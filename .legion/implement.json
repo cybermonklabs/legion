@@ -1,0 +1,11 @@
+{
+  "filesChanged": [
+    "smoke/legsmoke-137.md"
+  ],
+  "commitMessage": "smoke: add legsmoke-137 note (LEGSMOKE-137)",
+  "deviations": [],
+  "openQuestions": [],
+  "schemaVersion": 1,
+  "phase": "implement",
+  "completed": "2026-09-13T13:10:30.867Z"
+}
