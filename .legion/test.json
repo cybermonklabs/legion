@@ -1,0 +1,87 @@
+{
+  "issue": "LEGSMOKE-188",
+  "issueTitle": "Run one pull request for LEGSMOKE-183 from planner to merge queue",
+  "repo": "sjawhar/legion-smoke",
+  "branch": "legion/LEGSMOKE-188",
+  "baseBranch": "main",
+  "pullRequest": {
+    "number": 48,
+    "url": "https://github.com/sjawhar/legion-smoke/pull/48",
+    "head": "legion/LEGSMOKE-188",
+    "base": "main"
+  },
+  "headTested": "6cb177065b18aaacf06078dcfe1e4bfcc1ca26d1",
+  "headMatchesArchitectExpectation": true,
+  "verdict": "PASS",
+  "passed": 3,
+  "failed": 0,
+  "failures": [],
+  "testedAt": "2026-09-13T18:42Z",
+  "liveHeadCheck": {
+    "command": "cd -- \"$LEGION_WORKSPACE\" && legion gh -- pr view 48 --repo sjawhar/legion-smoke --json headRefOid,mergeable,mergeStateStatus,headRefName,baseRefName,state",
+    "output": "{\"baseRefName\":\"main\",\"headRefName\":\"legion/LEGSMOKE-188\",\"headRefOid\":\"6cb177065b18aaacf06078dcfe1e4bfcc1ca26d1\",\"mergeStateStatus\":\"CLEAN\",\"mergeable\":\"MERGEABLE\",\"state\":\"OPEN\"}",
+    "result": "head equals the expected 6cb177065b18aaacf06078dcfe1e4bfcc1ca26d1; not CONFLICTING"
+  },
+  "acceptance1": {
+    "result": "PASS",
+    "surface": "GitHub file view at the pull request head: https://github.com/sjawhar/legion-smoke/blob/6cb177065b18aaacf06078dcfe1e4bfcc1ca26d1/smoke/legsmoke-183.md, proven through the contents API at that SHA",
+    "command": "cd -- \"$LEGION_WORKSPACE\" && HEAD=6cb177065b18aaacf06078dcfe1e4bfcc1ca26d1 && legion gh -- api \"repos/sjawhar/legion-smoke/contents/smoke/legsmoke-183.md?ref=$HEAD\" --jq .content | base64 -d | /usr/bin/cmp - <(printf 'LEGSMOKE-183 Legion smoke exercise (2026-09-13T17:12:56Z). Pipeline probe; safe to merge; throwaway.\\n'); echo \"exit=$?\"",
+    "output": "exit=0",
+    "exit": 0,
+    "negativeControl": {
+      "what": "same comparison with the literal's final '.' (byte 100) changed to '!'",
+      "command": "cd -- \"$LEGION_WORKSPACE\" && HEAD=6cb177065b18aaacf06078dcfe1e4bfcc1ca26d1 && legion gh -- api \"repos/sjawhar/legion-smoke/contents/smoke/legsmoke-183.md?ref=$HEAD\" --jq .content | base64 -d | /usr/bin/cmp - <(printf 'LEGSMOKE-183 Legion smoke exercise (2026-09-13T17:12:56Z). Pipeline probe; safe to merge; throwaway!\\n'); echo \"exit=$?\"",
+      "output": "- /dev/fd/63 differ: byte 100, line 1\nexit=1",
+      "exit": 1
+    },
+    "byteProperties": {
+      "command": "legion gh -- api \"repos/sjawhar/legion-smoke/contents/smoke/legsmoke-183.md?ref=$HEAD\" --jq .content | base64 -d > /tmp/legsmoke188-head-file.bin; wc -c; sha256sum; od -An -tx1 -N3 (first bytes); tail -c 2 | od -An -tx1 (last bytes); tr -cd '\\n' | wc -c; tr -cd '\\r' | wc -c; legion gh -- api ... --jq '{size, sha, encoding}'",
+      "output": "bytes=101\nsha256=6279fddaa7a59dd97f5992c35a6911d9ecce4890e34290f7700ed64910a6c696\nfirst3hex=4c4547\nlast2hex=2e0a\nnewlines=1\ncr_count=0\n{\"encoding\":\"base64\",\"sha\":\"c14365b0204c14a52d38f7aa7e238ef3481ed0c4\",\"size\":101}",
+      "reading": "101 bytes; first three bytes are 'LEG' (4c 45 47), so no UTF-8 byte-order mark (ef bb bf); the last two bytes are '.' then 0x0a, and the file holds exactly one 0x0a and no 0x0d, so exactly one trailing Unix newline; sha256 equals plan.json change.sha256"
+    }
+  },
+  "acceptance2": {
+    "result": "PASS",
+    "surface": "pull request Files changed tab and conversation tab",
+    "diffFileList": {
+      "command": "cd -- \"$LEGION_WORKSPACE\" && legion gh -- pr diff 48 --repo sjawhar/legion-smoke --name-only; echo \"exit=$?\"",
+      "output": ".legion/implement.json\n.legion/plan.json\nsmoke/legsmoke-183.md\nexit=0",
+      "reading": "smoke/legsmoke-183.md plus only .legion/ paths, which is the expected pre-cleanup shape; no .fail-me, no .omp/, no other path"
+    },
+    "prMetadata": {
+      "command": "cd -- \"$LEGION_WORKSPACE\" && legion gh -- pr view 48 --repo sjawhar/legion-smoke --json body,headRefName,baseRefName --jq '{headRefName, baseRefName, hasDispatchLine: (.body | split(\"\\n\") | index(\"Dispatch: LEGSMOKE-188\") != null)}'",
+      "output": "{\"baseRefName\":\"main\",\"hasDispatchLine\":true,\"headRefName\":\"legion/LEGSMOKE-188\"}",
+      "bodyFirstLine": "Dispatch: LEGSMOKE-188"
+    }
+  },
+  "acceptance3": {
+    "result": "PASS",
+    "surface": "pull request checks panel",
+    "checkRuns": {
+      "command": "cd -- \"$LEGION_WORKSPACE\" && HEAD=6cb177065b18aaacf06078dcfe1e4bfcc1ca26d1 && legion gh -- api \"repos/sjawhar/legion-smoke/commits/$HEAD/check-runs\" --jq '.check_runs[] | {name, conclusion, status, app: .app.slug, run: .details_url}'",
+      "output": "{\"app\":\"github-actions\",\"conclusion\":\"success\",\"name\":\"check\",\"run\":\"https://github.com/sjawhar/legion-smoke/actions/runs/34775213285/job/103771975002\",\"status\":\"completed\"}\n{\"app\":\"github-actions\",\"conclusion\":\"success\",\"name\":\"gate\",\"run\":\"https://github.com/sjawhar/legion-smoke/actions/runs/34775213198/job/103771974817\",\"status\":\"completed\"}\n{\"app\":\"github-actions\",\"conclusion\":\"success\",\"name\":\"check\",\"run\":\"https://github.com/sjawhar/legion-smoke/actions/runs/34775211092/job/103771968250\",\"status\":\"completed\"}\n{\"app\":\"github-actions\",\"conclusion\":\"success\",\"name\":\"gate\",\"run\":\"https://github.com/sjawhar/legion-smoke/actions/runs/34775211107/job/103771968192\",\"status\":\"completed\"}",
+      "distinctConclusions": "4 success (legion gh -- api .../check-runs --jq '.check_runs[].conclusion' | sort | uniq -c)",
+      "reading": "four check runs, names check (ci workflow) x2 and gate (fail-on-demand workflow) x2 for the push and pull_request triggers, every conclusion success, none pending"
+    },
+    "headTree": {
+      "command": "cd -- \"$LEGION_WORKSPACE\" && HEAD=6cb177065b18aaacf06078dcfe1e4bfcc1ca26d1 && legion gh -- api \"repos/sjawhar/legion-smoke/git/trees/$HEAD?recursive=1\" --jq '.tree[].path'",
+      "output": ".github\n.github/workflows\n.github/workflows/ci.yml\n.github/workflows/fail-on-demand.yml\n.legion\n.legion/implement.json\n.legion/plan.json\nREADME.md\nsmoke\nsmoke/legion16-green-20260912T193247Z.md\nsmoke/legion16-green-20260912T235521Z.md\nsmoke/legion16-green-20260913T014950Z.md\nsmoke/legion16-green-20260913T094659Z.md\nsmoke/legion16-green-20260913T111000Z.md\nsmoke/legion16-green-20260913T144851Z.md\nsmoke/legsmoke-183.md",
+      "forbiddenPathFilter": "--jq '.tree[].path | select(. == \".fail-me\" or startswith(\".omp/\") or . == \".omp\")' printed nothing",
+      "reading": "no root .fail-me and no .omp path at the head; .legion/ present as expected before cleanup"
+    }
+  },
+  "notTestedByThisPhase": "Acceptance 4 (reviewer, at the approved head), 5 (merger) and 6 (architect on pr-merged) belong to later phases per the spec's Testing table.",
+  "e2eLineForPrBody": "**E2E:** GitHub file view at head 6cb177065b18aaacf06078dcfe1e4bfcc1ca26d1 (https://github.com/sjawhar/legion-smoke/blob/6cb177065b18aaacf06078dcfe1e4bfcc1ca26d1/smoke/legsmoke-183.md) — ran `legion gh -- api 'repos/sjawhar/legion-smoke/contents/smoke/legsmoke-183.md?ref=6cb177065b18aaacf06078dcfe1e4bfcc1ca26d1' --jq .content | base64 -d | /usr/bin/cmp - <(printf 'LEGSMOKE-183 Legion smoke exercise (2026-09-13T17:12:56Z). Pipeline probe; safe to merge; throwaway.\\n')`, observed no output and exit 0 (101 bytes, no byte-order mark, exactly one trailing newline), at head 6cb177065b18aaacf06078dcfe1e4bfcc1ca26d1. Negative control: the same command with the literal's final `.` changed to `!` → `- /dev/fd/63 differ: byte 100, line 1`, exit 1.",
+  "e2eLineStatus": "Applied to PR #48 with `legion gh -- pr edit 48 --repo sjawhar/legion-smoke --body-file /tmp/legsmoke188-pr-body.md` once the daemon returned; the CI line is updated to the new head at the same time.",
+  "handoffCommitStatus": "Committed as its own change `test: record handoff` containing only .legion/test.json (path-limited `jj split`), bookmark legion/LEGSMOKE-188 set at @- with --allow-backwards, pushed. The LEGSMOKE-188 architect confirmed (Envoy c27bb6ac721d5a7e2d7e8d7546ad43be) that its 'do not push' meant no product changes and that a handoff-only .legion/ commit is expected. The commit that carries this file is the new PR head; its SHA cannot be written inside itself and is named in the completion summary and the PR body's CI line. Product diff is identical at 6cb177065b18aaacf06078dcfe1e4bfcc1ca26d1 and at that new head.",
+  "observations": [
+    "All three acceptance lines assigned to the tester pass at head 6cb177065b18aaacf06078dcfe1e4bfcc1ca26d1, which equals the head the architect expected; GitHub reports MERGEABLE / CLEAN.",
+    "The Legion smoke-rig daemon (pid 2064804 per /tmp/legion-83-smoke/daemon.pid, http://127.0.0.1:19483) stopped between 18:41:34Z (last daemon.log line, a normal resync) and 18:43Z: no /proc/2064804, connection refused on 19483, no crash line in daemon.log. Until the controller restarted it (new pid 3353218, listening again at 18:51Z) every credentialed command (`legion gh`, `jj git push`, `legion handoff complete`) and the pane's bash tool itself failed with 'Unable to connect', because the extension mints the grant from the daemon before each bash command. All GitHub evidence above was gathered before the outage; `legion handoff write` (local) ran during it; the E2E edit, the handoff push and `legion handoff complete` ran after it.",
+    "This handoff is committed and pushed per the LEGSMOKE-188 architect's direction; the tested head 6cb177065b18aaacf06078dcfe1e4bfcc1ca26d1 and the new head carrying test.json are both named in the completion summary.",
+    "The working copy @ carries the daemon-provisioned empty .omp/config.yml; it is not in any pushed commit (head tree listing above shows no .omp path).",
+    "Tool notes confirmed: bare `gh` on the pane PATH is not the Legion shim, and the pane's builtin `cmp` cannot read a process substitution; `legion gh --` and `/usr/bin/cmp` were used throughout."
+  ],
+  "schemaVersion": 1,
+  "phase": "test",
+  "completed": "2026-09-13T18:51:52.218Z"
+}
