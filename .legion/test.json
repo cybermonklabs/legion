@@ -1,0 +1,41 @@
+{
+  "passed": 4,
+  "failed": 0,
+  "failures": [],
+  "testedHead": "c14c8b6bd5faf58e0bcc5691b4648b36dbfd5b88",
+  "pullRequest": {
+    "number": 42,
+    "url": "https://github.com/sjawhar/legion-smoke/pull/42",
+    "headRefName": "legion/LEGSMOKE-131",
+    "baseRefName": "main",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "CLEAN"
+  },
+  "acceptance": {
+    "1": "PASS — `legion gh -- pr view 42 --json headRefName,baseRefName,body`: headRefName=legion/LEGSMOKE-131, baseRefName=main; body split on newline has `Dispatch: LEGSMOKE-131` at index 12.",
+    "2": "PASS — `legion gh -- pr diff 42 --name-only | sort` printed exactly .legion/implement.json, .legion/plan.json, smoke/legsmoke-129.md; no .omp/ and no .fail-me.",
+    "3": "PASS — contents API at ref=c14c8b6b decoded to /tmp/legsmoke-129.actual; `cmp` against the printf Design literal exit 0; 101 bytes; od -c shows first bytes `L E G` (no BOM) and final byte `\\n` (no CR); sha256 e5c2a9e6436e2b4ba9f381eed988ac1c65a885c93648be6221ddc214d14a60b3. Negative control 1: cmp against the literal with final '.'->',' exit 1 (`differ: char 100, line 1`). Negative control 2: contents API at ref=main -> HTTP 404, gh exit 1.",
+    "4": "PASS — `pr checks 42`: check pass x2, gate pass x2. check-runs API at c14c8b6b: 4 runs (check, check, gate, gate), `.conclusion | sort -u` = success only. Recursive tree at c14c8b6b: .github/workflows/{ci,fail-on-demand}.yml, .legion/{implement,plan}.json, README.md, smoke/legion16-green-*.md x5, smoke/legsmoke-129.md; no .fail-me, no .omp/."
+  },
+  "ciRuns": {
+    "ci": [
+      34755792475,
+      34755860589
+    ],
+    "fail-on-demand": [
+      34755792474,
+      34755860630
+    ]
+  },
+  "observations": [
+    "pr 42 at c14c8b6bd5faf58e0bcc5691b4648b36dbfd5b88; origin bookmark legion/LEGSMOKE-131 resolves to the same SHA after jj git fetch.",
+    "plan.json deliverable.sha256 (52dcee3c...4cba) is wrong for the Design literal; the byte cmp is authoritative and the file hashes to e5c2a9e6...60b3, matching implement.json fileSha256. No file defect.",
+    "cmp on this host rejects process substitution; the printf literal was written to /tmp/legsmoke-129.expected first, as the assignment directed.",
+    "Two runs per workflow exist at the head (push and pull_request triggers), all success; this is expected per plan.json deliverable.ci.triggers.",
+    "PR body E2E line replaced in place via `pr edit --body-file`; all other body lines unchanged (diff shows only GitHub's trailing newline).",
+    "Docs-only PR: no Thermo line, no thermo pass expected from the reviewer."
+  ],
+  "schemaVersion": 1,
+  "phase": "test",
+  "completed": "2026-09-13T12:04:11.608Z"
+}
