@@ -1,0 +1,59 @@
+{
+  "issue": "LEGSMOKE-188",
+  "repo": "sjawhar/legion-smoke",
+  "branch": "legion/LEGSMOKE-188",
+  "baseBranch": "main",
+  "baseSha": "40c26543a5fca07a04923de924d2688fce95b0f2",
+  "planCommitSha": "7affe96ffa219037b29743ada4ae6ebd296d832d",
+  "productCommitSha": "a06705245cd10ca91d6cf4e4866b39fb26c36351",
+  "pullRequest": {
+    "number": 48,
+    "url": "https://github.com/sjawhar/legion-smoke/pull/48",
+    "base": "main",
+    "head": "legion/LEGSMOKE-188",
+    "title": "smoke: add smoke/legsmoke-183.md (LEGSMOKE-183 pipeline probe)",
+    "headShaAtOpen": "a06705245cd10ca91d6cf4e4866b39fb26c36351",
+    "bodyContainsLine": "Dispatch: LEGSMOKE-188",
+    "bodyScratchFile": "/tmp/legsmoke188-pr-body.md",
+    "headDiscovery": "legion gh -- pr list --repo sjawhar/legion-smoke --head legion/LEGSMOKE-188 --json number,url,headRefOid"
+  },
+  "headNote": "The commit that records this handoff (`implement: record handoff`) is pushed after this file is written, so it becomes the PR head; its SHA is the headRefOid from pullRequest.headDiscovery and is also named in the implementer's completion summary and the PR body's CI line. The product diff is identical at both heads.",
+  "file": {
+    "path": "smoke/legsmoke-183.md",
+    "bytes": 101,
+    "sha256": "6279fddaa7a59dd97f5992c35a6911d9ecce4890e34290f7700ed64910a6c696",
+    "content": "LEGSMOKE-183 Legion smoke exercise (2026-09-13T17:12:56Z). Pipeline probe; safe to merge; throwaway.\n",
+    "localProof": "wc -c -> 101; sha256sum -> 6279fddaa7a59dd97f5992c35a6911d9ecce4890e34290f7700ed64910a6c696; od -c ends 'w a y . \\n' at offset 0000145, no \\r, no EF BB BF"
+  },
+  "commitMessages": [
+    "smoke: add smoke/legsmoke-183.md (LEGSMOKE-183 pipeline probe)",
+    "implement: record handoff"
+  ],
+  "commitProcedure": "Each commit is a path-limited `jj split -m <msg> <paths>`; `jj diff -r @- --summary` after the product split printed exactly `A smoke/legsmoke-183.md`. Before each push: `jj bookmark set legion/LEGSMOKE-188 -r @- --allow-backwards` then `jj git push --bookmark legion/LEGSMOKE-188`. The working copy @ keeps only the daemon-provisioned empty .omp/config.yml and is never pushed.",
+  "pathsTouched": [
+    "smoke/legsmoke-183.md",
+    ".legion/implement.json"
+  ],
+  "pathsNotTouched": "README.md, .github/workflows/*, .omp/, .fail-me, existing smoke/legion16-green-*.md",
+  "deviationsFromPlan": [
+    "Two pushes instead of one: the architect's assignment requires the PR number and head SHA in this handoff, so the product commit was pushed and PR #48 opened before this file was written and committed; the handoff commit is pushed as a second head. Both workflows run on both heads."
+  ],
+  "verificationForTester": {
+    "source": ".legion/plan.json verification.acceptance1, acceptance1NegativeControl, acceptance2, acceptance3, diffFileList",
+    "headToTest": "headRefOid from pullRequest.headDiscovery",
+    "toolNotes": "Use `legion gh --` (bare gh is the dotfiles shim acting as Sami) and `/usr/bin/cmp` (the pane's builtin cmp cannot read a process substitution).",
+    "expectedDiffFileListBeforeCleanup": [
+      "smoke/legsmoke-183.md",
+      ".legion/plan.json",
+      ".legion/implement.json"
+    ]
+  },
+  "followUpsForImplementer": [
+    "Push the .legion/ deletion at the reviewer's direction after round 1 (plan.phases.cleanupImplementer); run `legion threads resolve --pr 48 --repo sjawhar/legion-smoke` first.",
+    "Retro after APPROVE (plan.phases.retroImplementer).",
+    "Post-merge verification of smoke/legsmoke-183.md on main (plan.phases.postMergeImplementer)."
+  ],
+  "schemaVersion": 1,
+  "phase": "implement",
+  "completed": "2026-09-13T18:37:31.485Z"
+}
