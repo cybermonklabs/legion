@@ -1,0 +1,20 @@
+{
+  "passed": 7,
+  "failed": 0,
+  "failures": [],
+  "observations": [
+    "PR 43 https://github.com/sjawhar/legion-smoke/pull/43 at 573513df2f9495533b35b2f7b9677cacb3469e55 (== legion/LEGSMOKE-137@origin after jj git fetch)",
+    "A1a: `pr diff 43 --name-only | sort` = .legion/implement.json, .legion/plan.json, smoke/legsmoke-137.md (exactly three lines)",
+    "A1b: headRefName legion/LEGSMOKE-137, baseRefName main, body line index 12 == `Dispatch: LEGSMOKE-137`",
+    "A1c: contents API at 573513df2f9495533b35b2f7b9677cacb3469e55 -> cmp exit 0 against the plan literal; 101 bytes, sha256 55d46db8e9f0007a237c0648e2499bc7273aa040e909e2acfc3a32af22d17b41, wc -l 1, grep -c LEGSMOKE-137 = 1, grep -c throwaway = 1, od -c final byte \\n, no \\r, first bytes L E G (no BOM)",
+    "A1 negative control 1: `.`->`,` variant | cmp -> exit 1, `differ: char 100, line 1`",
+    "A1 negative control 2: contents API ref=main -> HTTP 404, gh exit 1",
+    "A2: check-runs at 573513df2f9495533b35b2f7b9677cacb3469e55 all success: check (ci run 34759110025 push, 34759152303 pull_request), gate (fail-on-demand run 34759110029 push, 34759152311 pull_request); `pr checks 43` 4/4 pass; git tree at 573513df2f9495533b35b2f7b9677cacb3469e55 has no .fail-me and no .omp/",
+    "A2 negative control: fresh /tmp/legsmoke-137-fod.of2kR2 (outside the workspace), gate command `if [ -f .fail-me ]; then exit 1; else exit 0; fi` -> armed-exit=1, disarmed-exit=0, workspace-has-no-fail-me; tmp dir removed; command matches .github/workflows/fail-on-demand.yml verbatim",
+    "E2E line of the PR body replaced (only line 7 changed); Dispatch: LEGSMOKE-137 re-verified at index 12 after edit",
+    "Environment: LEGION_* set by the daemon for this worker (LEGION_WORKSPACE, LEGION_ISSUE, LEGION_ROLE, LEGION_TREE, LEGION_GENERATION, LEGION_DAEMON_URL, LEGION_STATE_DIR, LEGION_GRANT_FILE, LEGION_CREDENTIAL_HELPER, LEGION_BOOT_TOKEN_FILE, LEGION_DAEMON_PORT, LEGION_PROJECT); credentialed commands ran only from the tester's own foreground bash"
+  ],
+  "schemaVersion": 1,
+  "phase": "test",
+  "completed": "2026-09-13T13:17:07.499Z"
+}
