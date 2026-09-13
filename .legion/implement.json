@@ -1,0 +1,15 @@
+{
+  "filesChanged": [
+    "smoke/legsmoke154-green-20260913T151120Z.md"
+  ],
+  "timestamp": "20260913T151120Z",
+  "literal": "LEGSMOKE-154 green-merge probe (20260913T151120Z). Safe to merge; throwaway.\n",
+  "bytes": 77,
+  "sha256": "6cdb5dd3ea5a13cc0423782b19cba680c82feefb851b53f6edd2201e129c0e8b",
+  "markerCommit": "d2bce3ab37e8923638341e034ff7466b7f815011",
+  "branch": "legion/LEGSMOKE-154",
+  "pullRequest": "opened after this handoff's single push; find it with legion gh -- pr list --repo sjawhar/legion-smoke --head legion/LEGSMOKE-154",
+  "schemaVersion": 1,
+  "phase": "implement",
+  "completed": "2026-09-13T15:11:34.564Z"
+}
