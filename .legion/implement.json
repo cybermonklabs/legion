@@ -1,0 +1,15 @@
+{
+  "filesChanged": [
+    "smoke/legsmoke-129.md"
+  ],
+  "commitMessage": "smoke: add legsmoke-129 marker (LEGSMOKE-131)",
+  "fileSha256": "e5c2a9e6436e2b4ba9f381eed988ac1c65a885c93648be6221ddc214d14a60b3",
+  "fileBytes": 101,
+  "deviations": [
+    "plan.json deliverable.sha256 (52dcee3c26d0d5a53783cf9f51bdfa6c4882dceda5045fa327e28d7db33f4cba) is incorrect for the spec literal. The file created via the plan createCommand is byte-identical to the Design literal (cmp exit 0, 101 bytes, LF, no BOM, no CR) and hashes to e5c2a9e6436e2b4ba9f381eed988ac1c65a885c93648be6221ddc214d14a60b3 (verified with sha256sum and Python hashlib). Tester A3: use the byte cmp (acceptance 3) as authoritative and expect sha256 e5c2a9e6...60b3, not 52dcee3c...4cba."
+  ],
+  "openQuestions": [],
+  "schemaVersion": 1,
+  "phase": "implement",
+  "completed": "2026-09-13T11:57:37.082Z"
+}
