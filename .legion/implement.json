@@ -1,0 +1,17 @@
+{
+  "filesChanged": [
+    "smoke/legsmoke153-green-20260913T151231Z.md"
+  ],
+  "markerPath": "smoke/legsmoke153-green-20260913T151231Z.md",
+  "markerTimestamp": "20260913T151231Z",
+  "markerLine": "LEGSMOKE-153 implementer green-merge probe (20260913T151231Z). Safe to merge; throwaway.",
+  "bytes": 89,
+  "sha256": "f3ecee6c2a89ad186246b2151db21c2374fd53ea521bc96280a9b8d5a0dc5c0e",
+  "markerCommit": "eb7b5a2d139173f495fb2a1f8a22f73f39df4e1d",
+  "branch": "legion/LEGSMOKE-153",
+  "deviations": [],
+  "openQuestions": [],
+  "schemaVersion": 1,
+  "phase": "implement",
+  "completed": "2026-09-13T15:12:42.213Z"
+}
