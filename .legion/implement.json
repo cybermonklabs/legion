@@ -1,0 +1,28 @@
+{
+  "pr": {
+    "repo": "sjawhar/legion-smoke",
+    "number": 27,
+    "url": "https://github.com/sjawhar/legion-smoke/pull/27",
+    "branch": "legion/LEGSMOKE-3",
+    "base": "main"
+  },
+  "implementationCommit": "6492f6e34375",
+  "changedFiles": [
+    "smoke/legsmoke3-20260913T013307Z.md"
+  ],
+  "summary": "Added the one-line throwaway file smoke/legsmoke3-20260913T013307Z.md; nothing else in the repository changed. The working copy's untracked .omp/config.yml (created by the omp harness) was deliberately kept out of every commit.",
+  "verification": [
+    "gh api repos/sjawhar/legion-smoke/contents/smoke/legsmoke3-20260913T013307Z.md?ref=legion/LEGSMOKE-3 returned blob 6ab58e844f, 79 bytes, the expected single line.",
+    "jj diff --from main --to legion/LEGSMOKE-3 shows only that file added."
+  ],
+  "testerNotes": [
+    "Acceptance 3 negative control: gh api ...contents/smoke/legsmoke3-20260913T013307Z.md?ref=main must return 404 before merge.",
+    "CI workflows ci and fail-on-demand run on the PR; no .fail-me exists so both are expected green. Record run ids and head sha in the PR body's CI line.",
+    "Do not rebase unless GitHub reports CONFLICTING."
+  ],
+  "fastFollow": "none",
+  "docsOnly": true,
+  "schemaVersion": 1,
+  "phase": "implement",
+  "completed": "2026-09-13T01:46:42.146Z"
+}
