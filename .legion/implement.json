@@ -1,0 +1,88 @@
+{
+  "filesChanged": [
+    "smoke/legsmoke-1-20260913T121813Z.md"
+  ],
+  "trickyParts": [
+    "jj 0.45.1 `jj split -m <msg> <paths>` moved the legion/LEGSMOKE-1 bookmark onto the undescribed remainder commit that carries the workspace's snapshotted `.omp/config.yml`; moved it back with `jj bookmark set legion/LEGSMOKE-1 -r @- --allow-backwards` and confirmed `jj file list -r legion/LEGSMOKE-1` has no `.omp/` and no `.fail-me` before each push (exactly as .legion/plan.json concern 3 predicted).",
+    "Pull request #31 was reused, never closed and no `gh pr create` run: `legion gh -- pr edit 31` set the title and READY-format body after both workflows concluded, so the CI line carries final run ids rather than placeholders."
+  ],
+  "deviations": [],
+  "openQuestions": [],
+  "subPlanningNeeded": false,
+  "pullRequest": {
+    "number": 31,
+    "url": "https://github.com/sjawhar/legion-smoke/pull/31",
+    "title": "smoke: add LEGSMOKE-1 marker 20260913T121813Z (LEGSMOKE-1)",
+    "baseRefName": "main",
+    "headRefName": "legion/LEGSMOKE-1",
+    "headAtMarkerCommit": "81dce72fa1414174966af4a1d43327fc8a953716",
+    "headAfterThisHandoff": "the commit carrying .legion/implement.json, the branch tip when this file is read (jj commit id = GitHub SHA); `legion gh -- pr view 31 --json headRefOid` returns it",
+    "supersededProbeHead": "5e110547fb50947fec7a06e087cfb7a9915a2436"
+  },
+  "markerCommit": {
+    "sha": "81dce72fa1414174966af4a1d43327fc8a953716",
+    "message": "smoke: add LEGSMOKE-1 marker 20260913T121813Z (LEGSMOKE-1)",
+    "parent": "4d2f676993eea6959ecd2c1e2464dc4788a59a18 (plan: record handoff)",
+    "base": "373184959b7a62c7e283f131564b8aeaad9365a2 (main@origin)"
+  },
+  "marker": {
+    "path": "smoke/legsmoke-1-20260913T121813Z.md",
+    "content": "LEGSMOKE-1 Legion smoke exercise (20260913T121813Z). Safe to merge; throwaway.",
+    "trailingNewline": false,
+    "bytes": 78,
+    "sha256": "bd0395f8ecb77ff6617283f4bd2f0a5fcc29b1f7ec2c2bce1b3850777a4fb584"
+  },
+  "ciRuns": [
+    {
+      "workflow": "ci",
+      "event": "pull_request",
+      "runId": 34757641668,
+      "job": "check",
+      "conclusion": "success",
+      "url": "https://github.com/sjawhar/legion-smoke/actions/runs/34757641668"
+    },
+    {
+      "workflow": "fail-on-demand",
+      "event": "pull_request",
+      "runId": 34757641682,
+      "job": "gate",
+      "conclusion": "success",
+      "url": "https://github.com/sjawhar/legion-smoke/actions/runs/34757641682"
+    },
+    {
+      "workflow": "ci",
+      "event": "push",
+      "runId": 34757639779,
+      "job": "check",
+      "conclusion": "success",
+      "url": "https://github.com/sjawhar/legion-smoke/actions/runs/34757639779"
+    },
+    {
+      "workflow": "fail-on-demand",
+      "event": "push",
+      "runId": 34757639833,
+      "job": "gate",
+      "conclusion": "success",
+      "url": "https://github.com/sjawhar/legion-smoke/actions/runs/34757639833"
+    }
+  ],
+  "verification": [
+    "local: `wc -c smoke/legsmoke-1-20260913T121813Z.md` -> 78; `sha256sum` -> bd0395f8ecb77ff6617283f4bd2f0a5fcc29b1f7ec2c2bce1b3850777a4fb584",
+    "local: `jj diff -r 81dce72f --summary` -> exactly `A smoke/legsmoke-1-20260913T121813Z.md`",
+    "local: `jj file list -r legion/LEGSMOKE-1 | sed -n '/^\\.omp\\//p;/fail-me/p'` -> empty before the marker push",
+    "GitHub: `gh api -H 'Accept: application/vnd.github.raw' repos/sjawhar/legion-smoke/contents/smoke/legsmoke-1-20260913T121813Z.md?ref=81dce72f` -> 78 bytes, sha256 bd0395f8...4fb584",
+    "GitHub: `gh api repos/sjawhar/legion-smoke/git/trees/81dce72f?recursive=1 --jq '.tree[].path'` filtered for `.fail-me` and `.omp/` -> empty",
+    "GitHub: `gh pr view 31 --json files` -> `.legion/plan.json +185 -0` and `smoke/legsmoke-1-20260913T121813Z.md +1 -0`; nothing else",
+    "GitHub: `gh pr checks 31` -> check pass, check pass, gate pass, gate pass; exit 0",
+    "GitHub: `gh run list --commit 81dce72f` -> all four runs status completed, conclusion success",
+    "GitHub: `gh pr view 31 --json title,headRefOid,baseRefName,state` -> new title, head 81dce72f, base main, OPEN; body ends with `Dispatch: LEGSMOKE-1`"
+  ],
+  "reviewThreadsAtHandoff": "0 review threads, 0 reviews on #31 (graphql reviewThreads.totalCount 0, reviews.totalCount 0); nothing to disposition yet",
+  "notesForTester": [
+    "Acceptance line 1 is evaluated with `.legion/` excluded while handoffs ride the branch (spec 'New since we talked' item 7); the PR head at test time also carries .legion/implement.json.",
+    "Repository has no formatters, linters, or test suites; none were run and none exist to run."
+  ],
+  "schemaVersion": 1,
+  "phase": "implement",
+  "completed": "2026-09-13T12:41:28.227Z"
+}
