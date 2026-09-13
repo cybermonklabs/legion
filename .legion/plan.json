@@ -5,7 +5,7 @@
     "complexity": "trivial",
     "estimatedImplementers": 1
   },
-  "workflowRecommendation": "One implementer, sequential phases: implement -> test -> review (COMMENT while .legion/ present) -> implementer pushes .legion/ deletion -> review APPROVE of that head by SHA -> retro -> merger publishes READY. Single-issue tree, no child issues, no plan or spec file in the repository. Rebase only if GitHub reports CONFLICTING; re-run a flaky job in place with `legion gh -- run rerun <run-id> --failed`, never by pushing. No deferrals: the only permitted follow-up field is `Fast-follow: none`.",
+  "workflowRecommendation": "One implementer, sequential phases: implement -> test -> review (COMMENT while .legion/ present) -> implementer pushes .legion/ deletion -> review APPROVE of that head by SHA -> retro -> merger verifies acceptance 3 at the PR head with the contents API, records it in the PR body, publishes READY -> the merge queue merges that exact head and reports the merge commit to the architect -> the architect's sign-off names the merge commit. Nothing runs after the merge (spec v3 Testing 3): no post-merge implementer round. Single-issue tree, no child issues, no plan or spec file in the repository. Rebase only if GitHub reports CONFLICTING; re-run a flaky job in place with `legion gh -- run rerun <run-id> --failed`, never by pushing. No deferrals: the only permitted follow-up field is `Fast-follow: none`.",
   "requiredSkills": {
     "implement": [
       "legion-worker",
@@ -21,21 +21,22 @@
   },
   "concerns": [
     "WORKSPACE TRAP: the working copy `@` carries a tracked 0-byte `.omp/config.yml` (harness-created, not on main, no .gitignore in the repo). It must never reach any commit or the PR (acceptance 1: the diff is smoke/legsmoke-115.md plus .legion/ only). Every phase commits with a path-scoped `jj -R \"$LEGION_WORKSPACE\" split -m '<msg>' <path>` from the working copy so `.omp/config.yml` stays in `@` as the remainder. Never `jj new` from `@`, never `jj describe @`, never `jj commit` without paths in this workspace. Held on LEGSMOKE-3 and LEGSMOKE-104.",
-    "BOOKMARK TRAP: after every `jj split`, jj moves bookmark legion/LEGSMOKE-115 onto the remainder commit `@` (the .omp/ remainder). Before every push re-point it with `jj -R \"$LEGION_WORKSPACE\" bookmark set legion/LEGSMOKE-115 -r @- --allow-backwards` (the bare form exits 1: `Refusing to move bookmark backwards or sideways`; verified on jj 0.45.1, flag `-B, --allow-backwards`). Then `jj -R \"$LEGION_WORKSPACE\" git push --bookmark legion/LEGSMOKE-115`. The planner pushed the bookmark at the plan-handoff commit, so origin already has legion/LEGSMOKE-115 with .legion/plan.json only.",
+    "BOOKMARK TRAP: after every `jj split`, jj moves bookmark legion/LEGSMOKE-115 onto the remainder commit `@` (the .omp/ remainder). Before every push re-point it with `jj -R \"$LEGION_WORKSPACE\" bookmark set legion/LEGSMOKE-115 -r @- --allow-backwards` (the bare form exits 1: `Refusing to move bookmark backwards or sideways`; verified on jj 0.45.1, flag `-B, --allow-backwards`). Then `jj -R \"$LEGION_WORKSPACE\" git push --bookmark legion/LEGSMOKE-115`. Origin already has legion/LEGSMOKE-115 carrying only the plan-handoff commits (.legion/plan.json). In this workspace the bookmark had been pre-provisioned untracked at the .omp/ remainder `@`; the second planner re-pointed it onto the plan commit (`bookmark set -r legion/LEGSMOKE-115@origin --allow-backwards`) and made it track @origin, so `jj -R \"$LEGION_WORKSPACE\" bookmark list --all-remotes legion/LEGSMOKE-115` shows one target with @git and @origin in step. A bare `bookmark track` on a sideways local bookmark would have produced a conflicted bookmark.",
     "TOOLING TRAP: in the harness bash tool, bare `cmp` resolves to a shadowing aux util that fails on process substitution (`Illegal seek`, exit 2). Use `/usr/bin/cmp` for every byte comparison. Verified by the planner: positive -> silent exit 0; one-character negative -> `differ: byte 84, line 1`, exit 1.",
     "`gh` on PATH is the `legion gh --` shim; every spec `gh ...` command is `legion gh -- ... --repo sjawhar/legion-smoke` (the workspace has no gh default repo). The shim refuses `pr merge`; the merge queue merges.",
     "The READY template's `pr-checks-result` run does not exist in this repository. The only workflows are `ci` (job `check`, `sleep 20 && exit 0`) and `fail-on-demand` (job `gate`, `if [ -f .fail-me ]; then exit 1; else exit 0; fi`). The CI line names both run ids at the head SHA.",
     "Thermo line omitted entirely: the change is one markdown line (docs-only per the skill). The reviewer runs no thermo pass unless it disagrees that the PR is docs-only.",
     "No `.legion/architect.json` preceded this plan (single-issue tree); plan.json is the first ledger entry.",
-    "Another issue's bookmark (legion/LEGSMOKE-116) is visible in this shared jj repo. Never touch it; the ancestry check before each push must show only main -> plan handoff -> this issue's commits."
+    "Other issues' bookmarks are visible in this shared jj repo (legion/LEGSMOKE-1, -3, -43, -45 (conflicted; `@origin (not created yet)`), -104, -121, -122, -123, legion16/*, legion42-*/*, legsmoke-2/*). Never touch or resolve them: the `legion/LEGSMOKE-45` conflict warning printed by every jj command is not this issue's. The ancestry check before each push must show only main -> plan handoff (3536b821) -> plan handoff (revision) -> this issue's commits.",
+    "SPEC VERSION: this plan follows spec version 3. Version 3 rewrote Testing 3 (acceptance 3): the merger fetches smoke/legsmoke-115.md from the PR head with the contents API before READY and records the response in the PR body; the merge queue merges that exact head and reports the merge commit to the architect; nothing runs after the merge and the architect's sign-off names the merge commit. The first plan.json (commit 3536b821, written against version 2) had the implementer verify on main after the merge — superseded by this revision (acceptanceChecks[2], mergerSteps, laterImplementerRounds.afterMerge). No production deploy exists for this repository, so the merge commit carrying the file onto main is the production observation."
   ],
   "issue": "LEGSMOKE-115",
-  "spec": "dispatch://LEGSMOKE-115 primary document (Summary, Acceptance 1-3, Requirements, Design, Errors, Testing 1-3, Rejected). Approved; this plan argues from it. Read it alongside this file.",
+  "spec": "dispatch://LEGSMOKE-115 primary document, version 3 (Summary, Acceptance 1-3, Requirements, Design, Errors, Testing 1-3, Rejected). Approved; this plan argues from it. Read it alongside this file. Version 3 moved Testing 3 (acceptance 3) from the implementer after the merge to the merger before READY; concerns[8].",
   "repo": "sjawhar/legion-smoke",
   "baseBranch": "main",
   "branch": "legion/LEGSMOKE-115",
   "baseline": {
-    "verifiedAt": "2026-09-13T10:00Z by planner, locally (jj file list -r main) and live (branches API, recursive tree API, contents API, pr list)",
+    "verifiedAt": "2026-09-13T10:00Z by the first planner, locally (jj file list -r main) and live (branches API, recursive tree API, contents API, pr list); re-verified 2026-09-13T11:18Z by the second planner after `jj git fetch`: main@origin 8e869f59 with the same seven paths, legion/LEGSMOKE-115@origin = 3536b821 adding .legion/plan.json only, branches API 3536b82158591dbcd4303db0e3387f6c641a0eb4, `pr list --head legion/LEGSMOKE-115 --state all` -> [].",
     "mainSha": "8e869f594e0e77e8029a37ad9c1a9c39339c188a",
     "treeAtMain": [
       ".github/workflows/ci.yml",
@@ -51,10 +52,10 @@
       ".fail-me (contents API -> 404)"
     ],
     "openPrsFromBranch": 0,
-    "remoteBranchBeforePlan": "absent (branches API -> Branch not found); the planner's gate push creates it at the plan-handoff commit",
+    "remoteBranchBeforePlan": "present at 3536b8215859 `plan: record handoff` (adds .legion/plan.json only), pushed by the first planner from a Legion deployment since torn down; this revision is committed on top of it and the bookmark pushed again.",
     "workspaceOnlyDiscrepancies": [
       "tracked 0-byte .omp/config.yml in @ (concerns[0])",
-      "bookmark legion/LEGSMOKE-115 pre-provisioned at @ (concerns[1])"
+      "bookmark legion/LEGSMOKE-115 pre-provisioned untracked at @; re-pointed to the plan commit and tracked by the second planner (concerns[1])"
     ]
   },
   "deliverable": {
@@ -84,7 +85,8 @@
     "Threads: `0 resolved, 0 unresolved` unless the reviewer opens threads; then one line per thread and the `legion threads resolve --pr <n> --repo sjawhar/legion-smoke` output pasted.",
     "E2E: the tester replaces the two pending lines with `e2eLineForTester`.",
     "No Thermo line (docs-only PR).",
-    "Every PR comment and review body ends with the Legion footer `<!-- legion: {\"session\":\"<session-id>\",\"phase\":\"<phase>\"} -->`."
+    "Every PR comment and review body ends with the Legion footer `<!-- legion: {\"session\":\"<session-id>\",\"phase\":\"<phase>\"} -->`.",
+    "Before READY the merger appends `acceptance3LineForMerger` (with <tip-sha> filled) to the E2E section, editing in place — the contents API response at the PR head is the acceptance-3 evidence. Nothing is recorded after the merge."
   ],
   "e2eLineForTester": "**E2E:** GitHub pull request https://github.com/sjawhar/legion-smoke/pull/<n> (the sandbox repository is the production-like surface for a smoke exercise) — ran `legion gh -- pr diff <n> --repo sjawhar/legion-smoke --name-only` -> <paths>; `legion gh -- pr view <n> --repo sjawhar/legion-smoke --json body` -> body contains `Dispatch: LEGSMOKE-115`; `legion gh -- pr checks <n> --repo sjawhar/legion-smoke` -> `check` pass (run <ci-run-id>), `gate` pass (run <fod-run-id>); contents API + /usr/bin/cmp for smoke/legsmoke-115.md -> exit 0 (85 bytes, blob d16664adc2edd530cbbece87fa19fa27fc75de1b); at head <sha>.\nNegative control: in a temp dir outside the workspace (`mktemp -d`), created `.fail-me` and ran the fail-on-demand gate command `if [ -f .fail-me ]; then exit 1; else exit 0; fi` -> exit 1; removed `.fail-me`, re-ran -> exit 0. Byte check with the final `.` changed to `!` -> /usr/bin/cmp exit 1 (`differ: byte 84, line 1`).",
   "acceptanceChecks": [
@@ -103,8 +105,8 @@
     {
       "id": "acceptance3",
       "spec": "The file lands on main through the merge queue.",
-      "check": "`legion gh -- api repos/sjawhar/legion-smoke/contents/smoke/legsmoke-115.md?ref=main` returns the file after the merge (sha d16664adc2edd530cbbece87fa19fa27fc75de1b, size 85); response recorded on the PR and on LEGSMOKE-115.",
-      "owner": "implementer after the merge queue merges (Testing 3); the architect sends it back"
+      "check": "Before publishing READY the merger runs `legion gh -- api \"repos/sjawhar/legion-smoke/contents/smoke/legsmoke-115.md?ref=<tip-sha>\" --jq '{sha,size,path}'` at the PR head (expect sha d16664adc2edd530cbbece87fa19fa27fc75de1b, size 85, path smoke/legsmoke-115.md) and records that response in the PR body's E2E section (acceptance3LineForMerger). The merge queue merges that exact head and reports the merge commit to the architect; the architect's sign-off names the merge commit, which carries the file onto main. Nothing runs after the merge (spec v3 Testing 3).",
+      "owner": "merger before READY (Testing 3); the merge queue reports the merge commit; the architect signs off naming it. The implementer is not sent back after the merge."
     }
   ],
   "implementerSteps": [
@@ -112,7 +114,7 @@
       "step": 1,
       "do": "Bind and confirm start state",
       "cmd": "cd -- \"$LEGION_WORKSPACE\" && jj -R \"$LEGION_WORKSPACE\" status && jj -R \"$LEGION_WORKSPACE\" log -r 'ancestors(@, 4)' --no-graph -T 'commit_id.short() ++ \" \" ++ bookmarks ++ \" | \" ++ description.first_line() ++ \"\\n\"'",
-      "expect": "Working copy changes: exactly `A .omp/config.yml`. Parent (@-) is `plan: record handoff`, whose parent is main 8e869f59. Bookmark legion/LEGSMOKE-115 sits on @- (the planner re-pointed and pushed it); if it sits on @ instead, that is the .omp/ remainder — never push without step 6's `bookmark set -r @- --allow-backwards`."
+      "expect": "Working copy changes: exactly `A .omp/config.yml`. Parent (@-) is `plan: record handoff` (the second planner's revision), whose parent is `plan: record handoff` 3536b821 (the first planner's), whose parent is main 8e869f59. Bookmark legion/LEGSMOKE-115 sits on @- (the planner re-pointed and pushed it); if it sits on @ instead, that is the .omp/ remainder — never push without step 6's `bookmark set -r @- --allow-backwards`."
     },
     {
       "step": 2,
@@ -140,7 +142,7 @@
       "step": 6,
       "do": "Ancestry check, point the bookmark at @- (NOT @), push",
       "cmd": "cd -- \"$LEGION_WORKSPACE\" && jj -R \"$LEGION_WORKSPACE\" log -r 'ancestors(@, 5)' && jj -R \"$LEGION_WORKSPACE\" bookmark set legion/LEGSMOKE-115 -r @- --allow-backwards && jj -R \"$LEGION_WORKSPACE\" git push --bookmark legion/LEGSMOKE-115",
-      "expect": "Chain is main -> plan handoff -> implementation -> @ only (no LEGSMOKE-116 commits). Push output names legion/LEGSMOKE-115 -> <impl-sha>."
+      "expect": "Chain is main -> plan handoff (3536b821) -> plan handoff (revision) -> implementation -> @ only (no other issue's commits). Push output names legion/LEGSMOKE-115 -> <impl-sha>."
     },
     {
       "step": 7,
@@ -249,15 +251,21 @@
   "mergerSteps": [
     {
       "step": 1,
-      "do": "Resolve threads (none expected) and prove nothing but retro sits above the approved head",
-      "cmd": "cd -- \"$LEGION_WORKSPACE\" && legion threads resolve --pr <n> --repo sjawhar/legion-smoke; jj -R \"$LEGION_WORKSPACE\" git fetch && jj -R \"$LEGION_WORKSPACE\" diff --from <approved-sha> --to <tip-sha> --summary; jj -R \"$LEGION_WORKSPACE\" diff --from <approved-sha> --to <tip-sha> --summary '~docs/solutions'; legion gh -- pr view <n> --repo sjawhar/legion-smoke --json state,mergeStateStatus,reviews,commits; legion gh -- api repos/sjawhar/legion-smoke/commits/<tip-sha>/check-runs --jq '.check_runs[].conclusion'",
+      "do": "Resolve threads (none expected), capture the tip once, and prove nothing but retro sits above the approved head",
+      "cmd": "cd -- \"$LEGION_WORKSPACE\" && legion threads resolve --pr <n> --repo sjawhar/legion-smoke; TIP=$(legion gh -- pr view <n> --repo sjawhar/legion-smoke --json headRefOid --jq .headRefOid); echo $TIP; jj -R \"$LEGION_WORKSPACE\" git fetch && jj -R \"$LEGION_WORKSPACE\" diff --from <approved-sha> --to $TIP --summary; jj -R \"$LEGION_WORKSPACE\" diff --from <approved-sha> --to $TIP --summary '~docs/solutions'; legion gh -- pr view <n> --repo sjawhar/legion-smoke --json state,mergeStateStatus,reviews,commits; legion gh -- api repos/sjawhar/legion-smoke/commits/$TIP/check-runs --jq '.check_runs[].conclusion'",
       "expect": "No `left open` line and exit 0. First summary lists only docs/solutions/* additions (retro) or is empty (quote as `no file changes above the approved head`); the second prints nothing. Reviews contain APPROVED pinned to the .legion/-free head; only retro's commit follows it; check-runs only success. Anything else above the approved head: tell the architect the head must return to review; do not publish."
     },
     {
       "step": 2,
+      "do": "Acceptance 3 at the PR head (spec v3 Testing 3): fetch smoke/legsmoke-115.md from the tip with the contents API, byte-check it, and record the response in the PR body's E2E section in place (acceptance3LineForMerger)",
+      "cmd": "legion gh -- api \"repos/sjawhar/legion-smoke/contents/smoke/legsmoke-115.md?ref=$TIP\" --jq '{sha,size,path}'; legion gh -- api \"repos/sjawhar/legion-smoke/contents/smoke/legsmoke-115.md?ref=$TIP\" --jq .content | base64 -d | /usr/bin/cmp - <(printf 'LEGSMOKE-115 Legion smoke exercise (2026-09-13T09:52:01Z). Safe to merge; throwaway.\\n'); echo cmp=$?; legion gh -- pr view <n> --repo sjawhar/legion-smoke --json body --jq .body > /tmp/legsmoke-115-pr-body.md; <append acceptance3LineForMerger with <tip-sha>=$TIP to the E2E section>; legion gh -- pr edit <n> --repo sjawhar/legion-smoke --body-file /tmp/legsmoke-115-pr-body.md",
+      "expect": "{\"sha\":\"d16664adc2edd530cbbece87fa19fa27fc75de1b\",\"size\":85,\"path\":\"smoke/legsmoke-115.md\"}; cmp prints nothing, cmp=0. Editing the PR body changes no commit, so the approval stands. The body file lives under /tmp, never inside the workspace."
+    },
+    {
+      "step": 3,
       "do": "Publish READY to the merge queue; never merge",
-      "cmd": "envoy_publish to notifications.role.pr-queue: `READY #<n> at <tip-sha>` naming the approved head, the tip, the --summary output, and the PR body's CI/Threads/E2E/Fast-follow/Chain facts",
-      "expect": "The queue merges under its own authority. Then `legion handoff complete`."
+      "cmd": "envoy_publish to the project's controller topic — the one named in the merger's own `Legion addressing` system-prompt line (this deployment: notifications.role.legion-sjawhar16-controller; never hand-format another): `READY #<n> at <tip-sha> (approved at <approved-sha>) for LEGSMOKE-115 (<pr url>)` with the two --summary outputs, the PR body's CI/Threads/E2E/Fast-follow/Chain facts, and the acceptance-3 contents API response at <tip-sha>. On a 404 no-holder, publish the same READY to the architect's topic and stay idle.",
+      "expect": "The queue merges that exact head under its own authority and reports the merge commit to the architect (spec v3 Testing 3). Then `legion handoff complete`. Nothing runs after the merge."
     }
   ],
   "laterImplementerRounds": {
@@ -272,11 +280,8 @@
     "retroAfterApproval": [
       "Commit exactly one file under docs/solutions/<category>/<slug>.md with `jj -R \"$LEGION_WORKSPACE\" split -m 'docs: retro for LEGSMOKE-115' docs/solutions`, `bookmark set legion/LEGSMOKE-115 -r @- --allow-backwards`, push. Nothing under .legion/, nothing else. The approval stands; the tree goes to the merger."
     ],
-    "postMergeAcceptance3": [
-      "After the queue merges (architect sends the implementer back): `legion gh -- api repos/sjawhar/legion-smoke/contents/smoke/legsmoke-115.md?ref=main --jq '{sha,size,path}'` -> sha d16664adc2edd530cbbece87fa19fa27fc75de1b, size 85, path smoke/legsmoke-115.md; `legion gh -- api repos/sjawhar/legion-smoke/contents/smoke/legsmoke-115.md?ref=main --jq .content | base64 -d | /usr/bin/cmp - <(printf '<contentLine>\\n')` -> exit 0.",
-      "Record the response on the PR (`legion gh -- pr comment <n> --repo sjawhar/legion-smoke --body $'...\\n\\n<!-- legion: {\"session\":\"<session-id>\",\"phase\":\"implement\"} -->'`) and on LEGSMOKE-115 (dispatch_message), then report to the architect. No production deploy exists for this repository; the merged file on main is the production observation (spec Testing 3)."
-    ],
-    "rebaseOnlyIfConflicting": "Only when `legion gh -- pr view <n> --repo sjawhar/legion-smoke --json mergeStateStatus` is CONFLICTING (it should not be: no unmerged branch touches smoke/legsmoke-115.md). Then follow the skill's fingerprint procedure verbatim (`jj rebase -s 'roots(main@origin..@)' -d main@origin`, fingerprint before and after with the single fileset '~(.legion | docs/solutions)'); post one `rebase <old> -> <new>; fingerprint <before> -> <after>; unchanged|changed` comment with the Legion footer. After the rebase the .omp/ remainder is still `@`; the bookmark still goes to @- --allow-backwards."
+    "rebaseOnlyIfConflicting": "Only when `legion gh -- pr view <n> --repo sjawhar/legion-smoke --json mergeStateStatus` is CONFLICTING (it should not be: no unmerged branch touches smoke/legsmoke-115.md). Then follow the skill's fingerprint procedure verbatim (`jj rebase -s 'roots(main@origin..@)' -d main@origin`, fingerprint before and after with the single fileset '~(.legion | docs/solutions)'); post one `rebase <old> -> <new>; fingerprint <before> -> <after>; unchanged|changed` comment with the Legion footer. After the rebase the .omp/ remainder is still `@`; the bookmark still goes to @- --allow-backwards.",
+    "afterMerge": "Nothing (spec v3 Testing 3). The merge queue reports the merge commit to the architect and the architect's sign-off names it; no worker is sent back and no post-merge contents API call on main is made. No production deploy exists for this repository; the merge commit carrying smoke/legsmoke-115.md onto main is the production observation."
   },
   "acceptance1Invariant": "At the tested head (implementer/tester heads) the PR diff touches only smoke/legsmoke-115.md and paths under .legion/. At the reviewer-approved head the PR diff is exactly smoke/legsmoke-115.md with additions 1, deletions 0. Any other path at any head (in particular .omp/config.yml, .fail-me, README.md, workflows) fails the phase; the implementer removes it (spec Errors row 3); nothing is downgraded.",
   "nonGoals": [
@@ -286,10 +291,12 @@
     "no second note or larger diff (spec Rejected row 1)",
     "no child issues or re-decomposition",
     "no rebase unless CONFLICTING",
-    "no worker merges; the queue merges"
+    "no worker merges; the queue merges",
+    "no post-merge verification round: the merge commit the queue reports is the acceptance-3 observation (spec v3 Testing 3)"
   ],
   "handoffSchema": "packages/contracts/src/handoff-schema.ts (validatePhaseHandoff): a declared field of the wrong type fails the whole file and the ledger treats it as missing; undeclared fields pass through untouched.",
+  "acceptance3LineForMerger": "Acceptance 3 (pre-merge, merger): `legion gh -- api \"repos/sjawhar/legion-smoke/contents/smoke/legsmoke-115.md?ref=<tip-sha>\" --jq '{sha,size,path}'` -> {\"sha\":\"d16664adc2edd530cbbece87fa19fa27fc75de1b\",\"size\":85,\"path\":\"smoke/legsmoke-115.md\"}; contents decoded and `/usr/bin/cmp` against the deliverable line -> exit 0; at head <tip-sha>. The merge queue merges this exact head.",
   "schemaVersion": 1,
   "phase": "plan",
-  "completed": "2026-09-13T10:03:07.706Z"
+  "completed": "2026-09-13T11:22:25.988Z"
 }
