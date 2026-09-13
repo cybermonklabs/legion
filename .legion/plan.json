@@ -1,0 +1,207 @@
+{
+  "taskCount": 7,
+  "independentTasks": 0,
+  "routingHints": {
+    "complexity": "trivial",
+    "estimatedImplementers": 1,
+    "skipArchitect": false
+  },
+  "workflowRecommendation": "Strictly sequential single-issue chain: implementer -> tester -> reviewer (COMMENT) -> implementer deletes .legion/ -> reviewer APPROVE by SHA -> retro -> merger publishes READY -> merge queue merges -> implementer verifies the marker on the default branch -> architect signs off naming the merge commit. One branch, one pull request, no child issues, no isolated worktree.",
+  "skillsFollowedByPlanner": [
+    "legion-worker: phase contract, workspace binding, handoff gate, PR body format, rebase rule.",
+    "dispatch: read the issue spec with dispatch_doc_read; the spec had no open decisions, so nothing was asked."
+  ],
+  "repositoryNorms": "sjawhar/legion-smoke has no AGENTS.md and no repository skills. Its only verification surface is GitHub: two GitHub Actions workflows (.github/workflows/ci.yml named 'ci', job 'check', sleeps 20s then exits 0; .github/workflows/fail-on-demand.yml named 'fail-on-demand', job 'gate', fails only if a file named .fail-me exists at the repository root). Verification norms therefore come from the legion-worker skill and the deployment instructions (keep every artifact inside sjawhar/legion-smoke and Dispatch project LEGSMOKE).",
+  "change": {
+    "file": "smoke/legsmoke195-green-<TS>.md where <TS> is the UTC creation time from `date -u +%Y%m%dT%H%M%SZ` (for example 20260913T183012Z). The same <TS> is used in the file name, the file's line, the commit message, and the pull request title.",
+    "content": "Exactly one line, following smoke/legsmoke146-green-20260913T134651Z.md and the smoke/legion16-green-*.md files: `LEGSMOKE-195 implementer green-merge probe (<TS>). Safe to merge; throwaway.`",
+    "forbidden": [
+      "No change to README.md.",
+      "No change under .github/workflows/.",
+      "Never create a file named .fail-me anywhere (it turns the fail-on-demand check red).",
+      "No docs/plans or spec markdown in the pull request; the plan lives in .legion/plan.json and the Dispatch issue document.",
+      "Never commit .omp/config.yml (see concerns)."
+    ]
+  },
+  "branch": "legion/LEGSMOKE-195 (already provisioned locally, pointing at the working-copy commit; cut from main 40c26543a5fc, the merge of pull request #45). The implementer pushes it with `jj -R \"$LEGION_WORKSPACE\" git push --bookmark legion/LEGSMOKE-195`; every later phase advances this same bookmark. No replacement bookmark or second pull request.",
+  "pullRequest": {
+    "count": 1,
+    "repo": "sjawhar/legion-smoke",
+    "base": "main",
+    "head": "legion/LEGSMOKE-195",
+    "titleSuggested": "smoke: add LEGSMOKE-195 green-merge probe <TS>",
+    "bodyMustContainLine": "Dispatch: LEGSMOKE-195",
+    "bodyFormat": "The legion-worker READY format from the moment the PR opens: a `Dispatch: LEGSMOKE-195` line, then `## Verification` with CI (both workflow names, their run ids, and the head SHA), Threads (`0 resolved, 0 unresolved` until a review opens one), E2E (left for the tester to fill), Fast-follow (`none`), Chain (`not stacked`). The Thermo line is omitted entirely: this PR adds one markdown file and is docs-only.",
+    "createCommand": "cd -- \"$LEGION_WORKSPACE\" && legion gh -- pr create --repo sjawhar/legion-smoke --base main --head legion/LEGSMOKE-195 --title '<title>' --body-file <file outside the workspace, e.g. /tmp/legsmoke195-pr-body.md>"
+  },
+  "requiredChecks": {
+    "names": [
+      "ci",
+      "fail-on-demand"
+    ],
+    "note": "These are GitHub Actions workflow names. `gh pr checks` lists check runs by job name instead: `check` belongs to workflow `ci`, `gate` belongs to workflow `fail-on-demand`. Both workflows trigger on `push` and on `pull_request`, so every pushed head produces four runs (two per workflow); all four must conclude `success`.",
+    "queryByWorkflowName": "cd -- \"$LEGION_WORKSPACE\" && legion gh -- run list --repo sjawhar/legion-smoke --commit <head-sha> --json workflowName,conclusion,event,url",
+    "expected": "Exactly two distinct workflowName values, `ci` and `fail-on-demand`, every row conclusion `success` for headSha <head-sha>. Verified working against pull request #45's head b52b8d37b2fae104d8818169c1cde1469cf22239.",
+    "onRed": "Read the failed run (`legion gh -- run view <run-id> --log-failed`). A flaky job is re-run alone with `legion gh -- run rerun <run-id> --failed`, never by pushing a new commit. A real cause (only plausible one: a .fail-me file) is fixed in a new commit on the branch."
+  },
+  "rebaseRule": "Rebase legion/LEGSMOKE-195 only when GitHub reports the pull request CONFLICTING: `legion gh -- pr view <n> --repo sjawhar/legion-smoke --json mergeable,mergeStateStatus` shows `\"mergeable\": \"CONFLICTING\"`. `mergeStateStatus: BEHIND` is NOT a reason to rebase; neither is picking up main or refreshing CI (Sami, 2026-09-11: \"Please don't do unnecessary rebases (i.e. unless there are merge conflicts). The CI queue is too long and slow.\"). If a rebase is forced: record the fingerprint at the old tip, `jj -R \"$LEGION_WORKSPACE\" rebase -s 'roots(main@origin..@)' -d main@origin`, push, record the fingerprint at the new tip, post one PR comment `rebase <old> -> <new>; fingerprint <before> -> <after>; unchanged|changed` with the Legion footer. The fingerprint command is the one in the legion-worker skill (`jj diff --from \"fork_point(main@origin | <sha>)\" --to <sha> --git --context 0 '~(.legion | docs/solutions)' | sed -e '/^@@/d' -e '/^index /d' | sha256sum`).",
+  "jjProcedure": {
+    "why": "The provisioned working copy already contains an untracked-by-git but jj-auto-tracked file `.omp/config.yml` (0 bytes), and the bookmark legion/LEGSMOKE-195 currently points at that working-copy commit. `jj split -m <msg> <paths>` moves only the named paths into a new described commit at @- and leaves the bookmark on the undescribed remainder @ (verified on jj 0.45.1). A `jj bookmark set legion/LEGSMOKE-195` without `-r @-` therefore points the bookmark at a commit jj refuses to push (`Won't push commit ... since it has no description`); and moving the bookmark from @ to @- the first time is a backwards move that jj refuses without `--allow-backwards`.",
+    "commit": "cd -- \"$LEGION_WORKSPACE\" && jj -R \"$LEGION_WORKSPACE\" split -m \"<message>\" <only your logical paths>",
+    "bookmark": "cd -- \"$LEGION_WORKSPACE\" && jj -R \"$LEGION_WORKSPACE\" bookmark set legion/LEGSMOKE-195 -r @- --allow-backwards   (the flag is harmless when the move is forwards; it is required only when the bookmark still sits on @)",
+    "ancestryCheck": "cd -- \"$LEGION_WORKSPACE\" && jj -R \"$LEGION_WORKSPACE\" log -r 'ancestors(@, 5)'   (only LEGSMOKE-195 commits above main 40c26543a5fc; .omp/config.yml must appear in no described commit: `jj -R \"$LEGION_WORKSPACE\" diff --from main@origin --to @- --summary`)",
+    "push": "cd -- \"$LEGION_WORKSPACE\" && jj -R \"$LEGION_WORKSPACE\" git push --bookmark legion/LEGSMOKE-195",
+    "never": "jj abandon, jj undo, jj op restore/revert, jj edit @-, git mutations, isolated worktrees, a second workspace."
+  },
+  "tasks": [
+    {
+      "order": 1,
+      "role": "implementer",
+      "summary": "Create the marker, push the branch, open the pull request, prove both checks green, write .legion/implement.json.",
+      "steps": [
+        "Bind: `cd -- \"$LEGION_WORKSPACE\" && jj -R \"$LEGION_WORKSPACE\" status`; read .legion/plan.json (this file).",
+        "TS=$(date -u +%Y%m%dT%H%M%SZ); write /absolute/$LEGION_WORKSPACE/smoke/legsmoke195-green-$TS.md with the single line `LEGSMOKE-195 implementer green-merge probe ($TS). Safe to merge; throwaway.` (write tool, absolute path).",
+        "Confirm `jj -R \"$LEGION_WORKSPACE\" status` shows exactly that one added smoke/ file plus the pre-existing .omp/config.yml; nothing else.",
+        "Commit only the marker: `jj -R \"$LEGION_WORKSPACE\" split -m \"smoke: LEGSMOKE-195 green-merge probe $TS\" smoke/legsmoke195-green-$TS.md`.",
+        "Move the bookmark to the described commit and check ancestry (jjProcedure.bookmark, jjProcedure.ancestryCheck), then push (jjProcedure.push).",
+        "Record the head SHA: `jj -R \"$LEGION_WORKSPACE\" log -r @- --no-graph -T commit_id`.",
+        "Wait for the four runs at that head to conclude, then query by workflow name (requiredChecks.queryByWorkflowName). Do not open the PR body with a CI claim you have not observed.",
+        "Write the PR body to a file outside the workspace (e.g. /tmp/legsmoke195-pr-body.md) in pullRequest.bodyFormat with the `Dispatch: LEGSMOKE-195` line; open the single pull request (pullRequest.createCommand); record its number and URL.",
+        "Re-query runs after the PR opens (the pull_request event adds two more runs at the same head); update the CI line if run ids changed.",
+        "Write the handoff with `legion handoff write --phase implement --data '<json>'` including: pullRequestNumber, pullRequestUrl, headSha, markerPath, timestamp, checkRunUrls (ci, fail-on-demand), and the fact that .omp/config.yml was left uncommitted.",
+        "Gate: `test -f \"$LEGION_WORKSPACE/.legion/implement.json\"`; `jj -R \"$LEGION_WORKSPACE\" split -m \"implement: record handoff\" .legion/implement.json`; bookmark set -r @-; ancestry check; push; wait for the checks at the new head to be green (they are what the tester will verify); then `legion handoff complete --summary '...'` naming the PR number and head SHA."
+      ],
+      "acceptance": "Pull request exists against main with head legion/LEGSMOKE-195; its Files changed list shows exactly smoke/legsmoke195-green-<TS>.md plus .legion/plan.json and .legion/implement.json; its body contains the line `Dispatch: LEGSMOKE-195`; `gh run list --commit <head>` shows ci and fail-on-demand success; .legion/implement.json committed and pushed."
+    },
+    {
+      "order": 2,
+      "role": "tester",
+      "summary": "Prove acceptance 1 and 2 on GitHub at the current head, run the negative control, fill the PR body's E2E section, write .legion/test.json.",
+      "steps": [
+        "Bind to the workspace; read .legion/plan.json and .legion/implement.json; `jj -R \"$LEGION_WORKSPACE\" git fetch`; HEAD=$(jj -R \"$LEGION_WORKSPACE\" log -r 'legion/LEGSMOKE-195@origin' --no-graph -T commit_id) and confirm it equals `legion gh -- pr view <n> --repo sjawhar/legion-smoke --json headRefOid`.",
+        "Acceptance 1 (files): `legion gh -- pr view <n> --repo sjawhar/legion-smoke --json files --jq '.files[].path'` must list exactly one smoke/legsmoke195-green-*.md file plus .legion/*.json handoff files and nothing else. Also `legion gh -- api repos/sjawhar/legion-smoke/contents/.fail-me?ref=legion/LEGSMOKE-195` must return 404.",
+        "Acceptance 2 (checks): run requiredChecks.queryByWorkflowName with $HEAD; record every row (workflowName, event, conclusion, url). Both `ci` and `fail-on-demand` must be `success` on every row. Cross-check `legion gh -- pr checks <n> --repo sjawhar/legion-smoke` (jobs check and gate, all pass).",
+        "Rebase rule evidence: `legion gh -- pr view <n> --repo sjawhar/legion-smoke --json mergeable,mergeStateStatus`; record the value. Only `mergeable: CONFLICTING` would allow a rebase; report it to the architect instead of rebasing yourself (the implementer owns rebases).",
+        "Negative control: from this worker pane run `cd -- \"$LEGION_WORKSPACE\" && legion gh -- pr merge <n> --repo sjawhar/legion-smoke; echo rc=$?`. Expected: non-zero exit and the message `Legion workers never merge; publish READY to the merge queue`, emitted by the shim before any GitHub call. Then `legion gh -- pr view <n> --repo sjawhar/legion-smoke --json state,merged` must still show OPEN / false. Record the refusal text and the state verbatim.",
+        "Fill the PR body's E2E section (edit in place with `legion gh -- pr edit <n> --repo sjawhar/legion-smoke --body-file <file outside the workspace>`, keeping every other section): `**E2E:** GitHub pull request #<n> on sjawhar/legion-smoke — ran `gh run list --commit <HEAD>`, observed ci and fail-on-demand success (run urls), Files changed = <list>, at head <HEAD>. Negative control: `legion gh -- pr merge <n>` from the worker pane -> refused with `Legion workers never merge; publish READY to the merge queue`; PR still OPEN.` Link the run urls.",
+        "Write `legion handoff write --phase test --data '<json>'` with headSha, checkResults (per workflow, per event, url), filesChanged, mergeable, negativeControl {command, exitCode, message, prStateAfter}, and verdict pass/fail.",
+        "Gate: test -f .legion/test.json; `jj -R \"$LEGION_WORKSPACE\" split -m \"test: record handoff\" .legion/test.json`; bookmark set -r @-; ancestry check; push; `legion handoff complete --summary '...'`."
+      ],
+      "acceptance": "PR body E2E section names the head SHA, both workflow names green with run links, the exact file list, and the merge refusal with the PR still OPEN; .legion/test.json committed and pushed. If any check is red, or the merge attempt is NOT refused, the tester fails the phase and tells the architect with the evidence instead of passing."
+    },
+    {
+      "order": 3,
+      "role": "reviewer",
+      "summary": "Verify the CI, Threads, and E2E facts against GitHub at the reviewed head, submit exactly one review per round, approve only a head without .legion/.",
+      "steps": [
+        "Bind; read plan.json, implement.json, test.json; fetch; take the head SHA from GitHub (`pr view --json headRefOid`), never from a handoff.",
+        "Re-run requiredChecks.queryByWorkflowName at that head (note: the tester's handoff push created a new head; ci and fail-on-demand must be success there too).",
+        "Confirm Files changed is exactly the one marker under smoke/ plus .legion/*.json; confirm the marker's single line matches change.content; confirm no README, workflow, or .fail-me change; confirm the body contains `Dispatch: LEGSMOKE-195`.",
+        "Thermo: skip entirely — docs-only PR (one markdown file).",
+        "Round 1 submission: one review via `legion gh -- api --method POST repos/sjawhar/legion-smoke/pulls/<n>/reviews --input <body.json outside the workspace>` with commit_id = reviewed head, event COMMENT (the head still carries .legion/), body with the Legion footer `<!-- legion: {\"session\":\"<session-id>\",\"phase\":\"review\"} -->`, and a comments[] array (expected empty: there is nothing to find). Use REQUEST_CHANGES only if a correctness finding stands (wrong file name/content, extra files, red check).",
+        "Write .legion/review.json (verdict, reviewedHead, reviewId), commit `review: record handoff`, bookmark set -r @-, push, `legion handoff complete` asking the architect to send the implementer back to delete .legion/.",
+        "Round 2 (after the implementer pushes the .legion/ deletion): fetch; confirm the new head differs from the reviewed one by the .legion/ deletion alone (`jj diff --from <reviewed> --to <new> --summary` shows only D .legion/*.json); re-run the checks query at the new head; submit one APPROVE naming the new head by SHA in commit_id and body (Legion footer). No .legion/review.json is written after the deletion (the gate no longer applies); report with `legion handoff complete` alone."
+      ],
+      "acceptance": "One COMMENT review on the .legion/-carrying head, then one APPROVE whose commit_id is the clean head; every fact in the review body was read from GitHub; no Thermo line."
+    },
+    {
+      "order": 4,
+      "role": "implementer (returning)",
+      "summary": "At the reviewer's direction (relayed by the architect), delete .legion/ and push; fix any correctness finding first.",
+      "steps": [
+        "If the review was REQUEST_CHANGES: fix in a new commit, answer each thread you own, `legion threads resolve --pr <n> --repo sjawhar/legion-smoke`, paste its output into the Threads section, push; the tester then re-runs (order 2) before the reviewer.",
+        "Deletion: the working copy @ is already the remainder commit on top of the branch tip (it holds only .omp/config.yml); do not run `jj new`. `cd -- \"$LEGION_WORKSPACE\" && jj -R \"$LEGION_WORKSPACE\" git fetch`, remove the four files .legion/plan.json, .legion/implement.json, .legion/test.json, .legion/review.json from the filesystem, confirm `jj -R \"$LEGION_WORKSPACE\" status` shows exactly those four deletions plus the pre-existing .omp/config.yml, then `jj -R \"$LEGION_WORKSPACE\" split -m \"chore: remove .legion handoffs\" .legion`, bookmark set -r @-, ancestry check, push (jjProcedure).",
+        "Verify `jj -R \"$LEGION_WORKSPACE\" file list -r legion/LEGSMOKE-195 .legion` prints nothing on stdout; wait for ci and fail-on-demand at the new head; `legion handoff complete` (no handoff file — the gate no longer applies once .legion/ is gone)."
+      ],
+      "acceptance": "Branch tip carries no .legion/ path; diff from the approved head is only the deletions; both checks green at the tip."
+    },
+    {
+      "order": 5,
+      "role": "retro",
+      "summary": "Owned by the legion-retro skill, not this plan: learnings land under docs/solutions/ on top of the approved head. Retro's commit does not void the approval.",
+      "steps": [
+        "Follow skills/legion-retro. The only constraint from this plan: touch nothing outside docs/solutions/."
+      ],
+      "acceptance": "Only docs/solutions/ paths above the approved head."
+    },
+    {
+      "order": 6,
+      "role": "merger",
+      "summary": "Prove nothing but docs/solutions/ sits above the approved head, then publish READY to the merge queue. Never merge.",
+      "steps": [
+        "`legion threads resolve --pr <n> --repo sjawhar/legion-smoke` — expect no `left open` lines (there should be zero threads).",
+        "`cd -- \"$LEGION_WORKSPACE\" && jj -R \"$LEGION_WORKSPACE\" git fetch && jj -R \"$LEGION_WORKSPACE\" diff --from <approved-sha> --to <tip-sha> --summary` (quote the output; empty output is quoted as `no file changes above the approved head`), then the same command with `'~docs/solutions'` appended, which must print nothing.",
+        "Confirm ci and fail-on-demand success at <tip-sha> (requiredChecks.queryByWorkflowName) and `mergeable` is not CONFLICTING.",
+        "envoy_publish `READY #<n> at <tip-sha>` to notifications.role.pr-queue naming the approved head, the tip, the diff summary, and the PR body's gate facts."
+      ],
+      "acceptance": "READY published once; the merge queue (not any worker) merges the pull request."
+    },
+    {
+      "order": 7,
+      "role": "implementer (post-merge) and architect",
+      "summary": "Acceptance 3 and 4: production-equivalent verification is the default branch on GitHub; the architect signs off naming the merge commit.",
+      "steps": [
+        "Implementer: `legion gh -- pr view <n> --repo sjawhar/legion-smoke --json state,mergeCommit` shows MERGED and the merge commit SHA; `legion gh -- api repos/sjawhar/legion-smoke/contents/smoke?ref=main --jq '.[].name'` lists smoke/legsmoke195-green-<TS>.md; record both on the PR (comment with Legion footer) and in the issue via the architect.",
+        "Architect: closes LEGSMOKE-195 with a sign-off comment on Dispatch naming the merge commit, after retro has posted its learnings."
+      ],
+      "acceptance": "Marker present on main; PR MERGED; Dispatch issue done with a sign-off naming the merge commit."
+    }
+  ],
+  "acceptanceSurfaces": [
+    {
+      "criterion": "1. PR adds exactly smoke/legsmoke195-green-<TS>.md and nothing else outside docs/solutions/",
+      "surface": "GitHub pull request Files changed (via `legion gh -- pr view <n> --json files`) at the approved head; merger's `jj diff --from <approved> --to <tip> --summary` for the docs/solutions-only rule.",
+      "provedBy": "tester (at test head, allowing .legion/*.json), reviewer (at approved head), merger (above approved head).",
+      "drivingSkill": "legion-worker (GitHub via legion gh; no repository skill exists)."
+    },
+    {
+      "criterion": "2. Checks 'ci' and 'fail-on-demand' green on the head the reviewer approves",
+      "surface": "GitHub Actions runs at the head SHA via `legion gh -- run list --commit <sha> --json workflowName,conclusion,event,url`.",
+      "provedBy": "tester (test head), reviewer (reviewed and approved heads), merger (tip).",
+      "drivingSkill": "legion-worker."
+    },
+    {
+      "criterion": "3. Merge queue merges; marker present on the default branch",
+      "surface": "GitHub PR state MERGED and `repos/sjawhar/legion-smoke/contents/smoke?ref=main`.",
+      "provedBy": "merger publishes READY; implementer verifies after the merge lands.",
+      "drivingSkill": "legion-worker (merge-queue discipline; post-merge verification by the implementer)."
+    },
+    {
+      "criterion": "4. Issue closed with a sign-off naming the merge commit after retro",
+      "surface": "Dispatch issue LEGSMOKE-195 status and sign-off comment.",
+      "provedBy": "architect.",
+      "drivingSkill": "dispatch, legion-architect."
+    }
+  ],
+  "testerEvidenceRequired": [
+    "Both workflow checks (ci, fail-on-demand) success at the head SHA, with run URLs, from `gh run list --commit <sha>` (not only `gh pr checks`, whose names are job names).",
+    "Negative control: `legion gh -- pr merge <n> --repo sjawhar/legion-smoke` from the worker pane refused with `Legion workers never merge; publish READY to the merge queue`, and the PR still OPEN afterwards.",
+    "Files changed list and `mergeable` value at the head.",
+    "All recorded in the PR body's E2E section and in .legion/test.json."
+  ],
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: owns the branch name legion/LEGSMOKE-195, the `Dispatch: LEGSMOKE-195` PR-body line, the READY body format, the .legion/ handoff gate, the jj safety rules, and the rebase-only-on-CONFLICTING rule.",
+      "verification-before-completion: the implementer must observe ci and fail-on-demand success at the pushed head before writing the CI line or reporting completion."
+    ],
+    "test": [
+      "legion-worker: defines the E2E section (surface, command, observation, head SHA, one negative control), the workflow-name check evidence, and the fingerprint rule after any conflict-forced rebase.",
+      "verification-before-completion: every claim in the E2E section is pasted from a command run against GitHub at the named head, never inferred from a handoff."
+    ],
+    "review": [
+      "legion-worker: one review per round via the reviews API, COMMENT while .legion/ is present, APPROVE only the clean head named by SHA, Thermo omitted on this docs-only PR, facts read from GitHub not handoffs.",
+      "verification-before-completion: re-run the checks query and the files query at the exact commit_id being reviewed before submitting."
+    ]
+  },
+  "concerns": [
+    "Workspace hygiene: `.omp/config.yml` (0 bytes) is present and jj-auto-tracked in the working copy of this workspace and must never be committed. Every phase must commit with a path-scoped `jj split` and set the bookmark with `-r @-` (first move needs `--allow-backwards`); a bare `jj bookmark set legion/LEGSMOKE-195` targets the undescribed remainder and jj refuses to push it. Verified on jj 0.45.1 in a throwaway repo; no prior LEGSMOKE branch leaked the file.",
+    "Check naming: the required checks are workflow names (ci, fail-on-demand) while `gh pr checks` shows job names (check, gate). Testers and reviewers must use `gh run list --commit <sha> --json workflowName,conclusion` so the evidence names the checks the spec names.",
+    "CI cost: every push fires four workflow runs (two workflows x push+pull_request). The chain as specified pushes at least five heads (implement marker, implement handoff, test handoff, review handoff, .legion deletion) plus retro; do not add pushes for rebases or CI refreshes.",
+    "Negative control safety: the shim's refusal of `pr merge` happens in `cmdGh` before any spawn or network call (packages/daemon/src/cli/index.ts, covered by its unit test). If the refusal does NOT occur, the tester must stop immediately, not retry, and report to the architect: that would be a shim defect, and the PR must be checked for an accidental merge.",
+    "The spec's acceptance 1 says nothing else changes outside docs/solutions/ at the merged head; during test and review the PR legitimately carries .legion/*.json, which the implementer deletes at the reviewer's direction before APPROVE. The tester must not fail the phase for the presence of .legion/ files.",
+    "LEGSMOKE-189, cited in the spec as the earlier completed smoke root, has no pull request in sjawhar/legion-smoke (`gh pr list --search LEGSMOKE-189` is empty). The naming precedent actually on the repository is smoke/legsmoke146-green-20260913T134651Z.md on branch legion/LEGSMOKE-146; this plan follows that file's format."
+  ],
+  "schemaVersion": 1,
+  "phase": "plan",
+  "completed": "2026-09-13T18:47:02.550Z"
+}
