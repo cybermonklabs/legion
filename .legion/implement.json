@@ -1,0 +1,13 @@
+{
+  "filesChanged": [
+    "smoke/legsmoke-143-20260913T131220Z.md"
+  ],
+  "smokeCommit": "057551276e005585b18ffc7695f2c33e0d5abf57",
+  "sha256": "69db27a7ca228175ed9cf2ed0c972e60bd3854e7383680a881e9187d36785f7a",
+  "bytes": 96,
+  "branch": "legion/LEGSMOKE-143",
+  "pullRequest": "opened after this handoff's push; find it with legion gh -- pr list --repo sjawhar/legion-smoke --head legion/LEGSMOKE-143",
+  "schemaVersion": 1,
+  "phase": "implement",
+  "completed": "2026-09-13T13:30:59.018Z"
+}
