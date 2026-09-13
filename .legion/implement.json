@@ -1,0 +1,27 @@
+{
+  "filesChanged": [
+    "smoke/legsmoke-127.md"
+  ],
+  "branch": "legion/LEGSMOKE-132",
+  "baseSha": "373184959b7a62c7e283f131564b8aeaad9365a2",
+  "planCommit": "a07ad0c69144fb46be8eccc554ea7405d9c8059e",
+  "markerCommit": "619d937104526122c0117b8177356a17dac763ab",
+  "markerCommitMessage": "smoke: add LEGSMOKE-127 marker file (LEGSMOKE-132)",
+  "sha256": "3933554eab842b235e6c48065516491208665576a603cf5187d8398f9238a4ef",
+  "bytes": 101,
+  "pullRequest": {
+    "repo": "sjawhar/legion-smoke",
+    "base": "main",
+    "head": "legion/LEGSMOKE-132",
+    "title": "smoke: add LEGSMOKE-127 marker file (LEGSMOKE-132)",
+    "locate": "legion gh -- pr list --repo sjawhar/legion-smoke --head legion/LEGSMOKE-132 --state open --json number,url,headRefOid",
+    "openedAfterThisCommit": true
+  },
+  "neverPushed": [
+    ".omp/config.yml"
+  ],
+  "verification": "sha256sum and wc -c on smoke/legsmoke-127.md match the plan; jj diff -r <markerCommit> --summary prints only A smoke/legsmoke-127.md",
+  "schemaVersion": 1,
+  "phase": "implement",
+  "completed": "2026-09-13T11:55:36.181Z"
+}
