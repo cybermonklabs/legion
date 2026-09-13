@@ -1,0 +1,36 @@
+{
+  "summary": "Single-phase throwaway smoke marker: add one file smoke/legsmoke146-green-<UTC>.md, open PR against main, get ci + fail-on-demand green, squash-merge. No workflow/README changes, no .fail-me.",
+  "branch": "legion/LEGSMOKE-146",
+  "defaultBranch": "main",
+  "deliverable": {
+    "file": "smoke/legsmoke146-green-<UTC-timestamp>.md",
+    "timestampFormat": "YYYYMMDDTHHMMSSZ (UTC, matches smoke/legion16-green-*.md)",
+    "contents": "One line, e.g. `LEGSMOKE-146 implementer green-merge probe (<timestamp>). Safe to merge; throwaway.` following smoke/legion16-green-*.md convention.",
+    "exactlyOneAddedFile": true
+  },
+  "prBody": "READY-format body MUST include the line `Dispatch: LEGSMOKE-146`. This is a docs-only marker PR: reviewer OMITS the Thermo line.",
+  "tasks": [
+    "implement: create smoke/legsmoke146-green-<UTC>.md (one line, throwaway marker) under $LEGION_WORKSPACE; commit; jj bookmark set legion/LEGSMOKE-146; jj git push --bookmark legion/LEGSMOKE-146; legion gh -- pr create against main with body containing `Dispatch: LEGSMOKE-146` in READY format. Do NOT add .fail-me.",
+    "test: confirm PR diff adds exactly one file under smoke/ and nothing else; confirm ci and fail-on-demand checks report success at head SHA. E2E surface = the GitHub PR checks + post-merge default-branch file listing. Negative control (do NOT commit): a .fail-me file would make fail-on-demand exit 1 — reason about it, do not create it.",
+    "review: verify diff==one added smoke file, ci+fail-on-demand green from GitHub directly (not handoff); docs-only PR so skip Thermo; approve.",
+    "merge: queue squash-merges to main; verify marker file present on default branch."
+  ],
+  "acceptance": [
+    "AC1 -> PR diff shows exactly one added file smoke/legsmoke146-green-<UTC>.md (surface: GitHub PR diff, driven by implementer/tester).",
+    "AC2 -> ci and fail-on-demand checks green on the PR (surface: GitHub PR checks, driven by tester/reviewer).",
+    "AC3 -> PR squash-merged and marker present on main (surface: merged PR + default-branch file listing, driven by merger/implementer)."
+  ],
+  "requiredSkills": {
+    "implement": "legion-worker (implementer push/PR procedure: bookmark legion/LEGSMOKE-146, jj git push, legion gh -- pr create with `Dispatch: LEGSMOKE-146` READY body) — governs the exact create-file/commit/push/PR surface.",
+    "test": "legion-worker (E2E gate: real surface is the GitHub PR checks page; assert exactly-one-file diff and green ci + fail-on-demand at head SHA, plus one negative control) — no repo test suite exists for a marker file.",
+    "review": "legion-worker (reviewer round: verify CI/diff facts from GitHub directly, docs-only so omit Thermo, one review, approve clean head) — governs review/approve/merge-queue discipline."
+  },
+  "risks": [
+    "Do NOT create a .fail-me file — it would flip fail-on-demand red.",
+    "Only push the existing legion/LEGSMOKE-146 bookmark; do not create alternates.",
+    "Keep every artifact inside sjawhar/legion-smoke and project LEGSMOKE."
+  ],
+  "schemaVersion": 1,
+  "phase": "plan",
+  "completed": "2026-09-13T13:44:55.058Z"
+}
