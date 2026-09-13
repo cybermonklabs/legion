@@ -1,0 +1,103 @@
+{
+  "taskCount": 1,
+  "independentTasks": 1,
+  "routingHints": {
+    "complexity": "trivial",
+    "estimatedImplementers": 1
+  },
+  "workflowRecommendation": "One implementer, strictly sequential phases: implement -> test -> review (COMMENT) -> implementer pushes .legion/ deletion -> review (APPROVE by SHA) -> retro (implementer, docs/solutions/ only) -> merger publishes READY -> merge queue merges -> implementer verifies smoke/legsmoke-129.md on main. No rebase unless GitHub reports CONFLICTING.",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker"
+    ],
+    "test": [
+      "legion-worker"
+    ],
+    "review": [
+      "legion-worker"
+    ]
+  },
+  "concerns": [
+    ".omp/config.yml leak risk: the daemon's workspace provisioner (packages/workspace/src/workspace.ts writeOmpConfig) writes an empty, unignored .omp/config.yml into the jj working copy on EVERY worker spawn, and jj snapshots it into @ (jj status shows `A .omp/config.yml`; the repository has no .gitignore). Every commit MUST be created with a path-scoped `jj split -m '<msg>' <paths>` so the file stays in the undescribed remainder @ and never enters a pushed commit. Never `jj describe`/`jj commit` the whole working copy; `jj file untrack` is re-tracked the next time the provisioner rewrites the file, so it is not a fix.",
+    "Bookmark placement: after `jj split`, legion/LEGSMOKE-131 stays on the remainder @ (undescribed), and the provisioner re-points it to @ on every spawn. Before every push run `jj -R \"$LEGION_WORKSPACE\" bookmark set legion/LEGSMOKE-131 -r @- --allow-backwards`. Verified on jj 0.45.1: without --allow-backwards the move is refused (`Refusing to move bookmark backwards or sideways`); pushing @ itself is refused (`Won't push commit ... since it has no description`).",
+    "Docs-only PR (one markdown marker, zero code paths): the PR body carries no Thermo line and the reviewer runs no thermo pass, per the worker skill's docs-only rule.",
+    "Earlier unmerged smoke branches add other smoke/ file names (legsmoke-101, -103, -123) and one adds .editorconfig; none adds smoke/legsmoke-129.md, so a conflict is not expected. Rebase only if GitHub reports CONFLICTING; then post `rebase <old> -> <new>; fingerprint <before> -> <after>; unchanged|changed`.",
+    "Every gh call goes through `legion gh -- ...` (the PATH gh is the same shim); the shim refuses `pr merge`. No worker merges."
+  ],
+  "deliverable": {
+    "repository": "sjawhar/legion-smoke",
+    "branch": "legion/LEGSMOKE-131",
+    "base": "main",
+    "file": "smoke/legsmoke-129.md",
+    "line": "LEGSMOKE-129 Legion smoke exercise (2026-09-13T11:34:49Z). Pipeline probe; safe to merge; throwaway.",
+    "bytes": 101,
+    "sha256": "52dcee3c26d0d5a53783cf9f51bdfa6c4882dceda5045fa327e28d7db33f4cba",
+    "lineEnding": "LF only, no BOM, exactly one trailing newline",
+    "createCommand": "printf 'LEGSMOKE-129 Legion smoke exercise (2026-09-13T11:34:49Z). Pipeline probe; safe to merge; throwaway.\\n' > \"$LEGION_WORKSPACE/smoke/legsmoke-129.md\"",
+    "pullRequest": {
+      "title": "smoke: add legsmoke-129 marker (LEGSMOKE-131)",
+      "bodyMustContainLine": "Dispatch: LEGSMOKE-131",
+      "bodyFormat": "merge-queue READY format from the moment it opens: `## Verification` with **CI:**, **Threads:**, **E2E:**, **Fast-follow:**, **Chain:** lines (no **Thermo:** line: docs-only), then the line `Dispatch: LEGSMOKE-131`",
+      "forbiddenPathsAtAnyHead": [
+        ".omp/",
+        ".fail-me"
+      ],
+      "allowedPathsAtTestedHead": [
+        ".legion/plan.json",
+        ".legion/implement.json",
+        "smoke/legsmoke-129.md"
+      ],
+      "allowedPathsAtApprovedHead": [
+        "smoke/legsmoke-129.md"
+      ]
+    },
+    "ci": {
+      "workflows": {
+        "ci": "job check (sleep 20 && exit 0)",
+        "fail-on-demand": "job gate (fails only if root .fail-me exists)"
+      },
+      "triggers": "push and pull_request, so check-runs exist at the head SHA before the PR is opened"
+    },
+    "preconditionsVerifiedByPlanner": [
+      "no PR with head legion/LEGSMOKE-131 (gh pr list --state all -> [])",
+      "no remote branch legion/LEGSMOKE-131 (branches API -> 404)",
+      "contents API for smoke/legsmoke-129.md at ref=main -> 404",
+      "workspace @ = 48e94706 (undescribed) on main 37318495 with only `A .omp/config.yml`"
+    ]
+  },
+  "implementerSteps": [
+    "1. Bind: `cd -- \"$LEGION_WORKSPACE\" && jj -R \"$LEGION_WORKSPACE\" status`. Expect @ undescribed with only `A .omp/config.yml`, parent `plan: record handoff`; `jj -R \"$LEGION_WORKSPACE\" file list -r @- .legion` prints `.legion/plan.json`. Read .legion/plan.json.",
+    "2. Create the file: `printf 'LEGSMOKE-129 Legion smoke exercise (2026-09-13T11:34:49Z). Pipeline probe; safe to merge; throwaway.\\n' > \"$LEGION_WORKSPACE/smoke/legsmoke-129.md\"`. Verify: `sha256sum \"$LEGION_WORKSPACE/smoke/legsmoke-129.md\"` = 52dcee3c26d0d5a53783cf9f51bdfa6c4882dceda5045fa327e28d7db33f4cba and `wc -c` = 101.",
+    "3. Commit ONLY that path: `jj -R \"$LEGION_WORKSPACE\" split -m 'smoke: add legsmoke-129 marker (LEGSMOKE-131)' smoke/legsmoke-129.md`. Verify `jj -R \"$LEGION_WORKSPACE\" diff -r @- --summary` prints exactly `A smoke/legsmoke-129.md` and `jj -R \"$LEGION_WORKSPACE\" diff -r @ --summary` prints exactly `A .omp/config.yml`.",
+    "4. Write the handoff: `legion handoff write --phase implement --data '{\"filesChanged\":[\"smoke/legsmoke-129.md\"],\"commitMessage\":\"smoke: add legsmoke-129 marker (LEGSMOKE-131)\",\"deviations\":[],\"openQuestions\":[]}'`; `test -f \"$LEGION_WORKSPACE/.legion/implement.json\"`; `jj -R \"$LEGION_WORKSPACE\" split -m 'implement: record handoff' .legion/implement.json`.",
+    "5. Guard before push: `jj -R \"$LEGION_WORKSPACE\" diff --from main@origin --to @- --summary` prints exactly three lines `A .legion/implement.json`, `A .legion/plan.json`, `A smoke/legsmoke-129.md` (no .omp/, no .fail-me); `jj -R \"$LEGION_WORKSPACE\" log -r 'ancestors(@-, 5)'` shows only implement handoff <- marker <- plan handoff <- main (37318495).",
+    "6. Bookmark and push: `jj -R \"$LEGION_WORKSPACE\" bookmark set legion/LEGSMOKE-131 -r @- --allow-backwards && jj -R \"$LEGION_WORKSPACE\" git push --bookmark legion/LEGSMOKE-131`. Record HEAD=`jj -R \"$LEGION_WORKSPACE\" log -r @- --no-graph -T commit_id`.",
+    "7. Wait for push-triggered CI at HEAD: `legion gh -- api repos/sjawhar/legion-smoke/commits/<HEAD>/check-runs --jq '.check_runs[] | .name + \" \" + (.conclusion // \"pending\")'` until `check success` and `gate success`; get run ids with `legion gh -- run list --repo sjawhar/legion-smoke --commit <HEAD> --json databaseId,name,conclusion,url`. A single red job is re-run with `legion gh -- run rerun <run-id> --failed`, never with a new commit.",
+    "8. Open the PR with the complete READY body (write it to a temp file OUTSIDE the workspace, e.g. /tmp/legsmoke-131-pr-body.md): `legion gh -- pr create --repo sjawhar/legion-smoke --base main --head legion/LEGSMOKE-131 --title 'smoke: add legsmoke-129 marker (LEGSMOKE-131)' --body-file /tmp/legsmoke-131-pr-body.md`. Body template: `## Verification` / `**CI:** \\`ci\\` run <ci-run-id> job check success; \\`fail-on-demand\\` run <fod-run-id> job gate success at <HEAD>.` / `**Threads:** 0 resolved, 0 unresolved.` / `**E2E:** pending — tester fills at the tested head.` / `**Fast-follow:** none.` / `**Chain:** not stacked.` / blank / `Dispatch: LEGSMOKE-131`. Verify: `legion gh -- pr view <n> --repo sjawhar/legion-smoke --json headRefName,baseRefName,body`.",
+    "9. Report: `legion handoff complete --summary '<PR number and URL, HEAD sha, check-runs green, diff = plan.json + implement.json + marker>'`. Then stay idle; do not touch the workspace."
+  ],
+  "testerChecks": [
+    "0. Bind; read .legion/plan.json and .legion/implement.json. Discover the PR: `legion gh -- pr list --repo sjawhar/legion-smoke --head legion/LEGSMOKE-131 --json number,url,headRefOid,baseRefName` -> exactly one PR; N=number, SHA=headRefOid. Confirm SHA == `jj -R \"$LEGION_WORKSPACE\" git fetch && jj -R \"$LEGION_WORKSPACE\" log -r legion/LEGSMOKE-131@origin --no-graph -T commit_id`. Every check below is run at SHA; the E2E line names SHA.",
+    "A1. `legion gh -- pr view N --repo sjawhar/legion-smoke --json headRefName,baseRefName,body` -> headRefName == `legion/LEGSMOKE-131`, baseRefName == `main`, and `--jq '.body | split(\"\\n\") | index(\"Dispatch: LEGSMOKE-131\")'` is a number (the line exists verbatim).",
+    "A2. `legion gh -- pr diff N --repo sjawhar/legion-smoke --name-only | sort` -> exactly three lines: `.legion/implement.json`, `.legion/plan.json`, `smoke/legsmoke-129.md`. Any other line (`.omp/config.yml`, `.fail-me`, anything) FAILS the phase.",
+    "A3. Byte-exact: `legion gh -- api \"repos/sjawhar/legion-smoke/contents/smoke/legsmoke-129.md?ref=SHA\" --jq .content | base64 -d > /tmp/legsmoke-129.actual`; then `cmp /tmp/legsmoke-129.actual <(printf 'LEGSMOKE-129 Legion smoke exercise (2026-09-13T11:34:49Z). Pipeline probe; safe to merge; throwaway.\\n')` exits 0; `sha256sum /tmp/legsmoke-129.actual` = 52dcee3c26d0d5a53783cf9f51bdfa6c4882dceda5045fa327e28d7db33f4cba; `wc -c < /tmp/legsmoke-129.actual` = 101; `od -c /tmp/legsmoke-129.actual | tail -n 2` shows the final byte is `\\n` with no `\\r` and no BOM.",
+    "A3-negative-control-1: `cmp /tmp/legsmoke-129.actual <(printf 'LEGSMOKE-129 Legion smoke exercise (2026-09-13T11:34:49Z). Pipeline probe; safe to merge; throwaway,\\n')` (final '.' -> ',') MUST exit 1 reporting a difference at byte 100. If it exits 0 the check itself is broken; stop and report.",
+    "A3-negative-control-2: `legion gh -- api \"repos/sjawhar/legion-smoke/contents/smoke/legsmoke-129.md?ref=main\"` MUST fail with HTTP 404 (exit 1) — the file is not on main before the merge.",
+    "A4. `legion gh -- pr checks N --repo sjawhar/legion-smoke` -> `check` and `gate` pass. `legion gh -- api repos/sjawhar/legion-smoke/commits/SHA/check-runs --jq '.check_runs[].conclusion' | sort -u` -> exactly one line `success`; `--jq '.check_runs[].name' | sort -u` includes `check` and `gate`. Tree: `legion gh -- api \"repos/sjawhar/legion-smoke/git/trees/SHA?recursive=1\" --jq '.tree[].path'` contains no `.fail-me` and no path under `.omp/`.",
+    "E2E. Edit the PR body (`legion gh -- pr view N --json body --jq .body > /tmp/body.md`, replace only the E2E line, `legion gh -- pr edit N --repo sjawhar/legion-smoke --body-file /tmp/body.md`): `**E2E:** GitHub pull request sjawhar/legion-smoke#N (the real repository is the production surface for a pipeline probe) — at head SHA: contents API bytes cmp exit 0 (101 bytes, sha256 52dcee3c…4cba); \\`pr diff --name-only\\` = .legion/implement.json, .legion/plan.json, smoke/legsmoke-129.md; check-runs at SHA all success (check, gate); no .fail-me or .omp/ in tree. Links: <PR files URL>, <ci run URL>. Negative control: cmp against the literal with the final '.' replaced by ',' -> exit 1 (differ at byte 100); contents API for smoke/legsmoke-129.md at ref=main -> HTTP 404.`",
+    "H. Handoff: `legion handoff write --phase test --data '{\"passed\":4,\"failed\":0,\"failures\":[],\"observations\":[\"pr N at SHA\",\"...\"]}'`; `test -f \"$LEGION_WORKSPACE/.legion/test.json\"`; `jj -R \"$LEGION_WORKSPACE\" split -m 'test: record handoff' .legion/test.json`; verify `jj -R \"$LEGION_WORKSPACE\" diff -r @- --summary` is exactly `A .legion/test.json`; `jj -R \"$LEGION_WORKSPACE\" bookmark set legion/LEGSMOKE-131 -r @- --allow-backwards && jj -R \"$LEGION_WORKSPACE\" git push --bookmark legion/LEGSMOKE-131`; `legion handoff complete --summary '...'`.",
+    "FAIL path (spec Errors): any A2 extra path or any A3 byte difference fails the phase — record it in test.json `failures` with the evidence and report to the architect; the implementer corrects; no acceptance line is downgraded."
+  ],
+  "reviewCleanupRetroMergerOrder": [
+    "R1 reviewer (round 1, head carries .legion/): verify against GitHub directly, never from a handoff — `pr diff N --name-only` = .legion/implement.json, .legion/plan.json, .legion/test.json, smoke/legsmoke-129.md; check-runs at head all success; body has the E2E line naming the tested head and `Dispatch: LEGSMOKE-131`; contents API bytes at head cmp exit 0. Docs-only: no thermo pass, no Thermo line. Submit ONE review: `legion gh -- api --method POST repos/sjawhar/legion-smoke/pulls/N/reviews --input body.json` with commit_id=<head>, event=COMMENT (REQUEST_CHANGES only if a correctness finding stands), body with footer `<!-- legion: {\"session\":\"<session-id>\",\"phase\":\"review\"} -->`, comments=[] when clean. Write .legion/review.json (verdict approved, critical 0, important 0, minor 0), split `review: record handoff`, bookmark -r @- --allow-backwards, push, `legion handoff complete` telling the architect the head is clean and the implementer must push the .legion/ deletion.",
+    "R2 implementer (at the architect's direction): `rm -r \"$LEGION_WORKSPACE/.legion\"`; `jj -R \"$LEGION_WORKSPACE\" split -m 'legion: remove handoff ledger' .legion`; verify `jj -R \"$LEGION_WORKSPACE\" file list -r @- .legion` prints nothing and `jj -R \"$LEGION_WORKSPACE\" diff --from main@origin --to @- --summary` prints exactly `A smoke/legsmoke-129.md`; `legion threads resolve --pr N --repo sjawhar/legion-smoke` (paste its output, expected empty with zero threads, into the Threads line); `jj -R \"$LEGION_WORKSPACE\" bookmark set legion/LEGSMOKE-131 -r @- --allow-backwards && jj -R \"$LEGION_WORKSPACE\" git push --bookmark legion/LEGSMOKE-131`; update the PR body CI line to the new head once check-runs are success; `legion handoff complete` alone (no .legion/ write — recreating it restarts review).",
+    "R3 reviewer (round 2, clean head C): `pr diff N --name-only` prints exactly `smoke/legsmoke-129.md`; `pr view N --json additions,deletions` = {\"additions\":1,\"deletions\":0}; `git/trees/C?recursive=1` lists no `.legion/`, `.omp/`, or `.fail-me`; check-runs at C all success; fingerprint of C equals fingerprint of the round-1 head (`jj diff --from \"fork_point(main@origin | <sha>)\" --to <sha> --git --context 0 '~(.legion | docs/solutions)' | sed -e '/^@@/d' -e '/^index /d' | sha256sum`). Submit ONE review with commit_id=C, event=APPROVE, body naming C by SHA plus the footer. No handoff file (.legion/ is gone); `legion handoff complete`.",
+    "R4 retro (implementer, legion-retro skill): on top of C commit exactly one file under docs/solutions/<category>/<slug>.md via `jj -R \"$LEGION_WORKSPACE\" split -m 'retro: record learnings (LEGSMOKE-131)' docs/solutions`; verify `jj diff --from C --to @- --summary` is one `A docs/solutions/...` line; bookmark -r @- --allow-backwards; push; post the retro comment on LEGSMOKE-131. Never recreate .legion/; the approval stands.",
+    "R5 merger: `legion threads resolve --pr N --repo sjawhar/legion-smoke` (no `left open`, exit 0); `cd -- \"$LEGION_WORKSPACE\" && jj -R \"$LEGION_WORKSPACE\" git fetch && jj -R \"$LEGION_WORKSPACE\" diff --from C --to <tip> --summary` -> only `A docs/solutions/...` (quoted in READY); the same with `'~docs/solutions'` appended prints nothing; check-runs at <tip> all success; no `.fail-me` in the tip tree; `pr view N --json reviews` shows APPROVED pinned to C. Publish `READY #N at <tip>` (approved head C, tip, summary, PR body gate facts) to `notifications.role.pr-queue` with envoy_publish. Never merges.",
+    "R6 after the queue merges (implementer, production check): `legion gh -- api \"repos/sjawhar/legion-smoke/contents/smoke/legsmoke-129.md?ref=main\" --jq .content | base64 -d | cmp - <(printf '<line>\\n')` exits 0; `git/trees/main?recursive=1` has no `.legion/`, `.omp/`, `.fail-me`; `pr view N --json state,mergedAt` shows MERGED; record on the PR (footer) and on LEGSMOKE-131 before the architect signs off.",
+    "Errors (spec table): red check at any head -> `legion gh -- run rerun <run-id> --failed`, never a new commit; CONFLICTING -> implementer rebases once (`jj rebase -s 'roots(main@origin..@)' -d main@origin`), posts before/after fingerprints; any push after APPROVE other than retro's docs/solutions commit -> back to review at the new head; reviewer requests changes -> implementer fixes, tester re-runs, reviewer re-reviews, in that order."
+  ],
+  "schemaVersion": 1,
+  "phase": "plan",
+  "completed": "2026-09-13T11:52:56.071Z"
+}
