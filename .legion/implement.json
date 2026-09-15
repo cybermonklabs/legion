@@ -1,0 +1,37 @@
+{
+  "summary": "Created smoke/legion26b-1.md with the exact single line, committed as one change commit, set bookmark legion/SLEGION26B-1, pushed, and opened PR #51 with Dispatch: SLEGION26B-1 and the READY-format Verification block.",
+  "filesChanged": [
+    "smoke/legion26b-1.md"
+  ],
+  "prNumber": 51,
+  "prUrl": "https://github.com/sjawhar/legion-smoke/pull/51",
+  "headSha": "5371e8940f2c5655b63a1df011f7ffb33dde14ad",
+  "bookmark": "legion/SLEGION26B-1",
+  "ci": {
+    "ci": {
+      "runId": 34929631880,
+      "job": "check",
+      "conclusion": "success"
+    },
+    "fail-on-demand": {
+      "runId": 34929631803,
+      "job": "gate",
+      "conclusion": "success"
+    }
+  },
+  "proof": [
+    {
+      "criterion": "smoke/legion26b-1.md on the branch contains exactly the line kind smoke legion26b 1 2026-09-15T04:32:54Z",
+      "surface": "shell in LEGION_WORKSPACE on branch legion/SLEGION26B-1 (pushed head)",
+      "command": "jj -R \"$LEGION_WORKSPACE\" file show -r legion/SLEGION26B-1 smoke/legion26b-1.md",
+      "observed": "exactly one line: kind smoke legion26b 1 2026-09-15T04:32:54Z (wc -l = 1)",
+      "headSha": "5371e8940f2c5655b63a1df011f7ffb33dde14ad",
+      "negativeControl": "jj -R \"$LEGION_WORKSPACE\" diff -r legion/SLEGION26B-1 --summary printed only: A smoke/legion26b-1.md (no other file changed)"
+    }
+  ],
+  "deviations": [],
+  "openQuestions": [],
+  "schemaVersion": 1,
+  "phase": "implement",
+  "completed": "2026-09-15T04:39:55.341Z"
+}
