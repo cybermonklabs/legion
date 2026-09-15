@@ -1,0 +1,16 @@
+{
+  "pr": 55,
+  "prUrl": "https://github.com/sjawhar/legion-smoke/pull/55",
+  "headSha": "8795ce3e6fc5f707ad70e1d6b12bb3fadb49de95",
+  "reviewedSha": "8795ce3e6fc5f707ad70e1d6b12bb3fadb49de95",
+  "decision": "approved",
+  "reviewId": 5205964993,
+  "summary": "Docs-only smoke change. Product diff main->head adds exactly one product file smoke/legion26u-1.md whose only line is `kind smoke legion26u 1 2026-09-15T05:14:51Z` with a single trailing newline; other two changed paths are .legion process handoffs. CI green (check, gate all success) at head. No thermo pass required for docs-only change. APPROVED review 5205964993 posted at head 8795ce3e.",
+  "threads": {
+    "opened": 0,
+    "unresolved": 0
+  },
+  "schemaVersion": 1,
+  "phase": "review",
+  "completed": "2026-09-15T05:43:43.456Z"
+}
