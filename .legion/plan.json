@@ -1,0 +1,53 @@
+{
+  "summary": "Add exactly one Markdown file smoke/legion26v-1.md whose sole line is the fixed smoke token. Single-issue root; no children, no decomposition.",
+  "scope": {
+    "files": [
+      "smoke/legion26v-1.md"
+    ],
+    "content": "kind smoke legion26v 1 2026-09-15T08:03:43Z",
+    "constraints": [
+      "Exactly one file changed: smoke/legion26v-1.md",
+      "File contains exactly one line: kind smoke legion26v 1 2026-09-15T08:03:43Z",
+      "If the file already exists, overwrite so it holds exactly that one line",
+      "No other repository files touched; .legion/plan.json is not part of the repo diff",
+      "One commit; no rebases unless GitHub reports a conflict",
+      "Skip formatters, linters, and project-wide test suites"
+    ]
+  },
+  "acceptanceCriteria": [
+    {
+      "criterion": "smoke/legion26v-1.md exists and its only line is: kind smoke legion26v 1 2026-09-15T08:03:43Z",
+      "surface": "filesystem in the shared jj workspace ($LEGION_WORKSPACE)",
+      "command": "cd -- \"$LEGION_WORKSPACE\" && cat smoke/legion26v-1.md && test \"$(wc -l < smoke/legion26v-1.md)\" -le 1",
+      "skill": "legion-worker (no repo-specific smoke skill; docs-only content change)"
+    },
+    {
+      "criterion": "The pushed PR diff adds exactly one file with exactly one added line",
+      "surface": "jj diff / GitHub PR files view",
+      "command": "cd -- \"$LEGION_WORKSPACE\" && jj -R \"$LEGION_WORKSPACE\" diff --stat -r @",
+      "skill": "legion-worker"
+    }
+  ],
+  "implementation": {
+    "steps": [
+      "Write smoke/legion26v-1.md with the single line: kind smoke legion26v 1 2026-09-15T08:03:43Z (newline-terminated, no other lines)",
+      "Verify content and single-line invariant with cat + wc -l",
+      "Commit the implementation file, set bookmark legion/SLEGION26V-1, push, open PR with body line Dispatch: SLEGION26V-1"
+    ]
+  },
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: docs-only single-file write; write the exact line, prove it on the filesystem/PR-diff surface, one commit, no formatters/linters"
+    ],
+    "test": [
+      "legion-worker: re-run cat + wc -l on smoke/legion26v-1.md and confirm the PR diff is one file/one added line; negative control is any deviation from the exact token"
+    ],
+    "review": [
+      "legion-worker: docs-only PR, skip thermo; confirm the single line matches exactly and no other files changed"
+    ]
+  },
+  "notes": "Throwaway kind smoke instance (legion26v); Dispatch is scratch and unread; design gate off. No child issues; no cross-file interfaces.",
+  "schemaVersion": 1,
+  "phase": "plan",
+  "completed": "2026-09-15T08:05:20.547Z"
+}
