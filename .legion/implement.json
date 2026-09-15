@@ -1,0 +1,22 @@
+{
+  "summary": "Added smoke/legion26v-1.md with the single fixed token line; opened PR #58 in merge-queue READY format with Dispatch: SLEGION26V-1.",
+  "filesChanged": [
+    "smoke/legion26v-1.md"
+  ],
+  "commit": "b72f5b8e71eb",
+  "bookmark": "legion/SLEGION26V-1",
+  "pr": "https://github.com/sjawhar/legion-smoke/pull/58",
+  "proof": [
+    {
+      "criterion": "smoke/legion26v-1.md exists and its only line is: kind smoke legion26v 1 2026-09-15T08:03:43Z",
+      "surface": "GitHub branch (implementation commit b72f5b8e, ancestor of branch head) + filesystem in $LEGION_WORKSPACE",
+      "command": "gh api repos/sjawhar/legion-smoke/contents/smoke/legion26v-1.md?ref=b72f5b8e71eb | jq -r .content | base64 -d",
+      "observed": "sole line: kind smoke legion26v 1 2026-09-15T08:03:43Z (wc -l == 1); PR diff adds exactly one repo file with one added line",
+      "headSha": "b72f5b8e71eb",
+      "negativeControl": "gh api .../contents/smoke/legion26v-1-WRONG.md?ref=b72f5b8e71eb returned HTTP 404 Not Found; no stray/misnamed token file present"
+    }
+  ],
+  "schemaVersion": 1,
+  "phase": "implement",
+  "completed": "2026-09-15T08:10:21.863Z"
+}
