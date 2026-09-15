@@ -1,0 +1,42 @@
+{
+  "summary": "Add a single file smoke/l179-1.md whose only line is exactly `kind smoke l179 1 2026-09-15T06:53:20Z`, overwriting if present. No other change.",
+  "surface": "Local filesystem in the issue workspace; the file's presence and exact contents are the deliverable. No CLI/endpoint/TUI is involved beyond `cat`.",
+  "tasks": [
+    {
+      "id": "write-smoke-file",
+      "description": "Create/overwrite smoke/l179-1.md with exactly one line: `kind smoke l179 1 2026-09-15T06:53:20Z` (single trailing newline, no other content).",
+      "files": [
+        "smoke/l179-1.md"
+      ],
+      "commit": "One implementation commit adding smoke/l179-1.md"
+    }
+  ],
+  "acceptance": [
+    {
+      "criterion": "smoke/l179-1.md contains exactly the line `kind smoke l179 1 2026-09-15T06:53:20Z`",
+      "surface": "shell in $LEGION_WORKSPACE",
+      "command": "cat smoke/l179-1.md",
+      "expected": "kind smoke l179 1 2026-09-15T06:53:20Z"
+    }
+  ],
+  "implementation": {
+    "commits": [
+      "impl: add smoke/l179-1.md"
+    ],
+    "notes": "Single implementation commit. Implementer creates bookmark legion/SL179-1, pushes, opens PR with `Dispatch: SL179-1` in body. No project-wide validation."
+  },
+  "requiredSkills": {
+    "implement": [
+      "legion-worker — governs the workspace-bound commit, bookmark/push, and PR opening; the only surface the change is proven on (cat smoke/l179-1.md)."
+    ],
+    "test": [
+      "legion-worker — tester re-runs `cat smoke/l179-1.md` in the production-like workspace and confirms the exact single line; that command is the full acceptance check."
+    ],
+    "review": [
+      "legion-worker — reviewer confirms the PR adds exactly smoke/l179-1.md with the required line and no other change; single-file diff, no extra gates."
+    ]
+  },
+  "schemaVersion": 1,
+  "phase": "plan",
+  "completed": "2026-09-15T06:55:24.180Z"
+}
