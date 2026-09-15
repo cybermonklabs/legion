@@ -1,0 +1,31 @@
+{
+  "summary": "Verified smoke/legion26-1.md at PR #50 head aa9142ae contains exactly the single line and is absent on main; CI green; implementer proof re-run independently and verified.",
+  "prNumber": 50,
+  "headSha": "aa9142ae83cc89b0135a78cd3470e8a60c46ba58",
+  "implementerProof": {
+    "verdict": "verified",
+    "how": "Re-ran cat smoke/legion26-1.md on the current PR head (aa9142ae) via jj file show in the shared workspace; byte-identical to the exact line kind smoke legion26 1 2026-09-15T04:08:20Z (43 bytes, single trailing newline). Implementer named head e6cebe6a; head advanced to aa9142ae by the handoff commit only, file content unchanged."
+  },
+  "proof": [
+    {
+      "criterion": "smoke/legion26-1.md on the PR head contains exactly kind smoke legion26 1 2026-09-15T04:08:20Z and nothing else",
+      "surface": "Git PR head file (shared workspace at GitHub headRefOid)",
+      "command": "jj -R \"$LEGION_WORKSPACE\" file show -r aa9142ae83cc89b0135a78cd3470e8a60c46ba58 smoke/legion26-1.md | od -c",
+      "observed": "exactly kind smoke legion26 1 2026-09-15T04:08:20Z followed by a single newline; 43 bytes (0o53) total, no other content",
+      "headSha": "aa9142ae83cc89b0135a78cd3470e8a60c46ba58",
+      "negativeControl": "jj file show -r main@origin smoke/legion26-1.md -> Error: No such path (file absent on main)"
+    },
+    {
+      "criterion": "CI green at head",
+      "surface": "GitHub Actions check-runs at head aa9142ae",
+      "command": "legion gh -- api repos/sjawhar/legion-smoke/commits/aa9142ae83cc89b0135a78cd3470e8a60c46ba58/check-runs",
+      "observed": "ci run 34928919874 (job check) success and fail-on-demand run 34928919861 (job gate) success; all check-runs conclusion=success",
+      "headSha": "aa9142ae83cc89b0135a78cd3470e8a60c46ba58",
+      "negativeControl": "n/a for CI status; file-content negative control recorded above"
+    }
+  ],
+  "failures": [],
+  "schemaVersion": 1,
+  "phase": "test",
+  "completed": "2026-09-15T04:29:51.017Z"
+}
