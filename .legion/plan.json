@@ -1,0 +1,54 @@
+{
+  "summary": "Single-file smoke change for ST179-1: create smoke/t179-1.md with one exact line, one commit, no other repo change, no rebases.",
+  "file": {
+    "path": "smoke/t179-1.md",
+    "action": "create-or-overwrite",
+    "content": "kind smoke t179 1 2026-09-15T07:26:07Z\n",
+    "note": "Exactly one line, trailing newline. Overwrite if it already exists (currently absent). No other files touched."
+  },
+  "commit": {
+    "count": 1,
+    "messageSuggestion": "ST179-1: add smoke/t179-1.md",
+    "constraints": [
+      "one commit only",
+      "no other repository change",
+      "no rebases unless GitHub reports CONFLICTING"
+    ]
+  },
+  "branchAndPR": {
+    "bookmark": "legion/ST179-1",
+    "prBodyMustContain": "Dispatch: ST179-1"
+  },
+  "ci": {
+    "ci.yml": "job check sleeps 20s then exits 0 — passes unconditionally on push/pull_request",
+    "fail-on-demand.yml": "job gate fails only if a .fail-me file exists; do NOT add .fail-me — passes",
+    "action": "no CI config changes; both workflows pass for a plain single-file add"
+  },
+  "acceptance": {
+    "criterion": "cat smoke/t179-1.md on the PR branch shows exactly: kind smoke t179 1 2026-09-15T07:26:07Z",
+    "surface": "the ST179-1 PR branch (sandbox repo sjawhar/legion-smoke)",
+    "implementerProof": "cd -- \"$LEGION_WORKSPACE\" && cat smoke/t179-1.md on the pushed head; confirm both CI checks green via legion gh -- pr checks",
+    "negativeControl": "an extra line or wrong timestamp in the file must fail the exact-line check",
+    "testerProof": "re-run cat smoke/t179-1.md on the PR head, byte-compare to the single expected line; confirm CI green"
+  },
+  "outOfScope": [
+    "adding .fail-me",
+    "modifying .github/workflows/*",
+    "touching existing smoke/legion16-*.md files",
+    "any rebase absent a reported conflict"
+  ],
+  "requiredSkills": {
+    "implement": [
+      "legion-worker — single-file create, one commit, set bookmark legion/ST179-1, push, open PR with Dispatch: ST179-1; prove with cat smoke/t179-1.md on pushed head."
+    ],
+    "test": [
+      "legion-worker — re-run cat smoke/t179-1.md on the PR head and byte-compare to the exact line; verify both CI workflows green; negative control = altered line fails."
+    ],
+    "review": [
+      "legion-worker — verify the diff is exactly one added file smoke/t179-1.md with the one line and nothing else, CI green, threads clean."
+    ]
+  },
+  "schemaVersion": 1,
+  "phase": "plan",
+  "completed": "2026-09-15T07:28:33.987Z"
+}
