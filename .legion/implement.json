@@ -1,0 +1,23 @@
+{
+  "summary": "Created smoke/legion26-1.md with the exact single line; one commit e6cebe6a; bookmark legion/SLEGION26-1 pushed; PR #50 opened against sjawhar/legion-smoke.",
+  "pr": "https://github.com/sjawhar/legion-smoke/pull/50",
+  "prNumber": 50,
+  "branch": "legion/SLEGION26-1",
+  "headSha": "e6cebe6afaea162ce8374d70a0e138c26e0e1ffa",
+  "filesChanged": [
+    "smoke/legion26-1.md"
+  ],
+  "proof": [
+    {
+      "criterion": "cat smoke/legion26-1.md on the PR branch shows exactly the line kind smoke legion26 1 2026-09-15T04:08:20Z",
+      "surface": "Git PR branch head (workspace checkout)",
+      "command": "cat smoke/legion26-1.md",
+      "observed": "exactly `kind smoke legion26 1 2026-09-15T04:08:20Z` (43 bytes, single trailing newline confirmed by od -c)",
+      "headSha": "e6cebe6afaea162ce8374d70a0e138c26e0e1ffa",
+      "negativeControl": "jj file show -r main@origin smoke/legion26-1.md -> Error: No such path (file absent before this commit)"
+    }
+  ],
+  "schemaVersion": 1,
+  "phase": "implement",
+  "completed": "2026-09-15T04:27:28.596Z"
+}
