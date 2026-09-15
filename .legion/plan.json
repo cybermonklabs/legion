@@ -1,0 +1,53 @@
+{
+  "summary": "Add one Markdown file smoke/legion26w-2.md whose only content is the exact line 'kind smoke legion26w 2 2026-09-15T08:09:34Z', in a single commit. No other repository change, no rebases unless GitHub reports a conflict.",
+  "scope": {
+    "files": [
+      "smoke/legion26w-2.md"
+    ],
+    "change": "Create (overwrite if present) smoke/legion26w-2.md with exactly one line: 'kind smoke legion26w 2 2026-09-15T08:09:34Z' followed by a single trailing newline. Touch nothing else.",
+    "nonGoals": [
+      "No changes to any other file",
+      "No linter or test-suite runs",
+      "No rebases unless GitHub reports a conflict"
+    ]
+  },
+  "acceptanceCriteria": [
+    {
+      "criterion": "cat smoke/legion26w-2.md shows exactly 'kind smoke legion26w 2 2026-09-15T08:09:34Z' on the PR branch",
+      "surface": "The pushed legion/SLEGION26W-2 PR branch content, verified in the shared jj workspace",
+      "command": "cd -- \"$LEGION_WORKSPACE\" && cat smoke/legion26w-2.md",
+      "expected": "kind smoke legion26w 2 2026-09-15T08:09:34Z",
+      "drivingSkill": "legion-worker (no domain skill applies to a single Markdown file in this sandbox repo)"
+    }
+  ],
+  "implementation": {
+    "steps": [
+      "cd -- \"$LEGION_WORKSPACE\" && jj -R \"$LEGION_WORKSPACE\" new (isolated commit off main)",
+      "Write smoke/legion26w-2.md with the single exact line via the write tool (absolute path under $LEGION_WORKSPACE)",
+      "Verify: cat smoke/legion26w-2.md prints exactly the line; jj -R \"$LEGION_WORKSPACE\" diff --summary shows only smoke/legion26w-2.md added/modified",
+      "jj -R \"$LEGION_WORKSPACE\" describe -m 'smoke: legion26w-2 marker'",
+      "jj -R \"$LEGION_WORKSPACE\" bookmark set legion/SLEGION26W-2 && jj -R \"$LEGION_WORKSPACE\" git push --bookmark legion/SLEGION26W-2",
+      "legion gh -- pr create with body containing the line 'Dispatch: SLEGION26W-2'"
+    ],
+    "ordering": "Single file, single commit. Handoff commit (plan/implement/etc.) is split separately per legion-worker completion gate."
+  },
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: only the implementer creates the bookmark, pushes legion/SLEGION26W-2, and opens the PR with a 'Dispatch: SLEGION26W-2' body line; single-file single-commit discipline, no rebases unless GitHub reports a conflict."
+    ],
+    "test": [
+      "legion-worker: verify the pushed branch content on the real surface (cat smoke/legion26w-2.md equals the exact line, byte-for-byte incl. single trailing newline) and that no other file changed; record implementerProof and own proof."
+    ],
+    "review": [
+      "legion-worker: confirm the PR diff touches only smoke/legion26w-2.md with the exact one-line content; docs-only PR so no thermo pass; verify CI facts against GitHub."
+    ]
+  },
+  "notes": [
+    "Sandbox smoke repo (sjawhar/legion-smoke); design gate off; Dispatch is scratch and unread.",
+    "The exact line is 'kind smoke legion26w 2 2026-09-15T08:09:34Z' - verbatim, no surrounding quotes, no extra whitespace.",
+    "Overwrite the file if it already exists; it does not currently exist under smoke/."
+  ],
+  "schemaVersion": 1,
+  "phase": "plan",
+  "completed": "2026-09-15T08:11:34.252Z"
+}
