@@ -1,0 +1,49 @@
+{
+  "issue": "SLEGION26U-2",
+  "summary": "Create smoke/legion26u-2.md containing exactly one line: `kind smoke legion26u 2 2026-09-15T05:14:51Z`, no trailing content. Single commit, no other change.",
+  "deliverable": {
+    "path": "smoke/legion26u-2.md",
+    "exactContent": "kind smoke legion26u 2 2026-09-15T05:14:51Z",
+    "trailingNewline": false,
+    "overwriteIfExists": true
+  },
+  "implementation": {
+    "steps": [
+      "Bind to $LEGION_WORKSPACE (cd + jj -R status).",
+      "Write smoke/legion26u-2.md with exactly the one line and no trailing newline (printf '%s' '...' > smoke/legion26u-2.md), overwriting if present.",
+      "Verify content byte-for-byte: [ \"$(cat smoke/legion26u-2.md)\" = 'kind smoke legion26u 2 2026-09-15T05:14:51Z' ] and confirm no trailing newline.",
+      "jj -R split/describe the single file into one commit, set bookmark legion/SLEGION26U-2, push, open PR with body line 'Dispatch: SLEGION26U-2'."
+    ],
+    "filesTouched": [
+      "smoke/legion26u-2.md"
+    ],
+    "nonGoals": [
+      "No changes to any other file",
+      "No project-wide suites",
+      "No plan/spec markdown committed to the repo"
+    ]
+  },
+  "acceptance": [
+    {
+      "criterion": "File smoke/legion26u-2.md exists on the PR branch with exactly the line `kind smoke legion26u 2 2026-09-15T05:14:51Z`.",
+      "surface": "The pushed legion/SLEGION26U-2 branch / PR head in the sjawhar/legion-smoke repo.",
+      "provingCommand": "cd -- \"$LEGION_WORKSPACE\" && [ \"$(cat smoke/legion26u-2.md)\" = 'kind smoke legion26u 2 2026-09-15T05:14:51Z' ] && [ $(wc -c < smoke/legion26u-2.md) -eq 43 ] && echo OK",
+      "negativeControl": "Any extra byte (trailing newline, extra word) makes the string comparison or the 43-byte length check fail."
+    }
+  ],
+  "requiredSkills": {
+    "implement": [
+      "legion-worker — single-file create/overwrite, one jj commit, implementer branch/push/PR procedure; content is a fixed literal, no build."
+    ],
+    "test": [
+      "legion-worker — re-run the exact string + byte-length comparison against the PR head; file presence and content is the whole contract, no runtime."
+    ],
+    "review": [
+      "legion-worker — confirm the diff is exactly one added file with the exact line, no other change, and PR body carries 'Dispatch: SLEGION26U-2'."
+    ]
+  },
+  "notes": "Sandbox smoke instance (legion26u); design gate off; Dispatch is scratch. 43-byte content length = length of the exact literal with no trailing newline.",
+  "schemaVersion": 1,
+  "phase": "plan",
+  "completed": "2026-09-15T05:17:05.259Z"
+}
