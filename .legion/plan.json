@@ -1,0 +1,38 @@
+{
+  "summary": "Create smoke/legion26x-1.md containing exactly one line; single commit, no other file changes.",
+  "steps": [
+    "Bind to $LEGION_WORKSPACE and confirm clean status.",
+    "Write file smoke/legion26x-1.md with exactly one line: 'kind smoke legion26x 1 2026-09-15T09:05:18Z' (overwrite if it exists).",
+    "Verify no other tracked files changed (jj -R \"$LEGION_WORKSPACE\" diff --summary shows only smoke/legion26x-1.md).",
+    "Commit the change on the issue branch, set bookmark legion/SLEGION26X-1, push, and open the PR with 'Dispatch: SLEGION26X-1' in the body."
+  ],
+  "filePath": "smoke/legion26x-1.md",
+  "lineContent": "kind smoke legion26x 1 2026-09-15T09:05:18Z",
+  "scope": "Exactly one file: smoke/legion26x-1.md. No other file changes. Single commit, no rebases unless GitHub reports a conflict.",
+  "acceptance": [
+    "cat smoke/legion26x-1.md on the branch prints exactly: kind smoke legion26x 1 2026-09-15T09:05:18Z (single line, trailing newline only).",
+    "jj -R \"$LEGION_WORKSPACE\" diff --summary lists only smoke/legion26x-1.md as added/modified."
+  ],
+  "proof": [
+    {
+      "surface": "shell on the issue branch in $LEGION_WORKSPACE",
+      "command": "cd -- \"$LEGION_WORKSPACE\" && cat smoke/legion26x-1.md",
+      "expected": "kind smoke legion26x 1 2026-09-15T09:05:18Z",
+      "negativeControl": "grep -c . smoke/legion26x-1.md returns 1 (exactly one non-empty line; more than one line fails acceptance)."
+    }
+  ],
+  "requiredSkills": {
+    "implement": [
+      "legion-worker — create/overwrite smoke/legion26x-1.md via the write tool with the exact single line, keep it to one commit, set bookmark legion/SLEGION26X-1, push, open PR with 'Dispatch: SLEGION26X-1'."
+    ],
+    "test": [
+      "legion-worker — re-run 'cat smoke/legion26x-1.md' on the branch and confirm the exact line and that it is the only changed file; production-like surface is the branch checkout itself since this is a docs-only content file."
+    ],
+    "review": [
+      "legion-worker — verify the diff touches only smoke/legion26x-1.md and the file's sole line matches exactly; docs-only PR, no thermo pass required."
+    ]
+  },
+  "schemaVersion": 1,
+  "phase": "plan",
+  "completed": "2026-09-15T09:07:18.037Z"
+}
