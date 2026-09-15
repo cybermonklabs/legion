@@ -1,0 +1,41 @@
+{
+  "summary": "Add smoke/legion26b-2.md with exactly one line: kind smoke legion26b 2 2026-09-15T04:32:54Z. Docs-only, single file, one commit, no rebases unless GitHub reports a conflict.",
+  "scope": {
+    "files": [
+      "smoke/legion26b-2.md"
+    ],
+    "onlyFile": "smoke/legion26b-2.md",
+    "content": "kind smoke legion26b 2 2026-09-15T04:32:54Z",
+    "noChildIssues": true,
+    "designGate": "off"
+  },
+  "tasks": [
+    "Create smoke/legion26b-2.md whose sole line is: kind smoke legion26b 2 2026-09-15T04:32:54Z (trailing newline only; no other content).",
+    "Commit only that file, set bookmark legion/SLEGION26B-2, push, open PR with body line Dispatch: SLEGION26B-2.",
+    "Prove: cat smoke/legion26b-2.md outputs exactly the required line; negative control: line count == 1 and byte-exact match."
+  ],
+  "acceptanceCriteria": [
+    {
+      "criterion": "smoke/legion26b-2.md exists on the PR branch with exactly the line: kind smoke legion26b 2 2026-09-15T04:32:54Z",
+      "surface": "shell in $LEGION_WORKSPACE on the pushed issue branch",
+      "command": "cat smoke/legion26b-2.md",
+      "expected": "kind smoke legion26b 2 2026-09-15T04:32:54Z",
+      "negativeControl": "grep -Fxc of the exact line returns 1 and wc -l returns 1; any other content fails"
+    }
+  ],
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: single-file create, jj split one file, bookmark set legion/SLEGION26B-2, git push, PR create with Dispatch: SLEGION26B-2 body line; docs-only so no thermo pass."
+    ],
+    "test": [
+      "legion-worker: re-run cat smoke/legion26b-2.md at the pushed head, confirm exact single line, run negative control (byte-exact and line-count == 1)."
+    ],
+    "review": [
+      "legion-worker: docs-only PR, verify the single-file diff and exact line content on GitHub; omit the Thermo line per the docs-only rule."
+    ]
+  },
+  "notes": "No repository-committed plan/spec file. Change confined to smoke/legion26b-2.md. Rebase only if GitHub reports CONFLICTING.",
+  "schemaVersion": 1,
+  "phase": "plan",
+  "completed": "2026-09-15T04:37:10.858Z"
+}
