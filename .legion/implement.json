@@ -1,0 +1,24 @@
+{
+  "summary": "Added the single file smoke/l179-1.md whose only content is the exact line `kind smoke l179 1 2026-09-15T06:53:20Z` with a single trailing newline. One implementation commit (facdc07098e996beb9103cc4ebbe76ee0c741dc6), bookmark legion/SL179-1 pushed, PR #56 opened with `Dispatch: SL179-1`.",
+  "filesChanged": [
+    "smoke/l179-1.md"
+  ],
+  "commits": [
+    "impl: add smoke/l179-1.md"
+  ],
+  "pr": "https://github.com/sjawhar/legion-smoke/pull/56",
+  "headSha": "facdc07098e996beb9103cc4ebbe76ee0c741dc6",
+  "proof": [
+    {
+      "criterion": "smoke/l179-1.md contains exactly the line `kind smoke l179 1 2026-09-15T06:53:20Z`",
+      "surface": "shell in $LEGION_WORKSPACE at branch head",
+      "command": "cat smoke/l179-1.md",
+      "observed": "kind smoke l179 1 2026-09-15T06:53:20Z",
+      "headSha": "facdc07098e996beb9103cc4ebbe76ee0c741dc6",
+      "negativeControl": "cat smoke/nonexistent-l179.md -> cat: smoke/nonexistent-l179.md: No such file or directory (exit 1)"
+    }
+  ],
+  "schemaVersion": 1,
+  "phase": "implement",
+  "completed": "2026-09-15T06:56:42.311Z"
+}
