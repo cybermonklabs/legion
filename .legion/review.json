@@ -1,0 +1,27 @@
+{
+  "summary": "Reviewed ST179-1 PR #57 at head dd29bdee10ca1d997d32490c64ef898c22894918. Clean: diff adds only smoke/t179-1.md (byte-identical to the single spec line, 39 bytes, sha256 a88a175906f71eaa26c85766775d0834fc2bb9b3bd049a94efdb7b2bc3a9f100) plus the expected .legion handoff artifacts; no workflow/.fail-me/existing-smoke edits; smoke change in one commit 0a97873952e4. Both CI checks green, zero review threads, both E2E lines present. Submitted a COMMENT review (head still carries .legion/); the .legion/ deletion is the only remaining work before APPROVE.",
+  "event": "COMMENT",
+  "reviewId": 5206969505,
+  "headReviewed": "dd29bdee10ca1d997d32490c64ef898c22894918",
+  "ci": {
+    "check": "success",
+    "gate": "success"
+  },
+  "threads": {
+    "total": 0,
+    "unresolved": 0
+  },
+  "e2e": {
+    "implementer": "present",
+    "tester": "present"
+  },
+  "thermo": "skipped — content-only PR (single-line markdown, no code)",
+  "findings": [],
+  "correctnessFindings": 0,
+  "specMatch": true,
+  "remainingWork": ".legion/ deletion push, then reviewer APPROVE of the resulting head by SHA",
+  "fastFollow": "none",
+  "schemaVersion": 1,
+  "phase": "review",
+  "completed": "2026-09-15T07:38:38.412Z"
+}
