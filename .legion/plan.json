@@ -1,0 +1,39 @@
+{
+  "issue": "SLEGION26U-1",
+  "summary": "Add a single smoke marker file smoke/legion26u-1.md containing exactly one line. Sandbox repo; one file, one commit, no rebases unless GitHub reports a conflict.",
+  "files": [
+    "smoke/legion26u-1.md"
+  ],
+  "steps": [
+    "Create or overwrite smoke/legion26u-1.md so its entire content is exactly one line: `kind smoke legion26u 1 2026-09-15T05:14:51Z` (single trailing newline, no other lines, no other files touched).",
+    "Verify content with `cat -A smoke/legion26u-1.md` and `wc -l smoke/legion26u-1.md` (expect 1).",
+    "Commit as one commit; set bookmark legion/SLEGION26U-1; push; open PR with body line `Dispatch: SLEGION26U-1`."
+  ],
+  "acceptanceCriteria": [
+    {
+      "criterion": "smoke/legion26u-1.md exists and its only line is exactly `kind smoke legion26u 1 2026-09-15T05:14:51Z`.",
+      "surface": "repository file at HEAD of PR branch",
+      "command": "cd -- \"$LEGION_WORKSPACE\" && cmp -s smoke/legion26u-1.md <(printf 'kind smoke legion26u 1 2026-09-15T05:14:51Z\\n') && test \"$(wc -l < smoke/legion26u-1.md)\" = 1"
+    },
+    {
+      "criterion": "No other file is added, modified, or deleted by this change.",
+      "surface": "PR diff on GitHub",
+      "command": "cd -- \"$LEGION_WORKSPACE\" && jj -R \"$LEGION_WORKSPACE\" diff --from main@origin --to @ --summary"
+    }
+  ],
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: write the file, single commit, set bookmark legion/SLEGION26U-1, push, open PR with `Dispatch: SLEGION26U-1`; content must be byte-exact, verify with cat -A/cmp."
+    ],
+    "test": [
+      "legion-worker: re-run the byte-exact cmp/wc check against the pushed head and confirm the PR diff touches only smoke/legion26u-1.md; production-like surface is the repository file at the PR head."
+    ],
+    "review": [
+      "legion-worker: confirm on GitHub the diff is exactly one line in one file; docs-only PR so no thermo pass."
+    ]
+  },
+  "notes": "Sandbox sjawhar/legion-smoke: keep change to the one named file, one commit, no rebases unless GitHub reports CONFLICTING. Overwrite if the file already exists.",
+  "schemaVersion": 1,
+  "phase": "plan",
+  "completed": "2026-09-15T05:18:10.308Z"
+}
