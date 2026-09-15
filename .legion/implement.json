@@ -1,0 +1,24 @@
+{
+  "summary": "Added smoke/legion26t-1.md with the single required line; one implementation commit on branch legion/SLEGION26T-1, PR #53 opened with Dispatch: SLEGION26T-1 and READY-format Verification block.",
+  "filesChanged": [
+    "smoke/legion26t-1.md"
+  ],
+  "commit": "9b6a94c25c853924423b80265575529db9587500",
+  "prNumber": 53,
+  "prUrl": "https://github.com/sjawhar/legion-smoke/pull/53",
+  "bookmark": "legion/SLEGION26T-1",
+  "proof": [
+    {
+      "criterion": "smoke/legion26t-1.md exists on the PR branch containing exactly the line 'kind smoke legion26t 1 2026-09-15T05:09:08Z'.",
+      "surface": "GitHub repository content on branch legion/SLEGION26T-1 (the pushed PR branch)",
+      "command": "gh api repos/sjawhar/legion-smoke/contents/smoke/legion26t-1.md?ref=legion/SLEGION26T-1 --jq .content | base64 -d",
+      "observed": "exactly one line: 'kind smoke legion26t 1 2026-09-15T05:09:08Z'",
+      "headSha": "9b6a94c25c853924423b80265575529db9587500",
+      "negativeControl": "gh api repos/sjawhar/legion-smoke/contents/smoke/legion26t-1-wrong.md?ref=legion/SLEGION26T-1 -> HTTP 404 Not Found (no extra/stray file present)"
+    }
+  ],
+  "notes": "Docs-only single-file add in the legion-smoke sandbox. Formatters/linters/test suites skipped per deployment instructions. No rebase performed; branch not conflicting.",
+  "schemaVersion": 1,
+  "phase": "implement",
+  "completed": "2026-09-15T05:13:50.978Z"
+}
