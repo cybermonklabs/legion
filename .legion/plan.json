@@ -1,0 +1,42 @@
+{
+  "summary": "Add exactly one new Markdown file smoke/legion26t-1.md containing the single line 'kind smoke legion26t 1 2026-09-15T05:09:08Z'. No other repository change; one commit.",
+  "tasks": [
+    {
+      "id": "create-file",
+      "description": "Create smoke/legion26t-1.md with exactly one line: 'kind smoke legion26t 1 2026-09-15T05:09:08Z' (newline-terminated, no other content). Use the write tool at absolute path $LEGION_WORKSPACE/smoke/legion26t-1.md. Touch no other file.",
+      "files": [
+        "smoke/legion26t-1.md"
+      ]
+    },
+    {
+      "id": "commit-push",
+      "description": "Implementer commits the single file as one commit, sets bookmark legion/SLEGION26T-1, pushes, and opens the PR with body line 'Dispatch: SLEGION26T-1'. No rebase unless GitHub reports a conflict.",
+      "files": [
+        "smoke/legion26t-1.md"
+      ]
+    }
+  ],
+  "acceptanceCriteria": [
+    {
+      "criterion": "smoke/legion26t-1.md exists on the PR branch containing exactly the line 'kind smoke legion26t 1 2026-09-15T05:09:08Z'.",
+      "surface": "The pushed PR branch on GitHub (the git repository content).",
+      "command": "cd -- \"$LEGION_WORKSPACE\" && cat smoke/legion26t-1.md   # then confirm on the pushed branch: legion gh -- api repos/{owner}/{repo}/contents/smoke/legion26t-1.md?ref=legion/SLEGION26T-1 --jq .content | base64 -d",
+      "negativeControl": "Any deviation (extra line, wrong timestamp, trailing text) makes the exact-match check fail."
+    }
+  ],
+  "requiredSkills": {
+    "implement": [
+      "legion-worker — docs-only single-file add; follow the implementer commit/push/PR procedure (bookmark legion/SLEGION26T-1, PR body 'Dispatch: SLEGION26T-1'), skip formatters/linters/test suites per deployment instructions."
+    ],
+    "test": [
+      "legion-worker — verify the file exists on the pushed branch with the exact line via cat and the GitHub contents API; docs-only, no unit suite, one negative control on exact content match."
+    ],
+    "review": [
+      "legion-worker — docs-only PR: no thermo pass, confirm exactly one file changed with the exact single line and no other repository change, verify CI/threads facts on GitHub directly."
+    ]
+  },
+  "notes": "Docs-only change in the legion-smoke sandbox. Deployment instructions: keep every change to the one file the issue names, one commit, no rebases unless GitHub reports a conflict; design gate off; Dispatch is scratch.",
+  "schemaVersion": 1,
+  "phase": "plan",
+  "completed": "2026-09-15T05:11:20.574Z"
+}
