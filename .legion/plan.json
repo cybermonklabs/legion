@@ -1,0 +1,38 @@
+{
+  "summary": "Add one docs-only smoke file smoke/legion26f-1.md containing exactly one line, in exactly one commit, no rebases unless GitHub reports a conflict.",
+  "singleFile": "smoke/legion26f-1.md",
+  "exactLine": "kind smoke legion26f 1 2026-09-15T08:51:12Z",
+  "fileContract": "File smoke/legion26f-1.md must contain exactly one line with the content `kind smoke legion26f 1 2026-09-15T08:51:12Z` and nothing else. Standard POSIX text file: the single line followed by one trailing newline. No other file may change.",
+  "createCommand": "cd -- \"$LEGION_WORKSPACE\" && printf 'kind smoke legion26f 1 2026-09-15T08:51:12Z\\n' > smoke/legion26f-1.md",
+  "commitDiscipline": "Implementer makes exactly ONE commit containing only smoke/legion26f-1.md. No rebases unless GitHub reports the branch CONFLICTING. No formatters, linters, or project-wide suites.",
+  "acceptanceCriteria": [
+    {
+      "criterion": "File smoke/legion26f-1.md exists on the PR branch with exactly one line: kind smoke legion26f 1 2026-09-15T08:51:12Z, and no other change.",
+      "surface": "The pushed PR branch in the sjawhar/legion-smoke GitHub repository (docs-only content on git).",
+      "proveCommand": "cd -- \"$LEGION_WORKSPACE\" && cat -A smoke/legion26f-1.md (expect exactly: kind smoke legion26f 1 2026-09-15T08:51:12Z$ and no second line) && jj -R \"$LEGION_WORKSPACE\" diff --from main@origin --to @ --summary (expect exactly one added file: A smoke/legion26f-1.md)",
+      "negativeControl": "A second line or any other changed path in the diff summary fails the criterion.",
+      "drivingSkill": "legion-worker (docs-only phase discipline; no thermo/no E2E surface beyond git content)."
+    },
+    {
+      "criterion": "Exactly one commit introduces the file.",
+      "surface": "Issue branch commit graph.",
+      "proveCommand": "cd -- \"$LEGION_WORKSPACE\" && jj -R \"$LEGION_WORKSPACE\" log -r main@origin..@ (expect exactly one content commit for the smoke file)",
+      "negativeControl": "The smoke file split across two commits fails the criterion.",
+      "drivingSkill": "legion-worker."
+    }
+  ],
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: create the single file with the exact line via write/printf, make exactly one content commit with only smoke/legion26f-1.md, then push the issue bookmark and open the PR with the Dispatch: SLEGION26F-1 line; no rebases unless GitHub reports a conflict."
+    ],
+    "test": [
+      "legion-worker: verify smoke/legion26f-1.md contains exactly the one line (cat -A) and that the branch diff against main adds only that path; docs-only, so no production-like surface beyond git content and no thermo."
+    ],
+    "review": [
+      "legion-worker: confirm docs-only single-file change, exact line content, one commit, PR body carries Dispatch: SLEGION26F-1; skip thermo (docs-only PR)."
+    ]
+  },
+  "schemaVersion": 1,
+  "phase": "plan",
+  "completed": "2026-09-15T08:53:19.717Z"
+}
