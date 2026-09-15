@@ -1,0 +1,41 @@
+{
+  "summary": "Add exactly one new file smoke/legion26b-1.md containing a single line, overwriting if it exists. No other change.",
+  "scope": "Single file: smoke/legion26b-1.md. Its only line must be exactly `kind smoke legion26b 1 2026-09-15T04:32:54Z`.",
+  "files": [
+    {
+      "path": "smoke/legion26b-1.md",
+      "action": "create-or-overwrite",
+      "content": "kind smoke legion26b 1 2026-09-15T04:32:54Z"
+    }
+  ],
+  "acceptanceCriteria": [
+    {
+      "criterion": "smoke/legion26b-1.md on the branch contains exactly the line `kind smoke legion26b 1 2026-09-15T04:32:54Z`",
+      "surface": "shell in LEGION_WORKSPACE on the issue branch",
+      "command": "cd -- \"$LEGION_WORKSPACE\" && cat smoke/legion26b-1.md",
+      "expected": "exactly one line: kind smoke legion26b 1 2026-09-15T04:32:54Z",
+      "negativeControl": "jj -R \"$LEGION_WORKSPACE\" diff --summary lists only smoke/legion26b-1.md for the change commit"
+    }
+  ],
+  "ordering": [
+    "implement: write smoke/legion26b-1.md with the exact single line, commit, create bookmark legion/SLEGION26B-1, push, open PR with body line `Dispatch: SLEGION26B-1`, prove with cat on the branch",
+    "test: re-run cat smoke/legion26b-1.md on the pushed head, verify exact line and no other file changed",
+    "review: confirm only smoke/legion26b-1.md changed and the line is exact; approve",
+    "merge: controller merges under its own authority"
+  ],
+  "requiredSkills": {
+    "implement": [
+      "legion-worker drives the implementer surface: single-file write, commit for the change, bookmark set, push, PR with Dispatch: SLEGION26B-1, and the cat proof on the branch."
+    ],
+    "test": [
+      "legion-worker drives the tester surface: re-run cat smoke/legion26b-1.md on the pushed head as the production-like proof and record implementerProof verdict; no code path executes only after merge."
+    ],
+    "review": [
+      "legion-worker drives the reviewer surface: verify via jj diff --summary that only smoke/legion26b-1.md changed and the line matches exactly; docs-only PR, no thermo pass."
+    ]
+  },
+  "notes": "Sandbox smoke instance legion26b: keep to the one file the issue names, one commit for the change, no rebases unless GitHub reports a conflict. Design gate off; Dispatch not read.",
+  "schemaVersion": 1,
+  "phase": "plan",
+  "completed": "2026-09-15T04:34:56.623Z"
+}
