@@ -1,0 +1,46 @@
+{
+  "summary": "Add one new file smoke/pnd17-1.md containing exactly one line: kind smoke pnd17 1 2026-09-17T12:40:54Z. Single-file, single-line, single-commit change; no other repository modification and no child decomposition (single-issue root).",
+  "scope": {
+    "newFiles": [
+      "smoke/pnd17-1.md"
+    ],
+    "fileContent": "kind smoke pnd17 1 2026-09-17T12:40:54Z",
+    "otherChanges": "none",
+    "childDecomposition": "none — single-issue root"
+  },
+  "acceptanceCriteria": [
+    {
+      "criterion": "Repository contains smoke/pnd17-1.md whose only line is exactly `kind smoke pnd17 1 2026-09-17T12:40:54Z` (no leading/trailing blank lines, trailing newline only).",
+      "surface": "Sandbox repository working copy on the issue branch legion/SPND17-1.",
+      "command": "cd -- \"$LEGION_WORKSPACE\" && printf '%s\\n' 'kind smoke pnd17 1 2026-09-17T12:40:54Z' | cmp - smoke/pnd17-1.md && jj -R \"$LEGION_WORKSPACE\" diff --summary",
+      "negativeControl": "Compare against a file with a differing timestamp or extra line → cmp reports a difference / nonzero exit."
+    }
+  ],
+  "implementationSteps": [
+    "Create smoke/pnd17-1.md with exactly the single line `kind smoke pnd17 1 2026-09-17T12:40:54Z` (one trailing newline, nothing else).",
+    "Commit only that path in one commit via jj; do not touch any other tracked file.",
+    "Set bookmark legion/SPND17-1 and push; open the PR with body line `Dispatch: SPND17-1`."
+  ],
+  "verification": {
+    "implement": "printf '%s\\n' 'kind smoke pnd17 1 2026-09-17T12:40:54Z' | cmp - smoke/pnd17-1.md; jj diff --summary shows only smoke/pnd17-1.md added.",
+    "test": "Re-run the byte-exact cmp on the pushed head; confirm the diff summary lists only smoke/pnd17-1.md; negative control with an altered line fails cmp.",
+    "review": "Confirm the PR diff adds only smoke/pnd17-1.md with the exact single line and no other repository change."
+  },
+  "requiredSkills": {
+    "implement": [
+      "legion-worker — drives the shared-workspace jj commit, single-path split, bookmark push, and PR conventions for the one-file change."
+    ],
+    "test": [
+      "legion-worker — defines the production-like proof (byte-exact cmp on the pushed sandbox head) and handoff/proof recording the tester must re-run."
+    ],
+    "review": [
+      "legion-worker — defines the review App's diff/thread verification that the PR adds only the one file with the exact line."
+    ]
+  },
+  "risks": [
+    "Exactness of the line (timestamp, spacing, no extra newline) is the only failure mode; verify byte-for-byte with cmp, not visual inspection."
+  ],
+  "schemaVersion": 1,
+  "phase": "plan",
+  "completed": "2026-09-17T12:44:27.417Z"
+}
