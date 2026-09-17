@@ -1,0 +1,22 @@
+{
+  "summary": "Created smoke/plnd8-1.md with exactly the single line 'kind smoke plnd8 1 2026-09-17T07:29:31Z' plus a trailing newline (40 bytes), one commit on legion/SPLND8-1, pushed, and opened PR #60.",
+  "prNumber": 60,
+  "prUrl": "https://github.com/sjawhar/legion-smoke/pull/60",
+  "headSha": "9ade3e0c0c9ff918ab681140dc35b2a41d5025f5",
+  "filesChanged": [
+    "smoke/plnd8-1.md"
+  ],
+  "proof": [
+    {
+      "criterion": "cat smoke/plnd8-1.md shows exactly the line \"kind smoke plnd8 1 2026-09-17T07:29:31Z\" on the PR branch",
+      "surface": "the smoke/plnd8-1.md file on the pushed legion/SPLND8-1 branch",
+      "command": "cd -- \"$LEGION_WORKSPACE\" && cat smoke/plnd8-1.md",
+      "observed": "exactly one line 'kind smoke plnd8 1 2026-09-17T07:29:31Z'; 40 bytes with a single trailing newline confirmed by od -c",
+      "headSha": "9ade3e0c0c9ff918ab681140dc35b2a41d5025f5",
+      "negativeControl": "a file whose line reads 'kind smoke plnd8 1 WRONG' differs per cmp, failing the exact-bytes cat check"
+    }
+  ],
+  "schemaVersion": 1,
+  "phase": "implement",
+  "completed": "2026-09-17T07:33:55.851Z"
+}
