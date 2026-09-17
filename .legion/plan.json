@@ -1,0 +1,45 @@
+{
+  "issue": "SPND15-1",
+  "summary": "Create smoke/pnd15-1.md containing exactly one line of text; no other files change.",
+  "targetFile": "smoke/pnd15-1.md",
+  "fileContent": "kind smoke pnd15 1 2026-09-17T11:49:52Z",
+  "contentNote": "Single line, exact text with no surrounding quotes; overwrite if the file already exists. Trailing newline is conventional and acceptable.",
+  "steps": [
+    "Write smoke/pnd15-1.md with the single line: kind smoke pnd15 1 2026-09-17T11:49:52Z",
+    "Do not touch any other file.",
+    "Commit as one commit on the issue branch."
+  ],
+  "acceptanceCriteria": [
+    {
+      "criterion": "smoke/pnd15-1.md exists and its only content is the line: kind smoke pnd15 1 2026-09-17T11:49:52Z",
+      "surface": "local shell in the issue workspace",
+      "command": "cd -- \"$LEGION_WORKSPACE\" && cat smoke/pnd15-1.md",
+      "expected": "prints exactly: kind smoke pnd15 1 2026-09-17T11:49:52Z"
+    },
+    {
+      "criterion": "No file other than smoke/pnd15-1.md is added, modified, or deleted",
+      "surface": "jj diff",
+      "command": "cd -- \"$LEGION_WORKSPACE\" && jj -R \"$LEGION_WORKSPACE\" diff --from main@origin --to @ --summary",
+      "expected": "the only content change is A smoke/pnd15-1.md (plus the planner/tester handoff commits under .legion/)"
+    }
+  ],
+  "implementerAcceptanceCheck": "cat smoke/pnd15-1.md",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: write the one file with the exact line, single commit on the issue branch, push and open the PR; no build/lint since the change is a static markdown fixture."
+    ],
+    "test": [
+      "legion-worker: verify smoke/pnd15-1.md content via cat and confirm jj diff shows only that file changed; re-run the implementer acceptance check."
+    ],
+    "review": [
+      "legion-worker: confirm the PR adds only smoke/pnd15-1.md with the exact single line and no collateral changes; docs-only, no thermo pass."
+    ]
+  },
+  "nonGoals": [
+    "Do not modify README.md, CI workflows, or any existing smoke/*.md file.",
+    "Do not add code, tests, or documentation beyond the one smoke file."
+  ],
+  "schemaVersion": 1,
+  "phase": "plan",
+  "completed": "2026-09-17T11:51:51.925Z"
+}
