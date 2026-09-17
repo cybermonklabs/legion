@@ -1,0 +1,33 @@
+{
+  "summary": "Create smoke/plnd8-1.md containing exactly one line so the kind-smoke probe verifies the plnd8 pipeline end to end.",
+  "surfaces": [
+    {
+      "criterion": "cat smoke/plnd8-1.md shows exactly the line \"kind smoke plnd8 1 2026-09-17T07:29:31Z\" on the PR branch",
+      "surface": "the smoke/plnd8-1.md file on the pushed legion/SPLND8-1 branch",
+      "command": "cd -- \"$LEGION_WORKSPACE\" && cat smoke/plnd8-1.md",
+      "skill": "legion-worker"
+    }
+  ],
+  "files": [
+    {
+      "path": "smoke/plnd8-1.md",
+      "change": "Overwrite (create) with a single line, exact bytes: kind smoke plnd8 1 2026-09-17T07:29:31Z, followed by a trailing newline. No other file changes."
+    }
+  ],
+  "ordering": "One implementation commit creating smoke/plnd8-1.md, then the implementer pushes legion/SPLND8-1 and opens the PR. No rebases unless GitHub reports CONFLICTING.",
+  "negativeControl": "A file whose line differs (extra whitespace, wrong timestamp, or extra lines) fails the cat check; use it as the deliberately-broken control.",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: single-file write in the shared jj workspace, one commit, push legion/SPLND8-1, open PR with Dispatch: SPLND8-1, prove with cat at the branch head."
+    ],
+    "test": [
+      "legion-worker: re-run cat smoke/plnd8-1.md at the PR head, confirm exactly one line with the required bytes, record E2E (tester) proof plus a negative control."
+    ],
+    "review": [
+      "legion-worker: verify CI, threads, and both E2E lines on GitHub for a one-file docs-only change; skip the Thermo line since docs-only."
+    ]
+  },
+  "schemaVersion": 1,
+  "phase": "plan",
+  "completed": "2026-09-17T07:31:21.639Z"
+}
