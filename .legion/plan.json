@@ -1,0 +1,37 @@
+{
+  "summary": "Add smoke/pnd18-1.md containing exactly one line: kind smoke pnd18 1 2026-09-17T13:35:13Z. One commit, one file, no other change.",
+  "steps": [
+    "Overwrite (create if absent) smoke/pnd18-1.md with a single line: kind smoke pnd18 1 2026-09-17T13:35:13Z (trailing newline only).",
+    "Commit that one file as the implementation commit; set bookmark legion/SPND18-1 and push; open PR with body line Dispatch: SPND18-1."
+  ],
+  "files": [
+    "smoke/pnd18-1.md"
+  ],
+  "acceptanceCriteria": [
+    {
+      "criterion": "smoke/pnd18-1.md exists with sole content line kind smoke pnd18 1 2026-09-17T13:35:13Z",
+      "surface": "sandbox repo file content",
+      "command": "cd -- \"$LEGION_WORKSPACE\" && cat smoke/pnd18-1.md"
+    },
+    {
+      "criterion": "Exactly one file changed in the commit",
+      "surface": "jj diff summary",
+      "command": "cd -- \"$LEGION_WORKSPACE\" && jj -R \"$LEGION_WORKSPACE\" diff -r @ --summary"
+    }
+  ],
+  "requiredSkills": {
+    "implement": [
+      "legion-worker drives the jj commit/push/PR flow for this one-file docs change on the sandbox repo."
+    ],
+    "test": [
+      "legion-worker: verify file content and one-file diff on the sandbox surface; no unit suite applies to a docs-only file."
+    ],
+    "review": [
+      "legion-worker: docs-only PR, skip Thermo line; confirm single-file scope and exact content."
+    ]
+  },
+  "notes": "Demo smoke instance (pnd18); design gate off. One commit, one file, no rebases unless GitHub reports a conflict.",
+  "schemaVersion": 1,
+  "phase": "plan",
+  "completed": "2026-09-17T13:37:15.214Z"
+}
