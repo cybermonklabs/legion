@@ -1,0 +1,19 @@
+{
+  "summary": "Created smoke/pnd27-1.md as the only changed file, containing exactly the single line kind smoke pnd27 1 2026-09-17T18:56:40Z with a trailing newline. Committed as smoke: add smoke/pnd27-1.md for pnd27 1.",
+  "filesChanged": [
+    "smoke/pnd27-1.md"
+  ],
+  "proof": [
+    {
+      "criterion": "smoke/pnd27-1.md exists on the PR branch containing exactly the single line kind smoke pnd27 1 2026-09-17T18:56:40Z and nothing else",
+      "surface": "sandbox repo PR branch working copy (jj workspace at branch head)",
+      "command": "cd -- \"$LEGION_WORKSPACE\" && cat smoke/pnd27-1.md",
+      "observed": "Output was exactly: kind smoke pnd27 1 2026-09-17T18:56:40Z followed by a trailing newline (40 bytes total, single line).",
+      "headSha": "ab6725630e1e97c8998969958b868f4abcb4876a",
+      "negativeControl": "jj -R \"$LEGION_WORKSPACE\" diff --summary at the implementation commit printed only A smoke/pnd27-1.md and no other tracked file changed."
+    }
+  ],
+  "schemaVersion": 1,
+  "phase": "implement",
+  "completed": "2026-09-17T19:00:22.454Z"
+}
