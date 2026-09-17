@@ -1,0 +1,21 @@
+{
+  "summary": "Created smoke/pnd25-1.md with the single exact line for pnd25 run 1, committed once as 'smoke: SPND25-1 pnd25 probe', pushed bookmark legion/SPND25-1, and opened PR #74 with the Dispatch: SPND25-1 link.",
+  "filesChanged": [
+    "smoke/pnd25-1.md"
+  ],
+  "proof": [
+    {
+      "criterion": "On the PR branch, cat smoke/pnd25-1.md prints exactly the single line 'kind smoke pnd25 1 2026-09-17T17:13:09Z' with no extra content.",
+      "surface": "sandbox jj/git working copy on branch legion/SPND25-1 in $LEGION_WORKSPACE",
+      "command": "cd -- \"$LEGION_WORKSPACE\" && cat smoke/pnd25-1.md",
+      "observed": "exactly one line 'kind smoke pnd25 1 2026-09-17T17:13:09Z' (wc -c = 40 bytes: 39-char line + trailing newline, no second content line); jj status shows only 'A smoke/pnd25-1.md'",
+      "headSha": "2c7030fbcdf8bef633fff96b5410a426611d76c0",
+      "negativeControl": "cd -- \"$LEGION_WORKSPACE\" && cat smoke/pnd25-2.md -> 'cat: smoke/pnd25-2.md: No such file or directory'"
+    }
+  ],
+  "deviations": [],
+  "openQuestions": [],
+  "schemaVersion": 1,
+  "phase": "implement",
+  "completed": "2026-09-17T17:18:16.591Z"
+}
