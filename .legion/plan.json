@@ -1,0 +1,33 @@
+{
+  "summary": "Create smoke/pnd24-1.md containing exactly one line, in a single commit with no other change.",
+  "files": [
+    {
+      "path": "smoke/pnd24-1.md",
+      "action": "create-or-overwrite",
+      "content": "kind smoke pnd24 1 2026-09-17T16:58:48Z"
+    }
+  ],
+  "exactLine": "kind smoke pnd24 1 2026-09-17T16:58:48Z",
+  "acceptance": [
+    {
+      "criterion": "smoke/pnd24-1.md exists with exactly the required single line",
+      "surface": "shell in LEGION_WORKSPACE",
+      "command": "cat smoke/pnd24-1.md"
+    }
+  ],
+  "commit": "one commit, no rebases unless GitHub reports a conflict",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: bind to LEGION_WORKSPACE, write smoke/pnd24-1.md via jj, single commit, push branch and open PR."
+    ],
+    "test": [
+      "legion-worker: re-run `cat smoke/pnd24-1.md` and confirm the exact line; no unit tests for a one-line docs file."
+    ],
+    "review": [
+      "legion-worker: confirm the diff is only smoke/pnd24-1.md with the exact line; docs-only, no thermo."
+    ]
+  },
+  "schemaVersion": 1,
+  "phase": "plan",
+  "completed": "2026-09-17T17:00:37.191Z"
+}
