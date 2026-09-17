@@ -1,0 +1,46 @@
+{
+  "summary": "Create smoke/pnd21-1.md containing exactly one line: kind smoke pnd21 1 2026-09-17T15:12:00Z. One commit, one file, no other files touched, no rebase unless GitHub reports a conflict.",
+  "scope": {
+    "files": [
+      "smoke/pnd21-1.md"
+    ],
+    "nonGoals": [
+      "Do not touch any other file",
+      "Do not add a trailing blank line or extra content",
+      "Do not rebase unless GitHub reports CONFLICTING"
+    ]
+  },
+  "tasks": [
+    "Implementer: write smoke/pnd21-1.md with printf so it holds exactly the single line kind smoke pnd21 1 2026-09-17T15:12:00Z (one trailing newline, no second line).",
+    "Implementer: verify with cat smoke/pnd21-1.md and wc -l (expect 1 line); commit as the sole change; set bookmark legion/SPND21-1; push; open PR with body line Dispatch: SPND21-1.",
+    "Tester: re-run cat smoke/pnd21-1.md on the PR head and confirm it prints exactly kind smoke pnd21 1 2026-09-17T15:12:00Z and nothing else.",
+    "Reviewer: confirm the PR diff adds only smoke/pnd21-1.md with that single line and no other file changed."
+  ],
+  "acceptanceCriteria": [
+    {
+      "criterion": "cat smoke/pnd21-1.md shows exactly the line kind smoke pnd21 1 2026-09-17T15:12:00Z on the PR branch.",
+      "surface": "Shared jj workspace checkout of the legion/SPND21-1 PR branch (production-like: the real sandbox repo branch a human reviews).",
+      "command": "cd -- \"$LEGION_WORKSPACE\" && cat smoke/pnd21-1.md",
+      "expect": "single line: kind smoke pnd21 1 2026-09-17T15:12:00Z",
+      "negativeControl": "wc -l smoke/pnd21-1.md returns 1; a second line or altered timestamp fails the criterion."
+    }
+  ],
+  "requiredSkills": {
+    "implement": [
+      "legion-worker — governs binding to LEGION_WORKSPACE, the single-commit jj split/bookmark/push, PR body Dispatch: line, and the E2E proof array the implement handoff requires."
+    ],
+    "test": [
+      "legion-worker — governs re-verifying the implementer proof on the PR head and recording implementerProof plus the tester proof in the test handoff."
+    ],
+    "review": [
+      "legion-worker — governs the single-review-per-round discipline, per-thread disposition, and approving only a head carrying no .legion/."
+    ]
+  },
+  "risks": [
+    "Accidental trailing blank line or missing newline changes wc -l; use printf and check wc -l == 1.",
+    "Touching any second file violates the one-file scope."
+  ],
+  "schemaVersion": 1,
+  "phase": "plan",
+  "completed": "2026-09-17T15:14:32.754Z"
+}
