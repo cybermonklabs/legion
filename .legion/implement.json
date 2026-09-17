@@ -1,0 +1,22 @@
+{
+  "filesChanged": [
+    "smoke/pnd16-1.md"
+  ],
+  "summary": "Created smoke/pnd16-1.md with the single exact line `kind smoke pnd16 1 2026-09-17T12:24:51Z` (40 bytes, one trailing newline). No other files changed.",
+  "commits": {
+    "implementation": "dc03b70f04ed1e1f28613a4525c83934866ade1b"
+  },
+  "proof": [
+    {
+      "criterion": "cat smoke/pnd16-1.md shows exactly the line kind smoke pnd16 1 2026-09-17T12:24:51Z and nothing else, and no other file changes.",
+      "surface": "Shared issue workspace file in sandbox repo sjawhar/legion-smoke (the production-like surface for this docs marker).",
+      "command": "cd -- \"$LEGION_WORKSPACE\" && cat smoke/pnd16-1.md; diff <(printf 'kind smoke pnd16 1 2026-09-17T12:24:51Z\\n') smoke/pnd16-1.md; jj -R \"$LEGION_WORKSPACE\" diff -r @- --summary",
+      "observed": "cat prints exactly `kind smoke pnd16 1 2026-09-17T12:24:51Z`; byte-exact diff against the expected line matches (40 bytes, one trailing newline); jj diff -r @- --summary shows only `A smoke/pnd16-1.md`.",
+      "headSha": "dc03b70f04ed1e1f28613a4525c83934866ade1b",
+      "negativeControl": "cat smoke/nonexistent.md -> `cat: smoke/nonexistent.md: No such file or directory`; the byte-exact diff would fail if any character differed."
+    }
+  ],
+  "schemaVersion": 1,
+  "phase": "implement",
+  "completed": "2026-09-17T12:30:05.885Z"
+}
