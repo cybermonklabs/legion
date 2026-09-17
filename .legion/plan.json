@@ -1,0 +1,50 @@
+{
+  "taskCount": 1,
+  "independentTasks": 1,
+  "workflowRecommendation": "Single trivial file write; no decomposition. Implement -> test -> review -> integrate sequentially.",
+  "concerns": [],
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: booted phase worker rules for the shared workspace, jj-safe single commit, and handoff/commit gate governing this one-file change."
+    ],
+    "test": [
+      "legion-worker: tester re-verifies the implementer's production-like proof (the cat command) and records implementerProof before completing."
+    ],
+    "review": [
+      "legion-worker: reviewer confirms only smoke/pnd16-1.md changed, one exact line, and drives PR/thread discipline for this change."
+    ]
+  },
+  "summary": "SPND16-1 adds one smoke marker file. Single commit, single file, exact one-line content.",
+  "tasks": [
+    {
+      "id": 1,
+      "title": "Create smoke marker file",
+      "path": "smoke/pnd16-1.md",
+      "action": "Write smoke/pnd16-1.md so its only line is exactly `kind smoke pnd16 1 2026-09-17T12:24:51Z` (with trailing newline). Overwrite if the file already exists. Change no other file. One commit for the change plus the standard separate handoff commit.",
+      "files": [
+        "smoke/pnd16-1.md"
+      ]
+    }
+  ],
+  "acceptanceCriteria": [
+    {
+      "criterion": "cat smoke/pnd16-1.md shows exactly the line kind smoke pnd16 1 2026-09-17T12:24:51Z and nothing else.",
+      "surface": "The workspace file itself (sandbox repo sjawhar/legion-smoke). Production-like surface is the committed file in the shared issue workspace.",
+      "command": "cd -- \"$LEGION_WORKSPACE\" && cat smoke/pnd16-1.md",
+      "expected": "Single line: kind smoke pnd16 1 2026-09-17T12:24:51Z",
+      "drivingSkill": "legion-worker"
+    },
+    {
+      "criterion": "No other files change.",
+      "surface": "jj diff of the implementation commit in the shared issue workspace.",
+      "command": "cd -- \"$LEGION_WORKSPACE\" && jj -R \"$LEGION_WORKSPACE\" diff -r @- --summary",
+      "expected": "Exactly one added/modified path: smoke/pnd16-1.md (handoff commit is separate).",
+      "drivingSkill": "legion-worker"
+    }
+  ],
+  "negativeControl": "cat smoke/nonexistent.md returns 'No such file or directory'; or a byte-diff of the file against the exact expected line fails when any character differs.",
+  "notes": "Deployment (demo) instructions: sandbox repo, keep change to the one named file, one commit, design gate off, Dispatch is scratch. Existing smoke/ contains unrelated legion16-green-*.md files; leave them untouched. Target file does not currently exist.",
+  "schemaVersion": 1,
+  "phase": "plan",
+  "completed": "2026-09-17T12:27:05.791Z"
+}
