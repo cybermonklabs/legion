@@ -1,0 +1,39 @@
+{
+  "issue": "SPND22-1",
+  "summary": "Add one file smoke/pnd22-1.md whose sole line is the exact token 'kind smoke pnd22 1 2026-09-17T16:00:08Z'. Single-issue root; no child issues; no other repository change; one commit.",
+  "acceptanceCriteria": [
+    "smoke/pnd22-1.md exists on the PR branch and contains exactly the single line 'kind smoke pnd22 1 2026-09-17T16:00:08Z'."
+  ],
+  "surfaces": [
+    {
+      "criterion": "File exists on PR branch with exactly the one line.",
+      "surface": "The pushed legion/SPND22-1 branch checkout in $LEGION_WORKSPACE.",
+      "command": "cd -- \"$LEGION_WORKSPACE\" && cat smoke/pnd22-1.md",
+      "expected": "kind smoke pnd22 1 2026-09-17T16:00:08Z",
+      "skill": "legion-worker"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "add-file",
+      "role": "implement",
+      "detail": "Create smoke/pnd22-1.md containing exactly the single line 'kind smoke pnd22 1 2026-09-17T16:00:08Z' followed by a trailing newline. No other files change. jj split only smoke/pnd22-1.md into the implementation commit, set bookmark legion/SPND22-1, push, open PR with body line 'Dispatch: SPND22-1'."
+    }
+  ],
+  "ordering": "One commit adds smoke/pnd22-1.md; nothing precedes or depends on it.",
+  "notes": "smoke/ directory already exists; target file is currently absent. Content must be the exact byte string on one line: 'kind smoke pnd22 1 2026-09-17T16:00:08Z'. No plan or spec markdown enters the PR.",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker — governs the jj split/bookmark/push/PR-open procedure and exact branch name legion/SPND22-1; the only change is writing one file."
+    ],
+    "test": [
+      "legion-worker — the tester re-runs `cat smoke/pnd22-1.md` on the pushed branch and confirms the single exact line, the whole acceptance surface."
+    ],
+    "review": [
+      "legion-worker — docs-only single-file change; reviewer verifies the file content and that no other path changed, skipping the thermo pass per docs-only rule."
+    ]
+  },
+  "schemaVersion": 1,
+  "phase": "plan",
+  "completed": "2026-09-17T16:02:23.361Z"
+}
