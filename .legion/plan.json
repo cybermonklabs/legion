@@ -1,0 +1,41 @@
+{
+  "summary": "Create smoke/pnd26-1.md with exactly one line of smoke-marker text; overwrite if present. No other change, one commit.",
+  "target": {
+    "file": "smoke/pnd26-1.md",
+    "lineContent": "kind smoke pnd26 1 2026-09-17T18:34:51Z",
+    "overwriteIfExists": true
+  },
+  "acceptanceCriteria": [
+    {
+      "criterion": "smoke/pnd26-1.md contains exactly the line: kind smoke pnd26 1 2026-09-17T18:34:51Z",
+      "surface": "shell in LEGION_WORKSPACE",
+      "command": "cat smoke/pnd26-1.md",
+      "expected": "kind smoke pnd26 1 2026-09-17T18:34:51Z"
+    }
+  ],
+  "constraints": [
+    "Change only smoke/pnd26-1.md; no other files.",
+    "Single commit.",
+    "No rebases unless GitHub reports a conflict.",
+    "Follow existing smoke/ convention: one-line markdown marker file."
+  ],
+  "implementationSteps": [
+    "Write smoke/pnd26-1.md with the single line: kind smoke pnd26 1 2026-09-17T18:34:51Z (overwrite if it exists).",
+    "Commit the change as one commit on the issue branch.",
+    "Verify with: cat smoke/pnd26-1.md"
+  ],
+  "requiredSkills": {
+    "implement": [
+      "legion-worker — trivial file write and single-commit push; no code intelligence or repo skill beyond the phase-worker contract applies."
+    ],
+    "test": [
+      "legion-worker — verification is the exact acceptance command cat smoke/pnd26-1.md; tester re-runs it against the workspace file, no test harness needed."
+    ],
+    "review": [
+      "legion-worker — review confirms only smoke/pnd26-1.md changed and its single line matches; docs-only, no thermo/CI beyond repo defaults."
+    ]
+  },
+  "schemaVersion": 1,
+  "phase": "plan",
+  "completed": "2026-09-17T18:37:33.651Z"
+}
