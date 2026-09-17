@@ -1,0 +1,21 @@
+{
+  "summary": "Created smoke/pnd18-1.md with the sole line kind smoke pnd18 1 2026-09-17T13:35:13Z; one commit, one file. Pushed legion/SPND18-1 and opened PR #67.",
+  "files": [
+    "smoke/pnd18-1.md"
+  ],
+  "pr": "https://github.com/sjawhar/legion-smoke/pull/67",
+  "headSha": "a67838599df255e5803579cb0f81880d110be1b9",
+  "proof": [
+    {
+      "criterion": "smoke/pnd18-1.md exists with sole content line kind smoke pnd18 1 2026-09-17T13:35:13Z and exactly one file changed",
+      "surface": "sandbox repo file content",
+      "command": "cat smoke/pnd18-1.md && jj -R \"$LEGION_WORKSPACE\" diff -r @ --summary",
+      "observed": "sole line kind smoke pnd18 1 2026-09-17T13:35:13Z; diff summary shows exactly A smoke/pnd18-1.md",
+      "headSha": "a67838599df255e5803579cb0f81880d110be1b9",
+      "negativeControl": "git grep -c . smoke/pnd18-1.md returned 1; a second content line would return 2 and fail the sole-line criterion"
+    }
+  ],
+  "schemaVersion": 1,
+  "phase": "implement",
+  "completed": "2026-09-17T13:38:53.386Z"
+}
