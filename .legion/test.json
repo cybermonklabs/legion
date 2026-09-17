@@ -1,0 +1,21 @@
+{
+  "summary": "Verified smoke/pnd14-1.md contains exactly the single line kind smoke pnd14 1 2026-09-17T11:30:14Z with one trailing newline; content commit a5d82be6 adds only that file. No other repository (product) change present; only Legion .legion/ handoff artifacts accompany it.",
+  "implementerProof": {
+    "verdict": "verified",
+    "how": "Re-ran the implementer command jj -R \"$LEGION_WORKSPACE\" file show -r legion/SPND14-1 smoke/pnd14-1.md at PR #63 head; got identical single line. Reproduced its negative control (smoke/nope.md -> Error: No such path)."
+  },
+  "proof": [
+    {
+      "criterion": "smoke/pnd14-1.md contains exactly the single line kind smoke pnd14 1 2026-09-17T11:30:14Z and no other repository change is present",
+      "surface": "shell on branch legion/SPND14-1 (PR #63) workspace",
+      "command": "od -c smoke/pnd14-1.md; wc -l smoke/pnd14-1.md; jj -R \"$LEGION_WORKSPACE\" diff -r a5d82be6 --git",
+      "observed": "od -c shows exactly kind smoke pnd14 1 2026-09-17T11:30:14Z\\n (one trailing newline, no extra bytes); wc -l=1; diff of content commit a5d82be6 adds only smoke/pnd14-1.md as a new file with +1 line and nothing else",
+      "headSha": "a5d82be66aa4def1f1650efc1f752faf33bf6555",
+      "negativeControl": "jj -R \"$LEGION_WORKSPACE\" file show -r legion/SPND14-1 smoke/nope.md -> Error: No such path: smoke/nope.md (absent/wrong path refused)"
+    }
+  ],
+  "failures": [],
+  "schemaVersion": 1,
+  "phase": "test",
+  "completed": "2026-09-17T11:34:36.333Z"
+}
