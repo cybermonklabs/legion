@@ -1,0 +1,21 @@
+{
+  "issue": "SPND28-1",
+  "summary": "Created smoke/pnd28-1.md with the single required line; one commit, no other repo change.",
+  "filesChanged": [
+    "smoke/pnd28-1.md"
+  ],
+  "commit": "90cb22744c935db78ae6d963d81aacae98d0c678",
+  "proof": [
+    {
+      "criterion": "AC1",
+      "surface": "sandbox git working tree on the legion/SPND28-1 branch",
+      "command": "cd -- \"$LEGION_WORKSPACE\" && cat smoke/pnd28-1.md",
+      "observed": "single line: kind smoke pnd28 1 2026-09-17T19:07:00Z (grep -c . == 1, wc -l == 1)",
+      "headSha": "90cb22744c935db78ae6d963d81aacae98d0c678",
+      "negativeControl": "grep -c . smoke/pnd28-1.md returned 1 (no extra lines); an added second line would make it 2 and fail AC1"
+    }
+  ],
+  "schemaVersion": 1,
+  "phase": "implement",
+  "completed": "2026-09-17T19:10:10.610Z"
+}
