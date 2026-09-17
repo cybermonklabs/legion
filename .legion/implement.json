@@ -1,0 +1,22 @@
+{
+  "summary": "Created smoke/plnd9-1.md with exactly the line \"kind smoke plnd9 1 2026-09-17T08:22:57Z\" plus one trailing newline. Committed as a single implementation commit on legion/SPLND9-1, pushed, and opened PR #61. Handoff recorded as a separate commit.",
+  "filesChanged": [
+    "smoke/plnd9-1.md"
+  ],
+  "prNumber": 61,
+  "prUrl": "https://github.com/sjawhar/legion-smoke/pull/61",
+  "headSha": "333c5b9a9da518246f1deb8d5a0f0df2c78ac264",
+  "proof": [
+    {
+      "criterion": "smoke/plnd9-1.md exists with the single line \"kind smoke plnd9 1 2026-09-17T08:22:57Z\" and a single trailing newline, no other content",
+      "surface": "repository contents at the pushed implementation commit (GitHub contents API)",
+      "command": "legion gh -- api repos/sjawhar/legion-smoke/contents/smoke/plnd9-1.md?ref=333c5b9a9da518246f1deb8d5a0f0df2c78ac264 --jq .content | base64 -d | cat -A",
+      "observed": "exactly kind smoke plnd9 1 2026-09-17T08:22:57Z$ — one line, single trailing newline (wc -c=40, wc -l=1)",
+      "headSha": "333c5b9a9da518246f1deb8d5a0f0df2c78ac264",
+      "negativeControl": "legion gh -- api repos/sjawhar/legion-smoke/contents/smoke/plnd9-1.md?ref=main returned HTTP 404 Not Found; the file is absent on main"
+    }
+  ],
+  "schemaVersion": 1,
+  "phase": "implement",
+  "completed": "2026-09-17T08:29:49.712Z"
+}
