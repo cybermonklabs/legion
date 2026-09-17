@@ -1,0 +1,22 @@
+{
+  "summary": "Created smoke/pnd20-1.md with the single required line, committed as one commit, pushed bookmark legion/SPND20-1, opened PR #69 with Dispatch: SPND20-1.",
+  "filesChanged": [
+    "smoke/pnd20-1.md"
+  ],
+  "pr": "https://github.com/sjawhar/legion-smoke/pull/69",
+  "headSha": "612136deb041ce2f8b4347d0911788dc4dcfabda",
+  "proof": [
+    {
+      "criterion": "cat smoke/pnd20-1.md on the PR branch prints exactly: kind smoke pnd20 1 2026-09-17T14:38:19Z",
+      "surface": "Sandbox repo PR branch legion/SPND20-1 in shared jj workspace",
+      "command": "cd -- \"$LEGION_WORKSPACE\" && cat smoke/pnd20-1.md",
+      "observed": "kind smoke pnd20 1 2026-09-17T14:38:19Z (40 bytes: 39-char line + one trailing newline)",
+      "headSha": "612136deb041ce2f8b4347d0911788dc4dcfabda",
+      "negativeControl": "cat smoke/absent.md -> cat: smoke/absent.md: No such file or directory, exit 1"
+    }
+  ],
+  "deviations": [],
+  "schemaVersion": 1,
+  "phase": "implement",
+  "completed": "2026-09-17T14:41:45.377Z"
+}
