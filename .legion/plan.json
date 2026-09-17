@@ -1,0 +1,36 @@
+{
+  "summary": "Single-commit change: create smoke/pnd20-1.md containing exactly one line, overwriting any existing file. No other file changes; no rebases unless GitHub reports a conflict.",
+  "targetFile": "smoke/pnd20-1.md",
+  "fileContent": "kind smoke pnd20 1 2026-09-17T14:38:19Z",
+  "contentNote": "Exactly one line, single trailing newline. No other files touched.",
+  "acceptanceCriteria": [
+    {
+      "criterion": "cat smoke/pnd20-1.md on the PR branch prints exactly: kind smoke pnd20 1 2026-09-17T14:38:19Z",
+      "surface": "Sandbox repository PR branch (legion/SPND20-1) checked out in the shared jj workspace",
+      "command": "cd -- \"$LEGION_WORKSPACE\" && cat smoke/pnd20-1.md",
+      "expected": "kind smoke pnd20 1 2026-09-17T14:38:19Z",
+      "negativeControl": "cat a nonexistent path (e.g. smoke/absent.md) fails with No such file or directory; or grep the file for a wrong timestamp yields no match"
+    }
+  ],
+  "implementerNextStep": "Overwrite smoke/pnd20-1.md so its sole line is exactly kind smoke pnd20 1 2026-09-17T14:38:19Z (single trailing newline), then verify with cat. Describe the working copy with jj describe (no plan/spec file in the commit), set bookmark legion/SPND20-1, jj git push --bookmark legion/SPND20-1, and open the PR with legion gh -- pr create whose body contains the line Dispatch: SPND20-1. Prove the acceptance command on the pushed branch as the E2E (implementer) line.",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: drives the file write, single-commit jj describe/bookmark/push, PR open, and the E2E (implementer) proof on the sandbox PR branch."
+    ],
+    "test": [
+      "legion-worker: re-runs cat smoke/pnd20-1.md on the PR head to verify byte-exact content and records the E2E (tester) verdict; no unit surface exists or is warranted for a one-line file."
+    ],
+    "review": [
+      "legion-worker: confirms the diff touches only smoke/pnd20-1.md, the line is byte-exact, and the CI/E2E facts hold; docs-only PR so no thermo pass."
+    ]
+  },
+  "constraints": [
+    "Exactly one new/overwritten file: smoke/pnd20-1.md.",
+    "No plan or spec file committed to the repository.",
+    "No rebases unless GitHub reports a conflict.",
+    "Design gate off; Dispatch is scratch."
+  ],
+  "schemaVersion": 1,
+  "phase": "plan",
+  "completed": "2026-09-17T14:40:19.085Z"
+}
