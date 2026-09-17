@@ -1,0 +1,40 @@
+{
+  "summary": "Add one new file smoke/pnd25-1.md whose only line is exactly `kind smoke pnd25 1 2026-09-17T17:13:09Z`. No other repository change; one commit.",
+  "acceptanceCriteria": [
+    {
+      "criterion": "On the PR branch, `cat smoke/pnd25-1.md` prints exactly the single line `kind smoke pnd25 1 2026-09-17T17:13:09Z` (no leading/trailing blank line, no extra content).",
+      "surface": "sandbox git/jj working copy on the issue branch legion/SPND25-1 in $LEGION_WORKSPACE",
+      "command": "cd -- \"$LEGION_WORKSPACE\" && cat smoke/pnd25-1.md",
+      "negativeControl": "cat a nonexistent path (e.g. smoke/pnd25-2.md) → No such file or directory; or a diff showing any second line fails the exact-content check"
+    }
+  ],
+  "implementation": {
+    "files": [
+      {
+        "path": "smoke/pnd25-1.md",
+        "action": "create",
+        "content": "single line exactly: kind smoke pnd25 1 2026-09-17T17:13:09Z (terminating newline permitted; no second content line)"
+      }
+    ],
+    "commits": 1,
+    "commitMessage": "smoke: SPND25-1 pnd25 probe",
+    "ordering": "Create the file, verify content, single implementation commit, set bookmark legion/SPND25-1, push, open PR with body line `Dispatch: SPND25-1`.",
+    "constraints": "Throwaway kind smoke sandbox: change only smoke/pnd25-1.md, exactly one commit, no rebases unless GitHub reports a conflict. Design gate off; do not touch any other file."
+  },
+  "requiredSkills": {
+    "implement": [
+      "legion-worker — booted implementer creates the single file, makes one commit, pushes bookmark legion/SPND25-1, opens the PR, and records the E2E proof (the cat command) per worker push/PR discipline."
+    ],
+    "test": [
+      "legion-worker — docs-only single-file change; tester verifies the implementer proof by re-running `cat smoke/pnd25-1.md` on the branch and confirms the exact single line. No unit suite exists or is warranted."
+    ],
+    "review": [
+      "legion-worker — reviewer verifies CI/threads/E2E on GitHub; docs-only PR so no thermo pass; confirm only smoke/pnd25-1.md changed and content is exact."
+    ]
+  },
+  "testStrategy": "No automated tests: docs-only, single-line file. Proof is the acceptance command `cat smoke/pnd25-1.md` on the PR branch plus a negative control (missing-file read). No project-wide suite, lint, or formatter runs.",
+  "risks": "Only real risk is content drift (extra whitespace/second line or wrong timestamp). Verify byte-exact single line before commit.",
+  "schemaVersion": 1,
+  "phase": "plan",
+  "completed": "2026-09-17T17:15:34.304Z"
+}
