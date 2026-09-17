@@ -1,0 +1,24 @@
+{
+  "issue": "SPND22-1",
+  "summary": "Added smoke/pnd22-1.md containing exactly the single line kind smoke pnd22 1 2026-09-17T16:00:08Z with a trailing newline; no other repository change.",
+  "filesChanged": [
+    "smoke/pnd22-1.md"
+  ],
+  "acceptanceCriteria": [
+    "smoke/pnd22-1.md exists on the PR branch and contains exactly the single line kind smoke pnd22 1 2026-09-17T16:00:08Z."
+  ],
+  "proof": [
+    {
+      "criterion": "smoke/pnd22-1.md exists on the PR branch and contains exactly the single line kind smoke pnd22 1 2026-09-17T16:00:08Z.",
+      "surface": "legion/SPND22-1 branch checkout in $LEGION_WORKSPACE",
+      "command": "cd -- \"$LEGION_WORKSPACE\" && cat smoke/pnd22-1.md",
+      "observed": "kind smoke pnd22 1 2026-09-17T16:00:08Z (40 bytes = 39-char line + trailing newline); jj status shows only A smoke/pnd22-1.md",
+      "headSha": "fd74febf",
+      "negativeControl": "String-equality test of the file content against wrong string kind smoke pnd22 1 WRONG returned mismatch (rejected), confirming the exact-match check discriminates."
+    }
+  ],
+  "deviations": [],
+  "schemaVersion": 1,
+  "phase": "implement",
+  "completed": "2026-09-17T16:05:07.345Z"
+}
