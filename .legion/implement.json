@@ -1,0 +1,24 @@
+{
+  "issue": "SPND15-1",
+  "summary": "Created smoke/pnd15-1.md with the exact single line; no other file changed.",
+  "prNumber": 64,
+  "prUrl": "https://github.com/sjawhar/legion-smoke/pull/64",
+  "headSha": "3167c52b7499dbe6b08a758e06874564672bbf8d",
+  "filesChanged": [
+    "smoke/pnd15-1.md"
+  ],
+  "proof": [
+    {
+      "criterion": "smoke/pnd15-1.md exists and its only content is the line: kind smoke pnd15 1 2026-09-17T11:49:52Z",
+      "surface": "local shell in the issue workspace (branch code head 3167c52b7499dbe6b08a758e06874564672bbf8d)",
+      "command": "cd -- \"$LEGION_WORKSPACE\" && cat smoke/pnd15-1.md",
+      "observed": "prints exactly: kind smoke pnd15 1 2026-09-17T11:49:52Z",
+      "headSha": "3167c52b7499dbe6b08a758e06874564672bbf8d",
+      "negativeControl": "cat smoke/pnd15-2.md (sibling fixture deliberately never created) -> cat: smoke/pnd15-2.md: No such file or directory"
+    }
+  ],
+  "diffCheck": "jj diff --from main@origin --to fixture-commit --summary shows only: A smoke/pnd15-1.md",
+  "schemaVersion": 1,
+  "phase": "implement",
+  "completed": "2026-09-17T11:55:22.610Z"
+}
