@@ -1,0 +1,38 @@
+{
+  "summary": "Add smoke/pnd35-1.md containing exactly one line; no other repository change.",
+  "targetFile": "smoke/pnd35-1.md",
+  "exactContent": "kind smoke pnd35 1 2026-09-17T22:27:45Z",
+  "steps": [
+    "If smoke/pnd35-1.md exists, overwrite it; otherwise create it.",
+    "Write exactly one line `kind smoke pnd35 1 2026-09-17T22:27:45Z` with trailing newline.",
+    "One implementation commit, push bookmark legion/SPND35-1, open PR."
+  ],
+  "acceptanceCriteria": [
+    {
+      "criterion": "smoke/pnd35-1.md contains exactly the single line `kind smoke pnd35 1 2026-09-17T22:27:45Z` and nothing else.",
+      "surface": "The file in the pushed issue branch / PR diff in sjawhar/legion-smoke.",
+      "command": "cd -- \"$LEGION_WORKSPACE\" && [ \"$(cat smoke/pnd35-1.md)\" = 'kind smoke pnd35 1 2026-09-17T22:27:45Z' ] && [ $(wc -l < smoke/pnd35-1.md) -eq 1 ]",
+      "negativeControl": "Any deviating byte (extra line, wrong timestamp) fails the string and line-count comparison."
+    },
+    {
+      "criterion": "No repository change other than smoke/pnd35-1.md (.legion/ excepted).",
+      "surface": "PR diff --summary in sjawhar/legion-smoke.",
+      "command": "cd -- \"$LEGION_WORKSPACE\" && jj -R \"$LEGION_WORKSPACE\" diff --from main@origin --to @ --summary '~.legion'"
+    }
+  ],
+  "requiredSkills": {
+    "implement": [
+      "legion-worker — edit the one named file, single commit, push bookmark legion/SPND35-1, open PR with 'Dispatch: SPND35-1'; skip formatters/linters/suites."
+    ],
+    "test": [
+      "legion-worker — verify file contents byte-exact and diff touches only smoke/pnd35-1.md; re-run implementer's comparison as E2E proof."
+    ],
+    "review": [
+      "legion-worker — confirm PR diff is the single expected line on one file and CI green; docs-only, no thermo pass."
+    ]
+  },
+  "notes": "Sandbox kind-smoke (pnd35); design gate off; Dispatch unread. One file, one commit, no rebases unless GitHub reports a conflict.",
+  "schemaVersion": 1,
+  "phase": "plan",
+  "completed": "2026-09-17T22:29:43.460Z"
+}
