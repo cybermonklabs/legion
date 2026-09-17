@@ -1,0 +1,17 @@
+{
+  "summary": "Reviewed PR #63 at head 3b03685e. Content is correct: outside .legion/, only smoke/pnd14-1.md (+1) with the exact single line kind smoke pnd14 1 2026-09-17T11:30:14Z and one trailing newline (content commit a5d82be6). CI green (check, gate) at head; zero review threads; docs-only so thermo skipped. Requested changes: the PR body E2E (tester) line reads pending and the CI line reads pending; approval is refused while an E2E line is missing.",
+  "decision": "changes_requested",
+  "prNumber": 63,
+  "headSha": "3b03685edcbf72af496b4a5b7dbde27db548d5f9",
+  "reviewId": 5235077613,
+  "reviewedCommit": "3b03685edcbf72af496b4a5b7dbde27db548d5f9",
+  "thermo": "skipped: docs-only single-line file PR",
+  "findings": [
+    "Blocking: PR body E2E (tester) line is pending; must carry the tester recorded proof (surface, command, observation, head SHA, negative control, verification of implementer proof) before approval.",
+    "Non-blocking: PR body CI line reads pending; update to cite green check/gate runs at head 3b03685e."
+  ],
+  "contentVerified": "Outside .legion/, PR adds only smoke/pnd14-1.md with exact line kind smoke pnd14 1 2026-09-17T11:30:14Z; matches acceptance.",
+  "schemaVersion": 1,
+  "phase": "review",
+  "completed": "2026-09-17T11:37:09.772Z"
+}
