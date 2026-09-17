@@ -1,0 +1,52 @@
+{
+  "issue": "SPND19-1",
+  "summary": "Create one Markdown file smoke/pnd19-1.md containing exactly the single line \"kind smoke pnd19 1 2026-09-17T14:02:22Z\". Overwrite if present. No other file changes.",
+  "surfaceContext": "Sandbox smoke repo (kind pnd19 throwaway). Design gate off; Dispatch is scratch. smoke/ already holds single-line probe markdown files with no trailing newline; this follows that convention.",
+  "deliverable": {
+    "path": "smoke/pnd19-1.md",
+    "exactContent": "kind smoke pnd19 1 2026-09-17T14:02:22Z",
+    "trailingNewline": false,
+    "overwriteIfExists": true,
+    "note": "Current state: file ABSENT, smoke/ dir EXISTS. Write with: printf %s \"kind smoke pnd19 1 2026-09-17T14:02:22Z\" > smoke/pnd19-1.md"
+  },
+  "steps": [
+    "Implementer: printf %s the exact line into smoke/pnd19-1.md (no other edits).",
+    "Implementer: cat smoke/pnd19-1.md to confirm exact single line; commit; jj bookmark set legion/SPND19-1; jj git push --bookmark legion/SPND19-1; open PR with body line Dispatch: SPND19-1.",
+    "Tester: re-run cat smoke/pnd19-1.md on the PR head; confirm byte-exact single line.",
+    "Reviewer: docs-only PR, skip Thermo line; confirm diff touches only smoke/pnd19-1.md."
+  ],
+  "acceptance": [
+    {
+      "criterion": "cat smoke/pnd19-1.md shows exactly the line kind smoke pnd19 1 2026-09-17T14:02:22Z on the PR branch",
+      "surface": "Shell on the pushed legion/SPND19-1 branch head in $LEGION_WORKSPACE",
+      "command": "cd -- \"$LEGION_WORKSPACE\" && cat smoke/pnd19-1.md",
+      "expected": "kind smoke pnd19 1 2026-09-17T14:02:22Z",
+      "negativeControl": "wc -l reports 0 (no-newline single line); any second line or altered timestamp fails.",
+      "drivingSkill": "legion-worker (no repo-specific test surface; smoke probe is the surface itself)"
+    }
+  ],
+  "constraints": [
+    "Exactly one file changed: smoke/pnd19-1.md.",
+    "One commit for the implementation.",
+    "No rebases unless GitHub reports a conflict (CONFLICTING).",
+    "No plan/spec markdown committed to the PR."
+  ],
+  "requiredSkills": {
+    "implement": [
+      "legion-worker — single printf write plus the standard implementer bookmark/push/PR-open procedure; no build or app code involved."
+    ],
+    "test": [
+      "legion-worker — verification is re-running cat on the PR head for byte-exact match; no test framework applies to a one-line smoke file."
+    ],
+    "review": [
+      "legion-worker — docs-only single-file diff review; skip Thermo, confirm scope is only smoke/pnd19-1.md."
+    ]
+  },
+  "risks": [
+    "Trailing-newline or whitespace drift would alter byte content; implementer must use printf %s (no echo) and cat-verify.",
+    "Accidental edits to other smoke/ probe files would break the one-file constraint."
+  ],
+  "schemaVersion": 1,
+  "phase": "plan",
+  "completed": "2026-09-17T14:04:24.098Z"
+}
