@@ -1,0 +1,28 @@
+{
+  "summary": "Created smoke/pnd34-1.md as a single-commit docs-only change; sole line is byte-exact and diff touches only that file.",
+  "filesChanged": [
+    "smoke/pnd34-1.md"
+  ],
+  "commit": "948e666f",
+  "proof": [
+    {
+      "criterion": "AC1: smoke/pnd34-1.md sole line is exactly kind smoke pnd34 1 2026-09-17T22:11:22Z",
+      "surface": "Repository working tree at change commit 948e666f (sandbox sjawhar/legion-smoke)",
+      "command": "[ \"$(cat smoke/pnd34-1.md)\" = 'kind smoke pnd34 1 2026-09-17T22:11:22Z' ] && wc -l < smoke/pnd34-1.md; od -c smoke/pnd34-1.md",
+      "observed": "Equality check passed (LINE_OK); wc -l = 1; od -c shows 40 bytes ending in single \\n, no CRLF or trailing space",
+      "headSha": "948e666f",
+      "negativeControl": "Comparing against altered timestamp kind smoke pnd34 1 2026-09-17T22:11:23Z makes the equality test exit non-zero (NEG_CONTROL_FAILS_AS_EXPECTED)"
+    },
+    {
+      "criterion": "AC2: single commit touching only smoke/pnd34-1.md",
+      "surface": "jj diff of change commit against its parent",
+      "command": "jj -R \"$LEGION_WORKSPACE\" diff -r 948e666f --summary",
+      "observed": "Output is exactly: A smoke/pnd34-1.md (one file added, no other paths)",
+      "headSha": "948e666f",
+      "negativeControl": "Any second changed path in --summary output would fail the single-file requirement; none present"
+    }
+  ],
+  "schemaVersion": 1,
+  "phase": "implement",
+  "completed": "2026-09-17T22:16:59.053Z"
+}
