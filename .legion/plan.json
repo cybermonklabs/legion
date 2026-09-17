@@ -1,0 +1,39 @@
+{
+  "summary": "Add smoke/plnd9-1.md containing exactly one line 'kind smoke plnd9 1 2026-09-17T08:22:57Z' terminated by a single newline. Single-file docs change, one commit, no child issues.",
+  "files": [
+    {
+      "path": "smoke/plnd9-1.md",
+      "action": "create",
+      "content": "kind smoke plnd9 1 2026-09-17T08:22:57Z\n",
+      "notes": "Exactly one line plus one trailing newline; no other content, no extra blank lines."
+    }
+  ],
+  "acceptanceCriteria": [
+    {
+      "criterion": "smoke/plnd9-1.md exists with the single line 'kind smoke plnd9 1 2026-09-17T08:22:57Z' and a single trailing newline, no other content",
+      "surface": "the repository working tree in $LEGION_WORKSPACE",
+      "command": "cd -- \"$LEGION_WORKSPACE\" && printf 'kind smoke plnd9 1 2026-09-17T08:22:57Z\\n' | cmp - smoke/plnd9-1.md && wc -l smoke/plnd9-1.md",
+      "expected": "cmp reports no differences (exit 0) and wc -l prints 1"
+    }
+  ],
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: bind to LEGION_WORKSPACE, create the one file with write, verify byte-for-byte, then jj split/push the implementation commit and open the PR with the Dispatch line."
+    ],
+    "test": [
+      "legion-worker: re-run the cmp/wc verification on the pushed head as the tester E2E proof; no unit suite exists for a docs file, the working-tree check is the production-like surface."
+    ],
+    "review": [
+      "legion-worker: docs-only PR, skip the Thermo line; confirm the file byte content matches and no other file changed."
+    ]
+  },
+  "nonGoals": [
+    "No tests, scaffolding, or config changes.",
+    "No modification of any file other than smoke/plnd9-1.md.",
+    "No child issues; this is a single-issue root."
+  ],
+  "ordering": "Single commit: create smoke/plnd9-1.md, verify, push, PR.",
+  "schemaVersion": 1,
+  "phase": "plan",
+  "completed": "2026-09-17T08:25:38.026Z"
+}
