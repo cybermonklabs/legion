@@ -1,0 +1,22 @@
+{
+  "summary": "Created smoke/pnd26-1.md with exactly one line kind smoke pnd26 1 2026-09-17T18:34:51Z; single commit on legion/SPND26-1; PR #75 opened.",
+  "filesChanged": [
+    "smoke/pnd26-1.md"
+  ],
+  "prNumber": 75,
+  "prUrl": "https://github.com/sjawhar/legion-smoke/pull/75",
+  "headSha": "d25c4f95bb909e4c4b91520c07c01b4094539a7b",
+  "proof": [
+    {
+      "criterion": "smoke/pnd26-1.md contains exactly the line: kind smoke pnd26 1 2026-09-17T18:34:51Z",
+      "surface": "shell in LEGION_WORKSPACE",
+      "command": "grep -qx 'kind smoke pnd26 1 2026-09-17T18:34:51Z' smoke/pnd26-1.md && wc -l < smoke/pnd26-1.md",
+      "observed": "exact marker line present; file has exactly 1 line",
+      "headSha": "d25c4f95bb909e4c4b91520c07c01b4094539a7b",
+      "negativeControl": "grep -qx 'kind smoke pnd26 1 WRONG' smoke/pnd26-1.md returned no match (expected failure)"
+    }
+  ],
+  "schemaVersion": 1,
+  "phase": "implement",
+  "completed": "2026-09-17T18:39:57.319Z"
+}
