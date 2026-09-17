@@ -1,5 +1,5 @@
 {
-  "summary": "Created smoke/pnd14-1.md with the single line kind smoke pnd14 1 2026-09-17T11:30:14Z (single trailing newline). One commit; PR #63 opened on legion/SPND14-1.",
+  "summary": "Created smoke/pnd14-1.md with the single line kind smoke pnd14 1 2026-09-17T11:30:14Z (single trailing newline). One content commit a5d82be6; PR #63. PR body updated to carry the tester E2E (tester) PASS line (test.json verdict verified) and the current green CI (ci run 35216311571, fail-on-demand run 35216311590; check, gate all success).",
   "filesChanged": [
     "smoke/pnd14-1.md"
   ],
@@ -18,5 +18,5 @@
   ],
   "schemaVersion": 1,
   "phase": "implement",
-  "completed": "2026-09-17T11:33:17.405Z"
+  "completed": "2026-09-17T11:38:46.635Z"
 }
