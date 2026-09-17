@@ -1,0 +1,23 @@
+{
+  "summary": "Added smoke/pnd21-1.md with the single line kind smoke pnd21 1 2026-09-17T15:12:00Z. Single commit 8d7869add4f49b81a6fb60c3b6a034a821eae756, sole file changed, PR #70 opened with body line Dispatch: SPND21-1.",
+  "filesChanged": [
+    "smoke/pnd21-1.md"
+  ],
+  "prNumber": 70,
+  "prUrl": "https://github.com/sjawhar/legion-smoke/pull/70",
+  "headSha": "8d7869add4f49b81a6fb60c3b6a034a821eae756",
+  "bookmark": "legion/SPND21-1",
+  "proof": [
+    {
+      "criterion": "cat smoke/pnd21-1.md shows exactly the line kind smoke pnd21 1 2026-09-17T15:12:00Z on the PR branch",
+      "surface": "Shared jj workspace checkout of the legion/SPND21-1 PR branch (sandbox repo branch a human reviews)",
+      "command": "cd -- \"$LEGION_WORKSPACE\" && cat smoke/pnd21-1.md && wc -l < smoke/pnd21-1.md",
+      "observed": "single line kind smoke pnd21 1 2026-09-17T15:12:00Z with lines=1",
+      "headSha": "8d7869add4f49b81a6fb60c3b6a034a821eae756",
+      "negativeControl": "Two-line variant kind smoke pnd21 1 2026-09-17T15:12:00Z\\nEXTRA\\n yields wc -l == 2, REJECTED since the criterion requires exactly one line"
+    }
+  ],
+  "schemaVersion": 1,
+  "phase": "implement",
+  "completed": "2026-09-17T15:16:40.423Z"
+}
