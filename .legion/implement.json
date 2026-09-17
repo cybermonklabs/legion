@@ -1,0 +1,19 @@
+{
+  "summary": "Created smoke/pnd24-1.md containing exactly the required single line; single implementation commit on legion/SPND24-1.",
+  "filesChanged": [
+    "smoke/pnd24-1.md"
+  ],
+  "proof": [
+    {
+      "criterion": "smoke/pnd24-1.md exists with exactly the required single line",
+      "surface": "shell in LEGION_WORKSPACE",
+      "command": "cat smoke/pnd24-1.md",
+      "observed": "single line kind smoke pnd24 1 2026-09-17T16:58:48Z; od -c and wc -l confirm exactly one line ending in one newline (40 bytes, no extra lines)",
+      "headSha": "d6ee8c6b",
+      "negativeControl": "appending any second line makes wc -l report 2, failing the exact-single-line criterion; current file reports wc -l = 1"
+    }
+  ],
+  "schemaVersion": 1,
+  "phase": "implement",
+  "completed": "2026-09-17T17:02:05.479Z"
+}
