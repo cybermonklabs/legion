@@ -1,0 +1,49 @@
+{
+  "issue": "SPND28-1",
+  "summary": "Add exactly one new file smoke/pnd28-1.md containing a single line, overwriting if present. No other change, one commit.",
+  "scope": {
+    "file": "smoke/pnd28-1.md",
+    "content": "kind smoke pnd28 1 2026-09-17T19:07:00Z",
+    "constraints": [
+      "exactly one file changed",
+      "sole line is the content string with a trailing newline",
+      "one commit",
+      "no other repo changes",
+      "no plan/spec file committed to the repo"
+    ]
+  },
+  "acceptanceCriteria": [
+    {
+      "id": "AC1",
+      "statement": "cat smoke/pnd28-1.md shows exactly the line kind smoke pnd28 1 2026-09-17T19:07:00Z on the PR branch",
+      "surface": "sandbox git working tree on the pushed legion/SPND28-1 branch",
+      "command": "cd -- \"$LEGION_WORKSPACE\" && cat smoke/pnd28-1.md",
+      "expected": "single line: kind smoke pnd28 1 2026-09-17T19:07:00Z",
+      "negativeControl": "grep -c . smoke/pnd28-1.md must equal 1 (no extra lines)"
+    }
+  ],
+  "implementationSteps": [
+    "Write smoke/pnd28-1.md with the sole line kind smoke pnd28 1 2026-09-17T19:07:00Z (overwrite if it exists).",
+    "Verify: cat smoke/pnd28-1.md and confirm exactly one line matching the required content.",
+    "jj -R \"$LEGION_WORKSPACE\" split the single file into one commit; do not touch any other path.",
+    "Set bookmark legion/SPND28-1 and push; open PR with body line Dispatch: SPND28-1."
+  ],
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: single-file write, one-commit split, bookmark push, and PR open procedure for the implementer."
+    ],
+    "test": [
+      "legion-worker: tester re-runs cat smoke/pnd28-1.md on the pushed branch and confirms the single-line content and no extra lines."
+    ],
+    "review": [
+      "legion-worker: reviewer confirms the diff touches only smoke/pnd28-1.md, one commit, and the exact line."
+    ]
+  },
+  "risks": [
+    "Trailing-newline or extra-line drift would fail AC1; the negative control grep -c . guards it.",
+    "Any second changed file breaks the one-file constraint."
+  ],
+  "schemaVersion": 1,
+  "phase": "plan",
+  "completed": "2026-09-17T19:09:06.667Z"
+}
