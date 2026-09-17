@@ -1,0 +1,79 @@
+{
+  "summary": "SPND34-1 is a docs-only smoke change in the sjawhar/legion-smoke sandbox: create smoke/pnd34-1.md whose sole line is exactly 'kind smoke pnd34 1 2026-09-17T22:11:22Z'. One commit, no other file changes, no rebases unless GitHub reports a conflict. Design gate off; Dispatch is scratch.",
+  "scope": {
+    "onlyFile": "smoke/pnd34-1.md",
+    "fileContent": "kind smoke pnd34 1 2026-09-17T22:11:22Z",
+    "notes": "Single line terminated by one trailing newline, matching existing smoke/*.md convention. No other files change."
+  },
+  "acceptanceCriteria": [
+    {
+      "id": "AC1",
+      "criterion": "smoke/pnd34-1.md exists and its only line is exactly 'kind smoke pnd34 1 2026-09-17T22:11:22Z'.",
+      "surface": "Repository working tree at the pushed PR head (sandbox repo sjawhar/legion-smoke).",
+      "proofCommand": "cd -- \"$LEGION_WORKSPACE\" && [ \"$(cat smoke/pnd34-1.md)\" = 'kind smoke pnd34 1 2026-09-17T22:11:22Z' ] && wc -l < smoke/pnd34-1.md",
+      "negativeControl": "Compare against a wrong string (altered timestamp) — the equality test exits non-zero.",
+      "drivingSkill": "legion-worker"
+    },
+    {
+      "id": "AC2",
+      "criterion": "The change is a single commit touching only smoke/pnd34-1.md.",
+      "surface": "jj/git diff of the PR against main.",
+      "proofCommand": "cd -- \"$LEGION_WORKSPACE\" && jj -R \"$LEGION_WORKSPACE\" diff --from main@origin --to @ --summary",
+      "negativeControl": "Any second changed path in --summary output fails the requirement.",
+      "drivingSkill": "legion-worker"
+    },
+    {
+      "id": "AC3",
+      "criterion": "CI is green on the PR head.",
+      "surface": "GitHub Actions 'ci' workflow, job 'check' (.github/workflows/ci.yml: sleep 20 && exit 0), on push/pull_request.",
+      "proofCommand": "legion gh -- run list --workflow ci.yml --branch legion/SPND34-1 --json databaseId,headSha,conclusion",
+      "negativeControl": "conclusion must be 'success' at the PR head SHA.",
+      "drivingSkill": "legion-worker"
+    }
+  ],
+  "implementationPlan": {
+    "steps": [
+      "Bind to $LEGION_WORKSPACE.",
+      "Create smoke/pnd34-1.md containing exactly 'kind smoke pnd34 1 2026-09-17T22:11:22Z' with one trailing newline.",
+      "Verify content and single-file diff (AC1, AC2) locally.",
+      "Split the file into its own commit, set bookmark legion/SPND34-1, push, open PR with body line 'Dispatch: SPND34-1'.",
+      "Record E2E (implementer) proof (AC1/AC2 output + head SHA + negative control) in .legion/implement.json and PR body."
+    ],
+    "files": [
+      "smoke/pnd34-1.md"
+    ],
+    "ordering": "Single file, single commit. No rebases unless GitHub reports CONFLICTING."
+  },
+  "testPlan": {
+    "steps": [
+      "Re-run implementer's AC1 byte-exact check and AC2 single-file diff at PR head; record verdict in .legion/test.json implementerProof.",
+      "Confirm CI 'check' conclusion 'success' at head SHA (AC3).",
+      "Add E2E (tester) line with re-run output and one negative control (wrong-string comparison)."
+    ]
+  },
+  "reviewPlan": {
+    "steps": [
+      "Verify CI, Threads, both E2E lines against GitHub directly.",
+      "Confirm diff touches only smoke/pnd34-1.md and the line is byte-exact.",
+      "Docs-only PR: skip Thermo. Approve only the head carrying no .legion/."
+    ]
+  },
+  "requiredSkills": {
+    "implement": [
+      "legion-worker — governs the shared jj workspace, single-commit split, bookmark/push, PR body, and the E2E proof gate for this one-file doc change; no code-domain skill applies."
+    ],
+    "test": [
+      "legion-worker — defines the tester's duty to verify the implementer's proof and add an independent E2E line; the byte-exact line check plus green CI is the whole verification for a one-line doc."
+    ],
+    "review": [
+      "legion-worker — sets docs-only review discipline (skip Thermo, individual thread disposition, approve only the .legion/-free head) for this sandbox change."
+    ]
+  },
+  "risks": [
+    "Byte-exactness: a stray trailing space, CRLF, or altered timestamp fails AC1 — write exactly and prove with the equality check.",
+    "Accidental extra changes would break single-commit/single-file — confirm --summary shows only smoke/pnd34-1.md."
+  ],
+  "schemaVersion": 1,
+  "phase": "plan",
+  "completed": "2026-09-17T22:15:30.012Z"
+}
