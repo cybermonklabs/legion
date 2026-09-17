@@ -1,0 +1,22 @@
+{
+  "summary": "Added smoke/pnd17-1.md with the single exact line as one commit and pushed legion/SPND17-1. Verified byte-exact on the pushed head with a negative control.",
+  "filesChanged": [
+    "smoke/pnd17-1.md"
+  ],
+  "commit": "741f59551a71",
+  "proof": [
+    {
+      "criterion": "smoke/pnd17-1.md on the pushed branch is exactly `kind smoke pnd17 1 2026-09-17T12:40:54Z` with only a trailing newline (40 bytes, no extra lines).",
+      "surface": "Pushed sandbox branch legion/SPND17-1 on github.com/sjawhar/legion-smoke (jj file show at the pushed commit that carries the file)",
+      "command": "jj -R \"$LEGION_WORKSPACE\" file show -r 741f5955 smoke/pnd17-1.md > /tmp/head2.txt; printf %s\\\\n kind smoke pnd17 1 2026-09-17T12:40:54Z > /tmp/expected.txt; cmp /tmp/expected.txt /tmp/head2.txt",
+      "observed": "cmp exit 0; file is 40 bytes = the exact line plus one trailing newline (od -c confirms no extra bytes).",
+      "headSha": "741f59551a71ce",
+      "negativeControl": "cmp of a variant with timestamp Z=55 (kind smoke pnd17 1 2026-09-17T12:40:55Z) against the pushed file -> differ at char 38, cmp exit 1."
+    }
+  ],
+  "deviations": [],
+  "openQuestions": [],
+  "schemaVersion": 1,
+  "phase": "implement",
+  "completed": "2026-09-17T12:47:57.275Z"
+}
