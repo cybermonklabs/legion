@@ -1,0 +1,23 @@
+{
+  "summary": "Added smoke/pnd35-1.md with the single required line in one implementation commit; branch legion/SPND35-1 pushed and PR opened. Acceptance criterion 1 proven byte-exact at branch head with a negative control.",
+  "filesChanged": [
+    "smoke/pnd35-1.md"
+  ],
+  "commits": [
+    "b0c23a7dac8cb12d1457b930a03facbeb22a40a0"
+  ],
+  "proof": [
+    {
+      "criterion": "smoke/pnd35-1.md contains exactly the single line `kind smoke pnd35 1 2026-09-17T22:27:45Z` and nothing else.",
+      "surface": "smoke/pnd35-1.md on branch head legion/SPND35-1 in sjawhar/legion-smoke",
+      "command": "cat smoke/pnd35-1.md; [ \"$(cat smoke/pnd35-1.md)\" = 'kind smoke pnd35 1 2026-09-17T22:27:45Z' ] && [ \"$(wc -l < smoke/pnd35-1.md)\" -eq 1 ]",
+      "observed": "File contains exactly the line \"kind smoke pnd35 1 2026-09-17T22:27:45Z\" with a trailing newline; byte-exact string and line-count check POS_PASS; jj diff --summary shows only A smoke/pnd35-1.md",
+      "headSha": "b114a3df412f8041fb2216bbfd65badea2c711b9",
+      "negativeControl": "Comparing the file against 'kind smoke pnd35 1 WRONG' fails (NEG_CORRECTLY_FAILED), confirming the check rejects any deviating byte."
+    }
+  ],
+  "deviations": [],
+  "schemaVersion": 1,
+  "phase": "implement",
+  "completed": "2026-09-17T22:31:52.558Z"
+}
