@@ -1,0 +1,21 @@
+{
+  "summary": "Added smoke/pnd23-1.md with exactly one line kind smoke pnd23 1 2026-09-17T16:32:37Z plus a single trailing newline. One commit touching only that path; branch legion/SPND23-1 pushed and PR opened carrying Dispatch: SPND23-1.",
+  "filesChanged": [
+    "smoke/pnd23-1.md"
+  ],
+  "proof": [
+    {
+      "criterion": "cat smoke/pnd23-1.md shows exactly the line: kind smoke pnd23 1 2026-09-17T16:32:37Z",
+      "surface": "smoke/pnd23-1.md in the SPND23-1 issue workspace (the pnd23 kind-smoke rig real artifact)",
+      "command": "printf 'kind smoke pnd23 1 2026-09-17T16:32:37Z\\n' | cmp - smoke/pnd23-1.md",
+      "observed": "cmp exit 0 (byte-exact match; file is 40 bytes: one line plus one trailing newline, nothing else)",
+      "headSha": "a6985f4942e890fa2cdd3def8087156645246107",
+      "negativeControl": "printf 'kind smoke pnd23 1 WRONG\\n' | cmp - smoke/pnd23-1.md reported differ: char 20, line 1 and exit 1"
+    }
+  ],
+  "deviations": [],
+  "openQuestions": [],
+  "schemaVersion": 1,
+  "phase": "implement",
+  "completed": "2026-09-17T16:37:23.990Z"
+}
