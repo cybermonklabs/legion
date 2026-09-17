@@ -1,0 +1,52 @@
+{
+  "taskCount": 1,
+  "independentTasks": 1,
+  "workflowRecommendation": "Single implementer creates one file in one commit; tester verifies byte-exact content; reviewer confirms docs-only single-file diff. No stacking, no rebase unless GitHub reports a conflict (deployment rig).",
+  "routingHints": {
+    "skipArchitect": false,
+    "complexity": "trivial",
+    "estimatedImplementers": 1
+  },
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: docs-only single-file smoke add; commit only smoke/pnd23-1.md, push branch legion/SPND23-1, open PR with 'Dispatch: SPND23-1'"
+    ],
+    "test": [
+      "legion-worker: re-run the implementer's byte-exact cat/diff on smoke/pnd23-1.md; no unit suite exists for a smoke marker file"
+    ],
+    "review": [
+      "legion-worker: verify the diff is exactly one added file with one line and nothing else changed; docs-only PR so no thermo pass"
+    ]
+  },
+  "summary": "Add smoke/pnd23-1.md containing exactly one line 'kind smoke pnd23 1 2026-09-17T16:32:37Z'. One new file, one commit, no other change per the pnd23 deployment rig.",
+  "tasks": [
+    {
+      "id": "T1",
+      "title": "Create smoke/pnd23-1.md",
+      "detail": "Write the file at $LEGION_WORKSPACE/smoke/pnd23-1.md with exactly one line: 'kind smoke pnd23 1 2026-09-17T16:32:37Z' followed by a single trailing newline and nothing else. Do not touch any other file. jj split so the implementation commit contains only smoke/pnd23-1.md.",
+      "files": [
+        "smoke/pnd23-1.md"
+      ]
+    }
+  ],
+  "acceptanceCriteria": [
+    {
+      "criterion": "cat smoke/pnd23-1.md shows exactly the line 'kind smoke pnd23 1 2026-09-17T16:32:37Z'",
+      "surface": "the smoke/pnd23-1.md file in the SPND23-1 issue workspace (the pnd23 kind-smoke rig's real artifact)",
+      "command": "cd -- \"$LEGION_WORKSPACE\" && cat smoke/pnd23-1.md",
+      "expectedObserved": "single line: kind smoke pnd23 1 2026-09-17T16:32:37Z",
+      "byteExactCheck": "printf 'kind smoke pnd23 1 2026-09-17T16:32:37Z\\n' | cmp - smoke/pnd23-1.md  (exit 0)",
+      "negativeControl": "cmp against a wrong marker (e.g. printf 'kind smoke pnd23 1 WRONG\\n' | cmp - smoke/pnd23-1.md) must report a difference and exit non-zero",
+      "drivingSkill": "legion-worker"
+    }
+  ],
+  "integration": "Implementer pushes bookmark legion/SPND23-1 and opens the PR (body must carry 'Dispatch: SPND23-1'). Docs-only single-file diff; no rebase unless GitHub reports CONFLICTING; human merges (no merge-queue role in this project).",
+  "concerns": [
+    "Content must be byte-exact: literal string 'kind smoke pnd23 1 2026-09-17T16:32:37Z' with one trailing newline, no extra lines, no leading/trailing spaces.",
+    "Deployment rig forbids touching any file other than smoke/pnd23-1.md; keep the implementation commit to that single path via jj split.",
+    "smoke/pnd23-1.md is currently absent; this is a pure add, no conflict expected."
+  ],
+  "schemaVersion": 1,
+  "phase": "plan",
+  "completed": "2026-09-17T16:35:24.175Z"
+}
