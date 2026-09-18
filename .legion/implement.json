@@ -1,0 +1,20 @@
+{
+  "filesChanged": [
+    "smoke/l194fix-1.md"
+  ],
+  "proof": [
+    {
+      "criterion": "cat smoke/l194fix-1.md prints exactly `kind smoke l194fix 1 2026-09-18T03:13:27Z` and nothing else",
+      "surface": "shell in $LEGION_WORKSPACE against the checked-in file (throwaway kind smoke sandbox repo; no build/test harness exists)",
+      "command": "cd -- \"$LEGION_WORKSPACE\" && cat smoke/l194fix-1.md && grep -c . smoke/l194fix-1.md",
+      "observed": "prints `kind smoke l194fix 1 2026-09-18T03:13:27Z`; grep -c . = 1 (exactly one non-empty line, no extra content)",
+      "headSha": "431488b7a1ff1a5a7dcfee0b512d99e4838a7af9",
+      "negativeControl": "grep -c 'WRONG-CONTENT' smoke/l194fix-1.md -> 0 (exit 1); file has no other line, so a mismatched query fails to match"
+    }
+  ],
+  "deviations": [],
+  "openQuestions": [],
+  "schemaVersion": 1,
+  "phase": "implement",
+  "completed": "2026-09-18T03:19:08.218Z"
+}
