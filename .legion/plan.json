@@ -1,0 +1,156 @@
+{
+  "issue": "SL200C-1",
+  "title": "Kind smoke l200c: runtime change 1",
+  "specVersion": 2,
+  "summary": "Add smoke/l200c-1.ts exporting kindSmokeValue() that returns the exact string \"kind smoke l200c 1\", and smoke/l200c-1.test.ts (bun:test) that imports kindSmokeValue and asserts that exact return value. One code commit. Nothing else in the repository changes.",
+  "scope": {
+    "files": [
+      {
+        "path": "smoke/l200c-1.ts",
+        "action": "create",
+        "exportedFunction": "kindSmokeValue",
+        "signature": "export function kindSmokeValue(): string",
+        "returns": "kind smoke l200c 1",
+        "content": "export function kindSmokeValue(): string {\n  return \"kind smoke l200c 1\";\n}\n"
+      },
+      {
+        "path": "smoke/l200c-1.test.ts",
+        "action": "create",
+        "runner": "bun:test",
+        "content": "import { expect, test } from \"bun:test\";\nimport { kindSmokeValue } from \"./l200c-1\";\n\ntest(\"kindSmokeValue returns the l200c smoke string\", () => {\n  expect(kindSmokeValue()).toBe(\"kind smoke l200c 1\");\n});\n"
+      }
+    ],
+    "nonGoals": [
+      "No package.json, tsconfig, bunfig.toml, README, or .github/workflows edit",
+      "No formatter, linter, or project-wide test run (there is none configured)",
+      "No rebase unless GitHub reports the pull request CONFLICTING",
+      "No plan or spec markdown committed to the repository"
+    ],
+    "preconditions": {
+      "neitherFileExists": "verified 2026-09-18: glob **/*.ts under the workspace returned nothing; the spec's Errors row (either file already exists -> replace only the generated files) does not trigger",
+      "bun": "bun 1.3.14 at /usr/local/bin/bun on the worker host; Bun runs .ts test files with zero configuration (probed in a temp dir: pass exit 0, wrong-string negative exit 1)",
+      "bookmark": "legion/SL200C-1 already exists locally on the working copy (jj log); implementer pushes it with --bookmark, no new bookmark needed"
+    }
+  },
+  "acceptance": [
+    {
+      "id": 1,
+      "text": "The module and test exist on the pull request branch, and the test proves kindSmokeValue() returns the required value.",
+      "surface": "Bun's built-in test runner, run from the workspace root on the pull request branch head (production-like: the repository's only runtime is Bun, and the change has no deployed surface beyond its own test)",
+      "skill": "legion-worker (proof format: command, observation, head SHA, negative control)",
+      "command": "cd -- \"$LEGION_WORKSPACE\" && bun test smoke/l200c-1.test.ts",
+      "expected": "exit 0; stderr contains `(pass) kindSmokeValue returns the l200c smoke string` and `1 pass` / `0 fail` / `Ran 1 test across 1 file`",
+      "negativeControl": {
+        "command": "N=$(mktemp -d) && printf 'import { expect, test } from \"bun:test\";\\nimport { kindSmokeValue } from \"%s/smoke/l200c-1\";\\ntest(\"negative control: wrong expected string\", () => {\\n  expect(kindSmokeValue()).toBe(\"kind smoke l200c 2\");\\n});\\n' \"$LEGION_WORKSPACE\" > \"$N/neg.test.ts\" && (cd \"$N\" && bun test neg.test.ts); echo \"exit=$?\"; rm -rf \"$N\"",
+        "expected": "exit 1; stderr shows `Expected: \"kind smoke l200c 2\"` and `Received: \"kind smoke l200c 1\"` and `1 fail`",
+        "why": "proves the assertion is load-bearing against the real module; runs from a temp directory so jj never snapshots a stray file into the workspace"
+      },
+      "ciIsNotTheProof": "Neither workflow runs bun test: .github/workflows/ci.yml job `check` is `sleep 20 && exit 0` (line 7); .github/workflows/fail-on-demand.yml job `gate` exits 1 only if a `.fail-me` file exists (line 8). CI green is a bare gate; the acceptance proof is the local bun test run at the PR head SHA."
+    }
+  ],
+  "proofCommand": "bun test smoke/l200c-1.test.ts",
+  "implement": {
+    "ordering": [
+      "1. cd -- \"$LEGION_WORKSPACE\" && jj -R \"$LEGION_WORKSPACE\" status; read .legion/plan.json (this file).",
+      "2. Write smoke/l200c-1.ts and smoke/l200c-1.test.ts with the exact contents under scope.files (write tool, absolute paths under $LEGION_WORKSPACE).",
+      "3. Proof: run acceptance[0].command; record exit code and the pass line. Run acceptance[0].negativeControl.command; record exit 1 and the Expected/Received lines.",
+      "4. jj -R \"$LEGION_WORKSPACE\" status must list exactly the two new files (plus nothing else). One code commit: jj -R \"$LEGION_WORKSPACE\" split -m \"smoke: add l200c-1 module and test (SL200C-1)\" smoke/l200c-1.ts smoke/l200c-1.test.ts",
+      "5. Read the code commit SHA: jj -R \"$LEGION_WORKSPACE\" log -r @- --no-graph -T commit_id. Re-run the proof command once more at that head if any file changed after step 3 (it should not have).",
+      "6. legion handoff write --phase implement --data '{...}' with the required proof array (surface, command, observed, headSha, negativeControl) plus commitSha and files; test -f .legion/implement.json; jj -R \"$LEGION_WORKSPACE\" split -m \"implement: record handoff\" .legion/implement.json",
+      "7. Identity check before push: jj -R \"$LEGION_WORKSPACE\" log -r 'main@origin..@' -T 'author.email() ++ \" | \" ++ committer.email() ++ \" \" ++ description.first_line() ++ \"\\n\"' shows the implementer App on the two commits you made (the plan handoff commit is legitimately the review App).",
+      "8. Ancestry check: jj -R \"$LEGION_WORKSPACE\" log -r 'ancestors(@, 5)' shows only main plus this issue's commits (plan handoff, code, implement handoff).",
+      "9. Push: jj -R \"$LEGION_WORKSPACE\" bookmark set legion/SL200C-1 && jj -R \"$LEGION_WORKSPACE\" git push --bookmark legion/SL200C-1",
+      "10. Open the PR with legion gh -- pr create --repo sjawhar/legion-smoke --base main --head legion/SL200C-1 --title 'smoke: add l200c-1 module and test (SL200C-1)' and a body in the READY format from skill://legion-worker containing the line `Dispatch: SL200C-1`, the CI line naming the two real workflows (`ci` job `check`, `fail-on-demand` job `gate`) with run ids and head SHA once they report, and the `E2E (implementer)` line built from step 3 (command, observation, head SHA, negative control).",
+      "11. Link the PR on the issue: dispatch_issue_update({ issue: \"SL200C-1\", external_links: [\"<pr url>\"] }) (the daemon owns status; do not move it)."
+    ],
+    "commitMessage": "smoke: add l200c-1 module and test (SL200C-1)",
+    "prTitle": "smoke: add l200c-1 module and test (SL200C-1)",
+    "prBodyMustContain": [
+      "Dispatch: SL200C-1",
+      "## Verification",
+      "**E2E (implementer):**"
+    ],
+    "ciLine": "**CI:** `ci` run <run-id> — job check success at <head-sha>; `fail-on-demand` run <run-id> — job gate success at <head-sha>. (This repository has no `Tests` or `PR Title` workflow; name the two that exist.)",
+    "thermoLine": "Not docs-only: the reviewer runs thermonuclear-deep-review and thermonuclear-code-quality once at the reviewed head. The spec's Rejected section chose a TypeScript change specifically so the thermo gate runs."
+  },
+  "test": {
+    "ordering": [
+      "1. Read .legion/plan.json and .legion/implement.json. If implement.json has no well-formed proof array, record a failure with implementerProof.verdict rejected and complete; do not fill the gap.",
+      "2. Verify the implementer's proof by re-running acceptance[0].command at the PR head SHA (jj -R \"$LEGION_WORKSPACE\" log -r @- --no-graph -T commit_id must equal the head GitHub shows: legion gh -- pr view <n> --repo sjawhar/legion-smoke --json headRefOid). Record implementerProof {verdict: verified, how: re-ran the command at <sha>}.",
+      "3. Own proof: run acceptance[0].command again as your E2E (tester) line, then acceptance[0].negativeControl.command; record exit codes, the pass line, the Expected/Received lines, and the head SHA.",
+      "4. Contract checks (observe, do not add repository files): (a) jj -R \"$LEGION_WORKSPACE\" diff --from main@origin --to @- --summary '~.legion' lists exactly A smoke/l200c-1.ts and A smoke/l200c-1.test.ts; (b) bun -e 'import { kindSmokeValue } from \"./smoke/l200c-1\"; if (kindSmokeValue() !== \"kind smoke l200c 1\") { throw new Error(kindSmokeValue()) }; console.log(\"ok\")' prints ok; (c) grep the test file for `from \"bun:test\"` and `kindSmokeValue` imports.",
+      "5. Edit the PR body's E2E (tester) line in place (legion gh -- pr edit <n> --repo sjawhar/legion-smoke --body-file ...), keeping every other line.",
+      "6. legion handoff write --phase test --data '{...}' with implementerProof, proof array, failures: []; test -f .legion/test.json; jj -R \"$LEGION_WORKSPACE\" split -m \"test: record handoff\" .legion/test.json. Never push."
+    ],
+    "noEnvironmentScrub": "The acceptance criteria do not call for LEGION_*/DISPATCH_*/ENVOY_* scrub evidence; do not record it."
+  },
+  "review": {
+    "ordering": [
+      "1. Verify on GitHub, never from a handoff: CI (both workflow runs green at the head SHA: legion gh -- run list --repo sjawhar/legion-smoke --branch legion/SL200C-1), the PR body carries both E2E lines with command, observation, head SHA, negative control, and the diff is exactly the two files under smoke/ plus .legion/ handoffs.",
+      "2. Correctness checks: kindSmokeValue is a named export; return value is byte-exact `kind smoke l200c 1` (no trailing whitespace, no casing drift); the test imports from bun:test and from ./l200c-1 and asserts with toBe against that literal; no other repository file changed.",
+      "3. Run task(agent=\"thermonuclear-deep-review\") and task(agent=\"thermonuclear-code-quality\") once at the reviewed head; record the verdict on the Thermo line.",
+      "4. One review per round via legion gh -- api --method POST repos/sjawhar/legion-smoke/pulls/<n>/reviews --input body.json with commit_id, event, body (Legion footer), comments[]. While the head carries .legion/: COMMENT when clean, REQUEST_CHANGES on any correctness finding. APPROVE only the head that removed .legion/ (named by SHA), after the architect sends the implementer back to push that deletion.",
+      "5. Answer every thread you opened with exactly one of `Accepted: fixed in <commit> — ...`, `Accepted: not a defect — ...`, `Still open: ...`.",
+      "6. legion handoff write --phase review; test -f .legion/review.json; jj -R \"$LEGION_WORKSPACE\" split -m \"review: record handoff\" .legion/review.json. Never push."
+    ]
+  },
+  "integration": {
+    "mergeQueue": "none for this project: the merger posts READY as a dispatch_message on SL200C-1 only; a human merges under the repository's branch protection.",
+    "mergerChecks": "legion threads resolve --pr <n> --repo sjawhar/legion-smoke; approved SHA == current head (or differs only by docs/solutions retro commits); jj diff --from <approved> --to <tip> --summary quoted in READY; READY first line exactly `READY #<n> at <sha> (approved at <sha>) for SL200C-1 (<pr url>)`.",
+    "productionCheck": {
+      "definition": "spec v2, New since we talked: after a human merges, the same command is run once more at the merge commit on main; that run is the production check because this repository has no deployed surface beyond its own tests.",
+      "owner": "implementer, when the architect sends it back after the merge",
+      "commands": [
+        "M=$(legion gh -- pr view <n> --repo sjawhar/legion-smoke --json mergeCommit --jq .mergeCommit.oid)",
+        "cd -- \"$LEGION_WORKSPACE\" && jj -R \"$LEGION_WORKSPACE\" git fetch && jj -R \"$LEGION_WORKSPACE\" new main@origin && test \"$(jj -R \"$LEGION_WORKSPACE\" log -r @- --no-graph -T commit_id)\" = \"$M\" && bun test smoke/l200c-1.test.ts"
+      ],
+      "expected": "exit 0, `1 pass` at the merge commit; jj new is forward-only and allowed by the legion-worker jj rules (never jj edit @-, never abandon)",
+      "record": "PR body `Production:` line with the merge SHA and the observed pass line; one PR comment with the Legion footer; one dispatch_message on SL200C-1. Until the merge lands the line reads `pending human merge of PR #<n>`."
+    },
+    "rebasePolicy": "Rebase only if GitHub reports the PR CONFLICTING (jj -R \"$LEGION_WORKSPACE\" rebase -s 'roots(main@origin..@)' -d main@origin), with the fingerprint comment from skill://legion-worker. Never rebase to refresh CI; re-run a single failed job with legion gh -- run rerun <run-id> --failed.",
+    "fastFollow": "none expected; the change is two files with no naming or duplication surface."
+  },
+  "requiredSkills": {
+    "implement": [
+      "legion-worker"
+    ],
+    "test": [
+      "legion-worker"
+    ],
+    "review": [
+      "legion-worker"
+    ]
+  },
+  "requiredSkillsWhy": {
+    "implement": "legion-worker: defines the only push path (bookmark legion/SL200C-1, credential helper), the PR body READY format, the proof array implement.json must carry, and the jj safety rules (split for commits, no abandon/edit @-).",
+    "test": "legion-worker: defines the implementerProof verdict, the tester's own proof array and E2E (tester) line, the split-only commit rule, and that the tester never pushes.",
+    "review": "legion-worker: defines one-review-per-round via the REST reviews endpoint, the COMMENT-while-.legion-exists / APPROVE-only-clean-head rule, the thermo pass, and thread acceptance wording."
+  },
+  "repositorySkills": "The repository sjawhar/legion-smoke ships no skills and no AGENTS.md (glob for **/AGENTS.md returned nothing); README.md is two lines. No repository-specific definition of done exists beyond the spec, so legion-worker's proof definition is the bar.",
+  "discrepancies": [
+    {
+      "what": "The deployment instructions say `keep every change to the one file the issue names`; the issue title, spec v2, and the architect's assignment name two files (module and test).",
+      "ruling": "Two files, one commit, per spec v2 and the architect's assignment. The deployment text is the generic sandbox rule; the spec is the issue's primary document and is more specific. Reported to the architect in the completion summary; no ask opened because the two sources agree and no human authority is needed."
+    },
+    {
+      "what": "The READY template's CI line names `Tests` and `PR Title` workflows; this repository has `ci` (job check) and `fail-on-demand` (job gate).",
+      "ruling": "Name the two real workflows with run ids and head SHA. CI is a bare gate here, not the acceptance proof."
+    }
+  ],
+  "risks": [
+    "Bun version drift: the proof was probed on bun 1.3.14 at /usr/local/bin/bun on this worker host; every phase runs on the same host, so the tester's re-run is comparable.",
+    "jj auto-snapshots new files: any throwaway file created inside $LEGION_WORKSPACE lands in @. The negative control therefore runs from mktemp -d and imports the module by absolute path (probed: exit 1 with Expected/Received).",
+    "The planner's `plan: record handoff` commit precedes the code commit on the branch; the final .legion/ deletion push removes it. This is the normal chain, not a second code commit."
+  ],
+  "hardeningLedger": [],
+  "readEvidence": [
+    "Spec: dispatch_doc_read SL200C-1 version 2 — Summary, Acceptance line 1, Requirements table, Testing row 1 (bun test smoke/l200c-1.test.ts on the PR branch, re-run by the tester, again at the merge commit), Errors row (either file already exists), Rejected (Markdown-only change).",
+    "Workspace: jj status clean at lnloktnl 81ac2744 (legion/SL200C-1) on main vkzmpqsw 40c26543; no .legion/ directory, so no predecessor handoff.",
+    "Repository: README.md lines 1-2; smoke/ holds six 80-byte legion16 markdown probes; .github/workflows/ci.yml line 7; .github/workflows/fail-on-demand.yml lines 7-8; no *.ts, package.json, tsconfig*.json, bunfig.toml, or AGENTS.md anywhere.",
+    "Handoff schema: legion handoff write --phase plan validates requiredSkills as {implement: string[], test: string[], review: string[]}; other fields pass through undeclared (probed against a temp workspace).",
+    "Bun: `bun test smoke/l200c-1.test.ts` with the exact file contents above exits 0 (1 pass); with the return string changed to `kind smoke l200c 2` it exits 1 with Expected/Received lines; a temp-dir test importing the module by absolute path also fails as expected (probed, temp dirs removed)."
+  ],
+  "schemaVersion": 1,
+  "phase": "plan",
+  "completed": "2026-09-18T20:05:49.559Z"
+}
