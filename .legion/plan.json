@@ -1,0 +1,47 @@
+{
+  "summary": "Add one new file smoke/l194fix-1.md containing exactly the single line `kind smoke l194fix 1 2026-09-18T03:13:27Z` (no trailing content, no other file changes). One commit, no rebases.",
+  "scope": {
+    "filesToChange": [
+      "smoke/l194fix-1.md"
+    ],
+    "nonGoals": [
+      "No changes to any other file",
+      "No rebases unless GitHub reports a conflict"
+    ]
+  },
+  "steps": [
+    "Create smoke/l194fix-1.md with a single line: kind smoke l194fix 1 2026-09-18T03:13:27Z",
+    "Verify the file has exactly that one line and nothing else",
+    "Commit as a single commit on the issue branch"
+  ],
+  "acceptanceCriteria": [
+    {
+      "criterion": "cat smoke/l194fix-1.md prints exactly `kind smoke l194fix 1 2026-09-18T03:13:27Z`",
+      "surface": "shell in $LEGION_WORKSPACE",
+      "command": "cd -- \"$LEGION_WORKSPACE\" && cat smoke/l194fix-1.md",
+      "expected": "kind smoke l194fix 1 2026-09-18T03:13:27Z",
+      "drivingSkill": "legion-worker (no repository test harness for this throwaway smoke repo)"
+    }
+  ],
+  "requiredSkills": {
+    "implement": [
+      "legion-worker — one-file create plus single-commit push and PR discipline; no build/test tooling exists in this sandbox repo."
+    ],
+    "test": [
+      "legion-worker — verification is a single cat command against the checked-in file; no unit/integration suite exists to run."
+    ],
+    "review": [
+      "legion-worker — docs-only single-file diff; verify content is exactly the one line and no other files changed; skip thermo (docs-only)."
+    ]
+  },
+  "risks": [
+    "Trailing newline/extra whitespace would fail the exact-line acceptance; implementer must ensure the file is exactly one line."
+  ],
+  "verification": {
+    "implementerProof": "Run `cat smoke/l194fix-1.md`; observe exactly `kind smoke l194fix 1 2026-09-18T03:13:27Z`. Negative control: `grep -c . smoke/l194fix-1.md` must be 1.",
+    "testerProof": "Re-run the same cat and line-count check independently."
+  },
+  "schemaVersion": 1,
+  "phase": "plan",
+  "completed": "2026-09-18T03:15:15.841Z"
+}
