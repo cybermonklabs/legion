@@ -1,0 +1,48 @@
+{
+  "issue": "SL200C-1",
+  "title": "Kind smoke l200c: runtime change 1",
+  "specVersion": 2,
+  "pullRequest": 83,
+  "headSha": "b680235962f522f06cdd2e45b5ab34e2678027dd",
+  "codeCommit": "4f4a73b3870fd9699697765ceedb7f4d9a4e1281",
+  "round": 1,
+  "verdict": "approved",
+  "verdictNote": "Clean round: no correctness finding. The GitHub review event is COMMENT because the head still carries .legion/; the APPROVE review lands on the head that removes only .legion/, named by SHA, with no further handoff write.",
+  "event": "COMMENT",
+  "reviewId": 5252239744,
+  "reviewUrl": "https://github.com/sjawhar/legion-smoke/pull/83#pullrequestreview-5252239744",
+  "findings": [],
+  "threadsOpened": [],
+  "fastFollow": "none",
+  "verifiedOnGitHub": {
+    "head": "gh pr view 83 --json headRefOid = b680235962f522f06cdd2e45b5ab34e2678027dd; equals the pushed tip of the chain (ae6cf960 test handoff sits on top locally, unpushed)",
+    "diff": "gh pr diff 83 --name-only: .legion/implement.json, .legion/plan.json, smoke/l200c-1.test.ts, smoke/l200c-1.ts; jj diff --from main@origin --to b680235962 --summary lists the same four",
+    "ci": "gh run list --branch legion/SL200C-1: ci 35389975074 success, fail-on-demand 35389974988 success, ci 35389931175 success, fail-on-demand 35389931087 success, all at b680235962f522f06cdd2e45b5ab34e2678027dd; gh pr checks 83: check pass x2, gate pass x2",
+    "e2eImplementer": "present in PR body: surface Bun 1.3.14 from workspace root, command bun test smoke/l200c-1.test.ts, observed 1 pass / 0 fail, head b680235962, negative control wrong string kind smoke l200c 2 -> exit 1 Expected/Received",
+    "e2eTester": "present in PR body: same surface and command, observed 1 pass / 0 fail at b680235962, negative control exit 1 Expected/Received, states it re-ran the implementer command and negative control independently",
+    "threads": "gh api graphql reviewThreads.totalCount 0; reviews before mine: none",
+    "mergeability": "MERGEABLE / CLEAN, base main, state OPEN; no rebase, no fingerprint comparison needed"
+  },
+  "correctnessChecks": {
+    "moduleExport": "smoke/l200c-1.ts:1 export function kindSmokeValue(): string; line 2 return \"kind smoke l200c 1\"; od -c shows plain ASCII, no trailing whitespace",
+    "testFile": "smoke/l200c-1.test.ts:1-2 import { expect, test } from bun:test and { kindSmokeValue } from ./l200c-1; line 5 expect(kindSmokeValue()).toBe(\"kind smoke l200c 1\")",
+    "ownRun": "cd -- \"$LEGION_WORKSPACE\" && bun test smoke/l200c-1.test.ts on the chain containing b680235962: exit 0, bun test v1.3.14, 1 pass, 0 fail, 1 expect() calls, Ran 1 test across 1 file",
+    "nothingElseChanges": "no package.json, tsconfig, README, or .github/workflows change in the PR diff"
+  },
+  "thermo": {
+    "head": "b680235962f522f06cdd2e45b5ab34e2678027dd",
+    "deepReview": "clean, zero findings (task agent thermonuclear-deep-review)",
+    "codeQuality": "clean, zero findings (task agent thermonuclear-code-quality)"
+  },
+  "fingerprintAtHead": "67bc5575be4ebfcaa7a7d4aad3e65f98ac6c57f3e8f5feb1f09d8e8279340f33",
+  "nextStep": "Architect sends the implementer back to push the .legion/ deletion as the only change on top of b680235962f522f06cdd2e45b5ab34e2678027dd (the chain also carries the unpushed test and review handoff commits, which the deletion push removes). Reviewer then confirms the new head differs from the reviewed head by the .legion/ deletion alone and APPROVEs it by SHA; no second review handoff write.",
+  "localChecks": "Repository configures no lint, typecheck, or project-wide suite; formatters, linters, and project-wide suites skipped per the assignment. Only bun test smoke/l200c-1.test.ts was run.",
+  "hardeningLedger": [],
+  "skillsFollowed": [
+    "legion-worker"
+  ],
+  "pushed": false,
+  "schemaVersion": 1,
+  "phase": "review",
+  "completed": "2026-09-18T20:19:04.440Z"
+}
