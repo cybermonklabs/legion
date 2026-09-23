@@ -1,0 +1,29 @@
+{
+  "branch": "legion/S392934082-1",
+  "completed": "2026-09-23T08:34:32.233894259Z",
+  "filesChanged": [
+    "smoke/s392934082-1-green-20260923T082020Z.md"
+  ],
+  "headSha": "83b1995f0b41",
+  "notes": "Throwaway stage-3 workflow proof. Single additive markdown file, no README/CI/other touches. Do not merge per operator instruction.",
+  "phase": "implementer",
+  "prNumber": 86,
+  "prUrl": "https://github.com/sjawhar/legion-smoke/pull/86",
+  "proof": [
+    {
+      "command": "legion gh -- api repos/sjawhar/legion-smoke/contents/smoke/s392934082-1-green-20260923T082020Z.md?ref=legion/S392934082-1 --jq .content | base64 -d",
+      "headSha": "83b1995f0b41",
+      "negativeControl": "legion gh -- api repos/sjawhar/legion-smoke/contents/smoke/does-not-exist-20260923T082020Z.md?ref=legion/S392934082-1 -\u003e Not Found (HTTP 404)",
+      "observed": "the exact probe line: S392934082-1 stage 3 architect smoke probe (20260923T082020Z). Safe to merge; throwaway.",
+      "surface": "GitHub remote branch legion/S392934082-1 (the artifact that becomes main) on sjawhar/legion-smoke"
+    },
+    {
+      "command": "jj -R \"$LEGION_WORKSPACE\" diff --from main@origin --to @ --summary",
+      "headSha": "83b1995f0b41",
+      "negativeControl": "any additional A/M/D product line would be a reject to implementer; none present",
+      "observed": "exactly one product file added: A smoke/s392934082-1-green-20260923T082020Z.md (plus the exempt .legion/ handoff commit)",
+      "surface": "single-file diff (acceptance 2) via jj"
+    }
+  ],
+  "schemaVersion": 1
+}
