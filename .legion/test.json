@@ -1,0 +1,26 @@
+{
+  "branch": "legion/S391665786-1",
+  "completed": "2026-09-23T16:36:57.264410874Z",
+  "failed": 0,
+  "failures": [],
+  "headSha": "094acca9bc49b3094e6dd14d8a14165108fe24e1",
+  "implementerProof": {
+    "how": "Independently drove the GitHub contents API on branch legion/S391665786-1 at corrected head 094acca9: README final line is exactly \"Stage 3 workflow proof: gated design change verified via Legion (Dispatch issue S391665786-1).\" with the Dispatch issue named explicitly (review round 3 fix 039db79a). Negative control on ?ref=main shows README ends at \"Stage 3 smoke check: Legion workflow proof.\" with no proof line.",
+    "verdict": "verified"
+  },
+  "phase": "test",
+  "prNumber": 103,
+  "prUrl": "https://github.com/sjawhar/legion-smoke/pull/103",
+  "proof": [
+    {
+      "command": "gh api repos/sjawhar/legion-smoke/contents/README.md?ref=legion/S391665786-1 | jq -r .content | base64 -d; jj diff --from main@origin --to 094acca9 --stat ~.legion",
+      "headSha": "094acca9bc49b3094e6dd14d8a14165108fe24e1",
+      "negativeControl": "gh api repos/sjawhar/legion-smoke/contents/README.md?ref=main returns README WITHOUT the proof line (ends at \"Stage 3 smoke check: Legion workflow proof.\"), confirming the appended line is introduced by this change and absent on main.",
+      "observed": "README final line is exactly \"Stage 3 workflow proof: gated design change verified via Legion (Dispatch issue S391665786-1).\" (Acceptance 1, review round 3 correction confirmed); product diff excluding .legion process artifacts is README.md only, 1 insertion (Acceptance 2). CI green at head: check success, gate success.",
+      "surface": "GitHub contents API on merge branch legion/S391665786-1 (final head 094acca9, the branch that merges to main)"
+    }
+  ],
+  "reviewRound": 3,
+  "schemaVersion": 1,
+  "summary": "Final test round 3: verified the review correction (name the Dispatch issue explicitly) on the real GitHub surface at head 094acca9. Proof line present and correct on branch head, absent on main; product diff is README.md alone; CI green. Implementer proof reproduced; verdict pass."
+}

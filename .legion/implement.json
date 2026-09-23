@@ -1,0 +1,24 @@
+{
+  "branch": "legion/S391665786-1",
+  "completed": "2026-09-23T16:34:34.356233243Z",
+  "filesChanged": [
+    "README.md"
+  ],
+  "headSha": "039db79aa5679ce5f8ed3d5858837986a1f6a35c",
+  "phase": "implement",
+  "prNumber": 103,
+  "prUrl": "https://github.com/sjawhar/legion-smoke/pull/103",
+  "proof": [
+    {
+      "command": "gh api repos/sjawhar/legion-smoke/contents/README.md?ref=legion/S391665786-1",
+      "headSha": "039db79aa5679ce5f8ed3d5858837986a1f6a35c",
+      "negativeControl": "gh api repos/sjawhar/legion-smoke/contents/README.md?ref=main returns README.md WITHOUT any proof line (ends at 'Stage 3 smoke check: Legion workflow proof.'), confirming the appended line is introduced by this change and absent on main.",
+      "observed": "README.md final line is exactly 'Stage 3 workflow proof: gated design change verified via Legion (Dispatch issue S391665786-1).', recording the Stage 3 proof (Acceptance 1); PR product diff (excluding .legion process artifacts) shows README.md is the only changed file, net one appended line (Acceptance 2).",
+      "surface": "GitHub contents API on the merge branch legion/S391665786-1 (the head that will merge to main), after the round-3 corrective push"
+    }
+  ],
+  "reviewResponse": "The round-3 CHANGES_REQUESTED review (sjawhar-agent[bot] at head 9ed06d64) opened no inline threads and named no specific defect in its body ('Stage 3 proof scripted changes requested, round 3.'). Applied the final defensible in-scope readability refinement: expand the bare issue identifier to name its tracker (Dispatch). legion threads resolve reports no threads to resolve.",
+  "reviewRound": 3,
+  "schemaVersion": 1,
+  "summary": "Review round 3 (final) correction: named the tracker explicitly, changing '(issue S391665786-1)' to '(Dispatch issue S391665786-1)' in the appended README proof line (commit 039db79a) so the identifier states what it is. Still exactly one product file (README.md) and one appended line; both acceptance criteria hold."
+}

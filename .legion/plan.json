@@ -1,0 +1,28 @@
+{
+  "completed": "2026-09-23T16:12:31.299647517Z",
+  "concerns": [
+    "Scope is exactly one file (README.md at repo root). Any diff touching another file must be rejected per the spec Errors table (Acceptance 2).",
+    "README.md must exist before editing; it does (repo root). If absent, implementer stops and reports, never substitutes a file.",
+    "CI is fixture-only: .github/workflows/ci.yml sleeps 20s then exits 0; fail-on-demand.yml fails only when a .fail-me file exists (do not add one). Green CI here is a gate pass, not proof of the criterion."
+  ],
+  "independentTasks": 1,
+  "phase": "plan",
+  "requiredSkills": {
+    "implement": [
+      "none: reviewed the system-prompt \u003cskills\u003e list and the repo (no AGENTS.md, no domain skill). Only Legion process skills exist (legion-worker, -architect, -controller, -oracle, -retro); the change is a plain one-line text append to README.md with the exact line given in the spec Design section, so no build/codegen/domain skill applies. legion-worker's implementer discipline (branch legion/S391665786-1, PR body 'Dispatch: S391665786-1', production-like proof) already governs by default."
+    ],
+    "review": [
+      "none: reviewed the \u003cskills\u003e list (no repository code-review skill). The only review rule specific to this issue is one-file scope enforcement (README.md alone), defined in the spec Errors table; legion-worker's reviewer discipline (thread disposition, thermo passes, READY, approve only a head carrying no .legion/) already applies by default."
+    ],
+    "test": [
+      "none: reviewed the \u003cskills\u003e list and repo conventions (no AGENTS.md, no test/smoke/e2e skill). Verification is defined entirely by the spec Testing section: read README.md on main after merge to confirm the appended proof line (Acceptance 1), and run the PR diff summary to confirm README.md is the only changed file (Acceptance 2). legion-worker's tester discipline (verify implementer proof, add own production-like proof) applies by default."
+    ]
+  },
+  "routingHints": {
+    "complexity": "trivial",
+    "estimatedImplementers": 1
+  },
+  "schemaVersion": 1,
+  "taskCount": 1,
+  "workflowRecommendation": "Single trivial edit: one implementer appends the spec's exact line to README.md, opens the PR (branch legion/S391665786-1, body carries 'Dispatch: S391665786-1'), and proves it; tester re-verifies; reviewer enforces one-file scope; merger publishes READY. No decomposition or sub-issues."
+}
