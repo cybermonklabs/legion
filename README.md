@@ -7,3 +7,4 @@ Stage 3 workflow proof: gated design change verified via Legion (Dispatch issue 
 Legion smoke check: S392569266-1.
 Legion smoke check (Stage 3 proof): S393466070-1 (PR #112).
 Legion Stage 3 smoke marker.
+Stage 3 smoke proof: Legion workflow verified.

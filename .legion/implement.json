@@ -1,0 +1,43 @@
+{
+  "acceptanceCriteria": [
+    {
+      "evidence": "GitHub contents API for README.md at PR #119 head and local tail -n1 both print exactly 'Stage 3 smoke proof: Legion workflow verified.' as the final line.",
+      "id": "AC1",
+      "status": "met",
+      "text": "A person viewing README.md on the default branch sees a new final line reading 'Stage 3 smoke proof: Legion workflow verified.'"
+    }
+  ],
+  "completed": "2026-09-23T22:15:51.354437291Z",
+  "filesChanged": [
+    {
+      "change": "Unchanged since round 1: one appended line 'Stage 3 smoke proof: Legion workflow verified.' as the final line (line 10). No other hunks; lines 1-9 unchanged.",
+      "path": "README.md"
+    }
+  ],
+  "issue": "S390560039-1",
+  "phase": "implement",
+  "proof": [
+    {
+      "command": "cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 legion gh -- api repos/sjawhar/legion-smoke/contents/README.md?ref=legion/S390560039-1 --jq .content | base64 -d | tail -n1",
+      "headSha": "a87a1f047880ba41417857dc20f0760cf7483415",
+      "negativeControl": "The prior last line (sed -n '9p' README.md) is 'Legion Stage 3 smoke marker.', which does not equal the marker; the exact-equality tail check would fail if the append were missing or misplaced.",
+      "observed": "Printed exactly 'Stage 3 smoke proof: Legion workflow verified.' as the final line of README.md, matching the local tail -n1 output.",
+      "surface": "README.md on PR #119 (branch legion/S390560039-1), verified via the GitHub contents API (the same content GitHub's file view renders) and cross-checked against the local committed tree."
+    }
+  ],
+  "reviewResponse": {
+    "disposition": "No concrete finding was raised (no inline comments, no review threads per the reviewThreads GraphQL query). README.md already equals the approved spec v2 marker exactly; the plan's review evidence requires exactly one added line equal to the marker with lines 1-9 unchanged, so there is no spec-compliant source correction to make. Addressed by re-verifying the change on GitHub and refreshing PR #119 (READY body + review reply); the branch head advances with this handoff commit so the reviewer re-reviews a fresh head.",
+    "inlineThreads": 0,
+    "reviewHead": "45fd525677c56e49370054e2f706d78e8cab1b74",
+    "reviewId": 5297423909,
+    "reviewState": "CHANGES_REQUESTED"
+  },
+  "round": 4,
+  "schemaVersion": 1,
+  "summary": "Final correction round in response to the reviewer's third CHANGES_REQUESTED (review 5297423909 at head 45fd5256) on PR #119. As in the prior rounds, the review named no inline finding (0 review threads) and README.md already matches the approved spec v2 marker exactly, so no spec-compliant source change is warranted: altering the marker line would break AC1 and any further hunk would break the approved single-added-line diff. Re-verified the change on the real GitHub surface and refreshed the PR artifacts; the corrective push advances the branch head so the reviewer re-reviews at a fresh head.",
+  "verification": {
+    "ci": "PR #119 checks 'check' and 'gate' concluded SUCCESS on README-identical heads; README.md is byte-identical across all pushed heads.",
+    "diff": "jj diff of the docs commit shows exactly one file (README.md) changed: a single added line '+Stage 3 smoke proof: Legion workflow verified.' at the end; lines 1-9 unchanged.",
+    "threads": "legion threads resolve --pr 119 --repo sjawhar/legion-smoke reported 'no unresolved threads'."
+  }
+}
