@@ -1,0 +1,61 @@
+{
+  "completed": "2026-09-23T19:25:50.879575557Z",
+  "concerns": [
+    "Idempotency: if README.md already ends with the marker line, the implementer makes no change and reports it already present (spec Errors table).",
+    "Exactly one file (README.md) may change; any second file changed fails requirement 'Exactly one file changes'."
+  ],
+  "independentTasks": 1,
+  "phase": "plan",
+  "plan": {
+    "acceptance": [
+      {
+        "command": "cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 git grep -c \"Legion Stage 3 smoke marker\" README.md",
+        "criterion": "README.md at the smoke branch head ends with a final line reading exactly \"Legion Stage 3 smoke marker.\"",
+        "expected": "prints exactly 1",
+        "negativeControl": "Before the edit (or grepping a wrong marker string), the same command prints 0 or errors, proving the check discriminates.",
+        "surface": "The README.md file on the issue's smoke branch head (the real repository file, viewed on the PR / checked out at head) — the production-like surface for a documentation marker."
+      }
+    ],
+    "goal": "Append one marker line to sjawhar/legion-smoke README.md so the Legion workflow is proven end-to-end on a real file change.",
+    "implementation": {
+      "fileLevelWork": [
+        "Edit only README.md at the repository root. Append one line `Legion Stage 3 smoke marker.` as the final line of the file, preserving the existing trailing content and a terminating newline.",
+        "Error handling per spec: if README.md already ends with the marker line, make no change and report it already present; if README.md does not exist, create it with the marker line as its only content.",
+        "Change exactly one file. No source, routes, config, or data-flow files are touched. Do NOT commit any .legion/ or plan/spec file into the PR beyond each phase's own handoff commit."
+      ],
+      "ordering": [
+        "1. Implementer: edit README.md, verify locally with the acceptance command (expect 1), write .legion/implement.json with a proof entry, create bookmark legion/S393466070-1, push, open PR whose body contains `Dispatch: S393466070-1`.",
+        "2. Tester: verify the implementer's proof by re-running the acceptance command at head, add own proof, write .legion/test.json.",
+        "3. Reviewer: verify the one-file diff and acceptance-command output on GitHub, review the PR.",
+        "4. Merger: publish READY once approved."
+      ]
+    },
+    "issue": "S393466070-1",
+    "spec": "dispatch://S393466070-1/spec (approved v2 by smoke)",
+    "verificationEvidence": {
+      "implement": "Acceptance command `git grep -c \"Legion Stage 3 smoke marker\" README.md` returns 1 at the pushed head; recorded as the implement proof with head SHA and a negative control.",
+      "integration": "Merger confirms no changes above the approved head except allowed process artifacts, then publishes READY.",
+      "review": "Reviewer confirms the PR diff changes exactly README.md by exactly one appended line and the acceptance command returns 1.",
+      "test": "Tester re-runs the same command at head, confirms 1, and confirms the diff touches only README.md."
+    }
+  },
+  "requiredSkills": {
+    "implement": [
+      "none: looked through all agent skills available in this session (dispatch, envoy, legion-architect, legion-controller, legion-oracle, legion-retro, legion-worker); none drives editing a plain README.md markdown line. legion-worker governs the phase-worker process itself, not the README edit. The edit is a one-line append handled with the ordinary edit/write file tools."
+    ],
+    "review": [
+      "none: no code-review skill applies to a single documentation line; the reviewer verifies the one-file diff and the acceptance command output on GitHub directly. legion-retro/legion-worker cover process, not markdown review."
+    ],
+    "test": [
+      "none: no repository test skill exists for this smoke sandbox; the sole acceptance is verified by running the shell command `git grep -c \"Legion Stage 3 smoke marker\" README.md` at the smoke branch head, which needs no skill. No unit/e2e harness applies to a docs marker."
+    ]
+  },
+  "routingHints": {
+    "complexity": "trivial",
+    "estimatedImplementers": 1,
+    "skipArchitect": true
+  },
+  "schemaVersion": 1,
+  "taskCount": 1,
+  "workflowRecommendation": "single implementer; trivial one-file docs change, no parallelism"
+}

@@ -1,0 +1,22 @@
+{
+  "completed": "2026-09-23T19:46:25.258361052Z",
+  "failed": 0,
+  "failures": [],
+  "implementerProof": {
+    "how": "Reproduced the implementer round-2 proof independently on the same surface: README.md at PR head 7b07aed9df966c76c36bee77bd763c3b18da5bac. grep -c \"Legion Stage 3 smoke marker\" =\u003e 1 and the final line is exactly \"Legion Stage 3 smoke marker.\"; the reworded traceability line \"Legion smoke check (Stage 3 proof): S393466070-1.\" (count 1) omits the marker substring so the count stays 1. Implementer proof matches.",
+    "verdict": "verified"
+  },
+  "phase": "test",
+  "proof": [
+    {
+      "command": "cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 jj -R \"$LEGION_WORKSPACE\" file show -r 7b07aed9 README.md | grep -c \"Legion Stage 3 smoke marker\"; jj -R \"$LEGION_WORKSPACE\" file show -r 7b07aed9 README.md | tail -n1",
+      "headSha": "7b07aed9df966c76c36bee77bd763c3b18da5bac",
+      "negativeControl": "Same file grepped for a nonexistent marker string prints 0; the reworded traceability line omits the marker substring, keeping the count 1 not 2.",
+      "observed": "grep -c prints 1 and the final line is exactly \"Legion Stage 3 smoke marker.\"; round-2 correction reworded the traceability line to \"Legion smoke check (Stage 3 proof): S393466070-1.\" above the marker.",
+      "surface": "README.md on the legion/S393466070-1 branch head (PR #112), the production-like surface for a documentation marker."
+    }
+  ],
+  "round": 2,
+  "schemaVersion": 1,
+  "summary": "Retest round 2: verified the implementer correction on PR #112 at head 7b07aed9. README.md still ends with exactly one \"Legion Stage 3 smoke marker.\" line (grep -c =\u003e 1, negative control =\u003e 0) and the traceability line was reworded to \"Legion smoke check (Stage 3 proof): S393466070-1.\"; product diff touches only README.md, CI check+gate green. Verdict pass."
+}
