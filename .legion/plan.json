@@ -1,0 +1,28 @@
+{
+  "completed": "2026-09-23T07:46:46.138932001Z",
+  "concerns": [
+    "Acceptance 1 is proven only after merge by reading SMOKE.md on main; the implementer must still prove the file exists on the PR head (production-like surface: the pushed branch / opened PR) before its phase completes, and the post-merge production check reads it on main.",
+    "Errors table: if SMOKE.md already exists at repo root, overwrite its contents with the single specified line — do not append and do not add a second file. Current workspace has no SMOKE.md at root, so this is expected to be a new-file add.",
+    "CI (.github/workflows/ci.yml) is a trivial 20s no-op check on push/pull_request; fail-on-demand.yml exists but is not triggered by this change. Green CI here is a gate, not proof of the acceptance criterion."
+  ],
+  "independentTasks": 1,
+  "phase": "plan",
+  "requiredSkills": {
+    "implement": [
+      "none: inspected the sjawhar/legion-smoke workspace root, its skills/ path (absent), AGENTS.md (absent), and .github/workflows (ci.yml, fail-on-demand.yml only) — this sandbox repository ships no repository-specific agent skills; the implementer follows the legion-worker phase-worker process skill to add SMOKE.md and open the PR."
+    ],
+    "review": [
+      "none: same inspection — no repository review skill exists in sjawhar/legion-smoke; the reviewer applies the legion-worker review discipline (CI/threads/E2E facts verified on GitHub) to a one-file docs-style change."
+    ],
+    "test": [
+      "none: same inspection — no repository test/e2e/smoke skill exists in sjawhar/legion-smoke; the tester verifies acceptance by reading SMOKE.md on the PR head and post-merge main per the legion-worker proof discipline."
+    ]
+  },
+  "routingHints": {
+    "complexity": "trivial",
+    "estimatedImplementers": 1
+  },
+  "schemaVersion": 1,
+  "taskCount": 1,
+  "workflowRecommendation": "Linear single-implementer flow: one implementer adds SMOKE.md, opens the PR against sjawhar/legion-smoke; tester verifies the file on the PR head and post-merge main; reviewer approves. No parallelism; the change touches exactly one new file."
+}
