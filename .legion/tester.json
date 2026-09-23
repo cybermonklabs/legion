@@ -1,0 +1,37 @@
+{
+  "branch": "legion/S392934082-1",
+  "completed": "2026-09-23T08:39:32.666668348Z",
+  "failures": [],
+  "headSha": "fbdd070c18d709958cd482158711d5a08c526446",
+  "implementerProof": {
+    "how": "Re-ran the implementer command `legion gh -- api repos/sjawhar/legion-smoke/contents/smoke/s392934082-1-green-20260923T082020Z.md?ref=\u003chead\u003e --jq .content | base64 -d` at PR head fbdd070c and independently drove the single-file diff summary; both matched the implementer proof.",
+    "verdict": "verified"
+  },
+  "notes": "Stage-3 throwaway workflow proof. All acceptance criteria (probe file present with exact line; exactly one added product file; CI green) verified on the real GitHub surface at the PR head. Do not merge per operator instruction.",
+  "phase": "tester",
+  "prNumber": 86,
+  "proof": [
+    {
+      "command": "legion gh -- api repos/sjawhar/legion-smoke/contents/smoke/s392934082-1-green-20260923T082020Z.md?ref=fbdd070c18d709958cd482158711d5a08c526446 --jq .content | base64 -d",
+      "headSha": "fbdd070c18d709958cd482158711d5a08c526446",
+      "negativeControl": "legion gh -- api repos/sjawhar/legion-smoke/contents/smoke/does-not-exist-20260923T082020Z.md?ref=fbdd070c... -\u003e Not Found (HTTP 404), exit 1",
+      "observed": "exact probe line: S392934082-1 stage 3 architect smoke probe (20260923T082020Z). Safe to merge; throwaway.",
+      "surface": "GitHub remote PR-86 head branch legion/S392934082-1 on sjawhar/legion-smoke (the artifact that becomes main)"
+    },
+    {
+      "command": "jj -R \"$LEGION_WORKSPACE\" diff --from main@origin --to @ --summary; legion gh -- pr diff 86 --name-only",
+      "headSha": "fbdd070c18d709958cd482158711d5a08c526446",
+      "negativeControl": "any additional product A/M/D line would be a finding/reject to implementer; none present",
+      "observed": "exactly one product file added: A smoke/s392934082-1-green-20260923T082020Z.md; the only other PR files are the exempt .legion/implementer.json and .legion/planner.json handoffs",
+      "surface": "AC2 single-file diff via jj and GitHub PR file list"
+    },
+    {
+      "command": "legion gh -- pr checks 86",
+      "headSha": "fbdd070c18d709958cd482158711d5a08c526446",
+      "negativeControl": "a failing job would block pass; none failed",
+      "observed": "check pass, gate pass (both workflows green) at head fbdd070c",
+      "surface": "CI on PR 86 at head"
+    }
+  ],
+  "schemaVersion": 1
+}
