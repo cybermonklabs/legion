@@ -1,24 +1,24 @@
 {
-  "branch": "legion/S391665786-1",
-  "completed": "2026-09-23T16:34:34.356233243Z",
+  "branch": "legion/S392569266-1",
+  "completed": "2026-09-23T17:32:54.186629655Z",
   "filesChanged": [
     "README.md"
   ],
-  "headSha": "039db79aa5679ce5f8ed3d5858837986a1f6a35c",
+  "headSha": "62f8095bb3c5166940a054d4db1a0f540210e227",
   "phase": "implement",
-  "prNumber": 103,
-  "prUrl": "https://github.com/sjawhar/legion-smoke/pull/103",
+  "prNumber": 106,
+  "prUrl": "https://github.com/sjawhar/legion-smoke/pull/106",
   "proof": [
     {
-      "command": "gh api repos/sjawhar/legion-smoke/contents/README.md?ref=legion/S391665786-1",
-      "headSha": "039db79aa5679ce5f8ed3d5858837986a1f6a35c",
-      "negativeControl": "gh api repos/sjawhar/legion-smoke/contents/README.md?ref=main returns README.md WITHOUT any proof line (ends at 'Stage 3 smoke check: Legion workflow proof.'), confirming the appended line is introduced by this change and absent on main.",
-      "observed": "README.md final line is exactly 'Stage 3 workflow proof: gated design change verified via Legion (Dispatch issue S391665786-1).', recording the Stage 3 proof (Acceptance 1); PR product diff (excluding .legion process artifacts) shows README.md is the only changed file, net one appended line (Acceptance 2).",
-      "surface": "GitHub contents API on the merge branch legion/S391665786-1 (the head that will merge to main), after the round-3 corrective push"
+      "command": "legion gh -- api repos/sjawhar/legion-smoke/contents/README.md?ref=legion/S392569266-1 --jq .content | base64 -d | tail -n 1",
+      "headSha": "62f8095bb3c5166940a054d4db1a0f540210e227",
+      "negativeControl": "legion gh -- api repos/sjawhar/legion-smoke/contents/README.md?ref=main --jq .content | base64 -d | tail -n 1 prints 'Stage 3 workflow proof: gated design change verified via Legion (Dispatch issue S391665786-1).' with no S392569266-1 line, confirming the appended line is introduced by this change and absent on main.",
+      "observed": "README.md final line is exactly 'Legion smoke check: S392569266-1.' (Acceptance 1); product commit 62f8095b changes README.md only, net one appended line, and the product diff excluding .legion process artifacts is README.md only (Requirements: exactly one file, one line).",
+      "surface": "GitHub contents API on the merge branch legion/S392569266-1 (the head that merges to main), re-verified for final review round 3"
     }
   ],
-  "reviewResponse": "The round-3 CHANGES_REQUESTED review (sjawhar-agent[bot] at head 9ed06d64) opened no inline threads and named no specific defect in its body ('Stage 3 proof scripted changes requested, round 3.'). Applied the final defensible in-scope readability refinement: expand the bare issue identifier to name its tracker (Dispatch). legion threads resolve reports no threads to resolve.",
+  "reviewResponse": "Round-3 (final) review (sjawhar-agent[bot], CHANGES_REQUESTED at 86168b42) opened no inline threads and named no specific defect ('Stage 3 proof scripted changes requested, round 3.'). As in rounds 1-2, the single product line is spec-locked: Acceptance 1 requires README.md's final line to be exactly 'Legion smoke check: S392569266-1.', so any edit would break the approved acceptance criterion. No in-scope product correction is available or warranted; the appended line is byte-exact to the approved spec (approved v3 by smoke) and re-verified on the GitHub surface. Corrective push records this disposition to advance the head for re-review. legion threads resolve reports no threads to resolve.",
   "reviewRound": 3,
   "schemaVersion": 1,
-  "summary": "Review round 3 (final) correction: named the tracker explicitly, changing '(issue S391665786-1)' to '(Dispatch issue S391665786-1)' in the appended README proof line (commit 039db79a) so the identifier states what it is. Still exactly one product file (README.md) and one appended line; both acceptance criteria hold."
+  "summary": "Review round 3 (final): no product change (the appended line is spec-locked to the exact acceptance string 'Legion smoke check: S392569266-1.'); recorded the review disposition (not a defect), re-verified the proof on the GitHub contents API surface with a main negative control, and advanced the head. Exactly one product file (README.md), one inserted line; both acceptance criteria hold. PR #106; not merged."
 }

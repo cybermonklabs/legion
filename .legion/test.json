@@ -1,26 +1,30 @@
 {
-  "branch": "legion/S391665786-1",
-  "completed": "2026-09-23T16:36:57.264410874Z",
+  "branch": "legion/S392569266-1",
+  "completed": "2026-09-23T17:32:10.686082918Z",
   "failed": 0,
   "failures": [],
-  "headSha": "094acca9bc49b3094e6dd14d8a14165108fe24e1",
+  "filesChanged": [
+    "README.md"
+  ],
+  "headSha": "86168b42d5876e44718ef97d57cb56b85612bced",
   "implementerProof": {
-    "how": "Independently drove the GitHub contents API on branch legion/S391665786-1 at corrected head 094acca9: README final line is exactly \"Stage 3 workflow proof: gated design change verified via Legion (Dispatch issue S391665786-1).\" with the Dispatch issue named explicitly (review round 3 fix 039db79a). Negative control on ?ref=main shows README ends at \"Stage 3 smoke check: Legion workflow proof.\" with no proof line.",
+    "how": "Re-ran the implementer's command independently at the new head 86168b42: `legion gh -- api repos/sjawhar/legion-smoke/contents/README.md?ref=legion/S392569266-1 --jq .content | base64 -d | tail -n 1` returned exactly 'Legion smoke check: S392569266-1.' (Acceptance 1). Confirmed the round-2 correction (commit 86168b42) touches only .legion/implement.json; the product diff excluding .legion remains README.md only with one insertion. Re-ran the main negative control: main's last README line lacks any S392569266-1 line.",
     "verdict": "verified"
   },
   "phase": "test",
-  "prNumber": 103,
-  "prUrl": "https://github.com/sjawhar/legion-smoke/pull/103",
+  "prNumber": 106,
+  "prUrl": "https://github.com/sjawhar/legion-smoke/pull/106",
   "proof": [
     {
-      "command": "gh api repos/sjawhar/legion-smoke/contents/README.md?ref=legion/S391665786-1 | jq -r .content | base64 -d; jj diff --from main@origin --to 094acca9 --stat ~.legion",
-      "headSha": "094acca9bc49b3094e6dd14d8a14165108fe24e1",
-      "negativeControl": "gh api repos/sjawhar/legion-smoke/contents/README.md?ref=main returns README WITHOUT the proof line (ends at \"Stage 3 smoke check: Legion workflow proof.\"), confirming the appended line is introduced by this change and absent on main.",
-      "observed": "README final line is exactly \"Stage 3 workflow proof: gated design change verified via Legion (Dispatch issue S391665786-1).\" (Acceptance 1, review round 3 correction confirmed); product diff excluding .legion process artifacts is README.md only, 1 insertion (Acceptance 2). CI green at head: check success, gate success.",
-      "surface": "GitHub contents API on merge branch legion/S391665786-1 (final head 094acca9, the branch that merges to main)"
+      "command": "legion gh -- api repos/sjawhar/legion-smoke/contents/README.md?ref=legion/S392569266-1 --jq .content | base64 -d | tail -n 1",
+      "criterion": "README.md's final line is exactly 'Legion smoke check: S392569266-1.' (Acceptance 1), and the product change is exactly one file with one appended line (Requirement), unchanged across review round 2.",
+      "headSha": "86168b42d5876e44718ef97d57cb56b85612bced",
+      "negativeControl": "legion gh -- api repos/sjawhar/legion-smoke/contents/README.md?ref=main --jq .content | base64 -d | tail -n 1 prints 'Stage 3 workflow proof: gated design change verified via Legion (Dispatch issue S391665786-1).' — no S392569266-1 line on main, confirming the appended smoke line is introduced only by this change.",
+      "observed": "README.md final line is exactly 'Legion smoke check: S392569266-1.' (Acceptance 1). Independently, `jj diff --from main@origin --to 86168b42 --stat '~.legion'` shows the product diff is README.md only with 1 insertion (Requirement). The round-2 correction changed only .legion/implement.json. PR #106 CI green at head 86168b42: jobs 'check' and 'gate' both SUCCESS; PR OPEN and MERGEABLE.",
+      "surface": "GitHub contents API on the merge branch legion/S392569266-1 (the head that merges to main), independently driven by the tester at the round-2 head"
     }
   ],
-  "reviewRound": 3,
+  "reviewRound": 2,
   "schemaVersion": 1,
-  "summary": "Final test round 3: verified the review correction (name the Dispatch issue explicitly) on the real GitHub surface at head 094acca9. Proof line present and correct on branch head, absent on main; product diff is README.md alone; CI green. Implementer proof reproduced; verdict pass."
+  "summary": "Retest round 2: verified the correction on PR #106 at head 86168b42. The round-2 change is confined to .legion/implement.json (disposition only; the product line is spec-locked to the acceptance string); the product diff excluding .legion is unchanged (README.md only, one appended line), README's final line is byte-exact 'Legion smoke check: S392569266-1.', and CI (check, gate) is green with the PR MERGEABLE. Implementer proof re-run independently and verified with a main negative control."
 }
