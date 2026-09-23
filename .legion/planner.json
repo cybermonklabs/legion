@@ -1,0 +1,29 @@
+{
+  "completed": "2026-09-23T10:50:16.809413928Z",
+  "concerns": [
+    "Idempotency: if README.md already contains the line 'Legion Stage 3 smoke proof.', make no change and report the proof already satisfied rather than passing a no-op as a fresh edit (spec Errors).",
+    "README.md exists at repo root, so append the line at end of file; do not recreate the file.",
+    "PR must change exactly one file (README.md) adding exactly one line; any second changed file or extra line fails Acceptance 1."
+  ],
+  "independentTasks": 1,
+  "phase": "planner",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: drives the implementer edit -\u003e commit -\u003e 'jj bookmark set legion/S393260357-1' -\u003e git push -\u003e 'legion gh -- pr create' with 'Dispatch: S393260357-1' in the body and the READY-format E2E proof for the one-line README.md append."
+    ],
+    "review": [
+      "legion-worker: governs the reviewer CI/threads/E2E verification against GitHub; the thermonuclear passes are skipped because this is a docs-only PR per the skill's Thermo rule."
+    ],
+    "test": [
+      "legion-worker: defines the tester duty to verify the implementer proof and add its own production-like proof; here re-run 'git show --stat \u003cpr-head\u003e' (Acceptance 1, only README.md changed) and 'grep -F \"Legion Stage 3 smoke proof.\" README.md' on the merge commit (Acceptance 2)."
+    ]
+  },
+  "routingHints": {
+    "complexity": "trivial",
+    "estimatedImplementers": 1,
+    "skipArchitect": false
+  },
+  "schemaVersion": 1,
+  "taskCount": 1,
+  "workflowRecommendation": "Single implementer, trivial scope, no sub-planning. Append exactly one line to README.md."
+}

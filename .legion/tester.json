@@ -1,0 +1,34 @@
+{
+  "completed": "2026-09-23T11:14:15.022853793Z",
+  "failed": 0,
+  "failures": [],
+  "gates": {
+    "ci": "green at a0c0a6460fac — check (run 35853273951) pass, gate (run 35853273714) pass"
+  },
+  "implementerProof": {
+    "how": "Round-2 correction (a0c0a646) touched only .legion/implementer.json; README.md product diff unchanged (fingerprint cdde61aa identical at prior head 6abaf2ad and new head a0c0a646). Re-drove the GitHub Contents API surface for README.md at the new head and reproduced both criteria plus the negative control.",
+    "verdict": "verified"
+  },
+  "phase": "tester",
+  "proof": [
+    {
+      "command": "jj -R \"$LEGION_WORKSPACE\" diff --from \"fork_point(main@origin | \u003chead\u003e)\" --to \u003chead\u003e --git --context 0 ~(.legion | docs/solutions) | sed -e /^@@/d -e /^index /d | sha256sum, at 6abaf2ad and a0c0a646",
+      "criterion": "Acceptance 1: substantive change touches exactly one file, README.md, one line; unchanged by round-2 correction.",
+      "headSha": "a0c0a6460fac490bbc81450cfe32affb631d7aec",
+      "negativeControl": "Round-2 correction diff --stat shows only .legion/implementer.json changed (0 product files); a product regression would have altered the fingerprint.",
+      "observed": "Both heads yield cdde61aad666575a2a6c4e18898977ece3c9a930c541fc6dc38c22dc05971024 — README.md one-line add is the only product change, unchanged by the correction.",
+      "surface": "Product diff of the issue branch at new head a0c0a646 vs its fork point (unchanged-diff fingerprint, excluding .legion/docs-solutions)."
+    },
+    {
+      "command": "legion gh -- api repos/sjawhar/legion-smoke/contents/README.md?ref=a0c0a6460fac490bbc81450cfe32affb631d7aec --jq .content | base64 -d | grep -Fn \"Legion Stage 3 smoke proof.\"",
+      "criterion": "Acceptance 2: the added line reads exactly \"Legion Stage 3 smoke proof.\" and is present in README as GitHub serves the current PR head after round-2 correction.",
+      "headSha": "a0c0a6460fac490bbc81450cfe32affb631d7aec",
+      "negativeControl": "Same fetched content grepped for \"Legion Stage 4 smoke proof.\" returns nothing (grep exit 1).",
+      "observed": "3:Legion Stage 3 smoke proof. (grep exit 0) — exact line at line 3 of the GitHub-served README at new head.",
+      "surface": "GitHub Contents API for README.md at ref a0c0a6460fac490bbc81450cfe32affb631d7aec (PR #89 current head)."
+    }
+  ],
+  "rebaseRecheck": "re-check 6abaf2adc6b1 -\u003e a0c0a6460fac: product fingerprint unchanged (cdde61aad666575a2a6c4e18898977ece3c9a930c541fc6dc38c22dc05971024), correction limited to .legion/implementer.json; bare gates re-run (CI green + real-surface README).",
+  "round": "retest round 2",
+  "schemaVersion": 1
+}
