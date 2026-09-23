@@ -1,31 +1,32 @@
 {
   "acceptance": [
     {
-      "criterion": "README.md at the root of sjawhar/legion-smoke ends with the exact final line 'Stage 3 smoke check: Legion workflow proof.', confirmed on the default branch after the pull request merges.",
+      "criterion": "A new file smoke/stage3.txt exists at the root of sjawhar/legion-smoke on this issue's smoke branch (legion/S390275229-1), containing exactly the single line 'Legion Stage 3 workflow proof.' followed by one trailing newline and nothing else.",
       "driverSkill": "legion-worker",
       "id": 1,
-      "provingCommand": "legion gh -- api 'repos/sjawhar/legion-smoke/contents/README.md?ref=main' --jq .content | base64 -d | tail -n1 | grep -Fxq 'Stage 3 smoke check: Legion workflow proof.'",
-      "surface": "GitHub Contents API / merged README.md on the default branch (main) — the exact bytes a reader fetches."
+      "provingCommand": "legion gh -- api 'repos/sjawhar/legion-smoke/contents/smoke/stage3.txt?ref=legion/S390275229-1' --jq .content | base64 -d | cmp - \u003c(printf 'Legion Stage 3 workflow proof.\\n')",
+      "surface": "GitHub Contents API for smoke/stage3.txt on the PR head (branch legion/S390275229-1), and the merged default branch after merge — the exact bytes a reader fetches from the repository."
     }
   ],
-  "completed": "2026-09-23T14:22:58.514285137Z",
+  "completed": "2026-09-23T15:12:23.633826495Z",
   "concerns": [
-    "README.md exists at repo root (current final line 'Legion smoke proof: stage 3.'), so append the new line at end of file; do not recreate it — the spec Errors 'create if missing' branch does not apply.",
-    "Acceptance 1 requires the new line to be the FINAL line of README.md; ensure a trailing newline on the prior last line so the appended text lands as its own last line.",
-    "Idempotency (spec Errors): if 'Stage 3 smoke check: Legion workflow proof.' is already the last line, make no change and report the file already satisfies acceptance rather than passing a no-op as a fresh edit.",
-    "Exactly one file changes and the change is additive text only: only README.md, exactly one added line, no existing line touched. Only .legion process artifacts may accompany the product diff and are removed at the end of a clean review."
+    "The smoke/ directory already exists (contains legion16-green-*.md), so adding smoke/stage3.txt requires no directory creation; the spec's 'create smoke/ if missing' branch does not apply.",
+    "Acceptance 1 requires exact bytes: the single line 'Legion Stage 3 workflow proof.' plus exactly one trailing newline and nothing else — no extra blank line, no leading/trailing whitespace, no BOM. Verify with byte-for-byte cmp, not a substring grep that would strip the trailing newline.",
+    "Idempotency (spec Errors): if smoke/stage3.txt already exists on the branch, overwrite it to the exact contents rather than appending/duplicating; if it already matches exactly, make no change and report the file already satisfies acceptance rather than passing a no-op as a fresh edit.",
+    "Exactly one product file changes: only smoke/stage3.txt, a single added file, no existing path touched. Only .legion process artifacts may accompany the product diff and are removed at the end of a clean review. Pre-existing stale .legion/*.json and docs/solutions/*.md in the workspace are prior-issue artifacts, not this issue's product diff.",
+    "Prior .legion/plan.json in this workspace targeted a different (stale) key S391283701-1 and a README.md append; this plan supersedes it for S390275229-1 per the approved spec v3 (dispatch://S390275229-1/spec), whose change is the new file smoke/stage3.txt."
   ],
   "independentTasks": 1,
   "phase": "plan",
   "requiredSkills": {
     "implement": [
-      "legion-worker: drives the implementer append -\u003e commit -\u003e 'jj -R \"$LEGION_WORKSPACE\" bookmark set legion/S391283701-1' -\u003e 'jj -R \"$LEGION_WORKSPACE\" git push --bookmark legion/S391283701-1' -\u003e 'legion gh -- pr create' with 'Dispatch: S391283701-1' in the body, and the READY-format E2E proof for the one-line README.md append 'Stage 3 smoke check: Legion workflow proof.' verified as the final line via the GitHub Contents API."
+      "legion-worker: drives the implementer create-file -\u003e commit -\u003e 'jj -R \"$LEGION_WORKSPACE\" bookmark set legion/S390275229-1' -\u003e 'jj -R \"$LEGION_WORKSPACE\" git push --bookmark legion/S390275229-1' -\u003e 'legion gh -- pr create' with 'Dispatch: S390275229-1' in the body, and the READY-format E2E proof that smoke/stage3.txt's exact bytes are 'Legion Stage 3 workflow proof.\\n' via the GitHub Contents API, with a negative control (a deliberately wrong final line/path absent)."
     ],
     "review": [
       "legion-worker: governs the reviewer's CI/threads/E2E verification against GitHub directly; the thermonuclear passes are skipped because this is a docs-only PR per the skill's Thermo rule, and approval requires both the implementer and tester E2E lines present."
     ],
     "test": [
-      "legion-worker: defines the tester duty to verify the implementer's proof and add its own production-like proof; re-drive the GitHub Contents API for README.md at the PR head, confirm 'Stage 3 smoke check: Legion workflow proof.' is the exact final line and only README.md changed with exactly one added line, plus a negative control on a non-added line."
+      "legion-worker: defines the tester duty to verify the implementer's proof and add its own production-like proof — re-fetch smoke/stage3.txt via the GitHub Contents API at the PR head, confirm byte-exact contents (cmp against printf 'Legion Stage 3 workflow proof.\\n') and that only smoke/stage3.txt changed (exactly one added file, no existing path touched), plus a negative control on a wrong line or path."
     ]
   },
   "routingHints": {
@@ -35,7 +36,7 @@
   },
   "schemaVersion": 1,
   "surfaces": {
-    "acceptance1": "GitHub-served README.md on the merged default branch (and the PR branch head) via the GitHub Contents API — the exact bytes a reader fetches. Command: legion gh -- api 'repos/sjawhar/legion-smoke/contents/README.md?ref=\u003cref\u003e' --jq .content | base64 -d | tail -n1, then compare to 'Stage 3 smoke check: Legion workflow proof.'; and legion gh -- pr checks \u003cpr\u003e --repo sjawhar/legion-smoke to confirm required checks green at head SHA."
+    "acceptance1": "GitHub-served smoke/stage3.txt on the PR branch head (and the merged default branch) via the GitHub Contents API — the exact bytes a reader fetches. Command: legion gh -- api 'repos/sjawhar/legion-smoke/contents/smoke/stage3.txt?ref=\u003cref\u003e' --jq .content | base64 -d, compared byte-for-byte to printf 'Legion Stage 3 workflow proof.\\n' (cmp exit 0); and legion gh -- pr checks \u003cpr\u003e --repo sjawhar/legion-smoke to confirm required checks green at the head SHA."
   },
   "taskCount": 1,
   "tasks": [
@@ -43,12 +44,12 @@
       "acceptanceCovered": [
         1
       ],
-      "change": "Append exactly one new final line reading 'Stage 3 smoke check: Legion workflow proof.'. Touch no existing line; change no other file, workflow, or configuration.",
+      "change": "Create the new file smoke/stage3.txt whose full contents are exactly the single line 'Legion Stage 3 workflow proof.' followed by exactly one trailing newline. If the path already exists on the branch, overwrite it to those exact contents (never append or duplicate). Touch no other file, workflow, or configuration.",
       "id": 1,
-      "ordering": "Single task; no dependencies. Implementer edits README.md, commits ('feat: append stage-3 smoke-check line to README' or similar), records the implement handoff, bookmarks legion/S391283701-1, pushes, and opens the PR with body line 'Dispatch: S391283701-1'.",
-      "target": "README.md at repository root of sjawhar/legion-smoke (already exists; current tail lines: 'Legion Stage 3 smoke proof.', 'Legion smoke proof: stage 3.').",
-      "title": "Append the Stage 3 smoke-check line to README.md"
+      "ordering": "Single task; no dependencies. Implementer creates smoke/stage3.txt, commits (e.g. 'feat: add stage-3 smoke proof file'), records the implement handoff, sets bookmark legion/S390275229-1, pushes with jj git push --bookmark legion/S390275229-1, and opens the PR with the body line 'Dispatch: S390275229-1'.",
+      "target": "smoke/stage3.txt at the repository root of sjawhar/legion-smoke (new file; the smoke/ directory already exists, holding legion16-green-*.md files, but no stage3.txt yet).",
+      "title": "Create smoke/stage3.txt with the Stage 3 proof line"
     }
   ],
-  "workflowRecommendation": "Single implementer, trivial docs-only scope, no sub-planning. Append exactly one final line ('Stage 3 smoke check: Legion workflow proof.') to README.md; docs-only PR so the reviewer skips the thermonuclear passes."
+  "workflowRecommendation": "Single implementer, trivial one-file additive scope, no sub-planning. Create smoke/stage3.txt with exact contents 'Legion Stage 3 workflow proof.' plus one trailing newline; docs-only PR so the reviewer skips the thermonuclear passes."
 }

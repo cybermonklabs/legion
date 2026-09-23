@@ -1,28 +1,38 @@
 {
-  "completed": "2026-09-23T14:47:04.728448431Z",
+  "completed": "2026-09-23T15:30:52.252234858Z",
+  "failed": 0,
   "failures": [],
   "implementerProof": {
-    "how": "Round-2 retest. Re-ran the implementer's exact proving command at the anchored product commit 79204cdc30f7 (legion gh -- api 'repos/sjawhar/legion-smoke/contents/README.md?ref=79204cdc30f7b411420ff60f3a733c6f22fe19bd' --jq .content | base64 -d | tail -n1 | grep -Fxq 'Stage 3 smoke check: Legion workflow proof.') → exit 0, and independently drove the same surface at the round-2 PR head 1f9d2593 → exit 0. Confirmed the round-2 correction commit 1f9d2593 touched only .legion/implement.json (handoff refresh), so the README product diff is byte-identical (additions:1, deletions:0; one added final line, no existing line touched).",
+    "how": "Independently re-drove the real surface at the round-2 head 4848bb0d36eff79fe262df70d223bca6c250db26: fetched smoke/stage3.txt via the GitHub Contents API and compared byte-for-byte to printf 'Legion Stage 3 workflow proof.\\n' (cmp exit 0, identical sha256 4ac0971f7b0cd4ad3c7b309deb2d9a2664e1c8d226c3c730f816113455297eba, 31 bytes); confirmed only smoke/stage3.txt is a product change via jj diff -r 8e88806e --stat (1 file, 1 insertion). The round-2 correction is documentation-only: it changed only .legion/implement.json (5 insertions, 4 deletions) and left the product diff unchanged.",
     "verdict": "verified"
   },
   "phase": "test",
   "proof": [
     {
-      "command": "legion gh -- api 'repos/sjawhar/legion-smoke/contents/README.md?ref=1f9d2593fd3a865cbdc79de34ee5eecb54ac0073' --jq .content | base64 -d | tail -n1 | grep -Fxq 'Stage 3 smoke check: Legion workflow proof.'",
-      "criterion": "Acceptance 1: README.md ends with the exact final line 'Stage 3 smoke check: Legion workflow proof.' on the GitHub-served round-2 PR head.",
-      "headSha": "1f9d2593fd3a865cbdc79de34ee5eecb54ac0073",
-      "negativeControl": "Same fetched content, grep -Fxq 'Stage 4 smoke check: Legion workflow proof.' returned exit 1 — the deliberately wrong final line is absent.",
-      "observed": "GitHub Contents API for README.md at PR #93 round-2 head 1f9d2593 returned final line exactly 'Stage 3 smoke check: Legion workflow proof.' (grep -Fxq exit 0).",
-      "surface": "GitHub Contents API for README.md at PR #93 round-2 head (https://github.com/sjawhar/legion-smoke/pull/93) — the exact bytes a reader fetches."
+      "command": "legion gh -- api 'repos/sjawhar/legion-smoke/contents/smoke/stage3.txt?ref=4848bb0d36eff79fe262df70d223bca6c250db26' --jq .content | base64 -d \u003e /tmp/actual_stage3.txt; cmp /tmp/expected_stage3.txt /tmp/actual_stage3.txt; sha256sum",
+      "criterion": "Acceptance 1: smoke/stage3.txt on branch legion/S390275229-1 contains exactly 'Legion Stage 3 workflow proof.' plus one trailing newline and nothing else, as served by GitHub.",
+      "headSha": "4848bb0d36eff79fe262df70d223bca6c250db26",
+      "negativeControl": "grep -Fxq 'Legion Stage 4 workflow proof.' on the fetched content returns nothing (exit 1); fetching wrong path smoke/stage4.txt returns HTTP 404 Not Found.",
+      "observed": "Byte-exact match: cmp exit 0, 31 bytes, sha256 4ac0971f7b0cd4ad3c7b309deb2d9a2664e1c8d226c3c730f816113455297eba; single line + one trailing \\n, no extra bytes.",
+      "surface": "GitHub Contents API for smoke/stage3.txt at PR #95 head 4848bb0d36eff79fe262df70d223bca6c250db26 — the exact bytes a reader fetches from the repository."
     },
     {
-      "command": "legion gh -- api repos/sjawhar/legion-smoke/commits/1f9d2593fd3a865cbdc79de34ee5eecb54ac0073/check-runs --jq '[.check_runs[]] | group_by(.name) | map(max_by(.id) | {name, conclusion})'",
-      "criterion": "Acceptance 1: the product diff remains exactly one added README line with no existing line touched, and the latest required checks are green at the round-2 head.",
-      "headSha": "1f9d2593fd3a865cbdc79de34ee5eecb54ac0073",
-      "negativeControl": "A second changed product file or a modified/removed existing README line would show in the PR files patch; the patch shows additions:1, deletions:0 with a single '+Stage 3 smoke check: Legion workflow proof.'. A red required check would show conclusion!=success on the latest run per context.",
-      "observed": "Latest check-run per required context at head 1f9d2593: check=success (id 107233110747), gate=success (id 107233109352). Round-2 correction commit changed only .legion/implement.json. An older duplicate gate run (id 107233080048) remained in_progress but is superseded by the newer passing gate run.",
-      "surface": "GitHub Check-Runs and Pull Files API for PR #93 at round-2 head 1f9d2593 — the gates and diff a reviewer reads."
+      "command": "jj -R \"$LEGION_WORKSPACE\" diff -r 8e88806e --stat",
+      "criterion": "Acceptance 1: the change adds exactly one product file, smoke/stage3.txt, touching no existing path.",
+      "headSha": "8e88806e1b3698bd026d1f6152fd4d4d2c08c471",
+      "negativeControl": "A second changed product file or a modified existing line would appear in --stat; none does.",
+      "observed": "smoke/stage3.txt | 1 +; 1 file changed, 1 insertion(+), 0 deletions(-).",
+      "surface": "The substantive implementation commit 8e88806e on branch legion/S390275229-1."
+    },
+    {
+      "command": "legion gh -- pr checks 95 --repo sjawhar/legion-smoke",
+      "criterion": "Bare gates green at the round-2 head (retest round 2).",
+      "headSha": "4848bb0d36eff79fe262df70d223bca6c250db26",
+      "negativeControl": "A failing or pending required check would show fail/pending rather than pass; none does.",
+      "observed": "check pass, gate pass (all required checks success) at the head SHA.",
+      "surface": "GitHub Actions checks on PR #95 at head 4848bb0d36eff79fe262df70d223bca6c250db26."
     }
   ],
+  "rebaseRecheck": "Round-2 corrective push moved PR #95 head fe4c72aee72b5bf33df17f8dd64fa39b10b0ae25 -\u003e 4848bb0d36eff79fe262df70d223bca6c250db26. Product-diff fingerprint (excluding .legion and docs/solutions) is identical at both heads: 16619550943fbc964cab3f66bbc3cd880dab4cbc54bf366c1461f67ee09775b5. Correction touched only excluded .legion process files (implement.json); acceptance re-verified on the real surface and bare gates (CI check+gate) green at the new head.",
   "schemaVersion": 1
 }
