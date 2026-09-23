@@ -1,29 +1,31 @@
 {
   "branch": "legion/S392934082-1",
-  "completed": "2026-09-23T08:34:32.233894259Z",
+  "completed": "2026-09-23T08:42:12.653829734Z",
   "filesChanged": [
     "smoke/s392934082-1-green-20260923T082020Z.md"
   ],
-  "headSha": "83b1995f0b41",
-  "notes": "Throwaway stage-3 workflow proof. Single additive markdown file, no README/CI/other touches. Do not merge per operator instruction.",
+  "headSha": "1fdac733550285af25ed59cbac756398330bf076",
+  "notes": "Throwaway stage-3 workflow proof, correction round 1: appended 'Correction round 1 applied.' to the single probe line. No other files touched. Do not merge per operator instruction.",
   "phase": "implementer",
   "prNumber": 86,
   "prUrl": "https://github.com/sjawhar/legion-smoke/pull/86",
   "proof": [
     {
       "command": "legion gh -- api repos/sjawhar/legion-smoke/contents/smoke/s392934082-1-green-20260923T082020Z.md?ref=legion/S392934082-1 --jq .content | base64 -d",
-      "headSha": "83b1995f0b41",
+      "headSha": "1fdac733550285af25ed59cbac756398330bf076",
       "negativeControl": "legion gh -- api repos/sjawhar/legion-smoke/contents/smoke/does-not-exist-20260923T082020Z.md?ref=legion/S392934082-1 -\u003e Not Found (HTTP 404)",
-      "observed": "the exact probe line: S392934082-1 stage 3 architect smoke probe (20260923T082020Z). Safe to merge; throwaway.",
-      "surface": "GitHub remote branch legion/S392934082-1 (the artifact that becomes main) on sjawhar/legion-smoke"
+      "observed": "the exact corrected probe line: S392934082-1 stage 3 architect smoke probe (20260923T082020Z). Safe to merge; throwaway. Correction round 1 applied.",
+      "surface": "GitHub remote branch legion/S392934082-1 (the artifact that becomes main) on sjawhar/legion-smoke, after correction round 1"
     },
     {
-      "command": "jj -R \"$LEGION_WORKSPACE\" diff --from main@origin --to @ --summary",
-      "headSha": "83b1995f0b41",
-      "negativeControl": "any additional A/M/D product line would be a reject to implementer; none present",
-      "observed": "exactly one product file added: A smoke/s392934082-1-green-20260923T082020Z.md (plus the exempt .legion/ handoff commit)",
-      "surface": "single-file diff (acceptance 2) via jj"
+      "command": "jj -R \"$LEGION_WORKSPACE\" diff --from main@origin --to \u003ccorrection-commit\u003e --summary '~.legion'",
+      "headSha": "1fdac733550285af25ed59cbac756398330bf076",
+      "negativeControl": "any additional product A/M/D line would be a reject to implementer; none present",
+      "observed": "exactly one product file: M smoke/s392934082-1-green-20260923T082020Z.md and nothing else (net diff vs main remains a single added file)",
+      "surface": "single-file diff (acceptance 2) via jj, product files only"
     }
   ],
-  "schemaVersion": 1
+  "round": 1,
+  "schemaVersion": 1,
+  "threadResolution": "round 1: reviewer submitted CHANGES_REQUESTED with no inline threads; legion threads resolve reports 0 resolved, 0 left open."
 }
