@@ -1,0 +1,37 @@
+{
+  "acceptanceSurfaces": [
+    "AC1 (file present on main with probe line): surface = merged main branch on sjawhar/legion-smoke; command = `legion gh -- api repos/sjawhar/legion-smoke/contents/smoke/s392934082-1-green-20260923T082020Z.md?ref=main --jq .content | base64 -d`; observed = the exact probe line. Negative control: query a non-existent probe filename -\u003e 404.",
+    "AC2 (exactly one added file, nothing else changed): surface = the pull request diff on GitHub; command = `legion gh -- pr diff \u003cn\u003e --repo sjawhar/legion-smoke --name-only` plus `jj -R \"$LEGION_WORKSPACE\" diff --from main@origin --to @ --summary`; observed = a single `A smoke/s392934082-1-green-20260923T082020Z.md` (plus only the exempt .legion/ handoff commits, removed before merge). Negative control: any additional A/M/D line -\u003e reject to implementer."
+  ],
+  "completed": "2026-09-23T08:27:04.998677201Z",
+  "concerns": [
+    "Acceptance 2 forbids any other file change; the implementer must ensure the diff summary shows exactly one added file (no incidental edits, no README/CI touch).",
+    "The .legion/ handoff commits are process artifacts and are exempt from the diff-summary rule; the review-round deletion of .legion/ is the only later touch."
+  ],
+  "files": [
+    "smoke/s392934082-1-green-20260923T082020Z.md (new, single line: `S392934082-1 stage 3 architect smoke probe (20260923T082020Z). Safe to merge; throwaway.`)"
+  ],
+  "independentTasks": 1,
+  "phase": "planner",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: booted phase-worker charter for creating the file, jj split, bookmark push, PR open, and implementer E2E proof — the only skill governing this workflow.",
+      "none: repo has no domain/agent skills (README.md + smoke/*.md markers + two GitHub workflows only); the change is an additive throwaway markdown file needing no repository-specific tooling."
+    ],
+    "review": [
+      "legion-worker: reviewer charter for verifying CI/threads/E2E facts on GitHub and the single-file diff.",
+      "none: no repo review or lint skill applies to a one-line markdown marker; correctness is the exact filename, the single probe line, and a one-added-file diff."
+    ],
+    "test": [
+      "legion-worker: tester charter for verifying the implementer proof and recording the E2E (tester) diff-summary check.",
+      "none: no repo test skill or suite exists (ci.yml is a 20s sleep, fail-on-demand keys off a .fail-me file); acceptance is proven by the PR diff summary and reading the file on main, not a unit suite."
+    ]
+  },
+  "routingHints": {
+    "complexity": "trivial",
+    "estimatedImplementers": 1
+  },
+  "schemaVersion": 1,
+  "taskCount": 1,
+  "workflowRecommendation": "Single implementer creates the one additive file, opens the PR, tester confirms exactly one added file, reviewer approves, merger publishes READY. No decomposition; no parallel work."
+}
