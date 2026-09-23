@@ -1,0 +1,27 @@
+{
+  "completed": "2026-09-23T07:39:01.939287162Z",
+  "concerns": [
+    "This is a Stage 3 workflow proof, not a product change; the only risk is a stray second-file edit, which acceptance 2 guards against."
+  ],
+  "independentTasks": 1,
+  "phase": "planner",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: the implementer follows it to make the one-line README.md edit, set/push bookmark legion/S393957426-1, open the PR with the READY-format body containing 'Dispatch: S393957426-1', and record the production-like E2E proof (criterion 1) on the sandbox-repo PR-diff surface with a negative control."
+    ],
+    "review": [
+      "legion-worker: the reviewer follows it to verify CI, threads, and both E2E lines against GitHub directly and submit exactly one review per round, approving only a head that carries no .legion/."
+    ],
+    "test": [
+      "legion-worker: the tester follows it to verify the implementer's proof by re-opening the PR diff and running 'git diff --name-only' on the smoke branch, then record its own E2E (tester) line for criteria 1 and 2."
+    ]
+  },
+  "routingHints": {
+    "complexity": "trivial",
+    "estimatedImplementers": 1,
+    "skipArchitect": true
+  },
+  "schemaVersion": 1,
+  "taskCount": 1,
+  "workflowRecommendation": "Single implementer, single file. Append the exact line 'Legion Stage 3 smoke proof: pipeline verified.' to the end of README.md on branch legion/S393957426-1; if README.md is absent create it containing only that line; if the line already exists make no change and report already-at-target. No source, build, or runtime surface is touched."
+}
