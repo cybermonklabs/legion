@@ -1,0 +1,28 @@
+{
+  "completed": "2026-09-23T13:16:54.033144631Z",
+  "failures": [],
+  "implementerProof": {
+    "how": "Final retest at PR #91 head d948bdc0118d794eac761b45b1461ec45e17d85b. The round-3 final correction (commit d948bdc0) touches only .legion/implement.json (3 insertions, 2 deletions); it makes no README product change. Re-drove the implementer's surface independently: fetched README.md from the GitHub Contents API at d948bdc0 and confirmed line 4 is exactly 'Legion smoke proof: stage 3.' (grep -Fn exit 0). jj diff --from cc6f3287 --to d948bdc0 -- README.md shows 0 changes, so the substantive README diff (feat commit cc6f3287, README.md +1 line) is unchanged and correct.",
+    "verdict": "verified"
+  },
+  "phase": "test",
+  "proof": [
+    {
+      "command": "legion gh -- api 'repos/sjawhar/legion-smoke/contents/README.md?ref=d948bdc0118d794eac761b45b1461ec45e17d85b' --jq .content | base64 -d | grep -Fn 'Legion smoke proof: stage 3.'",
+      "criterion": "Acceptance 1: README.md gains exactly one new line reading 'Legion smoke proof: stage 3.', confirmed on the GitHub-served PR head at the final correction.",
+      "headSha": "d948bdc0118d794eac761b45b1461ec45e17d85b",
+      "negativeControl": "Same fetched content grepped for 'Legion smoke proof: stage 4.' returns nothing (grep exit 1).",
+      "observed": "4:Legion smoke proof: stage 3. (grep exit 0) — exact line present at line 4, distinct from pre-existing 'Legion Stage 3 smoke proof.' at line 3. jj diff --from cc6f3287 --to d948bdc0 -- README.md: 0 files changed (correction left README untouched).",
+      "surface": "GitHub Contents API for README.md at PR #91 head d948bdc0 (https://github.com/sjawhar/legion-smoke/pull/91) — the exact bytes a reader fetches."
+    },
+    {
+      "command": "legion gh -- pr checks 91 --repo sjawhar/legion-smoke",
+      "criterion": "Acceptance 2: the delivering pull request shows green required checks at the final head.",
+      "headSha": "d948bdc0118d794eac761b45b1461ec45e17d85b",
+      "negativeControl": "The gate job (fail-on-demand) fails when a .fail-me file is present; none is present, so it passed.",
+      "observed": "check pass (run 35865891734) and gate pass (run 35865891737) at head d948bdc0118d794eac761b45b1461ec45e17d85b — required checks green.",
+      "surface": "GitHub pull request #91 Checks tab."
+    }
+  ],
+  "schemaVersion": 1
+}

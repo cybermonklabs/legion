@@ -1,0 +1,63 @@
+{
+  "acceptance": [
+    {
+      "criterion": "README.md gains exactly one new line reading 'Legion smoke proof: stage 3.', confirmed on merged main.",
+      "driverSkill": "legion-worker",
+      "id": 1,
+      "provingCommand": "legion gh -- api 'repos/sjawhar/legion-smoke/contents/README.md?ref=main' --jq .content | base64 -d | grep -Fn 'Legion smoke proof: stage 3.'",
+      "surface": "GitHub Contents API / merged README.md on main"
+    },
+    {
+      "criterion": "The delivering pull request shows green required checks.",
+      "driverSkill": "legion-worker",
+      "id": 2,
+      "provingCommand": "legion gh -- pr checks \u003cpr\u003e --repo sjawhar/legion-smoke",
+      "surface": "GitHub pull request Checks tab"
+    }
+  ],
+  "completed": "2026-09-23T12:51:42.880371335Z",
+  "concerns": [
+    "The workspace README already contains 'Legion Stage 3 smoke proof.' (from merged #89, issue S393260357-1). The line required by THIS issue's approved spec is different text: 'Legion smoke proof: stage 3.' — append it as a new line; do not treat the existing similar line as satisfying the criterion.",
+    "Idempotency (spec Errors): if README.md already contains 'Legion smoke proof: stage 3.', make no change and report the proof already satisfied rather than passing a no-op as a fresh edit.",
+    "README.md exists at repo root, so append at end of file; do not recreate it (the 'create if missing' Errors branch does not apply).",
+    "Acceptance 1 requires exactly one added product line and only README.md changed; any second changed product file or extra line fails it. Only .legion process artifacts may accompany it and are removed at the end of a clean review."
+  ],
+  "independentTasks": 1,
+  "phase": "plan",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: drives the implementer append -\u003e commit -\u003e 'jj -R \"$LEGION_WORKSPACE\" bookmark set legion/S391024427-1' -\u003e 'jj -R \"$LEGION_WORKSPACE\" git push --bookmark legion/S391024427-1' -\u003e 'legion gh -- pr create' with 'Dispatch: S391024427-1' in the body, plus the READY-format E2E proof for the one-line README.md append 'Legion smoke proof: stage 3.'"
+    ],
+    "review": [
+      "legion-worker: governs the reviewer's CI/threads/E2E verification against GitHub directly; the thermonuclear passes are skipped because this is a docs-only PR per the skill's Thermo rule, and approval requires both E2E lines present."
+    ],
+    "test": [
+      "legion-worker: defines the tester duty to verify the implementer's proof and add its own production-like proof; re-drive the GitHub Contents API for README.md at the PR head (Acceptance 1: only README.md changed, exactly one added line) and confirm the exact line 'Legion smoke proof: stage 3.' is present, plus a negative control on a not-added line."
+    ]
+  },
+  "routingHints": {
+    "complexity": "trivial",
+    "estimatedImplementers": 1,
+    "skipArchitect": false
+  },
+  "schemaVersion": 1,
+  "surfaces": {
+    "acceptance1": "GitHub-served README.md on merged main (and the PR branch head) via the GitHub Contents API and the merged file on main — the exact bytes a reader fetches. Command: legion gh -- api 'repos/sjawhar/legion-smoke/contents/README.md?ref=\u003cref\u003e' --jq .content | base64 -d | grep -Fn 'Legion smoke proof: stage 3.'",
+    "acceptance2": "The pull request's Checks tab on GitHub. Command: legion gh -- pr checks \u003cpr\u003e --repo sjawhar/legion-smoke, and legion gh -- run view \u003crun-id\u003e to confirm required checks green at head SHA."
+  },
+  "taskCount": 1,
+  "tasks": [
+    {
+      "acceptanceCovered": [
+        1,
+        2
+      ],
+      "change": "Append exactly one new line at end of file reading 'Legion smoke proof: stage 3.' — a distinct line from the pre-existing 'Legion Stage 3 smoke proof.' merged by #89. Touch no existing line; change no other file.",
+      "id": 1,
+      "ordering": "Single task; no dependencies. Implementer edits, commits ('feat: append stage-3 smoke proof line to README' or similar), records handoff, bookmarks legion/S391024427-1, pushes, opens PR with body line 'Dispatch: S391024427-1'.",
+      "target": "README.md at repository root (already exists; current content: '# legion-smoke', 'Legion-on-omp smoke sandbox', 'Legion Stage 3 smoke proof.').",
+      "title": "Append the stage-3 proof line to README.md"
+    }
+  ],
+  "workflowRecommendation": "Single implementer, trivial docs-only scope, no sub-planning. Append exactly one line ('Legion smoke proof: stage 3.') to README.md; docs-only PR so reviewer skips thermonuclear passes."
+}
