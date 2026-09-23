@@ -1,25 +1,26 @@
 {
-  "completed": "2026-09-23T08:02:34.307260139Z",
+  "completed": "2026-09-23T08:08:39.804966584Z",
   "failed": 0,
   "failures": [],
   "implementerProof": {
-    "how": "Independently re-ran the implementer's command `gh api repos/sjawhar/legion-smoke/contents/SMOKE.md` at the PR head and got the identical result: decoded body exactly 'Legion smoke check: workflow reached implementation.\\n', blob sha c312191ad85587c1ff0cf1e0c20a2b66abc67cc2, size 53. Matches implement.json proof blob sha exactly.",
+    "how": "Retest round 1 after the correction. Independently re-ran the implementer's `gh api repos/sjawhar/legion-smoke/contents/SMOKE.md` at the corrected PR head 7e2a39c3 and got: decoded body exactly 'Legion smoke check: workflow reached implementation.' with NO trailing newline, size 52, blob sha 5e2c924f9c802bc2f14eeb6d764f53a2bc226194. Confirmed identical in the local workspace (wc -c SMOKE.md = 52, od shows the file ends at 'ion.' with no newline).",
     "verdict": "verified"
   },
   "observations": [
-    "One-file new-file add (SMOKE.md); no existing file modified. Diff from main@origin adds only SMOKE.md plus the .legion/ handoff ledger files.",
-    "GitHub PR object headRefOid (9359477e) differs from the remote branch ref / handoff commit (ed672e8d): same logical jj change re-committed with different metadata; SMOKE.md content verified identical at both SHAs.",
+    "Retest round 1: correction commit 7e2a39c3 ('smoke: SMOKE.md contents are exactly the single line') dropped the trailing newline that round-1 review flagged. File is now exactly 52 bytes.",
+    "CI check-runs at 7e2a39c3: check=success, gate=success. Both required checks green.",
+    "Round-1 tester handoffs (test.json a009906e, tester.json 4fe29c49) are in the branch chain beneath the correction and were pushed with the implementer's corrective push.",
     "Stage 3 throwaway workflow proof; do not merge."
   ],
   "passed": 1,
   "phase": "tester",
   "proof": [
     {
-      "command": "gh api repos/sjawhar/legion-smoke/contents/SMOKE.md?ref=ed672e8d88e0fc505db144449d37effa873ffad3 --jq '{sha,size,decoded:(.content|@base64d)}'",
-      "criterion": "Acceptance 1: SMOKE.md exists at the repository root and contains exactly the line 'Legion smoke check: workflow reached implementation.'",
-      "headSha": "ed672e8d88e0fc505db144449d37effa873ffad3",
+      "command": "gh api repos/sjawhar/legion-smoke/contents/SMOKE.md?ref=7e2a39c3633261bdad7ffc501a9a2a4063ae8570 --jq '{sha,size,decoded:(.content|@base64d)}'",
+      "criterion": "Acceptance 1 (as corrected in review round 1): SMOKE.md's entire contents are exactly the single line 'Legion smoke check: workflow reached implementation.' with no trailing newline.",
+      "headSha": "7e2a39c3633261bdad7ffc501a9a2a4063ae8570",
       "negativeControl": "gh api repos/sjawhar/legion-smoke/contents/SMOKE.md?ref=main -\u003e HTTP 404 Not Found: SMOKE.md is absent on main pre-merge, confirming the file is delivered by this change and not already present.",
-      "observed": "HTTP 200; decoded body exactly 'Legion smoke check: workflow reached implementation.\\n'; blob sha c312191ad85587c1ff0cf1e0c20a2b66abc67cc2; size 53. Identical result at GitHub PR-reported head 9359477e6e4f8c37a81ec712fbf24d4ccc704218 (same logical 'implement: record handoff' commit, parent e1e1791f).",
+      "observed": "HTTP 200; decoded body exactly 'Legion smoke check: workflow reached implementation.' (52 bytes, no trailing newline); blob sha 5e2c924f9c802bc2f14eeb6d764f53a2bc226194; size 52. The correction commit 7e2a39c3 modifies SMOKE.md (+1/-1) dropping the trailing newline. CI at this head: check=success, gate=success.",
       "surface": "GitHub PR #85 head branch legion/S390543904-1 on github.com/sjawhar/legion-smoke, read via the GitHub contents API (production-like: the pushed branch a human would merge)."
     }
   ],
