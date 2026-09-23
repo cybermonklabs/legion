@@ -1,0 +1,43 @@
+{
+  "branch": "legion/S390543904-1",
+  "ci": [
+    {
+      "headSha": "e1e1791fa72ea867d78676844629708ead483126",
+      "name": "check",
+      "result": "pass",
+      "runId": "35833779464"
+    },
+    {
+      "headSha": "e1e1791fa72ea867d78676844629708ead483126",
+      "name": "gate",
+      "result": "pass",
+      "runId": "35833779475"
+    }
+  ],
+  "completed": "2026-09-23T07:56:19.781440278Z",
+  "deviations": [],
+  "filesChanged": [
+    "SMOKE.md"
+  ],
+  "headSha": "e1e1791fa72ea867d78676844629708ead483126",
+  "notes": "One-file new-file add; no existing file modified. Stage 3 proof operation: do not merge. Post-merge production check will read SMOKE.md on main.",
+  "openQuestions": [],
+  "phase": "implementer",
+  "prNumber": 85,
+  "prUrl": "https://github.com/sjawhar/legion-smoke/pull/85",
+  "proof": [
+    {
+      "command": "gh api repos/sjawhar/legion-smoke/contents/SMOKE.md?ref=e1e1791fa72ea867d78676844629708ead483126",
+      "criterion": "Acceptance 1: SMOKE.md exists at the repo root and contains exactly 'Legion smoke check: workflow reached implementation.' (fully proven post-merge on main; proven here on the PR head branch).",
+      "headSha": "e1e1791fa72ea867d78676844629708ead483126",
+      "negativeControl": "gh api repos/sjawhar/legion-smoke/contents/SMOKE.md?ref=main -\u003e HTTP 404 Not Found (SMOKE.md absent on main pre-merge, confirming the file is delivered by this change and not already present)",
+      "observed": "HTTP 200; decoded body exactly 'Legion smoke check: workflow reached implementation.'; blob sha c312191ad85587c1ff0cf1e0c20a2b66abc67cc2",
+      "surface": "GitHub branch head (production-like: the pushed legion/S390543904-1 branch on github.com/sjawhar/legion-smoke, read via the GitHub contents API)"
+    }
+  ],
+  "schemaVersion": 1,
+  "threads": {
+    "resolved": 0,
+    "unresolved": 0
+  }
+}
