@@ -1,11 +1,12 @@
 {
-  "completed": "2026-09-23T13:15:56.822786574Z",
+  "completed": "2026-09-23T14:48:17.784592758Z",
   "deviations": [
-    "None from the plan. The issue branch legion/S391024427-1 also carries .legion/plan.json (planner's process artifact) and this .legion/implement.json handoff; both are Legion process artifacts, not product files, removed by the implementer's .legion deletion push at the end of a clean review. Pre-existing .legion/{planner,implementer,tester}.json on main are from merged #89 (issue S393260357-1) and are unrelated to this issue's diff.",
-    "Per the human Stage-3 proof instruction on S391024427-1, this run stops at legion handoff complete and does not merge.",
-    "Round-1 correction response: the reviewer's round-1 review (sjawhar-agent[bot], CHANGES_REQUESTED, body 'Stage 3 proof scripted changes requested, round 1.') carried no inline review threads and no actionable finding; `legion threads resolve --pr 91 --repo sjawhar/legion-smoke` reports 'no unresolved threads' (exit 0). The approved spec forbids any further README content change (exactly one added line 'Legion smoke proof: stage 3.'), which is already present and CI-green. The minimal responsive correction is therefore documentation-only: this refreshed implement handoff plus an updated PR body; the README product diff (substantive commit cc6f3287, README.md | 1 +) is unchanged and correct.",
-    "Round-2 correction response: the reviewer's round-2 review (sjawhar-agent[bot], CHANGES_REQUESTED at d4ff1a9e, body 'Stage 3 proof scripted changes requested, round 2.') again carried no inline review threads and no actionable finding; `legion threads resolve --pr 91 --repo sjawhar/legion-smoke` reports 'no unresolved threads' (exit 0). Same disposition as round 1: documentation-only refresh of this handoff and the PR body; the README product diff (substantive commit cc6f3287, README.md | 1 +) is unchanged and correct.",
-    "Round-3 final correction response: the reviewer's round-3 review (sjawhar-agent[bot], CHANGES_REQUESTED at 1656341e, body 'Stage 3 proof scripted changes requested, round 3.') again carried no inline review threads and no actionable finding; `legion threads resolve --pr 91 --repo sjawhar/legion-smoke` reports 'no unresolved threads' (exit 0). Final disposition: documentation-only refresh of this handoff and the PR body; the README product diff (substantive commit cc6f3287, README.md | 1 +) is unchanged and correct."
+    "Per the human Stage-3 proof instruction on S391283701-1, this run stops at legion handoff complete and does not merge.",
+    "Pre-existing .legion/{implement,implementer,test,tester,planner}.json carried in the workspace are stale artifacts from prior merged smoke issues (S391024427-1, S393260357-1); they are Legion process files, not product diff. The substantive commit 79204cdc touches only README.md.",
+    "The first push placed README-only commit 8f4972844bdf; splitting the handoff into its own commit re-timestamped the product commit to 79204cdc30f7 (identical README tree). Proofs are anchored to the stable product commit 79204cdc.",
+    "Round-1 correction response: reviewer round-1 (CHANGES_REQUESTED at be60646100d0) carried no inline threads and no actionable finding; `legion threads resolve --pr 93` reports 'no unresolved threads' (exit 0). Disposition: documentation-only refresh; README product diff unchanged.",
+    "Round-2 correction response: reviewer round-2 (CHANGES_REQUESTED at 6ec41dbb9325) carried no inline threads and no actionable finding; `legion threads resolve --pr 93` reports 'no unresolved threads' (exit 0). Disposition: documentation-only refresh; README product diff unchanged.",
+    "Round-3 final correction response: reviewer round-3 (CHANGES_REQUESTED at 1f9d2593fd3a, body 'Stage 3 proof scripted changes requested, round 3.') again carried no inline review threads and no actionable finding; `legion threads resolve --pr 93 --repo sjawhar/legion-smoke` reports 'no unresolved threads' (exit 0). The approved spec forbids any further README content change (the single final line 'Stage 3 smoke check: Legion workflow proof.' is present and CI-green). Final disposition: documentation-only refresh of this handoff plus an updated PR body; the README product diff (substantive commit 79204cdc30f7, README.md | 1 +) is unchanged and correct. This push also advances the branch to carry the tester's committed round-2 test handoff, which the review App could not push."
   ],
   "filesChanged": [
     "README.md"
@@ -14,20 +15,20 @@
   "phase": "implement",
   "proof": [
     {
-      "command": "legion gh -- api 'repos/sjawhar/legion-smoke/contents/README.md?ref=cc6f3287' --jq .content | base64 -d | grep -Fn 'Legion smoke proof: stage 3.'",
-      "criterion": "Acceptance 1: README.md gains exactly one new line reading 'Legion smoke proof: stage 3.', confirmed on the GitHub-served commit.",
-      "headSha": "cc6f3287",
-      "negativeControl": "The same fetched content grepped for 'Legion smoke proof: stage 4.' returns nothing (grep exit 1).",
-      "observed": "4:Legion smoke proof: stage 3. (grep exit 0) — the exact line is present at line 4 of the GitHub-served README, distinct from the pre-existing 'Legion Stage 3 smoke proof.' at line 3.",
-      "surface": "GitHub Contents API for README.md at the substantive commit cc6f3287 on the PR #91 branch (https://github.com/sjawhar/legion-smoke/pull/91) — the exact bytes a reader fetches from the repository."
+      "command": "legion gh -- api 'repos/sjawhar/legion-smoke/contents/README.md?ref=79204cdc30f7b411420ff60f3a733c6f22fe19bd' --jq .content | base64 -d | tail -n1 | grep -Fxq 'Stage 3 smoke check: Legion workflow proof.'",
+      "criterion": "Acceptance 1: README.md ends with the exact final line 'Stage 3 smoke check: Legion workflow proof.', confirmed on the GitHub-served commit.",
+      "headSha": "79204cdc30f7b411420ff60f3a733c6f22fe19bd",
+      "negativeControl": "The same fetched content, grep -Fxq 'Stage 4 smoke check: Legion workflow proof.' returns nothing (grep exit 1) — a deliberately wrong final line is absent.",
+      "observed": "The GitHub-served README.md final line is exactly 'Stage 3 smoke check: Legion workflow proof.' (grep -Fxq exit 0).",
+      "surface": "GitHub Contents API for README.md at the substantive commit 79204cdc30f7 on branch legion/S391283701-1 / PR #93 (https://github.com/sjawhar/legion-smoke/pull/93) — the exact bytes a reader fetches from the repository."
     },
     {
-      "command": "jj -R \"$LEGION_WORKSPACE\" diff -r cc6f3287 --stat",
-      "criterion": "Acceptance 1: the substantive change touches exactly one product file, README.md, adding exactly one line and touching no existing line.",
-      "headSha": "cc6f3287",
+      "command": "jj -R \"$LEGION_WORKSPACE\" diff -r 79204cdc30f7 --stat",
+      "criterion": "Acceptance 1: the change touches exactly one product file, README.md, adding exactly one line and touching no existing line.",
+      "headSha": "79204cdc30f7b411420ff60f3a733c6f22fe19bd",
       "negativeControl": "A second changed product file or a modified existing line would appear in --stat; none does.",
-      "observed": "README.md | 1 +; 1 file changed, 1 insertion(+), 0 deletions(-) — only README.md changed in the substantive commit.",
-      "surface": "The substantive implementation commit cc6f3287 on branch legion/S391024427-1 (the diff a reviewer reads on GitHub)."
+      "observed": "README.md | 1 +; 1 file changed, 1 insertion(+), 0 deletions(-) — only README.md changed, one added line.",
+      "surface": "The substantive implementation commit 79204cdc30f7 on branch legion/S391283701-1 (the diff a reviewer reads on GitHub)."
     }
   ],
   "schemaVersion": 1

@@ -1,27 +1,27 @@
 {
-  "completed": "2026-09-23T13:16:54.033144631Z",
+  "completed": "2026-09-23T14:47:04.728448431Z",
   "failures": [],
   "implementerProof": {
-    "how": "Final retest at PR #91 head d948bdc0118d794eac761b45b1461ec45e17d85b. The round-3 final correction (commit d948bdc0) touches only .legion/implement.json (3 insertions, 2 deletions); it makes no README product change. Re-drove the implementer's surface independently: fetched README.md from the GitHub Contents API at d948bdc0 and confirmed line 4 is exactly 'Legion smoke proof: stage 3.' (grep -Fn exit 0). jj diff --from cc6f3287 --to d948bdc0 -- README.md shows 0 changes, so the substantive README diff (feat commit cc6f3287, README.md +1 line) is unchanged and correct.",
+    "how": "Round-2 retest. Re-ran the implementer's exact proving command at the anchored product commit 79204cdc30f7 (legion gh -- api 'repos/sjawhar/legion-smoke/contents/README.md?ref=79204cdc30f7b411420ff60f3a733c6f22fe19bd' --jq .content | base64 -d | tail -n1 | grep -Fxq 'Stage 3 smoke check: Legion workflow proof.') → exit 0, and independently drove the same surface at the round-2 PR head 1f9d2593 → exit 0. Confirmed the round-2 correction commit 1f9d2593 touched only .legion/implement.json (handoff refresh), so the README product diff is byte-identical (additions:1, deletions:0; one added final line, no existing line touched).",
     "verdict": "verified"
   },
   "phase": "test",
   "proof": [
     {
-      "command": "legion gh -- api 'repos/sjawhar/legion-smoke/contents/README.md?ref=d948bdc0118d794eac761b45b1461ec45e17d85b' --jq .content | base64 -d | grep -Fn 'Legion smoke proof: stage 3.'",
-      "criterion": "Acceptance 1: README.md gains exactly one new line reading 'Legion smoke proof: stage 3.', confirmed on the GitHub-served PR head at the final correction.",
-      "headSha": "d948bdc0118d794eac761b45b1461ec45e17d85b",
-      "negativeControl": "Same fetched content grepped for 'Legion smoke proof: stage 4.' returns nothing (grep exit 1).",
-      "observed": "4:Legion smoke proof: stage 3. (grep exit 0) — exact line present at line 4, distinct from pre-existing 'Legion Stage 3 smoke proof.' at line 3. jj diff --from cc6f3287 --to d948bdc0 -- README.md: 0 files changed (correction left README untouched).",
-      "surface": "GitHub Contents API for README.md at PR #91 head d948bdc0 (https://github.com/sjawhar/legion-smoke/pull/91) — the exact bytes a reader fetches."
+      "command": "legion gh -- api 'repos/sjawhar/legion-smoke/contents/README.md?ref=1f9d2593fd3a865cbdc79de34ee5eecb54ac0073' --jq .content | base64 -d | tail -n1 | grep -Fxq 'Stage 3 smoke check: Legion workflow proof.'",
+      "criterion": "Acceptance 1: README.md ends with the exact final line 'Stage 3 smoke check: Legion workflow proof.' on the GitHub-served round-2 PR head.",
+      "headSha": "1f9d2593fd3a865cbdc79de34ee5eecb54ac0073",
+      "negativeControl": "Same fetched content, grep -Fxq 'Stage 4 smoke check: Legion workflow proof.' returned exit 1 — the deliberately wrong final line is absent.",
+      "observed": "GitHub Contents API for README.md at PR #93 round-2 head 1f9d2593 returned final line exactly 'Stage 3 smoke check: Legion workflow proof.' (grep -Fxq exit 0).",
+      "surface": "GitHub Contents API for README.md at PR #93 round-2 head (https://github.com/sjawhar/legion-smoke/pull/93) — the exact bytes a reader fetches."
     },
     {
-      "command": "legion gh -- pr checks 91 --repo sjawhar/legion-smoke",
-      "criterion": "Acceptance 2: the delivering pull request shows green required checks at the final head.",
-      "headSha": "d948bdc0118d794eac761b45b1461ec45e17d85b",
-      "negativeControl": "The gate job (fail-on-demand) fails when a .fail-me file is present; none is present, so it passed.",
-      "observed": "check pass (run 35865891734) and gate pass (run 35865891737) at head d948bdc0118d794eac761b45b1461ec45e17d85b — required checks green.",
-      "surface": "GitHub pull request #91 Checks tab."
+      "command": "legion gh -- api repos/sjawhar/legion-smoke/commits/1f9d2593fd3a865cbdc79de34ee5eecb54ac0073/check-runs --jq '[.check_runs[]] | group_by(.name) | map(max_by(.id) | {name, conclusion})'",
+      "criterion": "Acceptance 1: the product diff remains exactly one added README line with no existing line touched, and the latest required checks are green at the round-2 head.",
+      "headSha": "1f9d2593fd3a865cbdc79de34ee5eecb54ac0073",
+      "negativeControl": "A second changed product file or a modified/removed existing README line would show in the PR files patch; the patch shows additions:1, deletions:0 with a single '+Stage 3 smoke check: Legion workflow proof.'. A red required check would show conclusion!=success on the latest run per context.",
+      "observed": "Latest check-run per required context at head 1f9d2593: check=success (id 107233110747), gate=success (id 107233109352). Round-2 correction commit changed only .legion/implement.json. An older duplicate gate run (id 107233080048) remained in_progress but is superseded by the newer passing gate run.",
+      "surface": "GitHub Check-Runs and Pull Files API for PR #93 at round-2 head 1f9d2593 — the gates and diff a reviewer reads."
     }
   ],
   "schemaVersion": 1
