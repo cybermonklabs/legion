@@ -1,0 +1,32 @@
+{
+  "completed": "2026-09-24T18:01:51.89102017Z",
+  "failed": 0,
+  "failures": [],
+  "headSha": "cd143090c66115fb59c421b60099d515281a61e9",
+  "implementerProof": {
+    "how": "Re-ran the implementer's four-line content test in the workspace (observed CHECK_OK) and its pr diff --name-only + compare commands at head cd143090: round delta outside .legion/ is smoke/S391565457-1.txt +1 -0.",
+    "verdict": "verified"
+  },
+  "passed": 4,
+  "phase": "test",
+  "priorHeadSha": "66f6235a7d6944482b62a4a3ff30ada5fd9677db",
+  "proof": [
+    {
+      "command": "legion gh -- api 'repos/sjawhar/legion-smoke/contents/smoke/S391565457-1.txt?ref=cd143090c66115fb59c421b60099d515281a61e9' --jq .content | base64 -d | cat -A",
+      "headSha": "cd143090c66115fb59c421b60099d515281a61e9",
+      "negativeControl": "test \"$(tail -n 1 smoke/S391565457-1.txt)\" = \"Stage 3 review round 4 (S391565457)\" -\u003e exit 1",
+      "observed": "exactly `Legion stage 3 proof: S391565457-1\\nStage 3 review round 1 (S391565457)\\nStage 3 review round 2 (S391565457)\\nStage 3 review round 3 (S391565457)\\n` (143 bytes, four lines)",
+      "surface": "GitHub PR https://github.com/sjawhar/legion-smoke/pull/154 (contents API at head)"
+    },
+    {
+      "command": "legion gh -- api repos/sjawhar/legion-smoke/compare/66f6235a7d6944482b62a4a3ff30ada5fd9677db...cd143090c66115fb59c421b60099d515281a61e9 --jq '.files[] | \"\\(.filename) +\\(.additions) -\\(.deletions)\"'; legion gh -- pr diff 154 --repo sjawhar/legion-smoke --name-only",
+      "headSha": "cd143090c66115fb59c421b60099d515281a61e9",
+      "negativeControl": "any path other than smoke/S391565457-1.txt or .legion/* would reject; none present",
+      "observed": "round delta: .legion/implement.json, .legion/test.json, smoke/S391565457-1.txt +1 -0; PR paths outside .legion/: smoke/S391565457-1.txt only; 0 review threads; MERGEABLE; checks check/gate pass (run 36038178473)",
+      "surface": "GitHub compare + PR diff https://github.com/sjawhar/legion-smoke/pull/154"
+    }
+  ],
+  "round": 3,
+  "schemaVersion": 1,
+  "summary": "Review round 3 correction verified: smoke/S391565457-1.txt now has exactly the marker line and review rounds 1-3 lines, nothing else changed; implementer proof verified and E2E (tester) line updated at cd143090."
+}

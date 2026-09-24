@@ -1,0 +1,67 @@
+{
+  "acceptance": [
+    {
+      "command": "legion gh -- pr view \u003cn\u003e --repo sjawhar/legion-smoke --json files --jq .files[].path",
+      "criterion": "PR adds only smoke/S391565457-1.txt (plus .legion/ before cleanup)",
+      "negativeControl": "a PR/diff also touching README.md would list a second non-.legion path -\u003e reject",
+      "surface": "GitHub PR in sjawhar/legion-smoke"
+    },
+    {
+      "command": "cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 test \"$(head -n 1 smoke/S391565457-1.txt)\" = \"Legion stage 3 proof: S391565457-1\" \u0026\u0026 echo OK",
+      "criterion": "First line is exactly `Legion stage 3 proof: S391565457-1`",
+      "negativeControl": "compare against `Legion stage 3 proof: S391565457-2` -\u003e test fails",
+      "surface": "PR branch file in the issue workspace"
+    },
+    {
+      "command": "legion gh -- pr diff \u003cn\u003e --repo sjawhar/legion-smoke --name-only",
+      "criterion": "Review-round append touches only that file",
+      "negativeControl": "any path other than smoke/S391565457-1.txt or .legion/* -\u003e reject",
+      "surface": "GitHub PR diff"
+    }
+  ],
+  "completed": "2026-09-24T17:48:42.188913011Z",
+  "evidence": {
+    "implement": "E2E line citing the head-line check and pr view files at the pushed head; CI `ci` run check job green.",
+    "integration": "Single-issue tree, no children; integrated by its own PR; merger READY, human merges.",
+    "review": "Verify files list and CI on GitHub directly; docs-only diff so no Thermo line.",
+    "test": "Re-run both commands independently at head; negative control on wrong marker text."
+  },
+  "phase": "plan",
+  "readFindings": [
+    "smoke/ on main (cc11cffa) has no S391565457-1.txt (checked with ls smoke/): the spec error path (file exists -\u003e stop) does not trigger.",
+    "Repo has no AGENTS.md; CI is .github/workflows/ci.yml job `check` (sleep 20 \u0026\u0026 exit 0) on push and pull_request."
+  ],
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: governs push, bookmark legion/S391565457-1, PR READY body and proof array"
+    ],
+    "review": [
+      "legion-worker: one-review-per-round, CI/E2E verification on GitHub, docs-only PR skips Thermo"
+    ],
+    "test": [
+      "legion-worker: tester proof verification and E2E (tester) line rules"
+    ]
+  },
+  "schemaVersion": 1,
+  "spec": {
+    "approvedVersion": 2,
+    "artifact": "dispatch://S391565457-1/spec"
+  },
+  "summary": "One-file smoke change: add smoke/S391565457-1.txt containing exactly the line `Legion stage 3 proof: S391565457-1` plus trailing newline; no other file changes outside .legion/.",
+  "tasks": [
+    {
+      "change": "Create file with single line `Legion stage 3 proof: S391565457-1` and trailing newline. If the file exists on main@origin, stop and report to architect; do not overwrite.",
+      "file": "smoke/S391565457-1.txt",
+      "order": 1
+    },
+    {
+      "change": "Commit, bookmark legion/S391565457-1, push, open PR with body containing `Dispatch: S391565457-1` in READY format.",
+      "order": 2
+    },
+    {
+      "change": "If review asks for one appended line in that same file, append it; any other requested change goes back to the architect.",
+      "order": 3
+    }
+  ],
+  "uncertainty": "none; spec approved v2, scope fixed to one file."
+}
