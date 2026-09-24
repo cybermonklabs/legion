@@ -17,3 +17,7 @@ Stage 3 smoke proof: Legion workflow verified (S392218424-1).
 Stage 3 review round 1 (S392218424)
 Stage 3 review round 2 (S392218424)
 Stage 3 review round 3 (S392218424)
+Stage 3 smoke proof: Legion workflow end-to-end.
+Stage 3 review round 1 (S392088555)
+Stage 3 review round 2 (S392088555)
+Stage 3 review round 3 (S392088555)
