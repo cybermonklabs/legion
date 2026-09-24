@@ -1,0 +1,32 @@
+{
+  "completed": "2026-09-24T07:27:11.071974311Z",
+  "failed": 0,
+  "failures": [],
+  "headSha": "bf1a371e8b61516d880e9778f348d9f5bbbc40ea",
+  "implementerProof": {
+    "how": "Final: independently re-ran the implementer's two proof commands at head bf1a371e. Contents API read of stage3-proof.txt returned four lines, line 1 exactly 'Stage 3 Legion workflow proof.' with lines 2-4 the plan-permitted review-round-1/2/3 appends; product-filtered PR changed-files list returned exactly stage3-proof.txt. CI all SUCCESS at that head.",
+    "verdict": "verified"
+  },
+  "phase": "test",
+  "prNumber": 134,
+  "proof": [
+    {
+      "acceptanceCriterion": "AC1",
+      "command": "legion gh -- api repos/sjawhar/legion-smoke/contents/stage3-proof.txt?ref=bf1a371e8b61516d880e9778f348d9f5bbbc40ea --jq '.content' | base64 -d",
+      "headSha": "bf1a371e8b61516d880e9778f348d9f5bbbc40ea",
+      "negativeControl": "Reading nonexistent path nope-DOES-NOT-EXIST.txt at the same ref returned Not Found (HTTP 404).",
+      "observed": "Line 1 exactly 'Stage 3 Legion workflow proof.' (required proof text); lines 2-4 the plan-permitted review appends rounds 1-3.",
+      "surface": "GitHub repository contents API on PR #134 head bf1a371e (production-like: the real sjawhar/legion-smoke repository)."
+    },
+    {
+      "acceptanceCriterion": "AC2",
+      "command": "legion gh -- pr view 134 --repo sjawhar/legion-smoke --json files --jq '.files[]|select(.path|startswith(\".legion/\")|not)|.path'",
+      "headSha": "bf1a371e8b61516d880e9778f348d9f5bbbc40ea",
+      "negativeControl": "A second product file in the filtered diff would fail AC2; the filtered product diff shows exactly one path.",
+      "observed": "stage3-proof.txt (sole product change; .legion/*.json are process handoff artifacts deleted at end of clean review).",
+      "surface": "GitHub pull request #134 changed-files list."
+    }
+  ],
+  "schemaVersion": 1,
+  "summary": "Final retest at head bf1a371e passed: the review-round-3 correction appends one more plan-permitted line to stage3-proof.txt, keeping the product diff to that single file with line 1 still the required proof text. CI all green; implementer proof re-run independently and verified; 0 failures."
+}
