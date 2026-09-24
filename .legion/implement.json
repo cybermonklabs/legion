@@ -1,0 +1,30 @@
+{
+  "branch": "legion/S393721621-1",
+  "completed": "2026-09-24T18:34:38.710927484Z",
+  "filesChanged": [
+    "smoke.txt"
+  ],
+  "phase": "implement",
+  "prNumber": 160,
+  "prUrl": "https://github.com/sjawhar/legion-smoke/pull/160",
+  "proof": [
+    {
+      "command": "jj show -r 825f36a83c544f82f1ad475ca7f1d58f6ce04dc8 --stat \u0026\u0026 legion gh -- api repos/sjawhar/legion-smoke/pulls/160/files \u0026\u0026 /tmp/scope_check.sh smoke.txt",
+      "criterion": "1",
+      "headSha": "825f36a83c544f82f1ad475ca7f1d58f6ce04dc8",
+      "negativeControl": "scope_check.sh with a synthetic second product file (README.md) exits 1 -\u003e REQUEST_CHANGES, confirming a diff touching a second product file is rejected",
+      "observed": "correction commit 825f36a8 touches only smoke.txt with 1 insertion(+); PR #160's only product file remains smoke.txt (.legion/ handoffs are process artifacts excluded from scope); scope gate PASS",
+      "surface": "jj/git commit stat + GitHub PR files (repos/sjawhar/legion-smoke/pulls/160/files)"
+    },
+    {
+      "command": "cat smoke.txt  (at 825f36a83c544f82f1ad475ca7f1d58f6ce04dc8)",
+      "criterion": "2",
+      "headSha": "825f36a83c544f82f1ad475ca7f1d58f6ce04dc8",
+      "negativeControl": "splitting the review-requested line into a separate issue/file would fail Acceptance 2, which requires the appended lines in the same smoke.txt on the same PR",
+      "observed": "smoke.txt carries every review-requested line appended in-scope on the same PR #160: 'Stage 3 proof S393721621-1 2026-09-24', 'Stage 3 review round 1 (S393721621)', 'Stage 3 review round 2 (S393721621)', and now 'Stage 3 review round 3 (S393721621)'",
+      "surface": "smoke.txt file contents at correction head"
+    }
+  ],
+  "reviewRound": 3,
+  "schemaVersion": 1
+}

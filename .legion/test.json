@@ -1,0 +1,30 @@
+{
+  "completed": "2026-09-24T18:36:53.574842294Z",
+  "failed": 0,
+  "failures": [],
+  "implementerProof": {
+    "how": "Re-ran the implementer's check independently on the GitHub PR-files surface at round-3 correction head 94c6126b; confirmed the only product file is smoke.txt whose diff adds the proof line and all three review-round lines (1,2,3); .legion/ handoffs excluded as process artifacts.",
+    "verdict": "verified"
+  },
+  "phase": "test",
+  "proof": [
+    {
+      "command": "legion gh -- api repos/sjawhar/legion-smoke/pulls/160/files | /tmp/tester_check4.sh",
+      "criterion": "1",
+      "headSha": "94c6126bf52f394edc2185ac3322767644fde535",
+      "negativeControl": "Injecting a synthetic second product file (README.md) -\u003e exit 1 (expected 1 product file, got 2), rejected",
+      "observed": "PASS: exactly 1 product file smoke.txt; CI check+gate both pass at head 94c6126b",
+      "surface": "git/GitHub PR-files surface (repos/sjawhar/legion-smoke/pulls/160/files)"
+    },
+    {
+      "command": "legion gh -- api repos/sjawhar/legion-smoke/pulls/160/files | /tmp/tester_check4.sh",
+      "criterion": "2",
+      "headSha": "94c6126bf52f394edc2185ac3322767644fde535",
+      "negativeControl": "Removing the round-3 review line from smoke.txt diff -\u003e exit 1 (missing round-3 line), rejected",
+      "observed": "smoke.txt diff adds Stage 3 proof S393721621-1 2026-09-24 and review round 1/2/3 (S393721621) lines on the same PR #160 (Acceptance 2 in-scope follow-ups)",
+      "surface": "git/GitHub PR-files surface (smoke.txt diff at round-3 correction head)"
+    }
+  ],
+  "reviewRound": 3,
+  "schemaVersion": 1
+}
