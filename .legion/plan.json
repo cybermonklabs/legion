@@ -1,0 +1,62 @@
+{
+  "completed": "2026-09-24T07:16:10.842957489Z",
+  "concerns": [
+    "If README.md is missing the implementer must stop and report, never create a substitute file.",
+    "If the diff touches any file other than README.md the review rejects and it is corrected; no silent fallback."
+  ],
+  "independentTasks": 1,
+  "phase": "plan",
+  "plan": {
+    "acceptanceToSurface": [
+      {
+        "commands": [
+          "legion gh -- pr view \u003cn\u003e --json files --jq '.files[].path'  (must list exactly README.md)",
+          "legion gh -- pr diff \u003cn\u003e  (must show one added line, no other file)",
+          "cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 jj -R \"$LEGION_WORKSPACE\" diff -r @ --stat  (one file, +1 line)"
+        ],
+        "criterion": "Acceptance 1: PR changes exactly one file, README.md, adding the single line `Stage 3 smoke proof: workflow verified.`; diff shows only that one added line.",
+        "negativeControl": "A diff that touches a second file, or adds more than the one line, must be rejected by review — not silently accepted.",
+        "surface": "GitHub pull-request diff (production-like: the real merged-PR diff GitHub renders)."
+      },
+      {
+        "commands": [
+          "legion gh -- pr diff \u003cn\u003e  (still only README.md, now the extra appended line present)"
+        ],
+        "criterion": "Acceptance 2: if review requests it, one more line appended to the same README.md lands on the same PR.",
+        "negativeControl": "Landing the extra line in a new file or a different file must be rejected.",
+        "surface": "GitHub pull-request diff on the same PR after the corrective push."
+      }
+    ],
+    "fileLevelWork": [
+      "README.md: append one line `Stage 3 smoke proof: workflow verified.` after the current final line. No other file is created or edited. No build/test/dependency/config change."
+    ],
+    "implementEvidence": "E2E (implementer): PR diff on GitHub shows exactly README.md +1 line `Stage 3 smoke proof: workflow verified.` at head \u003csha\u003e; negative control: a staged edit to a second file is rejected/reverted before push. No CI/test suite exists to gate a docs-only change.",
+    "integrationEvidence": "Merger runs `legion threads resolve`, confirms `jj diff --from \u003capproved-sha\u003e --to \u003ctip-sha\u003e --summary` shows no product change above the approved head, publishes READY. Post-merge the implementer confirms the merged PR diff on production (the merged main README.md carries the one line).",
+    "notes": "No surface-building prerequisite is needed: the GitHub PR diff already reaches both acceptance criteria; no new rig, sandbox, or tooling is required.",
+    "ordering": [
+      "1. Implementer appends the single line to README.md; verifies `jj diff` shows exactly one added line in exactly one file (README.md).",
+      "2. Implementer sets bookmark legion/S391388879-1, pushes, opens PR with body containing `Dispatch: S391388879-1`.",
+      "3. Tester independently re-runs the PR-diff check.",
+      "4. Reviewer reviews the PR head diff.",
+      "5. If review requests one more appended line (acceptance 2), implementer appends it to the same README.md on the same PR."
+    ],
+    "reviewEvidence": "Reviewer confirms on GitHub the PR diff is the single README.md added line, no other file; runs thermonuclear pair at final head; approves the head carrying no .legion/.",
+    "summary": "Append exactly one new line reading `Stage 3 smoke proof: workflow verified.` to the end of sjawhar/legion-smoke README.md on the issue smoke branch legion/S391388879-1, open a PR, change nothing else.",
+    "targetFile": "README.md (confirmed present at workspace root, 11 lines).",
+    "testEvidence": "E2E (tester): re-run `legion gh -- pr diff \u003cn\u003e` and `pr view --json files`; verdict verified that exactly one file (README.md) changed with the one added line. implementerProof {verdict: verified, how: re-ran the implementer's pr diff command}."
+  },
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: drives the only surface this change is proven on. It governs appending the single line to README.md, setting the legion/S391388879-1 bookmark, pushing, opening the PR with the `Dispatch: S391388879-1` line, and recording the E2E proof that the diff is exactly one added line."
+    ],
+    "review": [
+      "legion-worker: governs the one-review-per-round GitHub PR review, individual thread disposition, and approval only of the head whose diff is the single added README.md line."
+    ],
+    "test": [
+      "legion-worker: governs verifying the implementer's PR-diff proof and independently driving the same GitHub PR-diff surface to confirm exactly one added line in README.md and that no other file changed."
+    ]
+  },
+  "schemaVersion": 1,
+  "taskCount": 1,
+  "workflowRecommendation": "Trivial one-file change: single implementer, single tester, single reviewer, no build/test/CI wiring. No decomposition or parallelism."
+}
