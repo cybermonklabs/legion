@@ -1,0 +1,41 @@
+{
+  "completed": "2026-09-24T03:19:17.034852531Z",
+  "failed": 0,
+  "implementerProof": {
+    "how": "Final test: independently re-ran the implementer commands at the corrected PR head b678227599626c85843916c7c309c09373e6fd7d. legion gh -- pr diff 130 showed smoke/stage3-proof.txt with the four expected lines; legion gh -- api .../commits/b6782275/check-runs showed all four check runs (check, check, gate, gate) conclusion=success. Confirmed the negative-control gate is live: fail-on-demand/gate exits 1 on .fail-me (.github/workflows/fail-on-demand.yml) and implementer run 35949603311 (branch with .fail-me) concluded failure.",
+    "verdict": "verified"
+  },
+  "observations": [
+    "Final test: correction commit 3ca1ef5d appended the review-round-3 line; head advanced to b6782275 (implement: record handoff). All three acceptance criteria re-verified at the current head.",
+    "checksVerdict green in daemon state; all four check-runs conclusion=success at b6782275."
+  ],
+  "passed": 3,
+  "phase": "test",
+  "proof": [
+    {
+      "command": "legion gh -- pr diff 130 --repo sjawhar/legion-smoke",
+      "criterion": "1. smoke/stage3-proof.txt visible in the PR diff (marker line present).",
+      "headSha": "b678227599626c85843916c7c309c09373e6fd7d",
+      "negativeControl": "fail-on-demand/gate exits 1 when .fail-me present (.github/workflows/fail-on-demand.yml); implementer scratch run 35949603311 carrying .fail-me confirmed conclusion=failure, proving the passing diff/gate at this head is not vacuous.",
+      "observed": "Diff shows smoke/stage3-proof.txt with line 1: Legion Stage 3 proof: S390383979-1.",
+      "surface": "GitHub pull request diff on sjawhar/legion-smoke PR #130"
+    },
+    {
+      "command": "legion gh -- api repos/sjawhar/legion-smoke/commits/b678227599626c85843916c7c309c09373e6fd7d/check-runs",
+      "criterion": "2. PR passes the repository smoke check (ci/check and fail-on-demand/gate) at the corrected head.",
+      "headSha": "b678227599626c85843916c7c309c09373e6fd7d",
+      "negativeControl": "Implementer scratch run 35949603311 (branch with .fail-me at 4b629239) concluded failure, confirming the passing gate is live, not vacuous.",
+      "observed": "All four check runs (check, check, gate, gate) status=completed conclusion=success at head b6782275.",
+      "surface": "GitHub Actions check-runs on PR #130 head via check-runs API"
+    },
+    {
+      "command": "legion gh -- pr diff 130 --repo sjawhar/legion-smoke",
+      "criterion": "3. Review round 3 appended exactly one more line to the same file, in scope, no new spec version.",
+      "headSha": "b678227599626c85843916c7c309c09373e6fd7d",
+      "negativeControl": "The appended content is a single additional line in the same file; a change to any other product path would appear in the same pr diff, and none does — only smoke/stage3-proof.txt (plus .legion ledger artifacts) is touched.",
+      "observed": "smoke/stage3-proof.txt now has exactly four lines; the newest, appended in the same file, is: Stage 3 review round 3 (S390383979). No new spec version was created (designGate approvedVersion=2 unchanged).",
+      "surface": "GitHub pull request diff on sjawhar/legion-smoke PR #130"
+    }
+  ],
+  "schemaVersion": 1
+}

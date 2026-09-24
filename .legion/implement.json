@@ -1,0 +1,28 @@
+{
+  "completed": "2026-09-24T03:17:22.916193968Z",
+  "deviations": [],
+  "filesChanged": [
+    "smoke/stage3-proof.txt"
+  ],
+  "openQuestions": [],
+  "phase": "implement",
+  "proof": [
+    {
+      "command": "legion gh -- pr diff 130 --repo sjawhar/legion-smoke",
+      "criterion": "1. smoke/stage3-proof.txt visible in the PR diff; review round 3 appended one more line in the same file.",
+      "headSha": "3ca1ef5d782fd0bc0fce04ba99f0e9a366730bfd",
+      "negativeControl": "Throwaway branch legion-scratch-negctl-s390383979-1 at 4b62923978c25836090266857fc040630133be5c carrying a .fail-me file made fail-on-demand/gate run 35949603311 conclude failure, proving the gate is live (branch deleted after).",
+      "observed": "Diff shows smoke/stage3-proof.txt with four lines: the marker plus 'Stage 3 review round 1/2/3 (S390383979)'.",
+      "surface": "GitHub pull request diff on sjawhar/legion-smoke PR #130"
+    },
+    {
+      "command": "legion gh -- pr checks 130 --repo sjawhar/legion-smoke",
+      "criterion": "2. PR passes the repository smoke check (ci/check and fail-on-demand/gate) at the corrected head.",
+      "headSha": "3ca1ef5d782fd0bc0fce04ba99f0e9a366730bfd",
+      "negativeControl": "Same scratch-branch head 4b629239 with .fail-me produced fail-on-demand/gate run 35949603311 = failure, confirming the passing gate is not vacuous.",
+      "observed": "All four PR checks (two check, two gate) success at the corrected head; smoke check green.",
+      "surface": "GitHub Actions checks on PR #130 head via legion gh -- pr checks"
+    }
+  ],
+  "schemaVersion": 1
+}
