@@ -1,0 +1,45 @@
+{
+  "acceptanceProof": [
+    {
+      "command": "After merge: `cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 jj -R \"$LEGION_WORKSPACE\" git fetch \u0026\u0026 jj -R \"$LEGION_WORKSPACE\" file show main@origin:stage3-proof.txt` (or `legion gh -- api repos/sjawhar/legion-smoke/contents/stage3-proof.txt --jq .content | base64 -d`) and confirm the exact line `Stage 3 workflow proof.` is present. Implementer's pre-merge proof: after appending, on the branch head run the same `jj file show \u003chead\u003e:stage3-proof.txt` and grep for the exact line.",
+      "criterion": "stage3-proof.txt at repo root contains the line `Stage 3 workflow proof.`",
+      "negativeControl": "grep the file for a line that was never appended (e.g. `Stage 4 workflow proof.`) → absent, confirming the check discriminates.",
+      "surface": "merged default branch (main) of sjawhar/legion-smoke"
+    }
+  ],
+  "completed": "2026-09-24T20:01:38.254784854Z",
+  "concerns": [
+    "stage3-proof.txt already exists at repo root; its first line `Stage 3 Legion workflow proof.` is distinct from the required `Stage 3 workflow proof.`. Implementer MUST append the exact required line as a new line, never overwrite the file.",
+    "Requirement: the change touches exactly one file (stage3-proof.txt). No README/workflow/config edits.",
+    "In scope without new approval: if the reviewer requests one additional line, appending exactly one more line to stage3-proof.txt is permitted (spec Requirements + Errors)."
+  ],
+  "independentTasks": 1,
+  "phase": "plan",
+  "requiredSkills": {
+    "implement": [
+      "none: reviewed every injected skill (legion-worker, dispatch, envoy, legion-oracle, legion-retro, legion-controller, legion-architect) — all are Legion process/coordination skills, not repository domain skills. sjawhar/legion-smoke has no agent skill governing a one-line text-file append; the implement phase's own workflow (commit, bookmark, push, PR, production-like proof) is defined by legion-worker, which the implementer already follows by default."
+    ],
+    "review": [
+      "none: same review — no repository review skill or domain checklist exists for a one-line text append beyond the Legion reviewer workflow itself, which the reviewer already follows via legion-worker."
+    ],
+    "test": [
+      "none: same review — this repo has no test/smoke/e2e skill and no test suite. Acceptance is proven by reading the file on the merged default branch (a plain git/GitHub read), not by any skill-governed suite; the verification procedure is stated in acceptanceProof above."
+    ]
+  },
+  "routingHints": {
+    "complexity": "trivial",
+    "estimatedImplementers": 1
+  },
+  "schemaVersion": 1,
+  "surface": "The default branch (main) of sjawhar/legion-smoke on GitHub, after the issue PR merges.",
+  "taskCount": 1,
+  "tasks": [
+    {
+      "change": "Append exactly one new line `Stage 3 workflow proof.` to the existing repo-root file stage3-proof.txt. The file already exists (current first line `Stage 3 Legion workflow proof.`, which is NOT the acceptance line), so per the spec Errors table APPEND — do not overwrite and do not create a second file. Touch exactly this one file.",
+      "file": "stage3-proof.txt",
+      "id": 1,
+      "ordering": "Only task; no dependencies."
+    }
+  ],
+  "workflowRecommendation": "Single implementer, single serial pass. Trivial one-file text append; no parallelism, no sub-planning."
+}
