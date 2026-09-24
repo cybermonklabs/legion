@@ -1,0 +1,87 @@
+{
+  "acceptanceCriteria": [
+    {
+      "command": "legion gh -- pr view \u003cpr-number\u003e --repo sjawhar/legion-smoke --json files --jq .files  (expect one file smoke.txt with additions 1, deletions 0)",
+      "drivingSkill": "legion-worker",
+      "id": "AC1",
+      "negativeControl": "A diff touching a second file or adding more than one line fails AC1; the implementer must reduce the diff to the single appended line before opening the PR.",
+      "surface": "github.com/sjawhar/legion-smoke pull-request Files-changed view",
+      "text": "The pull request shows exactly one changed file, smoke.txt, with exactly one line added."
+    },
+    {
+      "command": "legion gh -- api repos/sjawhar/legion-smoke/contents/smoke.txt --jq .content | base64 -d  (or git show main:smoke.txt) — the appended marker line is the final line",
+      "drivingSkill": "legion-worker",
+      "id": "AC2",
+      "negativeControl": "If the file on main does not end with the marker line, AC2 fails; the merge did not land the change.",
+      "surface": "github.com/sjawhar/legion-smoke main branch after merge",
+      "text": "After merge, smoke.txt on the main branch ends with the appended marker line."
+    }
+  ],
+  "completed": "2026-09-24T15:49:15.934177136Z",
+  "issue": "S390384725-1",
+  "notes": "Plan and spec content live only in .legion/plan.json and the Dispatch issue document; no plan or spec file is committed to the repository. The planners only commit is plan: record handoff.",
+  "phase": "plan",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: governs the implementer push/PR procedure (bookmark legion/S390384725-1, push, PR body Dispatch: S390384725-1) and the E2E-proof discipline that proves AC1 on the real PR surface. No domain engineering skill applies: the change is a one-line append to a plain-text file with no build, framework, or test harness."
+    ],
+    "review": [
+      "legion-worker: defines the reviewer round discipline, thread dispositioning, thermonuclear pair, and the in-scope allowance to request one more appended line to smoke.txt on the same PR. No language- or framework-specific review skill applies to a single plain-text line."
+    ],
+    "test": [
+      "legion-worker: defines the tester proof contract (verify the implementers proof by re-driving the same surface, record implementerProof and the E2E (tester) line). No unit/integration test surface exists for a plain-text append; the git PR view and merged main are the only surfaces."
+    ]
+  },
+  "risks": [
+    "smoke.txt may not exist yet; the implementer creates it with the single marker line rather than failing (spec Errors table).",
+    "A review may ask for one more appended line; that second line lands on the same PR and same file, not a new issue."
+  ],
+  "schemaVersion": 1,
+  "specVersion": 2,
+  "summary": "Append one smoke marker line to smoke.txt at the root of github.com/sjawhar/legion-smoke, delivered by one implementer on one pull request, and carry it through the full Legion review/merge lifecycle. Done when the PR shows a single-file, single-line diff to smoke.txt, it merges, and that line is the final line of smoke.txt on main.",
+  "surface": "The production-like surface is the real github.com/sjawhar/legion-smoke repository and its pull-request lifecycle: the PR Files-changed view proves criterion 1, and the merged main branch proves criterion 2. There is no local unit surface; the git repository itself is the surface.",
+  "tasks": [
+    {
+      "files": [
+        "smoke.txt"
+      ],
+      "ordering": "Single implementer commit; no cross-file dependencies. If the reviewer asks for one more line, append it to the same smoke.txt on the same PR (in-scope per spec).",
+      "phase": "implement",
+      "steps": [
+        "Fetch current smoke.txt at repo root; if it does not exist, create it holding only the single marker line (per spec Errors table).",
+        "If it exists, append exactly one marker line to the end (single added line, no other edits).",
+        "Choose a short, unambiguous smoke marker line (spec leaves exact wording to the implementer).",
+        "Commit on the issue workspace, set bookmark legion/S390384725-1, push, and open the PR with body containing the line Dispatch: S390384725-1.",
+        "Prove AC1 on the PR Files-changed view and record it as the E2E (implementer) line and the implement handoff proof array."
+      ]
+    },
+    {
+      "files": [
+        "smoke.txt"
+      ],
+      "phase": "test",
+      "steps": [
+        "Verify the implementers proof by re-driving the PR Files-changed view for AC1 (one file, one added line).",
+        "Record implementerProof verdict and add the E2E (tester) proof line."
+      ]
+    },
+    {
+      "phase": "review",
+      "steps": [
+        "Verify CI, Threads, and E2E facts on GitHub directly; run the thermonuclear pair once at the final head.",
+        "May request one additional appended line to smoke.txt (in scope for this same PR per spec Requirements table)."
+      ]
+    },
+    {
+      "phase": "merge",
+      "steps": [
+        "After a human merges, verify AC2: smoke.txt on main ends with the appended marker line via git show main:smoke.txt (or the contents API)."
+      ]
+    }
+  ],
+  "verificationEvidence": {
+    "implement": "PR Files-changed view shows one file smoke.txt, +1/-0; recorded as E2E (implementer) at the PR head SHA with a negative control (a broken multi-file/multi-line diff rejected).",
+    "merge": "git show main:smoke.txt after merge shows the marker line as the final line (AC2).",
+    "test": "Tester re-drives the PR Files-changed view for AC1 and records implementerProof.verdict."
+  }
+}

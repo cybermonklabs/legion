@@ -1,0 +1,25 @@
+{
+  "completed": "2026-09-24T16:08:57.641093157Z",
+  "failed": 0,
+  "failures": [],
+  "headSha": "90293d44663ce9d726a0d12a9e87c646dbf2c72a",
+  "implementerProof": {
+    "how": "Independently re-drove the PR #149 Files-changed surface (legion gh -- pr view 149 --json files) and read smoke.txt via the contents API at head 90293d44663ce9d726a0d12a9e87c646dbf2c72a. Product diff (fileset excluding .legion/ and docs/solutions/) is exactly one file smoke.txt, additions 3, deletions 0, and the requested review-round-2 line is the last line — matching the implementer's round-2 recorded proof.",
+    "verdict": "verified"
+  },
+  "notes": "Stage 3 workflow proof, retest round 2. Reviewer requested one more appended line, in scope per the plan's per-review-round allowance; implementer appended it on the same PR/file (code commit 5dbdae64ac08bf5e00223c524c6465cf79c0e28d). AC2 (marker line final on main) remains a post-merge criterion owned by the implementer. No unit/integration surface exists for a plain-text append; the PR Files-changed view and the file contents are the only pre-merge surfaces.",
+  "phase": "test",
+  "prNumber": 149,
+  "proof": [
+    {
+      "command": "legion gh -- pr view 149 --repo sjawhar/legion-smoke --json files --jq .files ; legion gh -- api repos/sjawhar/legion-smoke/contents/smoke.txt?ref=90293d44663ce9d726a0d12a9e87c646dbf2c72a --jq .content | base64 -d",
+      "criterion": "AC1 (with review-round-2 allowance)",
+      "headSha": "90293d44663ce9d726a0d12a9e87c646dbf2c72a",
+      "negativeControl": "The round-2 assertion (single product file smoke.txt, deletions 0, review-round line last) returned PASS on the actual PR diff, FAIL on a diff touching a second file [{smoke.txt},{other.txt}], and FAIL on a diff carrying a deletion [{smoke.txt +3/-1}]. The last-line check confirmed 'Stage 3 review round 2 (S390384725)' is the final line.",
+      "observed": "Product diff (fileset ~(.legion | docs/solutions)) is exactly one file smoke.txt with additions 3, deletions 0: the initial marker line, the review-round-1 line, and the requested review-round-2 line 'Stage 3 review round 2 (S390384725)' as the last line. The branch also carries .legion handoff artifacts (plan.json, implement.json, test.json), removed at the final .legion deletion push; not part of the product diff.",
+      "surface": "github.com/sjawhar/legion-smoke pull-request #149 Files-changed view"
+    }
+  ],
+  "round": 2,
+  "schemaVersion": 1
+}
