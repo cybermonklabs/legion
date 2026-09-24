@@ -1,0 +1,57 @@
+{
+  "baseBranch": "main",
+  "branch": "legion/S393883308-1",
+  "ci": [
+    "ci run 36068152411 job check success at e247783593f9b3e3d87efc9827e34017a7e20ad2",
+    "fail-on-demand run 36068152521 success at e247783593f9b3e3d87efc9827e34017a7e20ad2"
+  ],
+  "completed": "2026-09-24T22:34:54.424972181Z",
+  "filesChanged": [
+    "smoke.md (4 added lines: original marker + round-1, round-2, round-3 lines)"
+  ],
+  "notes": "Three review rounds requested via Dispatch (no GitHub review thread); `legion threads resolve --pr 172` reported 'no unresolved threads' (exit 0) each round. Docs-only diff; ce-simplify-code and thermonuclear pair omitted per legion-worker docs-only rule. Criterion 3 (post-merge main content) handled after a human merges. PR tip is the handoff commit above smoke commit e2477835 (.legion process commit, exempt from the product fingerprint).",
+  "phase": "implement",
+  "prNumber": 172,
+  "prUrl": "https://github.com/sjawhar/legion-smoke/pull/172",
+  "proof": [
+    {
+      "command": "legion gh -- pr diff 172 --repo sjawhar/legion-smoke",
+      "criterion": "1. The PR against sjawhar/legion-smoke adds exactly one line to smoke.md.",
+      "headSha": "e247783593f9b3e3d87efc9827e34017a7e20ad2",
+      "negativeControl": "Scope guard fed a forbidden list with README.md reported FAIL exit 1; real list (smoke.md) passed.",
+      "observed": "smoke.md's first added line is the original marker, present and unmodified. README.md, smoke.txt, smoke/* untouched.",
+      "surface": "GitHub pull request #172 diff on sjawhar/legion-smoke."
+    },
+    {
+      "command": "legion gh -- pr diff 172 --repo sjawhar/legion-smoke ; legion gh -- pr view 172 --repo sjawhar/legion-smoke --json files --jq '.files[].path'",
+      "criterion": "2. If a review asks, one more line is appended to the same smoke.md in the same PR.",
+      "headSha": "e247783593f9b3e3d87efc9827e34017a7e20ad2",
+      "negativeControl": "A change modifying an earlier line or appending to a different file would fail; verified lines 1-3 are byte-identical to the prior round and no other content file appears in the PR file list.",
+      "observed": "smoke.md shows exactly four added lines: original marker, then 'Stage 3 review round 1/2/3 (S393883308)' in order, each earlier line unchanged across all three rounds. Only content file changed is smoke.md; README.md, smoke.txt, smoke/* untouched (.legion/*.json are process handoffs).",
+      "surface": "Updated GitHub pull request #172 diff on sjawhar/legion-smoke."
+    }
+  ],
+  "reviewRounds": [
+    {
+      "commit": "8ac8574a76ca3e39989a0b3d3a793dd46fbfdb93",
+      "disposition": "fixed append-only",
+      "requested": "append 'Stage 3 review round 1 (S393883308)'",
+      "round": 1
+    },
+    {
+      "commit": "c754a2d76ce666ee3c450c797452154967d2d0b8",
+      "disposition": "fixed append-only",
+      "requested": "append 'Stage 3 review round 2 (S393883308)'",
+      "round": 2
+    },
+    {
+      "commit": "e247783593f9b3e3d87efc9827e34017a7e20ad2",
+      "disposition": "fixed: appended requested line append-only; no other file changed; earlier lines unchanged",
+      "requested": "append 'Stage 3 review round 3 (S393883308)'",
+      "round": 3
+    }
+  ],
+  "schemaVersion": 1,
+  "smokeCommitSha": "e247783593f9b3e3d87efc9827e34017a7e20ad2",
+  "summary": "Round 3 (final) correction: appended 'Stage 3 review round 3 (S393883308)' to smoke.md in PR #172 (append-only; the first three lines unchanged). Verified on the real PR diff that smoke.md now shows exactly four added lines and no fixture file is touched, with a passing negative control; CI is green."
+}

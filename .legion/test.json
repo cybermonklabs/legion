@@ -1,0 +1,34 @@
+{
+  "completed": "2026-09-24T22:36:53.167094699Z",
+  "failed": 0,
+  "failures": [],
+  "headSha": "ed79c72cd525604357f99ccede58eb70f1c11442",
+  "implementerProof": {
+    "how": "Re-ran the implementer's round-3 command independently on the real PR surface (`legion gh -- pr diff 172 --repo sjawhar/legion-smoke` and `legion gh -- pr view 172 --repo sjawhar/legion-smoke --json files`). Observed the identical result it recorded: smoke.md shows exactly four added lines — original marker, 'Stage 3 review round 1/2/3 (S393883308)' — each earlier line unchanged, and the only content file changed is smoke.md (the three .legion/*.json entries are exempt process handoffs).",
+    "verdict": "verified"
+  },
+  "notes": "Round 3 (final proof test): the review requested a fourth line; criterion 2 is re-exercised and passes with all prior lines preserved (criterion 1's original marker unmodified). Criterion 3 (line present on main after merge) remains post-merge and unreachable until a human merges PR #172 — noted, not failed. Docs-only PR; verification is direct real-surface inspection per plan handoff requiredSkills.test ('none').",
+  "phase": "test",
+  "prNumber": 172,
+  "prUrl": "https://github.com/sjawhar/legion-smoke/pull/172",
+  "proof": [
+    {
+      "command": "legion gh -- pr diff 172 --repo sjawhar/legion-smoke  # inspect the smoke.md hunk",
+      "criterion": "1/2. smoke.md preserves the original marker and every prior appended line unmodified.",
+      "headSha": "ed79c72cd525604357f99ccede58eb70f1c11442",
+      "negativeControl": "A removed-line detector matches a synthetic tampered hunk ('-\u003coriginal line\u003e'), confirming it would flag any modification of a prior line; the real hunk had removed=0.",
+      "observed": "smoke.md added=4 removed=0: line 1 original marker verbatim, lines 2-4 the round-1/2/3 marker lines. Zero removed lines confirms no earlier line was modified.",
+      "surface": "GitHub pull request #172 diff on sjawhar/legion-smoke (real PR on the target repo)."
+    },
+    {
+      "command": "legion gh -- pr diff 172 --repo sjawhar/legion-smoke  (smoke.md hunk) ; legion gh -- pr view 172 --repo sjawhar/legion-smoke --json files",
+      "criterion": "2 (round 3). Review round 3: exactly one more line appended to the same smoke.md in the same PR, prior lines unchanged.",
+      "headSha": "ed79c72cd525604357f99ccede58eb70f1c11442",
+      "negativeControl": "Scope guard over content-file list rejects any non-smoke.md content file (a forbidden 'README.md' -\u003e FAIL exit 1); combined with removed=0 this distinguishes the correct single-file append from an out-of-scope or destructive change.",
+      "observed": "Line 4 'Stage 3 review round 3 (S393883308)' is the only new line versus round 2 (added grew 3 -\u003e 4, removed stayed 0). Content files changed = [smoke.md] only; README.md, smoke.txt, smoke/* untouched.",
+      "surface": "Updated GitHub pull request #172 diff on sjawhar/legion-smoke."
+    }
+  ],
+  "schemaVersion": 1,
+  "summary": "Final proof round verified on the PR #172 surface: smoke.md now has exactly four added lines (original marker + rounds 1-3), all prior lines unchanged, only smoke.md changed, with passing negative controls for a modified line and an out-of-scope file. Implementer's round-3 proof re-run independently and verified; no failures."
+}

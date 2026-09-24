@@ -1,0 +1,58 @@
+{
+  "acceptance": [
+    {
+      "command": "legion gh -- pr diff \u003cpr-number\u003e --repo sjawhar/legion-smoke  # expect exactly one added line in smoke.md and no other file changed",
+      "criterion": "1. The PR against sjawhar/legion-smoke adds exactly one line to smoke.md.",
+      "negativeControl": "A diff that also touches README.md or smoke.txt, or shows a modified (not purely added) line, fails this criterion.",
+      "skill": "legion-worker (implementer push/PR procedure and proof discipline)",
+      "surface": "The GitHub pull request diff on sjawhar/legion-smoke (production-like: the real PR on the target repo)."
+    },
+    {
+      "command": "legion gh -- pr diff \u003cpr-number\u003e --repo sjawhar/legion-smoke  # after the append: expect a second added line in the same smoke.md, first line unchanged",
+      "criterion": "2. If a review asks, one more line is appended to the same smoke.md in the same PR.",
+      "negativeControl": "A change that modifies the original line, or appends to a different file, fails this criterion.",
+      "skill": "legion-worker (implementer corrective push in response to review)",
+      "surface": "The updated GitHub pull request diff on sjawhar/legion-smoke."
+    },
+    {
+      "command": "legion gh -- api repos/sjawhar/legion-smoke/contents/smoke.md?ref=main --jq '.content' | base64 -d  # expect the appended line(s) present on main",
+      "criterion": "3. After merge, the main branch contains the added line.",
+      "negativeControl": "Reading a ref that never received the merge (e.g. a stale branch) would not show the line; presence is required specifically on main after merge.",
+      "skill": "legion-worker (post-merge production verification by the implementer)",
+      "surface": "The main branch of sjawhar/legion-smoke (production-like: post-merge main via the user's own read path)."
+    }
+  ],
+  "completed": "2026-09-24T22:11:48.378664703Z",
+  "files": [
+    {
+      "action": "create-or-append",
+      "detail": "At repo root. Does not exist -\u003e create with exactly one plain-text line as its only content. If a review asks, append a second plain-text line without modifying the first. Never rewrite existing content; never touch any other file.",
+      "path": "smoke.md"
+    }
+  ],
+  "phase": "plan",
+  "requiredSkills": {
+    "implement": [
+      "none: reviewed every skill in the worker's \u003cskills\u003e list (dispatch, envoy, legion-architect, legion-controller, legion-oracle, legion-retro, legion-worker) and the repository itself (no AGENTS.md, no skills/ directory, only README.md and fixture text files). Appending one plain-text line to smoke.md is a trivial file edit requiring no domain implementation skill; legion-worker governs the push/PR mechanics but is process, not a repo engineering skill."
+    ],
+    "review": [
+      "none: no repository review skill exists; the one-line append is reviewed against acceptance criteria 1-3 and the append-only / single-file requirement (no other file changed, existing content untouched). Review discipline comes from legion-worker, not a domain review skill."
+    ],
+    "test": [
+      "none: the repository has no test skill, harness, or suite; verification of all three acceptance criteria is direct surface inspection (PR diff via `legion gh -- pr diff`, and reading smoke.md on main via `legion gh -- api .../contents/smoke.md?ref=main`). This proof discipline lives in legion-worker, not in any domain test skill."
+    ]
+  },
+  "risks": [
+    "The only permitted scope is smoke.md at repo root; any change proposed outside it must be rejected (issue Errors table).",
+    "Edits must be append-only; rewriting the existing line violates the requirements.",
+    "smoke.md does not exist at plan time, so acceptance 1's 'single added line' is satisfied by creating the file with exactly one line."
+  ],
+  "schemaVersion": 1,
+  "summary": "One-file smoke change: deliver a single-line append to smoke.md at the root of sjawhar/legion-smoke as one pull request. smoke.md does not exist yet, so per the issue's Errors table the implementer creates it with the single line as its only content. A review may request one more appended line to the same file in the same PR; that append is in scope. Change is append-only and touches no file other than smoke.md.",
+  "tasks": [
+    "Implement: create smoke.md at repo root with a single plain-text line (append-only; the file's only content since it does not yet exist).",
+    "Implement: create bookmark legion/S393883308-1, push, and open the PR against sjawhar/legion-smoke with 'Dispatch: S393883308-1' in the body.",
+    "Review-contingent: if the review requests it, append exactly one more plain-text line to the same smoke.md in the same PR without altering the first line.",
+    "Merge/production: after a human merges, confirm smoke.md on main contains the added line(s)."
+  ]
+}
