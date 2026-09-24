@@ -1,0 +1,35 @@
+{
+  "branch": "legion/S392218424-1",
+  "ci": {
+    "check": {
+      "conclusion": "success",
+      "run": "35976416360"
+    },
+    "gate": {
+      "conclusion": "success",
+      "run": "35976416402"
+    }
+  },
+  "completed": "2026-09-24T08:40:52.645580787Z",
+  "failed": 0,
+  "failures": [],
+  "headSha": "c344328fd895351639a8cd9940f70a3df5c2f76d",
+  "implementerProof": {
+    "how": "Independently re-ran gh pr diff 140 --name-only \u0026\u0026 gh pr diff 140 on PR #140 at head c344328f (product commit e8acad7e). Confirmed the final round-3 correction: sole product file is README.md; the review round-3 line Stage 3 review round 3 (S392218424) is appended once with zero deletions, alongside the retained round-2, round-1, and smoke-proof markers. All four markers match implement.json markerLines. .legion/ paths are process handoffs, excluded from the product fingerprint and removed before merge.",
+    "verdict": "verified"
+  },
+  "phase": "test",
+  "prNumber": 140,
+  "proof": [
+    {
+      "command": "gh pr diff 140 --repo sjawhar/legion-smoke --name-only filtered to product files ; gh pr diff 140 grep -c round-3 marker",
+      "headSha": "c344328fd895351639a8cd9940f70a3df5c2f76d",
+      "negativeControl": "grep -c for a deliberately wrong marker (Stage 3 review round 77 (WRONG)) returned 0, confirming the check discriminates the actual appended line rather than matching any content.",
+      "observed": "Acceptance 1: exactly one product file (README.md) after excluding .legion/ and docs/solutions/. Acceptance 2: the review round-3 marker Stage 3 review round 3 (S392218424) present exactly once (grep -c = 1) as a pure addition, zero deletions, alongside the retained round-2, round-1, and smoke-proof markers (four total). CI green at head c344328f: check pass (run 35976416360), gate pass (run 35976416402).",
+      "surface": "GitHub PR diff surface (PR #140), sjawhar/legion-smoke"
+    }
+  ],
+  "round": "final-test-round-3",
+  "schemaVersion": 1,
+  "summary": "Final test PASS: verified the review round-3 correction on PR #140 diff surface at head c344328f. Still exactly README.md changed; round-3 marker appended once, all prior markers retained (4 total), zero deletions; CI green (check, gate). implementerProof verified; no failures."
+}

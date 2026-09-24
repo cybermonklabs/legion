@@ -1,0 +1,42 @@
+{
+  "branch": "legion/S392218424-1",
+  "ci": {
+    "ci": {
+      "conclusion": "success",
+      "job": "check"
+    },
+    "failOnDemand": {
+      "conclusion": "success",
+      "job": "gate"
+    },
+    "note": "Both workflows green at the pushed branch tip carrying this product commit; authoritative run ids cited in the PR body Verification section."
+  },
+  "completed": "2026-09-24T08:38:12.900886449Z",
+  "filesChanged": [
+    "README.md"
+  ],
+  "headSha": "e8acad7e1ab688b747fcf3358cd513fdb9a1dcb4",
+  "markerLines": [
+    "Stage 3 smoke proof: Legion workflow verified (S392218424-1).",
+    "Stage 3 review round 1 (S392218424)",
+    "Stage 3 review round 2 (S392218424)",
+    "Stage 3 review round 3 (S392218424)"
+  ],
+  "phase": "implement",
+  "prNumber": 140,
+  "prUrl": "https://github.com/sjawhar/legion-smoke/pull/140",
+  "productCommit": "e8acad7e1ab688b747fcf3358cd513fdb9a1dcb4",
+  "proof": [
+    {
+      "command": "gh pr diff 140 --name-only \u0026\u0026 gh pr diff 140",
+      "headSha": "e8acad7e1ab688b747fcf3358cd513fdb9a1dcb4",
+      "negativeControl": "jj diff --from main@origin --to e8acad7e --name-only ~(.legion | docs/solutions) | grep -v README.md -\u003e empty, confirming acceptance 1 exactly-one-file still holds after the correction.",
+      "observed": "Product change is exactly README.md; round-3 correction appends `Stage 3 review round 3 (S392218424)` at end of file (product commit e8acad7e), zero deletions. Only other raw-diff paths are Legion .legion/ handoffs, excluded from the product fingerprint and removed before merge.",
+      "surface": "GitHub PR diff surface (PR #140)"
+    }
+  ],
+  "reviewAddressed": "Reviewer round 3 (final) asked to append `Stage 3 review round 3 (S392218424)` to README.md; done. Spec Requirements row 2 permits an additional line per review round in this same file; in scope, no new issue.",
+  "round": "correction-round-3-final",
+  "schemaVersion": 1,
+  "summary": "Appended the review round-3 line to README.md; still exactly one product file changed. No inline review threads (top-level CHANGES_REQUESTED reviews only)."
+}
