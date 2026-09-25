@@ -1,0 +1,69 @@
+{
+  "ci": "green at prior heads; re-running at new head 58c5a830",
+  "completed": "2026-09-25T16:18:17.889943656Z",
+  "deviations": "none",
+  "files": [
+    {
+      "change": "Appended round-0 marker line and review-round lines 1-3; README.md only.",
+      "path": "README.md"
+    }
+  ],
+  "filesChanged": [
+    "README.md"
+  ],
+  "headSha": "58c5a8300a9e373776f62917519a4a2a357afb27",
+  "implementationEvidence": "Round 3: jj diff --summary == 'M README.md' (single content file); tail -1 README.md == 'Stage 3 review round 3 (S390584896)'; line appended below existing lines, nothing else changed. Head 58c5a8300a9e373776f62917519a4a2a357afb27.",
+  "openQuestions": "none",
+  "phase": "implement",
+  "prNumber": 233,
+  "prUrl": "https://github.com/sjawhar/legion-smoke/pull/233",
+  "proof": [
+    {
+      "command": "tail -1 README.md ; legion gh -- pr diff 233 --repo sjawhar/legion-smoke",
+      "headSha": "7faf7f8cd88733d8c9882c34ed4ac1ceadef329c",
+      "negativeControl": "grep -n 'Stage 3 WRONG workflow proof.' README.md -\u003e no match.",
+      "observed": "round 0: tail -1 README.md == 'Stage 3 Legion workflow proof.'; PR diff README.md hunk adds exactly that one final line; only content change is README.md.",
+      "surface": "README.md file / GitHub PR #233 diff"
+    },
+    {
+      "command": "tail -1 README.md ; jj diff -r e1b67f96 --summary",
+      "headSha": "e1b67f96b508985c94866367410fd307f7ad949d",
+      "negativeControl": "grep -n 'Stage 3 review round 1 (WRONG)' README.md -\u003e no match.",
+      "observed": "round 1: tail -1 README.md == 'Stage 3 review round 1 (S390584896)'; commit summary == 'M README.md'; appended below existing lines, nothing else changed.",
+      "surface": "README.md file / GitHub PR #233 diff"
+    },
+    {
+      "command": "tail -1 README.md ; jj diff -r 72cfec74 --summary",
+      "headSha": "72cfec74eedc3249bec5cadf95f1d61925b8d38e",
+      "negativeControl": "grep -n 'Stage 3 review round 2 (WRONG)' README.md -\u003e no match.",
+      "observed": "round 2: tail -1 README.md == 'Stage 3 review round 2 (S390584896)'; commit summary == 'M README.md'; appended below existing lines, nothing else changed.",
+      "surface": "README.md file / GitHub PR #233 diff"
+    },
+    {
+      "command": "tail -1 README.md ; jj diff -r 58c5a830 --summary ; legion gh -- pr diff 233 --repo sjawhar/legion-smoke",
+      "headSha": "58c5a8300a9e373776f62917519a4a2a357afb27",
+      "negativeControl": "grep -n 'Stage 3 review round 3 (WRONG)' README.md -\u003e no match, confirming the check discriminates the exact appended review-round line.",
+      "observed": "round 3: tail -1 README.md == 'Stage 3 review round 3 (S390584896)'; corrective commit summary == 'M README.md' (single content file); the review-round line was appended below the existing lines, nothing else changed.",
+      "surface": "README.md file / GitHub PR #233 diff"
+    }
+  ],
+  "reviewRounds": [
+    {
+      "correction": "append line: Stage 3 review round 1 (S390584896)",
+      "round": 1,
+      "status": "applied"
+    },
+    {
+      "correction": "append line: Stage 3 review round 2 (S390584896)",
+      "round": 2,
+      "status": "applied"
+    },
+    {
+      "correction": "append line: Stage 3 review round 3 (S390584896)",
+      "round": 3,
+      "status": "applied"
+    }
+  ],
+  "schemaVersion": 1,
+  "summary": "Round 3 review correction: appended line 'Stage 3 review round 3 (S390584896)' to README.md (in scope per acceptance 3), the only content change. PR #233 head now 58c5a8300a9e373776f62917519a4a2a357afb27."
+}
