@@ -1,0 +1,26 @@
+{
+  "completed": "2026-09-25T14:41:31.56099641Z",
+  "concerns": [
+    "AC1 surface/command: GitHub PR against sjawhar/legion-smoke; `legion gh -- pr diff \u003cn\u003e --repo sjawhar/legion-smoke` must show exactly one added line in README.md reading `Legion Stage 3 workflow proof.` (spec Design fixes the text). Negative control: a diff touching any other path or adding !=1 line fails AC1.",
+    "AC2 surface/command: same PR diff plus the review thread; if the reviewer requests one more README.md line it is in scope (spec: no new approval), added as a follow-up commit, and the thread resolved via `legion threads resolve --pr \u003cn\u003e --repo sjawhar/legion-smoke`; the diff then shows both appended lines. A reviewer request to change any file other than README.md is out of scope -\u003e stop and raise with the architect (spec Errors).",
+    "AC3 surface/command: main branch of sjawhar/legion-smoke after a human merge; `legion gh -- pr view \u003cn\u003e --json state,mergeCommit` shows merged and README.md on main contains the appended line(s); implementer performs the post-merge production check per legion-worker.",
+    "Scope guard: exactly one file (top-level README.md, confirmed present at README.md#1AB7); all work on bookmark legion/S393609902-1; do not touch build/test/CI (spec Rejected/Errors) and do not create a new file instead of appending.",
+    "Blocker path: if README.md were absent the implementer stops and reports the missing file (spec Errors); it is present, so no blocker expected."
+  ],
+  "independentTasks": 1,
+  "phase": "plan",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: governs the implementer's one-line append to README.md on the smoke branch, the exact bookmark/push procedure (`jj bookmark set legion/S393609902-1` then `jj git push --bookmark`), the PR-open with `Dispatch: S393609902-1`, and the required E2E proof recorded on the PR diff. No repository domain skill exists in this nascent legion-smoke sandbox (only README.md/SMOKE.md/smoke fixtures; no build/test/CI logic), so no domain-specific surface skill applies."
+    ],
+    "review": [
+      "legion-worker: governs the reviewer's one-review-per-round protocol, the thermonuclear-deep-review and thermonuclear-code-quality passes at the final head, and per-thread disposition on the PR. No repository domain/review skill exists in legion-smoke, so no domain-specific review skill applies."
+    ],
+    "test": [
+      "legion-worker: governs the tester's duty to verify the implementer's PR-diff proof and record its own proof re-inspecting the same PR diff and, after merge, README.md on main. No repository domain/test skill exists in legion-smoke (no test harness or CI to drive), so no domain-specific test skill applies."
+    ]
+  },
+  "schemaVersion": 1,
+  "taskCount": 1,
+  "workflowRecommendation": "Single implementer, no fan-out. Append exactly one line `Legion Stage 3 workflow proof.` to the top-level README.md on bookmark legion/S393609902-1; commit; set and push the bookmark; open the PR with a body containing `Dispatch: S393609902-1`; prove on the PR diff (E2E surface = the GitHub PR against sjawhar/legion-smoke). Tester re-inspects the same PR diff and merged main. Reviewer runs one review per round. No parallelism warranted for a one-file, one-line append."
+}

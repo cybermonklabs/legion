@@ -1,0 +1,49 @@
+{
+  "completed": "2026-09-25T15:01:24.401606449Z",
+  "deviations": [
+    "Review round 1: appended `Stage 3 review round 1 (S393609902)` to README.md as an in-scope follow-up commit (spec Design permits one more README.md line per review round); no new spec approval required.",
+    "Review round 2: appended `Stage 3 review round 2 (S393609902)` to README.md as an in-scope follow-up commit (spec Design permits one more README.md line per review round); no new spec approval required.",
+    "Review round 3: appended `Stage 3 review round 3 (S393609902)` to README.md as an in-scope follow-up commit (spec Design permits one more README.md line per review round); no new spec approval required."
+  ],
+  "filesChanged": [
+    "README.md"
+  ],
+  "openQuestions": [],
+  "phase": "implement",
+  "proof": [
+    {
+      "command": "legion gh -- pr diff 229 --repo sjawhar/legion-smoke; AC1 predicate scoping added lines to the README.md hunk (verified at branch tip README-impl commit 947e106808a12d0229278d1aed055c122fdc3dc2)",
+      "criterion": "AC1: the PR against sjawhar/legion-smoke shows README.md with exactly one appended Stage 3 marker line.",
+      "headSha": "947e106808a12d0229278d1aed055c122fdc3dc2",
+      "negativeControl": "Same exactly-one-added-line predicate run against a deliberately broken two-line append (`Legion Stage 3 workflow proof.` + `Extra bogus line.`) reported NEG FAIL (added 2 lines, AC1 requires exactly 1), confirming the check rejects a wrong diff.",
+      "observed": "README.md hunk adds exactly one line reading `Legion Stage 3 workflow proof.` (README.md additions=1, deletions=0 per pr view --json files); no non-README/.legion product file touched. AC1 PASS.",
+      "surface": "GitHub pull request #229 diff against sjawhar/legion-smoke (real sandbox repository)"
+    },
+    {
+      "command": "legion gh -- pr diff 229 --repo sjawhar/legion-smoke; jj diff --from main@origin --to 75e3fbd8 scoping added README.md lines",
+      "criterion": "AC2: after the reviewer's round-1 request, a follow-up commit appends one more line to the same README.md and the PR diff shows both appended lines.",
+      "headSha": "75e3fbd8b821693de9e49a5be8c02889e3e95ee9",
+      "negativeControl": "A reviewer request to change any file other than README.md would be out of scope per spec Errors -\u003e stop and raise with the architect; the round-1 request named only README.md, so the guard held (no non-README edit made).",
+      "observed": "README.md cumulative additions vs main are exactly two lines in order: `Legion Stage 3 workflow proof.` then `Stage 3 review round 1 (S393609902)`; the round-1 line was added as follow-up commit 75e3fbd8 (in scope per spec Design: one more line permitted for a review round), no other product file touched. AC2 PASS.",
+      "surface": "GitHub pull request #229 diff against sjawhar/legion-smoke (real sandbox repository)"
+    },
+    {
+      "command": "legion gh -- pr diff 229 --repo sjawhar/legion-smoke; jj diff --from main@origin --to d3faa736 scoping added README.md lines",
+      "criterion": "AC2 (review round 2): a further in-scope follow-up commit appends one more line to the same README.md and the PR diff shows all appended lines.",
+      "headSha": "d3faa7360a8ae7e8a08e1425b907a0ebeb5f3e62",
+      "negativeControl": "A reviewer request to change any file other than README.md would be out of scope per spec Errors -\u003e stop and raise with the architect; the round-2 request named only README.md, so the guard held.",
+      "observed": "README.md cumulative additions vs main are exactly three lines in order: `Legion Stage 3 workflow proof.`, `Stage 3 review round 1 (S393609902)`, `Stage 3 review round 2 (S393609902)`; round-2 line added as follow-up commit d3faa736 (in scope per spec: one more README.md line per review round), no other product file touched. AC2 PASS.",
+      "surface": "GitHub pull request #229 diff against sjawhar/legion-smoke (real sandbox repository)"
+    },
+    {
+      "command": "legion gh -- pr diff 229 --repo sjawhar/legion-smoke; jj diff --from main@origin --to eecd116c scoping added README.md lines",
+      "criterion": "AC2 (review round 3): a further in-scope follow-up commit appends one more line to the same README.md and the PR diff shows all appended lines.",
+      "headSha": "eecd116c6af7b44bb70f6d5033feee0f773d49f2",
+      "negativeControl": "A reviewer request to change any file other than README.md would be out of scope per spec Errors -\u003e stop and raise with the architect; the round-3 request named only README.md, so the guard held.",
+      "observed": "README.md cumulative additions vs main are exactly four lines in order: `Legion Stage 3 workflow proof.`, `Stage 3 review round 1 (S393609902)`, `Stage 3 review round 2 (S393609902)`, `Stage 3 review round 3 (S393609902)`; round-3 line added as follow-up commit eecd116c (in scope per spec: one more README.md line per review round), no other product file touched. AC2 PASS.",
+      "surface": "GitHub pull request #229 diff against sjawhar/legion-smoke (real sandbox repository)"
+    }
+  ],
+  "schemaVersion": 1,
+  "trickyParts": []
+}
