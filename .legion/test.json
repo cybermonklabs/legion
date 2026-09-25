@@ -1,0 +1,52 @@
+{
+  "ci": {
+    "check": {
+      "conclusion": "success",
+      "job": "check",
+      "workflow": "ci"
+    },
+    "gate": {
+      "conclusion": "success",
+      "job": "gate",
+      "workflow": "fail-on-demand"
+    },
+    "headSha": "1aed6bdfb9b8635a70bd6ae6226f6cc8bed6d3ef"
+  },
+  "completed": "2026-09-25T13:14:51.557704568Z",
+  "failures": [],
+  "implementerProof": {
+    "how": "Re-drove the same file surface independently for review round 2: GitHub contents API for ref legion/S390753994-1 (base64-decoded README.md, grep -Fxc = 1 for each of the three exact lines), jj diff --from main@origin --to @ (README.md +3/-0, --summary shows README.md the only product change), and legion gh -- pr checks 222 green — matching the implementer's recorded round-2 observation and negative control.",
+    "verdict": "verified"
+  },
+  "notes": "Review rounds 1-2 were top-level CHANGES_REQUESTED (no inline threads), each corrected by an appended README line (round 2 in code commit 4c426e247bb3). Docs-only diff; ce-simplify-code not applicable, thermonuclear pair runs at the reviewer's final pass. PR #222 body E2E (tester) line updated at head 1aed6bdf. The three .legion/ handoff files on the branch are process artifacts removed at the end of a clean review so the merged PR carries only README.md.",
+  "phase": "test",
+  "proof": [
+    {
+      "command": "GitHub contents API + grep -Fxc; jj diff main@origin..@; pr checks 222.",
+      "headSha": "21cdb88992c2fcd1f5a14a9febbef129e7d3de2e",
+      "negativeControl": "grep -Fxq wrong marker WRONG-999 -\u003e correctly absent.",
+      "observed": "Line 'Stage 3 durable workflow proof for issue S390753994-1.' present once as final line at head 21cdb88992c2; README.md only product change (+1/-0); check+gate green.",
+      "round": 0,
+      "surface": "README.md on branch legion/S390753994-1 of sjawhar/legion-smoke."
+    },
+    {
+      "command": "GitHub contents API + grep -Fxc; jj diff main@origin..@; pr checks 222.",
+      "headSha": "cb0b4462a4cdcf220ba4adc97f42affe98f3c041",
+      "negativeControl": "grep -Fxq 'Stage 3 review round 1 (WRONG-999)' -\u003e correctly absent.",
+      "observed": "Both lines 'Stage 3 durable workflow proof for issue S390753994-1.' and 'Stage 3 review round 1 (S390753994)' present once each as final two lines at head cb0b4462; README.md only product change (+2/-0); check+gate green.",
+      "round": 1,
+      "surface": "README.md on branch legion/S390753994-1 of sjawhar/legion-smoke."
+    },
+    {
+      "command": "legion gh -- api \"repos/sjawhar/legion-smoke/contents/README.md?ref=legion/S390753994-1\" --jq '.content' | base64 -d, then grep -Fxc for each of the three exact lines; jj -R \"$LEGION_WORKSPACE\" diff --from main@origin --to @ README.md --git and --summary; legion gh -- pr checks 222 --repo sjawhar/legion-smoke.",
+      "headSha": "1aed6bdfb9b8635a70bd6ae6226f6cc8bed6d3ef",
+      "negativeControl": "grep -Fxq \"Stage 3 review round 2 (WRONG-999)\" against the same branch content returned non-zero (correctly absent), so the acceptance check rejects any content that is not the exact review line.",
+      "observed": "All three exact lines 'Stage 3 durable workflow proof for issue S390753994-1.', 'Stage 3 review round 1 (S390753994)', and 'Stage 3 review round 2 (S390753994)' are present exactly once each (grep -Fxc = 1 for each) as the final three lines at head 1aed6bdfb9b8635a70bd6ae6226f6cc8bed6d3ef; the diff shows README.md the only product change (+3/-0), the other three changed paths being the .legion/ handoffs; pr checks shows job check success and job gate success.",
+      "round": 2,
+      "surface": "README.md file surface on the legion/S390753994-1 branch of sjawhar/legion-smoke (real merged-repo-bound branch state)."
+    }
+  ],
+  "round": 2,
+  "schemaVersion": 1,
+  "summary": "Retest round 2: independently verified the implementer's review-round-2 correction on branch legion/S390753994-1 of sjawhar/legion-smoke at PR head 1aed6bdf. README.md now carries all three exact lines 'Stage 3 durable workflow proof for issue S390753994-1.', 'Stage 3 review round 1 (S390753994)', and 'Stage 3 review round 2 (S390753994)', each present exactly once as the final three lines; README.md is the only product change (+3/-0); CI check+gate are green at head. Negative control confirms a wrong review line is rejected; verdict pass."
+}

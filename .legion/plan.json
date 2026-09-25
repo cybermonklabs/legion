@@ -1,0 +1,78 @@
+{
+  "acceptanceCriteria": [
+    {
+      "command": "legion gh -- api repos/sjawhar/legion-smoke/contents/README.md --jq '.content' | base64 -d  (assert the exact marker line is present); pre-merge on the branch: cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 jj -R \"$LEGION_WORKSPACE\" diff --from main@origin --to @ README.md (assert exactly one added line, that marker).",
+      "criterion": "README.md at the repo root gains exactly one new line reading 'Stage 3 durable workflow proof for issue S390753994-1.'",
+      "id": 1,
+      "skill": "legion-worker (drives the implementer's push/PR and the tester's re-verification of the file surface).",
+      "surface": "The README.md file on the merged main branch of sjawhar/legion-smoke (production-like surface: the real merged repository state)."
+    },
+    {
+      "command": "legion gh -- pr view \u003cn\u003e --repo sjawhar/legion-smoke --json state,files,mergedAt  (assert state MERGED, files == [README.md]); CI: legion gh -- pr checks \u003cn\u003e --repo sjawhar/legion-smoke (assert ci/check and fail-on-demand/gate success at head SHA).",
+      "criterion": "A PR carrying only that one-line change is opened, reviewed, and merged.",
+      "id": 2,
+      "skill": "legion-worker (implementer opens the PR and pushes; reviewer/merger verify on GitHub per its READY discipline).",
+      "surface": "The pull request on GitHub (sjawhar/legion-smoke) — its merged state and its file list showing only README.md changed."
+    }
+  ],
+  "ciSurfaces": [
+    {
+      "job": "check",
+      "note": "sleeps 20s then exits 0; always green.",
+      "trigger": "push, pull_request",
+      "workflow": "ci"
+    },
+    {
+      "job": "gate",
+      "note": "exits 1 iff a .fail-me file exists at repo root; do NOT add .fail-me. This is the deliberately-breakable required check for the negative control.",
+      "trigger": "push, pull_request",
+      "workflow": "fail-on-demand"
+    }
+  ],
+  "completed": "2026-09-25T12:50:56.860649709Z",
+  "implementationSteps": [
+    "cd -- \"$LEGION_WORKSPACE\"; on the issue working copy, append the single marker line to README.md (native edit, absolute path).",
+    "Verify locally: jj -R \"$LEGION_WORKSPACE\" diff --from main@origin --to @ README.md shows exactly one added line and no other file changed.",
+    "Describe the implementation commit, then bookmark set legion/S390753994-1 and jj git push --bookmark legion/S390753994-1.",
+    "legion gh -- pr create against main with a body in the READY format; the body MUST contain the line 'Dispatch: S390753994-1'.",
+    "Record the E2E (implementer) proof: pre-merge read of README.md on the branch showing the marker line, plus the negative control below, at the head SHA."
+  ],
+  "integrationEvidence": "After a human merges, the implementer reads README.md on merged main (legion gh -- api repos/sjawhar/legion-smoke/contents/README.md) and confirms the marker line is present; record on the PR Production line, a PR comment with the Legion footer, and a dispatch_message on the issue.",
+  "negativeControl": "Deliberately broken input for the proof: temporarily stage a second unrelated file change (or a README edit that is not the exact marker line) and observe the acceptance check reject it (diff shows more than the one marker line / wrong content). Do NOT push it. Alternatively, the fail-on-demand gate is the breakable required check: adding a .fail-me file would turn the gate red — used only to demonstrate the gate can fail; never committed.",
+  "ordering": "implement (append + push + PR + implementer E2E) -\u003e test (independent re-verify + tester E2E) -\u003e review (thermo pair + threads) -\u003e merge (human merges) -\u003e implementer production check (read README.md on merged main).",
+  "phase": "plan",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: drives the implementer's workspace binding, jj commit, bookmark push, PR creation, and E2E proof on the file surface."
+    ],
+    "review": [
+      "legion-worker: defines the reviewer's GitHub-fact verification, per-thread disposition, thermonuclear pair at final head, and approval discipline for the docs-only diff."
+    ],
+    "test": [
+      "legion-worker: defines the tester's duty to independently re-verify the implementer's proof (file diff + CI green) and record E2E (tester) with a negative control."
+    ]
+  },
+  "reviewEvidence": [
+    "Reviewer verifies CI, Threads, and E2E facts on GitHub directly.",
+    "PR diff is exactly one appended line to README.md; no other file changed.",
+    "A review MAY request one additional appended line to the same README.md; appending that second line is in scope for this issue (per spec Requirements/Design).",
+    "Thermonuclear pair (deep-review + code-quality) runs once at the final head; ce-simplify-code is not applicable to a docs-only diff."
+  ],
+  "risks": [
+    "This is a smoke/proof issue; the only real risk is touching more than one file — keep the diff to README.md alone.",
+    "Do not create a new file instead of appending (spec Rejected); do not add .fail-me (would fail the gate)."
+  ],
+  "schemaVersion": 1,
+  "summary": "Append exactly one line 'Stage 3 durable workflow proof for issue S390753994-1.' to README.md at the root of sjawhar/legion-smoke, open a PR against main carrying only that one-line change, and take it through test, review, and merge. This is a single-file, build-safe append; no other file, route, or component changes.",
+  "targetFiles": [
+    {
+      "change": "Append exactly one new final line reading: Stage 3 durable workflow proof for issue S390753994-1.",
+      "path": "README.md"
+    }
+  ],
+  "testEvidence": [
+    "Tester re-runs the implementer's file-diff check independently: confirm exactly one added line (the marker) in README.md and no other file touched.",
+    "Tester confirms CI green at head: ci/check success and fail-on-demand/gate success (legion gh -- pr checks).",
+    "Tester records E2E (tester) with a negative control."
+  ]
+}

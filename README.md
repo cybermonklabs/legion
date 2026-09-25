@@ -33,3 +33,7 @@ Stage 3 workflow proof: design gate exercised.
 Stage 3 review round 1 (S390409560)
 Stage 3 review round 2 (S390409560)
 Stage 3 review round 3 (S390409560)
+Stage 3 durable workflow proof for issue S390753994-1.
+Stage 3 review round 1 (S390753994)
+Stage 3 review round 2 (S390753994)
+Stage 3 review round 3 (S390753994)
