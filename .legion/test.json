@@ -1,0 +1,38 @@
+{
+  "ci": {
+    "conclusion": "success",
+    "job": "check",
+    "note": "ci/check + gate all pass on PR head 0286736f9bfdbdd8bf92c2528fbcc0f9db3e05fd (round 2).",
+    "workflow": "ci"
+  },
+  "completed": "2026-09-25T22:53:05.842216698Z",
+  "failed": 0,
+  "failures": [],
+  "implementerProof": {
+    "how": "Re-ran the implementer's exact commands `grep -Fxq 'Stage 3 smoke proof' smoke.md` and `grep -Fxq 'Stage 3 review round 2 (S393609063)' smoke.md` in $LEGION_WORKSPACE independently; both exit 0 (PRESENT), matching the recorded proof. Diff of correction commit 2c11a021 is a single added line `Stage 3 review round 2 (S393609063)` to smoke.md, no other file touched.",
+    "verdict": "verified"
+  },
+  "phase": "test",
+  "proof": [
+    {
+      "command": "cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 grep -Fxq 'Stage 3 smoke proof' smoke.md; echo $?",
+      "criterionId": "AC1",
+      "headSha": "0286736f9bfdbdd8bf92c2528fbcc0f9db3e05fd",
+      "negativeControl": "grep -Fxq 'Stage 3 smoke proof NOT PRESENT' smoke.md returned exit 1 (absent), confirming the exact whole-line check discriminates.",
+      "observed": "exit 0 (PRESENT): the standalone line `Stage 3 smoke proof` remains in smoke.md at head 0286736f.",
+      "surface": "smoke.md file in the issue workspace (production-like: the actual repository file that merges to the default branch), PR #302"
+    },
+    {
+      "command": "cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 grep -Fxq 'Stage 3 review round 2 (S393609063)' smoke.md; echo $?",
+      "criterionId": "AC2",
+      "headSha": "0286736f9bfdbdd8bf92c2528fbcc0f9db3e05fd",
+      "negativeControl": "grep -Fxq 'Stage 3 review round 2 (S393609063) NOPE' smoke.md returned exit 1 (absent), confirming the follow-up added the exact intended line and grep -Fxq discriminates.",
+      "observed": "exit 0 (PRESENT): the review-round-2 line is the new final line of smoke.md at correction commit 2c11a021. Diff at 2c11a021 shows exactly one addition (+Stage 3 review round 2 (S393609063)). CI on head 0286736f: ci/check + gate all pass (runs 36198625781/36198628354 check, 36198625774/36198628376 gate).",
+      "surface": "smoke.md file in the issue workspace (production-like: the actual repository file that merges to the default branch), PR #302"
+    }
+  ],
+  "round": 2,
+  "schemaVersion": 1,
+  "summary": "Retest round 2 on PR #302 head 0286736f (correction commit 2c11a021): verified AC1 (`Stage 3 smoke proof` still present, exit 0) and AC2 (`Stage 3 review round 2 (S393609063)` appended as new final line, exit 0), each with a passing negative control. Re-ran both of the implementer's exact proof commands independently (exit 0/0) and confirmed CI (ci/check + gate) green on the head; verdict pass.",
+  "verdict": "pass"
+}
