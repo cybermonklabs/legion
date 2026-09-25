@@ -1,0 +1,27 @@
+{
+  "branch": "legion/S391694762-1",
+  "completed": "2026-09-25T12:12:17.58033108Z",
+  "deviations": "The review requested one appended line; the plan explicitly scopes one additional SMOKE.md line per review round, so no new issue is needed. Branch tip is the implement handoff commit above the correction commit 5813a861.",
+  "filesChanged": [
+    "SMOKE.md"
+  ],
+  "headSha": "5813a861f4f775f1184a802693dc4f91560f0f0b",
+  "openQuestions": [],
+  "phase": "implement",
+  "prNumber": 217,
+  "prUrl": "https://github.com/sjawhar/legion-smoke/pull/217",
+  "proof": [
+    {
+      "codeCommit": "5813a861f4f775f1184a802693dc4f91560f0f0b",
+      "command": "legion gh -- pr diff 217 --repo sjawhar/legion-smoke",
+      "criterion": "AC1",
+      "negativeControl": "Editing any second product file (e.g. the distinct lowercase smoke.md) would make the product diff list two files and fail AC1; verified the correction commit's `jj diff --summary` = `M SMOKE.md` only.",
+      "observed": "Product diff shows SMOKE.md with exactly four added lines and nothing else changed: 'Stage 3 smoke proof (S391694762-1).', 'Stage 3 review round 1 (S391694762)', 'Stage 3 review round 2 (S391694762)', and the round-3 line 'Stage 3 review round 3 (S391694762)'. The only other diff paths are the .legion/*.json handoff ledgers, exempt from the product-diff fingerprint fileset and deleted before merge.",
+      "surface": "GitHub pull-request diff (real repository branch and PR)"
+    }
+  ],
+  "reviewRound": 3,
+  "reviewThreads": "GitHub reviewThreads(first:50) returns []; the round-3 review is a PR-level CHANGES_REQUESTED body with no inline threads, so `legion threads resolve` has nothing to resolve.",
+  "schemaVersion": 1,
+  "summary": "Review round 3 (final) correction for S391694762-1: appended the line 'Stage 3 review round 3 (S391694762)' to SMOKE.md (now four lines) as the review requested, in scope per the plan, changing nothing else. Committed on legion/S391694762-1 (correction 5813a861) and pushed to PR #217; not merged."
+}
