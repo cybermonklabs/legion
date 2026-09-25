@@ -1,0 +1,33 @@
+{
+  "branch": "legion/S392225649-1",
+  "ci": {
+    "note": "Tests/PR workflows re-run on the corrective push; ci.yml job 'check' always passes, fail-on-demand.yml job 'gate' passes (no .fail-me file).",
+    "status": "pending"
+  },
+  "completed": "2026-09-25T00:09:42.729140678Z",
+  "fastFollow": "none",
+  "filesChanged": [
+    "smoke/stage3.txt"
+  ],
+  "phase": "implement",
+  "prNumber": 175,
+  "prUrl": "https://github.com/sjawhar/legion-smoke/pull/175",
+  "proof": [
+    {
+      "command": "legion gh -- pr diff 175 --repo sjawhar/legion-smoke",
+      "criterion": "AC1 (round 3): PR adds only the reviewer-requested line to smoke/stage3.txt; no other product file changes",
+      "headSha": "pushed head of legion/S392225649-1; see PR body E2E line for the live SHA",
+      "negativeControl": "legion gh -- pr diff 175 --repo sjawhar/legion-smoke --name-only excluding .legion/ lists exactly smoke/stage3.txt, no second product file; the review-round-3 line is absent on main pre-merge.",
+      "observed": "Product change is confined to smoke/stage3.txt: the added product lines are 'Implementer proof line: S392225649-1.', 'Stage 3 review round 1 (S392225649)', 'Stage 3 review round 2 (S392225649)', and 'Stage 3 review round 3 (S392225649)'. The other diff entries are .legion/plan.json, .legion/implement.json, and .legion/test.json — Legion handoff artifacts excluded from the product-diff fingerprint set ~(.legion | docs/solutions), removed at the final cleanup push.",
+      "surface": "GitHub pull request diff on sjawhar/legion-smoke (PR #175)"
+    }
+  ],
+  "reviewRound": 3,
+  "schemaVersion": 1,
+  "summary": "Round 3 (final) review correction: appended the reviewer-requested line 'Stage 3 review round 3 (S392225649)' to the end of smoke/stage3.txt, below the existing lines; no other product file changed. The corrective commit rides the same PR #175 branch legion/S392225649-1.",
+  "threads": {
+    "note": "Round 3 review is a CHANGES_REQUESTED review with the request in the review body; no inline review threads were opened, so there are no per-thread dispositions.",
+    "resolved": 0,
+    "unresolved": 0
+  }
+}
