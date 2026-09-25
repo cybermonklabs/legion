@@ -1,0 +1,57 @@
+{
+  "acceptanceCriteria": [
+    {
+      "id": "AC1",
+      "provingCommand": "legion gh -- pr diff \u003cpr-number\u003e --repo sjawhar/legion-smoke",
+      "skill": "legion-worker (no repository domain skill applies to a plain-text file append)",
+      "surface": "GitHub pull request diff on sjawhar/legion-smoke",
+      "text": "The PR against sjawhar/legion-smoke adds exactly one line, 'Stage 3 smoke proof line.', to smoke.txt and changes no other file."
+    },
+    {
+      "id": "AC2",
+      "provingCommand": "legion gh -- pr diff \u003cpr-number\u003e --repo sjawhar/legion-smoke \u0026\u0026 legion gh -- api graphql (verify thread isResolved:true)",
+      "skill": "legion-worker",
+      "surface": "GitHub pull request review thread + diff on sjawhar/legion-smoke",
+      "text": "A review may ask for one more line appended to smoke.txt; appending that additional line in the same PR and resolving the review thread is in scope."
+    }
+  ],
+  "completed": "2026-09-25T13:44:34.806555059Z",
+  "filesToTouch": [
+    "smoke.txt"
+  ],
+  "nonGoals": [
+    "Any change to source, build, config, or any file other than smoke.txt.",
+    "More than one added line unless a review round explicitly asks for a second line."
+  ],
+  "ordering": "Single file, single edit. Implement -\u003e test -\u003e review -\u003e integrate. No parallelism; no cross-file interfaces.",
+  "phase": "plan",
+  "requiredSkills": {
+    "implement": [
+      "none: reviewed the system-prompt \u003cskills\u003e list (dispatch, envoy, legion-architect, legion-controller, legion-oracle, legion-retro, legion-worker) and the workspace (README.md, smoke.txt, no AGENTS.md); the change is a plain-text one-line append to smoke.txt with no CLI/endpoint/TUI/build surface, so no repository domain skill applies. The implementer follows legion-worker for push/PR mechanics as its phase charter, not as a domain skill."
+    ],
+    "review": [
+      "none: same review of the \u003cskills\u003e list and workspace; review is confirming the PR diff adds exactly the specified line(s) to smoke.txt only, which no repository domain skill drives. The reviewer follows legion-worker for review/thread discipline."
+    ],
+    "test": [
+      "none: same review of the \u003cskills\u003e list and workspace; verification is reading the GitHub PR diff for a one-line text append, which no repository domain skill drives. The tester follows legion-worker for proof/handoff discipline."
+    ]
+  },
+  "schemaVersion": 1,
+  "summary": "Prove the Legion Stage 3 workflow end-to-end on sjawhar/legion-smoke by appending exactly one line, 'Stage 3 smoke proof line.', to smoke.txt at the repo root, touching no other file. A review may ask for one more appended line to the same file; that added line is in scope and not deferred.",
+  "targetFile": "smoke.txt",
+  "tasks": [
+    {
+      "detail": "Append exactly one line 'Stage 3 smoke proof line.' to smoke.txt at the workspace root (the file exists). Touch no other file. Commit, set bookmark legion/S394108011-1, push, open PR with body containing 'Dispatch: S394108011-1'. If review asks for one more line, append exactly one additional line to smoke.txt in the same PR.",
+      "phase": "implement"
+    },
+    {
+      "detail": "Verify only smoke.txt changed by exactly one added line via the PR diff; re-run/confirm the implementer's E2E proof on the PR diff surface.",
+      "phase": "test"
+    },
+    {
+      "detail": "Confirm PR diff adds exactly the one line to smoke.txt and no other file; if a review round asks for a second line, verify it was appended and the thread resolves.",
+      "phase": "review"
+    }
+  ],
+  "verificationEvidence": "Proof surface is the real GitHub PR on sjawhar/legion-smoke: the merged/opened PR diff must show exactly one added line to smoke.txt and no other file change. Negative control: a diff touching any other file or adding more than the specified line(s) fails AC1."
+}
