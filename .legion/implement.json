@@ -1,0 +1,27 @@
+{
+  "branch": "legion/S394135277-1",
+  "completed": "2026-09-25T05:39:41.878607672Z",
+  "docsOnly": true,
+  "filesChanged": [
+    "smoke.txt (+4 lines total in PR: 'Stage 3 proof S394135277-1 2026-09-25', 'Stage 3 review round 1 (S394135277)', 'Stage 3 review round 2 (S394135277)', 'Stage 3 review round 3 (S394135277)')",
+    ".legion/plan.json, .legion/implement.json, .legion/test.json (Legion process handoffs; removed at end of clean review)"
+  ],
+  "headSha": "0a98553d",
+  "phase": "implement",
+  "prNumber": 186,
+  "prUrl": "https://github.com/sjawhar/legion-smoke/pull/186",
+  "proof": [
+    {
+      "command": "legion gh -- pr diff 186 --repo sjawhar/legion-smoke ; legion gh -- pr view 186 --repo sjawhar/legion-smoke --json files",
+      "criterion": "AC1 (with in-scope review-round follow-ups): PR adds only lines to smoke.txt and changes no other repository content file.",
+      "headSha": "0a98553d3c4f (correction commit; product change is exercised here and is stable in branch history)",
+      "negativeControl": "legion gh -- api repos/sjawhar/legion-smoke/contents/smoke.txt on the default branch (main) does NOT contain any of the four added lines, confirming they arrive only via this PR.",
+      "observed": "Product diff is four added lines in smoke.txt only: 'Stage 3 proof S394135277-1 2026-09-25' (original), 'Stage 3 review round 1 (S394135277)', 'Stage 3 review round 2 (S394135277)', and 'Stage 3 review round 3 (S394135277)' (review-round follow-ups). No source/build/config file changed; the only other diff entries are the .legion process handoffs, excluded by the '~(.legion | docs/solutions)' fileset and removed before merge.",
+      "surface": "GitHub pull-request diff on sjawhar/legion-smoke (PR #186)."
+    }
+  ],
+  "reviewRoundCorrection": "Appended 'Stage 3 review round 3 (S394135277)' per the round-3 review; spec Requirements/Errors declare an additional appended line for a review round in scope for this same PR.",
+  "round": 3,
+  "schemaVersion": 1,
+  "summary": "Review round 3 (final) correction on PR #186: appended the review-round line 'Stage 3 review round 3 (S394135277)' to the end of smoke.txt (commit 0a98553d), the in-scope one-more-line follow-up the spec permits for a review round. No other file changed; docs-only PR, so ce-simplify-code and the thermonuclear pair remain omitted."
+}

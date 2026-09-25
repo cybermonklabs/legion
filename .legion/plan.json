@@ -1,0 +1,50 @@
+{
+  "acceptancePlan": [
+    {
+      "command": "legion gh -- pr diff \u003cn\u003e --repo sjawhar/legion-smoke  (and legion gh -- pr view \u003cn\u003e --repo sjawhar/legion-smoke --json files)",
+      "criterion": "AC1: PR against sjawhar/legion-smoke adds exactly one new line to smoke.txt and changes no other file.",
+      "evidence": "Diff shows +1 line in smoke.txt and files list contains only smoke.txt.",
+      "negativeControl": "A diff that also touches any other path, or adds more than one line, fails AC1.",
+      "surface": "GitHub pull-request diff on sjawhar/legion-smoke."
+    },
+    {
+      "command": "legion gh -- pr view \u003cn\u003e --repo sjawhar/legion-smoke --json state,mergedAt,mergeCommit  and  legion gh -- api repos/sjawhar/legion-smoke/contents/smoke.txt (default ref) to confirm the line.",
+      "criterion": "AC2: PR passes required checks and merges to the default branch; the added line is present there.",
+      "evidence": "PR state MERGED; smoke.txt on the default branch ends with the added line.",
+      "negativeControl": "Reading smoke.txt on the default branch before merge does not contain the new line.",
+      "surface": "Merged pull request state + default-branch contents of smoke.txt."
+    }
+  ],
+  "completed": "2026-09-25T05:26:30.878308444Z",
+  "concerns": [
+    "smoke.txt already exists at repo root (554B); the change is an append of exactly one line, not a create. The spec's create-if-absent branch does not apply here.",
+    "Change is plain text, not runtime code: this is a docs-only PR. ce-simplify-code and the thermonuclear deep-review/code-quality pair are omitted per legion-worker docs-only rule.",
+    "Required CI check is the `ci` workflow `check` job (.github/workflows/ci.yml: sleep 20 \u0026\u0026 exit 0) fired on push and pull_request.",
+    "In-scope anticipated follow-up: a review may request one more appended line to smoke.txt; the implementer appends it to the same file in the same PR (spec Requirements/Errors)."
+  ],
+  "fileLevelWork": [
+    "smoke.txt (root): append exactly one line of plain text to the end. This is the only tracked-code change in the PR.",
+    "No other repository file changes. .legion/\u003cphase\u003e.json handoffs are the only additional committed files, removed at the end of a clean review by the implementer's final push."
+  ],
+  "independentTasks": 1,
+  "ordering": "1) implement: append line to smoke.txt, commit, set+push bookmark legion/S394135277-1, open PR (body: `Dispatch: S394135277-1`), record E2E (implementer). 2) test: verify AC1 on PR diff + AC2 setup, re-run proof, record implementerProof. 3) review: one round on the PR head, thread disposition, approve the head carrying no .legion/ (docs-only: no thermo pair, no ce-simplify). 4) merge: human merges; implementer confirms AC2 on default branch and records the production/default-branch check.",
+  "phase": "plan",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: drives the GitHub PR surface for this change — append one line to smoke.txt, set bookmark legion/S394135277-1, push it, open the PR whose body carries `Dispatch: S394135277-1`, and record the E2E (implementer) proof. No domain/build agent skill applies: the diff is plain text and sjawhar/legion-smoke has no source, build, lint, or test tooling."
+    ],
+    "review": [
+      "legion-worker: defines the review round, per-thread disposition, and approval gate on the PR head. No domain review agent skill applies to a one-line plain-text diff, and the docs-only rule omits the thermonuclear pair."
+    ],
+    "test": [
+      "legion-worker: defines the tester's proof discipline — verify the implementer's proof on the PR diff/merge surface, drive the same surface independently, and record implementerProof in .legion/test.json. No domain test agent skill applies; the only automated check is the `ci` workflow `check` job."
+    ]
+  },
+  "routingHints": {
+    "complexity": "trivial",
+    "estimatedImplementers": 1
+  },
+  "schemaVersion": 1,
+  "taskCount": 1,
+  "workflowRecommendation": "Single implementer, one PR against sjawhar/legion-smoke. Docs-only text change: skip ce-simplify-code and the thermonuclear pair (no runtime code in the diff)."
+}

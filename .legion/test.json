@@ -1,0 +1,27 @@
+{
+  "branch": "legion/S394135277-1",
+  "completed": "2026-09-25T05:38:39.56220463Z",
+  "docsOnly": true,
+  "failures": [],
+  "headSha": "164c2e27708482ed0cabe15435714222bb5b08b3",
+  "implementerProof": {
+    "how": "Re-ran the implementer's surface independently at the round-2 head 164c2e27: `legion gh -- pr view 186 --repo sjawhar/legion-smoke --json files` reports smoke.txt MODIFIED additions:3 deletions:0 and no repository content file beyond the .legion process handoffs; the jj product diff (`--from main@origin --to @- '~.legion'`) shows exactly the three added lines. Matches the implementer's recorded round-2 correction.",
+    "verdict": "verified"
+  },
+  "phase": "test",
+  "prNumber": 186,
+  "prUrl": "https://github.com/sjawhar/legion-smoke/pull/186",
+  "proof": [
+    {
+      "command": "legion gh -- pr view 186 --repo sjawhar/legion-smoke --json files,headRefOid ; jj -R \"$LEGION_WORKSPACE\" diff --from main@origin --to @- --git '~.legion' ; legion gh -- pr checks 186 --repo sjawhar/legion-smoke",
+      "criterion": "AC1 (with in-scope round-1 and round-2 follow-up lines): PR #186 appends only lines to smoke.txt and changes no other repository content file.",
+      "headSha": "164c2e27708482ed0cabe15435714222bb5b08b3",
+      "negativeControl": "smoke.txt on the default branch (main) via `legion gh -- api repos/sjawhar/legion-smoke/contents/smoke.txt` ends at 'Stage 3 review round 3 (S392811554)' and contains none of the three S394135277 lines — all arrive only through this PR.",
+      "observed": "PR head 164c2e277084, state OPEN, mergeStateStatus CLEAN. files: smoke.txt MODIFIED (additions:3, deletions:0); the only other entries are the .legion process handoffs (removed before merge). Product diff is exactly three added lines at the end of smoke.txt: '+Stage 3 proof S394135277-1 2026-09-25', '+Stage 3 review round 1 (S394135277)', '+Stage 3 review round 2 (S394135277)' — the round-2 follow-up is the in-scope one-more-line the spec permits per review round. No source/build/config file changed. CI at head: `check` pass, `gate` pass.",
+      "surface": "GitHub pull-request diff/files on sjawhar/legion-smoke (PR #186) and the jj product diff at the PR head."
+    }
+  ],
+  "round": 2,
+  "schemaVersion": 1,
+  "summary": "Round-2 retest: verified the correction on PR #186 against the real GitHub PR surface — smoke.txt now carries the proof line plus the round-1 and round-2 lines, no other repository content file changed, CI check+gate pass at head 164c2e27. Implementer's round-2 proof re-run independently and verified; negative control confirms all three lines are absent from the default branch."
+}
