@@ -1,0 +1,36 @@
+{
+  "completed": "2026-09-25T17:51:50.267439206Z",
+  "failures": [],
+  "implementerProof": {
+    "how": "Round 2 (head 0859083b): re-verified the implementer's containment check by driving the same file surface independently - read smoke.txt at the PR head via the GitHub Contents API and confirmed grep -Fxq 'Stage 3 smoke proof.' succeeds; local $LEGION_WORKSPACE file matches. Review round 2 appended `Stage 3 review round 2 (S392225819)` as the new final line, nothing else changed. Negative control grep -Fxq 'Stage 3 WRONG' absent, so the check discriminates.",
+    "verdict": "verified"
+  },
+  "phase": "test",
+  "proof": [
+    {
+      "command": "legion gh -- api repos/sjawhar/legion-smoke/contents/smoke.txt?ref=c7c9902cb3d3c3ef9df007e2e80e151e8987a727 --jq .content | base64 -d | tail -n1",
+      "criterion": "Acceptance 1 (round 0): smoke.txt at the repository root contains `Stage 3 smoke proof.`",
+      "headSha": "c7c9902cb3d3c3ef9df007e2e80e151e8987a727",
+      "negativeControl": "Compared against `Stage 3 WRONG` → not equal.",
+      "observed": "Round 0: final line of smoke.txt at that head equalled `Stage 3 smoke proof.`; CI green.",
+      "surface": "GitHub Contents API for sjawhar/legion-smoke at the PR head."
+    },
+    {
+      "command": "legion gh -- api repos/sjawhar/legion-smoke/contents/smoke.txt?ref=4c7ddf0f84736843fe3642678a124bdc143e10fe --jq .content | base64 -d | grep -Fxq 'Stage 3 smoke proof.'",
+      "criterion": "Acceptance 1: smoke.txt at the repository root of sjawhar/legion-smoke contains the line `Stage 3 smoke proof.`",
+      "headSha": "4c7ddf0f84736843fe3642678a124bdc143e10fe",
+      "negativeControl": "grep -Fxq 'Stage 3 WRONG' on the same content → non-zero; a line never written is absent, confirming the containment check discriminates.",
+      "observed": "Round 1 (correction): smoke.txt at the new PR head contains `Stage 3 smoke proof.` (now the second-to-last line; review round 1 appended `Stage 3 review round 1 (S392225819)` as the final line, nothing else changed). CI green at head: check completed/success and gate completed/success.",
+      "surface": "GitHub Contents API for sjawhar/legion-smoke at the new PR head — the real repository file the acceptance criterion reads back; this marker repo has no build/test/app logic, so the file surface plus PR CI is the production-like surface."
+    },
+    {
+      "command": "legion gh -- api repos/sjawhar/legion-smoke/contents/smoke.txt?ref=0859083b10023bdb73c3ba0180e4aa69ea62e989 --jq .content | base64 -d | grep -Fxq 'Stage 3 smoke proof.'",
+      "criterion": "Acceptance 1: smoke.txt at the repository root of sjawhar/legion-smoke contains the line `Stage 3 smoke proof.`",
+      "headSha": "0859083b10023bdb73c3ba0180e4aa69ea62e989",
+      "negativeControl": "grep -Fxq 'Stage 3 WRONG' on the same content -\u003e non-zero; a line never written is absent, confirming the containment check discriminates.",
+      "observed": "Round 2 (correction): smoke.txt at the new PR head contains `Stage 3 smoke proof.` (review round 2 appended `Stage 3 review round 2 (S392225819)` as the final line, nothing else changed). CI green at head: check and gate completed/success.",
+      "surface": "GitHub Contents API for sjawhar/legion-smoke at the round-2 PR head - the real repository file the acceptance criterion reads back; no build/test/app logic exists, so the file surface plus PR CI is the production-like surface."
+    }
+  ],
+  "schemaVersion": 1
+}

@@ -1,0 +1,23 @@
+{
+  "completed": "2026-09-25T17:52:53.142380366Z",
+  "deviations": [],
+  "filesChanged": [
+    "smoke.txt"
+  ],
+  "openQuestions": [],
+  "phase": "implement",
+  "proof": [
+    {
+      "command": "cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 grep -Fxq 'Stage 3 smoke proof.' smoke.txt \u0026\u0026 tail -n1 smoke.txt",
+      "criterion": "Acceptance 1: smoke.txt at the repository root of sjawhar/legion-smoke contains the line `Stage 3 smoke proof.`",
+      "headSha": "e0c0b1c9650e512c7d6719b72bc9c4245fe33132",
+      "negativeControl": "grep -Fxq 'Stage 3 WRONG' smoke.txt returns non-zero — a line that was never written is absent, confirming the containment check is discriminating",
+      "observed": "grep confirms the exact line `Stage 3 smoke proof.` is present in the file; tail shows the review-round-3 line `Stage 3 review round 3 (S392225819)` appended as the new final line, changing nothing else",
+      "surface": "$LEGION_WORKSPACE working tree of sjawhar/legion-smoke — the real repository file the acceptance criterion reads back; no build/test/app logic exists in this marker repo, so the file surface plus PR CI is the production-like surface"
+    }
+  ],
+  "schemaVersion": 1,
+  "trickyParts": [
+    "Review round 3 (reviewer sjawhar-agent, CHANGES_REQUESTED) requested one additional line `Stage 3 review round 3 (S392225819)` appended to smoke.txt; spec Requirements permits this extra review-round line with no re-approval. No inline review threads exist on PR #290."
+  ]
+}
