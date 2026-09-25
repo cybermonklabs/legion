@@ -1,0 +1,21 @@
+{
+  "completed": "2026-09-25T08:59:37.635459846Z",
+  "failures": [],
+  "implementerProof": {
+    "how": "Round 3 (final): re-ran the implementer's exact command independently against the GitHub PR branch content API: `legion gh -- api 'repos/sjawhar/legion-smoke/contents/smoke.txt?ref=legion/S394355701-1' --jq .content | base64 -d | tail -4` returned the round-0 proof line plus review lines round 1, round 2, round 3, matching the implementer's observed result. Negative control on ?ref=main returned `Stage 3 review round 3 (S394135277)`, confirming none of the added S394355701 lines are on main.",
+    "verdict": "verified"
+  },
+  "notes": "Final test round: all appended lines (round-0 proof plus review rounds 1-3) verified on their real surface at head bad67b70. Acceptance criterion 2 (lines present on main) remains inherently post-merge and is the implementer's production check, not a testable-now gap.",
+  "phase": "test",
+  "proof": [
+    {
+      "command": "legion gh -- api 'repos/sjawhar/legion-smoke/contents/smoke.txt?ref=legion/S394355701-1' --jq .content | base64 -d | tail -4",
+      "criterion": "1",
+      "headSha": "bad67b70a8866f5f1a21c5c1f166afefd76c3a30",
+      "negativeControl": "Same read on ?ref=main returns the pre-append content whose last line is 'Stage 3 review round 3 (S394135277)' — none of the round-0/1/2/3 S394355701 lines are on main, confirming the branch adds them.",
+      "observed": "Round 3 (final): smoke.txt on the PR branch ends with 'Stage 3 workflow proof for S394355701-1.', then review round 1, round 2, and round 3 lines 'Stage 3 review round N (S394355701)'; PR diff confirms smoke.txt is the sole product file changed. CI green at this head: `check` run 36115763821 and `gate` run 36115763835 both success.",
+      "surface": "GitHub PR branch content API (repos/sjawhar/legion-smoke/contents/smoke.txt?ref=legion/S394355701-1)"
+    }
+  ],
+  "schemaVersion": 1
+}

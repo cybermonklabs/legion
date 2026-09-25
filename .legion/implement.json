@@ -1,0 +1,22 @@
+{
+  "branch": "legion/S394355701-1",
+  "completed": "2026-09-25T08:57:27.103394155Z",
+  "filesChanged": [
+    "smoke.txt"
+  ],
+  "phase": "implement",
+  "prNumber": 205,
+  "prUrl": "https://github.com/sjawhar/legion-smoke/pull/205",
+  "proof": [
+    {
+      "command": "legion gh -- api 'repos/sjawhar/legion-smoke/contents/smoke.txt?ref=legion/S394355701-1' --jq .content | base64 -d | tail -4",
+      "criterion": "1",
+      "headSha": "dc49f4767187f80be5984a26481557faeaf0f729",
+      "negativeControl": "The same read on ?ref=main returns the pre-append content whose last line is 'Stage 3 review round 3 (S394135277)' - none of the round-0/1/2/3 lines for S394355701 are on main, confirming this branch adds them.",
+      "observed": "smoke.txt on the PR branch now ends with 'Stage 3 workflow proof for S394355701-1.', then review lines round 1, round 2, and the round-3 review line 'Stage 3 review round 3 (S394355701)' appended below; smoke.txt remains the sole product file changed.",
+      "surface": "GitHub PR branch content API (repos/sjawhar/legion-smoke/contents/smoke.txt?ref=legion/S394355701-1)"
+    }
+  ],
+  "reviewRound": 3,
+  "schemaVersion": 1
+}
