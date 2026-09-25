@@ -1,0 +1,56 @@
+{
+  "acceptanceCriteria": [
+    {
+      "command": "legion gh -- api repos/sjawhar/legion-smoke/contents/README.md?ref=main --jq '.content' | base64 -d",
+      "criterion": "A reader who opens README.md on main sees one new line not there before, proven by viewing the file on GitHub after merge.",
+      "id": 1,
+      "skill": "none: reviewed legion-worker and dispatch skills; no repository engineering skill governs a plain-text README append.",
+      "surface": "GitHub-rendered README.md on the main branch of sjawhar/legion-smoke (the user-facing file view)."
+    },
+    {
+      "command": "legion gh -- pr checks \u003cpr-number\u003e --repo sjawhar/legion-smoke",
+      "criterion": "The PR passes the repository's required checks, proven by green check status on the PR.",
+      "id": 2,
+      "skill": "none: CI is a single GitHub Actions job; no repository skill drives it.",
+      "surface": "GitHub Actions 'ci' workflow, job 'check' (.github/workflows/ci.yml), reported as the PR's required status check."
+    }
+  ],
+  "completed": "2026-09-25T07:07:15.666119008Z",
+  "evidence": {
+    "implement": "PR opened on sjawhar/legion-smoke; README.md diff shows exactly one added line, no other file changed; ci/check green at head SHA; E2E proof line recorded in implement handoff.",
+    "review": "Verify single-file diff, green required check, and threads on GitHub; run thermonuclear review pair at final head.",
+    "test": "Independently re-run the acceptance-1 file view and acceptance-2 ci/check status; record implementerProof verdict and own E2E line."
+  },
+  "fileLevelWork": [
+    "README.md: append exactly one new line of plain text at end-of-file (e.g. a Stage 3 proof marker line naming issue S392083388-1). No other file may change; the change touches exactly one file per the spec requirement.",
+    "If a review round requests it: append one additional plain-text line to the same README.md within the same PR — this is in scope per spec."
+  ],
+  "ordering": [
+    "1. Verify README.md exists at HEAD (jj -R \"$LEGION_WORKSPACE\" file list -r @ README.md). If missing, stop and report per spec Errors table — do not create a substitute file.",
+    "2. Append exactly one line to README.md end-of-file; confirm no other tracked file changed (jj -R \"$LEGION_WORKSPACE\" diff --summary shows only README.md).",
+    "3. Commit, set bookmark legion/S392083388-1, push, open PR with body line 'Dispatch: S392083388-1'.",
+    "4. Prove acceptance-1 surface (README diff / GitHub file view) and acceptance-2 surface (ci/check green) before completing implement phase.",
+    "5. Tester independently re-verifies both surfaces.",
+    "6. Reviewer verifies CI/threads/E2E on GitHub; a review may request one more appended line (in scope).",
+    "7. On clean review, delete .legion/, merge (human), implementer verifies the line on main post-merge."
+  ],
+  "phase": "plan",
+  "requiredSkills": {
+    "implement": [
+      "none: reviewed the session skill list (legion-worker, legion-retro, dispatch, envoy) and repository state; no repository engineering skill governs appending a plain-text line to README.md — the legion-worker skill's push/PR procedure is followed as standing worker process, not a domain skill."
+    ],
+    "review": [
+      "none: no repository review skill applies; review follows legion-worker's PR/thread/thermonuclear discipline against a single-file README diff."
+    ],
+    "test": [
+      "none: no repository test/smoke/e2e skill exists for this sandbox; verification is a direct GitHub file view plus the single ci/check status, both covered by legion-worker's proof discipline."
+    ]
+  },
+  "risks": [
+    "The change must touch exactly one file — adding any second file (including stray smoke/*.txt) fails the spec requirement.",
+    "Do not create a substitute file if README.md is missing; stop and report."
+  ],
+  "schemaVersion": 1,
+  "summary": "Append exactly one new line of plain text to the end of README.md in sjawhar/legion-smoke on this issue's smoke branch, open a PR, and let CI's required check pass. If review requests it, append one additional line to the same README.md within the same PR.",
+  "targetFile": "README.md"
+}

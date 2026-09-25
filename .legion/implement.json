@@ -1,0 +1,39 @@
+{
+  "branch": "legion/S392083388-1",
+  "completed": "2026-09-25T07:32:02.375937257Z",
+  "deviations": "none",
+  "fastFollow": "none",
+  "filesChanged": [
+    "README.md"
+  ],
+  "headSha": "9d32364c69373a0e3670420fc4547ddf680e2d52",
+  "phase": "implement",
+  "prNumber": 197,
+  "prUrl": "https://github.com/sjawhar/legion-smoke/pull/197",
+  "proof": [
+    {
+      "command": "legion gh -- api repos/sjawhar/legion-smoke/contents/README.md?ref=legion/S392083388-1 --jq '.content' | base64 -d",
+      "criterion": 1,
+      "headSha": "9d32364c69373a0e3670420fc4547ddf680e2d52",
+      "negativeControl": "legion gh -- api repos/sjawhar/legion-smoke/contents/README.md?ref=legion/does-not-exist -\u003e HTTP 404 'No commit found for the ref legion/does-not-exist'.",
+      "observed": "Final line of README.md is 'Stage 3 review round 3 (S392083388)', following the round-1 and round-2 lines; the round-3 correction diff is 'M README.md' only with a single added line (@@ -28,3 +28,4 @@).",
+      "surface": "GitHub-rendered README.md file view on branch legion/S392083388-1 of sjawhar/legion-smoke"
+    },
+    {
+      "command": "legion gh -- pr checks 197 --repo sjawhar/legion-smoke",
+      "criterion": 2,
+      "headSha": "9d32364c69373a0e3670420fc4547ddf680e2d52",
+      "negativeControl": "Only head-SHA-matching runs are cited as this proof; superseded runs at earlier heads are not accepted.",
+      "observed": "check and gate both report pass at the pushed PR head; exact run ids at the head are recorded in the PR body Verification/CI line.",
+      "surface": "GitHub Actions 'ci' workflow required check on PR #197"
+    }
+  ],
+  "round": 4,
+  "schemaVersion": 1,
+  "summary": "Review round 3 (final) correction: appended exactly the line 'Stage 3 review round 3 (S392083388)' to the end of README.md (correction commit 9d32364c69373a0e3670420fc4547ddf680e2d52) within the same PR #197; no other file changed. Answers the reviewer's round-3 CHANGES_REQUESTED at d82ba19ed352; CI green at the pushed head (run ids in the PR body) and the E2E file-view proof plus 404 negative control re-recorded.",
+  "threads": {
+    "note": "Reviewer submitted a top-level CHANGES_REQUESTED review with no inline review threads; nothing to resolve individually.",
+    "resolved": 0,
+    "unresolved": 0
+  }
+}
