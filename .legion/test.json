@@ -1,0 +1,80 @@
+{
+  "ci": {
+    "headSha": "fd380290813e86fe7e6b1c107d55fa48b6dc7254",
+    "runs": [
+      {
+        "conclusion": "success",
+        "event": "pull_request",
+        "runId": 36247539903,
+        "workflow": "ci"
+      },
+      {
+        "conclusion": "success",
+        "event": "push",
+        "runId": 36247536824,
+        "workflow": "ci"
+      },
+      {
+        "conclusion": "success",
+        "event": "pull_request",
+        "runId": 36247539880,
+        "workflow": "fail-on-demand"
+      },
+      {
+        "conclusion": "success",
+        "event": "push",
+        "runId": 36247536822,
+        "workflow": "fail-on-demand"
+      }
+    ]
+  },
+  "completed": "2026-09-26T14:19:52.613987426Z",
+  "failed": 0,
+  "failures": [],
+  "headSha": "fd380290813e86fe7e6b1c107d55fa48b6dc7254",
+  "implementerProof": {
+    "how": "Re-ran all three implementer proof commands independently at 27d7cb537b7ae7efba35bce7bc313cdeb3c55615 and again at the current head fd380290813e86fe7e6b1c107d55fa48b6dc7254: `legion gh -- pr view 326 --json headRefOid,files` (head fd380290, files .legion/implement.json, .legion/plan.json, smoke/stage4b-legsmoke-278.txt); `jj diff --from main@origin --to fd380290 --summary '~.legion'` =\u003e exactly `A smoke/stage4b-legsmoke-278.txt`; contents API at both refs piped through `cat -A` =\u003e `Stage 4b workflow proof: LEGSMOKE-278.$`, `wc -l` =\u003e 1; `legion gh -- run list --branch legion/LEGSMOKE-278` =\u003e ci 36247202477/36247178776 and fail-on-demand 36247202500/36247178737 success at 27d7cb53, ci 36247539903/36247536824 and fail-on-demand 36247539880/36247536822 success at fd380290; `legion gh -- pr checks 326` exit 0. Negative control reproduced: contents API at ref=main =\u003e HTTP/2.0 404 Not Found. All match the implementer's `E2E (implementer)` line and .legion/implement.json `proof`.",
+    "verdict": "verified"
+  },
+  "notes": "No lint, typecheck, or unit lane exists in sjawhar/legion-smoke (no AGENTS.md, no package manifest, no test framework; only .github/workflows/ci.yml and fail-on-demand.yml). The repository's fast local checks are therefore the two workflows themselves, cited above. Tester made no code commit; the PR body's `E2E (tester)` line was written with `legion gh -- pr edit 326 --body-file` and verified by diff against the fetched body.",
+  "phase": "test",
+  "proof": [
+    {
+      "command": "legion gh -- pr view 326 --repo sjawhar/legion-smoke --json headRefOid,files; legion gh -- api \"repos/sjawhar/legion-smoke/compare/main...fd380290813e86fe7e6b1c107d55fa48b6dc7254\" --jq '.files[] | \"\\(.status)\\t+\\(.additions)\\t-\\(.deletions)\\t\\(.filename)\"'; cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 jj -R \"$LEGION_WORKSPACE\" diff --from main@origin --to fd380290813e86fe7e6b1c107d55fa48b6dc7254 --summary '~.legion'",
+      "criterion": "AC1: the pull request adds exactly one file, smoke/stage4b-legsmoke-278.txt, whose only line is `Stage 4b workflow proof: LEGSMOKE-278.`",
+      "headSha": "fd380290813e86fe7e6b1c107d55fa48b6dc7254",
+      "negativeControl": "cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 test ! -e .fail-me =\u003e absent; jj -R \"$LEGION_WORKSPACE\" file list -r fd380290813e86fe7e6b1c107d55fa48b6dc7254 .fail-me =\u003e `No matching entries for paths: .fail-me` (the fail-on-demand gate `if [ -f .fail-me ]; then exit 1` would fail any head carrying it).",
+      "observed": "PR head fd380290813e86fe7e6b1c107d55fa48b6dc7254, state OPEN, mergeable MERGEABLE, files .legion/implement.json, .legion/plan.json, smoke/stage4b-legsmoke-278.txt; compare API: status=ahead ahead_by=3 behind_by=0, `added +1 -0 smoke/stage4b-legsmoke-278.txt` is the only non-.legion/ file (the two .legion/ entries are the handoff ledger, exempt from the product diff and deleted before approval); jj diff excluding .legion =\u003e exactly `A smoke/stage4b-legsmoke-278.txt`.",
+      "surface": "GitHub pull request #326 Files changed, the GitHub compare API main...head, and the jj diff from main@origin in $LEGION_WORKSPACE (sjawhar/legion-smoke, the real repository the change ships in)"
+    },
+    {
+      "command": "legion gh -- api \"repos/sjawhar/legion-smoke/contents/smoke/stage4b-legsmoke-278.txt?ref=fd380290813e86fe7e6b1c107d55fa48b6dc7254\" --jq .content | base64 -d | cat -A; same | wc -l; cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 jj -R \"$LEGION_WORKSPACE\" file show -r fd380290813e86fe7e6b1c107d55fa48b6dc7254 smoke/stage4b-legsmoke-278.txt | cat -A",
+      "criterion": "AC1 content: the file's only line is `Stage 4b workflow proof: LEGSMOKE-278.` with a single trailing newline",
+      "headSha": "fd380290813e86fe7e6b1c107d55fa48b6dc7254",
+      "negativeControl": "legion gh -- api \"repos/sjawhar/legion-smoke/contents/smoke/stage4b-legsmoke-278.txt?ref=main\" -i =\u003e HTTP/2.0 404 Not Found, {\"message\":\"Not Found\",\"status\":\"404\"}: the file does not exist on the default branch before the merge.",
+      "observed": "`Stage 4b workflow proof: LEGSMOKE-278.$` from both the contents API and jj file show (one line, single trailing newline, no other characters); wc -l =\u003e 1. Identical at the smoke commit 27d7cb537b7ae7efba35bce7bc313cdeb3c55615.",
+      "surface": "GitHub contents API for smoke/stage4b-legsmoke-278.txt at the PR head, and jj file show in $LEGION_WORKSPACE"
+    },
+    {
+      "command": "legion gh -- run list --repo sjawhar/legion-smoke --branch legion/LEGSMOKE-278 --json name,conclusion,status,headSha,databaseId,event; legion gh -- pr checks 326 --repo sjawhar/legion-smoke",
+      "criterion": "AC2: workflows ci and fail-on-demand are both green on the pull request's current head",
+      "headSha": "fd380290813e86fe7e6b1c107d55fa48b6dc7254",
+      "negativeControl": "cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 test ! -e .fail-me =\u003e absent at the head; the fail-on-demand gate job exits 1 on any head where .fail-me exists, so its success here is a real pass of that gate and not a vacuous one.",
+      "observed": "At fd380290813e86fe7e6b1c107d55fa48b6dc7254: ci run 36247539903 (pull_request) completed success, ci run 36247536824 (push) completed success, fail-on-demand run 36247539880 (pull_request) completed success, fail-on-demand run 36247536822 (push) completed success. At 27d7cb537b7ae7efba35bce7bc313cdeb3c55615 the same four workflows were also success (36247202477, 36247178776, 36247202500, 36247178737). `legion gh -- pr checks 326` exit 0: check pass, check pass, gate pass, gate pass (job names of workflows ci and fail-on-demand respectively).",
+      "surface": "GitHub Actions runs for branch legion/LEGSMOKE-278 and the checks on PR #326 (https://github.com/sjawhar/legion-smoke/actions/runs/36247539903, https://github.com/sjawhar/legion-smoke/actions/runs/36247539880, https://github.com/sjawhar/legion-smoke/actions/runs/36247536824, https://github.com/sjawhar/legion-smoke/actions/runs/36247536822)"
+    }
+  ],
+  "pullRequest": {
+    "base": "main",
+    "head": "legion/LEGSMOKE-278",
+    "number": 326,
+    "url": "https://github.com/sjawhar/legion-smoke/pull/326"
+  },
+  "redTests": [],
+  "schemaVersion": 1,
+  "summary": "PR #326 head fd380290813e86fe7e6b1c107d55fa48b6dc7254 adds exactly one product file, smoke/stage4b-legsmoke-278.txt, whose only line is `Stage 4b workflow proof: LEGSMOKE-278.` with a single trailing newline; workflows ci and fail-on-demand are green at that head on both push and pull_request events; .fail-me is absent; the file is absent from main (404). Acceptance criteria 1 and 2 pass on their real surfaces; criteria 3 and 4 are conditional on the review and the merge and are not yet reachable.",
+  "unreached": [
+    "AC3 (append one line on review request, checks green again, thread resolved) is conditional on the reviewer asking; no review has been submitted at fd380290 (0 threads). Not yet reachable; it becomes a test round only if the reviewer opens it.",
+    "AC4 (file exists on main after a human merges) is the implementer's post-merge production check and is not reachable before the merge; verified today that the contents API and jj file show at main both report the file absent (the expected pre-merge state)."
+  ]
+}
