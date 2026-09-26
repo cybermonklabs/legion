@@ -1,0 +1,56 @@
+{
+  "acceptanceCriteria": [
+    {
+      "command": "cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 sed -n '$p' README.md  (confirm the final appended line reads exactly 'Stage 3 smoke proof.'); on GitHub: legion gh -- pr diff \u003cn\u003e --repo sjawhar/legion-smoke",
+      "criterion": "README.md gains exactly one new line reading \"Stage 3 smoke proof.\"",
+      "id": 1,
+      "skill": "none — docs-only file read; no repository skill drives a README read",
+      "surface": "The README.md file on the pull request branch in sjawhar/legion-smoke"
+    },
+    {
+      "command": "legion gh -- pr view \u003cn\u003e --json files --repo sjawhar/legion-smoke  (expect README.md as the sole modified file)",
+      "criterion": "A single pull request against the smoke branch carries only that one-file change",
+      "id": 2,
+      "skill": "none — GitHub PR file-list inspection; no repository skill applies",
+      "surface": "The pull request's file list on GitHub"
+    }
+  ],
+  "completed": "2026-09-26T07:22:15.914944302Z",
+  "evidence": {
+    "implement": "After appending, `sed -n '$p' README.md` prints exactly 'Stage 3 smoke proof.'; PR opened with README.md as sole file.",
+    "integration": "Merge lands the one-line change on the smoke branch; implementer confirms the line present post-merge.",
+    "review": "PR diff shows a single added line 'Stage 3 smoke proof.' to README.md and no other file changed.",
+    "test": "Re-read README.md on the PR branch confirms the appended final line; `legion gh -- pr view \u003cn\u003e --json files` lists only README.md."
+  },
+  "phase": "plan",
+  "requiredSkills": {
+    "implement": [
+      "none: reviewed the skill list; the change is a one-line append to an existing README.md (docs-only), so no repository code path or domain agent skill applies. ce-simplify-code does not run on a docs-only diff."
+    ],
+    "review": [
+      "none: docs-only diff, so the thermonuclear pair and ce-simplify-code passes are skipped per legion-worker; standard PR review of the one-file diff and file list suffices."
+    ],
+    "test": [
+      "none: acceptance is proven by reading README.md on the PR branch (criterion 1) and the PR file list (criterion 2); a one-line docs append has no test framework or testing skill to invoke."
+    ]
+  },
+  "risks": [
+    "The exact string must be 'Stage 3 smoke proof.' with the trailing period — existing README lines are near-duplicates (e.g. line 3 'Legion Stage 3 smoke proof.'), so the appended line must match the acceptance string exactly and not reuse a prefixed variant.",
+    "A review may request one additional appended line to the same README.md; that follow-up is in scope for this issue (spec Requirements)."
+  ],
+  "schemaVersion": 1,
+  "summary": "Append exactly one new line reading \"Stage 3 smoke proof.\" to README.md at the root of sjawhar/legion-smoke, delivered as a single one-file pull request against the smoke branch. Docs-only change; no code, config, or other file is touched.",
+  "tasks": [
+    {
+      "description": "Append the single line 'Stage 3 smoke proof.' to the end of README.md at the repository root. README.md exists; no existing line matches the exact string, so append. If the line were already present, make no change and report it (spec Errors table).",
+      "files": [
+        "README.md"
+      ],
+      "order": 1
+    },
+    {
+      "description": "Commit the change and open a single pull request against the smoke branch with the READY-format body and the 'Dispatch: S390718552-1' line.",
+      "order": 2
+    }
+  ]
+}
