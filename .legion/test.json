@@ -1,0 +1,67 @@
+{
+  "completed": "2026-09-26T20:49:57.985128419Z",
+  "criteriaNotExercised": [
+    {
+      "criterion": 3,
+      "reason": "Conditional on a review requesting a second line; no review round has occurred yet (Threads: 0 resolved, 0 unresolved). Re-verify with the plan's criterion-3 commands if the reviewer asks for the append."
+    },
+    {
+      "criterion": 5,
+      "reason": "Post-merge production check owned by the implementer after a human merges; PR #346 is OPEN and MERGEABLE."
+    }
+  ],
+  "failed": 0,
+  "failures": [],
+  "forReviewer": "Verify CI, Threads, and both E2E lines on GitHub directly. The tester's `test: record handoff` commit moves the PR head above 0507815f; CI re-runs there and the tester re-cites the CI line at that head after its push when the runs settle. Product content is byte-identical at every head on the branch (blob 9a0b777f5cf5545d971786dbd1988b73a47e65e1).",
+  "headVerified": "0507815f03728b460ab67e4a3814b713c3b29790",
+  "implementerProof": {
+    "how": "Re-ran each of the implementer's three proof commands independently from the tester session at 80f8dc706fcb5e9d60bbc1f773163ffe95077598 after `jj git fetch` (Nothing changed): the jj fileset diff and the compare-API filter both printed the single added product file; the contents API decoded to the exact line with wc -l = 1 and od -c showing 39 bytes ending in one \\n; `gh run list` filtered to that headSha listed the same four `completed success` runs (36270403067, 36270403176, 36270446121, 36270446128). Outputs identical line for line to the implement.json proof. Its negative controls reproduced: contents API `?ref=main` → HTTP 404 (exit 1), jj `file show -r main@origin` → `No such path` (exit 1), `.fail-me` → HTTP 404 at the head.",
+    "verdict": "verified"
+  },
+  "localChecks": "No lint, type, or unit lanes exist in the repository (root has only .github/workflows/ci.yml and fail-on-demand.yml; no AGENTS.md, no package manifest); the tester's only change is .legion/test.json. No test files written: text fixture with no test framework (plan requiredSkills.test).",
+  "passed": 3,
+  "phase": "test",
+  "prBodyUpdated": {
+    "at": "0507815f03728b460ab67e4a3814b713c3b29790",
+    "how": "legion gh -- pr edit 346 --repo sjawhar/legion-smoke --body-file",
+    "line": "E2E (tester)"
+  },
+  "productHead": "80f8dc706fcb5e9d60bbc1f773163ffe95077598",
+  "proof": [
+    {
+      "command": "cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 jj -R \"$LEGION_WORKSPACE\" git fetch \u0026\u0026 jj -R \"$LEGION_WORKSPACE\" diff --from main@origin --to 80f8dc706fcb5e9d60bbc1f773163ffe95077598 --summary '~(.legion | docs/solutions)'; legion gh -- api \"repos/sjawhar/legion-smoke/compare/main...80f8dc706fcb5e9d60bbc1f773163ffe95077598\" --jq '.files[] | select((.filename | startswith(\".legion/\") or startswith(\"docs/solutions/\")) | not) | \"\\(.status) \\(.filename)\"'; legion gh -- pr view 346 --repo sjawhar/legion-smoke --json files,headRefOid --jq '.headRefOid, (.files[].path)'; jj -R \"$LEGION_WORKSPACE\" diff --from main@origin --to @- --summary smoke/stage4b-legsmoke-278.txt",
+      "criterion": 1,
+      "headSha": "80f8dc706fcb5e9d60bbc1f773163ffe95077598",
+      "link": "https://github.com/sjawhar/legion-smoke/pull/346/files",
+      "negativeControl": "`legion gh -- api \"repos/sjawhar/legion-smoke/compare/main...0000000000000000000000000000000000000000\"` → HTTP 404 (`gh: Not Found`, exit 1): the compare surface refuses a head that does not exist, so its `added` line for the real head is a positive observation, not a default.",
+      "observed": "jj printed exactly `A smoke/stage4b-legsmoke-288.txt` (stderr warning `No matching entries for paths: docs/solutions`, expected: no docs/solutions exists yet); the compare filter printed exactly `added smoke/stage4b-legsmoke-288.txt`; pr view printed head 0507815f03728b460ab67e4a3814b713c3b29790 and files `.legion/implement.json`, `.legion/plan.json`, `smoke/stage4b-legsmoke-288.txt` only; the sibling fixture smoke/stage4b-legsmoke-278.txt diff against main is empty.",
+      "surface": "GitHub compare API and pull request #346 Files changed for sjawhar/legion-smoke, cross-checked from the fetched jj workspace"
+    },
+    {
+      "command": "legion gh -- api \"repos/sjawhar/legion-smoke/contents/smoke/stage4b-legsmoke-288.txt?ref=80f8dc706fcb5e9d60bbc1f773163ffe95077598\" --jq .content | base64 -d | tee /tmp/c.txt; wc -l \u003c /tmp/c.txt; od -c /tmp/c.txt; grep -qx 'Stage 4b workflow proof: LEGSMOKE-288.' /tmp/c.txt; echo $?; legion gh -- api \"repos/sjawhar/legion-smoke/contents/smoke/stage4b-legsmoke-288.txt?ref=0507815f03728b460ab67e4a3814b713c3b29790\" --jq .sha; jj -R \"$LEGION_WORKSPACE\" file show -r 80f8dc706fcb5e9d60bbc1f773163ffe95077598 smoke/stage4b-legsmoke-288.txt",
+      "criterion": 2,
+      "headSha": "80f8dc706fcb5e9d60bbc1f773163ffe95077598",
+      "link": "https://github.com/sjawhar/legion-smoke/blob/80f8dc706fcb5e9d60bbc1f773163ffe95077598/smoke/stage4b-legsmoke-288.txt",
+      "negativeControl": "`grep -qx 'Stage 4b workflow proof: LEGSMOKE-278.' /tmp/c.txt` (the neighbouring fixture's key) → exit 1 while the LEGSMOKE-288 line → exit 0; `legion gh -- api \"repos/sjawhar/legion-smoke/contents/smoke/stage4b-legsmoke-288.txt?ref=main\"` → HTTP 404 (`gh: Not Found`, exit 1) and `jj -R \"$LEGION_WORKSPACE\" file show -r main@origin smoke/stage4b-legsmoke-288.txt` → `Error: No such path` (exit 1): the file does not exist before this change.",
+      "observed": "Decoded content exactly `Stage 4b workflow proof: LEGSMOKE-288.`; wc -l = 1; od -c shows 39 bytes (0000047 octal) ending in a single \\n; grep -x exit 0; blob sha at the PR head 9a0b777f5cf5545d971786dbd1988b73a47e65e1, matching the product-head blob (`index 0000000000..9a0b777f5c` in the jj git diff); jj file show printed the same single line.",
+      "surface": "GitHub contents API at the product head and the PR head, cross-checked from the jj workspace"
+    },
+    {
+      "command": "legion gh -- run list --repo sjawhar/legion-smoke --branch legion/LEGSMOKE-288 --limit 30 --json name,event,status,conclusion,headSha,databaseId --jq '.[] | select(.headSha==\"80f8dc706fcb5e9d60bbc1f773163ffe95077598\") | \"\\(.name) \\(.event) \\(.status) \\(.conclusion) \\(.databaseId)\"'; same with headSha 0507815f03728b460ab67e4a3814b713c3b29790; legion gh -- pr checks 346 --repo sjawhar/legion-smoke; echo $?",
+      "criterion": 4,
+      "headSha": "0507815f03728b460ab67e4a3814b713c3b29790",
+      "link": "https://github.com/sjawhar/legion-smoke/actions/runs/36270529946",
+      "negativeControl": "`legion gh -- api \"repos/sjawhar/legion-smoke/contents/.fail-me?ref=0507815f03728b460ab67e4a3814b713c3b29790\"` → HTTP 404 (`gh: Not Found`, exit 1). `.github/workflows/fail-on-demand.yml` line 8 is `if [ -f .fail-me ]; then exit 1; else exit 0; fi`, so the gate's only failing input is absent at the head and its `success` is the expected outcome rather than a vacuous one.",
+      "observed": "At 80f8dc70: `fail-on-demand pull_request completed success 36270446128`, `ci pull_request completed success 36270446121`, `fail-on-demand push completed success 36270403176`, `ci push completed success 36270403067`. At 0507815f: `fail-on-demand pull_request completed success 36270529956`, `ci pull_request completed success 36270529946`, `fail-on-demand push completed success 36270527234`, `ci push completed success 36270527173`. `pr checks 346` listed check pass ×2 and gate pass ×2, exit 0.",
+      "surface": "GitHub Actions runs for branch legion/LEGSMOKE-288 (pull request #346 Checks tab)"
+    }
+  ],
+  "pullRequest": {
+    "number": 346,
+    "repo": "sjawhar/legion-smoke",
+    "url": "https://github.com/sjawhar/legion-smoke/pull/346"
+  },
+  "schemaVersion": 1,
+  "summary": "Verified PR #346 (sjawhar/legion-smoke, legion/LEGSMOKE-288 → main) on its real surfaces at product head 80f8dc706fcb5e9d60bbc1f773163ffe95077598 and PR head 0507815f03728b460ab67e4a3814b713c3b29790: the product diff (jj fileset '~(.legion | docs/solutions)' and the GitHub compare API) is exactly `A smoke/stage4b-legsmoke-288.txt`; the file decodes from the contents API to exactly `Stage 4b workflow proof: LEGSMOKE-288.` with wc -l = 1 and 39 bytes ending in one newline, blob sha 9a0b777f5cf5545d971786dbd1988b73a47e65e1 identical at both heads; `ci` and `fail-on-demand` conclude success on push and pull_request at both heads (eight runs) and `gh pr checks 346` exits 0. Negative controls: .fail-me absent at the PR head (HTTP 404; fail-on-demand.yml line 8 fails iff it exists), the file absent on main (HTTP 404 / jj `No such path`), the neighbouring LEGSMOKE-278 line refused by the exact-line check (exit 1). Implementer proof verified by independent re-run, outputs identical. Verdict pass. Acted on the operator's targeted Dispatch message 154f8886-e83a-483e-92da-c170710ef1f5 (2026-09-26T20:46:17Z).",
+  "verdict": "pass"
+}
