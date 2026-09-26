@@ -1,0 +1,12 @@
+{
+  "completed": "2026-09-26T16:43:23.028858953Z",
+  "findings": [],
+  "notes": "Stage 3 throwaway workflow proof. Smoke instruction (Dispatch 00abc49a) directed APPROVE at head ad06a5a8 and takes precedence over waiting for another review round.",
+  "phase": "review",
+  "reviewId": 5326604979,
+  "reviewState": "APPROVED",
+  "reviewedHead": "ad06a5a83874193636280033be82156374dc8720",
+  "round": 4,
+  "schemaVersion": 1,
+  "verdict": "approved"
+}
