@@ -1,0 +1,31 @@
+{
+  "completed": "2026-09-26T12:07:29.377729986Z",
+  "deviations": [],
+  "filesChanged": [
+    "smoke.txt"
+  ],
+  "openQuestions": [],
+  "phase": "implement",
+  "proof": [
+    {
+      "command": "cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 grep -Fc 'Stage 3 review round 3 (S392742634)' smoke.txt",
+      "criterion": "Review round 3: smoke.txt ends with the appended line `Stage 3 review round 3 (S392742634)` below the existing lines",
+      "headSha": "759858069517",
+      "negativeControl": "grep -Fc 'Stage 3 review round 7 (S392742634)' smoke.txt =\u003e 0, exit 1 (an unwritten round marker is absent)",
+      "observed": "1 — exactly one occurrence; diff adds only this single line at end of file",
+      "surface": "GitHub repo sjawhar/legion-smoke checked-out working copy at $LEGION_WORKSPACE"
+    },
+    {
+      "command": "cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 grep -Fc 'Stage 3 workflow proof for S392742634-1.' smoke.txt \u0026\u0026 grep -Fc 'Stage 3 review round 1 (S392742634)' smoke.txt \u0026\u0026 grep -Fc 'Stage 3 review round 2 (S392742634)' smoke.txt",
+      "criterion": "Prior lines preserved (original marker + rounds 1 and 2)",
+      "headSha": "759858069517",
+      "negativeControl": "grep -Fc 'Stage 3 workflow proof for S392742634-2.' smoke.txt =\u003e 0, exit 1",
+      "observed": "1, 1 and 1 — the round-3 append did not disturb earlier lines",
+      "surface": "GitHub repo sjawhar/legion-smoke checked-out working copy at $LEGION_WORKSPACE"
+    }
+  ],
+  "schemaVersion": 1,
+  "trickyParts": [
+    "Round 3 (final) correction appended below tester's head (78d1cb05); smoke.txt remains the only changed file; no GitHub review threads existed (round workflow-driven)."
+  ]
+}

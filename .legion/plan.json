@@ -1,0 +1,27 @@
+{
+  "completed": "2026-09-26T11:50:08.41110967Z",
+  "concerns": [
+    "Acceptance criterion 2 is conditional: a reviewer of the PR MAY request one additional appended line to smoke.txt. If requested, that line is in-scope for this issue and is proven the same way (read smoke.txt after it lands). No extra line is added unless a reviewer asks.",
+    "Idempotency: if `Stage 3 workflow proof for S392742634-1.` is already present in smoke.txt, make no change and report the line already exists (spec Errors table)."
+  ],
+  "independentTasks": 1,
+  "phase": "plan",
+  "requiredSkills": {
+    "implement": [
+      "none: reviewed the system-prompt \u003cskills\u003e list (legion-*, ce-simplify-code, dispatch, envoy) and the repo (no AGENTS.md; a marker-text smoke sandbox). The change is a one-line text append to smoke.txt with no runtime code, build, or domain surface, so no domain agent skill applies; ce-simplify-code governs runtime-code simplification and has no code to act on here. legion-worker (already the daemon-enforced process contract) governs workspace/jj/PR mechanics."
+    ],
+    "review": [
+      "none: reviewed the same \u003cskills\u003e list. Review is a diff inspection (exactly one file, one added line) plus GitHub gate verification per legion-worker; no domain review skill applies to a marker-text append. thermonuclear-* passes run on the diff per standard Legion review flow, not from a repo skill."
+    ],
+    "test": [
+      "none: reviewed the same \u003cskills\u003e list. Verification is a plain-text presence check (grep on smoke.txt) on the GitHub-repo surface; no test-framework or e2e-harness skill exists for this sandbox and none fits a single-line text assertion."
+    ]
+  },
+  "routingHints": {
+    "complexity": "trivial",
+    "estimatedImplementers": 1
+  },
+  "schemaVersion": 1,
+  "taskCount": 1,
+  "workflowRecommendation": "Single trivial one-file change; one implementer, no decomposition. IMPLEMENT: append exactly one line `Stage 3 workflow proof for S392742634-1.` to smoke.txt at the repo root of sjawhar/legion-smoke (create the file with just that line if it is absent; make no change if the line already exists). Touch no other file. Order: (1) edit smoke.txt, (2) verify with the production-like surface below, (3) commit, (4) open PR with body line `Dispatch: S392742634-1`. Surface for every acceptance line is the GitHub repo sjawhar/legion-smoke and its checked-out working copy. IMPLEMENTER E2E (criterion 1): after appending, run `cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 grep -Fc 'Stage 3 workflow proof for S392742634-1.' smoke.txt` and observe exactly 1; negative control: `grep -Fc 'Stage 3 workflow proof for S392742634-999.' smoke.txt` observes 0. TESTER: re-run the same grep on the pushed branch head (`jj -R \"$LEGION_WORKSPACE\" file show -r @- smoke.txt` piped to `grep -Fc`), verifying the implementer's proof and recording its own; negative control as above. PRODUCTION CHECK (implementer, post-merge, criterion 1): read smoke.txt on the merge commit of main via `legion gh -- api repos/sjawhar/legion-smoke/contents/smoke.txt --jq '.content' | base64 -d | grep -Fc 'Stage 3 workflow proof for S392742634-1.'` observing 1. REVIEW: confirm the diff touches only smoke.txt and adds exactly one line; criterion 2 handled in-scope if the reviewer requests a second appended line, proven by re-reading smoke.txt after it lands."
+}

@@ -39,3 +39,7 @@ Stage 3 review round 1 (S390834035)
 Stage 3 review round 2 (S390834035)
 Stage 3 review round 3 (S390834035)
 Stage 4b proof LEGSMOKE-270 2026-09-26
+Stage 3 workflow proof for S392742634-1.
+Stage 3 review round 1 (S392742634)
+Stage 3 review round 2 (S392742634)
+Stage 3 review round 3 (S392742634)
