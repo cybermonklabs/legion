@@ -1,0 +1,73 @@
+{
+  "acceptanceCriteria": [
+    {
+      "command": "git show \u003cmerge-commit-sha\u003e -- README.md  (equivalently: legion gh -- pr diff \u003cn\u003e --repo sjawhar/legion-smoke shows README.md as the only changed file with exactly the one added line); CI: `ci` and `fail-on-demand` workflows green on the PR head.",
+      "criterion": "A PR against sjawhar/legion-smoke appends the line `Legion Stage 3 smoke proof.` to README.md and changes no other file.",
+      "id": 1,
+      "negativeControl": "Touching a second file (or omitting the appended line) makes `pr diff` show a non-README.md change or no README change -\u003e proof fails.",
+      "surface": "GitHub pull request against sjawhar/legion-smoke and the merged main branch (the real repository, the production-like surface for a docs change)."
+    },
+    {
+      "command": "legion gh -- pr diff \u003cn\u003e --repo sjawhar/legion-smoke shows README.md as the only changed file; the review thread that requested the extra line is resolved (isResolved:true via gh api graphql).",
+      "criterion": "If review asks for one more appended line to README.md, the implementer adds it in the same PR and the PR still touches only README.md.",
+      "id": 2,
+      "negativeControl": "An extra line landing in any file other than README.md -\u003e pr diff shows a second changed file -\u003e proof fails.",
+      "surface": "GitHub pull request review threads and PR diff on sjawhar/legion-smoke."
+    }
+  ],
+  "completed": "2026-09-26T17:12:06.620651708Z",
+  "implementation": {
+    "errorHandling": [
+      "README.md missing at root -\u003e stop and report to the architect; do NOT create a different file.",
+      "Review requests changes to any non-README.md file -\u003e escalate to the architect; do NOT widen the change."
+    ],
+    "steps": [
+      "Confirm README.md exists at the repository root of $LEGION_WORKSPACE (it does; verified by the planner).",
+      "Append exactly one line `Legion Stage 3 smoke proof.` at the end of README.md (preserve trailing newline; no other edits).",
+      "Commit the change, push the issue branch legion/S394547882-1, and open the PR with body line `Dispatch: S394547882-1`.",
+      "If review requests exactly one more appended line to README.md, add it in the same PR (pre-approved as in scope by spec.md v2); any request to change a different file is out of scope and must be escalated to the architect."
+    ]
+  },
+  "integration": {
+    "branch": "legion/S394547882-1",
+    "postMerge": "Implementer verifies on main: `git show \u003cmerge-commit\u003e -- README.md` shows exactly the one appended line on main (production check for a docs change).",
+    "prBodyRequires": "Line `Dispatch: S394547882-1`"
+  },
+  "phase": "plan",
+  "requiredSkills": {
+    "implement": [
+      "none: reviewed the system-prompt \u003cskills\u003e list (all Legion workflow skills plus dispatch/envoy/ce-simplify-code) and the repo (no AGENTS.md, only .github CI stubs); a one-line append to README.md is a docs-only edit with no runtime code, so no engineering/build skill applies and ce-simplify-code (runtime-code-only) is out of scope.",
+      "legion-worker: the implementer runs as a Legion phase worker and must follow it for workspace binding, jj/push procedure, PR open, and E2E proof discipline."
+    ],
+    "review": [
+      "none: reviewed the \u003cskills\u003e list and the repo — this is a docs-only PR, so the thermonuclear-deep-review/thermonuclear-code-quality passes are skipped per legion-worker and no repository review skill applies; review is standard PR thread + CI/E2E verification.",
+      "legion-worker: the reviewer must follow it for one-review-per-round discipline, thread disposition, and verifying CI/E2E facts against GitHub."
+    ],
+    "test": [
+      "none: reviewed the \u003cskills\u003e list and the repo — there is no test framework, test suite, or repository testing skill; verification is `git show \u003cmerge\u003e -- README.md` / `pr diff` on GitHub, which needs no test skill.",
+      "legion-worker: the tester must follow it to verify the implementer's proof, record implementerProof in .legion/test.json, and add its own E2E line."
+    ]
+  },
+  "risks": [
+    "The two CI workflows (`ci`, `fail-on-demand`) run on push/PR; `fail-on-demand` fails only if a `.fail-me` file is present — do not add one.",
+    "Repeated appended proof lines already exist in README.md; append the new line at EOF only, do not edit existing lines."
+  ],
+  "schemaVersion": 1,
+  "scope": {
+    "filesToChange": [
+      "README.md"
+    ],
+    "outOfScope": [
+      "Any file other than README.md",
+      "New files",
+      "Build/config/test/CI changes"
+    ]
+  },
+  "summary": "Append the single line `Legion Stage 3 smoke proof.` to README.md at the repository root of sjawhar/legion-smoke, changing no other file, delivered as one pull request through the full plan/implement/test/review/merge flow on the issue's smoke branch. Approved spec: spec.md v2 (doc token sha256:0b5bae48e73475f1dcdc9d634bcf7ba3247dbf968d003af31b31a80beee46873).",
+  "testEvidence": {
+    "implementer": "Open the PR, let CI (`ci`, `fail-on-demand`) run green at head, and record `git show \u003chead\u003e -- README.md` (one added line, README.md only) plus a negative control as the E2E (implementer) proof line and .legion/implement.json proof array.",
+    "merger": "After approval on a head carrying no .legion/, run `legion threads resolve`, confirm no changes above the approved head, publish READY.",
+    "review": "Docs-only PR: thermonuclear-deep-review and thermonuclear-code-quality passes are skipped (no runtime code); reviewer verifies CI/Threads/E2E facts against GitHub and confirms README.md is the only changed file.",
+    "tester": "Independently re-run `git show \u003chead\u003e -- README.md` / `legion gh -- pr diff \u003cn\u003e` to confirm README.md is the sole changed file with the exact added line, verify the implementer's proof, and record E2E (tester) in .legion/test.json."
+  }
+}

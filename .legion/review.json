@@ -1,0 +1,10 @@
+{
+  "completed": "2026-09-26T17:35:19.57008982Z",
+  "decision": "approved",
+  "findings": [],
+  "phase": "review",
+  "reviewedHead": "a824ca1ae3f9ef18064f0a5ef204a8d1a677a4a2",
+  "round": 4,
+  "schemaVersion": 1,
+  "summary": "Final review: APPROVE submitted on PR #333 at head a824ca1ae3f9ef18064f0a5ef204a8d1a677a4a2 as legion-reviewer[bot], per the targeted Stage 3 smoke instruction taking precedence over another review round."
+}

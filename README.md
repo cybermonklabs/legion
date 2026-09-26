@@ -49,3 +49,7 @@ Stage 3 durable workflow proof (S392202905-1).
 Stage 3 review round 1 (S392202905)
 Stage 3 review round 2 (S392202905)
 Stage 3 review round 3 (S392202905)
+Legion Stage 3 smoke proof.
+Stage 3 review round 1 (S394547882)
+Stage 3 review round 2 (S394547882)
+Stage 3 review round 3 (S394547882)
