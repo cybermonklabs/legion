@@ -1,0 +1,44 @@
+{
+  "completed": "2026-09-25T23:55:20.846575259Z",
+  "failures": [],
+  "implementerProof": {
+    "how": "Final round: re-ran the implementer's exact command `legion gh -- pr diff 306 --repo sjawhar/legion-smoke` at PR head 3d68f8c2c12e38bc610b7d6cf737d81acdd9c474 and observed the identical result — exactly four spec-permitted added lines to SMOKE.md (`Stage 3 smoke proof.`, `Stage 3 review round 1 (S393145251)`, `Stage 3 review round 2 (S393145251)`, `Stage 3 review round 3 (S393145251)`) and no other product file (only .legion process artifacts). Implementer product proof head 794ee89f is unchanged at handoff head 3d68f8c2. CI ci/check and fail-on-demand/gate both SUCCESS at 3d68f8c2.",
+    "verdict": "verified"
+  },
+  "phase": "test",
+  "proof": [
+    {
+      "command": "legion gh -- pr diff 306 --repo sjawhar/legion-smoke ; jj diff --from main@origin --to @-",
+      "criterion": "Round 0 — Acceptance 1: append exactly one line to SMOKE.md, no other product file changed",
+      "headSha": "7a8f74321c92512c3840b6f3f928a910ca7d1b43",
+      "negativeControl": "Two-added-line input refused: 'Acceptance 1 requires exactly 1 added line, got 2 -\u003e test would FAIL'.",
+      "observed": "One changed product file (SMOKE.md) with one added line `Stage 3 smoke proof.`; CI green at head 7a8f7432.",
+      "surface": "GitHub pull-request diff on sjawhar/legion-smoke (PR #306) plus workspace jj diff"
+    },
+    {
+      "command": "legion gh -- pr diff 306 --repo sjawhar/legion-smoke ; jj diff --from main@origin --to d10d8785 SMOKE.md --git",
+      "criterion": "Round 1 — Acceptance 1 + review round 1: proof line plus one review-round line; no other product file changed",
+      "headSha": "d10d8785f878b2b6727940f2241a1c1c621452ba",
+      "negativeControl": "Three-added-line input refused: 'expected 2 spec-permitted lines, got 3 -\u003e test FAILS'.",
+      "observed": "One changed product file (SMOKE.md) with two spec-permitted added lines; CI green at head d10d8785.",
+      "surface": "GitHub pull-request diff on sjawhar/legion-smoke (PR #306) plus workspace jj diff"
+    },
+    {
+      "command": "legion gh -- pr diff 306 --repo sjawhar/legion-smoke ; jj diff --from main@origin --to 0bdde346 SMOKE.md --git",
+      "criterion": "Round 2 — Acceptance 1 + review rounds 1-2: proof line plus both review-round lines; no other product file changed",
+      "headSha": "0bdde34654f48f85a90bd4b949a6c890f64ae729",
+      "negativeControl": "Four-added-line input refused: 'expected 3 spec-permitted lines, got 4 -\u003e test FAILS'.",
+      "observed": "One changed product file (SMOKE.md) with three spec-permitted added lines; CI green at head 0bdde346.",
+      "surface": "GitHub pull-request diff on sjawhar/legion-smoke (PR #306) plus workspace jj diff"
+    },
+    {
+      "command": "legion gh -- pr diff 306 --repo sjawhar/legion-smoke ; jj diff --from main@origin --to 3d68f8c2 SMOKE.md --git",
+      "criterion": "Round 3 (final) — Acceptance 1 + review rounds 1-3: proof line plus all three review-round lines; no other product file changed",
+      "headSha": "3d68f8c2c12e38bc610b7d6cf737d81acdd9c474",
+      "negativeControl": "Fed the count check a deliberately broken five-added-line input (an unrequested extra line); refused with 'expected 4 spec-permitted lines, got 5 -\u003e test FAILS'. Confirms the check discriminates the four spec-permitted lines from an unrequested fifth.",
+      "observed": "Exactly one changed product file (SMOKE.md) with four spec-permitted added lines `Stage 3 smoke proof.`, `Stage 3 review round 1 (S393145251)`, `Stage 3 review round 2 (S393145251)`, `Stage 3 review round 3 (S393145251)`; only other paths are .legion/*.json process artifacts. CI green at head 3d68f8c2: ci run 36202728343 job check SUCCESS and fail-on-demand run 36202728412 job gate SUCCESS.",
+      "surface": "GitHub pull-request diff on sjawhar/legion-smoke (PR #306) plus workspace jj diff"
+    }
+  ],
+  "schemaVersion": 1
+}

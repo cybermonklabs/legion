@@ -1,0 +1,20 @@
+{
+  "completed": "2026-09-25T23:53:04.733230365Z",
+  "deviations": [],
+  "filesChanged": [
+    "SMOKE.md"
+  ],
+  "openQuestions": [],
+  "phase": "implement",
+  "proof": [
+    {
+      "command": "legion gh -- pr diff 306 --repo sjawhar/legion-smoke",
+      "criterion": "Acceptance 1 + review rounds 1-3: SMOKE.md carries the proof line and all three review-round lines; no other product file changed",
+      "headSha": "794ee89f374feb77d2f627d8005d8d42805a4afc",
+      "negativeControl": "Any diff touching a second product file or adding an unrequested SMOKE.md line fails the criterion; the actual diff adds only the four spec-permitted lines.",
+      "observed": "SMOKE.md diff adds exactly '+Stage 3 smoke proof.', '+Stage 3 review round 1 (S393145251)', '+Stage 3 review round 2 (S393145251)', and '+Stage 3 review round 3 (S393145251)'; the only other paths are the Legion .legion/*.json process handoffs, removed at end of clean review. CI green at head 794ee89f374f: ci run 36202672928 job check SUCCESS and fail-on-demand run 36202672848 job gate SUCCESS.",
+      "surface": "GitHub pull-request diff on sjawhar/legion-smoke (PR #306)"
+    }
+  ],
+  "schemaVersion": 1
+}
