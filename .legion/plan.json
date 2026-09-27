@@ -1,0 +1,62 @@
+{
+  "completed": "2026-09-27T17:26:56.677388477Z",
+  "concerns": [
+    "Docs-only, one-file change: ce-simplify-code and the thermonuclear pair do not run (no runtime code). Acceptance is proven on the sandbox repo sjawhar/legion-smoke via the merged PR/main diff, not a unit suite.",
+    "Error guard from spec: create smoke/S392670114-1.md exactly once; verified none exists on the branch (ls smoke/ | grep S392670114 -\u003e none). Any change touching a file outside smoke/ is out of scope and review rejects it.",
+    "Per spec, the dependent leaf S392670114-5 carries the file addition; this root plan records the concrete change and tracks integration onto current main and sign-off once merged and production-checked."
+  ],
+  "independentTasks": 1,
+  "phase": "plan",
+  "plan": {
+    "acceptanceCriteria": [
+      {
+        "command": "legion gh -- pr diff \u003cpr\u003e --repo sjawhar/legion-smoke ; and on main: jj -R \"$LEGION_WORKSPACE\" diff --from main@origin --to @ --summary",
+        "criterion": "A new Markdown file exists under smoke/ holding a single line naming S392670114-1.",
+        "id": "AC1",
+        "negativeControl": "A diff that adds a second file or edits a file outside smoke/ fails review as out of scope.",
+        "proof": "Diff shows exactly one added file smoke/S392670114-1.md with one line naming the issue and no other change.",
+        "surface": "sjawhar/legion-smoke sandbox repo; merged pull request / current-main diff"
+      },
+      {
+        "command": "legion gh -- pr diff \u003cpr\u003e --repo sjawhar/legion-smoke",
+        "criterion": "If review requests it, that same file gains one appended line and nothing else changes.",
+        "id": "AC2",
+        "negativeControl": "Appending to any other file, or a second line, is rejected in review.",
+        "proof": "Updated diff shows one appended line to smoke/S392670114-1.md and no other change.",
+        "surface": "sjawhar/legion-smoke sandbox repo; updated pull request diff"
+      }
+    ],
+    "integration": "On current main after the child S392670114-5 merges, smoke/S392670114-1.md is present with its issue-naming line; the tester confirms against main, not merely the child PR's CI checks. Implementer opens the PR with body line 'Dispatch: S392670114-1' and proves AC1 on the sandbox surface before its phase completes.",
+    "ordering": "T1 is the only implementation step. Test verifies AC1 (and AC2 if a review append is requested) on the sandbox diff surface. Review confirms single-file scope. Merger publishes READY; implementer runs the post-merge production check on the merged main.",
+    "tasks": [
+      {
+        "dependsOn": [],
+        "detail": "Create smoke/S392670114-1.md containing a single line that names this issue, e.g. 'Stage 3 smoke proof for S392670114-1.'. Do not modify any other file. Confirmed no file matching S392670114 currently exists under smoke/.",
+        "files": [
+          "smoke/S392670114-1.md"
+        ],
+        "id": "T1",
+        "title": "Add the smoke marker file"
+      }
+    ]
+  },
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: drives the implementer's push and PR-open procedure and the docs-only handling for this single Markdown file; because the diff is docs-only, ce-simplify-code and the thermonuclear pair are correctly skipped. No legion-smoke domain skill covers Markdown authoring."
+    ],
+    "review": [
+      "legion-worker: defines the reviewer's per-round single-submission, individual thread disposition, and docs-only skip of the thermo pair; the review confirms exactly one new smoke/ file with one issue-naming line and nothing else changed. No domain review skill applies to a Markdown-only diff."
+    ],
+    "test": [
+      "legion-worker: defines the tester's production-like proof and verification duty; the surface is the sandbox repo sjawhar/legion-smoke, proven by the merged PR/main diff showing exactly the added smoke/S392670114-1.md line naming this issue. No domain test skill applies to a one-line Markdown addition."
+    ]
+  },
+  "routingHints": {
+    "complexity": "trivial",
+    "estimatedImplementers": 1,
+    "skipArchitect": false
+  },
+  "schemaVersion": 1,
+  "taskCount": 1,
+  "workflowRecommendation": "Single trivial docs-only task: add one Markdown file under smoke/. No sub-planning; the adopted child S392670114-5 carries the file addition and this root owns integration and sign-off."
+}
