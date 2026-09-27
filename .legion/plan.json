@@ -1,0 +1,87 @@
+{
+  "acceptanceCriteria": [
+    {
+      "command": "cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 cat smoke/S392703949-1.md; and inspect the PR diff: legion gh -- pr diff \u003cn\u003e --repo sjawhar/legion-smoke (or jj -R \"$LEGION_WORKSPACE\" diff -r @- --summary) shows exactly one added file smoke/S392703949-1.md and no other change.",
+      "criterion": "smoke/S392703949-1.md exists on the PR branch and contains a single line naming this issue (S392703949-1).",
+      "id": 1,
+      "negativeControl": "cat a non-created key file (e.g. cat smoke/S000000000-0.md) -\u003e file-not-found; confirms the check discriminates the specific file.",
+      "provableToday": true,
+      "surface": "The pushed PR branch on GitHub (sjawhar/legion-smoke) plus the workspace working copy."
+    },
+    {
+      "command": "cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 cat smoke/S392703949-1.md (shows the appended second line) and the PR diff shows the added line on that file only, matching the existing multi-line files such as smoke/S390606688-1.md.",
+      "conditional": "Only when a review round requests it; otherwise criterion is satisfied vacuously by the single-line file.",
+      "criterion": "If and only if the review asks, exactly one more line is appended to smoke/S392703949-1.md and nothing else changes.",
+      "id": 2,
+      "negativeControl": "If the review did not ask, the diff must show a single-line file; a second line present without a review request is a violation.",
+      "provableToday": true,
+      "surface": "Same PR branch/diff after any review-requested change."
+    }
+  ],
+  "change": {
+    "action": "create",
+    "content": "S392703949-1\n",
+    "file": "smoke/S392703949-1.md",
+    "noOtherFiles": true,
+    "rationale": "Spec: 'add one new Markdown file under smoke/ holding a single line that names this issue.' Existing files use the bare issue key as the first/naming line (smoke/S390606688-1.md -\u003e 'S390606688-1'); match that convention."
+  },
+  "completed": "2026-09-27T21:34:25.799726835Z",
+  "implementation": {
+    "notes": "Docs-only: no runtime code, so ce-simplify-code is NOT run and the thermonuclear pair is skipped; the Thermo line is omitted from the PR body. If the target file already exists on the branch, ensure the single naming line is present without duplicating it (spec Errors table).",
+    "steps": [
+      "cd -- \"$LEGION_WORKSPACE\"; create smoke/S392703949-1.md with the single line 'S392703949-1'.",
+      "Verify: cat smoke/S392703949-1.md prints exactly that line; jj -R \"$LEGION_WORKSPACE\" diff -r @ --summary shows only that one added file.",
+      "Commit the change (implementation commit), then push the issue branch legion/S392703949-1 with legion-worker's single push procedure (bookmark set -r @-, git push --bookmark).",
+      "Open the PR with legion gh -- pr create; PR body in READY format including the line 'Dispatch: S392703949-1'.",
+      "Record the E2E (implementer) proof line in .legion/implement.json 'proof' and the PR body (surface = PR branch/workspace, command = cat + diff inspection, negative control as above)."
+    ]
+  },
+  "integration": "Standard Legion flow: implementer opens PR on legion/S392703949-1 with 'Dispatch: S392703949-1'; tester verifies; reviewer approves the cleaned head; merger publishes READY; human merges; implementer verifies in production (the merged file present on main). No stacking; not chained.",
+  "issue": "S392703949-1",
+  "ordering": "Single file; no intra-issue ordering. Wave 1 = child S392703949-5 adopted as-is. No dependency on other files or children beyond adoption.",
+  "phase": "plan",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: drives the implementer's proof, single push procedure, PR-open with 'Dispatch: \u003cKEY\u003e', READY-format PR body, and handoff/commit gate for this file change.",
+      "ce-simplify-code: does NOT apply — docs-only diff (one Markdown file, no runtime code), so the simplify pass and the thermonuclear pair are skipped per the skill's own docs-only rule."
+    ],
+    "review": [
+      "legion-worker: drives the reviewer's verify-on-GitHub discipline (CI, E2E lines, thread disposition), the docs-only skip of the thermonuclear pair, single-review-per-round, and approval of the .legion/-free head by SHA."
+    ],
+    "test": [
+      "legion-worker: drives the tester's implementerProof verdict, the tester's own E2E proof line, the bare-gate (CI 'check') confirmation, and the test handoff gate; the surface is the PR branch + `cat smoke/S392703949-1.md` + PR-diff inspection."
+    ]
+  },
+  "reviewEvidence": {
+    "required": [
+      "Verify CI 'check' success, E2E (implementer) and E2E (tester) lines both present, and threads dispositioned.",
+      "Docs-only PR: skip the Thermo line and the thermonuclear pair entirely; approve the .legion/-free head by SHA once clean.",
+      "A single review round MAY request appending exactly one more line (acceptance 2); that request is the only in-scope change beyond the new file."
+    ],
+    "surface": "GitHub PR (facts read from GitHub, never a handoff)."
+  },
+  "risks": [
+    "Adding any file other than smoke/S392703949-1.md violates 'Nothing else changes' (spec) — keep the diff to exactly one added file.",
+    "Appending a second line without a review request violates acceptance 2's 'if and only if'.",
+    "No production deploy surface for a static Markdown file: production check = the file present on main after merge (implementer confirms post-merge)."
+  ],
+  "schemaVersion": 1,
+  "summary": "One-file docs-only smoke change: add smoke/S392703949-1.md containing a single line naming issue S392703949-1, matching the existing smoke/\u003cKEY\u003e.md files (e.g. smoke/S390606688-1.md whose first line is the bare key). Adopt existing child S392703949-5 as-is in a single wave; no re-decomposition. Docs-only PR: ce-simplify-code and the thermonuclear pair do not run; repo CI is the trivial `check` job in .github/workflows/ci.yml.",
+  "testEvidence": {
+    "required": [
+      "Verify the implementer's proof (implementerProof {verdict, how}) by independently running cat smoke/S392703949-1.md and inspecting the PR diff for exactly one added file.",
+      "Add the tester's own E2E line: ran cat + PR diff inspection, observed the single naming line and one-file diff, at the head SHA, with the negative control above.",
+      "Confirm repo CI 'check' is success at the head."
+    ],
+    "surface": "PR branch on GitHub + workspace working copy; CI = the .github/workflows/ci.yml 'check' job (must be green at head)."
+  },
+  "waves": [
+    {
+      "children": [
+        "S392703949-5"
+      ],
+      "note": "Existing human-created child 'Dependent admission leaf' adopted as-is; the whole change is one file, so no second wave and no new children.",
+      "wave": 1
+    }
+  ]
+}

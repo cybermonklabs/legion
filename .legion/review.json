@@ -1,0 +1,22 @@
+{
+  "ci": "check + gate success on the reviewed head.",
+  "completed": "2026-09-27T21:56:38.93835223Z",
+  "critical": 0,
+  "docsOnly": true,
+  "e2eVerified": "both E2E lines present in PR body: implementer and tester, each naming the surface, command, observation, head SHA, and negative control. Verified against GitHub.",
+  "important": 0,
+  "issue": "S392703949-1",
+  "keyFindings": [],
+  "minor": 0,
+  "phase": "review",
+  "prNumber": 398,
+  "prUrl": "https://github.com/sjawhar/legion-smoke/pull/398",
+  "productDiff": "only smoke/S392703949-1.md changed as product; file content is the four expected lines (S392703949-1 + rounds 1-3). All prior review corrections applied.",
+  "reviewedContentHead": "9cb051e8a3418b64e67fab9c542d358d313dd0cb",
+  "round": 4,
+  "schemaVersion": 1,
+  "summary": "Final review of PR #398: APPROVE. Docs-only PR; no thermonuclear pass. All three review-round corrections applied (file has the four expected lines). Both E2E lines present; no review threads; CI green.",
+  "thermonuclear": "skipped — docs-only PR (only smoke/S392703949-1.md is product); no runtime code, so ce-simplify-code and the thermonuclear pair do not run.",
+  "threads": "no review threads opened across any round (reviews carried no inline comments); nothing to disposition.",
+  "verdict": "approved"
+}
