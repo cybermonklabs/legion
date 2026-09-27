@@ -1,0 +1,74 @@
+{
+  "acceptanceCriteria": [
+    {
+      "command": "cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 cat smoke/S392838755-1.md   (pre-merge on the issue branch; post-merge: read smoke/S392838755-1.md on origin/main)",
+      "criterion": "A new Markdown file under smoke/ has a single line naming this issue S392838755-1.",
+      "expected": "First line is exactly S392838755-1.",
+      "id": 1,
+      "negativeControl": "Read a nonexistent smoke/NOPE.md or a file whose first line is a different key -\u003e absent/non-matching, so the check is discriminating.",
+      "skill": "legion-worker (drives phase execution, push, PR); dispatch (PR body Dispatch: \u003cKEY\u003e line).",
+      "surface": "The merged sjawhar/legion-smoke repository on main (production-like: the real git repo the change ships to)."
+    },
+    {
+      "command": "dispatch_read issue S392838755-5 -\u003e confirm signed-off closure event.",
+      "criterion": "Child issue S392838755-5 (Dependent admission leaf) completes its own one-file change and closes with sign-off.",
+      "expected": "S392838755-5 recorded as signed off / closed.",
+      "id": 2,
+      "negativeControl": "An open or unassigned child state fails the criterion.",
+      "skill": "Out of this issue's scope (belongs to the child's own plan); noted here only because the root spec lists it. This planner does not decompose or re-plan the child.",
+      "surface": "Dispatch issue S392838755-5 lifecycle (owned by that child's own architect/roles; not this issue's phases)."
+    },
+    {
+      "command": "cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 jj -R \"$LEGION_WORKSPACE\" git fetch \u0026\u0026 ls smoke/ | grep -E 'S392838755-1\\.md'  (and the child's file after its merge)",
+      "criterion": "After both changes merge, smoke/ on main holds both named files.",
+      "expected": "smoke/S392838755-1.md present alongside the child's file.",
+      "id": 3,
+      "negativeControl": "Missing either file fails the listing.",
+      "skill": "legion-worker; integration verified by architect/merger at integration time.",
+      "surface": "sjawhar/legion-smoke main after both merges (production-like real repo)."
+    }
+  ],
+  "change": {
+    "action": "create",
+    "collisionCheck": "smoke/S392838755-1.md does not exist; existing smoke/ files name other issue keys. Never overwrite.",
+    "content": "Single line: S392838755-1",
+    "conventionSource": "smoke/S390606688-1.md (line 1 = issue key; later lines are review-appended)",
+    "file": "smoke/S392838755-1.md",
+    "repo": "sjawhar/legion-smoke"
+  },
+  "completed": "2026-09-27T16:11:54.556966915Z",
+  "implementationSteps": [
+    "1. Bind to LEGION_WORKSPACE; confirm smoke/S392838755-1.md does not exist.",
+    "2. Create smoke/S392838755-1.md with a single line: S392838755-1.",
+    "3. jj new (isolated commit), describe, and split the one file into the implementation commit.",
+    "4. Push issue branch legion/S392838755-1 via the legion-worker push procedure (credential helper authenticates as implement App).",
+    "5. Open PR with body containing 'Dispatch: S392838755-1' and the READY Verification block; write E2E (implementer) line proving `cat smoke/S392838755-1.md` shows the naming line at the head SHA, with a negative control.",
+    "6. If review asks for one more line, append it to the SAME file in a follow-up commit on the SAME PR — never create a second file."
+  ],
+  "integrationEvidence": "Acceptance 3 (both files on main) is an integration check the architect/merger performs after both this issue and child S392838755-5 merge: fetch main and list smoke/ for both files. This issue is independently mergeable; it does not block on the child.",
+  "ordering": "Single wave. This root issue's one-file change and child S392838755-5's one-file change are independent and each independently mergeable; integration (Acceptance 3) confirms both are present after both merges.",
+  "phase": "plan",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: authoritative phase charter for the implementer — bind to LEGION_WORKSPACE, create smoke/S392838755-1.md (single line naming the issue), commit, push the issue branch with the one push procedure, and open the PR whose body carries 'Dispatch: S392838755-1' plus the READY-format Verification block.",
+      "dispatch: PR/spec messaging conventions and the Dispatch: \u003cKEY\u003e back-link the implementer must place in the PR body.",
+      "none (ce-simplify-code): docs-only diff has no runtime code, so the ce-simplify-code pass is explicitly not run per legion-worker's docs-only rule."
+    ],
+    "review": [
+      "legion-worker: reviewer charter — verify CI/Threads/E2E facts on GitHub, confirm exactly one new file under smoke/ with the correct single line, and that nothing else changed. May request one appended line (in scope per spec).",
+      "none (thermonuclear-deep-review / thermonuclear-code-quality): the Thermo pair is skipped entirely on a docs-only PR per legion-worker, so neither runs here."
+    ],
+    "test": [
+      "legion-worker: tester charter — verify the implementer's E2E proof (re-run `cat smoke/S392838755-1.md` / read the file on the branch, confirm first line is S392838755-1) and record implementerProof plus the tester's own E2E line. No unit/integration test framework exists in this repo for a Markdown file; proof is reading the file on the real surface.",
+      "none (repo test suite): sjawhar/legion-smoke has no build/test harness for a single Markdown file; the only meaningful test is reading the file content on the real repo surface, which is the proof itself."
+    ]
+  },
+  "risks": [
+    "Filename collision — mitigated by pre-create existence check; never overwrite.",
+    "Adding the naming line to an existing file instead of a new file — rejected by spec; a new file keeps attribution unambiguous.",
+    "Second file on a review append request — forbidden; append to the same file."
+  ],
+  "schemaVersion": 1,
+  "summary": "Documentation-only smoke change to sjawhar/legion-smoke: add exactly one new Markdown file smoke/S392838755-1.md whose single line names this issue (S392838755-1). No code, route, or runtime behaviour. A review may ask for one additional appended line to the same file; that is the only in-scope follow-up.",
+  "testEvidence": "Tester re-runs the implementer's file read on the issue branch (or reads it on the PR head), confirms the single line names S392838755-1, records implementerProof {verdict, how} and its own E2E (tester) line. Docs-only: no thermo, no ce-simplify."
+}

@@ -1,0 +1,16 @@
+{
+  "completed": "2026-09-27T16:31:58.484005095Z",
+  "decision": "approved",
+  "findings": [],
+  "headSha": "b4bcf09dd76465dc2f4ff351c5605309da32b473",
+  "phase": "review",
+  "prNumber": 369,
+  "reviewId": 5331159258,
+  "round": 4,
+  "schemaVersion": 1,
+  "summary": "Final review: submitted APPROVE (review 5331159258) on PR #369 at head b4bcf09d as legion-reviewer[bot], per the Stage 3 smoke instruction that takes precedence over another review round. All prior round corrections applied; decision is approved.",
+  "threads": {
+    "opened": 0,
+    "unresolved": 0
+  }
+}
