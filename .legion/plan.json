@@ -1,0 +1,63 @@
+{
+  "acceptanceSurfaces": [
+    {
+      "command": "legion gh -- pr diff \u003cn\u003e --repo sjawhar/legion-smoke  (expect single added file); legion gh -- pr view \u003cn\u003e --json files --repo sjawhar/legion-smoke; cat smoke/S391300712-1.md at PR head; legion gh -- run list --repo sjawhar/legion-smoke for green ci + fail-on-demand.",
+      "criterion": "AC1: PR adds only smoke/S391300712-1.md whose sole line names this issue; no other file changes.",
+      "negativeControl": "Confirm the diff/summary guard catches a bad state: touch a second tracked file locally and observe `jj -R $LEGION_WORKSPACE diff --summary` reports 2 files (proving the one-file check is real), then discard it before commit. Do NOT push it.",
+      "surface": "The pull request against sjawhar/legion-smoke (real repo) + GitHub Actions CI."
+    },
+    {
+      "command": "legion gh -- pr diff \u003cn\u003e --repo sjawhar/legion-smoke (still one file, +1 line); cat smoke/S391300712-1.md shows both lines.",
+      "criterion": "AC2 (conditional): if review requests it, the same file gains exactly one appended line; diff still touches only that file.",
+      "negativeControl": "Verify appending two lines would show 2 added lines in the diff (out of scope), so the review can only accept exactly one.",
+      "surface": "The pull-request head after the corrective push, on sjawhar/legion-smoke."
+    },
+    {
+      "command": "dispatch_read issue S391300712-4 -\u003e status done. Tracked by the architect's wave, not implemented here.",
+      "criterion": "AC3: dependent child S391300712-4 reaches done with its own evidence.",
+      "negativeControl": "n/a for this plan; the child proves itself.",
+      "surface": "Dispatch issue S391300712-4's own lifecycle (NOT this plan's phases)."
+    }
+  ],
+  "branch": "legion/S391300712-1",
+  "ciJobs": {
+    "ci.yml": "job `check` (sleep 20 \u0026\u0026 exit 0) — always green on push/PR",
+    "fail-on-demand.yml": "job `gate` — fails iff `.fail-me` present; the negative-control mechanism"
+  },
+  "completed": "2026-09-27T22:09:55.890135189Z",
+  "concerns": [
+    "Acceptance 3 (dependent child S391300712-4) is NOT this issue's implementation work: it is a separate adopted child proven by its own lifecycle. Architect owns its wave release; the implementer/tester/reviewer here must not touch it.",
+    "Scope acceptance 2 is conditional: only if the review explicitly asks, append EXACTLY one line to the same file. Any request beyond one appended line is out of scope -\u003e new child issue, never silent expansion (spec Errors table).",
+    "Keep the diff to exactly one added file. `.fail-me` must never be committed (it trips fail-on-demand); it is only a negative-control lever run locally/transiently, never pushed."
+  ],
+  "fileLevelWork": [
+    "implement: create smoke/S391300712-1.md containing exactly one line: `S391300712-1 — Primary durable workflow profile` (trailing newline, matching existing smoke/*.md format). No other file. Commit, set bookmark legion/S391300712-1 on the change, `jj git push --bookmark`, open PR with body line `Dispatch: S391300712-1` in READY format, cite ci + fail-on-demand runs, record `proof` array (surface=PR/CI, command=pr diff, observed=one added file+naming line, negativeControl=second-file-in-summary check).",
+    "test: verify AC1 by reading the PR diff (one added file), the file contents (naming line), and CI green; set implementerProof.verdict; add tester `proof`. If AC2 was triggered, verify both lines and one-file diff.",
+    "review: docs-only PR -\u003e skip thermonuclear pair (legion-worker); verify CI/threads/E2E facts on GitHub; require both E2E lines present; COMMENT while head carries .legion/, APPROVE the .legion/-deleted head.",
+    "integration: implementer opens the PR and, after human merge, runs the production check (read merged PR diff + file on main). Merger runs threads resolve and posts READY."
+  ],
+  "independentTasks": 1,
+  "namingLine": "S391300712-1 — Primary durable workflow profile",
+  "ordering": "plan -\u003e implement (create file, PR, proof) -\u003e test (verify AC1/AC2, tester proof) -\u003e review (verify, approve) -\u003e retro -\u003e merge -\u003e post-merge production check. AC3 (child S391300712-4) runs on its own lifecycle in parallel under the architect's wave, independent of these phases.",
+  "phase": "plan",
+  "repo": "sjawhar/legion-smoke",
+  "requiredSkills": {
+    "implement": [
+      "none: read the \u003cskills\u003e list (legion-worker, legion-architect, legion-controller, legion-oracle, legion-retro, dispatch, envoy) and the repo (no AGENTS.md, no build/test tooling) — the change is adding one Markdown file, so no repository engineering skill applies; legion-worker governs the push/PR mechanics but is process, not a domain skill for this change."
+    ],
+    "review": [
+      "none: no repository review skill exists; this is a docs-only diff so the thermonuclear pair is skipped per legion-worker, and review is CI/threads/E2E verification against GitHub — no domain review skill applies."
+    ],
+    "test": [
+      "none: no repository test skill or suite exists (ci.yml only runs `sleep 20 \u0026\u0026 exit 0`); the criteria are verified by inspecting the PR diff and file contents plus CI status, which legion-worker's proof rules already cover — no domain test skill fits."
+    ]
+  },
+  "routingHints": {
+    "complexity": "trivial",
+    "estimatedImplementers": 1
+  },
+  "schemaVersion": 1,
+  "targetFile": "smoke/S391300712-1.md",
+  "taskCount": 1,
+  "workflowRecommendation": "Single implementer; docs-only one-file add. No parallel decomposition."
+}
