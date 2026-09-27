@@ -1,0 +1,88 @@
+{
+  "acceptance": [
+    {
+      "check": "grep -Fq 'S390606688-1' smoke/S390606688-1.md  -\u003e exit 0; file is exactly one line before any review-requested append.",
+      "criterion": "A new Markdown file exists under smoke/ added by this issue's merged PR; its single line contains S390606688-1.",
+      "id": 1,
+      "negativeControl": "grep -Fq 'S390606688-1' \u003ca different existing smoke file\u003e that lacks the key -\u003e exit 1, confirming the check discriminates.",
+      "proofCommand": "cd \"$LEGION_WORKSPACE\" \u0026\u0026 cat smoke/S390606688-1.md  # and, post-merge, on origin/main: git show origin/main:smoke/S390606688-1.md",
+      "surface": "The merged file in the repository (git working tree on the merged head / GitHub blob)."
+    },
+    {
+      "check": "The diff's changed-file set is exactly {smoke/S390606688-1.md}; with an append, that file shows two added lines and no other path appears.",
+      "criterion": "If review asks for one appended line, the merged file carries both lines and nothing else in the repo changed.",
+      "id": 2,
+      "negativeControl": "Any second path in the diff summary fails the criterion.",
+      "proofCommand": "legion gh -- pr diff \u003cn\u003e --repo sjawhar/legion-smoke  (equivalently: jj -R \"$LEGION_WORKSPACE\" diff --from main@origin --to @- --summary)",
+      "surface": "The pull request diff on GitHub."
+    }
+  ],
+  "branch": "legion/S390606688-1",
+  "completed": "2026-09-27T15:32:26.239691198Z",
+  "filesToChange": [
+    {
+      "action": "create",
+      "detail": "New file, one line: `S390606688-1`. Must NOT already exist on the branch (it does not: `ls smoke/` shows only prior-issue files). If a reviewer asks for one more line, append a single second line to THIS same file and no other.",
+      "path": "smoke/S390606688-1.md"
+    }
+  ],
+  "integration": "Standard Legion single-PR delivery on branch legion/S390606688-1 into sjawhar/legion-smoke main. Not stacked. Merger runs `legion threads resolve`, verifies the diff summary touches only smoke/S390606688-1.md above the approved head, then posts READY. Post-merge production check: implementer confirms smoke/S390606688-1.md on origin/main (this repo has no deploy slot; the merged repo state IS production for a docs sandbox).",
+  "issue": "S390606688-1",
+  "nonGoals": [
+    "No edit to any existing file (README.md, SMOKE.md, smoke.md, smoke.txt, stage3-*.txt, or any existing smoke/* file).",
+    "No new file other than smoke/S390606688-1.md.",
+    "No code, workflow, or configuration change."
+  ],
+  "phase": "plan",
+  "repository": "sjawhar/legion-smoke",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: governs the implementer's workspace binding, jj commit/push procedure, PR open with `Dispatch: S390606688-1`, and the mandatory real-surface proof + E2E (implementer) line.",
+      "none (domain): reviewed the full skill list (ce-simplify-code, dispatch, envoy, legion-*) — this is a one-line docs-only Markdown addition with no runtime code, so ce-simplify-code (runtime code only) and every domain skill are inapplicable."
+    ],
+    "review": [
+      "legion-worker: defines the reviewer's per-round single-review discipline, thread dispositioning, E2E verification against GitHub, and the docs-only exemption from the thermonuclear pair and ce-simplify-code.",
+      "none (domain): reviewed the skill list — a one-file docs diff needs no domain-specific review skill; the thermonuclear code-quality/deep-review passes are skipped because there is no runtime code."
+    ],
+    "test": [
+      "legion-worker: defines the tester's duty to verify the implementer's proof (implementerProof), add its own E2E (tester) line, and confirm the PR diff touches only the one file.",
+      "none (domain): reviewed the skill list — no test/e2e/deploy skill exists for this sandbox; acceptance is proven by reading the file and inspecting the diff, so no domain testing skill applies."
+    ]
+  },
+  "risks": [
+    "Path collision: if smoke/S390606688-1.md already exists, per spec fail the phase and report to architect (currently absent — safe).",
+    "Scope creep on review: only one appended line to the same file is permitted; a broader ask is declined or filed as a new child issue by the architect.",
+    "requiredSkills below are process skills only; this docs change needs no domain skill."
+  ],
+  "schemaVersion": 1,
+  "summary": "Add exactly one new Markdown file smoke/S390606688-1.md to sjawhar/legion-smoke whose single line names this issue key S390606688-1; nothing else in the repository changes. Delivered by one pull request on this issue's smoke branch through the normal plan→implement→test→review→merge phases.",
+  "tasks": [
+    {
+      "phase": "implement",
+      "steps": [
+        "Confirm smoke/S390606688-1.md does not exist (error path in spec: if it exists, fail and report to architect, never overwrite).",
+        "Create smoke/S390606688-1.md with the single line `S390606688-1`.",
+        "Prove acceptance #1 on the real surface: cat the file, grep the key (exit 0), and run the negative control. Record proof array in .legion/implement.json and the E2E (implementer) line in the PR body.",
+        "Commit onto legion/S390606688-1, push with the standard role push procedure, open the PR (body must contain `Dispatch: S390606688-1`)."
+      ]
+    },
+    {
+      "phase": "test",
+      "steps": [
+        "Verify the implementer's proof: re-cat smoke/S390606688-1.md and re-grep S390606688-1, or drive the surface independently; record implementerProof {verdict, how} in .legion/test.json.",
+        "Prove acceptance #2: inspect the PR diff summary, confirm the only changed path is smoke/S390606688-1.md; record own proof array + E2E (tester) line.",
+        "Confirm CI `ci` workflow job `check` is green at head."
+      ]
+    },
+    {
+      "phase": "review",
+      "steps": [
+        "Verify CI, Threads, and both E2E lines on GitHub directly.",
+        "Docs-only PR: skip the Thermo pair and ce-simplify-code (no runtime code).",
+        "If requesting the optional appended line, open exactly one review thread for it (in scope per spec); anything beyond one appended line is out of scope -\u003e return to architect.",
+        "Submit one review per round; APPROVE only the head that carries no .legion/."
+      ]
+    }
+  ],
+  "testStrategy": "No unit/integration suite exists or is warranted for a one-line docs addition. Acceptance is proven on the real surfaces: #1 by reading the merged file and grepping the key (with a negative control on a file lacking it); #2 by inspecting the PR diff summary for a single-file changeset. CI is the repo's `ci` workflow (job `check`, sleep+exit 0) which gates the PR green."
+}
