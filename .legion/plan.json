@@ -1,0 +1,26 @@
+{
+  "completed": "2026-09-27T22:43:07.566531047Z",
+  "concerns": [
+    "Throwaway workflow proof; no production feature is being built."
+  ],
+  "independentTasks": 1,
+  "phase": "plan",
+  "requiredSkills": {
+    "implement": [
+      "none: reviewed the \u003cskills\u003e list; this is a Stage 3 held-worker proof fixture with no repository feature to implement, so no implementer skill applies."
+    ],
+    "review": [
+      "none: reviewed the \u003cskills\u003e list; a proof fixture carries no code diff to audit, so no reviewer skill applies."
+    ],
+    "test": [
+      "none: reviewed the \u003cskills\u003e list and AGENTS.md verification norms; a proof fixture exercises no real surface, so no tester skill applies."
+    ]
+  },
+  "routingHints": {
+    "complexity": "trivial",
+    "estimatedImplementers": 1
+  },
+  "schemaVersion": 1,
+  "taskCount": 1,
+  "workflowRecommendation": "Stage 3 held-worker proof fixture: single sequential pass, no decomposition."
+}
