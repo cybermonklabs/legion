@@ -1,0 +1,21 @@
+{
+  "completed": "2026-09-27T21:20:02.347059721Z",
+  "deviations": [],
+  "filesChanged": [
+    "smoke/S394058563-1.md"
+  ],
+  "openQuestions": [],
+  "phase": "implement",
+  "proof": [
+    {
+      "command": "jj file show -r 6e717d155084 smoke/S394058563-1.md | wc -l; jj diff -r 6e717d15 --git; jj diff -r 6e717d15 --summary; legion gh -- pr view 393 --json statusCheckRollup",
+      "criterion": "Acceptance 1 \u0026 2: smoke/S394058563-1.md names this issue (S394058563-1); review round 3's single appended line is present with no other change.",
+      "headSha": "6e717d155084312d93d534b94c9d4bef14ef5621",
+      "negativeControl": "jj file show -r main@origin smoke/S394058563-1.md → 'Error: No such path: smoke/S394058563-1.md' — file still absent on main before merge.",
+      "observed": "Four lines: original + 'Stage 3 review round 1/2/3 (S394058563)' (wc -l = 4); correction diff = single hunk '@@ -1,3 +1,4 @@' adding exactly the round-3 line; diff summary = 'M smoke/S394058563-1.md' (only that file); CI green at head — ci/check and gate/gate SUCCESS.",
+      "surface": "sjawhar/legion-smoke repository file surface on branch legion/S394058563-1 (PR #393); the Markdown file has no executing surface, so file presence and content on the branch head is the surface, verified pre-merge on the branch head and finally on main after merge."
+    }
+  ],
+  "schemaVersion": 1,
+  "trickyParts": []
+}
