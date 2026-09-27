@@ -1,0 +1,51 @@
+{
+  "ci": "none — docs-only Markdown change; repository has no test/lint/typecheck suite this file participates in.",
+  "completed": "2026-09-27T22:32:16.737316422Z",
+  "filesChanged": [
+    {
+      "action": "modify",
+      "detail": "Now four lines: 'S391724318-1', 'Stage 3 review round 1 (S391724318)', 'Stage 3 review round 2 (S391724318)', 'Stage 3 review round 3 (S391724318)'.",
+      "path": "smoke/S391724318-1.md"
+    }
+  ],
+  "headSha": "c3ec2b20bb2aadaf53d89008eba2d21b693ae2b2",
+  "notes": "AC1 and AC2 satisfied on the PR-diff surface. AC3 is architect-owned (child S391724318-4). Did not merge.",
+  "phase": "implement",
+  "pr": {
+    "base": "main",
+    "branch": "legion/S391724318-1",
+    "number": 405,
+    "repo": "sjawhar/legion-smoke",
+    "url": "https://github.com/sjawhar/legion-smoke/pull/405"
+  },
+  "proof": [
+    {
+      "command": "legion gh -- pr diff 405 --repo sjawhar/legion-smoke; and jj -R \"$LEGION_WORKSPACE\" diff --from main@origin --to legion/S391724318-1 --summary '~.legion'",
+      "headSha": "c3ec2b20bb2aadaf53d89008eba2d21b693ae2b2",
+      "negativeControl": "jj -R \"$LEGION_WORKSPACE\" diff --summary after a deliberate extra append to README.md (earlier round) showed 'M README.md' (a second changed path) -\u003e would be rejected per the spec Errors table; reverted before push, working copy clean.",
+      "observed": "Product change is exactly one file smoke/S391724318-1.md with four lines ('S391724318-1', 'Stage 3 review round 1 (S391724318)', 'Stage 3 review round 2 (S391724318)', 'Stage 3 review round 3 (S391724318)'). The only other diff paths are the exempt .legion/{plan,implement,test,review}.json process artifacts. Product-only summary is exactly 'A smoke/S391724318-1.md'. AC2 satisfied: the same file gained one more appended line and nothing else changed.",
+      "surface": "GitHub pull-request diff (sjawhar/legion-smoke) at PR #405 — the real user-facing surface for this docs change."
+    }
+  ],
+  "reviewRounds": [
+    {
+      "disposition": "Fixed in d36f7701b892556ea762a4f3f8c00c2c09ddca65.",
+      "finding": "important: append 'Stage 3 review round 1 (S391724318)'.",
+      "round": 1
+    },
+    {
+      "disposition": "Fixed in 7a728f015d931a25e9c10d652db87f3a4820aaeb.",
+      "finding": "important: append 'Stage 3 review round 2 (S391724318)'.",
+      "round": 2
+    },
+    {
+      "disposition": "Fixed in c3ec2b20bb2aadaf53d89008eba2d21b693ae2b2 — appended the line below the existing ones; nothing else changed.",
+      "finding": "important: append 'Stage 3 review round 3 (S391724318)', change nothing else.",
+      "round": 3,
+      "threads": "No GitHub review thread was opened; rounds delivered via the Legion review handoff. `legion threads resolve --pr 405 --repo sjawhar/legion-smoke` reported 'no unresolved threads' (exit 0)."
+    }
+  ],
+  "schemaVersion": 1,
+  "summary": "Review round 3 (final) correction: appended the line 'Stage 3 review round 3 (S391724318)' to smoke/S391724318-1.md (below the existing lines), changing nothing else. Pushed to existing PR #405 (branch legion/S391724318-1); Dispatch: S391724318-1. AC1 and AC2 satisfied on the PR-diff surface.",
+  "thermo": "omitted — docs-only PR; ce-simplify-code and the thermonuclear pair do not run (no runtime code), per plan and legion-worker."
+}
