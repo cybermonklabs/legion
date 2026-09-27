@@ -1,0 +1,60 @@
+{
+  "acceptanceCriteria": [
+    {
+      "command": "legion gh -- pr view \u003cn\u003e --json files,statusCheckRollup; legion gh -- pr diff \u003cn\u003e",
+      "criterion": "The PR adds exactly one new Markdown file under smoke/ holding a single line naming this issue (S392497156-1), and the repository CI check is green at that head.",
+      "id": 1,
+      "skill": "none: this repo has no repository verification skill; the surface is the GitHub PR diff and the ci.yml workflow, verified with legion gh.",
+      "surface": "GitHub pull request against sjawhar/legion-smoke: the PR diff plus the ci.yml `check` job."
+    },
+    {
+      "command": "n/a for this planner: owned by the child's own roles.",
+      "criterion": "Adopted child S392497156-4 delivers its own one-file leaf under smoke/ and merges with a recorded post-merge production check.",
+      "id": 2,
+      "skill": "none: out of this issue's plan scope; the child tree owns its verification.",
+      "surface": "Child issue S392497156-4's own pull request; owned by its sub-architect."
+    },
+    {
+      "command": "cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 jj -R \"$LEGION_WORKSPACE\" git fetch \u0026\u0026 jj -R \"$LEGION_WORKSPACE\" file list -r main@origin smoke/ | grep -E 'S392497156-1|\u003cchild-file\u003e'",
+      "criterion": "After both PRs merge to the default branch, both files exist under smoke/ on current main.",
+      "id": 3,
+      "skill": "none: plain repository file listing on current main; no verification skill applies.",
+      "surface": "A checkout of current main of sjawhar/legion-smoke."
+    }
+  ],
+  "completed": "2026-09-27T11:35:22.447054368Z",
+  "fileWork": [
+    {
+      "action": "create",
+      "detail": "New Markdown file containing a single line naming this issue, e.g. `# Legion Stage 3 durable workflow proof: S392497156-1`. This is the only repository file the root issue changes. Do not touch smoke/ files owned by the child S392497156-4.",
+      "path": "smoke/S392497156-1.md"
+    }
+  ],
+  "notes": "This is a Stage-3 smoke proof. Plan and spec live in Dispatch and .legion/plan.json only; no plan/spec markdown is committed to the repository. The only planner commit is `plan: record handoff`.",
+  "ordering": [
+    "Implementer: create smoke/S392497156-1.md (single line naming S392497156-1); commit; push issue branch legion/S392497156-1; open PR with body containing `Dispatch: S392497156-1`.",
+    "Implementer proof: PR diff shows exactly the one added file; ci.yml `check` job green at head SHA. Negative control: an empty or misnamed file / a second changed file would fail the acceptance (exactly-one-file rule).",
+    "A review may ask for one additional line appended to smoke/S392497156-1.md; that is in scope and lands as a new commit on the same branch.",
+    "Tester: verify the implementer's proof (re-run pr diff + status check at head) and record own E2E line.",
+    "Reviewer/merger/integration per Legion workflow."
+  ],
+  "phase": "plan",
+  "requiredSkills": {
+    "implement": [
+      "none: legion-smoke is a docs-only markdown sandbox with no build/test tooling; the change is one new Markdown file, so no repository implementation skill applies. ce-simplify-code does not run on a docs-only diff."
+    ],
+    "review": [
+      "none: docs-only one-line Markdown change; no repository review skill applies and the thermonuclear pair is skipped on a docs-only PR per legion-worker."
+    ],
+    "test": [
+      "none: no repository test harness exists (ci.yml is a trivial sleep-and-exit check); the criterion is proven on the GitHub PR surface (diff + green CI) via legion gh, not a test skill."
+    ]
+  },
+  "risks": [
+    "Acceptance 1 requires exactly one new file: adding, renaming, or modifying any other file (README.md, other smoke/ files) fails it. Keep the diff to smoke/S392497156-1.md only.",
+    "File-name collision with the child S392497156-4: each issue writes a distinctly named file, so no conflict; do not touch the child's file.",
+    "CI is push/pull_request triggered and green by construction (exit 0); a red check would only occur from workflow/infra failure — re-run the single failed job, never push to refresh."
+  ],
+  "schemaVersion": 1,
+  "summary": "Plan for the one-file smoke change: root issue S392497156-1 adds exactly one new Markdown file smoke/S392497156-1.md holding a single line naming this issue. Proven on the real surface (GitHub PR diff + green ci.yml check). The adopted child S392497156-4 delivers its own separate file and is owned by its sub-architect; integration verified on current main after both merge."
+}
