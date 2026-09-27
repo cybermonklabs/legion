@@ -1,0 +1,49 @@
+{
+  "branch": "legion/S392523424-1",
+  "ci": {
+    "ciConclusion": "success",
+    "ciRun": "36342398023",
+    "gateConclusion": "success",
+    "gateRun": "36342398015",
+    "headSha": "93775603b4dfc13166e231fa0cd9eae6d896aa61"
+  },
+  "completed": "2026-09-27T18:55:56.421083506Z",
+  "deviations": "none",
+  "docsOnly": true,
+  "filesChanged": [
+    "smoke/S392523424-1.md"
+  ],
+  "headSha": "93775603b4dfc13166e231fa0cd9eae6d896aa61",
+  "openQuestions": "none",
+  "phase": "implement",
+  "prNumber": 378,
+  "prUrl": "https://github.com/sjawhar/legion-smoke/pull/378",
+  "proof": [
+    {
+      "command": "cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 test \"$(sed -n '1p' smoke/S392523424-1.md)\" = 'S392523424-1'",
+      "criterion": "AC1",
+      "headSha": "93775603b4dfc13166e231fa0cd9eae6d896aa61",
+      "negativeControl": "test \"$(echo 'S000000000-1')\" = 'S392523424-1' → non-equal, rejected",
+      "observed": "PASS: first line reads back exactly S392523424-1",
+      "surface": "smoke/S392523424-1.md in the sjawhar/legion-smoke working tree at the PR head"
+    },
+    {
+      "command": "cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 test \"$(sed -n '1p' smoke/S392523424-1.md)\" = 'S392523424-1' \u0026\u0026 test \"$(sed -n '4p' smoke/S392523424-1.md)\" = 'Stage 3 review round 3 (S392523424)' \u0026\u0026 test \"$(wc -l \u003c smoke/S392523424-1.md)\" -ge 4",
+      "criterion": "AC2",
+      "headSha": "93775603b4dfc13166e231fa0cd9eae6d896aa61",
+      "negativeControl": "Appending nothing for a requested round leaves the file short and fails the line-count check",
+      "observed": "PASS: first line intact, rounds 1-3 lines present, file has \u003e=4 lines",
+      "surface": "smoke/S392523424-1.md at the reviewed PR head"
+    }
+  ],
+  "reviewCorrection": "Appended 'Stage 3 review round 3 (S392523424)' per reviewer round-3 finding; correctness fix landed in this PR (commit 93775603b4df). Reviewer rounds 1-3 were top-level CHANGES_REQUESTED reviews with no inline threads (legion threads resolve: 'no unresolved threads').",
+  "reviewRound": 3,
+  "schemaVersion": 1,
+  "summary": "Review round 3 (final) correction: appended the line 'Stage 3 review round 3 (S392523424)' to smoke/S392523424-1.md (earlier lines unchanged), fixing the reviewer's round-3 CHANGES_REQUESTED finding. Pushed to PR #378; CI (ci/check, fail-on-demand/gate) green at head 93775603b4dfc13166e231fa0cd9eae6d896aa61.",
+  "targetRepo": "sjawhar/legion-smoke",
+  "tasksCompleted": [
+    "T1",
+    "T2"
+  ],
+  "thermo": "skipped: docs-only diff (Markdown only), no runtime code, so ce-simplify-code and the thermonuclear pair do not run"
+}

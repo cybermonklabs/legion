@@ -1,0 +1,86 @@
+{
+  "acceptanceCriteria": [
+    {
+      "command": "cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 test \"$(cat smoke/S392523424-1.md)\" = 'S392523424-1'",
+      "expected": "smoke/S392523424-1.md exists and its only line reads back exactly S392523424-1.",
+      "id": "AC1",
+      "negativeControl": "A file whose line names a different key (e.g. S000000000-1) or an empty file fails the equality check.",
+      "skill": "none",
+      "surface": "The file in the sjawhar/legion-smoke working tree / merged PR.",
+      "text": "Exactly one new Markdown file under smoke/ whose single line names S392523424-1."
+    },
+    {
+      "command": "cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 test \"$(sed -n '1p' smoke/S392523424-1.md)\" = 'S392523424-1' \u0026\u0026 test \"$(wc -l \u003c smoke/S392523424-1.md)\" -ge 2",
+      "expected": "First line still names the issue key; the review-requested second line is present. Only applies if a review requests it.",
+      "id": "AC2",
+      "negativeControl": "Appending nothing when a review requested a line leaves the file single-line and fails the \u003e=2 line check.",
+      "skill": "none",
+      "surface": "smoke/S392523424-1.md at the reviewed PR head.",
+      "text": "When a review requests one additional appended line, the same file carries both lines at the reviewed head."
+    },
+    {
+      "command": "cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 cat smoke/S392523424-5.md",
+      "expected": "Verified on the child's PR/branch, not this issue's branch. Out of scope for this issue's implementer; named here only for the integration check.",
+      "id": "AC3",
+      "negativeControl": "Child file missing at integration time.",
+      "skill": "none",
+      "surface": "Child issue S392523424-5's pull request (separate branch, separate issue).",
+      "text": "Child S392523424-5 delivers its own analogous one-line Markdown file naming S392523424-5."
+    }
+  ],
+  "branch": "legion/S392523424-1",
+  "completed": "2026-09-27T18:29:29.4061103Z",
+  "evidence": {
+    "implement": "cat smoke/S392523424-1.md at the PR head returns S392523424-1; negative control returns non-equal for a wrong key. CI ci/check and fail-on-demand/gate green at head (no .fail-me present). Record as the E2E (implementer) line in the PR body and the proof array in .legion/implement.json.",
+    "integration": "On main after both merges: cat smoke/S392523424-1.md and smoke/S392523424-5.md; each line names its own key.",
+    "review": "Verify CI, threads, and both E2E lines against GitHub directly. A docs-only diff (Markdown only): skip the Thermo line and ce-simplify-code — no runtime code. Confirm the added file is exactly one new file under smoke/ and its line names the issue key.",
+    "test": "Re-run the implementer's cat command independently on the same head; verdict pass into .legion/test.json implementerProof. Add own proof: read the file on the branch head and confirm the single line equals the issue key; negative control: a wrong-key line is rejected."
+  },
+  "integrationTest": {
+    "command": "cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 jj -R \"$LEGION_WORKSPACE\" git fetch \u0026\u0026 cat smoke/S392523424-1.md smoke/S392523424-5.md",
+    "expected": "smoke/S392523424-1.md names S392523424-1 and smoke/S392523424-5.md names S392523424-5 on current main.",
+    "text": "After both root and child changes reach main in sjawhar/legion-smoke, smoke/ holds both Markdown files, each naming its own issue key."
+  },
+  "ordering": "T1 first (opens the PR). T2 only on review request, as a new commit on the same branch; no rebase unless GitHub reports CONFLICTING.",
+  "phase": "plan",
+  "requiredSkills": {
+    "implement": [
+      "none: reviewed the system-prompt \u003cskills\u003e list (ce-simplify-code, dispatch, envoy, legion-* family) and this repo (no AGENTS.md, CI is a trivial ci.yml sleep/gate); the change is one Markdown file in a smoke sandbox, so no domain implementation skill applies."
+    ],
+    "review": [
+      "none: no repository review skill applies to a docs-only one-file Markdown addition; the standard Legion reviewer flow (CI/threads/E2E verification, thermo pair skipped for docs-only) governs and needs no repo-specific skill."
+    ],
+    "test": [
+      "none: no test/smoke/e2e repository skill exists for this sandbox; verification is a shell cat/equality check on the added file plus the trivial ci.yml (sleep) and fail-on-demand gate, which need no skill."
+    ]
+  },
+  "risks": [
+    "Docs-only change: no ce-simplify-code pass and no thermonuclear pair run (no runtime code in the diff).",
+    "The PR must be a single new file under smoke/ (AC1 says 'exactly one new Markdown file'); do not modify README.md, smoke.md, or other roots.",
+    "AC3 and the integration test depend on the separate child issue S392523424-5; this issue's branch must not carry the child's file."
+  ],
+  "schemaVersion": 1,
+  "skillsFollowed": "Read skill://legion-worker and this repo (README.md, .github/workflows, smoke/). No AGENTS.md present; no domain agent skill matches a one-file Markdown smoke change.",
+  "summary": "Root smoke change for S392523424-1: add exactly one new Markdown file smoke/S392523424-1.md whose single line reads S392523424-1. One wave, one file, proven by cat on the merged head. A review may request one appended line to the same file (in scope); nothing else changes. The adopted child S392523424-5 delivers its own analogous one-line file on its own branch and is not this issue's implementation work.",
+  "targetRepo": "sjawhar/legion-smoke",
+  "tasks": [
+    {
+      "description": "Create smoke/S392523424-1.md containing exactly one line: S392523424-1 (trailing newline). No other file changes.",
+      "files": [
+        "smoke/S392523424-1.md"
+      ],
+      "id": "T1",
+      "phase": "implement",
+      "proof": "cat smoke/S392523424-1.md reads back S392523424-1 at the PR head; negative control: wrong-key line fails the equality check."
+    },
+    {
+      "description": "If and only if a review round requests it, append one additional line to smoke/S392523424-1.md, preserving the first line. Correctness fix, lands in this PR.",
+      "files": [
+        "smoke/S392523424-1.md"
+      ],
+      "id": "T2",
+      "phase": "implement",
+      "proof": "sed -n '1p' still reads S392523424-1 and the appended line is present at the reviewed head."
+    }
+  ]
+}
