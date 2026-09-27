@@ -1,0 +1,41 @@
+{
+  "acceptanceResults": [
+    {
+      "id": 1,
+      "note": "First line unchanged, names key and title; verified at head 0026a64e on the PR-diff surface.",
+      "verdict": "pass"
+    },
+    {
+      "id": 2,
+      "note": "Review round 3 appended exactly one line 'Stage 3 review round 3 (S394570180)' (commit c5bc1483) below the round-2 line; only smoke/S394570180-1.md changed, no fifth line; round-1/2 lines intact.",
+      "verdict": "pass"
+    },
+    {
+      "id": 3,
+      "note": "Child S394570180-5 child-closed gating is architect-owned integration evidence, verified at sign-off, not by the tester.",
+      "verdict": "deferred"
+    }
+  ],
+  "completed": "2026-09-27T20:29:28.480442378Z",
+  "failures": [],
+  "headSha": "0026a64eed5553066c3f829f5dc8cd0da44dbb90",
+  "implementerProof": {
+    "how": "Re-ran the implementer's cited command `legion gh -- pr diff 387 --repo sjawhar/legion-smoke` independently at PR head 0026a64eed5553066c3f829f5dc8cd0da44dbb90 and observed the identical product diff: exactly one product file smoke/S394570180-1.md with four lines — line 1 'S394570180-1 — Primary durable workflow profile' (unchanged), lines 2–3 'Stage 3 review round 1/2 (S394570180)' (intact), line 4 'Stage 3 review round 3 (S394570180)' (the round-3 appended line). The .legion/*.json are the handoff ledger, excluded from the product diff by the unchanged-diff fingerprint procedure.",
+    "verdict": "verified"
+  },
+  "phase": "test",
+  "proof": [
+    {
+      "command": "legion gh -- pr diff 387 --repo sjawhar/legion-smoke --name-only | grep -v '^\\.legion/'  ;  sed -n '1,5p' smoke/S394570180-1.md",
+      "criterion": "Acceptance 1 (first line names key S394570180-1 and title 'Primary durable workflow profile') and Acceptance 2 (review round 3 appends exactly one further line, nothing else changes).",
+      "headSha": "0026a64eed5553066c3f829f5dc8cd0da44dbb90",
+      "link": "https://github.com/sjawhar/legion-smoke/pull/387/files",
+      "negativeControl": "Asserted no fifth line exists (sed -n '5p' is empty) — a second appended line this round, or any product file other than smoke/S394570180-1.md, would fail acceptance 2; the product-file count is exactly 1.",
+      "observed": "Product-file filter of the PR diff returns exactly one path, smoke/S394570180-1.md; the file has exactly 4 lines: line 1 'S394570180-1 — Primary durable workflow profile' (unchanged, acceptance 1), line 2 'Stage 3 review round 1 (S394570180)', line 3 'Stage 3 review round 2 (S394570180)', line 4 'Stage 3 review round 3 (S394570180)' (single appended line this round, acceptance 2), no fifth line. CI green at this head: jobs check and gate both completed/success (runs 36348094375, 36348094254).",
+      "surface": "GitHub PR-diff surface (production-like surface for a fixture markdown add; legion-smoke has no build/test/deploy path to reach), driven independently by the tester at PR head 0026a64e."
+    }
+  ],
+  "round": 3,
+  "schemaVersion": 1,
+  "summary": "Final test round (round 3) passed on the GitHub PR-diff surface at head 0026a64e: acceptance 1 (unchanged first line) and acceptance 2 (single round-3 appended line, prior lines intact, no other change) both hold, CI green, implementer proof re-run independently and verified. No failures."
+}
