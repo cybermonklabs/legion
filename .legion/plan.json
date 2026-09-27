@@ -1,0 +1,50 @@
+{
+  "completed": "2026-09-27T16:05:28.300102434Z",
+  "ordering": "Single unit: implement -\u003e test -\u003e review -\u003e retro -\u003e merge -\u003e production check. No child issues, no waves.",
+  "phase": "plan",
+  "requiredSkills": {
+    "implement": [
+      "none: reviewed system-prompt skills and the repo (no AGENTS.md, no repo skills). The change is a one-line markdown file add; ce-simplify-code targets runtime code and does not apply to a docs-only diff."
+    ],
+    "review": [
+      "none: reviewed available skills; no repository review skill exists. Docs-only PR: no Thermo line; review confirms the diff adds only smoke/S390606688-2.md and approves the .legion-free head."
+    ],
+    "test": [
+      "none: reviewed available skills; no repository test/smoke/e2e skill exists. Verification is reading the merged file's contents via the repo access path; docs-only, so no unit suite or thermo pair."
+    ]
+  },
+  "schemaVersion": 1,
+  "summary": "Add one Markdown file smoke/S390606688-2.md holding a single line naming this issue by key and title. No other file changes; an optional single appended line is in scope if a review asks. Docs-only change delivered via PR on the smoke branch.",
+  "surfaces": [
+    {
+      "command": "cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 cat smoke/S390606688-2.md",
+      "criterion": "AC1: new smoke/S390606688-2.md holds one line naming key S390606688-2 and title 'Budget exhaustion sentinel'",
+      "skill": "none: repo has no AGENTS.md and no repository skills; system-prompt skills are Legion process skills, not surface drivers for a one-file markdown add.",
+      "surface": "The file's presence and contents in sjawhar/legion-smoke on the default branch after merge."
+    },
+    {
+      "command": "legion gh -- pr diff \u003cpr\u003e --repo sjawhar/legion-smoke",
+      "criterion": "AC2: no other repository file changes",
+      "skill": "none: git/gh diff review; no repository skill applies.",
+      "surface": "PR diff on the smoke branch."
+    },
+    {
+      "command": "cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 cat smoke/S390606688-2.md",
+      "criterion": "AC3: optional single appended line if review asks",
+      "skill": "none: no repository skill applies.",
+      "surface": "Same file, appended line only."
+    },
+    {
+      "command": "legion gh -- api repos/sjawhar/legion-smoke/contents/smoke/S390606688-2.md?ref=\u003cdefault-branch\u003e",
+      "criterion": "AC4/AC5: delivered via PR, CI green, reviewer approves clean head, human merges, implementer confirms file on merged default branch",
+      "skill": "none: standard Legion PR/CI/merge/production-check flow governed by legion-worker, not a repository surface skill.",
+      "surface": "GitHub PR + merged default branch via repo access path."
+    }
+  ],
+  "tasks": [
+    "Implement: create smoke/S390606688-2.md with a single line: 'S390606688-2 Budget exhaustion sentinel'. Change no other file.",
+    "Test: read smoke/S390606688-2.md and confirm the single line names key and title; docs-only, no unit tests, no thermo pair.",
+    "Review: verify diff adds only smoke/S390606688-2.md; docs-only PR so no Thermo line; approve the head carrying no .legion/."
+  ],
+  "verification": "Production-like surface is the file's contents on the merged default branch of sjawhar/legion-smoke, read through the repository access path (gh contents API), not a local workspace. A green CI run alone is not the proof."
+}
