@@ -1,0 +1,11 @@
+{
+  "completed": "2026-09-27T23:43:02.948222693Z",
+  "findings": [],
+  "headSha": "6144081084c994a9f8fe924fdf38a12dd6787d9d",
+  "phase": "review",
+  "prNumber": 414,
+  "round": 4,
+  "schemaVersion": 1,
+  "summary": "Final review: APPROVE submitted on PR #414 at head 6144081084c9 as legion-reviewer[bot], per the Stage 3 smoke instruction that took precedence over another review round. All prior review rounds satisfied; PR ready for the merge gate.",
+  "verdict": "approved"
+}
