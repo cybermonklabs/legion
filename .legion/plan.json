@@ -1,0 +1,83 @@
+{
+  "acceptance": [
+    {
+      "command": "legion gh -- api repos/sjawhar/legion-smoke/contents/smoke/S392719464-1.md?ref=\u003chead-sha\u003e --jq .content | base64 -d  (equivalently `legion gh -- pr diff \u003cn\u003e` / local `cat smoke/S392719464-1.md` at the head SHA).",
+      "criterion": "AC1: the merged branch of sjawhar/legion-smoke has a new file smoke/S392719464-1.md whose one line names this issue.",
+      "negativeControl": "Same api call for a path that does not exist (e.g. smoke/S392719464-1-nope.md) returns HTTP 404 Not Found — proves the read surface actually distinguishes presence from absence.",
+      "observe": "Output is exactly `S392719464-1 — Primary durable workflow profile` (single line).",
+      "surface": "The file as it exists on the pushed GitHub branch head (and, post-merge, on main) of sjawhar/legion-smoke — the real repository surface a user reads."
+    },
+    {
+      "command": "legion gh -- api repos/sjawhar/legion-smoke/contents/smoke/S392719464-1.md?ref=\u003chead-sha\u003e --jq .content | base64 -d",
+      "conditional": "Only applies if the reviewer requests the appended line; otherwise AC1's single line is the whole deliverable.",
+      "criterion": "AC2: if review asks for one more appended line, the merged file carries both lines.",
+      "negativeControl": "Before the append, the same read shows only the first line — confirms the second line is genuinely added by the corrective push rather than pre-existing.",
+      "observe": "Output contains both the original first line and the review-requested appended second line, in order.",
+      "surface": "Same GitHub file surface at the head SHA after the corrective push."
+    }
+  ],
+  "change": {
+    "convention": "Matches existing smoke/S394570180-1.md: first line is `\u003cKEY\u003e — \u003ctitle\u003e`; any review-requested lines are appended below, one per line (precedent: 'Stage 3 review round N (\u003cKEY\u003e)').",
+    "file": "smoke/S392719464-1.md",
+    "initialContent": "S392719464-1 — Primary durable workflow profile",
+    "reviewAppendScope": "If review asks for one more appended line, append it to the same file smoke/S392719464-1.md as a second line; the merged file then carries both lines. Nothing else changes.",
+    "summary": "Add one new Markdown file naming this issue, per the approved spec (issue S392719464-1, artifact 861fc5ca, approved v2)."
+  },
+  "completed": "2026-09-27T22:30:39.249687848Z",
+  "concerns": [
+    "Docs-only markdown change: ce-simplify-code and thermonuclear-deep-review/code-quality are skipped by rule (no runtime code); the reviewer omits the Thermo line entirely.",
+    "CI on push runs two jobs: ci.yml `check` (sleep 20; exit 0) and fail-on-demand.yml `gate` (exit 0 unless a `.fail-me` file exists — it must not). There is no pr-title workflow in this repo, so the READY `PR Title` clause does not apply.",
+    "Child S392719464-4 (Dependent admission leaf) is architect-owned adoption, not part of this plan's file work; the root delivers only the one-file change."
+  ],
+  "filePlan": [
+    "Create smoke/S392719464-1.md (new file) with the single line: 'S392719464-1 — Primary durable workflow profile'. No other files change.",
+    "Do NOT create or edit any docs/plans/*, spec markdown, or AGENTS.md; the plan/spec live only in .legion/plan.json and the Dispatch issue.",
+    "Implementer commit ordering: (1) create the file, verify locally, (2) commit code, (3) push issue branch legion/S392719464-1 via the legion-worker push procedure, (4) open PR with `legion gh -- pr create` whose body contains `Dispatch: S392719464-1` and the READY-format Verification section (Thermo line omitted; PR Title clause omitted — no such workflow)."
+  ],
+  "implementEvidence": {
+    "ci": "Cite the CI run for jobs `check` and `gate` both success at the head SHA (Tests-equivalent for this repo; no pr-title job exists).",
+    "proof": "Implementer's E2E line: read smoke/S392719464-1.md at the PR head SHA via `legion gh -- api ...contents...?ref=\u003csha\u003e` and observe the exact line; negative control = 404 on a non-existent smoke path. Recorded as the required `proof` array in .legion/implement.json and as `E2E (implementer)` in the PR body.",
+    "surface": "Pushed GitHub branch head of sjawhar/legion-smoke."
+  },
+  "independentTasks": 1,
+  "integrationEvidence": {
+    "check": "Read smoke/S392719464-1.md on main at the merge commit and confirm it names this issue (both lines if AC2 was exercised); confirm adopted child S392719464-4 reached done. This is the whole integration surface.",
+    "production": "Implementer's post-merge production check = read the file on main at the merge commit SHA via `legion gh -- api ...contents...?ref=\u003cmerge-sha\u003e` and record on PR body `Production:` line, one PR comment (Legion footer), and a dispatch_message on the issue.",
+    "surface": "current main of sjawhar/legion-smoke after merge."
+  },
+  "phase": "plan",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: drives the only production-like surface for this criterion — pushing branch legion/S392719464-1 and opening the PR, then proving the file on the GitHub head via `legion gh -- api`. It also fixes the E2E proof format the implement handoff requires.",
+      "none (domain): I reviewed the repository skill set (legion-worker, dispatch, envoy, legion-architect, legion-controller, legion-oracle, legion-retro) and ce-simplify-code; no engineering/domain skill applies to a one-line markdown fixture, and ce-simplify-code explicitly does not run on a docs-only diff."
+    ],
+    "review": [
+      "legion-worker: defines the reviewer's verdict, single-review-per-round, thread-disposition, and E2E-verification discipline for the GitHub PR surface.",
+      "none (domain/thermo): I checked the skill set and the diff kind; the thermonuclear pair and ce-simplify-code are skipped for a docs-only PR, and no domain review skill applies to a one-line markdown change."
+    ],
+    "test": [
+      "legion-worker: defines the E2E/proof discipline the tester follows — re-read smoke/S392719464-1.md on the pushed GitHub head via `legion gh -- api` (with a 404 negative control) and record implementerProof + own proof in .legion/test.json.",
+      "none (test framework): I looked through the repo for a test harness (only .github/workflows/ci.yml sleep-and-exit and fail-on-demand.yml exist) and the skill set; no automated-test skill fits a markdown fixture, so the proof is the file read itself, not a test file."
+    ]
+  },
+  "reviewEvidence": {
+    "approvalHead": "APPROVE only the head that carries no .legion/ (after the implementer pushes the .legion deletion at the reviewer's direction), named by SHA.",
+    "checks": "Reviewer verifies CI (`check`, `gate` success at head), thread dispositions, and both E2E lines (implementer + tester) present against GitHub directly; approval refused if either E2E line is missing.",
+    "surface": "GitHub PR for sjawhar/legion-smoke.",
+    "thermo": "SKIPPED — docs-only PR (no runtime code). The reviewer omits the Thermo line entirely and runs neither thermonuclear pass nor ce-simplify-code."
+  },
+  "routingHints": {
+    "complexity": "trivial",
+    "estimatedImplementers": 1,
+    "skipArchitect": false
+  },
+  "schemaVersion": 1,
+  "taskCount": 1,
+  "testEvidence": {
+    "ownProof": "Tester's own E2E line: independently read the file at the head SHA, observe the exact line(s); negative control = 404 on a non-existent smoke path. Recorded as the `proof` array in .legion/test.json and `E2E (tester)` in the PR body.",
+    "regressionLock": "No unit/integration test framework exists for a markdown fixture; a test file would be theater. The regression surface is the file read itself. Do NOT author a placeholder test.",
+    "surface": "Pushed GitHub branch head of sjawhar/legion-smoke (same real surface).",
+    "verifyImplementerProof": "Re-run the implementer's `legion gh -- api ...contents...?ref=\u003csha\u003e` read (or drive the same surface independently) and record implementerProof {verdict, how} in .legion/test.json."
+  },
+  "workflowRecommendation": "Single implementer; docs-only one-file change. No parallel decomposition. ce-simplify-code and the thermonuclear pair do NOT run (no runtime code in the diff)."
+}
