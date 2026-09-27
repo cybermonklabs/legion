@@ -1,0 +1,37 @@
+{
+  "acceptanceCriteriaMet": [
+    "A1",
+    "A2"
+  ],
+  "ciRun": "36318072602",
+  "completed": "2026-09-27T12:11:29.047298694Z",
+  "failures": [],
+  "headSha": "e493dc31254ee6a1a6a0da7643c3e2f203bbe968",
+  "implementerProof": {
+    "how": "Re-ran the implementer's command `cat smoke/S393198222-1.md` independently at PR head e493dc31 (product head 140a93d8); observed exactly the four lines matching its recorded round-3 proof (wc -l = 4), and re-ran its negative control `cat smoke/does-not-exist.md` -\u003e No such file or directory, exit 1.",
+    "verdict": "verified"
+  },
+  "notes": "Docs-only Markdown change: ce-simplify-code and the thermonuclear pair do not run and no Thermo line is required. Repo has no test framework/lint/typecheck (ci.yml runs `sleep 20 \u0026\u0026 exit 0`), so no red regression test is added (no defect found; plan requiredSkills.test = none). E2E (tester) line recorded in PR #363 body.",
+  "phase": "test",
+  "proof": [
+    {
+      "acceptance": "A1",
+      "command": "cat smoke/S393198222-1.md ; jj diff --from main@origin --to e493dc31 --summary '~.legion'",
+      "headSha": "e493dc31254ee6a1a6a0da7643c3e2f203bbe968",
+      "negativeControl": "cat smoke/does-not-exist.md -\u003e No such file or directory, exit 1; a diff adding any other product file fails the check.",
+      "observed": "First line is exactly S393198222-1; product diff (excluding .legion) is a single added file A smoke/S393198222-1.md and nothing else; GitHub ci 'check' job pass at this head.",
+      "surface": "Repository working tree / git checkout of PR #363 branch legion/S393198222-1 at head e493dc31254ee6a1a6a0da7643c3e2f203bbe968."
+    },
+    {
+      "acceptance": "A2",
+      "command": "cat smoke/S393198222-1.md ; wc -l \u003c smoke/S393198222-1.md",
+      "headSha": "e493dc31254ee6a1a6a0da7643c3e2f203bbe968",
+      "negativeControl": "A file with fewer, more, or unrelated lines fails the check; cat smoke/does-not-exist.md -\u003e No such file or directory, exit 1.",
+      "observed": "Printed exactly the four lines 'S393198222-1', 'Stage 3 review round 1 (S393198222)', 'Stage 3 review round 2 (S393198222)', 'Stage 3 review round 3 (S393198222)' with wc -l = 4 and nothing else, matching the review-requested appended lines (one per round).",
+      "surface": "Repository working tree / git checkout of PR #363 branch legion/S393198222-1 at head e493dc31254ee6a1a6a0da7643c3e2f203bbe968 (product-code head 140a93d8123702dbb987f4977495523c874af14c)."
+    }
+  ],
+  "reviewRound": 3,
+  "schemaVersion": 1,
+  "summary": "Final test (after review round 3): verified A1 and A2 on the real surface (checkout of PR #363 branch legion/S393198222-1) at PR head e493dc31254ee6a1a6a0da7643c3e2f203bbe968 (product-code head 140a93d8123702dbb987f4977495523c874af14c). smoke/S393198222-1.md holds exactly the four lines 'S393198222-1', 'Stage 3 review round 1 (S393198222)', 'Stage 3 review round 2 (S393198222)', 'Stage 3 review round 3 (S393198222)' (wc -l = 4, nothing else); the product diff adds exactly that one file and the ci 'check' job is green."
+}
