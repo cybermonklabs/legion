@@ -1,0 +1,24 @@
+{
+  "completed": "2026-09-27T01:56:00.662597575Z",
+  "concerns": [
+    "README.md already contains prior `Stage 3 workflow proof.` lines (e.g. line 4-area duplicates); acceptance 2 requires the appended line to be the LAST line of README.md, so the implementer must append at EOF, not edit an existing occurrence.",
+    "Acceptance 1 requires exactly one file changed with one insertion: `git diff --stat` on the PR must show only README.md with 1 insertion, 0 deletions. Preserve the file's existing trailing-newline convention so no incidental second-line change appears.",
+    "Follow-up review may request one additional line appended to the same README.md; that second append is in scope for this issue and needs no new spec approval (per issue Requirements)."
+  ],
+  "independentTasks": 1,
+  "phase": "plan",
+  "requiredSkills": {
+    "implement": [
+      "none: reviewed the system-prompt \u003cskills\u003e list — all entries are Legion/Dispatch workflow skills (legion-worker, dispatch, envoy, legion-*) plus ce-simplify-code, which is explicitly scoped to runtime code and is skipped on a docs-only diff; no repository skill drives appending a line to a README, so the implementer follows the plain edit + jj + PR procedure in legion-worker."
+    ],
+    "review": [
+      "none: no review skill in the \u003cskills\u003e list applies to a docs-only text change; the thermonuclear pair is skipped for a docs-only PR per legion-worker, so the reviewer verifies CI/threads/E2E facts on GitHub and confirms the single-file one-insertion diff directly."
+    ],
+    "test": [
+      "none: no test/e2e/smoke skill exists in the \u003cskills\u003e list for this sandbox; acceptance is proven by inspecting the PR diff (`git diff --stat` shows only README.md, 1 insertion) and `git show` of the merge commit (last line of README.md reads `Stage 3 workflow proof.`), per the issue Testing section — the tester re-runs those commands on the PR/merged main surface."
+    ]
+  },
+  "schemaVersion": 1,
+  "taskCount": 1,
+  "workflowRecommendation": "Single implementer, no sub-planning. Docs-only one-file change: implementer appends the exact line `Stage 3 workflow proof.` as the new last line of README.md (the file already exists at repo root, 55 lines; verified README.md#61EB), makes no other edit, and opens one PR whose body carries `Dispatch: S393381512-1`. Because the diff is docs-only (README.md is markdown/text, no runtime code), skip ce-simplify-code and the thermonuclear review pair per legion-worker; reviewer submits COMMENT/APPROVE without a Thermo line."
+}

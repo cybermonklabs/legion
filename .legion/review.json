@@ -1,0 +1,11 @@
+{
+  "completed": "2026-09-27T02:28:51.05339808Z",
+  "decision": "approved",
+  "findings": [],
+  "phase": "review",
+  "reviewId": 5328562271,
+  "reviewedHead": "f6e0a35d86c9fc99e8f0e5448ab1356a0060ebaa",
+  "round": 4,
+  "schemaVersion": 1,
+  "summary": "Stage 3 proof final review: APPROVE submitted (review 5328562271) at head f6e0a35d as legion-reviewer[bot], per the smoke instruction directing approval at the current head."
+}

@@ -1,0 +1,56 @@
+{
+  "completed": "2026-09-27T02:21:43.760047533Z",
+  "deviations": [
+    "Review rounds 1–3 (each a top-level reviewer CHANGES_REQUESTED with no inline threads) appended one line each: `Stage 3 review round 1 (S393381512)` (771729f8), `Stage 3 review round 2 (S393381512)` (86f44134), `Stage 3 review round 3 (S393381512)` (0dd90dab). All in scope per spec Requirements (one more line per review round); no new spec approval required."
+  ],
+  "filesChanged": [
+    "README.md"
+  ],
+  "phase": "implement",
+  "proof": [
+    {
+      "command": "jj diff -r ac3c0f66d65fb24e4341585ffa7a3f58709dd857 --stat",
+      "criterion": "Acceptance 1: the change adds exactly one line to README.md and changes no other product file (git diff --stat shows only README.md, 1 insertion, 0 deletions).",
+      "headSha": "ac3c0f66d65fb24e4341585ffa7a3f58709dd857",
+      "negativeControl": "At parent a4d03a20 the same command shows no README change; any second-file edit would show \u003e1 file and fail acceptance 1.",
+      "observed": "README.md | 1 +  — 1 file changed, 1 insertion(+), 0 deletions(-). No other product file appears.",
+      "surface": "sjawhar/legion-smoke jj workspace at the original implementation commit; product diff against its parent (plan handoff a4d03a20)."
+    },
+    {
+      "command": "jj file show -r ac3c0f66d65fb24e4341585ffa7a3f58709dd857 README.md | tail -1",
+      "criterion": "Acceptance 2: the appended line reads `Stage 3 workflow proof.` as the last line of README.md (initial change).",
+      "headSha": "ac3c0f66d65fb24e4341585ffa7a3f58709dd857",
+      "negativeControl": "At parent a4d03a20 `tail -1` prints `Stage 3 review round 3 (S394547882)`, not the target line.",
+      "observed": "Prints exactly `Stage 3 workflow proof.` as the final line.",
+      "surface": "README.md at the original implementation commit ac3c0f66."
+    },
+    {
+      "command": "jj file show -r 771729f823eeaeb077473a2052d8c2d45c2d84ab README.md | tail -1 ; jj diff -r 771729f823eeaeb077473a2052d8c2d45c2d84ab --stat",
+      "criterion": "Review round 1 correction (in scope): append `Stage 3 review round 1 (S393381512)`.",
+      "headSha": "771729f823eeaeb077473a2052d8c2d45c2d84ab",
+      "negativeControl": "At parent 329c91f7 `tail -1` prints `Stage 3 workflow proof.`.",
+      "observed": "tail -1 prints `Stage 3 review round 1 (S393381512)`; --stat shows one insertion.",
+      "surface": "README.md at the round-1 correction commit 771729f8."
+    },
+    {
+      "command": "jj file show -r 86f441346ac0536ec8be7f417e45d9e9969ed816 README.md | tail -1 ; jj diff -r 86f441346ac0536ec8be7f417e45d9e9969ed816 --stat",
+      "criterion": "Review round 2 correction (in scope): append `Stage 3 review round 2 (S393381512)`.",
+      "headSha": "86f441346ac0536ec8be7f417e45d9e9969ed816",
+      "negativeControl": "At parent 3a8f4c8c `tail -1` prints `Stage 3 review round 1 (S393381512)`.",
+      "observed": "tail -1 prints `Stage 3 review round 2 (S393381512)`; --stat shows one insertion.",
+      "surface": "README.md at the round-2 correction commit 86f44134."
+    },
+    {
+      "command": "jj file show -r 0dd90dab77da148c23944778322c2843115197bd README.md | tail -1 ; jj diff -r 0dd90dab77da148c23944778322c2843115197bd --stat",
+      "criterion": "Review round 3 correction (in scope: one more line per review round): append `Stage 3 review round 3 (S393381512)` to the end of README.md, below existing lines, changing nothing else.",
+      "headSha": "0dd90dab77da148c23944778322c2843115197bd",
+      "negativeControl": "At parent e5491efa (before this correction) `tail -1` prints `Stage 3 review round 2 (S393381512)`, not the round-3 line, so this commit is what adds it and no other file changes.",
+      "observed": "tail -1 prints exactly `Stage 3 review round 3 (S393381512)` as the new final line; --stat shows `README.md | 1 +  1 file changed, 1 insertion(+), 0 deletions(-)` (trailing newline preserved; file is 59 lines).",
+      "surface": "README.md at the round-3 correction commit 0dd90dab in the sjawhar/legion-smoke workspace; product diff against its parent."
+    }
+  ],
+  "schemaVersion": 1,
+  "trickyParts": [
+    "Each round appends exactly one line at EOF, preserving the trailing-newline convention so every diff is a clean single insertion with 0 deletions."
+  ]
+}

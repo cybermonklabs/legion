@@ -1,0 +1,37 @@
+{
+  "completed": "2026-09-27T02:27:59.375996893Z",
+  "failures": [],
+  "implementerProof": {
+    "how": "Re-verified the round-3 correction independently: `jj file show -r 0dd90dab README.md | tail -1` and the GitHub Contents API at head de33cdf8 both return `Stage 3 review round 3 (S393381512)`; product diff (excl .legion) is `README.md | 4 ++++`. Negative control at pre-correction parent e5491efa returns `Stage 3 review round 2 (S393381512)`, so 0dd90dab is exactly what adds the round-3 line.",
+    "verdict": "verified"
+  },
+  "notes": "Retest round 3 (final review round). Docs-only PR: no runtime code, no red test, no thermonuclear/simplify pass per legion-worker and plan requiredSkills.test (\"none\"). Review round 3 (REQUEST_CHANGES, top-level, no inline threads) requested appending `Stage 3 review round 3 (S393381512)`; implementer added it in 0dd90dab. Correction verified on the real surface at head de33cdf8; no defect found; verdict pass. Prior rounds: 0 `Stage 3 workflow proof.` (f2164f01), 1 (73899a78), 2 (a8077d13).",
+  "phase": "test",
+  "proof": [
+    {
+      "command": "legion gh -- api repos/sjawhar/legion-smoke/contents/README.md?ref=de33cdf8b8c71d168cbd07eada41752e58e56ed6 --jq '.content' | base64 -d | tail -1",
+      "criterion": "Round 3 correction: `Stage 3 review round 3 (S393381512)` is the last line of README.md at the PR head (review round 3 requested this appended line).",
+      "headSha": "de33cdf8b8c71d168cbd07eada41752e58e56ed6",
+      "negativeControl": "At the pre-correction parent e5491efa the same read prints `Stage 3 review round 2 (S393381512)`, not the round-3 line, so the criterion fails without commit 0dd90dab.",
+      "observed": "Prints exactly `Stage 3 review round 3 (S393381512)` as the final line, matching local jj file show at the same head.",
+      "surface": "README.md content at the PR head fetched from the GitHub Contents API (the surface a reader of the repository reaches)."
+    },
+    {
+      "command": "legion gh -- pr view 359 --repo sjawhar/legion-smoke --json files ; jj diff --from main@origin --to de33cdf8b8c7 --stat '~.legion'",
+      "criterion": "Only README.md is a changed product file; the round adds one insertion (4 total product insertions across the appended lines), no deletions.",
+      "headSha": "de33cdf8b8c71d168cbd07eada41752e58e56ed6",
+      "negativeControl": "A change to any second product file would show \u003e1 file changed and fail this criterion.",
+      "observed": "Product diff stat `README.md | 4 ++++  1 file changed, 4 insertions(+), 0 deletions(-)`; the only non-.legion file changed is README.md.",
+      "surface": "GitHub PR #359 file list and jj product diff (main@origin..head, excluding .legion process files)."
+    },
+    {
+      "command": "legion gh -- pr view 359 --repo sjawhar/legion-smoke --json headRefOid,statusCheckRollup",
+      "criterion": "CI is green at the PR head (bare gate).",
+      "headSha": "de33cdf8b8c71d168cbd07eada41752e58e56ed6",
+      "negativeControl": "A failing CI conclusion at the head would block the pass; observed conclusion is SUCCESS.",
+      "observed": "headRefOid de33cdf8b8c71d168cbd07eada41752e58e56ed6; ci `check` and fail-on-demand `gate` conclusions SUCCESS at that head.",
+      "surface": "GitHub PR #359 status check rollup."
+    }
+  ],
+  "schemaVersion": 1
+}
