@@ -1,0 +1,41 @@
+{
+  "branch": "legion/S391998586-1",
+  "completed": "2026-09-28T00:41:46.805415565Z",
+  "decision": "approved",
+  "docsOnly": true,
+  "findings": [],
+  "gatesVerified": {
+    "ci": "check success, gate success at head",
+    "e2eImplementer": "present in PR body",
+    "e2eTester": "present in PR body",
+    "fileContent": "smoke/S391998586-1.md has 4 lines: S391998586-1 plus rounds 1-3 markers",
+    "threads": "0 unresolved (all reviews PR-level, no inline threads)"
+  },
+  "phase": "review",
+  "prNumber": 428,
+  "priorRounds": [
+    {
+      "decision": "changes_requested",
+      "finding": "append `Stage 3 review round 1 (S391998586)`",
+      "resolvedIn": "5a8f0cdc0e0123f814f2a7755989d52351f91ec8",
+      "round": 1
+    },
+    {
+      "decision": "changes_requested",
+      "finding": "append `Stage 3 review round 2 (S391998586)`",
+      "resolvedIn": "9450884e7619b66f27198af592861aaa6823435a",
+      "round": 2
+    },
+    {
+      "decision": "changes_requested",
+      "finding": "append `Stage 3 review round 3 (S391998586)`",
+      "resolvedIn": "965ada156e0544b75a1b913b3358bd1d8aebe44e",
+      "round": 3
+    }
+  ],
+  "reviewedBaseHead": "365d471eb64c65817bb8b734fd77f2c4dd67847c",
+  "round": 4,
+  "schemaVersion": 1,
+  "summary": "Final review of docs-only PR #428: rounds 1-3 findings all addressed (marker lines appended). CI green, mergeState CLEAN, both E2E lines present, 0 unresolved threads. No new findings; APPROVE the pushed head.",
+  "thermo": "omitted — docs-only PR (only smoke/S391998586-1.md changes); ce-simplify-code and the thermonuclear pair do not run"
+}
