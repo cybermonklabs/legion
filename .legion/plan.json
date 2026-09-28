@@ -1,0 +1,85 @@
+{
+  "acceptanceCriteria": [
+    {
+      "criterion": "smoke/S391461798-1.md exists on the merged PR holding a single line naming S391461798-1.",
+      "id": "AC1",
+      "implementerCommand": "cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 cat smoke/S391461798-1.md   # expect exactly one line naming S391461798-1",
+      "negativeControl": "grep for a wrong issue key (e.g. S000000000-0) in the file returns no match / exits non-zero.",
+      "surface": "The sjawhar/legion-smoke git repository / GitHub PR file contents at the merge commit.",
+      "testerCommand": "cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 test \"$(wc -l \u003c smoke/S391461798-1.md)\" -le 1 \u0026\u0026 grep -q 'S391461798-1' smoke/S391461798-1.md; and read the file on the PR head via: legion gh -- api repos/sjawhar/legion-smoke/contents/smoke/S391461798-1.md?ref=\u003cpr-head-sha\u003e --jq '.content' | base64 -d"
+    },
+    {
+      "criterion": "Child issue Dependent admission leaf (dispatch://S391461798-5) reaches Dispatch status done through its own Legion lifecycle.",
+      "id": "AC2",
+      "implementerCommand": "Not this planner/implementer's edit; verified at parent integration by reading the child status: dispatch_read issue S391461798-5 -\u003e Status: done.",
+      "negativeControl": "If child status is not done, parent integration is not complete.",
+      "surface": "Dispatch issue lifecycle for S391461798-5 (owned end-to-end by its sub-architect; not this issue's file-level work).",
+      "testerCommand": "dispatch_read issue S391461798-5 and confirm Status: done before parent integration verification."
+    },
+    {
+      "criterion": "Merged change confirmed in production by the implementer's production check.",
+      "id": "AC3",
+      "implementerCommand": "legion gh -- api repos/sjawhar/legion-smoke/contents/smoke/S391461798-1.md?ref=main --jq '.content' | base64 -d   # after merge lands on main; record merge commit SHA",
+      "negativeControl": "Reading the path at a pre-merge main SHA (before the merge) returns 404 / absent, proving the merge is what published it.",
+      "surface": "The merged file on sjawhar/legion-smoke main branch at the merge commit (GitHub contents API is the production surface for this docs-only repo).",
+      "testerCommand": "Re-read the same contents at the merge commit and confirm the single naming line; confirm the Production line exists on the PR and on this issue."
+    }
+  ],
+  "completed": "2026-09-28T04:55:37.673352557Z",
+  "fileWork": [
+    {
+      "action": "create",
+      "detail": "New Markdown file containing a single line that names this issue, e.g. 'Legion smoke proof for issue S391461798-1'. If the file already exists, append the naming line and note the pre-existing file in the PR; never overwrite. If review requests an extra line, append exactly one more line to this same file; open no new file.",
+      "order": 1,
+      "path": "smoke/S391461798-1.md"
+    }
+  ],
+  "implementation": {
+    "steps": [
+      "On the Legion branch legion/S391461798-1, create smoke/S391461798-1.md with a single line naming this issue.",
+      "Verify with cat / wc -l that the file holds exactly one naming line.",
+      "Commit the file, push the issue branch, and open the PR with body line 'Dispatch: S391461798-1'.",
+      "After merge, run the production check reading the file on main at the merge commit and record the Production line on the PR and this issue."
+    ]
+  },
+  "integration": {
+    "parentVerification": "Once child S391461798-5 completes (status done) and this issue's PR merges, verify the parent against the three acceptance criteria above.",
+    "waves": "Wave 1 adopts existing child dispatch://S391461798-5 (Dependent admission leaf) rather than re-creating it. The root one-file change is delivered through this issue's own phases."
+  },
+  "nonGoals": [
+    "No source, build, or configuration file changes.",
+    "No new file other than smoke/S391461798-1.md.",
+    "Re-creating the child S391461798-5 (it is adopted, owned by its sub-architect)."
+  ],
+  "phase": "plan",
+  "repository": "sjawhar/legion-smoke",
+  "requiredSkills": {
+    "implement": [
+      "none: reviewed the repository root and smoke/ — sjawhar/legion-smoke has no AGENTS.md and no repository agent skills; the change is a single Markdown file created with the editor/jj, so no domain skill applies."
+    ],
+    "review": [
+      "none: reviewed the repo for review skills — sjawhar/legion-smoke defines none; review is a diff-scope check (one new Markdown file, single naming line, PR body format) driven by the standard Legion reviewer charter, not a repository skill."
+    ],
+    "test": [
+      "none: reviewed the repo for test tooling and skills — there is no test harness or testing skill in sjawhar/legion-smoke; verification is a file-content check plus GitHub contents read and Dispatch child-status read, needing no repository skill."
+    ]
+  },
+  "reviewFocus": [
+    "Exactly one new file smoke/S391461798-1.md; no other tracked file changed (jj diff --summary shows one path).",
+    "File holds a single line naming S391461798-1 (or one appended line if review asked for it).",
+    "PR body carries the READY format and the Dispatch: S391461798-1 line."
+  ],
+  "risks": [
+    "smoke/S391461798-1.md may already exist; handle per Errors table by appending, never overwriting.",
+    "Production surface for this docs repo is the merged file on main via GitHub contents API; the implementer must record the merge commit SHA in the Production line."
+  ],
+  "schemaVersion": 1,
+  "summary": "One-file smoke change: add smoke/S391461798-1.md holding a single line naming this issue (S391461798-1) on the Legion branch, open a PR, integrate the adopted child S391461798-5, and confirm the file in production after merge.",
+  "testEvidence": {
+    "commands": [
+      "cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 grep -q 'S391461798-1' smoke/S391461798-1.md \u0026\u0026 test \"$(wc -l \u003c smoke/S391461798-1.md)\" -le 1",
+      "legion gh -- api repos/sjawhar/legion-smoke/contents/smoke/S391461798-1.md?ref=\u003cpr-head-sha\u003e"
+    ],
+    "regressionLock": "A permanent unit/integration test is not warranted for a one-line docs file; testing is a content check of smoke/S391461798-1.md at the PR head and at the merge commit, plus confirmation of child S391461798-5 status done. This matches the spec Testing section."
+  }
+}
