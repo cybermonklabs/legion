@@ -1,0 +1,48 @@
+{
+  "completed": "2026-09-28T07:49:03.268958329Z",
+  "decision": "APPROVE",
+  "e2e": {
+    "implementer": "present",
+    "tester": "present"
+  },
+  "findings": [],
+  "phase": "review",
+  "prNumber": 442,
+  "reviewedHead": "c9ae03c9b0d6600e37ba0c5bd532297d6394e790",
+  "round": 4,
+  "rounds": [
+    {
+      "detail": "Requested `Stage 3 review round 1 (S392537713)`; landed in e3e452d7722c.",
+      "reviewedHead": "5c000cecee51065d83eba55f6b79f29dc8b49ec0",
+      "round": 1,
+      "verdict": "changes_requested"
+    },
+    {
+      "detail": "Requested `Stage 3 review round 2 (S392537713)`; landed in 41e36c28c598.",
+      "reviewedHead": "58223b81560dd1a545b6813bd8f7255c00968334",
+      "round": 2,
+      "verdict": "changes_requested"
+    },
+    {
+      "detail": "Requested `Stage 3 review round 3 (S392537713)`; landed in a3f91e8073ba.",
+      "reviewedHead": "8ff9ce901558d0f1af7665b444ad7dd5f1f45c74",
+      "round": 3,
+      "verdict": "changes_requested"
+    },
+    {
+      "detail": "Clean: all requested lines present, CI green, zero threads, both E2E lines present. APPROVE.",
+      "reviewedHead": "c9ae03c9b0d6600e37ba0c5bd532297d6394e790",
+      "round": 4,
+      "verdict": "approved"
+    }
+  ],
+  "schemaVersion": 1,
+  "summary": "Final review: APPROVE. All three review-round lines are present on head (smoke/S392537713-1.md carries the base line plus the round-1, round-2, and round-3 lines); the diff versus main is docs-only (one Markdown file plus .legion handoffs), so ce-simplify-code and the thermonuclear pair are omitted. CI is green at the final code head a3f91e8073ba (ci/check + fail-on-demand/gate both success); both E2E lines (implementer and tester) are present in the PR body; reviewThreads is empty (all REQUEST_CHANGES rounds were body-only, no inline threads to resolve), so there are zero unresolved threads.",
+  "thermo": "omitted — docs-only PR",
+  "threads": {
+    "opened": 0,
+    "resolved": 0,
+    "unresolved": 0
+  },
+  "verdict": "approved"
+}
