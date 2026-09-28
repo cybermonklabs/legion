@@ -1,0 +1,51 @@
+{
+  "completed": "2026-09-28T00:17:09.824649654Z",
+  "decision": "APPROVE",
+  "fastFollow": "none",
+  "findings": [],
+  "forArchitect": "Clean round; APPROVE submitted on the head this handoff push makes (ledger-carrying, per the Go daemon role text and the human's proof message). Next per the daemon: retro, then merger READY, then human merge, then the implementer's production check (plan criterion 5).",
+  "forMerger": "Approved head carries .legion/plan.json, implement.json, test.json, review.json; the merge lands them on main (PR #346 precedent) — say so in READY. Only docs/solutions/ (retro) may sit above the approved head.",
+  "headReviewed": "a537bf84f654407e52fd0dd254d8f618bd81ec23",
+  "humanProofMessage": "539ff070-8d50-4332-98da-d227d20fc47c (2026-09-28T00:13:03Z, actor legion-e2e4b-proof-human-3677503): review PR #424 as the role requires, run the deep and code-quality review passes as task subagents, decision APPROVE submitted as legion-reviewer[bot], take the round's steps in role order, complete the reviewer handoff. Also acted on the daemon reviewing-phase task for Stage 4b proof tree 1 (run /tmp/legion-e2e4b.3677503.yQjLrch8). The Go daemon's role text directs APPROVE on a clean head even though it carries .legion/.",
+  "phase": "review",
+  "productBlobSha": "a410619ee86319e5e1251058fa12fe0fb7f03dca",
+  "productHead": "c114235361a413d4af29acf0f96ef94c652bb700",
+  "pullRequest": {
+    "number": 424,
+    "repo": "sjawhar/legion-smoke",
+    "url": "https://github.com/sjawhar/legion-smoke/pull/424"
+  },
+  "round": 1,
+  "schemaVersion": 1,
+  "specNotes": [
+    "Spec v2 Acceptance 1 says `gh pr diff \u003cn\u003e --name-only` prints exactly one path; at this ledger-carrying head it prints four (three .legion/*.json plus the product file). The plan defined the check over the product diff (excluding .legion/ and docs/solutions/), which is what was verified; the Go daemon removes handoffs from main after merge. Not a finding.",
+    "Spec Acceptance 3 / plan criterion 4 (review-requested second line) was not exercised: this review requests no append."
+  ],
+  "thermonuclear": {
+    "codeQuality": {
+      "agent": "thermonuclear-code-quality",
+      "findings": 0,
+      "summary": "Byte-for-byte the same template as stage4b-legsmoke-278.txt / -288.txt with the key substituted; .md matches the dominant fixture extension (17 of 23 pre-existing smoke/ files) and the spec's explicit Markdown requirement; no index needs updating; every structural axis is vacuous on a one-line prose file.",
+      "verdict": "pass"
+    },
+    "deepReview": {
+      "agent": "thermonuclear-deep-review",
+      "findings": 0,
+      "summary": "Product diff is exactly one added file, mode 100644, 39 bytes, blob a410619ee8; no path collision, no .github/ change, no .fail-me, no executable bit, no registry to update; workflows byte-identical to main and unfiltered by paths; ledger records consistent with the tree.",
+      "verdict": "pass"
+    },
+    "ranAt": "a537bf84f654407e52fd0dd254d8f618bd81ec23",
+    "why": "Run at the human proof message's direction even though the diff is docs-only (role default would skip); the PR body's Thermo line correctly states neither ce-simplify-code nor the pair applies by default."
+  },
+  "threadsOpened": [],
+  "verdict": "pass",
+  "verifiedOnGitHub": {
+    "ci": "At head a537bf84f654407e52fd0dd254d8f618bd81ec23: `legion gh -- run list --branch legion/LEGSMOKE-310` filtered to the head printed four `completed success` runs: ci push 36361252496, ci pull_request 36361255484, fail-on-demand push 36361252463, fail-on-demand pull_request 36361255494. statusCheckRollup: `ci check COMPLETED SUCCESS` x2, `fail-on-demand gate COMPLETED SUCCESS` x2. `legion gh -- pr checks 424` exit 0. read_record checksVerdict green, mergeStateStatus CLEAN.",
+    "content": "Contents API at ref=a537bf84 decoded to exactly `Stage 4b workflow proof: LEGSMOKE-310.`; wc -l 1, wc -c 39, grep -qx exit 0, od -c 39 bytes ending in one \\n; blob sha a410619ee86319e5e1251058fa12fe0fb7f03dca (identical to implement/test handoff records). Workspace read of smoke/stage4b-legsmoke-310.md matched.",
+    "contractChangeCensus": "Not applicable: text-only diff adds no refusal, required field, rename, removal, or boundary signature change; no census section is required.",
+    "e2eLines": "PR body carries both `E2E (implementer)` (surface: PR #424 compare/contents/Actions; command, observation, head c1142353, negative controls incl. contents at ref=main 404, .fail-me 404) and `E2E (tester)` (same surface driven independently at c1142353 and cross-checked at 76eed30d; `Verified the implementer's proof by re-running ...`). Each names a production-like surface, command, observation, head SHA, and negative control.",
+    "failMe": "`legion gh -- api repos/sjawhar/legion-smoke/contents/.fail-me?ref=a537bf84...` → HTTP 404 (exit 1); .github/workflows/fail-on-demand.yml line 8 exits 1 iff .fail-me exists, so the gate's success is not vacuous.",
+    "productDiff": "`legion gh -- api repos/sjawhar/legion-smoke/compare/main...a537bf84f654407e52fd0dd254d8f618bd81ec23` filtered to exclude .legion/ and docs/solutions/ printed exactly `added smoke/stage4b-legsmoke-310.md`; raw file list is .legion/implement.json, .legion/plan.json, .legion/test.json, smoke/stage4b-legsmoke-310.md. Nothing under .github/ changed. jj fileset diff `--from fork_point(main@origin | @-) --to @- --summary` matched.",
+    "threads": "GraphQL reviewThreads totalCount 0 at head a537bf84; reviews nodes []; reviewDecision null. Zero unresolved non-Minor threads. This reviewer opened none."
+  }
+}
