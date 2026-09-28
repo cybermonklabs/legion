@@ -1,0 +1,63 @@
+{
+  "acceptanceVerified": [
+    {
+      "how": "smoke/S393569515-1.md present on PR head c6769d5b with naming line plus in-scope review-round-1/2/3 appended lines; only runtime file changed (+4/-0); CI check+gate green; 404 negative control on wrong path.",
+      "id": 1,
+      "verdict": "pass"
+    }
+  ],
+  "ci": {
+    "head": "c6769d5b453f1e9d76068afd8688eefcdd48e9cd",
+    "runs": [
+      {
+        "check": "check",
+        "conclusion": "success",
+        "workflow": "ci"
+      },
+      {
+        "check": "gate",
+        "conclusion": "success",
+        "workflow": "fail-on-demand"
+      }
+    ]
+  },
+  "completed": "2026-09-28T00:07:27.61714969Z",
+  "failed": 0,
+  "failures": [],
+  "implementerProof": {
+    "how": "Independently re-ran the implementer's proof command `legion gh -- api repos/sjawhar/legion-smoke/contents/smoke/S393569515-1.md?ref=legion/S393569515-1 --jq .content | base64 -d` at current PR head c6769d5b453f1e9d76068afd8688eefcdd48e9cd; observed the four lines 'S393569515-1 — Primary durable workflow profile' / 'Stage 3 review round 1 (S393569515)' / 'Stage 3 review round 2 (S393569515)' / 'Stage 3 review round 3 (S393569515)', matching the implementer's E2E claim. Negative control (misnamed path -\u003e HTTP 404) reproduced.",
+    "verdict": "verified"
+  },
+  "phase": "test",
+  "proof": [
+    {
+      "command": "legion gh -- api repos/sjawhar/legion-smoke/contents/smoke/S393569515-1.md?ref=legion/S393569515-1 --jq .content | base64 -d",
+      "headSha": "c6769d5b453f1e9d76068afd8688eefcdd48e9cd",
+      "negativeControl": "legion gh -- api repos/sjawhar/legion-smoke/contents/smoke/S393569515-1-WRONG.md?ref=legion/S393569515-1 returned HTTP 404 Not Found, proving the read distinguishes present from absent.",
+      "observed": "Four lines: 'S393569515-1 — Primary durable workflow profile', 'Stage 3 review round 1 (S393569515)', 'Stage 3 review round 2 (S393569515)', 'Stage 3 review round 3 (S393569515)'. GET /pulls/420/files confirms the only runtime change is smoke/S393569515-1.md (+4/-0); no existing file modified. Review round 3 correction present. CI (check, gate) green at this head.",
+      "surface": "GitHub contents API on sjawhar/legion-smoke, branch legion/S393569515-1 (production-like: real repository branch state reached through the same client a user uses)."
+    }
+  ],
+  "reviewRounds": [
+    {
+      "correction": "Appended 'Stage 3 review round 1 (S393569515)'; verified at head 3f3ff2f2.",
+      "reviewId": 5332736626,
+      "round": 1,
+      "verdict": "pass"
+    },
+    {
+      "correction": "Appended 'Stage 3 review round 2 (S393569515)'; verified at head dbe58eac.",
+      "reviewId": 5332749032,
+      "round": 2,
+      "verdict": "pass"
+    },
+    {
+      "correction": "Appended 'Stage 3 review round 3 (S393569515)' per reviewer REQUEST_CHANGES; verified present at head c6769d5b, nothing else changed.",
+      "reviewId": 5332758926,
+      "round": 3,
+      "verdict": "pass"
+    }
+  ],
+  "schemaVersion": 1,
+  "summary": "Final test (round 3): verified the reviewer-requested correction on PR #420 at head c6769d5b — smoke/S393569515-1.md now carries the naming line plus rounds 1, 2, and 3 appended lines, only runtime file changed (+4/-0), CI check+gate green after waiting for the pending check runs to settle, negative control 404. Implementer proof independently re-run and verified; no failures."
+}

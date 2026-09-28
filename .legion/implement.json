@@ -1,0 +1,54 @@
+{
+  "branch": "legion/S393569515-1",
+  "ci": {
+    "head": "0540e61c7ba7",
+    "runs": [
+      {
+        "conclusion": "success",
+        "event": "pull_request",
+        "runId": 36360836917,
+        "workflow": "ci"
+      },
+      {
+        "conclusion": "success",
+        "event": "pull_request",
+        "runId": 36360836922,
+        "workflow": "fail-on-demand"
+      },
+      {
+        "conclusion": "success",
+        "event": "push",
+        "runId": 36360834114,
+        "workflow": "ci"
+      },
+      {
+        "conclusion": "success",
+        "event": "push",
+        "runId": 36360834122,
+        "workflow": "fail-on-demand"
+      }
+    ]
+  },
+  "completed": "2026-09-28T00:06:07.633517883Z",
+  "filesChanged": [
+    "smoke/S393569515-1.md (new; rounds 1–3 each appended one line)"
+  ],
+  "headSha": "0540e61c7ba7",
+  "phase": "implement",
+  "prNumber": 420,
+  "prUrl": "https://github.com/sjawhar/legion-smoke/pull/420",
+  "proof": [
+    {
+      "command": "legion gh -- api repos/sjawhar/legion-smoke/contents/smoke/S393569515-1.md?ref=legion/S393569515-1 --jq .content | base64 -d",
+      "headSha": "0540e61c7ba7",
+      "negativeControl": "Misnamed path smoke/S393569515-1-typo.md?ref=legion/S393569515-1 returned HTTP 404, and smoke/S393569515-1.md?ref=main returned HTTP 404 (absent on main pre-merge), proving the check distinguishes present from absent.",
+      "observed": "Four lines: 'S393569515-1 — Primary durable workflow profile', 'Stage 3 review round 1 (S393569515)', 'Stage 3 review round 2 (S393569515)', 'Stage 3 review round 3 (S393569515)'",
+      "surface": "GitHub contents API on sjawhar/legion-smoke, branch legion/S393569515-1 (production-like: the real repository branch state)."
+    }
+  ],
+  "reviewRound": 3,
+  "schemaVersion": 1,
+  "summary": "Round 3 (final) correction: appended 'Stage 3 review round 3 (S393569515)' to smoke/S393569515-1.md (code head 0540e61c7ba7), nothing else changed. PR #420 CI green (ci + fail-on-demand on push and pull_request); E2E re-run confirms all four lines with 404 negative controls.",
+  "thermo": "omitted — docs-only diff (Markdown marker lines, no runtime code); ce-simplify-code and the thermonuclear pair do not apply.",
+  "threads": "Reviewer rounds 1–3 submitted REQUEST_CHANGES (reviews 5332736626, 5332749032, 5332758926) with no inline threads; reviewThreads empty. Round 3 disposition: Fixed in 0540e61c7ba7 — appended 'Stage 3 review round 3 (S393569515)', nothing else changed."
+}
