@@ -1,0 +1,52 @@
+{
+  "acceptance4": "not triggered: `pr view --json reviews` returns [] at 6ac31cd3; no REQUEST_CHANGES has asked for a second line.",
+  "branch": "legion/LEGSMOKE-358",
+  "codeHead": "c3d0a5777571db75855b1527e2907384d1959eb5",
+  "completed": "2026-09-30T19:42:17.781932906Z",
+  "failed": 0,
+  "failures": [],
+  "head": "6ac31cd36013c5125c429f851602810dab586b74",
+  "implementerProof": {
+    "how": "Re-ran the implementer's exact GitHub REST read at the SHA its E2E line names: `legion gh -- api \"repos/sjawhar/legion-smoke/contents/smoke/stage4b-legsmoke-358.md?ref=c3d0a5777571db75855b1527e2907384d1959eb5\" --jq .content | base64 -d` then `cmp` against `printf 'Stage 4b workflow proof: LEGSMOKE-358.\\n'` (via a temp file: `cmp - \u003c(...)` process substitution returns `Illegal seek` under this pane's gVisor kernel, an environment artifact, not a content difference). cmp clean, printed MATCH-IMPL. Its 404 negative control at `?ref=main` reproduced: `{\"message\":\"Not Found\",\"status\":\"404\"}`, gh exit 1.",
+    "verdict": "verified"
+  },
+  "issue": "LEGSMOKE-358",
+  "localChecks": "No lint/type/test lanes exist in this repository (plan and implement handoffs; two workflows only). The path-scoped check run: `jj file show -r @- smoke/stage4b-legsmoke-358.md` cmp-equal to the 39-byte expected content.",
+  "openChoiceForArchitect": "plan risks[0] stands: retro's docs/solutions/ commit vs. spec acceptance 3; tester takes no position.",
+  "phase": "test",
+  "proof": [
+    {
+      "acceptance": 1,
+      "command": "head=$(legion gh -- pr view 471 --repo sjawhar/legion-smoke --json headRefOid --jq .headRefOid); legion gh -- api \"repos/sjawhar/legion-smoke/contents/smoke/stage4b-legsmoke-358.md?ref=$head\" --jq .content | base64 -d \u003e got; printf 'Stage 4b workflow proof: LEGSMOKE-358.\\n' \u003e exp; cmp got exp \u0026\u0026 echo MATCH-TESTER; wc -c \u003c got; wc -l \u003c got",
+      "head": "6ac31cd36013c5125c429f851602810dab586b74",
+      "negativeControl": "`legion gh -- api 'repos/sjawhar/legion-smoke/contents/smoke/stage4b-legsmoke-358.md?ref=main'` -\u003e `{\"message\":\"Not Found\",\"status\":\"404\"}`, gh exit 1 (file absent on the default branch while the PR is open, so the positive read reached the branch head, not a cached or local copy); `legion gh -- api 'repos/sjawhar/legion-smoke/contents/.fail-me?ref=6ac31cd36013c5125c429f851602810dab586b74'` -\u003e 404, gh exit 1 (the one input that turns fail-on-demand red is absent at the head).",
+      "observed": "head resolved to 6ac31cd36013c5125c429f851602810dab586b74; decoded content `Stage 4b workflow proof: LEGSMOKE-358.`; cmp clean; MATCH-TESTER; 39 bytes; 1 line. Independently, `jj file show -r @- smoke/stage4b-legsmoke-358.md` in the workspace is byte-equal to the same expected content.",
+      "surface": "GitHub repository sjawhar/legion-smoke read through the REST contents API via `legion gh -- api` at the pull request head SHA (the real remote every reader uses), never the local working copy"
+    },
+    {
+      "acceptance": 2,
+      "command": "legion gh -- pr checks 471 --repo sjawhar/legion-smoke; legion gh -- run list --repo sjawhar/legion-smoke --commit 6ac31cd36013c5125c429f851602810dab586b74 --json databaseId,name,conclusion,event; legion gh -- pr view 471 --repo sjawhar/legion-smoke --json statusCheckRollup,reviewDecision,reviews,headRefOid",
+      "head": "6ac31cd36013c5125c429f851602810dab586b74",
+      "negativeControl": "`.fail-me` absent at the head (404 above), so fail-on-demand's only red path was not exercised; no red check existed to re-run, so `legion gh -- run rerun` was not needed and no commit was made to repair CI.",
+      "observed": "pr checks exit 0, four rows all pass: `ci` job check runs 36766717763 (push) and 36766808821 (pull_request); `fail-on-demand` job gate runs 36766717684 (push) and 36766808915 (pull_request); every run conclusion success at 6ac31cd36013c5125c429f851602810dab586b74; statusCheckRollup all four SUCCESS/COMPLETED. reviews [] and reviewDecision empty: the approving review is the reviewer's, on the later .legion/-deletion head, and is not this phase's to prove.",
+      "surface": "the GitHub pull request via `legion gh -- pr checks` / `run list` / `pr view` (checks and reviews as GitHub records them)"
+    },
+    {
+      "acceptance": 3,
+      "command": "legion gh -- pr diff 471 --repo sjawhar/legion-smoke --name-only; jj -R \"$LEGION_WORKSPACE\" diff --from main@origin --to @- --summary",
+      "head": "6ac31cd36013c5125c429f851602810dab586b74",
+      "negativeControl": "`.fail-me` read at the head -\u003e 404 (a stray root file would have appeared in both lists and turned fail-on-demand red).",
+      "observed": "GitHub: exactly `.legion/implement.json`, `.legion/plan.json`, `smoke/stage4b-legsmoke-358.md`. Workspace: `A .legion/implement.json`, `A .legion/plan.json`, `A smoke/stage4b-legsmoke-358.md`. The smoke file plus only .legion/*.json handoffs, as the plan's pre-deletion check requires; no `.fail-me`, no workflow, README, or other smoke/* change.",
+      "surface": "the pull request's file list on GitHub (pre-deletion scope)"
+    }
+  ],
+  "pullRequest": 471,
+  "repository": "sjawhar/legion-smoke",
+  "schemaVersion": 1,
+  "summary": "PR #471 head 6ac31cd36013c5125c429f851602810dab586b74 verified on GitHub: smoke/stage4b-legsmoke-358.md decodes to the 39-byte line `Stage 4b workflow proof: LEGSMOKE-358.` (MATCH), both workflows green in both push and pull_request runs, PR file list is the smoke file plus .legion/*.json only, 404 at ?ref=main and for .fail-me at the head. Implementer proof re-run and verified at c3d0a5777571db75855b1527e2907384d1959eb5. No failures; acceptance 4 not triggered; no regression test written.",
+  "tests": {
+    "reason": "No test harness in the repository (workflows: `ci` sleeps 20s; `fail-on-demand` keys on `.fail-me`) and a one-line Markdown marker has no behaviour a regression test would defend (plan testEvidence). No defect found, so no red test to pin.",
+    "written": []
+  },
+  "verdict": "pass"
+}
