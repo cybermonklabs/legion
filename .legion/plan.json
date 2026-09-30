@@ -1,0 +1,38 @@
+{
+  "approach": "Add exactly one new file smoke/S391616981-1.md holding a single line following the existing smoke/ marker convention (\"\u003cKEY\u003e — \u003ctitle\u003e\"), e.g. `S391616981-1 — Primary durable workflow profile`. No other file changes. Alternatives weighed: (a) appending to an existing smoke file — rejected, spec requires one NEW file under smoke/; (b) a second spec/plan artifact in the repo — rejected, plan/spec live in Dispatch and .legion/, never in the PR. If review asks for one more line appended to that same file (acceptance 2), append it and re-run test+review in order; nothing else changes.",
+  "completed": "2026-09-30T13:32:28.283007043Z",
+  "concerns": [
+    "Trivial one-file markdown addition in the legion-smoke sandbox; no runtime/CLI/endpoint/TUI surface exists or is needed — the production-like surface is the GitHub PR plus its CI (.github/workflows/ci.yml).",
+    "Acceptance 4 depends on the child S391616981-5 merging first; root review/test of acceptance 4 must run on the default branch after the child's merge.",
+    "fail-on-demand.yml workflow exists in .github/workflows; if CI is red spuriously, re-run per skill (`legion gh -- run rerun \u003cid\u003e --failed`), never by pushing base."
+  ],
+  "fileWork": [
+    "Create smoke/S391616981-1.md with a single line naming this issue in the smoke/ convention. This is the only repository file the root issue changes.",
+    "The adopted child S391616981-5 (Dependent admission leaf) delivers its own marker file under smoke/; that file is owned by the child's phases, not this root implementer."
+  ],
+  "implementEvidence": "Implementer proof: smoke/S391616981-1.md present on the PR head carrying the single marker line (production-like surface = the GitHub PR + CI), the file visible in the PR diff, CI green on that head, one negative control that the file is absent on main. PR body carries `Dispatch: S391616981-1`.",
+  "independentTasks": 1,
+  "phase": "plan",
+  "requiredSkills": {
+    "implement": [
+      "none: looked through the system-prompt \u003cskills\u003e list (dispatch, envoy, legion-* workflow skills only) and the repo (README.md, smoke/, .github/workflows); none is a domain/engineering skill for adding one Markdown marker file — the only relevant guidance is the generic Legion phase-worker workflow (skill://legion-worker), not a repository engineering skill."
+    ],
+    "review": [
+      "none: no repository review skill exists; review is confirming the single new marker file and green CI on the approved head under the generic Legion reviewer/merge-gate workflow, not a repo skill."
+    ],
+    "test": [
+      "none: no repository test/smoke/e2e skill exists for a one-line Markdown addition; verification is reading the file on the PR head and default branch plus confirming CI green, covered by the generic Legion tester workflow, not a repo skill."
+    ]
+  },
+  "reviewEvidence": "Reviewer approves the exact head that carries smoke/S391616981-1.md, after CI is green; confirms the file is a single new marker line and no unrelated files changed. If changes were requested (acceptance 2), confirms the appended line and resolves the thread.",
+  "schemaVersion": 1,
+  "surfaces": [
+    "Acceptance 1: GitHub pull request on branch legion/S391616981-1 with green CI (.github/workflows/ci.yml). Surface command: on the PR head, `cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 cat smoke/S391616981-1.md` shows the single line, and `legion gh -- pr checks \u003cpr\u003e` / `legion gh -- pr view \u003cpr\u003e` shows CI green and the file in the diff. Negative control: `git show main:smoke/S391616981-1.md` (or reading the file on main) fails/absent before the change.",
+    "Acceptance 2 (conditional): if a reviewer requests one more appended line, the same surface — the file on the branch head shows the appended line and the review thread is resolved.",
+    "Acceptance 3: owned by child S391616981-5's own tester/reviewer and its sign-off; not a root-implementer surface.",
+    "Acceptance 4: on the default branch after children merge, `cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 ls smoke/ | grep -E 'S391616981-1|\u003cchild-marker\u003e'` lists both this issue's marker and the child's marker. Root tester runs this on the merged default branch."
+  ],
+  "taskCount": 1,
+  "testEvidence": "Tester re-runs the implementer's proof on the same head (file present, single line correct, CI green) and records its own proof; for acceptance 4, reads smoke/ on the default branch after children merge and confirms both markers present.",
+  "workflowRecommendation": "Single implementer task, no parallelism. One-file addition; implementer opens the PR, tester verifies on the default-branch surface, reviewer approves the head carrying the file."
+}

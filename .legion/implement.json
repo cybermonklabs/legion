@@ -1,0 +1,22 @@
+{
+  "completed": "2026-09-30T13:58:54.658920922Z",
+  "filesChanged": [
+    "smoke/S391616981-1.md"
+  ],
+  "phase": "implement",
+  "prNumber": 459,
+  "prUrl": "https://github.com/sjawhar/legion-smoke/pull/459",
+  "proof": [
+    {
+      "command": "cat smoke/S391616981-1.md on PR head eb1570d8dc828c64f93b4b66acc04e44c9d8c8cb; CI run 36725543376 job check",
+      "headSha": "eb1570d8dc828c64f93b4b66acc04e44c9d8c8cb",
+      "link": "https://github.com/sjawhar/legion-smoke/actions/runs/36725543376",
+      "negativeControl": "jj file show -r main@origin smoke/S391616981-1.md returned 'Error: No such path: smoke/S391616981-1.md' — the file is absent on the default branch",
+      "observed": "File holds four lines: the marker 'S391616981-1 — Primary durable workflow profile' then 'Stage 3 review round 1/2/3 (S391616981)', with round 3 appended last; CI job 'check' concluded success at the head (also push run 36725535289 success)",
+      "surface": "GitHub PR #459 + CI (.github/workflows/ci.yml) on branch legion/S391616981-1"
+    }
+  ],
+  "reviewResponse": "Round 3 changes_requested: appended the line 'Stage 3 review round 3 (S391616981)' to smoke/S391616981-1.md per review.json finding; no other change. legion threads resolve reports no unresolved threads (the round-1 bot thread was resolved on the reviewer's acceptance in round 2).",
+  "reviewRound": 3,
+  "schemaVersion": 1
+}

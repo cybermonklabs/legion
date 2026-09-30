@@ -1,0 +1,21 @@
+{
+  "completed": "2026-09-30T14:01:18.747267091Z",
+  "failed": 0,
+  "failures": [],
+  "implementerProof": {
+    "how": "Re-drove the same surface independently at the round-3 PR head 9d21725c0bab7611b19763e68214553da4f21bc9: read smoke/S391616981-1.md (four lines ending with the appended 'Stage 3 review round 3 (S391616981)'), confirmed the append diff 3→4 lines matches the reviewer round-3 finding, confirmed CI check+gate green at head, and reproduced the negative control (jj file show -r main@origin → 'Error: No such path'). Implementer proof cited code head eb1570d8; file and behavior identical at the current head.",
+    "verdict": "verified"
+  },
+  "phase": "test",
+  "proof": [
+    {
+      "command": "jj file show -r @- smoke/S391616981-1.md; jj diff -r eb1570d8dc82 --git; legion gh -- pr checks 459 --repo sjawhar/legion-smoke",
+      "headSha": "9d21725c0bab7611b19763e68214553da4f21bc9",
+      "link": "https://github.com/sjawhar/legion-smoke/actions/runs/36725694251",
+      "negativeControl": "jj file show -r main@origin smoke/S391616981-1.md → 'Error: No such path: smoke/S391616981-1.md' — marker absent on the default branch",
+      "observed": "smoke/S391616981-1.md holds four lines at PR head, ending with the appended 'Stage 3 review round 3 (S391616981)' (the exact line review.json round 3 requested); append diff limited to 3→4 lines; CI jobs check and gate both pass at the head; overall PR diff limited to the marker plus .legion handoffs.",
+      "surface": "GitHub PR #459 + CI (.github/workflows/ci.yml) on branch legion/S391616981-1"
+    }
+  ],
+  "schemaVersion": 1
+}
