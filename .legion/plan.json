@@ -1,0 +1,64 @@
+{
+  "completed": "2026-09-30T10:36:26.863544812Z",
+  "concerns": [
+    "This child's own Dispatch spec (dispatch://S393319197-5/spec) was the empty template; the concrete change below was defined by the planner, consistent with the approved parent spec (dispatch://S393319197-1/spec, approved v2) and the smoke/ convention, and written into the child spec at version 2.",
+    "File choice avoids collision: the parent issue owns smoke/S393319197-1.md on its own branch; this child adds smoke/S393319197-5.md. Both are currently absent from the workspace (verified 2026-09-30).",
+    "Docs-only sandbox: no build/lint/unit tests exist. CI is .github/workflows/ci.yml (sleep 20 \u0026\u0026 exit 0) plus .github/workflows/fail-on-demand.yml (fails only if a .fail-me file exists). The change adds no .fail-me, so CI passes.",
+    "Legion artifact discipline: plan/spec content lives in this handoff and the Dispatch issue, never in the repo. The only repo change is smoke/S393319197-5.md (plus, per review scope, one appended line to that same file)."
+  ],
+  "independentTasks": 1,
+  "phase": "plan",
+  "plan": {
+    "acceptanceProofs": [
+      {
+        "command": "legion gh -- pr view \u003cPR\u003e --json files --jq '.files[].path'  (shows only smoke/S393319197-5.md); jj -R \"$LEGION_WORKSPACE\" file show -r @- smoke/S393319197-5.md  (single issue-naming line)",
+        "criterion": "Acceptance 1: PR adds exactly one new file smoke/S393319197-5.md whose single line names issue S393319197-5.",
+        "negativeControl": "On main (before the change) `jj file show -r main smoke/S393319197-5.md` errors / the path is absent, and the PR file list would list zero or extra files if the change were wrong.",
+        "surface": "GitHub PR file list + repo head content"
+      },
+      {
+        "command": "legion gh -- pr diff \u003cPR\u003e  (touches only smoke/S393319197-5.md, now two lines)",
+        "criterion": "Acceptance 2: a review-requested single appended line lands in the same file and nothing else changes.",
+        "negativeControl": "A diff naming any second path, or more than one added line, fails the criterion. Only exercised if review requests the append; otherwise not applicable.",
+        "surface": "GitHub PR diff after the append"
+      },
+      {
+        "command": "legion gh -- pr checks \u003cPR\u003e  (ci and fail-on-demand both green)",
+        "criterion": "Acceptance 3: the issue reaches done under its tree.",
+        "negativeControl": "Adding a .fail-me file would make fail-on-demand red; this change adds none, so a green result is meaningful.",
+        "surface": "GitHub Actions checks on the PR head + Dispatch status (daemon-owned)"
+      }
+    ],
+    "concreteChange": {
+      "action": "create new file (must not already exist; fail rather than overwrite)",
+      "content": "A single line naming this issue, e.g. `Stage 3 dependent admission leaf proof: S393319197-5`. Review may append exactly one more line to this same file; nothing else changes.",
+      "file": "smoke/S393319197-5.md",
+      "surface": "sjawhar/legion-smoke repository content on the pushed issue branch legion/S393319197-5 and the GitHub PR file list/diff. No runtime/CLI/endpoint exists for a docs change."
+    },
+    "implementationOrder": [
+      "1. Confirm smoke/S393319197-5.md does not exist (Errors: fail if it does).",
+      "2. jj new; create smoke/S393319197-5.md with one issue-naming line.",
+      "3. Commit the implementation, `legion push` the branch legion/S393319197-5, open the PR with `legion gh -- pr create` (body includes `Dispatch: S393319197-5`).",
+      "4. Record the implement proof (Acceptance 1) and write/commit/push the implement handoff."
+    ],
+    "integrationEvidence": "On the tree's smoke branch after this child completes, the merged branch contains smoke/S393319197-5.md with its issue-naming line and no other path changed for this issue (parent's smoke/S393319197-1.md is the parent issue's own change on its branch)."
+  },
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: the implementer adds smoke/S393319197-5.md, pushes with `legion push`, opens the PR (body carrying `Dispatch: S393319197-5`), and records the production-like proof (the file present on the pushed head with its single issue-naming line) per skill://legion-worker/references/pr-body.md. No legion-smoke repository build/lint/test skill exists — it is a documentation-only sandbox."
+    ],
+    "review": [
+      "legion-worker: the reviewer confirms the diff adds only smoke/S393319197-5.md (or, after a review-requested append, touches only that file) and approves per skill://legion-worker/references/merge-gate.md. No legion-smoke code-review skill applies to a single-line Markdown addition."
+    ],
+    "test": [
+      "legion-worker: the tester verifies the implementer's proof and records its own by inspecting the pushed head for smoke/S393319197-5.md and its issue-naming line and confirming CI green, per skill://legion-worker/references/pr-body.md. No legion-smoke test-harness or e2e skill applies — the repo has no test suite (CI is a trivial sleep gate)."
+    ]
+  },
+  "routingHints": {
+    "complexity": "trivial",
+    "estimatedImplementers": 1
+  },
+  "schemaVersion": 1,
+  "taskCount": 1,
+  "workflowRecommendation": "Single implementer, single pass. Trivial one-file documentation addition; no sub-planning, no parallelism."
+}
