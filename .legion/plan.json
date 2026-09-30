@@ -1,0 +1,24 @@
+{
+  "completed": "2026-09-30T10:58:30.58449036Z",
+  "concerns": [
+    "CI (.github/workflows/ci.yml) is a no-op `sleep 20 \u0026\u0026 exit 0`; it does not verify file contents. The acceptance surface is the git repository head, proven with `git ls-files` and `cat`, not a CI job.",
+    "Acceptance 3 is an integration check on main AFTER both the root PR (#this) and the child S390959369-5 PR merge; the root tester re-runs it once both are merged. It is not blocking for the root PR head, only for the tree's final integration proof.",
+    "Marker-file convention: existing files (e.g. smoke/S394570180-1.md) start with a line `\u003cKEY\u003e — \u003ctitle\u003e`; follow it exactly."
+  ],
+  "independentTasks": 1,
+  "phase": "plan",
+  "requiredSkills": {
+    "implement": [
+      "none: legion-smoke is a bare marker-file sandbox — no AGENTS.md content, no build/test tooling, no domain agent skills in the \u003cskills\u003e list apply to adding one Markdown file. The implementer follows legion-worker for workspace/push/PR mechanics only."
+    ],
+    "review": [
+      "none: no repo review skill or code-owner surface beyond the marker file; the reviewer confirms the single line names S390959369-1 and that nothing else changed, per legion-worker review-threads/merge-gate references."
+    ],
+    "test": [
+      "none: no test framework or repo test skill exists; verification is `git ls-files` + `cat` of the marker file on the PR head, and re-checking both markers on main for the integration criterion. legion-worker's pr-body/proof reference governs how the proof is recorded."
+    ]
+  },
+  "schemaVersion": 1,
+  "taskCount": 1,
+  "workflowRecommendation": "Single implementer, single tester, single reviewer. No sub-planning: one new file, no dependencies within the root issue. The child S390959369-5 is a separate issue with its own workflow."
+}

@@ -1,0 +1,23 @@
+{
+  "branch": "legion/S390959369-1",
+  "completed": "2026-09-30T11:17:20.269626878Z",
+  "failures": [],
+  "headSha": "e6e50c37333dabe7d57f5de313b78cce9ba3f3e8",
+  "implementerProof": {
+    "how": "Final test: re-ran the implementer's exact command (gh api contents/smoke/S390959369-1.md) at its recorded code head a3f2d079 and at the current PR head e6e50c37; both returned the file with all four expected lines ('S390959369-1 — Primary durable workflow profile', 'Stage 3 review round 1 (S390959369)', 'Stage 3 review round 2 (S390959369)', 'Stage 3 review round 3 (S390959369)'). Negative control smoke/S390959369-999.md returned HTTP 404 at the current head.",
+    "verdict": "verified"
+  },
+  "phase": "test",
+  "prNumber": 453,
+  "prUrl": "https://github.com/sjawhar/legion-smoke/pull/453",
+  "proof": [
+    {
+      "command": "gh api repos/sjawhar/legion-smoke/contents/smoke/S390959369-1.md?ref=e6e50c37333dabe7d57f5de313b78cce9ba3f3e8",
+      "headSha": "e6e50c37333dabe7d57f5de313b78cce9ba3f3e8",
+      "negativeControl": "gh api for smoke/S390959369-999.md at the same head returned HTTP 404 Not Found, confirming the check distinguishes a present marker from an absent one",
+      "observed": "File present at PR head, size 158, four lines: 'S390959369-1 — Primary durable workflow profile', 'Stage 3 review round 1 (S390959369)', 'Stage 3 review round 2 (S390959369)', 'Stage 3 review round 3 (S390959369)' (review round 3 correction applied). PR diff shows only smoke/S390959369-1.md plus workflow .legion handoffs.",
+      "surface": "GitHub head of sjawhar/legion-smoke (sandbox repository is the acceptance surface for Acceptance 1; CI ci.yml is a no-op sleep)"
+    }
+  ],
+  "schemaVersion": 1
+}
