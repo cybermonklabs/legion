@@ -1,0 +1,61 @@
+{
+  "codeHead": "e23e374e3bd3d4861deefb1ff254ea0b7288b5e9",
+  "commits": [
+    {
+      "message": "smoke: add Stage 4b workflow proof for LEGSMOKE-366",
+      "paths": [
+        "smoke/stage4b-legsmoke-366.md"
+      ],
+      "sha": "e23e374e3bd3d4861deefb1ff254ea0b7288b5e9"
+    }
+  ],
+  "completed": "2026-09-30T23:04:10.065073465Z",
+  "criteria": {
+    "1": "proved at e23e374e (contents byte-exact; diff shows the smoke file plus .legion/ handoff paths only; exact single path is the reviewer's check at the .legion/-deleted head)",
+    "2": "proved at e23e374e (both workflows SUCCESS on both push and pull_request events)",
+    "3": "not exercised yet: conditional on a reviewer change request (plan task 7)",
+    "4": "pending human merge (plan task 8, production check)"
+  },
+  "filesChanged": [
+    "smoke/stage4b-legsmoke-366.md"
+  ],
+  "localChecks": "This repository defines no lint, type, or unit lane (no AGENTS.md, no package manifest); verified locally with `jj diff --summary` (only `A smoke/stage4b-legsmoke-366.md`), `wc -l -c` (1 line, 39 bytes), `od -c`, and `sed 's/362/366/' smoke/stage4b-legsmoke-362.md | cmp - smoke/stage4b-legsmoke-366.md` (exit 0).",
+  "notesForTester": "The handoff commit `implement: record handoff` follows e23e374e and adds only .legion/implement.json, so the PR head the tester sees is that commit; `pr diff --name-only` there lists .legion/plan.json, .legion/implement.json, and smoke/stage4b-legsmoke-366.md. The smoke file's bytes are identical at both heads. CI reruns on the handoff push (implement.json is not on `legion push`'s skip allow-list).",
+  "phase": "implement",
+  "pr": {
+    "base": "main",
+    "head": "legion/LEGSMOKE-366",
+    "number": 475,
+    "repo": "sjawhar/legion-smoke",
+    "url": "https://github.com/sjawhar/legion-smoke/pull/475"
+  },
+  "prBody": "READY format written at PR open and edited once after CI settled: `Dispatch: LEGSMOKE-366`, CI line with the four run ids at e23e374e, Threads 0/0, E2E (implementer) with the three commands and both negative controls, E2E (tester) pending, Production pending human merge, Fast-follow none, Chain not stacked; Thermo line omitted (docs-only diff, no runtime code, ce-simplify-code does not apply).",
+  "proof": [
+    {
+      "command": "legion gh -- api repos/sjawhar/legion-smoke/contents/smoke/stage4b-legsmoke-366.md?ref=e23e374e3bd3d4861deefb1ff254ea0b7288b5e9 -q .content | base64 -d | od -c",
+      "criterion": 1,
+      "head": "e23e374e3bd3d4861deefb1ff254ea0b7288b5e9",
+      "negativeControl": "legion gh -- api repos/sjawhar/legion-smoke/contents/smoke/stage4b-legsmoke-366.md?ref=main -i → HTTP/2.0 404 Not Found, body {\"message\":\"Not Found\",\"status\":\"404\"}: the file does not exist on main before merge.",
+      "observed": "Exactly `Stage 4b workflow proof: LEGSMOKE-366.` followed by one newline; od -c ends at offset 0000047 (39 bytes), no other bytes.",
+      "surface": "GitHub pull request https://github.com/sjawhar/legion-smoke/pull/475 in sjawhar/legion-smoke (production-like sandbox repository), via `legion gh --`"
+    },
+    {
+      "command": "legion gh -- pr diff 475 --repo sjawhar/legion-smoke --name-only",
+      "criterion": 1,
+      "head": "e23e374e3bd3d4861deefb1ff254ea0b7288b5e9",
+      "negativeControl": "`jj -R \"$LEGION_WORKSPACE\" diff --summary -r e23e374e` on the code commit alone prints only `A smoke/stage4b-legsmoke-366.md`; the `.legion/plan.json` path belongs to the planner's commit 4943bf02, not to the code change.",
+      "observed": "Two paths: `.legion/plan.json` and `smoke/stage4b-legsmoke-366.md` — the smoke file plus the planner's Legion handoff only; no other repository file. The exact one-path check is evaluated by the reviewer at the `.legion/`-deleted head per plan risk 3.",
+      "surface": "GitHub pull request https://github.com/sjawhar/legion-smoke/pull/475, via `legion gh --`"
+    },
+    {
+      "command": "legion gh -- pr view 475 --repo sjawhar/legion-smoke --json statusCheckRollup -q '.statusCheckRollup[] | [.workflowName, .name, .status, .conclusion, .detailsUrl] | @tsv'",
+      "criterion": 2,
+      "head": "e23e374e3bd3d4861deefb1ff254ea0b7288b5e9",
+      "negativeControl": ".github/workflows/fail-on-demand.yml source: job gate runs `if [ -f .fail-me ]; then exit 1; else exit 0; fi` after checkout, so its only red path is a `.fail-me` file at the repository root; `jj -R \"$LEGION_WORKSPACE\" file list -r @- .fail-me` on the branch prints nothing (jj warns `No matching entries for paths: .fail-me`).",
+      "observed": "ci/check COMPLETED SUCCESS (runs 36788864659 pull_request, 36788788754 push); fail-on-demand/gate COMPLETED SUCCESS (runs 36788864652 pull_request, 36788788796 push). `legion gh -- run list --repo sjawhar/legion-smoke --commit e23e374e3bd3d4861deefb1ff254ea0b7288b5e9 --json databaseId,name,event,conclusion,headSha` lists the same four runs, all conclusion success at that headSha.",
+      "surface": "GitHub Actions on the PR head, via `legion gh --`"
+    }
+  ],
+  "schemaVersion": 1,
+  "summary": "Added smoke/stage4b-legsmoke-366.md holding the single line `Stage 4b workflow proof: LEGSMOKE-366.` plus one newline (39 bytes), committed alone as e23e374e `smoke: add Stage 4b workflow proof for LEGSMOKE-366` on legion/LEGSMOKE-366, pushed with `legion push`, and opened PR #475 against main of sjawhar/legion-smoke with the READY-format body. Proved criteria 1 and 2 on the GitHub PR at head e23e374e via `legion gh --`; the `.legion/` handoff paths appear in the PR diff until the reviewer-directed deletion, as the plan's risk note states."
+}
