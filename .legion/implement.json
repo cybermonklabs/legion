@@ -1,0 +1,44 @@
+{
+  "baseCommit": "24db05290851a09b626d9d509e552d75e5e16704",
+  "branch": "legion/LEGSMOKE-349",
+  "ciNote": "The `ci` and `fail-on-demand` workflows run on push; run ids are recorded in the PR body CI line once the PR is open. A red check is re-run with `legion gh -- run rerun \u003crun-id\u003e --failed`, never repaired by a new commit.",
+  "commits": [
+    {
+      "author": "legion-implementer[bot]",
+      "files": [
+        "smoke/LEGSMOKE-349.md"
+      ],
+      "message": "smoke: add LEGSMOKE-349 marker file",
+      "sha": "2be8af08a3c59c2068d29703aaee8d8a5f1075cb"
+    }
+  ],
+  "completed": "2026-09-30T16:23:49.723082538Z",
+  "deviations": [
+    "Proof command adapted from process substitution to a temp file because `\u003c(…)` is not seekable under gVisor; the comparison is byte-identical in effect."
+  ],
+  "filesChanged": [
+    "smoke/LEGSMOKE-349.md"
+  ],
+  "issue": "LEGSMOKE-349",
+  "localChecks": "Repository has no lint, type, or unit lanes (no package manifest, no test harness; only the two GitHub Actions workflows `ci` and `fail-on-demand`). Local verification: `wc -c` = 56, `wc -l` = 1, `cmp` against `printf 'LEGSMOKE-349: Stage 4b proof tree 1: the whole workflow\\n'` OK, `jj diff --summary` listed only `A smoke/LEGSMOKE-349.md`.",
+  "phase": "implement",
+  "precondition": "spec Errors row `file already exists on the default branch` not triggered: `test ! -e smoke/LEGSMOKE-349.md` passed locally at main@origin 24db0529, and the GitHub contents API returned HTTP 404 for smoke/LEGSMOKE-349.md?ref=main.",
+  "proof": [
+    {
+      "command": "printf 'LEGSMOKE-349: Stage 4b proof tree 1: the whole workflow\\n' \u003e /tmp/legsmoke-349-expected \u0026\u0026 legion gh -- api 'repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-349.md?ref=2be8af08a3c59c2068d29703aaee8d8a5f1075cb' --jq .content | base64 -d \u003e /tmp/legsmoke-349-remote \u0026\u0026 wc -c /tmp/legsmoke-349-remote \u0026\u0026 wc -l /tmp/legsmoke-349-remote \u0026\u0026 cmp /tmp/legsmoke-349-remote /tmp/legsmoke-349-expected \u0026\u0026 echo MATCH",
+      "criterion": 1,
+      "head": "2be8af08a3c59c2068d29703aaee8d8a5f1075cb",
+      "negativeControl": "legion gh -- api 'repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-349.md?ref=main' → {\"message\":\"Not Found\",\"status\":\"404\"}, gh exit 1 (file absent on the default branch before the merge; proves the positive read reached the branch, not a cached or local copy)",
+      "note": "The plan's `cmp - \u003c(printf …)` process-substitution form fails in this sandbox (gVisor: `cmp: /dev/fd/N: Illegal seek`); the expected bytes were written to a temp file and compared with a plain `cmp`, an equivalent byte-for-byte check.",
+      "observed": "56 bytes, 1 line, content `LEGSMOKE-349: Stage 4b proof tree 1: the whole workflow`, cmp exit 0, printed MATCH",
+      "surface": "GitHub repository sjawhar/legion-smoke read through the GitHub REST contents API via `legion gh -- api` at the pushed code SHA (the real remote every reader uses; not the local working copy)"
+    }
+  ],
+  "pullRequest": "opened after the handoff push; number and URL recorded in the handoff_complete summary and the PR body carries `Dispatch: LEGSMOKE-349`",
+  "repository": "sjawhar/legion-smoke",
+  "schemaVersion": 1,
+  "summary": "Added smoke/LEGSMOKE-349.md holding exactly `LEGSMOKE-349: Stage 4b proof tree 1: the whole workflow` (newline-terminated, 56 bytes, 1 line; sha256 c38cfc3ca0e8973f2ed0357c5668a35b3e1248de40c293f09aa808b88e109c26). No other tracked file changed; .fail-me not created; .github/workflows untouched.",
+  "tasksCompleted": [
+    "T1"
+  ]
+}

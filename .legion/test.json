@@ -1,0 +1,60 @@
+{
+  "acceptance3": "not triggered: no reviewer REQUEST_CHANGES asking for a second line exists at this round; re-run T2 at the new head (expect wc -l = 2) if one lands.",
+  "branch": "legion/LEGSMOKE-349",
+  "checks": {
+    "ci": {
+      "conclusion": "success",
+      "pull_request": 36744035067,
+      "push": 36743908348
+    },
+    "fail-on-demand": {
+      "conclusion": "success",
+      "pull_request": 36744035219,
+      "push": 36743908766
+    },
+    "head": "69b595b85ab57d919fc22b58529c03b47d9bc5ee"
+  },
+  "codeCommit": "2be8af08a3c59c2068d29703aaee8d8a5f1075cb",
+  "completed": "2026-09-30T16:28:54.063703699Z",
+  "diffScope": [
+    "smoke/LEGSMOKE-349.md",
+    ".legion/plan.json",
+    ".legion/implement.json"
+  ],
+  "failed": 0,
+  "failures": [],
+  "head": "69b595b85ab57d919fc22b58529c03b47d9bc5ee",
+  "implementerProof": {
+    "how": "Re-ran the implementer's exact command at the SHA its E2E line and .legion/implement.json proof name: `legion gh -- api 'repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-349.md?ref=2be8af08a3c59c2068d29703aaee8d8a5f1075cb' --jq .content | base64 -d \u003e /tmp/legsmoke-349-impl-remote \u0026\u0026 wc -c \u0026\u0026 wc -l \u0026\u0026 cmp /tmp/legsmoke-349-impl-remote \u003cexpected\u003e` → 56 bytes, 1 line, cmp exit 0, MATCH. Its negative control (`?ref=main` → 404) was re-run independently and reproduced: {\"message\":\"Not Found\",\"status\":\"404\"}, gh exit 1. Its CI run ids (36743908348, 36744035067, 36743908766, 36744035219) match `legion gh -- run list --commit 69b595b8…` exactly, all success.",
+    "verdict": "verified"
+  },
+  "issue": "LEGSMOKE-349",
+  "localChecks": "Repository has no lint, type, or unit lanes (no package manifest, no test harness; only the `ci` and `fail-on-demand` GitHub Actions workflows, both green at the head). Nothing to run locally before the handoff push.",
+  "phase": "test",
+  "prBody": "E2E (tester) line written on PR #468 after the handoff push; E2E (implementer) line present and its command reproduced.",
+  "proof": [
+    {
+      "command": "head=$(legion gh -- pr view 468 --repo sjawhar/legion-smoke --json headRefOid --jq .headRefOid) \u0026\u0026 printf 'LEGSMOKE-349: Stage 4b proof tree 1: the whole workflow\\n' \u003e /tmp/legsmoke-349-tester-expected \u0026\u0026 legion gh -- api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-349.md?ref=$head\" --jq .content | base64 -d \u003e /tmp/legsmoke-349-tester-remote \u0026\u0026 wc -c /tmp/legsmoke-349-tester-remote \u0026\u0026 wc -l /tmp/legsmoke-349-tester-remote \u0026\u0026 cmp /tmp/legsmoke-349-tester-remote /tmp/legsmoke-349-tester-expected \u0026\u0026 echo MATCH",
+      "criterion": 1,
+      "head": "69b595b85ab57d919fc22b58529c03b47d9bc5ee",
+      "negativeControl": "`legion gh -- api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-350.md?ref=$head\"` → {\"message\":\"Not Found\",\"status\":\"404\"}, gh exit 1 (a sibling name the change must not create); `legion gh -- api \"repos/sjawhar/legion-smoke/contents/.fail-me?ref=$head\"` → 404, gh exit 1 (the input that would turn fail-on-demand red is absent); `legion gh -- api 'repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-349.md?ref=main'` → 404, gh exit 1 (absent on the default branch before the merge, so the positive read reached this branch and not a cached or local copy)",
+      "note": "The plan's `cmp - \u003c(printf …)` process-substitution form is not seekable under gVisor (`cmp: /dev/fd/N: Illegal seek`), so the expected bytes were written to a temp file and compared with plain `cmp`; byte-for-byte equivalent.",
+      "observed": "HEAD=69b595b85ab57d919fc22b58529c03b47d9bc5ee; 56 bytes, 1 line, content `LEGSMOKE-349: Stage 4b proof tree 1: the whole workflow`, cmp exit 0, printed MATCH. https://github.com/sjawhar/legion-smoke/blob/69b595b85ab57d919fc22b58529c03b47d9bc5ee/smoke/LEGSMOKE-349.md",
+      "surface": "GitHub repository sjawhar/legion-smoke read through the GitHub REST contents API via `legion gh -- api` at the PR head (the real remote every reader uses; not the local working copy)"
+    },
+    {
+      "command": "legion gh -- pr diff 468 --repo sjawhar/legion-smoke --name-only \u0026\u0026 legion gh -- pr checks 468 --repo sjawhar/legion-smoke \u0026\u0026 legion gh -- run list --repo sjawhar/legion-smoke --commit 69b595b85ab57d919fc22b58529c03b47d9bc5ee --json databaseId,name,conclusion,event,headSha",
+      "criterion": 2,
+      "head": "69b595b85ab57d919fc22b58529c03b47d9bc5ee",
+      "negativeControl": "`.fail-me` absent at the head (contents API 404 above) — the one input that turns the fail-on-demand gate red is not present, so the green gate reflects the branch and not a disabled check.",
+      "observed": "pr diff --name-only: .legion/implement.json, .legion/plan.json, smoke/LEGSMOKE-349.md — nothing else. pr checks: check pass (run 36743908348 push, run 36744035067 pull_request), gate pass (run 36743908766 push, run 36744035219 pull_request). run list at the head: ci success ×2, fail-on-demand success ×2, all headSha 69b595b85ab57d919fc22b58529c03b47d9bc5ee. Reviewer approval and human merge are later gates and not the tester's to record.",
+      "surface": "the GitHub pull request via `legion gh -- pr checks` / `pr diff` / `run list` (checks and diff as GitHub records them)"
+    }
+  ],
+  "pullRequest": 468,
+  "regressionTests": "none written: the change is a one-line Markdown marker with no behaviour a test would defend, and the repository has no test harness (plan requiredSkills.test).",
+  "repository": "sjawhar/legion-smoke",
+  "round": 0,
+  "schemaVersion": 1,
+  "summary": "PR #468 head 69b595b85ab57d919fc22b58529c03b47d9bc5ee verified on GitHub: smoke/LEGSMOKE-349.md read through the contents API is exactly `LEGSMOKE-349: Stage 4b proof tree 1: the whole workflow` (56 bytes, 1 line, cmp exit 0); the PR diff is that file plus .legion/plan.json and .legion/implement.json only; ci and fail-on-demand are green on both the push and pull_request runs at the head. The implementer's proof was re-run at the head it named (2be8af08) and matched. No failures."
+}
