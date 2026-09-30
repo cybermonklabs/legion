@@ -1,0 +1,61 @@
+{
+  "ci": {
+    "headSha": "aaad456aaec887a007ea854eb7b4c91988ca6c66",
+    "runs": [
+      {
+        "conclusion": "success",
+        "job": "check",
+        "runId": 36723138413,
+        "workflow": "ci"
+      },
+      {
+        "conclusion": "success",
+        "job": "gate",
+        "runId": 36723138390,
+        "workflow": "fail-on-demand"
+      }
+    ]
+  },
+  "commits": [
+    {
+      "message": "smoke: add smoke/LEGSMOKE-339.md (Stage 4b proof tree 1)",
+      "sha": "aaad456aaec887a007ea854eb7b4c91988ca6c66"
+    }
+  ],
+  "completed": "2026-09-30T13:39:43.309029179Z",
+  "deviations": "none from .legion/plan.json T1-T4",
+  "filesChanged": [
+    "smoke/LEGSMOKE-339.md"
+  ],
+  "openQuestions": [],
+  "phase": "implement",
+  "preCheck": {
+    "command": "legion gh -- api -H \"Accept: application/vnd.github.raw\" \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-339.md?ref=main\"",
+    "observed": "HTTP 404 (target absent on main before the change)",
+    "task": "T1 (spec Errors row 1)"
+  },
+  "proof": [
+    {
+      "command": "legion gh -- api -H \"Accept: application/vnd.github.raw\" \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-339.md?ref=aaad456aaec887a007ea854eb7b4c91988ca6c66\"; the same piped to wc -l; and in the workspace: wc -l smoke/LEGSMOKE-339.md \u0026\u0026 cat smoke/LEGSMOKE-339.md",
+      "criterion": "AC1: smoke/LEGSMOKE-339.md exists with exactly one line containing LEGSMOKE-339",
+      "headSha": "aaad456aaec887a007ea854eb7b4c91988ca6c66",
+      "negativeControl": "legion gh -- api -H \"Accept: application/vnd.github.raw\" \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-339-missing.md?ref=aaad456aaec887a007ea854eb7b4c91988ca6c66\" -\u003e {\"message\":\"Not Found\",\"status\":\"404\"} gh: Not Found (HTTP 404), exit 1",
+      "observed": "API printed 'LEGSMOKE-339: Stage 4b proof tree 1: the whole workflow'; piped to wc -l printed 1; workspace wc -l printed '1 smoke/LEGSMOKE-339.md' and cat printed the same line",
+      "surface": "GitHub Contents API on sjawhar/legion-smoke (private), authenticated via legion gh; plus the shared jj workspace checkout"
+    },
+    {
+      "command": "legion gh -- api \"repos/sjawhar/legion-smoke/compare/main...aaad456aaec887a007ea854eb7b4c91988ca6c66\" --jq '.files[].filename'; and the exclusion filter: --jq '[.files[].filename | select((. == \"smoke/LEGSMOKE-339.md\" or startswith(\".legion/\")) | not)] | length'",
+      "criterion": "AC2: the pull request changes no file other than smoke/LEGSMOKE-339.md (allowed extras: .legion/ handoffs until their deletion; docs/solutions/ after retro)",
+      "headSha": "aaad456aaec887a007ea854eb7b4c91988ca6c66",
+      "negativeControl": "legion gh -- api \"repos/sjawhar/legion-smoke/compare/main...legion-LEGSMOKE-339-does-not-exist\" -\u003e {\"message\":\"Not Found\",\"status\":\"404\"} gh: Not Found (HTTP 404), exit 1 (a bad ref fails loudly; the check is not a vacuous empty list)",
+      "observed": "filenames: .legion/plan.json, smoke/LEGSMOKE-339.md (only the smoke file plus the allowed .legion/ handoff); exclusion filter printed 0",
+      "surface": "GitHub compare API on sjawhar/legion-smoke, authenticated via legion gh (main...head; the PR's changed-files list once the PR exists)"
+    }
+  ],
+  "proofHeadNote": "headSha is the code commit aaad456a. The implement handoff commit above it changes nothing under smoke/, so the PR head differs from the proof head only by .legion/implement.json.",
+  "schemaVersion": 1,
+  "trickyParts": [
+    "trailing newline required for wc -l == 1 (wc -l counts newlines; the write tool writes content verbatim, so the newline was included explicitly and checked with wc -l before the split)",
+    "docs-only diff: no ce-simplify-code pass and no thermonuclear pair; the Thermo line is omitted from the PR body"
+  ]
+}

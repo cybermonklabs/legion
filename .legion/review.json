@@ -1,0 +1,77 @@
+{
+  "blocking": 0,
+  "codeHead": "304b3384613a2199545c0f55572cd9d4924e3899",
+  "completed": "2026-09-30T13:50:22.345513558Z",
+  "decision": "APPROVE, submitted after this handoff's push as legion-reviewer[bot] via legion gh -- api POST repos/sjawhar/legion-smoke/pulls/460/reviews, commit_id = the head this handoff push creates, once read_record shows checksVerdict green at that head (Go daemon: APPROVE on a clean head that still carries .legion/).",
+  "fastFollow": "none",
+  "findings": [],
+  "forgeFacts": {
+    "ac3": "not requested: the optional extra-line round was not exercised",
+    "ci": {
+      "atReviewedHead": "no runs at d2c0729c: the tester's test.json-only push carries legion push's skip-checks: true trailer by design; the daemon record carries checksVerdict green to it",
+      "headWithRuns": "304b3384613a2199545c0f55572cd9d4924e3899",
+      "runs": [
+        {
+          "conclusion": "success",
+          "event": "push",
+          "job": "check",
+          "runId": 36723289949,
+          "workflow": "ci"
+        },
+        {
+          "conclusion": "success",
+          "event": "push",
+          "job": "gate",
+          "runId": 36723289944,
+          "workflow": "fail-on-demand"
+        },
+        {
+          "conclusion": "success",
+          "event": "pull_request",
+          "job": "check",
+          "runId": 36723425978,
+          "workflow": "ci"
+        },
+        {
+          "conclusion": "success",
+          "event": "pull_request",
+          "job": "gate",
+          "runId": 36723425785,
+          "workflow": "fail-on-demand"
+        }
+      ]
+    },
+    "commitIdentity": "aaad456a and 304b3384 authored+committed by legion-implementer[bot]; 9bcf357e and d2c0729c by legion-reviewer[bot]; no GitHub bracket CI keyword in any description; skip-checks: true trailers only on the plan and test handoff commits (added by legion push)",
+    "contractChangeCensus": "not required: docs-only diff adds one Markdown line and workflow handoffs; no refusal, required field, removed/renamed field, or signature at any process or package boundary",
+    "e2e": {
+      "implementer": "present: Contents API + compare API surface, commands, observed line and filter 0, head aaad456a (PR head 304b3384 differs only by .legion/implement.json), two negative controls (404 on -missing.md; 404 on a bad compare ref)",
+      "reviewerRecheck": "at d2c0729c: Contents API printed the line (wc -l 1); workspace od -c shows one trailing newline; -missing.md -\u003e HTTP 404 exit 1; jj diff main@origin..@- --summary = A .legion/implement.json, A .legion/plan.json, A .legion/test.json, A smoke/LEGSMOKE-339.md",
+      "tester": "present: Contents API + pr view --json files + workspace checkout, head 304b3384, observed line/wc -l 1/od -c one newline, exclusion filter 0, two negative controls (404), verified the implementer's proof by re-running its commands at aaad456a"
+    },
+    "prBody": "Dispatch: LEGSMOKE-339 present; CI line cites the four run ids at 304b3384; Threads 0/0; Thermo line omitted (docs-only, per references/pr-body.md); E2E (implementer) and E2E (tester) each with negative control; Production: pending merge; Fast-follow: none; Chain: not stacked",
+    "threads": {
+      "query": "api graphql reviewThreads(first:100) at headRefOid d2c0729c: nodes [], reviews nodes []",
+      "reviews": 0,
+      "total": 0,
+      "unresolved": 0
+    },
+    "verifiedAgainst": "GitHub directly via legion gh (pr view --json, api graphql reviewThreads, run list --commit, Contents API), never from a handoff"
+  },
+  "major": 0,
+  "minor": 0,
+  "nextForArchitect": "Under the Go daemon there is no .legion/ deletion step before Stage 7; the APPROVE of the handoff-push head is the round's decision. Retro then commits docs/solutions/ on top; the merger publishes READY; a human merges; the implementer runs AC4 (Production line) after the merge.",
+  "phase": "review",
+  "pullRequest": 460,
+  "repo": "sjawhar/legion-smoke",
+  "reviewedHead": "d2c0729c1a5e9df21cecb92c4666f8aa2773054d",
+  "round": 1,
+  "schemaVersion": 1,
+  "thermo": {
+    "codeQuality": "Sound — no findings; smoke/LEGSMOKE-339.md matches siblings smoke/LEGSMOKE-327.md and LEGSMOKE-331.md byte-for-byte except the ticket id",
+    "deepReview": "No actionable findings — 4 added files / 308 insertions / 0 deletions; AC1 and AC2 satisfied; .legion/*.json valid JSON, secret scan clean; no CI-skip bracket keyword in any commit; commit identities match",
+    "ran": true,
+    "simplifyPass": "none: docs-only diff, no runtime code (references/pr-body.md)",
+    "why": "docs-only diff would normally get no pair; run at the human proof driver's instruction (Dispatch message ab59f016 on LEGSMOKE-339) as task subagents at d2c0729c"
+  },
+  "verdict": "approved"
+}
