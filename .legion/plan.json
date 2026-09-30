@@ -1,0 +1,85 @@
+{
+  "acceptance": [
+    {
+      "builtByThisIssue": true,
+      "command": "On merged main: jj -R \"$LEGION_WORKSPACE\" file show -r main smoke/S392193540-1.md  (or cat smoke/S392193540-1.md after fetching main) — first line reads 'S392193540-1 — Primary durable workflow profile'. Negative control: the file is absent on the pre-merge base of main.",
+      "criterion": "A new Markdown file named for the root issue exists under smoke/ holding one line that names the issue (parent spec acceptance 1).",
+      "id": "A1",
+      "surface": "The file smoke/S392193540-1.md on the merged main branch."
+    },
+    {
+      "builtByThisIssue": true,
+      "command": "legion gh -- pr view \u003cpr\u003e --json reviewThreads (thread resolved) AND cat smoke/S392193540-1.md shows the appended second line. If no review asks, this line is vacuously satisfied.",
+      "criterion": "If the PR review asks for it, exactly one more line is appended to the same file and the requesting thread is resolved (parent spec acceptance 2). Conditional: only if a review round requests it.",
+      "id": "A2",
+      "surface": "The PR review thread on GitHub plus the file content on the branch head / merged main."
+    },
+    {
+      "builtByThisIssue": true,
+      "command": "dispatch_read({issue:'S392193540-5'}) shows Status: done after the merge gate completes. The daemon owns this transition; no worker sets it by hand.",
+      "criterion": "This adopted leaf delivers its outcome and closes; its Dispatch status reaches done (parent spec acceptance 3).",
+      "id": "A3",
+      "surface": "Dispatch issue S392193540-5 lifecycle status."
+    }
+  ],
+  "approach": "Deliver the root's one-file smoke change through this adopted leaf (S392193540-5): create exactly one new Markdown file, smoke/S392193540-1.md, whose first line names the root issue. This follows the established smoke-proof convention in this repo (smoke/S394570180-1.md first line 'S394570180-1 — Primary durable workflow profile', with later lines appended one per review round). No logic, build, or CI changes: the repo has no AGENTS.md and .github/workflows/ci.yml is a 20s no-op, so the production-like surface for every acceptance line is the file as it exists on the merged main branch (read via jj/git) plus the green CI check on the PR. Alternatives weighed and rejected: (a) naming the file for the child key S392193540-5 — rejected, the approved parent spec design names the file smoke/S392193540-1.md and its acceptance reads a file naming issue S392193540-1; (b) editing README.md/SMOKE.md/smoke.md instead of a new file — rejected, the human scoped the work to exactly one NEW file under smoke/.",
+  "completed": "2026-09-30T14:49:30.276152754Z",
+  "files": [
+    {
+      "change": "new",
+      "detail": "One Markdown line naming the root issue; second line appended only if a review round asks.",
+      "path": "smoke/S392193540-1.md"
+    }
+  ],
+  "phase": "plan",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: this repo has no AGENTS.md and no domain-specific skills for a one-line Markdown addition; the implementer follows skill://legion-worker (open PR, push) and skill://legion-worker/references/pr-body.md to record the E2E proof against the merged-main surface, since that is the only surface reaching acceptance A1."
+    ],
+    "review": [
+      "legion-worker: no repository review skill exists; the reviewer follows skill://legion-worker/references/review-threads.md and references/merge-gate.md to dispose of any review thread (including the optional single appended-line request of A2) and approve the exact head, since thread discipline is the only review contract for this change."
+    ],
+    "test": [
+      "legion-worker: no domain test skill exists (CI is a 20s no-op and there is no test suite); the tester follows skill://legion-worker/references/pr-body.md to verify the tester E2E proof — the file present on merged main with the naming line, plus green CI — because reading the merged file is the only proof surface for A1/A2."
+    ]
+  },
+  "risks": [
+    {
+      "mitigation": "Verified none exists today (ls smoke/S392193540* → no match); implementer re-checks and reports collision to architect rather than overwriting (parent spec Errors).",
+      "risk": "Filename collision with an existing smoke/ file."
+    },
+    {
+      "mitigation": "Bounded by A2/T3: only one appended line is in scope; anything more is escalated to the architect, per parent spec Errors.",
+      "risk": "Scope creep from a review asking for more than one appended line."
+    }
+  ],
+  "schemaVersion": 1,
+  "summary": "Plan the one-file smoke change delivered by this adopted leaf.",
+  "tasks": [
+    {
+      "desc": "Create smoke/S392193540-1.md with a single line naming the root issue: 'S392193540-1 — Primary durable workflow profile'. Do not overwrite: the file does not exist today (verified via ls smoke/). If a file of that name already exists, stop and report the collision to the architect (parent spec Errors table).",
+      "files": [
+        "smoke/S392193540-1.md"
+      ],
+      "id": "T1",
+      "phase": "implement"
+    },
+    {
+      "desc": "Open the PR whose body carries the line 'Dispatch: S392193540-5' and records the implementer E2E proof (the file present on the branch head), per skill://legion-worker/references/pr-body.md.",
+      "files": [
+        "smoke/S392193540-1.md"
+      ],
+      "id": "T2",
+      "phase": "implement"
+    },
+    {
+      "desc": "If and only if the reviewer asks for it, append exactly ONE more line to smoke/S392193540-1.md (e.g. 'Stage 3 review round 1 (S392193540)'), resolve that review thread, and push. Any request beyond one appended line is out of scope: escalate to the architect (parent spec Errors table). Do not pre-emptively add review lines.",
+      "files": [
+        "smoke/S392193540-1.md"
+      ],
+      "id": "T3",
+      "phase": "implement"
+    }
+  ],
+  "testing": "A1: read smoke/S392193540-1.md on merged main; naming line present (negative control: absent on base). A2 (conditional): review thread resolved and second line present, else vacuous. A3: Dispatch status of S392193540-5 reaches done. No unit tests: there is no code path; the surface is the merged file and CI green."
+}
