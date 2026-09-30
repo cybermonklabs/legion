@@ -1,0 +1,62 @@
+{
+  "baseRefOid": "6021e9ddb55bf42ea1ddd52d5b16f56efa7d1868",
+  "branch": "legion/LEGSMOKE-362",
+  "codeCommit": "15195ac42bd1461c0efd0c61f8c05b2b01dd3541",
+  "completed": "2026-09-30T21:30:49.191213868Z",
+  "failed": 0,
+  "failures": [],
+  "headSha": "9c868de6d758688b42e7ce17b9e5d7c93e9ea5fa",
+  "implementerProof": {
+    "how": "Re-ran the implementer's three proof commands from .legion/implement.json at its head 15195ac42bd1461c0efd0c61f8c05b2b01dd3541 through `legion gh --`: the contents read printed exactly one line `Stage 4b workflow proof: LEGSMOKE-362.` (od -c shows a single trailing newline); `pr view 473 --json headRefOid,statusCheckRollup,reviewDecision` showed ci/check SUCCESS and fail-on-demand/gate SUCCESS with reviewDecision empty; `run list --commit 15195ac4…` listed runs 36779180749, 36779180742, 36779144636, 36779144624 all success; `pulls/473/reviews` length 0; the filtered file list was [\"smoke/stage4b-legsmoke-362.md\"]; local `jj diff --from main@origin --to @- --summary` showed A .legion/implement.json, A .legion/plan.json, A smoke/stage4b-legsmoke-362.md. Every observation matched the implementer's recorded values.",
+    "verdict": "verified"
+  },
+  "issue": "LEGSMOKE-362",
+  "localChecks": "sjawhar/legion-smoke has no lint, typecheck, or unit lanes (plan repositoryNorms); the only local checks are the file's byte count (39) and git blob hash, both recorded in proof[0]. No red tests written: the repository has no test harness and the spec forbids changes outside the smoke file.",
+  "notExercised": [
+    "Criterion 4 (conditional second line): no reviewer request exists; nothing to test.",
+    "Criterion 2's review half (reviewDecision APPROVED): not observable before the reviewer's APPROVE of the .legion/-free head; actual value recorded as empty string, reviews length 0."
+  ],
+  "observations": [
+    "Docs-only diff: no ce-simplify-code pass and no thermonuclear pair apply; the PR body carries no Thermo line, consistent with pr-body.md.",
+    "The test handoff push touches only .legion/test.json, so `legion push` should skip CI and the PR head moves past 9c868de6 without a new workflow run; the E2E (tester) line keeps the SHA the proof ran on.",
+    "Author/committer check on `main@origin..@`: plan handoff by legion-reviewer[bot], code commit and implement handoff by legion-implementer[bot], working copy by legion-reviewer[bot]; no committer rewrite observed."
+  ],
+  "passed": 3,
+  "phase": "test",
+  "pr": 473,
+  "prBodyUpdated": "E2E (tester) line replaced `pending tester.` at head 9c868de6d758688b42e7ce17b9e5d7c93e9ea5fa via `legion gh -- pr edit 473 --body-file`.",
+  "prUrl": "https://github.com/sjawhar/legion-smoke/pull/473",
+  "proof": [
+    {
+      "command": "legion gh -- api \"repos/sjawhar/legion-smoke/contents/smoke/stage4b-legsmoke-362.md?ref=9c868de6d758688b42e7ce17b9e5d7c93e9ea5fa\" --jq '{size, sha, path}'; legion gh -- api \"repos/sjawhar/legion-smoke/contents/smoke/stage4b-legsmoke-362.md?ref=9c868de6d758688b42e7ce17b9e5d7c93e9ea5fa\" --jq .content | base64 -d | wc -l; printf 'blob %d\\0' \"$(wc -c \u003c smoke/stage4b-legsmoke-362.md)\" | cat - smoke/stage4b-legsmoke-362.md | sha1sum",
+      "criterion": 1,
+      "headSha": "9c868de6d758688b42e7ce17b9e5d7c93e9ea5fa",
+      "link": "https://api.github.com/repos/sjawhar/legion-smoke/contents/smoke/stage4b-legsmoke-362.md?ref=9c868de6d758688b42e7ce17b9e5d7c93e9ea5fa",
+      "negativeControl": "`legion gh -- api \"repos/sjawhar/legion-smoke/contents/smoke/stage4b-legsmoke-362.md?ref=main\"` -\u003e HTTP 404 Not Found; the same read with `?ref=6021e9ddb55bf42ea1ddd52d5b16f56efa7d1868` (the PR's base commit) -\u003e HTTP 404 Not Found (the file exists only on the branch)",
+      "observed": "size 39, blob sha db28ec3c828db2a671d953463f45ddb4bdd526ed, path smoke/stage4b-legsmoke-362.md; wc -l printed 1 and the line is `Stage 4b workflow proof: LEGSMOKE-362.`; the git blob hash of the workspace file is db28ec3c828db2a671d953463f45ddb4bdd526ed, byte-identical to what GitHub serves at the head",
+      "surface": "GitHub REST contents endpoint on sjawhar/legion-smoke through `legion gh -- api`, read at the current PR head"
+    },
+    {
+      "command": "legion gh -- api \"repos/sjawhar/legion-smoke/commits/9c868de6d758688b42e7ce17b9e5d7c93e9ea5fa/check-runs\" --jq '[.check_runs[] | .name + \":\" + .conclusion] | sort'; legion gh -- run list --repo sjawhar/legion-smoke --commit 9c868de6d758688b42e7ce17b9e5d7c93e9ea5fa --json databaseId,name,conclusion,event; legion gh -- pr view 473 --repo sjawhar/legion-smoke --json reviewDecision --jq .reviewDecision; legion gh -- api repos/sjawhar/legion-smoke/pulls/473/reviews --jq length",
+      "criterion": 2,
+      "headSha": "9c868de6d758688b42e7ce17b9e5d7c93e9ea5fa",
+      "link": "https://github.com/sjawhar/legion-smoke/pull/473/checks",
+      "negativeControl": "`legion gh -- api \"repos/sjawhar/legion-smoke/contents/.fail-me?ref=9c868de6d758688b42e7ce17b9e5d7c93e9ea5fa\"` -\u003e HTTP 404 (no `.fail-me` on the branch, the only input that turns `fail-on-demand` red); `legion gh -- api repos/sjawhar/legion-smoke/commits/0000000000000000000000000000000000000000/check-runs` -\u003e HTTP 422 No commit found for SHA (the query fails on a bogus head instead of reporting success)",
+      "observed": "check runs [check:success, check:success, gate:success, gate:success]; runs 36779431175 ci (pull_request), 36779431349 fail-on-demand (pull_request), 36779425901 ci (push), 36779425597 fail-on-demand (push), all success; reviewDecision is the empty string and the reviews list has length 0 — no review exists at this head, so only the checks half of criterion 2 is proven; the review half is the reviewer's APPROVE of the .legion/-free head",
+      "surface": "GitHub check-runs and workflow runs at the current PR head, and the pull request's reviews, via `legion gh -- api` and `legion gh -- run list`"
+    },
+    {
+      "command": "legion gh -- api \"repos/sjawhar/legion-smoke/compare/6021e9ddb55bf42ea1ddd52d5b16f56efa7d1868...9c868de6d758688b42e7ce17b9e5d7c93e9ea5fa\" --jq '{status, ahead_by, files: [.files[] | {filename, status, additions, deletions}]}'; cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 jj -R \"$LEGION_WORKSPACE\" diff --from main@origin --to @- --summary",
+      "criterion": 3,
+      "headSha": "9c868de6d758688b42e7ce17b9e5d7c93e9ea5fa",
+      "link": "https://github.com/sjawhar/legion-smoke/pull/473/files",
+      "negativeControl": "`legion gh -- api \"repos/sjawhar/legion-smoke/compare/main...main\" --jq '{status, files: [.files[].filename]}'` -\u003e {status: identical, files: []} (the listing is empty when nothing changed, so the three-entry listing at the head is real)",
+      "observed": "status ahead, ahead_by 3; files: .legion/implement.json added (+97), .legion/plan.json added (+309), smoke/stage4b-legsmoke-362.md added (+1/-0) — the smoke file is the only change outside the .legion/ handoffs, which the implementer deletes before the approving review; local jj summary: A .legion/implement.json, A .legion/plan.json, A smoke/stage4b-legsmoke-362.md",
+      "surface": "GitHub compare endpoint between the PR base commit and the current head, via `legion gh -- api`; jj diff locally"
+    }
+  ],
+  "redTests": [],
+  "repo": "sjawhar/legion-smoke",
+  "schemaVersion": 1,
+  "verdict": "pass"
+}

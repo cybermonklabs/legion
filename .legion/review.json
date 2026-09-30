@@ -1,0 +1,94 @@
+{
+  "branch": "legion/LEGSMOKE-362",
+  "ci": {
+    "carriedFromHead": "9c868de6d758688b42e7ce17b9e5d7c93e9ea5fa",
+    "checkRunsAtCarriedHead": [
+      "check:success",
+      "check:success",
+      "gate:success",
+      "gate:success"
+    ],
+    "daemonChecksVerdict": "green",
+    "how": "legion gh -- api repos/sjawhar/legion-smoke/commits/\u003csha\u003e/check-runs at both heads; jj log -r @- -T description showed the tester's `skip-checks: true` trailer; legion read_record showed pullRequest.head 44e2179c and checksVerdict green",
+    "reviewedHeadCheckRuns": 0,
+    "reviewedHeadSkipChecksTrailer": true,
+    "runsAtCarriedHead": [
+      36779431175,
+      36779431349,
+      36779425901,
+      36779425597
+    ]
+  },
+  "codeCommit": "15195ac42bd1461c0efd0c61f8c05b2b01dd3541",
+  "completed": "2026-09-30T21:35:24.081776625Z",
+  "contractChangeCensus": "not applicable: a marker Markdown file adds no refusal, required field, removed or renamed field, or signature change",
+  "critical": 0,
+  "decision": "APPROVE at the review-handoff head by SHA, one submission via legion gh -- api --method POST repos/sjawhar/legion-smoke/pulls/473/reviews with an empty comments array and the Legion footer",
+  "diff": {
+    "content": "Stage 4b workflow proof: LEGSMOKE-362.\n",
+    "fileBytes": 39,
+    "fileLines": 1,
+    "filesOutsideLegion": [
+      "smoke/stage4b-legsmoke-362.md"
+    ],
+    "handoffs": [
+      ".legion/implement.json",
+      ".legion/plan.json",
+      ".legion/test.json"
+    ],
+    "how": "legion gh -- pr diff 473 --name-only; od -c and wc -c on the workspace file"
+  },
+  "e2e": {
+    "how": "read from the PR body on GitHub via legion gh -- pr view 473 --json body, never from a handoff",
+    "implementer": {
+      "headSha": "15195ac42bd1461c0efd0c61f8c05b2b01dd3541",
+      "negativeControl": "contents?ref=main -\u003e 404; .fail-me -\u003e 404; bogus sha check-runs -\u003e 422; compare/main...main -\u003e identical",
+      "present": true,
+      "surface": "GitHub REST contents endpoint, pr view, run list via legion gh --"
+    },
+    "tester": {
+      "headSha": "9c868de6d758688b42e7ce17b9e5d7c93e9ea5fa",
+      "negativeControl": "contents?ref=main and ?ref=6021e9dd -\u003e 404; .fail-me -\u003e 404; bogus sha -\u003e 422; compare/main...main -\u003e identical",
+      "present": true,
+      "surface": "GitHub REST contents, check-runs, compare via legion gh --",
+      "verifiedImplementerProof": "re-ran the implementer's three commands at 15195ac4; identical output"
+    }
+  },
+  "fastFollow": "none",
+  "identity": {
+    "codeAndImplementHandoff": "legion-implementer[bot] author and committer",
+    "committerRewriteObserved": false,
+    "planHandoff": "legion-reviewer[bot] author and committer",
+    "testHandoff": "legion-reviewer[bot] author and committer"
+  },
+  "important": 0,
+  "issue": "LEGSMOKE-362",
+  "keyFindings": [],
+  "minor": 0,
+  "observations": [
+    "Under the Go daemon the clean round is APPROVE at the head the review handoff push makes, once CI settles green there (a reviewer handoff with verdict approved runs CI in full).",
+    "Criterion 2's review half (reviewDecision APPROVED) becomes observable with this round's APPROVE.",
+    "Criterion 4 (conditional second line) is not exercised: the proof driver directed APPROVE, so no change request is opened.",
+    "Plan concern about retro's docs/solutions/ commit versus acceptance 3 is the architect's ruling; it does not gate this review."
+  ],
+  "phase": "review",
+  "pr": 473,
+  "prUrl": "https://github.com/sjawhar/legion-smoke/pull/473",
+  "repo": "sjawhar/legion-smoke",
+  "reviewedHead": "44e2179c0b0e157853c0b42fb1571286dda2f741",
+  "round": 1,
+  "schemaVersion": 1,
+  "thermo": {
+    "codeQuality": "no findings; runtime code touched: false; file matches sibling convention (358, 310) byte-for-byte modulo the issue number",
+    "deepReview": "no findings; runtime code touched: false; workflow changed: false; .fail-me added: false",
+    "head": "44e2179c0b0e157853c0b42fb1571286dda2f741",
+    "ran": true,
+    "reason": "docs-only diff would get none per merge-gate.md; the Stage 4b proof driver's targeted Dispatch message directed both passes as task subagents"
+  },
+  "threads": {
+    "how": "legion gh -- api graphql reviewThreads(first:100) totalCount 0; pulls/473/reviews length 0",
+    "total": 0,
+    "unresolved": 0
+  },
+  "verdict": "approved"
+}
