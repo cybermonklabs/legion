@@ -1,0 +1,88 @@
+{
+  "ci": {
+    "command": "legion gh -- pr checks 449 --repo sjawhar/legion-smoke",
+    "headSha": "8bb362cf2f45df5aa5c4f3b7804bf1549e3ba7f0",
+    "runs": [
+      {
+        "conclusion": "success",
+        "event": "pull_request",
+        "job": "check",
+        "runId": 36689585969,
+        "workflow": "ci"
+      },
+      {
+        "conclusion": "success",
+        "event": "pull_request",
+        "job": "gate",
+        "runId": 36689585980,
+        "workflow": "fail-on-demand"
+      },
+      {
+        "conclusion": "success",
+        "event": "push",
+        "job": "check",
+        "runId": 36689518221,
+        "workflow": "ci"
+      },
+      {
+        "conclusion": "success",
+        "event": "push",
+        "job": "gate",
+        "runId": 36689518068,
+        "workflow": "fail-on-demand"
+      }
+    ]
+  },
+  "commits": [
+    {
+      "files": [
+        "smoke/LEGSMOKE-327.md"
+      ],
+      "message": "smoke: add LEGSMOKE-327 Stage 4b proof marker",
+      "sha": "8bb362cf2f45df5aa5c4f3b7804bf1549e3ba7f0"
+    }
+  ],
+  "completed": "2026-09-30T08:26:40.140475466Z",
+  "filesChanged": [
+    "smoke/LEGSMOKE-327.md"
+  ],
+  "localChecks": "No lint, type, or unit lane exists in sjawhar/legion-smoke (plan requiredSkills.implement: none). Local check run before pushing: `wc -l smoke/LEGSMOKE-327.md` printed 1 and `od -c` showed the final byte is `\\n`; `jj diff --from main@origin --to @- --summary` listed only `.legion/plan.json` and `smoke/LEGSMOKE-327.md`.",
+  "notes": [
+    "Docs-only pull request: no runtime code, so the Thermo line (ce-simplify-code and the thermonuclear pair) is omitted from the PR body per pr-body.md.",
+    "Acceptance item 3 (one reviewer-requested appended line) not triggered: no review round yet.",
+    "Under the Go daemon the `.legion/` deletion push is not made by any role until Stage 7; the operator removes `.legion/` from main after the merge.",
+    "Production check pending the human merge: `jj git fetch \u0026\u0026 jj file show -r main@origin smoke/LEGSMOKE-327.md | wc -l` must print the one line and 1."
+  ],
+  "phase": "implement",
+  "precondition": "jj git fetch \u0026\u0026 jj file list -r main@origin smoke/LEGSMOKE-327.md printed nothing on stdout (jj warned `No matching entries`) at main@origin df1082837f45: the file did not exist before this change.",
+  "proof": [
+    {
+      "command": "legion gh -- api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-327.md?ref=8bb362cf2f45df5aa5c4f3b7804bf1549e3ba7f0\" --jq .content | base64 -d; and the same piped to wc -l",
+      "criterion": "Acceptance item 1: smoke/LEGSMOKE-327.md exists with exactly the one line `LEGSMOKE-327: Stage 4b proof tree 1: the whole workflow`.",
+      "headSha": "8bb362cf2f45df5aa5c4f3b7804bf1549e3ba7f0",
+      "link": "https://github.com/sjawhar/legion-smoke/blob/8bb362cf2f45df5aa5c4f3b7804bf1549e3ba7f0/smoke/LEGSMOKE-327.md",
+      "negativeControl": "legion gh -- api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-327.md?ref=main\" → HTTP 404 `Not Found` (exit 1): the file does not exist on main, so the read distinguishes a head that carries it from one that does not.",
+      "observed": "Printed exactly `LEGSMOKE-327: Stage 4b proof tree 1: the whole workflow`; wc -l printed `1` (trailing newline present).",
+      "surface": "The pull request head on GitHub (sjawhar/legion-smoke), read through the GitHub contents API."
+    },
+    {
+      "command": "legion gh -- pr view 449 --repo sjawhar/legion-smoke --json files --jq '.files[].path'; legion gh -- api \"repos/sjawhar/legion-smoke/compare/main...8bb362cf2f45df5aa5c4f3b7804bf1549e3ba7f0\" --jq '.files[].filename'",
+      "criterion": "Acceptance item 2: nothing else in the repository changed; the pull request touches exactly one file besides Legion's `.legion/*.json` handoffs.",
+      "headSha": "8bb362cf2f45df5aa5c4f3b7804bf1549e3ba7f0",
+      "link": "https://github.com/sjawhar/legion-smoke/pull/449/files",
+      "negativeControl": "`legion gh -- pr checks 449 --repo sjawhar/legion-smoke` shows `fail-on-demand` job `gate` success (run 36689585980), which the workflow yields only when no `.fail-me` exists at the head; a head carrying `.fail-me` would fail that job.",
+      "observed": "Both listed exactly `.legion/plan.json` and `smoke/LEGSMOKE-327.md`; no `.fail-me`, README.md, or other smoke/ file.",
+      "surface": "The pull request's file list on GitHub and the compare API."
+    }
+  ],
+  "pullRequest": {
+    "base": "main",
+    "head": "legion/LEGSMOKE-327",
+    "headSha": "8bb362cf2f45df5aa5c4f3b7804bf1549e3ba7f0",
+    "number": 449,
+    "repo": "sjawhar/legion-smoke",
+    "url": "https://github.com/sjawhar/legion-smoke/pull/449"
+  },
+  "schemaVersion": 1,
+  "summary": "Added smoke/LEGSMOKE-327.md holding the single line `LEGSMOKE-327: Stage 4b proof tree 1: the whole workflow` with a trailing newline, as one commit 8bb362cf2f45df5aa5c4f3b7804bf1549e3ba7f0 on legion/LEGSMOKE-327 authored by legion-implementer[bot]. Pull request #449 (https://github.com/sjawhar/legion-smoke/pull/449) is open against main with `Dispatch: LEGSMOKE-327` and the READY-format body; both CI workflows are green at that head. Nothing else in the repository changed."
+}

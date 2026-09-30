@@ -1,0 +1,134 @@
+{
+  "acceptance": [
+    {
+      "criterion": "smoke/LEGSMOKE-327.md exists with exactly the one line",
+      "item": 1,
+      "verdict": "met"
+    },
+    {
+      "criterion": "nothing else changed besides .legion/*.json handoffs",
+      "item": 2,
+      "verdict": "met"
+    },
+    {
+      "criterion": "one reviewer-requested appended line",
+      "item": 3,
+      "verdict": "not triggered: this review requests no change"
+    }
+  ],
+  "ci": {
+    "at": [
+      {
+        "checkRuns": [
+          "check completed success (run 36689585969, pull_request)",
+          "gate completed success (run 36689585980, pull_request)",
+          "check completed success (run 36689518221, push)",
+          "gate completed success (run 36689518068, push)"
+        ],
+        "sha": "8bb362cf2f45df5aa5c4f3b7804bf1549e3ba7f0"
+      },
+      {
+        "checkRuns": [
+          "check completed success (run 36689761227)",
+          "gate completed success (run 36689761291)",
+          "check completed success (run 36689755195)",
+          "gate completed success (run 36689755133)"
+        ],
+        "sha": "9e8df196b6e638dd37b09a97e04159f680f7572a"
+      },
+      {
+        "checkRuns": [],
+        "note": "The tester's handoff commit carries the `skip-checks: true` trailer legion push adds to a .legion/test.json-only push, so it started no workflow; `legion state` shows pullRequest.checksVerdict green, carried from the code head as the Go daemon workflow describes.",
+        "sha": "379c08b60834091a16bf1b1b0ed86ffc7063bfe3"
+      }
+    ],
+    "command": "legion gh -- api repos/sjawhar/legion-smoke/commits/\u003csha\u003e/check-runs --jq '.check_runs[] | \"\\(.name) \\(.status) \\(.conclusion)\"'"
+  },
+  "codeHeadSha": "8bb362cf2f45df5aa5c4f3b7804bf1549e3ba7f0",
+  "completed": "2026-09-30T08:37:41.333423496Z",
+  "contractChangeCensus": "not applicable: the diff adds one Markdown marker file and Legion handoff records; it adds no refusal, makes no field required, removes or renames no field, and changes no signature at any process or package boundary, so no census is required and its absence is not a finding.",
+  "diff": {
+    "command": "cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 jj -R \"$LEGION_WORKSPACE\" git fetch \u0026\u0026 jj -R \"$LEGION_WORKSPACE\" diff --from main@origin --to @- --summary; legion gh -- api repos/sjawhar/legion-smoke/compare/main...379c08b60834091a16bf1b1b0ed86ffc7063bfe3 --jq '.files[] | \"\\(.status) \\(.filename)\"'",
+    "observed": "A .legion/implement.json, A .legion/plan.json, A .legion/test.json, A smoke/LEGSMOKE-327.md; compare API: the same four files, all `added`; `jj file list -r @- .fail-me` printed nothing (jj warned `No matching entries`)."
+  },
+  "fileContent": {
+    "command": "jj file show -r @- smoke/LEGSMOKE-327.md | od -c; | wc -l; printf '%s\\n' 'LEGSMOKE-327: Stage 4b proof tree 1: the whole workflow' | cmp - smoke/LEGSMOKE-327.md; legion gh -- api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-327.md?ref=379c08b60834091a16bf1b1b0ed86ffc7063bfe3\" --jq .content | base64 -d | od -c",
+    "negativeControl": "legion gh -- api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-327.md?ref=main\" → HTTP 404 Not Found: the file does not exist on main.",
+    "observed": "56 bytes `LEGSMOKE-327: Stage 4b proof tree 1: the whole workflow\\n`; wc -l printed 1; cmp exited 0; the contents-API read at the head printed the identical bytes."
+  },
+  "findings": [],
+  "identity": {
+    "command": "jj log -r 'main@origin..@' -T 'author.email() ++ \" | \" ++ committer.email() ++ \" \" ++ description.first_line()'",
+    "observed": "plan and test handoffs authored and committed by legion-reviewer[bot]; the code commit and implement handoff by legion-implementer[bot]; no commit carries a committer other than its author's App."
+  },
+  "notes": [
+    "Go daemon: APPROVE is submitted on this head although it carries .legion/ (the daemon's role text overrides the shared reserve-APPROVE-for-the-deletion-head rule); the handoffs are removed from main after the merge.",
+    "Round order followed: handoff written, committed, pushed with `legion push` (runs CI in full because the verdict is not changes_requested); APPROVE submitted by SHA once the CI verdict at that head settles green; then handoff_complete."
+  ],
+  "phase": "review",
+  "prBody": {
+    "dispatchLine": "Dispatch: LEGSMOKE-327 present",
+    "sections": "CI, Threads, E2E (implementer), E2E (tester), Production (pending the human merge), Fast-follow (none), Chain (not stacked) all present; Thermo line omitted as pr-body.md directs for a docs-only pull request"
+  },
+  "proofs": {
+    "implementer": {
+      "command": "contents API read at 8bb362cf… | base64 -d | wc -l; compare API main...8bb362cf…",
+      "head": "8bb362cf2f45df5aa5c4f3b7804bf1549e3ba7f0",
+      "negativeControl": "?ref=main → HTTP 404",
+      "observed": "the one line; wc -l 1; files .legion/plan.json and smoke/LEGSMOKE-327.md",
+      "present": true,
+      "surface": "the pull request head on GitHub read through the GitHub contents API and compare API",
+      "verdict": "verified: re-ran the contents-API read (at 379c08b6…) and the ?ref=main negative control myself with identical output"
+    },
+    "tester": {
+      "command": "contents API read | od -c and | wc -l at 8bb362cf… and 9e8df196…; printf | cmp; compare API main...9e8df196…; check-runs API at 9e8df196…",
+      "head": "9e8df196b6e638dd37b09a97e04159f680f7572a",
+      "negativeControl": "no-trailing-newline variant → wc -l 0; `tree 2` variant → cmp differ char 35, exit 1; ?ref=main → HTTP 404",
+      "observed": "56 bytes ending \\n; wc -l 1; cmp exit 0; three added .legion/*.json plus smoke/LEGSMOKE-327.md; check and gate completed success",
+      "present": true,
+      "surface": "the pull request head on GitHub read through the contents API, compare API, and check-runs API; the workspace file at @-",
+      "verdict": "verified: re-ran the compare and check-runs reads and the cmp myself with identical output; the tester also states it re-ran the implementer's exact commands"
+    }
+  },
+  "pullRequest": {
+    "base": "main",
+    "head": "legion/LEGSMOKE-327",
+    "number": 449,
+    "repo": "sjawhar/legion-smoke",
+    "url": "https://github.com/sjawhar/legion-smoke/pull/449"
+  },
+  "reviewedHead": "379c08b60834091a16bf1b1b0ed86ffc7063bfe3",
+  "round": 1,
+  "schemaVersion": 1,
+  "summary": "Reviewed pull request #449 (smoke: add LEGSMOKE-327 Stage 4b proof marker) at head 379c08b60834091a16bf1b1b0ed86ffc7063bfe3 (code head 8bb362cf2f45df5aa5c4f3b7804bf1549e3ba7f0). Every fact verified on GitHub, never from a handoff: the branch adds exactly smoke/LEGSMOKE-327.md (56 bytes, byte-for-byte the spec line with a trailing newline) plus the three .legion/*.json handoffs; no .fail-me; both CI jobs green at the code head and at the implement-handoff head; zero review threads; both E2E proof lines present and complete; both thermonuclear passes returned pass with zero blocking findings. No correctness finding stands, so the round's decision is APPROVE, submitted as one review naming the head this handoff's push makes once its CI verdict settles green.",
+  "thermo": {
+    "codeQuality": {
+      "agent": "thermonuclear-code-quality",
+      "blockingFindings": 0,
+      "notes": [
+        "All three handoffs parse as JSON and agree on the code head 8bb362cf… and the test head 9e8df196….",
+        "Minor (no action): smoke/ filenames are heterogeneous and the spec fixes this exact path."
+      ],
+      "verdict": "pass"
+    },
+    "deepReview": {
+      "agent": "thermonuclear-deep-review",
+      "blockingFindings": 0,
+      "notes": [
+        "File bytes, diff scope, and .fail-me absence confirmed; secret scan of all four added files returned no match; all links are public github.com/api.github.com URLs.",
+        "Informational: the head 379c08b6 has no check runs because the tester's handoff push skipped CI; the code head and the implement-handoff head are green."
+      ],
+      "verdict": "pass"
+    },
+    "ranAt": "379c08b60834091a16bf1b1b0ed86ffc7063bfe3",
+    "reason": "Docs-only diff, so pr-body.md would omit the pair; run anyway at the targeted human Dispatch message's direction (message b0f62208-192d-4dbb-bd96-2e65f96b76e3 on LEGSMOKE-327)."
+  },
+  "threads": {
+    "command": "legion gh -- api graphql (reviewThreads first:100 on pullRequest 449)",
+    "note": "No review threads and no prior reviews exist; nothing to answer or resolve.",
+    "resolved": 0,
+    "reviews": 0,
+    "unresolved": 0
+  },
+  "verdict": "approved"
+}
