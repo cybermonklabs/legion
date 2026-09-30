@@ -1,0 +1,117 @@
+{
+  "acceptance": [
+    {
+      "commands": [
+        "legion gh -- api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-331.md?ref=\u003chead-sha\u003e\" --jq .content | base64 -d",
+        "legion gh -- api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-331.md?ref=\u003chead-sha\u003e\" --jq .content | base64 -d | wc -l",
+        "cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 jj -R \"$LEGION_WORKSPACE\" file show -r @- smoke/LEGSMOKE-331.md | wc -l"
+      ],
+      "criterion": "smoke/LEGSMOKE-331.md exists with exactly the one line `LEGSMOKE-331: Stage 4b proof tree 1: the whole workflow`.",
+      "expect": "First command prints exactly `LEGSMOKE-331: Stage 4b proof tree 1: the whole workflow`; both `wc -l` commands print `1` (or `2` if acceptance item 3 applies).",
+      "item": 1,
+      "negativeControl": "legion gh -- api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-331.md?ref=main\" — before the merge this returns HTTP 404 `Not Found`, proving the check distinguishes a head that carries the file from one that does not.",
+      "productionCheck": "After the human merge: cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 jj -R \"$LEGION_WORKSPACE\" git fetch \u0026\u0026 jj -R \"$LEGION_WORKSPACE\" file show -r 'main@origin' smoke/LEGSMOKE-331.md | tee /dev/stderr | wc -l — the one line and `1` (or `2`). Equivalent to the spec's `git show origin/main:smoke/LEGSMOKE-331.md` (the issue workspace is a jj workspace, not a colocated git checkout, so the jj form is the one that runs there); `legion gh -- api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-331.md?ref=main\" --jq .content | base64 -d` is the same read through GitHub. Record the output on the pull request and on LEGSMOKE-331.",
+      "surface": "The pull request head on GitHub (sjawhar/legion-smoke), read through the GitHub contents API; after merge, the same file on main."
+    },
+    {
+      "commands": [
+        "legion gh -- pr view \u003cn\u003e --repo sjawhar/legion-smoke --json files --jq '.files[].path'",
+        "cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 jj -R \"$LEGION_WORKSPACE\" diff --from 'main@origin' --to @- --summary"
+      ],
+      "criterion": "Nothing else in the repository changed: the pull request touches exactly one file.",
+      "expect": "While `.legion/` handoffs are on the branch: `smoke/LEGSMOKE-331.md` plus `.legion/\u003cphase\u003e.json` files and nothing else. After the implementer's `.legion/` deletion push (reviewer's final gate) and on the merged pull request: exactly `smoke/LEGSMOKE-331.md`.",
+      "item": 2,
+      "negativeControl": "The same `--jq '.files[].path'` on the pull request must not list `.fail-me`, README.md, or any other `smoke/` file; `legion gh -- pr checks \u003cn\u003e --repo sjawhar/legion-smoke` must show `fail-on-demand / gate` green, which it is only when no `.fail-me` exists at the head.",
+      "surface": "The pull request's file list on GitHub."
+    },
+    {
+      "commands": [
+        "Same commands as items 1 and 2."
+      ],
+      "criterion": "If the review asks for one appended line, the merged file holds exactly two lines and the pull request still touches only that file.",
+      "expect": "`wc -l` prints `2`; the file list is still exactly `smoke/LEGSMOKE-331.md`. Applies only when a review thread requested the line; otherwise item 1's `1` stands.",
+      "item": 3,
+      "surface": "Same as items 1 and 2."
+    }
+  ],
+  "ci": {
+    "command": "legion gh -- pr checks \u003cn\u003e --repo sjawhar/legion-smoke",
+    "expect": "Both green on every code head. A red job that failed on its own is re-run with `legion gh -- run rerun \u003crun-id\u003e --failed`, never by pushing a new commit.",
+    "workflows": [
+      ".github/workflows/ci.yml (job `check`: sleep 20 \u0026\u0026 exit 0)",
+      ".github/workflows/fail-on-demand.yml (job `gate`: exit 1 only if `.fail-me` exists)"
+    ]
+  },
+  "completed": "2026-09-30T10:35:48.256319171Z",
+  "evidence": {
+    "implement": "`.legion/implement.json` `proof` array and the PR body `E2E (implementer)` line: acceptance item 1 and 2 commands run against the pushed head SHA, their output, and the item-1 negative control (404 on main). PR body contains `Dispatch: LEGSMOKE-331`. Both CI workflows green at that head.",
+    "integration": "Merge gate in order: tester green → implementer pushes the `.legion/` deletion at the reviewer's direction → reviewer approves that head by SHA → retro → merger publishes READY → human merges → implementer runs the production check in acceptance item 1 and records it on the pull request and the issue. Legion never merges.",
+    "review": "Reviewer verifies on the head SHA: (a) `jj diff --from main@origin --to \u003chead\u003e --summary` lists only smoke/LEGSMOKE-331.md and `.legion/*.json`; (b) the file's one line equals the spec text byte for byte and ends with a newline; (c) no `.fail-me`; (d) `legion gh -- pr checks` green; (e) PR body has `Dispatch: LEGSMOKE-331`, the two E2E lines, and follows pr-body.md. While `.legion/` is on the head, submit REQUEST_CHANGES for a correctness finding or COMMENT otherwise; APPROVE only the head that differs by the `.legion/` deletion alone. A request for one appended line to smoke/LEGSMOKE-331.md is the only in-scope change request (spec Scope).",
+    "test": "Tester re-runs the implementer's exact commands independently against the same head SHA and records `implementerProof: {verdict, how}` in `.legion/test.json`, plus its own `proof` array and the PR body `E2E (tester)` line with the item-1 negative control. No unit test exists or is wanted; the surface is GitHub itself. Fail the phase (record in `failures`) if the line text differs by any character, the file lacks its trailing newline (`wc -l` prints 0), or any file other than smoke/LEGSMOKE-331.md and `.legion/*.json` appears in the diff."
+  },
+  "outOfScope": [
+    "Editing README.md, any existing smoke/ file, or the workflows.",
+    "Child issues or waves: single-issue tree per the approved spec.",
+    "Any unit test or test file: the repository has no test tooling and the proof surface is GitHub."
+  ],
+  "phase": "plan",
+  "requiredSkills": {
+    "implement": [
+      "none: the repository has no AGENTS.md, no agent skills directory, and no build, test, or deploy tooling (only two GitHub workflows: ci.yml sleeps 20s and exits 0; fail-on-demand.yml fails only if a `.fail-me` file exists). The implementer's charter already binds skill://legion-worker (push, PR body, proof format in references/pr-body.md) and skill://dispatch; no repository skill drives creating one Markdown file."
+    ],
+    "review": [
+      "none: no repository review skill or CODEOWNERS exists. The reviewer checks the diff against the spec's fixed file name, line text, and single-file scope with the commands in `evidence.review`; skill://legion-worker/references/review-threads.md and merge-gate.md already govern the round."
+    ],
+    "test": [
+      "none: the repository has no testing, smoke, or e2e skill and no test suite; the only checks are the two GitHub workflows named above. The tester proves the acceptance criteria on GitHub (the pull request head and, after merge, main) with the exact commands in `acceptance` below; skill://legion-worker/references/pr-body.md already governs the proof record."
+    ]
+  },
+  "risks": [
+    "Trailing newline: acceptance item 1 uses `wc -l`; a file written without the final newline prints 0. The implementer writes `...workflow\\n` and checks `wc -l` before pushing.",
+    "Shared clone: every issue workspace shares one jj operation log. No `jj undo`, `jj abandon`, `jj op restore`; recover forward with `jj new` or `jj restore \u003cpaths\u003e`.",
+    "Stage 4b proof discipline: each downstream worker acts only on the targeted human Dispatch message for its phase; this plan orders the work but does not start it.",
+    "Scope creep: any review request other than one appended line to smoke/LEGSMOKE-331.md is not made; it goes to the architect, which asks Sami on the issue."
+  ],
+  "schemaVersion": 1,
+  "summary": "One-file smoke change on sjawhar/legion-smoke: add smoke/LEGSMOKE-331.md holding the single line `LEGSMOKE-331: Stage 4b proof tree 1: the whole workflow` (with a trailing newline so `wc -l` prints 1), on branch legion/LEGSMOKE-331, in a pull request against main. Nothing else in the repository changes. Spec approved at v2 (dispatch://LEGSMOKE-331/spec). Precondition verified by the planner at main@origin c48f01b1: smoke/LEGSMOKE-331.md does not exist (`jj file list -r main@origin smoke/LEGSMOKE-331.md` prints nothing; the previous run's smoke/LEGSMOKE-327.md shows the exact file shape).",
+  "tasks": [
+    {
+      "command": "cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 jj -R \"$LEGION_WORKSPACE\" git fetch \u0026\u0026 jj -R \"$LEGION_WORKSPACE\" file list -r 'main@origin' smoke/LEGSMOKE-331.md",
+      "expect": "stdout empty (jj warns `No matching entries` on stderr). If the file exists, do not write it: per the spec's Errors table, open a dispatch_ask on LEGSMOKE-331 asking whether to replace it or use another name, report to the architect, and wait.",
+      "id": 1,
+      "phase": "implement",
+      "title": "Re-verify the precondition"
+    },
+    {
+      "content": "LEGSMOKE-331: Stage 4b proof tree 1: the whole workflow\n",
+      "file": "smoke/LEGSMOKE-331.md",
+      "id": 2,
+      "note": "Exactly one line terminated by a newline. `wc -l` counts newline characters, so a file without the trailing newline prints 0 and fails acceptance item 1. Use the write tool or `printf '%s\\n'`; never append a second line, blank line, or heading. Byte-identical shape to the previous run's smoke/LEGSMOKE-327.md with the key and title swapped.",
+      "phase": "implement",
+      "title": "Create smoke/LEGSMOKE-331.md"
+    },
+    {
+      "command": "cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 jj -R \"$LEGION_WORKSPACE\" split -m \"smoke: add LEGSMOKE-331 Stage 4b proof marker\" smoke/LEGSMOKE-331.md",
+      "expect": "One commit touching only smoke/LEGSMOKE-331.md, authored by the implement App (legion-implementer[bot]). The planner's `plan: record handoff` commit sits below it on the branch; that is expected.",
+      "id": 3,
+      "phase": "implement",
+      "title": "Commit the change on its own"
+    },
+    {
+      "commands": [
+        "cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 legion push",
+        "cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 legion gh -- pr create --repo sjawhar/legion-smoke --base main --head legion/LEGSMOKE-331 --title \"smoke: add LEGSMOKE-331 Stage 4b proof marker\" --body-file \u003cREADY-format body\u003e"
+      ],
+      "id": 4,
+      "note": "Read skill://legion-worker/references/pr-body.md before writing the body. The body MUST contain the line `Dispatch: LEGSMOKE-331` and the `E2E (implementer)` line (surface, exact command, observation, head SHA, negative control). This push carries code, so it runs CI in full: both workflows `ci / check` and `fail-on-demand / gate` must go green on the head. Then write .legion/implement.json with its `proof` array, split it as `implement: record handoff`, and `legion push` again.",
+      "phase": "implement",
+      "title": "Push and open the pull request"
+    },
+    {
+      "id": 5,
+      "note": "Only if a review thread requests it: append exactly one line to smoke/LEGSMOKE-331.md (final newline kept, file becomes two lines), commit as `smoke: append reviewer-requested line to LEGSMOKE-331.md`, reply on the thread `Fixed in \u003ccommit\u003e: \u003cone line\u003e`, run `legion threads resolve --pr \u003cn\u003e --repo sjawhar/legion-smoke` before pushing, then `legion push`. Any other requested change is out of scope: do not make it; report to the architect, which asks Sami per the spec's Errors table.",
+      "phase": "implement",
+      "title": "Conditional: reviewer asks for one appended line (acceptance item 3)"
+    }
+  ]
+}
