@@ -1,0 +1,46 @@
+{
+  "acceptanceCriteria": [
+    {
+      "command": "git show \u003cpr-branch\u003e:smoke/S391616981-2.md",
+      "criterion": "smoke/S391616981-2.md exists on the PR branch and its first line reads 'S391616981-2 — Budget exhaustion sentinel'.",
+      "id": 1,
+      "surface": "Git working tree / PR branch (docs file; no CLI, endpoint, TUI, or job)."
+    },
+    {
+      "command": "legion gh -- pr diff \u003cpr-number\u003e --name-only  (expect exactly one added path)",
+      "criterion": "No other tracked file changes.",
+      "id": 2,
+      "surface": "PR diff summary."
+    }
+  ],
+  "approach": "Single new file. No code, build, or runtime. Follow the existing smoke/\u003cissue-key\u003e.md convention already used across the repo (e.g. smoke/S391724318-1.md). Chosen over decomposition (a one-file change integrates as one unit) and over a separate spec artifact (spec is extended in place).",
+  "completed": "2026-09-30T14:19:32.06703276Z",
+  "evidence": {
+    "implement": "Create the file with the exact first line; verify with 'jj -R \"$LEGION_WORKSPACE\" file show -r @ smoke/S391616981-2.md' and 'jj -R \"$LEGION_WORKSPACE\" diff --name-only' showing exactly one added path.",
+    "integration": "One unit; the single new file merges directly. No cross-slice interfaces.",
+    "review": "Confirm the first line matches the \u003ckey\u003e — \u003ctitle\u003e convention and the diff adds exactly one file; the sole in-scope change request is one appended line.",
+    "test": "Re-run both acceptance commands on the PR branch: git show \u003cpr-branch\u003e:smoke/S391616981-2.md (first line matches) and the PR name-only diff (exactly one added file). Negative control: confirm no other smoke/ file changed."
+  },
+  "files": [
+    "smoke/S391616981-2.md — new file; first line: 'S391616981-2 — Budget exhaustion sentinel'"
+  ],
+  "ordering": [
+    "Create smoke/S391616981-2.md with the required first line.",
+    "Commit, push the issue branch, open the PR with 'Dispatch: S391616981-2' in the body.",
+    "If review asks for one appended line, append exactly one line to that same file; change nothing else."
+  ],
+  "phase": "plan",
+  "requiredSkills": {
+    "implement": [
+      "none: no AGENTS.md and no repository skills exist in sjawhar/legion-smoke (checked repo file list and skill list); this is a docs-only change adding one Markdown file."
+    ],
+    "review": [
+      "none: no review skill in this repo; review confirms the first line convention and a single-file diff."
+    ],
+    "test": [
+      "none: no test framework, build, or repo skill exists here; verification is reading the file's first line and the PR diff on the branch, per the spec's Testing section."
+    ]
+  },
+  "schemaVersion": 1,
+  "summary": "Add one new Markdown file smoke/S391616981-2.md whose first line is 'S391616981-2 — Budget exhaustion sentinel', matching the sibling smoke/\u003ckey\u003e.md convention. No other tracked file changes."
+}
