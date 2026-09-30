@@ -1,0 +1,27 @@
+{
+  "completed": "2026-09-30T15:35:19.933997302Z",
+  "deviations": [],
+  "filesChanged": [
+    "smoke/S393189958-1.md"
+  ],
+  "headSha": "b9cb60f9ac9031e18610ca840d8047b6c67a5a04",
+  "openQuestions": [],
+  "phase": "implement",
+  "prNumber": 464,
+  "prUrl": "https://github.com/sjawhar/legion-smoke/pull/464",
+  "proof": [
+    {
+      "command": "cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 cat smoke/S393189958-1.md; wc -l \u003c smoke/S393189958-1.md; grep -c 'Stage 3 review round 3 (S393189958)' smoke/S393189958-1.md; grep -c S393189958-1 smoke/S393189958-1.md",
+      "criterion": "AC1 (review round 3): smoke/S393189958-1.md holds the marker line naming S393189958-1 plus the round-1, round-2, and round-3 review lines; the spec permits one more line per review round.",
+      "headSha": "b9cb60f9ac9031e18610ca840d8047b6c67a5a04",
+      "negativeControl": "grep -c 'Stage 3 review round 3 (S393189958)' on smoke/S393189958-1.md at main@origin returns 0 (file absent on main; the round-3 line does not exist there).",
+      "observed": "Four lines: the S393189958-1 marker and 'Stage 3 review round 1/2/3 (S393189958)'; wc -l reports 4; grep for the round-3 line returns 1; grep for S393189958-1 returns 1. jj diff --stat main@origin..@- shows only smoke/S393189958-1.md (+4) plus the earlier phases' .legion handoffs.",
+      "surface": "File content in the sjawhar/legion-smoke repository on the pull-request branch legion/S393189958-1 (this repo has no CLI/endpoint; the smoke/ marker file is the production surface)."
+    }
+  ],
+  "reviewRound": 3,
+  "reviewThreads": [
+    "discussion_r4146263412 (bot sjawhar-agent): resolved on the Legion reviewer's Accepted in round 2; no unresolved threads this round."
+  ],
+  "schemaVersion": 1
+}
