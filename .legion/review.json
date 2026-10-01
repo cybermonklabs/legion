@@ -1,8 +1,0 @@
-{
-  "completed": "2026-10-01T20:27:00.863811513Z",
-  "findings": [],
-  "phase": "review",
-  "schemaVersion": 1,
-  "summary": "Final round: APPROVE. All review rounds complete; smoke/S391594033-1.md carries the pinned first line plus the round-1/2/3 appended lines (four lines). Docs-only diff (markdown + .legion/ handoff artifacts), no runtime code, so no thermonuclear pass. Zero unresolved threads (bot thread accepted and resolved); both E2E proof lines present; CI green. Security: no sensitive surface in this diff.",
-  "verdict": "approved"
-}
