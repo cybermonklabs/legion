@@ -1,0 +1,149 @@
+{
+  "acceptanceCriteria": [
+    {
+      "command": "git show \u003chead\u003e:smoke/S391594033-1.md",
+      "criterion": "File exists on PR branch with exact content",
+      "expected": "equals 'S391594033-1 — Primary durable workflow profile\\n'",
+      "negativeControl": "git show \u003cbase\u003e:smoke/S391594033-1.md fails (path absent on base)",
+      "skill": "legion-worker (pr-body.md)",
+      "surface": "git/gh PR branch"
+    },
+    {
+      "command": "git diff --name-status \u003cbase\u003e...\u003chead\u003e",
+      "criterion": "Only one file changed",
+      "expected": "exactly 'A\\tsmoke/S391594033-1.md'",
+      "negativeControl": "any second path in output fails the criterion",
+      "skill": "legion-worker",
+      "surface": "git PR diff"
+    },
+    {
+      "command": "gh pr checks \u003cpr\u003e / gh run watch",
+      "criterion": "CI green",
+      "expected": "'check' job success (not evidence of the file; criteria 1-2 are)",
+      "negativeControl": "n/a (CI is unconditional exit 0)",
+      "skill": "legion-worker (merge gate)",
+      "surface": "GitHub Actions"
+    },
+    {
+      "command": "git fetch origin main \u0026\u0026 git show origin/main:smoke/S391594033-1.md; git diff --name-status \u003cmerge-base\u003e..origin/main",
+      "criterion": "Post-merge on main",
+      "expected": "content equals pinned line(s); diff shows only the one addition",
+      "negativeControl": "before merge the path is absent on origin/main",
+      "skill": "legion-worker (merge gate / production check)",
+      "surface": "origin/main"
+    },
+    {
+      "command": "git show \u003chead\u003e:smoke/S391594033-1.md",
+      "criterion": "Appended-line shape (only if review asks)",
+      "expected": "exactly two lines: line 1 pinned, line 2 the review-requested line; still one file in the diff",
+      "negativeControl": "three+ lines, or a second changed path, fails",
+      "skill": "legion-worker",
+      "surface": "git PR branch"
+    }
+  ],
+  "change": "Create smoke/S391594033-1.md containing exactly: 'S391594033-1 — Primary durable workflow profile' followed by one newline. Touch no other tracked file.",
+  "completed": "2026-10-01T19:53:46.036296Z",
+  "decisionForOwner": {
+    "owner": "architect",
+    "question": "Child S391594033-5 'Dependent admission leaf' has an empty spec body yet the parent spec adopts it as-is into the single initial wave while stating 'the change lands on this root issue' and 'nothing else changes'. What does the child deliver?",
+    "recommendation": "Treat S391594033-5 as a no-op admission marker: adopted into the wave to exercise dependent admission, producing no file change; its completion gate is admission/wave membership, not a diff. The planner does not re-decompose it. Wave composition is architect-owned."
+  },
+  "decisions": [
+    {
+      "decision": "smoke/S391594033-1.md first line is exactly 'S391594033-1 — Primary durable workflow profile' (em dash U+2014), file has exactly one line + one trailing newline.",
+      "id": 1,
+      "reason": "Matches existing convention in smoke/S391616981-1.md and smoke/S394570180-1.md ('\u003cKEY\u003e — \u003ctitle\u003e') and this issue's title.",
+      "topic": "Exact first line"
+    },
+    {
+      "decision": "smoke/S391594033-1.md (.md, not .txt).",
+      "id": 2,
+      "reason": "Spec names the .md path explicitly; repo mixes extensions but the spec settles it.",
+      "topic": "Filename/extension"
+    },
+    {
+      "decision": "PR branch: 'git diff --name-status \u003cbase\u003e...\u003chead\u003e' == 'A\\tsmoke/S391594033-1.md' and 'git show \u003chead\u003e:smoke/S391594033-1.md' == pinned content. Post-merge main: 'git fetch origin main \u0026\u0026 git show origin/main:smoke/S391594033-1.md' == pinned content and 'git diff --name-status \u003cmerge-base\u003e..origin/main' shows only that addition. CI green is NOT evidence of the file.",
+      "id": 3,
+      "reason": "CI (.github/workflows/ci.yml) is a no-op 'sleep 20 \u0026\u0026 exit 0' and never inspects smoke/; there is no test harness.",
+      "topic": "Proof commands"
+    },
+    {
+      "decision": "PR diff name-status contains exactly one entry for smoke/S391594033-1.md; a review-appended line keeps it one file. Diff taken against the PR base; generated/tooling paths (.codegraph/, .jj/, .git/) excluded.",
+      "id": 4,
+      "reason": "Binds the spec's 'no other file changes' to a machine check.",
+      "topic": "'Nothing else changed' check"
+    },
+    {
+      "decision": "Accepted file shapes: exactly one line (pinned first line) OR exactly two lines (pinned first line + the single review-requested line); nothing more. Second line text is review-time input.",
+      "id": 5,
+      "reason": "Spec allows one appended line on review; its exact text is review-dictated, so the acceptance bounds the shape rather than pinning the string.",
+      "topic": "Appended second line"
+    }
+  ],
+  "gapAnalysis": {
+    "findings": [
+      {
+        "answer": "Decision 1: pinned to 'S391594033-1 — Primary durable workflow profile' (convention + title); file is exactly one line + trailing newline, machine-checked by criterion 1.",
+        "finding": "Exact content of the single line is unspecified; existing smoke/ files use three different formats."
+      },
+      {
+        "answer": "Decision 3 + criteria 1-4: explicit git show / git diff --name-status commands on PR branch and origin/main; noted CI green is not evidence of the file.",
+        "finding": "No command named to prove the file on the PR branch or on main; CI cannot serve as the check."
+      },
+      {
+        "answer": "Decision 4 + criterion 2: PR diff name-status must be exactly one entry for smoke/S391594033-1.md; tooling paths excluded; base ref specified.",
+        "finding": "'Nothing else changed' is machine-checkable but had no stated check."
+      },
+      {
+        "answer": "decisionForOwner: recommended no-op admission marker (no file change, completion gate = admission/wave membership), surfaced to the architect as architect-owned; planner does not re-decompose.",
+        "finding": "Child S391594033-5 has an empty spec and no defined deliverable yet must be adopted as-is."
+      },
+      {
+        "answer": "Decision 5 + criterion 5: accepted shapes are exactly one line or exactly two lines (pinned + the single review line); exact second-line text is review-dictated.",
+        "finding": "Optional appended second line undefined, so 'both lines' acceptance is not checkable."
+      }
+    ]
+  },
+  "phase": "plan",
+  "planReview": {
+    "rounds": 1,
+    "verdict": "approved"
+  },
+  "repositorySkills": {
+    "followed": [
+      "legion-worker",
+      "dispatch"
+    ],
+    "note": "No project AGENTS.md and no domain/test skill exist in sjawhar/legion-smoke (verified: workspace root has no AGENTS.md; CI is .github/workflows/ci.yml, a single 'check' job running 'sleep 20 \u0026\u0026 exit 0'). Production-like surface is git/jj + the GitHub PR."
+  },
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: drives the production-surface proof, PR creation and push with 'Dispatch: S391594033-1' in the body, and the E2E proof lines (references/pr-body.md) for adding the one file smoke/S391594033-1.md"
+    ],
+    "review": [
+      "legion-worker: references/review-threads.md and references/merge-gate.md drive one-by-one thread disposition (a thread asking for a second line is in scope), approval of the .legion/-deletion head, and the merge gate"
+    ],
+    "test": [
+      "legion-worker: references/pr-body.md defines what a proof is and what the tester re-runs to verify the file on the head that merges; this repo has no unit/test harness, so verification is the named git/gh commands (git show / git diff --name-status), not a suite"
+    ]
+  },
+  "schemaVersion": 1,
+  "summary": "One-file smoke change: add smoke/S391594033-1.md whose sole line is 'S391594033-1 — Primary durable workflow profile' (em dash U+2014, one trailing newline). No other file changes; a review may append exactly one more line to that same file (in scope). Change lands on this root issue; child S391594033-5 is adopted as-is into the single initial wave as a no-op admission marker (architect-owned, recommended).",
+  "tasks": {
+    "implement": [
+      "Create smoke/S391594033-1.md with the single pinned line (decision 1); touch no other file.",
+      "Commit on the issue branch, open the PR with 'Dispatch: S391594033-1' in the body, push.",
+      "Record the E2E proof (surface = git/gh on the PR branch head that merges) per references/pr-body.md."
+    ],
+    "integration": [
+      "Implementer, post-merge on origin/main: confirm smoke/S391594033-1.md present with expected line(s) and the one-file diff; record observation on the PR and issue."
+    ],
+    "review": [
+      "Dispose of review threads one by one (references/review-threads.md); a thread asking for a second line is in scope (decision 5).",
+      "Approve the .legion/-deletion head; follow the merge gate."
+    ],
+    "test": [
+      "Re-run the PR-branch proof commands (decision 3) at the head that merges; confirm the one-file diff (decision 4). No unit suite exists; verification is these commands."
+    ]
+  }
+}
