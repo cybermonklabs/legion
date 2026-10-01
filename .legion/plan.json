@@ -1,0 +1,94 @@
+{
+  "acceptanceCriteria": [
+    {
+      "check": "cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 jj -R \"$LEGION_WORKSPACE\" file show -r @- smoke/S394873566-5.md | sed -n '1p' byte-equals the required string; od -An -c confirms 342 200 224 for the dash.",
+      "criterion": "smoke/S394873566-5.md exists on the child branch head and its first line byte-equals 'S394873566-5 — Dependent admission leaf' (U+2014 em dash, single ASCII spaces, title verbatim from Dispatch).",
+      "id": "AC1",
+      "surface": "Committed repository file on the child branch head in sjawhar/legion-smoke."
+    },
+    {
+      "check": "jj -R \"$LEGION_WORKSPACE\" diff -r \u003cimpl-commit\u003e --stat lists only smoke/S394873566-5.md.",
+      "criterion": "The child implementation diff adds exactly one repository file, smoke/S394873566-5.md, and does not author smoke/S394873566-1.md (the root/parent deliverable). Separate .legion/*.json handoff commits are expected.",
+      "id": "AC2",
+      "surface": "The child's implementation commit in the workspace."
+    },
+    {
+      "check": "File is 1 line, or 2 lines where line 2 is the single review-requested line. Reviewer/tester MUST NOT reject the file for lacking the 3-round sibling markers.",
+      "criterion": "Conditional: if and only if a PR review requests it, exactly one additional line is appended to smoke/S394873566-5.md. No 'Stage 3 review round N' markers are required ('nothing else changes' per approved parent spec).",
+      "id": "AC3",
+      "surface": "Same file at the head answering the review."
+    },
+    {
+      "check": "legion gh -- pr checks \u003cpr\u003e / run list shows the 'check' job success.",
+      "criterion": "The CI 'check' job concludes green on the push carrying the file. Mergeability gate only, NOT behavioral proof (the job is sleep 20 \u0026\u0026 exit 0).",
+      "id": "AC4",
+      "surface": "GitHub Actions on the pushed branch/PR."
+    }
+  ],
+  "completed": "2026-10-01T19:32:33.880838407Z",
+  "gapAnalysis": {
+    "findings": [
+      {
+        "answer": "Decision: child creates a DISTINCT new file smoke/S394873566-5.md. Encoded as AC1 (file + first line) and AC2 (single-file scope, not authoring the root file), grounded in the parent integration-test clause (two separate artifacts) and the smoke/\u003cKEY\u003e.md convention.",
+        "finding": "The child's concrete deliverable is never stated (child spec body empty; parent spec defines the file concretely only for the root, naming the child's work only as 'the dependent leaf change')."
+      },
+      {
+        "answer": "Decision: approved parent spec governs — first line alone, at most one optional appended line only if a PR review requests it. Encoded as AC3, which forbids the reviewer/tester from demanding the 3-round markers.",
+        "finding": "Repo convention (siblings append three 'Stage 3 review round N' markers) disagrees with the approved parent spec (review MAY add 'one more line ... nothing else changes')."
+      },
+      {
+        "answer": "Decision: proof is the file contents read at the child branch head SHA; CI-green is a mergeability gate only. Encoded as AC1/AC2 (file read) vs AC4 (CI mergeability), with the tester told not to substitute the green check.",
+        "finding": "Acceptance surface when CI is a no-op (sleep 20 \u0026\u0026 exit 0) — treating 'CI green' as proof proves nothing."
+      },
+      {
+        "answer": "Decision: first line MUST byte-equal 'S394873566-5 — Dependent admission leaf' using U+2014. Verified against smoke/S394570180-1.md (od: 342 200 224) and the Dispatch title; pinned in AC1 and the implement task.",
+        "finding": "Exact first-line text and dash glyph — U+2014 em dash with single spaces and the title verbatim; a hyphen-minus or wrong title silently fails equality."
+      },
+      {
+        "answer": "Decision: child touches exactly smoke/S394873566-5.md and does not author smoke/S394873566-1.md. Encoded as AC2 and the non-goals.",
+        "finding": "Scope boundary — the child could accidentally also create smoke/S394873566-1.md and double-deliver the root's file."
+      }
+    ]
+  },
+  "nonGoals": [
+    "The child does not author smoke/S394873566-1.md (root deliverable).",
+    "No change beyond the one file; 'nothing else changes' per the approved parent spec.",
+    "The merged-main integration read is the PARENT's integration test, not the child's; the child proves against its own branch head."
+  ],
+  "phase": "plan",
+  "planReview": {
+    "rounds": 1,
+    "verdict": "approved"
+  },
+  "requiredSkills": {
+    "implement": [
+      "none: no repo-domain agent skill exists in legion-smoke (no AGENTS.md, no build/test tooling, CI is a no-op sleep); the AC proof surface is reading a committed Markdown file, governed by no domain skill. legion-worker still governs the workflow mechanics (branch work, PR body, proof recording, push) the implementer follows."
+    ],
+    "review": [
+      "none: same review — no repo-domain review skill; review scope is bounded by the approved parent spec (first line, at most one optional appended line). legion-worker governs review-thread disposal and the merge gate."
+    ],
+    "test": [
+      "none: same review as implement — no repo test framework or domain skill; proof is the committed file read at the branch head, not a test suite. legion-worker governs the tester's proof recording and the head SHA to read."
+    ]
+  },
+  "risks": [
+    "Wrong dash glyph (hyphen-minus vs U+2014) silently fails AC1 — pinned to U+2014, verified with od (342 200 224).",
+    "Over-delivery: adding 3-round markers or the root file would exceed the approved spec — AC2/AC3 forbid it."
+  ],
+  "schemaVersion": 1,
+  "summary": "Legion Stage 3 workflow smoke proof. Child issue spec body is empty; acceptance derives from approved parent spec S394873566-1. Deliverable: one distinct new Markdown file smoke/S394873566-5.md whose first line names the issue. Proof surface is the committed file read at the child branch head (CI is a no-op sleep), driven through implement/test/review on the smoke branch.",
+  "tasks": [
+    {
+      "role": "implement",
+      "step": "Create smoke/S394873566-5.md containing exactly the single line 'S394873566-5 — Dependent admission leaf' (U+2014 em dash; trailing newline). Commit on issue branch legion/S394873566-5. Open the PR with a body carrying 'Dispatch: S394873566-5'. Record E2E proof: read the file at head SHA (AC1), show the single-file diff (AC2), CI green (AC4). Push via legion push."
+    },
+    {
+      "role": "test",
+      "step": "On the child branch head verify AC1 (first line byte-exact via file show/od), AC2 (diff touches only smoke/S394873566-5.md), AC4 (CI check green). Record proof entries with headSha and a negative control (file absent or wrong-dash first line fails the equality check). Do NOT substitute the green check for the file-contents read."
+    },
+    {
+      "role": "review",
+      "step": "Approve the head where smoke/S394873566-5.md is present, first-line-correct, and the diff is single-file. If requesting a change, request at most ONE appended line (AC3); do not demand the 3-round marker pattern."
+    }
+  ]
+}
