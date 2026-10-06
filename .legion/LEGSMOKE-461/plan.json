@@ -1,0 +1,319 @@
+{
+  "acceptance": [
+    {
+      "command": "legion gh -- pr view \u003cN\u003e --repo sjawhar/legion-smoke --json files --jq '.files[] | select(.path|startswith(\"smoke/\")) | [.path,.additions,.deletions] | @tsv' → `smoke/LEGSMOKE-461.md\t1\t0` (`2\t0` after the append); legion gh -- api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-461.md?ref=\u003chead\u003e\" --jq .name → LEGSMOKE-461.md",
+      "criterion": "The PR adds exactly one new Markdown file under smoke/, named smoke/LEGSMOKE-461.md",
+      "id": 1,
+      "negativeControl": "the same contents query at ?ref=7de51c913a26 → gh: Not Found (HTTP 404)",
+      "provedBy": "implementer at the code head (and in the production check), tester at the PR head, reviewer at the head it approves",
+      "surface": "the pull request on GitHub via `legion gh -- pr view --json files` plus the contents API"
+    },
+    {
+      "command": "legion gh -- api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-461.md?ref=\u003chead\u003e\" --jq .content | base64 -d | tee /tmp/ac2 | cmp - \u003c(printf 'LEGSMOKE-461: Stage 4b proof tree 2: planner beside tree 1, with the repository fixture\\n') \u0026\u0026 echo MATCH → MATCH; wc -c \u003c/tmp/ac2 → 88; wc -l → 1 (supplementary); grep -c LEGSMOKE-461 → 1",
+      "criterion": "smoke/LEGSMOKE-461.md holds exactly one newline-terminated line naming LEGSMOKE-461",
+      "id": 2,
+      "negativeControl": "the same query at ?ref=7de51c913a26 → HTTP 404",
+      "provedBy": "implementer (code head; post-merge production check), tester (PR head), reviewer (approved head)",
+      "surface": "GitHub contents API at a named SHA via `legion gh -- api`"
+    },
+    {
+      "command": "… | base64 -d | tee /tmp/ac3 | cmp - \u003c(printf '\u003cline 1\u003e\\n\u003cquoted line\u003e\\n') \u0026\u0026 echo MATCH → MATCH; head -n 1 /tmp/ac3 | cmp - \u003c(printf '\u003cline 1\u003e\\n') → exit 0; wc -l \u003c/tmp/ac3 → 2 (supplementary); acceptance 1 and 4 again at that head",
+      "conditional": "triggered only by a REQUEST_CHANGES review with exactly one inline comment on smoke/LEGSMOKE-461.md quoting the line; the proof driver's targeted message to the reviewer decides; at most one round (spec Scope: 'one more line'). When triggered, acceptance 3 supersedes acceptance 2's line count (D3). When not triggered: review.json and test.json carry `AC3 not triggered — review round 1 was APPROVE at \u003csha\u003e; no appended-line request`, no proof entry is written for it, and the body's Not proven / risk stays `none` for that reason (D4). A COMMENT-only review, plain PR comment, out-of-band request, second round, second file, third line or README/SMOKE edit: report to the architect over Envoy, no append.",
+      "criterion": "If the review asks for one more line, the file holds line 1 unchanged plus exactly the quoted line; acceptance 1 and 4 still hold",
+      "id": 3,
+      "negativeControl": "the 88-byte one-line printf against the post-append bytes → cmp reports differ/EOF",
+      "surface": "GitHub contents API at the post-append head"
+    },
+    {
+      "command": "legion gh -- pr view \u003cN\u003e --repo sjawhar/legion-smoke --json files --jq '.files[].path' | grep -vxF -f \u003c(legion gh -- api repos/sjawhar/legion-smoke/commits/7de51c913a26477844db66ba1790ff1bb52b4ad1 --jq '.files[].filename') | grep -v -e '^\\.legion/LEGSMOKE-461/' -e '^docs/solutions/' → exactly one line: smoke/LEGSMOKE-461.md; legion gh -- api \"repos/sjawhar/legion-smoke/compare/7de51c913a26...\u003chead\u003e\" --jq '.files[].filename' lists no fixture path. Local pre-push equivalent: jj -R \"$LEGION_WORKSPACE\" diff --from 7de51c913a26 --to @- --summary → `A smoke/LEGSMOKE-461.md` plus .legion/LEGSMOKE-461/ lines only",
+      "criterion": "Plan reading (see specDepartures): above the branch baseline 7de51c91 the PR changes only smoke/LEGSMOKE-461.md plus .legion/LEGSMOKE-461/ and docs/solutions/; the 10 fixture files keep their bytes",
+      "exemptionsExhaustive": "smoke/LEGSMOKE-461.md, .legion/LEGSMOKE-461/*, docs/solutions/*, and the fixture commit's 10 paths with unchanged bytes; a .legion/\u003cother key\u003e/ path, .fail-me, a README/SMOKE line, a committed PR-body file, a second smoke/ file, or a modified/deleted fixture file is a failure, never a new exemption",
+      "id": 4,
+      "negativeControl": "the unfiltered `.files[].path` list shows the 10 fixture paths and the .legion/LEGSMOKE-461/ paths (the filter does work); legion gh -- api \"repos/sjawhar/legion-smoke/contents/.fail-me?ref=\u003chead\u003e\" → HTTP 404",
+      "provedBy": "implementer at each code head and in the production check, tester at the PR head, reviewer at the approved head, merger at the tip (jj diff --from 7de51c913a26 --to \u003ctip\u003e --summary; jj diff --from \u003capproved\u003e --to \u003ctip\u003e --summary and its '~docs/solutions' variant)",
+      "surface": "the pull request on GitHub via `legion gh -- pr view --json files`, the baseline read from the commits API (never typed by hand)"
+    },
+    {
+      "command": "legion gh -- api \"repos/sjawhar/legion-smoke/actions/runs?head_sha=\u003chead\u003e\u0026per_page=20\" --jq '.workflow_runs[] | [.name,.event,.status,.conclusion] | @tsv' → rows for ci and fail-on-demand, every row completed/success; wait with legion gh -- pr checks \u003cN\u003e --repo sjawhar/legion-smoke --watch (ci sleeps 20 s; allow 30–60 s)",
+      "criterion": "gate fact, not a spec criterion: ci and fail-on-demand green for both events at the head each role acts on (branch protection unreadable by the role App: HTTP 403 re-measured 2026-10-06, so both workflows are the verdict)",
+      "id": "CI",
+      "negativeControl": "contents/.fail-me?ref=\u003chead\u003e → HTTP 404",
+      "pushesThatRunCI": "implementer pushes (code and implement: record handoff) and an approving reviewer's review: record handoff push run CI in full; the tester's test: record handoff push and a changes_requested reviewer handoff push skip CI and inherit the code head's verdict, so the reviewer approves the SHA its own handoff push made after its runs settle green",
+      "redRun": "legion gh -- run rerun \u003crun-id\u003e --failed only; never a new commit, never bringing in main; no [skip ci]-family keyword in any commit message",
+      "surface": "GitHub Actions via `legion gh --`"
+    }
+  ],
+  "baseCommit": "main@origin = 0cf9919c1d88; branch baseline (fixture commit, already on GitHub) = 7de51c913a26477844db66ba1790ff1bb52b4ad1; no PR open at planning time",
+  "branch": "legion/LEGSMOKE-461",
+  "changeSpec": {
+    "appendedLineIfRequested": "exactly the text the REQUEST_CHANGES review quotes, plus a newline; the plan's default `LEGSMOKE-461: Stage 4b review round 1` (38 bytes with newline) is what the reviewer quotes only when the proof driver's message names no other; a request quoting no text is answered on the thread, never guessed",
+    "bytes": 88,
+    "commitMessages": {
+      "append": "smoke: append review round 1 line to LEGSMOKE-461.md",
+      "code": "smoke: add LEGSMOKE-461 marker file"
+    },
+    "content": "LEGSMOKE-461: Stage 4b proof tree 2: planner beside tree 1, with the repository fixture\n",
+    "file": "smoke/LEGSMOKE-461.md",
+    "lines": 1,
+    "mustNotChange": "any other tracked file, including the 10 fixture files (.codex/tools/fixture.ts, .mcp.json, .omp/extensions/fixture.ts, .omp/mcp.json, .omp/plugins/**, .omp/tools/fixture.ts, AGENTS.md, lsp.json); never create .fail-me or any root file; never touch .github/workflows; no README/SMOKE line, no test, no changelog",
+    "precondition": "file absent in the workspace and 404 on GitHub at 7de51c91 (planner-verified); the implementer re-checks `test ! -e smoke/LEGSMOKE-461.md` (else report to the architect and stop, never overwrite) and `legion gh -- pr list --head legion/LEGSMOKE-461 --state open` (reuse an open PR)"
+  },
+  "completed": "2026-10-06T04:04:15.26811418Z",
+  "defaultBranch": "main",
+  "discoveredScope": [
+    "acceptance 4 cannot pass on a literal reading of the PR's file list because the proof driver's fixture commit 7de51c91 (10 files) is already on the branch; recorded in specDepartures for the architect",
+    "none otherwise: every acceptance criterion has a reachable production-like surface today (GitHub via legion gh --; the workspace's jj/git worktree for the post-merge read), so no prerequisite child issue is needed"
+  ],
+  "fixtureRules": "The 10 fixture files are standing content: no role modifies, moves or deletes them; AGENTS.md's one instruction touches /tmp only and carries no repository engineering convention. The fixture's MCP servers (sh -c '… \u0026\u0026 sleep 600'), markdown LSP, fixture_marker tool and /fixture plugin command are harness runtime, never a proof surface or command; a hanging or failing fixture server is reported to the architect, never fixed by editing a tracked file. Fixture loading (/tmp/legion-fixture markers) is the proof driver's observation of the worker environment, not this issue's evidence: no phase records or proves it unless the architect says otherwise.",
+  "gapAnalysis": {
+    "findings": [
+      {
+        "answer": "Departure recorded (specDepartures, plan.md 'Departure from the spec'): acceptance 4 is measured above the branch baseline 7de51c91, the files this issue's roles add. The architect decides whether spec acceptance 4 is amended.",
+        "finding": "Acceptance 4 cannot hold as written: the PR to main lists the fixture commit 7de51c91's 10 non-smoke files, which the spec's exemption (files the Legion workflow writes) does not cover; removing them would itself be a forbidden removal."
+      },
+      {
+        "answer": "Acceptance 4 command derives the fixture list from `legion gh -- api repos/sjawhar/legion-smoke/commits/7de51c91… --jq '.files[].filename'` (never typed by hand), filters it plus the two spec exemptions, expects exactly smoke/LEGSMOKE-461.md; the compare API confirms no fixture path changed; the exemption set is closed (exemptionsExhaustive).",
+        "finding": "Under the baseline reading the check must enumerate the 10 fixture paths, which tree 1's 'exemption list is exhaustive' rule forbids inventing ad hoc."
+      },
+      {
+        "answer": "D1: exactly `LEGSMOKE-461: Stage 4b proof tree 2: planner beside tree 1, with the repository fixture\\n`, 88 bytes, suffix dropped to match smoke/LEGSMOKE-339.md and smoke/LEGSMOKE-439.md; every content check is cmp at a named SHA, never a visual read.",
+        "finding": "The spec fixes the file name but no content bytes; a title-derived line would carry the ephemeral (/tmp/…) suffix."
+      },
+      {
+        "answer": "D2: the appended bytes are exactly the review's quoted text plus newline; the plan default applies only when the driver names none; a request quoting no text is answered on the thread; the check is line-1 cmp + two-line cmp + line count, not a precomputed byte total.",
+        "finding": "Acceptance 3's appended text is unknowable at plan time; tree 1's merged file carries the review's quote, not the plan's default."
+      },
+      {
+        "answer": "D2: trigger is a REQUEST_CHANGES review with exactly one inline comment on smoke/LEGSMOKE-461.md quoting the line; COMMENT-only, plain PR comment or out-of-band request → report to the architect, no append.",
+        "finding": "'When a review comment asks for one more line' names neither the actor nor the GitHub event; only a review that returns the issue to implementing starts the implementer."
+      },
+      {
+        "answer": "D2: at most one append round (Scope's 'one more line'), matching tree 1; a second request is reported to the architect and not made. Named in the completion summary for the architect to confirm.",
+        "finding": "Acceptance 3 says 'the lines review asked for' while Scope says 'one more line'; Stage 3 history shows three rounds per proof, so the round budget is open."
+      },
+      {
+        "answer": "D3: once triggered, acceptance 3 supersedes acceptance 2's line count; acceptance 2's newline and names-the-issue obligations still hold for line 1. Same reading tree 1 recorded (LEGSMOKE-439 D4); a reading for the architect to confirm, not a departure.",
+        "finding": "Acceptance 2 (one line) and acceptance 3 (line 1 plus the review's lines) describe different end states."
+      },
+      {
+        "answer": "D4: review.json and test.json carry `AC3 not triggered — review round 1 was APPROVE at \u003csha\u003e; no appended-line request`, no proof entry, Not proven / risk stays `none` for that reason.",
+        "finding": "Acceptance 3 is conditional, so on the APPROVE-first path no command decides it and a six-string proof cannot be invented."
+      },
+      {
+        "answer": "Acceptance 1 command: smoke/-prefixed files are exactly smoke/LEGSMOKE-461.md with additions 1 (2 after the append) and deletions 0, plus the contents API 404 at 7de51c91 and 200 at the head.",
+        "finding": "Acceptance 1 requires the PR to 'add' a file, but pr view --json files reports no add/modify status."
+      },
+      {
+        "answer": "Contradicted by measurement: the workspace .git is a worktree pointer (gitdir: /legion/repos/github.com/sjawhar/legion-smoke/.git/worktrees/legsmoke-461) and both `git show origin/main:` and `jj file show -r main@origin` read smoke/LEGSMOKE-439.md (95 bytes). D12/T12: jj git fetch then jj file show -r main@origin … | cmp, beside the contents API at ?ref=main and the merge commit.",
+        "finding": "All criteria are anchored on the pull request, none on the merged state, yet the workflow mandates a production check; the analyst saw no .git in the workspace."
+      },
+      {
+        "answer": "D6 / fixtureRules: no role modifies, moves or deletes AGENTS.md, .mcp.json, lsp.json, .omp/**, .codex/**; AGENTS.md's instruction touches /tmp only and is compatible with acceptance 4; requiredSkills name it.",
+        "finding": "The 10 fixture files are standing content every phase meets; tree 1's 'no AGENTS.md exists' statement is stale here."
+      },
+      {
+        "answer": "D6: none may be a proof surface or command; a hanging or failing fixture server is reported to the architect, never fixed by editing a tracked file.",
+        "finding": "The fixture changes each role's runtime (MCP servers with sleep 600, markdown LSP, fixture_marker tool, /fixture plugin command)."
+      },
+      {
+        "answer": "D7: fixture loading is the proof driver's observation of the worker environment, not this issue's evidence; no phase records or proves it. Named in the completion summary; the architect may overturn.",
+        "finding": "The issue title promises 'with the repository fixture' but no criterion names the /tmp/legion-fixture markers; undefined whether any phase must observe them."
+      },
+      {
+        "answer": "D9 from the role prompt: only the planner's plan.json, the tester's test.json and a changes_requested review.json push skip CI; an approving reviewer's handoff push runs CI in full, so the approval head has its own runs — the reviewer waits for them, then approves that SHA.",
+        "finding": "Handoff-only pushes skip CI yet the reviewer must approve after CI settled green at the head its handoff push made; if that head has no runs the gate is undecidable."
+      },
+      {
+        "answer": "Re-measured today: branches/main/protection → HTTP 403. Acceptance row CI carries the gate as a non-spec criterion with its own proof; the READY packet names the unknown required set.",
+        "finding": "The CI gate has no spec criterion and the required-check set is unknown (403 measured on tree 1, not today)."
+      },
+      {
+        "answer": "D9/T4: each proof's headSha is the head its reads ran at; the tester re-reads pr view --json headRefOid before re-running; red runs re-run with legion gh -- run rerun \u003cid\u003e --failed, never a new commit or bringing in main.",
+        "finding": "Each phase pushes twice in effect, so proof heads and the PR head diverge; acceptance 4's baseline check must be re-run at each head."
+      },
+      {
+        "answer": "D10/T1/T3: test ! -e smoke/LEGSMOKE-461.md (else report and stop, never overwrite); pr list --head legion/LEGSMOKE-461 --state open (reuse); code push before pr create.",
+        "finding": "The planner's preconditions are point-in-time; nothing tells the implementer what to do if one changed."
+      },
+      {
+        "answer": "D11/T9: retro's single commit adds only new docs/solutions/\u003ctopic\u003e.md paths, no README/SMOKE line, no .legion/ file, so the merger's '~docs/solutions' diff prints nothing.",
+        "finding": "docs/solutions/ does not exist, so retro creates it; acceptance 4 exempts only that prefix and retro must write no index entry."
+      }
+    ]
+  },
+  "integrationEvidence": "Gate order per references/merge-gate.md: tester green → reviewer APPROVE of the head → retro's docs/solutions/ commit → merger READY (threads resolve exit 0, both jj diff --summary outputs, the baseline diff from 7de51c91) → human merge → implementer production check in three places (PR body Production: line, PR comment with footer, dispatch_message). Handoff commits: `plan: record handoff`, `implement: record handoff`, `test: record handoff`, `review: record handoff`; every push is `legion push`; each commit's author/committer is its role's App. No role removes .legion/.",
+  "issue": "LEGSMOKE-461",
+  "outOfScope": [
+    "README.md, SMOKE.md, smoke.md, smoke.txt, stage3-*.txt, .github/workflows/*, any other smoke/* file, every fixture file",
+    "creating .fail-me or any root file",
+    "any GitHub issue write (Legion issues live on Dispatch)",
+    "a second review append round or any request beyond one appended line"
+  ],
+  "phase": "plan",
+  "planDocument": "dispatch://LEGSMOKE-461/artifact/plan-md (plan.md v1) — departure record, decisions D1–D12, acceptance table, tasks T1–T12",
+  "planReview": {
+    "notesFolded": "three non-blocking notes (T8 names round 2's review.json write/commit/push; T9 names the revived implementer and the Dispatch retro message; wc -l line counts marked supplementary) folded into plan.md v1 before upload",
+    "rounds": 1,
+    "verdict": "approved"
+  },
+  "repository": "sjawhar/legion-smoke",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker (with references/pr-body.md and references/merge-gate.md) — the implementer's proof-before-completion, the PR body template with the `Dispatch: LEGSMOKE-461` line and E2E (implementer) line, the proof[] array implement.json is refused without, the push/handoff completion gate, and the post-merge production check in three places; docs-only diff, so ce-simplify-code does not run and the Thermo line is omitted.",
+      "dispatch — the production-check dispatch_message on LEGSMOKE-461 follows its message rules. Repository: AGENTS.md's one fixture command (touches /tmp only); no repository skill, test harness or engineering convention exists — the planner read AGENTS.md, README.md, SMOKE.md, .github/workflows/, .omp/, .codex/."
+    ],
+    "review": [
+      "legion-worker (references/merge-gate.md and references/review-threads.md) — verify CI/E2E facts on GitHub not from handoffs; one review per round via legion gh -- api --method POST …/pulls/\u003cN\u003e/reviews named by SHA; APPROVE only after CI settled green at the head its handoff push made; docs-only PR so the Thermo line and thermonuclear passes are omitted; Look at first and Not proven / risk written into the live body. Repository: AGENTS.md's fixture command only; no repository skill exists (see implement)."
+    ],
+    "test": [
+      "legion-worker (references/pr-body.md tester rules) — re-run the implementer's GitHub reads at the current head, record implementerProof {verdict, how} and an own proof[] in test.json, write the E2E (tester) line; no test file is written (no harness; a one-line marker has no behaviour a test defends). Repository: AGENTS.md's fixture command only; no repository skill exists (see implement)."
+    ]
+  },
+  "reviewEvidence": "Reviewer verifies on GitHub, never from handoffs: both workflows green at the head, both E2E lines present and reproducible, the non-fixture non-exempt PR diff is exactly smoke/LEGSMOKE-461.md with the expected bytes, no fixture file changed, `Dispatch: LEGSMOKE-461` in the body, no .fail-me, no workflow change. Docs-only: no Thermo line, no thermonuclear passes. One review submission per round by SHA; APPROVE only after CI settled green at the head its handoff push made; REQUEST_CHANGES does not wait.",
+  "risks": [
+    "Content exactness: one newline-terminated line, 88 bytes; a missing trailing newline or an extra blank line fails the cmp proof. The line comes from the plan (D1), not the issue title (which carries a /tmp/… suffix).",
+    "Acceptance 4's literal reading fails because of the fixture commit; the plan's baseline reading is a recorded departure. If the architect rules otherwise, the implementer must not act on acceptance 4 until the spec or plan is settled.",
+    "Whether the review append round happens is the proof driver's call through its targeted message to the reviewer; both end states (one line or two) are specified and the implementer appends the text the review quotes.",
+    "main branch protection is unreadable by the role App (HTTP 403): the required-check set is unknown; both workflows green at the head is the verdict and the READY packet names the unknown.",
+    "The implementer pushes twice (code, then handoff), so the PR head after T3 is the handoff commit, not the proof's SHA; the tester re-verifies at the then-current head.",
+    "Fixture MCP/LSP processes (sleep 600) run in each role's harness; a hang is reported, never fixed in a tracked file."
+  ],
+  "schemaVersion": 1,
+  "spec": "dispatch://LEGSMOKE-461/spec v2",
+  "specDepartures": [
+    {
+      "evidence": "legion/LEGSMOKE-461@origin = 7de51c91, one commit above main (0cf9919c), authored stage4b@legion.invalid before any Legion role started, adding 10 files none under smoke/ (`legion gh -- api repos/sjawhar/legion-smoke/commits/7de51c91… --jq '.files[].filename'`). A PR from the branch to main lists them in `gh pr view --json files`, so the literal criterion cannot pass; removing them would itself be a forbidden 'removes' and defeat the tree's purpose ('with the repository fixture').",
+      "outcome": {
+        "kind": "changed",
+        "scope": "acceptance: item 4 — the exemption must also cover the fixture commit 7de51c91's 10 files (or the criterion be read above that baseline); the architect decides whether spec v2 is amended"
+      },
+      "plan": "Acceptance 4 is measured above the branch baseline 7de51c913a26 (the proof driver's fixture commit), not above main: the pull request's file list is filtered by the fixture commit's own 10 paths (read from the commits API) plus the two spec exemptions and must leave exactly smoke/LEGSMOKE-461.md; the fixture files keep their bytes (compare API lists none). The fixture commit is neither removed nor amended.",
+      "spec": "Acceptance 4: 'Outside that file, the pull request adds, changes or removes nothing, apart from the files the Legion workflow itself writes on every branch it runs: its phase handoffs under .legion/LEGSMOKE-461/ and the retro notes under docs/solutions/.'"
+    }
+  ],
+  "summary": "Docs-only one-file change: add smoke/LEGSMOKE-461.md holding the one newline-terminated line `LEGSMOKE-461: Stage 4b proof tree 2: planner beside tree 1, with the repository fixture` (88 bytes; the issue title without its /tmp suffix). No other repository file changes outside the workflow's own records (.legion/LEGSMOKE-461/\u003cphase\u003e.json, retro's docs/solutions/ note). The branch already carries the proof driver's fixture commit 7de51c91 (10 repository-configuration files), so acceptance 4 is measured above that baseline — recorded as a spec departure for the architect. The change rides legion/LEGSMOKE-461 through implement, test, review (at most one contingent append round), retro, merger READY, human merge, and the implementer's production check.",
+  "tasks": [
+    {
+      "id": "T1",
+      "phase": "implement",
+      "steps": [
+        "cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 jj -R \"$LEGION_WORKSPACE\" status; run AGENTS.md's fixture command (mkdir -p /tmp/legion-fixture \u0026\u0026 touch /tmp/legion-fixture/agents-md)",
+        "test ! -e \"$LEGION_WORKSPACE/smoke/LEGSMOKE-461.md\" || report to the architect and stop",
+        "write exactly `LEGSMOKE-461: Stage 4b proof tree 2: planner beside tree 1, with the repository fixture\\n`; verify printf '…\\n' | cmp - smoke/LEGSMOKE-461.md → exit 0; wc -c → 88; jj -R \"$LEGION_WORKSPACE\" diff --summary → exactly `A smoke/LEGSMOKE-461.md`",
+        "jj -R \"$LEGION_WORKSPACE\" split -m \"smoke: add LEGSMOKE-461 marker file\" smoke/LEGSMOKE-461.md",
+        "identity check: jj -R \"$LEGION_WORKSPACE\" log -r 'main@origin..@' -T 'author.email() ++ \" | \" ++ committer.email() ++ \" \" ++ description.first_line() ++ \"\\n\"' shows the implement App on the implementer's own commits (fixture commit = stage4b@legion.invalid, planner's = review App: both legitimate)"
+      ],
+      "title": "Create smoke/LEGSMOKE-461.md"
+    },
+    {
+      "id": "T2",
+      "phase": "implement",
+      "steps": [
+        "cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 legion push (CI runs in full)",
+        "record the code head: jj -R \"$LEGION_WORKSPACE\" log -r @- --no-graph -T commit_id",
+        "run acceptance 2 + CI commands with negative controls at that SHA; acceptance 1 and 4 (filtered and unfiltered) in T3 as soon as the PR exists, same SHA"
+      ],
+      "title": "Push and prove at the code head"
+    },
+    {
+      "id": "T3",
+      "phase": "implement",
+      "steps": [
+        "legion gh -- pr list --repo sjawhar/legion-smoke --head legion/LEGSMOKE-461 --state open --json number → reuse an open PR if any",
+        "legion gh -- pr create --repo sjawhar/legion-smoke --base main --head legion/LEGSMOKE-461 --title \"smoke: add LEGSMOKE-461 marker file\" --body-file /tmp/legsmoke-461-pr-body.md (body written outside the tree, never committed)",
+        "body per skill://legion-worker/references/pr-body.md: Outcome, Why ending (LEGSMOKE-461), Change, Proven by, Size; the literal line `Dispatch: LEGSMOKE-461`; CI line with run ids + head SHA; Threads: 0 resolved, 0 unresolved; Thermo omitted (docs-only); E2E (implementer) with surface/command/observed/head SHA/negative control; E2E (tester) left for the tester; Production: pending human merge; Fast-follow: none; Chain: not stacked",
+        "run acceptance 1 and acceptance 4 (filtered + unfiltered) at the code head",
+        "legion tool handoff_write phase implement with proof[] for acceptance 1, 2, 4 and the CI gate at the code head (six non-empty strings each)",
+        "test -f \"$LEGION_WORKSPACE/.legion/LEGSMOKE-461/implement.json\"; jj -R \"$LEGION_WORKSPACE\" split -m \"implement: record handoff\" .legion/LEGSMOKE-461/implement.json; legion push (runs CI; head moves — expected)",
+        "handoff_complete naming the PR number and code head SHA"
+      ],
+      "title": "Open the PR, write implement.json, push handoff"
+    },
+    {
+      "id": "T4",
+      "phase": "test",
+      "steps": [
+        "read .legion/LEGSMOKE-461/plan.json and implement.json; a missing or malformed implement proof is a failure to record (implementerProof.verdict rejected, failures entry, verdict fail), never a gap to fill",
+        "head=$(legion gh -- pr view \u003cN\u003e --repo sjawhar/legion-smoke --json headRefOid --jq .headRefOid); re-run acceptance 1, 2, 4 (filtered + unfiltered) and CI with negative controls at $head",
+        "test.json: implementerProof {verdict: verified, how: re-ran \u003ccommand\u003e at \u003csha\u003e, observed \u003cresult\u003e}, own proof[] (acceptance 1, 2, 4, CI), failures [], and `AC3 not triggered — …` when applicable; no test file written (no harness; a one-line marker has no behaviour a test defends)",
+        "edit the live PR body's E2E (tester) line (legion gh -- api repos/sjawhar/legion-smoke/pulls/\u003cN\u003e --jq .body → edit → --method PATCH -F body=@/tmp/body.md)",
+        "jj -R \"$LEGION_WORKSPACE\" split -m \"test: record handoff\" .legion/LEGSMOKE-461/test.json; legion push (handoff-only, skips CI); handoff_complete verdict pass"
+      ],
+      "title": "Verify at the PR head; write test.json"
+    },
+    {
+      "id": "T5",
+      "phase": "review",
+      "steps": [
+        "verify on GitHub, never from handoffs: CI rows at the head, Threads, both E2E lines reproducible (acceptance 1, 2, 4, CI commands); legion gh -- pr diff \u003cN\u003e --repo sjawhar/legion-smoke shows the non-fixture, non-exempt diff is exactly smoke/LEGSMOKE-461.md with the 88 bytes; `Dispatch: LEGSMOKE-461` in the body; no .fail-me, no workflow change, no fixture file changed",
+        "docs-only: no thermonuclear pair, no Thermo line; write Look at first (smoke/LEGSMOKE-461.md:1) and Not proven / risk into the live body",
+        "write review.json (verdict, head SHA, the AC3-not-triggered line when approving); jj -R \"$LEGION_WORKSPACE\" split -m \"review: record handoff\" .legion/LEGSMOKE-461/review.json; legion push",
+        "as the proof driver's targeted message instructs (absent one: merge-gate.md's rule — REQUEST_CHANGES when a correctness finding stands, otherwise APPROVE): either REQUEST_CHANGES by SHA via legion gh -- api --method POST repos/sjawhar/legion-smoke/pulls/\u003cN\u003e/reviews --input /tmp/review.json (commit_id, event, body with the Legion footer, exactly one comments[] entry on smoke/LEGSMOKE-461.md line 1 quoting the line to append), handoff_complete verdict fail; or wait for CI green at the head its handoff push made, APPROVE that SHA, handoff_complete verdict pass"
+      ],
+      "title": "Review round 1"
+    },
+    {
+      "id": "T6",
+      "phase": "implement (contingent, acceptance 3)",
+      "steps": [
+        "printf '\u003cquoted line\u003e\\n' \u003e\u003e \"$LEGION_WORKSPACE/smoke/LEGSMOKE-461.md\"; local cmp against the two-line printf; line 1 unchanged",
+        "jj -R \"$LEGION_WORKSPACE\" split -m \"smoke: append review round 1 line to LEGSMOKE-461.md\" smoke/LEGSMOKE-461.md; legion push",
+        "re-run acceptance 3, 1, 4 and CI at the new head with negative controls; update E2E (implementer), Size, Threads in the body; reply on the review thread naming the fix commit; legion threads resolve --pr \u003cN\u003e --repo sjawhar/legion-smoke and paste its output into Threads (a `left open … not an acceptance` line is expected until the reviewer's Accepted:)",
+        "pipe-edit implement.json adding the acceptance-3 proof entry (bun -e '…' | legion handoff write --phase implement); jj split -m \"implement: record handoff\" .legion/LEGSMOKE-461/implement.json; legion push; handoff_complete"
+      ],
+      "title": "Append the reviewer-quoted line"
+    },
+    {
+      "id": "T7",
+      "phase": "test (contingent)",
+      "steps": [
+        "as T4 with acceptance 3's expectations (two-line cmp, line-1 cmp, wc -l → 2) and the one-line printf as negative control"
+      ],
+      "title": "Re-verify at the post-append head"
+    },
+    {
+      "id": "T8",
+      "phase": "review (contingent)",
+      "steps": [
+        "post Accepted: on the round-1 thread per references/review-threads.md; verify the post-append head as in T5; write round 2's review.json, jj split -m \"review: record handoff\", legion push (approving round: CI runs in full); CI green at the head that push made; APPROVE that SHA; handoff_complete verdict pass"
+      ],
+      "title": "Review round 2"
+    },
+    {
+      "id": "T9",
+      "phase": "retro",
+      "steps": [
+        "run by the revived implementer per skill://legion-retro: one commit adding docs/solutions/\u003ctopic\u003e.md above the approved head (repository has no docs/ today), pushed with legion push; touches no README index, no .legion/ file, no other path; the Dispatch retro message with the phase: retro footer; no handoff file or commit; does not void the approval"
+      ],
+      "title": "Retro note"
+    },
+    {
+      "id": "T10",
+      "phase": "merge",
+      "steps": [
+        "legion threads resolve --pr \u003cN\u003e --repo sjawhar/legion-smoke → no `left open` line, exit 0",
+        "cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 jj -R \"$LEGION_WORKSPACE\" git fetch \u0026\u0026 jj -R \"$LEGION_WORKSPACE\" diff --from \u003capproved-sha\u003e --to \u003ctip-sha\u003e --summary (expected: the docs/solutions/ note or no file changes); same with '~docs/solutions' → prints nothing; jj diff --from 7de51c913a26 --to \u003ctip-sha\u003e --summary → smoke/LEGSMOKE-461.md, .legion/LEGSMOKE-461/*, docs/solutions/* only",
+        "READY #\u003cN\u003e at \u003ctip\u003e (approved at \u003capproved\u003e) for LEGSMOKE-461 (\u003cpr url\u003e) per references/merge-gate.md with Outcome:, Not proven / risk:, the --summary outputs, both E2E lines, CI facts, the unknown required-check set and the acceptance-4 departure; handoff_complete with ready: true; Legion never merges"
+      ],
+      "title": "Merger READY"
+    },
+    {
+      "id": "T11",
+      "phase": "human merge",
+      "steps": [
+        "no role polls; the daemon starts the implementer again once the merge lands"
+      ],
+      "title": "Proof driver merges on GitHub"
+    },
+    {
+      "id": "T12",
+      "phase": "implement (production check)",
+      "steps": [
+        "jj -R \"$LEGION_WORKSPACE\" git fetch \u0026\u0026 jj -R \"$LEGION_WORKSPACE\" file show -r main@origin smoke/LEGSMOKE-461.md | cmp - \u003c(printf '\u003cfinal bytes\u003e') \u0026\u0026 echo MATCH (the workspace .git is a worktree pointer into the shared clone; both this and git show origin/main:\u003cpath\u003e work, verified by the planner on smoke/LEGSMOKE-439.md → 95 bytes); contents API at ?ref=main and ?ref=\u003cmerge commit\u003e (legion gh -- pr view \u003cN\u003e --repo sjawhar/legion-smoke --json mergeCommit,mergedAt,mergedBy); negative control ?ref=7de51c913a26 → 404; acceptance 4 filtered command on the merged PR",
+        "record in the PR body Production: line (merge commit SHA, what was read, where), one PR comment with the Legion footer, and one dispatch_message on LEGSMOKE-461 naming the command, observed bytes, merge commit; handoff_complete"
+      ],
+      "title": "Production check after the merge"
+    }
+  ],
+  "testEvidence": "No unit or regression test: the repository has no test harness and a one-line Markdown marker has no behaviour a test defends. The tester's evidence is acceptance 1, 2 and 4 and the CI command run at the PR head, recorded as proof[] in test.json and the E2E (tester) body line with head SHA, observation and read-only negative controls, plus implementerProof recording the re-run of the implementer's commands; acceptance 3 when triggered."
+}
