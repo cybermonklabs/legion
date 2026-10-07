@@ -1,0 +1,76 @@
+{
+  "acceptance": [
+    {
+      "command": "cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 cat smoke/S394543611-1.md",
+      "criterion": "smoke/S394543611-1.md exists on the PR branch holding the single line `S394543611-1 — Primary durable workflow profile`.",
+      "negativeControl": "the file is absent on main/base before the change",
+      "surface": "repository working tree at the PR head"
+    },
+    {
+      "command": "legion gh -- pr checks \u003cpr\u003e",
+      "criterion": "ci.yml check job green on the PR (gate only; passes unconditionally, file content proven by the AC1 read; fail-on-demand.yml untriggered).",
+      "negativeControl": "n/a — ci.yml runs `sleep 20 \u0026\u0026 exit 0` and cannot go red on content",
+      "surface": "GitHub Actions on the PR"
+    }
+  ],
+  "completed": "2026-10-07T21:41:35.973450047Z",
+  "gapAnalysis": {
+    "findings": [
+      {
+        "answer": "Pinned exact first line to `S394543611-1 — Primary durable workflow profile` (em-dash U+2014) with a trailing newline.",
+        "finding": "Spec does not state the exact required line content; existing files use `\u003cKEY\u003e — \u003cTitle\u003e` with em-dash U+2014."
+      },
+      {
+        "answer": "Confirmed the title is `Primary durable workflow profile` verbatim, matching the issue title and prior files.",
+        "finding": "Canonical title to embed was not pinned."
+      },
+      {
+        "answer": "The spec's one-appended-line cap is authoritative; appended text, if review requests it, is the reviewer-specified line (`Stage 3 review round 1 (S394543611)`); no review-round lines are pre-added.",
+        "finding": "Scope conflict: spec caps appended lines at one, but older files carry three review-round lines."
+      },
+      {
+        "answer": "Accepted CI green as the gate as-is; file content is proven by the AC1 file read, not CI; fail-on-demand.yml left untriggered.",
+        "finding": "\"CI green\" is not a meaningful machine check: ci.yml runs `sleep 20 \u0026\u0026 exit 0` and passes unconditionally."
+      },
+      {
+        "answer": "Pinned the exact path to `smoke/S394543611-1.md` (Markdown, not .txt); no other file added or modified.",
+        "finding": "File identity/location underspecified; some prior proofs used .txt."
+      }
+    ]
+  },
+  "implementation": {
+    "files": [
+      {
+        "action": "create",
+        "content": "single line `S394543611-1 — Primary durable workflow profile` (em-dash U+2014) with a trailing newline",
+        "path": "smoke/S394543611-1.md"
+      }
+    ],
+    "ordering": [
+      "implement: create smoke/S394543611-1.md; commit; legion push; open PR with `Dispatch: S394543611-1` in the body",
+      "test: verify file content at PR head and CI green; record proof",
+      "review: approve head; may request one appended line",
+      "merge"
+    ]
+  },
+  "issue": "S394543611-1",
+  "phase": "plan",
+  "planReview": {
+    "rounds": 1,
+    "verdict": "approved"
+  },
+  "requiredSkills": {
+    "implement": [
+      "none: reviewed the \u003cskills\u003e list (legion-*, dispatch, ce-simplify-code) and the repo (no AGENTS.md, no agent-skill directory); no domain/surface skill applies to adding one Markdown line, and the Legion worker charter the implementer already follows is not a repository skill."
+    ],
+    "review": [
+      "none: no repository review skill exists beyond the Legion worker charter already loaded."
+    ],
+    "test": [
+      "none: no repository test/smoke skill exists; verification is a file read at the PR head plus the unconditional ci.yml check (sleep 20 \u0026\u0026 exit 0)."
+    ]
+  },
+  "schemaVersion": 1,
+  "specDepartures": [],
+  "summary": "One-file Legion smoke change: add smoke/S394543611-1.md holding the single line `S394543611-1 — Primary durable workflow profile` (em-dash U+2014, trailing newline), matching the first-line format of every existing smoke/\u003cKEY\u003e.md. No other file is created or modified; a review may append one reviewer-specified line to the same file."
+}

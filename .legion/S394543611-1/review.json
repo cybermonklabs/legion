@@ -1,0 +1,23 @@
+{
+  "completed": "2026-10-07T22:10:45.865998547Z",
+  "critical": 0,
+  "important": 0,
+  "issue": "S394543611-1",
+  "keyFindings": [],
+  "minor": 0,
+  "phase": "review",
+  "reviewedHead": "65f0b626bdb56e4fca31202232c25ad9e2acf632",
+  "round": 4,
+  "schemaVersion": 1,
+  "security": "No security-relevant surface: the PR adds one Markdown marker file (4 lines) and handoff JSON; no code paths, inputs, trust boundaries, refusals, auth, or secrets are touched; no contract change (no refusal added, no field required/removed/renamed, no process/package-boundary signature change).",
+  "summary": "Final review APPROVE of PR #518 at the approval head. Verified against GitHub directly: file smoke/S394543611-1.md holds the marker line plus review-round lines 1–3; the single bot thread (sjawhar-agent) is resolved with the reviewer's Accepted as its newest comment; both E2E lines (implementer and tester) and their proofs are present in the PR body with negative controls; CI green (ci/check, fail-on-demand/gate). Diff is docs-only (one Markdown marker file + .legion handoff JSON), so the thermonuclear pair is not run and no contract-change census applies.",
+  "thermo": "skipped — docs-only diff (Markdown marker lines plus handoff JSON); the thermonuclear pair runs only when the diff touches runtime code.",
+  "threads": [
+    {
+      "disposition": "Accepted: not a defect — change needed per spec; resolved, newest comment is the reviewer's Accepted. Verified against GitHub via gh api graphql.",
+      "opener": "sjawhar-agent (non-Legion bot)",
+      "thread": "smoke/S394543611-1.md:1"
+    }
+  ],
+  "verdict": "approved"
+}
