@@ -1,0 +1,43 @@
+{
+  "branch": "legion/S391574992-1",
+  "completed": "2026-10-07T16:54:37.390329456Z",
+  "deviations": [],
+  "filesChanged": [
+    "smoke/S391574992-1.md"
+  ],
+  "headSha": "05b032a2d307",
+  "issue": "S391574992-1",
+  "phase": "implement",
+  "prNumber": 508,
+  "prUrl": "https://github.com/sjawhar/legion-smoke/pull/508",
+  "proof": [
+    {
+      "command": "legion gh -- api repos/sjawhar/legion-smoke/contents/smoke/S391574992-1.md?ref=legion/S391574992-1 | base64 -d | xxd; python byte check for exact four-line content",
+      "criterion": "Review round 3: smoke/S391574992-1.md gains the appended line 'Legion proof review round 3 (S391574992)' below the existing lines, nothing else changed",
+      "headSha": "05b032a2d307",
+      "negativeControl": "jj file show -r main@origin smoke/S391574992-1.md → 'Error: No such path' (absent on main); a CRLF or plain-hyphen variant fails the exact-byte equality check",
+      "observed": "file is exactly 'S391574992-1 — Primary durable workflow profile\\nLegion proof review round 1 (S391574992)\\nLegion proof review round 2 (S391574992)\\nLegion proof review round 3 (S391574992)\\n' (173 bytes, 4 lines, em dash U+2014 preserved on line 1, no CR, single trailing LF); jj diff --git shows only the appended line 4 with lines 1-3 unchanged",
+      "surface": "file contents at PR head (GitHub contents API on the branch tip)"
+    },
+    {
+      "command": "legion gh -- pr view 508 --repo sjawhar/legion-smoke --json files; jj -R $LEGION_WORKSPACE diff --git",
+      "criterion": "A/C: smoke/S391574992-1.md is the only content path changed at PR head (no .fail-me, no other content edits)",
+      "headSha": "05b032a2d307",
+      "negativeControl": "any second content path or a root .fail-me file would appear in jj diff --git and in pr --json files",
+      "observed": "content diff adds only smoke/S391574992-1.md (+1 line this round, four lines total vs main); remaining PR files are the required .legion/ handoff artifacts; no README/SMOKE/.fail-me change",
+      "surface": "PR diff / GitHub pull-request files"
+    },
+    {
+      "command": "legion gh -- run watch 37655437613 (check) and 37655437624 (gate) --exit-status; legion gh -- pr checks 508",
+      "criterion": "D: all required CI checks green on PR head (check and fail-on-demand/gate)",
+      "headSha": "05b032a2d307",
+      "negativeControl": "a .fail-me file at repo root turns the fail-on-demand/gate job red; none is present, so gate is green",
+      "observed": "check and gate runs both success; pr checks shows check=pass and gate=pass at 05b032a2",
+      "surface": "GitHub Actions on the PR"
+    }
+  ],
+  "round": 3,
+  "schemaVersion": 1,
+  "summary": "Review round 3 (final): appended the line 'Legion proof review round 3 (S391574992)' below the existing lines in smoke/S391574992-1.md (title line, em dash U+2014, round-1 and round-2 lines unchanged), nothing else in content changed. No unresolved review threads; both required checks (check, gate) green at head 05b032a2; not merged.",
+  "threadDisposition": "The only review thread (#discussion_r4209466485, bot sjawhar-agent) was already resolved on the Legion reviewer's acceptance in round 2; legion threads resolve at head 05b032a2 reports 'no unresolved threads'."
+}

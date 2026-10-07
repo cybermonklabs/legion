@@ -1,0 +1,104 @@
+{
+  "acceptanceCriteria": [
+    {
+      "check": "jj file show -r \u003cheadSha\u003e smoke/S391574992-1.md (or legion gh -- pr view --json files)",
+      "criterion": "smoke/S391574992-1.md exists at PR head",
+      "id": "A",
+      "negativeControl": "file absent on main before the change",
+      "surface": "repo tree at PR head SHA"
+    },
+    {
+      "check": "grep -qF the line AND wc -l == 1 AND no CR",
+      "criterion": "single line exactly 'S391574992-1 — Primary durable workflow profile' with em dash U+2014, one trailing LF, LF endings",
+      "id": "B",
+      "negativeControl": "plain-hyphen or multi-line variant fails the grep/wc check",
+      "surface": "file contents at PR head"
+    },
+    {
+      "check": "legion gh -- pr diff / pr view --json files shows one added path",
+      "criterion": "PR diff is exactly one added file; nothing else changes (no .fail-me)",
+      "id": "C",
+      "negativeControl": "any second changed path fails",
+      "surface": "PR diff"
+    },
+    {
+      "check": "legion gh -- pr checks \u003cn\u003e all green: ci/check and fail-on-demand/gate",
+      "criterion": "all required CI checks green on PR head",
+      "id": "D",
+      "negativeControl": "a .fail-me file at repo root turns fail-on-demand/gate red",
+      "surface": "GitHub Actions on the PR"
+    }
+  ],
+  "acceptanceSurfaceBoundary": "Smoke proof satisfied at the PR head with all required checks green (implementer proof + tester verification). Merge to default branch is the merger/human step past the proof gate.",
+  "completed": "2026-10-07T16:25:46.655570233Z",
+  "deliverable": {
+    "extension": ".md",
+    "format": "exactly one line; separator literal em dash U+2014; single trailing LF; LF line endings; no CRLF; no BOM",
+    "line": "S391574992-1 — Primary durable workflow profile",
+    "otherChanges": "none — no README.md/SMOKE.md edits, no extra markers, no .fail-me; PR diff is exactly one added file",
+    "path": "smoke/S391574992-1.md"
+  },
+  "gapAnalysis": {
+    "findings": [
+      {
+        "answer": "The approved spec governs: one line at PR-open, with scope for one appended line only if review asks. The 4-line precedent reflects older runs and does not override the approved spec; this is following the spec, not a departure.",
+        "finding": "Spec says 'a single line' but same-titled precedents carry four lines (title + three review-round markers); conflict between spec wording and convention."
+      },
+      {
+        "answer": "Spec permits exactly one appended line. Recommended format matching precedent: 'Stage 3 review round 1 (S391574992)' with the base key (no -1). The implementer appends it only if the review requests; tester verifies whatever the review requested, at most one line.",
+        "finding": "Review-appended-line scope underspecified; precedents append three lines formatted 'Stage 3 review round N (\u003cbase key\u003e)'."
+      },
+      {
+        "answer": "Locked: the line MUST contain the literal em dash U+2014. Machine check: grep for the em-dash byte sequence (\\xe2\\x80\\x94) — check B.",
+        "finding": "Title-line separator is em dash U+2014, not ASCII hyphen; a naive edit could insert '-'."
+      },
+      {
+        "answer": "Locked to .md, matching all same-titled precedents. The .txt variant and its format are out of scope; the sole path is smoke/S391574992-1.md.",
+        "finding": "File extension ambiguous repo-wide (.md vs .txt with different format)."
+      },
+      {
+        "answer": "Required: single trailing LF, LF line endings, no CRLF, no BOM. Machine checks: wc -l == 1 and no CR — check B.",
+        "finding": "Trailing-newline/EOL expectation unstated."
+      },
+      {
+        "answer": "Confirmed by reading the workflow. Acceptance D requires both ci/check and fail-on-demand/gate green, and the change must not add .fail-me.",
+        "finding": "A second workflow fail-on-demand.yml (job gate) also runs on pull_request and fails if a .fail-me file exists; 'green' needs both."
+      },
+      {
+        "answer": "Defined: the smoke proof is satisfied at the PR head with all required checks green. Merge to the default branch is the merger/human step past the proof gate.",
+        "finding": "Merge boundary undefined — open PR with green checks vs merged to default branch."
+      },
+      {
+        "answer": "Acceptance C requires the PR diff to be exactly one added file smoke/S391574992-1.md — no README.md/SMOKE.md edits, no extra markers, a checkable diff.",
+        "finding": "No AGENTS.md; nothing enforces filename-to-key correspondence or prevents a stray second file."
+      }
+    ]
+  },
+  "implementationOrder": [
+    "Confirm smoke/S391574992-1.md absent on main (negative-control baseline).",
+    "Create smoke/S391574992-1.md with the single line (write tool; trailing LF, no CRLF).",
+    "Verify: wc -l == 1; grep -qF the exact line; em-dash U+2014 byte present; no CR; jj diff --stat shows one added file.",
+    "Commit code change, legion push, open PR with legion gh -- pr create (body carries 'Dispatch: S391574992-1' and proof template)."
+  ],
+  "issue": "S391574992-1",
+  "phase": "plan",
+  "planReview": {
+    "rounds": 1,
+    "verdict": "approved"
+  },
+  "requiredSkills": {
+    "implement": [
+      "none: reviewed \u003cskills\u003e (ce-simplify-code, dispatch, dispatch-brainstorming, envoy, legion-worker/architect/controller/oracle/retro); the change is a single Markdown marker with no code, build, or domain surface, so no domain skill applies — the legion-worker phase framework and its pr-body.md proof reference are followed by charter, not as a requiredSkill."
+    ],
+    "review": [
+      "none: reviewed the same skills list; the review is a one-file-diff check against this plan and spec, with no domain or review skill in the repo beyond the legion-worker review-thread/merge-gate references the reviewer follows by charter."
+    ],
+    "test": [
+      "none: reviewed the same skills list; the repo has no test suite or build (.github/workflows/ci.yml is 'sleep 20 \u0026\u0026 exit 0'), so verification is file-content plus CI-status assertions on the PR head, which no repository skill governs."
+    ]
+  },
+  "reviewAppendedLine": "Spec Scope permits exactly one appended line if review requests it. Recommended precedent format: 'Stage 3 review round 1 (S391574992)' using the base key without the -1 suffix. At most one line. Implementer appends on the review round; tester re-verifies A–D plus the appended line.",
+  "schemaVersion": 1,
+  "specDepartures": [],
+  "summary": "Add exactly one new file smoke/S391574992-1.md with the single line 'S391574992-1 — Primary durable workflow profile' (em dash U+2014, one trailing LF, LF endings), nothing else changed; prove it on the PR head with both CI workflows green. Full plan: dispatch://S391574992-1/artifact/plan-md."
+}
