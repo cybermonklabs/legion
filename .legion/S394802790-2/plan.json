@@ -1,0 +1,72 @@
+{
+  "acceptanceCriteria": [
+    {
+      "check": "single content line beginning with S394802790-2; PR open carrying 'Dispatch: S394802790-2'",
+      "command": "cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 cat smoke/S394802790-2.md",
+      "criterion": "smoke/S394802790-2.md exists with a single line whose first token is S394802790-2.",
+      "id": "AC1",
+      "negativeControl": "file absent on main@origin before the change",
+      "skill": "legion-worker",
+      "surface": "repository file on the PR branch and the GitHub PR diff"
+    },
+    {
+      "check": "only the one appended line changes; no other content",
+      "command": "cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 jj -R \"$LEGION_WORKSPACE\" diff -r main@origin..@ smoke/S394802790-2.md",
+      "criterion": "On reviewer request, exactly one line appended to the same file in house format 'Stage 3 review round N (S394802790)'.",
+      "id": "AC2",
+      "negativeControl": "no appended line present until a reviewer asks",
+      "skill": "legion-worker",
+      "surface": "same file on the PR branch"
+    }
+  ],
+  "completed": "2026-10-07T19:39:03.264543121Z",
+  "gapAnalysis": {
+    "findings": [
+      {
+        "answer": "Use smoke/S394802790-2.md — .md is the dominant convention and spec says Markdown; exact uppercase key.",
+        "finding": "Exact filename and extension (spec says 'Markdown'; a few legacy entries are .txt)."
+      },
+      {
+        "answer": "Use 'S394802790-2 — Budget exhaustion sentinel'; a bare key also satisfies AC1. Both pass the check.",
+        "finding": "First-line content format varies between bare '\u003cKEY\u003e' and '\u003cKEY\u003e — \u003cTitle\u003e'."
+      },
+      {
+        "answer": "Append only on explicit reviewer request, in house format 'Stage 3 review round N (S394802790)' (parenthetical base drops the '-2' as sibling files do).",
+        "finding": "AC2 appended-line wording is underspecified."
+      },
+      {
+        "answer": "Exactly one new file smoke/S394802790-2.md; no other smoke files, tooling, or AGENTS.md.",
+        "finding": "Scope confinement — nothing else may change."
+      },
+      {
+        "answer": "Exactly one content line terminated by a single newline; no leading/trailing blank lines.",
+        "finding": "Trivial formatting to match siblings."
+      }
+    ]
+  },
+  "implementation": [
+    "Create smoke/S394802790-2.md with exactly one newline-terminated line: 'S394802790-2 — Budget exhaustion sentinel' (bare 'S394802790-2' also satisfies AC1).",
+    "No edits to any other smoke/ file, no tooling, no AGENTS.md (none exists).",
+    "Implementer commits, pushes with legion push, opens PR via legion gh -- pr create with body containing 'Dispatch: S394802790-2'."
+  ],
+  "issue": "S394802790-2",
+  "phase": "plan",
+  "planReview": {
+    "rounds": 1,
+    "verdict": "approved"
+  },
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: phase-worker workspace binding, isolated jj commit, legion push, and PR creation with the 'Dispatch:' body line for this single-file add."
+    ],
+    "review": [
+      "legion-worker: review-threads and merge-gate discipline for the one-file diff and the optional AC2 appended line."
+    ],
+    "test": [
+      "legion-worker: proof-recording rules (surface, command, observed, headSha, negativeControl) to verify the file on the PR head."
+    ]
+  },
+  "schemaVersion": 1,
+  "specDepartures": [],
+  "summary": "Add one Markdown file smoke/S394802790-2.md holding a single line naming this issue, matching the existing per-issue convention in smoke/. No other files change; a reviewer may request one appended line (AC2, in scope)."
+}
