@@ -1,0 +1,9 @@
+{
+  "completed": "2026-10-07T18:19:45.733905794Z",
+  "issue": "S391782039-1",
+  "phase": "review",
+  "reviewedHead": "c37784c78394ed4d408a309aa8f37804f2f8930f",
+  "schemaVersion": 1,
+  "summary": "Final round: approved. Smoke marker smoke/S391782039-1.md has the issue key as line 1 and the three review-round markers as lines 2-4 (4 lines, no fifth); diff touches only that file plus .legion handoffs (docs-only, no runtime code). Both E2E proof lines present, bot thread resolved with reviewer Accepted, CI green.",
+  "verdict": "approved"
+}

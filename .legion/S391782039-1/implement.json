@@ -1,0 +1,56 @@
+{
+  "completed": "2026-10-07T18:16:51.924391267Z",
+  "filesChanged": [
+    "smoke/S391782039-1.md"
+  ],
+  "headSha": "fa75de286441f97d4deb24769434b292d7da22e7",
+  "issue": "S391782039-1",
+  "phase": "implement",
+  "prNumber": 512,
+  "prUrl": "https://github.com/sjawhar/legion-smoke/pull/512",
+  "proof": [
+    {
+      "command": "[ \"$(sed -n 1p smoke/S391782039-1.md)\" = \"S391782039-1\" ] \u0026\u0026 echo PASS",
+      "criterion": "smoke/S391782039-1.md line 1 equals the literal string 'S391782039-1'",
+      "headSha": "fa75de286441f97d4deb24769434b292d7da22e7",
+      "negativeControl": "before the initial implement commit, test -f smoke/S391782039-1.md returned non-zero (ABSENT)",
+      "observed": "PASS: line 1 byte-exact 'S391782039-1'",
+      "surface": "repository tree / PR diff (no app runtime)"
+    },
+    {
+      "command": "[ \"$(sed -n 2p smoke/S391782039-1.md)\" = \"Legion proof review round 1 (S391782039)\" ] \u0026\u0026 echo PASS",
+      "criterion": "review round 1 line present: line 2 equals 'Legion proof review round 1 (S391782039)'",
+      "headSha": "fa75de286441f97d4deb24769434b292d7da22e7",
+      "negativeControl": "line 2 would be empty if the round-1 append were missing",
+      "observed": "PASS: line 2 byte-exact",
+      "surface": "repository tree / PR diff"
+    },
+    {
+      "command": "[ \"$(sed -n 3p smoke/S391782039-1.md)\" = \"Legion proof review round 2 (S391782039)\" ] \u0026\u0026 echo PASS",
+      "criterion": "review round 2 line present: line 3 equals 'Legion proof review round 2 (S391782039)'",
+      "headSha": "fa75de286441f97d4deb24769434b292d7da22e7",
+      "negativeControl": "line 3 would be empty if the round-2 append were missing",
+      "observed": "PASS: line 3 byte-exact",
+      "surface": "repository tree / PR diff"
+    },
+    {
+      "command": "[ \"$(sed -n 4p smoke/S391782039-1.md)\" = \"Legion proof review round 3 (S391782039)\" ] \u0026\u0026 echo PASS",
+      "criterion": "review round 3 appended: line 4 equals 'Legion proof review round 3 (S391782039)' and the file is otherwise unchanged",
+      "headSha": "fa75de286441f97d4deb24769434b292d7da22e7",
+      "negativeControl": "before the append, sed -n 4p returned empty (no line 4)",
+      "observed": "PASS: line 4 byte-exact 'Legion proof review round 3 (S391782039)'; lines 1-3 unchanged",
+      "surface": "repository tree / PR diff"
+    },
+    {
+      "command": "jj -R \"$LEGION_WORKSPACE\" diff --stat -r 'main@origin..fa75de28' | grep -v '\\.legion/'",
+      "criterion": "the smoke diff adds/edits exactly one repository file, smoke/S391782039-1.md",
+      "headSha": "fa75de286441f97d4deb24769434b292d7da22e7",
+      "negativeControl": "an extra edited repository path would appear in --stat; none did",
+      "observed": "only non-.legion path is 'smoke/S391782039-1.md | 4 ++'; no other repository file added/modified/deleted",
+      "surface": "PR diff / jj diff against main"
+    }
+  ],
+  "reviewRound": 3,
+  "schemaVersion": 1,
+  "summary": "Review round 3: appended 'Legion proof review round 3 (S391782039)' as line 4 of smoke/S391782039-1.md; the smoke diff still touches only that one file and lines 1-4 are byte-exact. legion threads resolve reports no unresolved threads."
+}
