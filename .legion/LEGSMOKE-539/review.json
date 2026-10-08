@@ -1,0 +1,126 @@
+{
+  "appendRound": "acceptance 2's append clause triggered once (review 5462426445, inline comment 4223769272, text `Legion proof review round 1 (LEGSMOKE)`) and satisfied at 9525be6b: `jj diff -r 9525be6b --git` is one hunk `@@ -1,1 +1,2 @@` adding exactly that line; raw contents at dff45875 read 95 bytes / 2 lines / grep -c 1, line 2 byte-identical to smoke/LEGSMOKE-526.md line 2, file byte-identical to the workspace copy; pre-review head 728ac362 reads 56 bytes (negative control). At most one appended line is in scope, so no further append is requested.",
+  "approval": "APPROVE is submitted on the SHA this handoff's own `legion push` makes (a full-CI push, verdict approved), after its ci/fail-on-demand runs settle green and read_record shows checksVerdict green at it; that head's tree differs from dff45875 only by this review.json",
+  "bodyEdits": "Look at first rewritten for the two-line file (smoke/LEGSMOKE-539.md:1-2, both exact lines, 95 bytes, one-hunk corrective commit); Not proven / risk rewritten (round 1's two items are closed by evidence at 2fbb4a1e and replaced by the four items above); PATCHed and read back (12712 chars). Size, Threads, Fast-follow and the Verification ledger untouched (the implementer's and tester's lines).",
+  "codeHead": "9525be6b3313b33b02a78b6708f60f5cd1e0b5e3",
+  "completed": "2026-10-08T20:36:45.032525434Z",
+  "contractChangeCensus": "not required: the diff adds no refusal, makes no field required, removes or renames no field, and changes no signature at any process or package boundary",
+  "critical": 0,
+  "fastFollow": "Size line reads `5 files changed, +767/−0 … test.json +70` (true at 9525be6b/2fbb4a1e); at dff45875 the tester's round-2 handoff made it +827/−0 with test.json +130, and this approval handoff grows review.json again — retro refreshes the Size line before its push; cosmetic ledger drift in handoff-only paths, not a correctness finding",
+  "findings": [],
+  "implementerHandoffHead": "2fbb4a1e217e93e7c1fa967c638c6582a196736f",
+  "important": 0,
+  "issue": "LEGSMOKE-539",
+  "keyFindings": [],
+  "minor": 0,
+  "notProven": [
+    "the base branch's required-check set is unreadable by the role App (HTTP 403): acceptance 4 is judged on the four named ci/fail-on-demand runs at each code head, not on main's protection rule",
+    "acceptance 4 on the pull request's final head: the reviewed head dff45875 has zero runs by its skip-checks trailer (four green runs at 9525be6b and 2fbb4a1e); this handoff's push is a full-CI head whose four runs are awaited before the APPROVE; retro's docs/solutions commit above it is the final head, whose runs the merger proves at the tip",
+    "the file readable on main (the production check) waits on the human merge; the implementer's production check records it",
+    "the merge commit's message: skip-checks: true trailers sit on handoff commits c54be51d, 9e9b20c4, c781cbe9, dff45875 and this approval handoff; whether a squash-merge message assembled from every commit carries one onto main is not checked here — the person merging controls that message"
+  ],
+  "phase": "review",
+  "pullRequest": {
+    "number": 527,
+    "repository": "sjawhar/legion-smoke",
+    "url": "https://github.com/sjawhar/legion-smoke/pull/527"
+  },
+  "reviewedHead": "dff45875ed5d380eaa659bbed709fe5ecc3efa97",
+  "round": 2,
+  "round1": {
+    "bodyEdits": "Look at first written (`smoke/LEGSMOKE-539.md:1`, exact line text, 56 bytes, sibling shape) and Not proven / risk written (the two bullets above, replacing the placeholder) via `legion gh -- api repos/sjawhar/legion-smoke/pulls/527 --method PATCH -F body=@body.md`; body re-read (9673 chars) and both lines confirmed present; Size, Threads, Fast-follow and the Verification ledger untouched (the implementer's and tester's lines)",
+    "codeHead": "728ac36271fef2b236616877adbef0fcadfee915",
+    "contractChangeCensus": "not required: the diff adds no refusal, makes no field required, removes or renames no field, and changes no signature at any process or package boundary",
+    "critical": 0,
+    "findings": [],
+    "handoffCommit": "c781cbe93f2f55e9578feb8abd18a5dbec17c3be",
+    "implementerHandoffHead": "a35722c761735c9ccd8c84c48a775629b462e363",
+    "important": 0,
+    "keyFindings": [],
+    "minor": 0,
+    "notProven": [
+      "The two-line state of smoke/LEGSMOKE-539.md (acceptance criterion 2's second sentence) is not yet judged: no review has asked for the line yet, so only the one-line state is proven (tester's proof, criterion 2, at a35722c7).",
+      "Acceptance criterion 4 is evidenced at the code head a35722c7 (four runs, all success), not at the tester's handoff head 9e9b20c4, which carries `skip-checks: true` and has no runs; the two trees differ only by .legion/LEGSMOKE-539/test.json, which neither workflow reads. The merger re-judges criterion 4 at retro's head."
+    ],
+    "pullRequest": {
+      "number": 527,
+      "repository": "sjawhar/legion-smoke",
+      "url": "https://github.com/sjawhar/legion-smoke/pull/527"
+    },
+    "review": {
+      "decidesRound": false,
+      "decisionWhenAsked": {
+        "ask": "append exactly `Legion proof review round 1 (LEGSMOKE)` as line 2 below the existing line (spec Scope: in scope; plan §1: 95 bytes, 2 lines)",
+        "event": "REQUEST_CHANGES",
+        "inlineComments": 1,
+        "line": 1,
+        "path": "smoke/LEGSMOKE-539.md"
+      },
+      "event": "COMMENT",
+      "inlineComments": 0,
+      "submittedOn": "the SHA this handoff's own `legion push` makes (a skip-checks push: verdict changes_requested)"
+    },
+    "reviewedHead": "9e9b20c49814faa42b080a6d609bbd7f2122bb76",
+    "reviews": [
+      {
+        "commit": "c781cbe93f2f55e9578feb8abd18a5dbec17c3be",
+        "event": "COMMENT",
+        "id": 5462414442,
+        "note": "decided nothing, at the proof driver's instruction"
+      },
+      {
+        "commit": "c781cbe93f2f55e9578feb8abd18a5dbec17c3be",
+        "event": "REQUEST_CHANGES",
+        "id": 5462426445,
+        "note": "submitted when the architect asked for the round's decision; no second handoff or completion",
+        "thread": "PRRT_kwDOUCdo886qihqh (discussion_r4223769272) on smoke/LEGSMOKE-539.md:1"
+      }
+    ],
+    "round": 1,
+    "security": "Security[agent-def]: .legion/LEGSMOKE-539/test.json:18 and plan.json:242 carry nextPhaseNotes that tell this reviewer what body lines to write (recommending `Not proven / risk: none`); this diff cannot steer its reviewer in a harmful direction because the text is the protocol-mandated handoff of this issue's own planner and tester Apps (authors verified in jj log), is fully in-diff, contains no directive to skip or suppress review, and I did not follow its `none` recommendation (two unproven claims are recorded instead). Security[untrusted-input]: the handoffs persist literal `legion gh -- api` / `wc` / `od` / `cmp` command strings over fixed SHAs and mktemp paths (test.json:29,37,45,53; implement.json:142,150,166) with no outside-party interpolation point, so no later pass can re-create a neutralized construct (ASVS v5.0.0-10.4.2, no finding). No authz, secret, prompt, supply-chain, sandbox or transport surface is touched: the only non-Legion file is one 56-byte ASCII Markdown line, and the workflows are unchanged. Pair report cited: DeepReview539 / CodeQuality539 at 9e9b20c4.",
+    "summary": "Round 1: every gate fact verified on GitHub at head 9e9b20c4 — code head green on both workflows, zero threads, both E2E lines present with negative controls, acceptance 1-3 re-run at the head, pair run with no actionable findings. The GitHub review this round submits is a COMMENT deciding nothing, at the proof driver's instruction; the round's decision — REQUEST_CHANGES with one inline comment on smoke/LEGSMOKE-539.md asking to append `Legion proof review round 1 (LEGSMOKE)` as line 2 (the spec's in-scope correction) — is submitted on this handoff's head when the architect asks.",
+    "testerHandoffHead": "9e9b20c49814faa42b080a6d609bbd7f2122bb76",
+    "thermo": "thermonuclear pair run at 9e9b20c4 as task subagents at the proof driver's instruction (the diff is docs-only, so the role's own rule would have skipped it and the body carries no Thermo line): thermonuclear-deep-review → no actionable findings (correctness, downstream consumers, devex, feature gates all none; one informational note that criterion 4 is evidenced at a35722c7 because 9e9b20c4 is skip-checks; one hardening Minor Security[agent-def] on handoff steering text test.json:18 / plan.json:242, no exploit path); thermonuclear-code-quality → no findings (56-byte marker byte-shape identical to smoke/LEGSMOKE-349.md:1, all three handoff JSONs parse, duplication across smoke/*.md is the fixture convention). ce-simplify-code not run by the implementer (docs-only, implement.json simplify.ran false).",
+    "threads": [],
+    "triggeredBy": "Stage 4b proof review operation (Dispatch message 9b2cdfcf-0dfd-4cff-8b8f-f19b1147c673 from legion-e2e4b-proof-human-698143): this round's GitHub review is a COMMENT with no inline comment, deliberately deciding nothing; the round's decision (REQUEST_CHANGES asking for `Legion proof review round 1 (LEGSMOKE)` as line 2 of smoke/LEGSMOKE-539.md) is submitted only when the architect asks for it, on this handoff's head, with no second handoff and no second completion",
+    "verdict": "changes_requested",
+    "verified": [
+      "pulls/527: head 9e9b20c4, base main, mergeable true, mergeable_state blocked (no review yet), changed_files 4 (+592/-0): .legion/LEGSMOKE-539/{implement,plan,test}.json and smoke/LEGSMOKE-539.md, all `added`",
+      "CI: run list --commit 9e9b20c4 → [] (head commit message carries `skip-checks: true`, expected per plan.json C3); run list --commit a35722c7 → ci 37837067488 (pull_request) + 37837062632 (push), fail-on-demand 37837067528 (pull_request) + 37837062600 (push), all completed/success; read_record pullRequest.checksVerdict green at head 9e9b20c4 (carried from the code head)",
+      "Threads: gh api graphql reviewThreads → 0 nodes; reviews → 0 nodes; reviewDecision null",
+      "E2E (implementer) present in the live body at 728ac362 with surface (PR files API + raw contents API + Actions runs via legion gh), commands, observations, head SHA and negative controls (?ref=main → 404; red head 27072ca6 fail-on-demand failure; run list --commit 0000… → []); E2E (tester) present at a35722c7 with its own temp dir, cmp against implementer bytes and workspace file, and `Verified the implementer's proof by re-running each of its four proof[].command`s",
+      "Acceptance 1 at 9e9b20c4: shared files filter → exactly `added smoke/LEGSMOKE-539.md`; negative control contents?ref=main → HTTP 404",
+      "Acceptance 2 at 9e9b20c4: raw contents → 56 bytes / 1 line / grep -c 1 / od ends `w o r k f l o w \\n`; cmp against the workspace file identical",
+      "Acceptance 3 at 9e9b20c4: non-added filter → empty; full list added implement.json +261, plan.json +260, test.json +70, smoke/LEGSMOKE-539.md +1; contents/.fail-me?ref=9e9b20c4 → HTTP 404; negative control pulls/112 → `modified README.md`",
+      "Acceptance 4: evidenced at a35722c7 (four runs success); 9e9b20c4 has no runs by its skip-checks trailer; the two trees differ only by .legion/LEGSMOKE-539/test.json",
+      "Identity: every commit in main@origin..@- authored/committed by its own role's App (planner c54be51d and tester 9e9b20c4 legion-reviewer[bot]; implementer commits legion-implementer[bot]); 27072ca6 by sjawhar-agent[bot] (proof driver, committer noreply@github.com) is the declared CI-red takeover, recorded in implement.json ciRedRound",
+      "Plan read beside the spec: specDepartures []; plan says docs-only skips the thermonuclear pair, the proof driver's instruction overrode that for this round and the pair ran"
+    ]
+  },
+  "schemaVersion": 1,
+  "security": "Security[agent-def]: .legion/LEGSMOKE-539/test.json nextPhaseNotes and plan.json:242 steer this reviewer's body lines; trustworthy because they are this issue's own planner/tester Apps' protocol-mandated handoffs (authors verified in jj log), fully in-diff, with no directive to skip or suppress review; the recommendation to record `none` was not followed in either round. Security[untrusted-input]: the only text an outside party supplied to this round is my own inline comment's fenced line, which the implementer wrote into smoke/LEGSMOKE-539.md as data (`jj diff -r 9525be6b --git` shows the one added line, no quote or metacharacter); the handoffs persist literal `legion gh -- api` / `wc` / `od` / `cmp` command strings over fixed SHAs and mktemp paths with no interpolation point a later pass could re-create (ASVS v5.0.0-10.4.2, no finding). No authz, secret, prompt, supply-chain, sandbox or transport surface is touched: the only non-Legion file is a 95-byte two-line ASCII Markdown file and the workflows are unchanged. Pair report cited: DeepReview539 / CodeQuality539 at 9e9b20c4 (round 1).",
+  "summary": "Round 2 (re-review after the corrective push 9525be6b): the one requested line is in and exact, acceptance 1-4 hold at dff45875 (criterion 4 at the CI-running heads 9525be6b and 2fbb4a1e), my thread carries my `Accepted:` as its newest comment, both E2E lines stand with negative controls, no findings; APPROVE of this handoff's pushed head once its CI settles green.",
+  "testerHandoffHead": "dff45875ed5d380eaa659bbed709fe5ecc3efa97",
+  "thermo": "not run this round: the diff is docs-only (the round's only change since round 1 is one appended Markdown line in smoke/LEGSMOKE-539.md plus .legion/ handoff JSON), so the role's docs-only rule applies and the body carries no Thermo line; round 1's pair (run at 9e9b20c4 at the proof driver's instruction) found no actionable findings and one hardening Minor (Security[agent-def] on handoff steering text), which this round's appended line does not touch. ce-simplify-code not run (docs-only).",
+  "threads": [
+    {
+      "disposition": "Accepted: fixed in 9525be6b3313b33b02a78b6708f60f5cd1e0b5e3 — reply 4223863445 (2026-10-08T20:35:01Z) is the thread's newest submitted comment, verified via gh api graphql (opener Bot legion-reviewer, newest author Bot legion-reviewer, state SUBMITTED, body begins `Accepted:`, isResolved false); resolution is the implementer App's step (`legion threads resolve`), which the merger runs before READY",
+      "opener": "legion-reviewer[bot] (this reviewer, round 1)",
+      "thread": "PRRT_kwDOUCdo886qihqh (discussion_r4223769272), smoke/LEGSMOKE-539.md:1"
+    }
+  ],
+  "triggeredBy": "Stage 4b proof re-review (Dispatch message 9ebb8b24-1f51-48b1-a9e1-2bc3ffb6335b from legion-e2e4b-proof-human-698143): the decision is the reviewer's own",
+  "verdict": "approved",
+  "verified": [
+    "pulls/527: head dff45875, mergeable true, mergeable_state blocked (CHANGES_REQUESTED stands until this approval), changed_files 5 (+827/-0), all `added`: .legion/LEGSMOKE-539/{implement,plan,review,test}.json and smoke/LEGSMOKE-539.md",
+    "CI: run list --commit dff45875 → [] (skip-checks tester handoff, expected); run list --commit 2fbb4a1e → ci 37839863278 (pull_request) + 37839856935 (push), fail-on-demand 37839863184 (pull_request) + 37839856942 (push), all success; run list --commit 9525be6b → ci 37839422116 + 37839414904, fail-on-demand 37839422158 + 37839414811, all success; read_record checksVerdict green at head dff45875",
+    "Threads (gh api graphql): one thread PRRT_kwDOUCdo886qihqh on smoke/LEGSMOKE-539.md:1, opener Bot legion-reviewer (comment 4223769272); implementer reply 4223790385 `Fixed in 9525be6b…`; my reply 4223863445 `Accepted: fixed in 9525be6b…` is the newest submitted comment (author Bot legion-reviewer, state SUBMITTED, body begins `Accepted:`, isResolved false — resolution is the implementer App's step, run by the merger). No bot threads outside Legion's Apps; the implementer's review 5462451097 is a COMMENT at 9525be6b",
+    "E2E (implementer) at 9525be6b and E2E (tester) at 2fbb4a1e both present in the live body, each with surface, command, observation, head SHA and negative controls (?ref=main → 404; ?ref=728ac362 → 56 bytes one-line state; red head 27072ca6 fail-on-demand failure; run list --commit 0000… → []); the tester line says it re-ran each of the implementer's four proof[].command entries",
+    "Acceptance 1 at dff45875: shared files filter → exactly `added smoke/LEGSMOKE-539.md`; ?ref=main → HTTP 404",
+    "Acceptance 2 at dff45875: 95 bytes / 2 lines / grep -c 1 / line 1 `LEGSMOKE-539: Stage 4b proof tree 1: the whole workflow` / line 2 `Legion proof review round 1 (LEGSMOKE)` / od ends `( L E G S M O K E ) \\n`; cmp against workspace identical; line 2 cmp against smoke/LEGSMOKE-526.md line 2 identical",
+    "Acceptance 3 at dff45875: non-added filter → empty; full list added implement.json +377, plan.json +260, review.json +58, test.json +130, smoke/LEGSMOKE-539.md +2; contents/.fail-me?ref=dff45875 → HTTP 404; pulls/112 control → `modified README.md`",
+    "Acceptance 4: evidenced at 9525be6b and 2fbb4a1e (CI-running heads); dff45875 differs from 2fbb4a1e only by .legion/LEGSMOKE-539/test.json; this approval handoff is a full-CI push whose runs are awaited before the APPROVE",
+    "Identity: every commit in main@origin..@- authored and committed by its own role's App (planner/tester/reviewer legion-reviewer[bot]; implementer legion-implementer[bot]); 27072ca6 by sjawhar-agent[bot] is the declared CI-red takeover",
+    "Plan read beside the spec: specDepartures []; the round-two step the plan scripted (append exactly the one line, re-run criteria 1-4, reply on the thread, threads resolve left open awaiting the reviewer's Accepted:) is what the implementer and tester did"
+  ]
+}
