@@ -1,0 +1,103 @@
+{
+  "appendRound": "acceptance 2 append clause triggered once (review 5458523729, inline comment 4220509407, text `Legion proof review round 1 (LEGSMOKE)`) and satisfied at 1f361ca0: line 1 unchanged plus exactly the quoted line, newline-terminated, 95 bytes, 2 lines, one hunk `@@ -1,1 +1,2 @@`; at most one round, so no further append is in scope",
+  "approval": "APPROVE is submitted on the SHA this handoff's own `legion push` makes (a full-CI push, verdict approved), after its four `ci`/`fail-on-demand` rows settle green and read_record shows checksVerdict green at it; that head's diff differs from 42675e93 only by this review.json",
+  "bodyEdits": "Look at first rewritten for the two-line file at 42675e93; Not proven / risk rewritten (HTTP 403 sentence; acceptance 4 on the final head; file on main waits on the merge; skip-checks trailers vs a squash-merge message); PATCHed and read back byte-equal (CR-stripped). Size, Threads, Fast-follow and the Verification ledger untouched (the implementer's and tester's lines).",
+  "codeHead": "1f361ca01539ef732b3f1fa1f99309a870e5456a",
+  "completed": "2026-10-08T15:09:50.537384693Z",
+  "critical": 0,
+  "findings": [],
+  "implementerHandoffHead": "fb952431e6fb0d50ebd27448844cdad399afd665",
+  "important": 0,
+  "issue": "LEGSMOKE-526",
+  "keyFindings": [],
+  "minor": 0,
+  "notProven": [
+    "the base branch's required-check set is unreadable by the role App (HTTP 403): acceptance 4 is judged on the four named ci/fail-on-demand rows at each code head, not on main's protection rule",
+    "acceptance 4 on the pull request's final head: the reviewed head 42675e93 has zero runs by its skip-checks trailer (four green rows at fb952431 and 1f361ca0); this handoff's push is a full-CI head whose four rows are awaited before the APPROVE; retro's docs/solutions commit above it is the final head, whose four rows the merger proves at the tip",
+    "the file readable on main at the merge commit (plan acceptance 4) waits on the human merge; the implementer's production check records it",
+    "the merge commit's message: skip-checks: true trailers sit on handoff commits e70eca5a, d85dacb0, b23aa9a3 and 42675e93; whether a squash-merge message assembled from every commit carries one onto main is not checked here — the person merging controls that message"
+  ],
+  "phase": "review",
+  "pullRequest": {
+    "number": 525,
+    "repository": "sjawhar/legion-smoke",
+    "url": "https://github.com/sjawhar/legion-smoke/pull/525"
+  },
+  "reviewedHead": "42675e93fb825fdf231371cd6dd432bf8d9ca9c9",
+  "round": 2,
+  "round1": {
+    "bodyEdits": "Look at first and Not proven / risk written into the live body via PATCH (body read back; placeholders gone); Size, Fast-follow and the Verification ledger untouched (the implementer's and tester's lines)",
+    "codeHead": "8c769387cfdd0d29b3edebb34bdb2b6b48e12377",
+    "findings": [
+      {
+        "finding": "Size reads `7 files changed, +558/−723 at round-2 handoff head 56dd2b66…`; true at that SHA, but the reviewed head d85dacb0 is 8 files, +615/−723 (test.json added). Retro's T9 step refreshes Size at the final head; named as the round's one fast-follow, not a correctness finding.",
+        "location": "PR body Size line",
+        "priority": "Minor (cleanup, fast-follow)"
+      },
+      {
+        "finding": "Spec acceptance 4 has zero runs at the reviewed head itself; the four green rows are at 56dd2b66 and 8c769387 and the daemon carries that verdict (plan D5/skipCiHeads). The final head the merger quotes must be a full-CI head.",
+        "location": "head d85dacb0 (`skip-checks: true` trailer)",
+        "priority": "Minor (recorded in Not proven / risk)"
+      },
+      {
+        "finding": "Security[untrusted-input]: the append recipe inlines review-comment text into a single-quoted shell assignment; a single quote in that text would close the literal before the hardened `printf '%s\\n' \"$line2\"` runs. The text this round quotes, `Legion proof review round 1 (LEGSMOKE)`, carries no quote or shell metacharacter, so no exploit path exists here; the implementer should assign from a read of pulls/comments/\u003cid\u003e rather than paste the literal. ASVS v5.0.0-10.4.2.",
+        "location": ".legion/LEGSMOKE-526/plan.json T6 step 1 (`line2='\u003cquoted text\u003e'`)",
+        "priority": "Minor (hardening, no exploit path)"
+      }
+    ],
+    "handoffCommit": "b23aa9a3d249bbe3ebb655fb8ef83ce5b1fc228d",
+    "implementerHandoffHead": "56dd2b660c9de090e302026fee75b189df1f1afe",
+    "minor": 3,
+    "notProven": [
+      "the base branch's required-check set is unreadable by the role App (HTTP 403): acceptance 4 is judged on the four named ci/fail-on-demand rows at each code head, not on main's protection rule",
+      "acceptance 4 at the reviewed head d85dacb0 itself: zero workflow runs there (skip-checks trailer); the four green rows are at 56dd2b66 and 8c769387; the final head the merger quotes in READY must be a full-CI head with its own four rows",
+      "the file readable on main at the merge commit (plan acceptance 4) waits on the human merge; the implementer's production check records it"
+    ],
+    "reviewedHead": "d85dacb0be2ddae6570ac2d7fe84d2ac3d4a6884",
+    "reviews": "5458505563 COMMENT (no inline comment, decided nothing, per the proof driver's targeted message 96e1069f) then 5458523729 REQUEST_CHANGES at the same head b23aa9a3 with one inline comment 4220509407 on smoke/LEGSMOKE-526.md:1 asking for `Legion proof review round 1 (LEGSMOKE)` appended, submitted when the architect asked for the round's decision (Envoy 6d8eae81); no second handoff or completion",
+    "round": 1,
+    "security": "Security[untrusted-input]: plan.json T6's `line2='\u003cquoted text\u003e'` inlines review-comment text into a shell literal a later worker runs; hardening only — the clause has not fired (implement.json appendClause, test.json appendClause) and the text this round will quote has no quote character. Security[prompt]: the added .legion/LEGSMOKE-526/{plan,implement,test}.json embed outside-party text only as opaque ids and short quoted labels in non-imperative fields (Dispatch message UUIDs, the Envoy ruling id, the cancelled sleep command quoted as a record); no untrusted region is pasted into a worker's instruction block. Security[agent-def]: plan.json docsOnly/T5 instruct this reviewer to skip the thermonuclear pair and Thermo line; trustworthy because the docs-only exemption is skill://legion-worker's own rule, the diff genuinely holds no runtime code (full file list read), the plan commit e70eca5a is the Legion planner App's, and the pair ran anyway at the proof driver's instruction. No authz, secret, supply-chain, sandbox or transport surface: .github/workflows/{ci,fail-on-demand}.yml byte-identical to base; no credential, token or path-building code in the diff.",
+    "summary": "Round 1 of PR #525 at head d85dacb0 (the tester's skip-CI handoff; code head 8c769387, implementer handoff 56dd2b66). Verified on GitHub: the net diff outside .legion/ is exactly the 56-byte smoke/LEGSMOKE-526.md, both E2E lines present with negative controls, four green rows at 56dd2b66 and 8c769387, zero runs at d85dacb0 by its trailer, no threads, no .fail-me, no workflow change. The thermonuclear pair ran at d85dacb0 at the proof driver's instruction: 0 Major/0 Medium/3 Minor, no correctness finding. The round's review is a COMMENT deciding nothing (proof of the daemon's handling of an undecided round); the decision when asked for is REQUEST_CHANGES with one inline comment asking for the appended line.",
+    "testerHandoffHead": "d85dacb0be2ddae6570ac2d7fe84d2ac3d4a6884",
+    "thermo": "pair run at d85dacb0 at the proof driver's instruction (the diff is docs-only, so the role's rule alone would skip it and the body carries no Thermo line): thermonuclear-deep-review 0 Major/0 Medium/3 Minor (stale Size line; acceptance 4 unproven at the skip-checks head; plan.json T6 single-quoted assignment hardening), docsOnly true; thermonuclear-code-quality 0 structural findings (Size line duplicate; informational notes), smoke/LEGSMOKE-526.md matches the marker convention byte for byte (56 B like smoke/LEGSMOKE-{349,339,331,327}.md; the 95 B siblings 439/504 carry the appended round-1 line). ce-simplify-code not run by the implementer (docs-only).",
+    "triggeredBy": "daemon task `Continue … Phase: reviewing. Handoff commit: d85dacb0… Handoff verdict: pass. Pull request: #525`, then the proof driver's targeted Dispatch message 96e1069f-d409-43ed-b3a5-f0e14c116f53 (2026-10-08T14:39:46Z)",
+    "verdict": "changes_requested",
+    "verified": {
+      "acceptance1": "`pulls/525/files` filtered outside .legion/ and docs/solutions/ → exactly `added smoke/LEGSMOKE-526.md 1 0`; non-added/non-removed count 0; unfiltered 8 rows: removed .legion/LEGSMOKE-504/{implement,plan,review,test}.json, added .legion/LEGSMOKE-526/{implement,plan,test}.json, added smoke/LEGSMOKE-526.md; local `jj diff --from aadb51ef --to d85dacb0 --summary` the same 8 rows; `--git -- '~.legion'` one hunk @@ -0,0 +1,1 @@; negative: contents/.fail-me?ref=d85dacb0 → HTTP 404 while ?ref=e8bb497d → size 25",
+      "acceptance2": "contents API at d85dacb0 decoded | cmp against printf 'LEGSMOKE-526: Stage 4b proof tree 1: the whole workflow\\n' → MATCH; wc -c 56; wc -l 1; grep -c LEGSMOKE-526 → 1; od -c ends `w o r k f l o w \\n`; negatives: ?ref=aadb51ef (base) → HTTP 404 exit 1; no-newline printf vs file → `cmp: EOF on - after byte 55` exit 1",
+      "acceptance3": "no modified/renamed/copied row anywhere (count 0); the only removed rows are the daemon's four .legion/LEGSMOKE-504/*.json (architect ruling, implement.json architectRuling); no .github/workflows row, no root file",
+      "acceptance4": "actions/runs?head_sha=d85dacb0 → total_count 0 (commit message carries `skip-checks: true`); at 56dd2b66 → fail-on-demand/pull_request 37793273512, ci/pull_request 37793273569, fail-on-demand/push 37793264077, ci/push 37793264381, each completed/success; at 8c769387 → 37792778262, 37792778238, 37792771422, 37792771423, each completed/success; negatives: at e8bb497d fail-on-demand/push 37792447133 and /pull_request 37792454720 failure; at e70eca5a (planner's skip-CI head) → 0; `legion state` read_record checksVerdict green at head d85dacb0",
+      "contractChangeCensus": "not required: no refusal added, no field required/removed/renamed, no process- or package-boundary signature changed",
+      "e2eLines": "PR body carries E2E (implementer) at 8c769387 (round 2, with the cure) and E2E (tester) at 56dd2b66, each with surface, command, observation, head SHA and negative control, the tester's naming its re-run of the implementer's commands; `Dispatch: LEGSMOKE-526` present; Threads: 0 resolved, 0 unresolved",
+      "exportedSymbols": "none changed (docs-only diff); codegraph not applicable",
+      "identity": "`jj log -r 'main@origin..@'`: d85dacb0 (tester) legion-reviewer[bot] both columns; 56dd2b66, 8c769387, 23667df8, d29219f8 legion-implementer[bot] both columns; e70eca5a (planner) legion-reviewer[bot]; e8bb497d (proof driver) sjawhar-agent[bot] / noreply@github.com; 3f6d0879 (daemon branch start) implement App / noreply@github.com; my working copy 56716f3f legion-reviewer[bot]",
+      "prHead": "d85dacb0be2ddae6570ac2d7fe84d2ac3d4a6884 via `legion gh -- pr view 525 --json headRefOid`; OPEN, MERGEABLE, mergeStateStatus BLOCKED (no review yet); reviews on record: none; reviewThreads: 0 (gh api graphql)"
+    }
+  },
+  "schemaVersion": 1,
+  "security": "Security[untrusted-input]: round 1's hardening note on plan.json:240 (`line2='\u003cquoted text\u003e'`) is closed for this issue — the implementer assigned from a machine read of pulls/comments/4220509407 (`line2=$(cat \u003cfence-extract\u003e)`; reply 4220537187) and `jj diff -r 1f361ca0 --git` shows only the added line; the appended text carries no quote or metacharacter. Security[prompt]: the .legion/LEGSMOKE-526/{plan,implement,test,review}.json records embed outside-party text only as opaque ids and quoted labels in non-imperative fields; nothing reaches a worker's instruction block. Security[agent-def]: the records' docs-only steering (plan.json:67, :230) is skill://legion-worker's own rule, the planner App authored e70eca5a, and round 1 ran the pair anyway; this round's only code change is one appended Markdown line. No authz, secret, supply-chain, sandbox or transport surface: .github/workflows/{ci,fail-on-demand}.yml byte-identical to base; no credential, token or path-building code in the diff.",
+  "summary": "Round 2 of PR #525 at head 42675e93 (tester's skip-CI handoff; append commit 1f361ca0, implementer handoff fb952431). The one thread I opened is answered with my Accepted: fixed in 1f361ca0 and that reply is its newest submitted comment. Verified on GitHub: both E2E lines in the two-line form with negative controls, four green rows at fb952431 and 1f361ca0, acceptance 1–3 reproduced at 42675e93 (95 bytes, 2 lines, line 2 byte-equal to the fenced quote), diff outside .legion/ exactly smoke/LEGSMOKE-526.md. No correctness finding stands; the pair is not re-run on a docs-only diff. APPROVE of the head this handoff's push makes follows once its four rows settle green.",
+  "testerHandoffHead": "42675e93fb825fdf231371cd6dd432bf8d9ca9c9",
+  "thermo": "not run this round: the diff is docs-only (the round's only code change is one appended Markdown line in smoke/LEGSMOKE-526.md), so the role's docs-only rule applies and the body carries no Thermo line; round 1's pair (run at d85dacb0 at the proof driver's instruction) found 0 Major/0 Medium/3 Minor, and the one hardening note touching this round's work (plan.json:240 shell literal) is closed by the implementer's variable-from-file read. ce-simplify-code not run (docs-only).",
+  "threads": [
+    {
+      "disposition": "Accepted: fixed in 1f361ca01539ef732b3f1fa1f99309a870e5456a — reply 4220676822 (2026-10-08T15:07:13Z) is the thread's newest submitted comment, verified via gh api graphql (opener Bot legion-reviewer, newest author Bot legion-reviewer, state SUBMITTED, body begins `Accepted:`, isResolved false); resolution is the implementer App's step (`legion threads resolve`), which the merger runs before READY",
+      "opener": "legion-reviewer[bot] (this reviewer, round 1)",
+      "thread": "PRRT_kwDOUCdo886qapF3 (discussion_r4220509407), smoke/LEGSMOKE-526.md:1"
+    }
+  ],
+  "triggeredBy": "daemon task `Continue … Phase: reviewing. Handoff commit: 42675e93fb825fdf231371cd6dd432bf8d9ca9c9. Handoff verdict: pass. Pull request: #525`, then the proof driver's targeted Dispatch message 6b47cd87-0864-4d6f-bcdf-bb97718866a6 (2026-10-08T15:05:48Z) `Stage 4b proof re-review` — the decision is the reviewer's own",
+  "verdict": "approved",
+  "verified": {
+    "acceptance1": "`pulls/525/files` filtered outside .legion/ and docs/solutions/ → exactly `added smoke/LEGSMOKE-526.md 2 0`; non-added/non-removed count 0; unfiltered 9 rows: removed .legion/LEGSMOKE-504/{implement,plan,review,test}.json, added .legion/LEGSMOKE-526/{implement,plan,review,test}.json, added smoke/LEGSMOKE-526.md; `jj diff -r 1f361ca0 --git` → one hunk `@@ -1,1 +1,2 @@` adding `+Legion proof review round 1 (LEGSMOKE)`; negative: contents/.fail-me?ref=42675e93 → HTTP 404",
+    "acceptance2": "fence read by machine from pulls/comments/4220509407 (sed CR strip + awk) → 39 bytes; contents API at 42675e93 decoded | cmp against printf '%s\\n%s\\n' of line 1 and the fence → TWO-LINE-MATCH; head -n 1 cmp → LINE1-UNCHANGED; sed -n 2p vs fence cmp → LINE2-EQUALS-FENCE; wc -c 95; wc -l 2; grep -c LEGSMOKE-526 → 1; od -c ends `( L E G S M O K E ) \\n`; negatives: one-line 56-byte printf vs file → `cmp: EOF on - after byte 56` exit 1; pre-append head b23aa9a3 still serves size 56; base aadb51ef → HTTP 404",
+    "acceptance3": "no modified/renamed/copied row anywhere (count 0); removed rows only the daemon's four .legion/LEGSMOKE-504/*.json (architect ruling b9c222c5); no .github/workflows row, no root file",
+    "acceptance4": "actions/runs?head_sha=42675e93 → total_count 0 (commit message carries `skip-checks: true`); at fb952431 → ci/pull_request 37797164411, fail-on-demand/pull_request 37797164374, fail-on-demand/push 37797156077, ci/push 37797156121, each completed/success; at 1f361ca0 → fail-on-demand/pull_request 37796507154, ci/pull_request 37796507173, fail-on-demand/push 37796495852, ci/push 37796495846, each completed/success; negatives: at b23aa9a3 (my skip-CI head) → 0; read_record checksVerdict green at head 42675e93",
+    "contractChangeCensus": "not required: no refusal added, no field required/removed/renamed, no process- or package-boundary signature changed",
+    "e2eLines": "PR body carries E2E (implementer) round 3 at 1f361ca0 and E2E (tester) round 2 at fb952431, both in the two-line form with surface, command, observation, head SHA and negative control, the tester's naming its re-run of the implementer's commands; Threads section reads `0 resolved, 1 unresolved` with the `legion threads resolve` output stamped at 1f361ca0 (`left open … newest reply by legion-implementer is not an acceptance`, true before my Accepted:); `Dispatch: LEGSMOKE-526` present",
+    "exportedSymbols": "none changed (docs-only diff); codegraph not applicable",
+    "identity": "`jj log -r 'main@origin..@'`: 42675e93 (tester) legion-reviewer[bot] both columns; fb952431 and 1f361ca0 (implementer) legion-implementer[bot] both columns; b23aa9a3 (this reviewer) legion-reviewer[bot]; earlier commits as recorded in round 1; no committer anomaly; my working copy legion-reviewer[bot]",
+    "prHead": "42675e93fb825fdf231371cd6dd432bf8d9ca9c9 via `legion gh -- pr view 525 --json headRefOid`; OPEN, MERGEABLE, mergeStateStatus BLOCKED, reviewDecision CHANGES_REQUESTED before this round's APPROVE; reviews on record: 5458505563 COMMENTED and 5458523729 CHANGES_REQUESTED (legion-reviewer at b23aa9a3), 5458557030 COMMENTED (legion-implementer at 1f361ca0)",
+    "threads": "gh api graphql reviewThreads: 1 (PRRT_kwDOUCdo886qapF3); before my reply its newest comment was the implementer's `Fixed in 1f361ca0…` (4220537187, SUBMITTED); after it, my Accepted: (4220676822, SUBMITTED) — opener and newest author both Bot legion-reviewer"
+  }
+}
