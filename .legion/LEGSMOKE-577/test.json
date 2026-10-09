@@ -1,0 +1,74 @@
+{
+  "base": "c6fc9a663af3869e729384bdcfffec39f0433170",
+  "branch": "legion/LEGSMOKE-577",
+  "codeHead": "73865aae62b7d048ff4993b8ebfa9ffcbe1dcc21",
+  "completed": "2026-10-09T16:12:35.181359147Z",
+  "criterion3CarryForHandoffHead": "the tester's handoff commit C3' (test: record handoff) is a skip-checks head; plan criterion 3's J (nearest earlier commit with a path outside .legion/LEGSMOKE-577/) is 73865aae62b7d048ff4993b8ebfa9ffcbe1dcc21 (files: modified smoke/LEGSMOKE-577.md; 4 runs completed/success listed in implementerProof), and the nearest ancestor with its own green runs is c96e056c5e165723e120fb99db6ea798f8433bb0 (4 runs completed/success above); the trailer read and the scoped run list at C3' are recorded in the PR body's E2E (tester) line after the push",
+  "failures": [],
+  "headSha": "c96e056c5e165723e120fb99db6ea798f8433bb0",
+  "implementerProof": {
+    "how": "re-ran all three implement.json proof[].command entries at their recorded full head SHA 73865aae62b7d048ff4993b8ebfa9ffcbe1dcc21 from my own mktemp -d (/tmp/tmp.nRarhXPM62): criterion 1 compare base...73865aae unfiltered `added .legion/LEGSMOKE-577/implement.json`, `added .legion/LEGSMOKE-577/plan.json`, `added .legion/LEGSMOKE-577/review.json`, `added .legion/LEGSMOKE-577/test.json`, `added smoke/LEGSMOKE-577.md`, filtered exactly `added smoke/LEGSMOKE-577.md`, pulls/534/files vs compare no diff; criterion 2 predicateKPinned D=2026-10-09T16:04:06Z K=1 (comment 4232078301 created 2026-10-09T16:02:30Z; K_now 1), contents raw 95 bytes / 2 lines / last byte LF, two-line printf | cmp MATCH-2LINES; criterion 3 scoped run list at 73865aae -\u003e fail-on-demand 37956401787 (pull_request) and 37956395568 (push), ci 37956401903 (pull_request) and 37956395621 (push), all completed/success; contents/.fail-me?ref=73865aae -\u003e HTTP 404; commits API trailer false, files `modified smoke/LEGSMOKE-577.md`, parent 35b4dec59f91a09adaaecc89ecc8aec00ef011f3. Every observation matches proof[].observed. The correction's shape was checked independently: jj diff --from 35b4dec5 --to 73865aae --summary -\u003e `M smoke/LEGSMOKE-577.md` only; jj diff --from 5f147165 --to 73865aae --git -\u003e `@@ -1,1 +1,2 @@` with line 1 unchanged and `+Legion proof review round 1 (LEGSMOKE)`; the file at 5f147165 is still 56 bytes. The implementer's reply 4232094281 (`Fixed in 73865aae…`) is on thread 4232078301, isResolved false (awaits the reviewer's Accepted:).",
+    "verdict": "verified"
+  },
+  "issue": "LEGSMOKE-577",
+  "notes": [
+    "Takeover observation (Stage 4b proof, not an acceptance criterion): the driver's targeted witness message dispatch://LEGSMOKE-577/message/fdf6e508-5f93-4934-bd44-605490fecf67 ordered one bash call (`/usr/bin/sleep 1207` then write /tmp/stage4b-takeover-witness); the daemon interrupted that turn when the outside push 405efc63 turned CI red (the tool returned `[Command cancelled]`); /tmp/stage4b-takeover-witness does not exist while /tmp/stage4b-takeover-control (2026-10-09T15:33:26Z) does; the interrupted work was not resumed.",
+    "The branch carries the outside commit 405efc63 (author sjawhar-agent[bot], committer noreply@github.com) and its deletion-only cure 025e22ba; neither was rewritten; identity log main@origin..@ shows every Legion commit authored and committed by its own role's App."
+  ],
+  "phase": "test",
+  "prNumber": 534,
+  "prUrl": "https://github.com/sjawhar/legion-smoke/pull/534",
+  "proof": [
+    {
+      "command": "T=$(mktemp -d); legion gh -- api \"repos/sjawhar/legion-smoke/compare/c6fc9a663af3869e729384bdcfffec39f0433170...c96e056c5e165723e120fb99db6ea798f8433bb0\" --jq '.files[] | \"\\(.status) \\(.filename)\"' \u003e $T/files; cat $T/files; grep -v -E '^[a-z]+ (\\.legion/LEGSMOKE-577/|docs/solutions/)' $T/files; legion gh -- api repos/sjawhar/legion-smoke/pulls/534 --jq .head.sha; legion gh -- api repos/sjawhar/legion-smoke/pulls/534/files --paginate --jq '.[] | \"\\(.status) \\(.filename)\"' | diff $T/files -",
+      "criterion": "1: the pull request's file list (compare base...head at the pinned SHA, equal to the live pulls/534/files list) holds smoke/LEGSMOKE-577.md and otherwise only paths under .legion/LEGSMOKE-577/ and docs/solutions/",
+      "headSha": "c96e056c5e165723e120fb99db6ea798f8433bb0",
+      "negativeControl": "the same filter over compare/c6fc9a663af3869e729384bdcfffec39f0433170...405efc636f7430aca8b22d4d182f3c335e1a1566 (this branch's red head) -\u003e `added .fail-me`, `added smoke/LEGSMOKE-577.md`; over compare/86cf4a46af071a805200a2215230fcb0b7b0ae94...41a3a2817c1423c09df6590ffb8a575666dd03dc (the LEGSMOKE-555 red head) -\u003e `added .fail-me`, `added .legion/LEGSMOKE-555/implement.json`, `added .legion/LEGSMOKE-555/plan.json`, `added smoke/LEGSMOKE-555.md` (a foreign .legion/\u003cKEY\u003e/ path prints and fails)",
+      "observed": "unfiltered: `added .legion/LEGSMOKE-577/implement.json`, `added .legion/LEGSMOKE-577/plan.json`, `added .legion/LEGSMOKE-577/review.json`, `added .legion/LEGSMOKE-577/test.json`, `added smoke/LEGSMOKE-577.md`; filtered: exactly `added smoke/LEGSMOKE-577.md`; live head.sha c96e056c5e165723e120fb99db6ea798f8433bb0; pulls/534/files vs compare -\u003e no diff",
+      "surface": "GitHub compare API base...head at the pinned SHA plus the live pull request files API"
+    },
+    {
+      "command": "S=c96e056c5e165723e120fb99db6ea798f8433bb0; D=$(legion gh -- api repos/sjawhar/legion-smoke/commits/$S --jq .commit.committer.date); K=$(legion gh -- api \"repos/sjawhar/legion-smoke/pulls/534/comments\" --paginate --jq \".[] | select(.path==\\\"smoke/LEGSMOKE-577.md\\\" and .in_reply_to_id==null and .user.login==\\\"legion-reviewer[bot]\\\" and (.body|contains(\\\"Legion proof review round 1 (LEGSMOKE)\\\")) and (.created_at \u003c \\\"$D\\\")) | .id\" | wc -l); echo \"S=$S D=$D K=$K\"; legion gh -- api -H \"Accept: application/vnd.github.raw+json\" \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-577.md?ref=$S\" \u003e $T/f; wc -c \u003c $T/f; wc -l \u003c $T/f; od -An -c $T/f; printf 'LEGSMOKE-577: Stage 4b proof tree 1: the whole workflow\\nLegion proof review round 1 (LEGSMOKE)\\n' | cmp - $T/f \u0026\u0026 echo MATCH-2LINES",
+      "criterion": "2: at the judged head smoke/LEGSMOKE-577.md holds exactly line 1 + the review line the REQUEST_CHANGES comment quoted (95 bytes, 2 lines, final LF) because K(S)=1",
+      "headSha": "c96e056c5e165723e120fb99db6ea798f8433bb0",
+      "negativeControl": "against the same $T/f, each exit 1: one-line printf | cmp -\u003e `cmp: EOF on - after byte 56`; CRLF variant -\u003e `differ: char 56, line 1`; no trailing LF -\u003e `cmp: EOF on - after byte 94`; a third line appended -\u003e `cmp: EOF on $T/f after byte 95`; absence: contents?ref=c6fc9a663af3869e729384bdcfffec39f0433170 -\u003e HTTP 404; K control with D = the review handoff R 35b4dec5's committer date 2026-10-09T15:59:27Z -\u003e 0 (the comment postdates R) and with D = the base commit's date 2026-10-09T05:39:09Z -\u003e 0; the file at the pre-correction head 5f147165 is 56 bytes",
+      "observed": "S=c96e056c5e165723e120fb99db6ea798f8433bb0 D=2026-10-09T16:07:48Z K=1 (comment id 4232078301 created 2026-10-09T16:02:30Z by legion-reviewer[bot], top-level, on the file, review 5472461336 REQUEST_CHANGES at 35b4dec5; K_now 1); 95 bytes; 2 lines; last byte \\n; MATCH-2LINES",
+      "surface": "raw bytes at the head SHA via the contents API with Accept: application/vnd.github.raw+json; K from pulls/534/comments pinned to the head's committer date"
+    },
+    {
+      "command": "legion gh -- pr checks 534 --repo sjawhar/legion-smoke --watch --fail-fast   # own bash call, exit 0; then in a fresh call: legion gh -- api repos/sjawhar/legion-smoke/pulls/534 --jq .head.sha; legion gh -- run list --repo sjawhar/legion-smoke --commit c96e056c5e165723e120fb99db6ea798f8433bb0 --json name,event,status,conclusion,databaseId,headBranch --jq '.[] | select(.headBranch==\"legion/LEGSMOKE-577\") | \"\\(.name) \\(.event) \\(.status)/\\(.conclusion) \\(.databaseId)\"'; legion gh -- api \"repos/sjawhar/legion-smoke/contents/.fail-me?ref=c96e056c5e165723e120fb99db6ea798f8433bb0\"; legion gh -- api repos/sjawhar/legion-smoke/commits/c96e056c5e165723e120fb99db6ea798f8433bb0 --jq '{trailer: (.commit.message|contains(\"skip-checks: true\")), files: [.files[] | \"\\(.status) \\(.filename)\"], parent: .parents[0].sha, author: .author.login}'; cd -- \"$LEGION_WORKSPACE\" \u0026\u0026 test ! -f .fail-me",
+      "criterion": "3: both workflows pass at the judged head (scoped run list non-empty, every run completed/success, \u003e=1 ci and \u003e=1 fail-on-demand); .fail-me absent; the head carries its own verdict (no skip-checks trailer)",
+      "headSha": "c96e056c5e165723e120fb99db6ea798f8433bb0",
+      "negativeControl": "scoped run list at 405efc636f7430aca8b22d4d182f3c335e1a1566 (this branch's red head) -\u003e fail-on-demand completed/failure 37952704305 (pull_request) and 37952698867 (push), ci completed/success 37952704317 and 37952698610; contents/.fail-me at that head -\u003e {path: .fail-me, size: 25}; short SHA --commit c96e056c -\u003e 0 runs",
+      "observed": "pr checks exit 0 (check pass x2, gate pass x2); live head c96e056c5e165723e120fb99db6ea798f8433bb0; scoped runs: fail-on-demand pull_request completed/success 37956856523, ci pull_request completed/success 37956856500, fail-on-demand push completed/success 37956849775, ci push completed/success 37956849575 (4 runs, 2 ci, 2 fail-on-demand); .fail-me -\u003e HTTP 404; commits: trailer false, files [modified .legion/LEGSMOKE-577/implement.json], parent 73865aae62b7d048ff4993b8ebfa9ffcbe1dcc21, author legion-implementer[bot] (own verdict); local test ! -f .fail-me -\u003e absent",
+      "surface": "GitHub Actions runs at the full head SHA scoped by headBranch legion/LEGSMOKE-577; contents API for .fail-me; commits API for the trailer; local predicate test ! -f .fail-me in the issue workspace"
+    }
+  ],
+  "round": 1,
+  "rounds": [
+    {
+      "K": 0,
+      "codeHead": "025e22ba774a2e5b7d03a395464cfa5bf1986c19",
+      "fileState": "56 bytes / 1 line / final LF",
+      "handoffHead": "5f1471658c12acefaea4ec1adfec679b32f82a95 (skip-checks true, 0 runs scoped and unscoped; strict J 025e22ba, nearest green ancestor 5733d96b)",
+      "implementerProofHead": "025e22ba774a2e5b7d03a395464cfa5bf1986c19",
+      "implementerProofVerdict": "verified",
+      "note": "superseded by round 1; the full round-0 proof[] is this file's content at commit 5f1471658c12acefaea4ec1adfec679b32f82a95",
+      "round": 0,
+      "runIds": [
+        37953323313,
+        37953323481,
+        37953316940,
+        37953316592
+      ],
+      "testedHead": "5733d96bbc406971d4c23dae22d875f2eff75149",
+      "trigger": "dispatch://LEGSMOKE-577/message/15e48d6d-fb54-441a-97d3-5817f6e7a14e",
+      "verdict": "pass"
+    }
+  ],
+  "schemaVersion": 1,
+  "threads": "1 thread (4232078301, opener legion-reviewer[bot]): newest reply 4232094281 by legion-implementer[bot] is not an acceptance, isResolved false, isOutdated false; reviewDecision CHANGES_REQUESTED; closes only on the opener's Accepted: at the approval round (review-threads rules), not a tester finding",
+  "trigger": "driver's targeted retest message dispatch://LEGSMOKE-577/message/c910fe27-3341-4992-b475-64846252e6d2 after review round 1 (REQUEST_CHANGES 5472461336, inline comment 4232078301) and the implementer's correction 73865aae",
+  "writesTests": false,
+  "writesTestsReason": "the repository has no test harness and the spec forbids any file outside smoke/LEGSMOKE-577.md, .legion/LEGSMOKE-577/ and docs/solutions/; the only local check is fail-on-demand's predicate `test ! -f .fail-me`, which passed in the workspace at c96e056c"
+}
