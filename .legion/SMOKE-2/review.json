@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "phase": "review",
+  "issue": "SMOKE-2",
+  "completed": "2026-10-16T15:34:00Z",
+  "verdict": "approved",
+  "critical": 0,
+  "important": 0,
+  "minor": 0,
+  "keyFindings": [],
+  "round": 1,
+  "reviewedDiff": {
+    "paths": [
+      "smoke/SMOKE-2.md",
+      ".legion/SMOKE-2/plan.json",
+      ".legion/SMOKE-2/implement.json",
+      ".legion/SMOKE-2/test.json"
+    ],
+    "docsOnly": true,
+    "thermonuclearPair": "not run: the diff touches no runtime code (one Markdown marker file plus handoffs), so skill://legion-worker/references/pr-body.md omits the Thermo line and the pair entirely",
+    "contractChangeCensus": "not required: the diff adds no refusal, makes no field required, removes or renames no field, and changes no signature at a process or package boundary",
+    "blastRadius": "no exported symbol changed; no codegraph impact/callers query applies to a Markdown marker file"
+  },
+  "ciRead": {
+    "requiredSet": "ruleset on main (gh api repos/sjawhar/legion-smoke/rules/branches/main) -> exactly 'gate'; branch protection read returned nothing for this App, recorded not guessed",
+    "ciHead": "71461a80bf63c57b093ee4389f3f0d34a7eaa932 (newest pull_request run on legion/SMOKE-2: fail-on-demand 38921816497, completed success)",
+    "checkRuns": "at 71461a80: gate completed success and check completed success, two rows each (push and pull_request events)",
+    "onlyLegionSince": "gh api compare/71461a80...6e0451fd -> all files start with .legion/ (true): .legion/SMOKE-2/implement.json, .legion/SMOKE-2/test.json",
+    "bodyCiLine": "names fail-on-demand 38921570750 and ci 38921570791, both headSha 71461a80bf63c57b093ee4389f3f0d34a7eaa932 -- current, not stale"
+  },
+  "e2eLines": {
+    "implementer": "present (GitHub REST contents API at 71461a80, cmp against the plan's pinned 208 bytes, negative controls: 404 at main's tip and a one-byte-altered reference)",
+    "tester": "present (REST and raw media type at 9287004957, blob SHA agreement, three negative controls including the BLOCKED mergeStateStatus at a skip-checks head)"
+  },
+  "reviewerVerification": {
+    "surface": "GitHub REST contents API against sjawhar/legion-smoke at the reviewed head",
+    "observed": "contents/smoke/SMOKE-2.md?ref=6e0451fda9b1926b84add80c876fb09ab194c189 decoded and cmp'd against a reference printf'd fresh in this pane: exit 0, byte-identical to the plan's pinned 208 bytes; compare main...6e0451fd lists exactly smoke/SMOKE-2.md and the three .legion/SMOKE-2/*.json handoffs, every path inside the plan's guard; dispatch projects confirms SMOKE is the Dispatch project key; the branch carries no foreign commit (every commit authored by legion-implementer[bot] or legion-reviewer[bot])",
+    "negativeControl": "the same served bytes compared against a one-byte-altered reference (gVisor -> gVisoR) -> cmp: differ: char 194, line 1 (exit 1), so the comparison is not vacuous"
+  },
+  "threads": "gh api graphql reviewThreads(first:100) returned 0 nodes at the reviewed head; no bot thread and no prior review exists on pull request 589, so no thread needed an answer and none was accepted for the implementer to resolve",
+  "prBodyLinesWritten": [
+    "Look at first: smoke/SMOKE-2.md:1 -- the whole change, the one place a wrong fact would reach main",
+    "Not proven / risk: the post-merge halves of C1/C2/C3; the file's two historical attestations, which no command in this repository can settle; and the merged_by half's exposure to a merge by the operator's fixture App or a person"
+  ],
+  "security": "no sensitive surface in this diff: the change adds one static Markdown marker file and phase handoff records -- no authorization check, route, command, tool, credential, subprocess, template, prompt, dependency, workflow, sandbox manifest, agent definition or transport surface is touched"
+}
