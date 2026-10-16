@@ -1,0 +1,1 @@
+SMOKE-2: Dispatch project SMOKE, issue SMOKE-2: the first issue a Legion daemon on GKE Autopilot took from Dispatch to a merged pull request. Every phase ran in an Agent Sandbox pod under gVisor. 2026-10-16.
