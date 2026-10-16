@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "phase": "implement",
+  "issue": "SMOKE-3",
+  "completed": "2026-10-16T18:59:30Z",
+  "pullRequest": "sjawhar/legion-smoke#599",
+  "headSha": "e3f736c7624630918056e7af07ac1c87be44b240",
+  "proof": [
+    {
+      "criterion": "C1, pre-merge half: smoke/SMOKE-3.md carries exactly the bytes the plan pins, and is written by Legion's implementer App.",
+      "surface": "GitHub's REST API against the real repository sjawhar/legion-smoke, the only runtime this change has (no tests, no build, no application in this repository).",
+      "command": "gh api \"repos/sjawhar/legion-smoke/contents/smoke/SMOKE-3.md?ref=e3f736c7624630918056e7af07ac1c87be44b240\" --jq .content | base64 -d | cmp - /tmp/smoke3-ref.txt ; gh api repos/sjawhar/legion-smoke/commits/e3f736c7624630918056e7af07ac1c87be44b240 --jq '[.author.login,(.author.id|tostring)]|@tsv' ; gh api repos/sjawhar/legion-smoke/commits/f72dfef5c4454f205065ee0f9e0e5f8e5e039b04 --jq '[.author.login,(.author.id|tostring)]|@tsv' ; gh api repos/sjawhar/legion-smoke/pulls/599 --jq '[.user.login,(.user.id|tostring)]|@tsv'",
+      "observed": "cmp printed nothing (the bytes GitHub serves are the pinned two lines: 299 bytes total, line 1 exactly 259 bytes, wc -l 2, last byte 0a, no non-ASCII byte). All three identity reads printed 'legion-implementer[bot]\t343353655' — the code head, the first code commit, and the pull request's author. Read at 2026-10-16T18:56:07Z.",
+      "headSha": "e3f736c7624630918056e7af07ac1c87be44b240",
+      "negativeControl": "The same contents read at ?ref=041c357f0a281b9195e9e4f205e55bafacbfb9fa (main's head) returned HTTP 404, so the read distinguishes 'on the branch' from 'on main'; a one-byte-altered copy of the reference made cmp report 'differ: char 257, line 1'; gh api repos/sjawhar/legion-smoke/pulls/571 --jq .merged_by.login returned 'sjawhar-agent[bot]', so the identity comparison distinguishes Apps rather than matching anything."
+    },
+    {
+      "criterion": "C1, pre-merge half: no GitHub auto-merge was ever armed on pull request 599, on a repository that has auto-merge turned off.",
+      "surface": "GitHub's REST API against the live, open pull request sjawhar/legion-smoke#599 (the field is only informative while the pull request is open, which is why the read is taken now and repeated).",
+      "command": "gh api repos/sjawhar/legion-smoke/pulls/599 --jq '.auto_merge|tostring' ; gh api repos/sjawhar/legion-smoke --jq .allow_auto_merge",
+      "observed": "auto_merge -> null at 2026-10-16T18:55:09Z and again at 2026-10-16T18:56:07Z, both while the pull request was open; allow_auto_merge -> false for sjawhar/legion-smoke. GitHub serves auto_merge as an object naming the enabling actor and the merge method while a pull request is armed, so null across the pull request's open life is the evidence that nothing armed it.",
+      "headSha": "e3f736c7624630918056e7af07ac1c87be44b240",
+      "negativeControl": "The same allow_auto_merge read against sjawhar/legion returned true, so the field reports the repository's real setting rather than a constant false. No positive control for an armed auto_merge exists on any pull request this pod can reach, and no phase arms auto-merge anywhere to manufacture one (plan section 3 C1, architect decision D1)."
+    },
+    {
+      "criterion": "C2, pre-merge half: the repository's required 'gate' check passes on the pull request's head.",
+      "surface": "GitHub Actions and the Checks API on sjawhar/legion-smoke; the gate is the job in .github/workflows/fail-on-demand.yml, which fails when a .fail-me file sits at the repository root.",
+      "command": "gh api repos/sjawhar/legion-smoke/rules/branches/main --jq '.[]|select(.type==\"required_status_checks\")|.parameters.required_status_checks[].context' ; gh api repos/sjawhar/legion-smoke/commits/e3f736c7624630918056e7af07ac1c87be44b240/check-runs --jq '.check_runs[]|[.name,.status,.conclusion]|@tsv' ; gh run list --repo sjawhar/legion-smoke --commit e3f736c7624630918056e7af07ac1c87be44b240 --json name,event,status,conclusion,databaseId",
+      "observed": "The required set on main is exactly 'gate'. At the head: 'gate completed success' twice (the push-event and pull_request-event runs) and 'check completed success' twice. Runs at that head: fail-on-demand/pull_request 38951118989 success, ci/pull_request 38951118993 success, fail-on-demand/push 38951113191 success, ci/push 38951113235 success.",
+      "headSha": "e3f736c7624630918056e7af07ac1c87be44b240",
+      "negativeControl": "Cited and never created: run 38794798972, workflow fail-on-demand at head 20634d1dc539504314a2cbe34d86c10986d10e99, conclusion failure — the gate red with .fail-me present, read back today with gh run view. Second control: the check-runs read at the handoff head b338793f128c3ad8a88b2cf5e1bce97638408983, pushed with the skip-checks: true trailer, returns zero check runs and so no gate row, showing the read reflects the head asked for."
+    },
+    {
+      "criterion": "C3, pre-merge half: the branch adds smoke/SMOKE-3.md and nothing outside the paths the plan allows, and the handoff files are the only .legion content on it.",
+      "surface": "GitHub's compare and contents APIs on the real branch legion/SMOKE-3, plus the workspace's own jj pre-push guard.",
+      "command": "gh api repos/sjawhar/legion-smoke/compare/main...legion/SMOKE-3 --jq '[.files[].filename]|sort|join(\" \")' ; jj -R \"$LEGION_WORKSPACE\" diff --from 'main@origin' --to @- --name-only",
+      "observed": "Both list exactly '.legion/SMOKE-3/plan.json' and 'smoke/SMOKE-3.md' — one path matching ^smoke/SMOKE-3\\.md$ and one matching ^\\.legion/SMOKE-3/, with no other path. docs/solutions/ files are retro's, and retro removes .legion/SMOKE-3/ before the head that merges.",
+      "headSha": "e3f736c7624630918056e7af07ac1c87be44b240",
+      "negativeControl": "gh api \"repos/sjawhar/legion-smoke/contents/.legion/SMOKE-3?ref=e3f736c7624630918056e7af07ac1c87be44b240\" returned HTTP 200 listing plan.json, so the 404 this same read must return at the merge commit will be evidence of removal rather than of a broken read; and the same contents read with a case-altered path, smoke/SMOKE-3.MD, returned HTTP 404, so the path is matched exactly."
+    }
+  ],
+  "filesChanged": [
+    "smoke/SMOKE-3.md — new, two lines, 299 bytes, ASCII: the run record the spec asks for. Line 1 (259 bytes) names the Dispatch project and issue, states that Legion's daemon merged this run's READY pull request itself by submitting the merge once GitHub reported it mergeable rather than through GitHub auto-merge, which this repository has turned off, and carries the run date 2026-10-16. Line 2 names pull request sjawhar/legion-smoke#599.",
+    ".legion/SMOKE-3/implement.json — this handoff."
+  ],
+  "trickyParts": [
+    "The file names the pull request, which does not exist until the branch carries a commit, so the change is two code commits in the order skill://legion-worker fixes: 'smoke: add SMOKE-3 marker file' (f72dfef5c4454f205065ee0f9e0e5f8e5e039b04, line 1 only), push, gh pr create -> 599, then 'smoke: record the pull request in the SMOKE-3 marker' (e3f736c7624630918056e7af07ac1c87be44b240, line 2 appended), push. The one-line intermediate is never a reviewed, READY or merged head; every proof above is at the two-line head.",
+    "auto_merge is null on a merged pull request whether or not it was ever armed, so the reads that carry the evidence are the ones taken while the pull request is open: 2026-10-16T18:55:09Z and 2026-10-16T18:56:07Z, both null. Later phases should repeat that read at their own head and record its UTC time, as plan section 3 C1 asks.",
+    "Three Apps act on this repository: this deployment's implement App legion-implementer[bot] id 343353655, the operator's trajectory-s-legion-implementer[bot], and sjawhar-agent[bot] (fixtures). Every comparison uses the REST login with the [bot] literal plus the numeric id; gh pr view --json author renders an App as app/legion-implementer with no [bot] and is not used for identity.",
+    "The date in the file is the run date, 2026-10-16 UTC, fixed when the file was written and not the merge date: a merge-date file would need a commit above the reviewer-approved head, which voids the approval. If the merge lands after 00:00 UTC on 2026-10-17 the bytes stand (plan section 1)."
+  ],
+  "deviations": [
+    "None from the plan. The plan's own departure from the spec (section 7: the file's bytes assert nothing about earlier runs) stands as the architect settled it on 2026-10-16T18:53:09Z, with the spec left at version 1.",
+    "No ce-simplify-code pass and no Thermo line in the pull request body: the diff is one Markdown file, and skill://legion-worker/references/pr-body.md gives a docs-only pull request neither pass. Its absence is not a review finding."
+  ],
+  "openQuestions": [
+    "None open to this phase. The architect settled D1, D2 and D3 before implementation began: the merge-path claim is proven as 'this deployment's implement App performed the merge' plus 'no auto-merge was ever armed on this pull request, on a repository with auto-merge off', with the remainder — that the daemon reached the merge through sjawhar/legion#1987's submit code rather than the pre-#1987 path — recorded as the issue author's attestation in Not proven / risk, since no observable a pod can read separates the two paths."
+  ],
+  "discoveredComplexity": [
+    "main is mutated by an outside actor between runs: fixture commit 041c357f ('proof: restore main's tree after sjawhar/legion#1987's live proofs (#598)') deleted SMOKE-2's merged files from main. Acceptance criterion 3 is therefore decided over the squash commit's own immutable file list, never over main's tree at read time, and the compare against main is recorded as a timed observation.",
+    "The 'gate' check appears twice in the check-runs read at any branch head, once for the push-event run and once for the pull_request-event run; both must be success, and a handoff head pushed with the skip-checks: true trailer carries no check run at all."
+  ]
+}
