@@ -1,0 +1,1 @@
+SMOKE-3: Dispatch project SMOKE, issue SMOKE-3: Legion's daemon merged this run's READY pull request itself, submitting the merge once GitHub reported it mergeable, rather than through GitHub auto-merge, which sjawhar/legion-smoke has turned off. 2026-10-16.
