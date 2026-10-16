@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "phase": "implement",
+  "issue": "SMOKE-2",
+  "completed": "2026-10-16T15:35:00Z",
+  "proof": [
+    {
+      "criterion": "C1 (pre-merge half): smoke/SMOKE-2.md exists with the plan's pinned bytes and is written by Legion's implementer App. The main/merged_by half is the post-merge production check.",
+      "surface": "GitHub REST API against the real repository sjawhar/legion-smoke, reading the pushed branch legion/SMOKE-2 (pull request 589). This change's only runtime is GitHub, so GitHub's own API on the real repository is the production-like surface.",
+      "command": "ref=/tmp/ref.txt; printf 'SMOKE-2: Dispatch project SMOKE, issue SMOKE-2: the first issue a Legion daemon on GKE Autopilot took from Dispatch to a merged pull request. Every phase ran in an Agent Sandbox pod under gVisor. 2026-10-16.\\n' > \"$ref\"; gh api \"repos/sjawhar/legion-smoke/contents/smoke/SMOKE-2.md?ref=71461a80bf63c57b093ee4389f3f0d34a7eaa932\" --jq .content | base64 -d | cmp - \"$ref\"; gh api repos/sjawhar/legion-smoke/commits/71461a80bf63c57b093ee4389f3f0d34a7eaa932 --jq .author.login; gh api repos/sjawhar/legion-smoke/pulls/589 --jq .user.login",
+      "observed": "cmp printed nothing (exit 0): the bytes GitHub serves are byte-identical to the plan's pinned 208-byte reference. commits/<H>.author.login printed 'legion-implementer[bot]' and pulls/589.user.login printed 'legion-implementer[bot]', this deployment's Legion implement App (the same identity as this pane's jj author, 343353655+legion-implementer[bot]@users.noreply.github.com). Local assertions on the committed file before the push: wc -c 208, wc -l 1, last byte 0a (od -An -tx1), LC_ALL=C grep -n '[^ -~]' printed nothing (exit 1).",
+      "headSha": "71461a80bf63c57b093ee4389f3f0d34a7eaa932",
+      "negativeControl": "The same contents read at main's tip 4c2722b35c6a11b9131a29643440d1593dd1df0a returned HTTP 404 Not Found, so the 200 above is not the base being read. A one-byte-altered copy of the reference (gVisor -> gVisoR) compared against the same served bytes made cmp report 'differ: char 194, line 1', so the comparison is not vacuous. For the identity read, gh api repos/sjawhar/legion-smoke/pulls/575 --jq '[.user.login,.merged_by.login]' printed ['trajectory-s-legion-implementer[bot]','sjawhar-agent[bot]'] - two logins distinct from this pull request's, so the read discriminates identities."
+    },
+    {
+      "criterion": "C2 (pre-merge half): the repository's required 'gate' check passes on the pull-request head. The merge-commit half is the post-merge production check.",
+      "surface": "GitHub Actions on the real repository: the fail-on-demand workflow's 'gate' job, run by GitHub for the push of legion/SMOKE-2 and again for pull request 589.",
+      "command": "gh api repos/sjawhar/legion-smoke/rules/branches/main --jq '.[]|select(.type==\"required_status_checks\")|.parameters.required_status_checks[].context'; gh api \"repos/sjawhar/legion-smoke/commits/71461a80bf63c57b093ee4389f3f0d34a7eaa932/check-runs\" --jq '.check_runs[]|select(.name==\"gate\")|[.name,.status,.conclusion]|@tsv'; gh run list --commit 71461a80bf63c57b093ee4389f3f0d34a7eaa932 --json name,event,status,conclusion,databaseId",
+      "observed": "The ruleset read printed exactly 'gate', so that is the required context on main (the branch-protection API answers 403 to this App; the ruleset read is used instead and the refusal is recorded, not worked around). check-runs printed 'gate\tcompleted\tsuccess' at the head. gh run list printed fail-on-demand run 38921570750 (push) conclusion success and ci run 38921570791 (push) conclusion success; opening pull request 589 started the pull_request-event copies of both.",
+      "headSha": "71461a80bf63c57b093ee4389f3f0d34a7eaa932",
+      "negativeControl": "The cited red gate, never recreated by pushing .fail-me: gh api repos/sjawhar/legion-smoke/actions/runs/38794798972 --jq '[.name,.head_sha,.conclusion,.event]' printed ['fail-on-demand','20634d1dc539504314a2cbe34d86c10986d10e99','failure','pull_request'] - the same workflow fails when .fail-me is at the repository root, so 'success' here is a real pass and not a workflow that cannot fail."
+    },
+    {
+      "criterion": "C3 (pre-merge half): the branch adds smoke/SMOKE-2.md and nothing outside the allowed path set; the .legion/SMOKE-2/ handoffs must not reach main (removed by retro, confirmed at the merge commit by the production check).",
+      "surface": "The pushed branch as GitHub itself compares it against main, plus the same read in the issue workspace with jj.",
+      "command": "jj -R /legion/workspaces/sjawhar/legion-smoke/smoke-2 diff --from 'main@origin' --to @- --name-only; gh api repos/sjawhar/legion-smoke/compare/main...legion/SMOKE-2 --jq '[.files[].filename]|sort'",
+      "observed": "Both reads list exactly ['.legion/SMOKE-2/plan.json', 'smoke/SMOKE-2.md'] - only the marker file and the planner's handoff, every path matching the plan's guard (^smoke/SMOKE-2\\.md$ or ^\\.legion/SMOKE-2/). No workflow, no other smoke/ marker and no foreign fixture file (such as .fail-me) is on the branch. jj diff --git for the implementation commit 71461a80 shows one new file, 1 line added, 0 removed.",
+      "headSha": "71461a80bf63c57b093ee4389f3f0d34a7eaa932",
+      "negativeControl": "The guard is discriminating rather than always-empty: the same compare read lists .legion/SMOKE-2/plan.json, a path the merged head must NOT carry, which is exactly what the guard is meant to surface and what retro's removal commit must clear. Its presence on the branch today, and its required absence at the merge commit, is read as gh api \"repos/sjawhar/legion-smoke/contents/.legion/SMOKE-2?ref=<approved head>\" -> 200 versus the same read at the merge commit -> 404."
+    }
+  ],
+  "filesChanged": [
+    "smoke/SMOKE-2.md (new, 208 bytes, one line, ASCII, trailing newline; commit 71461a80bf63c57b093ee4389f3f0d34a7eaa932 'smoke: add SMOKE-2 marker file')",
+    ".legion/SMOKE-2/implement.json (this handoff)"
+  ],
+  "trickyParts": [
+    "The plan pins the file's bytes exactly, so every phase can cmp against the printf reference in plan.md section 1 rather than re-arguing wording. The reference used here is reproduced verbatim in each proof entry's command.",
+    "The pull request body's CI line names this repository's real workflows (ci job 'check', fail-on-demand job 'gate'); the template's 'Tests'/'PR Title' lanes do not exist here, and only 'gate' is required by the ruleset on main.",
+    "No ce-simplify-code pass and no Thermo line: the diff is one Markdown file, and skill://legion-worker/references/pr-body.md omits the Thermo line entirely for a docs-only diff."
+  ],
+  "deviations": [
+    "The plan (section 2 and C1) pinned Legion's implement App as 'trajectory-s-legion-implementer[bot]', measured on pull request 582. This deployment now runs under a different App: the commit at the head and pull request 589 both read 'legion-implementer[bot]', matching this pane's jj author identity 343353655+legion-implementer[bot]@users.noreply.github.com. The criterion ('written by Legion's implementer App') is satisfied; the literal in the plan is stale. Later phases must compare against 'legion-implementer[bot]', and the merged_by read at the merge commit should expect the same App, not the trajectory-s- prefixed one. Reported to the architect.",
+    "The plan's byte assertion used 'tail -c 1 ... | xxd -p'; xxd is not installed in these pods. The identical property was checked with 'tail -c 1 smoke/SMOKE-2.md | od -An -tx1' -> 0a. Nothing was installed to work around it."
+  ],
+  "openQuestions": [
+    "C1's merged_by half is not under Legion's control: if the operator's fixture App (sjawhar-agent[bot]) or a person merges pull request 589 before the daemon submits it, C1 fails on this pull request and no rework recovers it (plan.md section 5). The architect owns that decision."
+  ],
+  "discoveredComplexity": [
+    "Pull request 589 is open with both ci and fail-on-demand running on the pull_request event in addition to the push-event runs already green at the head; a later phase reading check-runs at this head will see two rows per check name, one per event."
+  ]
+}
