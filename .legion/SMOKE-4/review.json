@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "phase": "review",
+  "issue": "SMOKE-4",
+  "completed": "2026-10-16T21:38:00Z",
+  "verdict": "approved",
+  "critical": 0,
+  "important": 0,
+  "minor": 0,
+  "keyFindings": [],
+  "round": 1,
+  "reviewedHead": "The APPROVE names the branch tip this handoff push makes; the code it reviews is 0a2670681406379945271f5a5a5ba76581617e28, every commit above which touches only .legion/.",
+  "ciRead": {
+    "requiredContexts": ["gate"],
+    "requiredSetSource": "gh api repos/sjawhar/legion-smoke/rules/branches/main -> [\"gate\"]; branch-protection endpoint returns no checks for our App (empty), recorded rather than guessed.",
+    "ciHead": "0a2670681406379945271f5a5a5ba76581617e28",
+    "ciHeadSource": "gh api 'repos/sjawhar/legion-smoke/actions/runs?branch=legion/SMOKE-4&event=pull_request&per_page=30' --jq '.workflow_runs[0].head_sha'",
+    "checkRuns": "gate completed success x2, check completed success x2 at 0a267068; every required name present, completed, success.",
+    "gapProof": "gh api repos/sjawhar/legion-smoke/compare/0a2670681406379945271f5a5a5ba76581617e28...f784e3d47ddc983486a984a42635920b754afdac --jq '[.files[].filename] | all(startswith(\".legion/\"))' -> true (files: .legion/SMOKE-4/implement.json, .legion/SMOKE-4/test.json), so the green code head stands for the review head.",
+    "prBodyCiLine": "not stale: runs 38968198122 (fail-on-demand) and 38968198105 (ci) both have head_sha 0a2670681406379945271f5a5a5ba76581617e28, completed success."
+  },
+  "verifiedOnGitHub": [
+    "Bytes: reference rebuilt from plan.md section 1's own printf with both substitutions re-derived from GitHub first (pulls?state=all&head=sjawhar:legion/SMOKE-4 -> [603]; commits/d83a1125... .commit.committer.date -> 2026-10-16T21:13:58Z -> 2026-10-16). cmp against GitHub's served bytes at the code head 0a267068 and at the review head f784e3d4: identical (exit 0) at both. Shape on the served bytes: 299 total, line 1 259 incl. newline, wc -l 2, last byte 0a, zero non-ASCII. Negative control: a one-byte-altered reference (turned off -> turned ON) -> 'differ: char 243, line 1', exit 1.",
+    "Authorship: users/legion-implementer%5Bbot%5D -> ['legion-implementer[bot]',343353655] read fresh; both code commits d83a1125 and 0a267068 carry that login and id in .author and .committer alike; pulls/603 .user the same. Negative control: pulls/571 .merged_by -> ['sjawhar-agent[bot]',329211056], so the identity read discriminates Apps.",
+    "No auto-merge: paginated timeline [.[].event]|unique -> 'committed' alone; select(.event==\"auto_merge_enabled\")|length -> 0, with the filter-sensitivity control select(.event==\"committed\")|length -> 5 beside it; pulls/603 auto_merge null while state=open; repo allow_auto_merge false, control sjawhar/legion -> true.",
+    "Path set: compare/main...legion/SMOKE-4 -> exactly .legion/SMOKE-4/{plan,implement,test}.json and smoke/SMOKE-4.md (+2/-0); status ahead 5, behind 0; mergeable MERGEABLE, mergeStateStatus BLOCKED (the review the gate still owes). smoke/SMOKE-4.md is absent from main at 5771f038 (HTTP 404), so this is a new record.",
+    "Threads: gh api graphql reviewThreads -> 0 nodes; no prior review on the pull request; no bot findings to adjudicate.",
+    "Both E2E lines present in the live PR body: E2E (implementer) and E2E (tester)."
+  ],
+  "thermonuclear": {
+    "ran": false,
+    "why": "Docs-only diff: smoke/SMOKE-4.md is a two-line static Markdown record and the remaining paths are .legion/SMOKE-4/*.json handoff metadata. No runtime code, so neither thermonuclear agent runs and the PR body carries no Thermo line (skill://legion-worker/references/pr-body.md; plan.md requiredSkills.review)."
+  },
+  "contractChangeCensus": {
+    "required": false,
+    "why": "The diff adds no refusal, makes no field required, removes or renames no field, and changes no signature at a process or package boundary."
+  },
+  "security": "Security[agent-def]: the only non-Markdown paths are .legion/SMOKE-4/plan.json, implement.json and test.json, Legion phase handoffs that later roles of this issue read, so this diff can in principle steer its own reviewer. It is trustworthy anyway because every claim they carry was re-derived from GitHub in this review rather than taken from them: the bytes from a reference rebuilt out of plan.md's printf, the App identity from users/legion-implementer%5Bbot%5D, the absence of auto-merge from the paginated timeline with its own sensitivity control, and the gate verdict from the commit's check-runs. No other row's surface is touched: no authorization check, route, command or tool; no credential, grant or lifetime; no subprocess, path, template or query built from outside text; no prompt; no dependency, lockfile, base image or Action; no pod manifest, capability or network policy; no TLS, signature, HMAC, randomness source or unbounded read.",
+  "prBodyEdits": [
+    "Look at first: written this round — smoke/SMOKE-4.md:1 (the claim sentence and the date, checkable against commits/d83a1125 .commit.committer.date) and smoke/SMOKE-4.md:2 (the pull-request number, with three live neighbouring numbers).",
+    "Not proven / risk: one bullet added — acceptance criterion 3 is unsatisfied at this head because the branch carries .legion/SMOKE-4/*.json, and it rests entirely on retro's last commit removing that directory before the merge."
+  ],
+  "forRetroAndMerger": [
+    "Retro's last commit MUST remove .legion/SMOKE-4/ from the head that merges: acceptance criterion 3 fails on main otherwise, and READY refuses a head still carrying it.",
+    "The approved head's code is 0a2670681406379945271f5a5a5ba76581617e28; nothing above it may change any path outside docs/solutions/ and .legion/SMOKE-4/ without voiding the approval."
+  ]
+}
