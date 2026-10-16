@@ -1,0 +1,90 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "SMOKE-3",
+  "completed": "2026-10-16T18:49:56Z",
+  "plan": "dispatch://SMOKE-3/artifact/plan-md",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: the implementer's push, pull-request and handoff contract — the two code commits this plan needs (marker file, then the line naming the pull request) are pushed with no skip-checks trailer, the handoff push with it.",
+      "legion-worker/references/pr-body.md: the body template and the definition of a proof; the implementer's E2E line and the implement.json proof array are written from it, and it is the rule that makes this docs-only diff skip ce-simplify-code and the Thermo line.",
+      "legion-worker/references/merge-gate.md: the implementer runs the post-merge production check at the squash commit, where every acceptance criterion's second half is decided.",
+      "legion-retro: the same agent runs retro, whose docs/solutions/<category>/<slug>-SMOKE-3.md naming and final removal of .legion/SMOKE-3/ are what acceptance criterion 3 matches on.",
+      "dispatch (with dispatch-first): the production check's record on the issue is a dispatch message, and Legion's issues never go to GitHub issues.",
+      "ce-simplify-code: does not apply — the diff is one Markdown file, and pr-body.md gives a docs-only pull request no simplify pass."
+    ],
+    "test": [
+      "legion-worker: the tester's phase contract, handoff fields (implementerProof, failures, proof) and push rules.",
+      "legion-worker/references/pr-body.md: the tester drives the surface itself and reads CI rather than re-running it; it also says a predecessor handoff with no proof array is a test failure, not a gap the tester fills.",
+      "dispatch-first: search the issue's history before posting anything to Dispatch.",
+      "none for a repository test suite: the repository has no tests, no build and no AGENTS.md (glob of the workspace root and .github/), so no suite convention applies and no red test is written for a one-file Markdown diff."
+    ],
+    "review": [
+      "legion-worker/references/merge-gate.md: the reviewer's CI read, the one review per round named by SHA, the Not proven / risk line, and the approval's relation to retro's commits.",
+      "legion-worker/references/review-threads.md: the disposition and resolution of any thread a bot or the reviewer opens.",
+      "legion-worker: the reviewer's handoff fields (verdict, counts, keyFindings) and the handoff push order inside a round.",
+      "ce-simplify-code and the thermonuclear pair: do not apply — pr-body.md and merge-gate.md omit both for a docs-only pull request, so their absence is not a finding."
+    ]
+  },
+  "gapAnalysis": {
+    "findings": [
+      {
+        "finding": "Criterion 1's clause 'merged by Legion's daemon, not through GitHub auto-merge' cannot be settled by the planner's first predicate: it would have passed unchanged on SMOKE-2, which merged before sjawhar/legion#1987, because that path also merged as the implement App with no auto-merge.",
+        "answer": "Plan section 3 (C1) narrows what is proven to two readable facts — this deployment's implement App performed the merge, and no auto-merge was ever armed on the pull request (auto_merge null while open, no auto_merge_enabled timeline event, repository allow_auto_merge false) — and section 6 D1 records the remainder as the issue author's attestation, with a Not proven / risk bullet the reviewer must carry. The architect is asked to name a readable observable if it wants the stronger claim proven."
+      },
+      {
+        "finding": "The file asserts, in bytes committed before the merge, that the daemon merged the pull request; nothing reserves the repository, and an operator App or a person merging first leaves a false record on main with no recovery.",
+        "answer": "Plan section 5 lists it as the first risk, section 3 (C1) adds a Not proven / risk bullet naming it, and section 6 D2 sends the policy decision to the architect with the default: criterion 1 fails on this pull request, the phase reports, and no phase edits the file or the spec to make the record true."
+      },
+      {
+        "finding": "'Legion's implementer App' and 'Legion's daemon' are not pinned, on a repository where two implement Apps and an operator App act; a predicate comparing merged_by to the author of our own commit is self-satisfying.",
+        "answer": "Plan section 2 pins legion-implementer[bot] id 343353655, measured from users/legion-implementer[bot] and from SMOKE-2's pull request 589 (this deployment's previous run, independent of the artefact under test), and names trajectory-s-legion-implementer[bot] and sjawhar-agent[bot] as identities that must never be accepted. Section 3 (C1) states that 'written by' is decided by the code commit's author and the pull request's author, with the squash commit's author as corroboration, and every comparison uses the REST login with the [bot] literal plus the numeric id."
+      },
+      {
+        "finding": "Criterion 3's 'and nothing else' does not say which commit's file set it ranges over, and an outside actor mutates main between runs.",
+        "answer": "Plan section 3 (C3) ranges the criterion over the squash commit's own file list, which is immutable, with the pattern smoke/SMOKE-3.md or docs/solutions/<category>/<name>-SMOKE-3.md and zero retro files accepted; the compare against main is recorded as a timed observation, never an acceptance condition."
+      },
+      {
+        "finding": "Criterion 2's 'the merged head' reads two ways, and under sjawhar/legion#1987 the push-event run at the squash commit can still be queued when the production check reads it.",
+        "answer": "Plan section 3 (C2) decides the criterion at the squash commit, checks the pull-request head too, and tells the production check to poll every 30 seconds past 10 minutes rather than record a pending Production line; a red gate there (only a foreign .fail-me can cause it) goes to the architect."
+      },
+      {
+        "finding": "The pull request number cannot be known before the pull request exists, so the planner's two-commit design needs choosing against the alternative of opening the pull request on the planner's handoff head.",
+        "answer": "Plan section 1 ('Why two code commits') fixes the order inside skill://legion-worker's own sequence — marker commit, push, gh pr create, append the pull-request line, push — pins the two-line file at the implementer's head as the reference every phase compares, states that the one-line intermediate is never a reviewed, READY or merged head, and that nothing touches smoke/SMOKE-3.md above the approved head. The rejected alternatives and why are recorded there."
+      },
+      {
+        "finding": "The spec's premise that every earlier run's merger armed auto-merge and waited is contradicted by sjawhar/legion#1987's own reproduction (arming is refused on this repository) and by SMOKE-2.",
+        "answer": "Plan section 7 records this as the one departure from the spec: the file's bytes assert nothing about earlier runs, and 'not through GitHub auto-merge' is proven by the absence of any arm on this pull request plus the repository setting. The architect decides whether the spec changes."
+      },
+      {
+        "finding": "That the deployed daemon carries sjawhar/legion#1987 and #1988 cannot be read from a pod, and both pull requests are open.",
+        "answer": "Plan sections 1 and 6 (D1, D3) keep both out of the file's bytes and record the claim as the issue author's attestation in Not proven / risk; no phase is asked to prove it."
+      },
+      {
+        "finding": "'The date' is unspecified, and the merge can cross midnight UTC after the bytes are fixed.",
+        "answer": "Plan section 1 pins the run date 2026-10-16 UTC, fixed when the implementer writes the file, with the reason: a merge-date file needs a commit above the approved head, which voids the approval. Section 5 accepts the crossing explicitly."
+      },
+      {
+        "finding": "sjawhar/legion#1988 appears in the spec's narrative but in no acceptance criterion and in no list of what the file records, so whether the bytes mention it is undecided.",
+        "answer": "Plan sections 1 and 6 (D3) decide the bytes carry exactly the spec's three facts and no mention of #1988, and send the decision to the architect to overrule if it wants it."
+      }
+    ]
+  },
+  "planReview": {
+    "verdict": "approved",
+    "rounds": 1
+  },
+  "specDepartures": [
+    {
+      "spec": "sjawhar/legion-smoke has GitHub's auto-merge setting off, so every earlier run's merger armed auto-merge and waited for GitHub to merge it.",
+      "plan": "The bytes of smoke/SMOKE-3.md assert nothing about earlier runs. 'Not through GitHub auto-merge' is proven for this run only, by the absence of any arm on this pull request (auto_merge null across its open life, no auto_merge_enabled timeline event) together with the repository's auto-merge setting, not by a contrast with earlier runs. The plan also records that no pod-readable fact separates sjawhar/legion#1987's merge path from the earlier one.",
+      "evidence": "sjawhar/legion#1987's own reproduction records the arm being refused on this repository ('Auto merge is not allowed for this repository (enablePullRequestAutoMerge)'), so no earlier run's arm can have waited. Measured today: gh api repos/sjawhar/legion-smoke --jq .allow_auto_merge -> false; gh api repos/sjawhar/legion-smoke/pulls/589 --jq '[.merged_by.login,(.auto_merge|tostring)]' -> legion-implementer[bot], null; the timeline of 589 carries closed, commented, committed, cross-referenced, merged, reviewed and no auto_merge_enabled.",
+      "outcome": {
+        "kind": "changed",
+        "summary": [
+          "sjawhar/legion-smoke has GitHub's auto-merge setting off, so every earlier run's merger armed auto-merge and waited for GitHub to merge it."
+        ]
+      }
+    }
+  ]
+}
