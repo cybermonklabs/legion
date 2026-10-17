@@ -47,13 +47,24 @@ type Kubernetes struct {
 	// are each both the container's request and its limit, so every Legion pod is Guaranteed and
 	// bursts past nothing; at the defaults a six-role issue pod sums to 3 CPU and 19 GiB.
 	// EphemeralStorage bounds what the container writes to the node's disk — its root filesystem,
-	// which no volume backs: the role's $HOME, Oh My Pi's state home with its Chromium profiles and
-	// logs, the Go and Bun caches — since pods of unrelated trees share a node and one role filling
-	// the node's disk would put every pod on it under DiskPressure; a container past its own limit
-	// has its pod evicted, the offending issue's alone. EphemeralStorageRequest is what the scheduler
-	// fits to the node's allocatable ephemeral storage (its root volume), small by default so that it
-	// binds almost nothing.
+	// which no volume backs once a role's scratch (TMPDIR, the Go and Bun caches, pip/npm/uv) moves
+	// to a directory of its own on the issue's volume (manifest.go, roleScratchDir): what is left is
+	// the base image's own diff and whatever small file a tool writes outside every redirected
+	// variable — since pods of unrelated trees share a node and one role filling the node's disk
+	// would put every pod on it under DiskPressure, a container past its own limit has its pod
+	// evicted, the offending issue's alone. EphemeralStorageRequest is what the scheduler fits to
+	// the node's allocatable ephemeral storage (its root volume) and, on GKE Autopilot, what the
+	// platform's own admission webhook clamps the limit down to regardless of what this sets
+	// (observed live, 2026-10-17): the two are equal at the defaults below, so the configured value
+	// is the effective one. PodEphemeralStorageCap bounds their sum (resolveKubernetes).
 	Resources map[claim.Role]RoleResources
+	// PodEphemeralStorageCap is the most the six workflow roles' EphemeralStorageRequest may sum to,
+	// refused at load naming the sum (resolveKubernetes): a platform admission limit on the whole
+	// pod's ephemeral storage, 10Gi on GKE Autopilot (the default), configurable for another
+	// platform or a future limit. It does not cover the controller, which runs alone in its own pod,
+	// or the two init containers, which keep the triggering role's reservation and have not needed
+	// more than its small default to clone a repository (observed live, 2026-10-17).
+	PodEphemeralStorageCap string
 	// Pod is what the operator adds to every pod (runtime.kubernetes.pod).
 	Pod PodConfig
 	// AgentSecrets is the secrets broker every pod is enrolled with (runtime.kubernetes.agent_secrets);
@@ -119,19 +130,26 @@ func (r RoleResources) Reserved() bool {
 // since it starts one Oh My Pi at a time and runs no lane, and a probe sized as a role could not
 // boot on a full pool.
 // The ephemeral-storage limit bounds the role's writes to the node's disk (the container's root
-// filesystem: $HOME, the state home, the Go and Bun caches a build fills), 20Gi for the two roles
-// that build, 10Gi for the rest; the request is 1Gi for every role, since the scheduler fits it to
-// the node's allocatable ephemeral storage — its root volume, which nobody has sized for these
-// pods — and a small request binds scheduling to almost nothing. An operator who knows the root
-// volume raises the request so the scheduler reserves disk.
+// filesystem): with a role's scratch — TMPDIR, XDG_CACHE_HOME and XDG_DATA_HOME, GOCACHE, GOPATH
+// and GOMODCACHE, BUN_INSTALL_CACHE_DIR, npm's and pip's caches — redirected to a directory of its
+// own on the issue's volume (manifest.go, roleScratchDir), a live idle role container's root
+// filesystem holds on the order of 20-40 MiB (measured on the production LINUX and BET pods,
+// 2026-10-17: the base image's own diff, a few hundred KiB of dotfiles, nothing a build leaves
+// behind), so 1Gi is ample headroom for every role and 2Gi for the two that build and test a
+// change, where an occasional tool ignores every redirected variable. The request equals the limit:
+// GKE Autopilot's own admission webhook clamps a container's ephemeral-storage limit down to its
+// request regardless of what this sets (observed live, 2026-10-17), so a request under the limit
+// bought nothing but a surprise, and the six roles' requests summing to 8Gi leaves 2Gi of headroom
+// under PodEphemeralStorageCap's 10Gi default. An operator on a platform with no such cap, or with
+// a role that genuinely writes more outside the issue volume, raises either field past the default.
 var defaultResources = map[claim.Role]RoleResources{
-	claim.RoleArchitect:   {CPU: "250m", Memory: "1Gi", EphemeralStorage: "10Gi", EphemeralStorageRequest: "1Gi"},
-	claim.RolePlanner:     {CPU: "250m", Memory: "1Gi", EphemeralStorage: "10Gi", EphemeralStorageRequest: "1Gi"},
-	claim.RoleImplementer: {CPU: "750m", Memory: "6Gi", EphemeralStorage: "20Gi", EphemeralStorageRequest: "1Gi"},
-	claim.RoleTester:      {CPU: "750m", Memory: "6Gi", EphemeralStorage: "20Gi", EphemeralStorageRequest: "1Gi"},
-	claim.RoleReviewer:    {CPU: "750m", Memory: "4Gi", EphemeralStorage: "10Gi", EphemeralStorageRequest: "1Gi"},
-	claim.RoleMerger:      {CPU: "250m", Memory: "1Gi", EphemeralStorage: "10Gi", EphemeralStorageRequest: "1Gi"},
-	claim.RoleController:  {CPU: "1", Memory: "4Gi", EphemeralStorage: "10Gi", EphemeralStorageRequest: "1Gi"},
+	claim.RoleArchitect:   {CPU: "250m", Memory: "1Gi", EphemeralStorage: "1Gi", EphemeralStorageRequest: "1Gi"},
+	claim.RolePlanner:     {CPU: "250m", Memory: "1Gi", EphemeralStorage: "1Gi", EphemeralStorageRequest: "1Gi"},
+	claim.RoleImplementer: {CPU: "750m", Memory: "6Gi", EphemeralStorage: "2Gi", EphemeralStorageRequest: "2Gi"},
+	claim.RoleTester:      {CPU: "750m", Memory: "6Gi", EphemeralStorage: "2Gi", EphemeralStorageRequest: "2Gi"},
+	claim.RoleReviewer:    {CPU: "750m", Memory: "4Gi", EphemeralStorage: "1Gi", EphemeralStorageRequest: "1Gi"},
+	claim.RoleMerger:      {CPU: "250m", Memory: "1Gi", EphemeralStorage: "1Gi", EphemeralStorageRequest: "1Gi"},
+	claim.RoleController:  {CPU: "1", Memory: "4Gi", EphemeralStorage: "1Gi", EphemeralStorageRequest: "1Gi"},
 }
 
 // DefaultResources is every role's default reservation, the controller's included, as a fresh map
@@ -158,6 +176,9 @@ const (
 	kubernetesKey      = "runtime.kubernetes"
 	podKey             = kubernetesKey + ".pod"
 	defaultIssueVolume = "20Gi"
+	// defaultPodEphemeralStorageCap is GKE Autopilot's own limit on a pod's summed
+	// ephemeral-storage, the platform this runtime first shipped on.
+	defaultPodEphemeralStorageCap = "10Gi"
 	// poolLabel is the node label that selects the Legion pool. The runtime sets it on every pod,
 	// and the cluster's admission policy requires its value.
 	poolLabel = "legion.dev/pool"
@@ -349,8 +370,8 @@ func readKubernetes(value *yaml.Node) (*Kubernetes, error) {
 		return nil, errors.New("runtime.kubernetes must be a mapping")
 	}
 	fields, err := members(value, kubernetesKey, "namespace", "image", "storage_class", "issue_volume", "tree_volume",
-		"kubeconfig", "context", "scheduling", "resources", "gateway", "pod", "session_store", "session_dsn_secret",
-		"role_profiles", "agent_secrets", "plugins")
+		"kubeconfig", "context", "scheduling", "resources", "pod_ephemeral_storage_cap", "gateway", "pod", "session_store",
+		"session_dsn_secret", "role_profiles", "agent_secrets", "plugins")
 	if err != nil {
 		return nil, err
 	}
@@ -383,6 +404,9 @@ func readKubernetes(value *yaml.Node) (*Kubernetes, error) {
 	}
 	if issueVolume != "" {
 		block.IssueVolume = issueVolume
+	}
+	if block.PodEphemeralStorageCap, err = readQuantity(fields["pod_ephemeral_storage_cap"], kubernetesKey+".pod_ephemeral_storage_cap"); err != nil {
+		return nil, err
 	}
 	if block.Kubeconfig, err = optionalString(fields["kubeconfig"], kubernetesKey+".kubeconfig"); err != nil {
 		return nil, err
@@ -762,9 +786,13 @@ func readPodMounts(value *yaml.Node, volumes []corev1.Volume) ([]corev1.VolumeMo
 // default for each field it left out — so the daemon translates seven complete reservations and
 // never one with a side missing. A role whose settled ephemeral-storage request exceeds its limit
 // is refused naming both, since the API server would refuse the pod (the file set one of the two,
-// or both: the defaults never exceed). The file's own block (file.Kubernetes) keeps only what the
-// file set, which resolveControllerLaunch reads to tell a controller the operator sized from one
-// the default sized.
+// or both: the defaults never exceed). PodEphemeralStorageCap defaults to GKE Autopilot's own 10Gi
+// pod limit when the file leaves it unset, and the six workflow roles' settled
+// EphemeralStorageRequest — never the controller's, which runs alone in a pod of its own — must sum
+// to no more than it, refused naming the sum and the cap: the roles share one pod, so a platform
+// that bounds a pod's ephemeral storage bounds their sum, not any one role's share. The file's own
+// block (file.Kubernetes) keeps only what the file set, which resolveControllerLaunch reads to tell
+// a controller the operator sized from one the default sized.
 func resolveKubernetes(file fileConfig, configDir string, cfg *Config) error {
 	if err := checkKubernetesKeys(file); err != nil {
 		return err
@@ -772,6 +800,11 @@ func resolveKubernetes(file fileConfig, configDir string, cfg *Config) error {
 	block := *file.Kubernetes
 	if block.Kubeconfig != "" {
 		block.Kubeconfig = underConfig(block.Kubeconfig, configDir)
+	}
+	block.PodEphemeralStorageCap = cmp.Or(block.PodEphemeralStorageCap, defaultPodEphemeralStorageCap)
+	podCap, err := resource.ParseQuantity(block.PodEphemeralStorageCap)
+	if err != nil {
+		return fmt.Errorf("%s.pod_ephemeral_storage_cap: %w", kubernetesKey, err)
 	}
 	block.Resources = DefaultResources()
 	for role, set := range file.Kubernetes.Resources {
@@ -788,6 +821,14 @@ func resolveKubernetes(file fileConfig, configDir string, cfg *Config) error {
 		if request.Cmp(limit) > 0 {
 			return fmt.Errorf("%s.resources.%s.ephemeral_storage_request %s exceeds ephemeral_storage %s", kubernetesKey, role, settled.EphemeralStorageRequest, settled.EphemeralStorage)
 		}
+	}
+	var sum resource.Quantity
+	for _, role := range claim.Roles {
+		sum.Add(resource.MustParse(block.Resources[role].EphemeralStorageRequest))
+	}
+	if sum.Cmp(podCap) > 0 {
+		return fmt.Errorf("%s.resources: the six workflow roles' ephemeral_storage_request sums to %s, past %s.pod_ephemeral_storage_cap %s",
+			kubernetesKey, sum.String(), kubernetesKey, podCap.String())
 	}
 	cfg.Runtime = Runtime{Name: "kubernetes", Kubernetes: &block}
 	return nil

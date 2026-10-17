@@ -396,8 +396,9 @@ func TestTheInitContainersPathNamesNoIssueVolumeDirectory(t *testing.T) {
 // jj keeps a repository's `--repo` configuration under $XDG_CONFIG_HOME, so what workspace-init
 // sets there reaches the agent's jj only when both containers have one config home, on a volume
 // both mount (#1258 deep review, finding 4). It is in memory, so every pod's starts empty and
-// nothing an agent wrote reaches workspace-init's jj. The state home is not among the names the two
-// must agree on: each role's agent is told one of its own (TestEachRolesAgentIsToldAStateHomeOfItsOwn).
+// nothing an agent wrote reaches workspace-init's jj. The cache, data and state homes are not among
+// the names the two must agree on: each role's agent is told its own, on the issue volume
+// (TestEachRolesAgentIsToldAStateHomeOfItsOwn, TestEachRolesCachesAreOnItsOwnDirectoryOfTheIssueVolume).
 func TestBothContainersShareOneInMemoryXDGConfigHome(t *testing.T) {
 	r, err := configure(goldenOptions())
 	if err != nil {
@@ -405,10 +406,8 @@ func TestBothContainersShareOneInMemoryXDGConfigHome(t *testing.T) {
 	}
 	pod := podOf(t, r, workerSpec(t))
 	init, main := containerNamed(t, pod, initContainer), workerOf(t, r, workerSpec(t))
-	for _, name := range []string{"XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME"} {
-		if envOf(init)[name] == "" || envOf(init)[name] != envOf(main)[name] {
-			t.Errorf("%s: init %q, main %q; the two containers must agree", name, envOf(init)[name], envOf(main)[name])
-		}
+	if envOf(init)["XDG_CONFIG_HOME"] == "" || envOf(init)["XDG_CONFIG_HOME"] != envOf(main)["XDG_CONFIG_HOME"] {
+		t.Errorf("XDG_CONFIG_HOME: init %q, main %q; the two containers must agree", envOf(init)["XDG_CONFIG_HOME"], envOf(main)["XDG_CONFIG_HOME"])
 	}
 	configHome := envOf(main)["XDG_CONFIG_HOME"]
 	volumeAt := func(c corev1.Container) string {
@@ -434,10 +433,11 @@ func TestBothContainersShareOneInMemoryXDGConfigHome(t *testing.T) {
 // the Oh My Pi profile path, and Oh My Pi's browser broker lock is an abstract unix socket named
 // from the lock path under its state root: one state root would make it one name in every
 // container, the first role's lock blocking every other role's broker. So each role's agent is
-// told a XDG_STATE_HOME of its own, `/home/legion/.local/state/<role>`, differing from every other
-// role's, and the controller's agent one by the same rule; workspace-init, which runs alone, keeps
-// the plain state home. The value is a path on the container's own filesystem, mounted from no
-// volume, so Chromium's profiles and Oh My Pi's logs are not charged to the pod's memory.
+// told a XDG_STATE_HOME of its own under roleScratchDir, differing from every other role's, and the
+// controller's agent one by the same rule; workspace-init, which runs alone, keeps the plain state
+// home on the container's own filesystem. The role's value is on the issue's own volume, so
+// Chromium's profiles and Oh My Pi's logs are charged to neither the pod's memory nor the
+// container's ephemeral-storage bound (INFRA-31).
 func TestEachRolesAgentIsToldAStateHomeOfItsOwn(t *testing.T) {
 	r, err := configure(goldenOptions())
 	if err != nil {
@@ -455,17 +455,18 @@ func TestEachRolesAgentIsToldAStateHomeOfItsOwn(t *testing.T) {
 		}
 		worker := workerOf(t, r, spec)
 		got := envOf(worker)["XDG_STATE_HOME"]
-		if want := xdgStateHome + "/" + string(role); got != want {
+		if want := roleScratchDir(role) + "/state"; got != want {
 			t.Errorf("%s's agent is told XDG_STATE_HOME=%q, want %q", role, got, want)
 		}
 		if other, taken := told[got]; taken {
 			t.Errorf("%s's agent is told XDG_STATE_HOME=%q, %s's too", role, got, other)
 		}
 		told[got] = role
-		for _, mount := range worker.VolumeMounts {
-			if overlaps(mount.MountPath, got) {
-				t.Errorf("%s's XDG_STATE_HOME %s overlaps volume %q's mount %q; it must be on the container's own filesystem", role, got, mount.Name, mount.MountPath)
-			}
+		if mount := mountHolding(worker, got); mount == nil || mount.Name != issueVolume || mount.SubPath != "" {
+			t.Errorf("%s's XDG_STATE_HOME %s is on mount %+v, want the issue volume's own mount at %s", role, got, mount, TreeRoot)
+		}
+		if overlaps(got, envOf(worker)["LEGION_WORKSPACE"]) {
+			t.Errorf("%s's XDG_STATE_HOME %s overlaps the workspace %s", role, got, envOf(worker)["LEGION_WORKSPACE"])
 		}
 	}
 	init := containerNamed(t, podOf(t, r, workerSpec(t)), initContainer)
@@ -474,36 +475,61 @@ func TestEachRolesAgentIsToldAStateHomeOfItsOwn(t *testing.T) {
 	}
 }
 
-// bun (measured: bun 1.3.14, LEGION-198) resolves its install cache at
-// $XDG_CACHE_HOME/.bun/install/cache when neither BUN_INSTALL nor BUN_INSTALL_CACHE_DIR is set —
-// neither is ever set here — and hardlinks that cache's files into every worktree's node_modules,
-// which is how one shared cache corrupted every checkout on a box at once (LEGION-198's spec). A
-// pod's XDG_CACHE_HOME is mounted from no volume of this pod's — not the tree volume, the boot
-// volume, the state volume, nor the in-memory config volume, at, above, or beneath it — so it
-// lives on the pod's own ephemeral container filesystem alone: private to this one pod, never
-// shared with the operator or another pod's, and gone with the pod. `overlaps` (operatorpod.go),
-// the package's own at/under/above predicate for exactly this question, catches a volume mounted
-// beneath the cache home (e.g. a tree-shared warm-cache volume at
-// $XDG_CACHE_HOME/.bun/install/cache) that a bare prefix-or-equal check would miss. No code
-// change is needed to keep the cache private; this test locks the absence of any overlapping
-// mount so a future volume addition cannot reintroduce sharing.
-func TestBunCacheHomeIsMountedFromNoVolume(t *testing.T) {
+// Every cache and temp directory manifest.go redirects away from a role's container filesystem —
+// XDG_CACHE_HOME and XDG_DATA_HOME, TMPDIR, Go's GOCACHE/GOPATH/GOMODCACHE, bun's
+// BUN_INSTALL_CACHE_DIR, npm's and pip's — sits on the issue's own volume under that role's own
+// roleScratchDir, never another role's or the workspace's, so a build or a browser session cannot
+// fill the container's ephemeral-storage bound (INFRA-31) and no two roles' writes land on the same
+// path. bun in particular (measured: bun 1.3.14, LEGION-198) resolves its install cache at
+// $XDG_CACHE_HOME/.bun/install/cache by default and hardlinks that cache's files into every
+// worktree's node_modules, which is how one cache shared between two writers corrupted both their
+// checkouts (LEGION-198's spec); BUN_INSTALL_CACHE_DIR is set explicitly, apart from
+// XDG_CACHE_HOME, to a directory private to this one role of this one issue, so no second writer
+// ever reaches it.
+func TestEachRolesCachesAreOnItsOwnDirectoryOfTheIssueVolume(t *testing.T) {
 	r, err := configure(goldenOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
-	main := workerOf(t, r, workerSpec(t))
-	cacheHome := envOf(main)["XDG_CACHE_HOME"]
-	if cacheHome == "" {
-		t.Fatal("the main container carries no XDG_CACHE_HOME")
+	names := []string{"XDG_CACHE_HOME", "XDG_DATA_HOME", "TMPDIR", "GOCACHE", "GOPATH", "GOMODCACHE", "BUN_INSTALL_CACHE_DIR", "npm_config_cache", "PIP_CACHE_DIR"}
+	seen := map[string]map[string]claim.Role{}
+	for _, name := range names {
+		seen[name] = map[string]claim.Role{}
 	}
-	for _, mount := range main.VolumeMounts {
-		if overlaps(mount.MountPath, cacheHome) {
-			t.Fatalf("XDG_CACHE_HOME %s overlaps volume %q's mount %q; bun's cache would then persist or share across pods",
-				cacheHome, mount.Name, mount.MountPath)
+	for _, role := range launcherRoles {
+		spec := controllerSpec(t)
+		if role != claim.RoleController {
+			token, err := claim.NewToken("legion", testTree, role)
+			if err != nil {
+				t.Fatal(err)
+			}
+			spec = testSpec(t, token, role, testTree)
+		}
+		worker := workerOf(t, r, spec)
+		env := envOf(worker)
+		for _, name := range names {
+			dir := env[name]
+			if dir == "" {
+				t.Errorf("%s carries no %s", role, name)
+				continue
+			}
+			if !strings.HasPrefix(dir, roleScratchDir(role)+"/") {
+				t.Errorf("%s %s = %q, want it under %s", role, name, dir, roleScratchDir(role))
+			}
+			if mount := mountHolding(worker, dir); mount == nil || mount.Name != issueVolume || mount.SubPath != "" {
+				t.Errorf("%s %s %q is on mount %+v, want the issue volume's own mount at %s", role, name, dir, mount, TreeRoot)
+			}
+			if overlaps(dir, env["LEGION_WORKSPACE"]) {
+				t.Errorf("%s %s %q overlaps the workspace %s", role, name, dir, env["LEGION_WORKSPACE"])
+			}
+			if other, taken := seen[name][dir]; taken {
+				t.Errorf("%s and %s share %s=%q", role, other, name, dir)
+			}
+			seen[name][dir] = role
 		}
 	}
 }
+
 
 // uv links a project's .venv, in an issue's workspace on the issue's volume, to an interpreter
 // under UV_PYTHON_INSTALL_DIR, and installs into it from UV_CACHE_DIR. Both are on the volume's own

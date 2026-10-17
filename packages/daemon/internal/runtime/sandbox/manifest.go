@@ -90,6 +90,8 @@ var runtimeOwned = map[string]bool{
 	"POD_UID": true, bootTokenKey + "_FILE": true, dispatchTokenKey + "_FILE": true,
 	"AGENT_SECRETS_URL": true, "AGENT_SECRETS_KEY_DIR": true, slackChannelsVariable: true,
 	"UV_PYTHON_INSTALL_DIR": true, "UV_CACHE_DIR": true, "UV_LINK_MODE": true,
+	"TMPDIR": true, "GOCACHE": true, "GOPATH": true, "GOMODCACHE": true, "BUN_INSTALL_CACHE_DIR": true,
+	"npm_config_cache": true, "PIP_CACHE_DIR": true,
 	ompsessions.StorageVariable: true, ompsessions.DSNFileVariable: true,
 }
 
@@ -622,13 +624,22 @@ func (r *Runtime) operatorEnv() []corev1.EnvVar {
 	return env
 }
 
-// The XDG base directories, at the standard offsets from the image's HOME. The config, cache and
-// data homes are the same in the workspace-init and main containers; the state home is
-// xdgStateHome itself in workspace-init and a role's own directory under it in each role container
-// (roleStateHome). The config home is the pod's shared in-memory volume: jj keeps a repository's
-// `--repo` configuration under $XDG_CONFIG_HOME/jj/repos/, so what workspace-init sets there
-// (git.abandon-unreachable-commits false, no repository identity) is what the agent's jj reads. It
-// starts empty in every pod, so nothing an agent wrote reaches workspace-init's jj.
+// The XDG base directories. The config home is the same in the workspace-init and main containers,
+// the pod's shared in-memory volume: jj keeps a repository's `--repo` configuration under
+// $XDG_CONFIG_HOME/jj/repos/, so what workspace-init sets there (git.abandon-unreachable-commits
+// false, no repository identity) is what the agent's jj reads. It starts empty in every pod, so
+// nothing an agent wrote reaches workspace-init's jj.
+//
+// The cache, data and state homes differ between the two: workspace-init, whose own footprint is
+// tiny and done once, keeps the standard offsets from the image's HOME, on the container's own
+// (ephemeral) filesystem; each role container's agent is told its own directory under
+// roleScratchDir instead — on the issue's own volume, never shared with another role or another
+// issue — so a role's caches (Oh My Pi's state home, with Chromium's `browser-profiles` and Oh My
+// Pi's own logs; a build's Go and Bun caches; pip's and npm's) do not count against the container's
+// ephemeral-storage bound at all, the problem INFRA-31 found: GKE Autopilot caps a pod's ephemeral
+// storage at 10Gi regardless of what a role's own containers request, and six roles' worth of build
+// caches and browser profiles routinely exceeded the ~1Gi Autopilot was left to clamp each
+// container's limit down to.
 const (
 	xdgConfigHome = podHome + "/.config"
 	xdgCacheHome  = podHome + "/.cache"
@@ -636,30 +647,66 @@ const (
 	xdgStateHome  = podHome + "/.local/state"
 )
 
-// xdgEnvironment is the four XDG base directories with stateHome as the state home.
-func xdgEnvironment(stateHome string) []corev1.EnvVar {
+// xdgEnvironment is the four XDG base directories, cacheHome, dataHome and stateHome the caller's.
+func xdgEnvironment(cacheHome, dataHome, stateHome string) []corev1.EnvVar {
 	return []corev1.EnvVar{
 		{Name: "XDG_CONFIG_HOME", Value: xdgConfigHome},
-		{Name: "XDG_CACHE_HOME", Value: xdgCacheHome},
-		{Name: "XDG_DATA_HOME", Value: xdgDataHome},
+		{Name: "XDG_CACHE_HOME", Value: cacheHome},
+		{Name: "XDG_DATA_HOME", Value: dataHome},
 		{Name: "XDG_STATE_HOME", Value: stateHome},
 	}
 }
 
-// roleStateHome is the XDG_STATE_HOME a role's agent is told, `<xdgStateHome>/<role>`: a state home
-// of its own in a pod whose role containers share the network namespace and the workspace path.
-// Oh My Pi keeps its browser broker's lock under its state root
+// roleScratchDir is a role's own directory on the issue's volume, `<TreeRoot>/scratch/<role>`: the
+// root every env variable manifest.go redirects away from the container's own filesystem resolves
+// under (roleCacheHome, roleDataHome, roleStateHome, scratchEnvironment), each role's own and never
+// another's, so nothing two roles (or two issues, each on its own volume) could write at once.
+// Disjoint from the workspace (workspace.Location, under TreeRoot+"/workspaces"), the clone
+// (TreeRoot+"/repos"), uv's own directories (uvPythonRoot, uvCacheDir, under TreeRoot+"/uv") and the
+// sessions subpath (SessionsSubPath).
+func roleScratchDir(role claim.Role) string {
+	return TreeRoot + "/scratch/" + string(role)
+}
+
+// roleCacheHome and roleDataHome are a role's own XDG_CACHE_HOME and XDG_DATA_HOME, on the issue's
+// volume under roleScratchDir.
+func roleCacheHome(role claim.Role) string { return roleScratchDir(role) + "/cache" }
+func roleDataHome(role claim.Role) string  { return roleScratchDir(role) + "/data" }
+
+// roleStateHome is the XDG_STATE_HOME a role's agent is told, on the issue's volume under
+// roleScratchDir: a state home of its own in a pod whose role containers share the network
+// namespace and the workspace path. Oh My Pi keeps its browser broker's lock under its state root
 // (`run/daemons/<hash of the workspace's real path>/broker.pid`), taken as an abstract unix socket
 // named from the lock path, and an abstract socket name is one name across every container of the
 // pod; with one state root the first role's lock would block every other role's broker, and their
 // `browser.open` would fail while `broker.sock` sits on the first container's own filesystem. The
 // shim makes Oh My Pi's profile directory under it before Oh My Pi starts
 // (podsafety.EnsureStateHome), since Oh My Pi reads the variable only where that directory exists.
-// It is a path on the container's own filesystem rather than the role's in-memory state volume
-// (StateDir), so Chromium's `browser-profiles` and Oh My Pi's logs are not charged to the pod's
-// memory.
-func roleStateHome(role claim.Role) string {
-	return xdgStateHome + "/" + string(role)
+// It is on the issue's volume, not the role's in-memory state volume (StateDir) or the container's
+// own filesystem, so Chromium's `browser-profiles` and Oh My Pi's logs are charged to neither the
+// pod's memory nor its ephemeral-storage bound.
+func roleStateHome(role claim.Role) string { return roleScratchDir(role) + "/state" }
+
+// scratchEnvironment is a role's remaining scratch — everywhere else a tool resolves a cache or a
+// temp file from an environment variable rather than falling back to $HOME — redirected to its own
+// directory under roleScratchDir: TMPDIR; Go's build cache, its module cache and GOPATH (so
+// `go install` lands there too); bun's install cache, which bun resolves under $XDG_CACHE_HOME by
+// default (bun 1.3.14) and which this sets apart so it is never confused with the directory
+// roleCacheHome already redirects XDG_CACHE_HOME to; npm's and pip's. None of these is shared with
+// another role: a role never needs an earlier role's build artifacts to still be there, and a
+// directory private to one role can never be the two-writer sharing a cache's hardlinks into
+// multiple node_modules trees corrupted elsewhere (LEGION-198).
+func scratchEnvironment(role claim.Role) []corev1.EnvVar {
+	scratch := roleScratchDir(role)
+	return []corev1.EnvVar{
+		{Name: "TMPDIR", Value: scratch + "/tmp"},
+		{Name: "GOCACHE", Value: scratch + "/go-build"},
+		{Name: "GOPATH", Value: scratch + "/go"},
+		{Name: "GOMODCACHE", Value: scratch + "/go/pkg/mod"},
+		{Name: "BUN_INSTALL_CACHE_DIR", Value: scratch + "/bun-cache"},
+		{Name: "npm_config_cache", Value: scratch + "/npm-cache"},
+		{Name: "PIP_CACHE_DIR", Value: scratch + "/pip-cache"},
+	}
 }
 
 // uv's settings in the worker container, which the pod's environment hands the image's uv.
@@ -716,7 +763,7 @@ func (r *Runtime) initEnvironment(l launch) []corev1.EnvVar {
 	if l.spec.WorkspaceRecoveredFrom != "" {
 		env = append(env, corev1.EnvVar{Name: "LEGION_WORKSPACE_RECOVERED_FROM", Value: l.spec.WorkspaceRecoveredFrom})
 	}
-	return append(env, xdgEnvironment(xdgStateHome)...)
+	return append(env, xdgEnvironment(xdgCacheHome, xdgDataHome, xdgStateHome)...)
 }
 
 // ProvisionBound satisfies runtime.Runtime: workspace.FetchTimeout plus workspace.CloneTimeout, the
@@ -794,7 +841,8 @@ func (r *Runtime) mainEnvironment(l launch) []corev1.EnvVar {
 	if spec.Role == claim.RoleController {
 		add(slackChannelsVariable, r.slackChannelsValue())
 	}
-	env = append(env, xdgEnvironment(roleStateHome(spec.Role))...)
+	env = append(env, xdgEnvironment(roleCacheHome(spec.Role), roleDataHome(spec.Role), roleStateHome(spec.Role))...)
+	env = append(env, scratchEnvironment(spec.Role)...)
 	env = append(env, corev1.EnvVar{Name: "POD_UID", ValueFrom: &corev1.EnvVarSource{
 		FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.uid"},
 	}})
