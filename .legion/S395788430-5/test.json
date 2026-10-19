@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "phase": "test",
+  "issue": "S395788430-5",
+  "completed": "2026-10-19T12:34:00Z",
+  "implementerProof": {
+    "verdict": "verified",
+    "how": "Re-ran the implementer's commands independently at the PR head (9ef525ca, code head 86dd6ff1): `jj file show` + `wc -c` = 13, last byte 0x0a (LF); `cmp` against `printf 'S395788430-5\\n'` exit 0; `jj diff -r 86dd6ff1 --name-only` = exactly `smoke/S395788430-5.md`; CI runs 39252538102 (ci) and 39252538121 (fail-on-demand) both success. Negative controls reproduced: wrong key `S395788430-1` differs at char 12; path absent at base 8f7f3ab3."
+  },
+  "failures": [],
+  "failed": 0,
+  "proof": [
+    {
+      "criterion": "AC1/AC2/AC3: smoke/S395788430-5.md exists and is exactly `S395788430-5\\n` (13 bytes, single trailing LF), matching the uniform smoke/*-5.md bare-key leaf convention",
+      "surface": "repo tree at PR head 9ef525cae6d1ae158b56a4fe288914ee7ffb624c (code head 86dd6ff15f31bb372961205f35337aa635406b83)",
+      "command": "jj -R \"$LEGION_WORKSPACE\" file show -r 9ef525ca smoke/S395788430-5.md | wc -c; tail -c1 | xxd; printf 'S395788430-5\\n' | cmp - <file>; jj -R \"$LEGION_WORKSPACE\" diff -r 86dd6ff1 --name-only",
+      "observed": "file present; wc -c = 13; last byte 0x0a (LF, not CRLF, no extra lines); cmp exit 0 (byte-identical); diff name-only lists exactly `smoke/S395788430-5.md`; content matches all six smoke/*-5.md siblings which are each 13 bytes",
+      "headSha": "9ef525cae6d1ae158b56a4fe288914ee7ffb624c",
+      "negativeControl": "`cmp` against `printf 'S395788430-1\\n'` → `differ: char 12, line 1` (exit 1); path absent at base `jj file show -r 8f7f3ab3 smoke/S395788430-5.md` → `No such path` (exit 1), so the proof measures the change"
+    },
+    {
+      "criterion": "AC4: CI (ci + fail-on-demand) green on the PR code head",
+      "surface": "GitHub Actions on pull request #668, code head 86dd6ff15f31bb372961205f35337aa635406b83",
+      "command": "gh run list --branch legion/S395788430-5 --json databaseId,name,headSha,conclusion,event; gh api repos/sjawhar/legion-smoke/commits/86dd6ff1/check-runs",
+      "observed": "`ci` run 39252538102 conclusion success and `fail-on-demand` run 39252538121 conclusion success, both pull_request event at 86dd6ff1; check-runs gate+check both success. PR head 9ef525ca is a handoff-only commit carrying the `skip-checks` trailer, so `gh pr checks 668` reports no checks there by design; the daemon carries the code head's verdict forward",
+      "headSha": "9ef525cae6d1ae158b56a4fe288914ee7ffb624c",
+      "negativeControl": "fail-on-demand gate fails only when a `.fail-me` file exists in the tree; none exists (`jj diff -r 86dd6ff1 --name-only` shows only the one marker), so the gate stays green"
+    }
+  ]
+}
