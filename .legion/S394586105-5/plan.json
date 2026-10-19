@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "S394586105-5",
+  "completed": "2026-10-19T17:48:52Z",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker (Implementer push and pull request + references/pr-body.md): drives the required PR-body line `Dispatch: S394586105-5` and the implementer E2E proof on the git tree + GitHub PR, the only surfaces for this docs-only change; no repo domain/build skill exists (no AGENTS.md, no build)."
+    ],
+    "test": [
+      "legion-worker (references/pr-body.md): defines what a proof is and that the tester drives the changed surface (git worktree at head + GitHub check-runs for ci and fail-on-demand) and reads CI for static gates; no repo test suite or domain test skill exists."
+    ],
+    "review": [
+      "legion-worker (references/merge-gate.md + references/review-threads.md): drive reviewer approval of the head and one-by-one thread resolution; no repo domain review skill exists for a single-file markdown addition."
+    ]
+  },
+  "gapAnalysis": {
+    "findings": [
+      {
+        "finding": "PR body line `Dispatch: S394586105-5` is not in the parent spec and no repo doc describes it; is it required and in what exact form?",
+        "answer": "Required and settled by skill://legion-worker (Implementer push and pull request): the PR body must contain the line `Dispatch: <KEY>`, i.e. `Dispatch: S394586105-5`, so the daemon links the PR to this Dispatch issue. Plan step 3 mandates it. Not an open question."
+      },
+      {
+        "finding": "Parent spec allows review to append 'one more line' but derived acceptance says 'a single line'; the two conflict and the appended line's text is undefined for a -5 leaf.",
+        "answer": "Resolved by making acceptance a range consistent with the spec: exactly one line (`S394586105-5`) at PR open; up to one additional line only if review requests it, so AC2's line count is 1 at open and <=2 after an allowed append with line 1 unchanged. The appended line's exact text has no -5 precedent; default is `Legion proof review round 1 (S394586105-5)` mirroring the -1 parent convention, flagged to the architect as the only product/convention choice (only matters if review asks)."
+      },
+      {
+        "finding": "'a single line that names this issue' could be the bare key or key-plus-title.",
+        "answer": "Settled by convention: every -5 leaf holds the bare key only. Deliverable content is exactly `S394586105-5`."
+      },
+      {
+        "finding": "Exact byte-level format: filename, extension, line ending, trailing newline.",
+        "answer": "Locked: path `smoke/S394586105-5.md`, content exactly `S394586105-5\\n` (one LF-terminated line, no BOM, no extra blank line), matching the verified -5 convention."
+      },
+      {
+        "finding": "Each acceptance criterion needs a concrete machine check and surface.",
+        "answer": "Spelled out in plan.md as AC1-AC4: AC1 `cat smoke/S394586105-5.md`; AC2 `test \"$(cat smoke/S394586105-5.md)\" = S394586105-5 && test \"$(wc -l < smoke/S394586105-5.md)\" -eq 1`; AC3 `git diff --name-only main..@-` lists exactly that one path; AC4 GitHub check-runs (ci + fail-on-demand) conclusion success and `test ! -f .fail-me`. Negative control: `git show main:smoke/S394586105-5.md` fails on base. Surfaces: git tree at PR head + GitHub PR/check-runs (no test suite exists)."
+      },
+      {
+        "finding": "'Dependent admission leaf' might imply a content or ordering dependency on the parent or a sibling.",
+        "answer": "Confirmed none: the issue has no blocked_by links and no references; 'dependent admission' is daemon admission-slot scheduling under parent S394586105-1, not a code dependency. The plan carries no inter-file dependency; the new file references neither parent nor siblings and no parent file need pre-exist."
+      }
+    ]
+  },
+  "planReview": {
+    "verdict": "approved",
+    "rounds": 1
+  },
+  "specDepartures": []
+}
