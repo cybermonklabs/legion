@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "phase": "test",
+  "issue": "S392473105-5",
+  "completed": "2026-10-19T04:22:00Z",
+  "implementerProof": {
+    "verdict": "verified",
+    "how": "Re-ran the implementer's two commands independently at the PR head: `git show f141bb0e:smoke/S392473105-5.md` returns exactly `S392473105-5` (one line, byte stream `S392473105-5\\n`), and `jj diff -r 109117fe --stat` lists only `smoke/S392473105-5.md` (1 file, +1). The implementer's negative control (file absent at base be118c4a) reproduced: `git show be118c4a:smoke/S392473105-5.md` → `fatal: path ... not in 'be118c4a'`."
+  },
+  "failures": [],
+  "failed": 0,
+  "proof": [
+    {
+      "criterion": "AC1 — The marker file smoke/S392473105-5.md exists with the exact expected content: a single line equal to the issue key.",
+      "surface": "Repository working tree / git object store at the pull-request head commit f141bb0e36fcd59fe2f4e38538ca063dfd413030.",
+      "command": "content=$(git show f141bb0e:smoke/S392473105-5.md); [ \"$content\" = 'S392473105-5' ] && [ \"$(git show f141bb0e:smoke/S392473105-5.md | wc -l)\" -eq 1 ]; xxd smoke/S392473105-5.md",
+      "observed": "Equality and one-line checks both exit 0. xxd shows the byte stream `5333 3932 3437 3331 3035 2d35 0a` = `S392473105-5\\n`, identical in shape to siblings smoke/S393243811-5.md and smoke/S395289629-5.md, which each hold their own key plus one trailing newline.",
+      "headSha": "f141bb0e36fcd59fe2f4e38538ca063dfd413030",
+      "negativeControl": "Content equality against a wrong key `[ \"$content\" = 'S392473105-WRONG' ]` exits non-zero — the check correctly rejects a non-matching marker rather than passing anything; and `git show be118c4a:smoke/S392473105-5.md` at the base fails with `fatal: path 'smoke/S392473105-5.md' ... not in 'be118c4a'` (file absent at base, so the proof distinguishes the change)."
+    },
+    {
+      "criterion": "AC2 — Nothing else changes; the code diff is scoped to the single added marker file.",
+      "surface": "The pull-request diff (jj) at the code commit 109117fe and across the full branch from base.",
+      "command": "jj diff -r 109117fe --stat && jj diff -r 'main@origin..f141bb0e' --stat",
+      "observed": "The code commit 109117fe lists exactly `smoke/S392473105-5.md | 1 +` (1 file changed, 1 insertion, 0 deletions). The full branch vs main lists only that marker file plus the two expected handoff artifacts `.legion/S392473105-5/plan.json` and `.legion/S392473105-5/implement.json`; no sibling marker, run log, or other repository file is touched.",
+      "headSha": "f141bb0e36fcd59fe2f4e38538ca063dfd413030",
+      "negativeControl": "A diff that also touched a sibling marker, README, or run log would list more than one code path and fail this scoped check; the observed code diff lists only the one new marker file."
+    },
+    {
+      "criterion": "AC3 — The repository's required CI gate is green at the merging head (necessary, not sufficient).",
+      "surface": "GitHub required check `ci / check` on PR #620, as carried by the Legion daemon record.",
+      "command": "legion read_record S392473105-5 (record.pullRequest.checksVerdict); gh pr view 620 --json statusCheckRollup",
+      "observed": "record.pullRequest.checksVerdict = \"green\" at head f141bb0e. The statusCheckRollup is empty by design: the head commit (handoff-only) carries `skip-checks: true`, so GitHub starts no workflow for it and the daemon carries the code head's green verdict. The `ci/check` job (.github/workflows/ci.yml) runs `sleep 20 && exit 0` and is content-blind, so CI green is necessary but never sufficient — the AC1 content proof is the real acceptance check.",
+      "headSha": "f141bb0e36fcd59fe2f4e38538ca063dfd413030",
+      "negativeControl": "CI being content-blind cannot itself reject a wrong marker — the AC1 wrong-key negative control (non-zero exit) is what would catch a bad deliverable, which CI alone would not; this is recorded as the reason CI green is necessary-not-sufficient."
+    }
+  ]
+}
