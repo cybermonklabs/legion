@@ -1,0 +1,144 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-828",
+  "completed": "2026-10-19T23:38:00Z",
+  "planDocument": "dispatch://LEGSMOKE-828/artifact/plan-md",
+  "base": "33f6d682f689ad4a51d36e5114e60bc9374ff941",
+  "change": {
+    "file": "smoke/LEGSMOKE-828.md",
+    "line1": "LEGSMOKE-828: Pre-merge boot of a deployment's worker pod block",
+    "line1ShellLiteral": "printf 'LEGSMOKE-828: Pre-merge boot of a deployment'\"'\"'s worker pod block\\n'",
+    "oneLineBytes": 64,
+    "reviewLine": "Legion proof review round 1 (LEGSMOKE)",
+    "twoLineBytes": 103,
+    "apostrophe": "ASCII U+0027",
+    "codeCommitMessage": "smoke: add LEGSMOKE-828 marker file",
+    "reviewLineCommitMessage": "smoke: add the review round 1 line to LEGSMOKE-828.md",
+    "prTitle": "smoke: add LEGSMOKE-828 marker file",
+    "prBodyFirstLine": "Dispatch: LEGSMOKE-828",
+    "docsOnly": true,
+    "docsSolutionsDocument": false,
+    "testsWritten": false
+  },
+  "armDetector": "K=$(gh api \"repos/sjawhar/legion-smoke/pulls/$N/comments?per_page=100\" --jq '[.[] | select(.path==\"smoke/LEGSMOKE-828.md\" and .in_reply_to_id==null and .user.login==\"trajectory-s-legion-reviewer[bot]\" and (.body|contains(\"Legion proof review round 1 (LEGSMOKE)\")))] | length'); echo \"K=$K\"  # K=0 one line (64 bytes); K>=1 two lines (103 bytes)",
+  "criteria": [
+    {
+      "id": 1,
+      "criterion": "main holds smoke/LEGSMOKE-828.md after the merge, and no commit before the merge does",
+      "surface": "GitHub contents API on main / the judged head",
+      "command": "gh api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-828.md?ref=main\" (404 before the merge, 200 after); ?ref=$S -> 200 with .path; after the merge gh api \"repos/sjawhar/legion-smoke/commits?path=smoke/LEGSMOKE-828.md&sha=main\" --jq 'length, .[0].sha' -> 1 and the merge SHA",
+      "negativeControl": "the same contents read at ?ref=33f6d682f689ad4a51d36e5114e60bc9374ff941 -> HTTP 404"
+    },
+    {
+      "id": 2,
+      "criterion": "at the first code head C1 the file holds one LF-terminated line naming the issue, byte-equal to line1",
+      "surface": "raw bytes at C1 through the contents API (Accept: application/vnd.github.raw+json)",
+      "command": "gh api -H \"Accept: application/vnd.github.raw+json\" \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-828.md?ref=$C1\" > $T/f; wc -c (64), wc -l (1), tail -c1 | od -An -c (\\n); printf 'LEGSMOKE-828: Pre-merge boot of a deployment'\"'\"'s worker pod block\\n' | cmp - $T/f && echo MATCH-1LINE",
+      "negativeControl": "literal without final LF -> cmp: EOF on - after byte 63; key LEGSMOKE-827 -> differ: char 12, line 1; grep -c LEGSMOKE-827 -> 0"
+    },
+    {
+      "id": 3,
+      "criterion": "a second line exists only when the Legion reviewer asked for it (K>=1); line 1 unchanged",
+      "surface": "raw bytes at the judged head after printing K",
+      "command": "print K; K=0 -> criterion 2's check at $S; K>=1 -> wc -c 103, wc -l 2, two-line literal cmp -> MATCH-2LINES, head -1 byte-equal to C1's line 1",
+      "negativeControl": "one-line literal vs two-line file -> cmp: EOF on - after byte 64; two-line literal without final LF -> EOF after byte 102; wrong arm's literal -> non-zero exit"
+    },
+    {
+      "id": 4,
+      "criterion": "Nothing else changes: mid-run the PR's files are the marker plus .legion/LEGSMOKE-828/*.json only; the head that merges and the merge commit list exactly smoke/LEGSMOKE-828.md",
+      "surface": "gh pr diff --name-only, the pulls/$N/files API, the merge commit's files",
+      "command": "gh api \"repos/sjawhar/legion-smoke/pulls/$N/files?per_page=100\" --jq '[.[].filename] | map(select(. != \"smoke/LEGSMOKE-828.md\" and (startswith(\".legion/LEGSMOKE-828/\")|not)))' -> []; at C5 gh pr diff $N --name-only -> exactly smoke/LEGSMOKE-828.md and jj file list -r <C5> 'root:.legion/LEGSMOKE-828' -> nothing; after the merge gh api \"repos/sjawhar/legion-smoke/commits/<merge sha>\" --jq '[.files[] | \"\\(.status) \\(.filename)\"]' -> [\"added smoke/LEGSMOKE-828.md\"]",
+      "negativeControl": "the same filter against pulls/701/files -> [\"smoke/LEGSMOKE-817.md\"]; commits/33f6d682 lists smoke/LEGSMOKE-817.md, not ours"
+    },
+    {
+      "id": 5,
+      "criterion": "both workflows green at the CI head (gate is the ruleset's required context; check expected), handoff heads carry the code head's verdict",
+      "surface": "GitHub Actions / check-runs at CI_HEAD with the compare to the judged head",
+      "command": "CI_HEAD=$(gh api \"repos/sjawhar/legion-smoke/actions/runs?branch=legion/LEGSMOKE-828&event=pull_request&per_page=30\" --jq '.workflow_runs[0].head_sha'); gh api \"repos/sjawhar/legion-smoke/commits/$CI_HEAD/check-runs\" --paginate --jq '.check_runs[] | [.name,.status,.conclusion] | @tsv' -> check and gate completed/success; gh api \"repos/sjawhar/legion-smoke/compare/$CI_HEAD...$S\" --jq '[.files[].filename] | all(startswith(\".legion/\"))' -> true at a handoff head",
+      "negativeControl": "gh api repos/sjawhar/legion-smoke/commits/57dab69be2de066f30a10fb2621ea4abed5db57b/check-runs -> gate completed failure beside check completed success; locally touch .fail-me && if [ -f .fail-me ]; then exit 1; fi -> exit=1"
+    }
+  ],
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: push rules, references/pr-body.md (template, proof with negative control), references/review-threads.md (the round-two reply and thread resolution); no ce-simplify-code because the diff is docs-only",
+      "legion-retro: the revived retro removes .legion/LEGSMOKE-828/ and writes no docs/solutions document for this issue",
+      "dispatch: the retro message and the production-check message on the issue"
+    ],
+    "test": [
+      "legion-worker: references/pr-body.md for implementerProof, the tester's own E2E (tester) proof on the contents API, and the test handoff rules; the repository has no harness, so no test file is written"
+    ],
+    "review": [
+      "legion-worker: references/merge-gate.md (CI head read, one review per round by SHA, docs-only skips Thermo) and references/review-threads.md (one disposition per thread, bot threads named to the implementer)"
+    ]
+  },
+  "gapAnalysis": {
+    "findings": [
+      {
+        "finding": "'names this issue' has two live readings in the repository (key alone vs KEY: title); the plan must pin line 1's bytes and check them by byte comparison, not a grep for the key",
+        "answer": "Plan §1 pins line 1 to `LEGSMOKE-828: Pre-merge boot of a deployment's worker pod block` + LF (64 bytes), names repository precedent (every smoke/LEGSMOKE-*.md since LEGSMOKE-439, newest LEGSMOKE-817) as the source, and criterion 2 checks it with cmp against the literal plus wc -c/wc -l/od."
+      },
+      {
+        "finding": "Dropping the title's (/tmp/...) run-directory suffix is an unsupported claim: no marker on main contains /tmp/ and no precedent title with a suffix was shown",
+        "answer": "Measured: issue LEGSMOKE-817's title carries ` (/tmp/legion-e2e4b.1893747.BXwB3mci)` and its marker on main (smoke/LEGSMOKE-817.md, merged in #701) holds `LEGSMOKE-817: Stage 4b proof tree 1: the whole workflow` without it. Plan §1 and M6 record that precedent as the rule's source."
+      },
+      {
+        "finding": "The apostrophe in the title is a byte-level fork (U+0027 vs U+2019) no precedent settles",
+        "answer": "Measured with od -c on the Dispatch title: 0x27. Plan §1 pins ASCII U+0027, gives the printf splice literal, and the tester's near-miss list includes the U+2019 variant (66 bytes, measured)."
+      },
+      {
+        "finding": "The spec has no Acceptance section and v1 is approved, so criteria cannot be added to it without closing the design gate",
+        "answer": "Plan §4 derives five machine-checkable criteria from Summary and Scope; §9 states the approved spec is left untouched and whether it should carry an Acceptance section is the architect's call. plan.json carries the same five criteria."
+      },
+      {
+        "finding": "'Nothing else changes' is false for the branch mid-run (handoff JSON under .legion/); the plan must say at which artifact it is judged",
+        "answer": "Criterion 4 judges it on the head that merges and the merge commit (exactly `added smoke/LEGSMOKE-828.md`), names handoff JSON as the workflow's process record removed by retro, and gives the mid-run filter that admits only the marker and .legion/LEGSMOKE-828/ paths."
+      },
+      {
+        "finding": "Whether retro may add a docs/solutions/ file is unsettled and changes the merged diff",
+        "answer": "Plan §7 decides: no docs/solutions document for this issue, because the spec's 'Nothing else changes' makes the merge commit one added file, skill://legion-retro allows a retro that commits no learning, the repository has no docs/ directory (404 measured), and LEGSMOKE-817's retro wrote none (its retro message, measured). A learning worth a document is a report to the architect."
+      },
+      {
+        "finding": "The second-line arm has no stated detection rule, yet implementer, tester and reviewer must agree on it",
+        "answer": "Plan §3 gives one predicate K (top-level comment by trajectory-s-legion-reviewer[bot] on the file containing the literal `Legion proof review round 1 (LEGSMOKE)`), the exact second-line bytes, both byte targets (64/103), and the reviewer's REQUEST_CHANGES comment body in §6.2 embeds the literal verbatim; its shape is what PR #701 shows (measured)."
+      },
+      {
+        "finding": "'Which head' is undefined for every proof line, and handoff-only pushes run no CI, so 'green at the merged head' needs the CI-head-plus-compare reading",
+        "answer": "Plan §2 head table: every proof[].headSha of a round names the newest code head (C1, then C1′), the tester re-runs at the then-current head with the compare, the reviewer approves C4 by SHA, a review-line push resets all three, and C5 (retro's removal) is a code push with its own runs."
+      },
+      {
+        "finding": "Which checks must be green, at which SHA, is asserted but not pinned",
+        "answer": "Measured ruleset: one required context `gate`. Plan §2 and criterion 5 name `gate` required, `check` informational-but-expected, and the one deciding command: check-runs at CI_HEAD plus the compare to $S."
+      },
+      {
+        "finding": "The production-like surface and its negative control are unnamed for a Markdown marker",
+        "answer": "Plan §4: GitHub contents API at a SHA with the raw media type, cmp against the literal; negative controls `?ref=main` -> 404 before the merge (measured today), `?ref=$BASE` -> 404 after, plus the near-miss cmps."
+      },
+      {
+        "finding": "The post-merge production check needs a definition of 'production' for this repository",
+        "answer": "Plan §8: production is main on GitHub (the merge is the publish step; nothing deploys), with the exact post-merge commands and expected values (merged: true, ?ref=main 200, arm-selected cmp, merge-commit file list, runs success, $BASE 404) and the Production: line's wording."
+      },
+      {
+        "finding": "A docs-only PR changes the required PR-body shape (Thermo omitted) and the literal Dispatch token must be checked",
+        "answer": "Plan §5.5: body line 1 `Dispatch: LEGSMOKE-828` checked with grep -c on the live body, template lines named, Thermo omitted, both E2E lines required before approval (§6.2)."
+      },
+      {
+        "finding": "Red CI / a stray .fail-me has no contingency and the only required check keys on it",
+        "answer": "Plan §6.4: .fail-me is outside scope; at a red head read contents/.fail-me and the commit's author first; present -> one deletion-only cure commit by the implementer (the #701 precedent, measured); absent -> gh run rerun --failed; outside author -> deviations[] and a report to the architect; a red above the approved head -> the architect decides."
+      },
+      {
+        "finding": "The child LEGSMOKE-829's relation needs one explicit boundary line",
+        "answer": "Plan §13: this plan creates no smoke/LEGSMOKE-829.md, touches only legion/LEGSMOKE-828, makes 829 no dependency, and criterion 4's reads name only our file; whether READY or sign-off waits on 829 is the daemon's child rule and the architect's decision."
+      },
+      {
+        "finding": "No document in the repository records the marker convention, so the plan is its only source",
+        "answer": "Plan §1 and plan.json `change` carry the full byte specification (file, line 1, shell literal, apostrophe, byte counts, review line, commit messages, PR title) so the implementer and tester need nothing else."
+      }
+    ]
+  },
+  "planReview": {
+    "verdict": "approved",
+    "rounds": 1
+  },
+  "specDepartures": []
+}
