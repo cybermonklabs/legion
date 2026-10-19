@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "phase": "implement",
+  "issue": "S392473105-5",
+  "completed": "2026-10-18T18:30:00Z",
+  "proof": [
+    {
+      "criterion": "AC1 — The marker file smoke/S392473105-5.md exists with the exact expected content (single line equal to the issue key).",
+      "surface": "The repository working tree at the pull-request head commit 109117feb5987e9155efd3de53df783d411e3574.",
+      "command": "test \"$(git show 109117feb5987e9155efd3de53df783d411e3574:smoke/S392473105-5.md)\" = 'S392473105-5' && test \"$(wc -l < smoke/S392473105-5.md)\" -eq 1",
+      "observed": "git show prints 'S392473105-5'; the equality test exits 0 (PASS) and the file is exactly one line. Byte dump confirms 'S392473105-5\\n', matching siblings smoke/S393243811-5.md and smoke/S395289629-5.md byte-for-byte.",
+      "headSha": "109117feb5987e9155efd3de53df783d411e3574",
+      "negativeControl": "git show be118c4a:smoke/S392473105-5.md at the pull-request base fails with \"fatal: path 'smoke/S392473105-5.md' ... not in 'be118c4a'\" — the file is absent at the base, so the proof is distinguishing the change, not a pre-existing file."
+    },
+    {
+      "criterion": "AC2 — Nothing else changes; the diff is scoped to the single added file.",
+      "surface": "The pull-request diff (jj) at head 109117feb5987e9155efd3de53df783d411e3574.",
+      "command": "jj diff -r 109117fe --stat",
+      "observed": "Output lists exactly 'smoke/S392473105-5.md | 1 +' and '1 file changed, 1 insertion(+), 0 deletions(-)'. No other path appears.",
+      "headSha": "109117feb5987e9155efd3de53df783d411e3574",
+      "negativeControl": "A diff that also touched README.md, SMOKE.md, or any sibling marker would list more than one path and fail this scoped-diff check; the observed output lists only the one file."
+    }
+  ],
+  "filesChanged": [
+    "smoke/S392473105-5.md"
+  ],
+  "trickyParts": [
+    "The repository's only CI job (ci / check in .github/workflows/ci.yml) runs 'sleep 20 && exit 0' and is blind to file content and presence, so CI green is necessary but never sufficient; the real acceptance proof is the content/scope check recorded above.",
+    "The child spec S392473105-5 has no approved body (token only). This change follows the approved parent spec S392473105-1 pattern verbatim (one file smoke/S392473105-5.md, single line equal to this issue key, trailing newline, nothing else), matching both -5 siblings byte-for-byte."
+  ],
+  "deviations": [],
+  "openQuestions": [
+    "Two architect decisions recorded by the planner remain open and non-blocking: (1) approve a child spec body or confirm the leaf inherits the parent pattern; (2) confirm the title 'Dependent admission leaf' names no upstream admission/dependency gate that alters sequencing. Neither blocked implementation; the parent pattern was followed."
+  ],
+  "discoveredComplexity": []
+}
