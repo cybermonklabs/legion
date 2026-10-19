@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "S393834654-1",
+  "completed": "2026-10-19T05:17:01Z",
+  "requiredSkills": {
+    "implement": [
+      "none: checked repo root (no AGENTS.md, no skills directory) and the session <skills> list (all Legion framework skills, none repo-domain); a one-line Markdown add under smoke/ needs no domain skill. The Legion framework skill legion-worker and its references/pr-body.md govern the PR body and the implementer proof the implementer already follows."
+    ],
+    "test": [
+      "none: no repo test/lint/build skill exists (no AGENTS.md, no test suite, no skills directory); the tester drives the PR surface and reads GitHub Actions per the Legion framework skill legion-worker (references/pr-body.md), which is universal, not repo-specific."
+    ],
+    "review": [
+      "none: no repo review skill exists; the reviewer follows the Legion framework skill legion-worker references/review-threads.md and references/merge-gate.md, which are framework-level, not a skill of sjawhar/legion-smoke."
+    ]
+  },
+  "gapAnalysis": {
+    "findings": [
+      {
+        "finding": "First-line separator is ambiguous (older files use colon, recent S-series siblings use em-dash).",
+        "answer": "Plan pins the em-dash form byte-exactly: `S393834654-1 — Primary durable workflow profile` (U+2014 with surrounding single spaces), matching nearest sibling smoke/S393569515-1.md which shares this issue's title; stated as em-dash, not hyphen or colon."
+      },
+      {
+        "finding": "'Names this issue' = key only, or key + title?",
+        "answer": "Plan requires the full `KEY — TITLE` line; the embedded title is the exact issue title `Primary durable workflow profile` (acceptance criterion 2)."
+      },
+      {
+        "finding": "Reviewer-appended line format, and the parenthetical key drops the -1 suffix.",
+        "answer": "Plan pins the append template `Stage 3 review round N (S393834654)` — base key without `-1` in the parenthetical — appended as a new line to the same file with no blank separator (Reviewer tasks)."
+      },
+      {
+        "finding": "'Single line' vs review-appended line; trailing newline unspecified.",
+        "answer": "Plan states the initial file is exactly one newline-terminated line, and the reviewer's optional line is appended to the same file with no blank separator, preserving the one-file constraint (append, never a second file)."
+      },
+      {
+        "finding": "Markdown-ness is nominal, not structural.",
+        "answer": "Plan states `.md` is convention only (path smoke/S393834654-1.md); no Markdown formatting is required and nothing in CI parses it."
+      },
+      {
+        "finding": "Exact required-check identities and whether they are truly required.",
+        "answer": "Verified against branch-protection ruleset 24471196 on main: the only required status check context is `gate` (fail-on-demand.yml, job gate). ci.yml job `check` runs on push+pull_request but is informational, not branch-required. Plan names both and distinguishes required vs informational (acceptance criterion 3)."
+      },
+      {
+        "finding": "'Production-like surface' / exact command undefined for a docs-only change on this CI.",
+        "answer": "Plan defines the surface as the GitHub PR and its Actions checks on the head SHA, states there is NO local build/test/lint command, and gives exact observation commands (`git show <headSHA>:smoke/S393834654-1.md`, `gh pr checks <PR>`) plus a precise negative control (`.fail-me` at repo root turns `gate` red; a nonexistent sibling path returns no file)."
+      }
+    ]
+  },
+  "planReview": {
+    "verdict": "approved",
+    "rounds": 1
+  },
+  "specDepartures": []
+}
