@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "phase": "implement",
+  "issue": "S393243811-5",
+  "completed": "2026-10-18T15:30:00Z",
+  "proof": [
+    {
+      "criterion": "AC1 — smoke/S393243811-5.md exists with exact content (13 bytes, single line) at the creation commit.",
+      "surface": "Repo worktree at PR #615 head 5e83824caac5b877993253614ea1cb79b20300e3 on sjawhar/legion-smoke.",
+      "command": "printf 'S393243811-5\\n' | cmp - smoke/S393243811-5.md ; jj file show -r legion/S393243811-5 smoke/S393243811-5.md | wc -l",
+      "observed": "cmp exit 0 (exact 13 bytes S393243811-5\\n); wc -l = 1 at the creation commit.",
+      "headSha": "5e83824caac5b877993253614ea1cb79b20300e3",
+      "negativeControl": "jj diff --stat -r legion/S393243811-5 shows exactly one changed path smoke/S393243811-5.md (+1 insertion); no other file touched."
+    },
+    {
+      "criterion": "AC2 — PR is on branch legion/S393243811-5 and links the Dispatch issue.",
+      "surface": "GitHub PR #615 on sjawhar/legion-smoke.",
+      "command": "gh pr view 615 --json headRefName -q .headRefName ; gh pr view 615 --json body -q .body | grep -c 'Dispatch: S393243811-5'",
+      "observed": "headRefName = legion/S393243811-5; body contains 'Dispatch: S393243811-5' (count 1).",
+      "headSha": "5e83824caac5b877993253614ea1cb79b20300e3",
+      "negativeControl": "grep count is 1, not 0 — the Dispatch link is present, not absent."
+    },
+    {
+      "criterion": "AC3 — both required checks conclude success on the PR head SHA.",
+      "surface": "GitHub check-runs on PR #615 head 5e83824caac5b877993253614ea1cb79b20300e3.",
+      "command": "sha=$(gh pr view 615 --json headRefOid -q .headRefOid); gh api repos/sjawhar/legion-smoke/commits/$sha/check-runs --jq '.check_runs[] | \"\\(.name): \\(.status)/\\(.conclusion)\"'",
+      "observed": "check: completed/success and gate: completed/success on head 5e83824c (both ci/check and fail-on-demand/gate green).",
+      "headSha": "5e83824caac5b877993253614ea1cb79b20300e3",
+      "negativeControl": "No root .fail-me at head (test ! -f .fail-me passes), which is the fail-on-demand gate's only failure mode; a present .fail-me would make gate conclude failure."
+    }
+  ],
+  "filesChanged": [
+    "smoke/S393243811-5.md (new, 13 bytes, single line 'S393243811-5')"
+  ],
+  "trickyParts": [
+    "Exact bytes pinned: 12 ASCII chars 'S393243811-5' plus one trailing newline = 13 bytes; cmp used to make the check deterministic.",
+    "ce-simplify-code pass is a no-op: the diff is docs-only (one Markdown marker file), so no runtime code to simplify and no thermonuclear pair applies."
+  ],
+  "deviations": [],
+  "openQuestions": [
+    "Plan Decisions 1-3 for the architect remain open (empty leaf spec / inherited acceptance; 'dependent admission' is workflow-level not a repo deliverable; parent smoke file absent). These are architect-owned and do not block this leaf's one-file deliverable."
+  ],
+  "discoveredComplexity": []
+}
