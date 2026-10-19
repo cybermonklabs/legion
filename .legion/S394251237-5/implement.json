@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "phase": "implement",
+  "issue": "S394251237-5",
+  "completed": "2026-10-19T20:52:00Z",
+  "proof": [
+    {
+      "criterion": "AC1: smoke/S394251237-5.md exists and is exactly 13 bytes `S394251237-5\\n` (UTF-8, single trailing LF, no CRLF/BOM/blank lines).",
+      "surface": "GitHub contents API for the pushed branch head — the file as a consumer reads the leaf, not the local working copy.",
+      "command": "gh api repos/sjawhar/legion-smoke/contents/smoke/S394251237-5.md?ref=f56d6056548c --jq .content | base64 -d | cmp - <(printf 'S394251237-5\\n')",
+      "observed": "cmp produced no output (byte-exact match); xxd of the decoded content shows 5333 3934 3235 3132 3337 2d35 0a = 13 bytes `S394251237-5\\n`.",
+      "headSha": "f56d6056548cc39302c7828ed1b46dc0db26451b",
+      "negativeControl": "Same fetch at parent head 08d71bdfc4d5958ac30c32152559915fef06c48a (before this commit) returned GitHub `404 Not Found` — the file was absent until this change."
+    },
+    {
+      "criterion": "AC2: the diff from merge base (main) to the PR head adds exactly one code file, smoke/S394251237-5.md (status A).",
+      "surface": "jj diff of the code commit against the main merge base in the authoritative workspace.",
+      "command": "jj -R \"$LEGION_WORKSPACE\" diff -r @- --name-only",
+      "observed": "Single line `smoke/S394251237-5.md`; the commit adds exactly one file and touches nothing else (the only other path on the branch is the planner's .legion/ handoff, a workflow artifact removed at retro).",
+      "headSha": "f56d6056548cc39302c7828ed1b46dc0db26451b",
+      "negativeControl": "`jj -R \"$LEGION_WORKSPACE\" status` before the split showed the working copy adding only smoke/S394251237-5.md — no .fail-me or stray edit was staged."
+    }
+  ],
+  "filesChanged": [
+    "smoke/S394251237-5.md"
+  ],
+  "trickyParts": [],
+  "deviations": [
+    "The issue's own spec document is empty; per the plan handoff (specDepartures), the change is derived verbatim from approved parent spec S394251237-1 and the verified leaf convention. Outcome unchanged."
+  ],
+  "openQuestions": [],
+  "discoveredComplexity": []
+}
