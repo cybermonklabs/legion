@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "phase": "implement",
+  "issue": "S396017608-5",
+  "completed": "2026-10-19T08:30:00Z",
+  "proof": [
+    {
+      "criterion": "C1: smoke/S396017608-5.md is the only file added/modified by the change.",
+      "surface": "repository working tree at the PR head (sjawhar/legion-smoke PR #639)",
+      "command": "jj -R \"$LEGION_WORKSPACE\" diff -r 8cf073ac --name-only",
+      "observed": "exactly one path: smoke/S396017608-5.md. gh pr diff 639 --name-only additionally lists .legion/S396017608-5/plan.json, the planner's Legion handoff artifact carried by the branch and removed at retro; it is not part of the change.",
+      "headSha": "8cf073acfb291fe52a8aa2d0f52b809140a1a53e",
+      "negativeControl": "At the base tip the path is absent: jj file show -r @ smoke/S396017608-5.md -> 'No such path: smoke/S396017608-5.md', and grep S396017608 over the base tree matched only .legion/S396017608-5/plan.json, so the proof measures the change."
+    },
+    {
+      "criterion": "C2: the file is exactly S396017608-5\\n (13 bytes).",
+      "surface": "repository file at the PR head (sjawhar/legion-smoke PR #639)",
+      "command": "wc -c smoke/S396017608-5.md && printf 'S396017608-5\\n' | cmp - smoke/S396017608-5.md",
+      "observed": "wc -c = 13; cmp exits 0 (byte-identical to printf 'S396017608-5\\n').",
+      "headSha": "8cf073acfb291fe52a8aa2d0f52b809140a1a53e",
+      "negativeControl": "printf 'S396017608-1\\n' | cmp - smoke/S396017608-5.md -> 'differ: char 12, line 1' (exit 1), confirming cmp detects the wrong content."
+    },
+    {
+      "criterion": "C3: GitHub checks ci and fail-on-demand pass on the PR head.",
+      "surface": "GitHub Actions checks on sjawhar/legion-smoke PR #639",
+      "command": "gh pr checks 639 --repo sjawhar/legion-smoke",
+      "observed": "ci (job check) run 39222998770 = pass and fail-on-demand (job gate) run 39222998762 = pass, both at head 8cf073ac.",
+      "headSha": "8cf073acfb291fe52a8aa2d0f52b809140a1a53e",
+      "negativeControl": "fail-on-demand goes red only if a .fail-me file exists; none was created, so its green state confirms the tree carries no such file."
+    },
+    {
+      "criterion": "C4: PR body contains the line Dispatch: S396017608-5.",
+      "surface": "GitHub PR body of sjawhar/legion-smoke PR #639",
+      "command": "gh pr view 639 --repo sjawhar/legion-smoke --json body -q .body | grep -F 'Dispatch: S396017608-5'",
+      "observed": "match present: 'Dispatch: S396017608-5'.",
+      "headSha": "8cf073acfb291fe52a8aa2d0f52b809140a1a53e",
+      "negativeControl": "grep -F 'Dispatch: S396017608-1' against the same body returns no match, so the grep is specific to this issue's key."
+    }
+  ],
+  "filesChanged": [
+    "smoke/S396017608-5.md (new, 13 bytes, content 'S396017608-5\\n')"
+  ],
+  "trickyParts": [
+    "Docs-only diff: no runtime code, so ce-simplify-code and the thermonuclear pair do not apply; the PR body omits the Thermo line per pr-body rules.",
+    "gh pr diff --name-only lists .legion/S396017608-5/plan.json alongside the marker because the branch carries the planner handoff; retro removes .legion/ before merge, so criterion 1's 'single path' holds for the actual change (jj diff -r of the code commit shows exactly smoke/S396017608-5.md)."
+  ],
+  "deviations": [],
+  "openQuestions": []
+}
