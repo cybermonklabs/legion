@@ -1,0 +1,99 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "S394220170-5",
+  "completed": "2026-10-19T09:22:12Z",
+  "plan": {
+    "summary": "One-file smoke change in sjawhar/legion-smoke: add smoke/S394220170-5.md, a single LF-terminated line equal to the issue key. Follows the established smoke/ leaf convention (verified against smoke/S396017608-5.md and smoke/S395289629-5.md).",
+    "acceptanceCriteria": [
+      {
+        "id": "AC1",
+        "statement": "smoke/S394220170-5.md exists and is the only new/changed repository file (aside from .legion/ handoffs).",
+        "surface": "repository on PR branch legion/S394220170-5",
+        "check": "test -f smoke/S394220170-5.md; jj diff --stat lists only that file plus .legion/"
+      },
+      {
+        "id": "AC2",
+        "statement": "Content is exactly the issue key on one LF-terminated line, UTF-8, no BOM, no extra blank lines.",
+        "surface": "file on PR branch",
+        "check": "printf 'S394220170-5\\n' | diff - smoke/S394220170-5.md exits 0"
+      },
+      {
+        "id": "AC3",
+        "statement": "PR required CI checks (ci, fail-on-demand) are green.",
+        "surface": "GitHub PR for branch legion/S394220170-5",
+        "check": "gh pr checks shows ci and fail-on-demand success",
+        "negativeControl": "No .fail-me file is added (fail-on-demand would go red if one were), proving the pipeline can fail; before the change test -f smoke/S394220170-5.md fails, distinguishing the change from a no-op."
+      },
+      {
+        "id": "AC4",
+        "statement": "Conditional: iff the reviewer requests it, one additional free-form line is appended to the same file; no other file changes. Implementer adds no proactive second line.",
+        "surface": "file on PR branch",
+        "check": "if requested, file has exactly two lines; otherwise one. jj diff touches only smoke/S394220170-5.md"
+      }
+    ],
+    "implementation": [
+      "jj new per worker rules; create smoke/S394220170-5.md containing exactly 'S394220170-5\\n'.",
+      "Commit the file alone via jj split; push branch legion/S394220170-5; open PR whose body contains 'Dispatch: S394220170-5'.",
+      "Prove on production-like surface: cat smoke/S394220170-5.md content match + PR CI green; record proof (criterion, surface, command, observed, headSha, negativeControl) in implement.json and the PR body E2E line."
+    ],
+    "testing": [
+      "Verify file content on the PR head (diff check AC2).",
+      "Read PR CI status for AC3 (tester reads CI for static checks, does not rerun).",
+      "Confirm negative control: no .fail-me present. Record implementerProof verification and own proof."
+    ],
+    "review": [
+      "Confirm AC1/AC2 by reading the diff; optionally request the one appended line (AC4); resolve review threads per legion-worker review-threads reference; approve the head."
+    ],
+    "integration": "Standard Legion merge gate: tester green -> reviewer approval -> retro -> merger READY -> daemon submits merge -> implementer production check. No special integration steps."
+  },
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: governs the implementer's phase workflow in this shared jj workspace \u2014 jj new/split, branch push (legion/S394220170-5), PR open with 'Dispatch:' line, pr-body proof recording on a production-like surface.",
+      "ce-simplify-code: the implementer runs the simplify pass on its change before review; applies to the one new file."
+    ],
+    "test": [
+      "legion-worker: governs the tester \u2014 verify the changed surface for real (file content diff), read CI for the static/unit checks rather than rerun them, record implementerProof verification and own proof per pr-body rules."
+    ],
+    "review": [
+      "legion-worker: governs the reviewer \u2014 read the diff against spec and plan, request at most the one appended line, answer/resolve review threads one by one (review-threads reference) and follow the merge-gate reference to approve the head."
+    ]
+  },
+  "gapAnalysis": {
+    "findings": [
+      {
+        "finding": "Exact filename/path unstated by spec.",
+        "answer": "Pinned to smoke/S394220170-5.md by the verified smoke/<KEY>.md leaf convention (AC1)."
+      },
+      {
+        "finding": "Exact single-line content/format unstated.",
+        "answer": "Pinned to exactly 'S394220170-5\\n' (one LF-terminated line, no heading) via AC2's printf|diff check, matching sibling files."
+      },
+      {
+        "finding": "Review-appended-line scope: content/format of the possible second line unspecified.",
+        "answer": "AC4: append-only, free-form reviewer-supplied text, same file only; implementer adds no proactive second line. Matches approved spec scope."
+      },
+      {
+        "finding": "Proof on production-like surface (CI green) pass condition unnamed.",
+        "answer": "AC3: PR checks ci and fail-on-demand green via gh pr checks."
+      },
+      {
+        "finding": "Negative control missing because ci.yml is unconditionally green.",
+        "answer": "AC3 dual control: exact file-content match is the correctness signal; absence of a .fail-me file keeps fail-on-demand capable of going red; pre-change absence of the target file distinguishes the change from a no-op."
+      },
+      {
+        "finding": "Branch/PR/commit hygiene (branch name, PR title, single commit) unstated.",
+        "answer": "Low impact: Legion issue branch is fixed at legion/S394220170-5; PR body must carry 'Dispatch: S394220170-5'; file committed as its own jj split commit. No further architect decision needed."
+      },
+      {
+        "finding": "Trailing newline / encoding unstated.",
+        "answer": "Pinned in AC2: single LF-terminated line, UTF-8, no BOM, no trailing blank lines, matching sibling files."
+      }
+    ]
+  },
+  "planReview": {
+    "verdict": "approved",
+    "rounds": 1
+  },
+  "specDepartures": []
+}
