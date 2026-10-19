@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "S392923308-2",
+  "completed": "2026-10-19T12:30:19Z",
+  "plan": {
+    "change": "Implementer creates one new file smoke/S392923308-2.md whose only line is `S392923308-2 — Budget exhaustion sentinel` (first line contains the exact issue key, em-dash title mirrors the repo convention seen in smoke/S394388429-1.md). No other file changes.",
+    "ordering": [
+      "Bind to LEGION_WORKSPACE; jj new off the branch head.",
+      "Write smoke/S392923308-2.md as a single line naming S392923308-2.",
+      "Commit the file, set bookmark legion/S392923308-2, push, open the PR."
+    ],
+    "acceptance": [
+      {"criterion": "A1 new file exists on PR branch", "surface": "PR branch working tree", "command": "test -f smoke/S392923308-2.md"},
+      {"criterion": "A2 single line on the initial/adding commit names the issue", "surface": "PR branch VCS history (the revision that first adds the file)", "command": "jj file show -r <adding-rev> smoke/S392923308-2.md | grep -c '' equals 1 AND head -1 contains S392923308-2"},
+      {"criterion": "A3 only smoke/S392923308-2.md changes across the PR; reviewer may append further lines to that same file", "surface": "PR diff", "command": "git diff --name-only <base>...<head> lists only smoke/S392923308-2.md"}
+    ],
+    "ci": ".github/workflows/ci.yml is a no-op pass (sleep 20 && exit 0); fail-on-demand.yml fails only if a .fail-me file exists. No gate validates the smoke file; proof surface is filesystem + VCS diff on the PR branch."
+  },
+  "requiredSkills": {
+    "implement": ["legion-worker: governs workspace binding, jj commit/push, PR creation, and proving the change on the PR surface; no repo-domain skill applies to a one-line Markdown file (no AGENTS.md, no build)."],
+    "test": ["legion-worker: governs re-running the named A1/A2/A3 proving commands on the PR branch and reporting the CI verdict."],
+    "review": ["legion-worker: governs the review round and the spec-sanctioned request to append further issue-naming lines to the same file."]
+  },
+  "gapAnalysis": {
+    "findings": [
+      {"finding": "A2 is temporal (single line on initial commit) while A3 permits reviewer-appended lines, so PR HEAD legitimately grows; the single-line check cannot read final state.", "answer": "Plan pins A2 to the blob at the revision that first adds the file: jj file show -r <adding-rev> smoke/S392923308-2.md, asserting exactly one line and that it contains the key."},
+      {"finding": "Ambiguity: 'a single line that names this issue' could mean the line equals the key or merely contains it.", "answer": "Plan adopts the convention reading: first line contains the exact key substring S392923308-2 plus an em-dash title; content is `S392923308-2 — Budget exhaustion sentinel`. Check: head -1 contains S392923308-2."},
+      {"finding": "Filename must be the full key smoke/S392923308-2.md (suffix included).", "answer": "Confirmed; plan targets exactly smoke/S392923308-2.md, which does not yet exist. Check: test -f."},
+      {"finding": "No hidden CI gate or generated index forces another file to change.", "answer": "Confirmed: ci.yml is a no-op, fail-on-demand.yml keys off .fail-me, README/smoke logs are not generated indexes; A3 holds. Check: git diff --name-only base...head names only the one file."}
+    ]
+  },
+  "planReview": {"verdict": "approved", "rounds": 1},
+  "specDepartures": [{"kind": "unchanged"}]
+}
