@@ -1,0 +1,102 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-809",
+  "completed": "2026-10-19T02:45:00Z",
+  "plan": "dispatch://LEGSMOKE-809/artifact/plan-md",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker (+ references/pr-body.md, review-threads.md, conflicts-and-rewrites.md, merge-gate.md): the push rule, PR body template with `Dispatch: LEGSMOKE-809`, what a proof on a production-like surface is, one reply and one resolution per review thread, the forward-commit rule for a foreign `.fail-me`, and the post-merge production check (C7).",
+      "legion-retro: the implementer runs retro after approval; an optional learning under docs/solutions/<category>/<slug>-LEGSMOKE-809.md, then the commit removing .legion/LEGSMOKE-809/ before READY.",
+      "dispatch: read before the retro's Dispatch message or any comment on LEGSMOKE-809.",
+      "ce-simplify-code does not run: the diff is docs-only (one Markdown file), so the Thermo line is omitted per pr-body.md."
+    ],
+    "test": [
+      "legion-worker (+ references/pr-body.md, merge-gate.md): what the tester verifies (re-run the implementer's proof at HEAD with its own reference built from the plan's printf, break it with wrong ref / casing / stripped LF / CRLF / BOM controls, read CI at the code head and never re-run a workflow as evidence) and the test.json fields.",
+      "dispatch: read before any write to LEGSMOKE-809."
+    ],
+    "review": [
+      "legion-worker (+ references/merge-gate.md, review-threads.md, pr-body.md): the review-round order (read the code head's checks, push review.json with the trailer, review the head that push made, complete), the Look-at-first / Not-proven lines, the bot-thread adjudication, and the single in-scope CHANGES_REQUESTED append quoting the exact line.",
+      "dispatch: read before any write to LEGSMOKE-809."
+    ]
+  },
+  "gapAnalysis": {
+    "findings": [
+      {
+        "finding": "1. 'whose single line names LEGSMOKE-809' has three in-repo readings (bare key, `<KEY>: <sentence>`, `<KEY> — <title>`); the bare-key solution doc prescribes the bare key when no title is given.",
+        "answer": "Plan §3 fixes L1 verbatim: `LEGSMOKE-809: Pre-merge boot of a deployment's worker pod block` + LF, 64 bytes, sha256 0e8f208d…, built by `printf '%s\\n' \"…\" > /tmp/l1`. Chosen as the convention of the 21 earlier files of this proof family (the spec's own example smoke/LEGSMOKE-794.md). §4.3/§7 flag the bare key as the alternative the architect may substitute before implementing (13/52 bytes); every phase compares against the one reference either way."
+      },
+      {
+        "finding": "2. 'no other file in the repository has changed' collides with .legion/LEGSMOKE-809/*.json handoffs on the branch and retro's docs/solutions learning on main.",
+        "answer": "Plan C2: changed-file allowlist `^(smoke/LEGSMOKE-809\\.md|\\.legion/LEGSMOKE-809/[^/]+\\.json|docs/solutions/[^/]+/.+-LEGSMOKE-809\\.md)$` over compare/$BASE...<tip> (and post-merge over the merge SHA); retro's learning filename must end -LEGSMOKE-809.md. Recorded as spec departure D1 (§7) for the architect."
+      },
+      {
+        "finding": "3. The acceptance subject is the post-merge default branch, which no pre-merge phase can observe; `main` as default branch and 61ed4f38 as its tip were unverified.",
+        "answer": "Verified live 2026-10-19T02:37Z: default_branch `main`, tip 61ed4f386d60eeb7bc2929792422b1d94f67ceff (§2). Plan §4.4: C1–C6 are proved at the code head and gate the merge; C7 (main serves the bytes, one commit touches PATH, .legion/ absent, compare allowlist) is the implementer's production check after the merge, and `Production: pending merge` / Not-proven lists it until then."
+      },
+      {
+        "finding": "4. 'single line' is unscoped in time while a review may append a second line; a tip-scoped wc -l = 1 would fail an in-scope append.",
+        "answer": "Plan C1b pins `jj file show -r <creation-sha> smoke/LEGSMOKE-809.md | wc -l` = 1 to the creation commit; C6 states the tip's 2-line form (103 bytes) after a review-requested append."
+      },
+      {
+        "finding": "5. The review-round line's text and acceptance check are unstated; precedent is `Legion proof review round 1 (LEGSMOKE)`.",
+        "answer": "Plan §3 L2: exactly the text the reviewer's inline comment on smoke/LEGSMOKE-809.md:1 quotes, plus LF; precedent text named; C6 is the 2-line cmp (head -c 64 / tail -c +65, 103 bytes, sha256 118b06c6…); the tester rebuilds L2 from the reviewer's comment, not the implementer's file."
+      },
+      {
+        "finding": "6. 'Production-like surface' and 'negative control' are undefined for a static Markdown file; phases would cat their own working copy.",
+        "answer": "Plan §3 GET = GitHub contents API with the raw Accept header at a named ref; controls N1 (404/0 at main), N6 (404 at $BASE), N2 (stripped LF, CRLF, BOM each differ), N3 (neighbouring marker differs at char 10), N4 (key-swapped filter prints the real paths), N5 (varied head= returns 575). Each role builds its own reference from the plan's printf."
+      },
+      {
+        "finding": "7. Trailing newline and encoding are unstated; grep would accept no-LF, CRLF, or a BOM.",
+        "answer": "Plan C1: 64 bytes, 1 line, last byte 0a, cmp against /tmp/l1 exit 0; N2 proves cmp rejects no-LF (65-byte CRLF, 67-byte BOM copies). Visual reads, grep and diff are not the proof."
+      },
+      {
+        "finding": "8. Required CI contexts were asserted only by a stale solution doc; both workflows run on push and pull_request so a code head carries four rows.",
+        "answer": "Read live 2026-10-19T02:37Z: ruleset required_status_checks = [gate] (integration 15368), strict false; classic protection API answers 403 to the Apps (§2). Plan C3 re-reads the ruleset live and expects gate ×2 and check ×2 `completed success` at HEAD; ci/check sleeps 20s."
+      },
+      {
+        "finding": "9. `.fail-me` is a trap: creating it to show a red gate would violate 'no other file changed' and redden the required check.",
+        "answer": "Plan §4.6: no role creates .fail-me; the CI negative control is N5/N6 plus the compare predicate, not a red run. A foreign .fail-me commit is removed by a forward commit (never rebase/force), with the red head and failing run id cited as that round's control; C4 holds at the head that merges."
+      },
+      {
+        "finding": "10. Which head carries the CI verdict is unstated; a skip-checks handoff head returns zero check runs.",
+        "answer": "Plan §3 HEAD = the code head; §4.8 reads check-runs there, proves the gap with compare/$HEAD...<tip> all(startswith(\".legion/\")) → true (admitting docs/solutions/ after retro), and states the trailer placement (last line after two empty lines, trailers off)."
+      },
+      {
+        "finding": "11. A review round changes the code head; proofs pinned to the first head go stale.",
+        "answer": "Plan §4.5 and implementer step 9: the append is a code push; CI re-runs; every proof, the CI line and the E2E lines are re-pinned to the second head with both SHAs quoted and the note that the one-line head is never a reviewed, READY or merged head."
+      },
+      {
+        "finding": "12. Filename, casing and extension are given only by analogy; smoke/ holds three naming families and the checkout is case-sensitive.",
+        "answer": "Plan §3 PATH = `smoke/LEGSMOKE-809.md`, uppercase key, .md, directly under smoke/, used as the literal argument of every check; the tester tries `smoke/legsmoke-809.md` → 404."
+      },
+      {
+        "finding": "13. Branch, PR body and head= identity requirements are hidden preconditions of the acceptance.",
+        "answer": "Plan §4.9: branch legion/LEGSMOKE-809 (already on origin at the base), PR title `smoke: add LEGSMOKE-809 marker file`, body from the template with `Dispatch: LEGSMOKE-809`, Thermo omitted; N5 is the varied head= identity check (LEGSMOKE-794 → 575)."
+      },
+      {
+        "finding": "14. Nothing forbids the file from naming its own PR, which would force a two-commit ordering.",
+        "answer": "Plan §3 L1: line 1 names only the issue key and title, never the pull request, so the change is one commit."
+      },
+      {
+        "finding": "15. 'no other file … has changed' is a present-tense quantifier over main, which concurrent smoke runs move.",
+        "answer": "Plan §4.2 scopes the criterion to this PR's own diff (compare/$BASE...<tip>, post-merge compare/$BASE...<merge-sha>) and requires every proof line to quote the SHA pair and UTC time."
+      }
+    ]
+  },
+  "planReview": {
+    "verdict": "approved",
+    "rounds": 1
+  },
+  "specDepartures": [
+    {
+      "spec": "Acceptance: 'the default branch … holds one new Markdown file under smoke/ … and no other file in the repository has changed'; Scope: 'Nothing else changes.'",
+      "plan": "No other content path changes, but the pull request carries .legion/LEGSMOKE-809/{plan,implement,test,review}.json until retro removes them (never on main), and if retro commits a learning the merge lands docs/solutions/<category>/<slug>-LEGSMOKE-809.md on main. C2's allowlist admits exactly those paths; the retro learning's filename must end -LEGSMOKE-809.md.",
+      "evidence": "skill://legion-retro lines 22-31 and 78-87: retro's durable outputs are on the issue branch of the repository being worked; READY refuses a head still carrying .legion/<issue>/; 'a retro that commits no learning makes that [removal] commit alone' (line 119). The workspace has no root .gitignore, so handoffs are tracked and appear in the PR diff.",
+      "outcome": {
+        "kind": "changed",
+        "scope": "acceptance: 'no content path other than smoke/LEGSMOKE-809.md changes; Legion workflow artifacts (.legion/LEGSMOKE-809/, removed before merge; an optional docs/solutions/<category>/<slug>-LEGSMOKE-809.md, merged) are outside the deliverable'. The spec stays as written; the architect decides whether it changes."
+      }
+    }
+  ]
+}
