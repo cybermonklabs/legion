@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "phase": "test",
+  "issue": "S395289629-5",
+  "completed": "2026-10-19T02:39:34Z",
+  "implementerProof": {
+    "verdict": "verified",
+    "how": "Re-ran the implementer's command independently against the branch head (`test -f smoke/S395289629-5.md && head -1 smoke/S395289629-5.md | grep -q 'S395289629-5' && echo OK`); printed OK. Confirmed the file content at the PR head 35d171d2 via `jj file show` is identical to the code commit b0989ae8. Negative control reproduced: file absent at base 7e6dbdc3 (`No such path`)."
+  },
+  "failures": [],
+  "failed": 0,
+  "proof": [
+    {
+      "criterion": "smoke/S395289629-5.md exists and its first line names issue S395289629-5 (spec: one new Markdown file under smoke/ holding a single line that names this issue).",
+      "surface": "Repository PR tree — the deliverable is a repository file with no runnable application, so the production-like surface is the issue branch (legion/S395289629-5) working tree at the PR head.",
+      "command": "cd -- \"$LEGION_WORKSPACE\" && test -f smoke/S395289629-5.md && head -1 smoke/S395289629-5.md | grep -q 'S395289629-5' && echo OK && wc -l < smoke/S395289629-5.md",
+      "observed": "Printed OK then 1; file is a single 13-byte line 'S395289629-5' (no extra lines). File content at PR head 35d171d2 matches code commit b0989ae8.",
+      "headSha": "35d171d28f48e2de204734e2f4e08b18fee07ff8",
+      "negativeControl": "First-line check for the parent key 'S395289629-1' exited 1 (no match) — the marker names only this leaf, not the parent; and `jj file show -r 7e6dbdc3 smoke/S395289629-5.md` errored 'No such path' — the file did not exist before this change."
+    }
+  ],
+  "ci": {
+    "verdict": "green",
+    "how": "Read CI from GitHub, not rerun. At code head b0989ae8: workflow 'ci' run 39190725646 job check success; workflow 'fail-on-demand' run 39190725592 job gate success. Branch head 35d171d2 is a handoff-only commit carrying skip-checks, so GitHub starts no workflow for it and the daemon carries the code head's verdict."
+  }
+}
