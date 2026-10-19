@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "phase": "test",
+  "issue": "S394586105-5",
+  "completed": "2026-10-19T18:20:00Z",
+  "implementerProof": {
+    "verdict": "verified",
+    "how": "Re-ran the implementer's own commands independently on the git worktree at PR head 561bbac8 — `cat smoke/S394586105-5.md` printed `S394586105-5`; the AC2 content+line-count test exited 0 (file 13 bytes, one LF-terminated line); `jj diff -r zzvq --name-only` listed only `smoke/S394586105-5.md`. Read the same GitHub check-runs at code head 6e313687 (check run 39297911736, gate run 39297911811, both SUCCESS). Negative control `jj file show -r main@origin smoke/S394586105-5.md` returned `No such path`. Every claim in implement.json reproduced."
+  },
+  "failures": [],
+  "failed": 0,
+  "proof": [
+    {
+      "criterion": "AC1: the new leaf file exists and prints the issue key",
+      "surface": "git worktree at PR head (branch legion/S394586105-5)",
+      "command": "cat smoke/S394586105-5.md",
+      "observed": "prints `S394586105-5`",
+      "headSha": "561bbac83395ff0466afb8ec324b82f03a479374",
+      "negativeControl": "jj file show -r main@origin smoke/S394586105-5.md -> `Error: No such path: smoke/S394586105-5.md` (file absent on base main)"
+    },
+    {
+      "criterion": "AC2: content is the bare issue key, exactly one LF-terminated line",
+      "surface": "git worktree at PR head (branch legion/S394586105-5)",
+      "command": "test \"$(cat smoke/S394586105-5.md)\" = S394586105-5 && test \"$(wc -l < smoke/S394586105-5.md)\" -eq 1",
+      "observed": "exit 0; file is 13 bytes, one LF-terminated line, no BOM, no blank lines",
+      "headSha": "561bbac83395ff0466afb8ec324b82f03a479374",
+      "negativeControl": "same validation against a deliberately two-line wrong-key file (`WRONG-KEY\\nextra\\n`) exits non-zero (refused)"
+    },
+    {
+      "criterion": "AC3: nothing else changes (single-path code diff)",
+      "surface": "git tree at PR head / PR diff",
+      "command": "jj diff -r zzvq --name-only",
+      "observed": "the code commit 6e313687 lists exactly `smoke/S394586105-5.md` and nothing else",
+      "headSha": "561bbac83395ff0466afb8ec324b82f03a479374",
+      "negativeControl": "jj file show -r main@origin smoke/S394586105-5.md -> No such path, confirming the diff adds the file rather than editing an existing one"
+    },
+    {
+      "criterion": "AC4: CI green on head; no .fail-me introduced",
+      "surface": "GitHub PR #687 check-runs (sjawhar/legion-smoke) at code head 6e313687",
+      "command": "gh api repos/sjawhar/legion-smoke/commits/6e313687.../check-runs",
+      "observed": "check (ci.yml) run 39297911736 and gate (fail-on-demand.yml) run 39297911811 both conclusion SUCCESS, pull_request event; branch diff introduces no .fail-me (grep -c = 0); `test ! -f .fail-me` exits 0",
+      "headSha": "561bbac83395ff0466afb8ec324b82f03a479374",
+      "negativeControl": "fail-on-demand.yml `gate` job exits 1 only when a root .fail-me exists; none introduced on the branch, so the gate stays green"
+    }
+  ]
+}
