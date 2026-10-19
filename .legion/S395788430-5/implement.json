@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "phase": "implement",
+  "issue": "S395788430-5",
+  "completed": "2026-10-19T12:40:00Z",
+  "proof": [
+    {
+      "criterion": "AC1/AC2/AC3: smoke/S395788430-5.md exists and is exactly `S395788430-5\\n` (13 bytes, single trailing LF)",
+      "surface": "repo tree at PR head (code commit 86dd6ff15f31bb372961205f35337aa635406b83)",
+      "command": "jj diff -r 86dd6ff1 --name-only; jj file show -r 86dd6ff1 smoke/S395788430-5.md | wc -c; jj file show -r 86dd6ff1 smoke/S395788430-5.md | cmp - <(printf 'S395788430-5\\n')",
+      "observed": "diff name-only lists exactly `smoke/S395788430-5.md`; wc -c = 13; cmp exit 0 (byte-identical to `S395788430-5\\n`)",
+      "headSha": "86dd6ff15f31bb372961205f35337aa635406b83",
+      "negativeControl": "jj file show -r 86dd6ff1 smoke/S395788430-5.md | cmp - <(printf 'S395788430-1\\n') → `differ: char 12, line 1` (exit 1); and the path is absent at base `jj file show -r 8f7f3ab3 smoke/S395788430-5.md` → `No such path` (exit 1), so the proof measures the change"
+    },
+    {
+      "criterion": "AC4: CI (ci + fail-on-demand) green on the PR head",
+      "surface": "GitHub Actions on pull request #668 at head 86dd6ff15f31bb372961205f35337aa635406b83",
+      "command": "gh pr checks 668; gh run list --branch legion/S395788430-5 --json databaseId,name,headSha,conclusion",
+      "observed": "`ci` run 39252538102 job check success and `fail-on-demand` run 39252538121 job gate success, both at 86dd6ff1",
+      "headSha": "86dd6ff15f31bb372961205f35337aa635406b83",
+      "negativeControl": "fail-on-demand gate fails only when a `.fail-me` file exists in the tree; none exists, so the gate stays green (exit 0)"
+    }
+  ],
+  "filesChanged": [
+    "smoke/S395788430-5.md (new, 13 bytes, content `S395788430-5\\n`)"
+  ],
+  "trickyParts": [
+    "Leaf key must be the child key S395788430-5 (bare-key -5 form, 13 bytes), not the parent's key+em-dash-title -1 form; matches all five existing smoke/*-5.md siblings."
+  ],
+  "deviations": [],
+  "openQuestions": [],
+  "discoveredComplexity": []
+}
