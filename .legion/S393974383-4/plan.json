@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "S393974383-4",
+  "completed": "2026-10-19T06:59:30Z",
+  "requiredSkills": {
+    "implement": [
+      "none: no AGENTS.md and no repository coding/domain skill in this smoke repo; the change is a single new markdown file under smoke/, proved on the working copy with cat and jj diff."
+    ],
+    "test": [
+      "none: no repository test skill or test harness exists (no AGENTS.md, no toolchain, no suite); acceptance is re-checked with filesystem/diff assertions on smoke/S393974383-4.md."
+    ],
+    "review": [
+      "none: no repository review skill; review is a diff inspection confirming the one new file is added and no other file changed."
+    ]
+  },
+  "gapAnalysis": {
+    "findings": [
+      {
+        "finding": "F1: exact text of the starting line is unspecified; acceptance only requires a non-empty line containing the key.",
+        "answer": "Plan pins the line to the sibling convention: 'S393974383-4 \u2014 Restart outbox compass', which is non-empty and contains the key; any such line satisfies acceptance."
+      },
+      {
+        "finding": "F2: the review-requested second line's content and trigger are not pinned.",
+        "answer": "Plan adds a second non-empty line only on an explicit PR review request (in scope per spec); its text follows what the review asks, and no action is taken otherwise."
+      },
+      {
+        "finding": "F3: 'created by this change and not by editing any other file' is not intrinsically checkable from the file alone.",
+        "answer": "Plan treats it as a diff constraint: the change's diff MUST add exactly smoke/S393974383-4.md and modify/delete zero other files (notably S393974383-1.md), verified via jj diff --name-status in both implement and test phases."
+      }
+    ]
+  },
+  "planReview": {
+    "verdict": "approved",
+    "rounds": 1
+  },
+  "specDepartures": [
+    {
+      "kind": "unchanged"
+    }
+  ]
+}
