@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "phase": "implement",
+  "issue": "S394220170-5",
+  "completed": "2026-10-19T09:40:00Z",
+  "proof": [
+    {
+      "criterion": "AC1/AC2: smoke/S394220170-5.md exists as the only new repository file and contains exactly the issue key on one LF-terminated line (UTF-8, no BOM).",
+      "surface": "repository on PR branch legion/S394220170-5 (read from GitHub, not the local working copy)",
+      "command": "gh api repos/sjawhar/legion-smoke/contents/smoke/S394220170-5.md?ref=legion/S394220170-5 --jq .content | base64 -d | cat -A  (and  jj diff -r legion/S394220170-5 --stat)",
+      "observed": "Output 'S394220170-5$' — one LF-terminated line equal to the key, no BOM, no trailing blank line; jj diff --stat lists only smoke/S394220170-5.md (1 insertion).",
+      "headSha": "b2e95f01d65a60abb5cd3aa1e117ae4ebb3db96a",
+      "negativeControl": "gh api for the neighboring path smoke/S394220170-5.fail on the same branch returned HTTP 404 Not Found, confirming only the exact key file exists and no extra file (e.g. no .fail-me) was added."
+    },
+    {
+      "criterion": "AC3: PR required CI checks (ci, fail-on-demand) are green on the PR head.",
+      "surface": "GitHub PR #644 for branch legion/S394220170-5",
+      "command": "gh pr checks 644 --repo sjawhar/legion-smoke --json name,state,workflow",
+      "observed": "ci/check SUCCESS (run 39229971421) and fail-on-demand/gate SUCCESS (run 39229971396), both at head b2e95f01d65a60abb5cd3aa1e117ae4ebb3db96a.",
+      "headSha": "b2e95f01d65a60abb5cd3aa1e117ae4ebb3db96a",
+      "negativeControl": "No .fail-me file was added; the fail-on-demand gate fails only when .fail-me is present, so its green result confirms the gate can discriminate failure rather than passing unconditionally."
+    }
+  ],
+  "filesChanged": [
+    "smoke/S394220170-5.md"
+  ],
+  "trickyParts": [
+    "Docs/smoke-only diff: no runtime code, so no ce-simplify-code or thermonuclear pass applies (Thermo line omitted from PR body)."
+  ],
+  "deviations": [],
+  "openQuestions": [],
+  "discoveredComplexity": []
+}
