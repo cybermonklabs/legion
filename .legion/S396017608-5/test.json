@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "phase": "test",
+  "issue": "S396017608-5",
+  "completed": "2026-10-19T08:34:00Z",
+  "implementerProof": {
+    "verdict": "verified",
+    "how": "Re-ran the implementer's commands independently on the same surface at the PR head: jj file show -r 78045d28 smoke/S396017608-5.md -> 'S396017608-5'; | wc -c -> 13; printf 'S396017608-5\\n' | cmp - -> exit 0 (byte-identical); jj diff -r 8cf073ac --name-only -> exactly smoke/S396017608-5.md. All reproduced. CI read (not rerun): ci run 39222998770 success, fail-on-demand run 39222998762 success, both at 8cf073ac."
+  },
+  "failures": [],
+  "failed": 0,
+  "proof": [
+    {
+      "criterion": "C1: the smoke leaf marker is the only code path changed (smoke/S396017608-5.md).",
+      "surface": "repository tree at PR head 78045d28 / code commit 8cf073ac (sjawhar/legion-smoke PR #639)",
+      "command": "jj -R \"$LEGION_WORKSPACE\" diff -r 8cf073ac --name-only",
+      "observed": "exactly one path: smoke/S396017608-5.md. gh pr diff 639 --name-only additionally lists .legion/S396017608-5/plan.json and .legion/S396017608-5/implement.json, the Legion handoff artifacts carried by the branch and removed at retro, not part of the change.",
+      "headSha": "78045d28beb52204faab3ad84ef981d726a6234f",
+      "negativeControl": "No .fail-me exists in the tree (jj file list -r 78045d28 | grep -F '.fail-me' -> no match), and grep S396017608 over smoke/ matched only smoke/S396017608-5.md, so no stray marker inflates the change."
+    },
+    {
+      "criterion": "C2: the marker is exactly S396017608-5\\n (13 bytes).",
+      "surface": "repository file at PR head 78045d28 (sjawhar/legion-smoke PR #639)",
+      "command": "jj -R \"$LEGION_WORKSPACE\" file show -r 78045d28 smoke/S396017608-5.md | wc -c; printf 'S396017608-5\\n' | cmp - <(jj file show -r 78045d28 smoke/S396017608-5.md)",
+      "observed": "wc -c = 13; cmp exit 0 (byte-identical to printf 'S396017608-5\\n').",
+      "headSha": "78045d28beb52204faab3ad84ef981d726a6234f",
+      "negativeControl": "printf 'S396017608-1\\n' | cmp - <file> -> 'differ: char 12, line 1' (exit 1), so cmp detects the wrong (parent) key."
+    },
+    {
+      "criterion": "C3: GitHub checks ci and fail-on-demand pass on the change.",
+      "surface": "GitHub Actions checks on sjawhar/legion-smoke PR #639 (code head 8cf073ac; PR head 78045d28 is a handoff-only push with skip-checks, verdict carried by the daemon)",
+      "command": "gh run view 39222998770 --repo sjawhar/legion-smoke --json conclusion,headSha; gh run view 39222998762 --repo sjawhar/legion-smoke --json conclusion,headSha",
+      "observed": "ci run 39222998770 conclusion=success at 8cf073ac; fail-on-demand run 39222998762 conclusion=success at 8cf073ac. Read, not rerun.",
+      "headSha": "78045d28beb52204faab3ad84ef981d726a6234f",
+      "negativeControl": "fail-on-demand goes red only when a .fail-me file exists; none is present in the tree, so its green state confirms the tree carries no such file."
+    },
+    {
+      "criterion": "C4: PR body contains the line Dispatch: S396017608-5.",
+      "surface": "GitHub PR body of sjawhar/legion-smoke PR #639",
+      "command": "gh pr view 639 --repo sjawhar/legion-smoke --json body -q .body | grep -F 'Dispatch: S396017608-5'",
+      "observed": "match present: 'Dispatch: S396017608-5'.",
+      "headSha": "78045d28beb52204faab3ad84ef981d726a6234f",
+      "negativeControl": "grep -F 'Dispatch: S396017608-1' against the same body returns no match, so the grep is specific to this issue's child key."
+    }
+  ]
+}
