@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "S393243811-5",
+  "completed": "2026-10-19T01:03:46Z",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: drives the phase-worker flow — branch legion/S393243811-5, open the PR with the `Dispatch: S393243811-5` body line, and prove AC1+AC3 on the PR head per references/pr-body.md.",
+      "ce-simplify-code: the implementer's simplify pass before review; a no-op to record for this one trivial file, but the skill governs that pass."
+    ],
+    "test": [
+      "legion-worker: the tester drives the real surface (the PR + its checks) and reads CI for the static jobs rather than rerunning them, recording its proof per references/pr-body.md."
+    ],
+    "review": [
+      "legion-worker: the reviewer verifies the single-file diff and exact bytes, the PR body `Dispatch:` line, and green checks on head, resolving threads one at a time per references/review-threads.md and following references/merge-gate.md ordering."
+    ]
+  },
+  "gapAnalysis": {
+    "findings": [
+      {
+        "finding": "Title 'Dependent admission leaf' implies a dependency/ordering the plan does nothing about; the proof demonstrates nothing about dependent admission (architect-only).",
+        "answer": "Routed to the architect as plan.md Decision 2: the issue has no Dispatch dependency edge (References: none; only child_of S393243811-1); 'admission' is the daemon/controller's gate, already satisfied by this leaf reaching planning, so it is not a repo deliverable. If the architect intends the proof to demonstrate dependent admission in the repo, the spec must state that new requirement."
+      },
+      {
+        "finding": "Inheriting the parent's acceptance is an inference, not an approved requirement: the leaf's spec document is empty (architect-only).",
+        "answer": "Routed to the architect as plan.md Decision 1: the plan inherits the parent profile (S393243811-1 approved v1) as the low-risk default and asks the architect to either populate+approve the leaf spec or confirm deliberate inheritance. The planner does not edit the spec."
+      },
+      {
+        "finding": "'a single line that names this issue' has multiple in-repo readings (bare key / key+title / key+sentence); which form and which title (not architect-only).",
+        "answer": "Settled in plan.md by code precedent: bare key `S393243811-5` is precedented (smoke/S392703949-1.md, smoke/S393198222-1.md) and unambiguously names the issue; the plan pins exact bytes `S393243811-5\\n` (13 bytes) so the check is deterministic regardless of the reviewer's expectation."
+      },
+      {
+        "finding": "Drafted acceptance was under-specified: exact bytes not pinned, single-line check could wrongly forbid the review-appended line, head SHA not pinned for CI.",
+        "answer": "Addressed in plan.md AC1–AC3: exact bytes pinned via `cmp`; the single-line `wc -l` assertion scoped to the creation commit only (so a reviewed append stays in scope); AC3 pins the PR head SHA (`gh pr view --json headRefOid`) before asserting `ci`/check and `fail-on-demand`/gate are success, with `.fail-me`-absent and single-changed-path as negative controls."
+      },
+      {
+        "finding": "Parent's own smoke file is absent (grep finds no 'S393243811'); the leaf might depend on the parent's deliverable landing first (architect-only).",
+        "answer": "Routed to the architect as plan.md Decision 3: the leaf file is fully standalone and does not depend on a parent file; architect to confirm no ordering against the parent's deliverable is intended."
+      }
+    ]
+  },
+  "planReview": {
+    "verdict": "approved",
+    "rounds": 1
+  },
+  "specDepartures": [
+    {
+      "spec": "The issue S393243811-5 'Dependent admission leaf' spec document is empty — no Summary, Scope, or Acceptance.",
+      "plan": "The plan builds the leaf by inheriting the parent profile S393243811-1 (approved v1): add exactly smoke/S393243811-5.md holding the single line `S393243811-5`; a review may append one more line; nothing else changes.",
+      "evidence": "dispatch doc-read --issue S393243811-5 returns an empty body; parent S393243811-1 spec is approved v1 with that one-file profile; repo convention (dozens of smoke/<KEY>.md files, e.g. smoke/S392703949-1.md) matches.",
+      "outcome": {
+        "kind": "changed",
+        "acceptance": "Adds the inherited acceptance (one file smoke/S393243811-5.md, single line naming the issue, CI green on head) that the empty leaf spec does not state; the architect decides whether to populate+approve the leaf spec or confirm deliberate inheritance (plan.md Decision 1)."
+      }
+    }
+  ]
+}
