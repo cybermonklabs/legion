@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-810",
+  "completed": "2026-10-19T02:43:30Z",
+  "plan": "dispatch://LEGSMOKE-810/artifact/plan-md",
+  "deliverable": {
+    "path": "smoke/LEGSMOKE-810.md",
+    "bytes": "LEGSMOKE-810\\n",
+    "byteCount": 13,
+    "reviewAppendLine": "Legion proof review round 1 (LEGSMOKE)",
+    "permittedPathsBeforeRetro": "^(smoke/LEGSMOKE-810\\.md|\\.legion/LEGSMOKE-810/.+)$",
+    "permittedPathsAtReady": "^(smoke/LEGSMOKE-810\\.md|docs/solutions/[^/]+/.+-LEGSMOKE-810\\.md)$",
+    "mainAtPlanning": "61ed4f38"
+  },
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: its PR-body template, proof definition (references/pr-body.md), push/trailer procedure and post-merge production check (references/merge-gate.md#after-the-merge) are the only verification norms this repository has; no AGENTS.md or repo-local skill exists (workspace root listing, 2026-10-19T02:36Z)."
+    ],
+    "test": [
+      "legion-worker: references/pr-body.md defines what the tester verifies and that it reruns no static check; the reference bytes are rebuilt from the plan's own printf per docs/solutions/legion/proving-facts-the-event-erases-SMOKE-3.md."
+    ],
+    "review": [
+      "legion-worker: references/merge-gate.md (the reviewer) and references/review-threads.md (one disposition per thread); an approval of a head still carrying .legion/LEGSMOKE-810/ follows docs/solutions/legion/claims-that-go-stale-as-the-branch-grows-SMOKE-4.md."
+    ]
+  },
+  "gapAnalysis": {
+    "findings": [
+      {
+        "finding": "Which key the deliverable names is unsettled: the child spec is empty and the parent's acceptance names LEGSMOKE-809; the competing reading is that the child produces smoke/LEGSMOKE-809.md.",
+        "answer": "Decision 1 of plan.md: the file is smoke/LEGSMOKE-810.md naming LEGSMOKE-810; each issue has its own branch and PR (legion/LEGSMOKE-809 exists separately), precedent child leaf S393243811-5 created its own-key file, and the parent's smoke/LEGSMOKE-809.md is the parent's deliverable. The parent's 'no other file' is read per pull request. Flagged to the architect as the one reading it may overturn."
+      },
+      {
+        "finding": "The exact bytes of the single line were the plan's invention (leaf title); the repo shows bare-key and <KEY>: <tree title> forms, never a leaf title.",
+        "answer": "Decision 2: line 1 is the bare key, exactly printf 'LEGSMOKE-810\\n' (13 bytes), written into plan.md and plan.json so implementer and tester each rebuild the reference from the plan's printf, not from the file."
+      },
+      {
+        "finding": "'No other file in the repository has changed' collides with the branch's .legion/ handoffs and retro's docs/solutions/ learning; a one-path PR diff check fails at most heads.",
+        "answer": "Decision 3 and AC2: permitted path set per head — before retro ^(smoke/LEGSMOKE-810\\.md|\\.legion/LEGSMOKE-810/.+)$, at READY ^(smoke/LEGSMOKE-810\\.md|docs/solutions/[^/]+/.+-LEGSMOKE-810\\.md)$; retro's last commit must remove .legion/LEGSMOKE-810/ and any learning filename must end -LEGSMOKE-810.md."
+      },
+      {
+        "finding": "<code-head> was used for two different SHAs; a tip-scoped wc -l=1 fails an in-scope review append, and a single-commit diff misses the branch's total change.",
+        "answer": "Decision 5 and AC1/AC2/AC3: line count and line-1 bytes pinned to <creation-sha>; content, CI and path-set checks at the newest non-handoff head via compare/main...<code-head>; the compare/<code-head>...<tip> all(startswith('.legion/')) read proves the code head still stands."
+      },
+      {
+        "finding": "CI acceptance under-specified: two rows per job per head (push + pull_request), and the required-contexts claim is unreadable at this credential (HTTP 403).",
+        "answer": "AC3: every check-run row at the code head is completed/success, rows quoted (expect two check and two gate rows), never total_count; required contexts recorded as unreadable at this credential in Not proven / risk, citing the SMOKE-3 solution doc rather than asserting branch protection."
+      },
+      {
+        "finding": "The default-branch acceptance was assigned to a phase that cannot run it (the implementer runs before the merge).",
+        "answer": "AC6: in this workflow the implementer runs again after the merge as the production check (skill://legion-worker/references/merge-gate.md#after-the-merge, lines 194-215); 'production' for this repo is main on GitHub, read via gh api contents?ref=main with cmp, negative control ?ref=61ed4f38 -> 404."
+      },
+      {
+        "finding": "The review-round append had no defined text and no cap; the spec admits one extra line while older runs show three review lines.",
+        "answer": "AC5 fixes the second line to exactly 'Legion proof review round 1 (LEGSMOKE)' (17 of 21 LEGSMOKE precedents) and Decision 4 makes any further line out of scope — a review asking for more is sent to the architect, not appended."
+      },
+      {
+        "finding": "Facts the analyst could not check (title, empty spec, parent wording, human message, default branch, workspace head, the 403) must be stamped as reads, not asserted.",
+        "answer": "plan.md 'What the spec says and what was read' quotes each with its command and UTC read time; the branch-protection read is carried as unreadable at this credential under Not proven / risk."
+      }
+    ]
+  },
+  "planReview": {
+    "verdict": "approved",
+    "rounds": 1,
+    "nonBlocking": [
+      "AC1 negative control first differing byte is 11, not 12 — corrected in plan.md.",
+      "The 'Dispatch: <KEY>' PR-body line is mandated by skill://legion-worker itself, not only pr-body.md — citation corrected in plan.md."
+    ]
+  },
+  "specDepartures": [
+    {
+      "spec": "LEGSMOKE-810's primary document is empty (dispatch doc-read --issue LEGSMOKE-810 at 2026-10-19T02:36Z printed only a document token). The parent LEGSMOKE-809 spec's acceptance names a file whose single line names LEGSMOKE-809.",
+      "plan": "The plan supplies the child's Summary and Acceptance by inheriting the parent's one-file design keyed to this child: smoke/LEGSMOKE-810.md, exactly 'LEGSMOKE-810\\n' (13 bytes); optional review line 2 'Legion proof review round 1 (LEGSMOKE)'; 'no other file' read as a per-head permitted path set that admits .legion/LEGSMOKE-810/ before retro and docs/solutions/*-LEGSMOKE-810.md at READY.",
+      "evidence": "The targeted human message (2026-10-19T02:33:22Z) calls this issue's work 'the one-file smoke change'; legion/LEGSMOKE-810 is its own branch beside legion/LEGSMOKE-809@origin; precedent child leaf smoke/S393243811-5.md is a bare key named for the child (docs/solutions/legion/acceptance-check-for-a-bare-key-smoke-leaf-S393243811-5.md); 21 LEGSMOKE leaves carry a tree title, never a leaf title.",
+      "outcome": {
+        "kind": "changed",
+        "scope": "summary and acceptance lines the child spec lacks: the file is smoke/LEGSMOKE-810.md naming LEGSMOKE-810 (not the parent's key); the exact bytes; the per-head path set. Whether to write these into LEGSMOKE-810's spec, or to read the child as producing the parent's file, is the architect's decision."
+      }
+    }
+  ]
+}
