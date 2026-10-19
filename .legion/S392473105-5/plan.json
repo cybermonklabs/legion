@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "S392473105-5",
+  "completed": "2026-10-18T18:12:00Z",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: the implementer is a Legion phase worker; it follows legion-worker's push/PR, proof-on-a-production-surface, and completion-gate rules for this one-file smoke change."
+    ],
+    "test": [
+      "legion-worker: the tester follows legion-worker's proof and evidence rules (drive the real surface, record proof, read CI for the static gate) to verify the marker file and PR state."
+    ],
+    "review": [
+      "legion-worker: the reviewer follows legion-worker's review-thread and merge-gate rules to approve the scoped one-file change."
+    ]
+  },
+  "gapAnalysis": {
+    "findings": [
+      {
+        "finding": "The child spec S392473105-5 has no approved body (token only); every planned action traces to the parent spec pattern, not to approved text of this issue.",
+        "answer": "Plan follows the approved parent spec S392473105-1 pattern verbatim (one file smoke/S392473105-5.md, single line equal to this issue key, nothing else) and escalates to the architect to approve a child spec body or confirm the leaf inherits the parent pattern. Architect-only decision; recorded in plan.md 'Open decisions for the architect' item 1 and in the completion summary."
+      },
+      {
+        "finding": "No acceptance criterion is stated and the only automated gate (ci / check) cannot check the deliverable: it runs sleep 20 && exit 0 regardless of file content or presence.",
+        "answer": "Plan states explicit acceptance criteria with runnable checks: AC1 content check `test \"$(cat smoke/S392473105-5.md)\" = 'S392473105-5'` and a one-line check; AC2 scoped-diff check via `jj diff --stat`; AC3 the CI gate green, noted as necessary-not-sufficient. Settled from the pattern; no product choice needed."
+      },
+      {
+        "finding": "Title 'Dependent admission leaf' implies a dependency/admission gate that a one-file change would not reflect.",
+        "answer": "No sibling marker exists in the repo and the parent spec names no dependency; the daemon has already admitted this child into planning. Plan treats the title as naming the admission-workflow proof, not an in-file dependency, and changes no file content or sequencing. Escalated to the architect to confirm no upstream admission gate alters sequencing; recorded in plan.md 'Open decisions for the architect' item 2."
+      },
+      {
+        "finding": "Filename extension ambiguity: .md vs .txt (smoke/ mixes both).",
+        "answer": "Settled by the parent spec ('Markdown file') and both -5 siblings (smoke/S393243811-5.md, smoke/S395289629-5.md): use smoke/S392473105-5.md. No architect input needed."
+      },
+      {
+        "finding": "Whether the single line names this issue or the parent, and whether a trailing newline is included.",
+        "answer": "Settled by the parent spec ('names this issue') and the two -5 siblings, which contain their own key with one trailing newline: the line is `S392473105-5` (self, not parent) with one trailing newline. No architect input needed."
+      }
+    ]
+  },
+  "planReview": {
+    "verdict": "approved",
+    "rounds": 1
+  },
+  "specDepartures": []
+}
