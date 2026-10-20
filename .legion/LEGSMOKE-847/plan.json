@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-847",
+  "completed": "2026-10-20T04:47:00Z",
+  "plan": "dispatch://LEGSMOKE-847/artifact/plan-md",
+  "designSource": "The child spec dispatch://LEGSMOKE-847/spec is empty; the design is the parent spec dispatch://LEGSMOKE-846/spec read with 'this issue' meaning LEGSMOKE-847: one new Markdown file under smoke/ holding a single line naming the issue; a review may ask for one more appended line; nothing else changes.",
+  "pinned": {
+    "path": "smoke/LEGSMOKE-847.md",
+    "line1": "LEGSMOKE-847: Stage 4b upgrade rehearsal: a child of LEGSMOKE-846\n",
+    "line1Bytes": 66,
+    "handoffFilterPrefix": ".legion/LEGSMOKE-847/",
+    "requiredCheck": "gate",
+    "advisoryCheck": "check",
+    "detectorK": "count of top-level (in_reply_to_id==null) inline comments on pulls/<n>/comments by trajectory-s-legion-reviewer[bot] with path smoke/LEGSMOKE-847.md whose body contains 'Legion proof review round'; K=0 one line, K=1 two lines (line 2 = that comment's single one-line fenced block, CRs removed, one trailing LF), K>1 stop and report to the architect",
+    "preMergeSurface": "gh api -H 'Accept: application/vnd.github.raw+json' repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-847.md?ref=<headSha>",
+    "postMergeSurface": "the same path with ?ref=main, plus commits?path=smoke/LEGSMOKE-847.md&sha=main listing exactly the merge commit",
+    "retro": "one commit removing .legion/LEGSMOKE-847/, pushed as a code push before READY; no docs/solutions/ file (it would be a second changed file)"
+  },
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: push and skip-checks trailer rules, App identity check, PR body template and the six-field proof array (references/pr-body.md), one-by-one thread reply and GraphQL resolution (references/review-threads.md); the implementer opens the PR and proves C1/C2/C4 (and C1'/C3 when the review asks for the line) on GitHub's served bytes at the head SHA, then C5 at ?ref=main after the merge.",
+      "legion-retro: the revived implementer's retro makes only the .legion/LEGSMOKE-847/ removal commit and writes no docs/solutions/ file, since the spec's 'nothing else changes' forbids a second changed file (plan D6); the learning goes into the Dispatch retro message.",
+      "dispatch: the retro message and any other Dispatch write follow its writing rules; ce-simplify-code is not run because the diff is one Markdown line, docs-only (plan D13)."
+    ],
+    "test": [
+      "legion-worker (references/pr-body.md): verify the implementer's proof from GitHub's served bytes at the head SHA, record implementerProof {verdict, how}, add the tester's own proof array with a negative control per criterion (C1 or C1'+C3, C2 filtered by .legion/LEGSMOKE-847/, C4 via check-runs name==gate), read CI and never rerun it; the repository has no test harness and the spec admits no second file, so no test file is written."
+    ],
+    "review": [
+      "legion-worker (references/merge-gate.md and references/review-threads.md): read the gate check at the code head, one review submission per round at the head SHA, write Look at first and Not proven / risk in the live body, name accepted bot threads to the implementer; docs-only PR skips the Thermo pair; when the driver asks for the extra line, a CHANGES_REQUESTED review with exactly one inline comment on smoke/LEGSMOKE-847.md line 1 whose body contains 'Legion proof review round' and exactly one fenced block of one line, so detector K and the extracted line L are computable (plan D3)."
+    ]
+  },
+  "gapAnalysis": {
+    "findings": [
+      {
+        "finding": "F1 The child's own spec is empty and nothing in LEGSMOKE-847 records that LEGSMOKE-846's spec is its design, so a post-upgrade worker reading only 847 sees no design.",
+        "answer": "Plan §1 and this handoff's designSource quote the parent spec verbatim with its dispatch:// link and read 'this issue' as LEGSMOKE-847; no criterion rests on unrecorded inheritance."
+      },
+      {
+        "finding": "F2 'A single line that names this issue' fixes neither filename, path depth nor text; the facts choose them only by precedent.",
+        "answer": "D1 pins the flat path smoke/LEGSMOKE-847.md and D2 the byte-exact 66-byte literal 'LEGSMOKE-847: Stage 4b upgrade rehearsal: a child of LEGSMOKE-846' + LF as the sole meaning of 'names this issue'; every command in §4 embeds them."
+      },
+      {
+        "finding": "F3 With no root .gitignore the .legion/LEGSMOKE-847/*.json handoffs are tracked and ride the PR, so C2's unfiltered merge-head form holds only if retro's deletion lands on the branch before merge, an ordering the issue never states.",
+        "answer": "D4 names the retro removal commit, its role (the revived implementer), that it is a code push, and that it precedes READY, which refuses a head still carrying .legion/LEGSMOKE-847/; mid-run C2 filters that prefix and its negative control (wrong prefix .legion/LEGSMOKE-846/ lists more than one file) shows the filter is not vacuous."
+      },
+      {
+        "finding": "F4 The driver may add .fail-me, which lands a second file and turns gate red; C2 and C4 both fail while it exists.",
+        "answer": "D5: C2 and C4 are evaluated only at a head where .fail-me has been deleted again by a later commit on the driver's instruction (added then deleted it is absent from the base...head files list), and C4 reads the check-runs of the final code head only."
+      },
+      {
+        "finding": "F5 C1 as drafted (66 bytes) is false in exactly the K=1 case C3 exists for, and its ?ref=main → 404 control is true only before the merge.",
+        "answer": "§4 splits C1 (K=0, 66 bytes, 1 line) from C1' (K=1, 66 + len(L) + 1 bytes, 2 lines, line 1 cmp-equal to the literal) and marks the 404 control as valid only while the PR is open."
+      },
+      {
+        "finding": "F6 No criterion asserts the production end state after the squash merge.",
+        "answer": "C5 (plan §4): contents at ?ref=main cmp-equal to the final expected bytes, commits?path on main exactly the merge commit, PR merged true; negative control ?ref=c5f092a15eab (the base) → 404; it is the only criterion evaluated after the merge, by the implementer's production check (§5.1 step 9)."
+      },
+      {
+        "finding": "F7 The K detector and 'line 2 = the comment's fenced text' come from the LEGSMOKE-836 handoff, not from the spec, and C3 is undecidable when the comment has no, several, or multi-line fenced blocks.",
+        "answer": "D3 restates the detector and the extraction as this plan's own rule (first and only fenced block, fence lines stripped, CRs removed, exactly one trailing LF, exactly one line), and fixes the K>1 or malformed-comment action: stop, report to the architect, append nothing; §5.3 tells the reviewer the exact comment shape."
+      },
+      {
+        "finding": "F8 The daemon upgrade happens while the planner holds, so a successor has none of the planner's in-memory facts.",
+        "answer": "D12 and this handoff's pinned block write the literal, its byte count, the filter prefix, the exact gh api surfaces, the K detector and the gate-vs-check split durably; no criterion depends on planner state surviving the restart."
+      }
+    ]
+  },
+  "planReview": {
+    "verdict": "approved",
+    "rounds": 1
+  },
+  "specDepartures": []
+}
