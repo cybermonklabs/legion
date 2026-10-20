@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-846",
+  "completed": "2026-10-20T04:47:30Z",
+  "plan": "dispatch://LEGSMOKE-846/artifact/plan-md",
+  "base": "c5f092a15eab9662aa6e26df9ec7194c252db642",
+  "change": {
+    "path": "smoke/LEGSMOKE-846.md",
+    "line1": "LEGSMOKE-846: Pre-merge boot of a deployment's worker pod block",
+    "line1Bytes": 64,
+    "commitMessage": "smoke: add LEGSMOKE-846 marker file",
+    "reviewRoundCommitMessage": "smoke: add the review round 1 line to LEGSMOKE-846.md"
+  },
+  "acceptance": [
+    {"id": "C1", "criterion": "smoke/LEGSMOKE-846.md exists at the head, is new against the pinned main SHA, and (K=0) is exactly the 64-byte LF-terminated line naming LEGSMOKE-846", "surface": "GitHub contents API at an explicit SHA", "check": "wc -c 64; wc -l 1; printf '%s\\n' \"$L1\" | cmp - f exits 0; contents?ref=<pinned main> is 404", "negativeControl": "printf '%s' \"$L1\" | cmp - f prints 'cmp: EOF on -'; grep -c '^LEGSMOKE-836:' f prints 0"},
+    {"id": "C2", "criterion": "the pull request changes no other file", "surface": "GitHub pull-request files list", "check": "mid-run: files minus .legion/LEGSMOKE-846/ paths == [\"smoke/LEGSMOKE-846.md\"]; at the merge head: files == [\"smoke/LEGSMOKE-846.md\"]; after merge: contents/.legion/LEGSMOKE-846?ref=<merge sha> is 404", "negativeControl": "the unfiltered mid-run list shows the handoff paths beside the marker"},
+    {"id": "C3", "criterion": "when K=1, exactly two LF-terminated lines: line 1 unchanged, line 2 the review's fenced quote byte-for-byte", "surface": "GitHub contents API at the post-fix head and the review comment", "check": "wc -l 2; wc -c 64+len(L)+1; head -c 64 cmp L1; tail -n 1 cmp L", "negativeControl": "printf '%s\\n' \"$L1\" | cmp - f prints 'cmp: EOF on -'; grep -c 'review round 2' f prints 0"},
+    {"id": "CI", "criterion": "gate is success at every code head and at the post-retro head the merger names", "surface": "GitHub check-runs at the SHA", "check": "check-runs gate conclusions unique == [\"success\"]", "negativeControl": "a handoff head has actions/runs?head_sha total_count 0 and compares to the code head with only .legion/ paths"}
+  ],
+  "requiredSkills": {
+    "implement": ["legion-worker: the push, pull-request body, proof-on-GitHub-served-bytes, review-thread and handoff rules the implementer follows; dispatch before any Dispatch write. No repository skill exists (no AGENTS.md, no test harness, no deploy surface), so GitHub's served content at an explicit SHA is the production-like surface."],
+    "test": ["legion-worker: references/pr-body.md defines what the tester verifies (drive the surface, read CI, never rerun it) and the tester's handoff; the repository has no test skill and the spec admits no test file."],
+    "review": ["legion-worker: references/merge-gate.md and references/review-threads.md define the review round and its submission at the head; docs-only pull request, so no thermonuclear pair."]
+  },
+  "gapAnalysis": {
+    "findings": [
+      {"finding": "The spec has no Acceptance section; every criterion a phase judges is private to the planner.", "answer": "plan.md §3 publishes C1, C2, C3 and the CI criterion, each with surface, command, expected output and negative control; the same set is in this handoff's acceptance array."},
+      {"finding": "The file's text is unsourced; the precedent drop of the title's /tmp parenthetical has no precedent and the byte count is uncounted.", "answer": "D2: line 1 is 'LEGSMOKE-846: Pre-merge boot of a deployment's worker pod block' + LF = 64 bytes (measured with printf | wc -c). The drop has precedent: LEGSMOKE-836's title carried '(/tmp/legion-e2e4b.1794117.8tDTo0xD)' (dispatch read) and its merged smoke/LEGSMOKE-836.md:1 drops it."},
+      {"finding": "The apostrophe in deployment's breaks a single-quoted shell literal.", "answer": "D3: every literal is a double-quoted printf '%s\\n' \"$L1\" argument, L1 set once per shell; plan.md §2 and §3 commands use that form."},
+      {"finding": "A flat 'exactly one line' criterion fails the reviewed arm.", "answer": "D5 and C3: detector K over the pull request's review comments selects the arm; K=0 requires 64 bytes / 1 line, K=1 requires 64+len(L)+1 bytes / 2 lines."},
+      {"finding": "The second line's text is nowhere in the spec; what if the reviewer's wording differs or the detector misses?", "answer": "D5: the appended line is the review's fenced quote byte-for-byte (extractor L), never a constant; §4.4 tells the reviewer the exact shape; §6.1: K!=1 when a line was asked, or a missing/multi-line fenced block, stops the implementer, which reports to the architect."},
+      {"finding": "'Nothing else changes' collides with tracked .legion handoffs; the plan must state a two-level rule.", "answer": "D6 and C2: mid-run the files list minus .legion/LEGSMOKE-846/ paths is exactly the marker; at the merge head the unfiltered list is exactly the marker and .legion/LEGSMOKE-846 is 404 on main (both measured on PR #706)."},
+      {"finding": "The skip-checks trailer cannot suppress Actions here since both workflows trigger unconditionally, so gate must be re-read at the final head.", "answer": "D8 refutes the premise by measurement: PR #706's trailered handoff commits have actions/runs?head_sha total_count 0 and its code commits 4. The plan still names the gate re-read: CI criterion at the post-retro head, judged by the merger's READY and the daemon's merge."},
+      {"finding": "Retro's removal push moves the head after approval; which SHA do READY and the merge judge, and is that push trailered?", "answer": "D8/D12 and §4.5: retro's removal is a code push (no trailer), gate runs at it, READY names that SHA with gate success and the reviewer's approval re-established if dismissed."},
+      {"finding": "D10 squash-merge commit-count is an inference; the ruleset constrains no merge method.", "answer": "D11: post-merge acceptance is the contents API at the merge commit's SHA; the commits?path list is reported, not gated on."},
+      {"finding": "Newness is only true at a pinned SHA; sibling trees may merge concurrently.", "answer": "D10: planning measured 404 and 0 at main c5f092a1; the implementer re-measures against the main SHA its first commit sits on, records SHA and results, and stops and reports if the path already exists (§6.3)."},
+      {"finding": "The post-merge surface is unnamed; must pass even if main advances.", "answer": "D9/D11 and §4.6: contents API and check-runs at the merge commit's SHA from pulls/N merge_commit_sha, never a moving main."},
+      {"finding": "Child issue LEGSMOKE-847 notices have no written rule for phase workers.", "answer": "Plan preamble: no criterion depends on LEGSMOKE-847 and a child notice is not the targeted human message that licenses action."},
+      {"finding": "No docs/solutions file should be a Scope criterion, not retro etiquette.", "answer": "D6 folds it into C2: the repository has no docs/ and the merge-head files list must be exactly the marker; §4.6 also checks contents/docs?ref=<merge sha> is 404."}
+    ]
+  },
+  "planReview": {"verdict": "approved", "rounds": 1},
+  "specDepartures": []
+}
