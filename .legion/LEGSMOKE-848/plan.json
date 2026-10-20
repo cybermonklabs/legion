@@ -1,0 +1,92 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-848",
+  "completed": "2026-10-20T05:06:11Z",
+  "plan": "dispatch://LEGSMOKE-848/artifact/plan-md",
+  "base": "c5f092a15eab9662aa6e26df9ec7194c252db642",
+  "change": {
+    "path": "smoke/LEGSMOKE-848.md",
+    "line1": "LEGSMOKE-848: Pre-merge boot of a deployment's worker pod block",
+    "line1Bytes": 64,
+    "reviewLinePrecedent": "Legion proof review round 1 (LEGSMOKE)",
+    "twoLineBytesPrecedent": 103,
+    "commitMessage": "smoke: add LEGSMOKE-848 marker file",
+    "requiredCheckForMerge": "gate",
+    "specAcceptanceCheck": "check (workflow ci)"
+  },
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: push and trailer rules, the identity check, the PR body template and six-field proof in references/pr-body.md, thread reply and resolution in references/review-threads.md; the implementer proves C1, C2 and C4 (C3 when K=1) on GitHub's served content at its head SHA",
+      "legion-retro: the revived implementer's removal-only retro (no docs/solutions/ file, plan D6) and its Dispatch retro message",
+      "dispatch: every Dispatch write (the retro message); ce-simplify-code is not run because the diff is docs-only"
+    ],
+    "test": [
+      "legion-worker: references/pr-body.md defines implementerProof, the tester's own proof with a negative control, and CI read not rerun; the repository has no test harness and the spec admits no second file, so the tester writes no test file and verifies plan §3 commands from GitHub's served bytes"
+    ],
+    "review": [
+      "legion-worker: references/merge-gate.md (CI read at the CI head for both check and gate, one review per round by SHA, docs-only skips the Thermo pair) and references/review-threads.md (one disposition per thread, bot threads named to the implementer); the review-requested line is a CHANGES_REQUESTED inline comment on smoke/LEGSMOKE-848.md:1 containing the phrase 'Legion proof review round' with the line in a fenced block"
+    ]
+  },
+  "gapAnalysis": {
+    "findings": [
+      {
+        "finding": "The spec requires the ci workflow green at the head that merged, but a handoff-only push (skip-checks: true) has no CI run at its head, so the criterion is unsatisfiable if such a push is the last before merge.",
+        "answer": "D8/D11 and §4.5: the last push before READY is retro's .legion/LEGSMOKE-848/ removal commit, a code push with no trailer, so check and gate run at the merge head; C4 reads check-runs there with the check selector returning exactly [\"success\"]."
+      },
+      {
+        "finding": "\"The head that merged\" has two readings under a squash merge: the pull request head or the squash commit on main.",
+        "answer": "D8 pins the pull request head (READY's SHA, read after the merge as pulls/N .head.sha) and §4.6 reads check at the squash commit M as well, so both readings are covered; PR #706 showed check success at both."
+      },
+      {
+        "finding": "\"No other file differs from the default branch before this change\" reads either as the merged change touching one path or as main today equalling the base plus one file, and the second fails whenever a sibling merges mid-run.",
+        "answer": "D5 chooses the diff-of-the-merge reading; C2 checks pulls/N/files at the merge head and commits/M files list after the merge, each exactly [\"smoke/LEGSMOKE-848.md\"]; §6.5 says a sibling merge needs no action."
+      },
+      {
+        "finding": "The spec names no file name, yet the review-request detector counts comments on the marker path and every precedent is smoke/LEGSMOKE-<N>.md.",
+        "answer": "D1 fixes the path smoke/LEGSMOKE-848.md and every command in §3 embeds it; C1 checks existence at the head SHA and on main."
+      },
+      {
+        "finding": "\"Its single line names LEGSMOKE-848\" fixes no bytes: text, encoding, the apostrophe codepoint, BOM, CRLF and trailing newline are unconstrained, and no precedent marker contains an apostrophe.",
+        "answer": "D2/D3 fix the 64-byte literal with the U+0027 apostrophe, double-quoted printf '%s\\n' form, and the checks: whole-file cmp, wc -c 64, wc -l 1, final LF, LC_ALL=C tr -d ' -~\\n' count 0, apostrophe count 1 (validated locally against BOM, CRLF and U+2019 variants)."
+      },
+      {
+        "finding": "The title carries a run-directory parenthetical the precedent strips, and the spec never says the line derives from the title.",
+        "answer": "D2 records the line as the title with the parenthetical and its preceding space removed, a mechanical derivation the precedent (smoke/LEGSMOKE-836.md:1) settles."
+      },
+      {
+        "finding": "The conditional two-line sentence names neither the detector for \"asked\" nor the second line's bytes, nor what happens if a second round asks again.",
+        "answer": "D4 and §3 detector K (top-level reviewer-bot comments on the path containing 'Legion proof review round'), the precedent 38-byte line (103 bytes total) with L read from the comment's fenced block, and §6.1: a second request is reported to the architect, nothing appended."
+      },
+      {
+        "finding": "The driver may add .fail-me mid-run, which is both a second differing file and a merge blocker, and the spec assigns nobody its removal.",
+        "answer": "§6.2 makes the implementer own the deletion-only removal as a code push (CI runs at the resulting head) and C2 checks contents/.fail-me 404 at every judged head including the merge head."
+      },
+      {
+        "finding": ".legion/<issue>/*.json handoffs are tracked and ride the branch, so retro's removal is a precondition of the one-file criterion that the spec's scope never mentions.",
+        "answer": "D5 and §4.5 make the removal an explicit pre-READY retro task; its check is the merge-head files list containing no .legion/ path."
+      },
+      {
+        "finding": "\"One new Markdown file exists\" asserts newness no single read shows, and proofs need a negative control and a headSha on GitHub's served content.",
+        "answer": "D9/D10 pin the base c5f092a15eab9662aa6e26df9ec7194c252db642 and the paired check: contents at the base 404 (negative control) while the same path at the head SHA serves the literal bytes; the implementer re-measures newness on main at its round start."
+      },
+      {
+        "finding": "The spec calls ci the repository's check, but the ruleset requires only gate, inviting a planner to treat ci as the merge gate and ignore gate.",
+        "answer": "D7 records both: gate gates the merge (READY), check (workflow ci) is the spec's acceptance read; every role proves both at the head it judges, and C4 is the acceptance criterion."
+      },
+      {
+        "finding": "\"The file arrived through one pull request\" has no criterion; nothing rules out an abandoned first PR or a second PR touching the path.",
+        "answer": "D10 and §4.6: commits?path=smoke/LEGSMOKE-848.md&sha=main has length 1 and equals M, and M's first message line ends (#N) for this pull request."
+      },
+      {
+        "finding": "Every GitHub-side fact the analyst relied on came from the planner's measurements, which may have changed.",
+        "answer": "All were re-measured in this planning session on 2026-10-20 (ruleset 24471196 requiring only gate, the 404s for the marker path, .legion and .fail-me on main, K=1 on PR #706 and K=0 on PR #674, check and gate success at be0069dd and c5f092a1); D10 makes the implementer re-measure newness at its round start."
+      }
+    ]
+  },
+  "planReview": {
+    "verdict": "approved",
+    "rounds": 1
+  },
+  "specDepartures": []
+}
