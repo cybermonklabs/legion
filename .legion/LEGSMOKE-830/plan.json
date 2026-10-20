@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-830",
+  "completed": "2026-10-20T00:03:00Z",
+  "planDocument": "dispatch://LEGSMOKE-830/artifact/plan-md",
+  "specVersion": 2,
+  "base": "33f6d682f689ad4a51d36e5114e60bc9374ff941",
+  "change": {
+    "file": "smoke/LEGSMOKE-830.md",
+    "line1": "LEGSMOKE-830: Pre-merge boot of a deployment's worker pod block",
+    "line1Bytes": 64,
+    "reviewLine": "Legion proof review round 1 (LEGSMOKE)",
+    "twoLineBytes": 103,
+    "commitMessage": "smoke: add LEGSMOKE-830 marker file",
+    "reviewLineCommitMessage": "smoke: add the review round 1 line to LEGSMOKE-830.md",
+    "armDetector": "K=$(gh api \"repos/sjawhar/legion-smoke/pulls/$N/comments?per_page=100\" --jq '[.[] | select(.path==\"smoke/LEGSMOKE-830.md\" and .in_reply_to_id==null and .user.login==\"trajectory-s-legion-reviewer[bot]\" and (.body|contains(\"Legion proof review round 1 (LEGSMOKE)\")))] | length'); echo \"K=$K\"",
+    "allowlist": "gh api \"repos/sjawhar/legion-smoke/pulls/$N/files?per_page=100\" --paginate --jq '[.[].filename] | {has_marker: (index(\"smoke/LEGSMOKE-830.md\") != null), foreign: map(select(. != \"smoke/LEGSMOKE-830.md\" and (startswith(\".legion/LEGSMOKE-830/\")|not) and (test(\"^docs/solutions/.+-LEGSMOKE-830\\\\.md$\")|not)))}'"
+  },
+  "criteria": [
+    {"id": "A1", "spec": "The pull request adds one new file, smoke/LEGSMOKE-830.md, and changes no other file apart from what the Legion workflow writes for itself", "surface": "GitHub pull request files API / gh pr diff --name-only; the merge commit after the merge", "judgedAt": "mid-run heads with the allowlist; merge-head form at C5 (READY) and the merge commit M"},
+    {"id": "A2", "spec": "smoke/LEGSMOKE-830.md holds one line containing LEGSMOKE-830; exactly two lines when a review asks for one more", "surface": "GitHub contents API with Accept: application/vnd.github.raw+json at a SHA, cmp against the arm's literal after printing K", "judgedAt": "every head a role proves; main and M in the production check"},
+    {"id": "A3", "spec": "Proof is read on GitHub after the merge: the file at main reads as above and the merged PR's changed files name only that file and the workflow's own paths", "surface": "GitHub main and the merge commit M (contents API, commits?path=, commits/M files)", "judgedAt": "production check; precondition (404 at main, 200 at head) at every earlier head"},
+    {"id": "CI", "spec": "implied by the merge: both workflows green at the CI head, the ruleset-required gate included", "surface": "GitHub Actions check-runs at CI_HEAD with the compare to the judged head", "judgedAt": "every head; commits/M/check-runs after the merge"}
+  ],
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: the push rules and trailer, references/pr-body.md for the PR body template and the six-string proof, references/review-threads.md for the round-two reply and the thread resolutions the reviewer names",
+      "legion-retro: the revived retro's docs/solutions/<category>/<slug>-LEGSMOKE-830.md naming, the .legion/LEGSMOKE-830/ removal, and the re-proof at the head that merges",
+      "dispatch: the retro message and the production-check message on LEGSMOKE-830"
+    ],
+    "test": [
+      "legion-worker: references/pr-body.md defines implementerProof, the tester's own E2E (tester) proof on the GitHub surface, and the test handoff; the repository has no harness, so no test file is written (plan §6.1)"
+    ],
+    "review": [
+      "legion-worker: references/merge-gate.md for the CI-head read, one review per round by SHA, the docs-only Thermo skip; references/review-threads.md for one disposition per thread and naming the sjawhar-agent[bot] thread to the implementer"
+    ]
+  },
+  "gapAnalysis": {
+    "findings": [
+      {"finding": "Acceptance line 1 names only docs/solutions/ as the workflow's own paths, while the live PR file list carries .legion/LEGSMOKE-830/*.json until retro removes them and docs/solutions/ may or may not exist.", "answer": "Plan §4 A1: a subset predicate (the marker present; every other path .legion/LEGSMOKE-830/ mid-run or docs/solutions/.+-LEGSMOKE-830.md), judged mid-run under the filter with the gap named in Not proven / risk, and for real at C5 and the merge commit; 1 or 1+N files both pass."},
+      {"finding": "Acceptance line 2 states two exclusive end states and the trigger is an out-of-band driver message; every later role must pick the same arm.", "answer": "Plan §3: the K detector (path, in_reply_to_id==null, review App login, body literal) printed before judging; K≥2 and a post-approval match are reports to the architect; the production check evaluates K at the merged PR."},
+      {"finding": "'A single line that names this issue' fixes no bytes (apostrophe, suffix, CRLF, BOM, trailing LF) and the spec never names line 2's text.", "answer": "Plan §1: the 64-byte literal with ASCII apostrophe and dropped run-directory suffix by precedent LEGSMOKE-817; the review line is the plan's literal, quoted verbatim in the reviewer's request; §4 A2 checks wc -c, wc -l, last byte 0a, no 0d, no BOM, whole-file cmp; a request with other wording is a report."},
+      {"finding": "No map from criterion to phase to commit; the head keeps moving after proofs are written, and the head that merges must carry the implementer's own proof.", "answer": "Plan §2 head table and §4 criterion × phase × head table; the implementer re-proves at C5 (§7.5) and extends its E2E line; every proof headSha names the newest code head of its round."},
+      {"finding": "The proof driver pushes a .fail-me commit onto the issue branch to turn the required gate red; the spec says nothing about who removes it.", "answer": "Plan §6.4 pre-authorises the implementer's deletion-only cure commit (message, code push, implement App identity, recorded in deviations[]), confined below the approval; a red above C4/C5 is a report, never a push."},
+      {"finding": "Each proof needs a negative control the spec does not name; a control that touches the branch would break A1 or void the approval.", "answer": "Plan §4: one control per criterion (404 at main before, 404 at BASE after; no-LF/CRLF/wrong-key/wrong-arm/U+2019 cmp variants; #701 and #575 file lists for the allowlist; the measured red commit 57dab69b and the gate logic reproduced locally); no control adds or keeps a path on the branch."},
+      {"finding": "'Proof is read on GitHub after the merge' never says what production is; merge-gate.md's default would leave Production: pending forever.", "answer": "Plan §8: main on GitHub is production, the merge is the publish step, no deploy signal or ask is waited on; the exact post-merge reads and the three record places are named."},
+      {"finding": "'The file at main' is time-indexed on a branch other smoke trees keep moving.", "answer": "Plan §4 A3 anchors the read to the merge commit M: commits?path=…&sha=main → 1 and M, the file at main and at M, BASE serving 404; unrelated movement of main cannot fail it."},
+      {"finding": "sjawhar-agent[bot] reliably opens an inline thread on the marker file; the spec never mentions it.", "answer": "Plan §6.2.2: expected; the reviewer answers it as not a defect, names the thread node id to the implementer by envoy_publish, the implementer resolves it with plain gh; an unresolved one is named in the review body, never a stall."},
+      {"finding": "The deployment instruction's waiting rule is not resolved per phase and may split a review round into COMMENT + decision, departing from one review per round.", "answer": "Plan §5, §6.2, §7, §8 pin which task lines sleep 300 (the implementing task only), which reply WAITING, and that every role acts on the driver's targeted message; §6.2.4 and §9 record the possible two-submission round as a deployment-instruction override, not a spec departure."},
+      {"finding": "The tester's default is to push red tests, but the repository has no harness and any added file breaks acceptance line 1.", "answer": "Plan §6.1: the tester writes no test file, pushes only test.json, breaks the marker with read-only GitHub probes, and records a defect in failures[]; a compare check proves its push touched only .legion/LEGSMOKE-830/."},
+      {"finding": "The child LEGSMOKE-831 exists in todo with an empty spec and the spec says nothing about it; its handling changes when 830 may be signed off.", "answer": "Plan §13: 830's branch, PR and proofs assert nothing about 831; A1 and A3 are scoped to this PR, the path and M; release/park/sign-off ordering is the architect's lifecycle decision, which the completion summary names."},
+      {"finding": "Several facts (title bytes, approved version, 831's status, branch head, ruleset, red control, 404 at main) lived only in the context note and were unverified by the analyst.", "answer": "Plan §11 M1–M10 re-measured each with the planner's own gh/jj/dispatch commands on 2026-10-19 and cites them; none is a product choice."}
+    ]
+  },
+  "planReview": {"verdict": "approved", "rounds": 1},
+  "specDepartures": []
+}
