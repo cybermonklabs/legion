@@ -1,0 +1,105 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-834",
+  "completed": "2026-10-20T01:03:25Z",
+  "planDocument": "dispatch://LEGSMOKE-834/artifact/plan-md",
+  "change": {
+    "path": "smoke/LEGSMOKE-834.md",
+    "content": "LEGSMOKE-834: Stage 4b upgrade rehearsal: a child of LEGSMOKE-833\n",
+    "appendOnReviewRequestOnly": true,
+    "defaultAppendText": "Legion proof review round 1 (LEGSMOKE)\n",
+    "docsOnly": true
+  },
+  "acceptance": [
+    {
+      "id": "AC1",
+      "criterion": "smoke/LEGSMOKE-834.md at the PR head is exactly `LEGSMOKE-834: Stage 4b upgrade rehearsal: a child of LEGSMOKE-833` plus one trailing newline (wc -l prints 1; after a review-requested append, that line then the appended line, wc -l prints 2).",
+      "surface": "GitHub contents of sjawhar/legion-smoke at the head commit",
+      "command": "gh api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-834.md?ref=<headSha>\" --jq .content | base64 -d",
+      "negativeControl": "gh api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-834.md?ref=main\" exits non-zero with HTTP 404 Not Found",
+      "testerRoute": "gh api -H 'Accept: application/vnd.github.raw+json' \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-834.md?ref=<headSha>\" prints the same line; same at ?ref=main is 404"
+    },
+    {
+      "id": "AC2",
+      "criterion": "The pull request changes exactly one tracked path outside .legion/LEGSMOKE-834/ and docs/solutions/: smoke/LEGSMOKE-834.md. At the squash merge the commit's files are smoke/LEGSMOKE-834.md plus at most one docs/solutions/ learning and never a .legion/ path.",
+      "surface": "GitHub compare of sjawhar/legion-smoke",
+      "command": "gh api \"repos/sjawhar/legion-smoke/compare/main...<headSha>\" --jq '[.files[].filename | select((startswith(\".legion/\") or startswith(\"docs/solutions/\")) | not)]'  → [\"smoke/LEGSMOKE-834.md\"]; post-merge: gh api repos/sjawhar/legion-smoke/commits/<mergeSha> --jq '[.files[].filename]'",
+      "negativeControl": "any additional path in the compare output is a failure"
+    },
+    {
+      "id": "AC3",
+      "criterion": "Merge gate, not proof: check-runs `check` (workflow ci) and `gate` (workflow fail-on-demand) are completed/success at the CI head. Required set for main read 2026-10-20: rulesets require `gate`; branch protection requires nothing.",
+      "surface": "GitHub check-runs",
+      "command": "gh api \"repos/sjawhar/legion-smoke/commits/<headSha>/check-runs\" --paginate --jq '.check_runs[] | [.name, .status, .conclusion] | @tsv'",
+      "ciBodyLine": "`ci` run <id> — job check success at <sha>; `fail-on-demand` run <id> — job gate success at <sha>"
+    }
+  ],
+  "productionCheck": {
+    "production": "main of github.com/sjawhar/legion-smoke; no deploy workflow exists",
+    "command": "gh api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-834.md?ref=<mergeSha>\" --jq .content | base64 -d",
+    "negativeControl": "same read at the merge commit's first parent (gh api repos/sjawhar/legion-smoke/commits/<mergeSha> --jq '.parents[0].sha') → 404",
+    "productionLine": "smoke/LEGSMOKE-834.md fetched from main at merge commit <mergeSha> via gh api …/contents?ref=<mergeSha>: <line observed>; absent at parent <parentSha> (404) — merge commit <mergeSha>"
+  },
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: its references/pr-body.md defines the PR body, the proof (surface, command, observed, headSha, negativeControl) and the implement.json proof array that AC1/AC2 feed; docs-only diff so no ce-simplify-code pass and no Thermo line.",
+      "dispatch: the retro's Dispatch message and any message on the issue; no repository skill exists (no AGENTS.md, no skills directory, no docs/)."
+    ],
+    "test": [
+      "legion-worker: references/pr-body.md 'The tester verifies the implementer's proof' governs implementerProof, failures, the tester's own proof and the independent route (raw media type read) this plan names; CI is read from the CI line, never rerun."
+    ],
+    "review": [
+      "legion-worker: references/merge-gate.md for the required-check read (rulesets → gate; protection → none) and approval order; references/review-threads.md for the one in-scope append request as a thread."
+    ]
+  },
+  "gapAnalysis": {
+    "findings": [
+      {
+        "finding": "No production-like surface is named in a repository with no runtime; the worker skill forbids completing a phase without one, and the tester must drive the surface independently.",
+        "answer": "Surface fixed as GitHub itself: AC1's contents read at <headSha> is the implementer's proof; the tester drives the same surface through the raw media type route (Accept: application/vnd.github.raw+json) plus AC2's compare."
+      },
+      {
+        "finding": "Neither the file name nor the line's bytes are fixed; 'names this issue' could mean LEGSMOKE-833 or LEGSMOKE-834; trailing newline unstated.",
+        "answer": "Path smoke/LEGSMOKE-834.md; line 1 exactly `LEGSMOKE-834: Stage 4b upgrade rehearsal: a child of LEGSMOKE-833` plus one trailing newline (wc -l → 1), matching all 22 prior markers' `<KEY>: <title>` shape and smoke/LEGSMOKE-817.md's trailing \\n."
+      },
+      {
+        "finding": "'Nothing else changes' collides with Legion's own commits (.legion handoffs, retro's docs/solutions, the plan's own location).",
+        "answer": "The constraint governs the diff outside Legion machinery and the squash-merged diff: .legion/LEGSMOKE-834/ (removed by retro) and a docs/solutions/ learning (retro's call) are not counted; AC2 excludes both. The plan lives only in plan.json and the plan.md Dispatch artifact; no repository plan file."
+      },
+      {
+        "finding": "The spec states no acceptance criterion; the implement handoff needs a criterion per proof entry.",
+        "answer": "AC1 (content), AC2 (one file), AC3 (gates) each with command and expected output; AC2 is stated against both the PR compare and the merge commit."
+      },
+      {
+        "finding": "CI's role is unstated and the branch-protection endpoint 403s.",
+        "answer": "CI green is a merge gate, never proof; CI line names ci/check and fail-on-demand/gate. The two reads merge-gate.md names (rules/branches/main → gate; branches/main .protection → none) both succeed for the worker App; the 403 on /branches/main/protection is a read no role needs."
+      },
+      {
+        "finding": "No negative control exists from the file alone; .fail-me would break the one-file scope.",
+        "answer": "Negative control is the same contents read at ?ref=main → 404, for implementer, tester and production check (at the merge parent). .fail-me is out of scope."
+      },
+      {
+        "finding": "The in-scope appended line has no trigger, text, or re-proof rule.",
+        "answer": "Append only on a reviewer's request, never pre-emptively; text as the reviewer names or `Legion proof review round 1 (LEGSMOKE)` by default; after the append the implementer re-runs AC1 at the new head (wc -l → 2), updates E2E and implement.json, and the tester re-verifies there. An unrequested second line fails AC1."
+      },
+      {
+        "finding": "The post-merge production check has no deploy slot in this repository.",
+        "answer": "Production is main of github.com/sjawhar/legion-smoke; the check is AC1's command at <mergeSha> with the 404 control at the merge parent; the Production: line's wording is given."
+      },
+      {
+        "finding": "Whether the diff is docs-only is unstated and changes which steps run.",
+        "answer": "Stated docs-only: no ce-simplify-code pass, no Thermo line, no thermonuclear pair."
+      },
+      {
+        "finding": "Default branch and the 403 are command output, not repository text; carry verified facts with paths.",
+        "answer": "The plan lists the workspace-verified facts with their paths and marks the GitHub facts as command output of 2026-10-20 that the implementer and reviewer re-read at their phase."
+      }
+    ]
+  },
+  "planReview": {
+    "verdict": "approved",
+    "rounds": 1
+  },
+  "specDepartures": []
+}
