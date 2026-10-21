@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "phase": "implement",
+  "issue": "LEGSMOKE-937",
+  "completed": "2026-10-21T16:47:05Z",
+  "pullRequest": "https://github.com/sjawhar/legion-smoke/pull/721",
+  "codeHead": "d4bbc6f58dc18250f9596a049b504a9e65cf70c4",
+  "proof": [
+    {
+      "criterion": "C1 New file (pre-merge form): smoke/LEGSMOKE-937.md is absent from main and from the planning base B and present at the code head H1",
+      "surface": "GitHub contents and commits API for sjawhar/legion-smoke (main is production: the repository has no deploy step)",
+      "command": "gh api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-937.md?ref=main\"; gh api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-937.md?ref=f50e1ee313c123832159bcf6ed3de7b0eb2d8b8b\"; gh api 'repos/sjawhar/legion-smoke/commits?path=smoke/LEGSMOKE-937.md&sha=main' --jq length; gh api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-937.md?ref=d4bbc6f58dc18250f9596a049b504a9e65cf70c4\" --jq .size; gh api \"repos/sjawhar/legion-smoke/commits?sha=legion/LEGSMOKE-937&path=smoke/LEGSMOKE-937.md\" --jq '.[-1].sha'",
+      "observed": "main at 09965a0583519fd558f58c142ede802fe1ab205d (moved past B by sibling merges; D19 needs nothing) → HTTP 404; base B f50e1ee313c123832159bcf6ed3de7b0eb2d8b8b (= legion/LEGSMOKE-937@origin's base, planner's handoff 1ed03073 above it) → HTTP 404; commits?path on main → 0; .size at H1 → 47; oldest commit by path on the branch → d4bbc6f58dc18250f9596a049b504a9e65cf70c4 (one commit); GitHub's file list for commit H1 → [\"smoke/LEGSMOKE-937.md\"]",
+      "headSha": "d4bbc6f58dc18250f9596a049b504a9e65cf70c4",
+      "negativeControl": "The neighbour smoke/LEGSMOKE-929.md at the same ref f50e1ee313c123832159bcf6ed3de7b0eb2d8b8b → .size 59, so the 404 is absence at a good ref, not a bad ref; .fail-me?ref=main → 404; the marker at the pre-push branch head 1ed030738a9b8cca88e26a1e26d5599534033c5c → 404"
+    },
+    {
+      "criterion": "C2 Line 1: the served bytes at H1 are exactly `LEGSMOKE-937: Upgrade rehearsal fallback child` followed by one LF (47 bytes), no BOM, no CR, no trailing space",
+      "surface": "GitHub contents API raw media type, served bytes of smoke/LEGSMOKE-937.md at the code head",
+      "command": "d=$(mktemp -d); gh api -H 'Accept: application/vnd.github.raw+json' \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-937.md?ref=d4bbc6f58dc18250f9596a049b504a9e65cf70c4\" > \"$d/f\"; wc -c < \"$d/f\"; wc -l < \"$d/f\"; head -1 \"$d/f\"; head -c 47 \"$d/f\" | cmp - <(printf 'LEGSMOKE-937: Upgrade rehearsal fallback child\\n'); printf 'LEGSMOKE-937: Upgrade rehearsal fallback child\\n' | cmp - \"$d/f\"; head -c3 \"$d/f\" | od -An -tx1; grep -c $'\\r' \"$d/f\"; grep -c ' $' \"$d/f\"; grep -c 'LEGSMOKE-937' \"$d/f\"; tail -c1 \"$d/f\" | od -An -c",
+      "observed": "wc -c 47; wc -l 1; head -1 → LEGSMOKE-937: Upgrade rehearsal fallback child; 47-byte prefix cmp exit 0 (silent); whole-file cmp against the 47-byte literal exit 0 (silent); first bytes 4c 45 47 (no BOM); CR count 0; trailing-space count 0; LEGSMOKE-937 occurrences 1; last byte \\n",
+      "headSha": "d4bbc6f58dc18250f9596a049b504a9e65cf70c4",
+      "negativeControl": "cmp of the served bytes against the literal without its LF → `cmp: EOF on - after byte 46`; against the CRLF literal → `differ: char 47, line 1`; against a BOM-prefixed literal → `differ: char 1, line 1`; smoke/LEGSMOKE-929.md's first 47 bytes at B against the literal → `differ: char 11, line 1`; grep -c LEGSMOKE-929 → 0; grep -c LEGSMOKE-9370 → 0"
+    },
+    {
+      "criterion": "C5 Scope arm: K=0 (no review has asked for a second line), so the file is one LF-terminated line at the code head",
+      "surface": "GitHub pull-request reviews and review-comments API for #721 (detector K of plan §4), and the served bytes at the code head",
+      "command": "d=$(mktemp -d); gh api \"repos/sjawhar/legion-smoke/pulls/721/reviews?per_page=100\" > \"$d/reviews.json\"; gh api \"repos/sjawhar/legion-smoke/pulls/721/comments?per_page=100\" > \"$d/comments.json\"; RV=$(jq -r '[.[] | select(.state==\"CHANGES_REQUESTED\") | .user.login] | unique | join(\",\")' \"$d/reviews.json\"); F='[.[] | .user.login as $u | select(.path==$p and .in_reply_to_id==null and (($rv|split(\",\")) | index($u)) != null and (.body|contains(\"```\")))]'; jq --arg rv \"$RV\" --arg p smoke/LEGSMOKE-937.md \"$F | length\" \"$d/comments.json\"; wc -l < \"$d/f\"",
+      "observed": "RV= (empty: 0 reviews, 0 review comments on #721); K=0; wc -l 1 at d4bbc6f58dc18250f9596a049b504a9e65cf70c4; commits-by-path length on the branch 1",
+      "headSha": "d4bbc6f58dc18250f9596a049b504a9e65cf70c4",
+      "negativeControl": "The two-line precedent literal (line 2 = `Legion proof review round 1 (LEGSMOKE)`) cmp'd against the served bytes → `cmp: EOF on $d/f after byte 47` (the one-line arm is not vacuously equal to the two-line one); the same detector run against #712 with p=smoke/LEGSMOKE-892.md → K=1 (the detector is not vacuous)"
+    },
+    {
+      "criterion": "C6 Nothing else changes (mid-run form): the content commit touches only smoke/LEGSMOKE-937.md and the pull request's file list filtered to non-marker, non-.legion/LEGSMOKE-937/ paths is empty",
+      "surface": "GitHub commits API and pull-request files API for #721; jj in the issue workspace",
+      "command": "jj -R \"$LEGION_WORKSPACE\" diff -r d4bbc6f58dc18250f9596a049b504a9e65cf70c4 --name-only; gh api \"repos/sjawhar/legion-smoke/commits/d4bbc6f58dc18250f9596a049b504a9e65cf70c4\" --jq '[.files[].filename]'; gh pr diff 721 -R sjawhar/legion-smoke --name-only; gh api \"repos/sjawhar/legion-smoke/pulls/721/files?per_page=100\" --jq '[.[].filename | select(. != \"smoke/LEGSMOKE-937.md\" and (startswith(\".legion/LEGSMOKE-937/\") | not))]'; gh api \"repos/sjawhar/legion-smoke/pulls/721/files?per_page=100\" --jq 'map(.filename) | index(\"smoke/LEGSMOKE-937.md\") != null'",
+      "observed": "jj diff of the content commit → smoke/LEGSMOKE-937.md alone; GitHub commit file list → [\"smoke/LEGSMOKE-937.md\"]; gh pr diff --name-only (raw) → .legion/LEGSMOKE-937/plan.json smoke/LEGSMOKE-937.md; filtered list → []; marker present → true; pre-push D12 guard (jj diff --from legion/LEGSMOKE-937@origin --to @- --name-only) → smoke/LEGSMOKE-937.md alone",
+      "headSha": "d4bbc6f58dc18250f9596a049b504a9e65cf70c4",
+      "negativeControl": "The same filter run against #718 (LEGSMOKE-929's pull request) with this run's names → [\"smoke/LEGSMOKE-929.md\"]: a wrong file is caught, so an empty list means something"
+    },
+    {
+      "criterion": "P CI standard (read, never rerun): check ×2 and gate ×2 completed/success at the code head, .fail-me absent at that head",
+      "surface": "GitHub check-runs and Actions runs API at the code head, which is also the CI head (newest pull_request run on the branch)",
+      "command": "gh api \"repos/sjawhar/legion-smoke/commits/d4bbc6f58dc18250f9596a049b504a9e65cf70c4/check-runs\" --paginate --jq '.check_runs[] | [.name, .status, .conclusion] | @tsv'; gh api \"repos/sjawhar/legion-smoke/actions/runs?head_sha=d4bbc6f58dc18250f9596a049b504a9e65cf70c4\" --jq '.workflow_runs[] | {id, name, event, conclusion}'; gh api 'repos/sjawhar/legion-smoke/actions/runs?branch=legion/LEGSMOKE-937&event=pull_request&per_page=30' --jq '.workflow_runs[0].head_sha'; gh api \"repos/sjawhar/legion-smoke/contents/.fail-me?ref=d4bbc6f58dc18250f9596a049b504a9e65cf70c4\"",
+      "observed": "Four check-run rows: check completed success, gate completed success, check completed success, gate completed success; runs: ci 39637612569 (pull_request, success, job check), ci 39637433613 (push, success, job check), fail-on-demand 39637612450 (pull_request, success, job gate), fail-on-demand 39637434043 (push, success, job gate); CI head = d4bbc6f58dc18250f9596a049b504a9e65cf70c4; .fail-me at that head → HTTP 404",
+      "headSha": "d4bbc6f58dc18250f9596a049b504a9e65cf70c4",
+      "negativeControl": "No .fail-me head occurred; at the same ref the marker's .size reads 47 (non-404) beside .fail-me's 404, so the 404 is absence at a good ref; .fail-me?ref=main → 404"
+    }
+  ],
+  "filesChanged": [
+    "smoke/LEGSMOKE-937.md (new, 47 bytes, one LF-terminated line) in commit d4bbc6f58dc18250f9596a049b504a9e65cf70c4 `smoke: add LEGSMOKE-937 marker file`",
+    ".legion/LEGSMOKE-937/implement.json (this handoff; travels on the branch, removed by retro before READY)"
+  ],
+  "trickyParts": [
+    "D16's body check `test(\"\\nDispatch: LEGSMOKE-937\\n\")` needs a newline before the line, so the standalone `Dispatch: LEGSMOKE-937` sits between the two template sections, not as the body's first line (the first placement returned false; the live body now returns true).",
+    "main moved from B f50e1ee3 to 09965a05 under the branch before the first code push (sibling merges). Per D19 nothing was brought in; the PR is mergeable on a disjoint path and B remains the 404 control."
+  ],
+  "deviations": [
+    "None from the plan. The driver's targeted message (Dispatch message 49f0cfbc-10b8-4839-aea5-918243a50964) asked for the smallest one-line smoke change, commit, push, handoff and handoff_complete; the pull request #721 was opened as plan §5.1 step 4 and the implementer role require, right after the code push so pull_request runs exist at H1."
+  ],
+  "openQuestions": [],
+  "discoveredComplexity": [
+    "None. The repository has no lint/type/test lane for a Markdown marker (plan D13); the checks run were the repository's own two workflows (ci → check, fail-on-demand → gate), both green at H1, read from GitHub and not rerun."
+  ]
+}
