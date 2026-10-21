@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-947",
+  "completed": "2026-10-21T19:45:01Z",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: the implementer follows the shared phase-worker contract (workspace binding, handoff, push, PR) on the disposable legion-smoke repository; the Stage 4b proof defines no product change beyond the smoke branch."
+    ],
+    "test": [
+      "legion-worker: the tester follows the phase-worker proof rules (pr-body.md) against whatever smoke marker the implementer lands; the repository has no test or e2e skill of its own."
+    ],
+    "review": [
+      "legion-worker: the reviewer follows merge-gate.md and review-threads.md; no repository-specific review skill exists in legion-smoke."
+    ]
+  },
+  "gapAnalysis": {
+    "error": "not run: the Stage 4b proof's targeted human message (dispatch message 7e4f2460-5a59-4d61-aadb-ae1a7ec71d2c) limited this phase to writing and committing the plan handoff; dispatch://LEGSMOKE-947/spec renders no body, so there was no spec to analyse."
+  },
+  "planReview": {
+    "verdict": "failed",
+    "rounds": 0,
+    "error": "not run: the Stage 4b proof's targeted human message limited this phase to writing and committing the plan handoff; no plan was drafted for review."
+  },
+  "specDepartures": []
+}
