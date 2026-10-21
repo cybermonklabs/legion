@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "phase": "review",
+  "issue": "LEGSMOKE-914",
+  "completed": "2026-10-21T07:48:00Z",
+  "round": 1,
+  "pullRequest": "https://github.com/sjawhar/legion-smoke/pull/714",
+  "pullRequestNumber": 714,
+  "decision": "approved",
+  "reviewedHead": "the handoff commit this file is committed in (the pull-request head after this round's push); the review names it by SHA",
+  "codeHead": "1825a477e2bcd41b76f3a3f650e44d7eda5f15dd",
+  "ciHead": "1825a477e2bcd41b76f3a3f650e44d7eda5f15dd",
+  "predecessorHead": "513091100546dc8a26d3ae413cccd9a857f3c626",
+  "critical": 0,
+  "important": 0,
+  "minor": 0,
+  "keyFindings": [],
+  "ci": {
+    "requiredSet": {
+      "rulesets": "gate (gh api repos/sjawhar/legion-smoke/rules/branches/main, base_path built from gh pr view 714 --json baseRefName; exit 0)",
+      "branchProtection": "none (gh api repos/sjawhar/legion-smoke/branches/main --jq '.protection.required_status_checks.checks[].context' printed nothing, exit 0; .protection.enabled = false)"
+    },
+    "ciHeadRead": "actions/runs?branch=legion/LEGSMOKE-914&event=pull_request → workflow_runs[0].head_sha = 1825a477e2bcd41b76f3a3f650e44d7eda5f15dd",
+    "checkRuns": ["gate completed success", "check completed success", "gate completed success", "check completed success"],
+    "runs": [
+      "39562998594 ci pull_request completed success",
+      "39562998784 fail-on-demand pull_request completed success",
+      "39562854229 fail-on-demand push completed success",
+      "39562854110 ci push completed success"
+    ],
+    "d12Compare": "compare/1825a477e2bcd41b76f3a3f650e44d7eda5f15dd...513091100546dc8a26d3ae413cccd9a857f3c626 → status ahead; all(startswith(\".legion/\")) = true; files: .legion/LEGSMOKE-914/implement.json, .legion/LEGSMOKE-914/test.json",
+    "handoffHeadRuns": "actions/runs?head_sha=513091100546dc8a26d3ae413cccd9a857f3c626 → total_count 0",
+    "prBodyCiLine": "names runs 39562998594, 39562854110, 39562998784, 39562854229 at 1825a477e2bcd41b76f3a3f650e44d7eda5f15dd — matches GitHub, not stale"
+  },
+  "threads": {
+    "graphql": "reviewThreads(first:100).nodes = [] ; reviews(first:50).nodes = [] (read 2026-10-21T07:46Z)",
+    "botThreadsAccepted": [],
+    "answered": []
+  },
+  "proofLines": {
+    "implementer": "present in the PR body: surface GitHub contents API (raw media type) with blob link at 1825a477e2bcd41b76f3a3f650e44d7eda5f15dd, command, observed, head SHA, negative control (no-LF literal refused by cmp; two-line literal refused; LEGSMOKE-892 grep 0; .fail-me 404 beside marker size 56)",
+    "tester": "present in the PR body: same surface and link, independent re-run of every implement.json command plus cross-surface cmp (code head, PR head adff1560, jj copy), negative controls (no-LF, trailing space, CRLF, BOM, two-line literal all refused; detector K on #712 = 1, path filter live), 'Verified the implementer's proof by re-running its commands independently'",
+    "testHandoff": "test.json: implementerProof.verdict verified, failures [], failed 0, five proof entries with six non-empty fields each"
+  },
+  "detector": {
+    "RV": "",
+    "K": 0,
+    "arm": "one-line",
+    "reviewsTotal": 0,
+    "reviewCommentsTotal": 0,
+    "measuredAt": "2026-10-21T07:46Z"
+  },
+  "verifiedAtHead": {
+    "head": "513091100546dc8a26d3ae413cccd9a857f3c626",
+    "A1": "contents/smoke/LEGSMOKE-914.md?ref=main → HTTP 404 (main = 17892ec57c5bc46ddaa98713eb44f3d163ae7ad3 at 2026-10-21T07:46Z); commits?path=smoke/LEGSMOKE-914.md&sha=main → 0; served at the PR head: size 56",
+    "A2": "served bytes at 513091100546dc8a26d3ae413cccd9a857f3c626: wc -l 1, wc -c 56, last byte \\n, first bytes 4c 45 47 (no BOM), grep -c LEGSMOKE-914 → 1, grep -c CR → 0, cmp against the one-line literal exit 0, head -1 = 'LEGSMOKE-914: Stage 4b proof tree 1: the whole workflow', cmp-equal to the bytes at H1 and to the workspace copy; first introducing commit 1825a477e2bcd41b76f3a3f650e44d7eda5f15dd, commits-by-path count 1",
+    "A3": "K=0 → one-line arm; the two-line #712 literal refused ('cmp: EOF on f after byte 56', exit 1); the no-LF literal refused ('cmp: EOF on - after byte 55', exit 1); grep -c LEGSMOKE-892 → 0",
+    "A4": "gh pr diff 714 --name-only → .legion/LEGSMOKE-914/implement.json, .legion/LEGSMOKE-914/plan.json, .legion/LEGSMOKE-914/plan.md, .legion/LEGSMOKE-914/test.json, smoke/LEGSMOKE-914.md; filtered list → []; marker present → true; negative control: the same filter on #712 → [\"smoke/LEGSMOKE-892.md\"]",
+    "P": "four check-runs completed/success at the CI head; contents/.fail-me?ref=1825a477e2bcd41b76f3a3f650e44d7eda5f15dd → HTTP 404",
+    "diffContent": "+LEGSMOKE-914: Stage 4b proof tree 1: the whole workflow (new file mode 100644, blob b7c91aa8, @@ -0,0 +1 @@)",
+    "mergeState": "mergeable MERGEABLE, mergeStateStatus BLOCKED (required review not yet submitted)"
+  },
+  "thermo": "not run: docs-only diff (one Markdown marker plus .legion/ handoffs; plan D14; merge-gate.md skips the Thermo line on a docs-only PR); the driver's targeted message did not ask for the pair",
+  "security": "Security: no sensitive surface in this diff.",
+  "contractChangeCensus": "not applicable: no refusal, required field, removed or renamed field, or signature change at any boundary",
+  "codegraphImpact": "not applicable: no exported symbol changed (the diff is one Markdown file and JSON handoffs)",
+  "planReadBesideSpec": "specDepartures [] in plan.json; reviewed against the spec's four Acceptance bullets (A1–A4) and its proof paragraph (P) through plan D1–D22; the plan's interpretations D4, D7, D8, D12, D13 hold at this head",
+  "prBodyEdits": "Look at first and Not proven / risk written into the live body by PATCH at 2026-10-21T07:47Z (body 8433 → 8930 characters; no placeholder left)",
+  "bodyThreadsSection": "0 resolved, 0 unresolved — matches GitHub",
+  "identityCheck": "every commit of this round authored and committed by trajectory-s-legion-reviewer[bot] (the review App); earlier phases' commits carry their own role's App",
+  "fastFollow": "none"
+}
