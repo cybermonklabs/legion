@@ -1,0 +1,61 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-938",
+  "completed": "2026-10-21T15:01:50Z",
+  "requiredSkills": {
+    "implement": [
+      "none: sjawhar/legion-smoke has no AGENTS.md and no .agents/skills or .claude/skills directory; the only skills available are Legion's own (legion-worker, dispatch), which every role already follows. The change is one Markdown file under smoke/."
+    ],
+    "test": [
+      "none: the repository has no test suite; CI (.github/workflows/ci.yml) is `sleep 20 && exit 0`. The tester proves the file on the branch head with `git show <head>:smoke/LEGSMOKE-938.md` and reads CI green on the PR head via `gh pr checks`."
+    ],
+    "review": [
+      "none: no repository review skill exists; the reviewer follows skill://legion-worker/references/merge-gate.md and checks the diff is exactly one new file, smoke/LEGSMOKE-938.md, whose single line names LEGSMOKE-938."
+    ]
+  },
+  "plan": {
+    "summary": "LEGSMOKE-938's own spec.md is empty (dispatch doc-read --issue LEGSMOKE-938 returns only a document token). The plan inherits the root spec of LEGSMOKE-934: add one new Markdown file under smoke/ holding a single line that names this issue. Nothing else changes.",
+    "files": [
+      {
+        "path": "smoke/LEGSMOKE-938.md",
+        "change": "new file, one line: `Stage 4b workflow proof: LEGSMOKE-938.` (same shape as smoke/stage4b-legsmoke-378.md and the sibling markers smoke/LEGSMOKE-919.md … LEGSMOKE-929.md already on main)."
+      }
+    ],
+    "acceptance": [
+      {
+        "criterion": "One new Markdown file exists under smoke/ and its single line names LEGSMOKE-938.",
+        "surface": "the issue branch head on GitHub (legion/LEGSMOKE-938) and the pull request diff",
+        "command": "cd -- \"$LEGION_WORKSPACE\" && git show \"$(jj -R \"$LEGION_WORKSPACE\" log -r @- --no-graph -T commit_id)\":smoke/LEGSMOKE-938.md && gh pr diff <pr> --name-only",
+        "observed": "file prints exactly one line containing `LEGSMOKE-938`; `--name-only` lists only smoke/LEGSMOKE-938.md (plus .legion/ handoffs, which retro removes)",
+        "negativeControl": "`git show main:smoke/LEGSMOKE-938.md` fails with `does not exist in 'main'`"
+      },
+      {
+        "criterion": "CI is green on the code head.",
+        "surface": "GitHub Actions `ci` workflow on the pull request",
+        "command": "gh pr checks <pr> --repo sjawhar/legion-smoke",
+        "observed": "check `check` passes on the code head SHA",
+        "negativeControl": "a handoff-only push carries `skip-checks: true` and starts no run; the daemon carries the code head's verdict"
+      }
+    ],
+    "ordering": [
+      "implementer: `jj new` on the remote tip, write smoke/LEGSMOKE-938.md, `jj split -m \"smoke: add LEGSMOKE-938 marker file\" smoke/LEGSMOKE-938.md`, push legion/LEGSMOKE-938 (no trailer: code push), `gh pr create` with body line `Dispatch: LEGSMOKE-938` and the E2E (implementer) proof line, write implement.json, handoff-only push with trailer, handoff_complete.",
+      "tester: read CI on the code head (never re-run it), run the acceptance command above against the head SHA, record `E2E (tester)` and proof array, write test.json, handoff-only push, handoff_complete with verdict.",
+      "reviewer: confirm the diff is one new file under smoke/ with one line naming the issue; the root spec allows a review to ask for one more line appended to the same file and nothing else; approve the head.",
+      "retro → merger READY → daemon merge → implementer production check (`git show origin/main:smoke/LEGSMOKE-938.md` after the merge)."
+    ],
+    "uncertainty": [
+      "The child issue's spec.md is empty; this plan treats the root spec (dispatch://LEGSMOKE-934) as the child's spec. If the architect intends a different file name or line for the child, that is the architect's call; the plan picks smoke/LEGSMOKE-938.md to match the sibling markers on main.",
+      "Scope: the root spec permits one review-requested appended line to the same file. Any other change is out of scope."
+    ]
+  },
+  "gapAnalysis": {
+    "error": "not run: the Stage 4b proof's targeted human message named the exact operation for this phase (write and commit the plan handoff, then handoff_complete); the plan-gap-analyst check was not invoked."
+  },
+  "planReview": {
+    "verdict": "failed",
+    "rounds": 0,
+    "error": "not run: the Stage 4b proof's targeted human message named the exact operation for this phase (write and commit the plan handoff, then handoff_complete); the plan-reviewer check was not invoked."
+  },
+  "specDepartures": []
+}
