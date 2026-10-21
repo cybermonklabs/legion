@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-952",
+  "completed": "2026-10-21T21:17:30Z",
+  "plan": {
+    "document": "dispatch://LEGSMOKE-952/artifact/plan-md",
+    "designSource": "dispatch://LEGSMOKE-949/spec (the child's own spec is empty; its Summary and Scope are the whole design text)",
+    "driverMessage": "dispatch://LEGSMOKE-952/message/d322e158-2b88-459a-aab6-7ba5edb74ccc",
+    "base": "87eeef5a50241721c3ac74aef78ed1e457f6e87f",
+    "branch": "legion/LEGSMOKE-952",
+    "file": "smoke/LEGSMOKE-952.md",
+    "line1Literal": "LEGSMOKE-952: Upgrade rehearsal fallback child\n",
+    "line1Bytes": 47,
+    "line1BlobSha": "16b18dd6d7ab1daebe019d9cbdf363121d5a0457",
+    "commitMessage": "smoke: add LEGSMOKE-952 marker file",
+    "criteria": {
+      "C1": "New file: 404 at ?ref=main and ?ref=87eeef5a before the merge, present at every code head; post-merge commits?path on main lists only the merge commit",
+      "C2": "Line 1 is exactly the 47-byte literal (prefix cmp against the composed literal; no BOM/CR/trailing space; file ends in LF); immutable across every code head, the retro head and main",
+      "C3": "Post-merge: one PR from legion/LEGSMOKE-952 into main, MERGED, required context (gate at planning, re-read at READY) success at the READY head",
+      "C4": "Post-merge: production record (PR body Production line, PR comment with Legion footer, dispatch message) that bytes at ?ref=<merge> equal the literal and the bytes at ?ref=main",
+      "C5": "One line through the merge is the expected arm; two lines only when the PR review asked for exactly one more line (detector K or a request naming the exact line), size 47 + LB + 1",
+      "C6": "Nothing else changes, scoped to this change: each content commit touches the marker alone; PR file list minus .legion/LEGSMOKE-952/ is exactly the marker; no .legion/LEGSMOKE-952/ at the READY head; merge commit lists exactly the marker with one parent; no docs/solutions/ file",
+      "P": "CI: every required context success at the READY head; gate and check rows recorded at every code head (check observed, not a gate); .fail-me 404 at every head judged"
+    },
+    "testerPassesWithout": ["C3", "C4"],
+    "productionSurface": "GitHub main of sjawhar/legion-smoke as the contents API serves it (no deploy step); pre-merge the same API at ?ref=<code head>, the tester also via git trees/blobs",
+    "docsOnly": true,
+    "twin": "PR #721 smoke/LEGSMOKE-937.md, 47 bytes, differs at byte 11: every check is pinned to the exact path, never a search over smoke/"
+  },
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: the one push procedure and skip-checks trailer, the identity check, the PR body template and the definition of a proof (references/pr-body.md), one disposition per thread and the implementer's own resolution (references/review-threads.md), the production check after the merge (references/merge-gate.md)",
+      "legion-retro: the revived implementer's retro commits only the removal of .legion/LEGSMOKE-952/ (no docs/solutions/ file under 'Nothing else changes') and posts the retro Dispatch message",
+      "dispatch: every Dispatch write (the production-check message, the retro message)"
+    ],
+    "test": [
+      "legion-worker: references/pr-body.md defines implementerProof, the tester's own proof with a negative control on GitHub's served bytes (contents API and git trees/blobs), and CI read from the CI line never rerun; the repository has no test harness so no test file is written"
+    ],
+    "review": [
+      "legion-worker: references/merge-gate.md for the two required-set reads, CI at the code head, one review submission per round naming the head SHA, and the docs-only omission of the Thermo line; references/review-threads.md for one disposition per thread and bot threads named to the implementer"
+    ]
+  },
+  "gapAnalysis": {
+    "findings": [
+      {"finding": "No acceptance criteria exist in the tree; C3/C4 are post-merge and cannot be judged by the tester or reviewer", "answer": "§1 states C1–C6/P verbatim with a head/who table; the tester passes without C3 and C4 and records them as post-merge, owned by the implementer; the reviewer lists them under Not proven / risk until READY and the production check close them"},
+      {"finding": "'names this issue' sits in the parent's spec: child key or parent key?", "answer": "§0/D1 read it as the child (smoke/LEGSMOKE-952.md) with four pieces of evidence (sibling branches would collide on a parent-keyed path; LEGSMOKE-937's precedent in PR #721; the driver names the child branch; no 949/950/952/953/954 marker exists on the base) and flag it to the architect in §8.1"},
+      {"finding": "The head that merges must carry a gate check-run; a trailered handoff head has none (PR #721 is BLOCKED this way)", "answer": "D18 names retro's removal commit as the READY head and a code push; the merger reads check-runs at the exact head; §7.4 covers retro's no-op branch by reporting to the architect instead of building READY on a handoff head"},
+      {"finding": "C6's 'zero .legion/ on main' is about other branches' merges (PR #721 carries two .legion/ files)", "answer": "C6 is rescoped to this change: no .legion/LEGSMOKE-952/ at the READY head; the merge commit lists exactly the marker; nothing is asserted about the rest of main's tree"},
+      {"finding": "No pre-merge production-like surface or negative control was defined", "answer": "D8 names the contents API at ?ref=<code head> for the implementer and the git trees/blobs API for the tester; §4 gives each criterion's command, expected output and negative controls (calibrated 404 at the base beside a neighbour reading 59 bytes; no-LF, CRLF, BOM and twin cmp outcomes, each measured)"},
+      {"finding": "Which SHA each E2E line names once retro moves the head", "answer": "D17: both E2E lines name the last code head (the commit that produced the marker's bytes); retro re-cites the CI line at the retro head; no rebase so no re-check line; the terms code push vs code head are defined"},
+      {"finding": "The review-request arm is also a thread disposition, a resolution and a body update", "answer": "D15 and §5.2 step 4: one disposition reply per thread, the implementer's own resolveReviewThread mutation after the push, Threads: and Size: updated before the handoff"},
+      {"finding": "Detector K has false positives (a correction to line 1 quoted in a fence), false negatives (a request in a review body or a Dispatch/Envoy message), undefined parses, and 'anything else → architect' collides with no-deferrals", "answer": "D4 defines: a request outside K counts when it names the exact line (its id quoted); a finding that line 1's bytes are wrong is a correction fixed in this PR; malformed fences, K ≥ 2, a second request or another file go to the architect (§7.1); the line is appended at most once"},
+      {"finding": "Mid-run park/close/re-tree: the plan must be re-derivable with no memory", "answer": "D2 carries the literal byte-for-byte; D19 hard-codes no role token; D20 gives the relaunch idempotence rule; D9 keeps the production record on the PR when the issue is closed and reports a refused dispatch message to the architect; §7.9 and §7.11"},
+      {"finding": "The diff is docs-only: no simplify pass, no Thermo line, no thermonuclear pair", "answer": "D13 declares it, citing PR #723's review"},
+      {"finding": "The 'cmp is the only discriminating check' rationale is overstated: the path already discriminates; the twin forbids path-agnostic checks", "answer": "D11 restates it: every check is pinned to the exact path and the PR's base; cmp against the literal is the content check; byte 11 is why a search over smoke/ or a size test is forbidden, and why they break when PR #721 merges"},
+      {"finding": "P made every check row at every head a gate the repository does not have; the required set is live state", "answer": "P rewritten: required contexts (re-read per D6) success at the READY head; check rows are observation; one gh run rerun --failed for a self-failed run; a .fail-me red is never rerun"},
+      {"finding": "A .fail-me on main is not ours to delete", "answer": "D10 split: locate first; on the branch a deletion-only code commit whose add and delete net out of the PR file list; on main nothing on this branch and a report to the architect (§7.2)"},
+      {"finding": "Push classification is by paths; every commit must be path-scoped and guarded (.codegraph/.gitignore is un-ignored)", "answer": "D12: jj split with explicit paths, pre-push diff --name-only and identity check, the exact trailer describe form, retro's removal push carries no trailer, run-count read after each push; §7.10 for a stray write"},
+      {"finding": "The WAITING / sleep 300 rule is unassigned per phase", "answer": "D14 assigns it: every role WAITING on the task line and acting only on the targeted message (recorded in its handoff); the implementer alone sleeps on implementing task lines and retro's, not the production check's; the operator's rule overrides the skill's proceed-by-default in those words; §8.7 flags the per-task-line scope"},
+      {"finding": "Twin #721 merging mid-run moves the base", "answer": "D16: nothing is owed while paths stay disjoint; the base comes in only on a real CONFLICTING state or a retarget, as a forward merge, never jj rebase; §7.7"},
+      {"finding": "PR body specifics (Dispatch: line, CI: line shape) and the plan.json records were unstated", "answer": "§5.1 step 5 gives the body skeleton with the standalone last line Dispatch: LEGSMOKE-952 and the CI: shape naming ci/check and fail-on-demand/gate; §5.0 lists plan.json's records; specDepartures is [] because the parent spec's design holds and the empty child spec has no design to depart from"},
+      {"finding": "D7's no-learning-file choice needs the skill's permission and the scope sentence stated; live-state facts must be dated and re-derivable; the 47 bytes is a composition", "answer": "D7 quotes skill://legion-retro's permission and the Scope sentence and flags the scope call (§8.4); §0 dates every GitHub fact with its command; D2 marks the literal a convention-derived composition, not a measurement of an existing file"}
+    ]
+  },
+  "planReview": {
+    "verdict": "approved",
+    "rounds": 1,
+    "nonBlockingNotes": [
+      "D6 attributed a two-command rule to merge-gate.md, which chains them with &&: applied (D6 now says the reference chains them and why this plan runs two commands)",
+      "§5.1 created the PR with a CI: line claiming success before waiting for the rows: applied (step 4 now waits for the push-triggered rows before gh pr create; pull_request runs are added once complete)",
+      "D12 vs D17 used 'code push' in two senses: applied (D17 defines code push vs code head)",
+      "D14 exempts the production-check task line from sleep 300 while the operator's rule names 'an implementer on its task line': recorded as-is, a reading for the operator (§8.7), a driver message to the implementer wins"
+    ]
+  },
+  "specDepartures": []
+}
