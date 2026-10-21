@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-931",
+  "completed": "2026-10-21T10:42:00Z",
+  "planDocument": "dispatch://LEGSMOKE-931/artifact/plan-md",
+  "designSource": "dispatch://LEGSMOKE-931/spec is empty; the design is the parent spec dispatch://LEGSMOKE-928/spec read with 'this issue' = LEGSMOKE-931. Siblings LEGSMOKE-932 and LEGSMOKE-933 write markers for their own keys; the root's smoke/LEGSMOKE-928.md is the root's own marker.",
+  "change": {
+    "path": "smoke/LEGSMOKE-931.md",
+    "line1": "LEGSMOKE-931: Upgrade rehearsal fallback child",
+    "bytesWithLF": 47,
+    "branch": "legion/LEGSMOKE-931",
+    "prBodyLine": "Dispatch: LEGSMOKE-931",
+    "commitMessage": "smoke: add LEGSMOKE-931 marker file",
+    "reviewAppendDetector": "K = count of top-level inline review comments by trajectory-s-legion-reviewer[bot] on path smoke/LEGSMOKE-931.md whose body contains 'Legion proof review round'; K=1 appends that comment's single fenced one-line block L as line 2."
+  },
+  "measurements": {
+    "mainSha": "f2831df3ac0bda65cbf38410274953d4e035a674",
+    "fileOnMain": "404; zero commits for the path",
+    "requiredStatusChecks": ["gate"],
+    "advisoryChecks": ["check"],
+    "requiredChecksSource": "gh api repos/sjawhar/legion-smoke/rules/branches/main (branches/main/protection is 403 to the worker App)",
+    "newestMarker": "smoke/LEGSMOKE-920.md"
+  },
+  "acceptance": [
+    {"id": "C1", "criterion": "Served file at the PR head is exactly the 47-byte literal (K=0), or starts with it (K=1, C1')", "surface": "gh api -H 'Accept: application/vnd.github.raw+json' repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-931.md?ref=<headSha>", "negativeControl": "?ref=main -> 404 while the PR is open; literal without LF | cmp -> exit 1"},
+    {"id": "C2", "criterion": "No other file changes", "surface": "gh api repos/sjawhar/legion-smoke/pulls/<n>/files with .legion/LEGSMOKE-931/ filtered mid-run; unfiltered at the head that merges", "negativeControl": "wrong prefix .legion/LEGSMOKE-928/ -> more than one entry"},
+    {"id": "C3", "criterion": "K=1 only: line 2 equals L extracted from the review comment", "surface": "tail -n 1 f | cmp - <(printf '%s\\n' \"$L\")", "negativeControl": "L with a trailing x -> exit 1"},
+    {"id": "C4", "criterion": "gate green at the code head", "surface": "gh api repos/sjawhar/legion-smoke/commits/<headSha>/check-runs, select name==gate, conclusions unique -> [\"success\"]", "negativeControl": "name==no-such-check -> []; a .fail-me head -> [\"failure\"]"},
+    {"id": "C5", "criterion": "Production: file readable on main at the merge commit; path commit list is exactly the merge commit; PR merged", "surface": "gh api ... contents/smoke/LEGSMOKE-931.md?ref=main | cmp; gh api commits?path=...&sha=main; gh pr view <n> --json merged", "negativeControl": "?ref=f2831df3ac0bda65cbf38410274953d4e035a674 -> 404"}
+  ],
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: the only workflow for the implementer's push, PR body template (references/pr-body.md), proof array, review-thread resolution (references/review-threads.md), handoff and production check; the repository has no skills of its own (no AGENTS.md, no .agents/).",
+      "legion-retro: the retro commit removes .legion/LEGSMOKE-931/ and posts the Dispatch retro message; no docs/solutions file because a second changed file breaks C2.",
+      "dispatch: every message, comment and artifact to the issue follows it."
+    ],
+    "test": [
+      "legion-worker: references/pr-body.md defines the tester's proof (served bytes at the head SHA, negative control, CI read never rerun) and the test handoff fields; no repository test harness exists.",
+      "dispatch: the tester's Dispatch writes follow it."
+    ],
+    "review": [
+      "legion-worker: references/merge-gate.md and references/review-threads.md define the review round, the one inline comment that asks for the appended line, approval of the head, and the review handoff; a docs-only diff needs no Thermo pair.",
+      "dispatch: the reviewer's Dispatch writes follow it."
+    ]
+  },
+  "gapAnalysis": {
+    "findings": [
+      {"finding": "File name contradicts the root's acceptance: root LEGSMOKE-928 names smoke/LEGSMOKE-928.md; the child's spec is empty, so nothing authorizes smoke/LEGSMOKE-931.md. Decide root key or child key.", "answer": "Plan §1/D1: smoke/LEGSMOKE-931.md. The root's acceptance names the root's own marker; every one of the 30 smoke/LEGSMOKE-*.md markers is named for the issue that added it; precedent plan LEGSMOKE-847 (empty child spec) resolved it the same way. Reported to the architect in the completion summary, which may write it into 931's spec; the planner edits no spec."},
+      {"finding": "'Fallback child' implies a sibling may write the same file; two PRs adding one path collide.", "answer": "Plan §1: siblings LEGSMOKE-932 (handoff child) and LEGSMOKE-933 (push child) each write smoke/<own key>.md; no shared path. Whether 931 runs conditionally is the driver's, and the plan is the same either way."},
+      {"finding": "Line content unspecified: the root says only 'names this issue'; precedent is <KEY>: <title> with the root's title.", "answer": "Plan D2: exact 47-byte literal 'LEGSMOKE-931: Upgrade rehearsal fallback child' + LF, the child's own title with the run-directory suffix dropped as every precedent marker drops it."},
+      {"finding": "Acceptance must not assert 'single line' because review may append one; a line-count check fails after review.", "answer": "Plan C1/C1' and D3: head -c 47 prefix equality plus the K detector; line count asserted per arm (1 when K=0, 2 when K=1), never as 'single line' after review."},
+      {"finding": "Negative control at ref=main is order-dependent (404 only pre-merge) and the ci.yml check job has no checkout, so CI proves nothing about the file.", "answer": "Plan D8 and §2: ?ref=main 404 is a pre-merge control only; C5 expects 200 after merge; D7 states check is advisory and witnesses no bytes; only the contents read proves the file."},
+      {"finding": "'Merged under the repository's rules' is unverifiable: branch protection returned 403.", "answer": "Plan §2: gh api repos/sjawhar/legion-smoke/rules/branches/main is readable and names gate as the only required context; C4 reads gate at the code head; C5 records merged==true and the path's commit list; D5 keeps .fail-me off the merged head."}
+    ]
+  },
+  "planReview": {"verdict": "approved", "rounds": 1},
+  "specDepartures": []
+}
