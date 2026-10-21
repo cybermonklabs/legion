@@ -1,0 +1,107 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-922",
+  "completed": "2026-10-21T10:05:41Z",
+  "plan": "dispatch://LEGSMOKE-922/artifact/plan-md",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: push and skip-checks trailer rules, App identity check, PR body template (references/pr-body.md), six-field proof array, one-by-one thread resolution (references/review-threads.md), post-merge production check (references/merge-gate.md 'After the merge'); references/conflicts-and-rewrites.md only on a CONFLICTING pull request",
+      "legion-retro: the one removal-only commit `retro: remove .legion/LEGSMOKE-922/ before READY` and the Dispatch retro message; no docs/solutions/ file because a second changed file would break 'No other file changes' (plan D6)",
+      "dispatch: the retro and production-check messages on LEGSMOKE-922 and any other Dispatch write"
+    ],
+    "test": [
+      "legion-worker (references/pr-body.md): re-run the implementer's proof commands at their recorded heads, write the tester's own proof with negative controls, read CI through the run list and never rerun it; no test file (no harness, and a second file would break 'No other file changes')"
+    ],
+    "review": [
+      "legion-worker (references/merge-gate.md, references/review-threads.md): required-set read from rulesets and branch protection, round order read CI -> handoff push -> review the pushed head -> complete, and the review comment shape plan D3 needs (one inline comment on smoke/LEGSMOKE-922.md line 1 containing `Legion proof review round` with exactly one fenced block of one line) when the driver asks for the appended line; the merger's turn reads references/merge-gate.md for the READY packet and its refusals"
+    ]
+  },
+  "design": {
+    "file": "smoke/LEGSMOKE-922.md",
+    "line1": "LEGSMOKE-922: Upgrade rehearsal handoff child",
+    "line1Bytes": 46,
+    "line1Sha256": "69f3d9b70c9a0cb6ad8f9c9ab9220d8f6fd1e34919e27133bf0e62eb1246fd68",
+    "createCommand": "printf 'LEGSMOKE-922: Upgrade rehearsal handoff child\\n' > smoke/LEGSMOKE-922.md",
+    "handoffFilterPrefix": ".legion/LEGSMOKE-922/",
+    "requiredChecks": ["gate"],
+    "planRequiredWorkflows": ["ci", "fail-on-demand"],
+    "branchBase": "17892ec57c5bc46ddaa98713eb44f3d163ae7ad3",
+    "mainAtPlanning": "f2831df3ac0bda65cbf38410274953d4e035a674",
+    "criteria": {
+      "C1": "main holds a new file smoke/LEGSMOKE-922.md whose first line names LEGSMOKE-922 (byte-exact per D2)",
+      "C2": "No other file changes: the pull request's final diff is exactly that one file",
+      "C3": "(only when a review round asked for it) the file's second and last line is exactly the line the review asked for",
+      "C4": "The pull request is merged under the repository's rules: the required check gate and the spec-named ci workflow are both green at the judged head",
+      "C5": "The production check records the file readable on main at the merge commit"
+    }
+  },
+  "gapAnalysis": {
+    "findings": [
+      {
+        "finding": "F1: the child's spec is empty and the parent's acceptance literally names smoke/LEGSMOKE-919.md and LEGSMOKE-919, a file already merged to main (PR #715); read literally the child is a no-op, read as 'this issue' = LEGSMOKE-922 it adds a new file. Which reading applies is the architect's, and every later proof must quote a written acceptance line.",
+        "answer": "plan.md §1 quotes the parent spec, rebinds 'this issue' to LEGSMOKE-922 as every precedent child did (847, 849, 831), writes the rebound acceptance as the five criterion strings C1–C5 every proof[].criterion quotes, and records the rebinding as a spec departure (plan.md §10, specDepartures below) for the architect; the plan edits no spec."
+      },
+      {
+        "finding": "F2: the operator's standing rules, the byte-exact literal, the detector and the commands existed only in prompts and planner memory, which a daemon upgrade or an interrupted handoff loses; and 'nothing created outside the branch' could be read to forbid the Dispatch plan.md artifact, the PR comments and the Dispatch messages the roles' skills require.",
+        "answer": "plan.md §1 restates the standing rules; D2 gives the printf command, the 46-byte count and sha256; D13 names where everything durable lives (this plan.json and dispatch://LEGSMOKE-922/artifact/plan-md, which survives retro's deletion of .legion/LEGSMOKE-922/); §1 records the reading that the rule governs repository work and that the Dispatch writes the roles' prompts require are made, as on every precedent child."
+      },
+      {
+        "finding": "F3: 'merged under the repository's rules' was left open (only gate is required while ci also runs), and branches/main/protection returns 403 for the App, which merge-gate.md's 'a refused read is reported, never guessed' could turn into an escalation.",
+        "answer": "D7: gate is the required set and satisfies the spec; the plan additionally requires ci green; C4 = both workflows completed/success scoped to headBranch legion/LEGSMOKE-922. §2 shows merge-gate.md's two reads (rules/branches/main and branches/main --jq .protection…) both succeed for the App and yield gate; the 403 is on an endpoint no role uses; the reviewer re-reads live."
+      },
+      {
+        "finding": "F4: 'production check records that the file is readable on main at the merge commit' had no command, two readings (bytes at ?ref=<mergeSha> vs main containing the merge) that diverge because sibling markers land on main mid-run, and an assumed merge strategy.",
+        "answer": "C5 gives the commands: pulls/<n> → merged, merge_commit_sha M, head H; commits/M parents count (strategy recorded, D11); served bytes at ?ref=M and ?ref=main cmp-equal to the frozen bytes; compare/<M>...main → identical or ahead; commits?path=…&sha=main → exactly [M]; negative controls ?ref=<B> → 404 and an altered byte → cmp exit 1."
+      },
+      {
+        "finding": "F5: 'No other file changes' versus the handoffs that necessarily ride the branch and retro's default of writing docs/solutions/ learnings; D4 had no stated check.",
+        "answer": "D4: per-PR files list (three-dot against the merge base, so siblings never appear), filtered by .legion/LEGSMOKE-922/ mid-run and unfiltered at the post-retro head H; C2 adds `jj file list -r <H> 'root:.legion/LEGSMOKE-922'` → nothing; D6 instructs retro to write no docs/solutions/ file, quoting skill legion-retro's permission ('A retro that commits no learning makes that commit alone')."
+      },
+      {
+        "finding": "F6: detector K hard-coded the reviewer's login, did not separate replies from top-level comments concretely, assumed a fenced block, was not idempotent, and had no fallback for a malformed ask.",
+        "answer": "D3 filters by shape (path, in_reply_to_id == null, user.type == Bot, body contains `Legion proof review round`) and records the observed login and comment id; the awk/tr extraction was run on PR #712's precedent comment and yields its one line; the end-state invariant (file = line1 + L, wc -l = 2; append nothing when the last line already equals L) makes the append idempotent; §5.3 obliges the reviewer to write the computable shape, so K>1 or a malformed ask is a stop condition (§6) reported to the architect."
+      },
+      {
+        "finding": "F7: the PR body template's CI line names runs (Tests, PR Title) this repository lacks, and the Thermo/simplify pass is undefined for a docs-only PR.",
+        "answer": "D15 fixes the repository-specific lines: CI: `ci` run <id> — job check success at <sha>; `fail-on-demand` run <id> — job gate success at <sha>; Thermo omitted and no simplify pass (docs-only); Production: pending merge; Fast-follow: none; Chain: not stacked; each run id checked with gh run view --json headSha,status,conclusion."
+      },
+      {
+        "finding": "F8: a driver-pushed .fail-me turns gate red and the daemon's CI-red move hands the implementer a task with no targeted human message; the design did not say whether WAITING or immediate deletion wins.",
+        "answer": "D5: that task is 'a new task for the same phase' under the standing rules, so the implementer runs sleep 300, reads contents/.fail-me and commits/<head>, replies WAITING with both, and deletes .fail-me only on the driver's targeted message, in one deletion-only commit `smoke: remove .fail-me` code-pushed without a trailer; end state: .fail-me → 404 and fail-on-demand success at that head; added-then-deleted it leaves no files-list entry, so C2 holds. Precedent PR #712 followed this path."
+      },
+      {
+        "finding": "F9: dropping the title's (/tmp/legion-e2e4b.1573873.nOgoPYDL) suffix from the marker line is supported by precedents but stated nowhere, and the title is editable while the bytes are not.",
+        "answer": "D2 records the suffix-dropping as a reading with its evidence (smoke/LEGSMOKE-892.md vs that issue's title; 919/920 on main) and freezes the 46-byte literal and its sha256 as the authoritative content, so a later title edit reopens nothing."
+      },
+      {
+        "finding": "F10: several design facts rest on the planner's live GitHub reads (sibling markers on main, the required set, the reviewer login, SHAs and run ids) that a phase hours later could cite as asserted facts.",
+        "answer": "plan.md §2 attributes each to its command and time window; D7 (required set), D10 (newness), D11/C5 (merge SHA and strategy) and D3 (reviewer login from the actual comment) have the dependent phase re-read the value live and record its own output."
+      },
+      {
+        "finding": "F11: the branch is behind main and will fall further behind; nothing told the phases to leave it alone or named the check that decides a forward merge.",
+        "answer": "D12: no forward merge while gh pr view --json mergeable,mergeStateStatus shows MERGEABLE (the ruleset is non-strict); only CONFLICTING triggers conflicts-and-rewrites.md's procedure; a conflict merge above the approved head sends the head back to review (READY_UNREVIEWED_CHANGE); never jj rebase."
+      },
+      {
+        "finding": "F12: the plan handoff must carry requiredSkills, gapAnalysis, planReview and specDepartures; the skills map omitted the merger's and the post-merge turn's reading; the round model was implicit.",
+        "answer": "This file carries all four records; requiredSkills names merge-gate.md for the production check (implement) and the merger's turn (review entry); plan.md §7 is the round model, with the .fail-me insertion and the named restart point for a resumed phase."
+      }
+    ]
+  },
+  "planReview": {
+    "verdict": "approved",
+    "rounds": 1,
+    "notes": "Round 1 approved with four non-blocking notes; three were folded into plan.md before upload (reviewer round order in §5.3, the exact protection --jq in §2, settle-vs-evidence wording in C4); the fourth (implementer starts with `jj new legion/LEGSMOKE-922@origin`) was judged harmless by the reviewer and kept."
+  },
+  "specDepartures": [
+    {
+      "spec": "LEGSMOKE-919 spec v2, Acceptance: \"The default branch main of sjawhar/legion-smoke holds a new file smoke/LEGSMOKE-919.md whose first line names this issue, LEGSMOKE-919\". The child LEGSMOKE-922's own spec document is empty, so this parent line is the only written acceptance.",
+      "plan": "The child adds smoke/LEGSMOKE-922.md whose first line is exactly `LEGSMOKE-922: Upgrade rehearsal handoff child` (46 bytes with its LF); every criterion C1–C5 is the parent's acceptance with 'this issue' rebound to LEGSMOKE-922.",
+      "evidence": "dispatch doc-read --issue LEGSMOKE-922 prints only a document token (empty spec). smoke/LEGSMOKE-919.md is already on main via PR #715 (squash 592fed6d720c38d5434dcebcf668f97595921ae7), so the literal line is met with no work by this child. The parent's Summary says 'names this issue'. Precedent children LEGSMOKE-847, -849 and -831 each added smoke/<CHILD>.md (their plan.md artifacts and merged markers).",
+      "outcome": {
+        "kind": "changed",
+        "scope": "acceptance: the file is smoke/LEGSMOKE-922.md and the key its first line names is LEGSMOKE-922. Whether the child's spec is to carry this acceptance is the architect's decision; the plan edits no spec."
+      }
+    }
+  ]
+}
