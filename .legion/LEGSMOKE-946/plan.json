@@ -1,0 +1,101 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-946",
+  "completed": "2026-10-21T18:24:00Z",
+  "plan": "dispatch://LEGSMOKE-946/artifact/plan-md (version 2). Design source: the issue's own spec is empty; the parent spec dispatch://LEGSMOKE-943/spec v1 (approved: read_record designGate currentVersion 1 = approvedVersion 1) read with 'this issue' = the child. Criteria C1-C6 and P, decisions D1-D22, proof commands with negative controls per criterion (section 4), per-role phase work (5.0-5.6), contingencies 7.1-7.11, seven readings for the architect (8.1-8.7). Base B 09965a0583519fd558f58c142ede802fe1ab205d = legion/LEGSMOKE-946@origin = GitHub main at planning. File smoke/LEGSMOKE-946.md; literal 'LEGSMOKE-946: Upgrade rehearsal fallback child' + LF, 47 bytes, blob c50532f2dfdd454748bb4d05885c3463135faa1c. Twin: smoke/LEGSMOKE-937.md in open PR #721 (47 bytes, differs at byte 11) -> the prefix cmp is the only discriminating check. Detector K resolves the CHANGES_REQUESTED author at run time (RV); K=1 control #712, K=0 controls #720 and #721. Driver legion-e2e4b-proof-human-3980288, planning message 2bb662d5-405f-4f06-9b38-f297e8248a76.",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: the one push procedure and skip-checks trailer (D11), the identity check, the PR body template and the definition of a proof in references/pr-body.md, thread replies in references/review-threads.md, the production check in references/merge-gate.md; the driver's implementing message is followed as written, including any legion tool-call shape it names (D14)",
+      "legion-retro: the revived implementer's retro commits only the removal of .legion/LEGSMOKE-946/ (no learning file under the Scope, D7) and posts the retro Dispatch message",
+      "dispatch: every Dispatch write (the retro message, the production-check message) follows its writing rules"
+    ],
+    "test": [
+      "legion-worker: references/pr-body.md defines implementerProof, the tester's own proof with negative controls on the GitHub-served bytes (the twin's bytes among them) and a second surface through the git object API, and that CI is read at the CI head and never rerun; the repository has no test harness, so the tester commits only .legion/LEGSMOKE-946/test.json (D13)"
+    ],
+    "review": [
+      "legion-worker: references/merge-gate.md gives the two required-set reads built from the derived base (D6), the CI head, one review submission per round naming the head by SHA, and the docs-only Thermo skip; references/review-threads.md gives one disposition per thread and bot threads named to the implementer; the reviewer cites dispatch://LEGSMOKE-943/spec v1 and the plan artifact"
+    ]
+  },
+  "gapAnalysis": {
+    "findings": [
+      {
+        "finding": "1. 'None 47 bytes; none contains rehearsal' holds at the base only: open PR #721 (LEGSMOKE-937, the previous run's fallback child) carries a 47-byte marker differing from this literal only at byte 11, so size and hygiene checks do not discriminate.",
+        "answer": "Section 0 names the twin and where to read it (#721's code head d4bbc6f5 while open, main after its merge, the typed 937 literal if closed unmerged); C2 makes the prefix cmp / head -1 the only discriminating check with grep -c LEGSMOKE-937 -> 0; section 4 C2 carries the twin as a negative control (differ: char 11, measured); D12 aborts any push listing smoke/LEGSMOKE-937.md, -947.md or -948.md; 5.4 Look at first names byte 11."
+      },
+      {
+        "finding": "2. 'A single line that names this issue' sits in the parent's spec; 'this issue' could be the parent (smoke/LEGSMOKE-943.md) or the child; plan-931's Acceptance-based argument is unavailable because 943's spec has no Acceptance.",
+        "answer": "Section 0 derives the child key from four measurements (a root writes its own marker, smoke/LEGSMOKE-934.md; three children of 943 would collide on a shared path; all 34 markers are named for the issue that added them; 931 and 937 resolved it the same way); D1 fixes the path; specDepartures is [] with 8.1 naming the reading for the architect, who may copy it into the child's spec."
+      },
+      {
+        "finding": "3. No Acceptance text exists anywhere in the tree, and the reviewer has no approved version of 946's own document to cite; the design-gate state of 943 was not in the facts file.",
+        "answer": "Section 0 measures read_record for LEGSMOKE-943 (designGate currentVersion 1, approvedVersion 1) and has the reviewer and merger cite dispatch://LEGSMOKE-943/spec v1 plus the plan artifact; section 1 labels C1-C6/P plan-supplied; 8.2 states that a root-spec v2 reopens the gate and refuses every READY in the tree (946, 947, 948) until re-approval, and recommends against it."
+      },
+      {
+        "finding": "4. 'Upgrade rehearsal' means a relaunch may land between any two phases; the refusal menu is larger than plan-931 covered, and HANDOFF_NOT_NEW vs 'never write a second handoff' needed settling.",
+        "answer": "D22 names the two durable copies (the Dispatch artifact and plan.json on origin) and what each holds; D14 says what a resumed role re-reads and that it takes the architect topic from its new prompt; 7.9 lists every refusal with its action, settles HANDOFF_NOT_NEW as the one case where this phase's handoff is written (none exists yet) against HANDOFF_STALE_GENERATION/NO_RUN (never redo), and gives the planner's own new-generation procedure."
+      },
+      {
+        "finding": "5. The issue may be parked before any later phase (LEGSMOKE-931 never ran past planning); the plan must be correct for a full run and for planning-only.",
+        "answer": "5.0 states the planner's deliverable is complete at handoff_complete whatever happens afterwards; 7.11 covers the driver's four fates (closed, parked, left mid-run and handed to Legion as its own tree, relabelled), a park's stop-and-keep-session, and a new generation restarting from planning."
+      },
+      {
+        "finding": "6. Check-run rows accrue at a commit as branches are created at it (16 rows at the base now, two rows hours earlier); no count can be a verdict at any head including M and R.",
+        "answer": "P and D11 make the verdict 'every gate and check row completed/success, raw list recorded', call expected counts an expectation only, and say extra rows from sibling branches are not a failure; 5.1 step 5, 5.3, 5.5 and 5.6 use 'every row' wording."
+      },
+      {
+        "finding": "7. The head READY names must itself carry a successful gate check-run; #721 sits BLOCKED at a handoff-only head; the trailer's exact three-line shape matters.",
+        "answer": "D21 states the invariant with the count command and cites #721's BLOCKED handoff-only head; D11 gives the describe with trailers off and the three-line tail check (measured on e4612371); 7.4 names the cure (retro's removal as a code push) and 7.6 the post-retro round."
+      },
+      {
+        "finding": "8. The production record may have nowhere to post its Dispatch leg (#720's issue was done when the check ran), and the architect cannot be assumed to wait for the record.",
+        "answer": "D9 specifies the degraded record (two GitHub legs, the PR comment stating the Dispatch leg was impossible, the architect told) and the terminal 'pending the merge' state; 5.6 step 3 and 7.8 carry it; 8.6 names the sign-off choice as the architect's and recommends its own section-5.6 read."
+      },
+      {
+        "finding": "9. The operator's sleep-300 rule reads two ways (every implementer task line vs implementing-phase lines only); a sleep in the production check can spend its bounded look.",
+        "answer": "D14 applies the sleep to every implementing task line and to retro's, not to the production check's; D9 writes the record first in the first look; 8.7 names the reading for the operator and says the driver's message wins if it says otherwise."
+      },
+      {
+        "finding": "10. The two precedent plans define detector K incompatibly (hard-coded reviewer login plus a body phrase vs run-time RV plus a fence).",
+        "answer": "Section 4 and D4 use the run-time RV definition with a fence and no phrase, record the #712 positive control and the #720/#721 K=0 controls, and admit the driver's Dispatch message as KD=1 with its id quoted; 7.1 handles K>=2, a bad fence and a request K cannot see."
+      },
+      {
+        "finding": "11. Markers are majority two-line but every recent run merged one line; the appended-line arm needs its own byte formula from 47.",
+        "answer": "C5 names one line the expected outcome and the two-line arm an admitted branch with size 47 + LB + 1 computed from the extracted L (D5); 'may ask' is read as permission (8.5)."
+      },
+      {
+        "finding": "12. Three children, the root and five other bookmarks share one clone at one base; pushes and recoveries must be bounded to this issue's bookmark.",
+        "answer": "D12 fixes the one push procedure (--bookmark legion/LEGSMOKE-946 only; never --all/--force/--allow-new), the path guard naming the sibling marker paths, and forward-only recovery (no jj undo/abandon/op restore); section 0 lists the sibling bookmarks as no-touch; 7.3 and 7.10 repeat it."
+      },
+      {
+        "finding": "13. main equals the base now but #721, #714 and 947/948 can move it; main-anchored assertions must be containments and the conflict path spelled out.",
+        "answer": "D19 and C6 write every main-anchored read as a containment, keep the fixed base SHA as the 404 control, and require no base update; 7.7 gives the forward-merge-only conflict path with fingerprint and READY_UNREVIEWED_CHANGE."
+      },
+      {
+        "finding": "14. The driver's message names only the handoff, commit, push and completion; the skill places the plan in two homes and the handoff needs four planner fields; the precedent reviewer cited the Dispatch plan artifact.",
+        "answer": "5.0 fixes the order (gap analyst, draft, reviewer, plan.md artifact upload, plan.json with all fields committed, trailered, guarded, pushed, handoff_complete) and notes task subagents are not Legion roles; D22 names both homes."
+      },
+      {
+        "finding": "15. 'Names this issue', 'may ask' and 'Nothing else changes' decide nothing mechanically as written, and the last is false on the branch mid-run by the workflow's own rule; retro's docs/solutions question needs a decision.",
+        "answer": "Section 1 gives each phrase its criterion and section 4 its command and expected output (prefix cmp; detector K; filtered pulls/<N>/files -> [], unfiltered at R, commits/<M> one parent and exactly the marker); D7 forbids a docs/solutions file under the Scope with sources, learning in the retro message; 8.4 names it for the architect."
+      },
+      {
+        "finding": "16. Adapting plan-931 risks dead identifiers (key, base f2831df3, fixture path, PR #716, a hard-coded login).",
+        "answer": "Section 0 lists this run's identifiers (driver 3980288, message 2bb662d5, base 09965a05, branch, fixture path) and states that earlier runs' values are precedents for one named measurement only; every head SHA and the PR number are placeholders."
+      },
+      {
+        "finding": "17. The merge gate's two required-set reads must not share one && chain; the facts said the protection endpoint was 403 in earlier runs; base_path must be built without the refused gh --jq flags.",
+        "answer": "D6 runs the two reads as separate commands with the skill's exact endpoints, builds base_path with standalone jq (measured), records both outputs and exit statuses; the second read was measured readable in this pane (classic protection enabled: false, empty output, exit 0), replacing the 403 claim; a refused read is reported, never guessed."
+      },
+      {
+        "finding": "18. Several facts were caller-measured or unverified (check-run rows, the design-gate state, the ruleset, the 403, tool facts in one pane, the production-check task wording, the 'fallback' mechanism, LEGSMOKE-937's tree and plan, the 947/948 byte arithmetic).",
+        "answer": "Section 0 timestamps the window and D3 has each role re-measure at its wake and record the SHA it read; the design gate was measured (read_record 943); the 403 was replaced by a measurement; 947/948 literals measured at 46 and 43 bytes; LEGSMOKE-937's issue, plan artifact and its driver's 'fallback interruption' message were read and are cited; the production-check wording and the fallback mechanism stay marked unverified in D9 and section 0."
+      }
+    ]
+  },
+  "planReview": {
+    "verdict": "approved",
+    "rounds": 1
+  },
+  "specDepartures": []
+}
