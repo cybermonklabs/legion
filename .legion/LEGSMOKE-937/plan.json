@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-937",
+  "completed": "2026-10-21T12:58:21Z",
+  "plan": "dispatch://LEGSMOKE-937/artifact/plan-md",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: the push and skip-checks trailer rules per push (plan D11), the identity check, the PR body template and the proof definition in references/pr-body.md, thread handling in references/review-threads.md, and the production check in references/merge-gate.md",
+      "legion-retro: the revived implementer's retro commits only the removal of .legion/LEGSMOKE-937/ (no docs/solutions/ file, plan D7) and posts the retro Dispatch message",
+      "dispatch: the retro message and the production-check message on the issue; ce-simplify-code is not run because the diff is one Markdown marker (plan D13)"
+    ],
+    "test": [
+      "legion-worker: references/pr-body.md defines implementerProof, the tester's own proof with a negative control, and that CI is read and never rerun; the repository has no test harness, so no test file is written (plan D13, section 5.3)"
+    ],
+    "review": [
+      "legion-worker: references/merge-gate.md gives the required-set reads built from gh pr view --json baseRefName (plan D6), the CI head read, one review per round named by SHA, and that a docs-only PR omits the Thermo line; references/review-threads.md gives one disposition per thread and bot threads named to the implementer (plan D15)"
+    ]
+  },
+  "gapAnalysis": {
+    "findings": [
+      {"finding": "Which issue key the marker names: 937 (the issue the worker is on) or 934 (whose spec says 'names this issue'); three children on smoke/LEGSMOKE-934.md would collide.", "answer": "D0: the marker names LEGSMOKE-937, as every sibling marker names its own issue and the driver's message says 'on legion/LEGSMOKE-937'; the reading is recorded for the architect in section 8.2."},
+      {"finding": "No acceptance criteria exist on the empty child spec or the parent's spec, yet every proof entry must quote a criterion.", "answer": "Section 1 supplies C1-C6 and P as the plan's standards the roles cite by letter; section 8.1 records that the child spec is empty, the parent's spec is the design text used, and filling the child spec is the architect's; specDepartures is [] because an empty spec has no design to depart from."},
+      {"finding": "The exact bytes are a convention-derived inference; the title carries a parenthetical.", "answer": "D2 fixes the literal as a printf constant, LEGSMOKE-937: Upgrade rehearsal fallback child plus LF, 47 bytes, derived by the sibling rule (drop the trailing parenthetical) and recorded for the architect in section 8.3."},
+      {"finding": "The production-like surface and per-criterion commands are unnamed; the repository has no application.", "answer": "D8 names GitHub main via the contents API as the surface; section 4 gives the exact command, expected output and negative control per criterion; D18 says which SHA each E2E line names after retro."},
+      {"finding": "'Nothing else changes' is false of every pre-merge head because the branch carries .legion/ handoffs.", "answer": "C6 is judged on what lands on main (commits/M lists exactly the marker); the mid-run read is the pull request's file list filtered to non-.legion/LEGSMOKE-937/ paths and never 'exactly one file'."},
+      {"finding": "Retro's docs/solutions/ learning would add a second path to the merged diff.", "answer": "D7: no learning file under this Scope; learnings go in the retro Dispatch message; admitting a file is the architect's (section 8.4)."},
+      {"finding": "Retro's push must not carry skip-checks: true even though it only removes .legion/.", "answer": "D11 classifies every push: handoff pushes trailered; the implementer's code pushes and retro's removal push are code pushes with no trailer, so check and gate run at R."},
+      {"finding": "A driver-made .fail-me may sit on main, where the branch cannot cure it.", "answer": "D10 and section 7.2: locate the file first (branch head and main); on the branch a deletion-only code commit; on main the implementer touches nothing and reports to the architect."},
+      {"finding": "A .fail-me red is deterministic and not a rerun case.", "answer": "D6 triage: read the failing run's log line; the .fail-me branch of gate is never rerun; any other failure gets the one rerun by the reviewer."},
+      {"finding": "The required-check set must be re-derived at review time, not quoted from the plan.", "answer": "D6 gives merge-gate.md's command verbatim for each round, the 12:40Z snapshot as the expected shape only, a per-round ruleset read for C3's no-bypass clause, and the PR opened right after the code push so pull_request runs exist."},
+      {"finding": "The Scope's optional 'one more line' arm is unspecified in text, timing and effect on the criteria.", "answer": "D4-D5 and C5: detector K or the driver's fenced line (KD=1), at most one line, the two-line literal and size computed from the extracted L; a post-approval request is a new round and its cost is the driver's; section 8.5."},
+      {"finding": "Docs-only or not decides whether a simplify pass and the thermonuclear pair run.", "answer": "D13 declares the diff docs-only: no ce-simplify-code, no Thermo line, no pair unless the driver asks."},
+      {"finding": "The PR body needs a literal Dispatch: LEGSMOKE-937 line the template lacks.", "answer": "D16 spells the body: the template sections plus the standalone Dispatch line, the CI line shape for ci/check and fail-on-demand/gate, Size, Chain, Fast-follow, and the jq checks that read them."},
+      {"finding": "The upgrade rehearsal's relaunch semantics are not in the phase steps.", "answer": "D14 and section 7.9: on relaunch re-read the record, issue and handoffs, re-derive from legion/LEGSMOKE-937@origin and GitHub, skip creation when the exact bytes are already at the remote head, call handoff_complete again rather than writing a second handoff, and quote any HANDOFF_* refusal verbatim."},
+      {"finding": "The WAITING / sleep 300 gating is ambiguous about which roles it binds.", "answer": "D14 states it per role: every role replies WAITING on its task line and acts on the driver's targeted message; only the implementer sleeps 300 (implementing and retro task lines, not the production check); the operator's hold overrides proceed-by-default."},
+      {"finding": "The tester has no application, no harness and no red test to write.", "answer": "Section 5.3: the tester re-runs the implementer's commands and drives the surface a second way through the git object API (trees, blobs, hash-object), lists its break attempts, and writes no test because the repository has no suite (D13)."},
+      {"finding": "The plan artifact is two objects and plan.json has four required records.", "answer": "Section 9: plan.md uploaded as the issue artifact before plan.json is committed; planReview by the read-only plan-reviewer in the planner's session; specDepartures [] with its reading."},
+      {"finding": "An untracked .codegraph/.gitignore sits in the workspace and could be pushed.", "answer": "D12: every commit names its paths, every push uses bookmark set -r @-, the diff --name-only guard runs before each push, and the implementer reads the pushed commit's file list from GitHub before opening the PR; jj snapshots none of .codegraph/ (measured)."},
+      {"finding": "Concurrent sibling trees will move main under this PR; that is not a reason to merge the base in.", "answer": "D19: a moved main needs nothing (strict policy false, disjoint paths); a forward merge only on a real CONFLICTING state; D0 rules out a path collision."},
+      {"finding": "Dispatch-sourced and GitHub-sourced facts were unverified by the analyst (no shell); one claim (legion/LEGSMOKE-938 on origin) uncorroborated.", "answer": "Preamble: every GitHub statement is dated as a snapshot and each role re-reads what it depends on; legion/LEGSMOKE-938 was measured on GitHub at f50e1ee3 in this session."},
+      {"finding": "The precedent plan was unread by the analyst, so 'follow LEGSMOKE-929's plan' could not be checked.", "answer": "Preamble and D19 name the deltas from dispatch://LEGSMOKE-929/artifact/plan-md: base equals main, empty child spec, 47-byte literal, existing remote branch, relaunch rules."}
+    ]
+  },
+  "planReview": {
+    "verdict": "approved",
+    "rounds": 1,
+    "nonBlockingNotes": [
+      "C3's no-bypass clause now has its own per-round ruleset read (D6).",
+      "Section 4's commands are bash, not sh (noted in the section 4 setup).",
+      "Section 9's plan-review line filled before the handoff.",
+      "D9's production-check task shape rests on precedent; the Continue/Phase fallback is already given (left as written)."
+    ]
+  },
+  "specDepartures": []
+}
