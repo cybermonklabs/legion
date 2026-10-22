@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-1000",
+  "completed": "2026-10-22T16:18:05Z",
+  "plan": "dispatch://LEGSMOKE-1000/artifact/plan-md",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: references/pr-body.md (PR template, what a proof is; docs-only diff gets no ce-simplify-code pass and omits the Thermo line) and references/default-branch-check.md (identity check before each push)",
+      "dispatch: the production-check message and retro's message on the issue"
+    ],
+    "test": [
+      "legion-worker: references/pr-body.md (verify the implementer's proof, drive the surface independently through the git objects API, read CI and never re-run it; no red test on a docs-only diff with no suite) and references/merge-gate.md (which head's checks count)"
+    ],
+    "review": [
+      "legion-worker: references/merge-gate.md (the four CI reads, one review per round, approval of the head by SHA, handoff push before the review, no Thermo pair on a docs-only PR) and references/review-threads.md (one disposition per thread)"
+    ]
+  },
+  "gapAnalysis": {
+    "findings": [
+      {"finding": "The child's spec document is empty and the parent spec's 'this issue' could bind to LEGSMOKE-997 or LEGSMOKE-1000; the plan must state which document it treats as the spec of record.", "answer": "Reading R1: the parent LEGSMOKE-997 spec is the spec of record with 'this issue' bound to LEGSMOKE-1000 (precedent children 991 and 992 each name their own key; the driver calls this 'the one-file smoke change'). Recorded as a reading for the architect to confirm, named in the completion summary; specDepartures stays [] because the parent's design is followed in full."},
+      {"finding": "Neither spec gives a path, file name or bytes; nothing fixes smoke/LEGSMOKE-1000.md or the trailing newline.", "answer": "Decisions 1 and 2 make the path smoke/LEGSMOKE-1000.md and the 48-byte literal 'LEGSMOKE-1000: Upgrade rehearsal fallback child\\n' (blob sha1 4a63997c…) normative, with no second line at K = 0."},
+      {"finding": "'Holding a single line that names this issue' has no check attached; 'names' is ambiguous.", "answer": "A2 and C1: cmp against the literal, wc -c 48, wc -l 1, last byte LF, head -c 14 = 'LEGSMOKE-1000:', sha1 from the bytes and from the contents entry, at H; negative control: 404 at B beside the sibling's 200. Decision 4 says which head each check binds at."},
+      {"finding": "'Nothing else changes' collides with the .legion/ handoffs and retro's removal commit.", "answer": "Decision 6: .legion/LEGSMOKE-1000/*.json are mandatory process artifacts that never reach main; A4/C2 measure per head (marker + four handoffs mid-run; marker alone at R and M; the merge commit lists exactly ['smoke/LEGSMOKE-1000.md']). Not a departure."},
+      {"finding": "Retro may write a docs/solutions/ learning that lands in the squash merge; retro's push must not carry skip-checks.", "answer": "Decision 7 (reading R2): retro commits no learning, the removal commit alone, pushed without the trailer so R carries its own gate run; a learning goes to the architect in retro's summary; widening to docs/solutions/** is the architect's Scope change."},
+      {"finding": "The optional appended line names no trigger, text or cap.", "answer": "Decision 8: trigger is a REQUEST_CHANGES review by the reviewer naming the file and line (driven by the proof driver in Stage 4b); default text 'Legion proof review round 1 (LEGSMOKE)'; cap one appended line total in one round; A3 gives the K = 1 bytes (87, sha1 62672ddc…) so both states are decidable."},
+      {"finding": "A one-line Markdown file has no runtime surface; the obvious negative control (.fail-me) would violate scope.", "answer": "Production-like surface section: the GitHub contents API at the head SHA is the surface; negative controls are reads (404 at B beside the sibling's 200, the twin-file cmp, total_count 0 at a handoff head); 'no negative control may add a tracked file' is stated."},
+      {"finding": "The post-merge production check is mandatory but this repository deploys nothing.", "answer": "Production section and C5: production is main as GitHub serves it, the merge is the deploy, the implementer reads the merge commit's parents/files and the served bytes at M and at main, and records the PR Production line, a PR comment with the footer and a dispatch message; no deploy role or dispatch ask."},
+      {"finding": "The issue says nothing about checks; the required set is gate only, both workflows run on every non-trailered push, and the template's CI line names jobs this repo lacks.", "answer": "Decisions 10 and 14: the CI line names fail-on-demand/gate and ci/check at H; code pushes (H0, H1, R) carry runs, trailered handoff pushes carry none; the reviewer re-reads the required set each round with merge-gate.md's two reads."},
+      {"finding": "The Stage 4b hold governs every role; a plan sequenced from the daemon's task line would mis-direct downstream roles.", "answer": "Decision 11 states the hold (read, reply WAITING, wait for the driver's targeted message), the implementer's sleep 300 on every implementing task, and extends the gate to retro and the production check; no acceptance line depends on a later phase running."},
+      {"finding": "The planner's own handoff/push mechanics are exacting (write tool, jj split, trailer shape, identity check, push before completion).", "answer": "Ordering step 0 spells them: jj new @- (since @ was empty), write plan.json, split with the one path, trailer describe with trailers off, default-branch identity check, bookmark set, push, handoff_complete; the commit carries plan.json and nothing else."},
+      {"finding": "'The required plan handoff' is ambiguous against the two planner artifacts (plan.json and the plan.md document).", "answer": "Step 0 attaches plan.md as the issue artifact (dispatch://LEGSMOKE-1000/artifact/plan-md) and commits plan.json; the artifact is a document write, not a role start, so it is within the driver's release."},
+      {"finding": "plan.json's record shapes live in the role prompt, and the repository has no suite to name skills against.", "answer": "The handoff carries requiredSkills (legion-worker references per role, dispatch for the implementer's Dispatch writes), gapAnalysis (this list), planReview and specDepartures as the role prompt spells them; the Skills section records what was looked through."},
+      {"finding": "No Acceptance section exists; every criterion will be the planner's.", "answer": "A1–A5 are authored in plan.md with machine checks C1–C5; the lines encoding product choices (the literal, the appended line, no docs/solutions/ file) are named under Uncertainty for the architect."},
+      {"finding": "The fixture clause is dropped on a rule consistent with the files but not proven by them.", "answer": "Decision 2 cites LEGSMOKE-992's title (clause present, quoted in its plan) against its merged marker (clause absent); the clause is likewise absent from the commit message, PR title and Outcome line."},
+      {"finding": "Hashes and GitHub state are live-state claims the implementer might assert rather than verify.", "answer": "Decision 12: every phase re-reads the facts it relies on and recomputes the sha1 from the literal; a plan-constant mismatch with a clean cmp goes to the architect, never into the PR body."},
+      {"finding": "The precedent LEGSMOKE-991 plan could not be read by the analyst; carry-over should be auditable.", "answer": "Section 'Carried over from the precedent plan, and dropped' lists what is carried, dropped and changed."},
+      {"finding": "This 'fallback' child may be parked or closed at any point; what is durable if nothing after planning runs?", "answer": "The acceptance section states that the pushed plan.json on legion/LEGSMOKE-1000 and the plan.md artifact are the durable result and that no criterion requires a merge."},
+      {"finding": "Nothing tells the implementer not to bring main into the branch while siblings land.", "answer": "Decision 13: no base merge absent a GitHub-reported CONFLICTING state (non-strict required checks; disjoint file names); the forward-merge procedure is the only cure."},
+      {"finding": "'Write a red test where none of the implementer's tests would catch a break' invites inventing a harness.", "answer": "Tester's break set: no red test (no runtime behaviour, no suite, a test file would break A4); the independent drive is the git objects API read at H plus in-memory break attempts."},
+      {"finding": "A requested appended line is a second code push with new CI, tester and review rounds.", "answer": "Decision 8's loop and ordering step 4 spell it end to end, with K = 0 and K = 1 bytes in A2/A3 and C1."},
+      {"finding": "The PR body's gate lines (Dispatch, E2E ×2, no Thermo, Production) appear nowhere in the issue.", "answer": "Decision 10 enumerates every line for this docs-only PR, who writes it, and the grep check that reads it."}
+    ]
+  },
+  "planReview": {"verdict": "approved", "rounds": 1},
+  "specDepartures": []
+}
