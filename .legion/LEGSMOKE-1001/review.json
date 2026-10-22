@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "phase": "review",
+  "issue": "LEGSMOKE-1001",
+  "completed": "2026-10-22T18:42:58Z",
+  "pullRequest": "https://github.com/sjawhar/legion-smoke/pull/742",
+  "round": 1,
+  "decision": "approved",
+  "critical": 0,
+  "important": 0,
+  "minor": 0,
+  "keyFindings": [],
+  "reviewedHead": "aad09d302693f78f9a1c6812ce0abc10cad6c245",
+  "codeHead": "44ded605ef1210cbf430e6aa890d4fcea84baa80",
+  "ci": {
+    "requiredOnMain": {"rulesets": ["gate"], "branchProtection": []},
+    "ciHead": "44ded605ef1210cbf430e6aa890d4fcea84baa80",
+    "pullRequestRuns": {"ci": {"id": 39832072710, "conclusion": "success"}, "fail-on-demand": {"id": 39832072953, "conclusion": "success"}},
+    "checkRunsAtCiHead": "gate, check, check, gate — all completed/success, head_sha 44ded605…",
+    "compareCiHeadToHead": "44ded605…aad09d30: every file starts with .legion/ → true (implement.json, test.json)",
+    "bodyCiLine": "names runs 39832072710 and 39832072953, both headSha 44ded605… success — current, not stale"
+  },
+  "verified": {
+    "diff": "pulls/742/files at aad09d30: smoke/LEGSMOKE-1001.md (added +1/−0) plus .legion/LEGSMOKE-1001/{plan,implement,test}.json; the marker's served bytes (contents API, raw, ref aad09d30) od -c → 'LEGSMOKE-1001: Upgrade rehearsal handoff child\\n', 47 bytes, equal to plan LIT; .fail-me 404 at aad09d30",
+    "specAndPlan": "Root LEGSMOKE-997 spec (one new Markdown file under smoke/, one line naming the issue; nothing else changes) satisfied; child spec empty, inherits root per plan Scope/D1; plan departure D2 (optional docs/solutions/ file) ruled off by the architect per implement.json deviations, so the merge set is the marker alone",
+    "proofLines": "E2E (implementer): contents API at 44ded605, command, observation, head, negative control (404 at base 630a2a54 beside 200 for LEGSMOKE-992, 404 at main 8cf142f4, case-variant 404, twin cmp exit 1) present. E2E (tester): git-objects API at 44ded605, decoded blob cmp 0, in-memory break set (10 variants cmp 1), bogus blob 404, handoff-only head check-runs 0; implementer's proof re-run verbatim — present",
+    "threads": "gh api graphql reviewThreads → 0 nodes; reviews → 0 nodes before this round",
+    "chainIdentity": "compare 630a2a54...aad09d30: f80e9fe9 plan.json reviewer App; 44ded605 marker and f342468d implement.json implementer App; aad09d30 test.json reviewer App — every author and committer is its role's App",
+    "thermonuclear": "not run: docs-only diff (one Markdown marker line, no runtime code), no Thermo line per references/pr-body.md",
+    "codegraph": "not applicable: no exported symbol changed",
+    "contractChangeCensus": "not applicable: no refusal, required field, rename or signature change"
+  },
+  "security": "no sensitive surface in this diff",
+  "prBody": {
+    "lookAtFirst": "smoke/LEGSMOKE-1001.md:1",
+    "notProvenRisk": "Plan A4 (no .legion/LEGSMOKE-1001/ at the READY head; main serves the 47-byte marker alone after the squash) is read only at R by the merger (plan C4) and at M by the implementer's production check"
+  },
+  "appendedLineRequested": false,
+  "notes": [
+    "K stays 0: no REQUEST_CHANGES and no appended line (plan D4).",
+    "mergeStateStatus BLOCKED at the handoff-only tip is expected: no check-run exists at a skip-checks: true head; the required gate is green at the code head 44ded605 and the compare proves only .legion/ changed since."
+  ]
+}
