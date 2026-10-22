@@ -1,0 +1,80 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-994",
+  "completed": "2026-10-22T13:12:30Z",
+  "planDocument": "dispatch://LEGSMOKE-994/artifact/plan-md",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: the push procedure, the `Dispatch: LEGSMOKE-994` PR body line, the pr-body.md template and the implementer's six-field proof on the GitHub contents API are all defined there; no repository skill or AGENTS.md exists in sjawhar/legion-smoke."
+    ],
+    "test": [
+      "legion-worker: pr-body.md defines what the tester verifies (independent drive of the same surface, read CI never rerun, in-memory break set) and the test handoff's implementerProof/failures/proof fields; the repository has no test suite or testing skill."
+    ],
+    "review": [
+      "legion-worker: merge-gate.md fixes the review round order and review-threads.md the one-thread rule for the optional second line; the reviewer writes `Look at first` and `Not proven / risk` per pr-body.md; the repository carries no review convention of its own."
+    ]
+  },
+  "change": {
+    "file": "smoke/LEGSMOKE-994.md",
+    "bytes": "LEGSMOKE-994: Upgrade rehearsal fallback child\\n",
+    "size": 47,
+    "blobSha1": "806dd0a11ef2421b03c24d6e920442a08bf360ac",
+    "base": "32aa229743db4f7e63c85594e052c13301e99295",
+    "requiredCheck": "gate",
+    "optionalSecondLine": "K in {0,1}: appended only when one reviewer thread quotes its exact text; nothing else changes."
+  },
+  "gapAnalysis": {
+    "findings": [
+      {
+        "finding": "Reviewer criterion 'exactly one file, one line' contradicts the parent spec's in-scope review-requested second line; no sampled marker has a second line, so no precedent fixes its text.",
+        "answer": "D3: K in {0,1}. K=0 unless one reviewer thread asks for an appended line and quotes its exact text; then the implementer appends exactly that line, changes nothing else, and re-proves A1/A2 with `additions: 1+K`. A second line with no requesting thread is a defect."
+      },
+      {
+        "finding": "'a single line that names this issue' never fixes the bytes (prefix, title text, trailing newline, trailing blank line).",
+        "answer": "D1/A1: literal `LEGSMOKE-994: Upgrade rehearsal fallback child` + LF, 47 bytes, 1 line, blob sha1 806dd0a11ef2421b03c24d6e920442a08bf360ac; check is `cmp` of the raw contents-API bytes against `printf` of the literal plus `wc -c`, `wc -l`, `git hash-object`."
+      },
+      {
+        "finding": "Whose key names the file: the child's spec is empty, so 'this issue' could read as the parent LEGSMOKE-991.",
+        "answer": "D2: the child key LEGSMOKE-994. Precedent: sibling markers smoke/LEGSMOKE-985.md and -986.md are each named for their own child key; no smoke/LEGSMOKE-99x exists at base 32aa2297; siblings 995/996 own their own paths."
+      },
+      {
+        "finding": "The title 'Upgrade rehearsal fallback child' implies behaviour neither spec describes; only the issue owner can say whether the rehearsal acts on this child mid-flight.",
+        "answer": "D6: the title names the proof driver's operation on Legion's own workers (deployment instructions: operations arrive by targeted human Dispatch message), not a repository behaviour; the repository change is the marker only, and D5 is all a resumed worker re-checks. Anything beyond that is the architect's to say, and the completion summary names this."
+      },
+      {
+        "finding": "No resume/idempotency rule when the file, commit, pushed branch or PR already exists.",
+        "answer": "D5: an existing byte-identical file, commit, or open PR with head legion/LEGSMOKE-994 is success, not a second attempt; on resume re-read `.legion/LEGSMOKE-994/*.json`, `jj log`, and `gh pr list --head legion/LEGSMOKE-994 --state all` (<= 1 entry; `[]` today)."
+      },
+      {
+        "finding": "Terminal state (green PR vs merged) and who merges are unstated.",
+        "answer": "D4/A5: the Legion merge gate; the daemon submits the merge on the merger's READY, no role runs `gh pr merge`; the implementer's production check reads `contents/smoke/LEGSMOKE-994.md?ref=main` -> 200 with cmp-equal bytes and `.legion/LEGSMOKE-994` absent from main."
+      },
+      {
+        "finding": "Two checks and a 20 s delay: pending is not failure, and which check is required was unknown.",
+        "answer": "A3/D4: `gate` is the one required context (ruleset 24471196, read via `gh api repos/sjawhar/legion-smoke/rules/branches/main`); `check` also runs; wait with `gh pr checks <n> --watch`; PENDING is a wait, never a failure."
+      },
+      {
+        "finding": "Tester break attempts (appended line, wrong filename, .fail-me) would mutate the branch under review and trip the gate.",
+        "answer": "D7: negative controls are read-only; no phase pushes a break, creates `.fail-me`, or appends a line as a test; break set runs in memory/`/tmp` against the served blob, absence controls are 404 reads at base, main, and a case-variant path."
+      },
+      {
+        "finding": "The `Dispatch: LEGSMOKE-994` PR body line is not a repository convention.",
+        "answer": "D8: it is a Legion convention required by `skill://legion-worker` 'Implementer push and pull request' (the daemon's PR->issue fallback link), and PR #736 carries it as its first line; the plan cites that source, not the repository."
+      },
+      {
+        "finding": "Live-state claims (404 at main, branch at 32aa2297, prior one-file PRs) were unverified by the analyst.",
+        "answer": "Verified by the planner on 2026-10-22 and recorded in the plan's Spec basis: `contents/smoke/LEGSMOKE-994.md?ref=main` -> 404, `.fail-me?ref=main` -> 404, `main` = `legion/LEGSMOKE-994` = 32aa2297, PR #736 one file +1/-0; A1 still has the implementer capture the base 404 with a 200 twin at its own head."
+      }
+    ]
+  },
+  "planReview": {
+    "verdict": "approved",
+    "rounds": 1,
+    "nonBlockingNotes": [
+      "A4 wording was literally stricter than D8 on the Thermo line; A4 now says every template line except Thermo (docs-only).",
+      "The template's CI line names Tests/PR Title jobs; A4 now names this repository's `ci`/`check` and `fail-on-demand`/`gate` runs."
+    ]
+  },
+  "specDepartures": []
+}
