@@ -1,0 +1,91 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-1001",
+  "completed": "2026-10-22T18:15:41Z",
+  "plan": "dispatch://LEGSMOKE-1001/artifact/plan-md",
+  "deliverable": {
+    "path": "smoke/LEGSMOKE-1001.md",
+    "literal": "LEGSMOKE-1001: Upgrade rehearsal handoff child\n",
+    "bytes": 47,
+    "blobSha1": "c96620912f91dbf1cfc8719f8cbd80cdab7ecea7",
+    "appendedLines": 0,
+    "conditionalAppendedLiteral": "Legion proof review round 1 (LEGSMOKE)",
+    "conditionalTwoLineBytes": 86,
+    "conditionalTwoLineBlobSha1": "8076fb2a687ae8f689b2c014026c6fb642eac701",
+    "allowList": ["smoke/LEGSMOKE-1001.md", ".legion/LEGSMOKE-1001/*.json"],
+    "base": "630a2a54e3d42ef90046f592b4bcf883e0e1185a",
+    "mainAtPlanning": "8cf142f4c87586dff5fa735fa4b9ace55968020a",
+    "requiredChecks": ["gate"]
+  },
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: push rules, PR body template (references/pr-body.md), proof definition, default-branch identity check; the repository has no AGENTS.md, code, tests or domain skill, so no other skill applies"
+    ],
+    "test": [
+      "legion-worker: references/pr-body.md defines what the tester verifies and records (drive the surface, re-run the implementer's command, read CI, never re-run it); no repository test runner exists"
+    ],
+    "review": [
+      "legion-worker: references/merge-gate.md (review order, CI head read, approval of the head) and references/review-threads.md (one disposition per thread)"
+    ]
+  },
+  "gapAnalysis": {
+    "findings": [
+      {
+        "finding": "The PR will not contain only smoke/LEGSMOKE-1001.md: .legion/LEGSMOKE-1001/ phase handoffs ride it mid-run, and nobody is assigned their removal.",
+        "answer": "A3 names the allow-list (marker plus .legion/LEGSMOKE-1001/*.json) with the jq allow-list test in C2; A4/C4 bind the .legion-free state at the READY head and at main; task 4 (retro) removes .legion/LEGSMOKE-1001/ before READY."
+      },
+      {
+        "finding": "The in-scope appended review line contradicts a fixed one-line acceptance.",
+        "answer": "D4: K = 0 by default; only a REQUEST_CHANGES review may ask for exactly one more line, whose literal is pinned (Legion proof review round 1 (LEGSMOKE), 86 bytes, sha 8076fb2a…); expected line count is 1+K and every proof re-runs at the new code head."
+      },
+      {
+        "finding": "The line's bytes are unpinned; wc -l = 1 and 'contains LEGSMOKE-1001' do not decide the file.",
+        "answer": "Deliverable pins LIT = printf 'LEGSMOKE-1001: Upgrade rehearsal handoff child\\n', 47 bytes (measured), blob sha1 c96620912f91dbf1cfc8719f8cbd80cdab7ecea7 (measured); C1 checks cmp, wc -c, last byte 0a, git hash-object and the contents-API sha/size. D5 records the fixture clause is dropped on purpose."
+      },
+      {
+        "finding": "'CI green' names neither the required check nor the head it binds at.",
+        "answer": "Facts section records required set [gate] (measured via rules/branches/main); A5/C5 define H0 as the code head and read check-runs at H0, with a handoff-only head's total_count 0 as the negative control."
+      },
+      {
+        "finding": "Proof commands read local git refs that may be stale or absent.",
+        "answer": "D6: every proof reads GitHub at a pinned sha via the RAW/STATUS/MAIN helpers; the plan notes the workspace main is already 2 behind origin."
+      },
+      {
+        "finding": "The negative control cannot distinguish absent from unauthorised, and has no positive twin.",
+        "answer": "C1's control pairs the 404 for smoke/LEGSMOKE-1001.md with a 200 for smoke/LEGSMOKE-992.md at the same ref, adds the lower-case variant 404 and the twin cmp (exit 1, differ at char 10, measured)."
+      },
+      {
+        "finding": "The tester's assignment is 'rerun the same commands', which the preceding round's review would not accept; the repo has no test runner.",
+        "answer": "D3 assigns the tester a second surface (git-objects API: tree listing and blob decode) plus an in-memory break set, and the explicit 'no red test: docs-only diff, no test runner' sentence for test.json and the PR body."
+      },
+      {
+        "finding": "The child issue's spec is empty and the title's 'upgrade rehearsal handoff' is unaddressed.",
+        "answer": "Scope section states the child inherits LEGSMOKE-997's spec verbatim and reads 'upgrade rehearsal handoff' as a run-level rehearsal with no repository change; D1 records this as the architect's to overturn and the completion summary reports it."
+      },
+      {
+        "finding": "The retro's docs/solutions document has no decided home; the repo has no docs/ tree.",
+        "answer": "D2 decides: retro writes no repository document unless it has a real learning; if it does, exactly one docs/solutions/<category>/<slug>-LEGSMOKE-1001.md path widens the A4 allow-list at R/M and the body names it. Recorded as the plan's one spec departure for the architect."
+      },
+      {
+        "finding": "Three claims carried into the plan's context were unverified or imprecise (merge sha, marker count, absence on main).",
+        "answer": "Re-measured at planning via gh api: pulls/738 merge_commit_sha = 630a2a54…, main = 8cf142f4…, contents 404/200 pair, 50 smoke/LEGSMOKE-*.md markers; D7 tells the implementer to re-resolve MAIN() and record what it observes rather than copy the planning-time value."
+      }
+    ]
+  },
+  "planReview": {
+    "verdict": "approved",
+    "rounds": 1
+  },
+  "specDepartures": [
+    {
+      "spec": "Root LEGSMOKE-997 spec, Scope: 'A review of the pull request may ask for one more line appended to that same file; that is in scope. Nothing else changes.'",
+      "plan": "D2 permits retro to add exactly one docs/solutions/<category>/<slug>-LEGSMOKE-1001.md file at the READY head and on main when its retrospective yields a learning a future worker needs; default is none written, and .legion/LEGSMOKE-1001/ is removed before READY either way.",
+      "evidence": "skill://legion-retro 'Durable outputs' requires learnings under docs/solutions/ on the issue branch; this repository has no docs/ tree (ls docs → No such file); PR #738's reviewer recorded the same departure as the architect's to confirm and its retro landed the marker alone (merge commit 630a2a54 files = smoke/LEGSMOKE-992.md only).",
+      "outcome": {
+        "kind": "changed",
+        "scope": "Scope may gain one docs/solutions/**/*-LEGSMOKE-1001.md file at R/M if retro writes a learning; otherwise unchanged."
+      }
+    }
+  ]
+}
