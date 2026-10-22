@@ -1,0 +1,76 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-1007",
+  "completed": "2026-10-22T20:46:21Z",
+  "plan": "dispatch://LEGSMOKE-1007/artifact/plan-md",
+  "requiredSkills": {
+    "implement": [
+      "skill://legion-worker: push rules, PR body template and proof definition (references/pr-body.md), identity check (references/default-branch-check.md). No repository-domain skill exists: sjawhar/legion-smoke has no AGENTS.md, no code, no tests, and none of the session's skills names it."
+    ],
+    "test": [
+      "skill://legion-worker (references/pr-body.md): what the tester verifies and records on the PR body and in test.json; CI is read at the code head H0, never re-run; the repository has no test runner so the tester's independent surface is the GitHub git-objects API plus an in-memory break set (plan D3)."
+    ],
+    "review": [
+      "skill://legion-worker (references/merge-gate.md, references/review-threads.md): CI head read, A1-A5 against the plan beside the root spec, one disposition per thread; a REQUEST_CHANGES asking for the one appended line names the literal `Legion proof review round 1 (LEGSMOKE)` (plan D4)."
+    ]
+  },
+  "gapAnalysis": {
+    "findings": [
+      {
+        "finding": "Empty child spec: which spec it inherits and which issue the file names (root LEGSMOKE-1003 already has smoke/LEGSMOKE-1003.md).",
+        "answer": "D1: the child inherits root LEGSMOKE-1003's spec verbatim; 'this issue' is LEGSMOKE-1007; deliverable is smoke/LEGSMOKE-1007.md; specDepartures stays empty. Named for the architect in the completion summary."
+      },
+      {
+        "finding": "Exact bytes, and whether the title's fixture clause (/tmp/legion-e2e4b.111786.Tk4mDamx) is dropped; blob sha1 unverified by the analyst.",
+        "answer": "Pinned LIT = `LEGSMOKE-1007: Upgrade rehearsal handoff child\\n`, 47 B UTF-8, LF, no BOM/CR/trailing space; fixture clause dropped (D5, every smoke/ marker drops it). sha1 c7d78320845cc63369d2302a707d7a3bb4b93f96 measured by the planner with `git hash-object --stdin`; D7 makes the implementer recompute and record it at execution."
+      },
+      {
+        "finding": "Branch tip 8cf142f4 is 2 behind main (cd982c1a) and main keeps moving; which base, and are ?ref=main checks re-resolved?",
+        "answer": "Base B = legion/LEGSMOKE-1007@origin = 8cf142f4; build on B, no rebase; forward-merge only if GitHub reports CONFLICTING (no path overlap expected). MAIN() is re-resolved at execution and recorded (D7)."
+      },
+      {
+        "finding": "K, the 'one more line' a review may ask for: default, literal, trigger, cap.",
+        "answer": "D4: K = 0; only a REQUEST_CHANGES review may ask, at most once; literal `Legion proof review round 1 (LEGSMOKE)`; K=1 bytes 86, sha1 a758ec1ee8d4ad99423c8b0e0b57046c1c86cb83; all proofs re-run at the new code head."
+      },
+      {
+        "finding": "Retro's docs/solutions learning versus the spec's 'Nothing else changes'.",
+        "answer": "D2 pre-rules that retro writes no docs/solutions file (no docs/ tree, no learning a future worker needs, same ruling as the twin child in PR #742); any docs/ path in compare/main...HR, or any legsmoke-1007 path on main other than the marker, fails A4. Architect's to overturn; if overturned it becomes a recorded spec departure."
+      },
+      {
+        "finding": ".legion/LEGSMOKE-1007/ handoffs ride the PR mid-run, so 'exactly one file' cannot hold at every head.",
+        "answer": "Split: A3 is the mid-run allow-list (marker + .legion/LEGSMOKE-1007/*, marker present) proven by implementer/tester/reviewer at the head each binds; A4 is READY head HR and merged M with no .legion/ path, proven by merger and production check."
+      },
+      {
+        "finding": "CI criterion has no head on a handoff-only push and run-level status can lag.",
+        "answer": "A5/C5 reads commits/<H0>/check-runs (check and gate completed/success, head_sha = H0) plus rules/branches/main -> [gate]; total_count 0 at a handoff-only head is expected and is the negative control."
+      },
+      {
+        "finding": "'A file exists at that path' needs uniqueness, case and mode checks.",
+        "answer": "A1/C1: recursive git tree at H0, truncated:false, exactly one non-.legion blob matching legsmoke-1007 case-insensitively, path smoke/LEGSMOKE-1007.md, mode 100644, size 47; case-variant smoke/legsmoke-1007.md -> 404 control."
+      },
+      {
+        "finding": "No test runner; the tester still needs an independent surface and must say no red test is written.",
+        "answer": "D3: git-objects API (blob decode + cmp, tree query) and an in-memory break set of ten variants (CRLF, no LF, BOM, trailing space, double LF, wrong key, key only, fixture clause kept, lower-case key, K=1 two-liner), each cmp exit 1; no red test committed, stated in test.json."
+      },
+      {
+        "finding": "Negative controls must name paths that exist at the pinned refs; LEGSMOKE-1001's marker may not be on main.",
+        "answer": "D6: control twin is smoke/LEGSMOKE-998.md (present at B, H0 and main; 200 beside the 1007 404 at each ref; its bytes cmp != LIT). LEGSMOKE-1001 is not used."
+      },
+      {
+        "finding": "Post-merge acceptance binds to commits that do not exist yet; gate depends on .fail-me absent at every head.",
+        "answer": "C4 assigns the merger HR checks (compare exactly the marker, .legion 404, .fail-me 404, gate success at HR) and the implementer's production check M checks (main serves LIT, .legion 404, tree scoped to legsmoke-1007 = marker only, .fail-me 404, squash commit one parent listing the marker alone, gate success)."
+      },
+      {
+        "finding": "Several briefing facts were unverifiable from the analyst's session (ref SHAs, sha1s, 404s).",
+        "answer": "All were measured by the planner with gh api / git hash-object in the workspace and are recorded in the plan's 'Facts observed' section as planning-time observations; D7 requires each role to re-resolve and record them with command and output at execution."
+      }
+    ]
+  },
+  "planReview": {
+    "verdict": "approved",
+    "rounds": 1,
+    "notes": "Three non-blocking notes; two acted on in the plan: A4's M check is scoped to paths matching legsmoke-1007 instead of an unscoped contents/docs 404 (a sibling tree's doc on main is not this change's failure), and C4 adds the gate check-run read at HR."
+  },
+  "specDepartures": []
+}
