@@ -1,0 +1,76 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-983",
+  "completed": "2026-10-22T09:52:00Z",
+  "plan": "dispatch://LEGSMOKE-983/artifact/plan-md",
+  "stage4bMessage": "debe2908-0706-4205-b7b7-db0370add8f3",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: references/pr-body.md (template, what a proof is, docs-only diff gets no simplify pass and no Thermo line) and references/default-branch-check.md (identity check before each push); the repository ships no AGENTS.md, skill, linter or test suite."
+    ],
+    "test": [
+      "legion-worker: references/pr-body.md (verify the implementer's proof, drive the surface independently, read CI once and never re-run it) and references/merge-gate.md (which head's checks count); the repository ships no test harness."
+    ],
+    "review": [
+      "legion-worker: references/merge-gate.md (review order: handoff push then review of that head; approval of A) and references/review-threads.md (one disposition per thread); the repository ships no review norms."
+    ]
+  },
+  "gapAnalysis": {
+    "findings": [
+      {
+        "finding": "Root spec's 'names this issue' is read as the child key LEGSMOKE-983, yet every existing smoke/LEGSMOKE-*.md (973, 974 cited) is root-keyed; no file in smoke/ is named after a child.",
+        "answer": "Decision 1 keeps the child key: smoke/LEGSMOKE-979.md (the root's marker) is already on main at 841a4227 (sha 3faf9bb0, 56 bytes), so a root-keyed marker from this child would add nothing; this is the first child-keyed marker and is named to the architect in the completion summary."
+      },
+      {
+        "finding": "LIT and the dropped fixture clause rest on the Dispatch title and on 'as in 973/974', which the repository does not show.",
+        "answer": "plan.md quotes the title verbatim ('Upgrade rehearsal handoff child (/tmp/legion-e2e4b.2981255.u9Y0j1xh)') and the measurement: 979's title carries ' (/tmp/legion-e2e4b.2981255.u9Y0j1xh)' and its file is 'LEGSMOKE-979: Stage 4b proof tree 1: the whole workflow\\n' (56 bytes); 980 likewise drops ', with the repository fixture (/tmp/...)'. Decision 2 gives the keep-clause alternative for the architect."
+      },
+      {
+        "finding": "C2a pinned the compare base to the literal c400c1af while sibling trees move main (main is already 2 ahead: 979, 980 markers).",
+        "answer": "C2a now computes MB from compare/main...$H (.merge_base_commit.sha) and compares MB...$H; decision 9 records main at 841a4227, ahead by 2 with disjoint paths, MERGEABLE."
+      },
+      {
+        "finding": "Stage 4b gating and the implementer's sleep 300 were narrative only, with no criterion, command or expected output.",
+        "answer": "C6: each handoff records stage4bMessage (the driver message id it acted on; plan: debe2908-0706-4205-b7b7-db0370add8f3) and implement.json records sleep300 {startedAt, endedAt} >= 300 s apart, checked with jq; proof of the gating itself is the driver's daemon-state measurement, stated as outside this issue's acceptance."
+      },
+      {
+        "finding": "For a reviewer-given K=1 text the implementer both set and reported the expected bytes, leaving the tester nothing independent to check against.",
+        "answer": "Decision 5: the reviewer writes the exact line as a fenced literal in its REQUEST_CHANGES review; the tester computes size and sha itself from that literal with printf | git hash-object --stdin, never from the implementer's numbers; the default text's bytes (85, bd297bf7...) are pre-computed."
+      },
+      {
+        "finding": "The child spec is empty and the root spec has no Acceptance section, so LIT, the path and C1-C6 are planner-derived and approved by no one.",
+        "answer": "Stated in plan.md 'Spec this plan builds': the derivation is the plan's; the child spec and its sign-off are the architect's; the literal goes to the architect in the completion summary, who may overrule it before the implementer's targeted message (the implementer re-reads the plan at start); the planner edits no spec."
+      },
+      {
+        "finding": "'Nothing else changes' versus the mid-run .legion/LEGSMOKE-983/*.json commits; no stated fallback if retro leaves them.",
+        "answer": "Decision 4: handoffs are artifacts the legion-worker completion gate requires; the scope sentence is judged on the merged result M (C5); mid-run they are excluded (C2a) and retro removes them (C2b); a head offered for READY still carrying .legion/ gets no READY, the merger reports to the architect, who re-runs retro (the implementer); the reviewer removes nothing."
+      },
+      {
+        "finding": "C5 depends on a squash merge no role may perform, so the final criterion is reachable only through an actor the plan did not name.",
+        "answer": "Decision 13: the daemon submits the merge on READY's acceptance (legion-worker 'the merge gate'; PR #734 merged as 841a4227 that way); if M has not landed when the production-check task arrives, the implementer reports the PR state to the architect and holds; C5 is never waived."
+      },
+      {
+        "finding": "C4 allowed 'if the approval is voided, re-approve' and C3's negative control was 'read, not provoked', so neither decided itself.",
+        "answer": "C4 requires reviewDecision APPROVED at R unconditionally; the normal path is the approval of A persisting (ruleset 24471196 has no dismiss-stale rule; PR #734: approval at 7fb21d30, retro 200d1dae after it, still APPROVED); otherwise the reviewer re-approves R before READY. C3's negative control is the real failing run 39526057184 (fail-on-demand, failure, head beb7bfb1), re-read by the tester with gh run view."
+      },
+      {
+        "finding": "C1 derived H from jj log -r @-, which after the implementer's handoff commit names the handoff commit, so the tester's 'verbatim' re-run would record a different H.",
+        "answer": "Decision 12: the implementer records H once (right after the code split, before the handoff split) as headSha in every implement.json proof entry and the E2E line; tester and reviewer read H=$(jq -r '.proof[0].headSha' .legion/LEGSMOKE-983/implement.json); C1 uses that H."
+      },
+      {
+        "finding": "Decision 3's 'no .gitignore' named no concrete stray; .codegraph/.gitignore un-ignores itself and could be swept into an unscoped commit.",
+        "answer": "Measurements: .codegraph/ has 0 tracked paths on main and jj status is clean (jj snapshots nothing there); decision 3 names a .codegraph/ file, a stray /tmp copy and .fail-me as rows that make 'jj diff -r @- --summary' != 'A smoke/LEGSMOKE-983.md' a failed scope to fix before pushing."
+      },
+      {
+        "finding": "Measured facts the plan rests on (blob sha1s, branch position, no PR, ruleset contents, two-line-marker counts) were asserted without their commands and outputs; the last 16 LEGSMOKE markers took no appended line.",
+        "answer": "plan.md's Measurements table lists each command with its output (LIT 46 bytes bfa198f8..., LIT2 85 bytes bd297bf7..., calibration 2c1e082e... local = API, branch at c400c1af with 0 PRs, ruleset gate-only strict false, 69 two-line markers / 24 LEGSMOKE, none after 892) and states that K=0 is the expectation and K=1 the exception."
+      }
+    ]
+  },
+  "planReview": {
+    "verdict": "approved",
+    "rounds": 2
+  },
+  "specDepartures": []
+}
