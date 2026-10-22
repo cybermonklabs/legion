@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "phase": "implement",
+  "issue": "LEGSMOKE-995",
+  "completed": "2026-10-22T15:30:00Z",
+  "proof": [
+    {
+      "criterion": "Smallest one-file change for the Stage 4b upgrade rehearsal child (targeted proof message a3696ad0-cbf8-4c0c-a69b-f72cfa6afc99): smoke/LEGSMOKE-995.md exists on legion/LEGSMOKE-995 with the marker line, following the smoke/<KEY>.md convention.",
+      "surface": "GitHub repository contents of the sandbox repository sjawhar/legion-smoke at the pushed head (PR #739, https://github.com/sjawhar/legion-smoke/pull/739)",
+      "command": "gh api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-995.md?ref=237b79342476a38ec4d5f88c7c470a00fd135379\" --jq .content | base64 -d",
+      "observed": "LEGSMOKE-995: Upgrade rehearsal handoff child (/tmp/legion-e2e4b.1474246.3BHKpOIn); CI on the head: ci run 39804811790 job check success, fail-on-demand run 39804812019 job gate success",
+      "headSha": "237b79342476a38ec4d5f88c7c470a00fd135379",
+      "negativeControl": "gh api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-995.md?ref=main\" -> HTTP 404 Not Found: the marker is absent from the base branch"
+    }
+  ],
+  "filesChanged": [
+    "smoke/LEGSMOKE-995.md (new, 1 line)"
+  ],
+  "trickyParts": [],
+  "deviations": [
+    "The issue's spec document is empty; the file and its content follow the repository's observed smoke/<KEY>.md convention (smoke/LEGSMOKE-985.md, smoke/LEGSMOKE-986.md) and the issue title, as the targeted proof message asked for the smallest one-file change.",
+    "No simplify pass and no thermonuclear pair: docs-only diff (one markdown marker), per skill://legion-worker/references/pr-body.md."
+  ],
+  "openQuestions": [],
+  "discoveredComplexity": []
+}
