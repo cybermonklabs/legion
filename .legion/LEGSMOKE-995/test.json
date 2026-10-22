@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "phase": "test",
+  "issue": "LEGSMOKE-995",
+  "completed": "2026-10-22T15:30:00Z",
+  "implementerProof": {
+    "verdict": "verified",
+    "how": "Re-ran the implementer's command `gh api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-995.md?ref=237b79342476a38ec4d5f88c7c470a00fd135379\" --jq .content | base64 -d` and observed the same marker line `LEGSMOKE-995: Upgrade rehearsal handoff child (/tmp/legion-e2e4b.1474246.3BHKpOIn)`; re-ran its negative control `...?ref=main` and observed HTTP 404 Not Found (exit 1). Read its CI line against `gh run list -R sjawhar/legion-smoke --branch legion/LEGSMOKE-995`: ci run 39804811790 job check success and fail-on-demand run 39804812019 job gate success, both at 237b79342476a38ec4d5f88c7c470a00fd135379 (the pull_request-event runs 39804967920 / 39804967945 at the same SHA also success). Head 7a8ba643d96ebb9aba5d26b2d5508157dae666d9 is the handoff-only commit carrying `skip-checks: true` and has no check runs of its own; the daemon record carries checksVerdict green."
+  },
+  "failures": [],
+  "failed": 0,
+  "proof": [
+    {
+      "criterion": "smoke/LEGSMOKE-995.md exists on legion/LEGSMOKE-995 with the marker line, following the smoke/<KEY>.md convention, as the smallest one-file change for the Stage 4b upgrade rehearsal child (targeted proof message a3696ad0-cbf8-4c0c-a69b-f72cfa6afc99 to the implementer; tester message f6951cb8-7a4d-4900-9f91-6e1a59ce78c1 asked for one focused observable check).",
+      "surface": "GitHub repository contents API of the sandbox repository sjawhar/legion-smoke at the pull request head (PR #739, https://github.com/sjawhar/legion-smoke/pull/739), compared byte-for-byte against the issue workspace checkout",
+      "command": "gh api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-995.md?ref=7a8ba643d96ebb9aba5d26b2d5508157dae666d9\" --jq .content | base64 -d | sha256sum; sha256sum smoke/LEGSMOKE-995.md; gh pr diff 739 -R sjawhar/legion-smoke --name-only",
+      "observed": "Both sha256 sums are 75c69b3cc281cb0289b102eab04d2e8d41f3e1b4f4bc6173ea44c6db29e034cf; od -c shows exactly one line `LEGSMOKE-995: Upgrade rehearsal handoff child (/tmp/legion-e2e4b.1474246.3BHKpOIn)` terminated by a single newline, the same shape as smoke/LEGSMOKE-985.md and smoke/LEGSMOKE-986.md; the PR diff lists smoke/LEGSMOKE-995.md as the only path outside .legion/; PR state OPEN, mergeable MERGEABLE against main.",
+      "headSha": "7a8ba643d96ebb9aba5d26b2d5508157dae666d9",
+      "negativeControl": "gh api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-995.md?ref=main\" -> HTTP 404 Not Found, exit 1 (the base carries LEGSMOKE-985/986/991/992 markers but not 995); gh api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-999.md?ref=7a8ba643d96ebb9aba5d26b2d5508157dae666d9\" -> HTTP 404 Not Found, exit 1 (a wrong key at the head finds nothing)."
+    }
+  ],
+  "notes": [
+    "Docs-only diff (one markdown marker): no implementer tests exist to judge and no red test is warranted; the repository's ci `check` job is `sleep 20 && exit 0`, so CI proves only that the workflows ran green at the code head.",
+    "main has moved past the branch base (smoke/LEGSMOKE-991.md, smoke/LEGSMOKE-992.md on main, not on the branch); GitHub reports the PR MERGEABLE, so no forward merge is needed."
+  ]
+}
