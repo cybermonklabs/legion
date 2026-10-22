@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "phase": "implement",
+  "issue": "LEGSMOKE-964",
+  "completed": "2026-10-22T03:36:30Z",
+  "codeHead": "8834897bffb7c10ef8b00c5bca23b531532d26f1",
+  "commitMessage": "smoke: add LEGSMOKE-964 marker file",
+  "filesChanged": [
+    "smoke/LEGSMOKE-964.md (added, 47 bytes, blob 1cf8e8866e66ca319113efe2d5dda1de60cb663c)"
+  ],
+  "proof": [
+    {
+      "criterion": "C1 marker bytes at the code head: smoke/LEGSMOKE-964.md holds exactly the plan's literalK0 (47 bytes, blob 1cf8e8866e66ca319113efe2d5dda1de60cb663c)",
+      "surface": "GitHub REST contents API on sjawhar/legion-smoke (the repository the merge lands in), read with the pane's gh",
+      "command": "gh api 'repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-964.md?ref=8834897bffb7c10ef8b00c5bca23b531532d26f1' --jq .content | base64 -d > /tmp/l964-head.bin && printf 'LEGSMOKE-964: Upgrade rehearsal fallback child\\n' > /tmp/l964-lit.bin && cmp /tmp/l964-head.bin /tmp/l964-lit.bin && echo CMP_EQUAL",
+      "observed": "contents API returned {sha: 1cf8e8866e66ca319113efe2d5dda1de60cb663c, size: 47, encoding: base64}; decoded bytes cmp-equal to the literal (CMP_EQUAL printed, wc -c 47); local git hash-object of the working file gave the same blob sha before the push",
+      "headSha": "8834897bffb7c10ef8b00c5bca23b531532d26f1",
+      "negativeControl": "Same contents API read at the planning base 3789bd33901a63bc70d3cde80d5e46e2ca2a2140 → HTTP 404 Not Found (gh exit 1); and cmp of the head bytes against the wrong literal (missing trailing newline, 46 bytes) → 'cmp: EOF on /tmp/l964-wrong.bin after byte 46', exit 1"
+    },
+    {
+      "criterion": "C2 nothing else changes: the code commit adds smoke/LEGSMOKE-964.md and touches no other path",
+      "surface": "GitHub REST commits API on sjawhar/legion-smoke, read with the pane's gh",
+      "command": "gh api repos/sjawhar/legion-smoke/commits/8834897bffb7c10ef8b00c5bca23b531532d26f1 --jq '{parents:[.parents[].sha], files:[.files[]|{filename,status,additions,deletions}]}'",
+      "observed": "{files:[{filename: smoke/LEGSMOKE-964.md, status: added, additions: 1, deletions: 0}], parents:[568c0794aa74f71e314f147057251c90ef7c3c3c]} — one file, one parent (the plan handoff commit), zero .legion/ paths in the code commit",
+      "headSha": "8834897bffb7c10ef8b00c5bca23b531532d26f1",
+      "negativeControl": "The same read at the planning base's own commit 3789bd33901a63bc70d3cde80d5e46e2ca2a2140 is the LEGSMOKE-956 marker (smoke/LEGSMOKE-956.md, 59 bytes per wc -c in the workspace), not this issue's file; and the contents API for smoke/LEGSMOKE-964.md at that base is 404"
+    }
+  ],
+  "trickyParts": [
+    "Identity check before the push (default-branch-check.md): gh reported default_branch \"main\", matching the addressing line; jj log main@origin..@ showed the implementer App in author and committer on 8834897b; the plan handoff 568c0794 is the reviewer App's, as expected for a planner commit.",
+    "Two pushes this round: the code push (8834897b, no trailer) so the proof could be observed at a pushed head, then the handoff-only push carrying this file with the skip-checks trailer."
+  ],
+  "deviations": [
+    "No pull request was opened this round. The targeted Stage 4b proof message on LEGSMOKE-964 (message 6cdb3678-7a43-4257-9d4c-ac0f64457f8a) named exactly: smallest one-line smoke change, commit and push on legion/LEGSMOKE-964, record the implementation handoff, call handoff_complete without an issue field; the proof instructions say to act only on the targeted operation. Consequently no E2E (implementer) PR-body line exists yet; the proof above is the one that line would carry, and the `gate` check (plan C3) has no pull_request run at this head.",
+    "The 47-byte marker file was written directly by the implementer (printf of the plan's literalK0) rather than through a deep-worker subagent: a Markdown-only, byte-fixed file with no design freedom."
+  ],
+  "openQuestions": [
+    "Whether the next targeted proof message asks for the PR (gh pr create with Dispatch: LEGSMOKE-964 and the pr-body.md template) before the tester runs, or whether the tester reads this head without one."
+  ],
+  "discoveredComplexity": []
+}
