@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-1014",
+  "completed": "2026-10-22T23:02:00Z",
+  "plan": {
+    "document": "dispatch://LEGSMOKE-1014/artifact/plan-md",
+    "designSource": "The child's own spec is empty; the plan applies the parent spec dispatch://LEGSMOKE-1009/spec with the key LEGSMOKE-1014 substituted, as every earlier 'Upgrade rehearsal push child' plan did. The architect decides whether to write the child's spec.",
+    "file": "smoke/LEGSMOKE-1014.md",
+    "content": "LEGSMOKE-1014: Upgrade rehearsal push child\n",
+    "contentBytes": 44,
+    "contentSha256": "06cd64faec4b5279083d3f723ff2b8c72fae6ed92bd4b8c63517e0a214c7307d",
+    "reviewAppendLine": "Legion proof review round 1 (LEGSMOKE)",
+    "appendedBytes": 83,
+    "appendedSha256": "e073f8d4aa6ceab0799077ac5cfb321e63dbbdc84ddad9c07aa783f1c8012d74",
+    "baseSha": "cd982c1a6f3d2abc219ed655afe88603830d6caf",
+    "commitMessages": {
+      "code": "smoke: add LEGSMOKE-1014 marker file",
+      "reviewRound": "smoke: append review line to LEGSMOKE-1014 marker",
+      "retro": "retro: remove .legion/LEGSMOKE-1014/ before READY"
+    },
+    "ciCheck": "gh api 'repos/sjawhar/legion-smoke/commits/<ciHead>/check-runs?per_page=100' --jq '[.check_runs[] | select(.name==\"gate\" or .name==\"check\")] | {names: (map(.name)|unique), states: (map(.status+\"/\"+(.conclusion//\"pending\"))|unique)}' must print {\"names\":[\"check\",\"gate\"],\"states\":[\"completed/success\"]}; handoff heads carry skip-checks and are compared to <ciHead> with gh api 'repos/sjawhar/legion-smoke/compare/<ciHead>...<head>' --jq '[.files[].filename | startswith(\".legion/LEGSMOKE-1014/\")] | all' -> true",
+    "surface": "GitHub via the pane's plain gh (contents, commits, check-runs, pulls/<N>/files, pr diff) at named SHAs; jj in $LEGION_WORKSPACE for local pre-push checks; production is main read at the merge commit"
+  },
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: binding to $LEGION_WORKSPACE, the shared-workspace commit rule, the push/trailer rule, the PR body template and proof definition (references/pr-body.md), review-thread resolution (references/review-threads.md), and the production check (references/merge-gate.md).",
+      "legion-retro: the implementer is revived for retro and must make the one removal commit of .legion/LEGSMOKE-1014/ (pushed without the trailer) and the Retro Complete Dispatch message.",
+      "dispatch: the production check posts one dispatch message on LEGSMOKE-1014; no repository skill exists (no AGENTS.md, docs/, PR template or test harness in sjawhar/legion-smoke)."
+    ],
+    "test": [
+      "legion-worker: references/pr-body.md defines what the tester verifies (drive the real GitHub surface, judge the implementer's proof, read CI, never rerun it) and the test.json fields (implementerProof, failures, proof); no repository test harness exists, so the tester's commands are the plan's fixed GET-only read list (T4) with literal expected outputs and no test file is added."
+    ],
+    "review": [
+      "legion-worker: references/merge-gate.md (required-set read from the ruleset and branch protection, review submission by SHA of the head the handoff push made, round order) and references/review-threads.md (one disposition per thread; an optional one-line append request per the parent spec's Scope); no repository review skill exists."
+    ]
+  },
+  "gapAnalysis": {
+    "findings": [
+      {"finding": "The child's own spec is empty, so no document in LEGSMOKE-1014 states the file, content or review-append rule; the design traces only to the parent spec plus the planner's inference.", "answer": "plan.md 'Where the design comes from' and plan.designSource: the parent spec dispatch://LEGSMOKE-1009/spec governs with the key substituted; the completion summary names the empty spec so the architect can decide whether to write it; a child spec that differs re-runs planning (Risks)."},
+      {"finding": "'Both workflows pass on the final head' collides with the phase order if retro's removal push carried skip-checks and ran no workflows.", "answer": "D5: skill://legion-worker lists retro's removal of .legion/<KEY>/ among pushes that carry no trailer, so the READY head runs both workflows and is its own <ciHead>; CI row and T7."},
+      {"finding": "'On first push wc -l = 1' is ambiguous because the planner's handoff push precedes any code.", "answer": "D3: the criterion attaches to <implSha>, the first commit adding smoke/LEGSMOKE-1014.md; AC2 reads the file at ?ref=<implSha>."},
+      {"finding": "The ruleset requires only gate while the spec names both workflows, and each SHA yields duplicate check/gate runs from push and pull_request events.", "answer": "D4 states CI as a set condition over every check and gate run at <ciHead> ({names:[check,gate], states:[completed/success]}); D6 says the ruleset's single context is necessary, not sufficient."},
+      {"finding": "wc -l counts newlines, so a missing trailing LF reads 0 and a stray blank line reads 2; no document pins the bytes.", "answer": "D1 pins 44 bytes / sha256 06cd64fa…7307d; AC2 checks sha256sum, --jq .size, tail -c1 | xxd -p -> 0a, not wc -l alone."},
+      {"finding": "Dropping the (/tmp/…) title suffix is an unwritten convention.", "answer": "D1 cites smoke/LEGSMOKE-1004.md (and every earlier marker) as the source; the acceptance is equality with the pinned constant plus containment of the key."},
+      {"finding": "Line 2's text is unpinned and a no-append review must also pass.", "answer": "D2 pins 'Legion proof review round 1 (LEGSMOKE)' (24-file precedent) unless the thread names a line; AC3a/AC3b branch on the review's outcome."},
+      {"finding": "docs/solutions/ optional or required is undecided; the repo has no docs/ directory.", "answer": "D7: permitted, not required (precedent #744 merged the marker alone); AC4b checks the literal sorted file list from pulls/<N>/files."},
+      {"finding": "The changed-files criterion is only satisfiable after retro deletes .legion/LEGSMOKE-1014/; no time point is given.", "answer": "D8 defines two evaluation points: pre-retro (handoff paths expected) and READY head (none); T7 makes the removal an acceptance item."},
+      {"finding": "The production check assumes a squash merge and does not say how the merge SHA is obtained.", "answer": "D11/D12: <mergeSha> from gh pr view <N> --json mergeCommit; the commits/<mergeSha> file list is checked whichever strategy GitHub used; T9."},
+      {"finding": "The 'no earlier commit on main' control flips after the merge.", "answer": "D9 pins the control to commits?sha=cd982c1a…&path=… -> 0 with positive control LEGSMOKE-1004.md -> 1; AC1 names before/after readings separately."},
+      {"finding": "'Read-only negative controls' is unbounded and invites creating .fail-me.", "answer": "D9 enumerates GET-only controls and forbids creating .fail-me, scratch files, branches, tags, PR comments or GitHub-issue writes for any proof."},
+      {"finding": "No test harness exists, so 'the tester verifies' has no command to run.", "answer": "D10 and T4: a fixed list of GitHub reads with literal expected outputs plus six GET-only break attempts; no test file; the reason recorded in test.json."},
+      {"finding": "Who pushes the planner's handoff and when is a hidden sequencing requirement.", "answer": "D14: the planner commits plan.json and pushes only on the proof driver's targeted message; the implementer's first push carries it beneath the code commit, so it appears in the pre-retro diff (D8a)."},
+      {"finding": "Measured facts (main head, branch head, ruleset, .fail-me, skip-checks behaviour) can drift before the implementer acts.", "answer": "The facts table is dated 2026-10-22T22:55Z; D13 requires the implementer to re-run the reads before the first push and record its own outputs; a moved main licenses no rebase."}
+    ]
+  },
+  "planReview": {"verdict": "approved", "rounds": 1},
+  "specDepartures": []
+}
