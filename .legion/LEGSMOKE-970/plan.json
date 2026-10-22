@@ -1,0 +1,80 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-970",
+  "completed": "2026-10-22T04:35:30Z",
+  "plan": "dispatch://LEGSMOKE-970/artifact/plan-md",
+  "governingSpec": "dispatch://LEGSMOKE-967/spec (the child's own spec document is empty)",
+  "base": "a0c7ce50098b20bcfce1afb6e0af3851cce21b32",
+  "change": {
+    "path": "smoke/LEGSMOKE-970.md",
+    "literal": "LEGSMOKE-970: Upgrade rehearsal fallback child\n",
+    "bytes": 47,
+    "blobSha1": "08abbb01db0d221073e3fbd1ecff34d97d20375a",
+    "appendedLineDefault": "Legion proof review round 1 (LEGSMOKE)",
+    "appendedBlobSha1": "ca17c8b74c20fd4639cd7f942e29509e3b38deb0",
+    "appendedBytes": 86,
+    "commitMessage": "smoke: add LEGSMOKE-970 marker file",
+    "prTitle": "smoke: add LEGSMOKE-970 marker file"
+  },
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: references/pr-body.md (PR template, what a proof is; a Markdown-only diff gets no simplify pass and omits the Thermo line) and references/default-branch-check.md (identity check before each push). The repository ships no skills, AGENTS.md, manifest, linter or tests."
+    ],
+    "test": [
+      "legion-worker: references/pr-body.md (the tester verifies the implementer's proof and drives the surface independently through the GitHub contents and git objects APIs; CI is read at the code head, never re-run) and references/merge-gate.md (which head's checks count)."
+    ],
+    "review": [
+      "legion-worker: references/merge-gate.md (review order; approval of the head, stating K) and references/review-threads.md (one disposition per thread; the one appended line is requested only by a review on the pull request)."
+    ]
+  },
+  "gapAnalysis": {
+    "findings": [
+      {
+        "finding": "The issue's deliverable is undefined: the driver asked only for a pushed plan handoff while the root spec asks for a marker file reviewed in a pull request; which path this 'fallback' rehearsal takes only the owner can settle.",
+        "answer": "Plan section 'How far this issue runs': the plan covers the whole path; every criterion binds to a head that exists only once its phase has run; a plan-only outcome leaves the branch holding only .legion/LEGSMOKE-970/plan.json and makes no claim on C1/C3/C4/C5. Named to the architect in the completion summary."
+      },
+      {
+        "finding": "Which key names the file is ambiguous: the root spec says 'this issue' but the branch is the child's.",
+        "answer": "Decision 1: smoke/LEGSMOKE-970.md naming LEGSMOKE-970, as all 42 precedents key the marker by the branch's own issue; siblings 971/972 write disjoint paths, so no forward merge is expected."
+      },
+      {
+        "finding": "No Acceptance section exists anywhere; the plan is the only checkable document.",
+        "answer": "Criteria C1–C5 with surface, exact command, expected output and negative control; the plan is the acceptance of record and the child spec stays empty unless the architect populates it."
+      },
+      {
+        "finding": "The marker text has no documented source beyond the title minus its fixture clause.",
+        "answer": "Decision 2 pins the literal byte-for-byte (47 bytes, LF, no BOM/CRLF, blob sha1 08abbb01…), states the derivation rule, keeps 'child', drops ' (/tmp/legion-e2e4b.1357539.ifXgUL5l)'; no later role re-derives it."
+      },
+      {
+        "finding": "'Nothing else changes' collides with Legion's own .legion/ handoff commits.",
+        "answer": "Decision 4 and C2: .legion/ excluded from the diff criterion mid-run, zero .legion/ paths at the READY head R and in the squash merge commit M; a branch holding only handoff commits satisfies the sentence trivially."
+      },
+      {
+        "finding": "CI evidence may bind to a head that has no checks (handoff-only pushes get zero check-runs).",
+        "answer": "C3: CI binds to the code head H and retro's head R only; gate is the only required context, check informational; no CI claim is made for a handoff-only head."
+      },
+      {
+        "finding": "The production surface is undefined for a rehearsal that may never merge.",
+        "answer": "Section 'Production-like surface': production is main of sjawhar/legion-smoke after the daemon's squash merge; C5 names the exact reads at M and ?ref=main with expected bytes; before the merge the production-like read is the contents API at a branch head."
+      },
+      {
+        "finding": "The optional appended line is unspecified in trigger, text and cap.",
+        "answer": "Decision 5: K in {0,1}; triggered only by a REQUEST_CHANGES review or a review thread from the reviewer on the pull request; default text 'Legion proof review round 1 (LEGSMOKE)'; one-line cap; anything else goes to the architect; K is 0 while no pull request exists."
+      },
+      {
+        "finding": "Base drift and concurrent siblings are unaddressed.",
+        "answer": "Decision 10 and C1(a): base pinned to B = a0c7ce50…; disjoint paths mean no rebase or forward merge while MERGEABLE; absence control pinned at B and re-read at the then-current main with its SHA recorded; 'nothing else changes' measured on M against its one parent."
+      },
+      {
+        "finding": "Several planning facts rest on command output the analyst could not see (blob sha1s, base SHA, ruleset contexts, contents-API probes, skip-checks behaviour).",
+        "answer": "Section 'Production-like surface' lists each fact with the command that produced it, marked to be re-run at implement time; the cmp against the literal is binding and a sha1 mismatch is reported as a plan bug, not re-cut."
+      }
+    ]
+  },
+  "planReview": {
+    "verdict": "approved",
+    "rounds": 1
+  },
+  "specDepartures": []
+}
