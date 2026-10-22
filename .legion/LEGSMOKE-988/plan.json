@@ -1,0 +1,79 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-988",
+  "completed": "2026-10-22T10:32:00Z",
+  "planDocument": "dispatch://LEGSMOKE-988/artifact/plan-md",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: references/pr-body.md defines the PR template and what a proof is (a docs-only diff gets no simplify pass and omits the Thermo line, so ce-simplify-code does not apply); references/default-branch-check.md is the identity check before each push. The repository ships no skills, AGENTS.md, tests or linters; the smoke/LEGSMOKE-<n>.md convention is read from sibling files smoke/LEGSMOKE-979.md and smoke/LEGSMOKE-980.md."
+    ],
+    "test": [
+      "legion-worker: references/pr-body.md says the tester verifies the implementer's proof and drives the surface (GitHub contents and git-objects API at the pinned head) independently, reads CI and never re-runs it; references/merge-gate.md says which head's checks count. No red test is written: the repository has no test suite and nothing executable changes."
+    ],
+    "review": [
+      "legion-worker: references/merge-gate.md gives the review order (read CI, handoff push, review of that head, complete) and the approval of the head; references/review-threads.md gives one disposition per thread. The reviewer reads the plan beside the parent spec dispatch://LEGSMOKE-985/spec since the child spec is empty."
+    ]
+  },
+  "gapAnalysis": {
+    "findings": [
+      {
+        "finding": "The child spec is empty; the only requirement text is the parent's (dispatch://LEGSMOKE-985/spec), and 'this issue' read on the parent is LEGSMOKE-985. Neither spec has an Acceptance section, so every criterion is the planner's.",
+        "answer": "Plan section 'What the issue inherits': LEGSMOKE-988 inherits the parent's Summary and Scope verbatim and 'this issue' resolves to the child, as every sibling marker names itself (smoke/LEGSMOKE-979.md, smoke/LEGSMOKE-980.md). Criteria C1-C5 are the planner's, sanctioned by the driver's targeted message c5c92eb1-1040-472b-a9d9-ccbe176d7239 ('the one-file smoke change'); each choice is listed under Uncertainty for the architect to overturn. The planner edits no spec."
+      },
+      {
+        "finding": "The candidate literal drops the title's parenthetical '(/tmp/legion-e2e4b.34097.fZ6oiKvE)'; full title and truncated title yield different bytes, blob shas and criteria. Mechanical properties (one line, LF, no BOM, byte count, sha1) must be pinned.",
+        "answer": "Decision 2 fixes the literal 'LEGSMOKE-988: Upgrade rehearsal fallback child' + LF: 47 bytes, ASCII, no CR/BOM/trailing space, one terminating LF, blob sha1 685ca6c487f53c1bf115f70af7d9680d8ff6d32e. Rule '<key>: <title with fixture clause dropped>' is the sibling precedent (LEGSMOKE-979's title carries '(/tmp/legion-e2e4b.2981255.u9Y0j1xh)', its marker does not). C1 checks cmp against LIT, wc -c, wc -l, last byte 0a, SHA1, and the API's .sha/.size. Listed under Uncertainty."
+      },
+      {
+        "finding": "The claim that handoff-only pushes carry 'skip-checks: true' and therefore no CI is unverified; both workflows trigger on push and pull_request. Per-head expectations and 'absence of runs is not green' must be stated with a machine-run check.",
+        "answer": "Verified at planning time on PR #734: check-runs at the four handoff commits (19f4531a plan, c551ca29 implement, 67d2b24d test, 7fb21d30 review) each total_count 0; at the marker commit e15b81fb and retro head 200d1dae each total_count 4 (check x2, gate x2, all success), and actions/runs?head_sha=<full sha> lists ci and fail-on-demand for push and pull_request. Decision 9 and C3 bind CI to code heads H and R via the RUNS helper (check-runs and workflow runs at the pinned SHA, polled to completed); a total_count 0 head is a handoff head and never cited as CI; the PR body's CI line cites H's run ids."
+      },
+      {
+        "finding": "'Nothing else changes' is contradicted by Legion's own mechanics unless allow-listed: .legion/LEGSMOKE-988/<phase>.json mid-run, retro's removal, and an optional docs/solutions/ file that would create a new top-level tree. Which paths may exist at which heads must be bound.",
+        "answer": "Decisions 5 and 7 and C2 allow-list by head: mid-run the PR file list is the marker plus .legion/LEGSMOKE-988/*.json (C2a jq filter -> true, compare/main...<head> minus .legion/ -> exactly the marker added +1); at R and M no .legion/ path (C2b: STATUS .legion/LEGSMOKE-988 R -> 404, compare/A...R shows only .legion/ removed and docs/solutions/ added); M has one parent and lists the marker plus zero or more docs/solutions/ files (C5), as #734's merge commit 841a4227 lists exactly smoke/LEGSMOKE-980.md. Whether a new docs/ tree is acceptable is the architect's call (Uncertainty); the checks pass either way."
+      },
+      {
+        "finding": "Under Stage 4b gating the planner cannot create the marker, open the PR or run the production check; an implementer must sleep 300 first. The plan must split criteria by owner and head and say what the plan's own done-ness is.",
+        "answer": "Decision 13: each role acts only on its targeted message; the implementer sleeps 300 on implementing task lines. This phase's deliverable is .legion/LEGSMOKE-988/plan.json pushed on legion/LEGSMOKE-988, the plan.md artifact, and handoff_complete. Ordering steps 1-5 assign C1/C2a/C3 at H0 (and H1) to the implementer, verification at H to the tester, review of A to the reviewer, C4 at R to the merger, C5 at M to the implementer's production check."
+      },
+      {
+        "finding": "The optional appended line is ambiguous: who counts as a review, what text, whether more than one append is allowed. Two mutually exclusive byte-exact states are needed.",
+        "answer": "Decision 6: the ask is the reviewer role's REQUEST_CHANGES review or review thread on the PR (a Dispatch comment, bare PR comment, bot or message is not); text is the line the review names, default 'Legion proof review round 1 (LEGSMOKE)' (verbatim second line of all 24 two-line markers); cap one appended line, line 1 unchanged, anything else escalated to the architect. C1 is parameterised by K: 47 bytes / 685ca6c4... (K=0) or 86 bytes / 8a095fca2dbdc501a0ef29ade20c4390631cd8b6 (K=1 default), recomputed from LIT for other text."
+      },
+      {
+        "finding": "The proof standard needs a production-like surface and a negative control per criterion; the local jj working copy is not one, and 'the file contains X' is satisfiable by a local cat.",
+        "answer": "Every criterion reads GitHub at a pinned SHA via the RAW/STATUS/FILES/RUNS helpers: C1 contents API at H with cmp against LIT and controls (a) 404 for smoke/LEGSMOKE-988.md at B=841a4227 beside 200 for smoke/LEGSMOKE-980.md at B, commits?path= count 0, case-variant 404; (b) twin cmp 'differ: char 12'; (c) in-memory break set. C2 PR files API and compare API; C3 check-runs and actions runs; C4 pr view fields at R; C5 contents at M and ?ref=main with MAIN recorded, commits/M parents and files, STATUS .legion/LEGSMOKE-988 M -> 404."
+      },
+      {
+        "finding": "The parent presumes a pull request but never requires one; zero PRs exist for the head. Who opens it, its title and body, and whether its existence, file list and single-parent squash are criteria must be stated.",
+        "answer": "Decision 11: the implementer opens exactly one PR after the code push (gh pr create --base main --head legion/LEGSMOKE-988 --title 'smoke: add LEGSMOKE-988 marker file', body from the pr-body.md template with 'Dispatch: LEGSMOKE-988' first). Existence and file list are criteria (pr list count 1, grep -cx 'Dispatch: LEGSMOKE-988' -> 1, C2); the squash shape is part of C5 (parents: 1) with decision 14's fallback if the daemon merges otherwise."
+      },
+      {
+        "finding": "main moves while the issue is open (strict_required_status_checks_policy false; sibling trees land markers); criteria pinned to main or asserting fast-forward go stale, and a sibling's .fail-me could redden gate on this branch.",
+        "answer": "Decision 10: every observation is pinned to a SHA; absence controls to B; 'nothing else' measured on M against its one parent; post-merge read at ?ref=M plus ?ref=main with MAIN recorded. No rebase or forward merge while the PR is MERGEABLE. A gate red with an outside cause (a .fail-me arriving on main fails the pull_request-event gate run) is reported to the architect with run id and base SHA, not fixed here; a job that failed on its own is re-run with gh run rerun --failed, never by a new commit."
+      },
+      {
+        "finding": "Merge preconditions rest on one ruleset rule read while the classic protection endpoint returned 403; whether a review, signature, linear-history or merge-method rule exists is unshown.",
+        "answer": "Read at planning time: gh api repos/sjawhar/legion-smoke/rules/branches/main --jq '[.[]|.type]' -> [\"required_status_checks\"], the only rule applying to main (context gate, strict false). The 403 is recorded as refused, never guessed at, and the merger names it in its READY packet (decision 14). The approval the gate needs is Legion's own reviewer approval of A, not a GitHub rule; #734 shows reviewDecision APPROVED surviving retro's push, checked again in C4."
+      },
+      {
+        "finding": "A plan citing 'repository conventions' has nothing to cite: no AGENTS.md, manifest, linter, tests, PR template or root .gitignore; README.md and SMOKE.md are marker prose.",
+        "answer": "Skills section states the repository ships no skills, tests, linters or contributor docs; the only automated surfaces are the two workflows; the naming and content convention is sourced from sibling files smoke/LEGSMOKE-979.md and smoke/LEGSMOKE-980.md; requiredSkills name Legion's process skills only; no reviewer expects a test or lint step."
+      },
+      {
+        "finding": "'Under smoke/' admits several naming families and a subdirectory; a different path would break every byte-exact criterion. The path must be pinned with an existence precondition.",
+        "answer": "Decision 1 pins exactly smoke/LEGSMOKE-988.md (46 LEGSMOKE-*.md siblings; this run's family 973-980 all use it), no subdirectory, with the implementer's precondition STATUS smoke/LEGSMOKE-988.md <branch head> -> 404 before writing."
+      },
+      {
+        "finding": "Commit subject, the skip-checks trailer on handoff pushes, and the single-parent squash shape are visible in history but unstated as requirements or non-requirements.",
+        "answer": "Decision 4: subject 'smoke: add LEGSMOKE-988 marker file' follows precedent and a different subject is not a defect. The trailer rule is Legion's push rule, applied push by push in Ordering (handoff pushes trailered, code and retro pushes not). The squash shape is a criterion read in C5 (commits/M parents: 1, files = marker plus optional docs/solutions/)."
+      }
+    ]
+  },
+  "planReview": {
+    "verdict": "approved",
+    "rounds": 1
+  },
+  "specDepartures": []
+}
