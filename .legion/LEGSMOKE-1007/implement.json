@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "phase": "implement",
+  "issue": "LEGSMOKE-1007",
+  "completed": "2026-10-22T21:02:00Z",
+  "pullRequest": "https://github.com/sjawhar/legion-smoke/pull/745",
+  "codeHead": "a69e84bd8b550379be5ca32a310d747b943142b7",
+  "base": "8cf142f4c87586dff5fa735fa4b9ace55968020a",
+  "mainAtExecution": "cd982c1a6f3d2abc219ed655afe88603830d6caf",
+  "ci": {
+    "ci": {"run": 39853447353, "job": "check", "conclusion": "success", "headSha": "a69e84bd8b550379be5ca32a310d747b943142b7"},
+    "fail-on-demand": {"run": 39853447428, "job": "gate", "conclusion": "success", "headSha": "a69e84bd8b550379be5ca32a310d747b943142b7"}
+  },
+  "proof": [
+    {
+      "criterion": "A1/A2 (plan C1): the marker exists at H0 at smoke/LEGSMOKE-1007.md, mode 100644, nowhere else outside .legion/, and its bytes are LIT (47 bytes, one LF-terminated line, blob sha1 c7d78320845cc63369d2302a707d7a3bb4b93f96).",
+      "surface": "GitHub contents API (application/vnd.github.raw+json) and git-objects API (git/commits, git/trees?recursive=1) of sjawhar/legion-smoke at the pushed head H0, read with the pane's gh.",
+      "command": "R=repos/sjawhar/legion-smoke; H0=a69e84bd8b550379be5ca32a310d747b943142b7; LIT() { printf 'LEGSMOKE-1007: Upgrade rehearsal handoff child\\n'; }; RAW() { gh api \"$R/contents/$1?ref=$2\" -H 'Accept: application/vnd.github.raw+json'; }; RAW smoke/LEGSMOKE-1007.md $H0 > f; cmp f <(LIT); echo cmp=$?; wc -c < f; wc -l < f; head -1 f; tail -c1 f | od -An -tx1; git hash-object f; LIT | git hash-object --stdin; gh api \"$R/contents/smoke/LEGSMOKE-1007.md?ref=$H0\" --jq '.path+\" \"+.sha+\" \"+(.size|tostring)'; T=$(gh api \"$R/git/commits/$H0\" --jq .tree.sha); echo tree=$T; gh api \"$R/git/trees/$T?recursive=1\" --jq '{truncated, m:[.tree[]|select(.type==\"blob\")|select(.path|ascii_downcase|test(\"legsmoke-1007\"))|select(.path|startswith(\".legion/\")|not)|{path,size,sha,mode}]} | tostring'",
+      "observed": "cmp=0; 47; 1; LEGSMOKE-1007: Upgrade rehearsal handoff child; 0a; c7d78320845cc63369d2302a707d7a3bb4b93f96 (served blob) and c7d78320845cc63369d2302a707d7a3bb4b93f96 (LIT via git hash-object --stdin); contents API: smoke/LEGSMOKE-1007.md c7d78320845cc63369d2302a707d7a3bb4b93f96 47; tree=6fa4920c60991b89bef2a79071d727f020a3ff37; recursive tree: {\"m\":[{\"mode\":\"100644\",\"path\":\"smoke/LEGSMOKE-1007.md\",\"sha\":\"c7d78320845cc63369d2302a707d7a3bb4b93f96\",\"size\":47}],\"truncated\":false}. Locally before the push: cmp=0, 47 bytes, 1 line, od -c shows a single trailing \\n, git hash-object c7d78320845cc63369d2302a707d7a3bb4b93f96, jj diff --git shows one new file mode 100644, +1/-0.",
+      "headSha": "a69e84bd8b550379be5ca32a310d747b943142b7",
+      "negativeControl": "Paired at the same refs with STATUS() { gh api \"$R/contents/$1?ref=$2\" --jq .sha >/dev/null 2>&1 && echo 200 || echo 404; }: at base B=8cf142f4c87586dff5fa735fa4b9ace55968020a, STATUS smoke/LEGSMOKE-1007.md -> 404 beside STATUS smoke/LEGSMOKE-998.md -> 200 (absent, not unauthorised); at main=cd982c1a6f3d2abc219ed655afe88603830d6caf (MAIN() re-resolved at execution) the same pair -> 404 / 200; case variant STATUS smoke/legsmoke-1007.md at H0 -> 404; RAW smoke/LEGSMOKE-998.md $H0 | cmp - <(LIT) -> exit 1 ('differ: char 10, line 1'), so cmp discriminates the twin's bytes from LIT."
+    },
+    {
+      "criterion": "A3 (plan C2): mid-run the pull request carries only the marker and .legion/LEGSMOKE-1007/ handoffs; outside .legion/ the diff against main is exactly one added file, +1/-0; .fail-me is absent at the head.",
+      "surface": "GitHub pulls API (pulls/745/files, pulls/745), compare API (compare/main...H0), contents API, and gh pr diff/gh pr view against pull request #745 of sjawhar/legion-smoke at H0.",
+      "command": "R=repos/sjawhar/legion-smoke; H0=a69e84bd8b550379be5ca32a310d747b943142b7; N=745; gh api \"$R/pulls/$N/files\" --jq '[.[].filename] | (all(. == \"smoke/LEGSMOKE-1007.md\" or startswith(\".legion/LEGSMOKE-1007/\")) and any(. == \"smoke/LEGSMOKE-1007.md\"))'; gh api \"$R/pulls/$N/files\" --jq '[.[]|{filename,status,additions,deletions}] | tostring'; gh pr diff $N -R sjawhar/legion-smoke --name-only; gh api \"$R/compare/main...$H0\" --jq '[.files[]|select(.filename|startswith(\".legion/\")|not)|{filename,status,additions,deletions}] | tostring'; STATUS .fail-me $H0; gh pr view $N -R sjawhar/legion-smoke --json number,headRefOid,baseRefName,mergeable,mergeStateStatus,additions,deletions,changedFiles --jq tostring",
+      "observed": "true; [{\"additions\":76,\"deletions\":0,\"filename\":\".legion/LEGSMOKE-1007/plan.json\",\"status\":\"added\"},{\"additions\":1,\"deletions\":0,\"filename\":\"smoke/LEGSMOKE-1007.md\",\"status\":\"added\"}]; gh pr diff --name-only: .legion/LEGSMOKE-1007/plan.json and smoke/LEGSMOKE-1007.md (the same set); compare/main...H0 non-.legion files: [{\"additions\":1,\"deletions\":0,\"filename\":\"smoke/LEGSMOKE-1007.md\",\"status\":\"added\"}] (ahead_by 2, behind_by 2, status diverged, all files [\".legion/LEGSMOKE-1007/plan.json\",\"smoke/LEGSMOKE-1007.md\"]); STATUS .fail-me at H0 -> 404; gh pr view: {\"additions\":77,\"baseRefName\":\"main\",\"changedFiles\":2,\"deletions\":0,\"headRefOid\":\"a69e84bd8b550379be5ca32a310d747b943142b7\",\"mergeStateStatus\":\"UNSTABLE\",\"mergeable\":\"MERGEABLE\",\"number\":745}. Check-runs at H0 at the time of the read: check completed/success (ci run 39853447353), gate completed/success (fail-on-demand run 39853447428), both head_sha = H0.",
+      "headSha": "a69e84bd8b550379be5ca32a310d747b943142b7",
+      "negativeControl": "The same allow-list jq over pulls/741/files (files [\"smoke/LEGSMOKE-998.md\"]) -> false (a sibling's marker is rejected); printf '%s\\n' smoke/LEGSMOKE-1007.md docs/x.md | jq -R . | jq -s 'all(. == \"smoke/LEGSMOKE-1007.md\" or startswith(\".legion/LEGSMOKE-1007/\"))' -> false (a stray path is detected)."
+    }
+  ],
+  "filesChanged": [
+    "smoke/LEGSMOKE-1007.md (new, 47 bytes, mode 100644, commit a69e84bd8b550379be5ca32a310d747b943142b7 'smoke: add LEGSMOKE-1007 marker file')",
+    ".legion/LEGSMOKE-1007/implement.json (this handoff; handoff-only push with the skip-checks trailer)"
+  ],
+  "trickyParts": [
+    "K = 0 (plan D4): no second line appended; the K=1 literal 'Legion proof review round 1 (LEGSMOKE)' is used only if this issue's reviewer asks for it in a REQUEST_CHANGES review.",
+    "Built on B = 8cf142f4 (legion/LEGSMOKE-1007@origin at start, under the planner's handoff b0689365); main = cd982c1a is 2 ahead with no path overlap, so no forward merge; GitHub reports the pull request MERGEABLE.",
+    "Thermo/simplify pass not run: the diff is a one-line Markdown marker (docs-only), so skill://legion-worker/references/pr-body.md omits the Thermo line entirely.",
+    "The handoff head (this commit) carries no workflow run by design (skip-checks: true); the tester binds C5 at H0 = a69e84bd8b550379be5ca32a310d747b943142b7, where check and gate are both completed/success."
+  ],
+  "deviations": [],
+  "openQuestions": [],
+  "discoveredComplexity": []
+}
