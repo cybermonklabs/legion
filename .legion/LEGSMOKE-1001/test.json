@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "phase": "test",
+  "issue": "LEGSMOKE-1001",
+  "completed": "2026-10-22T18:37:30Z",
+  "pullRequest": "https://github.com/sjawhar/legion-smoke/pull/742",
+  "codeHead": "44ded605ef1210cbf430e6aa890d4fcea84baa80",
+  "boundHead": "f342468dcb1f4583bb380b877cb213e00109f9ef",
+  "round": 1,
+  "implementerProof": {
+    "verdict": "verified",
+    "how": "Re-ran plan C1 verbatim at H0 = 44ded605ef1210cbf430e6aa890d4fcea84baa80 over the GitHub contents API (RAW/STATUS/MAIN helpers as the plan defines them) and observed every value the implementer recorded: cmp=0, 47 bytes, 1 line, head -1 = 'LEGSMOKE-1001: Upgrade rehearsal handoff child', last byte 0a, git hash-object of the served bytes and of LIT both c96620912f91dbf1cfc8719f8cbd80cdab7ecea7, contents entry 'smoke/LEGSMOKE-1001.md c96620912f91dbf1cfc8719f8cbd80cdab7ecea7 47'. Its negative controls reproduced too: STATUS 1001@B(630a2a54) → 404 beside 992@B → 200; MAIN re-resolved → 8cf142f4c87586dff5fa735fa4b9ace55968020a and 1001@M → 404; commits?sha=main&path=smoke/LEGSMOKE-1001.md → 0; lower-case path at H0 → 404; twin RAW smoke/LEGSMOKE-992.md at H0 | cmp - <(LIT) → 'differ: char 10, line 1', exit 1. Its C2 allow-list read and C5 CI read were re-driven independently (see proof)."
+  },
+  "failures": [],
+  "failed": 0,
+  "proof": [
+    {
+      "criterion": "A1/A2 — The marker exists at H0 at smoke/LEGSMOKE-1001.md and nowhere else; its bytes are LIT: 47 bytes, one LF-terminated line, blob sha1 c96620912f91dbf1cfc8719f8cbd80cdab7ecea7 (plan D3 (b), the tester's independent surface).",
+      "surface": "GitHub git-objects API (git/commits → git/trees?recursive=1 → git/blobs, base64-decoded) at the pinned code head over gh api; https://github.com/sjawhar/legion-smoke/blob/44ded605ef1210cbf430e6aa890d4fcea84baa80/smoke/LEGSMOKE-1001.md",
+      "command": "R=repos/sjawhar/legion-smoke; H0=44ded605ef1210cbf430e6aa890d4fcea84baa80; LIT() { printf 'LEGSMOKE-1001: Upgrade rehearsal handoff child\\n'; }; T=$(gh api \"$R/git/commits/$H0\" --jq .tree.sha); gh api \"$R/git/trees/$T?recursive=1\" | jq -c '{truncated, m:[.tree[]|select(.type==\"blob\")|select(.path|ascii_downcase|test(\"legsmoke-1001\"))|select(.path|startswith(\".legion/\")|not)|{path,size,sha,mode}], failme:[.tree[]|select(.path==\".fail-me\")]|length, markers:[.tree[]|select(.type==\"blob\")|select(.path|test(\"^smoke/LEGSMOKE-[0-9]+\\\\.md$\"))]|length}'; gh api \"$R/git/blobs/c96620912f91dbf1cfc8719f8cbd80cdab7ecea7\" --jq .content | base64 -d > blob; cmp blob <(LIT); echo blob_cmp=$? blob_bytes=$(wc -c < blob); gh api \"$R/git/blobs/c96620912f91dbf1cfc8719f8cbd80cdab7ecea7\" --jq '.size, .encoding'",
+      "observed": "tree 06ddf6ced788704626a1407703a63a53e8c0c086; {\"truncated\":false,\"m\":[{\"path\":\"smoke/LEGSMOKE-1001.md\",\"size\":47,\"sha\":\"c96620912f91dbf1cfc8719f8cbd80cdab7ecea7\",\"mode\":\"100644\"}],\"failme\":0,\"markers\":51} (50 markers at base B plus this one; the case-insensitive match finds exactly one non-.legion/ blob); blob_cmp=0 blob_bytes=47; blob size 47, encoding base64.",
+      "headSha": "44ded605ef1210cbf430e6aa890d4fcea84baa80",
+      "negativeControl": "In-memory break set (plan D3 (c), uncommitted) each cmp'd against the decoded blob: exact LIT 47 B → exit 0; CRLF 48 B → 1; no final LF 46 B → 1; UTF-8 BOM 50 B → 1; trailing space 48 B → 1; double LF 48 B → 1; wrong key LEGSMOKE-992 46 B → 1; key-only 'LEGSMOKE-1001\\n' 14 B → 1; fixture clause kept 84 B → 1; lower-case key (same length, 47 B) → 1; K=1 two-liner 86 B → 1 (its sha1 8076fb2a687ae8f689b2c014026c6fb642eac701 matches the plan's pinned conditional). Bogus blob gh api $R/git/blobs/0000000000000000000000000000000000000000 → 404."
+    },
+    {
+      "criterion": "A3 — Mid-run the pull request carries only the marker and .legion/LEGSMOKE-1001/ handoffs; outside .legion/ the diff against main is exactly one added file, +1/−0; .fail-me is absent (plan C2 at the head the tester binds).",
+      "surface": "GitHub pulls and compare API over gh api and gh pr diff, pull request #742 at head f342468dcb1f4583bb380b877cb213e00109f9ef (the implement.json handoff head, the branch tip when testing began)",
+      "command": "R=repos/sjawhar/legion-smoke; N=742; H=f342468dcb1f4583bb380b877cb213e00109f9ef; gh api \"$R/pulls/$N\" --jq '.head.sha+\" \"+.base.ref+\" \"+.state'; gh api \"$R/pulls/$N/files\" --jq '[.[].filename] | (all(. == \"smoke/LEGSMOKE-1001.md\" or startswith(\".legion/LEGSMOKE-1001/\")) and any(. == \"smoke/LEGSMOKE-1001.md\"))'; gh api \"$R/pulls/$N/files\" | jq -c '[.[].filename]'; gh pr diff $N -R sjawhar/legion-smoke --name-only; gh api \"$R/compare/main...$H\" | jq -c '[.files[]|select(.filename|startswith(\".legion/\")|not)|{filename,status,additions,deletions}]'; STATUS .fail-me $H",
+      "observed": "'f342468dcb1f4583bb380b877cb213e00109f9ef main open'; true; [\".legion/LEGSMOKE-1001/implement.json\",\".legion/LEGSMOKE-1001/plan.json\",\"smoke/LEGSMOKE-1001.md\"]; gh pr diff --name-only → the same three paths; [{\"filename\":\"smoke/LEGSMOKE-1001.md\",\"status\":\"added\",\"additions\":1,\"deletions\":0}]; .fail-me → 404. CI read at H0 (plan C5, read not re-run): commits/44ded605…/check-runs → total_count 4, runs gate/check/check/gate all completed/success, every head_sha = 44ded605…; rules/branches/main required_status_checks → [\"gate\"]; .fail-me at H0 → 404; gh pr view 742 → mergeable MERGEABLE, mergeStateStatus BLOCKED at the handoff-only head (no check-run there by design; the daemon's record carries checksVerdict green from H0).",
+      "headSha": "f342468dcb1f4583bb380b877cb213e00109f9ef",
+      "negativeControl": "The same allow-list jq over $R/pulls/738/files ([\"smoke/LEGSMOKE-992.md\"]) → false; this head's file list with a stray docs/solutions/x.md appended, through the same jq → false. C5 control: commits/f342468d…/check-runs total_count → 0 and actions/runs?head_sha=f342468d… total_count → 0 (the skip-checks: true head carries no run; od of its message tail shows '\\n\\n\\nskip-checks: true\\n')."
+    }
+  ],
+  "redTests": "No red test is written: docs-only diff and no test runner in this repository (plan D3). The break set above ran in memory and committed nothing.",
+  "ci": {
+    "readAt": "44ded605ef1210cbf430e6aa890d4fcea84baa80",
+    "checkRuns": "4 (gate, check, check, gate), all completed/success",
+    "requiredOnMain": ["gate"],
+    "handoffOnlyHeadControl": "f342468dcb1f4583bb380b877cb213e00109f9ef → check-runs 0, workflow runs 0"
+  },
+  "notes": [
+    "The daemon-upgrade rehearsal during planning left no trace in the branch: the chain is 630a2a54 (base) → f80e9fe9 plan.json (review App) → 44ded605 marker (implement App) → f342468d implement.json (implement App); every commit's author and committer match its role's App.",
+    "mergeStateStatus moved from CLEAN (implementer's read at H0) to BLOCKED once the branch tip became the handoff-only commit without a gate check-run; expected under the skip-checks: true rule, not a defect of the change."
+  ]
+}
