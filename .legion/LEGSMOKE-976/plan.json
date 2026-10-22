@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-976",
+  "completed": "2026-10-22T05:42:17Z",
+  "plan": "dispatch://LEGSMOKE-976/artifact/plan-md",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: references/pr-body.md (PR template, what a proof is; docs-only diff gets no simplify pass and no Thermo line), references/default-branch-check.md (identity before each push), references/review-threads.md (one disposition per thread), references/merge-gate.md (production check after the merge)",
+      "legion-retro: the revived implementer's retro commits only the removal of .legion/LEGSMOKE-976/ and no docs/solutions/ file (plan D5)",
+      "dispatch: loaded before any Dispatch write (retro message, production-check message)"
+    ],
+    "test": [
+      "legion-worker: references/pr-body.md (verify the implementer's proof, drive the surface independently through the GitHub contents and git-objects APIs, read CI never rerun) and references/merge-gate.md (which head's checks count); the repository has no test harness so no test file is written (plan D12)"
+    ],
+    "review": [
+      "legion-worker: references/merge-gate.md (required-set read each round, review order, approval of the head by SHA) and references/review-threads.md (one disposition per thread, bot threads named to the implementer)"
+    ]
+  },
+  "gapAnalysis": {
+    "findings": [
+      {"finding": "The inherited Acceptance names the parent's key and path (smoke/LEGSMOKE-973.md); three children inherit the same text and would collide.", "answer": "D0/§8.1: this child's file is smoke/LEGSMOKE-976.md containing LEGSMOKE-976; recorded as a spec departure."},
+      {"finding": "'On the branch's first push' binds to no head this run produces: the branch exists on origin at B and the planner's handoff push is the first push.", "answer": "D3/§8.3: the one-line criterion binds to H1, the first commit adding the marker, by SHA; recorded as a departure."},
+      {"finding": "Scope's 'Nothing else changes' contradicts Acceptance's allowance for docs/solutions/ files in the merge commit.", "answer": "D5/§8.2: retro commits no learning file; M lists exactly [\"smoke/LEGSMOKE-976.md\"] with one parent; recorded as a departure the architect may overturn."},
+      {"finding": "'Both workflows pass on the pull request's head' mixes required gate with informational check and names no head.", "answer": "C3 and D6: bound to each code head and R by SHA with the check-runs command; gate required (ruleset 24471196), check reported never bypassed."},
+      {"finding": "The claim that handoff-only heads run no CI is unsupported by the workflow files.", "answer": "D7: measured on PR #729's commits — the four 'record handoff' heads have check-runs total_count 0, the marker commit and retro's removal commit 4; retro's push is a code push so R carries CI for READY."},
+      {"finding": "The file-list criterion is time-dependent; .legion/ handoffs appear mid-run and vanish at retro.", "answer": "C6 and the §1 head table: mid-run filter excludes .legion/LEGSMOKE-976/ explicitly; zero .legion/ paths at R; M's own file list is the binding check."},
+      {"finding": "'A review may ask for one more line' has no asker, detector or literal.", "answer": "D4 and §4 detector K: a CHANGES_REQUESTED review with one fenced inline comment on the marker path; default line 'Legion proof review round 1 (LEGSMOKE)'; K in {0,1}; anything else goes to the architect (§7.1)."},
+      {"finding": "The exact bytes of line 1 are a convention, not a requirement.", "answer": "D2: printf 'LEGSMOKE-976: Upgrade rehearsal fallback child\\n', 47 bytes, blob e440e2239123431696b0f946a898b57019b24b4d; the cmp against the literal binds."},
+      {"finding": "Every criterion needs a production-like surface and a negative control; the spec supplies none.", "answer": "§4: each of C1–C7 names the GitHub API command, expected output and a control that fails when the criterion is false (B 404 calibrated by the sibling 200; wrong-literal cmps; PR #729 filter)."},
+      {"finding": "Relaunch/idempotency is an operator requirement absent from the spec; a later 'fallback interruption' message is expected.", "answer": "D9 and §7.6: re-derive from origin and GitHub first; no second content commit if the bytes already exist; reuse an existing PR; the smallest change is the D2 literal."},
+      {"finding": "main moves under the criteria as siblings merge.", "answer": "D8, C1, C6: newness pinned to B and judged by commits?path → [M]; 'nothing else' judged on M against its one parent; no rebase or forward merge unless CONFLICTING."},
+      {"finding": "No role is assigned the pull request, its base, or reuse across relaunches.", "answer": "D14: the implementer opens exactly one PR against main after the marker push, reusing any existing one (gh pr list --head legion/LEGSMOKE-976 --state all)."},
+      {"finding": "CI reads see duplicate runs per SHA (push and pull_request) and queued ones.", "answer": "D6 and C3: every run on the judged SHA must be success; poll until completed; after 10 minutes queued report to the architect; never rerun as evidence."},
+      {"finding": "The handoff's required fields carry content the spec does not supply; departures must be enumerated.", "answer": "§8 and this file's specDepartures list the three departures explicitly."},
+      {"finding": "The retro/merge head sequence (which head the reviewer approves, how R relates) is unstated.", "answer": "C4 and §5.5: the reviewer approves A by SHA; compare/A...R lists only .legion/LEGSMOKE-976/*.json removals; marker bytes at R cmp-equal H; reviewDecision APPROVED at R."},
+      {"finding": "The implementer's sleep 300 is an operator instruction not in the spec and repeats on re-task.", "answer": "D13 and §5.1 step 0, §5.2, §5.5 retro: sleep 300 as one bash call with timeout 600 before WAITING, on the task line and on any re-task for the same phase."},
+      {"finding": "No merged precedent exists for a fallback child's second line.", "answer": "D4/C5: the default line is admitted if a review asks but never directed; a clean APPROVE at one line completes the change (K = 0)."},
+      {"finding": "The post-merge production check has no stated command or expected value.", "answer": "§5.6: the exact command block with expected outputs for K = 0 and K = 1, the B 404 control, and the three records (Production: line, PR comment with footer, dispatch message)."},
+      {"finding": "Several facts (empty child spec, ruleset, branch tip, 404s, squash merge shape, PR #721 open) were unverified by the analyst.", "answer": "Each was measured by the planner at 05:30Z–05:40Z and is cited inline in the plan with its command and output (ruleset 24471196 contexts [gate]; branch and main at a0c7ce50; 404 for smoke/LEGSMOKE-976.md at main and B with 200 for smoke/LEGSMOKE-962.md; #729's M has one parent and one file; PR #721 OPEN)."}
+    ]
+  },
+  "planReview": {
+    "verdict": "approved",
+    "rounds": 1
+  },
+  "specDepartures": [
+    {
+      "spec": "Acceptance of the inherited parent spec (dispatch://LEGSMOKE-973/spec; this child's own spec is empty): the new file is smoke/LEGSMOKE-973.md and its line contains this issue's key, LEGSMOKE-973.",
+      "plan": "The file is smoke/LEGSMOKE-976.md and its line is 'LEGSMOKE-976: Upgrade rehearsal fallback child' + LF (47 bytes); smoke/LEGSMOKE-973.md is no child's deliverable.",
+      "evidence": "Every marker under smoke/ names the issue of the branch that carried it (smoke/LEGSMOKE-961.md, -962.md read at B); the driver's message c49ca87f names legion/LEGSMOKE-976; siblings LEGSMOKE-977/-978 inherit the same text and three children on one path would collide.",
+      "outcome": {"kind": "changed", "scope": "acceptance: the file path and key lines read for the child's own key; summary unchanged."}
+    },
+    {
+      "spec": "Acceptance: the pull request's changed files may include docs/solutions/ (notes the retro step commits), and the merge commit on main lists smoke/LEGSMOKE-973.md, files under docs/solutions/, and nothing else.",
+      "plan": "Retro commits no docs/solutions/ file; learnings go in retro's Dispatch message; the merge commit M has one parent and lists exactly [\"smoke/LEGSMOKE-976.md\"] (C6, D5).",
+      "evidence": "Scope says 'Nothing else changes'; contents/docs?ref=main → 404; merge commits of #727 (3789bd33), #728 (c8d2e73f) and #729 (a0c7ce50) each list exactly one marker file with one parent; skill://legion-retro allows a retro that commits no learning.",
+      "outcome": {"kind": "changed", "scope": "acceptance: the docs/solutions/ allowance is narrowed to none; the architect may admit a file by amending the spec."}
+    },
+    {
+      "spec": "Acceptance: 'On the branch's first push, that file holds one line ending in a newline'.",
+      "plan": "The one-line state binds to H1, the first commit that adds smoke/LEGSMOKE-976.md, identified by SHA (commits?sha=legion/LEGSMOKE-976&path=smoke/LEGSMOKE-976.md .[-1].sha), not to the branch's first push (D3).",
+      "evidence": "legion/LEGSMOKE-976 already exists on origin at B (git/ref/heads/legion%2FLEGSMOKE-976 → a0c7ce50) and this planner's handoff-only push, which carries no marker, is the run's first push.",
+      "outcome": {"kind": "changed", "scope": "acceptance: 'the branch's first push' reads as the code head H1."}
+    }
+  ]
+}
