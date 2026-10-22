@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-995",
+  "completed": "2026-10-22T15:16:20Z",
+  "requiredSkills": {
+    "implement": [
+      "none: Stage 4b upgrade rehearsal proof child; the spec document (dispatch://LEGSMOKE-995/spec) is empty and the targeted proof message directs the planner to write and commit the handoff only. Looked through the system-prompt skill list (ce-simplify-code, dispatch*, envoy, legion-*); none drives a code change here."
+    ],
+    "test": [
+      "none: no acceptance criteria exist in the empty spec, so there is no surface to re-run. Looked through the system-prompt skill list; no testing, smoke or e2e skill applies to this throwaway proof."
+    ],
+    "review": [
+      "none: nothing to review beyond this handoff's presence on legion/LEGSMOKE-995. Looked through the system-prompt skill list; no review skill applies to this throwaway proof."
+    ]
+  },
+  "gapAnalysis": {
+    "error": "not run: the Stage 4b proof instructions direct the planner to act only on the targeted human Dispatch message, which asked for the plan handoff to be written and committed directly; the spec is empty so there was no issue text to analyse."
+  },
+  "planReview": {
+    "verdict": "failed",
+    "rounds": 0,
+    "error": "not run: the Stage 4b proof instructions direct the planner to act only on the targeted human Dispatch message, which asked for the plan handoff to be written and committed directly; no plan beyond this handoff was drafted."
+  },
+  "specDepartures": []
+}
