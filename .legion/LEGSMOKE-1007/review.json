@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "phase": "review",
+  "issue": "LEGSMOKE-1007",
+  "completed": "2026-10-22T21:11:26Z",
+  "pullRequest": "https://github.com/sjawhar/legion-smoke/pull/745",
+  "round": 1,
+  "decision": "approved",
+  "reviewedCodeHead": "a69e84bd8b550379be5ca32a310d747b943142b7",
+  "boundHead": "324042d12a2e83f3b1b9f1568b1b675729e4984b",
+  "critical": 0,
+  "important": 0,
+  "minor": 0,
+  "keyFindings": [],
+  "ci": {
+    "requiredSet": {
+      "rulesets": ["gate"],
+      "branchProtection": [],
+      "command": "gh api repos/sjawhar/legion-smoke/rules/branches/main --jq '.[] | select(.type==\"required_status_checks\") | .parameters.required_status_checks[].context'; gh api repos/sjawhar/legion-smoke/branches/main --jq '.protection.required_status_checks.checks[].context'"
+    },
+    "ciHead": "a69e84bd8b550379be5ca32a310d747b943142b7",
+    "ciHeadCommand": "gh api 'repos/sjawhar/legion-smoke/actions/runs?branch=legion/LEGSMOKE-1007&event=pull_request&per_page=30' --jq '.workflow_runs[0].head_sha'",
+    "checkRuns": "commits/a69e84bd/check-runs: check completed/success x2, gate completed/success x2, every head_sha a69e84bd8b550379be5ca32a310d747b943142b7 (runs 39853447353, 39853447428, 39853659613, 39853659563)",
+    "bodyCiLine": "runs 39853447353 and 39853447428 both headSha a69e84bd8b550379be5ca32a310d747b943142b7, completed/success (gh run view) — the PR body's CI line is current",
+    "onlyLegionSince": "compare/a69e84bd...324042d1 -> status ahead, ahead_by 2, files .legion/LEGSMOKE-1007/implement.json and .legion/LEGSMOKE-1007/test.json; all(startswith(\".legion/\")) -> true"
+  },
+  "threads": "gh api graphql reviewThreads(first:100) -> [] and reviews -> [] at 324042d1; no issue comments on the pull request. Nothing to answer; no bot thread.",
+  "proofLines": {
+    "implementer": "present in the PR body: GitHub contents + git-objects API at a69e84bd, command, observations, negative controls (404 at base B and main beside the LEGSMOKE-998 twin's 200, case variant 404, twin bytes cmp exit 1, allow-list false on pulls/741/files and a stray path)",
+    "tester": "present in the PR body: git/blobs decode + cmp, recursive tree, pulls/compare/checks API, in-memory ten-variant break set each cmp=1, negative controls (twin blob cmp exit 1, zero-sha blob 404, 404/200 pairs at B and main, case variant 404, allow-list false, check-runs total_count 0 at the skip-checks handoff head); implementer's proof re-run verbatim and verified"
+  },
+  "reviewerChecks": {
+    "A1A2": "At 324042d1 (the head bound at review): RAW smoke/LEGSMOKE-1007.md cmp LIT -> 0, 47 bytes, 1 line, trailing 0a, git hash-object of served file and of LIT both c7d78320845cc63369d2302a707d7a3bb4b93f96; tree 0b79eefae7037c992a35f2115136597d60361643 recursive -> truncated:false, exactly one non-.legion blob {smoke/LEGSMOKE-1007.md, 100644, 47}. Local workspace file cmp LIT -> 0.",
+    "A3": "pulls/745/files allow-list jq -> true (files .legion/LEGSMOKE-1007/{implement,plan,test}.json and smoke/LEGSMOKE-1007.md); compare/main...324042d1 -> ahead_by 4, behind_by 2, non-.legion files exactly [{smoke/LEGSMOKE-1007.md, added, +1/-0}]; .fail-me 404 at 324042d1 and at a69e84bd.",
+    "A5": "required set [gate]; gate completed/success at a69e84bd (both push and pull_request runs); check also success.",
+    "negativeControls": "smoke/LEGSMOKE-1007.md 404 at base 8cf142f4 beside smoke/LEGSMOKE-998.md 200; smoke/legsmoke-1007.md 404 at 324042d1; RAW smoke/LEGSMOKE-998.md at 324042d1 cmp LIT -> exit 1 (differ: char 10, line 1).",
+    "planBesideSpec": "plan.json specDepartures [] ; plan D1 (child inherits root LEGSMOKE-1003 spec, names LEGSMOKE-1007), D4 (K=0, no appended line requested), D5 (fixture clause dropped) honoured; the root spec's single-line-under-smoke/ criterion met.",
+    "thermonuclear": "not run: docs-only diff (one Markdown marker plus .legion/ phase handoffs); Thermo line omitted per pr-body.md",
+    "codegraph": "no exported symbol changed; no code in the diff; blast-radius query not applicable",
+    "contractChangeCensus": "not applicable: no refusal, required field, removed/renamed field or signature change",
+    "security": "Security: agent-def — .legion/LEGSMOKE-1007/plan.json:14-16 (requiredSkills.review) names only skill://legion-worker references the reviewer's own role prompt already mandates, so it steers no reviewer beyond its prompt, and retro removes .legion/LEGSMOKE-1007/ before READY (A4); no authz, secret, untrusted-input, prompt, supply-chain, sandbox or transport surface in the diff."
+  },
+  "prBody": {
+    "lookAtFirst": "smoke/LEGSMOKE-1007.md:1; .legion/LEGSMOKE-1007/ must be gone at the READY head",
+    "notProvenRisk": "Plan A4 (C4) at HR and M is unproven at the reviewed head by design: bound to commits that do not exist yet (merger at HR, implementer's production check at M)."
+  },
+  "fastFollow": "none"
+}
