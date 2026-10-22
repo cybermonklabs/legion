@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-1008",
+  "completed": "2026-10-22T18:53:00Z",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: the only skill in this session that applies; drives the implementer's push, pull request (body must carry `Dispatch: LEGSMOKE-1008`), proof array, and handoff. sjawhar/legion-smoke has no AGENTS.md and no repository skills of its own."
+    ],
+    "test": [
+      "legion-worker (references/pr-body.md): defines the tester's proof on the production-like surface (the pull request's checked-out head on GitHub) and what it verifies of the implementer's proof; no repository test skill exists."
+    ],
+    "review": [
+      "legion-worker (references/merge-gate.md, references/review-threads.md): defines the reviewer's approval of the head and thread handling; no repository review skill exists."
+    ]
+  },
+  "summary": "Stage 4b throwaway proof child under LEGSMOKE-1003 on the disposable legion-smoke repository. The issue's spec document is empty (dispatch doc-read --issue LEGSMOKE-1008 returned no text); the plan follows the convention every earlier Stage 4b child used on main: add one marker file smoke/LEGSMOKE-1008.md whose single line is `LEGSMOKE-1008: Upgrade rehearsal push child (/tmp/legion-e2e4b.111786.Tk4mDamx)` (pattern read from smoke/LEGSMOKE-998.md and smoke/LEGSMOKE-997.md at main 8cf142f4). Every phase acts only on a targeted human Dispatch message, as the Stage 4b proof instructions require.",
+  "tasks": [
+    {
+      "phase": "implement",
+      "files": ["smoke/LEGSMOKE-1008.md"],
+      "change": "Create smoke/LEGSMOKE-1008.md with the one line `LEGSMOKE-1008: Upgrade rehearsal push child (/tmp/legion-e2e4b.111786.Tk4mDamx)`; commit with `jj split -m \"smoke: add LEGSMOKE-1008 marker file\" smoke/LEGSMOKE-1008.md`; push legion/LEGSMOKE-1008 (code push: no skip-checks trailer); open the pull request against main with `gh pr create` and a body carrying `Dispatch: LEGSMOKE-1008`.",
+      "surface": "GitHub pull request head of legion/LEGSMOKE-1008 on sjawhar/legion-smoke; CI workflows `ci` and `fail-on-demand` (.github/workflows) run on push and pull_request.",
+      "proofCommand": "gh api repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1008.md?ref=<headSha> --jq .content | base64 -d",
+      "negativeControl": "gh api repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1008.md?ref=main returns 404 before the merge."
+    },
+    {
+      "phase": "test",
+      "change": "Read the implementer's proof at the head SHA on GitHub; re-run the proofCommand above against the pull request head; confirm `ci` and `fail-on-demand` checks green via `gh pr checks <pr>`; record own proof with the same negative control.",
+      "surface": "GitHub pull request head and its checks."
+    },
+    {
+      "phase": "review",
+      "change": "Confirm the diff is exactly the one new file with the one expected line and nothing else; approve the head per references/merge-gate.md."
+    }
+  ],
+  "acceptance": [
+    {
+      "criterion": "smoke/LEGSMOKE-1008.md exists at the pull request head with the one expected line.",
+      "surface": "GitHub contents API at the head SHA",
+      "check": "gh api repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1008.md?ref=<headSha> --jq .content | base64 -d prints `LEGSMOKE-1008: Upgrade rehearsal push child (/tmp/legion-e2e4b.111786.Tk4mDamx)`"
+    },
+    {
+      "criterion": "Required checks `ci` and `fail-on-demand` are green on the head that merges.",
+      "surface": "GitHub checks on the pull request",
+      "check": "gh pr checks <pr> --repo sjawhar/legion-smoke shows both passing"
+    }
+  ],
+  "gapAnalysis": {
+    "error": "not run: the Stage 4b proof instructions for this run confined this phase to the targeted operation (write and commit the plan handoff, do not push, do not complete); the issue's spec is empty and the plan follows the fixed marker-file convention of every earlier Stage 4b child, so no plan-gap-analyst call was made."
+  },
+  "planReview": {
+    "verdict": "failed",
+    "rounds": 0,
+    "error": "not run: the Stage 4b proof instructions for this run confined this phase to the targeted operation (write and commit the plan handoff, do not push, do not complete); no plan-reviewer call was made."
+  },
+  "specDepartures": []
+}
