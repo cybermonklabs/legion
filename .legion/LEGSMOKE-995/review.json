@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "phase": "review",
+  "issue": "LEGSMOKE-995",
+  "completed": "2026-10-22T15:33:00Z",
+  "decision": "approved",
+  "critical": 0,
+  "important": 0,
+  "minor": 0,
+  "keyFindings": [],
+  "round": 1,
+  "reviewedHead": "36eea68750be62af8d7b1119e74c317f526f194f",
+  "codeHead": "237b79342476a38ec4d5f88c7c470a00fd135379",
+  "ciRead": {
+    "requiredChecks": {
+      "rulesets": ["gate"],
+      "branchProtection": []
+    },
+    "ciHead": "237b79342476a38ec4d5f88c7c470a00fd135379",
+    "checkRuns": [
+      "gate completed success (run 39804967945, pull_request)",
+      "check completed success (run 39804967920, pull_request)",
+      "gate completed success (run 39804812019, push)",
+      "check completed success (run 39804811790, push)"
+    ],
+    "compareCiHeadToHead": "ahead; only .legion/LEGSMOKE-995/implement.json and .legion/LEGSMOKE-995/test.json changed since the CI head",
+    "prBodyCiLine": "runs 39804811790 (ci) and 39804812019 (fail-on-demand) both at 237b79342476a38ec4d5f88c7c470a00fd135379, success; not stale"
+  },
+  "proofsVerified": {
+    "implementer": "Re-ran gh api contents at 237b79342476a38ec4d5f88c7c470a00fd135379: marker line `LEGSMOKE-995: Upgrade rehearsal handoff child (/tmp/legion-e2e4b.1474246.3BHKpOIn)`; negative control at ref=main: HTTP 404, exit 1.",
+    "tester": "Re-ran gh api contents at 7a8ba643d96ebb9aba5d26b2d5508157dae666d9 and at 36eea68750be62af8d7b1119e74c317f526f194f: sha256 75c69b3cc281cb0289b102eab04d2e8d41f3e1b4f4bc6173ea44c6db29e034cf both, equal to the workspace file; both proof heads are ancestors of the reviewed head with only .legion/ changed since."
+  },
+  "threads": "none open: reviewThreads, reviews and comments all empty in gh api graphql at the reviewed head",
+  "thermonuclear": "not run: docs-only diff (one markdown marker line, no runtime code)",
+  "security": "no sensitive surface in this diff",
+  "contractChangeCensus": "not required: no refusal, required field, removed or renamed field, or signature change at any boundary",
+  "planBesideSpec": "spec document empty; plan.json specDepartures []; change follows the smoke/<KEY>.md convention of smoke/LEGSMOKE-985.md and smoke/LEGSMOKE-986.md"
+}
