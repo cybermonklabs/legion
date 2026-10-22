@@ -1,0 +1,84 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-989",
+  "completed": "2026-10-22T12:33:00Z",
+  "planDocument": "dispatch://LEGSMOKE-989/artifact/plan-md",
+  "stage4bMessage": "b4bdec4c-b4e0-48d7-a509-d5a62c2c222e",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: references/pr-body.md (template, what a proof is, docs-only exemption from the simplify pass and the Thermo line) and references/default-branch-check.md (identity check before each push); the repository ships no AGENTS.md, skill, linter or test suite"
+    ],
+    "test": [
+      "legion-worker: references/pr-body.md (verify the implementer's proof, drive the GitHub contents/compare surface independently, read CI once and never re-run it) and references/merge-gate.md (which head's checks count); no repository test harness exists, so no red test is owed (plan decision 15)"
+    ],
+    "review": [
+      "legion-worker: references/merge-gate.md (CI-head read, review order, approval of the reviewed head by SHA) and references/review-threads.md (one disposition per thread); the repository has no review norms of its own"
+    ]
+  },
+  "gapAnalysis": {
+    "findings": [
+      {
+        "finding": "F1: 'names this issue' is ambiguous for a child with an empty spec; a root-keyed marker (smoke/LEGSMOKE-985.md) is already merged, so reading it as the root makes the child a no-op; the architect owns the choice.",
+        "answer": "Plan decision 1 and 'Spec this plan builds': the file is smoke/LEGSMOKE-989.md with line 'LEGSMOKE-989: Upgrade rehearsal handoff child', the only reading that yields one new file; evidence: contents/smoke/LEGSMOKE-985.md?ref=main → sha 08349de9, 56 bytes. Named to the architect in the completion summary, who may fill the child spec or overrule before the implementer's targeted message. Recorded as an interpretation, not a departure (specDepartures []), since one new one-line file under smoke/ is still built."
+      },
+      {
+        "finding": "F2: 'Nothing else changes' collides with retro's docs/solutions/ learning file, which would add a second path to main after approval.",
+        "answer": "Decision 7: no docs/solutions/ file (repository has no docs/, disposable fixture, root scope); retro's one commit is the removal of .legion/LEGSMOKE-989/ alone; learnings go in the Dispatch retro message. Checks: C2b compare main...R = [\"smoke/LEGSMOKE-989.md\"] exactly; C4 commits/M files = the same."
+      },
+      {
+        "finding": "F3: proofs are recorded at the code head H but the head that merges is retro's removal commit; the skills read differently on whether a removal-only retro push carries the skip-checks trailer.",
+        "answer": "Decision 5: retro's removal push carries no trailer (skill://legion-worker lists it among non-trailered pushes; live precedent PR #734 commit 200d1dae has no trailer and 4 green check runs); CI runs at R; proofs at H remain valid because compare H...R is .legion/LEGSMOKE-989/-only (C2b), which the tester and reviewer treat as not a headSha mismatch. Decision 8/12 define H/A/R/M and how H is passed."
+      },
+      {
+        "finding": "F4: no production-like surface, negative control, link or production check is named for a repository whose product is its tree; the tester's red-test rule and the implementer's deploy-slot rule are unsatisfiable as written.",
+        "answer": "Surface section: GitHub contents/compare/git-trees/check-runs via the pane's gh, link = the contents API html_url; negative control = the same read at base 841a4227 (404) and byte compares against altered literals; decision 14: no deploy slot, the squash merge is the deploy, production check = ?ref=main read (C4), no dispatch ask; decision 15: no red test, no harness, building one is outside this issue."
+      },
+      {
+        "finding": "F5: 'CI green at H' as a proof criterion needs a negative control, and the only way to fail gate is .fail-me, which is forbidden.",
+        "answer": "Decision 10: CI green is a gate fact on the CI: line and in the reviewer's merge-gate.md read, not a proof criterion; no negative control owed; .fail-me never created; the historical failing run 39526057184 is cited only as a calibration read."
+      },
+      {
+        "finding": "F6: the optional appended line's trigger, text and proof are undefined; under Stage 4b the reviewer acts only on a targeted message.",
+        "answer": "Decision 6: trigger = reviewer REQUEST_CHANGES with a fenced literal (submitted only on the driver's targeted message); default text 'Legion proof review round 1 (LEGSMOKE)'; LIT2 85 bytes sha1 28f5ef5c…; the tester computes K=1 size/sha itself and asserts the K=0 sha only against a K=0 head; an appended line is a new code head that re-runs CI, tester, reviewer and retro."
+      },
+      {
+        "finding": "F7: 'Nothing else changes' must be checkable mid-run with .legion/ files present, with a named baseline and compare form; strays could enter a commit.",
+        "answer": "C2a uses three-dot compare main...H with the .legion/ filter and a second check that every .legion/ path is under .legion/LEGSMOKE-989/; C2b at R and C4 at M have no filter; decision 3: every phase commits with path-scoped jj split and the code split must show exactly 'A smoke/LEGSMOKE-989.md'."
+      },
+      {
+        "finding": "F8: the PR body template is not satisfiable verbatim (Thermo line, simplify pass, CI line naming jobs this repository lacks).",
+        "answer": "Decision 9: docs-only diff → no simplify pass, no Thermo line; the CI: line's exact shape for this repository names the ci/check and fail-on-demand/gate pull_request-event runs at H, with the gh api actions/runs command that lists them."
+      },
+      {
+        "finding": "F9: the required-check set was read from one ruleset by id; rules/branches/main and classic protection were not read.",
+        "answer": "Re-measured: gh api repos/sjawhar/legion-smoke/rules/branches/main → one required_status_checks rule (gate, ruleset 24471196, strict false); branches/main .protection enabled false, no checks; recorded in the Measurements table."
+      },
+      {
+        "finding": "F10: the planner's deliverable is plan.md on the Dispatch issue plus plan.json with requiredSkills, gapAnalysis, planReview and specDepartures.",
+        "answer": "plan.md uploaded as dispatch://LEGSMOKE-989/artifact/plan-md (version 1); this file carries the four records."
+      },
+      {
+        "finding": "F11: every phase step is gated on a targeted human message, but a plan written as an ordinary sequence contradicts the operator's rule; C6's sleep300 record is a convention, not a rule.",
+        "answer": "The gating paragraph and 'Ordering and evidence by phase' read every step as 'on the driver's targeted message naming it, do …' and name the four never-overridable rules; the sleep300 record is dropped; C5 keeps only the stage4bMessage id and is labelled a plan convention."
+      },
+      {
+        "finding": "F12: main is 2 ahead with disjoint paths and siblings will add more; the plan must say what BEHIND means.",
+        "answer": "Decision 11: BEHIND is not a conflict; no forward merge, no rebase, no re-push; act only on CONFLICTING/DIRTY from gh pr view --json mergeable,mergeStateStatus; siblings 988/990 add differently named files."
+      },
+      {
+        "finding": "F13: 'approval survives retro' was inferred from a PR view that shows no commit contents.",
+        "answer": "C3 cites merge-gate.md 'Retro' (only retro's own commits leave the approval standing) and names the READY_UNREVIEWED_CHANGE limit; the PR #734 row is kept only as the live observation that 200d1dae carried no trailer and had green check runs."
+      },
+      {
+        "finding": "F14: unsupported claims — LEGSMOKE-983's status, the trailer suppressing runs, the pinned sha1s, the title/empty-spec reading, the fixture-clause convention.",
+        "answer": "983 [backlog] confirmed by dispatch search output; dispatch read/doc-read of LEGSMOKE-989 performed (title verbatim, empty spec, token sha256:925349f7…); trailer behaviour measured live (handoff heads 19f4531a and 7fb21d30: 0 check runs; code head e15b81fb: 4); decision 2 has the implementer recompute size/sha at its head and record observed values; the fixture-clause convention is evidenced by the merged 985 and 980 markers and no '/tmp/' string under smoke/."
+      }
+    ]
+  },
+  "planReview": {
+    "verdict": "approved",
+    "rounds": 1
+  },
+  "specDepartures": []
+}
