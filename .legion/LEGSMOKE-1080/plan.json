@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-1080",
+  "completed": "2026-10-23T20:10:56Z",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: the implementer opens the PR with the template body, records its E2E proof on the merged head, and pushes under the one push procedure; no domain skill exists for a one-file smoke/ marker change."
+    ],
+    "test": [
+      "legion-worker: the tester drives the changed surface (the smoke/ marker file on the issue branch and after merge on main), reads CI rather than rerunning it, and records its own proof array; no domain skill applies."
+    ],
+    "review": [
+      "legion-worker: the reviewer reads the plan beside the spec, answers review threads one by one, and approves the head per references/merge-gate.md; no domain skill applies."
+    ]
+  },
+  "plan": {
+    "context": "Stage 4b upgrade rehearsal: this child's own spec document (dispatch doc-read --issue LEGSMOKE-1080) is empty; its parent LEGSMOKE-1076 spec asks for one new Markdown file under smoke/ whose first line names the issue, with at most one more line a review asks for, and no other path changed.",
+    "tasks": [
+      {
+        "step": 1,
+        "role": "implementer",
+        "change": "Add smoke/stage4b-legsmoke-1080.md with the single line 'LEGSMOKE-1080' (beside the earlier marker files, e.g. smoke/stage4b-legsmoke-378.md). Touch no other path.",
+        "surface": "The issue branch legion/LEGSMOKE-1080 on sjawhar/legion-smoke and its pull request.",
+        "command": "cd -- \"$LEGION_WORKSPACE\" && jj -R \"$LEGION_WORKSPACE\" diff --from main -r @- --summary && gh pr view --json files -R sjawhar/legion-smoke",
+        "acceptance": "The diff against main lists exactly one added path under smoke/, and gh pr view --json files reports that same single file."
+      },
+      {
+        "step": 2,
+        "role": "tester",
+        "change": "No code. Re-run the step-1 command on the PR head and additionally fetch the file's raw content from the head SHA via gh api repos/sjawhar/legion-smoke/contents/smoke/stage4b-legsmoke-1080.md?ref=<headSha>.",
+        "surface": "GitHub pull request head of legion/LEGSMOKE-1080.",
+        "command": "gh api 'repos/sjawhar/legion-smoke/contents/smoke/stage4b-legsmoke-1080.md?ref=<headSha>' --jq '.content' | base64 -d",
+        "acceptance": "First line is exactly LEGSMOKE-1080; file has one line (or two when a review asked for the second); negative control: the same request with ref=main returns 404 before merge."
+      },
+      {
+        "step": 3,
+        "role": "implementer (production check after merge)",
+        "change": "No code.",
+        "surface": "Default branch main of sjawhar/legion-smoke.",
+        "command": "gh api 'repos/sjawhar/legion-smoke/contents/smoke/stage4b-legsmoke-1080.md?ref=main' --jq '.content' | base64 -d && gh api 'repos/sjawhar/legion-smoke/compare/<baseSha>...main' --jq '.files[].filename'",
+        "acceptance": "main holds the file with LEGSMOKE-1080 as its first line and the compare against the pre-change base lists only smoke/stage4b-legsmoke-1080.md."
+      }
+    ],
+    "hiddenRequirements": [
+      "The child spec is empty: the marker-file design is inherited from the parent LEGSMOKE-1076 spec. Whether this child should carry its own spec is the architect's decision; the plan proceeds on the parent's design so the rehearsal has a concrete, checkable change."
+    ]
+  },
+  "gapAnalysis": {
+    "error": "not run: the Stage 4b targeted proof operation (Dispatch message 88b296fa-2cf3-4fde-8567-1676a79079c7) directed the planner to write and commit the plan handoff directly and call handoff_complete; the plan-gap-analyst check was not invoked."
+  },
+  "planReview": {
+    "verdict": "failed",
+    "rounds": 0,
+    "error": "not run: the Stage 4b targeted proof operation directed the planner to write and commit the plan handoff directly and call handoff_complete; the plan-reviewer check was not invoked."
+  },
+  "specDepartures": []
+}
