@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "phase": "implement",
+  "issue": "LEGSMOKE-1013",
+  "completed": "2026-10-23T00:46:30Z",
+  "pullRequest": "https://github.com/sjawhar/legion-smoke/pull/748",
+  "headSha": "bab9b77d34ec440daca71402562b48e9bc6e5d00",
+  "filesChanged": [
+    "smoke/LEGSMOKE-1013.md (added, 1 line: 'LEGSMOKE-1013 upgrade rehearsal handoff child marker', trailing newline)"
+  ],
+  "proof": [
+    {
+      "criterion": "The branch holds smoke/LEGSMOKE-1013.md, absent from main, one line ending in a newline that contains LEGSMOKE-1013 (plan.json acceptance[0], pre-merge form).",
+      "surface": "GitHub repository sjawhar/legion-smoke, branch legion/LEGSMOKE-1013, pull request #748",
+      "command": "gh api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1013.md?ref=bab9b77d34ec440daca71402562b48e9bc6e5d00\" --jq .content | base64 -d | wc -l; gh api repos/sjawhar/legion-smoke/compare/main...bab9b77d34ec440daca71402562b48e9bc6e5d00 --jq '.files[] | \"\\(.status) \\(.filename) +\\(.additions)/-\\(.deletions)\"'",
+      "observed": "wc -l printed 1; the decoded content is 'LEGSMOKE-1013 upgrade rehearsal handoff child marker' followed by a newline (od -c on the local file shows the trailing \\n); compare lists exactly 'added smoke/LEGSMOKE-1013.md +1/-0' and 'added .legion/LEGSMOKE-1013/plan.json +54/-0'.",
+      "headSha": "bab9b77d34ec440daca71402562b48e9bc6e5d00",
+      "negativeControl": "gh api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1013.md?ref=main\" → HTTP 404 Not Found (exit 1): the marker does not exist on the base."
+    },
+    {
+      "criterion": "Both workflows pass on the pull request head: ci (job check) and fail-on-demand (job gate) (plan.json task 2).",
+      "surface": "GitHub Actions on sjawhar/legion-smoke pull request #748",
+      "command": "gh pr checks 748 --repo sjawhar/legion-smoke; gh run list --repo sjawhar/legion-smoke --commit bab9b77d34ec440daca71402562b48e9bc6e5d00 --json databaseId,name,conclusion,status,headSha",
+      "observed": "ci run 39879853007 (pull_request) and 39879775697 (push): job check pass; fail-on-demand run 39879852988 (pull_request) and 39879775898 (push): job gate pass; all four completed success at bab9b77d34ec440daca71402562b48e9bc6e5d00.",
+      "headSha": "bab9b77d34ec440daca71402562b48e9bc6e5d00",
+      "negativeControl": "The compare main...bab9b77d34ec440daca71402562b48e9bc6e5d00 file list contains no .fail-me, the one path that makes fail-on-demand's gate job exit 1."
+    }
+  ],
+  "trickyParts": [
+    "Stage 4b proof: the implementer ran sleep 300 on the daemon's task line before acting, per the deployment instructions; the targeted Dispatch message 8a031d33-1e94-4d45-8c17-f928df7cf1a5 arrived in the same turn and named this exact operation (one-file change, push, PR, handoff, handoff_complete).",
+    "Thermo line omitted from the PR body: the diff is docs-only (one Markdown marker), so neither the simplify pass nor the thermonuclear pair runs."
+  ],
+  "deviations": [],
+  "openQuestions": [],
+  "discoveredComplexity": []
+}
