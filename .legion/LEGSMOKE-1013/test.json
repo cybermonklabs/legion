@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "phase": "test",
+  "issue": "LEGSMOKE-1013",
+  "completed": "2026-10-23T00:47:30Z",
+  "pullRequest": "https://github.com/sjawhar/legion-smoke/pull/748",
+  "headSha": "83085ddd96328e4b0b3cbee4a652627fc220ab80",
+  "codeHeadSha": "bab9b77d34ec440daca71402562b48e9bc6e5d00",
+  "implementerProof": {
+    "verdict": "verified",
+    "how": "Re-ran the implementer's contents read at ref=bab9b77d34ec440daca71402562b48e9bc6e5d00 (od -c: 'LEGSMOKE-1013 upgrade rehearsal handoff child marker\\n', 65 bytes, one trailing newline) and again at the PR head 83085ddd96328e4b0b3cbee4a652627fc220ab80 (wc -l → 1); re-ran compare main...83085ddd96328e4b0b3cbee4a652627fc220ab80 (exactly smoke/LEGSMOKE-1013.md +1/-0 plus the two .legion/LEGSMOKE-1013/ handoffs); re-ran its negative control (contents at ref=main → HTTP 404, exit 1); listed its four cited run ids with gh run list --commit bab9b77d34ec440daca71402562b48e9bc6e5d00: 39879853007 ci pull_request, 39879775697 ci push, 39879852988 fail-on-demand pull_request, 39879775898 fail-on-demand push, all completed success."
+  },
+  "failures": [],
+  "failed": 0,
+  "proof": [
+    {
+      "criterion": "The branch holds smoke/LEGSMOKE-1013.md, absent from every commit on main, one line ending in a newline that contains LEGSMOKE-1013 (plan.json acceptance[0], pre-merge form; the main-side read belongs to the production check after the merge).",
+      "surface": "GitHub repository sjawhar/legion-smoke, pull request #748 head, via gh api contents/compare/commits",
+      "command": "gh api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1013.md?ref=83085ddd96328e4b0b3cbee4a652627fc220ab80\" --jq .content | base64 -d | wc -l; gh api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1013.md?ref=bab9b77d34ec440daca71402562b48e9bc6e5d00\" --jq .content | base64 -d | od -c; gh api repos/sjawhar/legion-smoke/compare/main...83085ddd96328e4b0b3cbee4a652627fc220ab80 --jq '.files[] | \"\\(.status) \\(.filename) +\\(.additions)/-\\(.deletions)\"'; gh api \"repos/sjawhar/legion-smoke/commits?path=smoke/LEGSMOKE-1013.md&sha=main\" --jq length",
+      "observed": "wc -l → 1; od -c → 'L E G S M O K E - 1 0 1 3   u p g r a d e   r e h e a r s a l   h a n d o f f   c h i l d   m a r k e r \\n' ending at offset 0000065 (one trailing newline, no second line); compare → 'added .legion/LEGSMOKE-1013/implement.json +36/-0', 'added .legion/LEGSMOKE-1013/plan.json +54/-0', 'added smoke/LEGSMOKE-1013.md +1/-0' and nothing else; commits?path on main → 0 (no commit on main ever touched the path).",
+      "headSha": "83085ddd96328e4b0b3cbee4a652627fc220ab80",
+      "negativeControl": "gh api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1013.md?ref=main\" → {\"message\":\"Not Found\",\"status\":\"404\"}, exit 1: the marker is absent from the base."
+    },
+    {
+      "criterion": "Both workflows pass on the pull request head: ci (job check) and fail-on-demand (job gate, which fails only when .fail-me exists at the repository root) (plan.json task 2). Read from CI, not rerun.",
+      "surface": "GitHub Actions on sjawhar/legion-smoke pull request #748",
+      "command": "gh run list --repo sjawhar/legion-smoke --commit bab9b77d34ec440daca71402562b48e9bc6e5d00 --json databaseId,name,conclusion,status,event; gh run list --repo sjawhar/legion-smoke --commit 83085ddd96328e4b0b3cbee4a652627fc220ab80 --json databaseId,name,conclusion,status,event; gh pr checks 748 --repo sjawhar/legion-smoke",
+      "observed": "At bab9b77d34ec440daca71402562b48e9bc6e5d00: 39879852988 fail-on-demand pull_request success, 39879853007 ci pull_request success, 39879775697 ci push success, 39879775898 fail-on-demand push success. At 83085ddd96328e4b0b3cbee4a652627fc220ab80 (handoff-only push carrying skip-checks: true): [] and gh pr checks reports 'no checks reported', as the trailer intends; the daemon's record carries checksVerdict green for the PR head.",
+      "headSha": "83085ddd96328e4b0b3cbee4a652627fc220ab80",
+      "negativeControl": "gh api \"repos/sjawhar/legion-smoke/contents/.fail-me?ref=83085ddd96328e4b0b3cbee4a652627fc220ab80\" → HTTP 404 Not Found, exit 1: the one path that makes fail-on-demand's gate job exit 1 is not on the head, and the compare file list names no .fail-me."
+    }
+  ],
+  "breakAttempts": [
+    "Second line / stray bytes: od -c shows exactly 65 bytes ending in one \\n, so wc -l 1 is not hiding a missing trailing newline or a second line.",
+    "Extra paths: compare main...head names no path outside smoke/LEGSMOKE-1013.md and .legion/LEGSMOKE-1013/, so nothing else in the repository changes.",
+    "Prior history: commits?path=smoke/LEGSMOKE-1013.md&sha=main returns 0 entries, so the file is new on this branch and not a modification of an existing marker.",
+    "Workflow trigger: .fail-me absent at the head (404), so fail-on-demand's gate has nothing to fail on."
+  ],
+  "implementerTestsJudgement": "sjawhar/legion-smoke has no test suite; the change is one Markdown marker and both workflows (ci: check, fail-on-demand: gate) exercise the head directly. No way to break the change was found that CI would not catch, so no red test was written.",
+  "proofNote": "Stage 4b proof: the targeted Dispatch message c1503a96-e6a1-46fc-918d-19e588e349a2 named this phase's operation (inspect PR #748, run a focused observable check, record a passing tester handoff, handoff_complete with verdict pass). Acceptance[0]'s main-side read (ref=<merge commit>, main~1 → 404) is the implementer's production check after the merge; acceptance[1] (two lines only when review asks) does not apply: no review round has run, and the file stays at one line."
+}
