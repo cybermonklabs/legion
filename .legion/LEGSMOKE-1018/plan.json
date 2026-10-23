@@ -1,0 +1,91 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-1018",
+  "completed": "2026-10-23T01:47:30Z",
+  "planDocument": "dispatch://LEGSMOKE-1018/artifact/plan-md",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: shared-workspace jj rules, code push without trailer, PR body from references/pr-body.md with `Dispatch: LEGSMOKE-1018`, the six-string proof[] on the GitHub contents surface, handoff-only push with the skip-checks trailer; no repository skill exists (no AGENTS.md, no PR template, no harness)."
+    ],
+    "test": [
+      "legion-worker: references/pr-body.md defines the proof the tester verifies and the E2E (tester) line; the plan's T4 lists the read-only break attempts on the GitHub contents API and D15 why no test file is written; CI is read at the CI head per D5, never at the trailered handoff head."
+    ],
+    "review": [
+      "legion-worker: references/merge-gate.md (CI head and required-set read, review round order), references/review-threads.md (the one appended-line thread when the driver asks for it), references/pr-body.md (Look at first / Not proven lines; no Thermo line on a docs-only diff)."
+    ]
+  },
+  "gapAnalysis": {
+    "findings": [
+      {
+        "finding": "The inherited root acceptance says the file names LEGSMOKE-1015 while the same sentence cites the `<issue key>.md` first-line-key pattern and the assignment is smoke/LEGSMOKE-1018.md; the child spec is empty.",
+        "answer": "D1 pins smoke/LEGSMOKE-1018.md with `LEGSMOKE-1018: Upgrade rehearsal fallback child` as the only line; recorded as spec departure 1 for the architect; AC2 checks `head -1`; T4's control reads smoke/LEGSMOKE-1015.md at the head → 404."
+      },
+      {
+        "finding": "\"Nothing else changes\" is contradicted by the tracked .legion/LEGSMOKE-1018/*.json handoffs and retro's docs/solutions/ notes.",
+        "answer": "D4 evaluates it at two points: pre-retro the PR diff minus `.legion/LEGSMOKE-1018/` is the marker alone (AC4a); at READY and in the merge commit the set is the marker plus only docs/solutions/ paths, handoffs gone (AC4b, D17). D11 keeps the note permitted, not required."
+      },
+      {
+        "finding": "Neither spec gives a command, bytes or a definition of \"names\" for its acceptance; three line shapes exist in smoke/.",
+        "answer": "D2 pins the bytes (48 bytes, sha256 83ed60f7…, blob ddc4de78…); the AC table gives one command and expected output per criterion; `BLOB` (`gh api … --jq '[.size,.sha]'`) is the one-call check every role runs."
+      },
+      {
+        "finding": "The optional appended line has no trigger, author, text or ceiling; precedent shows one line per review round.",
+        "answer": "D3: the reviewer asks as one REQUEST_CHANGES thread on line 1 naming the text only when the driver's message says so; the implementer appends it verbatim (default `Legion proof review round 1 (LEGSMOKE)`, 87 bytes, blob a7626ad5…); ceiling two lines; anything else goes to the architect; AC3a/AC3b; D12 re-anchors proofs at the round head."
+      },
+      {
+        "finding": "\"The repository already holds 127 such files … each named `<issue key>.md`\" is false as written (127 files in smoke/, 56 LEGSMOKE-<n>.md).",
+        "answer": "The 127 claim is not carried into any criterion; D2's `COUNT` is re-runnable and AC6 checks a delta of exactly one LEGSMOKE-<n>.md between base and head and between the merge commit and its parent; correcting the root sentence is the architect's."
+      },
+      {
+        "finding": "The required-check set on main cannot be established: ruleset says `gate`, /protection answers 403, branches/main says protection disabled.",
+        "answer": "D6 records the set as unverified; READY rests on `gh pr view … --json headRefOid,mergeable,mergeStateStatus,statusCheckRollup` at the READY head; the CI line names the `check` and `gate` runs (D9)."
+      },
+      {
+        "finding": "Handoff-only pushes carry skip-checks, so four heads have no check-runs and the PR reads BLOCKED+MERGEABLE until retro's push.",
+        "answer": "D5: CI head = newest pull_request run's head_sha (push runs before the PR exists), check-runs read there, then compare/<ciHead>...<head> all under .legion/LEGSMOKE-1018/ → true; D6 states BLOCKED+MERGEABLE at a trailered head is expected, not a finding."
+      },
+      {
+        "finding": "A docs-only marker still owes two proofs with a negative control, and the obvious control (.fail-me) is forbidden.",
+        "answer": "Surface is the GitHub contents API at a named SHA (AC2 `READ`/`BLOB`); D13 makes every control read-only (pre-merge 404 and history 0 at main, 404 at the branch base, path-case and root-path 404s, .fail-me absent) and forbids creating .fail-me, any file or a throwaway branch."
+      },
+      {
+        "finding": "No PR exists, the branch is level with main, and the repository has no PR template; the body must carry `Dispatch: LEGSMOKE-1018` and omit Thermo.",
+        "answer": "T3 assigns PR creation to the implementer with title `smoke: add LEGSMOKE-1018 marker file`, the template body, `Dispatch: LEGSMOKE-1018`, `Why` ending `(LEGSMOKE-1018)`, no Thermo line (D14); D9 notes docs-pr-gate-smoke.md defines no body gate so retro derives nothing from paths; AC5 checks it."
+      },
+      {
+        "finding": "Every repository fact is a point-in-time measurement; sibling branches (legion/LEGSMOKE-1015, -1016) share the clone and may move main.",
+        "answer": "D8: only the file's bytes, sha256 and blob shas are pinned; every SHA, count and PR number is re-read when a role acts; revsets bounded to the issue branch; D7: non-strict ruleset, no rebase or forward merge absent CONFLICTING."
+      },
+      {
+        "finding": "The root acceptance's \"one new Markdown file\" is inherited by every child; two children could collide or the tree could land more than one file.",
+        "answer": "D1 reads it per issue: this issue touches smoke/LEGSMOKE-1018.md and no other smoke/ path; out-of-scope lists a sibling's marker; the architect confirms the per-issue reading (named in the completion summary)."
+      },
+      {
+        "finding": "The deployment instructions' `sleep 300` and \"act only on the driver's targeted message\" are unstated in both specs and read two ways.",
+        "answer": "D16 states the reading assumed (daemon task line → WAITING → driver's targeted message starts the work) and T1 carries `sleep 300` (one bash call, timeout 600) verbatim; the driver or architect corrects the reading if wrong."
+      },
+      {
+        "finding": "The child's spec is empty, so plan.md and plan.json are the child's only statement of what to build and how it is judged.",
+        "answer": "plan.md restates the inherited Summary, Scope and Acceptance for this child, gives the AC table with one command per criterion and the head it is read at, and this handoff carries requiredSkills, gapAnalysis, planReview and specDepartures; whether to fill the child spec is the architect's call."
+      }
+    ]
+  },
+  "planReview": {
+    "verdict": "approved",
+    "rounds": 1
+  },
+  "specDepartures": [
+    {
+      "spec": "Root spec LEGSMOKE-1015 (inherited; the child spec is empty), Acceptance: \"that file holds a single line that names LEGSMOKE-1015 … each named `<issue key>.md` with the issue key on its first line; the new file follows that pattern.\"",
+      "plan": "The file is smoke/LEGSMOKE-1018.md and its single line is `LEGSMOKE-1018: Upgrade rehearsal fallback child` — the child's own key, with the title's `(/tmp/…)` suffix dropped.",
+      "evidence": "dispatch doc-read --issue LEGSMOKE-1018 → empty document; the driver's message plans \"the one-file smoke change\" on legion/LEGSMOKE-1018; all 56 smoke/LEGSMOKE-<n>.md markers name their own issue on line 1 (e.g. smoke/LEGSMOKE-1010.md = `LEGSMOKE-1010: …`), which is the pattern the same acceptance sentence cites; writing LEGSMOKE-1015 into LEGSMOKE-1018.md would break it.",
+      "outcome": {
+        "kind": "changed",
+        "acceptance": [
+          "For this child: the new file is smoke/LEGSMOKE-1018.md and its single line names LEGSMOKE-1018 (plus one more line if the review asked); the root's own marker, naming LEGSMOKE-1015, is unchanged."
+        ]
+      }
+    }
+  ]
+}
