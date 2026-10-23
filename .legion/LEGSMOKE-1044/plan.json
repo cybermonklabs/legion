@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-1044",
+  "completed": "2026-10-23T09:58:00Z",
+  "planDocument": "dispatch://LEGSMOKE-1044/artifact/plan-md",
+  "requiredSkills": {
+    "implement": [
+      "skill://legion-worker — the only skills that reach this repository (no AGENTS.md, no repository skills); its references/pr-body.md gives the PR template, the proof shape and the docs-only rule (no simplify pass, no Thermo line), references/default-branch-check.md the identity check before each push, references/review-threads.md the one-reply-one-resolution rule; skill://legion-retro drives the retro phase the implementer runs"
+    ],
+    "test": [
+      "skill://legion-worker — references/pr-body.md defines verifying the implementer's proof and the tester's own proof on the GitHub repository surface (no suite, lint or runtime exists to rerun), references/merge-gate.md defines reading CI at the CI head rather than at a trailered handoff head"
+    ],
+    "review": [
+      "skill://legion-worker — references/merge-gate.md gives the required-set read (rules/branches/main → gate), the CI-head read and approval of the head; references/review-threads.md gives the review-thread protocol the conditional second-line request must follow"
+    ]
+  },
+  "constants": {
+    "path": "smoke/LEGSMOKE-1044.md",
+    "lineOne": "LEGSMOKE-1044: Upgrade rehearsal fallback child (/tmp/legion-e2e4b.3400458.tZxNeQfa)",
+    "lineOneBytes": 85,
+    "lineOneLines": 1,
+    "lineOneLastByteHex": "0a",
+    "lineOneSha256": "57c6b9625cf6a884c412b86b74340d385b1acb105e9bc0e00522c53813ff070a",
+    "lineOneSha256Command": "printf '%s\\n' \"$L1\" | sha256sum",
+    "lineTwoDefault": "Legion proof review round 1 (LEGSMOKE)",
+    "twoLineBytes": 124,
+    "twoLineSha256": "bfb7fbb5502cf4ded7d93279e97e4e7bb71a78ce175d85b0c00c1a82f1994a7a",
+    "twoLineSha256Command": "printf '%s\\n%s\\n' \"$L1\" \"$L2\" | sha256sum",
+    "alteredLine": "LEGSMOKE-1044x: Upgrade rehearsal fallback child (/tmp/legion-e2e4b.3400458.tZxNeQfa)",
+    "alteredSha256": "e328aec64d2e09eddbab08ef524c890f942f3c479c90265c443b91602ca4965c",
+    "forkPoint": "2db619cf99913afcd91aae2b130d1e83375fbd39",
+    "requiredChecks": ["gate"],
+    "advisoryChecks": ["check"],
+    "allowedPaths": ["smoke/LEGSMOKE-1044.md", ".legion/LEGSMOKE-1044/**", "docs/solutions/legion/*-LEGSMOKE-1044.md"],
+    "readCommand": "gh api 'repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1044.md?ref=<sha>' -H 'Accept: application/vnd.github.raw'",
+    "secondLineDiscriminator": "gh pr view <n> -R sjawhar/legion-smoke --json reviews --jq '[.reviews[] | select(.state==\"CHANGES_REQUESTED\") | select((.body // \"\") | test(\"append one more line\"))] | length'"
+  },
+  "acceptance": [
+    {"id": "A1", "criterion": "main holds a new smoke/LEGSMOKE-1044.md that no earlier main commit contains", "check": "commits?path=smoke/LEGSMOKE-1044.md&sha=main → 0 before the first code push; [<mergeSha>] after the merge; contents?ref=main 404 before, 200 after"},
+    {"id": "A2", "criterion": "At the first push carrying the file (firstCodeHead) it holds exactly one LF-terminated line naming this issue", "check": "readCommand at firstCodeHead: sha256 lineOneSha256, wc -c 85, wc -l 1, last byte 0a, grep -c '^LEGSMOKE-1044: ' 1"},
+    {"id": "A3", "criterion": "Two lines only when a review asked (secondLineDiscriminator > 0); line 1 unchanged", "check": "count > 0 ⇒ at the append head and later: wc -l 2, wc -c 124 (default) or the recorded value, head -1 = line 1 at firstCodeHead; count = 0 ⇒ lineOne constants at every code head through the merge"},
+    {"id": "A4", "criterion": "Nothing else changes: branch paths ⊆ allowedPaths; merge diff = marker + zero or one retro note; merge commit has one parent", "check": "jj diff --from 'fork_point(main@origin | @-)' --to @- --name-only before each push; compare/<forkPoint>...<sha> at firstCodeHead and at the READY head; commits/<mergeSha> parents 1"},
+    {"id": "A5", "criterion": "Both workflows (check, gate) pass at every code head, the READY head included", "check": "commits/<sha>/check-runs: check and gate every entry completed/success (two entries per job with an open PR)"},
+    {"id": "A6", "criterion": "After the merge, main holds the selected lines", "check": "readCommand at <mergeSha> and at main matches the selected constants; the same read at the merge commit's first parent → 404"}
+  ],
+  "gapAnalysis": {
+    "findings": [
+      {"finding": "No criterion is bound to a head; after an append the one-line constants are false at later heads.", "answer": "D5/A2/A3: C1 read at firstCodeHead and held only while the discriminator count is 0; C2 at the append head and later; C-final at the merge commit; nobody re-reads C1 after an append."},
+      {"finding": "The conditional second line has no discriminator and no text; precedent is the literal 'Legion proof review round 1 (LEGSMOKE)'.", "answer": "D3 fixes the request shape (CHANGES_REQUESTED body containing 'append one more line' + one thread on the file); D2 fixes the default text, its 124-byte/sha constants, and the recompute procedure for a review-named text."},
+      {"finding": "'Nothing else changes' contradicts Legion's own .legion/ handoffs and retro's docs/solutions/ note.", "answer": "D10/A4: allowed-path set named; 'nothing else changes' defined as the merge diff (paths outside .legion/LEGSMOKE-1044/); Size written that way; guard via jj diff from fork_point."},
+      {"finding": "The merge head must carry a green gate; trailered handoff heads have zero check-runs; retro's push rewrites the head after approval.", "answer": "D8/D13/M1: handoff-only pushes trailered, retro's removal push untrailered so both workflows run, READY names that head after D7 passes there, approval stands on the reviewed head per merge-gate.md."},
+      {"finding": "'a single line that names this issue' fixes neither filename, string nor bytes; precedent varies on the /tmp suffix; a title edit mid-run would redefine the target.", "answer": "D1 freezes path, line (title taken whole at planning), 85 bytes, 1 line, 0a, no CR/BOM, and makes plan.json constants.lineOne the authority regardless of later title edits."},
+      {"finding": "The sha256 constants are asserted, not shown.", "answer": "D1/D2 record the generating command beside each constant and rule that a constant failing regeneration is a plan defect reported to the architect, never a file defect."},
+      {"finding": "No suite, lint or runtime, yet the tester must drive the surface independently and write a red test where none would catch a break.", "answer": "D12: independent route (JSON .content base64-decoded vs raw), own negative controls, explicit noSuite record (no regression lock owed), tester commits nothing."},
+      {"finding": "'Production' has no deploy here.", "answer": "D14: production = main at the squash-merge commit, read at <mergeSha> and at main; negative control the merge commit's first parent → 404; waking event named in the Production line."},
+      {"finding": "The PR body template's CI line names lint/typecheck/test; this repo has check and gate.", "answer": "D7 gives the CI line's exact shape for ci/check and fail-on-demand/gate, cites the pull_request pair and names the push pair, gate blocking and check advisory, wait for completed."},
+      {"finding": "Scope allows 'one more line' with no refusal protocol and no bound on repeats (decider: architect).", "answer": "D2: cap at one appended line total; out-of-scope requests declined in the thread citing Scope, resolved with that reason, and sent to the architect verbatim; named for the architect in the completion summary."},
+      {"finding": "main@origin equals the fork point today; eight other trees will move main mid-run.", "answer": "D15/D10: fork_point(main@origin | @-) everywhere, recorded once; pre-state is four invalidating facts with commands; stop condition 'one of these changed'; no --from main@origin anywhere."},
+      {"finding": "No root .gitignore and jj auto-tracks everything; body.md written in the tree or .codegraph/ artefacts would be snapshotted.", "answer": "D10: scratch files under /tmp only; pre-push guard lists exactly the allowed set; stray path removed or untracked before push. .codegraph/ observed untracked and excluded by the clone's .git/info/exclude."},
+      {"finding": "The PR body has repo-specific fields the spec never mentions (Dispatch line, Thermo, Look at first, Not proven / risk, Fast-follow, Chain).", "answer": "D11 pins every line's value and the phase that writes it; Thermo omitted (docs-only)."},
+      {"finding": "Retro 'zero or more notes' with three notes already covering this pattern.", "answer": "D6: default zero notes; search on main named; a note only for a lesson none records; Size refreshed at the removal head if one is written."},
+      {"finding": "The title's 'Upgrade rehearsal fallback' asserts a context the spec never explains (decider: architect).", "answer": "D17: every constant lives in plan.json/implement.json so a resumed phase recomputes nothing from memory; the scenario is taken to change nothing about the file or checks; named for the architect in the completion summary."},
+      {"finding": "Every live-state fact is unverified by the analyst and several move on their own.", "answer": "'What was read' carries each fact with its re-reading command and timestamp as pre-state; D15 says which ones stop the run."},
+      {"finding": "'od present, xxd absent' and 'auto-track = all()' are inherited claims.", "answer": "Both observed in the planner pane (command -v od/xxd; jj config get snapshot.auto-track) and recorded as observed in 'What was read'."},
+      {"finding": "The 1022 plan precedent is a summary the analyst could not check; its SHAs, constants, Size numbers and discriminator wording must not be copied.", "answer": "The 1022 plan was re-read in full; decisions carry over as patterns only, every constant re-derived for LEGSMOKE-1044 ('What was read')."}
+    ]
+  },
+  "planReview": {"verdict": "approved", "rounds": 1},
+  "specDepartures": []
+}
