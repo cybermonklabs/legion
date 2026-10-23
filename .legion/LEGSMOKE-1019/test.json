@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "phase": "test",
+  "issue": "LEGSMOKE-1019",
+  "completed": "2026-10-23T03:32:10Z",
+  "pullRequest": "https://github.com/sjawhar/legion-smoke/pull/755",
+  "testedHead": "237bf7868f7f9034750cbe3c59572633c2376f50",
+  "ciHead": "82232a9d9fa032c74359118af2798f3479e25c05",
+  "implementerProof": {
+    "verdict": "verified",
+    "how": "Re-ran the implementer's command `gh api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1019.md?ref=82232a9d9fa032c74359118af2798f3479e25c05\" --jq '[.size,.sha]'` → [84,\"9a80980404d803f0a88081915f73c849c1628884\"]; decoded content: wc -l 1, grep -c LEGSMOKE-1019 1, sha256 ee814391695872252febc983756f7c729f035576a18e26fc0c7f24a063493529, last byte 0a, CR count 0 — every value the implement handoff and the PR body's E2E (implementer) line state. Independently drove the same surface at the pull request head 237bf786 (same size/blob) and in the issue workspace (`jj file show -r @- smoke/LEGSMOKE-1019.md | sha256sum` → same sha256). Re-ran its negative control: ?ref=main (a50a23aa) → HTTP 404 and commits?sha=main&path=smoke/LEGSMOKE-1019.md → 0."
+  },
+  "failures": [],
+  "failed": 0,
+  "proof": [
+    {
+      "criterion": "The smallest one-file change described by this child issue exists on legion/LEGSMOKE-1019: a one-line marker smoke/LEGSMOKE-1019.md naming the issue, matching the smoke/LEGSMOKE-10xx.md precedent (driver message c9ed5360-1879-4a32-8746-79effd3fb1d6 on LEGSMOKE-1019).",
+      "surface": "GitHub contents API of sjawhar/legion-smoke via the pane's gh at the pull request head 237bf786 and the CI head 82232a9d (https://github.com/sjawhar/legion-smoke/blob/237bf7868f7f9034750cbe3c59572633c2376f50/smoke/LEGSMOKE-1019.md), plus the issue workspace's jj copy at the same head.",
+      "command": "gh api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1019.md?ref=237bf7868f7f9034750cbe3c59572633c2376f50\" --jq '[.size,.sha]'; the same at ?ref=82232a9d…; --jq .content | base64 -d piped to wc -l, grep -c LEGSMOKE-1019, sha256sum, tail -c1 | od -An -tx1, grep -c $'\\r'; jj file show -r @- smoke/LEGSMOKE-1019.md | sha256sum; grep LEGSMOKE-1019 over smoke/ (128 files); jj file show -r @- smoke/LEGSMOKE-1010.md | od -c (precedent format)",
+      "observed": "[84,\"9a80980404d803f0a88081915f73c849c1628884\"] at both refs; wc -l 1; grep -c 1; sha256 ee814391695872252febc983756f7c729f035576a18e26fc0c7f24a063493529 from the API and from jj; last byte 0a; CR count 0; line `LEGSMOKE-1019: Upgrade rehearsal handoff child (/tmp/legion-e2e4b.3568507.2ggBOBR8)`; the only file under smoke/ naming LEGSMOKE-1019 is smoke/LEGSMOKE-1019.md (no colliding marker); the LEGSMOKE-1010.md precedent is likewise one LF-terminated line.",
+      "headSha": "237bf7868f7f9034750cbe3c59572633c2376f50",
+      "negativeControl": "contents/smoke/LEGSMOKE-1019.txt?ref=82232a9d… (wrong extension) → HTTP 404; contents/.fail-me?ref=82232a9d… (the gate job's trip wire) → HTTP 404; contents/smoke/LEGSMOKE-1019.md?ref=main (a50a23aa4dd7cde8ab79d37e4677d2ad0a5cb9a2) → HTTP 404 and commits?sha=main&path=smoke/LEGSMOKE-1019.md → 0."
+    },
+    {
+      "criterion": "CI is green at the code head and the trailered handoff head differs from it only under .legion/LEGSMOKE-1019/ (docs/solutions/legion/read-ci-and-merge-state-at-trailered-handoff-heads-LEGSMOKE-1010.md).",
+      "surface": "GitHub check-runs, compare and pull-request endpoints via the pane's gh (https://github.com/sjawhar/legion-smoke/pull/755/checks).",
+      "command": "gh api repos/sjawhar/legion-smoke/commits/82232a9d9fa032c74359118af2798f3479e25c05/check-runs; gh api repos/sjawhar/legion-smoke/commits/237bf7868f7f9034750cbe3c59572633c2376f50/check-runs; gh api repos/sjawhar/legion-smoke/compare/82232a9d…...237bf786… --jq '[.files[].filename]'; gh pr view 755 --json headRefOid,mergeable,mergeStateStatus,statusCheckRollup; gh api 'repos/sjawhar/legion-smoke/actions/runs?branch=legion/LEGSMOKE-1019&event=pull_request&per_page=10'",
+      "observed": "check-runs at 82232a9d: total_count 4 — check 39895064810 (push) and 39895208167 (pull_request), gate 39895064821 (push) and 39895208197 (pull_request), all completed/success; newest pull_request runs on the branch are ci 39895208167 and fail-on-demand 39895208197 at head_sha 82232a9d, both success; check-runs at 237bf786: total_count 0; compare → [\".legion/LEGSMOKE-1019/implement.json\"], all under .legion/LEGSMOKE-1019/; pr view → headRefOid 237bf786, mergeable MERGEABLE, mergeStateStatus BLOCKED, statusCheckRollup [] (the expected pre-retro state).",
+      "headSha": "237bf7868f7f9034750cbe3c59572633c2376f50",
+      "negativeControl": "contents/.fail-me?ref=82232a9d… → HTTP 404: the fail-on-demand gate's only failure condition is absent at the CI head, which is why gate is success rather than failure."
+    }
+  ],
+  "testsJudged": "The repository ships no test suite (CI is ci/check `sleep 20 && exit 0` and fail-on-demand/gate `exit 1 iff .fail-me exists`), so there is no implementer test to judge and no red test to write for a one-line marker. Break attempts: wrong extension (404), marker on main (404, 0 commits), colliding marker under smoke/ (none), CRLF or missing trailing newline (last byte 0a, 0 CR), .fail-me trip wire (404).",
+  "notes": [
+    "Stage 4b upgrade rehearsal proof child: this testing round ran on the driver's targeted Dispatch message 6eac161f-2b39-4076-a38a-999c8edab1de (inspect PR #755, run a focused observable check, record a passing tester handoff).",
+    "No rebase occurred; no fingerprint re-check applies."
+  ]
+}
