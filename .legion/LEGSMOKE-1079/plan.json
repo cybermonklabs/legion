@@ -1,0 +1,126 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-1079",
+  "completed": "2026-10-23T18:52:00Z",
+  "planDocument": "dispatch://LEGSMOKE-1079/artifact/plan-md",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker (+ references pr-body.md, default-branch-check.md, review-threads.md, merge-gate.md): the pull request body template, the definition of a proof on a production-like surface (here the GitHub contents API at an explicit SHA), the push and trailer rules, thread resolution, and the production check after the close; ce-simplify-code does not run and the Thermo line is omitted because the diff is one Markdown file (pr-body.md: docs-only).",
+      "dispatch: loaded before any Dispatch write (a message on the issue, the retro message)."
+    ],
+    "test": [
+      "legion-worker (+ pr-body.md, merge-gate.md): what the tester verifies (re-run the implementer's read at firstCodeHead, drive the same surface by the independent .content route, read CI from check-runs and never re-run it), the E2E (tester) line, the test.json fields (implementerProof, failures, proof, observations) and the verdict; no red test is written here because no harness reaches a Markdown file and any test file would add a path and fail AC3."
+    ],
+    "review": [
+      "legion-worker (+ merge-gate.md, review-threads.md, pr-body.md): the required-set read (rulesets -> gate; branches/main protection -> none), the CI-head read and the .legion/-only compare, the review submitted as one POST to pulls/<n>/reviews naming commit_id, the Look at first and Not proven / risk lines, and review.json's decision, counts, keyFindings and readHead (never approvedHead; the approved SHA lives on GitHub)."
+    ]
+  },
+  "repositorySkillsLookedThrough": "AGENTS.md (one fixture command, made every phase's first step); .omp/skills/fixture-omp-skill and .claude/skills/fixture-claude-skill (fixture tokens only, drive no surface); docs/solutions/legion/*.md (six notes from this proof series, each folded into the plan's commands).",
+  "constants": {
+    "path": "smoke/LEGSMOKE-1079.md",
+    "line": "LEGSMOKE-1079: Upgrade rehearsal fallback child (/tmp/legion-e2e4b.4058933.kp0hqnzV)",
+    "sha256": "4486a935f1dc0a9221dd41a553bee121de2fb334c0b345d6bcca5bc13b205734",
+    "bytes": 85,
+    "lines": 1,
+    "B": "6d843f28732dd82163065cb4d2248e488f68ca0b",
+    "F": "6d843f28732dd82163065cb4d2248e488f68ca0b",
+    "requiredChecks": ["gate"],
+    "commitMessage": "smoke: add LEGSMOKE-1079 marker file"
+  },
+  "preState": {
+    "measuredAt": "2026-10-23T18:21Z..18:36Z",
+    "contentsAtMain": "HTTP/2.0 404 Not Found",
+    "commitsByPathOnMain": 0,
+    "pullRequestsForHead": "[]",
+    "rulesetRequiredChecks": ["gate"],
+    "branchProtectionRequiredChecks": [],
+    "strictRequiredStatusChecksPolicy": false,
+    "childSpecDocument": "empty (document token only)"
+  },
+  "gapAnalysis": {
+    "findings": [
+      {
+        "finding": "Which issue the marker names is an inference that decides the file path: the parent spec says 'names this issue' (LEGSMOKE-1076 in its own words) and the child spec is empty.",
+        "answer": "Plan §1 and §8.1: the marker names LEGSMOKE-1079, following the convention on main where every earlier Stage 4b issue carries its own marker (smoke/LEGSMOKE-1069.md, smoke/LEGSMOKE-1070.md) and none names a parent key; recorded as the architect's decision, sent with the completion, proceeding is the default."
+      },
+      {
+        "finding": "The acceptance criteria have no approved source (parent spec + empty child spec), and the spec may have been written since the facts were gathered.",
+        "answer": "Re-read dispatch doc-read --issue LEGSMOKE-1079 at plan-writing time (18:36Z): still empty, 90 bytes. Plan §1 names each criterion's source (parent spec quote, driver's message, title convention); §8.1 asks the architect to confirm the reading or write a child spec."
+      },
+      {
+        "finding": "Retro's mandatory docs/solutions note lands on main and breaks the parent's 'no other path differs' literally; the slug is unknown at plan time.",
+        "answer": "Recorded as departure D1 (plan §7, specDepartures). AC3 has two checks: filtered compare from B equals the marker alone up to the approval; at retro's head and the merge commit the unfiltered compare lists exactly smoke/LEGSMOKE-1079.md and one docs/solutions/legion/*-LEGSMOKE-1079.md, no .legion/ path."
+      },
+      {
+        "finding": "The recorded sha256 and byte count are a single point of failure; the plan must say which artefact is authoritative.",
+        "answer": "Plan §3: LINE is authoritative; every phase re-derives sha256/wc -c locally with printf '%s\\n' and requires equality with the table and with the bytes read from the contents API; a disagreement is reported to the architect and the file is never edited to match a constant."
+      },
+      {
+        "finding": "AC2's line count is event-dependent (one line, or two when a review asked), so it is not machine-checkable as one criterion, and the second line's text has no owner.",
+        "answer": "Plan §5 AC2 in two branches with exact checks: (a) wc -l=1, wc -c=85, tail byte 0a, sha256 constant, head -1 = LINE; (b) implementer appends, records the second line, new sha256, wc -c, wc -l=2 in implement.json at the new code head and re-runs the proof there; the second line's words are the review thread's own request as the reviewer wrote it."
+      },
+      {
+        "finding": "A review finding asking for anything but the one appended line collides with 'no deferrals' and with AC3.",
+        "answer": "Plan §5 AC2: such an ask is answered on its thread as outside scope and sent to the architect with envoy_publish as a scope decision; never fixed by adding a path; the Fast-follow line holds nothing that would add one."
+      },
+      {
+        "finding": "The tester's 'write the red test' rule has no landing place; a test file would itself violate AC3.",
+        "answer": "Plan §6 Tester step 3: break attempts are read-only API reads (404 at ref=main, independent .content route, mergeStateStatus BLOCKED at the trailered handoff head, case-variant path 404); no red test is written because ci.yml's check is sleep 20 && exit 0 with no checkout and any test file adds a path; recorded with the reason in test.json observations."
+      },
+      {
+        "finding": "F equals B, so the 404 controls at F and B collapse into one read and cannot furnish two independent controls.",
+        "answer": "Plan §5 assigns distinct controls per phase: implementer 404 at ref=6d843f28 (stated as B = F) plus the altered-string mismatch; tester 404 at ref=main, the .content base64 route, and mergeStateStatus BLOCKED at the zero-check-run handoff head. .fail-me is forbidden in words with the reason: no root .gitignore, a probe would be snapshotted and turn the required gate red for every tree."
+      },
+      {
+        "finding": "The production check after the close is unplanned, and for this change main is production; a 'pending' would idle the check to the 14-day bound.",
+        "answer": "Plan §5 AC5: main is production for a repository file; the implementer reads the marker at ref=<merge sha> and ref=main through the contents API, compares bytes, writes the Production: line naming the merge as the waking event plus one footer comment, verdict pass; pending is named as wrong here."
+      },
+      {
+        "finding": "The PR body's CI line template names workflows this repository does not have (Tests, PR Title); only ci/check and fail-on-demand/gate exist and only gate is required.",
+        "answer": "Plan §5 AC4 and §6 Implementer step 5 give the CI line's exact shape naming the pull_request runs of fail-on-demand (gate) and ci (check) with the push pair beside them, verified by the check-runs read; Thermo omitted; Size: read from the filtered compare F...firstCodeHead; §6 retro bullet records that .github/ holds only workflows/."
+      },
+      {
+        "finding": "The reviewer's required-set read may hit a branch-protection endpoint the App is refused (403 observed on branches/main/protection/required_status_checks).",
+        "answer": "Measured at 18:36Z: merge-gate.md's own protection read, repos/sjawhar/legion-smoke/branches/main --jq '.protection.required_status_checks.checks[].context', succeeds and returns none (enabled false, checks []); the 403 is on branches/main/protection and .../protection/required_status_checks, which merge-gate.md does not use. Recorded in plan §4 fact 4 with the two reads separately."
+      },
+      {
+        "finding": "Push sequence and the skip-checks: true trailer are per-phase and decide where CI exists; firstCodeHead is undefined.",
+        "answer": "Plan §6 and §9 fix the sequence: planner, implementer-handoff, tester and reviewer pushes are handoff-only and trailered; the implementer pushes the code first untrailered and records that SHA as firstCodeHead, opens the PR after it, and takes the proof after check-runs complete there; retro's push is untrailered. AC4 checks gate completed/success at firstCodeHead."
+      },
+      {
+        "finding": "The branch guard cannot distinguish a proof-driver fixture commit from Legion's own, and B may stop being the branch tip.",
+        "answer": "Plan §3 records B and F (equal, with the SHA); §4's branch invariant adds an authorship read (jj log -r '<B>..@-' -T author.email()) and states the response: a commit no Legion App authored is a new pre-Legion tip B', judged from there, recorded as a departure, run proceeds; diverged/behind is a reset: stop and report. The stop condition is the four invalidating facts, never main's tip SHA; strict policy false, so no base update."
+      },
+      {
+        "finding": "Every gh command in the plan is copied by the phases, so it must obey the pane wrapper's jq rule (no flag between --jq and the filter).",
+        "answer": "Plan §2 states the rule once as standing for every phase; every gh command in the plan puts jq flags inside the filter (| tostring, | @tsv). The plan reviewer checked each command."
+      },
+      {
+        "finding": "AGENTS.md requires a fixture command before anything else in this repository, which the issue omits; several pre-state facts are live state each phase must re-read.",
+        "answer": "Plan §2 makes mkdir -p /tmp/legion-fixture && touch /tmp/legion-fixture/agents-md every phase's first step; §4 lists the four invalidating facts as commands each phase re-runs, with the planner's measured answers and times beside them; §3 marks the sha256/byte constants as derived from LINE."
+      }
+    ]
+  },
+  "planReview": {
+    "verdict": "approved",
+    "rounds": 1,
+    "notesApplied": "Reviewer approval written as the single POST to pulls/<n>/reviews carrying commit_id (merge-gate.md), not gh pr review; retro bullet records that .github/ holds only workflows/ (no PR template, no path-derived body content)."
+  },
+  "specDepartures": [
+    {
+      "spec": "Parent spec LEGSMOKE-1076 (the child's own spec is empty), Acceptance: 'the default branch main holds exactly one new file under smoke/ ... No other path in the repository differs from main as it stood before the change.'",
+      "plan": "The merge lands two files: smoke/LEGSMOKE-1079.md and retro's mandatory note docs/solutions/legion/<slug>-LEGSMOKE-1079.md. The criterion is read as: Legion's phases change no path but the marker (filtered compare from B = 6d843f28 lists the marker alone until retro), and the merge diff from F is exactly the marker plus retro's one note, with no .legion/ path.",
+      "evidence": "skill://legion-retro: 'Write the integrated learning as one or more discoverable documents under docs/solutions/', named docs/solutions/<category>/<slug>-<LEGION_ISSUE>.md, in the last push before READY. Pull request sjawhar/legion-smoke#767 (LEGSMOKE-1070, merged 2026-10-23T18:10:03Z) landed docs/solutions/legion/put-jq-flags-inside-the-filter-for-the-pane-gh-wrapper-LEGSMOKE-1070.md beside smoke/LEGSMOKE-1070.md; docs/solutions/legion/judge-a-pre-seeded-branch-from-its-pre-legion-tip-LEGSMOKE-1056.md records the same pattern as a departure with proceeding as the default.",
+      "outcome": {
+        "kind": "changed",
+        "scope": "acceptance",
+        "acceptance": "Once the pull request merges, main holds exactly one new file under smoke/, smoke/LEGSMOKE-1079.md, whose first line names LEGSMOKE-1079, and one new note under docs/solutions/legion/ named for LEGSMOKE-1079 that the retro wrote; no other path differs from main as it stood at the fork point 6d843f28."
+      }
+    }
+  ],
+  "decisionsForArchitect": [
+    "The child's spec document is empty; the plan derives acceptance from the parent LEGSMOKE-1076's spec with this child's key, the driver's message and the marker convention on main, and the marker names LEGSMOKE-1079. Confirm the reading (default) or write a child spec before the implementer's targeted message.",
+    "Departure D1: whether the parent-derived acceptance line 'No other path in the repository differs' changes to admit retro's docs/solutions note."
+  ]
+}
