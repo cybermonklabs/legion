@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "phase": "review",
+  "issue": "LEGSMOKE-1025",
+  "completed": "2026-10-23T06:28:22Z",
+  "pullRequest": 759,
+  "round": 1,
+  "headReviewed": "3f3b652732147d2dc5cc15f78c57ba98a5da0147",
+  "codeHead": "2b4ce80371d85faba9d226b0295695c825b536ba",
+  "decision": "approved",
+  "critical": 0,
+  "important": 0,
+  "minor": 0,
+  "keyFindings": [],
+  "appendRequested": false,
+  "ciRead": {
+    "requiredChecks": "rulesets on main: [\"gate\"]; branch protection required_status_checks: none",
+    "ciHead": "2b4ce80371d85faba9d226b0295695c825b536ba (newest pull_request run on legion/LEGSMOKE-1025)",
+    "checkRuns": "gate 120272757125 completed/success, check 120272756950 completed/success (pull_request); gate 120272363420 completed/success, check 120272363516 completed/success (push)",
+    "prBodyCiLine": "runs 39910693940 (fail-on-demand) and 39910693953 (ci) both headSha 2b4ce80371d85faba9d226b0295695c825b536ba, completed/success — matches the body",
+    "compareCiHeadToHead": "2b4ce803…...3f3b6527… status ahead; files [.legion/LEGSMOKE-1025/implement.json, .legion/LEGSMOKE-1025/test.json]; all(startswith(\".legion/\")) → true"
+  },
+  "threads": "0 review threads, 0 prior reviews on #759 (gh api graphql reviewThreads/reviews both empty)",
+  "proofLines": "E2E (implementer) and E2E (tester) both present in the PR body; each names a production-like surface (GitHub contents/git-objects API of sjawhar/legion-smoke at explicit shas), command, observation, head sha and negative control; tester verified the implementer's proof by re-running C1 verbatim",
+  "acceptanceChecked": [
+    "A1: contents/smoke/LEGSMOKE-1025.md?ref=main → 404 at review time (file still absent from main; final form at M is the implementer's production check)",
+    "A2: at 3f3b6527… raw bytes cmp LIT → 0; 83 B; 1 line; last byte 0a; 0 CR; sha1 952c062419532f4f5bdc2333b14977bbe0590a1f; sha256 e6d470babc256eddc19b58cc576cdcd7c8364c26ccb063e48f709c3369d4208f; negative control cmp against the no-final-LF variant → exit 1 (EOF after byte 82)",
+    "A3: K=0; one line; no append requested by this review",
+    "A4: pulls/759/files → .legion/LEGSMOKE-1025/{implement,plan,test}.json + smoke/LEGSMOKE-1025.md; no other path; .fail-me?ref=3f3b6527… → 404",
+    "A5: gate completed/success at the code head 2b4ce803…; mergeStateStatus BLOCKED at the trailered head 3f3b6527… by design (no check-run on a skip-checks head; its message ends \\n\\n\\nskip-checks: true\\n)"
+  ],
+  "thermonuclear": "not run — docs-only diff (one Markdown marker line plus .legion handoffs), no runtime code; Thermo line correctly absent from the PR body",
+  "contractChangeCensus": "not applicable — no refusal, field, or signature change at any process or package boundary",
+  "exportedSymbols": "none changed",
+  "prBodyEdits": "Look at first and Not proven / risk written at this round",
+  "notes": [
+    "Deployment instructions: the targeted Dispatch message (4e0c79a0-3f33-4aca-9aef-b4ddee37ba68) arrived in the same turn as the task line, so the review followed without a WAITING reply."
+  ]
+}
