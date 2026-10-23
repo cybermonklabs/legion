@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "phase": "review",
+  "issue": "LEGSMOKE-1087",
+  "completed": "2026-10-23T22:49:35Z",
+  "pullRequest": "https://github.com/sjawhar/legion-smoke/pull/773",
+  "reviewedHeadSha": "1ba1b833ecd41be13f6c1133fecbdd4c078fe62b",
+  "codeHeadSha": "e6459d9f84f1507ddda09322a4dfc78e230ea204",
+  "decision": "approved",
+  "critical": 0,
+  "important": 0,
+  "minor": 0,
+  "keyFindings": [],
+  "ciRead": {
+    "requiredChecks": ["gate"],
+    "requiredSource": "rulesets (repos/sjawhar/legion-smoke/rules/branches/main); branch protection lists none",
+    "ciHead": "e6459d9f84f1507ddda09322a4dfc78e230ea204",
+    "checkRuns": "gate completed success; check completed success (pull_request runs 40035311530 fail-on-demand, 40035311579 ci, both headSha e6459d9f)",
+    "compareOnlyLegionSince": "compare e6459d9f...1ba1b833 status ahead, files [.legion/LEGSMOKE-1087/implement.json, .legion/LEGSMOKE-1087/test.json] → all(startswith(\".legion/\")) = true"
+  },
+  "threads": "gh api graphql reviewThreads at 1ba1b833: 0 threads, 0 prior reviews; no bot threads to adjudicate",
+  "proofLines": {
+    "implementer": "present: contents API at e6459d9f returns the one line; negative control ref=main → 404",
+    "tester": "present: contents + compare APIs at 7bb9ee42; negative controls ref=main → 404 and wrong extension → 404; implementer proof re-run verified",
+    "reviewerRerun": "gh api contents/smoke/LEGSMOKE-1087.md?ref=1ba1b833 → `LEGSMOKE-1087: Upgrade rehearsal handoff child (/tmp/legion-e2e4b.1145802.BUQbzYB8)` exit 0; ref=main → HTTP 404 exit 1"
+  },
+  "thermonuclear": "not run: docs-only diff (one Markdown line under smoke/, no runtime code)",
+  "security": "no sensitive surface in this diff",
+  "contractChangeCensus": "not required: no refusal, required field, removed/renamed field, or boundary signature change",
+  "planReadBesideSpec": "plan.json specDepartures []; plan task 'Add smoke/LEGSMOKE-1087.md holding one line that names LEGSMOKE-1087; change no other file' satisfied: compare main...1ba1b833 lists exactly one non-.legion file, added +1/−0; PR body carries `Dispatch: LEGSMOKE-1087`",
+  "notes": [
+    "Stage 4b upgrade rehearsal proof: targeted human Dispatch message d27116d9-8cb4-4bcc-8271-53871a8dc533 directed reviewing PR #773, submitting APPROVE as the reviewer App, recording this handoff and completing.",
+    "Round order per the daemon workflow: CI read at the code head, handoff pushed, then APPROVE submitted naming the head that push made."
+  ]
+}
