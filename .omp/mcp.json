@@ -1,0 +1,1 @@
+{ "mcpServers": { "fixture-omp-mcp": { "command": "bun", "args": [".omp/mcp-fixture.ts", "/tmp/legion-fixture/mcp-omp"] } } }
