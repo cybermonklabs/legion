@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-1013",
+  "completed": "2026-10-23T00:30:58Z",
+  "requiredSkills": {
+    "implement": [
+      "none: the <skills> list holds only Legion/Dispatch workflow skills and ce-simplify-code; sjawhar/legion-smoke has no AGENTS.md and no repository skill, and the change is one Markdown marker file under smoke/."
+    ],
+    "test": [
+      "none: no repository test or smoke skill exists; the surface is the GitHub repository itself (gh pr diff --name-only, gh api contents, wc -l / head -1 on the merged file) and the two workflows .github/workflows/ci.yml and fail-on-demand.yml."
+    ],
+    "review": [
+      "none: no repository review skill exists; the reviewer reads the one-file diff beside the root spec dispatch://LEGSMOKE-1009/spec."
+    ]
+  },
+  "plan": {
+    "summary": "Stage 4b upgrade rehearsal: this child's own spec document is empty; its work is the root spec's one-file smoke change scoped to this child. Add smoke/LEGSMOKE-1013.md holding one line that names LEGSMOKE-1013, ending in a newline; nothing else changes.",
+    "tasks": [
+      {
+        "task": "Add smoke/LEGSMOKE-1013.md with the single line 'LEGSMOKE-1013 upgrade rehearsal handoff child marker' terminated by a newline; commit on legion/LEGSMOKE-1013; open the pull request with 'Dispatch: LEGSMOKE-1013' in its body.",
+        "surface": "GitHub repository sjawhar/legion-smoke, pull request on legion/LEGSMOKE-1013",
+        "check": "gh pr diff <n> --name-only lists smoke/LEGSMOKE-1013.md and only paths under .legion/LEGSMOKE-1013/ and docs/solutions/ beyond it; wc -l smoke/LEGSMOKE-1013.md reports 1; grep -c LEGSMOKE-1013 smoke/LEGSMOKE-1013.md reports 1."
+      },
+      {
+        "task": "Confirm both workflows pass on the pull request head: ci (job check) and fail-on-demand (job gate, which fails only when .fail-me exists at the repository root).",
+        "surface": "GitHub Actions on the pull request head",
+        "check": "gh pr checks <n> shows ci and fail-on-demand green; negative control: no .fail-me file is in the diff."
+      }
+    ],
+    "acceptance": [
+      {
+        "criterion": "main holds smoke/LEGSMOKE-1013.md, absent from every earlier commit on main, one line ending in a newline that contains LEGSMOKE-1013.",
+        "surface": "gh api 'repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1013.md?ref=<merge commit>' --jq .content | base64 -d | wc -l; git log --oneline main~1 -- smoke/LEGSMOKE-1013.md is empty",
+        "negativeControl": "the same read at ref=main~1 (the pre-merge main) returns 404"
+      },
+      {
+        "criterion": "Only when review asks for one more line: the file holds two lines, first line unchanged.",
+        "surface": "head -1 and wc -l on the file at the final head versus the first push",
+        "negativeControl": "with no review request the file stays at one line through the merge"
+      }
+    ],
+    "proofNote": "Stage 4b proof instruction (dispatch message 67618cdc-1e06-41a4-8bdb-2b0ccb9c7d96): this phase's operation is writing and committing the plan handoff, then handoff_complete without an issue field. The gap-analyst and plan-reviewer checks were not run for that reason; their records below say so."
+  },
+  "gapAnalysis": {
+    "error": "check not run: the Stage 4b targeted proof instruction scoped this planning phase to writing and committing the plan handoff; the child's spec document is empty and the plan is the root spec's one-file change scoped to LEGSMOKE-1013."
+  },
+  "planReview": {
+    "verdict": "failed",
+    "rounds": 0,
+    "error": "check not run: the Stage 4b targeted proof instruction scoped this planning phase to writing and committing the plan handoff."
+  },
+  "specDepartures": []
+}
