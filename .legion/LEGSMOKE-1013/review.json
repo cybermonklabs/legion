@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "phase": "review",
+  "issue": "LEGSMOKE-1013",
+  "completed": "2026-10-23T00:51:12Z",
+  "pullRequest": "https://github.com/sjawhar/legion-smoke/pull/748",
+  "reviewedHeadSha": "aed91bdb5172eccffb687608aeaafe4e5a4591c0",
+  "codeHeadSha": "bab9b77d34ec440daca71402562b48e9bc6e5d00",
+  "round": 1,
+  "decision": "approved",
+  "critical": 0,
+  "important": 0,
+  "minor": 0,
+  "keyFindings": [],
+  "verified": {
+    "ci": "Required set for main: ruleset required_status_checks = [gate]; branch protection has none. CI head (newest pull_request run on legion/LEGSMOKE-1013) = bab9b77d34ec440daca71402562b48e9bc6e5d00; check-runs there: check completed success, gate completed success (each twice: push + pull_request). compare bab9b77d...aed91bdb → status ahead, files [.legion/LEGSMOKE-1013/implement.json, .legion/LEGSMOKE-1013/test.json], all under .legion/. The PR body's CI line names runs 39879853007, 39879775697, 39879852988, 39879775898; gh run view shows all four at bab9b77d, completed success, so the line is current.",
+    "threads": "gh api graphql: reviews [] and reviewThreads [] on #748 — nothing to answer, nothing to accept.",
+    "e2e": "E2E (implementer) and E2E (tester) lines both present with surface, command, observation, head SHA and negative control. Re-ran at head aed91bdb: contents read of smoke/LEGSMOKE-1013.md decodes to 65 bytes 'LEGSMOKE-1013 upgrade rehearsal handoff child marker\\n' (od -c, one trailing newline); contents at ref=main → HTTP 404 (exit 1); contents of .fail-me at the head → HTTP 404 (exit 1).",
+    "spec": "Root spec dispatch://LEGSMOKE-1009/spec read beside plan.json; the child's own spec document is empty. plan.json specDepartures = [], so the review is against the spec's design scoped to LEGSMOKE-1013. Diff: smoke/LEGSMOKE-1013.md added (+1/-0) plus .legion/LEGSMOKE-1013/{plan,implement,test}.json; no path outside the spec's allowed set. acceptance[1] (two lines only when review asks) is not invoked: this review asks for no second line.",
+    "thermonuclear": "not run: the diff is docs-only (one Markdown marker plus .legion/ handoffs); the PR body carries no Thermo line, which is correct for a docs-only PR.",
+    "security": "Security: no sensitive surface in this diff.",
+    "contractChangeCensus": "not required: no refusal, required field, removed/renamed field or boundary signature change.",
+    "blastRadius": "no exported symbol changed; codegraph impact/callers not applicable."
+  },
+  "notProvenRisk": [
+    "The root spec's post-merge acceptance (the file read from main at the merge commit holds the one line; main~1 → 404) cannot be proven before the merge; it is the implementer's production check after the close."
+  ],
+  "proofNote": "Stage 4b proof: targeted Dispatch message c6ac6c17-2973-4563-8ddd-bc450f72e6e7 named this phase's operation (review #748, submit APPROVE as the reviewer App, record the reviewer handoff, handoff_complete). plan.json records that the planner's gap-analysis and plan-review checks were not run under the Stage 4b instruction; the plan's one-file change matches the root spec, so nothing in that gap changes this review."
+}
