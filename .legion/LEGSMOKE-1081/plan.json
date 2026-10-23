@@ -1,0 +1,134 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-1081",
+  "completed": "2026-10-23T18:36:00Z",
+  "planDocument": "dispatch://LEGSMOKE-1081/artifact/plan-md",
+  "spec": "dispatch://LEGSMOKE-1081/spec (empty); design inherited from the parent dispatch://LEGSMOKE-1076/spec v2 with Departures D1 and D2",
+  "requiredSkills": {
+    "implement": [
+      "skill://legion-worker with references/pr-body.md, references/default-branch-check.md, references/review-threads.md and references/merge-gate.md: the PR body from the template (Dispatch: LEGSMOKE-1081 line; Size: as the merge diff from the fork point 6d843f28 with handoffs excluded; CI line edited in once the pull_request pair exists), the six-field proof read through the GitHub contents API at firstCodeHead, the identity check before each push, one reply and one resolution per review thread, the production check after the close; skill://legion-retro for the retro the implementer runs (a docs/solutions/legion/*-LEGSMOKE-1081.md note only for a learning the six existing notes lack, then the removal of .legion/LEGSMOKE-1081/). Repository: AGENTS.md's one line (agentsMdCheck) first; the fixture skills carry no procedure; ce-simplify-code does not apply to a .md/.json-only diff. Stage 4b: sleep 300 on the task line before WAITING; act only on the driver's targeted message."
+    ],
+    "test": [
+      "skill://legion-worker with references/pr-body.md and references/merge-gate.md: re-run the implementer's exact commands at its headSha, drive the surface independently through the raw and JSON contents routes at firstCodeHead (or appendHead) with the read-only break set and the gateControl at a trailered handoff head, read CI at the CI head (never a rerun, never at a skip-checks head); the repository has no suite, lint or runtime, so no red test is written and no tracked file but test.json changes (noSuite: true)."
+    ],
+    "review": [
+      "skill://legion-worker with references/merge-gate.md and references/review-threads.md: the required-set read from ruleset 24471196 (gate; the 403 on branches/main/protection is the expected review-App refusal, never read as none), the CI-head read and compare, review.json naming readHead and never approvedHead (docs/solutions/legion/read-the-approved-head-from-github-not-the-review-handoff-LEGSMOKE-1062.md), one review per round by SHA of the head the handoff push made (APPROVE head <sha> / REQUEST_CHANGES head <sha>, the latter only on the driver's targeted message), the plan read beside the spec for D1 and D2."
+    ]
+  },
+  "constants": {
+    "repository": "sjawhar/legion-smoke",
+    "defaultBranch": "main",
+    "forkPoint": "6d843f28732dd82163065cb4d2248e488f68ca0b",
+    "forkPointCommand": "jj -R \"$LEGION_WORKSPACE\" log -r 'fork_point(main@origin | @-)' --no-graph -T commit_id",
+    "path": "smoke/LEGSMOKE-1081.md",
+    "lineOne": "LEGSMOKE-1081: Upgrade rehearsal push child (/tmp/legion-e2e4b.4058933.kp0hqnzV)",
+    "lineOneBytes": 81,
+    "lineOneLines": 1,
+    "lineOneLastByteHex": "0a",
+    "lineOneFirstBytesHex": "4c 45 47",
+    "lineOneSha256": "44d0199036d17a5530a17fa5a36f3c39b5659cee1ba8b0c110dd5a258d86c8a4",
+    "lineOneSha256Command": "printf '%s\\n' \"$L1\" | sha256sum",
+    "lineOneBlobSha1": "8070acf15dd1e8da50b00865b54e2c26811d08eb",
+    "lineOneBlobSha1Command": "(printf 'blob 81\\0'; printf '%s\\n' \"$L1\") | sha1sum",
+    "blobMethodVerification": "the same formula on smoke/LEGSMOKE-1070.md (126 bytes) gives 350a26d9388c22a591260e762d79ac35afd55a99, the .sha GitHub's contents API returns for it at ref=main (18:23Z)",
+    "alteredSha256": "0207fe1db725fdaeb8085ff461d292a2cca746db5ed349fe41cf1d8a57abc18b",
+    "crlfSha256": "fdaf9ab8feaada975060378fecb9408b298a9cc85139e8c10c260e76dbb74eca",
+    "noFinalLfSha256": "2f9695d784df1b67be3662dcf8c4fa7574f2a5001b5b40c2ad37772efd6a9a6f",
+    "lineTwo": "the review's requested text verbatim; default when the review names none: Legion proof review round 1 (LEGSMOKE)",
+    "lineTwoDefaultExample": {"twoLineBytes": 120, "twoLineSha256": "900a246d7a22efcd47f137648e67addeaba9ca6ac24b0af1631e7be64a2f8028", "twoLineBlobSha1": "1ef1ca6eff0ded3b8cdbcfd7d5ab731a096502a3", "command": "printf '%s\\n%s\\n' \"$L1\" \"$L2\" | sha256sum", "note": "example only; the implementer re-derives and records the real values at appendHead; the review's words win"},
+    "requiredChecks": ["gate"],
+    "requiredChecksSource": "ruleset 24471196 (main, active, ~DEFAULT_BRANCH), strict false; gate = job gate of .github/workflows/fail-on-demand.yml",
+    "advisoryChecks": ["check"],
+    "advisoryChecksSource": "job check of .github/workflows/ci.yml",
+    "allowedPathsFromForkPoint": ["smoke/LEGSMOKE-1081.md", ".legion/LEGSMOKE-1081/*.json", "docs/solutions/legion/*-LEGSMOKE-1081.md"],
+    "commitTitle": "smoke: add LEGSMOKE-1081 marker file",
+    "appendCommitTitle": "smoke: append review line to LEGSMOKE-1081 marker",
+    "sizeLine": "1 file changed, +1/-0 - merge diff from the fork point 6d843f28 (handoffs under .legion/LEGSMOKE-1081/ excluded, removed by retro)",
+    "readCommand": "gh api 'repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1081.md?ref=<sha>' -H 'Accept: application/vnd.github.raw'",
+    "jsonRoute": "gh api 'repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1081.md?ref=<sha>' --jq '[.sha,.size] | @tsv'",
+    "legionDiff": "gh api 'repos/sjawhar/legion-smoke/compare/6d843f28732dd82163065cb4d2248e488f68ca0b...<sha>' --jq '[.files[] | select(.filename | startswith(\".legion/\") | not) | {filename,status,additions,deletions}] | tostring'",
+    "handoffPaths": "gh api 'repos/sjawhar/legion-smoke/compare/6d843f28732dd82163065cb4d2248e488f68ca0b...<sha>' --jq '[.files[] | select(.filename | startswith(\".legion/\")) | .filename] | tostring'",
+    "pathGuard": "jj -R \"$LEGION_WORKSPACE\" diff --from 'fork_point(main@origin | @-)' --to @- --name-only",
+    "checkRuns": "gh api 'repos/sjawhar/legion-smoke/commits/<sha>/check-runs' --jq '[.check_runs[] | [.name,.status,.conclusion,.app.slug]] | tostring'",
+    "runsForHead": "gh api 'repos/sjawhar/legion-smoke/actions/runs?head_sha=<sha>&per_page=20' --jq '[.workflow_runs[] | [.id,.name,.event,.status,.conclusion]] | tostring'",
+    "approvedHead": "gh api repos/sjawhar/legion-smoke/pulls/<n>/reviews --jq '[.[] | select(.state==\"APPROVED\") | .commit_id] | tostring'",
+    "appendRequested": "gh api repos/sjawhar/legion-smoke/pulls/<n>/reviews --jq '[.[] | select(.state==\"CHANGES_REQUESTED\") | select((.body // \"\") | test(\"append one more line\"))] | length'",
+    "mergeParentCheck": "m=<mergeSha>; p=$(gh api repos/sjawhar/legion-smoke/commits/$m --jq '.parents[0].sha'); gh api \"repos/sjawhar/legion-smoke/compare/$p...$m\" --jq '[.files[] | {filename,status,additions,deletions}] | tostring'",
+    "mergeParentCheckExpected": "exactly smoke/LEGSMOKE-1081.md added (+1/-0, or +2/-0 after an append), plus zero or more docs/solutions/legion/*-LEGSMOKE-1081.md added, nothing under .legion/ (squash merge enabled; the precedent merge 6d843f28 has one parent)",
+    "listOnMain": "gh api 'repos/sjawhar/legion-smoke/contents/smoke?ref=main' --jq '[.[] | select(.name==\"LEGSMOKE-1081.md\") | [.path,.sha,.size]] | tostring'",
+    "commitsByPath": "gh api 'repos/sjawhar/legion-smoke/commits?path=smoke/LEGSMOKE-1081.md&sha=main&per_page=100' --jq '[.[].sha] | tostring'",
+    "gateControl": "gh pr view <n> -R sjawhar/legion-smoke --json mergeStateStatus,mergeable --jq '[.mergeStateStatus,.mergeable] | tostring' -> [\"BLOCKED\",\"MERGEABLE\"] at a trailered handoff head with checkRuns []; never a .fail-me probe (no root .gitignore: jj snapshots stray files)",
+    "agentsMdCheck": "t0=$(date -u +%s); mkdir -p /tmp/legion-fixture && touch /tmp/legion-fixture/agents-md; test \"$(stat -c %Y /tmp/legion-fixture/agents-md)\" -ge \"$t0\" && echo ok (each role's first repository action; recorded in preState, never a proof entry)",
+    "jqRule": "jq flags inside the filter (| tostring, @tsv), never --jq -c: docs/solutions/legion/put-jq-flags-inside-the-filter-for-the-pane-gh-wrapper-LEGSMOKE-1070.md"
+  },
+  "preStateAtPlanning": {
+    "readAt": "2026-10-23T18:22Z-18:24Z",
+    "mainShaOnGitHub": "6d843f28732dd82163065cb4d2248e488f68ca0b",
+    "branchShaOnGitHub": "6d843f28732dd82163065cb4d2248e488f68ca0b",
+    "forkPointSha": "6d843f28732dd82163065cb4d2248e488f68ca0b",
+    "contentsOnMain": "HTTP/2.0 404 Not Found",
+    "commitsByPathOnMain": 0,
+    "pullRequestsFromBranch": [],
+    "rulesetRequiredChecks": ["gate"],
+    "rulesetId": 24471196,
+    "rulesetStrict": false,
+    "protectionEndpointForReviewApp": "HTTP/2.0 403 Forbidden (branches/main/protection/required_status_checks; expected)",
+    "mergeMethods": {"squash": true, "merge": true, "rebase": true, "deleteBranchOnMerge": false},
+    "childSpec": "empty (dispatch doc-read --issue LEGSMOKE-1081 prints only a document token)",
+    "siblingIssues": ["LEGSMOKE-1079", "LEGSMOKE-1080"],
+    "docsSolutionsNotes": ["LEGSMOKE-1016", "LEGSMOKE-1021", "LEGSMOKE-1022", "LEGSMOKE-1056", "LEGSMOKE-1062", "LEGSMOKE-1070"],
+    "agentsMdCheck": {"ranAt": "turn start, before any repository read", "ok": true},
+    "invalidatingFacts": "the file present at ref=main, a non-empty commitsByPath on main, a pull request from legion/LEGSMOKE-1081, or a changed required set stop a phase and go to the architect; a moved main@origin never does"
+  },
+  "rehearsal": {
+    "driverMessage": "2026-10-23T18:20:56Z: write and commit the plan handoff on legion/LEGSMOKE-1081, do not push, do not call handoff_complete, reply exactly PUSH_READY, wait for the next targeted message",
+    "readingChosen": "only the push and handoff_complete wait; plan.md uploaded and the in-pane plan review run before PUSH_READY so the committed handoff carries the reviewed records",
+    "expectedLocalState": "@- carries exactly .legion/LEGSMOKE-1081/plan.json with message 'plan: record handoff', the Omp-Session trailer, two empty lines and 'skip-checks: true' last; @ empty; bookmark legion/LEGSMOKE-1081 not yet moved; author and committer the review App",
+    "beforePush": "agentsMdCheck; jj log -r 'ancestors(@, 5)' identity check per skill://legion-worker/references/default-branch-check.md; jj git fetch and legion/LEGSMOKE-1081@origin still 6d843f28 (a moved remote: report, never force); gh pr list --head legion/LEGSMOKE-1081 --state all still []; readCommand at ref=main still 404; then jj bookmark set legion/LEGSMOKE-1081 -r @- && jj git push --bookmark legion/LEGSMOKE-1081; then handoff_complete",
+    "restingStateIfStoppedHere": "branch unpushed or carrying only plan.json, no PR, main untouched; a run ended at a boundary, not a failed plan; nothing to clean up"
+  },
+  "acceptance": [
+    {"id": "C1", "criterion": "Exactly one pull request from legion/LEGSMOKE-1081 to main; legionDiff from the fork point is exactly smoke/LEGSMOKE-1081.md (+1/-0; +2/-0 after an append) at every code head, plus zero or more docs/solutions/legion/*-LEGSMOKE-1081.md at retroHead; handoffPaths [] at the head that merges; mergeParentCheck = mergeParentCheckExpected at the merge (the reading of 'exactly one new file under smoke/' and 'no other path differs' on a shared main)", "surface": "GitHub pull-request, compare and commits API", "check": "gh pr list -R sjawhar/legion-smoke --head legion/LEGSMOKE-1081 --state all --json number --jq '. | tostring' has length 1; legionDiff at firstCodeHead, appendHead, approvedHead, retroHead; handoffPaths at retroHead = []; mergeParentCheck at mergeSha", "negativeControl": "legionDiff at the plan handoff head = []; handoffPaths at approvedHead non-empty"},
+    {"id": "C2", "criterion": "The file is lineOne + LF (81 bytes, 1 line, last byte 0a, sha256 44d01990..., blob 8070acf1...); after an append, two lines, the first still lineOne, the second the review's text, with re-derived constants", "surface": "GitHub contents API at an explicit SHA, raw and JSON routes", "check": "readCommand at firstCodeHead | sha256sum, wc -c, wc -l, tail -c1 | od -An -tx1, head -c3 | od -An -tx1, od -An -tx1 | grep -c ' 0d', head -1 = lineOne, grep -c '^LEGSMOKE-1081: ' = 1; jsonRoute blob/size; decoded .content cmp-identical to the raw read", "negativeControl": "alteredSha256, crlfSha256, noFinalLfSha256 all differ from the read's; 404 at ref=main (before the merge) and ref=6d843f28 (always); smoke/legsmoke-1081.md, smoke/LEGSMOKE-1081.MD, smoke/LEGSMOKE-1081x.md 404"},
+    {"id": "C3", "criterion": "gate (required) completed/success at every code head and at retroHead, the head that merges; check (advisory) success", "surface": "GitHub check-runs and actions-runs API", "check": "checkRuns and runsForHead at firstCodeHead, appendHead, retroHead (pull_request pair cited in the CI line, push pair named beside it); CI head read with compare/<ciHead>...<prHead> listing only .legion/ paths; retro's push untrailered", "negativeControl": "gateControl at a trailered handoff head: [\"BLOCKED\",\"MERGEABLE\"] with checkRuns []"},
+    {"id": "C4", "criterion": "The pull request has merged and the file is readable on main in the selected state; commitsByPath = [mergeSha]", "surface": "GitHub contents and commits API on main and at mergeSha", "check": "listOnMain lists the path with the selected state's blob and size; readCommand at ref=mergeSha and ref=main equal the selected state's sha256/bytes with head -1 = lineOne; commitsByPath = [mergeSha]; mergeParentCheck expected; production check first look pass; Production: line rewritten and one PR comment with the Legion footer", "negativeControl": "readCommand at ref=6d843f28 -> 404 after the merge too"},
+    {"id": "C5", "criterion": "Each phase worker runs AGENTS.md's one step before anything else in the repository", "surface": "the worker's own container filesystem (/tmp/legion-fixture/agents-md)", "check": "agentsMdCheck prints ok; t0 and mtime recorded in each file-backed handoff's preState and named in retro's and the merger's completion summaries", "negativeControl": "proves a touch in that container since the turn began, nothing about another container; outside the merge diff"}
+  ],
+  "productionCheck": {
+    "pass": "readCommand at ref=mergeSha and ref=main both equal the selected state; listOnMain lists the path with that blob and size; commitsByPath = [mergeSha]; mergeParentCheck = expected; checkRuns at mergeSha shows gate completed/success",
+    "pending": "the PR is merged but ref=main does not yet show the file, commitsByPath is still [], or the push runs at mergeSha are queued/in_progress",
+    "fail": "content or paths differ from the selected state, or gate concluded failure at mergeSha"
+  },
+  "gapAnalysis": {
+    "findings": [
+      {"finding": "Which key the line names is unsettled: the parent spec says LEGSMOKE-1076, the draft departs to LEGSMOKE-1081 on precedent alone; three siblings share one parent and one main.", "answer": "D1 fixes path smoke/LEGSMOKE-1081.md and lineOne naming LEGSMOKE-1081 with the collision rationale (three children, one main; every smoke/LEGSMOKE-*.md names its own key); recorded in specDepartures with outcome changed (acceptance) and named in the completion summary; the plan proceeds on the convention and the architect decides whether the spec text changes."},
+      {"finding": "'Exactly one new file under smoke/' and 'no other path differs from main' are not machine-checkable on a shared base siblings move (LEGSMOKE-1016 note records the drift).", "answer": "C1 judges the diff this issue owns: legionDiff from the fork point 6d843f28 at each head and mergeParentCheck at the merge; the pre-state is written as invalidating facts (404 at ref=main, commitsByPath [], no PR, required set [gate]), never main == 6d843f28, and a moved main@origin is never a stop."},
+      {"finding": "'No other path differs' collides with retro's docs/solutions notes and the .legion/ handoffs that must exist on the branch before retro removes them.", "answer": "D2 allows zero or more docs/solutions/legion/*-LEGSMOKE-1081.md notes (expected none) in the acceptance path set; handoffPaths at the head READY names must be [] (READY refuses a head still carrying handoffs); C1 checks both."},
+      {"finding": "The rehearsal's constraint is unplanned-for: a committed-but-unpushed handoff, PUSH_READY, then a wait across a daemon upgrade; a successor must know where the commit is and what to re-check.", "answer": "The rehearsal record (plan.md section and plan.json rehearsal) names the expected local state (@- with plan.json, trailer already applied, bookmark unmoved), the pre-push re-checks (identity, remote still 6d843f28, no PR, 404 at ref=main), the push and completion commands, and the resting state if stopped; every constant lives in the plan."},
+      {"finding": "'Do not push and do not call handoff_complete' has two readings: suppress only those two, or suppress everything that leaves the pane.", "answer": "Reading chosen and recorded: only the push and handoff_complete wait; plan.md is uploaded to Dispatch and the in-pane plan-reviewer runs before PUSH_READY (it is a subagent, not a Dispatch approval request); the reply is exactly PUSH_READY."},
+      {"finding": "The required check gate lives in fail-on-demand.yml (exit 1 iff a root .fail-me exists), not ci.yml; no root .gitignore, so a stray scratch file would be snapshotted and redden gate for every tree.", "answer": "Constants name gate = fail-on-demand.yml (required) and check = ci.yml (advisory); every role works in mktemp -d and creates no file inside the workspace; the required-check control is gateControl (mergeStateStatus BLOCKED at a trailered head with zero check-runs), never a .fail-me probe."},
+      {"finding": "The hash constants and the blob-method verification were unverified by the analyst.", "answer": "Constants carry the exact command that re-derives each value (printf | sha256sum; blob header | sha1sum) and the verification against smoke/LEGSMOKE-1070.md's GitHub sha 350a26d9 observed 18:23Z; implementer task 4 re-derives them from the pushed bytes before they are used as proof; the L2 values are marked example-only."},
+      {"finding": "The second line is pre-written, but what a future review asks for is unknown; hash-keyed acceptance fails when the words differ.", "answer": "lineTwo is parameterized: the review's requested text verbatim, the default only when the review names none; C2 after an append reads 'the second line is the review's text' with constants re-derived at appendHead and recorded in implement.json."},
+      {"finding": "The production check has no definition for a repository with no runtime or deploy; pending and fail are undefined.", "answer": "productionCheck defines pass, pending and fail as concrete reads at ref=mergeSha and ref=main (readCommand, listOnMain, commitsByPath, mergeParentCheck, checkRuns), and implementer task 8 rewrites the Production: line and posts one footer comment."},
+      {"finding": "The CI criterion names no SHA or run; each push to a branch with an open PR yields a push run and a pull_request run per job; trailered heads carry no check-runs.", "answer": "C3 reads checkRuns/runsForHead at firstCodeHead, appendHead and retroHead, cites the pull_request pair and names the push pair; the head READY names is retroHead after an untrailered push with gate success; the CI line is edited in once the pull_request pair exists."},
+      {"finding": "Literal commands must obey the repository's notes (no --jq -c; path guard from the fork point; Size: by merged paths; approved head from the reviews API).", "answer": "Every command in constants uses jq flags inside the filter (| tostring, @tsv), pathGuard uses fork_point(main@origin | @-), sizeLine is the merge diff with handoffs excluded and refreshed by retro, approvedHead is read from pulls/<n>/reviews and review.json names readHead; each note is cited beside its command."},
+      {"finding": "Two settled-by-the-repo requirements the empty child spec omits: AGENTS.md's one instruction and the marker-file byte convention (one line, own key, final LF, no BOM/CRLF).", "answer": "C5 with agentsMdCheck as each role's first action, recorded in preState (outside the merge diff); C2's byte set wc -l 1, last byte 0a, wc -c 81, first bytes 4c 45 47, zero 0d bytes, sha256 match."}
+    ]
+  },
+  "planReview": {"verdict": "approved", "rounds": 1, "notes": "two non-blocking wrinkles folded into plan.md: the CI line is a post-creation body edit once the pull_request pair exists; retro's Dispatch message is named in task 7"},
+  "specDepartures": [
+    {
+      "spec": "dispatch://LEGSMOKE-1081/spec is empty. The parent spec dispatch://LEGSMOKE-1076/spec v2 (Summary): 'add one new Markdown file under smoke/ holding a single line that names this issue'; (Acceptance): 'Its first line names LEGSMOKE-1076.'",
+      "plan": "This child applies the parent's design unchanged except that it adds smoke/LEGSMOKE-1081.md whose line names LEGSMOKE-1081 (D1). The authority after planning is the recorded byte string lineOne; the check is head -1 = lineOne and grep -c '^LEGSMOKE-1081: ' = 1.",
+      "evidence": "dispatch doc-read --issue LEGSMOKE-1081 (18:22Z) prints only a document token; the driver's targeted message of 18:20:56Z asks for the plan handoff on legion/LEGSMOKE-1081; every smoke/LEGSMOKE-*.md names its own key (smoke/LEGSMOKE-1070.md); siblings LEGSMOKE-1079 and LEGSMOKE-1080 share the parent and one main, so three files naming LEGSMOKE-1076 would be one path added three times; the previous run's equivalent child LEGSMOKE-1072 was planned and merged this way.",
+      "outcome": {"kind": "changed", "acceptance": "For this child, 'Its first line names LEGSMOKE-1076' reads 'Its first line names LEGSMOKE-1081'; the architect decides whether the child gets a spec of its own or the parent's acceptance text changes."}
+    },
+    {
+      "spec": "Parent spec (Scope): 'Nothing else changes.' (Acceptance): 'main ... holds exactly one new file under smoke/ ... No other path in the repository differs from main as it stood before the change.'",
+      "plan": "Retro (skill://legion-retro) may add zero or more docs/solutions/legion/*-LEGSMOKE-1081.md notes beside the marker, only for a learning the six existing notes do not hold (expected zero; D2). Handoffs under .legion/LEGSMOKE-1081/ are removed before READY and never reach main, so they are no departure. 'Exactly one' and 'no other path' are judged as the merge commit's diff from its first parent (C1), never as a count at ref=main.",
+      "evidence": "skill://legion-retro (learnings under docs/solutions/, then one commit removing .legion/<issue>/; READY refuses a head still carrying handoffs); PR sjawhar/legion-smoke#767 (LEGSMOKE-1070) merged smoke/LEGSMOKE-1070.md and docs/solutions/legion/put-jq-flags-inside-the-filter-for-the-pane-gh-wrapper-LEGSMOKE-1070.md; six notes exist under docs/solutions/legion/ at 6d843f28.",
+      "outcome": {"kind": "changed", "scope": "The merged head may add files under docs/solutions/legion/ named *-LEGSMOKE-1081.md; Summary and Scope hold for smoke/; 'exactly one new file under smoke/' is judged in the merge-parent diff, not as a count on a shared main."}
+    }
+  ]
+}
