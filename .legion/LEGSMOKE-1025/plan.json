@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-1025",
+  "completed": "2026-10-23T06:05:30Z",
+  "plan": "dispatch://LEGSMOKE-1025/artifact/plan-md",
+  "requiredSkills": {
+    "implement": [
+      "skill://legion-worker: push and skip-checks trailer rules, references/pr-body.md (PR template, proof definition, E2E line), references/default-branch-check.md (identity check before push); skill://legion-retro for the retro task. No repository-domain skill exists: the repository has no AGENTS.md, no code, no tests, and none of the session's skills names it."
+    ],
+    "test": [
+      "skill://legion-worker: references/pr-body.md says what the tester verifies and records (drive the surface, read CI, never re-run it) and the proof entry shape; no repository test runner exists, so no red test."
+    ],
+    "review": [
+      "skill://legion-worker: references/merge-gate.md (CI-head read, review order, approval of the head) and references/review-threads.md (one disposition per thread); the K=1 append rule in plan D4 binds what a REQUEST_CHANGES may ask."
+    ]
+  },
+  "gapAnalysis": {
+    "findings": [
+      {"finding": "F1: child spec empty; inherited acceptance names the root's smoke/LEGSMOKE-1021.md, already on main.", "answer": "Plan §1 and D1: key substitution everywhere (smoke/LEGSMOKE-1025.md, .legion/LEGSMOKE-1025/, -LEGSMOKE-1025.md note suffix); 1021/1022 markers never appear in this branch's diff; fresh 404 and zero-commits-by-path facts for 1025 recorded in §3."},
+      {"finding": "F2: a skip-checks handoff push as the last commit leaves gate absent on the merging head.", "answer": "Plan §5 push/trailer table and D5: only handoff-only pushes carry the trailer; H0, any H1 and the retro head HR are code pushes with gate running; invariant HR has gate success; negative control is the trailered head's zero check-runs and BLOCKED."},
+      {"finding": "F3: marker bytes undecided; proposed literal dropped the fixture clause that this run's merged markers keep.", "answer": "Plan §2 and D2: LIT keeps the fixture clause, matching smoke/LEGSMOKE-1021.md and -1022.md read at ref=main; 83 B, sha1 952c0624…, sha256 e6d470ba…; LIT2 122 B, sha1 211aa652…; the short form is named as the architect's alternative with its own numbers."},
+      {"finding": "F4: untracked .codegraph/.gitignore could be snapshotted into the branch.", "answer": "Plan §3: .codegraph/ is excluded by the shared clone's .git/info/exclude (read at planning; jj status shows no changes); the GUARD helper (jj diff from fork_point, --name-only) runs before every push and allows only the three path classes."},
+      {"finding": "F5: changed-file set is measured at two times; docs/solutions required or optional unclear.", "answer": "Plan A4/C2/C4/C6 pin the set per head (pre-retro: marker + .legion/LEGSMOKE-1025/**; HR and M: marker + docs/solutions/legion/*-LEGSMOKE-1025.md only); D3 rules the retro note allowed, not required, flagged as the architect's to overturn."},
+      {"finding": "F6: review-may-append clause names no asker, limit, literal or push discipline.", "answer": "Plan D4: K in {0,1}; only this issue's Legion reviewer via REQUEST_CHANGES; at most once; literal 'Legion proof review round 1 (LEGSMOKE)'; code push (no trailer) to H1, reviewed there; C3 checks with LIT2 hashes."},
+      {"finding": "F7: wc -l cannot prove the trailing newline; gate has no runnable negative control without .fail-me.", "answer": "Plan C1 pairs wc -l with wc -c, tail -c1 od, cmp against LIT, git hash-object and sha256sum; D9: gate's control is the trailered head's BLOCKED/zero check-runs plus historical red run 39526057184 (legion/LEGSMOKE-892); .fail-me is never created."},
+      {"finding": "F8: pre-state pinned to moving base shas.", "answer": "Plan §3 and D7: pre-state is four invalidating facts (404 at ref=main, zero commits by path, no PR, required checks == [gate]); fork point recorded once; guards from fork_point; a moved main is not a stop."},
+      {"finding": "F9: only one ruleset field read.", "answer": "Plan §3 fact 4 and D10: full ruleset read — one required_status_checks rule (gate, strict false, do_not_enforce_on_create false), no pull_request rule, so no required approvals and no stale-approval dismissal; squash observed on #752 (one parent); daemon merges."},
+      {"finding": "F10: this run's two retro notes on main were not read.", "answer": "Read at ref=main and folded in: proofs read bytes at explicit shas with firstCodeHead (1021 note, §4 and D8); Size: line is the filtered merge diff (1022 note, task 1 and C2); fork-point guard (1016 note, §3)."},
+      {"finding": "F11: testing phase undefined on a repo with no test runner.", "answer": "Plan §7 and D6: tester re-runs C1, drives the git-blobs API as its own surface, runs an in-memory break set of eight mutations, reads C5, declares no red test."},
+      {"finding": "F12: no PR exists; who opens it, base, body unspecified.", "answer": "Plan task 1: implementer opens it after the H0 push, base main, head legion/LEGSMOKE-1025, title 'smoke: add LEGSMOKE-1025 marker file', body from the pr-body template with 'Dispatch: LEGSMOKE-1025', filtered Size: line and E2E line; N recorded in implement.json pullRequest."},
+      {"finding": "F13: production check has no criterion.", "answer": "Plan C6 pins it at M: raw bytes at ref=main cmp LIT, contents sha/size, merge commit parents and file list, .legion 404 on main, recursive tree match, .fail-me 404; control 404 at the fork point."},
+      {"finding": "F14: unsupported claims (1007 precedent as convention, unverified sha1s, partial ruleset, stale 404 fact).", "answer": "Plan cites the 1007 plan as a plan precedent only (D2) and reconciles with the merged 1021/1022 markers; every hash re-measured at planning with git hash-object and sha256sum and re-measured by each role at execution (§2, §6); ruleset read in full (§3); 404 and commits-by-path re-observed for 1025."}
+    ]
+  },
+  "planReview": {"verdict": "approved", "rounds": 1},
+  "specDepartures": []
+}
