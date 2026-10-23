@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "phase": "implement",
+  "issue": "LEGSMOKE-1025",
+  "completed": "2026-10-23T06:19:39Z",
+  "pullRequest": 759,
+  "pullRequestUrl": "https://github.com/sjawhar/legion-smoke/pull/759",
+  "firstCodeHead": "2b4ce80371d85faba9d226b0295695c825b536ba",
+  "forkPoint": "a50a23aa4dd7cde8ab79d37e4677d2ad0a5cb9a2",
+  "appendedLines": 0,
+  "preState": {
+    "observedAt": "2026-10-23T06:16Z",
+    "contentsAtMain": "404 (repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1025.md?ref=main)",
+    "commitsByPathAtMain": 0,
+    "pullRequestsForHead": "[] (gh pr list --head legion/LEGSMOKE-1025 --state all, before #759 was opened)",
+    "requiredStatusChecksOnMain": "[\"gate\"]; one rule required_status_checks, strict_required_status_checks_policy false, do_not_enforce_on_create false; no pull_request rule",
+    "githubMain": "2db619cf99913afcd91aae2b130d1e83375fbd39 (2 ahead of fork point, no path overlap)"
+  },
+  "proof": [
+    {
+      "criterion": "A2 — on the first push carrying the file (H0), smoke/LEGSMOKE-1025.md holds one LF-terminated line containing LEGSMOKE-1025; byte-exact LIT (83 B, blob 952c0624…).",
+      "surface": "GitHub contents API and git trees API at an explicit commit sha (production repository sjawhar/legion-smoke, branch legion/LEGSMOKE-1025)",
+      "command": "R=repos/sjawhar/legion-smoke; H0=2b4ce80371d85faba9d226b0295695c825b536ba; gh api \"$R/contents/smoke/LEGSMOKE-1025.md?ref=$H0\" -H 'Accept: application/vnd.github.raw+json' > f; cmp f <(printf 'LEGSMOKE-1025: Upgrade rehearsal handoff child (/tmp/legion-e2e4b.639348.dSfKNH4E)\\n'); echo cmp=$?; wc -c < f; wc -l < f; head -1 f; tail -c1 f | od -An -tx1; grep -c $'\\r' f; git hash-object f; sha256sum f; gh api \"$R/contents/smoke/LEGSMOKE-1025.md?ref=$H0\" --jq '.path+\" \"+.sha+\" \"+(.size|tostring)'; T=$(gh api \"$R/git/commits/$H0\" --jq .tree.sha); gh api \"$R/git/trees/$T?recursive=1\" --jq '{truncated, m:[.tree[]|select(.type==\"blob\")|select(.path|ascii_downcase|test(\"legsmoke-1025\"))|select(.path|startswith(\".legion/\")|not)|{path,mode}]} | tostring'",
+      "observed": "cmp=0; 83; 1; LEGSMOKE-1025: Upgrade rehearsal handoff child (/tmp/legion-e2e4b.639348.dSfKNH4E); 0a; 0; 952c062419532f4f5bdc2333b14977bbe0590a1f; e6d470babc256eddc19b58cc576cdcd7c8364c26ccb063e48f709c3369d4208f; smoke/LEGSMOKE-1025.md 952c062419532f4f5bdc2333b14977bbe0590a1f 83; {\"m\":[{\"mode\":\"100644\",\"path\":\"smoke/LEGSMOKE-1025.md\"}],\"truncated\":false}",
+      "headSha": "2b4ce80371d85faba9d226b0295695c825b536ba",
+      "negativeControl": "Same raw bytes cmp'd against printf 'LEGSMOKE-1025x: Upgrade rehearsal handoff child (/tmp/legion-e2e4b.639348.dSfKNH4E)\\n' → exit 1 (differ: char 14, line 1); contents/smoke/LEGSMOKE-1025.md?ref=a50a23aa4dd7cde8ab79d37e4677d2ad0a5cb9a2 (fork point) → 404; ?ref=main → 404; lower-case smoke/legsmoke-1025.md?ref=2b4ce803… → 404; twin smoke/LEGSMOKE-1016.md?ref=a50a23aa… → 200"
+    },
+    {
+      "criterion": "A4 — changed files mid-run are smoke/LEGSMOKE-1025.md plus only .legion/LEGSMOKE-1025/**; no .fail-me at any head.",
+      "surface": "GitHub pulls/files and compare APIs for sjawhar/legion-smoke#759, plus the local fork-point guard before each push",
+      "command": "R=repos/sjawhar/legion-smoke; F=a50a23aa4dd7cde8ab79d37e4677d2ad0a5cb9a2; H0=2b4ce80371d85faba9d226b0295695c825b536ba; gh pr diff 759 -R sjawhar/legion-smoke --name-only; gh api \"$R/pulls/759/files\" --jq '[.[].filename] | (all(. == \"smoke/LEGSMOKE-1025.md\" or startswith(\".legion/LEGSMOKE-1025/\") or startswith(\"docs/solutions/\")) and any(. == \"smoke/LEGSMOKE-1025.md\"))'; gh api \"$R/compare/$F...$H0\" --jq '[.files[]|select(.filename|startswith(\".legion/\")|not)|{filename,status,additions,deletions}] | tostring'; gh api \"$R/contents/.fail-me?ref=$H0\" --jq .sha; jj -R \"$LEGION_WORKSPACE\" diff --from 'fork_point(main@origin | @-)' --to @- --name-only",
+      "observed": "pr diff: .legion/LEGSMOKE-1025/plan.json, smoke/LEGSMOKE-1025.md; allow-list jq → true; compare (non-.legion) → [{\"additions\":1,\"deletions\":0,\"filename\":\"smoke/LEGSMOKE-1025.md\",\"status\":\"added\"}]; .fail-me?ref=H0 → 404; GUARD before the H0 push → .legion/LEGSMOKE-1025/plan.json, smoke/LEGSMOKE-1025.md",
+      "headSha": "2b4ce80371d85faba9d226b0295695c825b536ba",
+      "negativeControl": "The same allow-list jq over repos/sjawhar/legion-smoke/pulls/752/files ([docs/solutions/legion/measure-the-issue-branch-from-its-fork-point-LEGSMOKE-1016.md, smoke/LEGSMOKE-1016.md]) → false (no marker named 1025)"
+    },
+    {
+      "criterion": "A5 (implementer's read) — gate and check conclude success at H0; the pull request is mergeable only through gate.",
+      "surface": "GitHub checks API, Actions runs and pull request mergeability for sjawhar/legion-smoke#759 (CI read, not re-run)",
+      "command": "R=repos/sjawhar/legion-smoke; H0=2b4ce80371d85faba9d226b0295695c825b536ba; gh api \"$R/commits/$H0/check-runs\" --jq '{n:.total_count, runs:[.check_runs[]|{name,status,conclusion,head_sha,id}]} | tostring'; gh run list -R sjawhar/legion-smoke --commit $H0 --json databaseId,name,event,status,conclusion --jq tostring; gh pr view 759 -R sjawhar/legion-smoke --json mergeable,mergeStateStatus,headRefOid --jq tostring; gh api \"$R/rules/branches/main\" --jq '[.[]|select(.type==\"required_status_checks\")|.parameters.required_status_checks[].context]|tostring'",
+      "observed": "check-runs n=4 at H0: gate 120272757125 (pull_request) completed/success, check 120272756950 (pull_request) completed/success, gate 120272363420 (push) completed/success, check 120272363516 (push) completed/success; runs: fail-on-demand 39910693940 (pull_request) success, ci 39910693953 (pull_request) success, fail-on-demand 39910572265 (push) success, ci 39910572301 (push) success; pr: mergeable MERGEABLE, mergeStateStatus CLEAN, headRefOid 2b4ce803…; required checks on main: [\"gate\"]",
+      "headSha": "2b4ce80371d85faba9d226b0295695c825b536ba",
+      "negativeControl": "At the trailered planner handoff head 8f8df044efb56c3fa9fa9fb6df3a6eb9129e47c0, repos/sjawhar/legion-smoke/commits/8f8df044…/check-runs → total_count 0 (no gate run exists on a skip-checks head); .fail-me was never created"
+    }
+  ],
+  "filesChanged": [
+    "smoke/LEGSMOKE-1025.md (added, 83 B, blob 952c062419532f4f5bdc2333b14977bbe0590a1f, mode 100644)",
+    ".legion/LEGSMOKE-1025/implement.json (this handoff)"
+  ],
+  "trickyParts": [
+    "Deployment instructions required a 300 s hold on the task turn before acting; the targeted Dispatch message (fd21cc27-de96-4cf3-9fec-7952f66d1fe2) arrived in the same turn, so implementation followed the hold without a WAITING reply.",
+    "The code push to H0 preceded the pull request, so H0 carries two pairs of check-runs (push and pull_request); the CI line cites the pull_request pair and names the push pair.",
+    "Simplify pass: not run — docs-only diff, no runtime code (pr-body.md); the Thermo line is omitted from the PR body."
+  ],
+  "deviations": [],
+  "openQuestions": [],
+  "discoveredComplexity": []
+}
