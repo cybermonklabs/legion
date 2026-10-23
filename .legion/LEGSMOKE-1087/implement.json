@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "phase": "implement",
+  "issue": "LEGSMOKE-1087",
+  "completed": "2026-10-23T22:44:00Z",
+  "pullRequest": "https://github.com/sjawhar/legion-smoke/pull/773",
+  "headSha": "e6459d9f84f1507ddda09322a4dfc78e230ea204",
+  "proof": [
+    {
+      "criterion": "Add smoke/LEGSMOKE-1087.md holding one line that names LEGSMOKE-1087; change no other file.",
+      "surface": "GitHub contents API of sjawhar/legion-smoke (the pull-request head legion/LEGSMOKE-1087 at e6459d9f) and the pull request's file list",
+      "command": "gh api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1087.md?ref=e6459d9f84f1507ddda09322a4dfc78e230ea204\" --jq '.content' | base64 -d; gh pr view 773 --repo sjawhar/legion-smoke --json files,headRefOid",
+      "observed": "The read printed exactly one line: `LEGSMOKE-1087: Upgrade rehearsal handoff child (/tmp/legion-e2e4b.1145802.BUQbzYB8)`. The PR file list at that head is [\".legion/LEGSMOKE-1087/plan.json\", \"smoke/LEGSMOKE-1087.md\"]: the only non-handoff file is the marker (the plan handoff is the planner's workflow artifact on this branch; retro removes .legion/).",
+      "headSha": "e6459d9f84f1507ddda09322a4dfc78e230ea204",
+      "negativeControl": "gh api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1087.md?ref=main\" → `gh: Not Found (HTTP 404)`, exit 1: the file is absent on main before the merge."
+    }
+  ],
+  "filesChanged": [
+    "smoke/LEGSMOKE-1087.md (new, 1 line)"
+  ],
+  "trickyParts": [],
+  "deviations": [
+    "Local fast checks: the repository's CI is `ci` (sleep 20 && exit 0) and `fail-on-demand` (fails only when `.fail-me` exists); no lint, type or unit lane applies to a Markdown marker. Confirmed `.fail-me` absent in the workspace; relied on CI runs at the head.",
+    "Simplify pass (ce-simplify-code) not run: the diff is docs-only (one Markdown line, no runtime code), per pr-body.md the Thermo line is omitted."
+  ],
+  "openQuestions": [],
+  "discoveredComplexity": []
+}
