@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "phase": "test",
+  "issue": "LEGSMOKE-1025",
+  "completed": "2026-10-23T06:25:00Z",
+  "pullRequest": 759,
+  "headTested": "143d9cd5791b2e9c9ecfadd934c41fa5d953faf6",
+  "codeHead": "2b4ce80371d85faba9d226b0295695c825b536ba",
+  "implementerProof": {
+    "verdict": "verified",
+    "how": "Re-ran the implementer's C1 command verbatim at 2b4ce80371d85faba9d226b0295695c825b536ba (contents API raw route, cmp against LIT, wc -c/-l, head -1, tail -c1 od, grep -c CR, git hash-object, sha256sum, contents metadata, recursive tree query): cmp=0; 83; 1; LIT line; 0a; 0; 952c062419532f4f5bdc2333b14977bbe0590a1f; e6d470babc256eddc19b58cc576cdcd7c8364c26ccb063e48f709c3369d4208f; 'smoke/LEGSMOKE-1025.md 952c0624… 83'; tree {\"m\":[{\"mode\":\"100644\",\"path\":\"smoke/LEGSMOKE-1025.md\"}],\"truncated\":false} — every value equal to implement.json proof[0].observed. Re-read proof[1] (pulls/759/files allow-list jq → true; compare a50a23aa…...143d9cd5… non-.legion → one added file smoke/LEGSMOKE-1025.md +1/−0; .fail-me → 404) and proof[2] (check-runs at 2b4ce803: n=4, gate 120272757125/check 120272756950 pull_request and gate 120272363420/check 120272363516 push, all completed/success; required checks on main [\"gate\"]) with the same results. Then drove the git-blobs API independently (proof below). All three implement.json proof entries carry six non-empty strings."
+  },
+  "failures": [],
+  "failed": 0,
+  "proof": [
+    {
+      "criterion": "A2 — the marker file holds one LF-terminated line containing LEGSMOKE-1025, byte-exact LIT (83 B, blob 952c0624…), at the code head and unchanged at the handoff head the tester binds.",
+      "surface": "GitHub git-objects API (git/blobs) and contents API .content route at explicit shas, production repository sjawhar/legion-smoke",
+      "command": "R=repos/sjawhar/legion-smoke; HH=143d9cd5791b2e9c9ecfadd934c41fa5d953faf6; LIT() { printf 'LEGSMOKE-1025: Upgrade rehearsal handoff child (/tmp/legion-e2e4b.639348.dSfKNH4E)\\n'; }; gh api \"$R/git/blobs/952c062419532f4f5bdc2333b14977bbe0590a1f\" --jq '{size,encoding,sha}|tostring'; gh api \"$R/git/blobs/952c062419532f4f5bdc2333b14977bbe0590a1f\" --jq .content | base64 -d > blob; cmp blob <(LIT); echo blobcmp=$?; gh api \"$R/contents/smoke/LEGSMOKE-1025.md?ref=$HH\" --jq '{sha,size,encoding,path}|tostring'; gh api \"$R/contents/smoke/LEGSMOKE-1025.md?ref=$HH\" --jq .content | base64 -d > c; cmp c <(LIT); echo contentcmp=$?; cmp c blob; echo blob_eq_content=$?; T=$(gh api \"$R/git/commits/$HH\" --jq .tree.sha); gh api \"$R/git/trees/$T?recursive=1\" --jq '{truncated, all1025:[.tree[]|select(.type==\"blob\")|select(.path|ascii_downcase|test(\"legsmoke-1025\"))|{path,mode,sha,size}]}|tostring'; wc -c < blob; wc -l < blob; grep -c LEGSMOKE-1025 blob; git hash-object blob",
+      "observed": "{\"encoding\":\"base64\",\"sha\":\"952c062419532f4f5bdc2333b14977bbe0590a1f\",\"size\":83}; blobcmp=0; {\"encoding\":\"base64\",\"path\":\"smoke/LEGSMOKE-1025.md\",\"sha\":\"952c062419532f4f5bdc2333b14977bbe0590a1f\",\"size\":83}; contentcmp=0; blob_eq_content=0; {\"all1025\":[{\"mode\":\"100644\",\"path\":\".legion/LEGSMOKE-1025/implement.json\",\"sha\":\"edc4ff93…\",\"size\":7128},{\"mode\":\"100644\",\"path\":\".legion/LEGSMOKE-1025/plan.json\",\"sha\":\"7c084ba6…\",\"size\":6061},{\"mode\":\"100644\",\"path\":\"smoke/LEGSMOKE-1025.md\",\"sha\":\"952c062419532f4f5bdc2333b14977bbe0590a1f\",\"size\":83}],\"truncated\":false}; 83; 1; 1; 952c062419532f4f5bdc2333b14977bbe0590a1f",
+      "headSha": "143d9cd5791b2e9c9ecfadd934c41fa5d953faf6",
+      "negativeControl": "gh api repos/sjawhar/legion-smoke/git/blobs/aab992c029617180a1e6acbfcb739bf8c5647eee (sha1 of the 47 B fixture-dropped variant) → HTTP 404 Not Found, rc=1; in-memory break set against the decoded blob, each cmp exit 1 and only LIT exit 0: CRLF 84 B (differ char 83, sha1 c2b2e2e0…), no final LF 82 B (EOF after byte 82, dd10f96d…), UTF-8 BOM 86 B (differ char 1, 7cdaacb0…), trailing space 84 B (differ char 83, d75245c9…), double LF 84 B (EOF on blob after byte 83, 630df88c…), wrong key LEGSMOKE-1021 83 B (differ char 13, 8b9144ff…), key only 14 B (differ char 14, 129dc785…), fixture clause dropped 47 B (differ char 47, aab992c029617180a1e6acbfcb739bf8c5647eee)"
+    },
+    {
+      "criterion": "A4 — at the head the tester binds, changed files are smoke/LEGSMOKE-1025.md plus only .legion/LEGSMOKE-1025/**; no .fail-me. A1 pre-state still holds: the file is absent from main and from the fork point.",
+      "surface": "GitHub pulls/files, compare and contents APIs for sjawhar/legion-smoke#759",
+      "command": "R=repos/sjawhar/legion-smoke; F=a50a23aa4dd7cde8ab79d37e4677d2ad0a5cb9a2; HH=143d9cd5791b2e9c9ecfadd934c41fa5d953faf6; gh pr diff 759 -R sjawhar/legion-smoke --name-only; gh api \"$R/pulls/759/files\" --jq '[.[].filename] | (all(. == \"smoke/LEGSMOKE-1025.md\" or startswith(\".legion/LEGSMOKE-1025/\") or startswith(\"docs/solutions/\")) and any(. == \"smoke/LEGSMOKE-1025.md\"))'; gh api \"$R/compare/$F...$HH\" --jq '[.files[]|select(.filename|startswith(\".legion/\")|not)|{filename,status,additions,deletions}]|tostring'; gh api \"$R/contents/.fail-me?ref=$HH\" --jq .sha; gh api \"$R/contents/smoke/LEGSMOKE-1025.md?ref=main\" --jq .sha; gh api \"$R/contents/smoke/LEGSMOKE-1025.md?ref=$F\" --jq .sha; gh api \"$R/commits?path=smoke/LEGSMOKE-1025.md&sha=main\" --jq length",
+      "observed": "pr diff: .legion/LEGSMOKE-1025/implement.json, .legion/LEGSMOKE-1025/plan.json, smoke/LEGSMOKE-1025.md; allow-list jq → true; compare non-.legion → [{\"additions\":1,\"deletions\":0,\"filename\":\"smoke/LEGSMOKE-1025.md\",\"status\":\"added\"}]; .fail-me?ref=143d9cd5… → HTTP 404; contents ?ref=main → HTTP 404; ?ref=a50a23aa… → HTTP 404; commits by path on main → 0",
+      "headSha": "143d9cd5791b2e9c9ecfadd934c41fa5d953faf6",
+      "negativeControl": "The same allow-list jq over repos/sjawhar/legion-smoke/pulls/752/files → false (implement.json proof[1], re-read; its file list names smoke/LEGSMOKE-1016.md and a docs/solutions note, no 1025 marker); the fork-point and main 404s above are the A1 controls, against the 200 twin smoke/LEGSMOKE-1016.md at the fork point recorded by the implementer"
+    },
+    {
+      "criterion": "A5 — gate and check conclude success at the code head H0; the pull request is mergeable only through gate (CI read, never re-run).",
+      "surface": "GitHub checks API, Actions runs list, pull request mergeability and branch rules for sjawhar/legion-smoke#759",
+      "command": "R=repos/sjawhar/legion-smoke; H0=2b4ce80371d85faba9d226b0295695c825b536ba; HH=143d9cd5791b2e9c9ecfadd934c41fa5d953faf6; gh api \"$R/commits/$H0/check-runs\" --jq '{n:.total_count, runs:[.check_runs[]|{name,status,conclusion,head_sha,id}]}|tostring'; gh run list -R sjawhar/legion-smoke --commit $H0 --json databaseId,name,event,status,conclusion --jq tostring; gh pr view 759 -R sjawhar/legion-smoke --json mergeable,mergeStateStatus,headRefOid,state --jq tostring; gh api \"$R/rules/branches/main\" --jq '[.[]|select(.type==\"required_status_checks\")|.parameters.required_status_checks[].context]|tostring'; gh api \"$R/commits/$HH/check-runs\" --jq .total_count; gh api \"$R/git/commits/$HH\" --jq .message | tail -c 60 | od -c",
+      "observed": "n=4 at 2b4ce803: gate 120272757125 completed/success, check 120272756950 completed/success (pull_request pair), check 120272363516 completed/success, gate 120272363420 completed/success (push pair), all head_sha 2b4ce803…; runs: fail-on-demand 39910693940 (pull_request) success, ci 39910693953 (pull_request) success, ci 39910572301 (push) success, fail-on-demand 39910572265 (push) success; pr: mergeable MERGEABLE, mergeStateStatus BLOCKED at headRefOid 143d9cd5… (trailered handoff head: no gate run there, by design — plan §5/D9), state OPEN; required checks on main [\"gate\"]; check-runs total_count at 143d9cd5… → 0; its message ends \\n\\n\\nskip-checks: true\\n",
+      "headSha": "2b4ce80371d85faba9d226b0295695c825b536ba",
+      "negativeControl": "At the trailered handoff head 143d9cd5791b2e9c9ecfadd934c41fa5d953faf6: check-runs total_count 0 and mergeStateStatus BLOCKED (the required gate has no run on a skip-checks head, so the pull request cannot merge there); .fail-me was never created at any head (404 at 143d9cd5…)"
+    }
+  ],
+  "redTests": "none — the repository has no test runner and no test file is written (plan §7, D6); the break set ran in memory against the decoded blob and was not committed",
+  "ciRead": "CI line of PR #759 cited, not re-run: fail-on-demand 39910693940 (gate) and ci 39910693953 (check) at 2b4ce80371d85faba9d226b0295695c825b536ba, both success",
+  "prBodyUpdated": "E2E (tester) line written at 2026-10-23T06:24:28Z (PATCH repos/sjawhar/legion-smoke/pulls/759, body 7378 chars)",
+  "notes": [
+    "mergeStateStatus is BLOCKED at the current head 143d9cd5… because that head is the implementer's skip-checks handoff commit and carries no gate run; this is the plan's expected state for a trailered head and is the A5 negative control, not a failure. The merging head HR must be a code push (no trailer) with gate success.",
+    "Deployment instructions: the targeted Dispatch message (a2c6bab0-6c10-4615-8f82-5f1fce2fcc76) arrived in the same turn as the task line, so testing followed without a WAITING reply."
+  ]
+}
