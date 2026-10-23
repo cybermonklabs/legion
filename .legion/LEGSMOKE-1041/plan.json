@@ -1,0 +1,118 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-1041",
+  "completed": "2026-10-23T10:03:30Z",
+  "plan": "dispatch://LEGSMOKE-1041/artifact/plan-md",
+  "forkPoint": "2db619cf99913afcd91aae2b130d1e83375fbd39",
+  "expectedFile": {
+    "path": "smoke/LEGSMOKE-1041.md",
+    "line": "LEGSMOKE-1041: Stage 4b proof tree 1: the whole workflow (/tmp/legion-e2e4b.3400458.tZxNeQfa)",
+    "bytes": 94,
+    "sha256": "ef62d46b72f468caefb7bea901e73d23fd9a0f762c7116b05c3856413ec0695d",
+    "defaultSecondLine": "LEGSMOKE-1041: second line appended at the review's request",
+    "bytesTwoLineDefault": 154,
+    "sha256TwoLineDefault": "a5967888c2532bf6d49565ca2c75ba2e9cbc6ba746ac88b115da43bcb022ceb8"
+  },
+  "derivedCriteria": {
+    "A1": "After the merge, main holds smoke/LEGSMOKE-1041.md, which no earlier main commit contains.",
+    "A2": "At the first push that carries it, the file is exactly D1's bytes: one LF-terminated line, LEGSMOKE-1041: Stage 4b proof tree 1: the whole workflow (/tmp/legion-e2e4b.3400458.tZxNeQfa).",
+    "A3": "The file gains a second line only when a pull-request review asks (D4's discriminator); line 1 stays byte-identical; with no such review it stays one line through the merge.",
+    "A4": "Nothing else changes: every head's diff from the fork point touches only smoke/LEGSMOKE-1041.md, .legion/LEGSMOKE-1041/, and (retro) at most one new file under docs/solutions/; the merge commit adds the marker plus zero or one docs/solutions/ path; no .fail-me ever exists on the branch.",
+    "A5": "The pull request merges only once the required check gate is completed/success at its head; the required set is gate alone, re-read at review and READY.",
+    "note": "The spec (v1, approved) has no Acceptance section; these lines restate its Summary and Scope. Whether they become a spec v2 Acceptance section is the architect's decision; every proof[].criterion quotes them by id."
+  },
+  "preStateFacts": {
+    "contentsAtMain": "gh api 'repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1041.md?ref=main' -> HTTP 404",
+    "commitsByPathOnMain": "gh api 'repos/sjawhar/legion-smoke/commits?path=smoke/LEGSMOKE-1041.md&sha=main' --jq length -> 0",
+    "openPullRequests": "gh pr list -R sjawhar/legion-smoke --head legion/LEGSMOKE-1041 --json number,state -> []",
+    "requiredChecks": "rulesets (gh api repos/sjawhar/legion-smoke/rules/branches/main) -> gate; protection (gh api repos/sjawhar/legion-smoke/branches/main --jq .protection) -> enabled false, checks []; the branches/main/protection/required_status_checks sub-endpoint answers 403 for the App and is not used",
+    "measuredAt": "2026-10-23T09:49Z",
+    "note": "A moved main@origin is not a stop condition; sibling bookmarks legion/LEGSMOKE-1027/1031/1035/1036/1040@origin sit on the fork point. Every guard measures from fork_point(main@origin | @-) (docs/solutions/legion/measure-the-issue-branch-from-its-fork-point-LEGSMOKE-1016.md)."
+  },
+  "requiredSkills": {
+    "implement": [
+      "skill://legion-worker with references/pr-body.md, references/review-threads.md, references/default-branch-check.md: the PR body template with the Dispatch: line and the merge-diff Size: line, the six-field proof on the GitHub sandbox surface read at an explicit SHA, one reply and one resolution per review thread, the identity check before each push; no repository skill exists (no AGENTS.md, no skills directory, no PR template).",
+      "skill://legion-retro: the implementer runs retro after acceptance (zero or one new note under docs/solutions/legion/, then the removal of .legion/LEGSMOKE-1041/, untrailered push)."
+    ],
+    "test": [
+      "skill://legion-worker with references/pr-body.md and references/merge-gate.md: verify the implementer's proof by re-running its commands at its headSha, add the tester's own proof through the JSON .content route with read-only break attempts, write the E2E (tester) line, read CI at the CI head (never at a skip-checks handoff head); the repository has no test suite or lint, so the tester writes no test file."
+    ],
+    "review": [
+      "skill://legion-worker with references/merge-gate.md and references/review-threads.md: CI head read and required-set re-read with the escaped-base command, one review per round by SHA (REQUEST_CHANGES with the one thread naming the second line only when this proof's targeted message asks for it, else APPROVE), Thermo line omitted on a docs-only diff."
+    ]
+  },
+  "gapAnalysis": {
+    "findings": [
+      {
+        "finding": "A retro that adds no docs/solutions/ note pushes only the .legion/ removal; if that push were trailered the merge head would have no gate run and could never merge.",
+        "answer": "D7: retro's push is never trailered, with or without a note (skill://legion-worker, 'retro's removal of .legion/<KEY>/ ... carries no such line'), so GitHub runs ci and fail-on-demand at the READY head either way; M1 requires gate and check completed/success at the READY head and reports a missing gate run to the architect instead of building READY."
+      },
+      {
+        "finding": "The spec has no Acceptance section, so the criteria exist only in the plan; writing them into the approved spec would create v2 and close the design gate.",
+        "answer": "Derived criteria A1-A5 are recorded in plan.md and this handoff; every proof[].criterion quotes them by id; the plan records specDepartures [] because they change no design, scope or settled decision; whether the spec gains an Acceptance section is named as the architect's decision in plan.md and in the completion summary."
+      },
+      {
+        "finding": "The second-line branch has no precise trigger, no default text, and no round-two task list; whether a request in another form counts is open.",
+        "answer": "D3 fixes the default text and its two-line hash; D4 fixes the discriminator (CHANGES_REQUESTED review with one thread on the file containing 'one more line'); I7 lists the round-two work (append-only edit, line 1 byte-identical, thread reply and resolution via GraphQL, refreshed E2E/Threads/Proven by/Size lines, new proof); any other form is sent to the architect, not acted on, and widening the rule is the architect's call."
+      },
+      {
+        "finding": "A1 and A4's merge-commit clause are observable only after the merge, and nothing says what 'production carries the merge' means for a repository with no deploy.",
+        "answer": "D16 and P1: production is main on GitHub; the first look, woken by the merge, runs the raw read at ref=main, the commits-by-path count (= 1, the merge commit), the merge commit's file list and the .fail-me count, and reports pass, never pending. R1 lists A1 and the merge clause under Not proven / risk until then."
+      },
+      {
+        "finding": "A5 has no sanctioned demonstration that gate is required; creating .fail-me is forbidden and would break A4.",
+        "answer": "D11/D12: the required set is re-read at review and READY with merge-gate.md's escaped-base command (rulesets gate, protection empty); gate completed/success is checked at the CI head and the READY head; the read-only control is mergeStateStatus BLOCKED with zero check-runs at a trailered handoff head; .fail-me is never created and the post-merge commits?path=.fail-me count is 0."
+      },
+      {
+        "finding": "The sha256 values are the planner's unverified computations, and A2 names no check that catches CRLF, BOM or a missing final LF.",
+        "answer": "D2: the full set is wc -c, wc -l, tail -c1 = 0a, CR count 0, first bytes 4c 45 47, head -1 string equality, sha256; the implementer recomputes both hashes from the intended text before the first push and, on a mismatch, records the recomputed value with a deviations note and keeps the text."
+      },
+      {
+        "finding": "With no root .gitignore, a phase's own scratch file is snapshotted into the next commit and breaks A4.",
+        "answer": "D10: every scratch file lives under mktemp -d or /tmp, never under $LEGION_WORKSPACE; D9's guard runs before every split and every push."
+      },
+      {
+        "finding": "main will move during the run (five sibling bookmarks on the fork point); a literal base-tip stop condition is a documented prior failure, and a forward merge's effect on A4 is unstated.",
+        "answer": "D13: pre-state is the four invalidating facts, a moved main@origin is not a stop; guards and Size measure from fork_point(main@origin | @-); a forward merge happens only on a GitHub-reported conflict or retarget, A4 is then measured by gh pr diff --name-only and the post-merge fork point, and the issue returns to the reviewer per conflicts-and-rewrites.md."
+      },
+      {
+        "finding": "No criterion maps to a phase, head or command, yet every proof entry must name the line it proves and the head it ran at.",
+        "answer": "The 'Acceptance criteria -> machine checks' table gives, per criterion, the phase, head, command, expected output and negative control, and names which are reviewer-verifiable before the merge and which wait for P1."
+      },
+      {
+        "finding": "Nothing requires the PR body's Dispatch: <KEY> line the daemon needs.",
+        "answer": "D15/I4: the body carries 'Dispatch: LEGSMOKE-1041' on its own line; the grep -c check runs at every head (I5, R1)."
+      },
+      {
+        "finding": "'A single line that names this issue' has two readings (key alone vs key + title) and A2 was split between them.",
+        "answer": "D1/A2: the operative test is byte equality with the recorded line (key + issue title, the shape on main); 'contains the key' is not the test."
+      },
+      {
+        "finding": "The Size: line has a repository-specific definition that cost a tester observation and a reviewer finding on the previous issue.",
+        "answer": "D15: Size: is the merge diff read with the compare/<fork-point>...<firstCodeHead> filter excluding .legion/, worded as such; retro refreshes it at the removal head (RT1)."
+      },
+      {
+        "finding": "The tester has nothing to break: no application, no test suite.",
+        "answer": "T3: independent route (JSON .content decoded with base64 -d) and read-only break attempts: altered string and CRLF variant hash mismatch, fork-point 404, lower-case path 404, .fail-me 404, repeat read identical, BLOCKED at the trailered handoff head; D14 records noSuite."
+      },
+      {
+        "finding": "Retro's docs/solutions/ output is constrained (new file only, Extends prefix, no edits) in ways a bare 'docs/solutions/' allowance does not capture.",
+        "answer": "D7/RT1/A4: zero or one new file docs/solutions/legion/<slug>-LEGSMOKE-1041.md, opening 'Extends ...' when it refines an existing note, no existing note edited; D8's READY set and M1's diff allow at most one docs/solutions/ addition."
+      },
+      {
+        "finding": "Every live-state fact (ruleset, fork point, pre-state reads, tool availability, spec approval record) is unverified by the analyst, and the branch-protection endpoint's 403 needs a stated handling.",
+        "answer": "I1 re-reads the four facts and the fork point before the first commit and records them in implement.json preState; the required set is read with merge-gate.md's two endpoints (rulesets + branches/<base> protection, both readable), and the 403 sub-endpoint is named as unused; the spec record (currentVersion 1, approvedVersion 1) was read from the daemon record at planning."
+      },
+      {
+        "finding": "A5 names only gate; whether ci/check matters and how the CI: line cites four check-run entries for two jobs is unstated.",
+        "answer": "D12: check is cited, not required; the CI: line cites the pull_request pair by run id and names the push pair beside it; D14 omits the Thermo line on this docs-only diff."
+      }
+    ]
+  },
+  "planReview": {
+    "verdict": "approved",
+    "rounds": 1
+  },
+  "specDepartures": []
+}
