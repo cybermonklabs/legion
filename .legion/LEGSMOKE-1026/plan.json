@@ -1,0 +1,61 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-1026",
+  "completed": "2026-10-23T04:12:02Z",
+  "planDocument": "dispatch://LEGSMOKE-1026/artifact/plan-md",
+  "summary": "Add one file, smoke/LEGSMOKE-1026.md, holding exactly one line `LEGSMOKE-1026: Stage 4b proof tree 1: upgrade rehearsal push child` plus a trailing newline. The child spec is empty; the plan instantiates the parent LEGSMOKE-1021 spec (v2) with this key. Nothing else changes; no tests, lint or build exist in this repository.",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: push procedure, PR template with `Dispatch: LEGSMOKE-1026`, proof rules (references/pr-body.md) and the App identity check (references/default-branch-check.md); no repository skill exists (no AGENTS.md), and the one repo note docs/solutions/legion/measure-the-issue-branch-from-its-fork-point-LEGSMOKE-1016.md is folded into the plan's pre-state and path guard",
+      "dispatch: load before any Dispatch write (a message or comment on LEGSMOKE-1026)"
+    ],
+    "test": [
+      "legion-worker: references/pr-body.md defines what a proof is and what the tester verifies; the tester reads the GitHub contents API, `gh pr diff --name-only` and check-runs at the head, never CI again"
+    ],
+    "review": [
+      "legion-worker: references/merge-gate.md for the review round order and references/review-threads.md for one-by-one thread disposition"
+    ]
+  },
+  "preState": {
+    "measuredAt": "2026-10-23T04:05:00Z",
+    "forkPoint": "a50a23aa4dd7cde8ab79d37e4677d2ad0a5cb9a2",
+    "facts": [
+      {"command": "gh api 'repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1026.md?ref=main'", "value": "HTTP 404", "stopWhen": "anything but 404"},
+      {"command": "gh api 'repos/sjawhar/legion-smoke/commits?path=smoke/LEGSMOKE-1026.md&sha=main' -q length", "value": "0", "stopWhen": "non-zero"},
+      {"command": "gh pr list -R sjawhar/legion-smoke --head legion/LEGSMOKE-1026 --json number", "value": "[]", "stopWhen": "non-empty before the implementer's own PR exists"},
+      {"command": "gh api repos/sjawhar/legion-smoke/rules/branches/main -q '.[] | select(.type==\"required_status_checks\") | .parameters.required_status_checks[].context'", "value": "gate", "stopWhen": "any other set"}
+    ],
+    "note": "A moved main@origin is not a stop condition. Path guard: jj diff --from 'fork_point(main@origin | @-)' --to @- --name-only lists only smoke/LEGSMOKE-1026.md and .legion/LEGSMOKE-1026/ paths (docs/solutions/ after retro)."
+  },
+  "acceptance": [
+    {"id": "A1", "criterion": "smoke/LEGSMOKE-1026.md is new on main: 404 at ref=main and zero commits by path before the first push; after the merge the contents API returns a blob and commits-by-path is 1", "surface": "GitHub contents and commits API", "negativeControl": "contents at ref=a50a23aa4dd7cde8ab79d37e4677d2ad0a5cb9a2 still 404"},
+    {"id": "A2", "criterion": "At every pushed head the file holds one line ending in a newline: `gh api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1026.md?ref=$HEAD\" -q .content | base64 -d | wc -l` is 1, `head -1` equals `LEGSMOKE-1026: Stage 4b proof tree 1: upgrade rehearsal push child`, `tail -c1 | od -An -c` is \\n", "surface": "GitHub contents API at the branch head", "negativeControl": "same read for smoke/LEGSMOKE-1016.md prints a different first line"},
+    {"id": "A3", "criterion": "Two lines (`wc -l` 2, `head -1` unchanged, second line `Legion proof review round <n> (LEGSMOKE-1026)`) only if a review thread asked for one; otherwise A2 holds through the merge and the tester records that no review asked", "surface": "GitHub contents API at the branch head", "negativeControl": "n/a unless exercised"},
+    {"id": "A4", "criterion": "`gh pr diff <n> -R sjawhar/legion-smoke --name-only` lists smoke/LEGSMOKE-1026.md plus only .legion/LEGSMOKE-1026/ paths before retro, and plus only docs/solutions/ paths (no .legion/) at the head READY names", "surface": "gh pr diff --name-only", "negativeControl": "jj diff --from 'fork_point(main@origin | @-)' --to @- --name-only lists the same set"},
+    {"id": "A5", "criterion": "`gh api repos/sjawhar/legion-smoke/commits/$HEAD/check-runs -q '[.check_runs[] | select(.name==\"gate\") | .conclusion]'` is non-empty and all `success`; `check` (workflow ci) is not required", "surface": "GitHub check runs on the head", "negativeControl": "ruleset lists only gate; `.fail-me` absent at the head (contents API 404)"}
+  ],
+  "decisions": [
+    "Only smoke/LEGSMOKE-1026.md is owed by this PR; the parent's own marker is the parent's work (precedent: smoke/ holds child-key pairs, no parent-key file).",
+    "Exact one-line text fixed so acceptance is string equality, following smoke/LEGSMOKE-1016.md's `KEY: <description>` form.",
+    "Reviewer is not instructed to ask for a second line; the two-line form is exercised only when a review thread asks.",
+    "'Upgrade rehearsal' is the proof driver's run label; the standing relaunch rule (re-read record and handoffs) plus the per-phase pre-state re-check is the whole resume procedure.",
+    "The existing bookmark legion/LEGSMOKE-1026 (at main) is moved onto the change commit; 'first push' is the first push carrying the smoke file."
+  ],
+  "gapAnalysis": {
+    "findings": [
+      {"finding": "Child spec is empty; acceptance exists only by analogy to the parent, which names smoke/LEGSMOKE-1021.md; does this PR owe the parent's file too?", "answer": "Plan owes smoke/LEGSMOKE-1026.md only (precedent: child-key pairs under smoke/, no parent-key file); the empty child spec is reported to the architect in the completion summary, never edited by the planner."},
+      {"finding": "'Upgrade rehearsal' in the title has no source; does a mid-run restart add a resume requirement?", "answer": "Treated as the proof driver's run label; the standing relaunch rule (re-read record and .legion handoffs) and the per-phase pre-state re-check are the resume procedure; no extra step."},
+      {"finding": "'Merges only once gate passes on its head' names no command, and each SHA gets a gate run per event.", "answer": "A5 names the check-runs command and the rule: the gate conclusions array is non-empty and all success; check (ci) is not required."},
+      {"finding": "'wc -l reports 1' names no surface (checkout, contents API, PR diff).", "answer": "A2 pins the read to the GitHub contents API at the head SHA; the local wc -l is the implementer's self-check, not evidence."},
+      {"finding": "'the line contains the key' admits any string; implementer and tester can disagree.", "answer": "Decision 2 fixes the literal line text; acceptance is head -1 string equality plus wc -l 1 and a trailing \\n byte."},
+      {"finding": "Whether the review loop (second line) is exercised is open and costs a whole cycle.", "answer": "Decision 3: not exercised by default; only on an explicit review thread, with the exact second-line text and head -1 unchanged (A3)."},
+      {"finding": "The changed-files criterion is true for different sets at different moments; timing is load-bearing.", "answer": "A4 states both sets: before retro smoke file + .legion/LEGSMOKE-1026/; at the READY head smoke file + docs/solutions/ and no .legion/."},
+      {"finding": "Pre-state must not make a base SHA a stop condition; the guard must use the fork_point revset.", "answer": "preState lists four invalidating facts with stop rules and says a moved main@origin is not a stop; the path guard uses fork_point(main@origin | @-)."},
+      {"finding": "Bookmark legion/LEGSMOKE-1026 already exists at main, so 'first push' is ambiguous.", "answer": "Decision 5: the implementer moves the existing bookmark; first push = first push carrying smoke/LEGSMOKE-1026.md."},
+      {"finding": "Five live-state facts could not be verified by the analyst.", "answer": "Carried as re-checked-at-phase-start facts with their commands and 04:05Z values in preState, not as settled background."}
+    ]
+  },
+  "planReview": {"verdict": "approved", "rounds": 1},
+  "specDepartures": []
+}
