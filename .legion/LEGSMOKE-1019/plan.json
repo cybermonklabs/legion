@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-1019",
+  "completed": "2026-10-23T03:14:23Z",
+  "requiredSkills": {
+    "implement": [
+      "none: Stage 4b proof child on the disposable legion-smoke repository; the issue spec document is empty and the repository ships no agent skills. The workflow skills in this session (legion-worker, dispatch, envoy) are Legion process skills, not repository implementation skills."
+    ],
+    "test": [
+      "none: no repository test, smoke, e2e or deploy skill exists in legion-smoke; the proof's acceptance is the daemon's phase transition on the upgrade rehearsal handoff, which the driver verifies, not a tester surface."
+    ],
+    "review": [
+      "none: no repository review skill exists in legion-smoke; the reviewer reads this plan beside the (empty) spec as skill://legion-worker directs."
+    ]
+  },
+  "gapAnalysis": {
+    "error": "not run: the Stage 4b proof's targeted driver message directed writing and committing the plan handoff directly (upgrade rehearsal interrupted handoff), so no plan-gap-analyst call was made."
+  },
+  "planReview": {
+    "verdict": "failed",
+    "rounds": 0,
+    "error": "not run: the Stage 4b proof's targeted driver message directed writing and committing the plan handoff directly (upgrade rehearsal interrupted handoff), so no plan-reviewer call was made."
+  },
+  "specDepartures": [],
+  "plan": {
+    "summary": "Throwaway Stage 4b workflow proof on sjawhar/legion-smoke. The issue LEGSMOKE-1019 (child of LEGSMOKE-1015) carries an empty spec document; its purpose is to exercise the daemon's upgrade rehearsal handoff through the planning phase. No code change is planned: downstream phases act only on the driver's targeted Dispatch messages, per the deployment instructions.",
+    "acceptanceSurfaces": [],
+    "tasks": [],
+    "workspace": {
+      "path": "/legion/workspaces/sjawhar/legion-smoke/legsmoke-1019",
+      "branch": "legion/LEGSMOKE-1019",
+      "base": "eef0146a4838 (main, smoke: add LEGSMOKE-1010 marker file (#747))"
+    }
+  }
+}
