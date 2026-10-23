@@ -1,0 +1,130 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-1020",
+  "completed": "2026-10-23T01:36:30Z",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: the change is one marker file; the whole risk is the push, pull-request body, proof and handoff rules in skill://legion-worker and its references/pr-body.md and references/default-branch-check.md."
+    ],
+    "test": [
+      "legion-worker: references/pr-body.md defines the tester's proof shape and references/merge-gate.md how to read CI at the CI head rather than at a `skip-checks: true` handoff head."
+    ],
+    "review": [
+      "legion-worker: references/review-threads.md (one disposition per thread) and references/merge-gate.md (approval of the head). No repository skill exists: the repository has no AGENTS.md and the session's skill list carries nothing specific to this sandbox."
+    ]
+  },
+  "plan": {
+    "scope": "The child's own spec document is empty (dispatch doc-read --issue LEGSMOKE-1020 prints nothing). The plan stands on the parent LEGSMOKE-1015 design: one new file smoke/LEGSMOKE-1020.md holding one line, following the repository precedent of smoke/LEGSMOKE-1009.md: `LEGSMOKE-1020: Upgrade rehearsal push child (/tmp/legion-e2e4b.3568507.2ggBOBR8)`. The title's words `Upgrade rehearsal push` appear in no spec or repository text and are taken as proof-driver bookkeeping that adds no requirement. This inference is an open decision for the architect, not a settled constraint: confirm it or write the child's spec.",
+    "acceptance": [
+      {
+        "id": "A1",
+        "criterion": "The file smoke/LEGSMOKE-1020.md exists at the head under test.",
+        "surface": "GitHub contents API via gh",
+        "check": "gh api 'repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1020.md?ref=<sha>' --jq .name prints LEGSMOKE-1020.md",
+        "negativeControl": "the same call with ref=main before the merge returns HTTP 404"
+      },
+      {
+        "id": "A2",
+        "criterion": "Its first line names the issue (prefix LEGSMOKE-1020, matching precedent).",
+        "surface": "jj in the issue workspace (non-colocated: no git show)",
+        "check": "jj -R \"$LEGION_WORKSPACE\" file show -r <sha> smoke/LEGSMOKE-1020.md | head -n1 | grep -q '^LEGSMOKE-1020' exits 0",
+        "negativeControl": "grep -q '^LEGSMOKE-1015' on the same line exits 1"
+      },
+      {
+        "id": "A3",
+        "criterion": "Exactly 1 line at the implementer's code head; at most 2 at the READY head, the second only when a review thread asked for it (parent scope).",
+        "surface": "jj in the issue workspace",
+        "check": "jj -R \"$LEGION_WORKSPACE\" file show -r <sha> smoke/LEGSMOKE-1020.md | wc -l prints 1 (or 2 after a review-requested append)",
+        "negativeControl": "the same command on smoke/LEGSMOKE-654.md prints 2 (the precedent of a review-appended file)"
+      },
+      {
+        "id": "A4",
+        "criterion": "Nothing else changes: the branch-vs-main file list is smoke/LEGSMOKE-1020.md plus only paths under .legion/LEGSMOKE-1020/; at the READY head (after retro removes the handoffs) exactly [\"smoke/LEGSMOKE-1020.md\"].",
+        "surface": "GitHub compare API via gh",
+        "check": "gh api 'repos/sjawhar/legion-smoke/compare/main...<sha>' --jq '[.files[].filename]'",
+        "negativeControl": "the same compare for a sibling branch (e.g. legion/LEGSMOKE-1015) does not list smoke/LEGSMOKE-1020.md"
+      },
+      {
+        "id": "A5",
+        "criterion": "Done state per the parent: main holds the file after the merge (implementer's production check).",
+        "surface": "GitHub contents API via gh",
+        "check": "gh api 'repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1020.md?ref=main' --jq .name prints LEGSMOKE-1020.md",
+        "negativeControl": "before the merge the same call returns HTTP 404 (recorded by the implementer at A1)"
+      }
+    ],
+    "ciIsNotAcceptance": "ci.yml job `check` is `sleep 20 && exit 0`; fail-on-demand.yml job `gate` passes unless `.fail-me` exists. Neither reads smoke/. Green `check`/`gate` is the merge gate only. The merger reads the required-check set live at READY with gh pr view <n> -R sjawhar/legion-smoke --json headRefOid,mergeable,mergeStateStatus,statusCheckRollup; the LEGSMOKE-1010 solution note's `gate`-only reading is background, not a verified fact for today.",
+    "work": {
+      "implementer": [
+        "jj new per the worker rules; write smoke/LEGSMOKE-1020.md with the one line and a trailing newline.",
+        "jj -R \"$LEGION_WORKSPACE\" split -m \"smoke: add LEGSMOKE-1020 marker file\" smoke/LEGSMOKE-1020.md",
+        "identity check per skill://legion-worker/references/default-branch-check.md; push legion/LEGSMOKE-1020 (code push: no skip-checks trailer).",
+        "gh pr create -R sjawhar/legion-smoke --base main --head legion/LEGSMOKE-1020 with the pr-body.md template body including the line `Dispatch: LEGSMOKE-1020`.",
+        "proof array: A1, A2, A3, A4 at the code head SHA with the negative controls above.",
+        "write .legion/LEGSMOKE-1020/implement.json, commit, push handoff-only with the `skip-checks: true` trailer, handoff_complete."
+      ],
+      "tester": [
+        "re-run A1-A4 at the implementer's code head, never at the trailered handoff head (CI head = head_sha of the newest pull_request-triggered run on branch legion/LEGSMOKE-1020).",
+        "try to break it: confirm no second file under smoke/ in the compare output; confirm .fail-me is absent so `gate` is green for the right reason.",
+        "record implementerProof, failures and own proof in .legion/LEGSMOKE-1020/test.json; verdict."
+      ],
+      "reviewer": [
+        "review A4 (diff scope), filename and first-line precedent; one disposition per thread; may request the one extra line the parent scope allows.",
+        "write .legion/LEGSMOKE-1020/review.json."
+      ],
+      "retro": [
+        "remove .legion/LEGSMOKE-1020/ (untrailered push); add a docs/solutions note only for a new hazard."
+      ],
+      "merger": [
+        "READY at the retro head after reading its own CI (the retro push is untrailered, so it is its own CI head)."
+      ],
+      "productionCheck": [
+        "A5 by the implementer after the merge."
+      ]
+    },
+    "counts": "Background only, never a criterion: smoke/ holds 127 .md files (115 shaped <key>.md), 128 after this change.",
+    "doneStateNote": "The Stage 4b proof driver may end this issue before the merge; that is the driver's lifecycle call outside the plan. The parent's acceptance (A5) is the plan's done state."
+  },
+  "gapAnalysis": {
+    "findings": [
+      {
+        "finding": "The child's spec is empty; every requirement comes from the parent LEGSMOKE-1015, and the title's 'Upgrade rehearsal push' and the /tmp path appear in no spec or repository text.",
+        "answer": "The plan stands on the parent's design and treats the title terms as driver bookkeeping adding no requirement; recorded as an open decision for the architect (plan.scope), who confirms it or writes the child's spec."
+      },
+      {
+        "finding": "'names this issue' does not fix the filename for a child: LEGSMOKE-1020.md (precedent: siblings 1003/1004 and 1009/1010 are named by child key) versus the parent's key, which concurrent siblings would collide on.",
+        "answer": "smoke/LEGSMOKE-1020.md, by precedent; distinct per child so siblings cannot collide (A1, A4)."
+      },
+      {
+        "finding": "The parent's 'first line = the issue key' contradicts precedent: recent files read `<KEY>: <title>`; an equality check fails on all of them, a prefix check passes.",
+        "answer": "First line `LEGSMOKE-1020: Upgrade rehearsal push child (/tmp/legion-e2e4b.3568507.2ggBOBR8)` per smoke/LEGSMOKE-1009.md; the check is the prefix grep '^LEGSMOKE-1020' on head -n1 (A2)."
+      },
+      {
+        "finding": "'single line' versus precedent: smoke/LEGSMOKE-654.md has two lines because review appended one; a one-line assertion after review would fail.",
+        "answer": "A3: exactly 1 at the implementer's code head, at most 2 at the READY head and only when a review thread asked, which the parent's scope allows."
+      },
+      {
+        "finding": "'nothing else changes' is literally unachievable: handoff pushes add .legion/LEGSMOKE-1020/*.json to the branch until retro removes them.",
+        "answer": "A4 restates the diff criterion: the marker file plus only .legion/LEGSMOKE-1020/ paths before retro; exactly the marker file at the READY head."
+      },
+      {
+        "finding": "Two done-states: the parent's 'main holds the file' versus the proof driver's step-by-step operations.",
+        "answer": "A5 (file on main after the merge, read with gh api contents?ref=main) is the plan's done state; the driver's early end is a lifecycle call outside the plan (plan.doneStateNote)."
+      },
+      {
+        "finding": "No acceptance criterion is checked by CI: `check` sleeps and exits 0, `gate` passes unless .fail-me exists; neither reads smoke/.",
+        "answer": "plan.ciIsNotAcceptance: A1-A5 are content checks the roles run themselves; CI green is the merge gate only; the merger reads the required-check set live at READY."
+      },
+      {
+        "finding": "'127 such files' is half right: 127 .md files under smoke/, 12 of them not shaped <key>.md.",
+        "answer": "plan.counts: the count is background only and stated as 127 .md (115 <key>.md), 128 after; it is not a criterion."
+      }
+    ]
+  },
+  "planReview": {
+    "verdict": "approved",
+    "rounds": 1,
+    "note": "Non-blocking: the workspace is a non-colocated jj workspace, so A2/A3 use `jj file show -r <sha>` rather than `git show`; the plan was updated accordingly."
+  },
+  "specDepartures": []
+}
