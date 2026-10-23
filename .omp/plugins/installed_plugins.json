@@ -1,0 +1,1 @@
+{ "version": 2, "plugins": { "fixture-claude-plugin@fixture": [ { "scope": "project", "installPath": ".omp/plugins/fixture-claude-plugin" } ] } }

@@ -1,0 +1,8 @@
+# Stage 4b fixture: images.urls.enabled nothing above the repository sets, so it holds;
+# retry.modelFallback the operator's overlay (deploy/kubernetes/operator-route/overlay.yml) also
+# sets, to true, so the operator's wins.
+images:
+  urls:
+    enabled: true
+retry:
+  modelFallback: false
