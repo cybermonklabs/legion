@@ -1,0 +1,166 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-1086",
+  "completed": "2026-10-23T20:59:00Z",
+  "planDocument": "dispatch://LEGSMOKE-1086/artifact/plan-md",
+  "inheritedSpec": "dispatch://LEGSMOKE-1083/spec (v2); the child spec is empty",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker — binding to $LEGION_WORKSPACE, shared-workspace start rule, handoff write/commit/push with the skip-checks trailer on handoff-only pushes and none on code pushes, identity check before every push",
+      "legion-worker/references/pr-body.md — the PR body template (Dispatch: LEGSMOKE-1086 line, no Thermo line on this docs-only diff) and the six-field proof the implement.json proof[] and the E2E (implementer) line carry",
+      "legion-worker/references/default-branch-check.md — the jq-quoted default-branch identity check: implement App in both columns on every commit the implementer makes",
+      "legion-worker/references/review-threads.md — one disposition reply per thread and the implementer's own resolution mutation when a review round asks for the appended line (plan D3/T6)",
+      "legion-retro — the revived implementer's retro: optional docs/solutions note, the one removal commit of .legion/LEGSMOKE-1086/, untrailered push, Retro Complete message, no handoff (plan T7)",
+      "legion-worker/references/merge-gate.md — the production check after the close: PROD/AC1-after/AC4b-after/AC6-after at <mergeSha>, the Production: line and one PR comment, verdict pass|pending|fail (plan T9)",
+      "dispatch — the retro message's wording for a human and the rule that Legion issues are never written on GitHub issues"
+    ],
+    "test": [
+      "legion-worker — binding, handoff precedence (read plan.json then implement.json), test.json fields implementerProof/failures/proof, trailered handoff push, verdict on completion",
+      "legion-worker/references/pr-body.md — what the tester verifies: re-run the implementer's proof or drive the same surface, break attempts on the content surface, CI read from the CI head not rerun, E2E (tester) line with a link; a missing or blank proof field is a recorded failure",
+      "legion-worker/references/merge-gate.md — the CI fact is read at the newest pull_request run's head with the .legion/-only compare, never at the trailered handoff head (plan D5)",
+      "none: no repository test skill or harness exists — looked through .omp/skills/fixture-omp-skill, .claude/skills/fixture-claude-skill (fixture markers only), .github/ (two workflows, no template), fixture/, fixture_py/, src/ (fixtures untouched by this change); the tester adds no test file (plan D15) and proves AC2/AC4a/AC5/AC6/CI by the gh reads the plan pins"
+    ],
+    "review": [
+      "legion-worker — binding, handoff precedence, review.json fields (decision, counts, keyFindings, readHead), the round order: read CI at the CI head, push the handoff, review the head that push made, complete",
+      "legion-worker/references/merge-gate.md — the required set built from the ruleset and branch-protection reads (a 403 reported, never an empty set), approval refused while an E2E line is missing, the approval body naming the SHA it approves",
+      "legion-worker/references/pr-body.md — the body checks (Dispatch line, both E2E lines with links, Size as the merge diff, no Thermo on a docs-only PR) and the reviewer's own lines Look at first and Not proven / risk",
+      "legion-worker/references/review-threads.md — when the driver asks for the appended line: one REQUEST_CHANGES review with one thread on smoke/LEGSMOKE-1086.md line 1 naming the exact text (plan D3)",
+      "docs/solutions/legion/read-the-approved-head-from-github-not-the-review-handoff-LEGSMOKE-1062.md — name the head read before the push readHead, never approvedHead; the approved SHA lives in pulls/<N>/reviews (plan D19)"
+    ]
+  },
+  "constants": {
+    "path": "smoke/LEGSMOKE-1086.md",
+    "oneLine": {
+      "text": "LEGSMOKE-1086: Upgrade rehearsal fallback child\n",
+      "bytes": 48,
+      "lines": 1,
+      "sha256": "8094f10da9918b837866b25aee6ca7fc9a09db630d9676934e55c196945bc44a",
+      "gitBlob": "a321205d836987bc1bf14ff4239368c19212e785"
+    },
+    "twoLine": {
+      "appendedText": "Legion proof review round 1 (LEGSMOKE)\n",
+      "bytes": 87,
+      "lines": 2,
+      "sha256": "2ac9f11c067d9d9ce1dae1e5c30fe818f15cf401d46add6fc2282dc00343af0e",
+      "gitBlob": "ded673769eaa6b13b0720d50ba6a99f420849738"
+    },
+    "bases": {
+      "B_branchTipAtPlanning": "6d843f28732dd82163065cb4d2248e488f68ca0b",
+      "F_forkPoint": "6d843f28732dd82163065cb4d2248e488f68ca0b",
+      "note": "B = F; no pre-seeded commit; every path guard runs from fork_point(main@origin | @-), never from main@origin"
+    },
+    "commitMessages": {
+      "code": "smoke: add LEGSMOKE-1086 marker file",
+      "reviewRound": "smoke: append review line to LEGSMOKE-1086 marker",
+      "retroRemoval": "retro: remove .legion/LEGSMOKE-1086/ before READY"
+    },
+    "prTitle": "smoke: add LEGSMOKE-1086 marker file",
+    "requiredCheckRead": "ruleset 24471196: gate only (fail-on-demand); check (ci) informational; classic protection unreadable (403) in earlier runs — unverified, never assumed empty",
+    "markerCountAtF": 65
+  },
+  "preStateInvalidatingFacts": [
+    "gh api 'repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1086.md?ref=main' -> HTTP 404 (20:45Z)",
+    "gh api 'repos/sjawhar/legion-smoke/commits?sha=main&path=smoke/LEGSMOKE-1086.md' --jq length -> 0 (20:45Z)",
+    "gh pr list --repo sjawhar/legion-smoke --head legion/LEGSMOKE-1086 --state all --json number,state -> [] (20:45Z)",
+    "gh api repos/sjawhar/legion-smoke/rules/branches/main -> required_status_checks [gate], strict false (20:46Z)"
+  ],
+  "gapAnalysis": {
+    "findings": [
+      {
+        "finding": "The inherited acceptance says the file's first line names LEGSMOKE-1083, but this is child LEGSMOKE-1086; a literal reading makes three children write indistinguishable files (architect-only).",
+        "answer": "D1 names smoke/LEGSMOKE-1086.md with LEGSMOKE-1086 on line 1 (65/65 markers name their own issue); recorded as Departure 1 with outcome kind changed for the architect; AC2's head -1 check and T4's LEGSMOKE-1083.md -> 404 control enforce it."
+      },
+      {
+        "finding": "\"No file outside it changed\" collides with retro's optional docs/solutions note landing in the squash while .legion/ handoffs are removed (architect-only).",
+        "answer": "D4/D11 define the tolerated sets at each point (AC4a pre-retro, AC4b at READY and the merge, D17 checks the merge commit's file list); recorded as Departure 2 for the architect, who may rule that retro writes no note, in which case AC4b's set is the marker alone."
+      },
+      {
+        "finding": "The pinned first line drops the issue title's (/tmp/...) suffix while some precedents keep it, and the hashes were unverifiable by the analyst.",
+        "answer": "D2 decides the suffix is dropped (56 of 65 precedents drop it) and records that the constants were computed by execution (printf, sha256sum, git hash-object); T1 has the implementer re-check sha256sum and wc -c before committing and stop on mismatch."
+      },
+      {
+        "finding": "The optional appended line has no pinned trigger, author, text or ceiling (architect-only).",
+        "answer": "D3 pins all four: trigger = REQUEST_CHANGES with one thread on line 1 naming the text, author = implementer, default text Legion proof review round 1 (LEGSMOKE), ceiling one append in the PR's life; a second request goes to the architect; AC3a/AC3b, T5, T6, D12 carry it."
+      },
+      {
+        "finding": "B (branch tip at planning) equals F (fork point), so the two 404 controls of the LEGSMOKE-1056 note collapse into one read.",
+        "answer": "D-F1 states B = F = 6d843f28 explicitly; D13 pins the substitute controls: 404 at ?ref=6d843f28 and at ?ref=main, an altered-string mismatch, and BLOCKED with zero check-runs at the trailered handoff head."
+      },
+      {
+        "finding": "The effective required-check set cannot be read in full (ruleset gate only; classic protection 403 to the role App); the merge gate forbids guessing it.",
+        "answer": "D6 records the set as unverified, pins the two-endpoint read, requires a 403 be reported never treated as empty, and rests READY on GitHub's merge state (MERGEABLE, gate COMPLETED/SUCCESS); the architect is asked to confirm gate alone is what READY accepts."
+      },
+      {
+        "finding": "The branch's first push is the planner's trailered handoff with no PR and zero check-runs; CI must be read at the CI head and READY refuses a head with no CI.",
+        "answer": "D5 defines <ciHead> and the .legion/-only compare, cites the pull_request pair with the push pair named; D18 records firstCodeHead; T0 spells the exact trailer procedure; T7 makes retro's push untrailered so the merge head has CI."
+      },
+      {
+        "finding": "Siblings LEGSMOKE-1087/1088 share the base and clone, so main moves and a guard from the base tip lists a sibling's marker as this branch's change.",
+        "answer": "D8 makes the pre-state the four invalidating facts with stop condition one of them changed; D-F1 runs every path guard from fork_point(main@origin | @-) and the compare from B; D7 forbids rebase or forward merge absent CONFLICTING."
+      },
+      {
+        "finding": "The sleep 300 + WAITING gate's reach to a review-round implementing task and to the post-close production-check task is ambiguous, and whether implementing ever runs is the driver's choice (architect/driver).",
+        "answer": "D16 reads the rule as covering every implementing task including T6 and, as the safe reading, the production-check task (T9); each phase waits for its own targeted message; the plan orders work and never starts it; the architect or driver corrects the reading."
+      },
+      {
+        "finding": "The child's spec document is empty; the reviewer reads the plan beside the spec (architect-only).",
+        "answer": "The plan quotes the root v2 Summary/Scope/Acceptance verbatim and states the inheritance; filling the child spec is named as the architect's call in Departure 1."
+      },
+      {
+        "finding": "No root .gitignore: a stray file in the workspace is snapshotted into the next commit, and a .fail-me turns the required gate red for every tree.",
+        "answer": "D13 makes it a hard constraint (no file in the workspace beyond the marker, the handoffs and retro's note; body scratch in mktemp -d outside it); T1 guards with jj diff --summary -> exactly A smoke/LEGSMOKE-1086.md."
+      },
+      {
+        "finding": "The acceptance is decidable only on main after the merge; earlier phases need a machine-checkable criterion at their own head and the production check needs its own command.",
+        "answer": "The acceptance table maps each clause to a command at a branch head (AC2 raw read with bytes/lines/hash/last byte/no CR, AC4a compare) and to the production check (PROD, AC1-after, AC4b-after, AC6-after) with the Production: line (D10, T9)."
+      },
+      {
+        "finding": "PR body obligations for a docs-only PR (Dispatch line, Size as the merge diff, no Thermo, both E2E lines) and whether the repository derives body content from paths.",
+        "answer": "D9 pins each line (Size read from compare/<F>...<firstCodeHead> filtered of .legion/, Chain not stacked, Production pending deploy of <firstCodeHead>), D14 omits Thermo; the repository derives nothing from paths, so retro skips that recomputation and refreshes only Size."
+      },
+      {
+        "finding": "The upgrade rehearsal may end a worker's launches or re-create a workspace mid-flight; unpushed work is lost.",
+        "answer": "D20: every constant, command, expected value and stop condition is in the plan and plan.json; each role pushes as soon as it commits, records SHAs after the push, re-reads its committed handoff on relaunch and never redoes committed work."
+      },
+      {
+        "finding": "Measured facts are live-state claims and the 1016 note cites a LEGSMOKE-1009 note absent from this main.",
+        "answer": "Every fact is timestamped with its command; D8 re-reads the invalidating facts at execution; only bytes, hashes and B = F are pinned; the fork-point rule is cited by the 1016 path only."
+      },
+      {
+        "finding": "Three paid-for rules are easy to drop: approved head from GitHub not review.json; retro ordering with the removal last; jq flags inside the filter for the pane's gh wrapper.",
+        "answer": "D19 names all three; requiredSkills.test and .review carry them; T7/T8 read the approved SHA from pulls/<N>/reviews."
+      }
+    ]
+  },
+  "planReview": {
+    "verdict": "approved",
+    "rounds": 1,
+    "nonBlockingNotesApplied": [
+      "Production: placeholder now the template's `pending deploy of <firstCodeHead>` (D9, T3)",
+      "grep -c exit status documented as not a failure (definitions line)",
+      "D5 compare filter uses [.files[]?.filename] so an identical compare stays valid",
+      "T0's jj commands carry -R \"$LEGION_WORKSPACE\" and the exact skill form"
+    ]
+  },
+  "specDepartures": [
+    {
+      "spec": "Root LEGSMOKE-1083 spec v2, Acceptance: \"one new Markdown file exists under `smoke/` whose first line names LEGSMOKE-1083\"; Summary: \"a single line that names this issue\". The child LEGSMOKE-1086 spec is empty and inherits this text.",
+      "plan": "The file is smoke/LEGSMOKE-1086.md and its only line is `LEGSMOKE-1086: Upgrade rehearsal fallback child` (48 bytes, sha256 8094f10d…c44a, blob a321205d…): the child's own key, not the root's (plan D1, AC2).",
+      "evidence": "dispatch doc-read --issue LEGSMOKE-1086 → empty; the driver's message plans the change on legion/LEGSMOKE-1086; all 65 smoke/LEGSMOKE-<n>.md markers on main name their own issue on line 1 (ls smoke | grep -c; head -1); siblings LEGSMOKE-1087 and 1088 inherit the same sentence and would otherwise write indistinguishable files.",
+      "outcome": {
+        "kind": "changed",
+        "scope": "acceptance: for this child the clause reads \"whose first line names LEGSMOKE-1086\"; the root's own Summary, Scope and Acceptance stand for the root's own marker. The architect decides whether to write the child spec or leave the plan as the child's statement."
+      }
+    },
+    {
+      "spec": "Root LEGSMOKE-1083 spec v2, Scope: \"Nothing else changes\"; Acceptance: \"no file outside it changed\".",
+      "plan": "At the READY head and in the merge commit the plan tolerates, beside smoke/LEGSMOKE-1086.md, only a retro learning docs/solutions/<category>/<slug>-LEGSMOKE-1086.md written under skill://legion-retro (zero notes is a pass); the .legion/LEGSMOKE-1086/ handoffs are tracked files present at intermediate heads and removed by retro before READY (plan D4, D11, AC4a/AC4b, D17).",
+      "evidence": "skill://legion-retro: learnings under docs/solutions/ then the removal commit; \"A retro that commits no learning makes that commit alone\". PR #767 (LEGSMOKE-1070) merged smoke/LEGSMOKE-1070.md beside docs/solutions/legion/put-jq-flags-inside-the-filter-for-the-pane-gh-wrapper-LEGSMOKE-1070.md under the same root wording and its architect signed off. No root .gitignore, so handoffs are tracked (ls -la .gitignore → no such file).",
+      "outcome": {
+        "kind": "changed",
+        "scope": "acceptance: \"no file outside it changed, except one retro learning under docs/solutions/ and none of the .legion/LEGSMOKE-1086/ handoffs\". If the architect rules the merge must be exactly one file, retro writes no note and AC4b's tolerated set is the marker alone; nothing else in the plan changes."
+      }
+    }
+  ]
+}
