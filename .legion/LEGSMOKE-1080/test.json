@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "phase": "test",
+  "issue": "LEGSMOKE-1080",
+  "completed": "2026-10-23T20:28:09Z",
+  "pullRequest": "https://github.com/sjawhar/legion-smoke/pull/770",
+  "headSha": "dfff14c5924230844315ee5f4463ff6fe2432982",
+  "implementerProof": {
+    "verdict": "verified",
+    "how": "Re-ran the implementer's command at its headSha 627809dc4b600373934523f2325c9915cf472981: `gh api 'repos/sjawhar/legion-smoke/contents/smoke/stage4b-legsmoke-1080.md?ref=627809dc…' --jq .content | base64 -d | cat -A` returned `LEGSMOKE-1080$`; `gh api 'repos/sjawhar/legion-smoke/compare/main...627809dc…' --jq '.files[].filename'` listed `.legion/LEGSMOKE-1080/plan.json` and `smoke/stage4b-legsmoke-1080.md` only. Both match the E2E (implementer) line and implement.json's proof entry; its negative control (ref=main → 404) also reproduced."
+  },
+  "failures": [],
+  "failed": 0,
+  "proof": [
+    {
+      "criterion": "Plan step 2 (tester): first line of smoke/stage4b-legsmoke-1080.md at the PR head is exactly LEGSMOKE-1080 and the file has one line; the diff against main adds exactly one path under smoke/ and no other path outside .legion/.",
+      "surface": "GitHub REST contents and compare endpoints on the pull request #770 head of legion/LEGSMOKE-1080 on sjawhar/legion-smoke, driven with the pane's gh.",
+      "command": "HEAD=$(gh pr view 770 -R sjawhar/legion-smoke --json headRefOid --jq .headRefOid); gh api \"repos/sjawhar/legion-smoke/contents/smoke/stage4b-legsmoke-1080.md?ref=$HEAD\" --jq .content | base64 -d | cat -A; gh api \"repos/sjawhar/legion-smoke/contents/smoke/stage4b-legsmoke-1080.md?ref=$HEAD\" --jq .content | base64 -d | wc -lc; gh api \"repos/sjawhar/legion-smoke/compare/main...$HEAD\" --jq '.files[] | \"\\(.status) \\(.filename)\"'; gh api 'repos/sjawhar/legion-smoke/contents/smoke?ref=main' --jq '.[].name' | wc -l; gh api \"repos/sjawhar/legion-smoke/contents/smoke?ref=$HEAD\" --jq '.[].name' | wc -l",
+      "observed": "HEAD=dfff14c5924230844315ee5f4463ff6fe2432982. Contents: exactly `LEGSMOKE-1080$` (no CRLF, no trailing whitespace); wc: 1 line, 14 bytes. Compare main...head: `added .legion/LEGSMOKE-1080/implement.json`, `added .legion/LEGSMOKE-1080/plan.json`, `added smoke/stage4b-legsmoke-1080.md` — one path outside .legion/. smoke/ directory: 138 entries on main, 139 at head. CI (read, not rerun): head dfff14c5 is a handoff-only commit whose message ends `skip-checks: true` after two empty lines and has 0 check runs by design; the code head 627809dc4b600373934523f2325c9915cf472981 has `ci` run 40019023473 job check success and `fail-on-demand` run 40019024079 job gate success (commits/627809dc/check-runs).",
+      "headSha": "dfff14c5924230844315ee5f4463ff6fe2432982",
+      "negativeControl": "gh api 'repos/sjawhar/legion-smoke/contents/smoke/stage4b-legsmoke-1080.md?ref=main' → HTTP 404 Not Found, exit 1 (the marker is absent from the base before merge); gh api 'repos/sjawhar/legion-smoke/contents/smoke/stage4b-legsmoke-1081.md?ref=dfff14c5924230844315ee5f4463ff6fe2432982' → HTTP 404 (no neighbouring marker added by mistake)."
+    }
+  ],
+  "notes": [
+    "Stage 4b proof: testing ran on the targeted Dispatch message d616e08f-ae7b-4540-a31b-96cef6526017 (inspect PR #770, focused observable check, passing handoff). No red test written: the change is a one-line Markdown marker with no runtime code; the ways it could break (wrong first line, extra lines, CRLF, extra paths) were all driven on the real surface above and none reproduced.",
+    "Plan step 1's command `jj diff --from main -r @- --summary` is invalid jj syntax; implement.json's trickyParts already records the equivalent `--from main --to @-`."
+  ]
+}
