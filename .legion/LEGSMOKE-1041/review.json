@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "phase": "review",
+  "issue": "LEGSMOKE-1041",
+  "completed": "2026-10-23T10:24:30Z",
+  "decision": "approved",
+  "critical": 0,
+  "important": 0,
+  "minor": 0,
+  "keyFindings": [],
+  "round": 1,
+  "prNumber": 760,
+  "reviewedHead": "af0ecaa35705a2c39494b12770a38510b2c1f67a",
+  "ciHead": "cf7fab36e121bac420fdea8c9fe065c63c55f1d8",
+  "forkPoint": "2db619cf99913afcd91aae2b130d1e83375fbd39",
+  "ci": {
+    "requiredSet": "rulesets (escaped-base command, base main) -> gate; protection -> no required_status_checks",
+    "newestPullRequestRunHead": "cf7fab36e121bac420fdea8c9fe065c63c55f1d8 (runs 39937430290 fail-on-demand, 39937430482 ci; both completed success)",
+    "checkRuns": "check completed success x2, gate completed success x2 at cf7fab36e121bac420fdea8c9fe065c63c55f1d8 (job URLs under runs 39937430482, 39937430290, 39937349367, 39937349361)",
+    "compareCiHeadToPrHead": "compare/cf7fab36e1...af0ecaa357 -> status ahead; files [.legion/LEGSMOKE-1041/implement.json, .legion/LEGSMOKE-1041/test.json]; all(startswith(\".legion/\")) -> true",
+    "ciLineMatchesRuns": true
+  },
+  "threads": {
+    "listed": "gh api graphql reviewThreads(first:100) -> nodes []; pulls/760/comments -> 0; issues/760/comments -> 0",
+    "openedByReviewer": 0,
+    "botThreads": 0,
+    "acceptedBotThreadIds": []
+  },
+  "proofLines": {
+    "implementer": "present in the live body; surface the sandbox repository on GitHub at cf7fab36e121bac420fdea8c9fe065c63c55f1d8; negative control ref=main -> 404 and altered-line hash mismatch",
+    "tester": "present in the live body; independent JSON .content route at cf7fab36e121bac420fdea8c9fe065c63c55f1d8 / ad8ec2d23d0bbc04ea8b74293f088755c67398bf; negative controls 404 reads and hash variants; implementer's proof verified by re-run"
+  },
+  "verified": [
+    "A2: raw read of smoke/LEGSMOKE-1041.md at af0ecaa35705a2c39494b12770a38510b2c1f67a -> 94 bytes, LF-terminated, od -c shows the planned line, sha256 ef62d46b72f468caefb7bea901e73d23fd9a0f762c7116b05c3856413ec0695d",
+    "A4 (pre-retro set): compare/2db619cf...af0ecaa357 -> .legion/LEGSMOKE-1041/{plan,implement,test}.json and smoke/LEGSMOKE-1041.md (+1/-0), nothing else; gh pr diff 760 --name-only identical set",
+    "A5: required set gate alone; gate completed/success at the CI head cf7fab36e1",
+    "Size: 1 file, +1/-0 matches the compare from the fork point excluding .legion/",
+    "Dispatch: LEGSMOKE-1041 line count 1 after the reviewer's body PATCH"
+  ],
+  "thermo": "omitted: docs-only diff (one Markdown marker plus .legion/ handoffs), plan D14; no thermonuclear pair run, no Thermo line",
+  "contractChangeCensus": "not applicable: no refusal, required field, removed or renamed field, or boundary signature change",
+  "prBody": "Look at first and Not proven / risk written into the live body of #760 by PATCH (A1 and A4's merge-commit clause listed as post-merge facts for P1)",
+  "specDeparturesReviewed": "plan.json specDepartures [] confirmed against dispatch://LEGSMOKE-1041/spec (Summary and Scope only)"
+}
