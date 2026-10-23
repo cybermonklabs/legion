@@ -1,0 +1,118 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-1024",
+  "completed": "2026-10-23T04:18:30Z",
+  "planDocument": "dispatch://LEGSMOKE-1024/artifact/plan-md",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: shared-workspace jj rules (fetch first, bounded revsets, fork-point guard), code push without trailer, PR body from references/pr-body.md with `Dispatch: LEGSMOKE-1024`, the six-string proof[] on the GitHub contents surface, handoff-only push with the skip-checks trailer, D16 idempotency on relaunch; no repository skill exists (no AGENTS.md, no PR template, no harness)."
+    ],
+    "test": [
+      "legion-worker: references/pr-body.md defines the proof the tester verifies and the E2E (tester) line; the plan's T4 lists the read-only break attempts on the GitHub contents API and D14 why no test file is written; CI is read at the CI head per D6, never at the trailered handoff head."
+    ],
+    "review": [
+      "legion-worker: references/merge-gate.md (CI head and required-set read, review round order), references/review-threads.md (the one appended-line thread when the driver asks for it), references/pr-body.md (Look at first / Not proven lines; no Thermo line on a docs-only diff, D13)."
+    ]
+  },
+  "gapAnalysis": {
+    "findings": [
+      {
+        "finding": "The inherited acceptance names smoke/LEGSMOKE-1021.md, key LEGSMOKE-1021 and .legion/LEGSMOKE-1021/ throughout; this child is LEGSMOKE-1024 with an empty spec, so every clause must be re-keyed and the substitution recorded as a departure.",
+        "answer": "Plan restates all five clauses as A1-A5 keyed to LEGSMOKE-1024; D1 pins smoke/LEGSMOKE-1024.md; spec departure 1 records it for the architect; the root's smoke/LEGSMOKE-1021.md is named out of scope; AC5's control greps `Dispatch: LEGSMOKE-1021` -> 0."
+      },
+      {
+        "finding": "Clause 2 binds the one-line check to 'the branch's first push', but the planner's handoff push lands first and carries no marker.",
+        "answer": "D3: the clause is read at <implSha>, the first commit on the branch that adds the file; AC2 is proved there; no role reads it against the handoff push."
+      },
+      {
+        "finding": "Clause 1 requires the file on main, yet no role acts without a driver message and no earlier child marker has merged; is done 'merged' or 'PR open and green'?",
+        "answer": "D11: done is the merge plus the production check; A1-after is unproven until then and no phase shrinks it; whether the driver drives the tree to the merge is the driver's and architect's, recorded as such."
+      },
+      {
+        "finding": "Exact bytes unsettled: the title carries a /tmp suffix, precedent is split, and the 48-byte figures hold only for the suffix-dropped line.",
+        "answer": "D2 pins `LEGSMOKE-1024: Upgrade rehearsal fallback child\\n` (48 bytes, single LF, no CR/BOM; sha256 5e426772...bf6b; blob b2d555b9...4d86); T1 writes it with printf; AC2 checks size, blob, wc -l, head -1, sha256, last byte 0a, no CR."
+      },
+      {
+        "finding": "The optional review line has no trigger, author, text or ceiling in the spec.",
+        "answer": "D4: only the reviewer asks, as one REQUEST_CHANGES thread on line 1 naming the text, only when the driver's message says so; default text `Legion proof review round 1 (LEGSMOKE)` (24-file precedent); ceiling two lines; anything else goes to the architect; AC3a/AC3b; T5/T6."
+      },
+      {
+        "finding": "'Nothing else changes' contradicts the tracked .legion/LEGSMOKE-1024/ handoffs and docs/solutions/; the plan must name the allowed set, the fork-point guard, and what a role does when the guard lists more.",
+        "answer": "D5: allowed set = the marker, .legion/LEGSMOKE-1024/, docs/solutions/; guard `jj diff --from 'fork_point(main@origin | @-)' --to @- --name-only` before every push; anything else -> push nothing, report to the architect; AC4a pre-retro, AC4b at READY and after the merge."
+      },
+      {
+        "finding": "The acceptance says the merge adds the marker, files under docs/solutions/, and nothing else, while retro only may write a note; a run with no note could fail a literal reading.",
+        "answer": "D12: permitted, not required (skill://legion-retro: 'a retro that commits no learning makes that commit alone'); the clause is read as the ceiling of what may land; AC4b is written for both outcomes; the architect may rule otherwise."
+      },
+      {
+        "finding": "Both proofs need a production-like surface and a negative control for a Markdown marker that executes nothing, and .fail-me may not be created.",
+        "answer": "D14: surface is the GitHub contents API at a named SHA (READ/BLOB); implementer's controls are the 404 at <forkSha> and at main pre-merge plus history 0 (control for the control: LEGSMOKE-1016.md -> 1); tester's are its own read-only ones (path case, root path, root's key, .fail-me absent); creating any file is forbidden."
+      },
+      {
+        "finding": "Handoff-only pushes carry skip-checks, so a handoff head has no gate/check runs; which head does each proof and the tester's CI read cite?",
+        "answer": "D6: <ciHead> = head_sha of the newest pull_request run (the code head's push runs before the PR exists); check-runs read there; compare <ciHead>...<head> all under .legion/LEGSMOKE-1024/ -> true; CI row and T4 cite <ciHead>."
+      },
+      {
+        "finding": "Only `gate` is required is unverified: classic protection reads enabled:false and /protection answered 403 to the role App.",
+        "answer": "D7 records the set as unverified; READY rests on `gh pr view --json headRefOid,mergeable,mergeStateStatus,statusCheckRollup` at the READY head; any other required context, an unmerged PR after READY, or MANUAL_MERGE_REQUIRED goes to the architect."
+      },
+      {
+        "finding": "Squash, merge-commit and rebase merges are all allowed; 'the merge commit' shapes the post-merge check differently.",
+        "answer": "D17: <mergeSha> from `gh pr view --json mergeCommit`, <mergeBase> its first parent, the post-merge set from `compare/<mergeBase>...<mergeSha>` (same under both shapes); history count 1 under a squash, the compare decides otherwise; AC1-after, AC4b-after."
+      },
+      {
+        "finding": "Three siblings fork from a50a23aa and move main under each other; facts were measured at 04:06Z; the plan must list only invalidating facts as stop conditions.",
+        "answer": "D9: stop only when one of four facts changed (file at ref=main, history count, PR list, required set); a moved main@origin is normal; D8 no rebase; AC6 counts at <forkSha>/<mergeBase>, never the live tip."
+      },
+      {
+        "finding": "The sleep 300 rule names only the implementer; which roles sleep, and does the sleep precede WAITING?",
+        "answer": "D15: implementer only, on the daemon's task line and on a new task for the same phase, one bash call at timeout 600, before WAITING; every other role replies WAITING without it; work starts only on the driver's targeted message."
+      },
+      {
+        "finding": "The proof ends implementer launches mid-task; a relaunch must not duplicate a commit, a PR or a handoff.",
+        "answer": "D16: on every start fetch, then read the branch head for the file, `gh pr list --head legion/LEGSMOKE-1024 --state all`, and the branch head for implement.json; each step pushes before the next; a pushed step is never redone."
+      },
+      {
+        "finding": "The merge gate chain names no artefact for the merger, the daemon merge or the production check.",
+        "answer": "'Evidence each phase must leave' plus T7-T9: retro's removal commit and message, the merger's READY packet at the tip with GitHub's merge state, the production check's BLOB/READ at main and <mergeSha> recorded in the PR body, one PR comment and one Dispatch message (D11)."
+      },
+      {
+        "finding": "The precedent LEGSMOKE-1018 plan was cited but not read by the analyst; its claims were unverified.",
+        "answer": "The planner read dispatch://LEGSMOKE-1018/artifact/plan-md in full and its committed plan.json (jj file show -r a968f1a34d08) before drafting; the structure is reused with every value re-measured for LEGSMOKE-1024."
+      }
+    ]
+  },
+  "planReview": {
+    "verdict": "approved",
+    "rounds": 1
+  },
+  "specDepartures": [
+    {
+      "spec": "Root spec LEGSMOKE-1021 v2 (inherited; the child spec is empty), Acceptance: the new file is `smoke/LEGSMOKE-1021.md`, its line contains `LEGSMOKE-1021`, and the pull request's other paths are under `.legion/LEGSMOKE-1021/` and `docs/solutions/`.",
+      "plan": "For this child the file is `smoke/LEGSMOKE-1024.md`, its single line is `LEGSMOKE-1024: Upgrade rehearsal fallback child` (the child's own key, the title's `(/tmp/...)` suffix dropped), and the handoffs live under `.legion/LEGSMOKE-1024/`.",
+      "evidence": "dispatch doc-read --issue LEGSMOKE-1024 -> empty document; the driver's message plans 'the one-file smoke change' on legion/LEGSMOKE-1024; all 58 smoke/LEGSMOKE-<n>.md markers name their own issue on line 1 (e.g. smoke/LEGSMOKE-1016.md); writing the root's key into this child's file would collide with the root's own marker, which the root issue delivers.",
+      "outcome": {
+        "kind": "changed",
+        "acceptance": [
+          "For this child: `main` gains `smoke/LEGSMOKE-1024.md` whose single line contains `LEGSMOKE-1024` (plus one more line only if the review asked); the pull request's other paths are only under `.legion/LEGSMOKE-1024/` and `docs/solutions/`; the root's own `smoke/LEGSMOKE-1021.md` is untouched by this child."
+        ]
+      }
+    }
+  ],
+  "plan": {
+    "summary": "Add smoke/LEGSMOKE-1024.md holding one line `LEGSMOKE-1024: Upgrade rehearsal fallback child` (48 bytes, blob b2d555b91146ef694a9da485451ee8f4fba4ad86); optional one appended review line (87 bytes, blob 3757d2e95c688abbe266e73529ec46dd495a5fca); proofs on the GitHub contents API at named SHAs; tasks T1-T9 in dispatch://LEGSMOKE-1024/artifact/plan-md; every task starts only on the proof driver's targeted message.",
+    "workspace": {
+      "path": "/legion/workspaces/sjawhar/legion-smoke/legsmoke-1024",
+      "branch": "legion/LEGSMOKE-1024",
+      "forkPoint": "a50a23aa4dd7cde8ab79d37e4677d2ad0a5cb9a2 (main at planning, smoke: add LEGSMOKE-1016 marker file (#752))"
+    },
+    "preState": {
+      "fileAtMain": "HTTP 404",
+      "commitsByPathOnMain": 0,
+      "openPullRequests": [],
+      "requiredChecks": ["gate"],
+      "measuredAt": "2026-10-23T04:06:00Z"
+    }
+  }
+}
