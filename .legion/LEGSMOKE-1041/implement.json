@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "phase": "implement",
+  "issue": "LEGSMOKE-1041",
+  "completed": "2026-10-23T10:14:30Z",
+  "prNumber": 760,
+  "prUrl": "https://github.com/sjawhar/legion-smoke/pull/760",
+  "forkPoint": "2db619cf99913afcd91aae2b130d1e83375fbd39",
+  "firstCodeHead": "cf7fab36e121bac420fdea8c9fe065c63c55f1d8",
+  "expectedSha256": "ef62d46b72f468caefb7bea901e73d23fd9a0f762c7116b05c3856413ec0695d",
+  "expectedSha256TwoLine": "a5967888c2532bf6d49565ca2c75ba2e9cbc6ba746ac88b115da43bcb022ceb8",
+  "preState": {
+    "measuredAt": "2026-10-23T10:10Z",
+    "contentsAtMain": "gh api 'repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1041.md?ref=main' -> HTTP/2.0 404 Not Found",
+    "commitsByPathOnMain": "gh api 'repos/sjawhar/legion-smoke/commits?path=smoke/LEGSMOKE-1041.md&sha=main&per_page=100' --jq length -> 0",
+    "openPullRequests": "gh pr list -R sjawhar/legion-smoke --head legion/LEGSMOKE-1041 --state all --json number,state -> []",
+    "requiredChecks": "rulesets (gh api repos/sjawhar/legion-smoke/rules/branches/main) -> [\"gate\"]; protection (gh api repos/sjawhar/legion-smoke/branches/main --jq '{enabled: .protection.enabled, checks: .protection.required_status_checks.checks}') -> {\"checks\":[],\"enabled\":false}",
+    "forkPoint": "jj log -r 'fork_point(main@origin | @-)' -T commit_id -> 2db619cf99913afcd91aae2b130d1e83375fbd39 (after jj git fetch; unchanged from the plan)",
+    "hashRecompute": "printf '%s\\n' \"$LINE\" | sha256sum -> ef62d46b72f468caefb7bea901e73d23fd9a0f762c7116b05c3856413ec0695d, 94 bytes; printf '%s\\n%s\\n' \"$LINE\" \"$LINE2\" | sha256sum -> a5967888c2532bf6d49565ca2c75ba2e9cbc6ba746ac88b115da43bcb022ceb8, 154 bytes; both equal the plan's values"
+  },
+  "ci": {
+    "ciHead": "cf7fab36e121bac420fdea8c9fe065c63c55f1d8",
+    "pullRequestRuns": {"ci/check": 39937430482, "fail-on-demand/gate": 39937430290},
+    "pushRuns": {"ci/check": 39937349367, "fail-on-demand/gate": 39937349361},
+    "checkRuns": "gh api repos/sjawhar/legion-smoke/commits/cf7fab36e121bac420fdea8c9fe065c63c55f1d8/check-runs --paginate -> check completed success (x2), gate completed success (x2)"
+  },
+  "proof": [
+    {
+      "criterion": "A2: At the first push that carries it, the file is exactly D1's bytes: one LF-terminated line, LEGSMOKE-1041: Stage 4b proof tree 1: the whole workflow (/tmp/legion-e2e4b.3400458.tZxNeQfa).",
+      "surface": "the sandbox repository sjawhar/legion-smoke on GitHub, read at an explicit SHA through the contents API (raw media type)",
+      "command": "gh api 'repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1041.md?ref=cf7fab36e121bac420fdea8c9fe065c63c55f1d8' -H 'Accept: application/vnd.github.raw' > $T/head.md; wc -c < $T/head.md; wc -l < $T/head.md; tail -c1 $T/head.md | od -An -tx1; od -An -tx1 $T/head.md | tr -s ' ' '\\n' | grep -c '^0d$'; head -c3 $T/head.md | od -An -tx1; [ \"$(head -1 $T/head.md)\" = \"$LINE\" ] && echo 'head-1 equal'; sha256sum $T/head.md",
+      "observed": "94; 1; 0a; 0; 4c 45 47; head-1 equal; ef62d46b72f468caefb7bea901e73d23fd9a0f762c7116b05c3856413ec0695d",
+      "headSha": "cf7fab36e121bac420fdea8c9fe065c63c55f1d8",
+      "negativeControl": "gh api 'repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1041.md?ref=main' -i -> HTTP/2.0 404 Not Found; printf '%s\\n' 'LEGSMOKE-1041x: Stage 4b proof tree 1: the whole workflow (/tmp/legion-e2e4b.3400458.tZxNeQfa)' | sha256sum -> 39073dbeedecbfb9ecfe74363925f4c7610ca13a566382d3286d696b43271faf, not equal to the file's hash"
+    },
+    {
+      "criterion": "A4 (pre-retro set): at this head, the branch's diff from its fork point touches only smoke/LEGSMOKE-1041.md and .legion/LEGSMOKE-1041/; no .fail-me exists on the branch.",
+      "surface": "the sandbox repository sjawhar/legion-smoke on GitHub: pull request #760's three-dot diff and the compare API from the fork point",
+      "command": "gh pr diff 760 -R sjawhar/legion-smoke --name-only; gh api 'repos/sjawhar/legion-smoke/compare/2db619cf99913afcd91aae2b130d1e83375fbd39...cf7fab36e121bac420fdea8c9fe065c63c55f1d8' --jq '[.files[].filename]'; gh api repos/sjawhar/legion-smoke/pulls/760 --jq .body | grep -c '^Dispatch: LEGSMOKE-1041$'",
+      "observed": ".legion/LEGSMOKE-1041/plan.json and smoke/LEGSMOKE-1041.md, nothing else (both reads); merge-diff Size filter excluding .legion/ -> [{\"additions\":1,\"deletions\":0,\"filename\":\"smoke/LEGSMOKE-1041.md\"}]; Dispatch line count 1",
+      "headSha": "cf7fab36e121bac420fdea8c9fe065c63c55f1d8",
+      "negativeControl": "jj file list -r @- 'root:.fail-me' before the push -> 'No matching entries for paths: .fail-me' (no .fail-me on the branch); jj diff --from 'fork_point(main@origin | @-)' --to @- --name-only -> only .legion/LEGSMOKE-1041/plan.json and smoke/LEGSMOKE-1041.md"
+    },
+    {
+      "criterion": "A5: The pull request merges only once the required check gate is completed/success at its head; the required set is gate alone.",
+      "surface": "the sandbox repository sjawhar/legion-smoke on GitHub: rulesets, branch protection and check-runs at the CI head",
+      "command": "gh api repos/sjawhar/legion-smoke/rules/branches/main --jq '[.[] | select(.type==\"required_status_checks\") | .parameters.required_status_checks[].context]'; gh api repos/sjawhar/legion-smoke/branches/main --jq '{enabled: .protection.enabled, checks: .protection.required_status_checks.checks}'; gh api repos/sjawhar/legion-smoke/commits/cf7fab36e121bac420fdea8c9fe065c63c55f1d8/check-runs --paginate --jq '.check_runs[] | [.name, .status, .conclusion, .html_url] | @tsv'; gh api 'repos/sjawhar/legion-smoke/actions/runs?branch=legion/LEGSMOKE-1041&per_page=10' --jq '.workflow_runs[] | select(.head_sha==\"cf7fab36e121bac420fdea8c9fe065c63c55f1d8\") | [.id, .name, .event, .status, .conclusion] | @tsv'",
+      "observed": "required set [\"gate\"]; protection {\"checks\":[],\"enabled\":false}; check-runs: check completed success and gate completed success for both the push pair (runs 39937349367, 39937349361) and the pull_request pair (runs 39937430482 ci, 39937430290 fail-on-demand)",
+      "headSha": "cf7fab36e121bac420fdea8c9fe065c63c55f1d8",
+      "negativeControl": "the same check-runs read ~2 minutes after the push, before the pull_request pair finished, showed the pull_request check and gate entries as in_progress with no conclusion; the read-only control at a trailered handoff head (mergeStateStatus BLOCKED, zero check-runs) is the tester's T3 read at this handoff's commit"
+    }
+  ],
+  "filesChanged": [
+    "smoke/LEGSMOKE-1041.md (new, 94 bytes, one line)",
+    ".legion/LEGSMOKE-1041/implement.json (this handoff)"
+  ],
+  "trickyParts": [
+    "The marker file was written by a deep-worker subagent under the implementer's direction and re-verified by the implementer with the full D2 byte set and the D9 path guard before jj split; the worker made no commit.",
+    "No simplify pass and no Thermo line: the diff is docs-only (D14); the repository has no test suite, lint or AGENTS.md."
+  ],
+  "deviations": [],
+  "openQuestions": [
+    "Whether the spec gains a v2 Acceptance section for A1-A5 is the architect's decision (plan.md, Derived acceptance criteria); the implementer proceeded against the plan's A1-A5 as written."
+  ],
+  "discoveredComplexity": []
+}
