@@ -1,0 +1,119 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-1095",
+  "completed": "2026-10-23T23:31:00Z",
+  "planDocument": "dispatch://LEGSMOKE-1095/artifact/plan-md",
+  "summary": "Add smoke/LEGSMOKE-1095.md (one line: `LEGSMOKE-1095: Upgrade rehearsal push child (/tmp/legion-e2e4b.2506200.x99dcrt9)`, 81 bytes, sha256 bc67043f6a5152da664066032f12459833733c67a81595a7b24983ff83e3b83c), the repository's marker convention. The spec document is empty; the acceptance criteria below are planner-derived. The planner's push and handoff_complete are held by the human driver's targeted message (the 'upgrade rehearsal push').",
+  "preState": {
+    "forkPoint": "6d843f28732dd82163065cb4d2248e488f68ca0b",
+    "fileAtForkPoint": "404",
+    "commitsByPathOnMain": 0,
+    "openPullRequests": [],
+    "requiredChecks": ["gate"],
+    "workflows": {"ci": "check", "fail-on-demand": "gate"}
+  },
+  "acceptance": [
+    {
+      "id": "AC1",
+      "criterion": "smoke/LEGSMOKE-1095.md exists at <firstCodeHead> with exactly the recorded bytes: wc -c 81, wc -l 1, last byte 0a, sha256 bc67043f6a5152da664066032f12459833733c67a81595a7b24983ff83e3b83c, head -1 equals the recorded line.",
+      "surface": "GitHub contents API at an explicit SHA",
+      "command": "gh api 'repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1095.md?ref=<firstCodeHead>' -H 'Accept: application/vnd.github.raw' > /tmp/m.md && wc -c /tmp/m.md && wc -l /tmp/m.md && tail -c1 /tmp/m.md | od -An -tx1 && sha256sum /tmp/m.md && head -1 /tmp/m.md",
+      "negativeControl": "same read at ?ref=6d843f28732dd82163065cb4d2248e488f68ca0b and ?ref=main -> 404; comparison against 'LEGSMOKE-1095x: ...' mismatches"
+    },
+    {
+      "id": "AC2",
+      "criterion": "The merge diff (paths outside .legion/LEGSMOKE-1095/) from the fork point is exactly smoke/LEGSMOKE-1095.md +1/-0 before retro; plus one docs/solutions/legion/*.md note at retro's head.",
+      "surface": "GitHub compare API; jj diff from fork_point",
+      "command": "gh api 'repos/sjawhar/legion-smoke/compare/6d843f28732dd82163065cb4d2248e488f68ca0b...<head>' --jq '[.files[] | select(.filename | startswith(\".legion/\") | not) | {filename, additions, deletions}]'",
+      "negativeControl": "jj diff --from 'fork_point(main@origin | @-)' --to @- --name-only lists only smoke/LEGSMOKE-1095.md and .legion/LEGSMOKE-1095/*.json; gh pr view --json changedFiles is not the measure"
+    },
+    {
+      "id": "AC3",
+      "criterion": "Required check gate and job check are completed/success at <firstCodeHead>; the PR body's CI line cites the pull_request run pair and names the push pair.",
+      "surface": "GitHub check runs",
+      "command": "gh api 'repos/sjawhar/legion-smoke/commits/<firstCodeHead>/check-runs' --jq '[.check_runs[] | {name, status, conclusion, id}]'",
+      "negativeControl": "at the planner's trailered handoff head, check-runs total_count 0 and gh pr view <n> --json mergeStateStatus -> BLOCKED; never a .fail-me probe"
+    },
+    {
+      "id": "AC4",
+      "criterion": "The PR body carries the line `Dispatch: LEGSMOKE-1095`.",
+      "surface": "GitHub pull request body",
+      "command": "gh pr view <n> --json body --jq .body | grep -c '^Dispatch: LEGSMOKE-1095$'",
+      "negativeControl": "grep -c '^Dispatch: LEGSMOKE-1094$' -> 0"
+    }
+  ],
+  "productionCheck": "gh api 'repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1095.md?ref=main' -H 'Accept: application/vnd.github.raw' | sha256sum -> bc67043f...; gh api 'repos/sjawhar/legion-smoke/commits?path=smoke/LEGSMOKE-1095.md&sha=main' --jq length -> 1",
+  "phaseWork": {
+    "planning": "Handoff written and committed locally; push and handoff_complete held for the driver's targeted message. State: jj file show -r @- .legion/LEGSMOKE-1095/plan.json prints the handoff; legion/LEGSMOKE-1095@origin at 6d843f28; gh pr list --head legion/LEGSMOKE-1095 -> [].",
+    "implementing": "Run AGENTS.md fixture command; verify preState facts (stop if file present at fork point, commits by path on main, open PR, or required-check set differs); write smoke/LEGSMOKE-1095.md with exact bytes; jj split -m 'smoke: add LEGSMOKE-1095 marker file' smoke/LEGSMOKE-1095.md; push (no trailer); gh pr create with template body incl. Dispatch: LEGSMOKE-1095 and Size: '1 file, +1/-0; handoffs under .legion/LEGSMOKE-1095/ excluded, removed by retro'; record firstCodeHead; run AC1-AC4 with controls; proof array; implement.json; trailered handoff push; complete.",
+    "testing": "Re-run AC1-AC4 at firstCodeHead and current head from GitHub; three negative controls; CRLF/BOM check via od; read CI, rerun nothing; test.json with implementerProof, failures, proof; E2E (tester) line.",
+    "reviewing": "Per merge-gate.md: read head checks; push review.json; review the head that push made (AC1 bytes, AC2 filtered diff, AC4 Dispatch line, Size line vs filtered compare set, CI line cites pull_request pair); approve with footer.",
+    "integration": "Acceptance -> retro (docs/solutions note, refresh Size, remove .legion/LEGSMOKE-1095/) -> READY on head with gate green -> daemon merge -> implementer production check."
+  },
+  "openToArchitect": [
+    "What the 'upgrade rehearsal push' must prove beyond the marker file landing: the plan treats the marker file as the whole code change and the planner's push timing as driver-controlled; if the implementer's push or PR must land at a particular moment relative to a daemon upgrade, only the architect/driver can say so."
+  ],
+  "requiredSkills": {
+    "implement": [
+      "none: looked through the session <skills> list (ce-simplify-code, dispatch, dispatch-brainstorming, dispatch-first, envoy, fixture-claude-skill, fixture-omp-skill, legion-*) and the repository's .omp/skills and .claude/skills (fixture marker strings only); no repository skill covers a marker file. skill://legion-worker and its references/pr-body.md govern the phase mechanics; docs/solutions/legion/*.md carry the repository's proof conventions."
+    ],
+    "test": [
+      "none: same search; no repository test or smoke skill, no test suite, no runtime. skill://legion-worker/references/pr-body.md defines what the tester verifies."
+    ],
+    "review": [
+      "none: same search; skill://legion-worker/references/merge-gate.md and review-threads.md govern the review round."
+    ]
+  },
+  "gapAnalysis": {
+    "findings": [
+      {
+        "finding": "Every acceptance criterion is read at a pushed PR head, but the driver's targeted message holds the planner's push and handoff_complete, conflicting with the parent's message #8; nothing covers the planning-only slice.",
+        "answer": "The driver's targeted message to this planner governs this phase: the handoff is committed locally, push and handoff_complete wait for the next targeted message. The plan records the planning-phase state as checkable (jj file show -r @- .legion/LEGSMOKE-1095/plan.json; legion/LEGSMOKE-1095@origin at 6d843f28; gh pr list --head legion/LEGSMOKE-1095 -> []). Downstream phases run in normal order once released."
+      },
+      {
+        "finding": "The spec is empty and the title names an 'upgrade rehearsal push'; the plan does not state what the rehearsal must prove or when the push must occur relative to a daemon upgrade.",
+        "answer": "Recorded as openToArchitect and in plan.md: the plan treats the marker file as the whole code change and the push timing as driver-controlled. Only the architect/driver can settle it; the plan says so."
+      },
+      {
+        "finding": "AC2 'touches only that file' is false at every real Legion head because handoffs under .legion/ and retro's docs/solutions note join the branch.",
+        "answer": "AC2 restated as the merge diff: paths outside .legion/LEGSMOKE-1095/ via the filtered compare API; docs/solutions/legion/*.md explicitly permitted at retro's head; gh pr view --json changedFiles is not the measure."
+      },
+      {
+        "finding": "Diff and negative control anchored at main lose meaning as main@origin moves and invert after merge.",
+        "answer": "Fork point recorded once (6d843f28732dd82163065cb4d2248e488f68ca0b); diff expressed from fork_point(main@origin | @-); 404 control at ?ref=<fork point> and ?ref=main; pre-state stop condition is the four content facts, never the base tip moving."
+      },
+      {
+        "finding": "AC1 'exact single line' has no recorded bytes, sha256, line count, trailing-newline or CR check; cat decides nothing.",
+        "answer": "Recorded: 81 bytes, 1 line, last byte 0a, sha256 bc67043f6a5152da664066032f12459833733c67a81595a7b24983ff83e3b83c; read at an explicit SHA via Accept: application/vnd.github.raw; od, not xxd."
+      },
+      {
+        "finding": "AC3 calls both jobs 'required' without a source; four check-runs for two jobs could be read as duplicates.",
+        "answer": "Required set read at planning from the ruleset API: ['gate'] only; classic protection off. AC3 names gate as required and check as run-but-not-required, and says to cite the pull_request pair and name the push pair."
+      },
+      {
+        "finding": "The PR body's Size: line is unconstrained and goes stale per head when it counts the whole PR diff.",
+        "answer": "Size: line specified as the merge diff with the exclusion qualifier, read at the first code head via the filtered compare API; the reviewer compares against the filtered set."
+      },
+      {
+        "finding": "The AGENTS.md fixture command is assigned only to the implementer though every phase enters the repository; no criterion covers its marker.",
+        "answer": "Every phase runs it before anything else and may record test -f /tmp/legion-fixture/agents-md; it is a harness fixture, not an acceptance criterion of the change."
+      }
+    ]
+  },
+  "planReview": {
+    "verdict": "approved",
+    "rounds": 1
+  },
+  "specDepartures": [
+    {
+      "spec": "The spec document is empty: no summary, no acceptance criteria, no scope.",
+      "plan": "One marker file smoke/LEGSMOKE-1095.md with the recorded bytes; acceptance criteria AC1-AC4 (byte-exact file at an explicit SHA, one-file merge diff from the fork point, required check gate green, Dispatch: line in the PR body); production check at ?ref=main after the merge.",
+      "evidence": "dispatch doc-read --issue LEGSMOKE-1095 on 2026-10-23 printed only the document token; smoke/LEGSMOKE-1069.md and smoke/LEGSMOKE-1070.md show the marker convention; the parent LEGSMOKE-1090 message #8 names 'the one-file smoke change'.",
+      "outcome": {
+        "kind": "changed",
+        "scope": "summary and acceptance: the plan supplies the one-file summary and AC1-AC4 that the spec lacks; the architect decides whether the spec carries them."
+      }
+    }
+  ]
+}
