@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "phase": "implement",
+  "issue": "LEGSMOKE-1019",
+  "completed": "2026-10-23T03:30:30Z",
+  "pullRequest": "https://github.com/sjawhar/legion-smoke/pull/755",
+  "codeHead": "82232a9d9fa032c74359118af2798f3479e25c05",
+  "filesChanged": [
+    "smoke/LEGSMOKE-1019.md (+1/-0): one LF-terminated line `LEGSMOKE-1019: Upgrade rehearsal handoff child (/tmp/legion-e2e4b.3568507.2ggBOBR8)`, 84 bytes, sha256 ee814391695872252febc983756f7c729f035576a18e26fc0c7f24a063493529, blob 9a80980404d803f0a88081915f73c849c1628884"
+  ],
+  "proof": [
+    {
+      "criterion": "The smallest one-file change described by this child issue exists on legion/LEGSMOKE-1019: a one-line marker smoke/LEGSMOKE-1019.md naming the issue, matching the smoke/LEGSMOKE-10xx.md precedent (driver message c9ed5360-1879-4a32-8746-79effd3fb1d6 on LEGSMOKE-1019).",
+      "surface": "GitHub contents API of sjawhar/legion-smoke via the pane's gh, read at the pushed branch head (https://github.com/sjawhar/legion-smoke/blob/82232a9d9fa032c74359118af2798f3479e25c05/smoke/LEGSMOKE-1019.md)",
+      "command": "gh api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1019.md?ref=82232a9d9fa032c74359118af2798f3479e25c05\" --jq '[.size,.sha]'; the same read with --jq .content | base64 -d piped to wc -l, grep -c LEGSMOKE-1019, sha256sum, tail -c1 | od -An -tx1, grep -c $'\\r'",
+      "observed": "[84,\"9a80980404d803f0a88081915f73c849c1628884\"]; wc -l → 1; grep -c LEGSMOKE-1019 → 1; sha256 ee814391695872252febc983756f7c729f035576a18e26fc0c7f24a063493529; last byte 0a; CR count 0. Push CI at the same head: ci run 39895064810 job check success, fail-on-demand run 39895064821 job gate success; check-runs {\"names\":[\"gate\",\"check\"],\"states\":[\"completed/success\"],\"total_count\":2}.",
+      "headSha": "82232a9d9fa032c74359118af2798f3479e25c05",
+      "negativeControl": "The same contents read at ?ref=3153e8b9c9c4f67a2303b0538ad576709676ac4c (the branch base, the planner's handoff commit) → HTTP 404; at ?ref=main (a50a23aa4dd7cde8ab79d37e4677d2ad0a5cb9a2) → HTTP 404 and `gh api 'repos/sjawhar/legion-smoke/commits?sha=main&path=smoke/LEGSMOKE-1019.md' --jq length` → 0, while the same query for smoke/LEGSMOKE-1010.md → 1."
+    }
+  ],
+  "trickyParts": [
+    "The branch base is the planner's trailered handoff commit 3153e8b9 (no CI runs there by design); the code head 82232a9d is the CI head. This implement handoff push is handoff-only and carries `skip-checks: true`, so read CI at 82232a9d, per docs/solutions/legion/read-ci-and-merge-state-at-trailered-handoff-heads-LEGSMOKE-1010.md."
+  ],
+  "deviations": [
+    "Thermo line omitted from the PR body: the diff is a one-line Markdown marker (docs-only), so neither the simplify pass nor the thermonuclear pair runs.",
+    "No plan tasks existed (plan.json `tasks: []`, `acceptanceSurfaces: []`); the change follows the driver's targeted message #7 on LEGSMOKE-1019 and the repository's smoke/LEGSMOKE-10xx.md precedent."
+  ],
+  "openQuestions": [],
+  "discoveredComplexity": []
+}
