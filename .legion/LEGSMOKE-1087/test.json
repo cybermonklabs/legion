@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "phase": "test",
+  "issue": "LEGSMOKE-1087",
+  "completed": "2026-10-23T22:45:40Z",
+  "pullRequest": "https://github.com/sjawhar/legion-smoke/pull/773",
+  "headSha": "7bb9ee42977fe3802d3afda22e1c2059c91c0c66",
+  "codeHeadSha": "e6459d9f84f1507ddda09322a4dfc78e230ea204",
+  "implementerProof": {
+    "verdict": "verified",
+    "how": "Re-ran the implementer's exact command `gh api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1087.md?ref=e6459d9f84f1507ddda09322a4dfc78e230ea204\" --jq '.content' | base64 -d`: printed exactly `LEGSMOKE-1087: Upgrade rehearsal handoff child (/tmp/legion-e2e4b.1145802.BUQbzYB8)`, exit 0, matching the implement.json `observed` field word for word. Re-ran its negative control `gh api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1087.md?ref=main\"`: `gh: Not Found (HTTP 404)`, exit 1. All six proof fields in implement.json are non-empty."
+  },
+  "failures": [],
+  "failed": 0,
+  "proof": [
+    {
+      "criterion": "Add smoke/LEGSMOKE-1087.md holding one line that names LEGSMOKE-1087; change no other file.",
+      "surface": "GitHub contents and compare APIs of sjawhar/legion-smoke at the pull-request head legion/LEGSMOKE-1087 = 7bb9ee42 (the smoke repository is the production surface; main carries the file after the merge)",
+      "command": "gh api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1087.md?ref=7bb9ee42977fe3802d3afda22e1c2059c91c0c66\" --jq '.content' | base64 -d | tee /tmp/legsmoke-1087-marker.txt; wc -l < /tmp/legsmoke-1087-marker.txt; wc -c < /tmp/legsmoke-1087-marker.txt; grep -c 'LEGSMOKE-1087' /tmp/legsmoke-1087-marker.txt; gh api \"repos/sjawhar/legion-smoke/compare/main...7bb9ee42977fe3802d3afda22e1c2059c91c0c66\" --jq '[.files[] | select(.filename | startswith(\".legion/\") | not) | {filename, status, additions, deletions}]'; gh api \"repos/sjawhar/legion-smoke/contents/smoke?ref=7bb9ee42977fe3802d3afda22e1c2059c91c0c66\" --jq '[.[] | select(.name | test(\"1087\"))] | map(.name)'",
+      "observed": "Content read printed exactly `LEGSMOKE-1087: Upgrade rehearsal handoff child (/tmp/legion-e2e4b.1145802.BUQbzYB8)`; wc -l = 1, wc -c = 84, grep -c LEGSMOKE-1087 = 1 (one line, one newline, names the issue). compare main...7bb9ee42 lists exactly one non-.legion file: [{\"filename\":\"smoke/LEGSMOKE-1087.md\",\"status\":\"added\",\"additions\":1,\"deletions\":0}]. smoke/ directory at head holds exactly one entry matching 1087: [\"LEGSMOKE-1087.md\"]. The PR file list at 7bb9ee42 is [.legion/LEGSMOKE-1087/implement.json, .legion/LEGSMOKE-1087/plan.json, smoke/LEGSMOKE-1087.md]: the two .legion entries are workflow handoffs retro removes before the merge. CI read, not re-run: at code head e6459d9f check-runs `check` (ci, run 40035311579 pull_request and 40035267004 push) and `gate` (fail-on-demand, run 40035311530 pull_request and 40035267067 push) all completed/success; head 7bb9ee42 is a handoff-only push with `skip-checks: true` after two blank lines (total check-runs 0), and the daemon record carries checksVerdict green. `.fail-me` absent in the workspace. No implementer unit tests exist to judge: the repository's CI is `ci` (sleep && exit 0) and `fail-on-demand`; a one-line Markdown marker has no runtime path to break, so no red test is warranted.",
+      "headSha": "7bb9ee42977fe3802d3afda22e1c2059c91c0c66",
+      "negativeControl": "gh api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1087.md?ref=main\" → `{\"message\":\"Not Found\",...,\"status\":\"404\"}` + `gh: Not Found (HTTP 404)`, exit 1: the marker is absent on main before the merge. Second refused input: gh api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1087.markdown?ref=7bb9ee42977fe3802d3afda22e1c2059c91c0c66\" (wrong extension at the head) → HTTP 404, exit 1."
+    }
+  ],
+  "redTests": [],
+  "notes": [
+    "Stage 4b upgrade rehearsal proof: the targeted human Dispatch message (LEGSMOKE-1087 message 673896c4-546c-48ab-9709-6b85bf41f38d) directed a focused observable check and a passing tester handoff.",
+    "Both bot identities on the chain are legitimate: e6459d9f and 7bb9ee42 authored and committed by trajectory-s-legion-implementer[bot]; aba75411 (plan) by trajectory-s-legion-reviewer[bot]; main merges committed by GitHub."
+  ]
+}
