@@ -1,0 +1,61 @@
+{
+  "schemaVersion": 1,
+  "phase": "test",
+  "issue": "LEGSMOKE-1041",
+  "completed": "2026-10-23T10:18:30Z",
+  "prNumber": 760,
+  "ciHead": "cf7fab36e121bac420fdea8c9fe065c63c55f1d8",
+  "testedHead": "ad8ec2d23d0bbc04ea8b74293f088755c67398bf",
+  "forkPoint": "2db619cf99913afcd91aae2b130d1e83375fbd39",
+  "implementerProof": {
+    "verdict": "verified",
+    "how": "Re-ran the implementer's A2 command at cf7fab36e121bac420fdea8c9fe065c63c55f1d8 (raw contents read + D2 byte set): 94 bytes, 1 line, last byte 0a, 0 CR bytes, first bytes 4c 45 47, head -1 equal to the planned line, sha256 ef62d46b72f468caefb7bea901e73d23fd9a0f762c7116b05c3856413ec0695d; every value matches implement.json proof[0].observed. Re-ran its A4 reads (gh pr diff 760 --name-only; compare fork point...head; Dispatch line grep -c = 1) and its A5 reads (rulesets -> gate; protection -> none; check-runs at the CI head: check and gate completed/success x2; gh run view of runs 39937430482, 39937430290, 39937349367, 39937349361 -> all completed/success at cf7fab36e1). Then drove the same surface independently through the JSON .content route (below)."
+  },
+  "ci": {
+    "readAt": "cf7fab36e121bac420fdea8c9fe065c63c55f1d8",
+    "newestPullRequestRunHead": "cf7fab36e121bac420fdea8c9fe065c63c55f1d8",
+    "checkRuns": "check completed success (runs 39937430482 pull_request, 39937349367 push); gate completed success (runs 39937430290 pull_request, 39937349361 push)",
+    "requiredSet": "rulesets (escaped-base command) -> gate; protection -> no required_status_checks",
+    "compareCiHeadToPrHead": "[\".legion/LEGSMOKE-1041/implement.json\"] all(startswith(\".legion/\")) -> true",
+    "note": "CI read at the CI head only; the handoff head ad8ec2d2 carries skip-checks: true and has 0 check-runs (that is the read-only negative control, not a red)."
+  },
+  "failures": [],
+  "failed": 0,
+  "noSuite": "The repository has no test suite, lint or AGENTS.md (plan D14); no red test exists to write, so every break attempt is a read-only control recorded in proof[].negativeControl.",
+  "proof": [
+    {
+      "criterion": "A2: At the first push that carries it, the file is exactly D1's bytes: one LF-terminated line, LEGSMOKE-1041: Stage 4b proof tree 1: the whole workflow (/tmp/legion-e2e4b.3400458.tZxNeQfa).",
+      "surface": "the sandbox repository sjawhar/legion-smoke on GitHub, read at an explicit SHA through the contents API's JSON route (.content base64), independent of the implementer's raw-media-type route",
+      "command": "gh api 'repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1041.md?ref=cf7fab36e121bac420fdea8c9fe065c63c55f1d8' > $T/json; jq -r '[.encoding,.size,.sha,.path]|@tsv' $T/json; jq -r .content $T/json | base64 -d > $T/dec.md; sha256sum $T/dec.md; cmp $T/raw.md $T/dec.md; printf 'blob %d\\0' \"$(wc -c < $T/dec.md)\" | cat - $T/dec.md | sha1sum; gh api 'repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1041.md?ref=ad8ec2d23d0bbc04ea8b74293f088755c67398bf' --jq .sha; second raw read into $T/raw2.md; cmp $T/raw.md $T/raw2.md",
+      "observed": "base64 / 94 / 7189e60918522f7ffb94a09ec9a46c0e6e4e0139 / smoke/LEGSMOKE-1041.md; decoded sha256 ef62d46b72f468caefb7bea901e73d23fd9a0f762c7116b05c3856413ec0695d; cmp silent (routes byte-identical); recomputed git blob sha1 7189e60918522f7ffb94a09ec9a46c0e6e4e0139 equals GitHub's; blob sha at the handoff head ad8ec2d2 identical (file unchanged since the CI head); repeat raw read identical",
+      "headSha": "ad8ec2d23d0bbc04ea8b74293f088755c67398bf",
+      "negativeControl": "sha256 of the altered line (…tZxNeQfa)x) dbd3225f09d15e0ccaf57c150fa243379f368af2fcf560ea58fe7995672341a1, of the CRLF variant 01dce2dd0242d59d0cbc6d19fd8ff01a33ab681ad15baca57a0b192eb93623e2, of the no-final-LF variant c67b6053eab842f6b17dae12cf5c8fe6a59b46d6bde711c09c3b43e1a4b813d0: none equals the file's hash; raw read at ref=2db619cf (fork point), ref=main, lower-case path smoke/legsmoke-1041.md at the CI head, and ref=0000…0 -> HTTP/2.0 404 Not Found each"
+    },
+    {
+      "criterion": "A4 (pre-retro set): at this head, the branch's diff from its fork point touches only smoke/LEGSMOKE-1041.md and .legion/LEGSMOKE-1041/; no .fail-me ever exists on the branch.",
+      "surface": "the sandbox repository sjawhar/legion-smoke on GitHub: compare API from the fork point, pull request #760's three-dot diff, commits-by-path on the branch",
+      "command": "gh api 'repos/sjawhar/legion-smoke/compare/2db619cf99913afcd91aae2b130d1e83375fbd39...ad8ec2d23d0bbc04ea8b74293f088755c67398bf' --jq '[.files[].filename]'; gh pr diff 760 -R sjawhar/legion-smoke --name-only; gh api 'repos/sjawhar/legion-smoke/commits?path=.fail-me&sha=legion/LEGSMOKE-1041&per_page=100' --jq length; gh api repos/sjawhar/legion-smoke/pulls/760 --jq .body | grep -c '^Dispatch: LEGSMOKE-1041$'",
+      "observed": "[\".legion/LEGSMOKE-1041/implement.json\",\".legion/LEGSMOKE-1041/plan.json\",\"smoke/LEGSMOKE-1041.md\"] from both reads; .fail-me commit count 0; Dispatch line count 1",
+      "headSha": "ad8ec2d23d0bbc04ea8b74293f088755c67398bf",
+      "negativeControl": "gh api 'repos/sjawhar/legion-smoke/contents/.fail-me?ref=ad8ec2d23d0bbc04ea8b74293f088755c67398bf' -i -> HTTP/2.0 404 Not Found"
+    },
+    {
+      "criterion": "A5: The pull request merges only once the required check gate is completed/success at its head; the required set is gate alone, re-read at review and READY.",
+      "surface": "the sandbox repository sjawhar/legion-smoke on GitHub: rulesets and branch protection via the escaped-base command, actions runs, check-runs at the CI head, pull request merge state",
+      "command": "base=$(gh pr view 760 -R sjawhar/legion-smoke --json baseRefName -q .baseRefName); base_path=$(jq -rn --arg b \"$base\" '$b | split(\"/\") | map(@uri) | join(\"/\")'); gh api \"repos/sjawhar/legion-smoke/rules/branches/$base_path\" --jq '.[] | select(.type==\"required_status_checks\") | .parameters.required_status_checks[].context'; gh api \"repos/sjawhar/legion-smoke/branches/$base_path\" --jq '.protection.required_status_checks.checks[].context'; gh api 'repos/sjawhar/legion-smoke/actions/runs?branch=legion/LEGSMOKE-1041&event=pull_request&per_page=30' --jq '.workflow_runs[0].head_sha'; gh api repos/sjawhar/legion-smoke/commits/cf7fab36e121bac420fdea8c9fe065c63c55f1d8/check-runs --paginate --jq '.check_runs[] | [.name, .status, .conclusion, .html_url] | @tsv'; for r in 39937430482 39937430290 39937349367 39937349361; do gh run view $r -R sjawhar/legion-smoke --json headSha,status,conclusion,name,event; done; gh api 'repos/sjawhar/legion-smoke/compare/cf7fab36e121bac420fdea8c9fe065c63c55f1d8...ad8ec2d23d0bbc04ea8b74293f088755c67398bf' --jq '[.files[].filename] | all(startswith(\".legion/\"))'",
+      "observed": "rulesets -> gate; protection -> (empty); newest pull_request run head cf7fab36e121bac420fdea8c9fe065c63c55f1d8; check-runs: check completed success x2, gate completed success x2 (job URLs under runs 39937430482, 39937430290, 39937349367, 39937349361); the four runs: ci pull_request / fail-on-demand pull_request / ci push / fail-on-demand push, each completed success at cf7fab36e1; compare -> true (only .legion/LEGSMOKE-1041/implement.json above the CI head)",
+      "headSha": "cf7fab36e121bac420fdea8c9fe065c63c55f1d8",
+      "negativeControl": "at the trailered handoff head ad8ec2d23d0bbc04ea8b74293f088755c67398bf: gh pr view 760 --json headRefOid,mergeStateStatus,mergeable,state -> ad8ec2d2 / BLOCKED / MERGEABLE / OPEN; gh api repos/sjawhar/legion-smoke/commits/ad8ec2d2…/check-runs --jq .total_count -> 0; its commit message ends with two empty lines then 'skip-checks: true' (cat -A), so GitHub started no workflow there and the merge stays blocked until the daemon carries the CI head's verdict"
+    }
+  ],
+  "breakAttempts": [
+    "altered-string, CRLF and no-final-LF hash variants all differ from the file's sha256",
+    "reads at the fork point, main, a lower-case path, a bogus 40-zero ref and .fail-me all answer 404",
+    "repeat raw read and the JSON route are byte-identical to the first raw read; the git blob sha recomputed locally equals GitHub's",
+    "the trailered handoff head shows BLOCKED with zero check-runs; the code head carries gate completed/success"
+  ],
+  "unreachedCriteria": [
+    "A1 and A4's merge-commit clause are observable only after the merge (plan D16/P1): the implementer's first production-check look reads them at ref=main; the reviewer lists them under Not proven / risk until then."
+  ],
+  "prBody": "E2E (tester) line written into the live body of #760 by PATCH; Dispatch: LEGSMOKE-1041 line count still 1."
+}
