@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "phase": "review",
+  "issue": "LEGSMOKE-1080",
+  "completed": "2026-10-23T20:32:00Z",
+  "pullRequest": "https://github.com/sjawhar/legion-smoke/pull/770",
+  "round": 1,
+  "decision": "approved",
+  "critical": 0,
+  "important": 0,
+  "minor": 0,
+  "keyFindings": [],
+  "reviewedHead": "11035022891859bef815480e1f4984a3571a9a2a",
+  "ciRead": {
+    "requiredChecks": ["gate"],
+    "source": "rulesets on main (repos/sjawhar/legion-smoke/rules/branches/main); branch protection lists none",
+    "ciHead": "627809dc4b600373934523f2325c9915cf472981",
+    "checkRuns": "gate completed success; check completed success (commits/627809dc/check-runs)",
+    "runs": "ci 40019023473 and fail-on-demand 40019024079 both completed success at 627809dc (matches the PR body's CI line)",
+    "compareCiHeadToHead": "ahead; only .legion/LEGSMOKE-1080/implement.json and .legion/LEGSMOKE-1080/test.json changed since the CI head"
+  },
+  "proofChecks": {
+    "implementer": "E2E (implementer) present at 627809dc: contents API → `LEGSMOKE-1080$`, compare lists one path under smoke/; negative control ref=main → 404.",
+    "tester": "E2E (tester) present at dfff14c5: same surface plus wc 1 line/14 bytes, smoke/ 138→139 entries; negative controls ref=main → 404 and stage4b-legsmoke-1081.md → 404.",
+    "reviewer": "Re-ran at 11035022: contents → `LEGSMOKE-1080$`; compare main...11035022 lists three .legion/ files and smoke/stage4b-legsmoke-1080.md (+1/-0) only; ref=main → HTTP 404, exit 1."
+  },
+  "threads": "none open; no prior reviews on the pull request (gh api graphql reviewThreads and reviews both empty)",
+  "thermonuclear": "omitted: docs-only diff (one Markdown marker, no runtime code)",
+  "security": "no sensitive surface in this diff",
+  "contractChangeCensus": "not required: no refusal, field, or signature change",
+  "specRead": "child spec document dispatch://LEGSMOKE-1080/spec is empty; plan.json inherits parent LEGSMOKE-1076 design (one marker under smoke/, first line names the issue) with specDepartures []; reviewed against the plan",
+  "notes": [
+    "Stage 4b proof: review ran on the targeted Dispatch message 0de9c463-2fbb-4581-a1bd-8dda926e445b (review PR #770, submit APPROVE, record the reviewer handoff, call handoff_complete).",
+    "Marker wording (`LEGSMOKE-1080`) differs from sibling markers (`Stage 4b workflow proof: LEGSMOKE-NNN.`); the inherited spec requires only that the first line names the issue, so this is not a defect and no fast-follow is opened."
+  ]
+}
