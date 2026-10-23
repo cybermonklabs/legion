@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-1087",
+  "completed": "2026-10-23T22:30:10Z",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: the only repository-domain skill; it defines the handoff, push, PR-body and proof rules the implementer must follow on the smoke branch."
+    ],
+    "test": [
+      "legion-worker: its pr-body reference defines the tester's proof on a production-like surface (the merged file on main of sjawhar/legion-smoke); no repository test skill exists."
+    ],
+    "review": [
+      "legion-worker: its review-threads and merge-gate references define how the reviewer submits and resolves threads; no repository review skill exists."
+    ]
+  },
+  "gapAnalysis": {
+    "error": "check not run: Stage 4b upgrade rehearsal proof; the targeted human Dispatch message (LEGSMOKE-1087 message 9c0ceb4f-ea3c-4e50-b0c1-2892f61cdccf) directed writing and committing the plan handoff directly, and the issue's own spec document is empty, so there was no spec to analyze."
+  },
+  "planReview": {
+    "verdict": "failed",
+    "rounds": 0,
+    "error": "check not run: Stage 4b upgrade rehearsal proof; the targeted human Dispatch message directed writing and committing the plan handoff directly."
+  },
+  "specDepartures": [],
+  "plan": {
+    "summary": "Smoke proof child of LEGSMOKE-1083. The child's own spec document is empty; the root spec (dispatch://LEGSMOKE-1083) asks for one new Markdown file under smoke/ whose single line names the issue, and nothing else changed.",
+    "tasks": [
+      {
+        "task": "Add smoke/LEGSMOKE-1087.md holding one line that names LEGSMOKE-1087; change no other file.",
+        "surface": "main of sjawhar/legion-smoke after the pull request merges",
+        "check": "gh api repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1087.md --jq '.content' | base64 -d  -- one line naming LEGSMOKE-1087; gh pr view <n> --json files  -- exactly one file changed"
+      }
+    ],
+    "evidence": {
+      "implement": "PR body E2E (implementer) line and proof array: the file as read from the pull-request head via gh api contents, head SHA, and a negative control (the file is absent on main before the merge).",
+      "test": "Tester re-runs the same gh api read at the head SHA, confirms the PR diff touches exactly one file, records its own proof array.",
+      "review": "Reviewer confirms the single file, single line, and that the PR body carries Dispatch: LEGSMOKE-1087.",
+      "integration": "Merger READY on a green head; implementer production check reads the file on main after the close."
+    }
+  }
+}
