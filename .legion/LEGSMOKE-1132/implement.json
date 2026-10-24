@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "phase": "implement",
+  "issue": "LEGSMOKE-1132",
+  "completed": "2026-10-24T21:19:07Z",
+  "pullRequest": "https://github.com/sjawhar/legion-smoke/pull/788",
+  "codeHead": "650020cacb9f9b1c6c2bfca55880de346c866fe6",
+  "proof": [
+    {
+      "criterion": "The smallest one-file change described by this child issue lands on legion/LEGSMOKE-1132: a reader of the branch finds one new marker file smoke/LEGSMOKE-1132.md whose single LF-terminated line names LEGSMOKE-1132 and its title, and nothing else outside .legion/ changes (driver message 47f2a2cf-ba13-4442-94ee-3d58860d99c9 on dispatch://LEGSMOKE-1132; the spec document has no body).",
+      "surface": "sjawhar/legion-smoke read through the GitHub contents API and compare API at an explicit SHA (the surface every later phase reads the branch through), from the implementer pane's gh.",
+      "command": "gh api 'repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1132.md?ref=650020cacb9f9b1c6c2bfca55880de346c866fe6' -H 'Accept: application/vnd.github.raw' > /tmp/l1132.txt && wc -l < /tmp/l1132.txt && wc -c < /tmp/l1132.txt && tail -c1 /tmp/l1132.txt | od -An -tx1 && head -c3 /tmp/l1132.txt | od -An -tx1 && tr -cd '\\r' < /tmp/l1132.txt | wc -c && sha256sum < /tmp/l1132.txt && head -1 /tmp/l1132.txt && grep -c LEGSMOKE-1132 /tmp/l1132.txt; gh api 'repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1132.md?ref=650020cacb9f9b1c6c2bfca55880de346c866fe6' --jq '[.sha,.size] | tostring'; gh api 'repos/sjawhar/legion-smoke/compare/6d843f28732dd82163065cb4d2248e488f68ca0b...650020cacb9f9b1c6c2bfca55880de346c866fe6' --jq '[.files[] | {filename,status,additions,deletions}] | tostring'",
+      "observed": "1; 84; 0a; 4c 45 47; 0; 54bab16ede3b32a665c060fe0185a61c8df3ee9c946ac0667738c4023f478fcf; head -1 string-equal to the pinned line 'LEGSMOKE-1132: Upgrade rehearsal handoff child (/tmp/legion-e2e4b.3124663.8BPJj3lU)'; grep count 1. JSON route: [\"be079de028eecaceecd0a84eb12742a8b23591fd\",84]. Compare from the fork point 6d843f28 to the head: files .legion/LEGSMOKE-1132/plan.json (added, +26/-0) and smoke/LEGSMOKE-1132.md (added, +1/-0) only, so the marker is the only non-.legion/ change. GitHub runs at the head read 2026-10-24T21:18:37Z: push pair fail-on-demand 40133558257 (gate) and ci 40133558080 (check) both success; pull_request pair fail-on-demand 40133637553 and ci 40133637522 in progress (not waited for). Local mirror of both CI jobs before the push: no .fail-me file present (gate), ci's check is unconditional.",
+      "headSha": "650020cacb9f9b1c6c2bfca55880de346c866fe6",
+      "negativeControl": "The same path read at ?ref=main and at ?ref=6d843f28732dd82163065cb4d2248e488f68ca0b -> {\"message\":\"Not Found\",...,\"status\":\"404\"}, exit 1; gh api 'repos/sjawhar/legion-smoke/commits?path=smoke/LEGSMOKE-1132.md&sha=main' --jq length -> 0 (the file is new on this branch); the altered-key digest printf '%s\\n' 'LEGSMOKE-1132x: Upgrade rehearsal handoff child (/tmp/legion-e2e4b.3124663.8BPJj3lU)' | sha256sum -> b8eb8ea0d19cb47a6a6392d6a75245304b36d242ef7d6e89d9c72bf0d4313dd0, not the read's 54bab16e...8fcf, so a one-character change to the line would have been refused."
+    }
+  ],
+  "filesChanged": [
+    "smoke/LEGSMOKE-1132.md (added, +1/-0, one LF-terminated line, 84 bytes, sha256 54bab16ede3b32a665c060fe0185a61c8df3ee9c946ac0667738c4023f478fcf)",
+    ".legion/LEGSMOKE-1132/implement.json (this handoff)"
+  ],
+  "trickyParts": [
+    "The spec document dispatch://LEGSMOKE-1132/artifact/spec has no body, so 'the smallest one-file change described by this child issue' was taken from the repository's convention for Stage 4b children (smoke/<KEY>.md, one line '<KEY>: <title>', e.g. smoke/LEGSMOKE-1070.md on main and PR #786 for the sibling root LEGSMOKE-1128).",
+    "The Thermo line is omitted from the PR body: the diff is one markdown marker line with no runtime code, so neither the simplify pass nor the thermonuclear pair applies (docs-only rule in skill://legion-worker/references/pr-body.md)."
+  ],
+  "deviations": [
+    "None from the plan: plan.json carries no plan content (gapAnalysis and planReview both 'not run' for this Stage 4b proof) and specDepartures is []."
+  ],
+  "openQuestions": [],
+  "discoveredComplexity": []
+}
