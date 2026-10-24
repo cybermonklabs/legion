@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "phase": "implement",
+  "issue": "LEGSMOKE-1094",
+  "completed": "2026-10-24T01:17:00Z",
+  "pullRequest": "https://github.com/sjawhar/legion-smoke/pull/776",
+  "codeHead": "4e7d3053aa97681c3d4320911ccb3604cd43371d",
+  "filesChanged": [
+    "smoke/LEGSMOKE-1094.md (added, +1/-0): one LF-terminated line `LEGSMOKE-1094: Upgrade rehearsal handoff child (/tmp/legion-e2e4b.2506200.x99dcrt9)`, 84 bytes, sha256 e9389e24885958df25381da8d4eb57727d7d6f10b02cef1a9ebafa54e721b042",
+    ".legion/LEGSMOKE-1094/implement.json (this handoff)"
+  ],
+  "proof": [
+    {
+      "criterion": "The repository gains one new Markdown file under smoke/ holding a single line that names LEGSMOKE-1094 (root spec dispatch://LEGSMOKE-1090/artifact/spec; driver message dispatch://LEGSMOKE-1094 event #7), and nothing else changes outside .legion/.",
+      "surface": "GitHub contents and compare API of sjawhar/legion-smoke at the explicit pushed SHA (production-like: the real repository, read through the pane's gh)",
+      "command": "cd -- \"$LEGION_WORKSPACE\" && H=4e7d3053aa97681c3d4320911ccb3604cd43371d && gh api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1094.md?ref=$H\" -H 'Accept: application/vnd.github.raw' > raw && sha256sum < raw && wc -c < raw && wc -l < raw && tail -c1 raw | od -An -tx1 && (od -An -tx1 raw | grep -c ' 0d' || true) && grep -c '^LEGSMOKE-1094: Upgrade rehearsal handoff child (/tmp/legion-e2e4b.2506200.x99dcrt9)$' raw && cmp raw smoke/LEGSMOKE-1094.md && gh api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1094.md?ref=$H\" --jq '[.sha,.size] | @tsv' && gh api \"repos/sjawhar/legion-smoke/compare/main...$H\" --jq '[.files[] | select(.filename | startswith(\".legion/\") | not) | {filename,status,additions,deletions}] | tostring'",
+      "observed": "sha256 e9389e24885958df25381da8d4eb57727d7d6f10b02cef1a9ebafa54e721b042; 84 bytes; 1 line; last byte 0a; 0 CR bytes; grep count 1; cmp identical to the workspace file; JSON route blob 4ca4b6975802a8fa5267f935e68d32ce5565abf4 size 84; compare main...4e7d3053 lists outside .legion/ only [{\"additions\":1,\"deletions\":0,\"filename\":\"smoke/LEGSMOKE-1094.md\",\"status\":\"added\"}]. Push-event CI at this head: ci run 40048607297 (job check) success, fail-on-demand run 40048607289 (job gate) success; required set on main = {gate}.",
+      "headSha": "4e7d3053aa97681c3d4320911ccb3604cd43371d",
+      "negativeControl": "The same contents read at ?ref=main and at ?ref=6d843f28732dd82163065cb4d2248e488f68ca0b (the fork point), and the paths smoke/legsmoke-1094.md and smoke/LEGSMOKE-1094x.md at ?ref=4e7d3053 -> HTTP 404 {\"message\":\"Not Found\",\"status\":\"404\"} each (gh exit 1); the altered line `LEGSMOKE-1094x: Upgrade rehearsal handoff child (/tmp/legion-e2e4b.2506200.x99dcrt9)` + LF digests 4bd50fa6afa1c99d15ca329c4e75ec5a3e7e0ad1931caa14a53b29e7fefd0680, not the read's e9389e24…."
+    }
+  ],
+  "localChecks": [
+    "The repository's CI (.github/workflows/ci.yml) is `sleep 20 && exit 0` and fail-on-demand fails only when `.fail-me` exists: no lint, type or unit lane applies to a Markdown marker. Ran `test ! -f .fail-me` -> no-fail-me before the push.",
+    "Simplify pass (ce-simplify-code) not run: the diff is docs-only (one Markdown marker), which pr-body.md exempts; the PR body omits the Thermo line for the same reason."
+  ],
+  "trickyParts": [
+    "The child's own spec document (dispatch://LEGSMOKE-1094/artifact/spec) is empty (1 version, no body); the change follows the root spec's one-file instruction and the repository's smoke/<KEY>.md convention (smoke/LEGSMOKE-1069.md, smoke/LEGSMOKE-1070.md: one line `<KEY>: <title>`)."
+  ],
+  "deviations": [],
+  "openQuestions": [],
+  "discoveredComplexity": []
+}
