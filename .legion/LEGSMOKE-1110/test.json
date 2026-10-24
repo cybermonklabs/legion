@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "phase": "test",
+  "issue": "LEGSMOKE-1110",
+  "completed": "2026-10-24T07:23:30Z",
+  "requiredSkills": "plan.json requiredSkills.test = none (empty spec, fixture repository); followed skill://legion-worker, skill://legion-worker/references/pr-body.md and skill://legion-worker/references/default-branch-check.md; AGENTS.md fixture touch run (test -f /tmp/legion-fixture/agents-md).",
+  "implementerProof": {
+    "verdict": "verified",
+    "how": "Re-ran the implementer's command at the PR head 212aa73638395d62daf4a4937e5ddc3a75aa95b4 (gh api contents/smoke/LEGSMOKE-1110.md raw → 1 line, 84 bytes, sha256 05b74dc853e1ef51e5f2e8d4c2a67c770b5838fa4bf74c7464cf2aff3b73a820, last byte 0a, 0 CR bytes, JSON route blob 9371788257398448488465f8caec0b62f17e00b9 size 84; ?ref=main and ?ref=6d843f28732dd82163065cb4d2248e488f68ca0b → HTTP/2.0 404 Not Found) — every value equals implement.json proof[0]; the compare and CI claims (proof[1], proof[2]) re-read via compare/main...212aa736 and actions/runs + check-runs at 8b180fd6 — same four green runs, same single non-.legion file. The implementer's CI line (ci 40073553067, fail-on-demand 40073553080 at 8b180fd6) matches the API; no CI lane was re-run."
+  },
+  "failures": [],
+  "failed": 0,
+  "proof": [
+    {
+      "criterion": "smoke/LEGSMOKE-1110.md on the PR head is exactly `<KEY>: <Dispatch title verbatim>` + LF (parent plan D1), one line, naming LEGSMOKE-1110.",
+      "surface": "GitHub contents API of sjawhar/legion-smoke driven against the Dispatch issue's live title (dispatch read --issue LEGSMOKE-1110)",
+      "command": "T=\"$(dispatch read --issue LEGSMOKE-1110 | sed -n '1s/^Title: //p')\"; printf '%s\\n' \"LEGSMOKE-1110: $T\" > expected; gh api 'repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1110.md?ref=212aa73638395d62daf4a4937e5ddc3a75aa95b4' -H 'Accept: application/vnd.github.raw' > remote; sha256sum expected remote; cmp expected remote; (second read) cmp remote remote2",
+      "observed": "title `Upgrade rehearsal handoff child (/tmp/legion-e2e4b.1556784.YjU636Iz)`; expected and remote both sha256 05b74dc853e1ef51e5f2e8d4c2a67c770b5838fa4bf74c7464cf2aff3b73a820 (84 bytes); cmp silent / EXACT MATCH; second read byte-identical.",
+      "headSha": "212aa73638395d62daf4a4937e5ddc3a75aa95b4",
+      "negativeControl": "cmp against `LEGSMOKE-1109: <title>` → `differ: char 12, line 1` exit 1; against the altered title (`handof`) → `differ: char 40, line 1` exit 1; sibling path smoke/LEGSMOKE-1109.md?ref=212aa736 → HTTP/2.0 404 Not Found; the marker at ?ref=main and ?ref=6d843f28732dd82163065cb4d2248e488f68ca0b → HTTP/2.0 404 Not Found."
+    },
+    {
+      "criterion": "The pull request changes nothing but the marker and paths under .legion/LEGSMOKE-1110/, and its code head is green on both workflows (gate is the required check).",
+      "surface": "GitHub compare, actions/runs and check-runs APIs on sjawhar/legion-smoke, PR #782",
+      "command": "gh api 'repos/sjawhar/legion-smoke/compare/main...212aa73638395d62daf4a4937e5ddc3a75aa95b4' --jq '{status,ahead_by,behind_by,files:[.files[]|{filename,status,additions,deletions}]}'; gh api 'repos/sjawhar/legion-smoke/actions/runs?head_sha=8b180fd6e5c910ab8440f295d05ebfef9c45aa26' --jq '.workflow_runs[]|[.id,.name,.event,.status,.conclusion]|@tsv'; gh api 'repos/sjawhar/legion-smoke/commits/8b180fd6e5c910ab8440f295d05ebfef9c45aa26/check-runs' --jq '.check_runs[]|[.name,.status,.conclusion]|@tsv'; gh pr view 782 -R sjawhar/legion-smoke --json headRefOid,mergeStateStatus,mergeable,state",
+      "observed": "status ahead, ahead_by 3, behind_by 0, files: .legion/LEGSMOKE-1110/implement.json (+49), .legion/LEGSMOKE-1110/plan.json (+26), smoke/LEGSMOKE-1110.md (+1) — all added; runs at 8b180fd6: fail-on-demand 40073553080 pull_request success, ci 40073553067 pull_request success, ci 40073494714 push success, fail-on-demand 40073494713 push success; check-runs gate success ×2, check success ×2; PR 782 OPEN, headRefOid 212aa736…, BLOCKED/MERGEABLE (awaiting review, not checks).",
+      "headSha": "212aa73638395d62daf4a4937e5ddc3a75aa95b4",
+      "negativeControl": "At the handoff-only head 212aa736 (message ends `\\n\\n\\nskip-checks: true\\n` per od -c): actions/runs?head_sha= total_count 0 and check-runs total_count 0 — the trailered push started no workflow, so the green runs belong to the code head alone."
+    }
+  ],
+  "ciRead": "ci 40073553067 and fail-on-demand 40073553080 (pull_request) at 8b180fd6e5c910ab8440f295d05ebfef9c45aa26, both success; cited from the PR body's CI line and confirmed via actions/runs; no lane re-run by the tester.",
+  "redTests": [],
+  "notes": "Stage 4b proof testing round on the disposable LEGSMOKE fixture, directed by targeted Dispatch message 0d866abd-7ca7-4037-a85a-3f453263e607. No runtime code in the diff; the implementer's tests are none (fixture repository has no suite beyond the two workflows), and the one way the marker could be wrong — a line that is not the Dispatch title — is what the independent cmp above pins. PR body `E2E (tester)` line written at head 212aa736."
+}
