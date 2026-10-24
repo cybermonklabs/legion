@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "phase": "implement",
+  "issue": "LEGSMOKE-1110",
+  "completed": "2026-10-24T07:19:30Z",
+  "firstCodeHead": "8b180fd6e5c910ab8440f295d05ebfef9c45aa26",
+  "pullRequest": { "number": 782, "url": "https://github.com/sjawhar/legion-smoke/pull/782" },
+  "agentsMd": true,
+  "preState": [
+    "07:15Z: jj git fetch; @- == legion/LEGSMOKE-1110@origin == planHead d1ecb3856ae32f6f7200f4b074e33928d6b5dddd; fork_point(main@origin | @-) = 6d843f28732dd82163065cb4d2248e488f68ca0b; gh api repos/sjawhar/legion-smoke default_branch = \"main\"; gh pr list --head legion/LEGSMOKE-1110 --state all = []; contents/smoke/LEGSMOKE-1110.md?ref=main = HTTP/2.0 404; test -f /tmp/legion-fixture/agents-md = exit 0.",
+    "The child issue's own spec document is empty (dispatch doc-read --issue LEGSMOKE-1110, token sha256:925349f7…); the one-file change follows the repository's smoke/<KEY>.md convention (smoke/LEGSMOKE-1070.md) and the parent plan dispatch://LEGSMOKE-1106/artifact/plan-md D1 (`<KEY>: <Dispatch title verbatim>` + LF), as the targeted Stage 4b message 8c9aca11-5119-493f-8814-e7a7573d6e41 directed."
+  ],
+  "proof": [
+    {
+      "criterion": "On the branch's first push carrying the file, smoke/LEGSMOKE-1110.md holds one line ending in a newline that names LEGSMOKE-1110 (the smallest one-file change the targeted Stage 4b message asked for).",
+      "surface": "GitHub contents API of sjawhar/legion-smoke (raw and JSON routes) at the pushed code head",
+      "command": "H=8b180fd6e5c910ab8440f295d05ebfef9c45aa26; R=\"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1110.md?ref=$H\"; gh api \"$R\" -H 'Accept: application/vnd.github.raw' | wc -l; … | wc -c; … | sha256sum; … | tail -c1 | od -An -tx1; … | od -An -tx1 | grep -c ' 0d'; … | head -1; … | grep -c 'LEGSMOKE-1110'; gh api \"$R\" --jq '[.sha,.size] | @tsv'",
+      "observed": "1 line; 84 bytes; sha256 05b74dc853e1ef51e5f2e8d4c2a67c770b5838fa4bf74c7464cf2aff3b73a820; last byte 0a; 0 CR bytes; first line `LEGSMOKE-1110: Upgrade rehearsal handoff child (/tmp/legion-e2e4b.1556784.YjU636Iz)`; grep count 1; JSON route blob 9371788257398448488465f8caec0b62f17e00b9 size 84 — all equal to the values derived locally before the push (printf '%s\\n' \"$L1\" | wc -c = 84, sha256 05b74dc8…, blob sha1 93717882…).",
+      "headSha": "8b180fd6e5c910ab8440f295d05ebfef9c45aa26",
+      "negativeControl": "Same contents read at ?ref=main and at ?ref=6d843f28732dd82163065cb4d2248e488f68ca0b (fork point) → HTTP/2.0 404 Not Found; control digests of the altered line `LEGSMOKE-1110x: …` (54e26a2ac8117217ceee550438a81bf0a598d92bc362ca3247c51ee9331ce9b8), CRLF (2c21cfebea900a1283132bdc541a253963c286d56a0c92a2b1d11a15b7a1a9e9) and no-final-LF (5555a9d6dd8f5f610954c9612557dae67957424840cabaa11cfc6ae87ef84306) all differ from the observed sha256."
+    },
+    {
+      "criterion": "The pull request's changed files are the marker and, beyond it, only paths under .legion/LEGSMOKE-1110/ (nothing else changes).",
+      "surface": "GitHub compare API from the fork point 6d843f28 and jj path guard in the workspace",
+      "command": "gh api 'repos/sjawhar/legion-smoke/compare/6d843f28732dd82163065cb4d2248e488f68ca0b...8b180fd6e5c910ab8440f295d05ebfef9c45aa26' --jq '[.files[] | select(.filename | startswith(\".legion/\") | not) | {filename,additions,deletions}] | tostring'; same compare --jq .status; jj -R \"$LEGION_WORKSPACE\" diff --from 6d843f28732dd82163065cb4d2248e488f68ca0b --to @ --name-only (before the split)",
+      "observed": "[{\"additions\":1,\"deletions\":0,\"filename\":\"smoke/LEGSMOKE-1110.md\"}]; status ahead; path guard listed exactly .legion/LEGSMOKE-1110/plan.json and smoke/LEGSMOKE-1110.md.",
+      "headSha": "8b180fd6e5c910ab8440f295d05ebfef9c45aa26",
+      "negativeControl": "compare/6d843f28732dd82163065cb4d2248e488f68ca0b...6d843f28732dd82163065cb4d2248e488f68ca0b --jq '[.files[]] | tostring' → [] (the fork point against itself lists nothing)."
+    },
+    {
+      "criterion": "Both workflows (ci/check and fail-on-demand/gate) pass on the pull request's code head.",
+      "surface": "GitHub Actions runs and check-runs API on sjawhar/legion-smoke, PR #782",
+      "command": "gh api 'repos/sjawhar/legion-smoke/actions/runs?head_sha=8b180fd6e5c910ab8440f295d05ebfef9c45aa26' --jq '.workflow_runs[] | [.id,.name,.event,.status,.conclusion] | @tsv'; gh api 'repos/sjawhar/legion-smoke/commits/8b180fd6e5c910ab8440f295d05ebfef9c45aa26/check-runs' --paginate --jq '.check_runs[] | [.name,.status,.conclusion] | @tsv'; gh pr view 782 -R sjawhar/legion-smoke --json mergeStateStatus,mergeable,headRefOid",
+      "observed": "fail-on-demand run 40073553080 (pull_request) completed success; ci run 40073553067 (pull_request) completed success; ci run 40073494714 (push) completed success; fail-on-demand run 40073494713 (push) completed success; check-runs: gate success ×2, check success ×2; PR 782 CLEAN / MERGEABLE at headRefOid 8b180fd6e5c910ab8440f295d05ebfef9c45aa26.",
+      "headSha": "8b180fd6e5c910ab8440f295d05ebfef9c45aa26",
+      "negativeControl": "At the trailered handoff head planHead d1ecb3856ae32f6f7200f4b074e33928d6b5dddd (push carrying only .legion/, `skip-checks: true`), actions/runs?head_sha=d1ecb385… lists no runs and commits/d1ecb385…/check-runs is empty: a head without a code push gets no workflow run, so the four green runs above belong to the code head alone. (Read before this handoff's own push; the implementHead's shape is added to the PR body's E2E line after its push.)"
+    }
+  ],
+  "filesChanged": [
+    "smoke/LEGSMOKE-1110.md (new, 1 line, 84 bytes)",
+    ".legion/LEGSMOKE-1110/implement.json (this handoff)"
+  ],
+  "trickyParts": [
+    "The code commit was pushed alone (untrailered) before the handoff so CI runs at a code head; the handoff push carries `skip-checks: true` and starts no run."
+  ],
+  "deviations": [],
+  "openQuestions": [],
+  "discoveredComplexity": []
+}
