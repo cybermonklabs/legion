@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "phase": "test",
+  "issue": "LEGSMOKE-1132",
+  "completed": "2026-10-24T21:21:18Z",
+  "pullRequest": "https://github.com/sjawhar/legion-smoke/pull/788",
+  "headSha": "abc7d29540143fd2dfe6cef60ac87ab3aa400e9e",
+  "codeHead": "650020cacb9f9b1c6c2bfca55880de346c866fe6",
+  "implementerProof": {
+    "verdict": "verified",
+    "how": "Re-ran the implementer's command at ?ref=650020cacb9f9b1c6c2bfca55880de346c866fe6: gh api 'repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1132.md?ref=650020ca…' -H 'Accept: application/vnd.github.raw' | sha256sum -> 54bab16ede3b32a665c060fe0185a61c8df3ee9c946ac0667738c4023f478fcf, and the JSON route --jq '[.sha,.size] | tostring' -> [\"be079de028eecaceecd0a84eb12742a8b23591fd\",84]; both equal to the values implement.json records. The same blob sha and digest are read at the PR head abc7d29540143fd2dfe6cef60ac87ab3aa400e9e, so the handoff commit changed no code."
+  },
+  "ci": "Read from GitHub at 2026-10-24T21:20:30Z: code head 650020cacb9f9b1c6c2bfca55880de346c866fe6 check-runs gate (fail-on-demand, pull_request run 40133637553) success, check (ci, pull_request run 40133637522) success, and the push pair gate 40133558257 / check 40133558080 both success. The handoff-only PR head abc7d29540143fd2dfe6cef60ac87ab3aa400e9e (skip-checks: true) carries no check runs; the daemon's record shows checksVerdict green and carries the code head's verdict. No CI lane was rerun by the tester.",
+  "failures": [],
+  "failed": 0,
+  "proof": [
+    {
+      "criterion": "The smallest one-file change described by this child issue lands on legion/LEGSMOKE-1132: a reader of the branch finds one new marker file smoke/LEGSMOKE-1132.md whose single LF-terminated line names LEGSMOKE-1132 and its title, and nothing else outside .legion/ changes (driver message 47f2a2cf-ba13-4442-94ee-3d58860d99c9 on dispatch://LEGSMOKE-1132).",
+      "surface": "sjawhar/legion-smoke read through the GitHub contents API and compare API at the PR head abc7d29540143fd2dfe6cef60ac87ab3aa400e9e, from the tester pane's gh (the surface every later phase and the merge read the branch through).",
+      "command": "gh api 'repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1132.md?ref=abc7d29540143fd2dfe6cef60ac87ab3aa400e9e' -H 'Accept: application/vnd.github.raw' > /tmp/t1132.txt && wc -l < /tmp/t1132.txt && wc -c < /tmp/t1132.txt && tail -c1 /tmp/t1132.txt | od -An -tx1 && head -c3 /tmp/t1132.txt | od -An -tx1 && tr -cd '\\r' < /tmp/t1132.txt | wc -c && sha256sum < /tmp/t1132.txt && [ \"$(head -1 /tmp/t1132.txt)\" = 'LEGSMOKE-1132: Upgrade rehearsal handoff child (/tmp/legion-e2e4b.3124663.8BPJj3lU)' ] && echo pinned-line-equal; gh api 'repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1132.md?ref=abc7d29540143fd2dfe6cef60ac87ab3aa400e9e' --jq '[.sha,.size] | tostring'; gh api 'repos/sjawhar/legion-smoke/compare/6d843f28732dd82163065cb4d2248e488f68ca0b...abc7d29540143fd2dfe6cef60ac87ab3aa400e9e' --jq '[.files[] | {filename,status,additions,deletions}] | tostring'; gh pr view 788 -R sjawhar/legion-smoke --json headRefOid",
+      "observed": "1; 84; 0a; 4c 45 47; 0; 54bab16ede3b32a665c060fe0185a61c8df3ee9c946ac0667738c4023f478fcf; pinned-line-equal. JSON route [\"be079de028eecaceecd0a84eb12742a8b23591fd\",84]. Compare from the fork point 6d843f28 to the PR head: .legion/LEGSMOKE-1132/implement.json (added, +31), .legion/LEGSMOKE-1132/plan.json (added, +26), smoke/LEGSMOKE-1132.md (added, +1/-0) only, so the marker remains the only non-.legion/ change. PR 788 headRefOid abc7d29540143fd2dfe6cef60ac87ab3aa400e9e, mergeStateStatus BLOCKED (awaiting the required review).",
+      "headSha": "abc7d29540143fd2dfe6cef60ac87ab3aa400e9e",
+      "negativeControl": "The same path at ?ref=main -> {\"message\":\"Not Found\",\"status\":\"404\"}, exit 1 (the marker is not yet on main); the misspelt path smoke/LEGSMOKE-1132x.md at ?ref=abc7d29540143fd2dfe6cef60ac87ab3aa400e9e -> {\"message\":\"Not Found\",\"status\":\"404\"}, exit 1; a trailing-space variant of the pinned line hashes to a58b6d51d4450bdd14f5ad523c9947ee9215aef68a2c9306def799f1b1767bf4, not the read's 54bab16e…8fcf, so a one-byte change to the file would have been refused by the digest comparison."
+    }
+  ],
+  "redTests": [],
+  "notes": [
+    "Stage 4b upgrade rehearsal: the targeted driver message be58235e-fdfd-497f-bcf7-ae02761c3368 on dispatch://LEGSMOKE-1132 asked for an inspection of PR #788, one focused observable check, a passing tester handoff and handoff_complete with verdict pass.",
+    "No red test: the diff is one markdown marker line with no runtime code, so there is no behaviour a unit test could pin beyond the byte-pinned read recorded above; the only ways it breaks (wrong path, wrong bytes, extra files) are the negative controls and the compare listing.",
+    "PR body updated by the tester: the CI line's two pull_request runs moved from 'in progress' to 'success' as read, and the E2E (tester) line was written."
+  ]
+}
