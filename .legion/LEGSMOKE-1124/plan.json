@@ -1,0 +1,113 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-1124",
+  "completed": "2026-10-24T17:17:00Z",
+  "planDocument": "dispatch://LEGSMOKE-1124/artifact/plan-md",
+  "specSource": "dispatch://LEGSMOKE-1121/artifact/spec v2 with LEGSMOKE-1121 read as LEGSMOKE-1124; this issue's own spec (dispatch://LEGSMOKE-1124/artifact/spec, v1) is empty",
+  "requiredSkills": {
+    "implement": [
+      "skill://legion-worker — jj discipline, push and trailer rules, handoff gate, pull request creation; the only skill that drives the implementing phase here",
+      "skill://legion-worker/references/pr-body.md — the PR body template, the proof definition (six-string proof entries), docs-only means no simplify pass and no Thermo line",
+      "skill://legion-worker/references/review-threads.md — only if a review round asks for line 2: one reply and one resolution per thread",
+      "skill://legion-retro — the implementer runs retro: remove .legion/LEGSMOKE-1124/, optional docs/solutions note, untrailered push so gate runs at HR",
+      "none (repository domain skill): the repository ships .omp/skills/fixture-omp-skill and .claude/skills/fixture-claude-skill, each one fixture token; the surface is the GitHub REST API read at explicit SHAs, driven by the Legion worker skill"
+    ],
+    "test": [
+      "skill://legion-worker — handoff gate, trailered push, test.json fields (implementerProof, failures, proof, observations)",
+      "skill://legion-worker/references/pr-body.md — what the tester verifies: re-run the implementer's commands, drive the surface, cite CI rather than re-run it",
+      "none (repository domain skill): no repository skill reaches smoke/; the plan's AC2/AC3 byte checks and the GitHub contents API are the surface"
+    ],
+    "review": [
+      "skill://legion-worker — review round order (read CI, push review.json, approve the head that push made), readHead naming",
+      "skill://legion-worker/references/merge-gate.md — approval body naming the head, what the merger then reads",
+      "skill://legion-worker/references/pr-body.md — Look at first and Not proven / risk lines; none is invalid while the AC7 merge-side claim stands",
+      "none (repository domain skill): the repository's two fixture skills carry no review guidance; the plan's AC2/AC4/AC5 reads are the review's checks"
+    ]
+  },
+  "gapAnalysis": {
+    "findings": [
+      {
+        "finding": "F1: the model plan (LEGSMOKE-1117) pinned line 1 as the title with its (/tmp/…) suffix cut (48 bytes), while every marker of this generation on main carries the full title.",
+        "answer": "Line 1 pinned to `LEGSMOKE-1124: Upgrade rehearsal fallback child (/tmp/legion-e2e4b.1546829.WGpv3Ou5)` + LF, 85 bytes, sha256 f96cdff6…, blob 1c98eccf…; the Constants table says the 48-byte form is superseded; pre-state fact 5 has the implementer re-read the title with `dispatch read` and every phase recomputes the digests from the literal before quoting them."
+      },
+      {
+        "finding": "F2 (architect-only): the root spec says the pull request changes no other file, yet the branch carries .legion/LEGSMOKE-1124/*.json and the merge may carry one docs/solutions note; the model plan attributed that allowance to the root spec, which does not contain it.",
+        "answer": "AC4 is written in two halves (branch side: marker + .legion/LEGSMOKE-1124/; merge side at HR and M: marker + zero or one docs/solutions/legion/*-LEGSMOKE-1124.md) and sources the allowance to skill://legion-worker and skill://legion-retro, not the spec. Recorded as specDepartures[0] with kind changed on the substituted Acceptance 2 line, for the architect to decide."
+      },
+      {
+        "finding": "F3: nothing in the model plan said which head carries the green gate the merge needs; the approved head is a trailered handoff head with zero check-runs (BLOCKED).",
+        "answer": "Constants define HR as retro's untrailered removal commit; AC5 states that BLOCKED + total_count 0 at a trailered head is the expected shape and that gate comes back green at HR (measured on #767's head 4afb9ed7: check ×2, gate ×2, all success); Integration says the merger reads gate at HR."
+      },
+      {
+        "finding": "F4 (architect-only): the second-line trigger 'a review finding that asks, in words' is not machine-decidable, ignores that an APPROVED review ends implementing, and had no cap.",
+        "answer": "AC3/D4: the trigger is a CHANGES_REQUESTED review on the pull request whose body asks for one more line in smoke/LEGSMOKE-1124.md, read with `gh api pulls/<n>/reviews`; messages and comments do not count; K ≤ 1, a second request goes to the architect. The plan expects the one-line file and does not instruct the reviewer to request line 2; whether this run must exercise the second-line path is named as the architect's call."
+      },
+      {
+        "finding": "F5: the line-2 wording in the draft facts had no source in the repository; main holds a 24-marker convention `Legion proof review round 1 (LEGSMOKE)`.",
+        "answer": "D3 pins line 2 to the convention; the two-line digests were recomputed from that literal: 124 bytes, sha256 c00a02b6…, blob 83b95d4b…."
+      },
+      {
+        "finding": "F6 (architect-only): the child spec is empty; the root's Acceptance names LEGSMOKE-1121 and one file through one merged pull request while the root has three children each landing a marker.",
+        "answer": "Sources quotes the four substituted lines verbatim with their source; D1 states that no single child satisfies the root's line as written and that only the architect can decide whether the root spec changes; the completion summary reports it. Not recorded as a departure: the child's own spec is empty, so there is no design of this issue to depart from."
+      },
+      {
+        "finding": "F7: the merge-side criterion (file on main via a merged pull request) can be read by no phase before the merge, yet the model plan let the reviewer write `none` on Not proven / risk.",
+        "answer": "Implementer task 4 seeds Not proven / risk with the standing AC7 claim; the reviewer keeps it word for word and `none` is never valid before the production check; AC7 reads at M (`?ref=<mergeCommit>`), never at `?ref=main`."
+      },
+      {
+        "finding": "F8: a refused handoff_complete (HANDOFF_NO_RUN and kin) needs a stated response.",
+        "answer": "Tasks preamble: a refused completion is quoted verbatim to the architect; nothing is pushed again and no second handoff is written. (The daemon's record shows this planner was spawned by a run with generation 1 and phase planning, so HANDOFF_NO_RUN is not expected.)"
+      },
+      {
+        "finding": "F9: requiredSkills must be filled although the repository ships no domain skill.",
+        "answer": "requiredSkills lists skill://legion-worker and its references (plus skill://legion-retro for the implementer) with one line each on why, and an explicit `none (repository domain skill)` entry naming the two fixture skills; D9 records it as information for the architect, not a missing surface."
+      },
+      {
+        "finding": "F10: gapAnalysis and planReview must reach the next roles through plan.json.",
+        "answer": "This record and planReview below; plan.md carries the same decisions in prose."
+      },
+      {
+        "finding": "F11: the model plan credited the root spec with a two-workflow proof bar and a changed-files allowance it does not contain.",
+        "answer": "Constants source the proof bar to skill://legion-worker/references/pr-body.md and note LEGSMOKE-1021 as the plan's own bar beside the ruleset's merge bar (gate alone); D6 keeps `check` in the proof bar because both workflows run on every push and a red `check` is a repository change worth a stop."
+      },
+      {
+        "finding": "F12: the model plan cited unmeasured pull requests and sibling keys as precedent.",
+        "answer": "Sources cite only measured precedent: smoke/LEGSMOKE-1070.md on main, pull request #782 (LEGSMOKE-1110) and its marker bytes, the 24 two-line markers read in smoke/, and #767's merge and head check-runs."
+      },
+      {
+        "finding": "F13: pre-state 404s at B and F were not separate measurements at planning since B == F == main@origin.",
+        "answer": "Constants state B == F == main@origin == 6d843f28 with no pre-Legion commit (so no fixture departure); pre-state fact 1 says the one read at planning covers all three refs and the implementer takes the B and F reads separately."
+      },
+      {
+        "finding": "F14: digests were given without a command and without a git blob sha1.",
+        "answer": "Constants carry sha256 and blob sha1 for both files, computed with printf | wc -c, sha256sum and git hash-object; AC2 also checks the contents API's own .sha/.size; every phase recomputes before quoting and treats a mismatch as wrong text, not a wrong hash."
+      },
+      {
+        "finding": "F15: AC7's merge-commit file list only behaves that way for a squash; the merge method was not measured.",
+        "answer": "Measured: the repository allows squash, merge commit and rebase; #767 merged as the one-parent commit 6d843f28. AC7/D7 state the squash assumption, check `parents` = 1, and fall back to compare/<F>...<M> filtered to this issue's paths when it is 2."
+      },
+      {
+        "finding": "F16: the inherited Acceptance's 'only line' bullet contradicts the allowed second line.",
+        "answer": "AC2/AC3 land both readings in one check: line 1 byte-exact, at most one further line present only under the CHANGES_REQUESTED trigger; AC7 says the production check reads the AC2 bytes or the AC3 bytes accordingly, so merger and production check judge the same thing."
+      }
+    ]
+  },
+  "planReview": {
+    "verdict": "approved",
+    "rounds": 1
+  },
+  "specDepartures": [
+    {
+      "spec": "Root spec dispatch://LEGSMOKE-1121/artifact/spec v2, Acceptance 2 as substituted for this child: \"That pull request changes no other file. The one addition it may carry beyond the file's first line is a second line appended to the same file when a review of the pull request asked for it.\" Scope: \"Nothing else changes.\"",
+      "plan": "The pull request carries .legion/LEGSMOKE-1124/{plan,implement,test,review}.json on the branch until retro removes them before READY, and the merge may land zero or one docs/solutions/legion/*-LEGSMOKE-1124.md note beside smoke/LEGSMOKE-1124.md. AC4 judges the change as a path set in two halves (branch side; merge side at HR and M) rather than as 'no other file'.",
+      "evidence": "skill://legion-worker: every file-backed phase ends with a committed .legion/<issue>/<phase>.json on the issue branch. skill://legion-retro: removal of .legion/<issue>/ is mandatory, the docs/solutions learning optional. Measured 2026-10-24T17:11Z: pull request #767 (LEGSMOKE-1070) merged as squash commit 6d843f28 whose files are smoke/LEGSMOKE-1070.md and docs/solutions/legion/put-jq-flags-inside-the-filter-for-the-pane-gh-wrapper-LEGSMOKE-1070.md (plus two fixture skill files from an earlier commit on that branch).",
+      "outcome": {
+        "kind": "changed",
+        "acceptance": [
+          "That pull request changes no other file outside Legion's own mechanism: on the branch, the handoffs under .legion/LEGSMOKE-1124/ until retro removes them; at the merge, zero or one docs/solutions/legion/*-LEGSMOKE-1124.md note. The one addition it may carry beyond the file's first line is a second line appended to the same file when a CHANGES_REQUESTED review of the pull request asked for it."
+        ]
+      }
+    }
+  ]
+}
