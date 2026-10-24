@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-1110",
+  "completed": "2026-10-24T07:04:40Z",
+  "requiredSkills": {
+    "implement": [
+      "none: Stage 4b proof fixture (sjawhar/legion-smoke); the issue's spec document is empty and the repository ships only AGENTS.md's fixture touch, so no implementation skill applies."
+    ],
+    "test": [
+      "none: no testable surface is specified by the empty spec; the only check is the daemon's own handoff/phase bookkeeping, which no repository skill drives."
+    ],
+    "review": [
+      "none: nothing to review beyond this handoff's shape; legion-worker's completion gate is the only applicable rule and it is a role charter, not a repository skill."
+    ]
+  },
+  "gapAnalysis": {
+    "error": "not run: the targeted Stage 4b proof message (Dispatch message 1eedac0f-7ba0-48cf-a607-33d07fc1e4d3) directed an immediate plan handoff on an empty spec (doc token sha256:925349f76e707d50c17e6ce368d14aa56c35b196bf975fc0dc26bd29ac969bcb); no plan content exists for the gap analyst to check."
+  },
+  "planReview": {
+    "verdict": "failed",
+    "rounds": 0,
+    "error": "not run: no plan was drafted; the Stage 4b proof operation is the handoff and its handoff_complete call alone."
+  },
+  "specDepartures": []
+}
