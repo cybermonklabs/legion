@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "phase": "test",
+  "issue": "LEGSMOKE-1101",
+  "completed": "2026-10-24T04:00:30Z",
+  "pullRequest": 779,
+  "headTested": "9f44f989610e5288a282ff8e2347305a324feb03",
+  "firstCodeHead": "5e5f86aaf54ac2e402d854901eea38866c3ea237",
+  "forkPoint": "6d843f28732dd82163065cb4d2248e488f68ca0b",
+  "ci": {
+    "codeHead": "5e5f86aaf54ac2e402d854901eea38866c3ea237",
+    "checkRuns": "4 (gate x2, check x2) all completed/success, read 2026-10-24T03:58Z from GitHub; pull_request pair ci 40060173846 / fail-on-demand 40060173821, push pair ci 40060101309 / fail-on-demand 40060101296, all success",
+    "handoffHead": "9f44f989610e5288a282ff8e2347305a324feb03 carries the skip-checks trailer in the correct shape (message ends \\n\\n\\nskip-checks: true\\n), 0 check-runs, 0 workflow runs, mergeable_state blocked as plan D9 predicts",
+    "requiredChecksOnMain": ["gate"],
+    "rerun": "none; CI read from GitHub only"
+  },
+  "implementerProof": {
+    "verdict": "verified",
+    "how": "Re-ran the implementer's A1 command independently from a mktemp -d outside the workspace at 2026-10-24T03:58:02Z: commits?path=smoke/LEGSMOKE-1101.md&sha=5e5f86aa → oldest = 5e5f86aa (= H0); raw contents at ?ref=5e5f86aa cmp exit 0 against the planned 84-byte line, wc -c 84, wc -l 1, last byte 0a, 0 CR, no BOM, git hash-object 72aeb53d10e3f1d399ca9616063a15777f8ac270, sha256 9f0fc58b0d2ffa45dedbb66df27cd2b7ec8655d586d9dd58960d96bbeb0798fe; JSON route path/sha/size = smoke/LEGSMOKE-1101.md 72aeb53d… 84; recursive tree at H0 → .legion/LEGSMOKE-1101/plan.json + smoke/LEGSMOKE-1101.md, truncated false; compare 6d843f28...5e5f86aa outside .legion/ → marker added +1/−0 alone. Its negative controls reproduced: 404 at the fork point and at the plan handoff, 404 for the two case variants, control twin LEGSMOKE-1070.md 200/126 bytes, altered-line sha256 13428b0b… ≠ 9f0fc58b…. A2–A4 reads reproduced the same values (reviews [], one PR on the branch, Dispatch line count 1, 4 check-runs all success at H0)."
+  },
+  "failures": [],
+  "failed": 0,
+  "redTests": [],
+  "proof": [
+    {
+      "criterion": "A1 — the pull request adds smoke/LEGSMOKE-1101.md; when first added it holds exactly one line containing LEGSMOKE-1101",
+      "surface": "GitHub contents, commits and git-trees API of sjawhar/legion-smoke at explicit SHAs (what a reader of the repository sees), run 2026-10-24T03:58:02Z from a mktemp -d outside the workspace; no write",
+      "command": "R=repos/sjawhar/legion-smoke; HH=9f44f989610e5288a282ff8e2347305a324feb03; gh api \"$R/commits?path=smoke/LEGSMOKE-1101.md&sha=$HH\" --jq '[.[].sha]'; for ref in 5e5f86aaf54ac2e402d854901eea38866c3ea237 $HH; do gh api \"$R/contents/smoke/LEGSMOKE-1101.md?ref=$ref\" -H 'Accept: application/vnd.github.raw+json' > f.$ref; cmp f.$ref lit; wc -c < f.$ref; wc -l < f.$ref; tail -c1 f.$ref | od -An -tx1; od -An -tx1 f.$ref | grep -c ' 0d'; head -c3 f.$ref | od -An -tx1; git hash-object f.$ref; sha256sum f.$ref; T=$(gh api \"$R/git/commits/$ref\" --jq .tree.sha); gh api \"$R/git/trees/$T?recursive=1\" --jq '{truncated, m:[.tree[]|select(.type==\"blob\")|select(.path|ascii_downcase|contains(\"legsmoke-1101\"))|{path,mode,sha}]}'; done",
+      "observed": "[\"5e5f86aaf54ac2e402d854901eea38866c3ea237\"] — exactly one commit on the branch touches the path, and it is H0; at both 5e5f86aa and 9f44f989: cmp exit 0, 84 bytes, 1 line, last byte 0a, 0 CR, first bytes 4c4547 (no BOM), blob 72aeb53d10e3f1d399ca9616063a15777f8ac270, sha256 9f0fc58b0d2ffa45dedbb66df27cd2b7ec8655d586d9dd58960d96bbeb0798fe; tree at 9f44f989 → .legion/LEGSMOKE-1101/implement.json, .legion/LEGSMOKE-1101/plan.json, smoke/LEGSMOKE-1101.md all mode 100644, truncated false, 181 blobs",
+      "headSha": "9f44f989610e5288a282ff8e2347305a324feb03",
+      "negativeControl": "raw contents of smoke/LEGSMOKE-1101.md at ?ref=6d843f28732dd82163065cb4d2248e488f68ca0b (fork point) and ?ref=5ac5d265240a9ceab48f5486eeb1a2568d9ba3f2 (plan handoff) → HTTP 404 each; smoke/legsmoke-1101.md, smoke/LEGSMOKE-1101.MD, smoke/LEGSMOKE-1101.md/ and smoke/LEGSMOKE-1101 at 9f44f989 → HTTP 404 each; ?ref=0000000000000000000000000000000000000000 → 'No commit found for the ref'; control twin smoke/LEGSMOKE-1070.md at the fork point → 200, 126 bytes; sha256 of the altered line 'LEGSMOKE-1101x: …'+LF = 13428b0b7ef4167f41d90a59a229fe4b0fd7be32bec149d74b32e1dfa16519b6, of the line without LF = cc8167a3c0f0ea4ab3fe39e4bf0246c752eef06d1d4a8fed5db910671f720824, with CRLF = 40c04f73b458bcd670297241c56fd275918399be3bcff73526fc86117d1d127a, none equal to 9f0fc58b…"
+    },
+    {
+      "criterion": "A2 — the file holds one line (K=0) because no CHANGES_REQUESTED review by the Legion review App has asked for one more line",
+      "surface": "GitHub pulls API of sjawhar/legion-smoke (reviews on pull request 779) and the raw contents read above",
+      "command": "gh api repos/sjawhar/legion-smoke/pulls/779/reviews --jq '[.[]|{user:.user.login,state,commit_id}]'; wc -l < f.9f44f989610e5288a282ff8e2347305a324feb03; git hash-object f.9f44f989610e5288a282ff8e2347305a324feb03",
+      "observed": "[] (no review of any state on the pull request at 2026-10-24T03:58Z); the file at 9f44f989 has 1 line and blob sha1 72aeb53d10e3f1d399ca9616063a15777f8ac270",
+      "headSha": "9f44f989610e5288a282ff8e2347305a324feb03",
+      "negativeControl": "the two-line literal (LIT + 'Legion proof review round 1 (LEGSMOKE)' + LF) piped through git hash-object --stdin → 7dd95f8b258890c850ad54de7641f07e761e2760, which the branch blob is not"
+    },
+    {
+      "criterion": "A3 — apart from smoke/LEGSMOKE-1101.md only the handoffs under .legion/LEGSMOKE-1101/ sit on the branch; the branch's diff from the fork point outside .legion/ is the marker alone",
+      "surface": "GitHub compare and pulls/files API of sjawhar/legion-smoke at explicit SHAs",
+      "command": "gh api 'repos/sjawhar/legion-smoke/compare/6d843f28732dd82163065cb4d2248e488f68ca0b...9f44f989610e5288a282ff8e2347305a324feb03' --jq '{status, ahead_by, behind_by, files:[.files[]|select(.filename|startswith(\".legion/\")|not)|{filename,status,additions,deletions}], legion:[.files[]|select(.filename|startswith(\".legion/\"))|.filename]}'; gh api repos/sjawhar/legion-smoke/pulls/779/files --jq '[.[]|{filename,status,additions,deletions}]'; gh api repos/sjawhar/legion-smoke/pulls/779/files --jq '[.[].filename]|(all(. == \"smoke/LEGSMOKE-1101.md\" or startswith(\".legion/LEGSMOKE-1101/\")) and any(. == \"smoke/LEGSMOKE-1101.md\"))'",
+      "observed": "status ahead, ahead_by 3, behind_by 0; files outside .legion/ = [smoke/LEGSMOKE-1101.md added +1/−0]; legion = [.legion/LEGSMOKE-1101/implement.json, .legion/LEGSMOKE-1101/plan.json]; pulls/779/files = implement.json +83, plan.json +62, smoke/LEGSMOKE-1101.md +1, all added; predicate → true",
+      "headSha": "9f44f989610e5288a282ff8e2347305a324feb03",
+      "negativeControl": "marker on main: contents ?ref=main → HTTP 404 and commits?path=…&sha=main → 0 (nothing of this issue has reached main); the handoff directory is present on the branch mid-run by design and retro removes it before READY"
+    },
+    {
+      "criterion": "A4 — the pull request is the one on legion/LEGSMOKE-1101, its body carries 'Dispatch: LEGSMOKE-1101', and gate is green at the code head",
+      "surface": "GitHub pull request, check-runs, actions and rules API of sjawhar/legion-smoke",
+      "command": "gh pr list -R sjawhar/legion-smoke --head legion/LEGSMOKE-1101 --state all --json number --jq length; gh pr view 779 -R sjawhar/legion-smoke --json body --jq .body | grep -c '^Dispatch: LEGSMOKE-1101$'; gh api repos/sjawhar/legion-smoke/pulls/779 --jq '{state,draft,head:.head.sha,headRef:.head.ref,base:.base.ref,mergeable,mergeable_state,commits,changed_files}'; gh api repos/sjawhar/legion-smoke/commits/5e5f86aaf54ac2e402d854901eea38866c3ea237/check-runs --jq '{n:.total_count, runs:[.check_runs[]|{name,status,conclusion}]}'; gh api repos/sjawhar/legion-smoke/commits/9f44f989610e5288a282ff8e2347305a324feb03/check-runs --jq .total_count; gh api 'repos/sjawhar/legion-smoke/actions/runs?head_sha=5e5f86aaf54ac2e402d854901eea38866c3ea237' --jq '[.workflow_runs[]|{id,name,event,conclusion}]'; gh api repos/sjawhar/legion-smoke/rules/branches/main --jq '[.[]|select(.type==\"required_status_checks\")|.parameters.required_status_checks[].context]'; gh api repos/sjawhar/legion-smoke/git/commits/9f44f989610e5288a282ff8e2347305a324feb03 --jq .message | tail -c 60 | od -c",
+      "observed": "1; 1; state open, draft false, head 9f44f989 on legion/LEGSMOKE-1101 → main, mergeable true, mergeable_state blocked, 3 commits, 3 changed files; check-runs at 5e5f86aa n=4 (check, gate, check, gate) all completed/success; at 9f44f989 n=0; workflow runs at 5e5f86aa: fail-on-demand 40060173821 (pull_request, success), ci 40060173846 (pull_request, success), fail-on-demand 40060101296 (push, success), ci 40060101309 (push, success); required = [gate]; the 9f44f989 message ends with two empty lines then 'skip-checks: true' then LF",
+      "headSha": "9f44f989610e5288a282ff8e2347305a324feb03",
+      "negativeControl": "the handoff-only head 9f44f989 started 0 workflow runs and has 0 check-runs (the trailer did its job), so mergeable_state is blocked there while the code head 5e5f86aa holds the green gate; actions/runs?head_sha=9f44f989 → []"
+    }
+  ],
+  "breakAttempts": [
+    "wrong case (smoke/legsmoke-1101.md, smoke/LEGSMOKE-1101.MD), trailing slash, missing extension → 404 each",
+    "refs before the marker existed (fork point, plan handoff) and an all-zero ref → 404 / no commit found",
+    "byte variants of the line (altered key, no LF, CRLF, two lines) → digests differ from the branch blob",
+    "second run of the whole script at the same head reproduces identical values (idempotent read-only surface)"
+  ],
+  "implementerTestsJudgement": "The change is one Markdown file; the repository has no code or test touched by it (plan requiredSkills.implement notes the same), so no implementer test exists to judge and no red test is written. CI's ci/check and fail-on-demand/gate at 5e5f86aa are the only lanes and both are green, read from GitHub.",
+  "workspaceHygiene": "all reads ran in /legion/scratch/tmp/legsmoke-1101-test-4p532ctt (mktemp -d) outside the workspace; jj status in the workspace showed no untracked path before this handoff was written; no .fail-me or scratch file created in the workspace",
+  "prBody": "E2E (tester) line written into the live body of #779 at 2026-10-24T04:00Z via gh api PATCH; placeholder '(the tester writes this line)' count after the PATCH = 0"
+}
