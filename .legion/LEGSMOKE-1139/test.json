@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "phase": "test",
+  "issue": "LEGSMOKE-1139",
+  "completed": "2026-10-24T23:37:30Z",
+  "pullRequest": "https://github.com/sjawhar/legion-smoke/pull/791",
+  "headTested": "46d2700bd70404d32adc532d5663d164abfb980f",
+  "codeHead": "1f24c027d0916dfd608625cc9cf7e2eb66374e9f",
+  "requiredSkillsFollowed": [
+    "legion-worker (plan.json requiredSkills.test): workspace binding, pr-body.md proof rules, default-branch identity check, handoff write and push."
+  ],
+  "implementerProof": {
+    "verdict": "verified",
+    "how": "Re-ran the implementer's command verbatim: gh api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1139.md?ref=1f24c027d0916dfd608625cc9cf7e2eb66374e9f\" --jq '[.path, .sha, (.content | @base64d)] | tostring' -> identical output [\"smoke/LEGSMOKE-1139.md\",\"5e49cf05dfe343dd080708a2b6192ee6c5699674\",\"LEGSMOKE-1139: Upgrade rehearsal handoff child (/tmp/legion-e2e4b.178207.rtvOSiAa)\\n\"], exit 0; the compare 6d843f28732d...1f24c027 lists exactly one non-.legion/ file (smoke/LEGSMOKE-1139.md, added, +1/-0). Its negative control (same path at base tip 6d843f28732d -> HTTP 404) is consistent with mine at ref=main."
+  },
+  "ci": "Read from GitHub, rerun nothing: code head 1f24c027d0916dfd608625cc9cf7e2eb66374e9f has `ci` run 40143192319 (job check, success) and `fail-on-demand` run 40143192268 (job gate, success), plus a second trigger pair 40143245991/40143245966, both success. Handoff head 46d2700bd70404d32adc532d5663d164abfb980f has no runs: the handoff-only `skip-checks: true` trailer was honoured. PR mergeable: true, mergeable_state: blocked (required review pending).",
+  "failed": 0,
+  "failures": [],
+  "proof": [
+    {
+      "criterion": "The smallest one-file change for this child is on legion/LEGSMOKE-1139 at the PR head: one marker smoke/LEGSMOKE-1139.md whose content is `<KEY>: <issue title>`, matching the repository's smoke/ marker convention, with no other non-.legion change.",
+      "surface": "GitHub repository contents, compare and pulls API of sjawhar/legion-smoke (the real repository), read with the pane's gh as the review App; issue title read from Dispatch with `dispatch read --issue LEGSMOKE-1139`.",
+      "command": "gh api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1139.md?ref=46d2700bd70404d32adc532d5663d164abfb980f\" --jq '[.path, .sha, .size, (.content | @base64d)] | tostring'; gh api \"repos/sjawhar/legion-smoke/compare/6d843f28732d...46d2700bd70404d32adc532d5663d164abfb980f\" --jq '[.files[] | select(.filename | startswith(\".legion/\") | not) | {filename,status,additions,deletions}] | tostring'; gh api repos/sjawhar/legion-smoke/pulls/791 --jq '{mergeable, mergeable_state, head: .head.sha, base: .base.ref}'",
+      "observed": "[\"smoke/LEGSMOKE-1139.md\",\"5e49cf05dfe343dd080708a2b6192ee6c5699674\",83,\"LEGSMOKE-1139: Upgrade rehearsal handoff child (/tmp/legion-e2e4b.178207.rtvOSiAa)\\n\"] (exit 0): 83 bytes, newline-terminated, equal to `LEGSMOKE-1139: ` + the title Dispatch prints (`Upgrade rehearsal handoff child (/tmp/legion-e2e4b.178207.rtvOSiAa)`), same shape as smoke/LEGSMOKE-1070.md. Compare lists exactly [{\"additions\":1,\"deletions\":0,\"filename\":\"smoke/LEGSMOKE-1139.md\",\"status\":\"added\"}]. Pulls API: mergeable true, mergeable_state blocked, head 46d2700bd70404d32adc532d5663d164abfb980f, base main.",
+      "headSha": "46d2700bd70404d32adc532d5663d164abfb980f",
+      "negativeControl": "gh api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1139.md?ref=main\" (the live default branch, which must not carry the marker before the merge) -> {\"message\":\"Not Found\",\"status\":\"404\"}, gh: Not Found (HTTP 404), exit 1."
+    }
+  ],
+  "breakAttempts": [
+    "Content vs. title: compared the marker bytes (od -c) against the Dispatch title: exact match, no stray whitespace, single trailing newline.",
+    "Scope creep: compare base...head filtered to non-.legion/ paths lists one added file and nothing else.",
+    "Base contamination: the marker path on main is 404 (negative control).",
+    "Conflict/mergeability: pulls API reports mergeable true; blocked only on required review.",
+    "Workflow trigger leak: no GitHub run exists for the handoff head 46d2700b, so the skip-checks trailer worked and no CI was started by a handoff-only push."
+  ],
+  "redTests": [],
+  "notes": "Docs-only diff (one markdown marker); the repository carries no test suite for smoke/*.md and no runtime code changed, so no implementer tests exist to judge and no red test was warranted. PR body updated: CI line states set to what GitHub shows (success) and the E2E (tester) lines written."
+}
