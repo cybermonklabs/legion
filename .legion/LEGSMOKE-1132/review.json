@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "phase": "review",
+  "issue": "LEGSMOKE-1132",
+  "completed": "2026-10-24T21:23:47Z",
+  "pullRequest": "https://github.com/sjawhar/legion-smoke/pull/788",
+  "round": 1,
+  "reviewedHead": "733b65ea5232d5545e41f38f9d348b09f42e2b90",
+  "codeHead": "650020cacb9f9b1c6c2bfca55880de346c866fe6",
+  "decision": "approved",
+  "critical": 0,
+  "important": 0,
+  "minor": 0,
+  "keyFindings": [],
+  "ci": "Read from GitHub at 2026-10-24T21:23Z: required set on main is {gate} (ruleset required_status_checks; branch protection carries none). CI head = newest pull_request run head on legion/LEGSMOKE-1132 = 650020cacb9f9b1c6c2bfca55880de346c866fe6: check-runs gate completed/success (x2: push and pull_request pairs) and check completed/success (x2). PR body CI line's run ids 40133637553 (fail-on-demand) and 40133637522 (ci) both headSha 650020ca…, completed, success. compare 650020ca…...733b65ea… status ahead, files .legion/LEGSMOKE-1132/implement.json and .legion/LEGSMOKE-1132/test.json only (all(startswith('.legion/')) = true), so the code under review is the CI head's.",
+  "threads": "gh api graphql reviewThreads at 733b65ea…: 0 threads (none opened by anyone; no bot threads to adjudicate). Nothing for the implementer to resolve.",
+  "proofLines": "E2E (implementer) and E2E (tester) both present in the PR body; each names the GitHub contents/compare API surface at an explicit SHA, the command, the observation, the head, and a negative control (404 at ?ref=main; altered-key / trailing-space digest mismatch). Re-read by the reviewer at the PR head 733b65ea…: raw sha256 54bab16ede3b32a665c060fe0185a61c8df3ee9c946ac0667738c4023f478fcf, JSON route [\"be079de028eecaceecd0a84eb12742a8b23591fd\",84]; ?ref=main → 404, exit 1.",
+  "thermonuclear": "not run: docs-only diff (one markdown marker line smoke/LEGSMOKE-1132.md, no runtime code), so neither the thermonuclear pair nor the Thermo line applies; the PR body omits the Thermo line accordingly.",
+  "contractChangeCensus": "not applicable: no refusal, required field, renamed/removed field, or process/package-boundary signature in the diff.",
+  "planVsSpec": "plan.json specDepartures is []; the spec document has no body (implement.json trickyParts), so the change is reviewed against the driver's instruction recorded in the proof criterion (one marker file smoke/<KEY>.md, one line '<KEY>: <title>').",
+  "security": "Security: no sensitive surface in this diff.",
+  "prBodyEdits": "Look at first and Not proven / risk written into the live body at round 1 (Not proven / risk: none — tester failures [], no proof-check comment, no reviewer finding).",
+  "notes": [
+    "Stage 4b upgrade rehearsal: targeted driver message ff15ed97-97dc-481d-91d5-f52ef092f9c6 on dispatch://LEGSMOKE-1132 asked for a review of PR #788 with an APPROVE as legion-reviewer[bot], the reviewer handoff and handoff_complete."
+  ]
+}
