@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-1132",
+  "completed": "2026-10-24T21:07:25Z",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: the only skill governing the implementer's workspace, push, PR body and handoff rules; the issue's spec document (dispatch://LEGSMOKE-1132/artifact/spec, version 1) has no body, so no domain skill applies."
+    ],
+    "test": [
+      "legion-worker: defines the tester's proof and CI-read rules; no test, smoke, e2e or deploy skill exists in this repository's skill list beyond the Stage 4b fixture skills, which carry no verification norms."
+    ],
+    "review": [
+      "legion-worker: defines review-thread and merge-gate conduct for the reviewer; nothing else in the skill list touches this issue's (empty) domain."
+    ]
+  },
+  "gapAnalysis": {
+    "error": "not run: Stage 4b upgrade rehearsal proof; the targeted driver message (dispatch message 83a1ef39-5592-4f34-a634-26d4ff2b7da9) asked only for the handoff write, commit and completion, and the spec document has no body to analyse."
+  },
+  "planReview": {
+    "verdict": "failed",
+    "rounds": 0,
+    "error": "not run: Stage 4b upgrade rehearsal proof; no plan content exists to review (spec body empty), and the driver's targeted message asked only for the handoff write, commit and completion."
+  },
+  "specDepartures": []
+}
