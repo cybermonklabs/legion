@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-1111",
+  "completed": "2026-10-24T05:06:38Z",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: the push procedure for legion/LEGSMOKE-1111, the pull request body template with the `Dispatch: LEGSMOKE-1111` line, the proof definition in references/pr-body.md, and the handoff gate; the repository's fixture-omp-skill and fixture-claude-skill hold only a marker string and no instruction"
+    ],
+    "test": [
+      "legion-worker: references/pr-body.md defines what the tester drives (the file read from GitHub at the head SHA via gh api), the CI read, and the implementerProof, failures and proof records"
+    ],
+    "review": [
+      "legion-worker: references/review-threads.md for the one-thread-at-a-time review and references/merge-gate.md for approving the head after reading its checks"
+    ]
+  },
+  "gapAnalysis": {
+    "findings": [
+      {
+        "finding": "The child spec document is empty; the design ('substitute LEGSMOKE-1111 for LEGSMOKE-1106') exists only in the planner's reading of the parent spec, and 'main holds no smoke/LEGSMOKE-1111.md' was unverified.",
+        "answer": "The plan states that the parent LEGSMOKE-1106 spec governs with the key substituted (file smoke/LEGSMOKE-1111.md, branch legion/LEGSMOKE-1111, handoff dir .legion/LEGSMOKE-1111/) and names writing the child spec as the architect's call in the completion summary. The planner measured `gh api 'repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1111.md?ref=main'` at 2026-10-24T05:04Z: HTTP 404."
+      },
+      {
+        "finding": "The title 'Upgrade rehearsal push child' could mean extra push behaviour beyond the parent's single-PR flow; also `fail-on-demand` fails when `.fail-me` exists, so a red check would contradict the parent's proof.",
+        "answer": "The plan reads the title as the proof driver's operation on this child (targeted human messages dictate when roles push), not product behaviour: the change is the parent's one-file marker and nothing more, and the plan states no `.fail-me` is created."
+      },
+      {
+        "finding": "'A single line that names this issue' does not fix the line text; siblings carry `<KEY>: <title>`.",
+        "answer": "The plan fixes the literal first line: `LEGSMOKE-1111: Upgrade rehearsal push child (/tmp/legion-e2e4b.1556784.YjU636Iz)`, checked with `wc -l` = 1 and `head -1` equal to that text at the head SHA."
+      },
+      {
+        "finding": "The two-line conditional names no observable trigger and no second-line text.",
+        "answer": "The plan names the trigger (a reviewer's review thread or comment on the pull request asking for a second line) and fixes the second line `LEGSMOKE-1111: second line added at the pull request review's request`; checks are `wc -l` = 2 with `head -1` byte-identical, else `wc -l` = 1 at the head that merges."
+      },
+      {
+        "finding": "The changed-file criterion allows `.legion/<KEY>/` and `docs/solutions/`, but it is unsaid which of a handoff dir and a solutions doc the PR carries; solutions docs live under docs/solutions/legion/<slug>-<KEY>.md.",
+        "answer": "The plan states the PR carries smoke/LEGSMOKE-1111.md, one .legion/LEGSMOKE-1111/<phase>.json per completed phase (removed by retro before the merge), and a docs/solutions/legion/<lesson-slug>-LEGSMOKE-1111.md only when retro records a lesson; check `gh pr diff <number> --name-only`."
+      },
+      {
+        "finding": "AGENTS.md requires `mkdir -p /tmp/legion-fixture && touch /tmp/legion-fixture/agents-md` before anything else, which neither spec names.",
+        "answer": "Plan step 1 is that command, checked with `test -f /tmp/legion-fixture/agents-md`, a local side effect that never appears in the PR's changed files."
+      }
+    ]
+  },
+  "planReview": {
+    "verdict": "approved",
+    "rounds": 1
+  },
+  "specDepartures": []
+}
