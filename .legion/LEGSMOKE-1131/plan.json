@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-1131",
+  "completed": "2026-10-24T19:28:00Z",
+  "planDocument": "dispatch://LEGSMOKE-1131/artifact/plan-md",
+  "governingSpec": {
+    "ref": "dispatch://LEGSMOKE-1128/artifact/spec",
+    "version": 2,
+    "note": "The child spec dispatch://LEGSMOKE-1131/artifact/spec is empty (doc-read 2026-10-24T19:17Z returned no body). The plan applies the parent spec with LEGSMOKE-1128 replaced by LEGSMOKE-1131; this is the planner's inference, sent to the architect in the completion summary."
+  },
+  "constants": {
+    "B": "6d843f28732dd82163065cb4d2248e488f68ca0b",
+    "F": "6d843f28732dd82163065cb4d2248e488f68ca0b",
+    "filePath": "smoke/LEGSMOKE-1131.md",
+    "lineText": "LEGSMOKE-1131: Upgrade rehearsal fallback child (/tmp/legion-e2e4b.3124663.8BPJj3lU)",
+    "fileBytes": 85,
+    "fileLines": 1,
+    "lastByteHex": "0a",
+    "fileSha256": "fb01596a230c5db22aa07201bf3affd1a66bb092efa30861391adbc21bc03b23",
+    "fileSha256Status": "computed by the planner from lineText + LF; the implementer recomputes it before any check cites it",
+    "alteredStringSha256": "04dffcdab5b3f84677d6a0d458709f9dc149f31becf46ffd290769fb2228f82d",
+    "requiredChecksOnMain": ["gate"],
+    "workflows": {"ci": "check", "fail-on-demand": "gate"},
+    "firstCodeHead": "recorded by the implementer in implement.json",
+    "pullRequest": "recorded by the implementer in implement.json"
+  },
+  "preState": {
+    "measuredAt": "2026-10-24T19:17Z",
+    "contentsAtMain": "HTTP/2.0 404 Not Found",
+    "commitsByPathOnMain": 0,
+    "openPullRequestsForBranch": 0,
+    "workingCopy": "clean at B",
+    "branchTipEqualsMain": true
+  },
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: handoff, push, PR body template, proof rules (references/pr-body.md, references/default-branch-check.md); no repository skill drives the surface, the .omp/skills and .claude/skills entries are Stage 4b fixtures with a token body and no procedure",
+      "dispatch: every write to Dispatch (artifact, message, comment)"
+    ],
+    "test": [
+      "legion-worker: references/pr-body.md defines what the tester verifies and records (implementerProof, failures, own proof); the surface is the GitHub contents/compare/check-runs API at explicit SHAs",
+      "dispatch: every write to Dispatch"
+    ],
+    "review": [
+      "legion-worker: references/review-threads.md and references/merge-gate.md for the review round order, the approval of the pushed head, and readHead naming",
+      "dispatch: every write to Dispatch"
+    ]
+  },
+  "gapAnalysis": {
+    "findings": [
+      {"finding": "Implementer's driver task is sleep 300 then WAITING; nothing says when the smoke file is committed, yet AC1/AC2/AC4 need a code head.", "answer": "Plan §4 orders the whole implementing sequence and states the driver paces it: sleep 300, WAITING, then steps 1-10 when the targeted message gives them. The plan is complete; execution timing is the driver's, not a deferral."},
+      {"finding": "Post-merge criteria may have no verifier in an upgrade-rehearsal run; constants must survive a restarted role.", "answer": "Plan §2 records B, F, file path, line text, bytes, sha256, required check set; §7 names the implementer's production check for AC1/AC4 post-merge; firstCodeHead and pullRequest are recorded in implement.json for re-read. No criterion is deferred."},
+      {"finding": "Child spec is empty; nothing records that the parent spec governs or that key substitution was approved (owner decision).", "answer": "Plan §1 and plan.json governingSpec cite dispatch://LEGSMOKE-1128/artifact/spec v2 with key substitution as the planner's inference; the architect decides whether to write the child spec. Named in the completion summary."},
+      {"finding": "'On the branch's first push' is literally the planner's trailered handoff push, which carries no file.", "answer": "AC2 binds 'first push' to firstCodeHead, the first pushed commit carrying smoke/LEGSMOKE-1131.md, recorded in implement.json; every byte and unchanged read happens at that SHA."},
+      {"finding": "'Only when the review asks' is not machine-readable and the no-ask branch has no check.", "answer": "AC3 defines 'asks' as a CHANGES_REQUESTED GitHub review plus a review.json keyFindings entry naming the file and line; the no-ask branch is proven by equal sha256 and wc -l 1 at firstCodeHead, the approved SHA and the merge commit M."},
+      {"finding": "Line text unsettled: siblings use '<KEY>: <title>' while the draft constant copied 'Stage 4b workflow proof: ...'.", "answer": "Plan §2 fixes the sibling convention: 'LEGSMOKE-1131: Upgrade rehearsal fallback child (/tmp/legion-e2e4b.3124663.8BPJj3lU)' + LF, wc -c 85, sha256 fb01596a..., head -1 compared to that string."},
+      {"finding": "gh pr diff --name-only counts handoffs that retro removes, so the changed-files criterion drifts per head.", "answer": "AC4 is stated as the path set from B with .legion/LEGSMOKE-1131/ excluded, via jj diff --from B (workspace) and compare/B...<sha> (GitHub), read by tester and reviewer at their heads; docs/solutions/ allowed for retro; post-merge read from commits/<M> files."},
+      {"finding": "Ruleset requires only gate while the spec says both workflows pass (owner decision).", "answer": "AC5 treats check as a tester-read criterion from commits/<sha>/check-runs (pull_request pair cited, push pair named) and gate as the merge gate; §9 sends the enforcement question to the architect as a ruleset matter outside this issue."},
+      {"finding": "Merge method unknown; 'merge commit lists...' assumes one.", "answer": "Plan §3 AC4 records repo settings (squash, merge, rebase all allowed) and that the previous Legion merge 6d843f28 has one parent; the production check reads commits?sha=main&path=... (length 1) then commits/<M> files, falling back to compare/<M>^1...<M> if M has two parents."},
+      {"finding": "Negative controls unassigned; the gate control needs an open PR; .fail-me must never be created.", "answer": "Each AC names its control and the role that reads it; the implementer opens the PR at firstCodeHead (§4 step 6); AC4/AC5 forbid .fail-me or any probe file, citing the missing root .gitignore and jj snapshotting."},
+      {"finding": "Clean working copy not recorded; fixture paths might be untracked.", "answer": "Pre-state records jj status 'The working copy has no changes' at B (fixture paths are committed on main); §3 AC4 gives every role the pre-push guard jj diff --from B --to @- --name-only within the allowed set."},
+      {"finding": "Bare wc -l 1 does not prove newline or content.", "answer": "AC2 requires at firstCodeHead via the raw contents API: wc -l 1, tail -c1 | od -An -tx1 = 0a, wc -c 85, sha256sum = constant, head -1 string-equal, plus 404 at main and at B/F and the altered-string mismatch."},
+      {"finding": "Size: line is the recurring stale defect.", "answer": "§4 step 6 fixes Size: as the merge diff from B excluding .legion/LEGSMOKE-1131/, read from compare/B...firstCodeHead with | tostring, exclusion stated in the line; §7 has retro refresh it at the removal head."},
+      {"finding": "review.json is one commit below the approved SHA; copying it measures one commit too many.", "answer": "§6 names the reviewer's field readHead (never approvedHead); §7 takes the approved SHA from pulls/<n>/reviews commit_id as the merger's and retro's base."},
+      {"finding": "gh api --jq -c exits 2 in a worker pane.", "answer": "§3 states the rule once (jq flags inside the filter: | tostring, | @tsv, or -q) and every gh command in the plan is written that way."},
+      {"finding": "Unverified claims: the sha256 constant, the 403 on branch protection (required-review rule unknown), the planner identity claim.", "answer": "§2 marks the sha256 as planner-computed and requires the implementer to recompute it; §2 records the 403 and that no required-review rule is known; the identity fact is JJ_USER=trajectory-s-legion-reviewer[bot] observed in the pane, correct for a planner per skill://legion-worker."}
+    ]
+  },
+  "planReview": {"verdict": "approved", "rounds": 1},
+  "specDepartures": []
+}
