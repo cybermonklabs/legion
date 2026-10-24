@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-1101",
+  "completed": "2026-10-24T03:39:21Z",
+  "planDocument": "dispatch://LEGSMOKE-1101/artifact/plan-md",
+  "specSource": "dispatch://LEGSMOKE-1097/spec (v2) inherited with LEGSMOKE-1101 substituted for LEGSMOKE-1097; the child's own spec document is empty",
+  "requiredSkills": {
+    "implement": [
+      "skill://legion-worker — push and trailer rules, references/pr-body.md (PR body template, what a proof is), references/default-branch-check.md; the only workflow the change runs through",
+      "skill://legion-retro — the retro task (docs/solutions/ learning, removal of .legion/LEGSMOKE-1101/ before READY) is the implementer's",
+      "none (repository domain): AGENTS.md is a one-line fixture and fixture-omp-skill / fixture-claude-skill carry a marker string with no instruction; the repository has no code or tests touched by this change"
+    ],
+    "test": [
+      "skill://legion-worker — references/pr-body.md says what the tester verifies and records; CI is read from GitHub, never re-run; the tester's own surface is the GitHub contents and git-objects API at explicit shas (plan §7)"
+    ],
+    "review": [
+      "skill://legion-worker — references/merge-gate.md (CI-head read, one review per round named by sha) and references/review-threads.md (thread discipline)"
+    ]
+  },
+  "forkPoint": "6d843f28732dd82163065cb4d2248e488f68ca0b",
+  "marker": {
+    "path": "smoke/LEGSMOKE-1101.md",
+    "line": "LEGSMOKE-1101: Upgrade rehearsal handoff child (/tmp/legion-e2e4b.3817606.rzd23Qqj)",
+    "bytes": 84,
+    "gitSha1": "72aeb53d10e3f1d399ca9616063a15777f8ac270",
+    "sha256": "9f0fc58b0d2ffa45dedbb66df27cd2b7ec8655d586d9dd58960d96bbeb0798fe",
+    "line2Default": "Legion proof review round 1 (LEGSMOKE)",
+    "twoLineBytes": 123,
+    "twoLineGitSha1": "7dd95f8b258890c850ad54de7641f07e761e2760",
+    "twoLineSha256": "908123fb2d4e5e7ef889125c18adceda27eb3c219b5d74be300740086de76e5b"
+  },
+  "preState": {
+    "observedAt": "2026-10-24T03:26Z",
+    "markerOnMain": "404",
+    "commitsTouchingMarkerOnMain": 0,
+    "pullRequestsOnBranch": [],
+    "requiredChecksOnMain": ["gate"],
+    "mainHead": "6d843f28732dd82163065cb4d2248e488f68ca0b"
+  },
+  "gapAnalysis": {
+    "findings": [
+      {"finding": "F1: the context's claim that the merging head must be a code push contradicts skills/precedent that retro's .legion/-only removal can be the head; settle which HR shape this run uses with evidence.", "answer": "Plan §5/D5: HR is retro's removal commit, which touches only .legion/ but carries no skip-checks trailer, so CI runs there; evidence read from GitHub: PR #766 head de7b2066 (files = four .legion/LEGSMOKE-1069/*.json deletions) has 4 check-runs gate×2/check×2 all success, PR #767 head 4afb9ed7 the same."},
+      {"finding": "F2: the third acceptance line has no measurement point; a fork-point compare at the merge would list sibling trees' files since main moves under the branch.", "answer": "C4/C6: the merge-side check is the squash commit's own diff, gh api commits/<M> --jq '[.files[].filename]' → the marker plus zero or more docs/solutions/legion/*-LEGSMOKE-1101.md; the fork-point compare stays branch-side only."},
+      {"finding": "F3: 'the retro's note under docs/solutions/' reads as both allowed and required; docs/solutions/legion holds 6 notes for 13+ markers.", "answer": "D3: allowed, not required; skill://legion-retro decides; #766 merged with none (merge commit ae7d7023 files = marker alone), #767 with one; zero or more notes pass A3, any other docs/ path fails it."},
+      {"finding": "F4: the acceptance needs only a line containing LEGSMOKE-1101 while the proposed full-title literal is documented nowhere in-repo; fix exact bytes and re-read the title from Dispatch.", "answer": "§2 fixes LIT byte-exact (84 B, LF-terminated, no BOM/CR/trailing space) in the form of this family's two newest merged markers (LEGSMOKE-1069/-1070); the title was re-read via dispatch read --issue LEGSMOKE-1101 at planning; D2 names the alternative for the architect."},
+      {"finding": "F5: the literal's sha1/sha256 values were unverified by the analyst.", "answer": "Measured by the planner at 2026-10-24T03:26Z (git hash-object, sha256sum); §2 requires the implementer to recompute all three before quoting them and treat a mismatch as a wrong title/literal."},
+      {"finding": "F6: 'when first added' is bound to no commit; the branch's first push is the planner's handoff; rewrites could destroy the evidence.", "answer": "§4/D8: C1 = oldest commit on the branch touching the path (gh api commits?path=…&sha=<H0> --jq '.[-1].sha'), never rewritten; the K=1 line is a new commit; H0 = firstCodeHead recorded in implement.json."},
+      {"finding": "F7: who may ask for the second line, how a machine detects it, and what text is appended are undefined.", "answer": "A2/D4: K=1 iff a CHANGES_REQUESTED review on the PR by the Legion review App asks for one more line (gh api pulls/<N>/reviews filter); Dispatch messages and PR comments do not count; default text pinned to the LEGSMOKE-892 precedent, reviewer-named text allowed with bytes/hashes re-recorded as implement.json line2."},
+      {"finding": "F8: a second request for a third line has no answer in the document.", "answer": "D4: K ≤ 1; an over-cap request is reported to the architect as scope, never appended."},
+      {"finding": "F9: the PR body's Dispatch: LEGSMOKE-1101 line is a workflow requirement no criterion checks.", "answer": "A4: gh pr view <N> --json body … | grep -c '^Dispatch: LEGSMOKE-1101$' → 1, checked by the implementer at open and the merger after retro's body refresh."},
+      {"finding": "F10: '.legion/LEGSMOKE-1101/ is removed before the merge' has no check and the directory does not exist yet.", "answer": "C4: recursive tree at HR has 0 .legion/ paths and contents/.legion?ref=<M> → 404, negative control contents/.legion/LEGSMOKE-1101?ref=<approved head> lists the four handoffs; this plan's handoff push creates the directory."},
+      {"finding": "F11: no root .gitignore, so stray files (including a .fail-me negative control) would be snapshotted into commits.", "answer": "D9 and task 1: jj status clean before the first commit, commit by explicit path, no .fail-me or scratch file ever created in the workspace; the tester's break set runs in a mktemp -d outside it."},
+      {"finding": "F12: the mid-run daemon upgrade point is unverified; unpushed work is lost on a recreated workspace.", "answer": "§8 (D8 paragraph): every role pushes its handoff before handoff_complete; the plan lives in the pushed plan.json and the plan.md document; a resumed role re-reads its record, the handoffs in order and any workspace-recovered.json before new work."},
+      {"finding": "F13: the governing text is the root's with the key substituted, resting on precedent; the child may need its own spec version.", "answer": "§1 writes the substituted criteria verbatim with their source; §11 and the completion summary hand the spec-version question to the architect (a spec change is never the planner's)."},
+      {"finding": "F14: the production check has no pinned ref; ?ref=main can describe another tree's state.", "answer": "C6: every production read is at ?ref=<M> (merge_commit_sha), with compare <M>...main filtered to this issue's paths → []; negative control at F → 404."},
+      {"finding": "F15: legion/LEGSMOKE-1101@origin exists at the fork point with no PR; later phases must advance it, not replace it.", "answer": "A4 and task 1: every push moves the existing bookmark; exactly one PR, checked with gh pr list --head legion/LEGSMOKE-1101 --state all --json number --jq length → 1."}
+    ]
+  },
+  "planReview": {"verdict": "approved", "rounds": 1},
+  "specDepartures": []
+}
