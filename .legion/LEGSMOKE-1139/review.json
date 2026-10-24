@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "phase": "review",
+  "issue": "LEGSMOKE-1139",
+  "completed": "2026-10-24T23:39:42Z",
+  "pullRequest": "https://github.com/sjawhar/legion-smoke/pull/791",
+  "round": 1,
+  "headReviewed": "042d3f5f59608c4e96f56d50a84fe052c3382942",
+  "codeHead": "1f24c027d0916dfd608625cc9cf7e2eb66374e9f",
+  "decision": "approved",
+  "critical": 0,
+  "important": 0,
+  "minor": 0,
+  "keyFindings": [],
+  "requiredSkillsFollowed": [
+    "legion-worker (plan.json requiredSkills.review): merge-gate.md CI read, review-threads.md thread read, pr-body.md Look-at-first / Not-proven lines, handoff write and trailered push."
+  ],
+  "ci": "Read from GitHub at the round's head 042d3f5f: required set from rulesets on main = [gate]; branch protection names none. Newest pull_request run head on legion/LEGSMOKE-1139 = 1f24c027 (the code head). Check-runs at 1f24c027: check success, gate success (two trigger pairs: ci runs 40143192319/40143245991, fail-on-demand runs 40143192268/40143245966, all completed success at that sha, matching the PR body's CI line). Compare 1f24c027...042d3f5f: status ahead, files = .legion/LEGSMOKE-1139/implement.json, .legion/LEGSMOKE-1139/test.json only (all(startswith(.legion/)) = true).",
+  "threads": "gh api graphql reviewThreads(first:100) at 042d3f5f: 0 threads; pulls/791/reviews: none before this round. Nothing to answer, nothing named to the implementer for resolution.",
+  "proofs": "E2E (implementer) and E2E (tester) both present in the PR body with surface (GitHub contents/compare API of sjawhar/legion-smoke), command, observation, head sha and negative control (marker 404 at base tip 6d843f28 / at main). Re-ran independently: contents at ref=042d3f5f -> [smoke/LEGSMOKE-1139.md, 5e49cf05..., 83 bytes, 'LEGSMOKE-1139: Upgrade rehearsal handoff child (/tmp/legion-e2e4b.178207.rtvOSiAa)\\n']; contents at ref=main -> HTTP 404 exit 1; pulls/791/files lists smoke/LEGSMOKE-1139.md (+1/-0) as the only non-.legion/ path.",
+  "thermonuclear": "not run: docs-only diff (one markdown marker, no runtime code), per merge-gate.md and pr-body.md; no Thermo line. No exported symbol changed, so no codegraph impact query applies.",
+  "planBesideSpec": "plan.json specDepartures = []; the spec (dispatch://LEGSMOKE-1139/artifact/spec v1) is empty and the issue carries no acceptance criteria, so the repository's smoke/ marker convention (smoke/LEGSMOKE-1070.md from #767) is the binding shape; the diff matches it byte for byte in shape.",
+  "contractChangeCensus": "not required: no refusal added, no field made required/removed/renamed, no process or package boundary signature changed.",
+  "security": "Security: no sensitive surface in this diff.",
+  "prBody": "Wrote Look at first (smoke/LEGSMOKE-1139.md:1) and Not proven / risk (none: tester failures [], no proof-check comment, no reviewer finding) into the live body before the handoff push."
+}
