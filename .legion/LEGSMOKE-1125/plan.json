@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-1125",
+  "completed": "2026-10-24T19:02:38Z",
+  "requiredSkills": {
+    "implement": [
+      "none: Stage 4b proof child with an empty spec (dispatch://LEGSMOKE-1125/artifact/spec, version 1, no body); the repository ships no agent skills and the only matching skill is legion-worker, the role contract every phase already follows."
+    ],
+    "test": [
+      "none: no acceptance criteria exist to prove on any surface; the skills list holds no testing, smoke, e2e, or deploy skill for sjawhar/legion-smoke."
+    ],
+    "review": [
+      "none: nothing in the skills list fits reviewing an empty-spec proof child; the reviewer follows skill://legion-worker/references/merge-gate.md as its role contract."
+    ]
+  },
+  "gapAnalysis": {
+    "error": "not run: the Stage 4b proof's targeted message (dispatch message 0de96737-385e-4963-92f2-126d249a3ab9 on LEGSMOKE-1125, 2026-10-24T19:02:20Z) instructed 'write and commit the required plan handoff, then call handoff_complete without an issue field' as the exact proof operation; the spec is empty, so there is no plan content for the gap analyst to check."
+  },
+  "planReview": {
+    "verdict": "failed",
+    "rounds": 0,
+    "error": "not run: same targeted proof instruction as gapAnalysis; no plan was drafted because the spec carries no summary, acceptance, or scope."
+  },
+  "specDepartures": [],
+  "plan": {
+    "summary": "Upgrade rehearsal interrupted-handoff proof: this planning phase records only the handoff the driver asked for. The issue's spec is empty, so no implementation, test, review, or integration work is planned; downstream phases act on the driver's targeted messages, as the Stage 4b proof instructions say.",
+    "acceptance": [],
+    "tasks": []
+  }
+}
