@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-1133",
+  "completed": "2026-10-24T19:18:04Z",
+  "requiredSkills": {
+    "implement": [
+      "none: Stage 4b proof child with an empty spec (dispatch://LEGSMOKE-1133/artifact/spec, version 1, no body); sjawhar/legion-smoke ships no agent skills, and the only matching skill in the session's list is legion-worker, the role contract every phase already follows."
+    ],
+    "test": [
+      "none: the child spec names no acceptance criteria to prove on any surface; the session's skills list holds no testing, smoke, e2e, or deploy skill for sjawhar/legion-smoke."
+    ],
+    "review": [
+      "none: nothing in the skills list fits reviewing an empty-spec proof child; the reviewer follows skill://legion-worker/references/merge-gate.md as its role contract."
+    ]
+  },
+  "gapAnalysis": {
+    "error": "not run: the Stage 4b proof's targeted message (dispatch message 4f3f3913-fa7a-4bd2-a2a7-461173003c13 on LEGSMOKE-1133, 2026-10-24T19:16:28Z) instructed 'write and commit the required plan handoff on legion/LEGSMOKE-1133, but do not push and do not call handoff_complete' as the exact proof operation; the child spec is empty, so there is no plan content for the gap analyst to check."
+  },
+  "planReview": {
+    "verdict": "failed",
+    "rounds": 0,
+    "error": "not run: same targeted proof instruction as gapAnalysis; no plan was drafted because the child spec carries no summary, acceptance, or scope."
+  },
+  "specDepartures": [],
+  "plan": {
+    "summary": "Upgrade rehearsal push proof: this planning phase records only the handoff the driver asked for, committed locally and held unpushed for the driver's next targeted message. The child spec (dispatch://LEGSMOKE-1133/artifact/spec) is empty, so no implementation, test, review, or integration work is planned; the root spec (dispatch://LEGSMOKE-1128/artifact/spec v2) describes the root's own one-file change, smoke/LEGSMOKE-1128.md, and names no work for this child. Downstream phases act on the driver's targeted messages, as the Stage 4b proof instructions say.",
+    "acceptance": [],
+    "tasks": [],
+    "openForArchitect": "What this child changes in sjawhar/legion-smoke is unspecified: its spec has no body. Only the architect or the proof driver can settle it; no decision was sent, since the Stage 4b proof instructions tell the root architect to act on nothing but targeted messages."
+  }
+}
