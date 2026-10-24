@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "phase": "test",
+  "issue": "LEGSMOKE-1094",
+  "completed": "2026-10-24T01:16:00Z",
+  "pullRequest": "https://github.com/sjawhar/legion-smoke/pull/776",
+  "codeHead": "4e7d3053aa97681c3d4320911ccb3604cd43371d",
+  "testedHead": "917c3bc9463fc04307c7bc7997f1765876c4f26f",
+  "requiredSkillsFollowed": [
+    "legion-worker (plan.json requiredSkills.test): workspace binding, PR-body edit per references/pr-body.md, handoff/push/handoff_complete protocol."
+  ],
+  "implementerProof": {
+    "verdict": "verified",
+    "how": "Re-ran the implement.json proof command verbatim at ?ref=4e7d3053aa97681c3d4320911ccb3604cd43371d from the pane's gh: sha256 e9389e24885958df25381da8d4eb57727d7d6f10b02cef1a9ebafa54e721b042, 84 bytes, 1 line, last byte 0a, 0 CR bytes, grep count 1 for the exact line, cmp identical to the workspace file, JSON route blob 4ca4b6975802a8fa5267f935e68d32ce5565abf4 size 84, compare main...4e7d3053 outside .legion/ = [{\"additions\":1,\"deletions\":0,\"filename\":\"smoke/LEGSMOKE-1094.md\",\"status\":\"added\"}]. Every figure matches the implementer's observed field and its E2E (implementer) line."
+  },
+  "ci": {
+    "readNotRerun": true,
+    "codeHead": "4e7d3053aa97681c3d4320911ccb3604cd43371d",
+    "runs": [
+      {"id": 40048692769, "workflow": "ci", "event": "pull_request", "conclusion": "success"},
+      {"id": 40048692678, "workflow": "fail-on-demand", "event": "pull_request", "conclusion": "success"},
+      {"id": 40048607297, "workflow": "ci", "event": "push", "conclusion": "success"},
+      {"id": 40048607289, "workflow": "fail-on-demand", "event": "push", "conclusion": "success"}
+    ],
+    "checkRuns": "4 at 4e7d3053 (check x2, gate x2) all success; required set on main = {gate}",
+    "handoffHead": "917c3bc9 carries 0 workflow runs and 0 check-runs; its message ends \\n\\n\\nskip-checks: true\\n (git/commits API, od -c), so the daemon carries the code head's verdict (record checksVerdict: green)."
+  },
+  "breakAttempts": [
+    "Wrong-case path smoke/legsmoke-1094.md at the PR head -> HTTP 404.",
+    "Same path at ?ref=main -> HTTP 404 (the file exists only on the branch).",
+    "CRLF and LF-less variants of the line digest 8b2e5dfb... and d66ae0c2..., neither the read's e9389e24...; the read's last byte is 0a and it holds 0 CR bytes.",
+    "Stray files: compare main...917c3bc9 lists exactly three added paths (two handoffs, the marker); smoke/ listing grows 138 -> 139 with LEGSMOKE-1094.md the only difference; .fail-me absent at the PR head (gate tripwire not armed).",
+    "Convention: sibling marker smoke/LEGSMOKE-1070.md on main is the same one-line `<KEY>: <title>` LF shape."
+  ],
+  "redTests": [],
+  "redTestRationale": "The repository has no test suite (ci.yml runs `sleep 20 && exit 0`; fail-on-demand fails only on a `.fail-me` file) and the change is one static Markdown line verified byte-for-byte at the pushed head; no way it breaks escaped the surface checks above, so no red test is owed.",
+  "failures": [],
+  "failed": 0,
+  "proof": [
+    {
+      "criterion": "The repository gains one new Markdown file under smoke/ holding a single line that names LEGSMOKE-1094 (root spec dispatch://LEGSMOKE-1090/artifact/spec; driver message dispatch://LEGSMOKE-1094 event #7), and nothing else changes outside .legion/.",
+      "surface": "GitHub contents, compare and Actions API of sjawhar/legion-smoke at the pull request head, read through the pane's gh (the real repository; https://github.com/sjawhar/legion-smoke/pull/776/files)",
+      "command": "cd -- \"$LEGION_WORKSPACE\" && P=917c3bc9463fc04307c7bc7997f1765876c4f26f && gh api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1094.md?ref=$P\" -H 'Accept: application/vnd.github.raw' > /tmp/raw-tester && sha256sum < /tmp/raw-tester && wc -c < /tmp/raw-tester && cmp /tmp/raw-tester smoke/LEGSMOKE-1094.md && gh api \"repos/sjawhar/legion-smoke/compare/main...$P\" --jq '{status, ahead_by, behind_by, files: [.files[] | {filename,status,additions,deletions}]} | tostring' && gh api 'repos/sjawhar/legion-smoke/contents/smoke?ref=main' --jq '.[].name' | sort > /tmp/smoke-main && gh api \"repos/sjawhar/legion-smoke/contents/smoke?ref=$P\" --jq '.[].name' | sort > /tmp/smoke-pr && comm -3 /tmp/smoke-main /tmp/smoke-pr && wc -l < /tmp/smoke-main && wc -l < /tmp/smoke-pr; for S in 4e7d3053aa97681c3d4320911ccb3604cd43371d $P; do gh api \"repos/sjawhar/legion-smoke/actions/runs?head_sha=$S&per_page=20\" --jq '.workflow_runs[] | [.id,.name,.event,.status,.conclusion] | @tsv'; gh api \"repos/sjawhar/legion-smoke/commits/$S/check-runs\" --jq '.total_count'; done; gh api repos/sjawhar/legion-smoke/rules/branches/main --jq '[.[] | select(.type==\"required_status_checks\") | .parameters.required_status_checks[].context] | tostring'",
+      "observed": "sha256 e9389e24885958df25381da8d4eb57727d7d6f10b02cef1a9ebafa54e721b042; 84 bytes; cmp identical to the workspace file; compare status ahead, ahead_by 3, behind_by 0, files exactly .legion/LEGSMOKE-1094/implement.json (+32 added), .legion/LEGSMOKE-1094/plan.json (+41 added), smoke/LEGSMOKE-1094.md (+1/-0 added); smoke/ listing 138 entries on main, 139 at the head, comm -3 prints only LEGSMOKE-1094.md; runs at 4e7d3053: 40048692678 fail-on-demand pull_request success, 40048692769 ci pull_request success, 40048607289 fail-on-demand push success, 40048607297 ci push success, 4 check-runs; runs at 917c3bc9: none, 0 check-runs (handoff-only head with the skip-checks trailer); required set on main = [\"gate\"]. PR mergeable MERGEABLE, mergeStateStatus BLOCKED (awaiting review).",
+      "headSha": "917c3bc9463fc04307c7bc7997f1765876c4f26f",
+      "negativeControl": "gh api 'repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1094.md?ref=main' and the wrong-case path smoke/legsmoke-1094.md?ref=917c3bc9 -> HTTP 404 {\"message\":\"Not Found\",\"status\":\"404\"}, gh exit 1 each; the CRLF variant of the line digests 8b2e5dfb2d6732c52daa0c14f9a4b6d5fe4bc0f0a8b3a2421e2f382380819b02 and the LF-less variant d66ae0c20123a33455ec9821ca9a2807fdd785dc91303757b0b98d54b7c82378, neither the read's e9389e24...; .fail-me?ref=917c3bc9 -> HTTP 404."
+    }
+  ]
+}
