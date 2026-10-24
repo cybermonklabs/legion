@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "phase": "review",
+  "issue": "LEGSMOKE-1101",
+  "completed": "2026-10-24T04:03:26Z",
+  "pullRequest": 779,
+  "round": 1,
+  "headReviewed": "2da562042e21e364e46c7cb971c4da014ea29fa8",
+  "codeHead": "5e5f86aaf54ac2e402d854901eea38866c3ea237",
+  "decision": "approved",
+  "critical": 0,
+  "important": 0,
+  "minor": 0,
+  "keyFindings": [],
+  "ci": {
+    "requiredOnMain": {"rulesets": ["gate"], "branchProtection": []},
+    "ciHead": "5e5f86aaf54ac2e402d854901eea38866c3ea237",
+    "pullRequestRuns": {"ci": 40060173846, "fail-on-demand": 40060173821},
+    "checkRuns": "gate x2, check x2, all completed/success, read 2026-10-24T04:01Z",
+    "compareCiHeadToReviewedHead": "5e5f86aa...2da56204 → all files start with .legion/ → true",
+    "bodyCiLine": "names runs 40060173846 and 40060173821, both headSha 5e5f86aa, completed/success → current"
+  },
+  "threads": {"total": 0, "answered": 0, "acceptedBotThreadIds": []},
+  "proofLines": {
+    "implementer": "present in the PR body; surface GitHub contents/commits/git-trees/compare API at explicit SHAs, cmp 0 / 84 B / blob 72aeb53d at 5e5f86aa, negative controls 404 at the fork point and plan handoff and altered-line digests differ",
+    "tester": "present in the PR body; same surface extended to 9f44f989 plus pulls/check-runs/actions API, break set (case, slash, missing extension, zero ref, byte variants) all refused, implementer's proof re-run verbatim"
+  },
+  "reviewerVerification": "Re-read smoke/LEGSMOKE-1101.md from GitHub at 2da56204 in a mktemp -d outside the workspace: cmp 0 against the planned 84-byte line, 84 bytes, 1 line, last byte 0a, 0 CR, blob 72aeb53d10e3f1d399ca9616063a15777f8ac270, sha256 9f0fc58b…; commits?path=…&sha=2da56204 → [5e5f86aa] (one commit touches the path); pulls/779/files predicate (marker or .legion/LEGSMOKE-1101/ only, marker present) → true; negative control: the marker at the fork point 6d843f28 and at main → 404.",
+  "specAndPlan": "Reviewed against dispatch://LEGSMOKE-1097/spec v2 with the key substituted (plan D1, specDepartures []). A1 holds at the first-added commit 5e5f86aa; A2 holds with K=0 (no CHANGES_REQUESTED review exists on #779 and this review asks for no line); A3 branch side holds (marker + handoffs only); A4 holds (one PR on legion/LEGSMOKE-1101, Dispatch: line present, gate green at the code head). A3 merge side is recorded in the PR body's Not proven / risk line for HR and M.",
+  "thermonuclear": "not run: docs-only diff (one Markdown file under smoke/, no runtime code), so no Thermo line",
+  "blastRadius": "no exported symbol changed; codegraph not consulted (no code in the diff)",
+  "contractChangeCensus": "not applicable: no refusal, required field, rename or signature change",
+  "security": "Security: no sensitive surface in this diff.",
+  "fastFollow": "none",
+  "prBody": "Look at first and Not proven / risk written into the live body of #779 at 2026-10-24T04:03Z via gh api PATCH; placeholder count after the PATCH = 0"
+}
