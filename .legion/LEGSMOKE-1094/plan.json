@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-1094",
+  "completed": "2026-10-24T00:57:22Z",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: Stage 4b proof child; the implementer only binds the workspace, follows the proof's hold (sleep 300 then WAITING) and acts on the driver's targeted message, which legion-worker's workspace, push and handoff rules govern."
+    ],
+    "test": [
+      "legion-worker: the tester's only surface in this proof is the handoff/push/handoff_complete protocol that legion-worker spells; no product surface exists in the fixture repository."
+    ],
+    "review": [
+      "legion-worker: the reviewer verifies the proof handoffs and branch state per legion-worker's completion gate; no code change is in scope for the fixture."
+    ]
+  },
+  "plan": {
+    "summary": "LEGSMOKE-1094 is the Stage 4b upgrade-rehearsal handoff child under LEGSMOKE-1090 on the disposable LEGSMOKE project. Its spec carries no product change: the issue exists so the driver can interrupt the planner's handoff mid-run and prove the daemon upgrade carries the phase over. The targeted driver message (dispatch://LEGSMOKE-1094, event #3) directs this plan handoff to be written, committed and completed with handoff_complete carrying no issue field; no other work is in scope.",
+    "tasks": [
+      "Planner: write .legion/LEGSMOKE-1094/plan.json, commit it as a handoff-only push with the skip-checks trailer, push legion/LEGSMOKE-1094, call handoff_complete without an issue field (this handoff).",
+      "Implementer, tester, reviewer: on the daemon's task line bind the workspace, reply WAITING, and act only on the driver's next targeted Dispatch message; create no work outside the issue's smoke branch."
+    ],
+    "acceptance": [
+      {
+        "criterion": "The plan handoff is carried by a pushed commit on legion/LEGSMOKE-1094@origin and handoff_complete is accepted without an issue field.",
+        "surface": "daemon workflow (legion tool) and GitHub branch legion/LEGSMOKE-1094",
+        "command": "cd -- \"$LEGION_WORKSPACE\" && jj -R \"$LEGION_WORKSPACE\" log -r 'legion/LEGSMOKE-1094@origin' --no-graph -T 'commit_id ++ \" \" ++ description.first_line()'; then legion handoff_complete (no issue field)",
+        "check": "The commit listed carries .legion/LEGSMOKE-1094/plan.json and the handoff_complete call returns accepted rather than a refusal."
+      }
+    ]
+  },
+  "gapAnalysis": {
+    "error": "Not run. The Stage 4b proof instructions direct this phase to act only on the driver's targeted message, which named one exact operation: write and commit the plan handoff, then call handoff_complete without an issue field. The fixture spec carries no product acceptance criteria to analyse."
+  },
+  "planReview": {
+    "verdict": "failed",
+    "rounds": 0,
+    "error": "Not run, for the same reason as gapAnalysis: the proof's targeted message named the handoff write and completion as the whole operation."
+  },
+  "specDepartures": []
+}
