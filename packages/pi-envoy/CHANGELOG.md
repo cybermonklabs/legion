@@ -4,6 +4,19 @@
 
 ### Fixed
 
+- The run-end self-check's prompt counts as PROCEEDING a wait for a message, an answer or an event
+  a human already said they will send and that is on its way: such a reply is an event, not an
+  open question. Its WAITING case covered any information from a human, so an agent waiting for
+  the go-ahead message its user had promised answered WAITING, and the `dispatch-ask-reminder`
+  steer then told it to open a Dispatch ask for that message. Something a human put off for later,
+  or promised and then did not send, still counts as WAITING. WAITING now excludes a wait the
+  session's listed asks cover, and PROCEEDING counts a wait any open ask covers, another session's
+  included. With no open asks of its own, the prompt says the session has none, where it said
+  Dispatch had none: when another session's open ask covered the wait, that line denied the ask
+  existed, the check answered WAITING, and the steer told the agent to open an ask the other
+  session's ask already covered. The one-word WAITING/PROCEEDING answer and its parse are
+  unchanged.
+
 - No text the plugin cuts to a length ends on half an emoji, which reads as U+FFFD: a cut that
   would split a surrogate pair stops a UTF-16 unit short. That covers the held asks the run-end
   self-check lists, a reply to a person's typed input cut to a Dispatch body, the agent stream's
