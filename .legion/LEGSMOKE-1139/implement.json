@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "phase": "implement",
+  "issue": "LEGSMOKE-1139",
+  "completed": "2026-10-24T23:34:00Z",
+  "pullRequest": "https://github.com/sjawhar/legion-smoke/pull/791",
+  "codeHead": "1f24c027d0916dfd608625cc9cf7e2eb66374e9f",
+  "proof": [
+    {
+      "criterion": "The smallest one-file change described by this child issue is committed and pushed on legion/LEGSMOKE-1139 (targeted driver message 36120c78-9f3f-40dc-bcb4-848316ae9fa6; the spec is empty, so the repository's convention applies: one marker file per issue under smoke/).",
+      "surface": "GitHub repository contents and compare API of sjawhar/legion-smoke (the real repository), read with the pane's gh as the implement App",
+      "command": "gh api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1139.md?ref=1f24c027d0916dfd608625cc9cf7e2eb66374e9f\" --jq '[.path, .sha, (.content | @base64d)] | tostring'; gh api \"repos/sjawhar/legion-smoke/compare/6d843f28732d...1f24c027d0916dfd608625cc9cf7e2eb66374e9f\" --jq '[.files[] | select(.filename | startswith(\".legion/\") | not) | {filename,status,additions,deletions}] | tostring'",
+      "observed": "[\"smoke/LEGSMOKE-1139.md\",\"5e49cf05dfe343dd080708a2b6192ee6c5699674\",\"LEGSMOKE-1139: Upgrade rehearsal handoff child (/tmp/legion-e2e4b.178207.rtvOSiAa)\\n\"] (exit 0); compare main tip 6d843f28732d...head lists exactly one non-.legion file: [{\"additions\":1,\"deletions\":0,\"filename\":\"smoke/LEGSMOKE-1139.md\",\"status\":\"added\"}]. PR #791 opened at this head, base main, body carries `Dispatch: LEGSMOKE-1139`.",
+      "headSha": "1f24c027d0916dfd608625cc9cf7e2eb66374e9f",
+      "negativeControl": "gh api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1139.md?ref=6d843f28732d\" (the base main tip, before this change) -> {\"message\":\"Not Found\",\"status\":\"404\"}, gh: Not Found (HTTP 404), exit 1."
+    }
+  ],
+  "filesChanged": [
+    "smoke/LEGSMOKE-1139.md (added, one line: `LEGSMOKE-1139: Upgrade rehearsal handoff child (/tmp/legion-e2e4b.178207.rtvOSiAa)`)"
+  ],
+  "localChecks": [
+    "The repository names no lint, type or unit lane for smoke/*.md: .github/workflows/ci.yml is `sleep 20 && exit 0`, fail-on-demand.yml fails only when `.fail-me` exists (it does not). Verified the working-copy diff with `jj diff --git` (one added file) and the file bytes with `od -c` (83 bytes, newline-terminated) before the commit."
+  ],
+  "trickyParts": [
+    "The issue's spec document (dispatch://LEGSMOKE-1139/artifact/spec, version 1) has no body and the issue no acceptance criteria; the change follows the repository's established convention from earlier Stage 4b children (e.g. smoke/LEGSMOKE-1070.md in #767).",
+    "Docs-only diff: no ce-simplify-code pass and no Thermo line, per skill://legion-worker/references/pr-body.md."
+  ],
+  "deviations": [],
+  "openQuestions": [],
+  "discoveredComplexity": []
+}
