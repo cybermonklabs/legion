@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "phase": "review",
+  "issue": "LEGSMOKE-1110",
+  "completed": "2026-10-24T07:25:23Z",
+  "decision": "approved",
+  "critical": 0,
+  "important": 0,
+  "minor": 0,
+  "keyFindings": [],
+  "round": 1,
+  "reviewedHead": "a4dfa742c49f3931b4826ddf71e6e5340cd40385",
+  "codeHead": "8b180fd6e5c910ab8440f295d05ebfef9c45aa26",
+  "requiredSkills": "plan.json requiredSkills.review = none (empty spec, fixture repository); followed skill://legion-worker, skill://legion-worker/references/merge-gate.md, skill://legion-worker/references/pr-body.md and the Security Guidelines of skill://thermonuclear-deep-review; AGENTS.md fixture touch run.",
+  "ciRead": "Required set on main: rulesets {gate}; branch protection: none. CI head (newest pull_request run on legion/LEGSMOKE-1110) = 8b180fd6e5c910ab8440f295d05ebfef9c45aa26: ci 40073553067 success, fail-on-demand 40073553080 success; check-runs at 8b180fd6: gate success x2, check success x2. compare/8b180fd6...a4dfa742 all(startswith('.legion/')) = true. PR body CI line's run ids verified via gh run view (headSha 8b180fd6, success).",
+  "threads": "reviewThreads: 0; reviews: 0 before this round (gh api graphql at a4dfa742). Nothing to answer; no bot threads.",
+  "proofLines": "E2E (implementer) present at head 8b180fd6 (GitHub contents API, negative controls 404 at main/fork point, altered-line digests); E2E (tester) present at head 212aa736 (cmp against the live Dispatch title, negative controls wrong key/altered title/sibling path 404). Reviewer re-read the marker at a4dfa742: 84 bytes, sha256 05b74dc853e1ef51e5f2e8d4c2a67c770b5838fa4bf74c7464cf2aff3b73a820, final byte LF, text equals `LEGSMOKE-1110: ` + Dispatch title; ?ref=main -> 404.",
+  "thermonuclear": "not run: docs-only diff (one markdown marker file plus .legion/ handoffs; no runtime code).",
+  "contractChangeCensus": "not required: the diff adds no refusal, required field, rename/removal, or signature change at any process or package boundary.",
+  "security": "Security: no sensitive surface in this diff.",
+  "notes": "Stage 4b proof review round on the disposable LEGSMOKE fixture, directed by targeted Dispatch message 39bacc8a-0693-42a5-bb0c-5a5d2b41c675. PR body `Look at first` and `Not proven / risk` written at a4dfa742."
+}
