@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "phase": "review",
+  "issue": "LEGSMOKE-1094",
+  "completed": "2026-10-24T01:19:00Z",
+  "pullRequest": "https://github.com/sjawhar/legion-smoke/pull/776",
+  "round": 1,
+  "reviewedHead": "9f0d15c05037d18d77b0647c9481cdede1a80e81",
+  "codeHead": "4e7d3053aa97681c3d4320911ccb3604cd43371d",
+  "decision": "approved",
+  "critical": 0,
+  "important": 0,
+  "minor": 0,
+  "keyFindings": [],
+  "requiredSkillsFollowed": [
+    "legion-worker (plan.json requiredSkills.review): CI read from GitHub (required set, CI head, check-runs, compare), proof lines verified on GitHub, handoff/push/handoff_complete protocol; merge-gate.md for the round's order; pr-body.md for the Look at first / Not proven lines; review-threads.md (no threads exist)."
+  ],
+  "ciRead": {
+    "requiredSet": "rulesets on main: [gate]; branch protection: none",
+    "ciHead": "4e7d3053aa97681c3d4320911ccb3604cd43371d (newest pull_request run on legion/LEGSMOKE-1094)",
+    "checkRuns": "check x2 success, gate x2 success at 4e7d3053 (runs 40048692769, 40048692678 pull_request; 40048607297, 40048607289 push; each verified at headSha 4e7d3053 via gh run view)",
+    "onlyLegionSince": "compare 4e7d3053...9f0d15c0 files all under .legion/ -> true"
+  },
+  "proofChecks": {
+    "implementer": "E2E (implementer) present; its figures (sha256 e9389e24885958df25381da8d4eb57727d7d6f10b02cef1a9ebafa54e721b042, 84 bytes, 1 line, LF-terminated) re-observed by reading smoke/LEGSMOKE-1094.md at ?ref=9f0d15c0 via the GitHub contents API and cmp against the workspace file; negative control re-run: the path at ?ref=main -> HTTP 404.",
+    "tester": "E2E (tester) present with its own negative control and the verbatim re-run of the implementer's command; test.json implementerProof.verdict verified, failures [].",
+    "spec": "Root spec dispatch://LEGSMOKE-1090/artifact/spec asks for one new Markdown file under smoke/ holding a single line naming the issue; the diff outside .legion/ is exactly smoke/LEGSMOKE-1094.md (+1/-0), matching sibling smoke/LEGSMOKE-1070.md's one-line LF shape. plan.json specDepartures: []."
+  },
+  "threads": "0 review threads and 0 prior reviews on #776 (gh api graphql at 9f0d15c0); nothing to answer or name to the implementer.",
+  "thermonuclear": "not run: docs-only diff (one Markdown marker plus .legion/ handoffs), no runtime code; Thermo line omitted per pr-body.md.",
+  "security": "no sensitive surface in this diff.",
+  "contractChangeCensus": "not applicable: no refusal, required field, removed/renamed field or signature change.",
+  "codegraph": "not queried: the diff exports no symbol.",
+  "observations": [
+    "plan.json's summary says the child's spec carries no product change; the root spec (dispatch://LEGSMOKE-1090/artifact/spec) does ask for the one-file marker, and the implementer followed it with the driver's message #7. Plan text only; retro removes .legion/, so no finding."
+  ],
+  "prBodyEdits": "Look at first: smoke/LEGSMOKE-1094.md:1; Not proven / risk: none (tester failures [], no unproven claim, no proof-check comment on the PR)."
+}
