@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-1139",
+  "completed": "2026-10-24T23:23:43Z",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: the implementer follows the shared phase-worker contract (workspace binding, handoff write, push, handoff_complete); the Stage 4b proof instructions name no other implementation surface."
+    ],
+    "test": [
+      "legion-worker: the tester's evidence rules and handoff live there; the repository carries no test or smoke skill of its own."
+    ],
+    "review": [
+      "legion-worker: review-thread and merge-gate references under it define the review round; the repository carries no review skill of its own."
+    ]
+  },
+  "plan": {
+    "summary": "Stage 4b upgrade rehearsal: the targeted driver message for this planning phase directed the planner to write and commit the plan handoff and complete, so this plan records that operation and the empty spec it was planned against.",
+    "specRead": "dispatch://LEGSMOKE-1139/artifact/spec (version 1, no body); issue LEGSMOKE-1139 carries no acceptance criteria, labels, or components.",
+    "tasks": [
+      {
+        "phase": "implementing",
+        "task": "Act only on the next targeted driver message for the implementing phase; run `sleep 300` on the task line before replying WAITING, as the Stage 4b proof instructions say.",
+        "surface": "none: the issue defines no behaviour change to prove; the proof exercises the workflow itself.",
+        "check": "The implementer's handoff `.legion/LEGSMOKE-1139/implement.json` is committed and pushed on legion/LEGSMOKE-1139 before handoff_complete."
+      }
+    ],
+    "acceptance": [
+      {
+        "criterion": "plan.json committed on legion/LEGSMOKE-1139 and pushed to origin with a handoff-only trailer",
+        "check": "jj log -r 'legion/LEGSMOKE-1139@origin' shows the `plan: record handoff` commit carrying only .legion/LEGSMOKE-1139/plan.json, its description ending in `skip-checks: true` after two empty lines."
+      }
+    ]
+  },
+  "gapAnalysis": {
+    "error": "not run: the Stage 4b proof's targeted message for this phase directed the handoff write and completion directly, and the spec document has no body or acceptance criteria to analyse."
+  },
+  "planReview": {
+    "verdict": "failed",
+    "rounds": 0,
+    "error": "not run: the Stage 4b proof's targeted message for this phase directed the handoff write and completion directly; no plan content beyond this handoff exists to review."
+  },
+  "specDepartures": []
+}
