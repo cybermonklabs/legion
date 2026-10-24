@@ -1,0 +1,84 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-1138",
+  "completed": "2026-10-24T21:56:30Z",
+  "planDocument": "dispatch://LEGSMOKE-1138/artifact/plan-md",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: the phase-worker contract (turn-start jj rule, push rule, PR template, proof definition in references/pr-body.md, identity check in references/default-branch-check.md); AGENTS.md's fixture step runs first. The repository's fixture-omp-skill and fixture-claude-skill hold one fixture token each and no procedure, so they do not drive the change."
+    ],
+    "test": [
+      "legion-worker: the tester's verification contract in references/pr-body.md (re-run the implementer's proof, implementerProof {verdict, how}, own proof array, read CI for static evidence; never rerun CI)."
+    ],
+    "review": [
+      "legion-worker: review-round order in references/merge-gate.md and thread handling in references/review-threads.md; the approved head is read from GitHub (docs/solutions/legion/read-the-approved-head-from-github-not-the-review-handoff-LEGSMOKE-1062.md)."
+    ]
+  },
+  "constants": {
+    "repository": "sjawhar/legion-smoke",
+    "defaultBranch": "main",
+    "branch": "legion/LEGSMOKE-1138",
+    "B": "6d843f28732dd82163065cb4d2248e488f68ca0b",
+    "F": "6d843f28732dd82163065cb4d2248e488f68ca0b",
+    "file": "smoke/LEGSMOKE-1138.md",
+    "lineRule": "LEGSMOKE-1138: <issue title as read at implementing> + one LF",
+    "lineAtPlanning": "LEGSMOKE-1138: Upgrade rehearsal fallback child (/tmp/legion-e2e4b.178207.rtvOSiAa)",
+    "expectedBytes": 84,
+    "expectedSha256": "0dd91ec68151a0271961f9fcdd16dbd4396c0dabc430c6ca7979622ecb83ab86",
+    "alteredControlSha256": "806468beea92891c997892c9970dbf824bb83bac773f134ca84bf501bc81ba09",
+    "commitMessage": "smoke: add LEGSMOKE-1138 marker file",
+    "requiredChecks": ["gate"],
+    "workflows": {"ci": "check", "fail-on-demand": "gate"},
+    "allowedPathsFromB": ["smoke/LEGSMOKE-1138.md", ".legion/LEGSMOKE-1138/**", "docs/solutions/**"],
+    "preStateReadAt": "2026-10-24T21:44Z",
+    "preState": {
+      "contentsAtMain": "HTTP/2.0 404 Not Found",
+      "commitsByPathOnMain": 0,
+      "pullRequestsFromBranch": "[]",
+      "branchAtOrigin": "6d843f28732dd82163065cb4d2248e488f68ca0b (== main@origin; no commit of its own)",
+      "workingCopy": ".codegraph/ excluded by the clone's .git/info/exclude line 7; snapshot.auto-track = all(); jj status clean"
+    }
+  },
+  "gapAnalysis": {
+    "findings": [
+      {
+        "finding": "No root .gitignore; .codegraph/.gitignore un-ignores itself, so if untracked on main it could be snapshotted into the implementer's working copy and ride into the handoff commit after `jj split` moves only the marker; the local AC4 guard read `@-`, not `@`.",
+        "answer": "Measured: `.codegraph/` is excluded by the clone's `.git/info/exclude` line 7 (`git check-ignore -v .codegraph/.gitignore`), `snapshot.auto-track = all()`, `jj status` clean, `jj diff --from F --to @ --name-only` empty, `.codegraph` untracked at F. Plan adds a working-copy path guard (`--to @`) to the stop condition with the rule: leave a stray path out of every commit, never rm a path you did not author, report it."
+      },
+      {
+        "finding": "Scope ambiguity: the driver's message as recorded on the issue is truncated; the visible part asks for a plan handoff only, while the plan schedules every phase through the production check.",
+        "answer": "Plan quotes the whole message and settles the reading: the planning deliverable is the handoff alone (no code, no PR, no role started); the plan covers every later phase because the workflow runs them and the planner's charter is to plan them; the Stage 4b driver decides when each runs. Recorded as overturnable by the architect."
+      },
+      {
+        "finding": "Nothing on the issue says the child produces smoke/LEGSMOKE-1138.md; it could instead be the fallback executor of the parent's smoke/LEGSMOKE-1135.md.",
+        "answer": "Plan settles own-key with evidence: every marker on main names the issue whose branch landed it (PRs #763-#767); the parent's AC4 requires its own PR diff to be smoke/LEGSMOKE-1135.md, so a child landing that path races the parent; the proof instructions forbid work outside this issue's smoke branch; and the previous run's identical child planned its own key (dispatch://LEGSMOKE-1131/artifact/plan-md). Flagged to the architect as overturnable."
+      },
+      {
+        "finding": "AC3 has two mutually exclusive outcomes (one or two lines) and no readable fact selecting which a later phase must check.",
+        "answer": "Plan adds a selector: the reviewer writes `secondLineRequested: true|false` in review.json, which must agree with `gh api repos/sjawhar/legion-smoke/pulls/<n>/reviews --jq '[.[] | select(.state==\"CHANGES_REQUESTED\")] | length'` (>=1 <=> true); expected lines = 1 + (secondLineRequested ? 1 : 0); the implementer records secondCodeHead and secondLineSha256 when true."
+      },
+      {
+        "finding": "The branch pre-exists at origin, so the LEGSMOKE-1056 reset invariant (compare/B...head == ahead, B ancestor of the remote bookmark) belongs in every phase's pre-push guard; the plan's stop condition omitted it.",
+        "answer": "Plan adds constants B = F = 6d843f28 (no seed commit), the per-phase guard `gh api repos/sjawhar/legion-smoke/compare/6d843f28...<head> --jq .status` == ahead plus the ancestor check, the 'nothing else on the branch' fact as the path set from B with .legion/LEGSMOKE-1138/ excluded (empty), and the obligation on any other answer: stop, report, re-use no recorded proof SHA."
+      },
+      {
+        "finding": "The pre-state table, both sha256 values and the commit-message convention are command outputs the analyst could not re-run; no re-read step covered the hash or the convention.",
+        "answer": "Plan makes the hash re-derived: at implementing `printf '%s\\n' \"LEGSMOKE-1138: $(dispatch read --issue LEGSMOKE-1138 | sed -n 's/^Title: //p')\" | sha256sum` must print 0dd91ec6...ab86 or the implementer re-derives and records expectedBytes/expectedSha256/titleAtImplementing. The convention claim now quotes the five `git log --oneline -n 5 -- smoke/` lines it rests on."
+      },
+      {
+        "finding": "AC4's READY expectation asserted that a docs/solutions/ note exists, where the parent spec only permits that path.",
+        "answer": "Plan restates AC4 as a set relation: {marker} ⊆ S ⊆ {marker} ∪ .legion/LEGSMOKE-1138/** ∪ docs/solutions/** before retro, and {marker} ⊆ S ⊆ {marker} ∪ docs/solutions/** at READY; a docs/solutions/ note is allowed, not required by this acceptance."
+      },
+      {
+        "finding": "The marker text derives from the issue title (which embeds a run-specific /tmp path) while acceptance is pinned to a byte count and hash computed at planning; nothing says which governs if the title changes.",
+        "answer": "Plan states the content rule as `LEGSMOKE-1138: <title as read at implementing>`; 84 / 0dd91ec6...ab86 are the expected values for the title as read on 2026-10-24; a changed title means the implementer re-derives and records both, never writes a stale line to match the planning hash."
+      }
+    ]
+  },
+  "planReview": {
+    "verdict": "approved",
+    "rounds": 1
+  },
+  "specDepartures": []
+}
