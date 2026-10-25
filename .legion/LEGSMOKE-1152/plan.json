@@ -1,0 +1,233 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-1152",
+  "completed": "2026-10-25T02:34:00Z",
+  "planDocument": "dispatch://LEGSMOKE-1152/artifact/plan-md",
+  "summary": "Add one new file smoke/LEGSMOKE-1152.md (85 bytes: `LEGSMOKE-1152: Upgrade rehearsal fallback child (/tmp/legion-e2e4b.2732610.7edO7DPj)` + LF, sha256 d9fd1a6588111d1679e5e6991e858b17ea07add908b5ffbcfb796c17c581de9f) on branch legion/LEGSMOKE-1152 from B 6d843f28732dd82163065cb4d2248e488f68ca0b. If and only if a driver-ordered REQUEST_CHANGES round by trajectory-s-legion-reviewer[bot] carries one top-level inline comment on that file quoting `Legion proof review round 1 (LEGSMOKE)`, append exactly that line + LF as line 2 (124 bytes, sha256 6b235d5d748d7888f62ef49761737cc2a195d9349b01cc6dfa0a9654f410af8d). Nothing else changes outside .legion/LEGSMOKE-1152/ and docs/solutions/. Docs-only: no ce-simplify-code pass, no Thermo line, no test file. Full plan: dispatch://LEGSMOKE-1152/artifact/plan-md.",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker — references/pr-body.md for the PR body template and the proof definition, references/review-threads.md for the review-line round, references/conflicts-and-rewrites.md only on a real conflict, references/merge-gate.md for the production check after the close; ce-simplify-code is read but not run because the diff is docs-only",
+      "legion-retro — the revived implementer's retro: the docs/solutions/ note, the removal of .legion/LEGSMOKE-1152/, no handoff write",
+      "dispatch — the retro message and the production-check record follow its message rules"
+    ],
+    "test": [
+      "legion-worker — references/pr-body.md: the tester's own E2E (tester) proof, implementerProof {verdict, how}, failures[]; the change has no runtime and the spec permits no second file, so the tester writes no test and its break attempts are read-only (plan §5)"
+    ],
+    "review": [
+      "legion-worker — references/merge-gate.md: one review per round, the CI-head read with the compare proving only .legion/ changed since, approval named by SHA, docs-only skips Thermo, protection 403 reported never guessed; references/review-threads.md: thread disposition and Accepted:"
+    ]
+  },
+  "constants": {
+    "repo": "sjawhar/legion-smoke",
+    "branch": "legion/LEGSMOKE-1152",
+    "B": "6d843f28732dd82163065cb4d2248e488f68ca0b",
+    "F": "6d843f28732dd82163065cb4d2248e488f68ca0b",
+    "file": "smoke/LEGSMOKE-1152.md",
+    "line1": "LEGSMOKE-1152: Upgrade rehearsal fallback child (/tmp/legion-e2e4b.2732610.7edO7DPj)",
+    "line1Printf": "printf 'LEGSMOKE-1152: Upgrade rehearsal fallback child (/tmp/legion-e2e4b.2732610.7edO7DPj)\\n'",
+    "oneLine": {"bytes": 85, "lines": 1, "lastByte": "0a", "sha256": "d9fd1a6588111d1679e5e6991e858b17ea07add908b5ffbcfb796c17c581de9f"},
+    "reviewLine": "Legion proof review round 1 (LEGSMOKE)",
+    "twoLines": {"bytes": 124, "lines": 2, "lastByte": "0a", "sha256": "6b235d5d748d7888f62ef49761737cc2a195d9349b01cc6dfa0a9654f410af8d"},
+    "commitMessage": "smoke: add LEGSMOKE-1152 marker file",
+    "prTitle": "smoke: add LEGSMOKE-1152 marker file",
+    "reviewLineCommitMessage": "smoke: add the review round 1 line to LEGSMOKE-1152.md",
+    "failMeCureCommitMessage": "smoke: remove .fail-me so fail-on-demand passes again",
+    "implementerLogin": "trajectory-s-legion-implementer[bot]",
+    "reviewerLogin": "trajectory-s-legion-reviewer[bot]",
+    "workflows": {"ci": "check", "fail-on-demand": "gate"},
+    "requiredSet": "branches/main/protection -> HTTP 403 for the role Apps; criteria use the observed set check,gate; the reviewer reports the 403, never guesses",
+    "allowedPaths": ["smoke/LEGSMOKE-1152.md", ".legion/LEGSMOKE-1152/**", "docs/solutions/**"],
+    "docsOnly": true,
+    "agentsMdStep": "mkdir -p /tmp/legion-fixture && touch /tmp/legion-fixture/agents-md",
+    "sharedVars": "R=sjawhar/legion-smoke; B=6d843f28732dd82163065cb4d2248e488f68ca0b; N=<pr number>; S=<full 40-char sha>; T=$(mktemp -d)"
+  },
+  "heads": {
+    "P": "planner `plan: record handoff` (trailer; no runs; implementer re-checks A1: scoped run list [] and last message line skip-checks: true)",
+    "C1": "implementer `smoke: add LEGSMOKE-1152 marker file` = firstCodeHead (CI runs; implementer proves criteria 1-3)",
+    "C2": "implementer `implement: record handoff` (trailer; carried from C1; tester proves 1-2 at C2 and 3 at C1 with compare C1...C2 all .legion/)",
+    "C3": "tester `test: record handoff` (trailer; carried)",
+    "R": "reviewer changes-requested `review: record handoff`, only on a driver-ordered round (trailer; carried)",
+    "C1prime_C2prime_C3prime": "review-line code head (CI runs) and the handoffs after it (trailers), K=1",
+    "C4": "reviewer approval `review: record handoff` (trailer; APPROVE names C4 by commit_id; CI read at the CI head per merge-gate.md)",
+    "C5": "retro: docs/solutions/ note and removal of .legion/LEGSMOKE-1152/ (no trailer; CI runs; revived implementer re-proves 1-3; merger judges C5)",
+    "M": "merge commit on main from pulls/$N --jq .merge_commit_sha (implementer's production check, criterion 4)",
+    "rules": "code head = own commit changes a path outside .legion/LEGSMOKE-1152/; handoff head = last message line `skip-checks: true` and files all under .legion/LEGSMOKE-1152/ (commits API); approved head from pulls/$N/reviews APPROVED commit_id, never review.json (its field is readHead); no run or check-run read at B (138 runs share it); every run read --limit 200 with a headBranch filter"
+  },
+  "criteria": [
+    {
+      "id": 1,
+      "criterion": "From B the branch adds smoke/LEGSMOKE-1152.md alone: compare/$B...$S is `ahead` and its file list, with exactly the prefixes .legion/LEGSMOKE-1152/ and docs/solutions/ exempt, is exactly `added smoke/LEGSMOKE-1152.md`; equal to the live pulls/$N/files when S is the live head.",
+      "surface": "GitHub compare API from B at the pinned SHA plus the live pull request files API",
+      "command": "gh api \"repos/$R/compare/$B...$S\" --jq .status; gh api \"repos/$R/compare/$B...$S\" --jq '.files[] | \"\\(.status) \\(.filename)\"' > $T/files; cat $T/files; grep -v -E '^[a-z]+ (\\.legion/LEGSMOKE-1152/|docs/solutions/)' $T/files; gh api repos/$R/pulls/$N --jq .head.sha; gh api repos/$R/pulls/$N/files --paginate --jq '.[] | \"\\(.status) \\(.filename)\"' | diff $T/files -",
+      "expected": "ahead; unfiltered list printed; filtered output exactly `added smoke/LEGSMOKE-1152.md`; head.sha == $S and no diff when S is the live head",
+      "negativeControl": "the same filter over compare/ae7d702327d7984e32775cfbe13b5a83a262f0d8...6d843f28732dd82163065cb4d2248e488f68ca0b prints `modified .claude/skills/fixture-claude-skill/SKILL.md`, `modified .omp/skills/fixture-omp-skill/SKILL.md`, `added smoke/LEGSMOKE-1070.md` (measured 2026-10-25): foreign paths pass through",
+      "judgedAt": ["C1", "C2", "R", "C1'", "C2'", "C4", "C5", "M (frozen pulls/$N/files)"],
+      "link": "https://github.com/sjawhar/legion-smoke/compare/<B>...<S> and https://github.com/sjawhar/legion-smoke/pull/<N>/files"
+    },
+    {
+      "id": 2,
+      "criterion": "At the judged head smoke/LEGSMOKE-1152.md holds exactly line 1 (85 bytes, 1 line, last byte 0a, sha256 d9fd1a65…de9f) when K(S)=0, or exactly line 1 + the review line (124 bytes, 2 lines, sha256 6b235d5d…af8d) when K(S)>=1; never the other shape. K(S) counts top-level inline comments by trajectory-s-legion-reviewer[bot] on the file whose body contains the review line and whose created_at precedes S's committer date. Vacuous case: no such comment at the approved head -> K=0, one-line shape. Authoritative at C5 and M.",
+      "surface": "raw bytes at the explicit SHA via the contents API with Accept: application/vnd.github.raw+json",
+      "command": "D=$(gh api \"repos/$R/commits/$S\" --jq .commit.committer.date); K=$(gh api \"repos/$R/pulls/$N/comments\" --paginate --jq \".[] | select(.path==\\\"smoke/LEGSMOKE-1152.md\\\" and .in_reply_to_id==null and .user.login==\\\"trajectory-s-legion-reviewer[bot]\\\" and (.body|contains(\\\"Legion proof review round 1 (LEGSMOKE)\\\")) and (.created_at < \\\"$D\\\")) | .id\" | wc -l); echo \"S=$S D=$D K=$K\"; gh api -H \"Accept: application/vnd.github.raw+json\" \"repos/$R/contents/smoke/LEGSMOKE-1152.md?ref=$S\" > $T/f; wc -c < $T/f; wc -l < $T/f; tail -c1 $T/f | od -An -tx1; sha256sum < $T/f",
+      "expected": "K printed; K=0 -> 85 / 1 / 0a / d9fd1a6588111d1679e5e6991e858b17ea07add908b5ffbcfb796c17c581de9f; K>=1 -> 124 / 2 / 0a / 6b235d5d748d7888f62ef49761737cc2a195d9349b01cc6dfa0a9654f410af8d",
+      "negativeControl": "read-only: ?ref=$B -> HTTP 404 (B is also the fork point); ?ref=main -> HTTP 404 until the merge; the other arm's sha256 differs; `printf 'LEGSMOKE-1152x: …'` and a CRLF variant hash differently; the tester adds the JSON-route (.content | @base64d) equality and a second read at C2",
+      "judgedAt": ["C1", "C2", "R", "C1'", "C2'", "C4", "C5", "M and ?ref=main"],
+      "link": "https://github.com/sjawhar/legion-smoke/blob/<S>/smoke/LEGSMOKE-1152.md"
+    },
+    {
+      "id": 3,
+      "criterion": "Both workflows pass at the judged head: the run list at the full SHA with --limit 200 scoped to headBranch legion/LEGSMOKE-1152 is non-empty, every run completed/success, >=1 ci and >=1 fail-on-demand (two of each once the PR is open; the CI line cites the pull_request pair and names the push pair); contents/.fail-me?ref=$S -> 404. A handoff head is identified positively (last message line `skip-checks: true`, files all under .legion/LEGSMOKE-1152/) and carries the verdict of J, the nearest earlier commit (walk parents[0]) whose own files include a path outside .legion/LEGSMOKE-1152/; both SHAs recorded with jj diff --from J --to S --summary. [] at a code head is not yet judged, never a pass.",
+      "surface": "GitHub Actions runs at the full head SHA scoped by headBranch; contents API for .fail-me; commits API for the trailer and files",
+      "command": "gh run list --repo $R --commit $S --limit 200 --json name,event,status,conclusion,databaseId,headBranch --jq '.[] | select(.headBranch==\"legion/LEGSMOKE-1152\") | \"\\(.name) \\(.event) \\(.status)/\\(.conclusion) \\(.databaseId)\"'; gh api \"repos/$R/contents/.fail-me?ref=$S\"; gh api \"repos/$R/commits/$S\" --jq '{last: (.commit.message | rtrimstr(\"\\n\") | split(\"\\n\") | last), files: [.files[].filename], parent: .parents[0].sha} | tostring'",
+      "expected": "code head: non-empty scoped list, all completed/success, >=1 ci, >=1 fail-on-demand, .fail-me 404; handoff head: last == skip-checks: true, files only .legion/LEGSMOKE-1152/, [] in the scoped list, verdict carried from J",
+      "negativeControl": "positive control: the same query at ae7d702327d7984e32775cfbe13b5a83a262f0d8 scoped headBranch==main -> `fail-on-demand push completed/success 39993670610`, `ci push completed/success 39993670501`; negative: at 6d843f28… the default-limit list scoped main -> [] while --limit 200 -> 40001076855, 40001076868 (138 runs share that SHA); contains(\"skip-checks: true\") is true on both squash merges that ran CI on main, so only the last line discriminates (measured 2026-10-25)",
+      "settle": "gh pr checks $N --repo $R --watch --fail-fast in its own bash call; then re-read pulls/$N --jq .head.sha and the run list in a fresh call",
+      "judgedAt": ["C1", "C1'", "C5 (own verdict)", "C2, C3, R, C2', C3', C4 (carried from J)", "M: criterion 4 at the PR's final head.sha"],
+      "link": "https://github.com/sjawhar/legion-smoke/actions/runs/<databaseId> per run"
+    },
+    {
+      "id": 4,
+      "criterion": "After the merge: pulls/$N merged true; smoke/LEGSMOKE-1152.md at ?ref=<merge_commit_sha> and at ?ref=main matches the arm K(M) selects; the frozen pulls/$N/files filtered is exactly `added smoke/LEGSMOKE-1152.md`; runs at M scoped to headBranch main (--limit 200) are green (>=1 ci, >=1 fail-on-demand); criterion 3 holds at the PR's final head.sha. Production for this change is main read through the contents API: the merge carries it, there is no deploy step and nobody to notify, so the first look reports pass (or fail with a new issue), never pending. Strategy-independent: nothing inspects the merge commit's parents to pass.",
+      "surface": "the merged pull request, the contents API at the merge commit and at main, Actions runs on main",
+      "command": "gh api repos/$R/pulls/$N --jq '{state,merged,merge_commit_sha,head:.head.sha} | tostring'; M=<merge_commit_sha>; H=<head.sha>; criterion 2 with S=$M then the raw read with ?ref=main; gh api repos/$R/pulls/$N/files --paginate --jq '.[] | \"\\(.status) \\(.filename)\"' | grep -v -E '^[a-z]+ (\\.legion/LEGSMOKE-1152/|docs/solutions/)'; gh run list --repo $R --commit $M --limit 200 --json name,event,status,conclusion,databaseId,headBranch --jq '.[] | select(.headBranch==\"main\") | \"\\(.name) \\(.event) \\(.status)/\\(.conclusion) \\(.databaseId)\"'; criterion 3 with S=$H",
+      "expected": "merged true; K(M) printed; file shape per K(M) at $M and at main; filtered frozen list exactly `added smoke/LEGSMOKE-1152.md`; main-scoped runs at $M all completed/success with >=1 ci and >=1 fail-on-demand",
+      "negativeControl": "criterion 2 at ?ref=$B -> HTTP 404; the default-limit run list at M hides rows when a sibling branch creation shares M — the --limit 200 read is the evidence",
+      "owner": "implementer, production check (no phase, no handoff, no commit): PR body Production: line `main carries smoke/LEGSMOKE-1152.md (<bytes>/<lines>, sha256 <hash>, K=<k>) — merge commit <M>; woken by the merge`, one PR comment with the Legion footer, handoff_complete with verdict pass",
+      "closedUnmerged": "{merged false, merge_commit_sha null} with ?ref=main -> 404: report to the architect by envoy_publish; Production: stays `pending human merge`; no dispatch ask",
+      "judgedAt": ["M"],
+      "link": "https://github.com/sjawhar/legion-smoke/blob/main/smoke/LEGSMOKE-1152.md and the merge commit URL"
+    }
+  ],
+  "reviewLine": {
+    "literal": "Legion proof review round 1 (LEGSMOKE)",
+    "trigger": "only when the driver's targeted message orders the reviewer to ask for the in-scope line; not a correctness finding; review.json records driverOrdered: true with the message id; without it the reviewer approves and K stays 0",
+    "request": "one REQUEST_CHANGES review by trajectory-s-legion-reviewer[bot] on PR N via gh api --method POST repos/$R/pulls/$N/reviews --input $T/review.json with commit_id = R, the Legion footer in body, and exactly one comments[] entry {path: smoke/LEGSMOKE-1152.md, line: 1, side: RIGHT, body: reviewerCommentBody}; a COMMENT review, a PR-level comment, a reply, a human's comment or a REQUEST_CHANGES for another reason changes no byte",
+    "reviewerCommentBody": "Please append exactly this line as line 2 of this file, the spec's in-scope review line: Legion proof review round 1 (LEGSMOKE)",
+    "predicateKNow": "the criterion-2 filter without the created_at clause; the implementer appends the line when K_now >= 1 after that round",
+    "printfTwoLines": "printf 'LEGSMOKE-1152: Upgrade rehearsal fallback child (/tmp/legion-e2e4b.2732610.7edO7DPj)\\nLegion proof review round 1 (LEGSMOKE)\\n'",
+    "answer": "from the remote tip (jj git fetch && jj new legion/LEGSMOKE-1152@origin) append the literal + LF as line 2 (line 1 unchanged; printfTwoLines | cmp; 124/2); jj split -m \"smoke: add the review round 1 line to LEGSMOKE-1152.md\" smoke/LEGSMOKE-1152.md; push -> C1' (CI runs); reply on the thread via POST repos/$R/pulls/$N/comments/<id>/replies with `Fixed in <C1' sha>: appended the review line as line 2; file is 124 bytes / 2 lines.` plus the Legion footer; re-prove criteria 1-3 at C1'; rebuild implement.json (proof at C1', the C1 round kept in rounds[]); resolve the thread by its GraphQL mutation after the reviewer's Accepted: reply",
+    "rule": "at most one appended line ever",
+    "mismatch": "a reviewer comment asking for other wording is not a request: append nothing, reply quoting the literal and asking for a re-post that quotes it, report to the architect (D3)"
+  },
+  "implementerSteps": [
+    "AGENTS.md step; on the daemon's task line and on a new task for the same phase: sleep 300 as one bash call (timeout 600), then reply WAITING; act on the driver's targeted message (messageGating)",
+    "cd -- \"$LEGION_WORKSPACE\" && jj -R \"$LEGION_WORKSPACE\" git fetch && jj -R \"$LEGION_WORKSPACE\" status; read plan.json and skill://legion-worker/references/pr-body.md; jj log -r @ -T empty -> jj new @- on true, jj new on false; jj new legion/LEGSMOKE-1152@origin; identity log main@origin..@ shows only P by the review App and your own commits (any other author -> stop conditions)",
+    "pre-state facts (never the base SHA): contents/smoke/LEGSMOKE-1152.md?ref=main -> 404; gh pr list --repo $R --head legion/LEGSMOKE-1152 --state all -> none; compare/$B...legion/LEGSMOKE-1152 -> ahead with files only under .legion/LEGSMOKE-1152/; A1: scoped run list at P -> [] and last message line skip-checks: true; any other answer -> stop, report; a moved main@origin is normal",
+    "write smoke/LEGSMOKE-1152.md = line1 + LF with the write tool; wc -c 85; wc -l 1; line1Printf | cmp - smoke/LEGSMOKE-1152.md; sha256sum; jj status lists only that file; jj -R \"$LEGION_WORKSPACE\" split -m \"smoke: add LEGSMOKE-1152 marker file\" smoke/LEGSMOKE-1152.md; jj diff --from $B --to @- --name-only within allowedPaths; bookmark set + git push (no trailer) -> C1 = firstCodeHead",
+    "gh pr create --repo $R --base main --head legion/LEGSMOKE-1152 --title \"smoke: add LEGSMOKE-1152 marker file\" --body-file $T/body.md; body line 1 `Dispatch: LEGSMOKE-1152`, then the pr-body.md template: Outcome \"Anyone reading the smoke sandbox sees a marker file recording that Legion drove issue LEGSMOKE-1152 through its whole workflow.\"; Why ending in (LEGSMOKE-1152); Change bullets; Proven by; Size `1 file changed, +1/−0 — merge diff from B 6d843f28; handoffs under .legion/LEGSMOKE-1152/ excluded, removed by retro`; CI; Threads 0 resolved, 0 unresolved; no Thermo line; E2E (implementer) with links; Production `pending human merge`; Fast-follow none; Chain not stacked",
+    "settle CI at C1 (criteria[2].settle); prove criteria 1-3 at C1 with negative controls; write the CI and E2E (implementer) lines into the live body (gh api repos/$R/pulls/$N --jq .body > $T/body.md; edit; gh api --method PATCH repos/$R/pulls/$N -F body=@$T/body.md; read back and diff)",
+    "write .legion/LEGSMOKE-1152/implement.json: schemaVersion, phase, issue, completed, prNumber, prUrl, firstCodeHead, headSha, proof[] (criteria 1-3, six non-empty strings each, K and comment ids in observed), assumptionChecks (A1 and the pre-state facts), rounds[], deviations[]; jj split -m \"implement: record handoff\" .legion/LEGSMOKE-1152/implement.json; trailer describe; push -> C2; handoff_complete",
+    "later rounds: the review line (reviewLine); a red head (redHead); retro at C5 per skill://legion-retro (docs/solutions/legion/<slug>-LEGSMOKE-1152.md, removal of .legion/LEGSMOKE-1152/, Size refreshed, E2E (implementer) extended with `re-checked at C5 <sha>: criteria 1-3 hold`, retro dispatch message with the footer, handoff_complete with no handoff write); the production check (criteria[3], messageGating / D5)"
+  ],
+  "tester": {
+    "writesTests": false,
+    "reason": "the changed surface has no runtime (one Markdown line); ci runs no suite (sleep 20 && exit 0); the Go and Python files under fixture/ and fixture_py/ are the driver's fixture, not this change's surface; the spec permits no second file; a break found is a report to the architect, never a new file",
+    "steps": [
+      "AGENTS.md step; read the targeted message, plan.json and implement.json; re-run each proof[].command at its recorded full SHA from your own mktemp -d; record implementerProof {verdict, how}; a missing, blank, short-SHA or non-matching proof is verdict fail with a failures[] entry",
+      "read-only break attempts: altered-string and CRLF hashes mismatch; no-trailing-LF arm (EOF after byte 84); ?ref=$B and ?ref=main 404; JSON route (.content | @base64d) sha256 equals the raw route; a second read at C2 equals the read at C1; default-limit run list versus --limit 200",
+      "own proof at C2: criteria 1-2 at C2, criterion 3 at C1 with compare/C1...C2 --jq '[.files[].filename] | all(startswith(\".legion/\"))' -> true; E2E (tester) line with links and `Verified the implementer's proof by re-running its commands at <C1>`",
+      "test.json with implementerProof, failures ([]), proof[], writesTests false, observations; jj split -m \"test: record handoff\" .legion/LEGSMOKE-1152/test.json; trailer; push -> C3; fresh call: trailer read and scoped run list at C3 ([] and skip-checks: true expected; if runs appear, settle and prove criterion 3 at C3); handoff_complete with verdict pass|fail",
+      "if the daemon interrupts your turn (CI red above your head), stop; do not resume"
+    ]
+  },
+  "reviewer": {
+    "docsOnly": true,
+    "steps": [
+      "AGENTS.md step; verify CI, Threads, E2E (implementer) and E2E (tester) against GitHub, never from a handoff: CI head = actions/runs?branch=legion/LEGSMOKE-1152&event=pull_request&per_page=30 --jq '.workflow_runs[0].head_sha'; its check-runs (--paginate): check and gate completed/success; compare/<ci head>...<headRefOid> all .legion/ -> true; required-set reads: rulesets read, protection 403 -> report in review.json (requiredSetRead) and to the architect, do not guess, proceed on the observed set; criteria 1-2 at the head you read with K printed; a missing E2E line -> REQUEST_CHANGES naming it",
+      "write `Look at first: smoke/LEGSMOKE-1152.md:1` (and :2 after a review line) and `Not proven / risk` into the live body (`criterion 4 pending the merge` stands until the merge; none is invalid while it does)",
+      "review-line round only on the driver's targeted message: review.json (decision changes_requested, readHead, driverOrdered true, message id); jj split -m \"review: record handoff\"; trailer; push -> R; one REQUEST_CHANGES of R by commit_id per reviewLine.request; handoff_complete; never a second appended line",
+      "approval: review.json (decision approved, readHead, counts, keyFindings, requiredSetRead); split; trailer; push -> C4; one APPROVE naming C4 by commit_id with the Legion footer (body opens `APPROVE head <C4> (code head <C1 or C1'>, only .legion/ above it)`); handoff_complete; docs-only: no Thermo pair (a driver-ordered one is recorded in review.json, not the body); reply Accepted: on the implementer's thread reply if a round happened",
+      "if the daemon interrupts your turn (CI red), stop and do not resume"
+    ]
+  },
+  "merger": {
+    "steps": [
+      "jj git fetch; approved SHA from pulls/$N/reviews (APPROVED commit_id); jj -R \"$LEGION_WORKSPACE\" diff --from <approved> --to <C5> --summary -> only docs/solutions/ adds and .legion/LEGSMOKE-1152/ deletions; anything else -> report to the architect, no READY",
+      "criteria 1-3 at C5 (criterion 3 its own verdict there); both E2E lines present",
+      "design-gate pre-state: at planning the parent spec LEGSMOKE-1149 was at v2 with no artifact.approved event; a READY the gate refuses or holds is reported to the architect and the daemon submits it when the approval lands; never re-sent to force it",
+      "READY packet per merge-gate.md: `READY #<N> at <C5> (approved at <C4>) for LEGSMOKE-1152 (<url>)`, Outcome, Not proven / risk, the --summary output, both E2E lines; handoff_complete with ready true"
+    ]
+  },
+  "stopConditions": [
+    "compare/$B...$S not `ahead`, or B not an ancestor of legion/LEGSMOKE-1152@origin (branch reset): stop, report, re-use no recorded proof SHA",
+    "a path outside allowedPaths in criterion 1's unfiltered list, or a foreign modification in jj status: never committed (jj split explicit paths only), never rewritten; reported to the architect; above the approved head it is the merger's READY_UNREVIEWED_CHANGE report and the architect's decision",
+    "an author on the chain that is no Legion role App: report with the log",
+    "a CONFLICTING pull request: the base enters only then, as a forward merge, never jj rebase; a retarget likewise",
+    "a refused push (remote moved): report with the output, never force"
+  ],
+  "redHead": {
+    "firstCommands": [
+      "gh api \"repos/$R/contents/.fail-me?ref=$S\" --jq '{path,size} | tostring'",
+      "gh api \"repos/$R/commits/$S\" --jq '{author: .author.login, committer: .commit.committer.email, message: .commit.message, parent: .parents[0].sha} | tostring'"
+    ],
+    "failMeAbsent": "the job failed on its own: gh run rerun <run-id> --failed; push nothing",
+    "failMePresent": "it came from a commit outside the tree (no role creates .fail-me: there is no root .gitignore, so a probe is snapshotted into the next commit): the implementer cures it in one deletion-only commit from the remote tip (`smoke: remove .fail-me so fail-on-demand passes again`; jj diff --summary -> D .fail-me only); push (CI runs); settle; re-prove criteria 1-3 at the cured head; record the outside commit's identity in implement.json rounds[] and deviations[]; report to the architect; never rewrite or abandon the outside commit",
+    "aboveApproval": "a red above C4/C5 is the merger's report in place of READY; the architect decides the backward move",
+    "restamp": "every proof at a head no longer in the judged chain is re-run at the cured head; the superseded proof stays in rounds[], not proof[]"
+  },
+  "messageGating": "deployment instructions: every role acts only on a targeted human Dispatch message naming the next exact proof operation (dispatch read --issue LEGSMOKE-1152 lists the events; the message arrives as an Envoy delivery); the daemon's task line is not that message: reply WAITING. The implementer's sleep 300 rule applies on its task line and on a new task for the same phase. R, C1', C2', C3' and any .fail-me exercise exist only if a message orders them; a child-closed/child-status notice orders nothing. Retro's re-proof at C5 and the production check are the implementer's own proof rules the deployment instructions never override; D5 names the one open timing question. A role the daemon starts that has no targeted message by the end of its turn replies WAITING and tells the architect by envoy_publish which operation waits.",
+  "decisions": [
+    {"id": "D1", "forArchitect": true, "topic": "which key the file names", "decision": "the child's spec is empty; the plan applies the parent's one-file design with the child's key: line 1 names LEGSMOKE-1152, not the parent's literal LEGSMOKE-1149 (every prior child marker names its own key: smoke/LEGSMOKE-1070.md, smoke/LEGSMOKE-577.md); recorded as specDepartures[0]; the architect decides whether to write the child's spec or change the key"},
+    {"id": "D2", "forArchitect": true, "topic": "retro's docs/solutions note versus `nothing else changes`", "decision": "criterion 1 exempts exactly .legion/LEGSMOKE-1152/ and docs/solutions/; retro's learning note lands in the merge beside the marker (as PR #767's did); recorded as specDepartures[1]; the architect may direct retro to write no note"},
+    {"id": "D3", "topic": "what `a review asked for one more line` means", "decision": "the pinned predicate K of criterion 2 / reviewLine; vacuous case K=0; wording mismatch appends nothing and is reported"},
+    {"id": "D4", "topic": "which head each criterion is judged at", "decision": "the heads table; file criteria at every judged head, CI at code heads, carried at handoff heads from J; the approved head from GitHub"},
+    {"id": "D5", "forArchitect": true, "topic": "message gating versus the production check", "decision": "message gating holds for every phase task; the production-check task carries no phase, so it is not `a new task for the same phase` and gets no sleep 300; the implementer replies WAITING on it and tells the architect at once that the look is ready to report pass on the driver's message (a look is bounded at 2 hours; this repository has no issue.deployed wake); recommendation: the check acts without a targeted message as one of the four never-overridden rules; the architect/operator decides"},
+    {"id": "D6", "topic": "production for a Markdown file", "decision": "main of sjawhar/legion-smoke via the contents API at M and ?ref=main; the merge carries it; first look pass; strategy-independent; no deploy step, no dispatch ask"},
+    {"id": "D7", "topic": "run, check-run and trailer reads", "decision": "every run read --limit 200 with a headBranch filter and jq flags inside the filter; never at B; the trailer by the message's last line, never contains(); positive control at ae7d7023"},
+    {"id": "D8", "topic": "foreign paths", "decision": "jj split explicit paths only; a foreign modification stays in the working copy and is reported, never committed or rewritten; above the approved head it is READY_UNREVIEWED_CHANGE and the architect's decision"},
+    {"id": "D9", "topic": "negative controls and .fail-me", "decision": "controls per criterion are read-only and distinct per role; no role creates .fail-me (no root .gitignore)"},
+    {"id": "D10", "topic": "test writing", "decision": "writesTests false for tester.reason; a break is a report"},
+    {"id": "D11", "topic": "unreadable required set", "decision": "CI criterion over the observed set check,gate; the 403 reported, never guessed; the merge proceeds because READY's daemon-side read decides the required set"},
+    {"id": "D12", "topic": "proof links", "decision": "blob permalink, compare URL and run URL per criterion"},
+    {"id": "D13", "topic": "the literal line", "decision": "pinned in constants with bytes and sha256; the (/tmp/…) suffix included as in the latest precedent smoke/LEGSMOKE-1070.md"},
+    {"id": "D14", "topic": "design gate", "decision": "a pre-state fact for the merger: parent spec v2, no artifact.approved at planning; a held READY is reported, not forced"},
+    {"id": "D15", "topic": "AGENTS.md", "decision": "its command opens every role's steps"}
+  ],
+  "measurements": [
+    {"id": "M1", "claim": "base, branch and fork point coincide; no pre-Legion commit", "evidence": "branches/main and branches/legion/LEGSMOKE-1152 -> 6d843f28732dd82163065cb4d2248e488f68ca0b; jj fork_point(main@origin | @-) the same; workspace clean (02:14Z)"},
+    {"id": "M2", "claim": "target, .fail-me absent on main; protection unreadable", "evidence": "contents/smoke/LEGSMOKE-1152.md?ref=main -> 404; contents/.fail-me?ref=main -> 404; branches/main/protection -> 403 Resource not accessible by integration"},
+    {"id": "M3", "claim": "byte counts and hashes", "evidence": "printf line1 | wc -c -> 85, sha256 d9fd1a65…de9f; both lines -> 124, sha256 6b235d5d…af8d"},
+    {"id": "M4", "claim": "a squash can land paths beside the marker and the filter prints them", "evidence": "compare/ae7d702327d7...6d843f28732d -> modified .claude/skills/fixture-claude-skill/SKILL.md, modified .omp/skills/fixture-omp-skill/SKILL.md, added docs/solutions/legion/put-jq-flags-…-LEGSMOKE-1070.md, added smoke/LEGSMOKE-1070.md"},
+    {"id": "M5", "claim": "a default-limit run list hides rows at a shared SHA", "evidence": "gh run list --commit 6d843f28… scoped main: default limit -> []; --limit 200 -> fail-on-demand 40001076855, ci 40001076868; 138 runs share the SHA"},
+    {"id": "M6", "claim": "contains(skip-checks: true) is no discriminant", "evidence": "true on ae7d7023 and 6d843f28, both of which ran CI on main (39993670610/39993670501 and 40001076855/40001076868)"},
+    {"id": "M7", "claim": "check-runs at B are polluted", "evidence": "commits/6d843f28…/check-runs -> 30 entries (gate/check x 15 sibling branch creations)"},
+    {"id": "M8", "claim": "role App logins and the last run's shape", "evidence": "PR #767 author trajectory-s-legion-implementer[bot]; one APPROVED review 5632397088 by trajectory-s-legion-reviewer[bot] at e636023e; merge_commit_sha 6d843f28, one parent; no inline comments (K has not fired in the measured runs)"},
+    {"id": "M9", "claim": "pane tooling", "evidence": "no xxd, /usr/bin/od present; gh 2.98.0; the pane's gh wrapper refuses a jq flag between --jq and the filter (docs/solutions/legion/put-jq-flags-inside-the-filter-for-the-pane-gh-wrapper-LEGSMOKE-1070.md)"},
+    {"id": "M10", "claim": "no pull request on the branch; design gate", "evidence": "gh pr list --head legion/LEGSMOKE-1152 --state all -> none; dispatch read --issue LEGSMOKE-1149 events: spec v2 (artifact.version), no artifact.approved"}
+  ],
+  "gapAnalysis": {
+    "findings": [
+      {"finding": "F1: the child's spec is empty and the only acceptance text names LEGSMOKE-1149, so the intended file fails the written acceptance", "answer": "D1 / specDepartures[0]: criteria restated with the child's key; the key substitution recorded as a departure and sent to the architect, who decides whether the child's spec is written"},
+      {"finding": "F2: `adds exactly one new file … that file alone` is false at every head: handoffs and retro's docs/solutions note", "answer": "D2 / criterion 1: judged at every head with exactly .legion/LEGSMOKE-1152/ and docs/solutions/ exempt; the note's landing recorded as specDepartures[1] for the architect"},
+      {"finding": "F3: no criterion names its head; handoff heads have no CI", "answer": "heads table and rules: firstCodeHead for bytes, CI head per merge-gate.md, approved head from pulls/$N/reviews, M and ?ref=main for production, B as --from of every guard; carried verdicts from J at handoff heads; a review round re-judges criteria 1-3 at C1'"},
+      {"finding": "F4: `the review asks for one more line` has no machine predicate and collides with one-review-per-round / REQUEST_CHANGES-only-for-correctness and the message gate", "answer": "reviewLine: K pinned to the judged head's committer date, counted from pulls/$N/comments by path, login, literal and in_reply_to_id null; vacuous case K=0; the round exists only on the driver's targeted message and is recorded as driverOrdered in review.json"},
+      {"finding": "F5: the message gate collides with the never-overridden rules (implementer's proof, production check); sleep 300 scope", "answer": "messageGating and D5: gating per phase task; sleep 300 only on a phase task; the production-check task carries no phase; the implementer reports to the architect at once; the timing decision is the architect's/operator's"},
+      {"finding": "F6: the production check has no definition for a Markdown file and no wake can fire", "answer": "criterion 4 / D6: production = main via the contents API at M and ?ref=main, first look pass, strategy-independent, no deploy or ask; closedUnmerged form named"},
+      {"finding": "F7: default-limit run lists, polluted check-runs at B and contains() trailer reads return confident wrong answers", "answer": "D7 / criterion 3: --limit 200 + headBranch, never at B, last-line trailer test, positive control at ae7d7023, [] at a code head is never a pass"},
+      {"finding": "F8: driver-edited fixture files can appear mid-run and land in the squash", "answer": "D8 / stopConditions: jj split explicit paths only, foreign paths reported never committed; pre-push guard from B within allowedPaths; above the approved head the merger reports READY_UNREVIEWED_CHANGE"},
+      {"finding": "F9: each proof needs its own read-only control; a .fail-me probe is unsafe without a root .gitignore", "answer": "D9: distinct read-only controls per criterion and role; no role creates .fail-me; redHead handles an outside .fail-me by a deletion-only cure"},
+      {"finding": "F10: `no test harness` is false (Go and Python fixture tests exist)", "answer": "D10 / tester.reason: the change has no runtime, ci runs no suite, the fixture tests are the driver's, the spec permits no second file; the tester's read-only break attempts enumerated; a break is a report"},
+      {"finding": "F11: the required-check set is unreadable (403)", "answer": "D11: observed set check,gate; the 403 reported in review.json and to the architect, never guessed; READY's daemon-side read decides at merge time"},
+      {"finding": "F12: each E2E line needs a link and a contents read has no run URL", "answer": "D12: blob permalink, compare URL, run URL named per criterion"},
+      {"finding": "F13: the literal first line (with or without the (/tmp/…) suffix) decides every byte criterion", "answer": "D13 / constants: literal, printf, bytes, last byte and sha256 pinned for both arms; suffix included per smoke/LEGSMOKE-1070.md"},
+      {"finding": "F14: the design gate's state is unknown; READY may be held", "answer": "D14 / merger step 3: pre-state fact (spec v2, no artifact.approved at planning); a held READY is reported, the daemon submits it when the approval lands"},
+      {"finding": "F15: AGENTS.md demands a first action from every role", "answer": "D15 / constants.agentsMdStep opens every role's steps"}
+    ]
+  },
+  "planReview": {"verdict": "approved", "rounds": 1},
+  "specDepartures": [
+    {
+      "spec": "The child's own spec is empty; the inherited design (parent LEGSMOKE-1149 spec v2, Acceptance) says the file `holds a single line naming LEGSMOKE-1149`.",
+      "plan": "smoke/LEGSMOKE-1152.md holds one line naming this child, `LEGSMOKE-1152: Upgrade rehearsal fallback child (/tmp/legion-e2e4b.2732610.7edO7DPj)`; the parent's own marker is the parent's change.",
+      "evidence": "dispatch doc-read --issue LEGSMOKE-1152 --artifact spec prints no body (one version); every prior child marker on main names its own key (smoke/LEGSMOKE-1070.md: `LEGSMOKE-1070: …`; smoke/LEGSMOKE-577.md: `LEGSMOKE-577: …`); the driver's targeted message calls it `the one-file smoke change` for this issue.",
+      "outcome": {"kind": "changed", "scope": "acceptance: the single line names LEGSMOKE-1152 (the child's key) instead of LEGSMOKE-1149"}
+    },
+    {
+      "spec": "Parent spec v2 Scope `Nothing else changes` and Acceptance `lists that file alone, as added` for the comparison of the head against main.",
+      "plan": "Criterion 1 judges the compare from B with exactly .legion/LEGSMOKE-1152/ (handoffs, removed by retro before the merge) and docs/solutions/ (retro's learning note, which lands in the merge beside the marker) exempt.",
+      "evidence": "skill://legion-worker completion gate commits a handoff per phase; skill://legion-retro writes docs/solutions/ notes; compare/ae7d702327d7...6d843f28732d shows PR #767's squash landed docs/solutions/legion/put-jq-flags-inside-the-filter-for-the-pane-gh-wrapper-LEGSMOKE-1070.md beside smoke/LEGSMOKE-1070.md.",
+      "outcome": {"kind": "changed", "scope": "scope and acceptance: a docs/solutions/ learning note may land with the marker; the architect may instead direct retro to write no note"}
+    }
+  ]
+}
