@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-1167",
+  "completed": "2026-10-25T09:28:00Z",
+  "planDocument": "dispatch://LEGSMOKE-1167/artifact/plan-md",
+  "design": "The child's own spec (dispatch://LEGSMOKE-1167/artifact/spec) is empty; the design is the parent spec dispatch://LEGSMOKE-1163/artifact/spec (v1): one new Markdown file under smoke/ holding a single line naming this issue; a review may ask one appended line; nothing else changes.",
+  "driverMessage": "dispatch message 34d79a2f-7065-468d-b103-c4cd8e02d1a6 (2026-10-25T09:16:08Z): write and commit the required plan handoff, then call handoff_complete without an issue field.",
+  "record": {"readAt": "2026-10-25T09:16Z", "phase": "planning", "generation": 1, "rounds": 0, "status": "todo"},
+  "constants": {
+    "repository": "sjawhar/legion-smoke",
+    "base": "6d843f28732dd82163065cb4d2248e488f68ca0b",
+    "path": "smoke/LEGSMOKE-1167.md",
+    "lineOne": "LEGSMOKE-1167: Upgrade rehearsal handoff child (/tmp/legion-e2e4b.1612995.E10GrqVK)",
+    "oneLine": {"bytes": 84, "sha256": "47ef2cae5ce615758095942a9a976b0aab047bd4e2c3fbc2e3ac15335b0dfd5b", "blob": "54e54b62aeadd8b0d421d6ab8313368006b56968"},
+    "lineTwoDefault": "Legion proof review round 1 (LEGSMOKE)",
+    "twoLine": {"bytes": 123, "sha256": "cea5fa2c7a0d0415693ff561823324aebd488d5aacf4ffb250a17b5e9d8706eb", "blob": "d45944aa081ec7b6fa080a36a70cce85711df798"},
+    "requiredChecks": ["gate"],
+    "advisoryChecks": ["check"],
+    "commitTitle": "smoke: add LEGSMOKE-1167 marker file"
+  },
+  "preState": {
+    "readAt": "2026-10-25T09:17:33Z",
+    "fileAtMain": "HTTP 404",
+    "commitsTouchingPathOnMain": 0,
+    "pullRequestsForBranch": 0,
+    "compareMainToBranch": "identical 0 0",
+    "requiredStatusChecksOnMain": ["gate"],
+    "defaultBranch": "main",
+    "siblingBranchesAtBase": ["legion/LEGSMOKE-1166@origin", "legion/LEGSMOKE-1168@origin"]
+  },
+  "agentsMd": {"ran": true, "markerMtime": 1792911719},
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: the PR body template, six-field proof at an explicit SHA, identity check and trailer discipline the implementer must follow (references/pr-body.md, default-branch-check.md, review-threads.md); the repository has no harness, lint, PR template or deploy skill for smoke/*.md, and AGENTS.md's one instruction (the /tmp/legion-fixture marker) is each phase's first step",
+      "legion-retro: the implementer runs retro, which decides the docs/solutions note and removes .legion/LEGSMOKE-1167/ before READY",
+      "dispatch: the one Retro Complete message"
+    ],
+    "test": [
+      "legion-worker: the tester re-runs the implementer's exact commands at its headSha and records its own six-field proof on the GitHub contents API with the plan's read-only break set; the CI read is at ciHead, never a rerun (references/pr-body.md, merge-gate.md); no suite exists, so no red test and no tracked file but test.json"
+    ],
+    "review": [
+      "legion-worker: the required-set read, the CI-head compare, one review per round by SHA of the head the handoff push made, Look-at-first and Not-proven lines, Thermo omitted on a docs-only diff (references/merge-gate.md, review-threads.md)"
+    ]
+  },
+  "gapAnalysis": {
+    "findings": [
+      {"finding": "F1: the driver's message says commit, not push, but every planHead-dependent clause (legionDiff at planHead, the implementer's first check) needs planHead on origin.", "answer": "D18: the handoff is pushed, since skill://legion-worker's completion gate refuses a handoff not yet on legion/<KEY>@origin; planHead is on origin and the sibling's clauses hold; the sibling branch's state is recorded as an observation without a cause."},
+      {"finding": "F2: an interrupted handoff is this child's point, and no decision covers a role re-booted with an uncommitted or unpushed handoff.", "answer": "D19: the resume rule (read the record and the branch; commit a working-copy handoff; trailer and push an unpushed one authored by the role's own App; never rewrite a pushed one; complete again), with HANDOFF_ALREADY_RECORDED cited from skill://legion-worker as the reason a repeated completion is safe."},
+      {"finding": "F3: 'handoff_complete without an issue field' may bind this planner only or every phase.", "answer": "D20: planner-only reading; the legion tool's schema marks issue optional for handoff_complete (read_record refused without it at 09:16Z) and the daemon attributes the report to the claim's run; no plan step adds an issue field for later roles."},
+      {"finding": "F4: the byte constants differ from the sibling's by one byte (84/123 vs 85/124) and the six controls had no 1167 counterpart.", "answer": "Constants recomputed for 1167 at 09:17Z and 09:21Z with the producing commands recorded, including all six altered/CRLF/no-final-LF controls; D9 requires reproduction at first use."},
+      {"finding": "F5: no legion read_record read was recorded for 1167.", "answer": "Recorded: read at 09:16Z, phase planning, generation 1, rounds 0, status todo (plan.md opening paragraph and this file's record field)."},
+      {"finding": "F6: the rehearsal deliverable had no machine-checkable criterion.", "answer": "C4 with the handoffGuard commands (diff from base = plan.json only; description first line; planHead on origin; read_record past planning); its standing as acceptance versus protocol is named for the architect."},
+      {"finding": "F7: R3's design-gate fact was the sibling's stale 07:12Z read.", "answer": "R3 re-read at 09:17-09:21Z: the root is in retro (sign-off event #25 at 07:56Z), its spec shows Versions: 1 and no approval line; the architect's to judge."},
+      {"finding": "F8: the hedged cause for the sibling's missing push must not become an assertion.", "answer": "Only the observed fact is recorded (legion/LEGSMOKE-1166@origin and -1168@origin equal 6d843f28 at 09:17Z), with no cause."}
+    ]
+  },
+  "planReview": {"verdict": "approved", "rounds": 1, "note": "The reviewer's one looseness (handoffGuard written with the revset @-) was tightened: later roles resolve planHead by description on the origin branch."},
+  "specDepartures": [
+    {
+      "spec": "Scope: 'A review of the pull request may ask for one more line appended to that same file; that is in scope. Nothing else changes.'",
+      "plan": "Retro may add zero or more docs/solutions/legion/*-LEGSMOKE-1167.md notes beside the marker in the merge (D5); handoffs under .legion/LEGSMOKE-1167/ are branch-only and removed before READY, so they are not a departure.",
+      "evidence": "skill://legion-retro: 'Write the integrated learning as one or more discoverable documents under docs/solutions/'; PR #767 (LEGSMOKE-1070) merged one such note beside its marker, PR #766 (LEGSMOKE-1069) none.",
+      "outcome": {"kind": "changed", "scope": "Scope holds for smoke/ and the marker file; the merge may additionally add files under docs/solutions/legion/."}
+    }
+  ],
+  "architectToConfirm": [
+    "D1: 'this issue' names the worked child (smoke/LEGSMOKE-1167.md), since the child's own spec is empty and the design is the parent's.",
+    "D2: one appended line at most; a second ask is reported, not applied.",
+    "C4: whether the interrupted-handoff rehearsal is a tree acceptance criterion or Stage 4b protocol only."
+  ]
+}
