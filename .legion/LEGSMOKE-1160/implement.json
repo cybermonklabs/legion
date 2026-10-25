@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "phase": "implement",
+  "issue": "LEGSMOKE-1160",
+  "completed": "2026-10-25T06:43:12Z",
+  "proof": [
+    {
+      "criterion": "The pull request to main adds one new file, smoke/stage4b-legsmoke-1160.md, holding the single line `Stage 4b workflow proof: LEGSMOKE-1160.` (the parent spec LEGSMOKE-1156 v2 pattern applied to this child; the child's own spec.md v1 is empty), readable at that content from the pull request's head on GitHub.",
+      "surface": "GitHub contents API (raw route) at an explicit SHA on sjawhar/legion-smoke, as the implementer App",
+      "command": "gh api 'repos/sjawhar/legion-smoke/contents/smoke/stage4b-legsmoke-1160.md?ref=ec7d5a0badeea66ea7873f0ff9ef1f90ae96417a' -H 'Accept: application/vnd.github.raw' > /tmp/l1160-head.txt && sha256sum /tmp/l1160-head.txt && wc -c < /tmp/l1160-head.txt && wc -l < /tmp/l1160-head.txt && tail -c1 /tmp/l1160-head.txt | od -An -tx1 && (od -An -tx1 /tmp/l1160-head.txt | grep -c ' 0d' || true) && [ \"$(cat /tmp/l1160-head.txt)\" = 'Stage 4b workflow proof: LEGSMOKE-1160.' ] && echo EQUAL && cmp /tmp/l1160-head.txt smoke/stage4b-legsmoke-1160.md && echo same-as-local",
+      "observed": "sha256 c93ba1fb2d4d9640819181e1c6c75a27962a2bd20925f6ef5669634fcb643915; 40 bytes; 1 line; last byte 0a; 0 CR bytes; EQUAL; same-as-local (byte-identical to the workspace file).",
+      "headSha": "ec7d5a0badeea66ea7873f0ff9ef1f90ae96417a",
+      "negativeControl": "The same path read at ?ref=main, at ?ref=6d843f28732dd82163065cb4d2248e488f68ca0b (fork point) and at ?ref=fa4af6cfe423e2b0ad4e0a53df4cde0578d1ff9d (planner head) -> HTTP/2.0 404 Not Found each; the wrong-case path smoke/STAGE4B-LEGSMOKE-1160.md at the head -> HTTP/2.0 404 Not Found; printf 'Stage 4b workflow proof: LEGSMOKE-1161.\\n' | sha256sum -> 2b2eda367ffdec54c10ea5a7d51b71ae1b6ff5648a66c45ce4ed99d763f446fb, not equal to the read's c93ba1fb..."
+    },
+    {
+      "criterion": "The pull request changes no other file apart from the workflow's own records under .legion/LEGSMOKE-1160/.",
+      "surface": "GitHub contents API (JSON route) and compare API on sjawhar/legion-smoke, as the implementer App",
+      "command": "gh api 'repos/sjawhar/legion-smoke/contents/smoke/stage4b-legsmoke-1160.md?ref=ec7d5a0badeea66ea7873f0ff9ef1f90ae96417a' --jq '[.sha,.size,.path] | @tsv' && gh api 'repos/sjawhar/legion-smoke/compare/main...ec7d5a0badeea66ea7873f0ff9ef1f90ae96417a' --jq '.files[] | [.status,.filename,.additions,.deletions] | @tsv'",
+      "observed": "JSON route: blob cbda963bf296cd6073227cd46c507d0ef090ee3a, size 40, path smoke/stage4b-legsmoke-1160.md. Compare main...head: exactly two rows, `added .legion/LEGSMOKE-1160/plan.json 27 0` and `added smoke/stage4b-legsmoke-1160.md 1 0`; no modified or removed file.",
+      "headSha": "ec7d5a0badeea66ea7873f0ff9ef1f90ae96417a",
+      "negativeControl": "The contents read of the same path at ?ref=main -> HTTP/2.0 404 Not Found (the marker is absent from the base, so the compare row is a genuine addition, not a pre-existing file)."
+    }
+  ],
+  "filesChanged": [
+    "smoke/stage4b-legsmoke-1160.md (new, +1/-0, 40 bytes: `Stage 4b workflow proof: LEGSMOKE-1160.` + LF)",
+    ".legion/LEGSMOKE-1160/implement.json (this handoff)"
+  ],
+  "trickyParts": [
+    "The child's own spec (dispatch://LEGSMOKE-1160/artifact/spec, spec.md v1) has an empty body; the file name and line follow the parent root spec (dispatch://LEGSMOKE-1156/artifact/spec v2, Acceptance: `smoke/stage4b-legsmoke-<key>.md` holding `Stage 4b workflow proof: LEGSMOKE-<key>.`) applied to this child's key, matching the newest stage4b marker smoke/stage4b-legsmoke-1055.md byte-for-byte apart from the key.",
+    "Handoff-only push: this commit's message carries `skip-checks: true` after two empty lines so GitHub starts no run for it and the daemon carries the code head ec7d5a0b's verdict."
+  ],
+  "deviations": [
+    "No ce-simplify-code pass and no local lint/type/unit lane: the diff is one Markdown marker (docs-only), and the repository defines no lane for smoke/*.md (.github/workflows/ci.yml is `sleep 20 && exit 0`); local verification was the byte checks on the file (wc -c 40, wc -l 1, last byte 0a, 0 CR, cmp against the 1055 marker with the key substituted)."
+  ],
+  "openQuestions": [],
+  "discoveredComplexity": [
+    "Pull request: https://github.com/sjawhar/legion-smoke/pull/800 (code head ec7d5a0badeea66ea7873f0ff9ef1f90ae96417a). CI at write time: ci run 40170012310 and fail-on-demand run 40170012039, both event push, queued; not waited for."
+  ]
+}
