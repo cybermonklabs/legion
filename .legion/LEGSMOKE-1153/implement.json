@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "phase": "implement",
+  "issue": "LEGSMOKE-1153",
+  "completed": "2026-10-25T04:21:30Z",
+  "pullRequest": "https://github.com/sjawhar/legion-smoke/pull/797",
+  "codeHead": "9a844b3c7ce9f56da1570ec47824b0d645bfbe7c",
+  "proof": [
+    {
+      "criterion": "The smallest one-file change described by this child issue (targeted proof message b2d3efbb-98ac-40b3-86f7-9a8cfe05abc7 on LEGSMOKE-1153; the child's spec document is empty): smoke/LEGSMOKE-1153.md exists on legion/LEGSMOKE-1153 holding the single LF-terminated line `LEGSMOKE-1153: Upgrade rehearsal handoff child (/tmp/legion-e2e4b.2732610.7edO7DPj)`, and the branch's comparison against main lists that file alone as added once .legion/LEGSMOKE-1153/ is filtered out.",
+      "surface": "GitHub contents API (raw and JSON routes) and compare API on sjawhar/legion-smoke at an explicit SHA, read with the pane's gh as trajectory-s-legion-implementer[bot]",
+      "command": "H=9a844b3c7ce9f56da1570ec47824b0d645bfbe7c; L1='LEGSMOKE-1153: Upgrade rehearsal handoff child (/tmp/legion-e2e4b.2732610.7edO7DPj)'; d=$(mktemp -d); printf '%s\\n' \"$L1\" > \"$d/expected\"; gh api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1153.md?ref=$H\" -H 'Accept: application/vnd.github.raw' > \"$d/got\"; wc -c < \"$d/got\"; wc -l < \"$d/got\"; od -An -tx1 \"$d/got\" | tr -d '\\n' | awk '{print $NF, $1, $2, $3}'; tr -cd '\\r' < \"$d/got\" | wc -c; sha256sum \"$d/got\"; [ \"$(head -1 \"$d/got\")\" = \"$L1\" ] && echo 'head -1 == L1'; cmp \"$d/got\" \"$d/expected\" && echo 'cmp silent'; gh api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1153.md?ref=$H\" --jq '[.sha,.size,.encoding]'; gh api \"repos/sjawhar/legion-smoke/compare/main...$H\" --jq '[.files[] | select(.filename | startswith(\".legion/\") | not) | {filename,status,additions,deletions}]'; gh api \"repos/sjawhar/legion-smoke/compare/main...$H\" --jq '[.files[].filename]'; gh run list --commit \"$H\" --json databaseId,name,event,status,conclusion",
+      "observed": "84 bytes, 1 line, last byte 0a, first bytes 4c 45 47, 0 CR, sha256 5dd70ba5e086bed6f8e1162f71af763416cadace308ae7204149f3fc98bfeba1, `head -1 == L1`, `cmp silent`; JSON route [.sha,.size,.encoding] = [\"535e67d7f7bf119be1c7c73264b452ef483613a7\",84,\"base64\"]; compare/main...9a844b3c filtered of .legion/ = [{\"additions\":1,\"deletions\":0,\"filename\":\"smoke/LEGSMOKE-1153.md\",\"status\":\"added\"}], unfiltered = [\".legion/LEGSMOKE-1153/plan.json\",\"smoke/LEGSMOKE-1153.md\"]; push runs at this head: fail-on-demand 40161480518 completed success, ci 40161480561 completed success. Read 2026-10-25T04:20:04Z. https://github.com/sjawhar/legion-smoke/blob/9a844b3c7ce9f56da1570ec47824b0d645bfbe7c/smoke/LEGSMOKE-1153.md",
+      "headSha": "9a844b3c7ce9f56da1570ec47824b0d645bfbe7c",
+      "negativeControl": "The same contents read at ?ref=main and at the fork point ?ref=6d843f28732dd82163065cb4d2248e488f68ca0b both returned HTTP 404 ({\"message\":\"Not Found\",\"status\":\"404\"}, gh exit 1); commits?path=smoke/LEGSMOKE-1153.md&sha=main returned 0 commits; the altered-key line `LEGSMOKE-1153x: Upgrade rehearsal handoff child (/tmp/legion-e2e4b.2732610.7edO7DPj)` digests to 011788ff21443de299e6c8029788a4ad3d3179248863d6a9c8d75b597ecdc8af, not equal to the read's digest 5dd70ba5e086bed6f8e1162f71af763416cadace308ae7204149f3fc98bfeba1."
+    }
+  ],
+  "filesChanged": [
+    "smoke/LEGSMOKE-1153.md (added, 1 line, 84 bytes; commit 9a844b3c7ce9f56da1570ec47824b0d645bfbe7c)",
+    ".legion/LEGSMOKE-1153/implement.json (this handoff)"
+  ],
+  "localChecks": [
+    "The repository's CI (.github/workflows/ci.yml) is `sleep 20 && exit 0` and fail-on-demand's `gate` fails only when `.fail-me` exists; ran `test ! -f .fail-me` in the workspace before the push: .fail-me absent, exit 0. No lint, type or unit lane exists for a Markdown marker.",
+    "Default-branch identity check: `gh api repos/sjawhar/legion-smoke --jq '.default_branch | @json'` = \"main\" (matches the addressing line); `jj log -r \"${default}@origin..@\"` shows 9a844b3c authored and committed by 271566630+trajectory-s-legion-implementer[bot]; the planner's 17495f47 by the reviewer App, as expected for a planner."
+  ],
+  "trickyParts": [
+    "The child's spec document (dispatch://LEGSMOKE-1153, document `spec`) is empty, and the plan handoff plans no code change; the change's shape is taken from the targeted proof message and the repository's existing smoke/<KEY>.md convention (smoke/LEGSMOKE-1069.md, smoke/LEGSMOKE-1070.md: one LF-terminated line `<KEY>: <issue title>`).",
+    "Docs-only diff: no simplify pass and no Thermo line, per skill://legion-worker/references/pr-body.md."
+  ],
+  "deviations": [],
+  "openQuestions": [],
+  "discoveredComplexity": []
+}
