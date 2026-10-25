@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-1168",
+  "completed": "2026-10-25T07:07:30Z",
+  "planDocument": ".legion/LEGSMOKE-1168/plan.md",
+  "baseSha": "6d843f28732dd82163065cb4d2248e488f68ca0b",
+  "marker": {
+    "path": "smoke/LEGSMOKE-1168.md",
+    "line": "LEGSMOKE-1168: Upgrade rehearsal push child (/tmp/legion-e2e4b.1612995.E10GrqVK)",
+    "bytes": 81,
+    "sha256": "370a5ac5c0841daa96311ed13d91eb695aa481e4f485e93a558a44aa696a88fd",
+    "commitMessage": "smoke: add LEGSMOKE-1168 marker file"
+  },
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: the one-file marker change, its code push, the PR body (references/pr-body.md) and the App identity check (references/default-branch-check.md) all follow this skill; no repository skill fits (fixture-claude-skill and fixture-omp-skill are Stage 4b fixture markers, not domain skills)."
+    ],
+    "test": [
+      "legion-worker: references/pr-body.md defines what the tester verifies and how its proof is recorded; the plan's AC1-AC4 reads at an explicit SHA on GitHub are the surface it re-runs."
+    ],
+    "review": [
+      "legion-worker: references/merge-gate.md (reading the head's checks on GitHub before approving) and references/review-threads.md (one disposition per thread); the only in-scope change request is the root spec's one appended line (AC6)."
+    ]
+  },
+  "gapAnalysis": {
+    "findings": [
+      {
+        "finding": "The draft marker line appends a fixture path not obviously part of the issue title; the title is the source and was unverified from the analyst's session.",
+        "answer": "Verified: `dispatch read --issue LEGSMOKE-1168` prints the title `Upgrade rehearsal push child (/tmp/legion-e2e4b.1612995.E10GrqVK)`; the plan fixes the exact bytes (81 bytes, sha256 370a5ac5c0841daa96311ed13d91eb695aa481e4f485e93a558a44aa696a88fd) and AC1 compares the file at `?ref=<head>` against them."
+      },
+      {
+        "finding": "The issue's role (plan handoff committed locally, left unpushed across a daemon upgrade) is in no spec; nothing states who pushes it afterwards or forbids rewriting it.",
+        "answer": "Plan section 'Proof ordering': the planner pushes the handoff commit on the driver's next message and completes; the implementer starts on `legion/LEGSMOKE-1168@origin` and never rewrites that commit. AC5 checks `<plan-sha>::legion/LEGSMOKE-1168@origin` is non-empty."
+      },
+      {
+        "finding": "The negative control 'same read on main returns 404' decays once the PR merges.",
+        "answer": "AC1's control is pinned to `?ref=6d843f28732dd82163065cb4d2248e488f68ca0b` (base and fork point), expected HTTP 404 / exit 1."
+      },
+      {
+        "finding": "'Tester checks CI green' named no command or expected rows; a read right after push is pending, and green proves only that no `.fail-me` was added.",
+        "answer": "AC3 names `gh api repos/.../commits/<head>/check-runs --jq '... | tostring'`, expects `check` and `gate` completed/success (pull_request and push pairs), treats a non-completed entry as pending (re-read, not failure), and the change section forbids creating `.fail-me` in any phase."
+      },
+      {
+        "finding": "An in-scope review append collides with an 'exactly one line' assertion.",
+        "answer": "AC6: after a requested append the binding assertion is the planned line plus the reviewer's verbatim text; the implementer records the new byte count/sha256 and the tester re-runs AC1 against them; AC2 then expects additions 2."
+      },
+      {
+        "finding": "'Nothing else changes' is false of the PR as it appears: `.legion/` handoffs ride the same branch, so a naive one-file diff assertion fails.",
+        "answer": "AC2 reads `compare/<base>...<head>` excluding `.legion/` paths and expects exactly `smoke/LEGSMOKE-1168.md` added, with the jq flag inside the filter (`| tostring`) per docs/solutions/legion/put-jq-flags-inside-the-filter-for-the-pane-gh-wrapper-LEGSMOKE-1070.md."
+      }
+    ]
+  },
+  "planReview": {
+    "verdict": "approved",
+    "rounds": 1
+  },
+  "specDepartures": []
+}
