@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "phase": "test",
+  "issue": "LEGSMOKE-1160",
+  "completed": "2026-10-25T06:48:00Z",
+  "implementerProof": {
+    "verdict": "verified",
+    "how": "Re-ran the implementer's contents-API raw read of smoke/stage4b-legsmoke-1160.md at ?ref=ec7d5a0badeea66ea7873f0ff9ef1f90ae96417a independently as the review App and read the same path at the pull request head 195239b8673aaa0e4d420170757fd1470ae442dd: both 40 bytes, 1 line, sha256 c93ba1fb2d4d9640819181e1c6c75a27962a2bd20925f6ef5669634fcb643915, cmp-identical to each other, to the workspace file and to smoke/stage4b-legsmoke-1055.md with the key substituted; the compare API main...195239b8 lists exactly the three added rows (.legion/LEGSMOKE-1160/implement.json 39/0, .legion/LEGSMOKE-1160/plan.json 27/0, smoke/stage4b-legsmoke-1160.md 1/0), the implementer's two rows at main...ec7d5a0b plus its own handoff. Its negative controls (404 at ?ref=main, at the fork point, and for the wrong-case path) reproduced."
+  },
+  "failures": [],
+  "failed": 0,
+  "proof": [
+    {
+      "criterion": "The pull request to main adds one new file, smoke/stage4b-legsmoke-1160.md, holding the single line `Stage 4b workflow proof: LEGSMOKE-1160.` (parent spec LEGSMOKE-1156 v2 pattern applied to this child; the child's own spec.md v1 is empty), readable at that content from the pull request's head on GitHub.",
+      "surface": "GitHub contents API (raw route) at the pull request head and at the code head on sjawhar/legion-smoke, as the review App",
+      "command": "cd -- \"$LEGION_WORKSPACE\" && H=195239b8673aaa0e4d420170757fd1470ae442dd && C=ec7d5a0badeea66ea7873f0ff9ef1f90ae96417a && gh api \"repos/sjawhar/legion-smoke/contents/smoke/stage4b-legsmoke-1160.md?ref=$H\" -H 'Accept: application/vnd.github.raw' > /tmp/l1160-t-head.txt && gh api \"repos/sjawhar/legion-smoke/contents/smoke/stage4b-legsmoke-1160.md?ref=$C\" -H 'Accept: application/vnd.github.raw' > /tmp/l1160-t-code.txt && sha256sum /tmp/l1160-t-head.txt /tmp/l1160-t-code.txt && wc -c /tmp/l1160-t-head.txt && wc -l /tmp/l1160-t-head.txt && od -An -c /tmp/l1160-t-head.txt && cmp /tmp/l1160-t-head.txt /tmp/l1160-t-code.txt && echo head-eq-codehead && [ \"$(cat /tmp/l1160-t-head.txt)\" = 'Stage 4b workflow proof: LEGSMOKE-1160.' ] && echo EQUAL && cmp /tmp/l1160-t-head.txt smoke/stage4b-legsmoke-1160.md && echo same-as-workspace && sed 's/1055/1160/' smoke/stage4b-legsmoke-1055.md | cmp - /tmp/l1160-t-head.txt && echo same-shape-as-1055 && grep -rl 'LEGSMOKE-1160' smoke | wc -l",
+      "observed": "sha256 c93ba1fb2d4d9640819181e1c6c75a27962a2bd20925f6ef5669634fcb643915 for both reads; 40 bytes; 1 line; od shows `Stage 4b workflow proof: LEGSMOKE-1160.\\n` with no CR and no BOM; head-eq-codehead; EQUAL; same-as-workspace; same-shape-as-1055; grep count 1 (exactly one file under smoke/ names the key; smoke/ holds 139 entries).",
+      "headSha": "195239b8673aaa0e4d420170757fd1470ae442dd",
+      "negativeControl": "The same path read at ?ref=main and at ?ref=6d843f28732dd82163065cb4d2248e488f68ca0b (fork point) -> HTTP/2.0 404 Not Found each; the wrong-key path smoke/stage4b-legsmoke-1161.md and the wrong-case path smoke/STAGE4B-LEGSMOKE-1160.md at ?ref=195239b8673aaa0e4d420170757fd1470ae442dd -> HTTP/2.0 404 Not Found each."
+    },
+    {
+      "criterion": "The pull request changes no other file apart from the workflow's own records under .legion/LEGSMOKE-1160/.",
+      "surface": "GitHub compare API on sjawhar/legion-smoke, as the review App, plus gh pr view files",
+      "command": "gh api 'repos/sjawhar/legion-smoke/compare/main...195239b8673aaa0e4d420170757fd1470ae442dd' --jq '.files[] | [.status,.filename,.additions,.deletions] | @tsv' && gh pr view 800 -R sjawhar/legion-smoke --json state,headRefOid,mergeable,files --jq '[.state,.headRefOid,.mergeable,(.files|map(.path)|join(\",\"))]|@tsv'",
+      "observed": "Compare: exactly three rows, `added .legion/LEGSMOKE-1160/implement.json 39 0`, `added .legion/LEGSMOKE-1160/plan.json 27 0`, `added smoke/stage4b-legsmoke-1160.md 1 0`; no modified or removed file. PR view: OPEN, head 195239b8673aaa0e4d420170757fd1470ae442dd, MERGEABLE, files = the same three paths.",
+      "headSha": "195239b8673aaa0e4d420170757fd1470ae442dd",
+      "negativeControl": "The marker path read at ?ref=main -> HTTP/2.0 404 Not Found, so the compare row for smoke/stage4b-legsmoke-1160.md is a genuine addition and not a pre-existing file."
+    }
+  ],
+  "ci": "Read 2026-10-25T06:46Z, never waited for: `gh run list --commit ec7d5a0badeea66ea7873f0ff9ef1f90ae96417a` -> ci run 40170084011 (pull_request) queued; fail-on-demand run 40170083892 (pull_request) queued; ci run 40170012310 (push) completed success; fail-on-demand run 40170012039 (push) in_progress. `gh run list --commit 195239b8673aaa0e4d420170757fd1470ae442dd` -> 0 runs (skip-checks handoff head). `gh pr checks 800` -> no checks reported on the branch.",
+  "redTests": [],
+  "notes": "Docs-only diff: one Markdown marker, no runtime code, no implementer tests to judge and no behaviour a red test could pin; the repository's ci workflow is `sleep 20 && exit 0`. Break attempts were wrong ref, fork-point ref, wrong key, wrong case and a duplicate-marker scan, all refused or clean. PR body updated at the head: `E2E (tester)` line, its negative control, the implementer-proof verification sentence, and the `CI` line's tester read. Stage 4b upgrade-rehearsal proof on LEGSMOKE-1160 (child of LEGSMOKE-1156): the targeted message (dispatch message c9ab5415-0f09-40b4-a7ae-b3a443c9234e) asked for a focused observable check and a passing tester handoff."
+}
