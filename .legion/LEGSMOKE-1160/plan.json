@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-1160",
+  "completed": "2026-10-25T06:31:10Z",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: the only repository-applicable skill for a phase worker; the issue's spec.md (v1) carries no body, so no domain skill applies and the implementer's scope is whatever the next targeted Stage 4b proof message names."
+    ],
+    "test": [
+      "legion-worker: the tester follows its handoff, push and proof rules; the spec names no behaviour, so there is no surface or command to pre-name here."
+    ],
+    "review": [
+      "legion-worker: the reviewer follows its review-round and handoff rules; no code-area skill applies to an empty spec."
+    ]
+  },
+  "gapAnalysis": {
+    "error": "not run: the targeted Stage 4b proof message (dispatch message d1eb4b5c-1ef2-40bf-87c6-1a71c066910d, 2026-10-25T06:30:27Z) asked for the plan handoff to be written, committed and completed as the proof operation; the issue's spec.md (v1) has no body to analyse."
+  },
+  "planReview": {
+    "verdict": "failed",
+    "rounds": 0,
+    "error": "not run: same targeted Stage 4b proof message; no plan was drafted because the spec carries no body."
+  },
+  "specDepartures": [],
+  "notes": "Stage 4b upgrade rehearsal interrupted-handoff proof on LEGSMOKE-1160 (child of LEGSMOKE-1156). Workspace base: 6d843f28 (legion/LEGSMOKE-1160 = main at write time). No predecessor handoffs existed under .legion/LEGSMOKE-1160/."
+}
