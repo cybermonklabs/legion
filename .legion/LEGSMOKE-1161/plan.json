@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-1161",
+  "completed": "2026-10-25T04:42:48Z",
+  "requiredSkills": {
+    "implement": [
+      "none: read the <skills> list (ce-simplify-code, dispatch*, envoy, fixture-claude-skill, fixture-omp-skill, legion-*) and the repository AGENTS.md; the spec document of LEGSMOKE-1161 is empty and the repository is a marker-file smoke sandbox, so no implementation skill applies beyond legion-worker and the AGENTS.md fixture command"
+    ],
+    "test": [
+      "none: no skill in the <skills> list touches testing, smoke, e2e or deploy for this repository; the two fixture-* skills are Stage 4b load-proof fixtures with no instructions, and the repository has no test runner configured for the marker files"
+    ],
+    "review": [
+      "none: no review skill applies to a marker-file change; the reviewer follows legion-worker and skill://legion-worker/references/merge-gate.md only"
+    ]
+  },
+  "gapAnalysis": {
+    "error": "not run: Stage 4b proof instructions for LEGSMOKE restrict the planner to the targeted human Dispatch message's exact operation (message e8504882-3107-435d-ab3f-e1271f5882bf: write and commit the plan handoff, do not push, do not complete); the spec document dispatch://LEGSMOKE-1161/spec is empty, so there are no acceptance criteria to analyse"
+  },
+  "planReview": {
+    "verdict": "failed",
+    "rounds": 0,
+    "error": "not run: same Stage 4b restriction as gapAnalysis; no plan content exists to review because the issue's spec is empty"
+  },
+  "specDepartures": [],
+  "plan": {
+    "summary": "LEGSMOKE-1161 is a Stage 4b upgrade-rehearsal push child under the proof tree root LEGSMOKE-1156. Its spec is empty and it carries no acceptance criteria; the planning phase's deliverable is this committed handoff on legion/LEGSMOKE-1161, prepared for a handoff-only push (skip-checks trailer) that the proof driver releases with a later targeted message.",
+    "surfaces": [],
+    "tasks": [
+      {
+        "role": "implementer",
+        "task": "Hold for the proof driver's targeted Dispatch message on this issue; run `sleep 300` (timeout 600) on the task line before replying WAITING, as the LEGSMOKE deployment instructions say. Make no change until the targeted message names one."
+      }
+    ],
+    "openForArchitect": [
+      "The spec document dispatch://LEGSMOKE-1161/spec has no content; if the driver later adds acceptance criteria, planning must run again (request_backward_move to planning) before implementation."
+    ]
+  }
+}
