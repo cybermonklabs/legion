@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "phase": "review",
+  "issue": "LEGSMOKE-1146",
+  "completed": "2026-10-25T02:03:30Z",
+  "pullRequest": "https://github.com/sjawhar/legion-smoke/pull/794",
+  "reviewedHead": "d423fcb4bee91c2eb46138de4c568a95c6c951f6",
+  "codeHead": "85f1a529567e23ef9648c0775ffed2f2875fdafd",
+  "decision": "approved",
+  "round": 1,
+  "critical": 0,
+  "important": 0,
+  "minor": 0,
+  "keyFindings": [],
+  "requiredSkillsFollowed": "plan.json requiredSkills.review = none (no repository review skill exists); followed skill://legion-worker, its merge-gate, pr-body, review-threads and default-branch-check references, and the Security Guidelines of skill://thermonuclear-deep-review for the Security line.",
+  "ci": "Required set from rulesets on main: gate (branch protection: none). CI head (newest pull_request run on legion/LEGSMOKE-1146): 85f1a529567e23ef9648c0775ffed2f2875fdafd. Check-runs there: gate completed success, check completed success (push and pull_request events each). Compare 85f1a529...d423fcb4 lists only .legion/LEGSMOKE-1146/implement.json and test.json, so the code under review is the CI head's. PR body CI line's run ids 40152434586 (ci) and 40152434559 (fail-on-demand) both at 85f1a529, completed success.",
+  "threads": "gh api graphql: 0 review threads, 0 reviews, 0 comments at d423fcb4; nothing to answer.",
+  "proofs": "Both E2E lines present. Reviewer reproduced the tester's read at d423fcb4: contents API returns smoke/LEGSMOKE-1146.md as 1 line, 84 bytes, sha256 55553f2f9ae94ff7b5019a3baed5ca9bd4959e9e5636d99977c6af898868a804, text `LEGSMOKE-1146: Upgrade rehearsal handoff child (/tmp/legion-e2e4b.1289919.JOSEtLwS)`, equal to the Dispatch issue title; negative controls reproduced (404 exit 1 at ?ref=main, at fork point 6d843f28, and for .fail-me at the head).",
+  "thermonuclear": "not run: docs-only diff (one smoke/ marker line plus .legion/ handoffs), per the reviewer charter and skill://legion-worker/references/pr-body.md; no Thermo line in the body, as the template requires for a docs-only PR.",
+  "plan": "plan.json specDepartures = []; spec body empty; plan.json records gapAnalysis and planReview as not run under the Stage 4b proof's targeted-message instruction. No contract change census required: the diff adds no refusal, field or signature.",
+  "security": "Security: no sensitive surface in this diff.",
+  "prBody": "Reviewer wrote `Look at first` (smoke/LEGSMOKE-1146.md:1) and `Not proven / risk` (none: tester failures [], no proof-check comment, no reviewer finding) into the live body at d423fcb4."
+}
