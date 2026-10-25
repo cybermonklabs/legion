@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "phase": "review",
+  "issue": "LEGSMOKE-1160",
+  "completed": "2026-10-25T06:50:12Z",
+  "decision": "approved",
+  "critical": 0,
+  "important": 0,
+  "minor": 0,
+  "keyFindings": [],
+  "round": 1,
+  "reviewedHead": "e6ca5790a49c58ad10b42a73e14b41c94f91dfd0 (code head ec7d5a0badeea66ea7873f0ff9ef1f90ae96417a; the approval names the head this handoff's push makes)",
+  "ci": "Read 2026-10-25T06:49Z on GitHub: main's rulesets require `gate` only, branch protection adds none; CI head ec7d5a0badeea66ea7873f0ff9ef1f90ae96417a (newest pull_request run on legion/LEGSMOKE-1160); check-runs there: gate completed success (pull_request run 40170083892, push run 40170012039), check completed success (push run 40170012310), check queued (pull_request run 40170084011, not required); compare ec7d5a0b...e6ca5790 touches only .legion/LEGSMOKE-1160/implement.json and .legion/LEGSMOKE-1160/test.json (all(startswith('.legion/')) = true).",
+  "threads": "gh api graphql reviewThreads at e6ca5790: 0 threads, 0 reviews, 0 conversation comments; nothing to answer or name to the implementer.",
+  "proofLines": "E2E (implementer) and E2E (tester) both present in the PR body; each names a surface (GitHub contents API raw route at an explicit SHA), the command, the observation (sha256 c93ba1fb…, 40 bytes, 1 line, LF, no CR), an ancestor head (ec7d5a0b / 195239b8) and negative controls (404 at ?ref=main, fork point, wrong key, wrong case). Reviewer re-read the marker at e6ca5790 as the review App: sha256 c93ba1fb2d4d9640819181e1c6c75a27962a2bd20925f6ef5669634fcb643915, 40 bytes, od shows the one line + \\n, cmp-identical to the workspace file and to sed 's/1055/1160/' smoke/stage4b-legsmoke-1055.md; ?ref=main -> 404; grep -rl LEGSMOKE-1160 smoke -> 1 file of 139.",
+  "thermo": "not run: docs-only diff (one Markdown marker under smoke/, no runtime code); the PR body carries no Thermo line, as the template says for a docs-only PR.",
+  "contractChangeCensus": "not applicable: no refusal, required field, removed or renamed field, or signature change at any boundary.",
+  "security": "no sensitive surface in this diff.",
+  "specAndPlan": "Child spec dispatch://LEGSMOKE-1160/artifact/spec v1 is empty; plan.json specDepartures = []; reviewed against the root spec dispatch://LEGSMOKE-1156/artifact/spec v2 pattern applied to this child's key (smoke/stage4b-legsmoke-1160.md holding `Stage 4b workflow proof: LEGSMOKE-1160.`), which the diff meets; no second line, none asked for.",
+  "prBody": "Filled `Look at first` and `Not proven / risk` (two lines: the post-merge read from main is the production check; the non-required ci pull_request run 40170084011 was still queued) and appended the reviewer's CI read to the CI line at 2026-10-25T06:49Z.",
+  "notes": "Stage 4b upgrade-rehearsal proof on LEGSMOKE-1160 (child of LEGSMOKE-1156): the targeted message (dispatch message 5fbef64d-a509-4762-b152-bcdfb49a371e) asked for an APPROVE review of pull request #800 as the review App, the reviewer handoff and handoff_complete."
+}
