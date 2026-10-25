@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "phase": "test",
+  "issue": "LEGSMOKE-1146",
+  "completed": "2026-10-25T01:57:49Z",
+  "pullRequest": "https://github.com/sjawhar/legion-smoke/pull/794",
+  "headSha": "8da2f7fa7bb5687a55e458a889f3c639474e6156",
+  "codeHeadSha": "85f1a529567e23ef9648c0775ffed2f2875fdafd",
+  "requiredSkillsFollowed": "plan.json requiredSkills.test = none (no repository testing/smoke/e2e/deploy skill exists); followed skill://legion-worker and skill://legion-worker/references/pr-body.md.",
+  "ci": "Read via `gh run list --commit 85f1a529567e23ef9648c0775ffed2f2875fdafd`: `ci` pull_request run 40152434586 success, `fail-on-demand` pull_request run 40152434559 success, push pair runs 40152392542 and 40152392539 success. Handoff-only head 8da2f7fa… started no run (skip-checks trailer); no CI lane rerun by the tester.",
+  "implementerProof": {
+    "verdict": "verified",
+    "how": "Re-ran the implementer's `gh api repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1146.md -H 'Accept: application/vnd.github.raw'` independently at the PR head 8da2f7fa7bb5687a55e458a889f3c639474e6156 (implementer ran it at 85f1a529…): exit 0, 1 line, 84 bytes, trailing LF, sha256 55553f2f9ae94ff7b5019a3baed5ca9bd4959e9e5636d99977c6af898868a804, identical to the implementer's recorded bytes and to the workspace file at @- (cmp clean). Its negative controls reproduced: 404/exit 1 at ?ref=main, at the fork point 6d843f28…, for smoke/LEGSMOKE-1146x.md and for .fail-me."
+  },
+  "failures": [],
+  "failed": 0,
+  "proof": [
+    {
+      "criterion": "The smallest one-file change for this child issue: the repository's Stage 4b convention, one `<KEY>: <title>` marker under smoke/, is present at the pushed head of legion/LEGSMOKE-1146 (PR #794) and nowhere else, and no runtime, configuration or workflow changes ride with it.",
+      "surface": "GitHub REST contents and compare API of sjawhar/legion-smoke (the real repository), read with the pane's gh as the review App, cross-checked against the jj workspace file at @-.",
+      "command": "gh api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1146.md?ref=8da2f7fa7bb5687a55e458a889f3c639474e6156\" -H 'Accept: application/vnd.github.raw' > /tmp/l1146-tester-head.txt; wc -l -c /tmp/l1146-tester-head.txt; sha256sum /tmp/l1146-tester-head.txt; od -An -c /tmp/l1146-tester-head.txt | tail -1; printf 'LEGSMOKE-1146: Upgrade rehearsal handoff child (/tmp/legion-e2e4b.1289919.JOSEtLwS)\\n' | sha256sum; jj file show -r @- smoke/LEGSMOKE-1146.md | sha256sum; cmp /tmp/l1146-tester-head.txt smoke/LEGSMOKE-1146.md; gh api \"repos/sjawhar/legion-smoke/compare/6d843f28732dd82163065cb4d2248e488f68ca0b...8da2f7fa7bb5687a55e458a889f3c639474e6156\" --jq '[.status, .ahead_by, .behind_by, [.files[] | {filename,status,additions,deletions}]] | tostring'; grep -l '^LEGSMOKE-1146:' smoke/*.md | wc -l; gh api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1070.md?ref=main\" -H 'Accept: application/vnd.github.raw'; grep -rn smoke .github/workflows",
+      "observed": "exit 0; 1 line, 84 bytes; last byte \\n; sha256 55553f2f9ae94ff7b5019a3baed5ca9bd4959e9e5636d99977c6af898868a804 for the API bytes, for the expected printf line and for the workspace file at @-; cmp clean; compare → [\"ahead\",3,0,[.legion/LEGSMOKE-1146/implement.json added +29, .legion/LEGSMOKE-1146/plan.json added +26, smoke/LEGSMOKE-1146.md added +1/−0]] so the only non-.legion change is the marker; exactly 1 smoke/*.md begins LEGSMOKE-1146:; sibling LEGSMOKE-1070.md at main is one `<KEY>: <title>` line and every smoke/LEGSMOKE-10xx.md marker is one line with the file-name key as its first field; no workflow under .github/workflows mentions smoke. Link: https://github.com/sjawhar/legion-smoke/blob/8da2f7fa7bb5687a55e458a889f3c639474e6156/smoke/LEGSMOKE-1146.md",
+      "headSha": "8da2f7fa7bb5687a55e458a889f3c639474e6156",
+      "negativeControl": "The same raw read at ?ref=main and at ?ref=6d843f28732dd82163065cb4d2248e488f68ca0b (fork point) → {\"message\":\"Not Found\",\"status\":\"404\"}, gh exit 1 each; contents/smoke/LEGSMOKE-1146x.md?ref=8da2f7fa… (wrong key) → 404, exit 1; contents/.fail-me?ref=8da2f7fa… → 404, exit 1 (the fail-on-demand gate's trigger is absent, matching run 40152434559 success)."
+    }
+  ],
+  "breakAttempts": "Docs-only diff with no input surface: checked presence, exact bytes and line count at the head, absence at main and at the fork point, a wrong-key path, duplicate markers for the key (none), the fail-on-demand trigger file (absent), and that no workflow consumes smoke/*.md. No implementer tests exist to judge and no red test applies.",
+  "redTests": []
+}
