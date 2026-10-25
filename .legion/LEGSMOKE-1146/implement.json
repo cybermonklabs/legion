@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "phase": "implement",
+  "issue": "LEGSMOKE-1146",
+  "completed": "2026-10-25T01:56:30Z",
+  "pullRequest": "https://github.com/sjawhar/legion-smoke/pull/794",
+  "firstCodeHead": "85f1a529567e23ef9648c0775ffed2f2875fdafd",
+  "forkPoint": "6d843f28732dd82163065cb4d2248e488f68ca0b",
+  "filesChanged": [
+    "smoke/LEGSMOKE-1146.md (added, 1 line, 84 bytes, sha256 55553f2f9ae94ff7b5019a3baed5ca9bd4959e9e5636d99977c6af898868a804)"
+  ],
+  "proof": [
+    {
+      "criterion": "The smallest one-file change for this child issue (targeted message edbc255c-2b41-414d-a607-6c8cc22b9e91 on LEGSMOKE-1146): the repository's Stage 4b convention, one `<KEY>: <title>` marker under smoke/, is present at the pushed head of legion/LEGSMOKE-1146 and nowhere else.",
+      "surface": "GitHub REST contents and compare API of sjawhar/legion-smoke (the real repository), read with the pane's gh as the implement App.",
+      "command": "gh api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1146.md?ref=85f1a529567e23ef9648c0775ffed2f2875fdafd\" -H 'Accept: application/vnd.github.raw' | tee /tmp/l1146-head.txt | wc -l -c; sha256sum /tmp/l1146-head.txt; od -An -tx1 /tmp/l1146-head.txt; grep -c $'\\r' /tmp/l1146-head.txt; gh api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1146.md?ref=85f1a529567e23ef9648c0775ffed2f2875fdafd\" --jq '[.sha,.size] | tostring'; gh api \"repos/sjawhar/legion-smoke/compare/6d843f28732dd82163065cb4d2248e488f68ca0b...85f1a529567e23ef9648c0775ffed2f2875fdafd\" --jq '[.status, [.files[] | select(.filename | startswith(\".legion/\") | not) | {filename,status,additions,deletions}]] | tostring'; test ! -f .fail-me && echo no-fail-me",
+      "observed": "1 line, 84 bytes, first bytes 4c 45 47, last byte 0a, zero CR, sha256 55553f2f9ae94ff7b5019a3baed5ca9bd4959e9e5636d99977c6af898868a804, line equal to `LEGSMOKE-1146: Upgrade rehearsal handoff child (/tmp/legion-e2e4b.1289919.JOSEtLwS)`; metadata [\"a46c69108f7e0037c5ebc45b987cc78d1e00f08f\",84]; compare fork..head filtered to non-.legion paths → [\"ahead\",[{\"additions\":1,\"deletions\":0,\"filename\":\"smoke/LEGSMOKE-1146.md\",\"status\":\"added\"}]]; local fail-on-demand gate → no-fail-me. CI at PR creation (gh run list --commit, not waited on): fail-on-demand push run 40152392539 success, ci push run 40152392542 in progress.",
+      "headSha": "85f1a529567e23ef9648c0775ffed2f2875fdafd",
+      "negativeControl": "The same raw read at ?ref=6d843f28732dd82163065cb4d2248e488f68ca0b (fork point) and at ?ref=main → {\"message\":\"Not Found\",\"status\":\"404\"}, gh exit 1 each; contents/smoke/LEGSMOKE-1146x.md?ref=85f1a529… → 404; contents/.fail-me?ref=85f1a529… → 404 (the fail-on-demand gate's trigger file was never created)."
+    }
+  ],
+  "trickyParts": [
+    "The spec body is empty; the change follows the repository convention the sibling and parent proofs used (smoke/<KEY>.md, one LF-terminated line `<KEY>: <title>`), as the parent PR #792 did for LEGSMOKE-1142.",
+    "Docs-only diff: no simplify pass and no Thermo line, per skill://legion-worker/references/pr-body.md."
+  ],
+  "deviations": [],
+  "openQuestions": [],
+  "discoveredComplexity": []
+}
