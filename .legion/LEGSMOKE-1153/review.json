@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "phase": "review",
+  "issue": "LEGSMOKE-1153",
+  "completed": "2026-10-25T04:31:00Z",
+  "pullRequest": "https://github.com/sjawhar/legion-smoke/pull/797",
+  "reviewedHead": "2bdef0143a4c7c465d0e66da9943dcd0bde64931",
+  "codeHead": "9a844b3c7ce9f56da1570ec47824b0d645bfbe7c",
+  "decision": "approved",
+  "critical": 0,
+  "important": 0,
+  "minor": 0,
+  "keyFindings": [],
+  "round": 1,
+  "verified": {
+    "ci": "Required set read from GitHub: rulesets on main require `gate`; branch protection lists none. CI head (newest pull_request run on legion/LEGSMOKE-1153) = 9a844b3c7ce9f56da1570ec47824b0d645bfbe7c; check-runs there: gate completed success (x2), check completed success (x2). compare/9a844b3c...2bdef014 = ahead, files [.legion/LEGSMOKE-1153/implement.json, .legion/LEGSMOKE-1153/test.json], all under .legion/ → true. PR body CI line's runs 40161567519 and 40161567669 re-read with gh run view: headSha 9a844b3c, completed, success; the line is current.",
+    "threads": "gh api graphql reviewThreads at 2bdef014: [] (none opened by anyone; no bot threads).",
+    "e2eImplementer": "Present: GitHub contents API raw route at 9a844b3c (an ancestor of the reviewed head), cmp-silent against printf of the expected line, 84 bytes/1 line/0 CR/sha256 5dd70ba5…; negative control 404 at ?ref=main and at the fork point 6d843f28, altered-key digest differs.",
+    "e2eTester": "Present: same raw route at 37a1928f (PR head then; ancestor of 2bdef014 with only .legion/test.json above it) and at 9a844b3c, cmp-silent, same digest; negative controls 404 at ?ref=main and at the wrong-key path smoke/LEGSMOKE-1135.md; verified the implementer's proof by re-running its command.",
+    "reviewerRerun": "Re-ran the raw read at the reviewed head 2bdef014 as trajectory-s-legion-reviewer[bot]: 84 bytes, 1 line, 0 CR, sha256 5dd70ba5e086bed6f8e1162f71af763416cadace308ae7204149f3fc98bfeba1, cmp silent against printf '%s\\n' of the expected line; ?ref=main → HTTP 404 exit 1; smoke/LEGSMOKE-1135.md at the head → HTTP 404 exit 1; .github/workflows (ci.yml, fail-on-demand.yml) reference no smoke/ path.",
+    "thermonuclear": "Not run: docs-only diff (one Markdown marker line plus .legion/ handoffs; no runtime code), so the pair does not apply and the PR body carries no Thermo line, as skill://legion-worker/references/pr-body.md says.",
+    "contractChangeCensus": "Not required: the diff adds no refusal, required field, removed or renamed field, or signature change at any process or package boundary.",
+    "codegraphImpact": "Not applicable: no exported symbol changed (no code in the diff).",
+    "planBesideSpec": "Spec document is empty (version 1); plan.json specDepartures = [] and plans no code change; the change takes its shape from the targeted proof message b2d3efbb-98ac-40b3-86f7-9a8cfe05abc7 and the existing smoke/<KEY>.md convention (smoke/LEGSMOKE-1069.md, smoke/LEGSMOKE-1070.md: one LF-terminated `<KEY>: <title>` line), which the diff matches byte-for-byte in shape."
+  },
+  "security": "no sensitive surface in this diff.",
+  "notes": {
+    "proof": "Stage 4b upgrade rehearsal (/tmp/legion-e2e4b.2732610.7edO7DPj): targeted proof message 343f8fc2-9df1-40a3-9ea8-b1f7cd6c296e on LEGSMOKE-1153 directed reviewing #797, submitting APPROVE as legion-reviewer[bot], recording this handoff and calling handoff_complete.",
+    "requiredSkills": "plan.json names none for the review phase; followed skill://legion-worker, its merge-gate, pr-body, review-threads and default-branch-check references, and the Security Guidelines of skill://thermonuclear-deep-review for the Security line."
+  }
+}
