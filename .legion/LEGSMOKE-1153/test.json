@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "phase": "test",
+  "issue": "LEGSMOKE-1153",
+  "completed": "2026-10-25T04:25:00Z",
+  "pullRequest": "https://github.com/sjawhar/legion-smoke/pull/797",
+  "headSha": "37a1928fa2d18a03df7b688625dd0efdba651417",
+  "codeHead": "9a844b3c7ce9f56da1570ec47824b0d645bfbe7c",
+  "implementerProof": {
+    "verdict": "verified",
+    "how": "Re-ran the implementer's command independently as trajectory-s-legion-reviewer[bot]: raw GitHub contents read of smoke/LEGSMOKE-1153.md at ?ref=9a844b3c7ce9f56da1570ec47824b0d645bfbe7c and at the PR head ?ref=37a1928fa2d18a03df7b688625dd0efdba651417, each cmp-silent against printf '%s\\n' of the expected line, 84 bytes, 1 line, 0 CR, sha256 5dd70ba5e086bed6f8e1162f71af763416cadace308ae7204149f3fc98bfeba1; git ls-tree at the PR head gives blob 535e67d7f7bf119be1c7c73264b452ef483613a7, the sha the implementer's JSON-route read reported; the implementer's ?ref=main 404 negative control reproduced (HTTP 404, exit 1)."
+  },
+  "failures": [],
+  "failed": 0,
+  "proof": [
+    {
+      "criterion": "The smallest one-file change described by this child issue (targeted proof message b2d3efbb-98ac-40b3-86f7-9a8cfe05abc7 on LEGSMOKE-1153; the spec document is empty): smoke/LEGSMOKE-1153.md exists on legion/LEGSMOKE-1153 holding the single LF-terminated line `LEGSMOKE-1153: Upgrade rehearsal handoff child (/tmp/legion-e2e4b.2732610.7edO7DPj)` in the smoke/<KEY>.md convention, and the branch's comparison against main adds that file and the .legion/LEGSMOKE-1153/ handoffs alone.",
+      "surface": "GitHub contents API (raw route) and compare API on sjawhar/legion-smoke at explicit SHAs, read with the pane's gh as trajectory-s-legion-reviewer[bot]; the issue workspace's checked-out file and git ls-tree as a second, local read of the same blob",
+      "command": "H=37a1928fa2d18a03df7b688625dd0efdba651417; C=9a844b3c7ce9f56da1570ec47824b0d645bfbe7c; L1='LEGSMOKE-1153: Upgrade rehearsal handoff child (/tmp/legion-e2e4b.2732610.7edO7DPj)'; d=$(mktemp -d); printf '%s\\n' \"$L1\" > \"$d/expected\"; for R in $H $C; do gh api \"repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1153.md?ref=$R\" -H 'Accept: application/vnd.github.raw' > \"$d/got.$R\"; wc -c < \"$d/got.$R\"; wc -l < \"$d/got.$R\"; tr -cd '\\r' < \"$d/got.$R\" | wc -c; sha256sum \"$d/got.$R\"; cmp \"$d/got.$R\" \"$d/expected\" && echo \"cmp silent at $R\"; done; cat -A smoke/LEGSMOKE-1153.md; sha256sum smoke/LEGSMOKE-1153.md; cat -A smoke/LEGSMOKE-1070.md; gh api \"repos/sjawhar/legion-smoke/compare/main...$H\" --jq '[.files[]|{filename,status,additions,deletions}]'; gh pr view 797 --json mergeable,mergeStateStatus; git ls-tree $H smoke/LEGSMOKE-1153.md; gh run list --commit $C --json databaseId,name,status,conclusion,event",
+      "observed": "At both refs: 84 bytes, 1 line, 0 CR, sha256 5dd70ba5e086bed6f8e1162f71af763416cadace308ae7204149f3fc98bfeba1, `cmp silent`. Workspace file: cat -A shows the one line ending in `$`, same sha256. Sibling smoke/LEGSMOKE-1070.md has the same one-line `<KEY>: <title>` shape (126 bytes; 1069 is 94 bytes). compare/main...37a1928f = [.legion/LEGSMOKE-1153/implement.json added +33, .legion/LEGSMOKE-1153/plan.json added +30, smoke/LEGSMOKE-1153.md added +1/-0]. PR mergeable MERGEABLE, mergeStateStatus BLOCKED (awaiting review). git ls-tree at 37a1928f: 100644 blob 535e67d7f7bf119be1c7c73264b452ef483613a7. Runs at 9a844b3c: fail-on-demand 40161567669 and ci 40161567519 (pull_request) completed success; push pair 40161480518 and 40161480561 completed success; check-runs at 37a1928f: none (trailered handoff head, as expected). Read 2026-10-25T04:23Z. https://github.com/sjawhar/legion-smoke/blob/37a1928fa2d18a03df7b688625dd0efdba651417/smoke/LEGSMOKE-1153.md",
+      "headSha": "37a1928fa2d18a03df7b688625dd0efdba651417",
+      "negativeControl": "The same raw contents read at ?ref=main → HTTP 404 ({\"message\":\"Not Found\",\"status\":\"404\"}, gh exit 1); the wrong-key path smoke/LEGSMOKE-1135.md at ?ref=37a1928f… → HTTP 404, exit 1; `git ls-tree main smoke/LEGSMOKE-1153.md` prints nothing; the line with its last character altered (…7edO7DPk) digests to 9cc64032dd3b2fdd3dcfd03765c17ce5a9de705f3c089acd62dd163fa7e7e971 and the line without its trailing LF to 59db9f0123befe25cb80d3e06b5f3485fe86f530b296a995410d4f5bb081ce3c, neither equal to the read's digest."
+    }
+  ],
+  "ci": "Cited from the PR body's CI line and re-read with `gh run list --commit 9a844b3c7ce9f56da1570ec47824b0d645bfbe7c` at 2026-10-25T04:23Z: ci 40161567519 and fail-on-demand 40161567669 (pull_request) both completed success; no lane rerun by the tester. The repository has no lint, type or unit lane for a Markdown marker, so no red test is possible or needed: a docs-only one-line file has no code path to break beyond byte identity, which the proof pins.",
+  "notes": {
+    "proof": "Stage 4b upgrade rehearsal (/tmp/legion-e2e4b.2732610.7edO7DPj): targeted proof message 5053d0bb-128d-4722-8852-b858acb464fb on LEGSMOKE-1153 directed a focused observable check, a passing tester handoff and handoff_complete with verdict pass.",
+    "requiredSkills": "plan.json names none for the test phase; followed skill://legion-worker and skill://legion-worker/references/pr-body.md."
+  }
+}
