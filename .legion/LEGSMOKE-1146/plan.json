@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-1146",
+  "completed": "2026-10-25T01:44:17Z",
+  "requiredSkills": {
+    "implement": [
+      "none: the skills list holds only the two Stage 4b fixture skills and the Legion/Dispatch/Envoy process skills; the issue's spec (dispatch://LEGSMOKE-1146/artifact/spec, one version, empty body) names no code change for this throwaway proof, so no implementation skill applies."
+    ],
+    "test": [
+      "none: no repository testing, smoke, e2e, deploy or infrastructure skill exists in the skills list; the spec body is empty and names no surface to prove."
+    ],
+    "review": [
+      "none: no repository review skill exists beyond the generic reviewer agents; the spec body is empty and the proof exercises the workflow's handoff mechanics only."
+    ]
+  },
+  "gapAnalysis": {
+    "error": "not run: the Stage 4b proof's targeted message (dispatch message 2a40a88f-bad0-4d30-941c-46c2942bdfa1 on LEGSMOKE-1146) asked for the plan handoff and handoff_complete alone; the spec body is empty, so there was no design to analyse."
+  },
+  "planReview": {
+    "verdict": "failed",
+    "rounds": 0,
+    "error": "not run: the Stage 4b proof's targeted message asked for the plan handoff and handoff_complete alone; no plan beyond this handoff was drafted for an empty spec."
+  },
+  "specDepartures": []
+}
