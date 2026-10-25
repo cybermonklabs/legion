@@ -1,0 +1,87 @@
+{
+  "schemaVersion": 1,
+  "phase": "implement",
+  "issue": "LEGSMOKE-1167",
+  "completed": "2026-10-25T09:41:00Z",
+  "driverMessage": "dispatch message f2e5c033-e73e-4659-ae24-ad510805f857 (2026-10-25T09:33:09Z): make the smallest one-file change, commit and push it on legion/LEGSMOKE-1167, open its pull request, record the implementation handoff and call handoff_complete.",
+  "record": {"readAt": "2026-10-25T09:30Z", "phase": "implementing", "generation": 1, "rounds": 0, "status": "todo", "plannerHandoffCommit": "3ba5166bfa32180194fa3c48c99f47cf3be82317"},
+  "planHead": "3ba5166bfa32180194fa3c48c99f47cf3be82317",
+  "firstCodeHead": "a3bed347638ba38f3a729ef09092a82cb7a5966e",
+  "pullRequest": {"number": 803, "url": "https://github.com/sjawhar/legion-smoke/pull/803", "title": "smoke: add LEGSMOKE-1167 marker file", "base": "main", "head": "legion/LEGSMOKE-1167", "headRefOid": "a3bed347638ba38f3a729ef09092a82cb7a5966e", "mergeStateStatus": "BLOCKED", "mergeable": "MERGEABLE", "readAt": "2026-10-25T09:39:42Z"},
+  "ci": {
+    "readAt": "2026-10-25T09:39:42Z",
+    "head": "a3bed347638ba38f3a729ef09092a82cb7a5966e",
+    "runs": [
+      {"id": 40181550832, "workflow": "ci", "event": "pull_request", "status": "queued"},
+      {"id": 40181550812, "workflow": "fail-on-demand", "event": "pull_request", "status": "queued"},
+      {"id": 40181478369, "workflow": "ci", "event": "push", "status": "queued"},
+      {"id": 40181478361, "workflow": "fail-on-demand", "event": "push", "status": "queued"}
+    ],
+    "checkRuns": ["check queued", "gate queued", "check queued", "gate queued"],
+    "requiredSetOnMain": ["gate"],
+    "note": "Not waited for (skill://legion-worker/references/pr-body.md, Never waiting on CI); the daemon reads settlement. The tester reads ciHead and checkRuns there."
+  },
+  "preState": {
+    "readAt": "2026-10-25T09:37:17Z",
+    "defaultBranch": "\"main\"",
+    "mainSha": "6d843f28732dd82163065cb4d2248e488f68ca0b",
+    "fileAtMain": "HTTP 404",
+    "commitsTouchingPathOnMain": 0,
+    "pullRequestsForBranchBeforePush": 0,
+    "pullRequestsForBranchAfterOpen": 1,
+    "requiredStatusChecksOnMain": ["gate"],
+    "legionDiffAtPlanHead": "[]",
+    "compareStatusAtPlanHead": "ahead",
+    "originTipAtStart": "3ba5166bfa32180194fa3c48c99f47cf3be82317",
+    "branchInvariant": "6d843f28732dd82163065cb4d2248e488f68ca0b",
+    "forkPointRecheck": "6d843f28732dd82163065cb4d2248e488f68ca0b",
+    "constantsReproduced": {"bytes": 84, "sha256": "47ef2cae5ce615758095942a9a976b0aab047bd4e2c3fbc2e3ac15335b0dfd5b", "blob": "54e54b62aeadd8b0d421d6ab8313368006b56968", "altered": "5b19ecbcbd9981166160e1bbd62bf231d43f252502ca1cce8c2e34174ed54a7f"}
+  },
+  "identity": "jj log main@origin..@ at 09:38Z: 271566630+trajectory-s-legion-implementer[bot] author and committer on a3bed347 (smoke: add LEGSMOKE-1167 marker file); 271566912+trajectory-s-legion-reviewer[bot] on 3ba5166b (plan: record handoff), the planner's own App.",
+  "agentsMd": {"ran": true, "markerMtime": 1792920649},
+  "proof": [
+    {
+      "criterion": "C1 — the pull request adds one new Markdown file under smoke/, and nothing else changes",
+      "surface": "GitHub compare and pull-request API, repository sjawhar/legion-smoke",
+      "command": "gh api 'repos/sjawhar/legion-smoke/compare/6d843f28732dd82163065cb4d2248e488f68ca0b...a3bed347638ba38f3a729ef09092a82cb7a5966e' --jq '[.files[] | select(.filename | startswith(\".legion/\") | not) | {filename,status,additions,deletions}] | tostring'; same compare --jq .status; gh pr list -R sjawhar/legion-smoke --head legion/LEGSMOKE-1167 --state all --json number --jq length; jj -R \"$LEGION_WORKSPACE\" diff --from 6d843f28732dd82163065cb4d2248e488f68ca0b --to @- --name-only",
+      "observed": "[{\"additions\":1,\"deletions\":0,\"filename\":\"smoke/LEGSMOKE-1167.md\",\"status\":\"added\"}]; status ahead; pr count 0 before the first push (09:37:17Z) and 1 after the open (09:39:42Z, PR #803); pathGuard at @- = .legion/LEGSMOKE-1167/plan.json, smoke/LEGSMOKE-1167.md (both within allowedPaths)",
+      "headSha": "a3bed347638ba38f3a729ef09092a82cb7a5966e",
+      "negativeControl": "The same legionDiff at planHead 3ba5166bfa32180194fa3c48c99f47cf3be82317 → [] (no non-.legion file before the code commit); contents read of smoke/LEGSMOKE-1167.md at ?ref=main → HTTP 404 and gh api 'repos/sjawhar/legion-smoke/commits?path=smoke/LEGSMOKE-1167.md&sha=main' --jq length → 0 (main does not carry the file yet)"
+    },
+    {
+      "criterion": "C2 — the file holds a single line that names this issue (one-line state, L1 + LF, 84 bytes)",
+      "surface": "GitHub contents API, raw and JSON routes, at an explicit SHA",
+      "command": "gh api 'repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1167.md?ref=a3bed347638ba38f3a729ef09092a82cb7a5966e' -H 'Accept: application/vnd.github.raw' | sha256sum (also | wc -c, | wc -l, | tail -c1 | od -An -tx1, | head -c3 | od -An -tx1, | od -An -tx1 | grep -c ' 0d', | head -1, | grep -c '^LEGSMOKE-1167: '); gh api '…?ref=a3bed347638ba38f3a729ef09092a82cb7a5966e' --jq '[.sha,.size] | @tsv'; --jq .content | base64 -d | sha256sum",
+      "observed": "sha256 47ef2cae5ce615758095942a9a976b0aab047bd4e2c3fbc2e3ac15335b0dfd5b; 84 bytes; 1 line; last byte 0a; first bytes 4c 45 47; 0 CR bytes; head -1 string-equal to 'LEGSMOKE-1167: Upgrade rehearsal handoff child (/tmp/legion-e2e4b.1612995.E10GrqVK)'; prefix count 1; JSON route 54e54b62aeadd8b0d421d6ab8313368006b56968 84; decoded content sha256 identical (read 2026-10-25T09:38:51Z)",
+      "headSha": "a3bed347638ba38f3a729ef09092a82cb7a5966e",
+      "negativeControl": "?ref=main → HTTP 404; ?ref=6d843f28732dd82163065cb4d2248e488f68ca0b → HTTP 404; wrong-case path smoke/legsmoke-1167.md at the head → HTTP 404; the altered line 'LEGSMOKE-1167x: …' + LF hashes to 5b19ecbcbd9981166160e1bbd62bf231d43f252502ca1cce8c2e34174ed54a7f, not the read's 47ef2cae…"
+    },
+    {
+      "criterion": "C3 — CI at the code head: the push and pull_request pairs exist for ci (check) and fail-on-demand (gate, required on main); settlement is the daemon's read, not waited for",
+      "surface": "GitHub actions runs and commit check-runs API",
+      "command": "gh api 'repos/sjawhar/legion-smoke/actions/runs?head_sha=a3bed347638ba38f3a729ef09092a82cb7a5966e' --jq '.workflow_runs[] | [.id,.name,.event,.status,.conclusion] | @tsv'; gh api 'repos/sjawhar/legion-smoke/commits/a3bed347638ba38f3a729ef09092a82cb7a5966e/check-runs' --paginate --jq '.check_runs[] | [.name,.status,.conclusion] | @tsv'; gh api repos/sjawhar/legion-smoke/rules/branches/main --jq '[.[] | select(.type==\"required_status_checks\") | .parameters.required_status_checks[].context] | tostring'",
+      "observed": "Four runs at the head at 09:39:42Z: 40181550832 ci pull_request queued; 40181550812 fail-on-demand pull_request queued; 40181478369 ci push queued; 40181478361 fail-on-demand push queued; check-runs check/gate ×2 queued; required set on main [\"gate\"]; PR #803 mergeStateStatus BLOCKED, mergeable MERGEABLE. Green is not claimed here: the tester reads checkRuns at ciHead after settlement",
+      "headSha": "a3bed347638ba38f3a729ef09092a82cb7a5966e",
+      "negativeControl": "The trailered handoff head 3ba5166bfa32180194fa3c48c99f47cf3be82317 (plan: record handoff, skip-checks: true): actions/runs?head_sha → total_count 0 and commits/…/check-runs → total_count 0 at 09:40:16Z, so a run at a3bed347 is this code push's, not a carry-over"
+    },
+    {
+      "criterion": "C4 — the rehearsal: the plan handoff was written, committed, pushed, and its completion accepted (handoffGuard at planHead; record past planning)",
+      "surface": "The workspace's jj against legion/LEGSMOKE-1167@origin, and the legion tool's read_record",
+      "command": "jj -R \"$LEGION_WORKSPACE\" log -r 'description(glob:\"plan: record handoff*\") & ::legion/LEGSMOKE-1167@origin' --no-graph -T commit_id; jj -R \"$LEGION_WORKSPACE\" diff --from 6d843f28732dd82163065cb4d2248e488f68ca0b --to 3ba5166bfa32180194fa3c48c99f47cf3be82317 --name-only; jj -R \"$LEGION_WORKSPACE\" log -r 3ba5166bfa32180194fa3c48c99f47cf3be82317 --no-graph -T 'description.first_line()'; jj -R \"$LEGION_WORKSPACE\" log -r 'legion/LEGSMOKE-1167@origin' --no-graph -T commit_id (before the code push); legion read_record issue LEGSMOKE-1167",
+      "observed": "planHead 3ba5166bfa32180194fa3c48c99f47cf3be82317 (one commit); diff from base = .legion/LEGSMOKE-1167/plan.json only; first line 'plan: record handoff'; origin tip at the implementer's start = planHead (09:37Z); read_record at 09:30Z: phase implementing, generation 1, planner handoffCommit 3ba5166bfa32180194fa3c48c99f47cf3be82317, planner rounds 0; the task line named Handoff commit 3ba5166b. Whether the planner's handoff_complete omitted the issue field is the planner's and the daemon's record, not observable from this role",
+      "headSha": "3ba5166bfa32180194fa3c48c99f47cf3be82317",
+      "negativeControl": "The same revset for a description that does not exist on the branch, description(glob:\"implement: record handoff*\") & ::legion/LEGSMOKE-1167@origin, resolves to no commit before this handoff is pushed; and legionDiff at planHead is [] where at the code head it lists the marker"
+    }
+  ],
+  "filesChanged": ["smoke/LEGSMOKE-1167.md (added, 1 line, 84 bytes)", ".legion/LEGSMOKE-1167/implement.json (this handoff)"],
+  "trickyParts": [
+    "The byte constants were reproduced with the plan's recorded commands before use (84 bytes, sha256 47ef2cae…, blob 54e54b62…), and the committed blob id in jj diff --git (54e54b62ae) matched before the push.",
+    "The CI line names the pull_request pair, which exists only after gh pr create; the body was patched once after the open to add it."
+  ],
+  "deviations": [
+    "Plan Implementer step 5 says to wait for the four runs at firstCodeHead before writing CI:. Not done: the implementer role and references/pr-body.md forbid waiting on or polling CI; the CI line records the queued states read at 09:39:42Z and the daemon reads settlement.",
+    "Plan Implementer step 2 says the implementer writes the file with the write tool; per the implementer role prompt the file was written by a task(agent=\"deep-worker\") subagent with the exact bytes given, then verified by the implementer (wc -c 84, sha256 47ef2cae…, jj diff --git) before the split."
+  ],
+  "openQuestions": [],
+  "discoveredComplexity": []
+}
