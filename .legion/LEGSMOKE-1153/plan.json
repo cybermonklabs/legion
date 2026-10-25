@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-1153",
+  "completed": "2026-10-25T04:10:03Z",
+  "requiredSkills": {
+    "implement": [
+      "none: looked through the session skill list (ce-simplify-code, dispatch, dispatch-brainstorming, dispatch-first, envoy, fixture-claude-skill, fixture-omp-skill, legion-*); the repository carries only Stage 4b fixture skills and the spec (dispatch://LEGSMOKE-1153/artifact/spec, version 1) has no body, so no domain skill drives an implementation surface"
+    ],
+    "test": [
+      "none: same list; the spec names no acceptance criterion and no surface to drive, and the repository has no testing, smoke, e2e or deploy skill"
+    ],
+    "review": [
+      "none: same list; the spec names no design to review against, and the repository has no review skill beyond the legion-worker role skill every role already follows"
+    ]
+  },
+  "gapAnalysis": {
+    "error": "not run: Stage 4b upgrade rehearsal proof; the targeted human Dispatch message (LEGSMOKE-1153 message 4c7ceb51-4b78-4684-936d-bc41b9d5bdd3) directed writing and committing the plan handoff alone, and the spec has no body to analyse"
+  },
+  "planReview": {
+    "verdict": "failed",
+    "rounds": 0,
+    "error": "not run: Stage 4b upgrade rehearsal proof; the targeted human Dispatch message directed the handoff alone, and there is no plan body to review against an empty spec"
+  },
+  "specDepartures": [],
+  "notes": {
+    "proof": "Stage 4b upgrade rehearsal interrupted handoff on the LEGSMOKE smoke project (/tmp/legion-e2e4b.2732610.7edO7DPj). This handoff exists to exercise the planner's handoff path; it plans no code change. The issue is a child of dispatch://LEGSMOKE-1149.",
+    "workspaceState": "legion/LEGSMOKE-1153 at 6d843f28 (= main) before this handoff; no predecessor handoffs under .legion/LEGSMOKE-1153/."
+  }
+}
