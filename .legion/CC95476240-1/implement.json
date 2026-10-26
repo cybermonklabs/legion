@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "phase": "implement",
+  "issue": "CC95476240-1",
+  "completed": "2026-10-26T17:18:00Z",
+  "proof": [
+    {
+      "criterion": "smoke/CC95476240-1.md exists, is a single line, and contains the literal issue key CC95476240-1",
+      "surface": "repository filesystem in the issue workspace",
+      "command": "test -f smoke/CC95476240-1.md && [ \"$(wc -l < smoke/CC95476240-1.md)\" -le 1 ] && grep -q 'CC95476240-1' smoke/CC95476240-1.md && cat smoke/CC95476240-1.md",
+      "observed": "File exists at smoke/CC95476240-1.md with exactly one line: 'CC95476240-1 — Claude Code implementer proof'; grep matched the literal key.",
+      "headSha": "780aab1d6e7e35881fd0b8d39d8267da2aa7aaab",
+      "negativeControl": "Before this commit, `test -f smoke/CC95476240-1.md` failed (no such file) at parent commit c1429f9b."
+    }
+  ],
+  "filesChanged": [
+    "smoke/CC95476240-1.md"
+  ],
+  "deviations": [
+    "Per explicit Dispatch instruction (message 45a27be9-6596-4495-85f9-db2bcb235940) for this proof round: committed and pushed to legion/CC95476240-1 but did not open a pull request."
+  ]
+}
