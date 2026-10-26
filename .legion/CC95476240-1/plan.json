@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "CC95476240-1",
+  "completed": "2026-10-26T17:13:17Z",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: governs the implementer's proof discipline and PR/handoff for this file add; the only skill with real verification guidance (repo fixture skills are marker-only)."
+    ],
+    "test": [
+      "legion-worker: defines what 'tested' means here — re-run the AC shell checks at the PR head; CI (sleep 20 && exit 0) is contents-blind and not evidence."
+    ],
+    "review": [
+      "legion-worker: drives the reviewer's head-approval and the in-scope one-line-append handling; no repo domain skill applies to a single Markdown marker."
+    ]
+  },
+  "gapAnalysis": {
+    "findings": [
+      {
+        "finding": "Exact filename unstated.",
+        "answer": "Settled from convention: smoke/CC95476240-1.md, flat under smoke/ (matches smoke/LEGSMOKE-1003.md)."
+      },
+      {
+        "finding": "Extension .md vs .txt.",
+        "answer": "Use .md; spec says 'Markdown file'."
+      },
+      {
+        "finding": "Single line's exact content/format (only genuine choice).",
+        "answer": "CC95476240-1 — Claude Code implementer proof (key + em-dash + title, matching -1 markers); hard requirement is the line contains literal CC95476240-1."
+      },
+      {
+        "finding": "No Acceptance section; CI cannot serve as one (sleep 20 && exit 0 is contents-blind, always green).",
+        "answer": "Plan encodes machine checks: test -f, grep -q 'CC95476240-1', wc -l <=1 (<=2 after in-scope append); do not rely on CI green."
+      },
+      {
+        "finding": "AGENTS.md fixture precondition absent from spec.",
+        "answer": "Implementer runs mkdir -p /tmp/legion-fixture && touch /tmp/legion-fixture/agents-md before touching files; leaves no diff, so noted in plan not as reviewer check."
+      },
+      {
+        "finding": "In-scope follow-up append content undefined.",
+        "answer": "Low stakes; reviewer settles. Suggested: 'Legion proof review round 1 (CC95476240-1)', still one file, nothing else changes."
+      }
+    ]
+  },
+  "planReview": {
+    "verdict": "approved",
+    "rounds": 1
+  },
+  "specDepartures": []
+}
