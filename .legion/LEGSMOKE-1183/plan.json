@@ -1,0 +1,131 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-1183",
+  "completed": "2026-10-26T23:24:00Z",
+  "planDocument": "dispatch://LEGSMOKE-1183/artifact/plan-md",
+  "authority": {
+    "spec": "dispatch://LEGSMOKE-1183/artifact/spec has no body (1 version; parent dispatch://LEGSMOKE-1180/artifact/spec also empty). Every requirement is derived.",
+    "humanMessage": "2026-10-26T23:10:24Z, id 1de47713-c382-4954-9cbc-00f8f407b43b: \"Stage 4b upgrade rehearsal fallback planning: write the required plan handoff for the one-file smoke change, commit and push it on legion/LEGSMOKE-1183, then call handoff_complete with a concise summary. Do not start another role.\"",
+    "convention": "smoke/LEGSMOKE-1070.md line 1 = `LEGSMOKE-1070: <title>` (126 bytes, one LF-terminated line), landed by PR #767; smoke/LEGSMOKE-1069.md same shape."
+  },
+  "constants": {
+    "path": "smoke/LEGSMOKE-1183.md",
+    "line1": "LEGSMOKE-1183: Upgrade rehearsal fallback child (/tmp/legion-e2e4b.2615930.43hsvBwI)",
+    "bytes": 85,
+    "lines": 1,
+    "sha256": "a74ea3d66eec015cf8aff7be682e27f88559651a222d644e4fb7932454801af6",
+    "sha256AlteredControl": "d8e8443eb8423920b7b01b4fb9b5f3864f98a3b333cd356ca1b0a668adb9ee28",
+    "B": "6d843f28732dd82163065cb4d2248e488f68ca0b",
+    "F": "6d843f28732dd82163065cb4d2248e488f68ca0b",
+    "requiredChecks": ["gate"],
+    "prTitle": "smoke: add LEGSMOKE-1183 marker file",
+    "prBodyLine": "Dispatch: LEGSMOKE-1183",
+    "sizeLine": "1 file changed, +1/−0 — Legion's diff from B 6d843f28 at the first code head (merge diff; handoffs under .legion/LEGSMOKE-1183/ excluded, removed by retro)"
+  },
+  "preState": {
+    "verifiedAt": "2026-10-26T23:14Z",
+    "P1_contentsAtMain": "HTTP 404",
+    "P2_commitsByPathOnMain": 0,
+    "P3_prForBranch": [],
+    "P4_requiredChecks": ["gate"],
+    "stopRule": "Stop and report to the architect only when P1, P2 or P4 changed or P3 names a PR this tree did not open; a moved main tip is normal. Branch invariant: compare/B...<sha> status == ahead."
+  },
+  "agentsMdPrecondition": "ok",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker (+ references/pr-body.md, references/default-branch-check.md): the only skill with verification guidance for this repository; its own skills fixture-omp-skill and fixture-claude-skill are one-line Stage 4b marker fixtures with no instructions."
+    ],
+    "test": [
+      "legion-worker (references/pr-body.md, what the tester verifies): defines 'tested' here as the AC1/AC2 byte and compare reads re-run and broken at the code head, with CI read from GitHub and rerun by nobody (both workflows are contents-blind)."
+    ],
+    "review": [
+      "legion-worker (references/merge-gate.md, references/review-threads.md): the round's order, the single review submission naming the head by SHA, and thread handling; no repository domain skill applies to a single Markdown marker."
+    ]
+  },
+  "gapAnalysis": {
+    "findings": [
+      {
+        "finding": "Empty spec: the plan has no cited source of requirements.",
+        "answer": "plan.md §1 and this file's `authority` quote the driver's message verbatim and cite smoke/LEGSMOKE-1070.md as the convention; every requirement is marked derived. Whether the spec body is filled is the architect's call (D2); the plan proceeds."
+      },
+      {
+        "finding": "'One-file smoke change' names no file, extension or content.",
+        "answer": "Fixed as constants: smoke/LEGSMOKE-1183.md, `<KEY>: <title>` separator (the two most recent markers), line1 verbatim, 85 bytes, sha256 a74ea3d6… (D1)."
+      },
+      {
+        "finding": "Which title goes on the line; the title exists only in Dispatch.",
+        "answer": "The issue's own title, as LEGSMOKE-1069/1070 did; the literal line and its digest are plan constants so no role re-types it from an issue read. Planner re-derived: 84 chars + LF = 85 bytes."
+      },
+      {
+        "finding": "Run end-point ambiguous: plan-only or plan-then-implement?",
+        "answer": "D4: this planner pushes only .legion/LEGSMOKE-1183/plan.json (trailered) and completes; every criterion is written for a later implementer/tester; the daemon starts them."
+      },
+      {
+        "finding": "Green CI is not acceptance; both workflows are contents-blind.",
+        "answer": "AC3 records CI as a merge precondition read from check-runs at the code head; AC1/AC2 byte and compare checks are the acceptance."
+      },
+      {
+        "finding": "No production-like proof surface or exact commands.",
+        "answer": "AC1: GitHub contents API at firstCodeHead H with sha256sum/wc -c/wc -l/od/head -1/grep checks and expected values; H recorded in implement.json as firstCodeHead."
+      },
+      {
+        "finding": "Tester's breaking attempt undefined.",
+        "answer": "Tester §6: JSON route base64 decode + cmp, CR/BOM/second-line checks, altered-case/altered-name paths, altered digests, concurrent reads; never read at ?ref=legion/LEGSMOKE-1183."
+      },
+      {
+        "finding": "Negative controls unspecified; a .fail-me probe would break the branch (no root .gitignore).",
+        "answer": "Controls listed in §5: 404 at ?ref=main and ?ref=B, 404 for altered paths, sha256 mismatch for altered string; `.fail-me` creation forbidden for every role; gate control is mergeStateStatus BLOCKED at a trailered handoff head with 0 check-runs."
+      },
+      {
+        "finding": "'Only that one file changes' has no guard command and the base moves.",
+        "answer": "AC2: compare/B...<sha> filtered to paths outside .legion/ == exactly smoke/LEGSMOKE-1183.md added +1; local `jj diff --from B --to @- --name-only`; B == F == 6d843f28 recorded, no pre-Legion commit on this branch."
+      },
+      {
+        "finding": "Stop conditions must be facts, not the base SHA.",
+        "answer": "§4: four invalidating facts P1–P4 with commands; a moved main tip is normal; branch invariant compare status `ahead`."
+      },
+      {
+        "finding": "Reviewer's object undefined; approved head is not the one in review.json.",
+        "answer": "Reviewer §6.3: push review.json, then one POST …/pulls/<n>/reviews naming the new head R by commit_id; readers take the approved SHA from GitHub (`select(.state==\"APPROVED\") | .commit_id`), never from review.json; field named readHead."
+      },
+      {
+        "finding": "Handoff-push mechanics look like failures unless pre-declared.",
+        "answer": "Trailer rule per push stated (code push bare; .legion-only pushes `skip-checks: true`); BLOCKED/MERGEABLE with 0 check-runs at a trailered head declared the expected shape."
+      },
+      {
+        "finding": "AGENTS.md precondition unowned and unprovable from the repo.",
+        "answer": "Step 0 of every phase; each handoff records agentsMdPrecondition: \"ok\" from `test -f /tmp/legion-fixture/agents-md`."
+      },
+      {
+        "finding": "PR identity conventions unstated.",
+        "answer": "Constants: title `smoke: add LEGSMOKE-1183 marker file`, body line `Dispatch: LEGSMOKE-1183`, Size: line as the merge diff excluding .legion/; AC4 check command."
+      },
+      {
+        "finding": "Post-merge acceptance surface unnamed.",
+        "answer": "AC5: implementer's production check after the close reads contents at ?ref=<mergeCommit> and ?ref=main → sha256 a74ea3d6…, commits-by-path on main → 1."
+      },
+      {
+        "finding": "Whether a review-requested one-line append is in scope.",
+        "answer": "D3: forbidden; every constant and proof binds to a one-line file. A byte defect is fixed by rewriting the line. Product-shape choice the architect may overturn; named in the completion summary."
+      },
+      {
+        "finding": "Proof commands fail on the pane's gh wrapper if written with `--jq -c`.",
+        "answer": "Every --jq in the plan keeps flags inside the filter (`| tostring`, `| @tsv`); §5 and §8 state the rule."
+      },
+      {
+        "finding": "'Upgrade rehearsal fallback' has no source in the repository.",
+        "answer": "§1: the title is an opaque verbatim string copied onto the marker line; the plan asserts nothing about the rehearsal or the /tmp path."
+      }
+    ]
+  },
+  "planReview": {
+    "verdict": "approved",
+    "rounds": 1,
+    "nonBlockingNotesApplied": [
+      "Reviewer step uses the merge-gate.md POST …/pulls/<n>/reviews form with explicit commit_id instead of `gh pr review --approve`.",
+      "CR check wrapped `{ … | grep -c ' 0d' || true; }` since grep -c exits 1 on zero matches."
+    ]
+  },
+  "specDepartures": []
+}
