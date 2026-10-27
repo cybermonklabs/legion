@@ -1,0 +1,112 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-1195",
+  "completed": "2026-10-27T23:40:00Z",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: push, pull-request, PR-body template and proof rules (skill://legion-worker/references/pr-body.md, default-branch-check.md) govern the one code push, the PR with `Dispatch: LEGSMOKE-1195`, and the implement.json proof array for A1–A3",
+      "dispatch: every Dispatch write (message, comment) follows skill://dispatch; the repository's own skills (.omp/skills/fixture-omp-skill, .claude/skills/fixture-claude-skill) are single-line fixture markers with no guidance, and AGENTS.md only requires `mkdir -p /tmp/legion-fixture && touch /tmp/legion-fixture/agents-md` first"
+    ],
+    "test": [
+      "legion-worker: skill://legion-worker/references/pr-body.md defines what the tester verifies (re-run the implementer's proof on the production-like surface, try to break it, read CI for everything static) and the test.json fields; no repository test skill exists",
+      "dispatch: the tester's Dispatch writes, if any, follow skill://dispatch"
+    ],
+    "review": [
+      "legion-worker: skill://legion-worker/references/merge-gate.md (review order and approval of the head) and review-threads.md (one disposition per thread) govern the review; the review arm A4 (one appended line) is the parent spec's scope",
+      "dispatch: the reviewer's Dispatch writes, if any, follow skill://dispatch"
+    ]
+  },
+  "plan": {
+    "document": "dispatch://LEGSMOKE-1195/artifact/plan-md",
+    "constants": {
+      "file": "smoke/LEGSMOKE-1195.md",
+      "line": "LEGSMOKE-1195: Upgrade rehearsal push child (/tmp/legion-e2e4b.3970726.ozbZ4NB7)",
+      "bytes": 81,
+      "sha256": "49da57b09f503460376e4aa15daeb7ec7d66dc32a6929117fea495615ef1c349",
+      "forkPoint": "6d843f28732dd82163065cb4d2248e488f68ca0b",
+      "branchTipAtPlanning": "6d843f28732dd82163065cb4d2248e488f68ca0b",
+      "firstCodeHead": "recorded by the implementer in implement.json: the SHA of the first push carrying smoke/LEGSMOKE-1195.md"
+    },
+    "preState": {
+      "measuredAt": "2026-10-27T23:36:38Z",
+      "fileAtMain": "404",
+      "commitsByPathAtMain": 0,
+      "pullRequestsForBranch": 0,
+      "parentFileSmokeLEGSMOKE1190AtMain": "404 (parent not merged; read every new-on-branch control at forkPoint as well as at main)"
+    }
+  },
+  "gapAnalysis": {
+    "findings": [
+      {
+        "finding": "Every acceptance criterion traces to the parent LEGSMOKE-1190 spec v2 with the key swapped; the child's own spec v1 is empty.",
+        "answer": "Plan section 'Authority and departure' records the derivation and sends the decision (write child spec v2, or declare parent v2 the authority) to the architect; recorded as specDepartures[0]."
+      },
+      {
+        "finding": "The file's line text and its /tmp suffix had no verified source.",
+        "answer": "LINE is the Dispatch issue title verbatim (`dispatch read --issue LEGSMOKE-1195`, Title line) prefixed by `LEGSMOKE-1195: `, pinned as one quoted string with bytes=81 and sha256=49da57b0…c349 in plan constants; no phase re-derives it."
+      },
+      {
+        "finding": "`wc -l` = 1 plus `head -1` cannot decide trailing newline, CR, BOM or byte count.",
+        "answer": "A1 is the full byte set at a named SHA via the raw contents API: wc -l = 1, wc -c = 81, last byte 0a via `od -An -tx1`, sha256sum = H, head -1 string-equals LINE."
+      },
+      {
+        "finding": "'On the branch's first push' is ambiguous: the branch exists at origin at main's tip and the planner's handoff push comes first.",
+        "answer": "Criteria bind to firstCodeHead, the SHA of the first push carrying the file, recorded once in implement.json; tester and reviewer read at that SHA, never at a branch name."
+      },
+      {
+        "finding": "`gh pr diff --name-only` answers differently per phase as .legion/ handoffs accumulate and docs/solutions/ appears at retro.",
+        "answer": "A2 uses the compare API from forkPoint to the head under test with `.legion/` filtered inside the jq filter: exactly smoke/LEGSMOKE-1195.md (+1/−0) before retro, plus docs/solutions/ paths at the merging head; jq flags go inside the filter for the pane gh wrapper."
+      },
+      {
+        "finding": "'Workflows pass on the PR head' names no SHA and each push yields a push run and a pull_request run per job.",
+        "answer": "A3 reads `commits/<sha>/check-runs` at firstCodeHead and the approved head, requires `check` and `gate` completed/success, cites the pull_request pair and names the push pair; no `.fail-me` probe is ever created (no root .gitignore would snapshot it)."
+      },
+      {
+        "finding": "The only negative control (404 at ?ref=main) loses meaning once main advances; no fork point recorded.",
+        "answer": "forkPoint F and branch tip B (both 6d843f28) are recorded; the 404 control is read at F and at main; pre-state is recorded as invalidating facts (404 at main, 0 commits by path, 0 PRs) with its time."
+      },
+      {
+        "finding": "The post-merge criterion (main holds the file, no earlier commit contains it) had no owner or command.",
+        "answer": "A5 is assigned to the implementer's production check after the close: raw file at ?ref=main has sha256 = H (or the A4 two-line bytes) and `commits?path=…&sha=main` lists exactly the PR's merge commit; control: the same read at sha=forkPoint is empty."
+      },
+      {
+        "finding": "The parent's conditional 'review may ask one more line' criterion depends on an event that may not happen.",
+        "answer": "A4 states both arms as machine checks (no request: sha256 = H at approved head; request: wc -l = 2, head -1 = LINE, appendedLine recorded in review.json); whether the child keeps the arm is an open decision for the architect, and the plan keeps it as the parent does."
+      },
+      {
+        "finding": "AGENTS.md's first-action command is omitted by the issue, parent spec and design.",
+        "answer": "Task 1's first step runs `mkdir -p /tmp/legion-fixture && touch /tmp/legion-fixture/agents-md`; every phase worker runs it first; it is not an acceptance criterion."
+      },
+      {
+        "finding": "Three load-bearing premises (empty child spec and parent text, 404 and branch tip, parent file not landed) were unverifiable by the read-only analyst.",
+        "answer": "Re-read live at 2026-10-27T23:36:38Z with `dispatch doc-read`, `gh api contents`, `gh api commits?path=`, `gh pr list` and `jj log -r fork_point(...)`, recorded under plan.preState; the parent's file is 404 at main, so main may advance and the F control pairs with the main control."
+      }
+    ]
+  },
+  "planReview": {
+    "verdict": "approved",
+    "rounds": 1
+  },
+  "specDepartures": [
+    {
+      "spec": "The child spec document dispatch://LEGSMOKE-1195/artifact/spec (v1) is empty: it carries no Summary, Scope or Acceptance.",
+      "plan": "The plan supplies the child's Summary, Scope and Acceptance by deriving them from the parent spec dispatch://LEGSMOKE-1190/artifact/spec v2 with the key swapped: one new file smoke/LEGSMOKE-1195.md holding one line naming the issue, one PR from legion/LEGSMOKE-1195, byte-exact proofs at named SHAs, CI `check` and `gate` green, changed paths limited to the smoke file plus .legion/LEGSMOKE-1195/ and docs/solutions/, and the parent's optional one-appended-line review arm.",
+      "evidence": "`dispatch doc-read --issue LEGSMOKE-1195 --artifact spec` printed an empty body (document token sha256:925349f7…); `dispatch doc-read --issue LEGSMOKE-1190 --artifact spec` printed the parent's Summary/Scope/Acceptance/proof (v2, 'Acceptance and proof added for the one-file smoke change'); .github/workflows/ci.yml and fail-on-demand.yml match the parent's proof section; smoke/LEGSMOKE-1070.md shows the `KEY: <title>` convention.",
+      "outcome": {
+        "kind": "changed",
+        "summary": [
+          "Add one new Markdown file smoke/LEGSMOKE-1195.md to sjawhar/legion-smoke holding a single line that names this issue, through one pull request from legion/LEGSMOKE-1195 into main."
+        ],
+        "acceptance": [
+          "A1: at firstCodeHead the raw file has wc -l = 1, wc -c = 81, last byte 0a, sha256 = 49da57b09f503460376e4aa15daeb7ec7d66dc32a6929117fea495615ef1c349, head -1 = the recorded LINE; control: 404 at forkPoint 6d843f28 and at main while the PR is open.",
+          "A2: compare forkPoint...head excluding .legion/ is exactly smoke/LEGSMOKE-1195.md (+1/−0) before retro, plus docs/solutions/ paths at the merging head.",
+          "A3: check-runs at firstCodeHead and the approved head show `check` and `gate` completed/success (pull_request pair cited).",
+          "A4: no review request → sha256 unchanged at the approved head; review request → 2 lines, first line unchanged, appended line recorded in review.json.",
+          "A5 (production check after the close): raw file at main matches the recorded bytes and commits?path= at main lists exactly the merge commit."
+        ],
+        "scope": "A PR review may ask one more line appended to the same file; nothing else changes; no phase creates a .fail-me probe. The architect decides whether to write this into the child spec as v2 or to declare the parent's v2 the authority for the child."
+      }
+    }
+  ]
+}
