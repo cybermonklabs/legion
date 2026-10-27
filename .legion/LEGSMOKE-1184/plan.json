@@ -1,0 +1,89 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-1184",
+  "completed": "2026-10-27T01:08:14Z",
+  "planDocument": "dispatch://LEGSMOKE-1184/artifact/plan-md",
+  "agentsMdPrecondition": "ok",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker (+ references/pr-body.md, references/default-branch-check.md): the only skill with verification guidance for this repository; the repository's own skills (fixture-omp-skill, fixture-claude-skill) are one-line Stage 4b marker fixtures with no instructions."
+    ],
+    "test": [
+      "legion-worker (references/pr-body.md, 'what the tester verifies'): defines 'tested' here as the AC1/AC2 reads re-run and broken at the code head, with CI read from GitHub and rerun by nobody."
+    ],
+    "review": [
+      "legion-worker (references/merge-gate.md, references/review-threads.md): the round's order, the head approval and thread handling; no repository domain skill applies to a single Markdown marker."
+    ]
+  },
+  "constants": {
+    "path": "smoke/LEGSMOKE-1184.md",
+    "line1": "LEGSMOKE-1184: Upgrade rehearsal handoff child (/tmp/legion-e2e4b.2615930.43hsvBwI)",
+    "bytes": 84,
+    "sha256": "0ce49eda906c608d10d77b5bead4ea3a37f4947ff32739ae0b56732455d4b5e7",
+    "sha256AlteredControl": "efe84dcfdb085a44e9f593f7b971a07c0e12f6884bb177674fb22e39fb660a74",
+    "branchTipAtPlanning": "6d843f28732dd82163065cb4d2248e488f68ca0b",
+    "forkPoint": "6d843f28732dd82163065cb4d2248e488f68ca0b",
+    "requiredChecks": ["gate"],
+    "prTitle": "smoke: add LEGSMOKE-1184 marker file",
+    "prBodyLine": "Dispatch: LEGSMOKE-1184"
+  },
+  "preState": {
+    "measuredAt": "2026-10-27T00:58Z",
+    "P1_markerOnMain": "HTTP 404",
+    "P2_commitsTouchingPathOnMain": "0",
+    "P3_pullRequestsForBranch": "[]",
+    "P4_requiredChecks": "[\"gate\"]"
+  },
+  "gapAnalysis": {
+    "findings": [
+      {
+        "finding": "The planner's only targeted human message ('write and commit the required plan handoff, then call handoff_complete without an issue field') does not cover AC1-AC5; is this run's deliverable the plan handoff alone, or does the planner assert downstream phases run?",
+        "answer": "Plan section 1 and D5: this session delivers only plan.json and plan.md; AC1-AC6 are the contract the implementer, tester, reviewer, retro and merger inherit when the daemon hands each its task and the proof driver's targeted message lets it act. No code is written here."
+      },
+      {
+        "finding": "The approved root spec says the file names 'this issue, LEGSMOKE-1180' while the derived constant names LEGSMOKE-1184; is the child-naming reading recorded as a spec departure for the architect rather than silently assumed?",
+        "answer": "Recorded in specDepartures (below) and plan D2: the root sentence describes the root's own pull request; applied to a child it names the child, as every sibling marker in smoke/ does (smoke/LEGSMOKE-1070.md; sibling plan LEGSMOKE-1183). Named in the completion summary for the architect."
+      },
+      {
+        "finding": "Whether the planner pushes plan.json or leaves it local, what a successful handoff_complete without an issue field looks like, and what the planner does on an error are unsettled.",
+        "answer": "Plan section 1 / D5: pushed to legion/LEGSMOKE-1184 as a handoff-only push with the skip-checks trailer, because the role prompt makes the push a hard precondition of handoff_complete; 'without an issue field' means the legion tool call omits issue. Success = accepted completion naming the pushed commit and the record later showing phase implementing. A refusal is quoted verbatim to the architect via envoy_publish, never retried in a loop."
+      },
+      {
+        "finding": "Retro's convention adds a docs/solutions/legion note and removes .legion/, but AC2 measured only B...S and nothing checked the merged pull request's whole file set.",
+        "answer": "Plan AC6 and D4: the merged pull request's files (pulls/<n>/files) are exactly the marker plus at most one docs/solutions/legion/*.md added by retro and no .legion/ path; the merger refuses READY otherwise and the production check fails otherwise. The architect may overturn D4 by telling retro to write no note."
+      },
+      {
+        "finding": "The root clause allowing one appended line on review request has no second set of constants, so AC1/AC5 byte-exactness breaks the moment it is exercised.",
+        "answer": "Plan D3: the reviewer requests no appended line; a byte defect is fixed by rewriting the line to the constants. If the architect authorises an appended line, the re-binding rule is fixed: the implementer records L2, byte count and sha256 as constantsRebound in implement.json with the new code head, and AC1/AC2/AC5/AC6 bind to those values from that head on."
+      },
+      {
+        "finding": "AC3 ('CI green, read from GitHub, never waited on') named no endpoint, head or decision rule; ci.yml sleeps 20 s so an early read is queued/in_progress; only gate is required; each push yields two runs per job.",
+        "answer": "Plan AC3: exact check-runs command at explicit SHA H; pass = every gate run completed+success and no failure/cancelled/timed_out at H; check recorded but advisory; queued/in_progress is neither pass nor fail: tester/reviewer re-reads after 60 s, at most five reads, then reports to the architect; the implementer never reads CI; the pull_request pair is cited; a gate failure means a .fail-me file (real defect, fail), a check failure is infrastructure (gh run rerun --failed)."
+      },
+      {
+        "finding": "The two sha256 constants carried no command output, and the proof's negative controls (404 at F/B/main, altered string, BLOCKED-at-trailered-head, never a .fail-me probe since there is no root .gitignore) appeared in no criterion.",
+        "answer": "Plan section 2 records the derivation commands and outputs (planner, 2026-10-27T00:58Z) and requires the implementer to re-run them and record constantsRederived before writing the file, a mismatch being a stop. Section 5 makes controls acceptance items: every proof entry carries one, from the enumerated list; the gate control is the BLOCKED/MERGEABLE read at a trailered head, never a .fail-me probe."
+      },
+      {
+        "finding": "AGENTS.md's per-session command (mkdir/touch /tmp/legion-fixture/agents-md) and the two fixture skills appeared in no criterion or handoff instruction.",
+        "answer": "Plan section 3 (Step 0 of every phase): run the command first and record agentsMdPrecondition: 'ok' in each handoff; it leaves no repository diff so it is per-session evidence, not a reviewer check. The two fixture skills are empty markers: nothing in them is followed or recorded."
+      }
+    ]
+  },
+  "planReview": {
+    "verdict": "approved",
+    "rounds": 1,
+    "nonBlockingNoteApplied": "The reviewer noted AC6's compare/B...M would also list paths other trees merged into main after B; AC6 and the merger/production-check steps now read the pull request's own files (pulls/<n>/files) instead."
+  },
+  "specDepartures": [
+    {
+      "spec": "This issue's spec document (dispatch://LEGSMOKE-1184/artifact/spec) has no body. The parent root spec dispatch://LEGSMOKE-1180/artifact/spec v2 (approved) says the one new Markdown file under smoke/ 'holds a single line naming this issue, LEGSMOKE-1180' and 'No other file changes in that pull request. The one exception is one more line appended to that same file when a review of the pull request asks for it.'",
+      "plan": "The child's marker is smoke/LEGSMOKE-1184.md whose one line names LEGSMOKE-1184 (not LEGSMOKE-1180). The reviewer requests no appended line (D3; a re-binding rule exists if the architect authorises one). Retro may add one docs/solutions/legion/*.md note to the merged pull request (D4).",
+      "evidence": "smoke/LEGSMOKE-1070.md and smoke/LEGSMOKE-1069.md each name their own issue on one LF-terminated line; sibling plan dispatch://LEGSMOKE-1183/artifact/plan-md does the same; docs/solutions/legion/size-the-pr-body-by-the-paths-that-merge-LEGSMOKE-1022.md and read-the-approved-head-from-github-not-the-review-handoff-LEGSMOKE-1062.md record retro's note landing with the marker on main; the byte-exact constants (84 bytes, sha256 0ce49eda…) bind every proof to a one-line file.",
+      "outcome": {
+        "kind": "unchanged"
+      }
+    }
+  ]
+}
