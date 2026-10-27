@@ -1,0 +1,76 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-1193",
+  "completed": "2026-10-27T23:46:24Z",
+  "planDocument": "dispatch://LEGSMOKE-1193/artifact/plan-md",
+  "agentsMdPrecondition": "ok",
+  "constants": {
+    "KEY": "LEGSMOKE-1193",
+    "PATH": "smoke/LEGSMOKE-1193.md",
+    "L1": "LEGSMOKE-1193: Upgrade rehearsal fallback child (/tmp/legion-e2e4b.3970726.ozbZ4NB7)",
+    "bytes": 85,
+    "SHA": "52e8fd8837a5aed381bb1b8311e854d6ee7b1c5f0aace4c585db371db4078018",
+    "SHA_ALT": "7897f6df5515ac8586cea5258a29828a3d0f99c82490e0ae558e2abb58863a7b",
+    "F": "6d843f28732dd82163065cb4d2248e488f68ca0b",
+    "B": "6d843f28732dd82163065cb4d2248e488f68ca0b",
+    "requiredChecks": ["gate"],
+    "prTitle": "smoke: add LEGSMOKE-1193 marker file",
+    "prBodyLine": "Dispatch: LEGSMOKE-1193",
+    "derivation": "L1='LEGSMOKE-1193: Upgrade rehearsal fallback child (/tmp/legion-e2e4b.3970726.ozbZ4NB7)'; printf '%s\\n' \"$L1\" | wc -c -> 85; printf '%s\\n' \"$L1\" | sha256sum -> SHA; printf '%s\\n' \"${L1}x\" | sha256sum -> SHA_ALT. The implementer re-runs all three before writing the file and records the output as constantsRederived; a differing value is a stop."
+  },
+  "preState": {
+    "measuredAt": "2026-10-27T23:33:00Z",
+    "P1": {"command": "gh api 'repos/sjawhar/legion-smoke/contents/smoke/LEGSMOKE-1193.md?ref=main' -H 'Accept: application/vnd.github.raw'", "value": "HTTP 404"},
+    "P2": {"command": "gh api 'repos/sjawhar/legion-smoke/commits?path=smoke/LEGSMOKE-1193.md&sha=main' --jq 'length|tostring'", "value": "0"},
+    "P3": {"command": "gh pr list -R sjawhar/legion-smoke --head legion/LEGSMOKE-1193 --state all --json number", "value": "[]"},
+    "P4": {"command": "gh api repos/sjawhar/legion-smoke/rules/branches/main --jq '[.[] | select(.type==\"required_status_checks\") | .parameters.required_status_checks[].context] | tostring'; gh api repos/sjawhar/legion-smoke/branches/main --jq '.protection.required_status_checks.checks[].context'", "value": "[\"gate\"]; (nothing: protection.enabled false)"},
+    "stopRule": "Stop and report to the architect only when P1, P2 or P4 changed, or P3 names a pull request this tree did not open. A moved main@origin is normal; F stays 6d843f28. compare/F...<sha> status must be 'ahead' at every push."
+  },
+  "requiredSkills": {
+    "implement": [
+      "legion-worker (+ references/pr-body.md, references/default-branch-check.md): the only skill with verification guidance for this repository; the repository's own skills (.omp/skills/fixture-omp-skill, .claude/skills/fixture-claude-skill) are one-line Stage 4b fixture markers with no instructions, and no domain skill applies to a Markdown marker."
+    ],
+    "test": [
+      "legion-worker (references/pr-body.md, what the tester verifies): defines 'tested' here as the AC1/AC2 contents-API reads re-run and broken at the first code head, with CI read from GitHub and re-run by nobody."
+    ],
+    "review": [
+      "legion-worker (references/merge-gate.md, references/review-threads.md): the round's order (read CI, push review.json, approve the head that push made by SHA), the CI-head read with both base-branch endpoints, and thread handling; no repository domain skill applies."
+    ]
+  },
+  "gapAnalysis": {
+    "findings": [
+      {"finding": "Nothing says a child inherits the root's acceptance with its own key substituted; the root bullets name LEGSMOKE-1190 literally and the child spec is empty.", "answer": "plan.md section 1 and D2: every LEGSMOKE-1190 in the root Acceptance reads as LEGSMOKE-1193 for this child (PATH smoke/LEGSMOKE-1193.md, .legion/LEGSMOKE-1193/, the line's key), with the reasons; recorded as one specDepartures entry (outcome unchanged, the child spec being empty) and named in the completion summary for the architect."},
+      {"finding": "'On the branch's first push' is literally false: the branch's first push is this plan's handoff, which carries no marker.", "answer": "plan.md section 5: H = firstCodeHead, the first pushed commit carrying PATH, recorded in implement.json and the E2E (implementer) line; AC1 binds to ?ref=$H, never to the branch name; tester and reviewer re-run at the same recorded SHA."},
+      {"finding": "No bullet says which phase proves which criterion or at which head it first becomes provable.", "answer": "plan.md section 5 table: AC1/AC2/AC4 implementer at H (tester re-runs); AC3 tester and reviewer read at the CI head; AC5 implementer at H2 in the round answering the review; AC6 retro locally and merger before READY; AC7 the implementer's production check at M and main after the close."},
+      {"finding": "'Both workflows pass on the pull request's head' names neither the head nor what pass means when only gate is required.", "answer": "plan.md AC3 and D5: CI head from actions/runs?event=pull_request, check-runs at that SHA, pass when every gate and every check run is completed/success; only a red gate blocks the merge and is sent back by the daemon; a red check is a REQUEST_CHANGES under the spec's words, re-run once by the implementer, never by a push; READY is judged on retro's head, the last code head."},
+      {"finding": "The optional one-line append names no machine-readable trigger and no text for the second line.", "answer": "plan.md AC5 and D3: trigger is a CHANGES_REQUESTED review by Legion's reviewer asking for the line; L2 is the review's text, else the precedent 'Legion proof review round 1 (LEGSMOKE)'; the implementer never appends without such a review and at most once; constantsRebound (L2, bytes, sha256, H2) recorded; checks wc -l 2, head -1 == L1, sed -n 2p == L2; AC1 at H stands."},
+      {"finding": "The spec pins the file only with wc -l = 1, which CRLF, BOM or trailing spaces also satisfy, while the plan's byte constants are tighter.", "answer": "plan.md section 2: the byte set (85 bytes, last byte 0a, first bytes 4c 45 47, zero 0d, sha256) is a deliberate tightening per the LEGSMOKE-1021 note; file produced with printf '%s\\n'; the derivation commands are recorded and the implementer recomputes rather than trusts them."},
+      {"finding": "The changed-files criterion is true at no single head and its 'files under docs/solutions/' clause may be unsatisfiable if retro writes no note.", "answer": "plan.md AC2 (filtered compare from F at each head; Size: line from the same set) and AC6/D4 (pulls/<n>/files lists the marker plus zero or one docs/solutions/legion/*-LEGSMOKE-1193.md and no .legion/ path; 'files under docs/solutions/' read as zero or more); AC7 reads the merge commit's files."},
+      {"finding": "Every proof entry needs a negativeControl, the spec supplies none, and the ?ref=main control inverts after the merge.", "answer": "plan.md section 5 'Negative controls': 404 at ?ref=main (pre-merge) and at ?ref=F, 404 for altered paths and a wrong SHA, SHA_ALT/CRLF/no-LF digest mismatches, BLOCKED/0 check-runs at a trailered handoff head; all read-only; .fail-me forbidden for every phase; after the merge the F control and the altered string remain."},
+      {"finding": "The recorded 'branch tip == main@origin' is a live reading, and nothing says which facts are stop conditions.", "answer": "plan.md section 4: P1-P4 are the only invalidating facts; the base tip's SHA is not a fact; F recorded once for every compare and fork-point control; compare/F...<sha> status 'ahead' is the branch invariant."},
+      {"finding": "The post-merge read from main is the implementer's production check, and nothing says what counts as production carrying the merge for a repository with no deploy.", "answer": "plan.md AC7: production is sjawhar/legion-smoke@main; the check reads commits/<M> files and the contents at ?ref=M and ?ref=main; the M read decides; pass as soon as M is read and matches; fail per findings.md; pending is never this repository's answer once M exists."},
+      {"finding": "The tester must try to break a surface that has no input, and no bounded set of break attempts is named.", "answer": "plan.md Tester step 3 enumerates the permitted attempts (altered paths, wrong refs, altered digests, JSON route at a handoff head, second read, BLOCKED/0 at the handoff head) and states they exhaust the budget; .fail-me, workspace writes outside test.json, CI re-runs and pushes are prohibited for the tester."},
+      {"finding": "The planner's own deliverable and the handoff-only trailer shape are unstated.", "answer": "plan.md section 6 'Planner': plan.json fields, jj split, the one trailered describe with trailers off, bookmark set and push, then the machine check commits/<P>/check-runs total_count 0, then handoff_complete."},
+      {"finding": "AGENTS.md's fixture instruction and the two fixture skills are observable by the harness but named by neither the issue nor the root spec.", "answer": "plan.md section 3: the AGENTS.md command is step 0 of every phase, recorded as agentsMdPrecondition; it writes only under /tmp; the fixture skills are named in requiredSkills as read and ruled out (no instructions)."},
+      {"finding": "Four claim classes in the planner's context were unsupported: the required set rested on a ruleset read beside a 403; the hashes were planner-computed; B == F was a live reading; the LEGSMOKE-1056 note was not read in full.", "answer": "(a) plan.md section 4 note: the 403 was on branches/main/protection/required_status_checks, which no role reads; both reads merge-gate.md prescribes succeed (ruleset ['gate']; branches/main protection.enabled false, no checks); a refused read is reported, never guessed. (b) section 2: the implementer re-derives the hashes. (c) section 4: B == F is governed by the stop rule and the 'ahead' invariant. (d) section 2: the 1056 note is ruled out by B == F and re-read only if B != F is ever observed."}
+    ]
+  },
+  "planReview": {
+    "verdict": "approved",
+    "rounds": 1,
+    "observations": [
+      "The branches/main protection read is recorded in plan.md section 2 and section 4 (run by the planner at 2026-10-27T23:40Z, after the context file was written).",
+      "The 'never re-runs a CI lane as evidence' rule now says the implementer's one gh run rerun is a remedy, not evidence (plan.md section 5 preamble).",
+      "The reviewer step now says pr-body.md's docs-only rule (no Thermo line, no thermonuclear pair) governs over merge-gate.md's general instruction (plan.md Reviewer step 2)."
+    ]
+  },
+  "specDepartures": [
+    {
+      "spec": "This child's spec (dispatch://LEGSMOKE-1193/artifact/spec) is empty. The root spec it inherits by shape (dispatch://LEGSMOKE-1190/artifact/spec v2) names the file smoke/LEGSMOKE-1190.md, the handoff directory .legion/LEGSMOKE-1190/ and the key LEGSMOKE-1190 literally in its Acceptance.",
+      "plan": "The plan builds smoke/LEGSMOKE-1193.md holding one line 'LEGSMOKE-1193: Upgrade rehearsal fallback child (/tmp/legion-e2e4b.3970726.ozbZ4NB7)', with handoffs under .legion/LEGSMOKE-1193/, reading every LEGSMOKE-1190 of the root Acceptance as LEGSMOKE-1193 for this child.",
+      "evidence": "The driver's message (2026-10-27T23:29:24Z) calls this the one-file smoke change on legion/LEGSMOKE-1193; smoke/ holds one marker per Legion issue that ran, each named for its own issue (newest smoke/LEGSMOKE-1070.md); a child landing the root's file from a child branch is asked by no root bullet; the root's literal text describes the root's own pull request.",
+      "outcome": {"kind": "unchanged"}
+    }
+  ]
+}
