@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "phase": "plan",
+  "issue": "LEGSMOKE-1194",
+  "completed": "2026-10-28T01:30:09Z",
+  "requiredSkills": {
+    "implement": [
+      "legion-worker: the implementer commits a smoke marker file on legion/LEGSMOKE-1194, pushes, opens the PR with `Dispatch: LEGSMOKE-1194`, and records its proof per skill://legion-worker/references/pr-body.md."
+    ],
+    "test": [
+      "legion-worker: the tester verifies the implementer's proof at the PR head and reads CI for the static checks, per skill://legion-worker/references/pr-body.md."
+    ],
+    "review": [
+      "legion-worker: the reviewer reads this plan beside the (empty) spec and approves the head per skill://legion-worker/references/merge-gate.md."
+    ]
+  },
+  "plan": {
+    "summary": "Stage 4b upgrade-rehearsal interrupted-handoff child. The spec document (dispatch://LEGSMOKE-1194/artifact/spec, version 1) has no body; the issue carries no acceptance criteria. The deliverable follows the repository's smoke convention (every ancestor on main is `smoke: add LEGSMOKE-<n> marker file`): add one marker file for LEGSMOKE-1194.",
+    "tasks": [
+      {
+        "phase": "implement",
+        "change": "Add `smoke/LEGSMOKE-1194` (or the path the existing markers use; read the latest `smoke: add LEGSMOKE-1070 marker file` commit, 6d843f28, first and follow its path) containing the issue key.",
+        "surface": "The pushed PR on sjawhar/legion-smoke targeting main.",
+        "command": "cd -- \"$LEGION_WORKSPACE\" && jj -R \"$LEGION_WORKSPACE\" split -m \"smoke: add LEGSMOKE-1194 marker file\" <marker path> && jj -R \"$LEGION_WORKSPACE\" bookmark set legion/LEGSMOKE-1194 -r @- && jj -R \"$LEGION_WORKSPACE\" git push --bookmark legion/LEGSMOKE-1194 && gh pr create --base main --head legion/LEGSMOKE-1194 --title \"smoke: add LEGSMOKE-1194 marker file\" --body-file <body>",
+        "acceptance": "`gh pr view --json files` on the PR lists exactly the marker file; `gh pr checks` is green on that head.",
+        "negativeControl": "`gh api repos/sjawhar/legion-smoke/contents/<marker path>?ref=main` returns 404 before the merge."
+      },
+      {
+        "phase": "test",
+        "change": "No code. Re-run the implementer's acceptance command at the PR head SHA and record it as the tester proof.",
+        "surface": "GitHub PR head on sjawhar/legion-smoke.",
+        "command": "gh pr view <n> -R sjawhar/legion-smoke --json headRefOid,files,statusCheckRollup"
+      }
+    ],
+    "integration": "Merge via the daemon's READY submission; no manual merge. Production check after close: the marker file exists on main (`gh api repos/sjawhar/legion-smoke/contents/<marker path>?ref=main` returns 200)."
+  },
+  "gapAnalysis": {
+    "error": "not run: the Stage 4b proof's targeted operation for this planner was to write and commit the plan handoff and complete; the spec body is empty (dispatch://LEGSMOKE-1194/artifact/spec v1), so there is no acceptance text for the analyst to check."
+  },
+  "planReview": {
+    "verdict": "failed",
+    "rounds": 0,
+    "error": "not run: Stage 4b proof operation limited this phase to writing and committing the handoff."
+  },
+  "specDepartures": []
+}
