@@ -7,6 +7,7 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -273,7 +274,12 @@ func (s *unreadableSpecStore) LoadDocument(ctx context.Context, room string) (do
 // coverage was not read rather than naming gaps it could not count.
 func TestApprovalRequestGoesThroughWhenTheCoverageReadFails(t *testing.T) {
 	var broken *unreadableSpecStore
+	// The settle window is an hour so no settlement loads the spec's room before the request: a
+	// room this server holds answers the read itself, and the store read this test fails never
+	// happens. With the default 20ms window, an issue creation that took longer than it settled
+	// the room first and the coverage came back read.
 	handler, _, _ := newTestServer(t, testServerOptions{
+		settle: time.Hour,
 		persistence: func(database *store.Store) docs.VersionedStore {
 			broken = &unreadableSpecStore{VersionedStore: docs.NewPgVersioned(database), broken: map[string]bool{}}
 			return broken
