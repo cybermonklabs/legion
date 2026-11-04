@@ -3,7 +3,7 @@ import { createIssue, createMessage, createProject, patchIssue } from "./api";
 import { resetDatabase } from "./seed";
 import { signIn } from "./users";
 
-test("@phone issue Links shows derived duplicate and parent relations", async ({
+test("@phone issue Links shows a derived duplicate and leaves the parent to the Parent line", async ({
   page,
   context,
 }, testInfo) => {
@@ -23,12 +23,15 @@ test("@phone issue Links shows derived duplicate and parent relations", async ({
   const links = page.getByRole("region", { name: "Links", exact: true });
   await expect(links).toBeVisible();
   await expect(links).toContainText("duplicate_of");
-  await expect(links).toContainText("child_of");
+  await expect(links).not.toContainText("child_of");
   await expect(links.getByRole("link", { name: canonical.key })).toHaveAttribute(
     "href",
     `/issues/${canonical.key}`
   );
-  await expect(links.getByRole("link", { name: parent.key })).toBeVisible();
+  await expect(
+    page.getByTestId("issue-metadata-rail").getByRole("link", { name: parent.key })
+  ).toBeVisible();
+  await expect(page.getByRole("link", { name: parent.key, exact: true })).toHaveCount(1);
   await expect(
     page.evaluate(
       () => document.documentElement.scrollWidth <= document.documentElement.clientWidth
