@@ -1,0 +1,24 @@
+name: probe-perms
+on:
+  push:
+    branches: ['probe/infra1066-perms']
+permissions: {}
+jobs:
+  checkout-with-actions-write-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: |
+          echo "PROBE_CHECKOUT_OK files=$(ls -1 | wc -l)"
+          test -f .github/scripts/ci-ok.sh && echo "PROBE_SCRIPT_PRESENT"
+      - name: Can it list runs with actions write
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run list --repo "$GITHUB_REPOSITORY" --limit 1 --json databaseId --jq '.[0].databaseId' \
+            && echo "PROBE_ACTIONS_READ_OK" || echo "PROBE_ACTIONS_READ_FAIL"
