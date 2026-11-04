@@ -1,0 +1,14 @@
+name: probe-queue
+on:
+  push:
+    branches: ['probe/infra1066-queue']
+concurrency:
+  group: probe-queue-${{ github.ref }}
+  cancel-in-progress: false
+permissions: {}
+jobs:
+  work:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - run: sleep 240
