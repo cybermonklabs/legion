@@ -3715,6 +3715,7 @@ export async function executeDispatchTool(
       const external = optionalString(args, "external");
       const force = optionalBoolean(args, "force");
       const spec = optionalString(args, "spec");
+      const filedFrom = optionalString(args, "filed_from");
       const priority = optionalPriority(args, "priority");
       const assignee = optionalString(args, "assignee");
       const components = optionalComponents(args, "components");
@@ -3730,6 +3731,7 @@ export async function executeDispatchTool(
           ...(external === undefined ? {} : { external }),
           ...(force === undefined ? {} : { force }),
           ...(spec === undefined ? {} : { spec }),
+          ...(filedFrom === undefined ? {} : { filed_from: filedFrom }),
           ...(priority === undefined ? {} : { priority }),
           ...(assignee === undefined ? {} : { assignee }),
           ...(components === undefined ? {} : { components }),

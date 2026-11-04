@@ -22,10 +22,17 @@ A migration that cannot be written that way is a stop-the-world migration, deplo
 
 ## Derived graph
 
-The graph is the union of `graph_edges` and `graph_person_edges`, through `refs.AllEdgesSQL`.
-`graph_edges` retains the citation and structural relations existing builds read; `graph_person_edges` derives `authored_by` and `delivered_to` without changing old builds' results or query plans, during a rollout or a rollback.
-Neither view stores or writes an edge.
+The graph is the union of `graph_edges`, `graph_person_edges` and `graph_issue_edges`, through `refs.AllEdgesSQL`.
+`graph_edges` retains the citation and structural relations existing builds read; sibling views add identity, recorded delivery and issue relations without changing old builds' results or query plans.
+None of these views stores or writes an edge.
 `person_aliases(person, alias_kind, alias)` derives canonical logins with `user_threads_login`, raw user actor ids, and session ids only where a stored session actor's server-verified `owner` identifies the person.
 Routes, claims and role holders do not prove person ownership, so there is no role alias.
 Delivery reads the four word-carrying event types used by `sessionanswers`, their `published_destinations`, and sent message/comment delivery attempts; a recorded role topic identifies the role, not a session or a person.
 `envoy-dispatch census --deliveries` independently compares the graph's recipient sets with those records for every comment, message and ask created in the last 30 days.
+
+`graph_issue_edges` derives `duplicate_of` for a closed issue from its latest explicit `Duplicate of dispatch://KEY` message or comment at or before closure.
+Reopening the issue removes that edge; an incidental mention never makes one.
+`filed_from` derives from the nullable `issues.filed_from` canonical reference, written only during issue creation because older records contain no reliable filing provenance.
+The create path accepts an existing public message, ask or comment on an issue or project document in the filing's project; it refuses direct messages and guessed ownership.
+`GET /api/v1/issues/{key}/links` reads the complete derived relation in the `GraphReferences` shape.
+`GET /api/v1/issues/{key}/links/shadow` independently compares the common kinds with their source rows, returning `legacy`, `graph` and `mismatches`; zero is equality, not a count of the new kinds.

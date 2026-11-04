@@ -433,6 +433,14 @@ func (s *server) runRelatedCheck(
 		record.project = project
 	}
 	project := record.project
+	input.project = project
+	graphItems, graphErr := s.graphRelated(bounded, input)
+	if graphErr != nil {
+		slog.Warn("dispatch: graph related-item check unavailable", "error", graphErr)
+		suggestions.GraphMissing = "the graph neighbourhood query did not answer"
+	} else {
+		suggestions.GraphRelated = graphItems
+	}
 	// A blank text has nothing to pick terms from; the same answer for stopwords alone comes from
 	// the picker, which tokenizes as stored vectors are built.
 	if strings.TrimSpace(input.text) == "" {

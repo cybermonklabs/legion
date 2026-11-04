@@ -1,0 +1,5 @@
+kind: Added
+body: Issue Links reads typed edges, including duplicate closure and explicit filing provenance; related-item checks also report nearby issues with shared graph targets.
+time: 2026-11-04T09:01:47Z
+custom:
+  Issue: INFRA-1156

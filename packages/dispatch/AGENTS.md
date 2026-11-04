@@ -20,6 +20,9 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   Each row shows Authored or Received, its first line, creation time and an Open link when it has a page; direct messages link to the session conversation and have no `dispatch://` reference.
   The signed-in name in the navigation footer links to the caller's person page; other user bylines keep their existing text-only rendering.
 
+- `features/issue/IssueLinks.tsx` shows the issue header's Links section from `GET /issues/{key}/links`, in the existing `GraphReferences` shape.
+  It lists outgoing typed relations, including `duplicate_of` from an explicit closing note and `filed_from` from the creation source, and refreshes when the issue's event sequence changes.
+
 - `web/src/api/types.ts` mirrors the Dispatch JSON entities.
 - `web/src/lib/timestamps.ts`'s `compareTimestamps` is how the SPA orders two server timestamps.
   The server writes RFC 3339 with trailing fractional zeros dropped (`…00.12Z`, `…00.123456Z`), so

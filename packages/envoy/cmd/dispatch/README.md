@@ -1439,9 +1439,17 @@ A yes is kept for good, since a commit on the default branch never leaves it, an
 A new table, as above; its census answers `0`.
 
 Migration `20261104074751_person_graph` creates the derived views `person_aliases` and `graph_person_edges`, without altering `graph_edges` or any table.
-The graph is both edge views together (`refs.AllEdgesSQL`), while old builds keep their existing results and query plans.
+The graph includes these views and `graph_issue_edges` through `refs.AllEdgesSQL`, while old builds keep their existing results and query plans.
 The alias view uses `user_threads_login` for canonical person ids and stores no identity mapping of its own; session aliases require a stored actor's server-verified `owner`, and no record establishes a role alias.
 No row is scanned, rewritten or refused by the migration, no index is created, and its migration census answers `0`.
+
+Migration `20261104090147_issue_edges` adds nullable `issues.filed_from` and derives `graph_issue_edges`, leaving `graph_edges` unchanged.
+The create path is the only writer of filing provenance: `filed_from` names an existing public message, ask or comment on an issue or project document in the same project.
+No historical source record reliably records filing provenance, so existing issues remain null rather than guessing from citations.
+`duplicate_of` is derived from a closed issue's latest explicit `Duplicate of dispatch://KEY` message or comment at or before closure.
+The migration rewrites no row; its census answers `0`.
+`GET /api/v1/issues/{key}/links` returns the issue's outgoing edges in `GraphReferences` form, including the new kinds.
+`GET /api/v1/issues/{key}/links/shadow` compares common edge rows with the legacy sources in one snapshot and returns `{issue, legacy, graph, mismatches}`.
 
 Migration `0009_project_artifacts` deletes malformed derived artifact references, reports their count, and re-derives them from source text on the next write.
 It aborts server boot before a migration record or schema change only when an existing artifact has no owning issue.
@@ -1828,6 +1836,11 @@ The search leaves out everything the write's owner holds
 — so nothing is ever suggested that the writer already has.
 A hit on an issue that is `done` ranks below every hit on an open owner, since keyword search otherwise puts an issue already closed as a duplicate above the open issue it was closed into.
 `GET` and `POST /api/v1/projects/{key}/related` (`dispatch related`) run the same check on a title and a text and write nothing.
+The additive `graph_related` list independently ranks up to three same-project issues sharing cited nodes, components, blockers or a parent, with each shared target listed in `shared`.
+It reads the complete graph relation, including issue-owned documents and conversation items, never direct messages.
+The new issue, or `exclude_issue` on the no-write route, supplies its existing neighbourhood beside references parsed from the input text.
+Open issues sort before closed ones, then more shared targets sort first.
+`graph_missing` reports a graph query that failed or exceeded its one-second allowance inside the existing five-second check; the text fields retain their existing meaning.
 
 Every check of a write is recorded in `related_checks` (`0139`):
 its outcome, how it searched, the reason, the words, and its keyword, meaning and total milliseconds.

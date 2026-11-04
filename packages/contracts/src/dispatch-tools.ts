@@ -512,6 +512,12 @@ export const dispatchToolSpecs = [
         .string({ max: ISSUE_TITLE_MAX })
         .describe("Concise issue title, at most 1,000 characters."),
       parent: z.string().describe("Optional parent issue.").optional(),
+      filed_from: z
+        .string()
+        .describe(
+          "The dispatch:// reference of the public message, ask or comment this filing came from, on an issue or project document in the same project."
+        )
+        .optional(),
       blocked_by: z
         .array(z.string({ min: 1 }), { max: MAX_ISSUE_BLOCKERS })
         .describe(
