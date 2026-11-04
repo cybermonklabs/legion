@@ -18,6 +18,9 @@ const relatedGraphSQL = `with owners(kind,id,issue_key) as not materialized (
  union all select 'comment',c.id::text,coalesce(c.issue_key,a.issue_key) from comments c left join artifacts a on a.id=c.artifact_id join issues i on i.key=coalesce(c.issue_key,a.issue_key) where i.project_key=$1
  union all select 'message',m.id::text,m.issue_key from messages m join issues i on i.key=m.issue_key where i.project_key=$1
  union all select 'ask',k.id::text,coalesce(k.issue_key,a.issue_key) from asks k left join artifacts a on a.id=k.artifact_id join issues i on i.key=coalesce(k.issue_key,a.issue_key) where i.project_key=$1
+ union all select 'comment_block',b.node_id,coalesce(c.issue_key,a.issue_key) from comment_blocks b join comments c on c.id=b.comment_id left join artifacts a on a.id=c.artifact_id join issues i on i.key=coalesce(c.issue_key,a.issue_key) where i.project_key=$1 and b.position is not null
+ union all select 'message_block',b.node_id,m.issue_key from message_blocks b join messages m on m.id=b.message_id join issues i on i.key=m.issue_key where i.project_key=$1 and b.position is not null
+ union all select 'ask_block',b.node_id,coalesce(k.issue_key,a.issue_key) from ask_blocks b join asks k on k.id=b.ask_id left join artifacts a on a.id=k.artifact_id join issues i on i.key=coalesce(k.issue_key,a.issue_key) where i.project_key=$1 and b.position is not null
 ), seeds as (
  select * from unnest($2::text[],$3::text[]) as t(kind,id)
  union
@@ -57,7 +60,7 @@ func (s *server) graphRelated(ctx context.Context, input relatedInput) ([]model.
 		return nil, err
 	}
 	defer rows.Close()
-	items := []model.GraphRelatedIssue{}
+	items := make([]model.GraphRelatedIssue, 0, suggestionRelatedCount)
 	for rows.Next() {
 		var item model.GraphRelatedIssue
 		if err := rows.Scan(&item.Key, &item.Title, &item.Status, &item.Shared); err != nil {
