@@ -906,3 +906,63 @@ test("a held row stays drawn when the pointer moves onto the card its own refere
     await alice.close();
   }
 });
+
+/**
+ * The Inbox drawer holds the row the reader's hand is on, as the Inbox page does.
+ *
+ * The drawer mounts the same `Inbox` with `pane={false}` (`InboxDrawer`), and the page passes
+ * `ViewportAnchor` its scroller only while the reading pane is shown
+ * (`scroller={paneShown ? listScroller : undefined}`, `Inbox.tsx`). In the drawer the rows
+ * scroll inside the drawer's own `aside`, which the anchor is never given, so it reads
+ * `window.scrollY` - 0 there - and `snapshot()` returns null: Dispatch's own hold is inert and
+ * the reader is left with whatever the browser's scroll anchoring picks. Measured at 1280x720
+ * with the hand resting on a row and a row above it answered elsewhere, the row under the hand
+ * jumps one card height, 91 px, in five runs of eight; the drawer's `aside` compensates 425 px
+ * where holding the row needs 516. The page, driven identically, never moved in twelve runs.
+ *
+ * Four answers are made in turn because the jump is not certain on any one of them: the two
+ * outcomes are exactly "held" and "one card out", and four draws make a run that passes by luck
+ * unlikely.
+ */
+test("the Inbox drawer holds the row the hand rests on when a row above it is answered", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const asks = await seedAsks("Drawered", 20);
+  const held = askAtRow(asks, 11);
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.goto("/agents");
+    await expect(page.getByRole("heading", { name: "Agents" })).toBeVisible();
+    await page.locator("body").click({ position: { x: 5, y: 400 } });
+    await page.keyboard.press("i");
+    const drawer = page.getByRole("dialog", { name: "Inbox" });
+    await expect(drawer).toBeVisible();
+    await expect(drawer.locator("[data-inbox-row]")).toHaveCount(20);
+
+    const row = drawer.locator(`[data-inbox-row="${held.ask.id}"]`);
+    await row.scrollIntoViewIfNeeded();
+    await row.hover();
+    const before = await topOf(row);
+
+    for (const place of [10, 9, 8, 7]) {
+      const above = askAtRow(asks, place);
+      await answerAsk(
+        above.ask.id,
+        { expected_edited_at: null, selected: ["Ship"], text: "" },
+        { login: "bob" }
+      );
+      await expect(drawer.locator(`[data-inbox-row="${above.ask.id}"]`)).toHaveCount(0, {
+        timeout: 20_000,
+      });
+      expect(
+        Math.abs((await topOf(row)) - before),
+        `after answering row ${place}`
+      ).toBeLessThanOrEqual(2);
+    }
+  } finally {
+    await alice.close();
+  }
+});
