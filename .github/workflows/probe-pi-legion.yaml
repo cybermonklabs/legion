@@ -1,0 +1,81 @@
+name: probe pi_legion
+# Probe for INFRA-1066: drives the real dorny/paths-filter with ci.yaml's own pi_legion
+# patterns over one commit's diff, to read whether a change to packages/claude-envoy alone
+# selects the pi-legion job. Never merged.
+on:
+  push:
+    branches: ['probe/infra1066-pilegion']
+permissions: {}
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: What this commit changed
+        run: git diff --name-only HEAD~1 HEAD
+      - id: filter
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d
+        with:
+          base: HEAD~1
+          filters: |
+            pi_legion:
+            - .github/workflows/ci.yaml
+            - - package.json
+              - bun.lock
+              - patches/**
+              - packages/broker-client/package.json
+              - packages/contracts/package.json
+              - packages/envoy-client/package.json
+              - packages/pi-envoy/package.json
+              - packages/pi-legion/package.json
+              - packages/pi-shared/package.json
+              - packages/claude-envoy/package.json
+              - packages/proof-editor/package.json
+              - packages/dispatch/package.json
+              - packages/envoy/internal/dispatch/pmdoc/gen/package.json
+              - docs/site/package.json
+              - .bun-version
+              - .github/actions/setup-bun/**
+            - - biome.json
+              - .gitignore
+            - packages/pi-legion/**
+            - packages/pi-envoy/**
+            - packages/claude-envoy/**
+            - packages/envoy-client/bin/dispatch.ts
+            - packages/pi-shared/src/**
+            - packages/pi-shared/test/**
+            - packages/envoy-client/src/**
+            - packages/broker-client/**
+            - packages/contracts/src/**
+            - packages/contracts/fixtures/daemon-api/**
+            - packages/contracts/fixtures/capability-redaction.json
+            - packages/contracts/fixtures/capability-redaction-plugin-report.json
+            - packages/dispatch/e2e/**
+            - packages/dispatch/web/src/api/types.ts
+            - skills/**
+            - scripts/pi-plugin-prepack.sh
+            - scripts/third-party-notices.ts
+            - packages/daemon/internal/**
+            - packages/envoy/migrationid/*
+            - - go.work
+              - go.work.sum
+              - packages/daemon/go.mod
+              - packages/daemon/go.sum
+              - packages/envoy/go.mod
+              - packages/envoy/go.sum
+            - AGENTS.md
+            - README.md
+            - docs/kubernetes.md
+            - docs/site/src/content/docs/**
+            - deploy/kubernetes/daemon/controller.yaml.example
+            - scripts/e2e/lib/**
+            - - .omp-pin
+              - .github/actions/install-omp/**
+              - .github/actions/install-jj/**
+              - packages/daemon/docker/worker.Dockerfile
+      - name: Report
+        run: echo "PROBE_PI_LEGION=${{ steps.filter.outputs.pi_legion }}"
