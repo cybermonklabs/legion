@@ -136,6 +136,13 @@ func TestXidWindowRigJudgesAWriteThePollerNeverSaw(t *testing.T) {
 // before its first write, writes, waits gap, reads twice more and commits.
 func runRigTransaction(t *testing.T, database *store.Store, gap time.Duration) {
 	t.Helper()
+	runRigTransactionDoing(t, database, func() { time.Sleep(gap) })
+}
+
+// runRigTransactionDoing is runRigTransaction with between run after the write instead of a sleep:
+// what the transaction does in Go while it holds its transaction id.
+func runRigTransactionDoing(t *testing.T, database *store.Store, between func()) {
+	t.Helper()
 	ctx := storetest.MarkXid(context.Background())
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
@@ -150,7 +157,7 @@ func runRigTransaction(t *testing.T, database *store.Store, gap time.Duration) {
 	if _, err := tx.Exec(ctx, `insert into projects (key, name) values ('RIG', 'Rig')`); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	time.Sleep(gap)
+	between()
 	for range 2 {
 		if err := tx.QueryRow(ctx, `select count(*) from projects`).Scan(&count); err != nil {
 			t.Fatalf("read after the write: %v", err)
