@@ -662,9 +662,9 @@ func TestSessionConsumerInvalidSessionIDIsRefused(t *testing.T) {
 	rig.requireNothingWritten(t, "ses.dotted")
 }
 
-// A registration carrying no delivery field is a plugin older than consumer delivery. Nothing
+// A registration carrying no delivery field asks for nothing this listener delivers. Nothing
 // would deliver to it, so it is refused 409 and leaves no row, no entry and no consumer: the
-// plugin learns it must ask for a consumer instead of waiting on a subscription of its own, and,
+// client learns it must ask for a consumer instead of waiting on a subscription of its own, and,
 // since this body names no plugin either - every build before those fields - the refusal says so,
 // nothing else in the answer saying which session process it was.
 func TestSessionConsumerRegistrationWithoutDeliveryIsRefused(t *testing.T) {
@@ -712,6 +712,33 @@ func TestSessionConsumerRefusalSaysWhatTheClientMustDo(t *testing.T) {
 			sessionID: "ses_old_plugin",
 			client:    `"plugin":"@sjawhar/pi-envoy","plugin_version":"14.0.0"`,
 			want:      []string{upgrade, "@sjawhar/pi-envoy 14.0.0"},
+		},
+		{
+			// 8 sorts above 14 as text, so a comparison made part by part as strings would call
+			// this release current and tell a session on a two-year-old plugin that its relay
+			// subject is closed. The tag pi-envoy-v8.14.1 exists.
+			name:      "a released pi-envoy whose major sorts above the floor as text",
+			sessionID: "ses_text_sorted_plugin",
+			client:    `"plugin":"@sjawhar/pi-envoy","plugin_version":"8.14.1"`,
+			want:      []string{upgrade, "@sjawhar/pi-envoy 8.14.1"},
+		},
+		{
+			// And the other way: a minor of two digits is above a floor's single digit, which a
+			// comparison that gave up on the first difference of length would get wrong.
+			name:      "a pi-envoy whose minor has more digits than the floor's",
+			sessionID: "ses_two_digit_plugin",
+			client:    `"plugin":"@sjawhar/pi-envoy","plugin_version":"14.10.0"`,
+			want:      []string{"@sjawhar/pi-envoy 14.10.0 asks for a consumer only while its relay subject is open"},
+			unwanted:  upgrade,
+		},
+		{
+			// A prerelease of the floor carries the floor's behaviour, so its suffix is left out
+			// of the comparison rather than making the build undatable.
+			name:      "a prerelease of the release that asks for one",
+			sessionID: "ses_prerelease_plugin",
+			client:    `"plugin":"@sjawhar/pi-envoy","plugin_version":"14.1.0-rc.1"`,
+			want:      []string{"@sjawhar/pi-envoy 14.1.0-rc.1 asks for a consumer only while its relay subject is open"},
+			unwanted:  upgrade,
 		},
 		{
 			name:      "a pi-envoy at the release that asks for one",
