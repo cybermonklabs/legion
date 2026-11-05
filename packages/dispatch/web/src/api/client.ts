@@ -69,6 +69,7 @@ import type {
   Handoff,
   HandoffSummary,
   InboxRow,
+  InboxShadowReport,
   Issue,
   IssueAskRow,
   IssueAskThreadRow,
@@ -87,6 +88,7 @@ import type {
   MessageRead,
   MyAnswersResponse,
   MyRepliesResponse,
+  MyThreads,
   PersonNodes,
   Project,
   ProjectDefaultAssignee,
@@ -95,6 +97,7 @@ import type {
   SearchResponse,
   Subscriber,
   Suggestions,
+  UnifiedInboxPage,
   UpdateDeliverySessionGroupInput,
   UpdateIssueInput,
   UserAgentState,
@@ -1091,6 +1094,18 @@ export class DispatchApiClient {
     return this.json<MyAnswersResponse>(pathWithQuery("/api/v1/me/answers", page));
   }
 
+  listUnifiedInbox(page: {
+    limit: number;
+    offset: number;
+    mentions?: boolean;
+  }): Promise<UnifiedInboxPage> {
+    return this.json<UnifiedInboxPage>(pathWithQuery("/api/v1/me/inbox", page));
+  }
+
+  getInboxShadow(): Promise<InboxShadowReport> {
+    return this.json<InboxShadowReport>("/api/v1/me/inbox/shadow");
+  }
+
   listPersonNodes(login: string, page: { limit: number; offset: number }): Promise<PersonNodes> {
     return this.json<PersonNodes>(
       pathWithQuery(`/api/v1/people/${pathSegment(login)}/nodes`, page)
@@ -1107,6 +1122,10 @@ export class DispatchApiClient {
     offset?: number;
   }): Promise<MyRepliesResponse> {
     return this.json<MyRepliesResponse>(pathWithQuery("/api/v1/me/replies", page));
+  }
+
+  listMyThreads(page: { limit: number; offset: number }): Promise<MyThreads> {
+    return this.json<MyThreads>(pathWithQuery("/api/v1/me/threads", page));
   }
 
   /** `PUT /api/v1/me/threads/{id}/read`: move the signed-in person's read mark on one thread

@@ -109,7 +109,7 @@ func TestWriteRouteIndexCarriesEveryRouteTheTableHas(t *testing.T) {
 // The table is the registration: every row is mounted, every row is described, and the
 // count only moves when a route is deliberately added or removed.
 func TestRoutesTablePinsEveryRegisteredRoute(t *testing.T) {
-	const registeredRoutes = 162
+	const registeredRoutes = 166
 	routes := (&server{}).routes()
 	if len(routes) != registeredRoutes {
 		t.Fatalf("routes() has %d rows, want %d (update the pin when adding a route)", len(routes), registeredRoutes)
@@ -316,9 +316,17 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 		"GET /api/v1/issues/{key}/subscribers",
 		"DELETE /api/v1/issues/{key}/subscribers/{session_id}",
 		"GET /api/v1/inbox",
+		"GET /api/v1/me/inbox",
+		"GET /api/v1/me/inbox/shadow",
 		"GET /api/v1/me/answers",
 		"GET /api/v1/me/replies",
+		"GET /api/v1/me/inbox",
+		"GET /api/v1/me/inbox/shadow",
+		"GET /api/v1/me/threads",
+		"GET /api/v1/me/threads/shadow",
+		"GET /api/v1/people/{login}/nodes",
 		"PUT /api/v1/me/threads/{id}/read",
+		"GET /api/v1/people/{login}/nodes",
 		"GET /api/v1/agents/{session_id}/messages",
 		"POST /api/v1/agents/{session_id}/messages",
 		"POST /api/v1/broadcasts",

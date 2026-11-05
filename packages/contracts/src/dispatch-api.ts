@@ -60,6 +60,12 @@ export type Actor =
        *  none, a browser cookie, a personal token and a broker token scoped to its person
        *  included. */
       readonly project?: string;
+      /** Set where the credential itself proved this session: an access token the secrets
+       *  broker issued, which the broker binds to one session. Every other bearer names its
+       *  session in the request body, so the id is the caller's word and this is absent. The
+       *  server sets it and never reads it from a body. A read that treats "this session is
+       *  that person's" as a fact takes only the actors carrying it. */
+      readonly session_verified?: boolean;
     }
   /** A server-owned writer, such as the architecture importer
    *  (`{kind: "system", id: "architecture-importer"}`). */
@@ -1245,6 +1251,81 @@ export interface MyRepliesResponse {
   readonly offset: number;
 }
 
+/** Opt-in own-inbox graph read. Legacy pages and their response shapes are unchanged. */
+export interface UnifiedInboxItem {
+  readonly cause: "ask" | "thread_reply" | "direct_reply" | "mention";
+  readonly kind: "ask" | "comment" | "message" | "block";
+  readonly id: string;
+  readonly thread_id: string;
+  readonly created_at: string;
+  readonly body: string;
+  readonly author: Actor;
+  readonly href: string;
+  readonly subject: string;
+  readonly snoozed_until: string | null;
+}
+
+export interface UnifiedInboxPage {
+  readonly person: string;
+  readonly rows: UnifiedInboxItem[];
+  readonly total: number;
+  readonly limit: number;
+  readonly offset: number;
+  readonly horizon: number;
+  readonly expansions: UnifiedInboxItem[];
+}
+
+export interface InboxShadowUser {
+  readonly person: string;
+  readonly checked_items: number;
+  readonly mismatched: number;
+  readonly errors: number;
+  readonly missing: Record<string, number>;
+  readonly unexpected: Record<string, number>;
+  readonly expansions: Record<string, number>;
+}
+
+/** Observation counts only: this read never exposes another person's inbox content. */
+export interface InboxShadowReport {
+  readonly checked_at: string | null;
+  readonly horizon: number;
+  readonly active_users: number;
+  readonly checked_users: number;
+  readonly uncovered_users: number;
+  readonly mismatched: number;
+  readonly daily_mismatched: number;
+  readonly errors: number;
+  readonly missing: Record<string, number>;
+  readonly unexpected: Record<string, number>;
+  readonly expansions: Record<string, number>;
+  readonly users: InboxShadowUser[];
+  readonly ready: boolean;
+  readonly complete_zero_days: number;
+}
+
+/** One root the signed-in person participated in, even after it was read. */
+export interface MyThread {
+  readonly kind: "ask" | "comment" | "message";
+  readonly thread_id: string;
+  readonly causes: ("authored" | "mentioned" | "addressed")[];
+  readonly subject: string;
+  readonly activity_at: string;
+  readonly issue_key: string | null;
+  readonly project: string | null;
+  readonly document: string | null;
+  /** Direct conversations link to Agents and never receive a dispatch:// address. */
+  readonly href: string;
+  readonly unread: boolean;
+}
+
+export interface MyThreads {
+  readonly person: string;
+  readonly rows: MyThread[];
+  readonly total: number;
+  readonly limit: number;
+  readonly offset: number;
+}
+
 /** What a `SessionAnswer` is to the session Dispatch delivered it to, one snake_case wire value per
  *  relation, each spelling the phrase a reader prints: a person answered the session's ask,
  *  replied in its ask's thread, replied in a comment thread it wrote in, commented on a document it
@@ -2343,7 +2424,9 @@ export type GraphEdgeKind =
   | (string & {});
 
 // GraphNode is one end of a reference-graph edge. `ref` is its dispatch:// address; a
-// session node has none. A component node's id is `<project>/<component id>`.
+// session node and a role node have none. A component node's id is `<project>/<component id>`.
+// A role node's id is the role token a delivery was published to; Dispatch records no fact of a
+// role, so it carries the same empty actor lists a session node does.
 //
 // Every node carries six facts: `made_by` and `made_at` (who made it and when), `changed_by`
 // and `changed_at` (who last changed its own text or fields and when; the maker when nothing
@@ -2370,7 +2453,9 @@ export interface GraphNode {
     | "comment"
     | "message"
     | "session"
+    | "role"
     | "person"
+    | "role"
     | "component";
   readonly id: string;
   readonly block_id?: string;
@@ -2439,11 +2524,11 @@ export interface GraphReferences {
   readonly edges: GraphEdge[];
 }
 
-/** One comment, message or ask a person authored or a recorded session alias received. */
+/** One item authored, received or mentioned, or a document block mentioning the person. */
 export interface PersonNode {
-  readonly kind: "comment" | "message" | "ask";
+  readonly kind: "comment" | "message" | "ask" | "block";
   readonly id: string;
-  readonly relations: ("authored_by" | "delivered_to")[];
+  readonly relations: ("authored_by" | "delivered_to" | "mentions")[];
   readonly title: string;
   readonly created_at: string;
   readonly ref: string | null;

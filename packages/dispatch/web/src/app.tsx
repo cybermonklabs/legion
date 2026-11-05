@@ -13,8 +13,9 @@ import { useNeedsYouCount } from "./features/inbox/BlockedOnYou";
 import { Inbox } from "./features/inbox/Inbox";
 import { InboxDrawer } from "./features/inbox/InboxDrawer";
 import { CreateIssueDialog } from "./features/issue/CreateIssueDialog";
-import { DEFAULT_MARGIN_WIDTH, Margin } from "./features/margin/Margin";
+import { MarginColumn } from "./features/margin/MarginColumn";
 import { MarginProvider } from "./features/margin/margin-context";
+import { DEFAULT_MARGIN_WIDTH } from "./features/margin/margin-width";
 import { AgentRegistryPoller } from "./features/refs/agent-registry";
 import { TextAskCard } from "./features/refs/markdown-cards";
 import { RefPreviewHost } from "./features/refs/RefPreview";
@@ -33,7 +34,6 @@ import {
 } from "./features/refs/routes";
 import { useRepliesCount } from "./features/replies/useRepliesCount";
 import { type PaletteMode, SearchPalette } from "./features/search/SearchPalette";
-import { SettingsPage } from "./features/settings/SettingsPage";
 import { ErrorBoundary } from "./features/shell/ErrorBoundary";
 import { KeymapProvider } from "./features/shell/KeymapProvider";
 import {
@@ -155,6 +155,20 @@ const RepliesPage = lazy(() =>
 const PersonPage = lazy(() =>
   import("./features/people/PersonPage").then((module) => ({ default: module.PersonPage }))
 );
+const UnifiedInboxPage = lazy(() =>
+  import("./features/inbox/UnifiedInboxPage").then((module) => ({
+    default: module.UnifiedInboxPage,
+  }))
+);
+const InboxShadowPage = lazy(() =>
+  import("./features/inbox/InboxShadowPage").then((module) => ({ default: module.InboxShadowPage }))
+);
+const SettingsPage = lazy(() =>
+  import("./features/settings/SettingsPage").then((module) => ({ default: module.SettingsPage }))
+);
+const MyThreadsPage = lazy(() =>
+  import("./features/threads/MyThreadsPage").then((module) => ({ default: module.MyThreadsPage }))
+);
 
 function IssuePageFallback(): ReactNode {
   return (
@@ -227,6 +241,9 @@ function InboxPage(): ReactNode {
         <h1 className="text-[22px] font-semibold tracking-tight">Inbox</h1>
         <Link className={`text-sm ${linkText} ${linkHoverText}`} to={ANSWERS_PATH}>
           Answered by you
+        </Link>
+        <Link className={`text-sm ${linkText} ${linkHoverText}`} to="/inbox/shadow">
+          Inbox comparison
         </Link>
       </div>
       <Inbox />
@@ -820,7 +837,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
           </aside>
         )}
         <main
-          className={`min-w-0 flex-1 p-6 outline-none xl:order-2 ${fillsViewport ? "flex min-h-0 flex-col" : "pb-32 xl:pb-6"} ${mainLayoutClass}`}
+          className={`min-w-0 flex-1 p-6 outline-none xl:order-2 ${fillsViewport ? "flex min-h-0 flex-col" : location.pathname === "/inbox/shadow" ? "pb-6" : "pb-32 xl:pb-6"} ${mainLayoutClass}`}
           data-shell-layout={fullWidth ? "full-width" : "standard"}
           data-testid="main-content"
           id="main-content"
@@ -831,8 +848,11 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
             <Suspense fallback={<IssuePageFallback />}>
               <Routes>
                 <Route element={<InboxPage />} path="/" />
+                <Route element={<UnifiedInboxPage />} path="/inbox/unified" />
+                <Route element={<InboxShadowPage />} path="/inbox/shadow" />
                 <Route element={<AnswersPage />} path={ANSWERS_PATH} />
                 <Route element={<RepliesPage />} path={REPLIES_PATH} />
+                <Route element={<MyThreadsPage />} path="/threads" />
                 <Route element={<PersonPage />} path="/people/:login" />
                 <Route element={<AgentsPage />} path="/agents" />
                 <Route element={<BroadcastsPage />} path="/agents/broadcasts" />
@@ -856,7 +876,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
           </ErrorBoundary>
         </main>
         <ErrorBoundary region="the margin" resetKey={location.pathname}>
-          <Margin
+          <MarginColumn
             collapsed={marginHidden}
             onCollapsedChange={setMarginHidden}
             onWidthChange={setMarginWidth}

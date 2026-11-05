@@ -2,8 +2,15 @@
 title: Reference graph
 parent: dispatch-server
 depends_on: [dispatch-model, dispatch-text]
-paths: [packages/envoy/internal/dispatch/refs]
+paths: [packages/envoy/internal/dispatch/refs, packages/envoy/internal/dispatch/mentiongraph]
 ---
+Citation mentions and structural relations are derived by `graph_edges`; recorded session/role delivery by `graph_person_edges`, indexed delivery to people by `graph_inbox_edges`, identity mentions by `graph_mention_edges`, and participation by `graph_thread_edges`.
+`AllEdgesSQL` is their shared union for new named reads, filtering raw identity storage kinds so no API answer carries a `*_mention` kind.
+Identity addresses use the existing reference extraction and indexer; explicit mentions derive from recorded comment/message targets and resolution attempts.
+Person nodes use canonical logins from `person_aliases`, and a mentioned session expands to a person only through its verified alias.
+`mentiongraph.Recorded` reads those records independently of the graph; `census --mentions` compares sources active in the last 30 days, including empty source sets.
+`participates_in` runs from a person to a guarded thread root; `user_threads` remains the indexed issue/document authorship and read-state projection, expanded by recorded mentions, addresses and direct authorship without a second writer.
+`rebuild.go` reconciles reference rows including identity addresses; it restores unknown records an old build drops, and marks document blocks owed their existing reconciliation.
 Mentions, structural containment, and typed relations are derived by `graph_edges`; identity and recorded delivery by `graph_person_edges`; duplicate closure and explicit filing provenance by `graph_issue_edges`.
 `AllEdgesSQL` is their shared union for new named reads, leaving existing builds' graph reads unchanged during a rollout or rollback.
 Person nodes use canonical logins from `person_aliases`; `authored_by` identifies a person or session, and `delivered_to` identifies a recorded session or role destination.

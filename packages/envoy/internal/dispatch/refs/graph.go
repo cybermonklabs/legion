@@ -275,7 +275,7 @@ func readEdgeRows(ctx context.Context, q Queryer, query Query) ([]edgeRow, error
 		args = append(args, query.ID)
 	}
 	relation := "graph_edges"
-	if query.All || slices.Contains(query.Kinds, "duplicate_of") || slices.Contains(query.Kinds, "filed_from") || slices.Contains(query.Kinds, "authored_by") || slices.Contains(query.Kinds, "delivered_to") {
+	if query.Kind == "person" || query.Kind == "session" || query.Kind == "role" || slices.Contains(query.Kinds, "authored_by") || slices.Contains(query.Kinds, "delivered_to") || slices.Contains(query.Kinds, "participates_in") {
 		relation = AllEdgesSQL
 	}
 	var arms string
@@ -409,6 +409,7 @@ var nodeLoaders = map[string]nodeLoader{
 	"message":       loadMessageNodes,
 	"component":     loadComponentNodes,
 	"session":       loadSessionNodes,
+	"role":          loadRoleNodes,
 	"person":        loadPersonNodes,
 	"block":         loadBlockNodes,
 	"ask_block":     loadAskBlockNodes,
@@ -453,6 +454,17 @@ func resolveNodes(ctx context.Context, q Queryer, byRefKey bool, rows []edgeRow)
 // loadSessionNodes addresses a session node by its id alone. Dispatch records no fact of a
 // session: it is made by nobody recorded, never changed and belongs to no node.
 func loadSessionNodes(_ context.Context, _ Queryer, kind string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
+	for _, id := range ids {
+		nodes[[2]string{kind, id}] = resolvedNode{GraphNode: model.GraphNode{Kind: kind, ID: id, MadeBy: []model.Actor{}, ChangedBy: []model.Actor{}}}
+	}
+	return nil
+}
+
+// loadRoleNodes addresses a role node by its token alone, as loadSessionNodes does a session.
+// A role is a name an event was published to (notifications.role.<token>); Dispatch records no
+// fact of it, and who holds it at a moment is the listener's, not a fact of the graph. A role
+// endpoint resolves whether or not anyone holds it, because the delivery to it happened.
+func loadRoleNodes(_ context.Context, _ Queryer, kind string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
 	for _, id := range ids {
 		nodes[[2]string{kind, id}] = resolvedNode{GraphNode: model.GraphNode{Kind: kind, ID: id, MadeBy: []model.Actor{}, ChangedBy: []model.Actor{}}}
 	}
