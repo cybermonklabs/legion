@@ -22,24 +22,63 @@ From this problem alone, research and answer three questions. Do not ask for or 
 2. What is the world-class answer? The criteria that make it the best answer for this problem, and each action they ask for (a drill or a test included).
 3. Which fact of this setup, if any, rules out a practice or the world-class answer? A cost in time, money or effort is not such a fact.
 
-Answer as one numbered list, 1 to N, each number once at the very start of its line (`1. ` or `**1.** `, no indent, no heading): every practice, every action a world-class criterion asks for and every practice a fact rules out is its own item. Put nothing of substance outside the items, and number no other lines. Each item gives the practice or action, a source you read (the tools' own documentation, two or three well-regarded projects) as a link, and why it applies to this case: the facts of this problem that make it matter here; "it is a best practice" is not a reason. An item a fact rules out also names that fact.
+Return only one numbered list, 1 to N. Each line is `1. {"kind":"practice","action":"verify","target":"webhook signatures","source":"https://...","fact":"<exact words from the problem>","why":"<why that fact makes this action matter>"}`: one JSON object on one line, with exactly these six string fields. `kind` is `practice`, `world-class` or `ruled-out`. Each item is exactly one action, not one topic containing several actions. `action` is one lowercase verb from the check below. `target` is one noun phrase of at most 16 words, not a second instruction or list of actions. Noun modifiers such as `audit logs`, `test plan` and `record retention period` are valid. Split configuring a protection from testing it, writing a runbook from exercising it, and a timeout setting from investigating transactions. For example, logging policy, injection protection and clock synchronization need three items: `define` + `log field policy`; `sanitize` + `log fields`; `synchronize` + `producer clocks`. Keep all the actions; never delete one to fit the format.
+
+Each `source` is a link you opened and read (the tool's documentation or a well-regarded project's documentation). Each `fact` quotes one short fragment of this problem, not an assumed design or an invented constraint. `why` explains the connection and, for a world-class action, the criterion it serves; for a ruled-out action, why that fact prevents it. Each prose field is a single clause: no second sentence, semicolon, colon or conjunction joining another clause. A decimal or dotted identifier is not a sentence boundary. Put no additional instruction in `fact` or `why`: each additional action gets its own item, source and reason, even a drill or test. State that no fact rules anything out when that is the answer, in a final item with action `retain` and target `all applicable practices`. Do not add headings, a preface, code fences, continuation lines or other fields. Before returning, split every compound action and check your list against the schema and check below.
+Check the mechanical schema, but do not create `atomicity.json` or certify your own item granularity: the author must obtain that clearance from a different fresh agent after your reply.
+Prepositions and noun coordination are not second actions: `mean time to recovery`, `compatibility with PostgreSQL`, `delay before retry`, `latency after failover` and `read and write permissions` can each be one target. The fresh atomicity checker decides whether a preposition or conjunction actually introduces another instruction; word occurrence alone does not decide it.
 ```
+Include the exact check script below in the research brief, so the researcher has its verb vocabulary and schema before answering.
 
 Wait for its answers in the same turn: in Claude Code, start it with `run_in_background: false`; in omp, `wait` for its task. Never end your turn while it runs: in a headless session, the end of your turn stops every subagent still running, and its answers never arrive.
 
-Then, before any action that states or leans to a design (text you write, a file, a subagent brief, or a command's arguments, such as an issue title, even in a dry run), save its whole answer, unchanged, to `research.md`, and write the practice table to `table.md`: one row per item number, `| # | Practice | Source | Why it applies to this case |`, filled from that item. For an item with no link or with no reason that names a fact of this problem, ask a research subagent for the missing part (in Claude Code, a fresh subagent given its answer, started with `run_in_background: false`), add its answer to `research.md`, and fill the row from it, never from your own words. Then run this check, and fix and run it again until it prints `OK`:
+Before any action that states or leans to a design (your text, a file, a subagent brief, or a command's arguments, including an issue title in a dry run), save the whole answer unchanged to `research.md`. Write `table.md` with columns `| # | Practice | Source | Why it applies to this case |`. Copy each item's cells exactly: `kind: action target`, `source`, `fact — why`. Do not paraphrase or supply evidence yourself. If the check rejects an item, a source is missing, or a reason does not name a stated task fact, send the errors and whole answer back to a research subagent for a complete corrected list (a fresh subagent with `run_in_background: false` in Claude Code). It must preserve and split all actions, not drop any. Replace research.md with its whole corrected answer and rebuild the table. Run the exact check until it prints `OK`:
+
+Compute `sha256sum research.md`. Send the problem, schema, whole research file copied by code and hash to a fresh atomicity checker; wait in the same turn (`run_in_background: false` in Claude Code). It checks every item for exactly one prescribed action, including actions hidden in `target`, `fact` or `why`. Distinguish noun modifiers (`audit logs`, `test plan`, `record retention period`, `after-action report`) and identifiers (`database.synchronize`) from second clauses (`runbook exercise unaided recovery`, `timeout measure transaction latency`). Require only JSON: `{"sha256":"<supplied hash>","items":[{"id":1,"actions":["verify webhook signatures"]}]}`. Include every item once in order; extract every prescribed action as an imperative, copying `action target` exactly when there is one. Save its whole JSON unchanged as `atomicity.json`; never author your own clearance. A split, missing item, empty reply or error requires a complete corrected researcher list and a fresh check on its new hash. This pre-design review is distinct from step 2 and cannot authorize publication. The script checks complete one-action coverage bound to the research hash; the checker distinguishes nouns from verbs, which a blacklist cannot do reliably.
 
 ```bash
 python3 - research.md table.md <<'EOF'
-import re, sys
-research, table = (open(p).read() for p in sys.argv[1:3])
-bad, items, rows = [], [], {}
+import hashlib, json, re, sys
+raw = open(sys.argv[1], "rb").read()
+research, table = raw.decode("utf-8"), open(sys.argv[2]).read()
+verbs = set("adopt allow assign audit bound compare configure decide define delete disable document encrypt enforce exercise isolate keep limit measure monitor partition persist protect redact reconcile record reject replicate retain rotate sanitize schedule set sign split store synchronize test tune use verify".split())
+bad, items, expected, rows = [], [], {}, {}
+def unique(pairs):
+    d = {}
+    for k, v in pairs:
+        if k in d:
+            raise ValueError("duplicate field " + k)
+        d[k] = v
+    return d
 for i, line in enumerate(research.splitlines(), 1):
-    m = re.match(r"(?:\*\*)?(\d+)[.)](?:\*\*)?\s+\S", line)
-    if m:
-        items.append(int(m.group(1)))
-    elif re.match(r"[\s>#*_+-]*\d+[*_]*[.)][*_]*(\s|$)", line) or line.lstrip().startswith("|"):
-        bad.append(f"research.md line {i} is numbered or a table but not a top-level item: {line.strip()[:60]}")
+    if not line.strip():
+        continue
+    m = re.fullmatch(r"([1-9]\d*)\. (\{.*\})", line)
+    if not m:
+        bad.append(f"research.md line {i}: expected numbered one-line JSON item")
+        continue
+    n = int(m[1])
+    items.append(n)
+    try:
+        d = json.loads(m[2], object_pairs_hook=unique)
+        if set(d) != {"kind", "action", "target", "source", "fact", "why"}:
+            raise ValueError("expected exactly kind, action, target, source, fact, why")
+        if any(not isinstance(v, str) or not v.strip() or v != v.strip() or re.search(r"[|\r\n]", v) for v in d.values()):
+            raise ValueError("each field must be one nonempty string without pipes or newlines")
+        if d["kind"] not in {"practice", "world-class", "ruled-out"} or d["action"] not in verbs:
+            raise ValueError("kind invalid or action not exactly one listed verb")
+        for field in ("target", "fact", "why"):
+            boundary = r"[.!?]\s+\S|[;:()\[\]{}—–]|\s--?\s|,\s*[A-Za-z]"
+            if re.search(boundary, d[field]):
+                raise ValueError(field + " must be one clause, not joined sentences or instructions")
+        words = re.findall(r"\w+(?:[.'-]\w+)*", d["target"].lower())
+        if not words or len(words) > 16 or not re.fullmatch(r"[\w`'. -]+", d["target"]):
+            raise ValueError("target must be one noun phrase, not a list or clause")
+        if not re.fullmatch(r"https?://[^\s<>]+", d["source"]):
+            raise ValueError("source must be a source link from the researcher")
+        expected[n] = [str(n), f'{d["kind"]}: {d["action"]} {d["target"]}', d["source"], f'{d["fact"]} — {d["why"]}']
+    except (ValueError, TypeError) as e:
+        bad.append(f"item {n}: {e}")
 if not items or items != list(range(1, len(items) + 1)):
     bad.append(f"research.md numbers its items {items}, not once each from 1 to N")
 for line in table.splitlines():
@@ -54,14 +93,34 @@ for n in sorted(set(items) | set(rows)):
         bad.append(f"item {n}: {len(r)} rows, not 1")
     elif len(r[0]) != 4:
         bad.append(f"item {n}: {len(r[0])} cells, not 4 (# | Practice | Source | Why)")
-    elif not all(c.strip("-–— ") for c in r[0][1:]):
-        bad.append(f"item {n}: empty practice, source or reason")
+    elif n in expected and r[0] != expected[n]:
+        bad.append(f"item {n}: row differs from the research action, source or fact-based reason")
+try:
+    proof = json.loads(open("atomicity.json").read(), object_pairs_hook=unique)
+    if not isinstance(proof, dict) or set(proof) != {"sha256", "items"} or not isinstance(proof["items"], list):
+        raise ValueError("expected sha256 and complete items array")
+    if proof["sha256"] != hashlib.sha256(raw).hexdigest():
+        raise ValueError("stale research hash; obtain a fresh atomicity check")
+    ids = []
+    for r in proof["items"]:
+        if not isinstance(r, dict) or set(r) != {"id", "actions"} or type(r["id"]) is not int or not isinstance(r["actions"], list):
+            raise ValueError("each reviewed item needs integer id and actions array")
+        n = r["id"]
+        ids.append(n)
+        if len(r["actions"]) != 1:
+            bad.append(f'item {n}: atomicity checker extracted {len(r["actions"])} actions; ask the researcher to split it')
+        elif n in expected and r["actions"][0] != expected[n][1].split(": ", 1)[1]:
+            bad.append(f"item {n}: extracted action differs from action target")
+    if ids != items:
+        raise ValueError("atomicity check must cover every item once in order")
+except (OSError, ValueError, TypeError) as e:
+    bad.append(f"atomicity.json: {e}")
 print("\n".join(bad) or f"OK: {len(items)} items, {len(items)} rows")
 sys.exit(1 if bad else 0)
 EOF
 ```
 
-Take no action that states or leans to a design before it prints `OK`. It checks only that every item has one complete row; that each source is real and each reason fits this case is yours to check while you fill the rows. Recording them does not end your turn: go on with the work.
+Take no design action before `OK`. Any research or table change requires the mechanical check again; any research change also requires a fresh atomicity check. The script enforces the action field, clause grammar, exact evidence copying, hash and complete one-action clearance; the independent checker supplies the narrow noun-versus-verb judgment. Neither proves a source real or a quote a stated task fact: check those against the research. Step 2's reviewers must also reject any remaining bundled practice and send it back through step 1, not endorse it. Continue the work in this turn.
 
 Then:
 
@@ -70,7 +129,11 @@ Then:
 - Settle a disputed fact with evidence: the documentation, the code or a probe. Ask the person only for a cost to accept or a choice of priority.
 - In a spec, open the `Design` part with a `### Best practice and world-class` entry copied from step 1's table: each best practice with its source, why it applies to this case and whether the design follows it, the world-class answer, and each place the design falls short with its reason. The approver then sees the comparison without asking for it.
 
-## 2. Before each approval request
+## 2. Before any decision ask or approval request
+
+The decision ask MUST NOT be posted until BOTH reviewers' final comparisons have returned and the paste/arrival cross-review below has cleared them. A Dispatch spec containing an `:::ask` block opens that ask when the spec is published: it is already a decision request, even without `dispatch ask` or `request-approval`. Real block ids, artifact links, an unassigned issue and a later formal approval step do not exempt it.
+
+Run in this order: **local draft → two problem-first reviews → whole-proposal comparisons → both final replies → resolve findings and record verdicts → paste/arrival cross-review → first publication or decision ask**. Keep the proposal and its ask blocks local until that last stage; obtain live block ids and attach links afterward. Never publish first to prepare for review, and never post while a reviewer or the cross-review still runs.
 
 Start two fresh subagents, one per brief, and wait for each answer in the same turn, as in step 1. A fresh subagent starts with no history and gets only the text you send it. In each first-round reviewer's first message, give only the problem: what must work, for whom, the constraints and numbers, the person's words that describe the problem, and the setup. Do not include the proposal's title, design, options, decisions, recommendation or conclusion, or a person's words that state a proposal: a reviewer that reads the design first tends to accept it. After it answers, paste the whole proposal's text into your next message to that same subagent and ask it to compare. A path, a file name, a summary, or a note in place of a table or section is not the proposal, even when the reviewer can read files: paste every part as you wrote it. If your harness cannot message a finished subagent and wait for its answer, give a second fresh subagent the first reviewer's answer and the whole proposal's text, and ask it only to make that comparison; in Claude Code, a message to a finished subagent resumes it in the background, so start that second subagent with `run_in_background: false` instead. Where your harness offers a subagent on a different model family, use it for these reviews, because a reviewer on the author's model shares its blind spots.
 
@@ -102,9 +165,10 @@ Follow-up:
 List each place it accepts less than that answer (a manual step, a workaround, a second system, a narrower scope, a temporary fix), and whether the proposal gives a fact of this case that requires it. End with WORLD-CLASS, or the findings.
 ```
 
-- Paste the proposal by code that reads its file into the message, never by retyping or summarizing it. Before you post anything about the proposal to a person (an ask, a comment, a message or the approval request), start one more fresh subagent and wait for it in the same turn (in Claude Code, with `run_in_background: false`): send it the proposal file's text as it was at each send, each follow-up message you sent the reviewers, and both reviewers' final replies with the times they arrived. Ask it whether each follow-up holds the whole file text, the practice table included, and whether both final replies arrived. Post nothing until it answers that both hold; send the whole text again and wait for the new verdicts for each thing it names.
 - Fix each finding from either review, or record it in the `### Best practice and world-class` entry with the fact or the cost that requires it. Never request approval while a finding is neither. A NOT WORLD-CLASS verdict whose findings are all fixed or recorded does not block the request.
 - Write the final round's verdicts of both reviewers in that entry, not in another section: for each reviewer, its own verdict, its model (such as `anthropic/claude-opus-5`, never its role or agent name), the id of its run (the agent id or session id your harness gave it; the two reviewers are two runs with two ids) and the clock time (UTC) its final answer arrived. Take that time from your harness at the moment the answer arrives: run `date -u` as your next action, write the time and the run id to a file at once, and copy the entry's times from that file. Never write the time later from your own clock, from the time you edit the entry, or from text the reviewer or you wrote. Name the verdicts in the approval request, so the approver sees that the reviews ran and what they found.
+- Keep reviewer records inside that entry. Use plain lines or a `#### Review verdicts` subheading beneath `### Best practice and world-class`, never a sibling `### Review verdicts`. Only after both final replies and cross-review clearance may you publish the spec/options with its decision asks, then request formal approval when the separate approval rules allow it.
+- Once both final comparisons have returned, the findings are fixed or recorded, and the verdicts are in the entry, start the paste/arrival cross-review as the last stage before publication. Use one more fresh subagent and wait for it in the same turn (`run_in_background: false` in Claude Code). Send the current candidate's proposal file text as it was at each send, each whole-file follow-up generated by code from that file, both final replies with their arrival times (not progress wrappers), and any publication history for this candidate. Ask it to confirm every follow-up contains the whole send-version file including the practice table, both final replies arrived, and this candidate's proposal or embedded decision asks have not been published before their required reviews cleared. A previously cleared version may already be published; that does not block review of a local revision. Publish this candidate only after all three confirmations; repair each failure and recheck. If this candidate was published prematurely, report that ordering violation rather than treating a later audit as retroactive clearance.
 - Run step 2 again before a later approval request when the design, the problem, its constraints or the evidence changed since the last review.
 - Stop after three rounds of step 2 on one proposal: list each change made after the last round and each finding still open, with its cost, in the entry. Review loops between agents do not end by themselves.
 - When a reviewer names a practice or an answer you did not consider, go back to step 1 with it instead of defending the design.
