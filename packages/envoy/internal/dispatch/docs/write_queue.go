@@ -14,14 +14,15 @@ package docs
 //
 // The floor has to clear every whole-state frame an editor hands over, since a frame over it is
 // closed by the websocket library with a code the editor reconnects on, a loop the editor's
-// handoff must never enter. It is the larger of four times the heaviest frame the server's own
-// writes store, 4 x 12,598,044 = 50,392,176, and four times the most state one room may hold,
-// 4 x maxRoomStateBytes = 54,000,000, rounded up to the next mebibyte: 54 MiB, under the 64 MiB
-// ygo allowed before, past which this design would have had to come back to the architect. A
-// room at the state cap hands over a frame about the size of its state, so four such handoffs
-// fit the floor. Measured frames sit well inside it: heaviestDocument at 5,360,879 bytes, and
-// that document grown through the creep allowance at 9,577,606
-// (TestTheHeaviestWholeStateFrameFitsTheMessageFloor,
+// handoff must never enter. What it has to clear is the larger of four times the heaviest frame
+// the server's own writes store, 4 x 12,598,044 = 50,392,176, and four times the most state one
+// room may hold, 4 x maxRoomStateBytes = 54,000,000, whose next whole mebibyte is 52 MiB
+// (54,525,952). The constant stays at the 54 MiB (56,623,104) this branch set before the cut:
+// 2,097,152 bytes above what the derivation asks, and under the 64 MiB ygo allowed before, past
+// which this design would have had to come back to the architect. A room at the state cap hands
+// over a frame about the size of its state, so four such handoffs fit the floor. Measured frames
+// sit well inside it: heaviestDocument at 5,360,879 bytes, and that document grown through the
+// creep allowance at 9,577,606 (TestTheHeaviestWholeStateFrameFitsTheMessageFloor,
 // TestTheHeaviestWholeStateFrameABrowserCanGrowFitsTheMessageFloor), and
 // TestTheHeaviestWholeStateFrameTheServerStoresFitsTheMessageFloor holds the floor over both of
 // its terms.
@@ -90,9 +91,10 @@ const maxMessageBytes = 54 << 20
 // sockets more room than the six prices before it did: a socket's own queue is what dominates
 // the sum, and the budget is what bounds the frames beside it. 64 MiB, which the draft of this
 // against ygo's draft did not fit, would now fit the limit too -
-// 20 x 67,108,864 + 76,695,844 + 2,147,483,648 = 3,566,356,692 - but nothing asks for it: the
-// measurements above were taken at 60 MiB, and a larger budget buys an honest reader nothing it
-// does not already have, 6,291,456 bytes of lag beyond the largest frame it can be sent.
+// 20 x 67,108,864 + 76,695,844 + 2,147,483,648 = 3,566,356,772, which leaves 299,113,794 of the
+// calibration's 3,865,470,566 - but nothing asks for it: the measurements above were taken at
+// 60 MiB, and a larger budget buys an honest reader nothing it does not already have, 6,291,456
+// bytes of lag beyond the largest frame it can be sent.
 //
 // It is the one bound here that does not scale with the Go memory limit (MemoryBounds). What
 // sizes it is the frames a room sends, and no frame bound scales: a budget at or under the

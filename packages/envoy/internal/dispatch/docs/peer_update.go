@@ -429,10 +429,15 @@ func (s *Service) weighPeerUpdate(info websocket.PeerUpdateInfo, apply func() er
 }
 
 // refusedBeforeApply is the one refusal the hook makes without applying: an update carrying the
-// history its document's rebuild replaced (weighPeerUpdate), and an update whose header does not
-// read at all, which ygo would refuse the same way. A room whose history retired no client reads
-// nothing of the update. It carries the test hook's armed refusal too
+// history its document's rebuild replaced (weighPeerUpdate). A room whose history retired no
+// client reads nothing of the update. It carries the test hook's armed refusal too
 // (refusesNextPeerUpdateForTest), which stands for a refusal of the rules below it.
+//
+// An update whose header the scan cannot read refuses nothing here and falls through to the
+// apply, which judges the update itself. ygo's own decoder accepts nothing the scan refuses
+// except an update carrying more structs than one update may decode (maxV2Items), which the
+// Structs allowance refuses with its own reason: refusing it here instead would close an honest
+// whole-state handoff of a rebuilt document at the decode cap with the wrong reason.
 func (s *Service) refusedBeforeApply(info websocket.PeerUpdateInfo, weighing *roomWeighing) error {
 	if s.refusesNextPeerUpdateForTest(info.Room) {
 		refusal := documentUpdateRefused()
@@ -446,9 +451,9 @@ func (s *Service) refusedBeforeApply(info websocket.PeerUpdateInfo, weighing *ro
 	}
 	from, _, err := crdt.ParseUpdateMeta(info.Update)
 	if err != nil {
-		refusal := documentUpdateRefused()
-		logRefusal(info, refusal, "dispatch: refused a browser's update whose header will not read", "error", err.Error())
-		return refusedWith(refusal, err)
+		slog.Info("dispatch: a browser's update the retired-client scan could not read; the apply will judge it",
+			"room", info.Room, "update_bytes", len(info.Update), "error", err.Error())
+		return nil
 	}
 	for client, clock := range from {
 		if at, listed := retired[client]; listed && clock < at {
@@ -469,10 +474,14 @@ func (s *Service) refusedBeforeApply(info websocket.PeerUpdateInfo, weighing *ro
 // structs and the bytes carry whichever rule set them (peerRule). One ygo refused for a root the
 // browser may not name (crdt.ErrRootNotAllowed) is DOC_UPDATE_REFUSED: the editor never sends
 // one. One whose merge would scan past its allowance (crdt.ErrIntegrateScanBudget) is
-// DOC_TOO_TANGLED, or DOC_NEEDS_REBUILD where the room's scan total was used up. Any other
-// refusal of the bytes themselves (crdt.ErrInvalidUpdate) is DOC_UPDATE_REFUSED: ygo will not
-// read them, and the client that sent them sends them again on every reconnect. Anything else -
-// the room's pending cap - is returned as it is, and the browser is left connected.
+// DOC_TOO_TANGLED, or DOC_NEEDS_REBUILD where the room's scan total was used up. One the room's
+// pending cap refused (crdt.ErrPendingCap) is returned as it is, the one error the hook answers
+// that is no *websocket.PeerClose, so ygo answers that browser SyncStatus(0) and leaves it
+// connected, exactly as a room without this hook does: the update parks past the cap only
+// because the structs it depends on have not arrived, and the browser that sends it again once
+// its gap fills is right to stay. Any other refusal of the bytes themselves
+// (crdt.ErrInvalidUpdate) is DOC_UPDATE_REFUSED: ygo will not read them, and the client that
+// sent them sends them again on every reconnect.
 func (s *Service) refusedByApply(info websocket.PeerUpdateInfo, allowance peerAllowance, scanning *scanAllowance, err error) error {
 	var refused *crdt.RefusedUpdateError
 	errors.As(err, &refused)
@@ -504,6 +513,11 @@ func (s *Service) refusedByApply(info websocket.PeerUpdateInfo, allowance peerAl
 			return documentNeedsRebuild()
 		}
 		return documentTooTangled()
+	case errors.Is(err, crdt.ErrPendingCap):
+		// No line: a browser whose gap has not filled meets this on every frame it sends until
+		// the gap does fill, and the socket stays open, so one line here would be a flood where
+		// every other refusal here closes the socket and so logs at most once.
+		return err
 	case errors.Is(err, crdt.ErrInvalidUpdate):
 		refusal := documentUpdateRefused()
 		logRefusal(info, refusal, "dispatch: refused a browser's update ygo will not read", "error", err.Error())
