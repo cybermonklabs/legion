@@ -24,8 +24,13 @@ The question and the recommendation, as `skill://dispatch-writing-specs` writes 
 :::
 ```
 
-- An ask is short and asks one thing; its reasoning goes in the document.
-- In Legion, fix a clear defect in code your tree uses, hand others to the controller, and ask about decisions (`skill://legion-worker/references/findings.md`).
+<<<<<<< conflict 1 of 1
+%%%%%%% diff from: vummmxpt 8716ff58 "chore(deps): raise the Oh My Pi pin to 18.16.0-sami.20261105-032528, which heals a session stuck on a refused turn (#2796)"
+\\\\\\\        to: vwwzulpw e07fb883 "fix(dispatch): the harness's embedder default follows the embedder it builds, and one query carries a window write's block state"
++- An ask is short and asks one thing; its reasoning goes in the document.
+ - In Legion, fix a clear defect in code your tree uses, hand others to the controller, and ask about decisions (`skill://legion-worker/references/findings.md`).
++++++++ vkyzxpoz 0e0a4b7c "chore(claude-envoy): rebuild dist/ and legion/ from 57bb01b8140c [skip ci]"
+>>>>>>> conflict 1 of 1 ends
 - An open ask is the request; never repeat it per message.
 - Change an open ask's block with `dispatch edit-ask`, or `doc-edit`'s `replace` or `move`. An answered ask is fixed: ask anew.
 - Reply on an open ask with `dispatch comment --reply-to-ask`; `--turn agent` (a progress note) needs it. An approval request a newer version moved needs `request-approval` again.

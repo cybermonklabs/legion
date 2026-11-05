@@ -3,7 +3,15 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+<<<<<<< conflict 1 of 1
++++++++ vwwzulpw e07fb883 "fix(dispatch): the harness's embedder default follows the embedder it builds, and one query carries a window write's block state"
 import { DISPATCH_BLOCK_UNITS, DISPATCH_EVENT_BODY_MAX } from "@legion/contracts/dispatch-tools";
+%%%%%%% diff from: vummmxpt 8716ff58 "chore(deps): raise the Oh My Pi pin to 18.16.0-sami.20261105-032528, which heals a session stuck on a refused turn (#2796)"
+\\\\\\\        to: vkyzxpoz 0e0a4b7c "chore(claude-envoy): rebuild dist/ and legion/ from 57bb01b8140c [skip ci]"
+ import { ASK_QUESTION_MAX, overCapMessage } from "@legion/contracts";
+ import { DISPATCH_BODY_MAX } from "@legion/contracts/dispatch-tools";
++import { bearerCredential } from "../bearer";
+>>>>>>> conflict 1 of 1 ends
 import { type DispatchToolResult, executeDispatchTool } from "../dispatch-execute";
 import { DISPATCH_WRITE_RETRY, DispatchClient, forgetKeyedLayerMemory } from "../dispatch-http";
 import {
@@ -15,7 +23,12 @@ import {
 import { pictureAddresses } from "../dispatch-pictures";
 import { ToolInputError } from "../tool-input-errors";
 
-const config = { enabled: true, url: "http://dispatch.test", token: "secret", error: null };
+const config = {
+  enabled: true,
+  url: "http://dispatch.test",
+  credential: bearerCredential("secret"),
+  error: null,
+};
 const session = "01a1058e-f14f-7684-87eb-3dc885955551";
 const directory = mkdtempSync(path.join(os.tmpdir(), "dispatch-images-"));
 afterAll(() => rmSync(directory, { recursive: true, force: true }));
@@ -1060,7 +1073,11 @@ describe("reading pictures", () => {
         artifacts,
         Object.fromEntries(artifacts.map((artifact) => [artifact.id, png(16)]))
       );
-      const client = new DispatchClient("http://dispatch.test", "secret", server.fetchImpl);
+      const client = new DispatchClient(
+        "http://dispatch.test",
+        bearerCredential("secret"),
+        server.fetchImpl
+      );
       const address = (n: number) => `dispatch://agent/${session}/artifact/p${n}-png@v1`;
       const shown = new Set([address(1)]);
 
