@@ -1,0 +1,5 @@
+kind: Changed
+body: Include a negative control in the passing result commands shown to implementers and testers.
+time: 2026-11-05T08:42:20Z
+custom:
+  Issue: INFRA-1278
