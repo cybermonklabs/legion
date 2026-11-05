@@ -5,15 +5,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
-	"unsafe"
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
 )
@@ -173,10 +170,9 @@ func (kv racedSessionKV) Update(key string, value []byte, last uint64) (uint64, 
 // the handle its watcher hands out, as stallSessionReads does.
 func raceSessionWrites(t *testing.T, sessions *session.SessionRegistry) {
 	t.Helper()
-	field := reflect.ValueOf(sessions).Elem().FieldByName("watcher")
-	watcher := reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem()
-	raced := bus.KeyValue{KeyValue: racedSessionKV{KeyValue: watcher.Interface().(*kvwatch.Watcher).KV().KeyValue}}
-	watcher.Set(reflect.ValueOf(kvwatch.New("session registry", raced, func(nats.KeyValueEntry) {}, func() {})))
+	swapSessionBucket(t, sessions, func(kv nats.KeyValue) nats.KeyValue {
+		return racedSessionKV{KeyValue: kv}
+	})
 }
 
 // A registration write that loses its compare-and-set on every attempt is a transient failure: the

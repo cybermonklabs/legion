@@ -14,6 +14,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 )
@@ -58,10 +59,10 @@ func openStateTestPod(t *testing.T, instance string, startedAgo time.Duration, s
 
 // lapsedRoleAnswer is GET /v1/roles/<role>'s answer for a holder that is gone.
 type lapsedRoleAnswer struct {
-	Reason        roleHolderState `json:"reason"`
-	Holder        string          `json:"holder"`
-	LastSeen      *int64          `json:"last_seen"`
-	ClaimReleased *bool           `json:"claim_released"`
+	Reason        roles.State `json:"reason"`
+	Holder        string      `json:"holder"`
+	LastSeen      *int64      `json:"last_seen"`
+	ClaimReleased *bool       `json:"claim_released"`
 }
 
 // getLapsedRole asks pod for role, whose holder is gone, and returns the raw answer and its fields.
@@ -77,7 +78,7 @@ func (pod stateTestPod) getLapsedRole(t *testing.T, role string) (string, lapsed
 	if err := json.Unmarshal([]byte(body), &answer); err != nil {
 		t.Fatalf("decode GET /v1/roles/%s: %v (%s)", role, err, body)
 	}
-	if answer.Reason != roleHolderLapsed || answer.ClaimReleased == nil {
+	if answer.Reason != roles.Lapsed || answer.ClaimReleased == nil {
 		t.Fatalf("GET /v1/roles/%s = %s, want a lapsed holder whose claim this lookup released or kept", role, body)
 	}
 	return body, answer
