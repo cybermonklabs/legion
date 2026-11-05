@@ -18,6 +18,12 @@ func TestIssueLinksGraphDerivesDuplicateAndPreservesLegacyLinks(t *testing.T) {
 	parent := createSearchIssue(t, handler, "EDGE", "Parent topic", "")
 	target := createSearchIssue(t, handler, "EDGE", "Canonical topic", "")
 	source := createSuggestionIssue(t, handler, map[string]any{"project": "EDGE", "title": "Repeated topic", "parent": parent, "blocked_by": []string{target}})
+	if _, err := database.Pool.Exec(t.Context(), `
+		with attachment as (insert into issue_components (issue_key,mode) values ($1,'explicit') returning issue_key)
+		insert into issue_component_members (issue_key,project_key,component_id) select issue_key,'EDGE','parser' from attachment;
+	`, source); err != nil {
+		t.Fatal(err)
+	}
 	createIssueMessage(t, handler, source, map[string]any{"body": "Duplicate of dispatch://" + target + "."}, "alice")
 	response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+source, map[string]any{"status": "done"}, "alice")
 	if response.Code != http.StatusOK {
@@ -51,7 +57,7 @@ func TestIssueLinksGraphDerivesDuplicateAndPreservesLegacyLinks(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &shadow); err != nil {
 		t.Fatal(err)
 	}
-	if shadow.Mismatches != 0 || shadow.Legacy != 2 {
+	if shadow.Mismatches != 0 || shadow.Legacy != 3 {
 		t.Fatalf("shadow=%s", response.Body.String())
 	}
 	t.Logf("Links shadow: %s", response.Body.String())
@@ -63,7 +69,7 @@ func TestIssueLinksGraphDerivesDuplicateAndPreservesLegacyLinks(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &shadow); err != nil {
 		t.Fatal(err)
 	}
-	if shadow.Mismatches != 2 {
+	if shadow.Mismatches != 3 {
 		t.Fatalf("negative control=%s", response.Body.String())
 	}
 	t.Logf("Links shadow negative control: %s", response.Body.String())
@@ -180,4 +186,27 @@ func TestRelatedGraphFindsSharedSpecReferenceWhenTextMisses(t *testing.T) {
 		t.Fatalf("negative control=%s", response.Body.String())
 	}
 	t.Logf("Graph negative control: %s", response.Body.String())
+}
+
+func TestIssueDuplicateDoesNotReturnAfterReopenAndOrdinaryClose(t *testing.T) {
+	handler, _, _ := newTestServer(t, testServerOptions{})
+	createSuggestionProject(t, handler, "REOPEN")
+	target := createSearchIssue(t, handler, "REOPEN", "Original defect", "")
+	source := createSearchIssue(t, handler, "REOPEN", "Repeated defect", "")
+	createIssueMessage(t, handler, source, map[string]any{"body": "Duplicate of dispatch://" + target}, "alice")
+	for _, status := range []string{"done", "in_progress", "done"} {
+		response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+source, map[string]any{"status": status}, "alice")
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s: %d %s", status, response.Code, response.Body.String())
+		}
+	}
+	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+source+"/links", nil, "alice")
+	if response.Code != http.StatusOK {
+		t.Fatalf("links: %d %s", response.Code, response.Body.String())
+	}
+	for _, edge := range decodeBody[model.GraphReferences](t, response).Edges {
+		if edge.Kind == "duplicate_of" {
+			t.Fatalf("old duplicate returned: %+v", edge)
+		}
+	}
 }

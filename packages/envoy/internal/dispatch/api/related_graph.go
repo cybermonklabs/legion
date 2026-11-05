@@ -1,11 +1,13 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
@@ -38,6 +40,33 @@ select i.key,i.title,i.status,m.shared from matched m join issues i on i.key=m.i
 where i.project_key=$1
 order by (i.status='done'), cardinality(m.shared) desc,i.key limit 3`
 
+// graphAnswer is the graph neighbourhood stage's result: the issues it found, or the error that
+// stopped it.
+type graphAnswer struct {
+	items []model.GraphRelatedIssue
+	err   error
+}
+
+// startGraphRelated runs an issue's graph query beside its text searches. A no-write issue
+// draft has no issue key yet; asks and decision blocks do not run this stage.
+func (s *server) startGraphRelated(ctx context.Context, input relatedInput) <-chan graphAnswer {
+	if input.source.kind != "issue" {
+		return nil
+	}
+	answers := make(chan graphAnswer, 1)
+	read, err := store.ForConcurrentRead(ctx)
+	if err != nil {
+		answers <- graphAnswer{err: err}
+		return answers
+	}
+	go func() {
+		items, err := s.graphRelated(read, input)
+		answers <- graphAnswer{items: items, err: err}
+	}()
+	return answers
+}
+
+// graphRelated finds issues sharing a target with the source issue or its draft's citations.
 func (s *server) graphRelated(ctx context.Context, input relatedInput) ([]model.GraphRelatedIssue, error) {
 	kinds, ids := []string{}, []string{}
 	for _, ref := range text.Extract(input.text, s.deps.ServerURL) {
@@ -46,10 +75,7 @@ func (s *server) graphRelated(ctx context.Context, input relatedInput) ([]model.
 			ids = append(ids, target.ID)
 		}
 	}
-	source := input.source.issueKey
-	if source == "" {
-		source = input.excludeIssue
-	}
+	source := cmp.Or(input.source.issueKey, input.excludeIssue)
 	if len(kinds) == 0 && source == "" {
 		return nil, nil
 	}

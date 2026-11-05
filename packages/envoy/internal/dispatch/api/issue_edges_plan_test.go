@@ -3,13 +3,16 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"testing"
+	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 func TestIssueEdgePlansOnIssueAndCitationVolume(t *testing.T) {
-	_, database, _ := newTestServer(t, testServerOptions{})
+	handler, database, deps := newTestServer(t, testServerOptions{})
 	ctx := context.Background()
 	if _, err := database.Pool.Exec(ctx, `
  insert into projects (key,name) values ('VOL','Volume');
@@ -20,6 +23,8 @@ func TestIssueEdgePlansOnIssueAndCitationVolume(t *testing.T) {
  select md5(n::text)::uuid,'VOL-'||n,'VOL','spec','spec.md','doc',true,'{"kind":"user","id":"alice"}' from generate_series(1,20000) n;
  insert into refs (from_kind,from_id,kind,to_kind,to_id)
  select 'artifact',md5(n::text)::uuid::text,'mentions','issue','VOL-'||(20000-x) from generate_series(1,20000) n cross join generate_series(1,5) x;
+	update projects set next_number=20001 where key='VOL';
+	update issues set title='Zymurgy ledger' where key='VOL-3';
  analyze issues; analyze artifacts; analyze refs;
  `); err != nil {
 		t.Fatal(err)
@@ -65,5 +70,41 @@ func TestIssueEdgePlansOnIssueAndCitationVolume(t *testing.T) {
 	}
 	if after != definition {
 		t.Fatal("named graph reads changed the legacy view")
+	}
+	refreshTermStats(t, database, "VOL")
+	const title = "Zymurgy ledger reconciliation"
+	const text = "See dispatch://VOL-19999"
+	started := time.Now()
+	answer := directServer(deps).relatedCheck(t.Context(), relatedInput{
+		project: "VOL", title: title, text: title + "\n" + text,
+		source: suggestionSource{kind: "issue", issueKey: "VOL-2"},
+	})
+	if took := time.Since(started); took > 2*time.Second {
+		t.Fatalf("complete check at volume took %s, budget 2s", took)
+	} else {
+		t.Logf("complete related check at volume: %s", took)
+	}
+	if answer.Outcome == "not_made" || answer.GraphMissing != "" || len(answer.GraphRelated) != 3 {
+		t.Fatalf("incomplete check at volume: %+v", answer)
+	}
+	started = time.Now()
+	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "VOL", "title": title, "spec": text, "force": true,
+	}, "alice")
+	if took := time.Since(started); took > 2*time.Second {
+		t.Fatalf("issue creation at volume took %s, budget 2s", took)
+	} else {
+		t.Logf("complete issue creation at volume: %s", took)
+	}
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create at volume: %d %s", response.Code, response.Body.String())
+	}
+	created := decodeBody[struct {
+		Advice struct {
+			Suggestions model.Suggestions `json:"suggestions"`
+		} `json:"advice"`
+	}](t, response)
+	if got := created.Advice.Suggestions; got.Outcome == "" || got.Outcome == "not_made" || got.GraphMissing != "" || len(got.GraphRelated) != 3 {
+		t.Fatalf("incomplete create check at volume: %+v", got)
 	}
 }

@@ -4,8 +4,11 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 func TestPersonNodesListsGraphRelationsAndDoesNotWidenMessageReads(t *testing.T) {
@@ -72,10 +75,19 @@ func TestPersonNodesListsGraphRelationsAndDoesNotWidenMessageReads(t *testing.T)
 	if len(page.Rows) != 1 || page.Rows[0].Title != "Authored first line" {
 		t.Fatalf("second page = %+v", page)
 	}
+	// The route's gate is its routeScopes row: a credential that does not act for its person is
+	// refused before the handler runs, and the same person's own token holding the scope reads.
 	for _, target := range []string{"/api/v1/people/alice/nodes", "/api/v1/people/bob/nodes"} {
 		response := sessionRequest(t, handler, http.MethodGet, target, nil)
-		if response.Code != http.StatusForbidden {
-			t.Fatalf("bearer %s: %d %s", target, response.Code, response.Body.String())
+		if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), `"code":"`+codeScopeRequired+`"`) ||
+			!strings.Contains(response.Body.String(), model.ScopePerson) {
+			t.Fatalf("bearer %s: %d %s, want 403 %s naming the %s scope",
+				target, response.Code, response.Body.String(), codeScopeRequired, model.ScopePerson)
+		}
+		held := agentRequest(t, handler, http.MethodGet, target, nil,
+			personalTokenHolding(t, database, model.ScopePerson))
+		if held.Code != http.StatusOK {
+			t.Fatalf("a token holding the %s scope reading %s: %d %s", model.ScopePerson, target, held.Code, held.Body.String())
 		}
 		anonymous := httptest.NewRecorder()
 		handler.ServeHTTP(anonymous, httptest.NewRequest(http.MethodGet, target, nil))

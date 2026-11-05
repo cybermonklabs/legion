@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"net/url"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -32,6 +33,24 @@ func TestIssueFiledFromPublicProjectConversation(t *testing.T) {
 		links := decodeBody[model.GraphReferences](t, response)
 		if len(links.Edges) != 1 || links.Edges[0].Kind != "filed_from" || links.Edges[0].Node.Ref != ref {
 			t.Fatalf("project source: %+v", links)
+		}
+		for _, wrong := range []string{
+			"dispatch://PUB/artifact/missing-document/" + kind + "/" + item.ID,
+			testServerURL + "/projects/PUB/documents/missing-document?" + kind + "=" + url.QueryEscape(item.ID),
+		} {
+			response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
+				"project": "PUB", "title": "Forged " + kind + " source", "filed_from": wrong, "force": true,
+			}, "alice")
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("forged document %s: %d %s", wrong, response.Code, response.Body.String())
+			}
+		}
+		page := testServerURL + "/projects/PUB/documents/" + artifact.Slug + "?" + kind + "=" + url.QueryEscape(item.ID)
+		response = dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
+			"project": "PUB", "title": "Dashboard " + kind + " source", "filed_from": page, "force": true,
+		}, "alice")
+		if response.Code != http.StatusCreated {
+			t.Fatalf("dashboard source: %d %s", response.Code, response.Body.String())
 		}
 	}
 }

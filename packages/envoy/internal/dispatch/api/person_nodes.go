@@ -61,13 +61,13 @@ const personNodesQuery = `
 	order by p.created_at desc, p.kind, p.id desc`
 
 // listPersonNodes is a named graph read, not a graph traversal API. Like listAgentMessages it
-// is human-only: people may read direct conversations, while a bearer cannot use a person's
-// alias to reach another session's conversation. Session ownership affects receipt, not who
-// authored an item; an agent's own words remain authored by that session.
+// needs the person scope, which routeScopes holds for the route and gateRouteScopes refuses
+// without: people may read direct conversations, while a credential that does not act for its
+// person cannot use a person's alias to reach another session's conversation. The handler makes
+// no second check — the route reads the person its path names, not the caller, so there is no
+// acting person to resolve. Session ownership affects receipt, not who authored an item; an
+// agent's own words remain authored by that session.
 func (s *server) listPersonNodes(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requireHuman(w, r); !ok {
-		return
-	}
 	limit, offset, err := parseMyAnswersPage(r)
 	if err != nil {
 		s.writeHandlerError(w, err)

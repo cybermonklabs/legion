@@ -54,3 +54,41 @@ func TestIssueEdgeMigrationKeepsLegacyViewAndOldInsert(t *testing.T) {
 		t.Fatal("issue edge columns differ from the graph")
 	}
 }
+
+func TestIssueDuplicateUsesEditsAndIgnoresExamples(t *testing.T) {
+	database := openEmptyTestStore(t)
+	ctx := t.Context()
+	if err := database.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		insert into projects (key,name) values ('NOTES','Notes');
+		insert into issues (key,project_key,number,title,created_by,rank,status,closed_at)
+		select 'NOTES-'||n,'NOTES',n,'Topic '||n,'{"kind":"user","id":"alice"}',n::text,'done','2026-11-01T12:00:00Z' from generate_series(1,4) n;
+		insert into comments (issue_key,author,body,created_at,edited_at) values
+		('NOTES-3','{"kind":"user","id":"alice"}','Duplicate of dispatch://NOTES-2','2026-11-01T09:00:00Z','2026-11-01T11:00:00Z'),
+		('NOTES-3','{"kind":"user","id":"alice"}','Duplicate of dispatch://NOTES-1','2026-11-01T10:00:00Z',null),
+		('NOTES-4','{"kind":"user","id":"alice"}',E'\tDuplicate of dispatch://NOTES-1','2026-11-01T10:00:00Z',null);
+	`); err != nil {
+		t.Fatal(err)
+	}
+	var target string
+	if err := database.Pool.QueryRow(ctx, `select to_id from graph_issue_edges where from_id='NOTES-3' and kind='duplicate_of'`).Scan(&target); err != nil {
+		t.Fatal(err)
+	}
+	if target != "NOTES-2" {
+		t.Fatalf("edited declaration points to %s, want NOTES-2", target)
+	}
+	for _, body := range []string{"\tDuplicate of dispatch://NOTES-1", "    Duplicate of dispatch://NOTES-1", "> Duplicate of dispatch://NOTES-1", "```\nDuplicate of dispatch://NOTES-1\n```"} {
+		if _, err := database.Pool.Exec(ctx, `update comments set body=$1 where issue_key='NOTES-4'`, body); err != nil {
+			t.Fatal(err)
+		}
+		var count int
+		if err := database.Pool.QueryRow(ctx, `select count(*) from graph_issue_edges where from_id='NOTES-4' and kind='duplicate_of'`).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 0 {
+			t.Fatalf("example %q declares a duplicate", body)
+		}
+	}
+}

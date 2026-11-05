@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -16,7 +17,8 @@ func (s *server) filingSource(ctx context.Context, q queryer, project, raw strin
 	if raw == "" {
 		return nil, nil
 	}
-	ref, ok := text.ParseRef(strings.TrimSpace(raw), s.deps.ServerURL)
+	raw = strings.TrimSpace(raw)
+	ref, ok := text.ParseRef(raw, s.deps.ServerURL)
 	if !ok || ref.Block != "" || ref.Pin != 0 || (ref.Kind != "message" && ref.Kind != "ask" && ref.Kind != "comment") || (ref.IssueKey == "" && ref.Project == "") {
 		return nil, errorf(http.StatusBadRequest, "FILED_FROM_INPUT", "filed_from must name a public message, ask or comment")
 	}
@@ -26,6 +28,20 @@ func (s *server) filingSource(ctx context.Context, q queryer, project, raw strin
 	}
 	issueMatches := ref.IssueKey != "" && node.IssueKey != nil && *node.IssueKey == ref.IssueKey
 	projectMatches := ref.Project != "" && node.IssueKey == nil && node.Project == ref.Project
+	if projectMatches {
+		// Item references omit their document slug after parsing; validate that owner too.
+		var documentRef string
+		if strings.HasPrefix(raw, "dispatch://") {
+			documentRef, _, _ = strings.Cut(raw, "/"+ref.Kind+"/")
+		} else if page, err := url.Parse(raw); err == nil {
+			page.RawQuery, page.Fragment = "", ""
+			documentRef = page.String()
+		}
+		document, valid := text.ParseRef(documentRef, s.deps.ServerURL)
+		ownerRef, _, _ := strings.Cut(node.Ref, "/"+ref.Kind+"/")
+		projectMatches = valid && document.Kind == "artifact" &&
+			ownerRef == "dispatch://"+document.Project+"/artifact/"+document.ID
+	}
 	if !found || (!issueMatches && !projectMatches) || node.Project != project || node.Ref == "" {
 		return nil, errorf(http.StatusBadRequest, "FILED_FROM_INPUT", "filed_from must name an existing conversation item in project %s", project)
 	}
@@ -60,6 +76,8 @@ const issueLinksShadowSQL = `with expected as (
  select kind,to_kind,to_id,created_at,source_seq from refs where from_kind='issue' and from_id=$1
  union all select 'child_of','issue',parent_key,created_at,null from issues where key=$1 and parent_key is not null
  union all select 'blocked_by','issue',target_key,created_at,null from issue_links where issue_key=$1 and kind='blocked_by'
+ union all select 'affects','component',m.project_key||'/'||m.component_id,c.updated_at,null
+ from issue_component_members m join issue_components c using (issue_key) where m.issue_key=$1
 ), actual as (
  select kind,to_kind,to_id,created_at,source_seq from ` + refs.AllEdgesSQL + ` g
  where from_kind='issue' and from_id=$1 and kind not in ('duplicate_of','filed_from','authored_by','delivered_to')

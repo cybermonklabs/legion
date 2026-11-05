@@ -30,9 +30,9 @@ Routes, claims and role holders do not prove person ownership, so there is no ro
 Delivery reads the four word-carrying event types used by `sessionanswers`, their `published_destinations`, and sent message/comment delivery attempts; a recorded role topic identifies the role, not a session or a person.
 `envoy-dispatch census --deliveries` independently compares the graph's recipient sets with those records for every comment, message and ask created in the last 30 days.
 
-`graph_issue_edges` derives `duplicate_of` for a closed issue from its latest explicit `Duplicate of dispatch://KEY` message or comment at or before closure.
-Reopening the issue removes that edge; an incidental mention never makes one.
+`graph_issue_edges` derives `duplicate_of` for a closed issue from its latest explicit `Duplicate of dispatch://KEY` message or comment at or before closure, ordered by the comment's edit time when present.
+Only declarations after the issue last reopened count; code examples and quoted content do not, and reopening removes the edge.
 `filed_from` derives from the nullable `issues.filed_from` canonical reference, written only during issue creation because older records contain no reliable filing provenance.
 The create path accepts an existing public message, ask or comment on an issue or project document in the filing's project; it refuses direct messages and guessed ownership.
 `GET /api/v1/issues/{key}/links` reads the complete derived relation in the `GraphReferences` shape.
-`GET /api/v1/issues/{key}/links/shadow` independently compares the common kinds with their source rows, returning `legacy`, `graph` and `mismatches`; zero is equality, not a count of the new kinds.
+`GET /api/v1/issues/{key}/links/shadow` independently compares citations, parent, blocker and component edges with their source rows, returning `legacy`, `graph` and `mismatches`; zero is equality, not a count of the new kinds.
