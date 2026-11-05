@@ -22,6 +22,10 @@ import (
 type roomInstance struct {
 	hold   roomHold
 	cursor roomCursor
+	// resident is the token of the load this instance stands for, which the bytes of every update
+	// the instance commits count against (classifyDrained, queueUpdateClass), so the unload that
+	// ends the token takes them back (residentLoad). Set once, where the instance is kept (keepInstance).
+	resident *residentLoad
 }
 
 // roomLoad is one room load's record of the durable history behind the room it loads, kept from
@@ -34,6 +38,11 @@ type roomInstance struct {
 // store stood one past it, and the gate would refuse its every durable write until it reloaded -
 // a room born behind, which no reload is guaranteed to fix, since the next load can lose the same
 // race.
+//
+// Another process's write in that window reaches no instance here either, and took never hears of
+// it: what reaches this process is its documentHeadChannel notice, which the stale-room evictor
+// hands here (notice) rather than to a room it cannot find, and the instance is decided on it
+// once it is resident (start, keepInstance).
 type roomLoad struct {
 	mu   sync.Mutex
 	head int64
@@ -45,6 +54,20 @@ type roomLoad struct {
 	// when it does (start). instance is that instance, which took advances directly from then on.
 	appended []int64
 	instance *roomInstance
+	// noticed is the last documentHeadChannel notice the stale-room evictor heard for the room
+	// before the instance existed, and recheck the evictor's decision on it, nil while none came
+	// (notice). The notices of one document arrive in the order their writes committed, so the
+	// last one names the head the history stood at when it was heard.
+	noticed documentHeadNotice
+	recheck func(documentHeadNotice)
+	// size is the encoded bytes of the history the load read, which the room counts as resident
+	// once it loads (onLoadDocument). rendered is what a document socket's admission made of the
+	// state the load took (takePreload, admissionRendering): the tree it read from it and what it
+	// rendered of that tree, which the room's load takes rather than reading and rendering the
+	// room again (takeLoaded) and hands the room's replica (keepReplica); zero when the load read
+	// the store itself.
+	size     int
+	rendered admissionRendering
 }
 
 // beginRoomLoad records that room is loading, before the load reads the store: every version
@@ -60,13 +83,14 @@ func (s *Service) beginRoomLoad(room string) *roomLoad {
 }
 
 // read records what the load's read of the store saw: the head, the version the room it loads
-// holds every update through, and the state through that head, which the room's load applies next
-// (takeState).
-func (load *roomLoad) read(head persistence.Version, state []byte) {
+// holds every update through, the state through that head, which the room's load applies next
+// (takeState), and rendered, what a document socket's admission read and rendered of that state,
+// when the load took that socket's preload, zero when the load read the store itself (takeLoaded).
+func (load *roomLoad) read(head persistence.Version, state []byte, rendered admissionRendering) {
 	load.mu.Lock()
 	defer load.mu.Unlock()
 	load.head = int64(head)
-	load.state = state
+	load.state, load.size, load.rendered = state, len(state), rendered
 }
 
 // takeState hands over the state the load read, once, so the record holds no copy of it for as
@@ -77,6 +101,17 @@ func (load *roomLoad) takeState() []byte {
 	state := load.state
 	load.state = nil
 	return state
+}
+
+// takeLoaded is the size of the history the load read, and what a socket's admission read and
+// rendered of it, and drops that: the load's record stays with the room's document for as long as
+// it is resident (keepInstance), and the tree is a whole copy of it.
+func (load *roomLoad) takeLoaded() (size int, rendered admissionRendering) {
+	load.mu.Lock()
+	defer load.mu.Unlock()
+	size, rendered = load.size, load.rendered
+	load.rendered = admissionRendering{}
+	return size, rendered
 }
 
 // takeLoadedState is the state room's load read (servicePersistenceAdapter.LoadDoc), taken off its
@@ -104,8 +139,14 @@ func (load *roomLoad) took(version persistence.Version) {
 // start is the instance this load leaves behind: it stands at the head the load read, with every
 // version took recorded since folded in, in order and only where each follows the one before, as
 // every advance of a cursor is (advanceRoomCursor). The load holds it from here, so a version
-// appended before ygo publishes the loaded room still reaches it.
-func (load *roomLoad) start() *roomInstance {
+// appended before ygo publishes the loaded room still reaches it. recheck is the evictor's
+// decision on the last notice heard before the instance existed (notice), bound to that notice,
+// when that notice names a head other than the one the instance stands at, and nil otherwise. The
+// load then read the store before the write that notice announced - a prune among them, whose
+// head is lower - or after a later write whose own notice had not arrived yet, which the
+// decision's read of the head tells apart; its caller hands the room to that decision once the
+// instance is listed (keepInstance).
+func (load *roomLoad) start() (instance *roomInstance, recheck func()) {
 	load.mu.Lock()
 	defer load.mu.Unlock()
 	through := load.head
@@ -117,7 +158,27 @@ func (load *roomLoad) start() *roomInstance {
 	}
 	load.appended = nil
 	load.instance = &roomInstance{hold: roomHold{loaded: load.head}, cursor: roomCursor{through: through}}
-	return load.instance
+	if decide, notice := load.recheck, load.noticed; decide != nil && notice.Head != through {
+		recheck = func() { decide(notice) }
+	}
+	load.noticed, load.recheck = documentHeadNotice{}, nil
+	return load.instance, recheck
+}
+
+// notice records notice, a documentHeadChannel notice the stale-room evictor heard for the room
+// while ygo reported no room of it, with recheck, the evictor's decision on such a notice
+// (staleRoomEvictor.noticeLoading). Before the instance exists the load keeps the latest notice
+// for start, and reports false. Once it exists - between start and ygo publishing the room, or
+// after the room has gone and before its document is collected - it reports whether notice names
+// a head other than the one the instance stands at, which its caller then decides on itself.
+func (load *roomLoad) notice(notice documentHeadNotice, recheck func(documentHeadNotice)) bool {
+	load.mu.Lock()
+	defer load.mu.Unlock()
+	if load.instance != nil {
+		return load.instance.cursor.heldThrough() != notice.Head
+	}
+	load.noticed, load.recheck = notice, recheck
+	return false
 }
 
 // tookResidentVersion records version, which this process has just made durable for room outside
@@ -138,8 +199,13 @@ func (s *Service) tookResidentVersion(room string, version persistence.Version) 
 // advance of the instance's cursor: the instance holds every durable update through the head that
 // load read, and every version this process appended while it ran (roomLoad). The load's record
 // goes with the document from here, as the listing does: until then took still reaches this
-// instance through it, which is what ygo's loading window needs it for.
-func (s *Service) keepInstance(room string, live *crdt.Doc) *roomInstance {
+// instance through it, which is what ygo's loading window needs it for. counted is the token of
+// the load the instance stands for, which its updates' bytes count against (classifyDrained); it
+// is set before the instance is listed, so every reader of a listed instance reads it too. A
+// notice the load heard that the instance does not stand at goes to the stale-room evictor's
+// decision for the room (start), which waits for ygo to publish the room before it decides
+// (staleRoomEvictor.awaitResidence).
+func (s *Service) keepInstance(room string, live *crdt.Doc, counted *residentLoad) *roomInstance {
 	value, ok := s.roomLoads.Load(room)
 	if !ok {
 		// A room ygo loaded without reading the store through this service's persistence stands
@@ -147,9 +213,13 @@ func (s *Service) keepInstance(room string, live *crdt.Doc) *roomInstance {
 		value = s.beginRoomLoad(room)
 	}
 	load := value.(*roomLoad)
-	instance := load.start()
+	instance, recheck := load.start()
+	instance.resident = counted
 	listResident(&s.instances, live, instance)
 	runtime.AddCleanup(live, func(load *roomLoad) { s.roomLoads.CompareAndDelete(room, load) }, load)
+	if recheck != nil {
+		recheck()
+	}
 	return instance
 }
 
@@ -195,8 +265,9 @@ type roomCursor struct {
 //
 //   - the room's load, which starts the cursor at the head it read and the versions this process
 //     appended while it ran (keepInstance, roomLoad);
-//   - a browser append that committed, inside the lock it holds (PgVersioned.appendUpdate), and
-//     each room update its flush stored before it (PgVersioned.AppendRoomFlush);
+//   - a room's batch of browser updates that committed, inside the lock it holds, for each
+//     update its flush stored (PgVersioned.AppendRoomFlush), and an append of updates no class
+//     holds (PgVersioned.AppendUpdatesWithCredit);
 //   - a live write's commit, for the versions its publish is about to apply to the room
 //     (Ledger.takeRoomCursors), and that publish itself (publishLiveUpdate), and a joined
 //     transaction's commit for the room updates it flushed (Ledger.takeRoomCursors);
@@ -280,14 +351,29 @@ var ErrRoomBehindHead = fmt.Errorf("%w: the document's room is behind its durabl
 // it. A nil cursor is a write with no room's document behind it to be behind the head - a new
 // document's seed (SeedText), a test's own append - and is not gated.
 func refuseRoomBehindHead(room string, cursor documentCursor, head int64) error {
-	if cursor == nil {
+	return refuseThroughBehindHead(room, cursorThrough(cursor), head)
+}
+
+// refuseThroughBehindHead is refuseRoomBehindHead's decision on through, the version the cursor
+// held when it was read, or ungatedAppend for a write no cursor gates.
+func refuseThroughBehindHead(room string, through, head int64) error {
+	if through == ungatedAppend {
 		return nil
 	}
-	if at := cursor.heldThrough(); at != head {
+	if through != head {
 		return fmt.Errorf("%w: room %s holds the document through update %d, the stored document stands at %d",
-			ErrRoomBehindHead, room, at, head)
+			ErrRoomBehindHead, room, through, head)
 	}
 	return nil
+}
+
+// cursorThrough is the version cursor holds every update through, read now, or ungatedAppend for
+// a nil cursor, a write no room's document stands behind.
+func cursorThrough(cursor documentCursor) int64 {
+	if cursor == nil {
+		return ungatedAppend
+	}
+	return cursor.heldThrough()
 }
 
 // roomCursorContextKey marks a context with the cursor of the room instance whose document an
@@ -320,11 +406,11 @@ func roomCursorFrom(ctx context.Context) *roomCursor {
 // in when it flushed the room (a settlement's repairs, storeRepair). Nil is an append no cursor
 // gates.
 //
-// flush is passed by the appends of a flush alone (AppendRoomUpdateTx), and is the only way the
-// room's own persistence worker reaches its flush here: its transaction has no ledger, so the
-// cursor its context carries is the instance's alone, one version behind the head from the flush's
-// second append on. A joined transaction's flush appends pass it too (Service.flushThrough passes
-// flush to every append it makes), but the write branch comes first: a live write's own flush
+// flush is passed by the appends of a flush alone, and is the only way the room's own persistence
+// worker reaches its flush here: its batch (appendRoomTx) passes the flush to the gate it reads in
+// its first pipeline, since its transaction has no ledger. A joined transaction's flush appends
+// pass it too (Service.flushThrough passes flush to the one append of the run it makes,
+// AppendRoomUpdatesTx), but the write branch comes first: a live write's own flush
 // (Ledger.flushThrough, from recordLiveOperation) is decided by the write, whose heldThrough folds
 // the flushed versions in (withOwnAppends). The flush branch decides the flush appends of a
 // transaction that holds no write of the room: a settlement's, a version's, the block-id
@@ -351,10 +437,27 @@ func appendingCursor(ctx context.Context, room string, flush *RoomFlush) documen
 		return flush
 	}
 	if cursor := roomCursorFrom(ctx); cursor != nil {
-		if flush := ledgerFrom(ctx).flushFor(room); flush != nil && flush.cursor == cursor {
-			return flush
-		}
-		return cursor
+		return transactionCursor(ctx, room, cursor)
 	}
 	return nil
+}
+
+// transactionCursor is cursor, a room instance's, as the transaction ctx carries sees it: the
+// flush that transaction keeps for room when it flushed that very instance (Ledger.flushFor), whose
+// heldThrough folds in the versions the transaction has stored of the instance and not yet
+// committed, else cursor itself. Both a transaction's appends (appendingCursor) and its fork read
+// (roomBehindHead) compare this against the head they read under the document's lock.
+func transactionCursor(ctx context.Context, room string, cursor *roomCursor) documentCursor {
+	if flush := ledgerFrom(ctx).flushFor(room); flush != nil && flush.cursor == cursor {
+		return flush
+	}
+	return cursor
+}
+
+// appendingThrough is appendingCursor's version, read now, or ungatedAppend when no cursor gates
+// the append: the through an append made under ctx hands its gate's decision (gateAppend,
+// appendGate.head). Its caller reads it once it holds the document's advisory lock, so a peer of
+// the same room whose append committed under that lock has already advanced the cursor.
+func appendingThrough(ctx context.Context, room string, flush *RoomFlush) int64 {
+	return cursorThrough(appendingCursor(ctx, room, flush))
 }
