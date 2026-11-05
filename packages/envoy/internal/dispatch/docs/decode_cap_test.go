@@ -123,7 +123,9 @@ func parkToTheCap(t *testing.T, service *Service, artifactID string) *crdt.Doc {
 	parker, text := peerDocument(t, room)
 	parker.Transact(func(txn *crdt.Transaction) { text.Insert(txn, 0, "lost", nil) })
 	synced := parker.StateVector()
-	parked := int(maxUpdateItems-countRoomStructs(room))/(1+splitsAStructCanCause) - 8
+	// Each parked struct counts twice in the room's ceiling: the struct itself and the skip over
+	// the gap it waits behind (structCeiling).
+	parked := int(maxUpdateItems-structCeiling(room))/2 - 8
 	parker.Transact(func(txn *crdt.Transaction) {
 		for range parked {
 			text.Insert(txn, 0, "x", nil)
@@ -133,13 +135,13 @@ func parkToTheCap(t *testing.T, service *Service, artifactID string) *crdt.Doc {
 	if stats := room.PendingStats(); stats.Items != parked {
 		t.Fatalf("the room parks %d structs, want the %d keystrokes whose first edit never arrived", stats.Items, parked)
 	}
-	for structs := countRoomStructs(room); structs < maxUpdateItems; structs = countRoomStructs(room) {
+	for structs := structCeiling(room); structs < maxUpdateItems; structs = structCeiling(room) {
 		typeAndDelete(t, room, browser, browserText, int(maxUpdateItems-structs))
 	}
-	if structs, clocks := countRoomStructs(room), clockSum(room); structs != maxUpdateItems || clocks > maxUpdateItems/64 {
+	if structs, clocks := structCeiling(room), clockSum(room); structs != maxUpdateItems || clocks > maxUpdateItems/64 {
 		t.Fatalf("the room's struct total is %d and its clocks sum to %d, want the %d cap and a sum far short of it", structs, clocks, maxUpdateItems)
 	}
-	t.Logf("the room's struct total is the %d cap, with %d structs parked, and its clocks sum to %d", maxUpdateItems, room.PendingStats().Items, clockSum(room))
+	t.Logf("the room's ceiling is the %d cap, with %d structs parked, and its clocks sum to %d", maxUpdateItems, room.PendingStats().Items, clockSum(room))
 	return room
 }
 
@@ -222,38 +224,40 @@ func requireRoomNotFailed(t *testing.T, service *Service, artifactID string) {
 	}
 }
 
-// writeCounts records the counts the service's measurer makes of server writes' documents against
-// the decode cap (elementMeasurer.measuredWrite): how many it made, and how many of them went on
-// to copy the document and make the write on the copy.
-type writeCounts struct{ counted, copied atomic.Int64 }
+// writeCopies counts the copies a server write makes of a room's document to count itself
+// against the decode cap (structsAfter). The copy is a whole second document, so it takes a slot
+// of the pod's load concurrency before it decodes (holdServerLoad), and that slot is the one
+// trace such a copy leaves: the step before it, the document's own ceiling (structCeiling), reads
+// the store and takes nothing.
+type writeCopies struct{ copies atomic.Int64 }
 
-// recordWriteCounts records service's counts of its writes from now on.
-func recordWriteCounts(service *Service) *writeCounts {
-	counts := &writeCounts{}
-	service.measurer.measuredWrite = func(copied bool) {
-		counts.counted.Add(1)
-		if copied {
-			counts.copied.Add(1)
-		}
-	}
-	return counts
+// recordWriteCopies gives the process a load concurrency of its own for the rest of t and counts
+// every slot taken in it. Its callers have their room loaded and their settle timer held, so the
+// only slots taken from here are their writes' decode-cap copies.
+func recordWriteCopies(t *testing.T) *writeCopies {
+	t.Helper()
+	copies := &writeCopies{}
+	slots := newLoadSlots(calibratedBounds.LoadSlots)
+	slots.taken = func(int64) { copies.copies.Add(1) }
+	useLoadSlots(t, slots)
+	return copies
 }
 
-// requireCounted requires the writes to have been counted at least once, and to have copied the
-// document exactly when copied says: so the answer came from the step the test means it to.
-func requireCounted(t *testing.T, counts *writeCounts, copied bool) {
+// requireCopied requires the writes to have copied the document at least once: the ceiling alone
+// could not answer them, so the answer came from the exact count.
+func requireCopied(t *testing.T, copies *writeCopies) {
 	t.Helper()
-	if counted, copies := counts.counted.Load(), counts.copied.Load(); counted == 0 || (copies > 0) != copied {
-		t.Fatalf("the writes were counted %d times and copied the document %d times, want counted, and copied: %t", counted, copies, copied)
+	if made := copies.copies.Load(); made == 0 {
+		t.Fatal("the writes copied the document no times, want the exact count the ceiling could not answer for")
 	}
 }
 
-// requireNeverCounted requires no write to have been counted: the ceiling of the document's struct
-// total, which costs no encode, answered each one (structCeiling).
-func requireNeverCounted(t *testing.T, counts *writeCounts) {
+// requireNeverCopied requires no write to have copied the document: the ceiling of the document's
+// struct total, which costs no decode, answered each one (structCeiling).
+func requireNeverCopied(t *testing.T, copies *writeCopies) {
 	t.Helper()
-	if counted := counts.counted.Load(); counted != 0 {
-		t.Fatalf("the writes were counted %d times (%d of them on a copy), want answered without a count", counted, counts.copied.Load())
+	if made := copies.copies.Load(); made != 0 {
+		t.Fatalf("the writes copied the document %d times, want each answered on the document's own ceiling", made)
 	}
 }
 
@@ -342,7 +346,7 @@ func TestTheMarkSweepLeavesADocumentAtOrPastTheDecodeCapAsItWas(t *testing.T) {
 			service, artifactID := sweepableDocument(t, splitRuns)
 			room := test.push(t, service, artifactID)
 			before := crdt.EncodeStateAsUpdateV1(room, nil)
-			counts := recordWriteCounts(service)
+			copies := recordWriteCopies(t)
 
 			for range 2 {
 				settleCurrentGeneration(t, service, artifactID)
@@ -350,7 +354,11 @@ func TestTheMarkSweepLeavesADocumentAtOrPastTheDecodeCapAsItWas(t *testing.T) {
 			requireLeftAsItWas(t, service, artifactID, room, before)
 			requireMarked(t, service, artifactID, true)
 			requireRoomNotFailed(t, service, artifactID)
-			requireCounted(t, counts, test.copied)
+			if test.copied {
+				requireCopied(t, copies)
+			} else {
+				requireNeverCopied(t, copies)
+			}
 			requireLoggedOnce(t, service, artifactID, "unrecorded-mark sweep", logs)
 		})
 	}
@@ -365,7 +373,7 @@ func TestTheMarkSweepStillSweepsADocumentAtTheDecodeCapWhereItAddsNoStruct(t *te
 	service, artifactID := sweepableDocument(t, func(seed string) string { return seed })
 	room := pushToTheCap(t, service, artifactID)
 	before := crdt.EncodeStateAsUpdateV1(room, nil)
-	counts := recordWriteCounts(service)
+	copies := recordWriteCopies(t)
 
 	settleCurrentGeneration(t, service, artifactID)
 	requireWrittenTo(t, service, artifactID, room, before)
@@ -374,7 +382,7 @@ func TestTheMarkSweepStillSweepsADocumentAtTheDecodeCapWhereItAddsNoStruct(t *te
 		t.Fatalf("the sweep left the document's struct total at %d, past the %d cap", structs, maxUpdateItems)
 	}
 	requireRoomNotFailed(t, service, artifactID)
-	requireCounted(t, counts, true)
+	requireCopied(t, copies)
 	requireNeverLogged(t, service, artifactID, "unrecorded-mark sweep", logs)
 }
 
@@ -388,13 +396,13 @@ func TestTheMarkSweepStillSweepsADocumentOnlyItsClockSumPutsPastTheDecodeCap(t *
 	service, artifactID := sweepableDocument(t, quarterMebibyte)
 	room := pushPastClockSum(t, service, artifactID)
 	before := crdt.EncodeStateAsUpdateV1(room, nil)
-	counts := recordWriteCounts(service)
+	copies := recordWriteCopies(t)
 
 	settleCurrentGeneration(t, service, artifactID)
 	requireWrittenTo(t, service, artifactID, room, before)
 	requireMarked(t, service, artifactID, false)
 	requireRoomNotFailed(t, service, artifactID)
-	requireCounted(t, counts, false)
+	requireNeverCopied(t, copies)
 	requireNeverLogged(t, service, artifactID, "unrecorded-mark sweep", logs)
 }
 
@@ -474,7 +482,7 @@ func TestTheBlockIDStampLeavesADocumentAtOrPastTheDecodeCapAsItWas(t *testing.T)
 				service, artifactID := unstampedDocument(t, func(seed string) string { return seed })
 				room := document.push(t, service, artifactID)
 				before := crdt.EncodeStateAsUpdateV1(room, nil)
-				counts := recordWriteCounts(service)
+				copies := recordWriteCopies(t)
 
 				if report := test.stamp(t, service, artifactID); report != nil &&
 					(report.Err != nil || report.Stamped != 0 || report.Skipped != "the stamp would carry the document past the decode cap") {
@@ -484,7 +492,11 @@ func TestTheBlockIDStampLeavesADocumentAtOrPastTheDecodeCapAsItWas(t *testing.T)
 				if pmdoc.BlockIDRepairCount(liveTree(t, service, artifactID)) == 0 {
 					t.Fatal("a block of a document at the decode cap was stamped")
 				}
-				requireCounted(t, counts, document.copied)
+				if document.copied {
+					requireCopied(t, copies)
+				} else {
+					requireNeverCopied(t, copies)
+				}
 				requireLoggedOnce(t, service, artifactID, test.write, logs)
 			})
 		}
@@ -503,7 +515,7 @@ func TestTheBlockIDStampStillStampsADocumentOnlyItsClockSumPutsPastTheDecodeCap(
 			service, artifactID := unstampedDocument(t, quarterMebibyte)
 			room := pushPastClockSum(t, service, artifactID)
 			before := crdt.EncodeStateAsUpdateV1(room, nil)
-			counts := recordWriteCounts(service)
+			copies := recordWriteCopies(t)
 
 			if report := test.stamp(t, service, artifactID); report != nil &&
 				(report.Err != nil || report.Stamped == 0 || report.Skipped != "") {
@@ -513,7 +525,7 @@ func TestTheBlockIDStampStillStampsADocumentOnlyItsClockSumPutsPastTheDecodeCap(
 			if repairs := pmdoc.BlockIDRepairCount(liveTree(t, service, artifactID)); repairs != 0 {
 				t.Fatalf("%d blocks of a document that decodes were left unstamped", repairs)
 			}
-			requireCounted(t, counts, false)
+			requireNeverCopied(t, copies)
 			requireNeverLogged(t, service, artifactID, test.write, logs)
 		})
 	}
@@ -594,14 +606,18 @@ func TestSettlementWithholdsAnAnswerFromADocumentAtOrPastTheDecodeCapAndCountsNo
 			service, artifactID := answeredDocument(t, func(seed string) string { return seed + "\n" }, text)
 			room := document.push(t, service, artifactID)
 			before := crdt.EncodeStateAsUpdateV1(room, nil)
-			counts := recordWriteCounts(service)
+			copies := recordWriteCopies(t)
 
 			settleAnswered(t, service, artifactID)
 			requireLeftAsItWas(t, service, artifactID, room, before)
 			if lines := withheldAnswerLines(logs); !strings.Contains(lines, "withheld=1") || !strings.Contains(lines, "holding more than the 1048576 items") {
 				t.Fatalf("settlement logged, of withholding answers:\n%s\nwant the one answer withheld at the decode cap", lines)
 			}
-			requireCounted(t, counts, document.copied)
+			if document.copied {
+				requireCopied(t, copies)
+			} else {
+				requireNeverCopied(t, copies)
+			}
 			var kept model.AskAnswer
 			var stored []byte
 			if err := service.store.Pool.QueryRow(context.Background(), `
@@ -626,7 +642,7 @@ func TestSettlementStillReturnsAnAnswerToADocumentOnlyItsClockSumPutsPastTheDeco
 	service, artifactID := answeredDocument(t, quarterMebibyte, text)
 	room := pushPastClockSum(t, service, artifactID)
 	before := crdt.EncodeStateAsUpdateV1(room, nil)
-	counts := recordWriteCounts(service)
+	copies := recordWriteCopies(t)
 
 	settleAnswered(t, service, artifactID)
 	requireWrittenTo(t, service, artifactID, room, before)
@@ -634,7 +650,7 @@ func TestSettlementStillReturnsAnAnswerToADocumentOnlyItsClockSumPutsPastTheDeco
 	if lines := withheldAnswerLines(logs); lines != "" {
 		t.Fatalf("settlement withheld an answer from a document that decodes:\n%s", lines)
 	}
-	requireCounted(t, counts, false)
+	requireNeverCopied(t, copies)
 }
 
 // requireRendersAnswer requires the live document to render text, the answer settlement returned.
@@ -655,31 +671,31 @@ func requireRendersAnswer(t *testing.T, service *Service, artifactID, text strin
 func TestServerWritesWellShortOfTheDecodeCapAreNeverCounted(t *testing.T) {
 	t.Run("the sweep", func(t *testing.T) {
 		service, artifactID := sweepableDocument(t, func(seed string) string { return seed })
-		counts := recordWriteCounts(service)
+		copies := recordWriteCopies(t)
 		settleCurrentGeneration(t, service, artifactID)
 		requireMarked(t, service, artifactID, false)
-		requireNeverCounted(t, counts)
+		requireNeverCopied(t, copies)
 	})
 	for _, test := range stampWrites {
 		t.Run("the stamp, "+test.name, func(t *testing.T) {
 			service, artifactID := unstampedDocument(t, func(seed string) string { return seed })
-			counts := recordWriteCounts(service)
+			copies := recordWriteCopies(t)
 			if report := test.stamp(t, service, artifactID); report != nil && (report.Err != nil || report.Stamped == 0) {
 				t.Fatalf("the backfill reports %+v, want the document's blocks stamped", *report)
 			}
 			if repairs := pmdoc.BlockIDRepairCount(liveTree(t, service, artifactID)); repairs != 0 {
 				t.Fatalf("%d blocks were left unstamped", repairs)
 			}
-			requireNeverCounted(t, counts)
+			requireNeverCopied(t, copies)
 		})
 	}
 	t.Run("settlement's repair of a returning answer", func(t *testing.T) {
 		text := "Ship it on Friday."
 		service, artifactID := answeredDocument(t, func(seed string) string { return seed + "\n" }, text)
-		counts := recordWriteCounts(service)
+		copies := recordWriteCopies(t)
 		settleAnswered(t, service, artifactID)
 		requireRendersAnswer(t, service, artifactID, text)
-		requireNeverCounted(t, counts)
+		requireNeverCopied(t, copies)
 	})
 }
 
@@ -732,7 +748,7 @@ func TestAWriteLeavingParkedStructsPastTheDecodeCapIsRefusedAsUndecodable(t *tes
 	skipAtTheBoundsUnderRace(t)
 	service := calibratedService()
 	cold := &liveWrite{cold: true}
-	past := parkedFork(t, maxUpdateItems/(1+splitsAStructCanCause)+1)
+	past := parkedFork(t, maxUpdateItems/2+1)
 	if clocks := clockSum(past); clocks > 16 {
 		t.Fatalf("the fork's clocks sum to %d, want the handful its integrated text takes", clocks)
 	}
@@ -864,12 +880,12 @@ func TestAWriteIsRefusedAsUndecodableByTheRoomItsForkUndercounts(t *testing.T) {
 				roomCount, forkedBefore, forked, maxUpdateItems, runs*99/100)
 		}
 		service := calibratedService()
-		counts := recordWriteCounts(service)
+		copies := recordWriteCopies(t)
 		err := service.refuseUndecodable(context.Background(), write, fork, updates)
 		if !errors.Is(err, ErrDocumentTooLarge) || !strings.Contains(err.Error(), "this change would leave the document's live state past the 1048576 items ygo decodes in one update") {
 			t.Fatalf("refuseUndecodable of a write the room cannot take: %v, want ErrDocumentTooLarge naming the cap", err)
 		}
-		requireCounted(t, counts, true)
+		requireCopied(t, copies)
 		// Published, the write would have carried the room past the cap.
 		for _, update := range updates {
 			if err := crdt.ApplyUpdateV1(live, update, "publish"); err != nil {
@@ -888,14 +904,20 @@ func TestAWriteIsRefusedAsUndecodableByTheRoomItsForkUndercounts(t *testing.T) {
 			fork.Transact(func(txn *crdt.Transaction) { text.Insert(txn, 0, "a short write", nil) })
 		})
 		service := calibratedService()
-		counts := recordWriteCounts(service)
+		copies := recordWriteCopies(t)
 		if err := service.refuseUndecodable(context.Background(), write, fork, updates); err != nil {
 			t.Fatalf("refuseUndecodable of a short write to a short room: %v, want nil", err)
 		}
-		requireNeverCounted(t, counts)
+		requireNeverCopied(t, copies)
 		runtime.KeepAlive(live)
 	})
 }
+
+// countRoomStructs is how many structs doc holds now: what the decode cap bounds, what a load of
+// its state would decode again and what the peer hook's allowance of structs is left of
+// (crdt.Doc.StructCount, StateStructsForTest). It counts the store alone, so a document holding
+// parked structs counts none of them, which structCeiling adds where a write is weighed.
+func countRoomStructs(doc *crdt.Doc) uint64 { return uint64(doc.StructCount()) }
 
 // structCount is how many structs doc's whole state holds, as ygo's decoder counts them against
 // maxUpdateItems: each client's structs encoded alone, whose update declares their count in its
@@ -937,12 +959,13 @@ func documentAtTheCap(b *testing.B) *crdt.Doc {
 	return live
 }
 
-// BenchmarkDecodeCapConfirmation times what a server write outside applyLive pays near the decode
-// cap, on a mebibyte of the markdown a room can hold, typed over, whose clocks already sum past the
-// cap, and on a document at the cap itself: the count it makes now (elementMeasurer.structsAfter)
-// of a write a bound answers on the document's struct total alone ("count"), and of one it does
-// not, which copies the document, types one character into the copy and counts it before and
-// after ("copy-and-count"); and the encode-and-decode into a fresh document those replaced.
+// BenchmarkDecodeCapConfirmation times what a server write outside applyLive pays near the
+// decode cap, on a mebibyte of the markdown a room can hold, typed over, whose clocks already sum
+// past the cap, and on a document at the cap itself: the ceiling it answers on first
+// (structCeiling, a walk of the document's client slices and its parked counts), the copy it
+// falls back to where the ceiling cannot answer (structsAfter, which copies the document, types
+// one character into the copy and counts it before and after), and the encode-and-decode into a
+// fresh document the copy replaced.
 func BenchmarkDecodeCapConfirmation(b *testing.B) {
 	typeOne := func(copied *crdt.Doc) {
 		text := paragraphTexts(copied)[0]
@@ -960,28 +983,27 @@ func BenchmarkDecodeCapConfirmation(b *testing.B) {
 			clocks, structs, state := clockSum(live), countRoomStructs(live), len(crdt.EncodeStateAsUpdateV1(live, nil))
 			for _, step := range []struct {
 				name    string
-				measure func(measurer *elementMeasurer) error
+				measure func() error
 			}{
-				{"count", func(measurer *elementMeasurer) error {
-					if got := measurer.structsAfter(context.Background(), live, serverWrite{bounded: true, apply: typeOne}, state); got != structs {
-						return fmt.Errorf("the write was counted to %d structs, want the document's %d", got, structs)
+				{"ceiling", func() error {
+					if got := structCeiling(live); got < structs {
+						return fmt.Errorf("the ceiling reads %d, want no less than the document's %d structs", got, structs)
 					}
 					return nil
 				}},
-				{"copy-and-count", func(measurer *elementMeasurer) error {
-					if got := measurer.structsAfter(context.Background(), live, serverWrite{apply: typeOne}, state); got <= structs {
+				{"copy-and-count", func() error {
+					if got := structsAfter(context.Background(), live, serverWrite{apply: typeOne}); got <= structs {
 						return fmt.Errorf("the write was counted to %d structs, want more than the document's %d", got, structs)
 					}
 					return nil
 				}},
-				{"encode-and-decode", func(*elementMeasurer) error {
+				{"encode-and-decode", func() error {
 					return crdt.ApplyUpdateV1(newDocumentCopy(), crdt.EncodeStateAsUpdateV1(live, nil), nil)
 				}},
 			} {
 				b.Run(step.name, func(b *testing.B) {
-					measurer := &elementMeasurer{}
 					for b.Loop() {
-						if err := step.measure(measurer); err != nil {
+						if err := step.measure(); err != nil {
 							b.Fatal(err)
 						}
 					}

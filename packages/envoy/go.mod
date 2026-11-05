@@ -170,4 +170,6 @@ require (
 // room is that room's replica cloned (warmFork, forkPoint). Server.OnPeerUpdate, upstream ygo
 // #304, is in upstream v1.55.0; the document service sets it to weigh each browser's update
 // (weighPeerUpdate).
-replace github.com/reearth/ygo => github.com/sjawhar/ygo v1.55.1-sami.1
+// LOCAL ONLY while the fork release is cut: this must be sjawhar/ygo at the released tag before
+// any push (INFRA-179).
+replace github.com/reearth/ygo => /legion/scratch/tmp/ygo-fork

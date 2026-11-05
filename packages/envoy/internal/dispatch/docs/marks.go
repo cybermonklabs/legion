@@ -164,7 +164,7 @@ func (s *Service) VerifyMark(ctx context.Context, artifactID string, kind MarkKi
 	var unsubscribe func()
 	watch, booked := true, false
 	if !s.roomHoldsDocument(artifactID) {
-		booked = s.budget.openServerRoom()
+		booked = s.budget.openServerRoom(artifactID)
 		watch = booked
 	}
 	if watch {

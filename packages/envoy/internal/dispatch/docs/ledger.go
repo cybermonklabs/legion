@@ -56,11 +56,11 @@ type Ledger struct {
 	// flushes are the room updates this transaction stored ahead of its own appends, one flush
 	// per document (flushThrough), which its commit marks stored.
 	flushes []*RoomFlush
-	// forks is this transaction's grant of the copy-heap bound, shared by every live write it
-	// opens and made on the first (forkGrant, liveWrite.coverFork): one grant for all its forks,
-	// so a transaction writing two documents never waits for a part of the bound a grant of its
-	// own holds.
-	forks *forkGrant
+	// forks is this transaction's slot of the pod's load concurrency, shared by every live write
+	// it opens and taken on the first (forkSlot, liveWrite.coverFork): one slot for all its
+	// forks, so a transaction writing two documents never waits for a slot a fork of its own
+	// holds.
+	forks *forkSlot
 }
 
 type ledgerVersion struct {
@@ -607,11 +607,11 @@ func (l *Ledger) publish() {
 	}
 }
 
-// forkGrant is this transaction's grant of the copy-heap bound, made on its first live write
-// (forks).
-func (l *Ledger) forkGrant() *forkGrant {
+// forkSlot is this transaction's slot of the pod's load concurrency, made on its first live
+// write (forks).
+func (l *Ledger) forkSlot() *forkSlot {
 	if l.forks == nil {
-		l.forks = &forkGrant{grant: newCopyGrant()}
+		l.forks = &forkSlot{slot: newLoadSlot()}
 	}
 	return l.forks
 }
