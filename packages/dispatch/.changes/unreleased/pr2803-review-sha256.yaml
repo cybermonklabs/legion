@@ -1,0 +1,8 @@
+kind: Changed
+body: >-
+  The verification acceptance harness independently hashes approved version bytes,
+  reads review hashes using a person's cookie, and checks that editing the latest
+  version leaves the approval's hash unchanged in the API and CLI.
+time: 2026-11-05T10:42:29Z
+custom:
+  Issue: pr2803
