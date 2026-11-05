@@ -368,14 +368,17 @@ Every open live socket ends at the signal through the lifetime `api.Register` ta
 It waits for them first, with no deadline of its own.
 The document service starts when they are done, or 11 s after the signal with some still running (`httpDrainBeforeDocuments`, `dispatch: settle documents with
 requests still in flight`), and gets `documentShutdownTimeout`, 5 s more than its drain budget (14 s total - the reserve outlasting a settlement still committing when the budget ends, not only reading back what did), so it is done 5 s before the runtime's kill.
-The database pool closes once every request has answered and no connection of the shared or document-rooms pool is in use.
+The database pool closes once every request has answered and no connection of the shared, document-rooms or room-appends pool is in use.
 While the database answers, nothing but the runtime's kill bounds that wait, as with the deferred close of the pool this replaced:
 a write still waiting on a lock commits and is answered if it finishes before the kill.
-The database has stopped answering once three health probes in a row (`silentProbes`, each `store.Pool.Healthy`'s two seconds) have failed with no connection of those two pools taken back while they ran;
+The database has stopped answering once three health probes in a row (`silentProbes`, each `store.Pool.Healthy`'s two seconds) have failed with no connection of those pools taken back while they ran;
 a probe that answers, or a connection taken back, starts the count again.
 Then Dispatch exits without the connections waiting on it (`dispatch: exit with
 database connections still in use once the database stopped answering`), and the database rolls back what they held open;
 with nothing in flight over HTTP that is about 21 s after the signal.
+Closing the pool waits by the same rule (`closePool`):
+a connection taken after the pools were seen idle, such as ygo's persistence worker compacting a room as it exits, holds `store.Pool.Close` until it comes back or the probes say the database has stopped answering.
+`store.Pool.Close` closes the health probe's pool last, so the probe answers for as long as the close waits.
 
 An issue's task counts (`issues.tasks_done`, `tasks_total`, `tasks_version`, added by the `issue_task_progress` migration;
 LEGION-542) are the `- [ ]` / `- [x]` items of its primary document's latest version, and the number of that version.
@@ -452,7 +455,7 @@ A history that does not decode there, a log served merged among them, fails the 
 the room is not published, and its next access loads it afresh.
 Compaction (`compactRoom`) folds a document's rows at or below its fold point into that row, which then holds their state, and deletes the rows below it.
 The fold point is the newest row at or below the head older than two minutes on the database's clock (`compactTail`), so a row younger than that is left as written, byte for byte.
-It reads on its own two-connection pool (`store.Pool.Compaction`, `dispatch-compaction`) in one repeatable-read transaction, folds with no document lock held - from memory once that transaction ends when the rows total at most 32 MiB, streaming inside it otherwise - and then takes the document's lock on a connection of the same pool (`lockRoom`) for a short write.
+It reads on its own two-connection pool (`store.Pool.Compaction`, `application_name=dispatch-compaction`) in one repeatable-read transaction, folds with no document lock held - from memory once that transaction ends when the rows total at most 32 MiB, streaming inside it otherwise - and then takes the document's lock on a connection of the same pool (`lockRoom`) for a short write.
 That write checks the rows at or below the fold point are the ones it folded, version for version and xmin for xmin, and drops the fold when a prune, a rebuild, a delete or another compaction changed them, or when it had to finish a stranded prune first.
 The folded row's `content_changed` says whether any row it folded past the latest version's cursor, read inside that write, changed content.
 Three paths compact, all under that tail rule and none on a request goroutine:
@@ -468,7 +471,7 @@ text deleted before a version captured it is gone (the operator's decision, LEGI
 Each `doc_updates` row records `content_changed` - whether the update changed the document's rendered markdown, the only document content a version stores (`pmdoc.Render` of the tree before and after;
 the one measure the room's update observer, `updateChangesMarkdown`, a transactional live write in `applyLive`, and a settlement's or the block-id backfill's repair, `repairClass`, all apply) - and settlement writes a version only when a content-class row lies past the latest version's `doc_update_version` cursor and the settled document renders differently from that version.
 It stays one measure where a rendering is reused rather than made again:
-a write takes the rendering of its fork before the operation from the room's replica or from its own previous operation, the observer takes a published write's own rendering, and the replica's first run takes the room load's rendering of the state it starts from, only where each is the rendering of the very state being measured (`warmFork`, `applyLive`, `renderedReplica.changedBy`, `renderedReplica.start`), since rendering is deterministic over one state;
+a write takes the rendering of its fork before the operation from the room's replica or from its own previous operation, the observer takes a published write's own rendering, and the replica's first run takes the room load's rendering of the state it starts from (a cold socket's admission's, carried on its preload, when the load took that preload), only where each is the rendering of the very state being measured (`warmFork`, `applyLive`, `renderedReplica.changedBy`, `renderedReplica.start`), since rendering is deterministic over one state;
 a margin write (`applyMargin`) renders nothing before it writes.
 It stays one measure where the observer renders less than the whole document, too:
 for an update that changed something inside some top-level blocks, `pmdoc.Layout.Splice` renders only those blocks into the markdown the replica keeps and answers exactly what a whole render of the new document writes or declines, and where it declines the observer renders the whole document (`renderedReplica.updateChangesMarkdown`).
@@ -585,9 +588,20 @@ Nor does that read wait for a failed room's recovery (`docs.WithoutRecoveryWait`
 it is `DOC_SERVICE_UNAVAILABLE` at once, where `GET /text`, `GET /blocks` and the block route wait.
 
 A read whose caller holds no transaction fork and whose server holds no resident room reads the stored document through a rendering cache.
-The cache is keyed by `doc_updates`' stored head (version plus the head row's transaction id), so an append, prune and re-append, rebuild, delete or compaction cannot serve an older rendering;
-every cold read checks that head, which it reads with the same SQL as the store's own head (`headVersion`).
-Its entry carries the canonical markdown, document token, block ranges/tokens and block paths, is immutable after construction, and is bounded by a weighted LRU of 256 MiB (`documentReadBudget`).
+The cache is keyed by `doc_updates`' stored head (version plus the head row's transaction id), so an append, prune and re-append, rebuild, delete or compaction cannot serve an older rendering.
+A cold read takes the head tracker's token (`docs/head_tracker.go`) before it reads the store, and serves a cached entry with no database read while the tracker says nothing has written the document since that entry was read;
+otherwise it reads the head with the same SQL as the store's own head (`headVersion`) and compares.
+The tracker hears every content-changing write through `dispatch_doc_head` and `dispatch_doc_changed` (below), this process's own at their end, before the call that committed returns, and trusts nothing while its LISTEN is down, or while that connection has delivered nothing for 3 s (`headTrustWindow`):
+a half-open connection, up but silent, is otherwise noticed only by pglisten's idle ping after about 35 s.
+It keeps an entry only for a document its process holds - a resident room, a cached cold read, a preload, or a cold read between its token and its end - or is writing, and a notice of any other document makes none;
+an entry goes with its last holder, and a token taken under it never matches again, so what a dropped entry forgets is read from the store.
+The evictor keeps a healthy idle connection delivering by listening on `dispatch_doc_ping` and, while its process holds something that trust serves (a resident room, a cached cold read or a preload) and its connection has delivered nothing for its quiet window, sending `pg_notify('dispatch_doc_ping', <process id>)` through a shared-pool connection bounded at a second (a saturated pool skips the ping, and trust lapses to store reads).
+The quiet window is a second plus a jitter under a second (`math/rand/v2`), drawn afresh after every delivery and every ping, so processes that heard the same ping do not ping together and the first holder to fire resets the rest;
+the longest gap between pings is under 2 s plus a delivery, inside `headTrustWindow`.
+A process holding none of those sends no ping and still counts what it hears as delivery, so a deployment sends about one ping a second while some process holds a room, a cached read or a preload and no document write is announced, and none otherwise.
+The evictor's listener goroutine waits on no document lock - every room's decision, its re-examinations included, runs on that room's own goroutine (below) - so a read on one process lags a commit on another by at most the notification's delivery, and by at most 3 s plus that delivery on a half-open LISTEN connection.
+Its entry carries the canonical markdown, document token, block ranges/tokens and block paths, is immutable after construction, and is bounded by a weighted LRU whose budget `New` sets from the Go memory limit (`readBudgetFor`):
+one sixteenth of it, at least 64 MiB and at most 1 GiB, and 256 MiB (`documentReadBudget`) when no limit is set.
 An entry's weight counts every string and slice it holds, and a table's cells, header texts and row and column ordinals once however many paths share them;
 `TestADocumentReadWeighsAboutTheHeapItHolds` holds it within 0.97-1.25x of the heap an entry holds.
 A read hands out a copy of the blocks and of a path's entries, which callers write, and shares a table's descendant ids and a path's table position with every later read of that head, which no caller writes (`documentRead`).
@@ -730,7 +744,7 @@ A durable append of the state that went finishes on the state that counted it (`
 Two `envoy-dispatch` processes do not share a live document session, and durable convergence does not depend on one:
 every edit is appended under the document's advisory lock, Yjs updates commute, and the stored history is their union, so no edit is lost whichever process took it.
 No process writes durable state for a document from a room that is not at the durable head:
-each resident instance carries the version it holds the document through, and an append, a settlement, a fork of the live tree or a rebuild from a room behind the head is refused (`ErrRoomBehindHead`, `docs/pending_authors.go`), the live write taking the cold path instead.
+each resident instance carries the version it holds the document through, and an append, a settlement, a fork of the live tree or a rebuild from a room behind the head is refused (`ErrRoomBehindHead`, `docs/roomcursor.go`), the live write taking the cold path instead.
 A settlement refused so closes the room rather than retrying on it (`reloadRoomBehindHead`), since no retry on that room can pass the gate and three would fail the room, refusing every transaction on the document until its eviction ran;
 the settlement re-arms on the reloaded room (INFRA-218).
 It leaves the room open while a write of this process is in flight on it (an open live write, which arms the settlement when it finishes, or an update its persistence has not stored, whose settlement is armed a settle delay later) and during a shutdown, which leaves the settlement to the next process.
@@ -751,10 +765,28 @@ a room loaded while the issue was open and left behind the head by the other pro
 A named or snapshot version whose room is behind the head, read under the document's advisory lock, is rendered from the stored document instead (`storedTree`), and neither it nor a version over a cold fork lists the room's in-flight credits (`withoutInflight`):
 the store holds none of those changes, and an append the gate refuses is credited again when its browser resends it.
 What is per-process is the room: while a room is resident in one process it receives none of the other's updates, so presence and cursors show only the peers on that process.
-Every durable change notifies `dispatch_doc_changed` from inside the transaction holding the room's advisory lock, and the other process's listener (`docs/stale_room.go`, over `internal/pglisten`) closes the room that notification leaves behind the head, so within that round trip the browser reconnects, re-syncs and shows the current text - a brief reconnect, never stale text a reader can act on.
+Every durable change notifies from inside the transaction holding the room's advisory lock, in one statement, on two channels:
+`dispatch_doc_changed` with the bare artifact id, and `dispatch_doc_head` with `{"r":<artifact>,"v":<head after commit>,"p":<process id>}` (`Service.ProcessID`).
+A compaction, which changes no content, sends neither.
+The other process's listener (`docs/stale_room.go`, over `internal/pglisten`, on its one LISTEN connection) closes the room that notification leaves behind the head, so within that round trip the browser reconnects, re-syncs and shows the current text - a brief reconnect, never stale text a reader can act on.
+A head notification costs no query for a room this process does not hold or one whose cursor stands at `v`, and none for this process's own write, which waits for that write's bookkeeping (the head tracker's in-flight writes) and looks at the cursor again;
+anything else is decided on that room's own goroutine, with the unlocked head read and the confirmation under the document's advisory lock, each such goroutine reading through a pool hold mark of its own.
+The re-examination of a room whose eviction interval refused a notification, when that window ends, and the sweep of every resident room after each LISTEN stands go to the same goroutines, so one room's lock wait never holds the listener, any other room's decision or the head tracker's next delivery.
+ygo reports a room that is still loading as absent, so a head notification for it goes to the load's record (`roomLoad`):
+when the instance the load starts stands at another head than the last such notification names, the room goes to its goroutine, which waits for ygo to publish it and then decides it, rather than leaving a room born behind the store until a browser's edit is refused.
+A bare `dispatch_doc_changed` only invalidates the head tracker's entry:
+every write of this build sends the head notification beside it, so the bare id alone is an older build's write during a roll, which this build's rooms do not follow (their next durable write is refused, `ErrRoomBehindHead`, and they reload) and which still invalidates a cached cold read.
 Cross-process live co-editing of one document, two rooms with updates streaming between them, is a follow-up issue and out of scope here.
 
-The document socket's cap of 1,000 rooms (`maxLiveRooms`, `canOpenRoom`) counts ygo's live rooms, never documents touched since the process started (LEGION-513).
+The document socket's caps of 1,000 rooms and 1,000 browser connections (`DISPATCH_MAX_LIVE_ROOMS` and `DISPATCH_MAX_DOC_CONNECTIONS` set others;
+`reserveRoom`, `reserveConnection`) count ygo's live rooms, never documents touched since the process started (LEGION-513), and the connections registered on them, together with the rooms and connections the sockets being admitted reserved.
+A socket takes both places before it loads anything, each in the same step that checks its cap (a compare-and-swap on the connection count, a lock around the room places), so sockets that open at once never pass a cap, and a socket either cap turns away is refused `503`, never ygo's `401`.
+A room's place is shared by every socket and load that holds it, so a reserved room ygo then loads keeps the one place, and a room an API `Apply` loads takes a place from its load like any other.
+Every refused admission, failed load and closed socket gives its places back;
+a connection's place is its count from the reservation to `removeConnection`.
+Each is a count kept as rooms load and unload and browsers come and go, so admission walks no rooms.
+A socket's admission resolves the caller and reads the issue once each and hands both to ygo's authorization of the same request;
+a warm room's schema verdict is the one its replica observer recorded, and a cold open renders its document once.
 A room an `Apply` opened with no peer is idle-evicted only by a ygo whose `Apply` stamps the empty room idle (LEGION-484).
 `PgVersioned`'s per-room locks likewise live only while a caller holds or waits for one.
 
@@ -1036,7 +1068,7 @@ one that deletes such a row or changes a key column, which is what the weaker le
 Nothing does either today; the check refuses it if something starts to, and that red is the prompt to revisit this rule, not to reach for a weaker level that would not hold.
 **Order:** a transaction that takes both an owner row and the room lock takes the owner row first.
 The durable writers take no owner row at all
-— `appendUpdate`, `CaptureSnapshot`, `PruneAfter` and `Delete` reach the room through `withRoomLock`, and a compaction's write through `lockRoom` on a connection of the compaction pool;
+— a room's batch of browser updates (`AppendRoomFlush`, on a `store.Pool.RoomAppends` connection), `CaptureSnapshot`, `PruneAfter` and `Delete` (through `withRoomLock`'s `lockRoom`, on a shared-pool connection) and a compaction's write (through `lockRoom` on a connection of the compaction pool);
 each holds a session-level advisory lock on its own connection before it opens a transaction, so no row lock can precede it there
 — which is why order alone could not be the whole rule;
 but a transaction that does take both, such as an upload appending its event after writing the document, deadlocks against a settlement if it takes them the other way round.
@@ -1060,7 +1092,7 @@ The rule enforces itself.
 Every entry point that opens one of this pool's transactions marks its context with `store.WithTransactionTracking`:
 `api.Register` marks every route and the document websocket, and settlement, the architecture importer's `Sync`, the outbox publisher's `Run`, `MaterializeAt`, the two CLI backfills (`BackfillBlockIDs`, `BackfillAnchorBlocks`), `rebuild-refs`, the startup seeds and each migration mark their own.
 There is no exception: `docs.SetIssueClosed` takes its caller's context so the pool sees it even though it runs after that caller has committed.
-A durable append holds its connection directly rather than through a transaction, so `withRoomLock` marks its context with `store.HoldsConnection` for as long as it holds that connection and the room's advisory lock, and `Query` marks the caller for as long as its rows are open, so a cursor counts as the held connection it is.
+A durable writer that holds its connection directly rather than through a transaction - `lockRoom` and a batch of browser updates - marks its context with `store.HoldsConnection` for as long as it holds that connection and the room's advisory lock, and `Query` marks the caller for as long as its rows are open, so a cursor counts as the held connection it is.
 A refusal logs its stack once per call site, so a caller that trips it in a loop cannot flood the log; the error itself is returned every time.
 A caller that runs independent reads side by side gives each its own mark with `store.ForConcurrentRead`, which refuses a caller already holding a connection:
 on one shared mark, one read's open cursor would refuse the others, and each read still takes one connection only (the delivery timeline's four reads do this).
@@ -1084,14 +1116,18 @@ Everything the load needs comes from that pool, `onLoadDocument`'s issue read in
 
 - a writer holding a connection and the issue's row lock waits for the load, so a load that waited for the shared pool would close the same cycle without a transaction of its own.
   The pool belongs to the store rather than to each `PgVersioned`, so a caller that constructs one to read a document borrows those connections instead of opening more.
-  The load balancer's probe takes the other one:
+  A room's browser updates are stored on the room-appends pool (`store.Pool.RoomAppends`, eight connections):
+  a room's queued updates go in one transaction per batch (`docs/room_appends.go`), holding one of its connections and the document's advisory lock for about three round trips, so typing in a document takes no connection a request could use.
+  Only that batch path takes one, and no holder of a document lock waits for one (settlements, live writes and the `withRoomLock` writers take theirs where they always have), which is why it cannot deadlock (`roomAppendsPoolSize`).
+  Its connections name themselves `dispatch-room-appends` in `pg_stat_activity`, and the rooms pool's `dispatch-rooms`, so a reader of the database's sessions tells an append from a load and both from a request.
+  The load balancer's probe takes another one:
   `store.Pool.Healthy` reads the highest applied schema version from the health pool (one connection, used by nothing else) under a `store.healthProbeTimeout` deadline derived from the caller's context, two seconds covering dial and query, and `/healthz` answers with the result, reporting that version as `schema_version`.
   That constant's doc owns the argument for the bound:
   every prober reads silence as a dead process, the tightest of them allows three seconds (`deploy/compose/dispatch.compose.yml`, `deploy/scripts/autodeploy.sh`) against the ALB's five, and nothing else bounds the wait usefully
   — a cold dial is floored at two minutes by `pgxpool`, forty times that tightest deadline, and once the connection is up nothing bounds the query at all, because a request context carries no deadline.
   Warm is production's normal state, so the unbounded case is the one it runs.
-  Both separate pools zero `MinConns` and `MinIdleConns`, so a floor meant for the shared pool cannot become a target a one- or four-connection pool can never reach, and both are deliberately unguarded
-  — a load or a probe taken under an open transaction must be served, not refused, and a separate pool cannot close the cycle the guard prevents.
+  The separate pools zero `MinConns` and `MinIdleConns`, so a floor meant for the shared pool cannot become a target a one-, four- or eight-connection pool can never reach, and they are deliberately unguarded
+  — a load or a probe taken under an open transaction must be served, not refused, a room's append runs under no request's transaction, and a separate pool cannot close the cycle the guard prevents.
   The events outbox reads and records its batches, and takes and renews its publisher hold, on a pool of its own too (`store.Pool.Outbox`, two connections):
   the batches it runs side by side take one statement at a time between them (`outbox.lanes`, the lock held around a statement and the drain of its rows and never across a send) and the hold's renewal runs beside them, so a renewal never waits behind a batch's statement, and a full shared pool must not hold back publishing or let the hold lapse.
   So does the event log's safe horizon (`store.Pool.Horizon`, two connections, the server's one `events.Horizon`):

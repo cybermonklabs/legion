@@ -125,6 +125,17 @@ Each item below names a variable, then its purpose.
   Every process of one deployment takes the same values, and a model change on Azure takes a new deployment name, since each vector records an identity that names the deployment and not the model behind it (Search, below).
   A model service or Entra that is down refuses no boot: search answers by keyword and says so, and the queue retries.
 
+- `DISPATCH_MAX_LIVE_ROOMS`, `DISPATCH_MAX_DOC_CONNECTIONS`
+
+  Each process's own caps on the document rooms it holds in memory and the browser connections to them, so two processes of one deployment hold up to twice each;
+  a document socket past either is refused `503` before it upgrades, never `401`.
+  A socket takes its place under both caps before it loads anything, in the same step that checks each, so sockets that open at once never pass a cap:
+  the room cap counts the rooms held and the rooms sockets being admitted reserved, each room once, and the connection cap the browsers connected and the sockets being admitted.
+  The caps are counts kept as rooms load and unload and as sockets come and go, so admission walks no rooms.
+  Boot logs both with the cold reads' cache budget, `dispatch: document rooms' limits` with `max_live_rooms`, `max_doc_connections` and `read_budget_bytes`;
+  that budget is no setting but one sixteenth of the Go memory limit, at least 64 MiB and at most 1 GiB, and 256 MiB when no limit is set.
+  `/debug/vars` (Profiling, below) shows how near each cap a running process is.
+
 `DISPATCH_REPO_PROJECTS` optionally seeds repository-to-project settings at boot with comma-separated `owner/repo=KEY` entries.
 Existing dashboard mappings take precedence over this seed:
 it adds only a repository with no mapping, and announces each one it adds with `settings.repo_project.updated`, as a dashboard write does.
@@ -603,6 +614,34 @@ go tool pprof -seconds 30 http://127.0.0.1:<port>/debug/pprof/profile
 `/debug/pprof/` lists the other profiles (`heap`, `goroutine`, `allocs`, `threadcreate`, `trace`).
 `mutex` and `block` are listed too but record nothing: Dispatch sets no mutex or block sampling rate.
 
+The same port serves the process's `expvar` variables at `/debug/vars` (Go's `cmdline` and
+`memstats` among them), and `dispatch_rooms`, the document rooms' figures, computed afresh on each
+read with no database query (`docs.Service.RoomFigures`):
+
+```sh
+curl -s http://127.0.0.1:<port>/debug/vars | jq .dispatch_rooms
+```
+
+- `resident_rooms`: the rooms held in memory, which with the rooms sockets being admitted reserved are what `DISPATCH_MAX_LIVE_ROOMS` caps.
+- `room_records`: the room records the document service keeps.
+- `connections`: the browsers connected to rooms and the sockets being admitted to one, the count `DISPATCH_MAX_DOC_CONNECTIONS` caps.
+- `pending_updates`: the browser updates the rooms' persistence has yet to take.
+- `pending_update_bytes`: the bytes of the updates the rooms' queues hold.
+- `durable_appends`: the updates whose append has not landed.
+- `append_batches`: the append transactions of browser updates committed since the process started, an update stored alone included.
+- `appended_updates`: the browser updates those transactions stored.
+- `append_round_trips`: the round trips those transactions sent from the document's lock to its release, failed ones included.
+- `batch_sizes`: how many committed batches stored how many updates, by bucket (`1`, `2`, `3-4`, … `129-256`).
+- `pools.room_appends`, `pools.rooms`: each pool's connections held (`acquired`) and idle (`idle`), the acquires that found no idle connection (`empty_acquires`), and the time acquires waited in all (`acquire_duration_ns`); zeros for a pool not opened yet.
+- `read_cache`: the cold reads' cache's weight in bytes (`bytes`), its entries (`entries`) and its budget (`budget`).
+- `preloads`: the cold sockets' loaded states waiting for their room's load.
+- `resident_bytes`: the encoded bytes the resident rooms took, each load and every update since: loaded state only.
+  It leaves out the updates a room parks after it loaded, while they wait for an edit it has not received; parked rows already stored are part of the history a load decodes, so they count.
+  ygo bounds those per room by `MaxPendingItems`, which Dispatch sets to `maxUpdateItems` (1<<20, `internal/dispatch/docs/service.go` `New`): a count of parked items and, separately, of parked delete ranges, not bytes.
+- `head_tracker`: whether the head tracker trusts what it heard (`trusted`: false while its LISTEN is down, and while that connection has delivered nothing, not even a `dispatch_doc_ping` ping, for 3 s) and how many documents it holds (`entries`): one for each document its process holds a room, a cached read, a preload or a cold read in flight of, or is writing, and none for a document it only heard another process write. The evictor pings, through the shared pool, once its connection has delivered nothing for a second plus a jitter under a second, and only while its process holds a room, a cached read or a preload; a ping resets every process's wait, so a deployment sends about one ping a second while some process holds one of those and no document write is announced, and none otherwise, and a process that holds none of them reports `trusted: false` once 3 s pass with nothing heard.
+- `evictor_queries`: the stale-room evictor's reads of a document's head.
+- `settlement_wakeups`: the wakes of the waits for a room's appends.
+
 ## The live socket behind a proxy
 
 A page's live updates ride one WebSocket per tab, `GET /ws/live`, over HTTP/1.1.
@@ -768,6 +807,7 @@ What the two processes share, and what each keeps to itself:
   a process that finds it held tries again until a pass of its own runs, since the other process's pass may have read before the change that woke this one.
   The suggestion outcome sweep takes no lease at all:
   each of its pages holds the `suggestion_outcome_cursor` row `for update`, which serialises two processes by itself (Background loops, below).
+  Thirteen names are leased in all: those eleven loops and one per delivery durable for the consumers' reconciliation, which is why the lease pool holds thirteen connections (`leasePoolSize`'s comment in `internal/dispatch/store/pool.go` lists the names).
   The settlement resumption, the delivery live hub, the event-stream relay, the stale-room evictor, the shared wake listener and the document rooms' timers stay per-process by design (below), the embedding queue and the task progress reconciliation claim their own work, and the outbox publishes under its hold (above);
   the embedding queue's coverage pass runs in every process with no lease, each of its steps safe beside another process's, and drops every vector its own embedder did not make, so every process takes the same embedder settings (Search, below);
   `cmd/dispatch/main.go` says at the call site which loop is which and why.
@@ -800,7 +840,6 @@ What the two processes share, and what each keeps to itself:
 
 - A sign-in started on one process completes on the other:
   its state travels in the browser's signed `dispatch_oauth_state` cookie, not in a process (Identity, above), given one `DISPATCH_SERVER_URL` on every process.
-
 - `server.started` names the build every live process serves, once each time that build changes.
   A process that finds every live process serving one stamped, non-empty commit that the latest row of `server_build_announcements` does not name inserts a row;
   any process whose bus is connected publishes each row not yet published, with the event id `dispatch-server-started-<commit>-<seq>` and `started_at` the database's time of the announcement.
@@ -827,11 +866,30 @@ What the two processes share, and what each keeps to itself:
 **Two processes do not share a live document session.**
 Durable convergence is unconditional: every edit is appended under the document's advisory lock, Yjs updates commute, and the stored history is the union of them, so no edit is lost whichever process took it, no process writes a settlement or an ask retraction from a document state it does not hold (`ErrRoomBehindHead`), and a version whose room is behind the head is rendered from the stored document (`storedTree`).
 What is per-process is the live room: while a room is resident in one process it does not receive the other's updates, so presence and cursors show only the peers on that process.
-A write committed elsewhere closes the room within a notification round trip (`dispatch_doc_changed`, `docs/stale_room.go`), unless that room was evicted less than `staleRoomEvictInterval` (two seconds) ago, in which case its notification is refused and the room is re-examined when that window ends
+A write committed elsewhere closes the room within a notification round trip (`dispatch_doc_head`, which every content-changing write sends beside the bare-id `dispatch_doc_changed`; `docs/stale_room.go`), unless that room was evicted less than `staleRoomEvictInterval` (two seconds) ago, in which case its notification is refused and the room is re-examined when that window ends
 — the case the trailing write of an editing burst meets, since the last notification of a burst is one of the refused ones.
 Either way the browser reconnects, re-syncs and shows the current text.
 A reader sees a brief reconnect, never stale text they can act on.
+A write of an older build, which sends only `dispatch_doc_changed`, closes no room of this build during a roll: such a room's next durable write is refused (`ErrRoomBehindHead`) and it reloads.
 Cross-process live co-editing of one document — two rooms with text streaming between them — is a follow-up issue, out of scope here.
+
+**Each process holds its own connections, so a second process doubles them.**
+Every pool's size is fixed in code (`internal/dispatch/store/pool.go`), and a serving process opens at most 64 + 13 + 8 + 4 + 2 + 1 + 2 + 2 + 1 + 5 = 102 connections to Postgres (`store.ConnectionsPerProcess`):
+
+| Pool | Connections | What takes them |
+| --- | --- | --- |
+| Shared (`sharedPoolSize`) | 64 | Requests, settlements, and the document writers that hold a room's lock on a connection of their own (`lockRoom` through `withRoomLock`: snapshots, prunes, deletions). |
+| Leases (`leasePoolSize`) | 13 | The periodic maintenance loops' once-overall leases (`duty.Exclusive`), one per caller that can be inside a lease at once. |
+| Room appends (`roomAppendsPoolSize`) | 8 | The document rooms' batches of browser updates; `application_name=dispatch-room-appends`. |
+| Rooms (`RoomsPoolSize`) | 4 | Document loads; `application_name=dispatch-rooms`. |
+| Compaction (`compactionPoolSize`) | 2 | A document's compaction: the read transaction of the rows it folds, and its write back under the document's lock (`Pool.Compaction`); `application_name=dispatch-compaction`. |
+| Health (`healthPoolSize`) | 1 | The `/healthz` probe. |
+| Outbox (`outboxPoolSize`) | 2 | The events outbox's scan and, beside it, the renewal of its publisher hold (`duty.Hold`). |
+| Horizon (`horizonPoolSize`) | 2 | The event log's safe horizon (`events.Horizon`): its observations, its marks and the reads beside them, its stall diagnosis and its persist write. |
+| Registry (`registryPoolSize`) | 1 | Held for the life of the process: the heartbeat that stamps its row in the registry of live server processes every 5 seconds (`processes.Register`). |
+| Listeners (`permanentListeners`) | 5 | Held for the life of the process: the delivery hub, the event stream relay, the stale-room evictor, the shared wake hub the woken background loops wait on and the events outbox's `LISTEN` on `dispatch_events` and `dispatch_duty_holds`, each on a connection of its own. |
+
+Two processes at their ceiling hold 204, past a default Postgres's `max_connections` of 100, so size the database's limit for both, with whatever else uses that database counted in, before the second process starts.
 
 **A connection is closed after its next response once it is 60 seconds old** (`maxConnAge`, `cmd/dispatch/conn_age.go`):
 the server stamps each connection's accept time and answers the first request it reads at that age or later with `Connection: close`, and a request carrying an `Upgrade` header, a websocket handshake, keeps its connection.

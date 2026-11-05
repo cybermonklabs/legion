@@ -198,9 +198,9 @@ func TestShutdownSettlesEveryOtherRoomWhileOneRoomsQueuedAppendIsHeld(t *testing
 func TestShutdownSettlesABurstOfAppendsIncludingOneRecordedAfterItsScan(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
-	first := &appendGate{entered: make(chan struct{}), release: make(chan struct{})}
-	second := &appendGate{entered: make(chan struct{}), release: make(chan struct{})}
-	appends := &burstStore{VersionedStore: NewPgVersioned(database), room: artifactID, gates: []*appendGate{first, second}}
+	first := &heldAppendGate{entered: make(chan struct{}), release: make(chan struct{})}
+	second := &heldAppendGate{entered: make(chan struct{}), release: make(chan struct{})}
+	appends := &burstStore{VersionedStore: NewPgVersioned(database), room: artifactID, gates: []*heldAppendGate{first, second}}
 	t.Cleanup(func() {
 		first.let()
 		second.let()
@@ -468,8 +468,8 @@ func latestDocumentVersion(t *testing.T, database *store.Store, artifactID strin
 	return number, markdown, actors
 }
 
-// heldStore stores a document's updates as the store does, but holds the held room's next append,
-// once armed, until the test lets it go.
+// heldStore stores a document's updates as the store does, but holds the held room's next append
+// transaction - a batch of its updates, or one alone - once armed, until the test lets it go.
 type heldStore struct {
 	VersionedStore
 	room    string
@@ -496,36 +496,36 @@ func (s *heldStore) AppendRoomFlush(ctx context.Context, room string, flush *Roo
 	return s.VersionedStore.AppendRoomFlush(ctx, room, flush, through, credit)
 }
 
-func (s *heldStore) AppendUpdateWithCredit(ctx context.Context, room string, update []byte, contentChanged bool, credit *UpdateCredit) (persistence.Version, error) {
+func (s *heldStore) AppendUpdatesWithCredit(ctx context.Context, room string, updates []BrowserUpdate) (persistence.Version, error) {
 	s.hold(room)
-	return s.VersionedStore.AppendUpdateWithCredit(ctx, room, update, contentChanged, credit)
+	return s.VersionedStore.AppendUpdatesWithCredit(ctx, room, updates)
 }
 
-// appendGate pairs the channel a burstStore closes once an append reaches it with the channel a
+// heldAppendGate pairs the channel a burstStore closes once an append reaches it with the channel a
 // test closes, at most once, to let that append complete.
-type appendGate struct {
+type heldAppendGate struct {
 	entered chan struct{}
 	release chan struct{}
 	once    sync.Once
 }
 
-func (g *appendGate) let() { g.once.Do(func() { close(g.release) }) }
+func (g *heldAppendGate) let() { g.once.Do(func() { close(g.release) }) }
 
-// burstStore holds a room's durable appends one at a time, in the order they reach the store,
-// against the gates a test supplies - standing in for a burst of writes that keeps landing while
-// Shutdown drains the room, including ones recorded only after its room scan. Once armed, each
-// call consumes the next gate in order; a call past the gates a test supplied is not held. This
-// duplicates heldStore's single-gate shape rather than nesting two heldStores (outer(inner(...))):
-// heldStore's append calls through to its wrapped store inside the same call its gate
-// guards, so an outer heldStore's gate would fire a second time on the first append once the inner
-// one releases it and the call reaches the outer wrapper on its way through - a spurious second
-// hold on the first append rather than a hold on the second.
+// burstStore holds a room's durable append transactions one at a time, in the order they reach the
+// store, against the gates a test supplies - standing in for a burst of writes that keeps landing
+// while Shutdown drains the room, including ones recorded only after its room scan. Once armed,
+// each call consumes the next gate in order; a call past the gates a test supplied is not held.
+// This duplicates heldStore's single-gate shape rather than nesting two heldStores
+// (outer(inner(...))): heldStore's append calls through to its wrapped store inside the same call
+// its gate guards, so an outer heldStore's gate would fire a second time on the first append once
+// the inner one releases it and the call reaches the outer wrapper on its way through - a spurious
+// second hold on the first append rather than a hold on the second.
 type burstStore struct {
 	VersionedStore
 	room  string
 	armed atomic.Bool
 	mu    sync.Mutex
-	gates []*appendGate
+	gates []*heldAppendGate
 	next  int
 }
 
@@ -535,7 +535,7 @@ func (s *burstStore) hold(room string) {
 		return
 	}
 	s.mu.Lock()
-	var gate *appendGate
+	var gate *heldAppendGate
 	if s.next < len(s.gates) {
 		gate = s.gates[s.next]
 		s.next++
@@ -552,7 +552,7 @@ func (s *burstStore) AppendRoomFlush(ctx context.Context, room string, flush *Ro
 	return s.VersionedStore.AppendRoomFlush(ctx, room, flush, through, credit)
 }
 
-func (s *burstStore) AppendUpdateWithCredit(ctx context.Context, room string, update []byte, contentChanged bool, credit *UpdateCredit) (persistence.Version, error) {
+func (s *burstStore) AppendUpdatesWithCredit(ctx context.Context, room string, updates []BrowserUpdate) (persistence.Version, error) {
 	s.hold(room)
-	return s.VersionedStore.AppendUpdateWithCredit(ctx, room, update, contentChanged, credit)
+	return s.VersionedStore.AppendUpdatesWithCredit(ctx, room, updates)
 }
