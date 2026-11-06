@@ -86,7 +86,6 @@ var settingsEmitted = map[string]string{
 	"Config.PodUpdateMaxOpenRounds":                  "pod_update_max_open_rounds",
 	"Config.PodUpdateRoundsPerMinute":                "pod_update_rounds_per_minute",
 	"Config.ReviewRoundCap":                          "review_round_cap",
-	"Config.MaxFixAttempts":                          "max_fix_attempts",
 	"Config.ControllerLaunch":                        "controller",
 	"Config.Capabilities":                            "capabilities",
 	"Config.WorkerBackends":                          "worker_backends",
@@ -139,8 +138,6 @@ var settingsEmitted = map[string]string{
 	"PluginsConfig.PiLegion":                         "runtime.kubernetes.plugins.pi_legion",
 	"PluginsConfig.PiEnvoy":                          "runtime.kubernetes.plugins.pi_envoy",
 	"ProviderKey.Env":                                "provider_keys[]",
-	"Project.MergeQueueRole":                         "projects.<KEY>.merge_queue_role",
-	"Project.Merge":                                  "projects.<KEY>.merge",
 	"Project.SlackChannels":                          "projects.<KEY>.slack_channels",
 	"Project.Deploys":                                "projects.<KEY>.deploys",
 	"Project.Memory":                                 "projects.<KEY>.memory",
@@ -150,8 +147,6 @@ var settingsEmitted = map[string]string{
 	"Deploy.Repo":                                    "projects.<KEY>.deploys[].repo",
 	"Deploy.Workflow":                                "projects.<KEY>.deploys[].workflow",
 	"Deploy.Step":                                    "projects.<KEY>.deploys[].step",
-	"MergeRules.ByHand":                              "projects.<KEY>.merge.by_hand",
-	"PathPattern.Expression":                         "projects.<KEY>.merge.by_hand[]",
 	"Gates.Design":                                   "gates.design",
 	"GitHubApps.Implement":                           "github_apps.implement",
 	"GitHubApps.Review":                              "github_apps.review",
@@ -185,7 +180,6 @@ var settingsExcluded = map[string]string{
 	"PodConfig.VolumeMounts":        "runtime.kubernetes.pod: Kubernetes API types",
 	"PodConfig.ServiceAccount":      "runtime.kubernetes.pod: the operator's ServiceAccount, which every pod runs as and reads from its own spec",
 	"Kubernetes.PluginsFromBinary":  "derived: where the settled plugins pair came from, not a setting",
-	"PathPattern.Regexp":            "compiled from Expression, not a setting",
 }
 
 // Every exported field of every struct the walk reaches (settingsConfigTypes) is named in exactly
@@ -286,7 +280,7 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 		"dispatch_url", "projects", "gates", "github_apps", "linger_hours", "production_check_hours",
 		"pod_update_retask_hours", "pod_update_notice_hours", "pod_update_max_open_rounds",
 		"pod_update_rounds_per_minute", "review_round_cap",
-		"max_fix_attempts", "controller", "capabilities", "worker_backends", "role_config_files", "repository_renames",
+		"controller", "capabilities", "worker_backends", "role_config_files", "repository_renames",
 	}
 	top := keysOf(t, encoded)
 	assertKeys(t, "settings", top, wantTop)
@@ -341,12 +335,6 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	}
 	if settings.Runtime.Kubernetes.SessionStore != "postgres" {
 		t.Errorf("session_store = %q, want postgres", settings.Runtime.Kubernetes.SessionStore)
-	}
-	if want := []string{"^deploy/", `\.sql$`}; !slices.Equal(settings.Projects["WIDGETS"].Merge.ByHand, want) {
-		t.Errorf("projects.WIDGETS.merge.by_hand = %q, want %q", settings.Projects["WIDGETS"].Merge.ByHand, want)
-	}
-	if settings.Projects["WIDGETS"].MergeQueueRole != "merge-queue" {
-		t.Errorf("projects = %+v, want WIDGETS's merge queue role", settings.Projects)
 	}
 	if settings.ProductionCheckHours != 240 {
 		t.Errorf("production_check_hours = %v, want the file's 240", settings.ProductionCheckHours)
@@ -451,8 +439,8 @@ func TestSettingsOfAMinimalConfigurationResolvesTheDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if settings.MaxFixAttempts != 3 || settings.WorkerBootTimeoutSeconds != 120 {
-		t.Errorf("max_fix_attempts %d, worker_boot_timeout_seconds %d; want the defaults 3 and 120", settings.MaxFixAttempts, settings.WorkerBootTimeoutSeconds)
+	if settings.ReviewRoundCap != 3 || settings.WorkerBootTimeoutSeconds != 120 {
+		t.Errorf("review_round_cap %d, worker_boot_timeout_seconds %d; want the defaults 3 and 120", settings.ReviewRoundCap, settings.WorkerBootTimeoutSeconds)
 	}
 	if settings.Runtime.Name != "tmux" || settings.Runtime.Kubernetes != nil {
 		t.Errorf("runtime = %+v, want tmux with no kubernetes block", settings.Runtime)
@@ -483,9 +471,9 @@ func TestSettingsOfAMinimalConfigurationResolvesTheDefaults(t *testing.T) {
 		t.Errorf("settings carry the DSN: %s", encoded)
 	}
 
-	set := SettingsOf(loadSettingsFile(t, minimalSettingsFile+"max_fix_attempts: 5\n"))
-	if set.MaxFixAttempts != 5 {
-		t.Errorf("max_fix_attempts = %d, want the file's 5", set.MaxFixAttempts)
+	set := SettingsOf(loadSettingsFile(t, minimalSettingsFile+"review_round_cap: 5\n"))
+	if set.ReviewRoundCap != 5 {
+		t.Errorf("review_round_cap = %d, want the file's 5", set.ReviewRoundCap)
 	}
 }
 

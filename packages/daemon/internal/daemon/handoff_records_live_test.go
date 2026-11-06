@@ -20,7 +20,8 @@
 //
 // What is stood in for lies outside the records. The broker is a native nats-server the script
 // starts and names in LEGION_E2E_NATS_URL. GitHub is two REST stand-ins: the daemon's
-// (mergedRootWaitsGitHub, which answers each repository with default branch main and nothing
+// (handoffRecordsDaemonGitHub, which answers each repository with default branch main, lists the
+// one open pull request of the branch that completes rounds here, and nothing
 // else), and the import's (handoffRecordsGitHub), one branch carrying `.legion/<KEY>/`, which the
 // import reads through GitHub's contents API and, its issue in testing, leaves as it is. The Apps'
 // tokens are workflowTokenRecorder's placeholders, Envoy's listener is the package's
@@ -205,7 +206,7 @@ func (r *handoffRecordsLive) seed() {
 	}
 	// The implementer's completion of implementing reads GitHub for the open pull request on its
 	// branch, so GitHub lists the one the record holds for the issue that completes rounds here.
-	r.github = mergedRootWaitsGitHub(t, "legion/"+r.renew, int(number)+2)
+	r.github = handoffRecordsDaemonGitHub(t, "legion/"+r.renew, int(number)+2)
 	type seeded struct {
 		key   string
 		phase phase.Phase
@@ -1100,4 +1101,26 @@ func (g *handoffRecordsGitHub) heldNoRemoval(t *testing.T, r *handoffRecordsLive
 		}
 	}
 	r.note("GitHub stand-in received %d reads and no write: %v", len(g.requests), g.requests)
+}
+
+// handoffRecordsDaemonGitHub is GitHub's REST API as the daemon reads it through this proof: every
+// repository has default branch main, and the open pull requests of branch are the one numbered
+// number, which the implementer's completion of implementing reads before it moves its issue on.
+// Every other route is a 404: nothing else of GitHub is read here.
+func handoffRecordsDaemonGitHub(t *testing.T, branch string, number int) string {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rest, isRepository := strings.CutPrefix(r.URL.Path, "/repos/")
+		switch parts := strings.Split(rest, "/"); {
+		case r.Method == http.MethodGet && isRepository && len(parts) == 2:
+			_, _ = io.WriteString(w, `{"full_name":"`+parts[0]+"/"+parts[1]+`","default_branch":"main"}`)
+		case r.Method == http.MethodGet && isRepository && len(parts) == 3 && parts[2] == "pulls":
+			_, _ = fmt.Fprintf(w, `[{"number":%d,"state":"open","head":{"ref":%q,"sha":"head-child"},"base":{"ref":"main"},"updated_at":"2026-10-28T00:00:00Z"}]`, number, branch)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = io.WriteString(w, `{"message":"Not Found"}`)
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server.URL
 }
