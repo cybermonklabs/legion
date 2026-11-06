@@ -1447,6 +1447,7 @@ func TestTheRoomBudgetFollowsGrowingRoomsAndClosesTheGoneOnesFirst(t *testing.T)
 	took := make([]int, rooms)
 	gone := make([]bool, rooms)
 	var left []string
+	leftAt := map[string]time.Time{}
 	type refusal struct{ pass, room, took, left int }
 	var refusals []refusal
 	peak := server.peakResident(t, func() {
@@ -1471,6 +1472,10 @@ func TestTheRoomBudgetFollowsGrowingRoomsAndClosesTheGoneOnesFirst(t *testing.T)
 						growers[index].leave()
 						gone[index] = true
 						left = append(left, copies[index])
+						// When each room's browsers went, so the sweep's own lines for that
+						// room can be read against it afterwards (sweepHoldsAfter).
+						leftAt[copies[index]] = time.Now()
+						t.Logf("pass %d: room %d's browsers left %s at %s", pass, index, copies[index], leftAt[copies[index]].UTC().Format(time.RFC3339Nano))
 					}
 					continue
 				}
@@ -1552,6 +1557,10 @@ func TestTheRoomBudgetFollowsGrowingRoomsAndClosesTheGoneOnesFirst(t *testing.T)
 	t.Logf("%d pastes refused, the first on pass %d to room %d after it took %d, %d of them before any browser left; the next browser and every held room's insert refused, every held room's delete applied",
 		len(refusals), refusals[0].pass, refusals[0].room, refusals[0].took, early)
 	requireBudgetRefusals(t, server)
+	// What the sweep said of every charged room it left open, and for how long after its
+	// browsers went: the architect's reading of why a room whose browsers have gone is not
+	// closable (sweepHoldsAfter). It changes nothing the drive asserts.
+	sweepHoldsAfter(t, server, left, leftAt)
 	// Once the growth has ended, every room whose browsers went is the budget's to close and
 	// has been closed: this is the ordering the design promises, read where the teardown window
 	// is behind rather than at the instant of a refusal (above).
@@ -4266,6 +4275,65 @@ var budgetCloseLine = regexp.MustCompile(`msg="dispatch: the room budget closed 
 type budgetClose struct {
 	room                          string
 	chargedBefore, charged, limit int64
+}
+
+// sweepLeftOpenLine is the line the budget's sweep logs for each charged room it leaves open,
+// and sweepNoStateLine the one it logs where the budget holds a charge for a room no state
+// answers (sweepRooms). held_by is the first thing unusedLocked reads that is not clear.
+var (
+	sweepLeftOpenLine = regexp.MustCompile(`time=(\S+) [^\n]*msg="dispatch: the room budget's sweep left a charged room open" room=(\S+) held_by="?([^"\n]*?)"? pending=(\S+)`)
+	sweepNoStateLine  = regexp.MustCompile(`msg="dispatch: the room budget's sweep found no state for a charged room" room=(\S+)`)
+)
+
+// sweepHoldsAfter logs what the budget's sweep said of the charged rooms it left open: every
+// distinct held_by with a count, and for each room whose browsers went, the holds the sweep
+// named for it and how long after its sockets closed it was still naming one. It asserts
+// nothing. It is the reading that says whether a room nothing holds is held by its own work -
+// a settlement, an append, an apply in flight - which a sweep could drive, or by a browser the
+// handler has not forgotten, which wants the departure read from Dispatch's own socket close
+// (INFRA-179).
+func sweepHoldsAfter(t *testing.T, server *memoryServer, rooms []string, leftAt map[string]time.Time) {
+	t.Helper()
+	output := server.output.String()
+	counts := map[string]int{}
+	type hold struct {
+		at   time.Time
+		held string
+	}
+	byRoom := map[string][]hold{}
+	for _, match := range sweepLeftOpenLine.FindAllStringSubmatch(output, -1) {
+		counts[match[3]]++
+		at, err := time.Parse(time.RFC3339Nano, match[1])
+		if err != nil {
+			continue
+		}
+		byRoom[match[2]] = append(byRoom[match[2]], hold{at: at, held: match[3]})
+	}
+	if len(counts) == 0 {
+		t.Logf("the budget's sweep left no charged room open, or logged none: %d rooms whose browsers went", len(rooms))
+	}
+	for held, count := range counts {
+		t.Logf("the sweep left a charged room open %d times held by %q", count, held)
+	}
+	if missing := len(sweepNoStateLine.FindAllString(output, -1)); missing > 0 {
+		t.Logf("the sweep found no state for a charged room %d times", missing)
+	}
+	for _, room := range rooms {
+		holds := byRoom[room]
+		if len(holds) == 0 {
+			t.Logf("the sweep never left room %s open after its browsers went at %s: it was closable whenever it looked",
+				room, leftAt[room].UTC().Format(time.RFC3339Nano))
+			continue
+		}
+		reasons := map[string]int{}
+		for _, one := range holds {
+			reasons[one.held]++
+		}
+		last := holds[len(holds)-1]
+		t.Logf("room %s, whose browsers went at %s: the sweep left it open %d times, %v, the last %s after they went, held by %q",
+			room, leftAt[room].UTC().Format(time.RFC3339Nano), len(holds), reasons,
+			last.at.Sub(leftAt[room]).Round(time.Millisecond), last.held)
+	}
 }
 
 // budgetCloses is every close of an unused room the server has logged, in the order it logged them.
