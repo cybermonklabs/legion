@@ -716,8 +716,8 @@ from=accepting to=retro trigger=sign_off`, `phase_change_logged`), the board to 
 `daemon-merge` sees the daemon's merge close the issue: `awaiting_merge` and the merged pull request write `done` (`… from=awaiting_merge to=done
 trigger=pull_request_merged`, the board `done` within 60 s), the production check opens on the merge commit at its first look, woken by the merge (`check_opened_on`), and the root's close lingers the tree:
 `legion claims list --json` shows the architect, planner, tester, reviewer and merger `suspended` and the implementer alone live (`claim_states_are`), handed the first look in its pane.
-The proof sends the implementer nothing at a look:
-the issue is closed, and a closed issue takes no Dispatch write (409 `ISSUE_CLOSED`), so the fixture's instructions say a check task waits for no message and acts on the daemon's task as written
+The proof sends the implementer nothing at a look,
+so the fixture's instructions say a check task waits for no message and acts on the daemon's task as written
 — this proof has no production and no deploy role, so the implementer leaves `Production: pending deploy of <merge commit>` on the pull request and reports `pending`:
 the check stays open with `looks: 1, lookOpen: false` (`check_look_reported`, within 600 s of the look's start), and the daemon suspends the implementer's claim, session kept, beside the five.
 After the smoke main's cleanup, `production-check-bound` waits for the bound's wake, the last look (`last_look_started`: `looks:
@@ -2688,7 +2688,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   `awaiting_merge` → `done` within 900 s (the daemon log's `workflow: phase changed … from=awaiting_merge to=done trigger=pull_request_merged` and, once, `workflow: a merged root closes once its last child left the workflow`;
   Dispatch `done` within 120 s), the production check opens on the merge commit at its first look, woken by the merge (`check_opened_on`:
   `looks: 1`, `lookOpen: true`, `lastWake.kind: merge`), and the close hands the implementer that look in the still-live pod.
-  The proof sends it nothing there: the issue is closed, and a closed issue takes no Dispatch write (409 `ISSUE_CLOSED`), so the fixture's instructions say a check task waits for no targeted message and acts on the daemon's task as written
+  The proof sends it nothing there, so the fixture's instructions say a check task waits for no targeted message and acts on the daemon's task as written
   — this proof has no production and no deploy role, so the implementer leaves `Production: pending deploy of <merge commit>` on the pull request and reports `pending` (`check_look_reported`, within 600 s of the look's start:
   `looks: 1, lookOpen: false`, the check still open); the smoke main's cleanup (`clean_smoke_main`) runs while it works.
   The pending report suspends the implementer's claim, its session kept in the session database, and deletes the root's Sandbox as any stop of an issue does:

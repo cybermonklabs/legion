@@ -20,6 +20,8 @@ import type { PendingState } from "../features/doc/pending-sync";
 import type { DocumentRuntimeValue } from "../features/doc/runtime";
 
 export interface FakeEditor {
+  /** What the editor lets the reader do (`access`), as created or as the host last set it. */
+  access: NonNullable<EditorOptions["access"]>;
   /** Each set of block marks the host handed the editor (`setBlockMarks`), in order. */
   blockMarks: BlockMark[][];
   /** How many times the host asked to comment on the selection. */
@@ -29,7 +31,6 @@ export interface FakeEditor {
   markdown: string | undefined;
   focusedBlocks: string[];
   options: EditorOptions;
-  readOnly: boolean;
   remoteMarks: Record<string, StoredMark>[];
   root: HTMLElement;
   /** Whether the fake view's selection is empty (a caret); a test sets it to select text. */
@@ -43,6 +44,8 @@ export interface FakeEditor {
 
 interface FakeConnection extends DocumentConnection {
   destroyed: boolean;
+  /** How many times the host asked the server to admit this connection again. */
+  readmitted: number;
 }
 
 export interface FakeDocumentRuntime {
@@ -92,6 +95,10 @@ export function fakeDocumentRuntime(seed: { text?: string } = {}): FakeDocumentR
         connection.destroyed = true;
       },
       doc,
+      readmit() {
+        connection.readmitted += 1;
+      },
+      readmitted: 0,
     };
     callbacks.push(nextCallbacks);
     connections.push(connection);
@@ -102,6 +109,7 @@ export function fakeDocumentRuntime(seed: { text?: string } = {}): FakeDocumentR
       root.setAttribute(name, value);
     }
     const editor: FakeEditor = {
+      access: options.access ?? "edit",
       blockMarks: [],
       commented: 0,
       destroyed: false,
@@ -109,7 +117,6 @@ export function fakeDocumentRuntime(seed: { text?: string } = {}): FakeDocumentR
       focusedBlocks: [],
       markdown: undefined,
       options,
-      readOnly: options.readOnly ?? false,
       remoteMarks: [],
       root,
       selectionEmpty: true,
@@ -157,14 +164,14 @@ export function fakeDocumentRuntime(seed: { text?: string } = {}): FakeDocumentR
         editor.markdown = markdown;
         root.textContent = markdown;
       },
-      setReadOnly(readOnly: boolean) {
-        editor.readOnly = readOnly;
+      setAccess(access: FakeEditor["access"]) {
+        editor.access = access;
       },
       view: {
         dispatch() {},
         dom: root,
         get editable() {
-          return !editor.readOnly;
+          return editor.access === "edit";
         },
         hasFocus: () => root.ownerDocument.activeElement === root,
         props: editor.viewProps,

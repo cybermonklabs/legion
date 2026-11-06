@@ -142,7 +142,8 @@ it, with a comment on the issue summarizing the evidence; work still running ben
 not hold that acceptance, since the root's close waits for it. After the close the
 implementer checks the change in production, once your deploy carries it, and records what it saw
 as the result of the issue's `after_merge` check, with that result's line on the pull request; a
-closed issue takes a result for such a check and no other write, so look in both places.
+closed issue takes a result for such a check, a comment and a message, and no other write, so
+look in both places.
 The tree's workspace is kept for three days (`linger_hours`, 72 by default) in case the work
 resumes.
 

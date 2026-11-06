@@ -672,7 +672,7 @@ a wake while a look is open is kept for the next look);
 a defect with a clear fix goes to the controller, which gives it to the running tree whose code it is and files a Legion root only when none does, and one that needs a decision is a `dispatch ask` on the controller's report issue whose reference goes to the controller;
 either names the issue, the pull request, the merge commit, what was driven and what failed, and the result names the message or the ask.
 Each look is bounded at 2 hours and the check at `production_check_hours` (336 by default), whose wake is the last look.
-The record is that result and the pull request: a closed issue takes a result for an `after_merge` or `default_branch` check and refuses every other write; `legion state` prints `open production checks: …`.
+The record is that result and the pull request: a closed issue takes a result for an `after_merge` or `default_branch` check, a comment and a message, and refuses every other write; `legion state` prints `open production checks: …`.
 
 Statuses above are native Dispatch issue statuses, not GitHub labels
 — the daemon writes `in_progress`/`testing`/`needs_review`/`retro` through its outbox (a `dispatch_status` row it delivers to Dispatch) for the issues it runs, and a human may set any lifecycle status from the Dispatch dashboard.

@@ -404,7 +404,7 @@ request, the merge commit, what it drove and what failed. A defect with a clear 
 controller, which gives it to the tree that owns that code and files an issue only when none does.
 One that needs a decision is a Dispatch ask on Legion's
 daily report issue, so you decide whether it needs an issue.
-The record is that result and the pull request: a closed issue takes a result for an `after_merge` or `default_branch` check, and refuses every other write.
+The record is that result and the pull request: a closed issue takes a result for an `after_merge` or `default_branch` check, a comment and a message, and refuses every other write.
 
 Nothing waits for the deploy: a `pending` look ends, the implementer's pod goes — and its disk
 with it, since an issue's disk belongs to its pod — while its conversation is kept in the session

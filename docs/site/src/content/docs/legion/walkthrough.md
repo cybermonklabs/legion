@@ -82,7 +82,8 @@ role to carry the merge and waits for no reply; when production does not carry t
 reports `pending`, its pod goes, and the daemon wakes it when Dispatch reports the pull request
 deployed. The look that finds the merge in production drives the change and records the result of
 the issue's `after_merge` check, naming the merge commit and what woke the look, with that
-result's line on the pull request. A closed issue takes such a result and no other write.
+result's line on the pull request. A closed issue takes such a result, a comment and a message,
+and no other write.
 
 ## The operator's view
 

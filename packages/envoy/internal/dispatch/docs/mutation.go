@@ -1135,8 +1135,10 @@ func modelBlockPath(path pmdoc.BlockPath) model.BlockPath {
 }
 
 // SnapshotVersion returns the current immutable version, adding an unnamed
-// version only when the live text has diverged since the previous one.
+// version only when the live text has diverged since the previous one. The version a comment's
+// anchor is pinned to under WithCommentMarks is taken on a closed issue's document too.
 func (s *Service) SnapshotVersion(ctx context.Context, artifactID string, actor model.Actor) (VersionResult, error) {
+	ctx = commentMarkOperation(ctx)
 	tx, joined := txFromContext(ctx)
 	if !joined {
 		return VersionResult{}, errUnjoined
@@ -1153,11 +1155,14 @@ func (s *Service) SnapshotVersion(ctx context.Context, artifactID string, actor 
 		return VersionResult{Version: latest.Version}, nil
 	}
 	capture.authors[actorKey(actor)] = actor
+	// The owner's lock holds the issue's state under this write, and a closed issue refuses it -
+	// except the version a comment's anchor is pinned to, which a closed issue takes like the
+	// comment itself (WithCommentMarks, commentMarkOperation above).
 	_, open, err := lockArtifactOwner(ctx, tx, artifactID)
 	if err != nil {
 		return VersionResult{}, err
 	}
-	if !open {
+	if !open && !isOwnerVerified(ctx) {
 		return VersionResult{}, ErrIssueClosed
 	}
 	result, err := s.writeVersionTx(ctx, tx, artifactID, rendered, actor, &versionWrite{
