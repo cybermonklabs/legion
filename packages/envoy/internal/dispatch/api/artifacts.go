@@ -1117,7 +1117,15 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	if edit.Applied > 0 {
 		s.deps.Docs.ScheduleSettlement(artifact.ID)
 	}
-	s.publish(published...)
+	// The write is durable here, so the caller is answered before the rooms are told. A publish
+	// opens a room the browsers of that document hold, which waits for the room budget's opening
+	// and for one of the pod's load slots, and under a burst of writes that is where the time
+	// goes: measured at 320 concurrent writes, one the server answered 200 took 1 m 6.19 s
+	// against its caller's 1 m deadline, and that caller read an error of its own and would send
+	// the edit again (INFRA-179). Telling the rooms afterwards loses nothing: the update is
+	// durable before it publishes, no browser holds a document no room holds, and the room that
+	// loads next reads the store (publishLiveWrite).
+	defer s.publish(published...)
 	unchanged := edit.Unchanged
 	if unchanged == nil {
 		unchanged = []int{}

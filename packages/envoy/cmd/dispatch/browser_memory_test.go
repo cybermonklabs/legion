@@ -705,14 +705,20 @@ const (
 	// each of its items wins the tie-break against each item of the chain and scans on past it
 	// (sjawhar/ygo v1.55.1-sami.1, crdt/item.go:189-202).
 	tangledScanClient = 4_000_000
-	// scanFramePadding is the bytes of the string scanFrame opens with: its 256 KiB stand at the
-	// chain's end, where nothing follows them to scan, and make the frame the size a browser's
-	// paste is rather than a few hundred bytes. They are part of what the room weighs the
-	// frame's scan allowance from, since an apply under unslottedApplyBytesForTest is given what
-	// its marks can hold in what is left of that figure past the frame's own bytes
-	// (scanCeilingForTest), so the drives compute the allowance from the frame they built rather
-	// than assuming one.
-	scanFramePadding = 256 << 10
+	// scanFramePadding is the bytes of the string scanFrame opens with: it stands at the chain's
+	// end, where nothing follows it to scan, and makes the frame a paste's size rather than a
+	// few hundred bytes. It is part of what the room weighs the frame's scan allowance from,
+	// since an apply under unslottedApplyBytesForTest is given what its marks can hold in what
+	// is left of that figure past the frame's own bytes (scanCeilingForTest), so the drives
+	// compute the allowance from the frame they built rather than assuming one.
+	//
+	// 8 KiB and not the 256 KiB of before, because the padding is text the room renders. A room
+	// takes about forty of these frames to use up its million-item scan total
+	// (TestTheRoomScanTotalIsReMeasuredByEachLoadOverARealSocket), and forty paddings of 256 KiB
+	// would carry the rendering past pmdoc.MaxDocumentBytes long before then, so the byte bound
+	// would refuse the fifth frame with DOC_TOO_LARGE and the scan total would never be reached.
+	// Forty of 8 KiB are 320 KiB, well inside the bound.
+	scanFramePadding = 8 << 10
 )
 
 // chainFrame is a frame of tangledChain one-character strings after the last character of the
@@ -1450,38 +1456,24 @@ func TestTheRoomBudgetFollowsGrowingRoomsAndClosesTheGoneOnesFirst(t *testing.T)
 				requireRefused(t, applied, closed, contracts.DocumentBusyCloseCode, contracts.DocumentBusyCloseReason)
 				growers[index] = nil
 				refusals = append(refusals, refusal{pass: pass, room: index, took: took[index], left: len(left)})
-				// At the first refusal every fourth browser has gone and its room is closed. At
-				// each, every room whose browsers went and whose settlement has committed is
-				// closable, and closed by the sweep that raised the refusal or by the one its
-				// settlement's end started (Service.unlockState).
-				//
-				// A refusal may come while a room whose browsers have gone is still charged,
-				// and that is the teardown window rather than a fault: ygo takes a leaving peer
-				// out of its room, flushes the room's pending updates to the store and only
-				// then reports the departure, so until it does the budget still sees that room
-				// as held (docs' roomBudget.await). An admission waits through that window; an
-				// update's refusal reads the budget's full flag with one atomic load, by
-				// design, because it runs on the peer's read loop and may not wait. So what the
-				// drive holds is that those rooms are closed - which closesOf waits for - and
-				// not that every one of them was closed at the instant of the refusal. The
-				// grower's next pass then applies, as the editor's retry does.
-				closable := left
-				if len(refusals) > 1 {
-					closable = slices.DeleteFunc(slices.Clone(left), func(room string) bool { return !memory.settled(t, room) })
-				} else {
+				// A refusal may come while every room whose browsers have gone is still
+				// charged, and that is the teardown window rather than a fault: ygo takes a
+				// leaving peer out of its room, flushes the room's pending updates to the
+				// store and only then reports the departure, so until it does the budget still
+				// sees that room as held (docs' roomBudget.await). An admission waits through
+				// that window; an update's refusal reads the budget's full flag with one
+				// atomic load, by design, because it runs on the peer's read loop and may not
+				// wait. So the drive asks nothing of the instant of the refusal - the peer's
+				// read loop was never going to give that ordering - and holds what the design
+				// does promise, once the growth has ended: every room whose browsers went is
+				// closed, read from the line the budget logs for it and from the room's
+				// absence, and a grower the budget refused takes its paste on a later pass, as
+				// the editor's retry does.
+				if len(refusals) == 1 {
 					t.Logf("pass %d: the budget refused room %d's paste %d, its first refusal, with %d rooms whose browsers went; %d MiB resident", pass, index, took[index]+1, len(left), server.resident(t, "VmRSS")>>20)
 					if len(left) != rooms/4 {
 						t.Fatalf("the budget refused growth with %d of the %d rooms whose every fourth browser leaves left, want it to refuse none before they have", len(left), rooms/4)
 					}
-				}
-				closes := closesOf(t, server, closable, len(closable))
-				t.Logf("pass %d: at the refusal of room %d's paste %d the budget had closed %d of the %d rooms whose browsers went that it could close",
-					pass, index, took[index]+1, len(closes), len(closable))
-				if len(closes) != len(closable) {
-					t.Fatalf("pass %d: the budget refused room %d's paste %d and %d of the %d rooms whose browsers went were never closed, within the wait closesOf gives them", pass, index, took[index]+1, len(closable)-len(closes), len(closable))
-				}
-				for _, room := range closable {
-					requireRoomAbsent(t, server, room, "a room whose browsers went, at a refusal")
 				}
 			}
 			taken := 0
@@ -1539,7 +1531,10 @@ func TestTheRoomBudgetFollowsGrowingRoomsAndClosesTheGoneOnesFirst(t *testing.T)
 	t.Logf("%d pastes refused, the first on pass %d to room %d after it took %d, %d of them before any browser left; the next browser and every held room's insert refused, every held room's delete applied",
 		len(refusals), refusals[0].pass, refusals[0].room, refusals[0].took, early)
 	requireBudgetRefusals(t, server)
-	closes := closesOf(t, server, left, 0)
+	// Once the growth has ended, every room whose browsers went is the budget's to close and
+	// has been closed: this is the ordering the design promises, read where the teardown window
+	// is behind rather than at the instant of a refusal (above).
+	closes := closesOf(t, server, left, len(left))
 	for _, made := range closes {
 		t.Logf("the budget closed %s, a room whose browsers went, %d -> %d of %d bytes charged", made.room, made.chargedBefore, made.charged, made.limit)
 		if made.limit != roomBudgetBytesForTest || made.chargedBefore <= made.limit || made.charged >= made.chargedBefore {
@@ -1548,6 +1543,9 @@ func TestTheRoomBudgetFollowsGrowingRoomsAndClosesTheGoneOnesFirst(t *testing.T)
 	}
 	if len(closes) != len(left) || len(left) != rooms/4 {
 		t.Errorf("the budget closed %d rooms whose browsers went, of the %d whose browsers left, want each of the %d rooms of every fourth browser once", len(closes), len(left), rooms/4)
+	}
+	for _, room := range left {
+		requireRoomAbsent(t, server, room, "a room whose browsers went, once the growth had ended")
 	}
 	for index, room := range copies[:rooms] {
 		if gone[index] {
