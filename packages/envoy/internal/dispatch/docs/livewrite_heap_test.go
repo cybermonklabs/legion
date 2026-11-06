@@ -17,7 +17,7 @@ import (
 // would make.
 var errLiveWriteMeasured = errors.New("the live write was measured")
 
-// liveWriteMeasurer is one shape measured by TestALiveWritesPeakHeapIsWithinItsGrant: the service
+// liveWriteMeasurer is one shape measured by TestALiveWritesPeakHeapIsWithinItsSlot: the service
 // and document a write is made on, with the state its store holds.
 type liveWriteMeasurer struct {
 	service    *Service

@@ -536,21 +536,29 @@ func TestRebuildingADocumentNearTheScanTotalLeavesItWithASmallScanTotalAndReadin
 // A browser that held a document before its rebuild still holds the history the rebuild replaced,
 // and the edits it made while disconnected. When it reconnects, the rebuilt room holds none of
 // that history, so the browser's answer to the room's sync hands all of it back with its unsent
-// edit: the room refuses it with the document's own close and the reason that the document was
-// rebuilt (DOC_REBUILT), on which the editor drops what it sent and builds its document
-// afresh from the room, and drops its saved rows typed against the old
-// history as rows of a rebuilt document. The room's struct total stays small, the document reads
-// the rebuilt text with no block twice and without the unsent edit, and a browser of the rebuilt
-// history - its whole state, the retired clients' list included, handed back - edits it as before.
+// edit: the room refuses it with the document's own close, on which the editor drops what it
+// sent and builds its document afresh from the room. The room's struct count stays small, the
+// document reads the rebuilt text with no block twice and without the unsent edit, and a browser
+// of the rebuilt history - its whole state, the retired clients' list included, handed back -
+// edits it as before.
+//
+// The reason is DOC_UPDATE_REFUSED here rather than DOC_REBUILT, because this history stands at
+// the decode cap: the message carrying it holds more structs than one update may decode, so the
+// retired-client scan cannot read its header (crdt.ParseUpdateMeta refuses an update past
+// maxV2Items) and refuses nothing, and ygo's own decoder is what refuses the bytes
+// (refusedBeforeApply, refusedByApply). A history the scan can read is closed DOC_REBUILT, which
+// TestAGroupOfARetiredClientBelowItsClockIsClosedAndAHeaderThatWillNotReadIsRefused and the row
+// of TestEveryRefusalOfTheHookCarriesItsOwnCodeAndReason that hands one back drive. Either way
+// the browser is closed 4413 and comes back from a fresh read.
 //
 // Its fixture stands at the decode cap (longEditedAtCapState), so a -race build leaves it out
 // (skipAtTheBoundsUnderRace): the fixture's million instrumented writes cost the race run minutes
 // and gigabytes, and under -race on the development pod a socket connect of this test timed out
 // after 192 s. What the detector could catch here the tests beside it drive over a small
 // document: the hook closing a browser that hands back a history a rebuild replaced
-// (TestAGroupOfARetiredClientBelowItsClockIsClosedWhereverTheWalkRefuses, and the row of
-// TestEveryRefusalOfTheHookCarriesItsOwnCodeAndReason that hands one back), and a browser whose
-// socket a room's close ends and which reconnects and re-syncs
+// (TestAGroupOfARetiredClientBelowItsClockIsClosedAndAHeaderThatWillNotReadIsRefused, and the
+// row of TestEveryRefusalOfTheHookCarriesItsOwnCodeAndReason that hands one back), and a browser
+// whose socket a room's close ends and which reconnects and re-syncs
 // (TestAWriteOnTheOtherProcessClosesThisProcessesRoomWithinTheRoundTrip).
 func TestABrowserHoldingTheHistoryARebuildReplacedCannotHandItBack(t *testing.T) {
 	skipAtTheBoundsUnderRace(t)
@@ -592,8 +600,8 @@ func TestABrowserHoldingTheHistoryARebuildReplacedCannotHandItBack(t *testing.T)
 	case <-time.After(time.Minute):
 		t.Fatal("the room never answered the browser holding the replaced history")
 	}
-	if closed := reconnected.Closed(); closed == nil || closed.Code != contracts.DocumentTooLargeCloseCode || closed.Text != contracts.DocumentRebuiltCloseReason {
-		t.Fatalf("the room ended the browser holding the replaced history with %v, want %d %s", closed, contracts.DocumentTooLargeCloseCode, contracts.DocumentRebuiltCloseReason)
+	if closed := reconnected.Closed(); closed == nil || closed.Code != contracts.DocumentTooLargeCloseCode || closed.Text != contracts.DocumentUpdateRefusedCloseReason {
+		t.Fatalf("the room ended the browser holding the replaced history with %v, want %d %s", closed, contracts.DocumentTooLargeCloseCode, contracts.DocumentUpdateRefusedCloseReason)
 	}
 	live := service.srv.GetDoc(artifactID)
 	if live == nil {
@@ -646,7 +654,7 @@ func TestABrowserHoldingTheHistoryARebuildReplacedCannotHandItBack(t *testing.T)
 
 // oneClientWriter is the client that writes the whole of oneClientAtCapState's history, numbered
 // below the browser
-// TestABrowserHoldingAHistoryARebuildReplacedIsClosedThoughTheWalkRefusesItBeforeReadingAnyOfIt
+// TestABrowserHoldingAHistoryARebuildReplacedIsClosedThoughItsMessageWillNotRead
 // connects with: ygo and Yjs both write a state's client groups by descending client
 // (sjawhar/ygo v1.55.1-sami.1, crdt/update.go:386-387), so the browser's own group comes before
 // the history's.
@@ -700,29 +708,32 @@ func oneClientAtCapState(t *testing.T) []byte {
 	return state
 }
 
-// A browser holding the history a rebuild replaced is sent back to a fresh read whatever its
-// whole-state message lets the walk read before the walk refuses it. Here the history is one
-// client's, at the decode cap, and the browser's own client sorts before it, so the message the
-// browser hands back - its own unsent edits, then the history - is refused by the walk at the
-// history's header, the group that passes the cap, with no struct of the history read. The walk's
-// refusal is a plain error rather than a *websocket.PeerClose, which ygo answers SyncStatus(0)
-// and then closes with 4205 "Reset Connection" (sjawhar/ygo v1.55.1-sami.1,
-// provider/websocket/peer_update.go:142-154, provider/websocket/peer.go:271-290, over the
-// Hocuspocus framing New sets); 4205 is what @hocuspocus/provider 2.x reconnects at once after,
-// so the browser would hand the same message back on every reconnect while each later edit of it,
-// naming the old history's items, parked. The room closes it with the document's own close and
-// DOC_REBUILT; it reconnects from a fresh read of the rebuilt document, as the editor's
-// 4413 path does, not with its old state; and a new edit from it is applied and stored.
+// A browser holding the history a rebuild replaced is sent back to a fresh read even where
+// nothing can read its whole-state message's header. Here the history is one client's, at the
+// decode cap, and the browser's own unsent edits stand beside it, so the message carries more
+// structs than one update may decode: crdt.ParseUpdateMeta refuses it (maxV2Items), the
+// retired-client scan refuses nothing of its own and the apply judges the bytes, where ygo's own
+// decoder refuses them and rolls the apply back whole (refusedBeforeApply, refusedByApply).
+//
+// What matters is that the refusal is a close the editor acts on. A plain error rather than a
+// *websocket.PeerClose has ygo answer SyncStatus(0) and then close with 4205 "Reset Connection"
+// (sjawhar/ygo v1.55.1-sami.1, provider/websocket/peer_update.go:142-154,
+// provider/websocket/peer.go:271-290, over the Hocuspocus framing New sets); 4205 is what
+// @hocuspocus/provider 2.x reconnects at once after, so the browser would hand the same message
+// back on every reconnect while each later edit of it, naming the old history's items, parked.
+// The room closes it with the document's own close, 4413 DOC_UPDATE_REFUSED; it reconnects from
+// a fresh read of the rebuilt document, as the editor's 4413 path does, not with its old state;
+// and a new edit from it is applied and stored.
 //
 // Its fixture stands at the decode cap (oneClientAtCapState), built by about a million ygo
 // writes, so a -race build leaves it out (skipAtTheBoundsUnderRace). What the detector could
 // catch here the tests beside it drive over a small document: the hook closing a browser that
-// holds a history a rebuild replaced, wherever the walk refuses its message
-// (TestAGroupOfARetiredClientBelowItsClockIsClosedWhereverTheWalkRefuses, and the row of
-// TestEveryRefusalOfTheHookCarriesItsOwnCodeAndReason that hands one back), and a browser whose
-// socket a room's close ends and which reconnects and re-syncs
+// holds a history a rebuild replaced, whether or not its header reads
+// (TestAGroupOfARetiredClientBelowItsClockIsClosedAndAHeaderThatWillNotReadIsRefused, and the
+// row of TestEveryRefusalOfTheHookCarriesItsOwnCodeAndReason that hands one back), and a browser
+// whose socket a room's close ends and which reconnects and re-syncs
 // (TestAWriteOnTheOtherProcessClosesThisProcessesRoomWithinTheRoundTrip).
-func TestABrowserHoldingAHistoryARebuildReplacedIsClosedThoughTheWalkRefusesItBeforeReadingAnyOfIt(t *testing.T) {
+func TestABrowserHoldingAHistoryARebuildReplacedIsClosedThoughItsMessageWillNotRead(t *testing.T) {
 	skipAtTheBoundsUnderRace(t)
 	const browserClient crdt.ClientID = 0x0ce2
 	state := oneClientAtCapState(t)
@@ -775,18 +786,13 @@ func TestABrowserHoldingAHistoryARebuildReplacedIsClosedThoughTheWalkRefusesItBe
 		t.Fatalf("the rebuilt history lists %v as retired, want the one writer alone", retired)
 	}
 	// The rebuilt room holds none of the browser's clients, so the message it hands back is its
-	// whole state - the replaced history's writer from clock 0 beside the browser's own structs -
-	// and the hook reads that from the message's header alone (crdt.ParseUpdateMeta), before any
-	// apply and without decoding a struct of it.
-	from, _, err := crdt.ParseUpdateMeta(crdt.EncodeStateAsUpdateV1(held.Doc, nil))
-	if err != nil {
-		t.Fatalf("read the browser's message's header: %v", err)
-	}
-	if clock, named := from[oneClientWriter]; !named || clock != 0 {
-		t.Fatalf("the browser's message starts the replaced history's writer at %d (named %t), want clock 0, below the clock the rebuild retired it at", clock, named)
-	}
-	if clock, named := from[browserClient]; !named || clock != 0 {
-		t.Fatalf("the browser's message starts its own client at %d (named %t), want its own structs carried beside the replaced history's", clock, named)
+	// whole state: the replaced history's writer from clock 0 beside the browser's own structs,
+	// which together carry more structs than one update may decode. Nothing can read that
+	// message's header, so the retired-client scan refuses nothing and the apply is what judges
+	// the bytes.
+	handback := crdt.EncodeStateAsUpdateV1(held.Doc, nil)
+	if _, _, err := crdt.ParseUpdateMeta(handback); !errors.Is(err, crdt.ErrInvalidUpdate) {
+		t.Fatalf("the %d-byte message's header read as %v, want it refused as an update ygo will not decode", len(handback), err)
 	}
 
 	reconnected := docstest.Dial(t, url, alice, artifactID, held.Doc)
@@ -795,8 +801,8 @@ func TestABrowserHoldingAHistoryARebuildReplacedIsClosedThoughTheWalkRefusesItBe
 	case <-time.After(time.Minute):
 		t.Fatal("the room left the browser holding the replaced history connected")
 	}
-	if closed := reconnected.Closed(); closed == nil || closed.Code != contracts.DocumentTooLargeCloseCode || closed.Text != contracts.DocumentRebuiltCloseReason {
-		t.Fatalf("the room ended the browser holding the replaced history with %v, want %d %s", closed, contracts.DocumentTooLargeCloseCode, contracts.DocumentRebuiltCloseReason)
+	if closed := reconnected.Closed(); closed == nil || closed.Code != contracts.DocumentTooLargeCloseCode || closed.Text != contracts.DocumentUpdateRefusedCloseReason {
+		t.Fatalf("the room ended the browser holding the replaced history with %v, want %d %s", closed, contracts.DocumentTooLargeCloseCode, contracts.DocumentUpdateRefusedCloseReason)
 	}
 
 	fresh := docstest.Dial(t, url, alice, artifactID, crdt.New())
@@ -826,20 +832,23 @@ func TestABrowserHoldingAHistoryARebuildReplacedIsClosedThoughTheWalkRefusesItBe
 
 // A browser hands its whole state over whenever it connects - its structs and its whole delete
 // set, in its answer to the room's sync step 1 - so a document at the decode cap must take a
-// handoff of what it already holds, or no browser could reconnect to it. The room holds every
-// delete range of that state deleted already, and the struct total counts nothing for them
-// (deletedRuns.splitEnds), where two splits a range would take it past the cap. For each of the
-// two documents a room keeps at the cap, and for the long-edited one typed on to one keystroke
-// short of it, a browser that read the document hands its whole state back, and another
-// reconnects holding it: both are admitted and stay connected, the room's state as it was. A third
-// reconnects with an edit it typed offline, which deletes nothing and adds one struct with the two
-// splits it can cause: admitted and stored where the room's total leaves room for those, and
-// refused DOC_TOO_LARGE where it does not, the room as it was, so no handoff takes the room past
-// the cap. Measured on 2026-10-28, both documents at the cap load at 1,048,576 structs exactly,
-// the long-edited one's handoff carrying 1,345 delete ranges and the agent's 32,793; the
-// long-edited one took 33 s here, the one a keystroke short 30 s, and the agent's 229 s, which
-// runs with DISPATCH_REBUILD_AGENT_REWRITES=1, as its rebuild does. The row a keystroke short of
-// the cap types a million keystrokes of its own, where the rows before it share one fixture.
+// handoff of what it already holds, or no browser could reconnect to it. The room already holds
+// every struct and every delete range of that state, so the handoff integrates nothing and adds
+// nothing to its count. For each of the two documents a room keeps at the cap, and for the
+// long-edited one typed on to one keystroke short of it, a browser that read the document hands
+// its whole state back, and another reconnects holding it: both are admitted and stay connected,
+// the room's state as it was. A third reconnects with an edit it typed offline, which deletes
+// nothing and adds one struct with the two splits it can cause: every one of these rooms refuses
+// it and is left as it was, so no handoff and no edit takes a room past the cap. The reason
+// differs with what refuses it - the struct cap's DOC_TOO_LARGE where the room's own count
+// leaves no room for the edit, and the state cap's DOC_NEEDS_REBUILD where it does, since a
+// document at the decode cap holds more state than one room may (maxRoomStateBytes) and takes
+// no insert at all until it is rebuilt. Measured on 2026-10-28, both documents at the cap load
+// at 1,048,576 structs exactly, the long-edited one's handoff carrying 1,345 delete ranges and
+// the agent's 32,793; the long-edited one took 33 s here, the one a keystroke short 30 s, and
+// the agent's 229 s, which runs with DISPATCH_REBUILD_AGENT_REWRITES=1, as its rebuild does. The
+// row a keystroke short of the cap types a million keystrokes of its own, where the rows before
+// it share one fixture.
 //
 // Every row's fixture stands at the decode cap, each built by about a million ygo writes, so a
 // -race build leaves the test out (skipAtTheBoundsUnderRace): under -race on the development pod
@@ -857,8 +866,11 @@ func TestAWholeStateHandoffOfADocumentAtTheDecodeCapIsAdmitted(t *testing.T) {
 		name  string
 		gate  string
 		state func(t *testing.T) []byte
-		// edits is whether the room's total leaves room for the offline edit.
-		edits bool
+		// edits is whether the room's own struct count leaves room for the offline edit, and
+		// reason the close that edit meets: the struct cap's where it does not, the state cap's
+		// where it does.
+		edits  bool
+		reason string
 	}{
 		{"an agent's whole rewrites until the cap refused one", agentRewritesEnv, func(t *testing.T) []byte {
 			state, refusal := agentRewrittenState(t)
@@ -866,11 +878,11 @@ func TestAWholeStateHandoffOfADocumentAtTheDecodeCapIsAdmitted(t *testing.T) {
 				t.Fatalf("the agent's last write was refused with %v, want ErrDocumentTooLarge", refusal)
 			}
 			return state
-		}, false},
-		{"a long-edited document typed on until the cap", "", longEditedAtCapState, false},
+		}, false, contracts.DocumentTooLargeCloseReason},
+		{"a long-edited document typed on until the cap", "", longEditedAtCapState, false, contracts.DocumentTooLargeCloseReason},
 		{"a long-edited document typed on until a keystroke short of the cap", "", func(t *testing.T) []byte {
 			return longEditedTypedTo(t, maxUpdateItems-editAdds)
-		}, true},
+		}, true, contracts.DocumentNeedsRebuildCloseReason},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			if row.gate != "" && os.Getenv(row.gate) == "" {
@@ -883,7 +895,6 @@ func TestAWholeStateHandoffOfADocumentAtTheDecodeCapIsAdmitted(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 			t.Cleanup(server.Close)
 			url := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws/doc/" + artifactID + "?schema_version=" + strconv.Itoa(pmdoc.SchemaVersion())
-			ctx := context.Background()
 
 			reader := connectPeer(t, server.URL, artifactID, "alice")
 			awaitAnswer(t, reader, "the document near the cap")
@@ -945,27 +956,15 @@ func TestAWholeStateHandoffOfADocumentAtTheDecodeCapIsAdmitted(t *testing.T) {
 			into := firstText(editing.GetXmlFragment(fragmentName))
 			docstest.Transact(editing, func(txn *crdt.Transaction) { into.Insert(txn, into.Len(), "offline", nil) })
 			edited := docstest.Dial(t, url, http.Header{"X-Dispatch-User": []string{"carol"}}, artifactID, editing)
-			if !row.edits {
-				select {
-				case <-edited.Ended:
-				case <-time.After(time.Minute):
-					t.Fatal("the room left connected a browser whose edit would take it past the cap")
-				}
-				if closed := edited.Closed(); closed == nil || closed.Code != contracts.DocumentTooLargeCloseCode || closed.Text != contracts.DocumentTooLargeCloseReason {
-					t.Fatalf("the room ended the browser whose edit would take it past the cap with %v, want %d %s", closed, contracts.DocumentTooLargeCloseCode, contracts.DocumentTooLargeCloseReason)
-				}
-				unchanged("the refused edit")
-				return
+			select {
+			case <-edited.Ended:
+			case <-time.After(time.Minute):
+				t.Fatal("the room left connected a browser whose edit it cannot take")
 			}
-			awaitAnswer(t, edited, "the document to a browser with an edit")
-			confirmed(edited, "the browser that reconnected with an edit")
-			waitFor(t, 30*time.Second, "the offline edit to reach the document", func() bool {
-				text, err := service.Text(ctx, artifactID)
-				return err == nil && strings.Contains(text, "offline")
-			})
-			if after := countRoomStructs(live); after > maxUpdateItems {
-				t.Fatalf("the edit left the room at %d structs, past the %d cap", after, maxUpdateItems)
+			if closed := edited.Closed(); closed == nil || closed.Code != contracts.DocumentTooLargeCloseCode || closed.Text != row.reason {
+				t.Fatalf("the room ended the browser carrying the offline edit with %v, want %d %s", closed, contracts.DocumentTooLargeCloseCode, row.reason)
 			}
+			unchanged("the refused edit")
 		})
 	}
 }
@@ -975,9 +974,14 @@ func TestAWholeStateHandoffOfADocumentAtTheDecodeCapIsAdmitted(t *testing.T) {
 // whatever follows that group: the hook reads the update's header alone (crdt.ParseUpdateMeta),
 // which reports the lowest clock each client's structs start at, and never a struct of it. A
 // group of a retired client from its retired clock on - what that client wrote after the
-// rebuild, which a browser of the rebuilt document can hold - is applied; and a message whose
-// header will not read at all is refused DOC_UPDATE_REFUSED before any apply, the one other
-// refusal the hook makes without applying, since ygo would refuse the same bytes.
+// rebuild, which a browser of the rebuilt document can hold - is applied.
+//
+// A message whose header will not read at all refuses nothing here and falls through to the
+// apply, which judges the bytes itself: ygo's own decoder refuses the same bytes, rolls the
+// whole apply back and the hook answers DOC_UPDATE_REFUSED. Refusing it here instead would
+// close an honest whole-state handoff of a document at the decode cap, whose header carries
+// more structs than one update may decode, with the wrong reason. Either way the room is left
+// byte for byte as it was.
 func TestAGroupOfARetiredClientBelowItsClockIsClosedAndAHeaderThatWillNotReadIsRefused(t *testing.T) {
 	retired := map[crdt.ClientID]uint64{123: 5}
 	service, room, replica := rebuiltRoom(t, "# Rebuilt\n\nOne paragraph of ordinary prose.\n", retired)
@@ -987,25 +991,30 @@ func TestAGroupOfARetiredClientBelowItsClockIsClosedAndAHeaderThatWillNotReadIsR
 	for _, row := range []struct {
 		name   string
 		update []byte
-		// reason is the close the hook answers with, empty for a message it applies. Every one
-		// of these is refused before the apply.
+		// reason is the close the hook answers with, empty for a message it applies.
 		reason string
+		// afterApply is whether the hook reached the apply: a header the retired-client scan
+		// cannot read is judged by the apply and by nothing before it.
+		afterApply bool
 	}{
-		{name: "the history's header past the cap", update: own(2).group(maxUpdateItems, 123, 0).done(), reason: contracts.DocumentUpdateRefusedCloseReason},
-		{name: "a struct of the history cut short", update: own(2).group(1, 123, 0).done(), reason: contracts.DocumentUpdateRefusedCloseReason},
+		{name: "the history's header past the cap", update: own(2).group(maxUpdateItems, 123, 0).done(), reason: contracts.DocumentUpdateRefusedCloseReason, afterApply: true},
+		{name: "a struct of the history cut short", update: own(2).group(1, 123, 0).done(), reason: contracts.DocumentUpdateRefusedCloseReason, afterApply: true},
 		{name: "the history the header reads whole", update: own(2).group(1, 123, 0).gc(5).noDeletes(), reason: contracts.DocumentRebuiltCloseReason},
 		{name: "a retired client's group from its retired clock on", update: own(2).group(1, 123, 5).gc(1).noDeletes()},
-		{name: "another client's header that will not read", update: own(2).group(maxUpdateItems, 456, 0).done(), reason: contracts.DocumentUpdateRefusedCloseReason},
+		{name: "another client's header that will not read", update: own(2).group(maxUpdateItems, 456, 0).done(), reason: contracts.DocumentUpdateRefusedCloseReason, afterApply: true},
 	} {
+		before := crdt.EncodeStateAsUpdateV1(room, nil)
 		err, called := weighInto(service, room, row.update)
 		var refusal *websocket.PeerClose
 		closed := errors.As(err, &refusal) && refusal.Code == contracts.DocumentTooLargeCloseCode
 		switch {
 		case row.reason == "" && (err != nil || !called):
-			t.Errorf("%s was answered %v (applied %t), want it applied", row.name, err, called)
-		case row.reason != "" && (!closed || refusal.Reason != row.reason || called):
-			t.Errorf("%s was answered %v (applied %t), want it closed %d %q and never applied",
-				row.name, err, called, contracts.DocumentTooLargeCloseCode, row.reason)
+			t.Errorf("%s was answered %v (the apply ran %t), want it applied", row.name, err, called)
+		case row.reason != "" && (!closed || refusal.Reason != row.reason || called != row.afterApply):
+			t.Errorf("%s was answered %v (the apply ran %t), want it closed %d %q with the apply run %t",
+				row.name, err, called, contracts.DocumentTooLargeCloseCode, row.reason, row.afterApply)
+		case row.reason != "" && !bytes.Equal(crdt.EncodeStateAsUpdateV1(room, nil), before):
+			t.Errorf("%s changed the room though it was refused", row.name)
 		}
 	}
 	runtime.KeepAlive(replica)
