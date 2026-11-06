@@ -82,11 +82,19 @@ func (s *Service) sweepRooms() {
 		state := s.lockExistingState(room)
 		if state == nil {
 			pending = true
+			slog.Info("dispatch: the room budget's sweep found no state for a charged room",
+				"room", room)
 			continue
 		}
 		if s.srv.GetDoc(room) == nil || !s.unusedLocked(state) {
 			// Left as it is: unlockState's look at the budget would only ask for this sweep again.
+			// The line names what holds it, which is the one reading that says why a sweep over a
+			// budget past its limit closed nothing: a browser still connected, a browser gone
+			// whose handler has not forgotten it, the room's own work (a settlement, a writer, an
+			// append), or no room at all (INFRA-179).
 			pending = pending || state.onlyDepartedLocked()
+			slog.Info("dispatch: the room budget's sweep left a charged room open",
+				"room", room, "held_by", s.holdingLocked(state), "pending", pending)
 			state.mu.Unlock()
 			continue
 		}

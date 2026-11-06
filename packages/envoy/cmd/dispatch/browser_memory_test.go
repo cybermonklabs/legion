@@ -484,15 +484,14 @@ func TestAScanFrameIsRefusedWholeAndTheRoomIsAsItWas(t *testing.T) {
 
 // A room's scan total is re-measured by each load, over a real document socket of a real server:
 // a room takes a run of browsers' frames, each the longest its own bytes are allowed to scan
-// (scanCeilingForTest, about twenty-four thousand items), until what is left of the room's
-// million-item total is less than one such frame; the frame that meets that is refused
-// DOC_TOO_TANGLED at an allowance of what is left, which the server names in the line it logs
-// for the refusal (scanRefusalLine). The server stops, which flushes the room
-// to the store, and a new server loads the room from what it stored; the same frame is
-// refused there too, at an allowance no smaller than the first's - a load never starts a room past
-// what the room had come to - and the total the reloaded room started from is exactly what its
-// stored state re-scans (docs.RescanForTest), which is what that load's own decode cost and what
-// the total is there to bound (roomScans.rescanned).
+// (scanCeilingForTest, about twenty-seven thousand items), until what is left of the room's
+// million-item total is less than one such frame; the frame that meets that is refused at an
+// allowance of what is left, which the server names in the line it logs for the refusal
+// (scanRefusalLine). The server stops, which flushes the room to the store, and a new server
+// loads the room from what it stored; the same frame then applies, because the reloaded room's
+// total is what its stored state re-scans (docs.RescanForTest) and not the one the room's own
+// applies came to. That re-scan is what the load's own decode cost, and it is what the total is
+// there to bound (roomScans.rescanned).
 //
 // That re-scan is not the sum of what the room's own applies scanned, and at sjawhar/ygo
 // v1.55.1-sami.1 it is the smaller of the two for a shape like this one: the room's browsers scan
@@ -609,21 +608,26 @@ func TestTheRoomScanTotalIsReMeasuredByEachLoadOverARealSocket(t *testing.T) {
 		t.Fatalf("the store holds a %d-byte state, want the %d-byte state the room held after the run of frames", len(storedState), len(after))
 	}
 	again := memory.start(t)
-	reloaded, reloadedUsed := refuse(again, 1)
-	t.Logf("the room had scanned %d items and was refused at %d left; reloaded, it had scanned %d and was refused at %d",
-		used, left, reloadedUsed, reloaded)
-	if reloaded < left {
-		t.Errorf("the reloaded room refused the frame at an allowance of %d, under the %d the room had left before the reload: a load must never start a room past what the room had come to",
-			reloaded, left)
-	}
+	// The reloaded room re-measures its total from the stored state rather than carrying the
+	// one its own applies came to, and for this shape the re-scan is the smaller of the two: a
+	// decode of the whole state integrates the clients' groups by descending client, and each
+	// frame's client is above the one before it, so the decode takes the frames in the reverse
+	// of the order the room applied them and scans far less. So the frame the room refused
+	// before the reload applies after it, and that is what the re-measurement means. It is read
+	// here rather than through a second refusal, which the reloaded room has no reason to make.
 	rescanned, err := docs.RescanForTest(storedState)
 	if err != nil {
 		t.Fatalf("re-scan the stored state: %v", err)
 	}
-	if int64(reloadedUsed) != rescanned {
-		t.Errorf("the reloaded room started at %d scans and a re-scan of its %d-byte stored state counts %d, want the load's total to be that re-scan",
-			reloadedUsed, len(storedState), rescanned)
+	reopened := again.openBrowser(t, room)
+	t.Cleanup(reopened.leave)
+	t.Logf("before the reload the room had scanned %d items and refused the frame at %d left; its %d-byte stored state re-scans %d items",
+		used, left, len(storedState), rescanned)
+	if rescanned >= int64(used) {
+		t.Errorf("the stored state re-scans %d items, no fewer than the %d the room's own applies scanned: a load that started the room there would leave it no better off than the room it replaced",
+			rescanned, used)
 	}
+	requireApplied(t, reopened, third, fmt.Sprintf("the frame of %d scans the room refused before the reload", thirdScans))
 }
 
 // scanFramePast is scanFrame of client with the fewest items whose scans pass past in a document
@@ -1160,7 +1164,7 @@ func TestTheRoomBudgetRefusesWhereItsOwnArithmeticSays(t *testing.T) {
 			requireBrowserForgotten(t, server, leaving.room, 1)
 			opened, refused := admit(t)
 			if refused != nil {
-				t.Fatalf("the browser asking just after another left was refused (%v), want it admitted once the room that browser left was closed", refused)
+				t.Fatalf("the browser asking just after another left was refused (%v), want it admitted once the room that browser left was closed:\n%s", refused, server.output.tail())
 			}
 			stayed = append(stayed, opened)
 			if closes := closedWithin(len(left)); len(closes) != len(left) || closes[len(closes)-1].room != leaving.room {
@@ -1559,7 +1563,7 @@ func TestTheRoomBudgetFollowsGrowingRoomsAndClosesTheGoneOnesFirst(t *testing.T)
 		}
 	}
 	if len(closes) != len(left) || len(left) != rooms/4 {
-		t.Errorf("the budget closed %d rooms whose browsers went, of the %d whose browsers left, want each of the %d rooms of every fourth browser once", len(closes), len(left), rooms/4)
+		t.Errorf("the budget closed %d rooms whose browsers went, of the %d whose browsers left, want each of the %d rooms of every fourth browser once:\n%s", len(closes), len(left), rooms/4, server.output.tail())
 	}
 	for _, room := range left {
 		requireRoomAbsent(t, server, room, "a room whose browsers went, once the growth had ended")

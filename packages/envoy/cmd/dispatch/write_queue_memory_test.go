@@ -764,6 +764,14 @@ func TestAThrottledReaderIsNotClosedByTheWriteQueueBudget(t *testing.T) {
 		t.Logf("the socket that never reads asked for %d whole states of %d (%v) and nothing closed it: its queue never reached the %d-byte budget",
 			sent, floodFramesPerSocket, asked, peerWriteQueueBytesForTest)
 	}
+	// The flood is ended here rather than left for the rest of the drive. Nothing closes the
+	// silent socket now that its queue never reaches the budget, so its ninety-six unanswered
+	// asks would have the server writing whole states at it for the two minutes the slow
+	// browser spends draining - and the slow browser is what this drive is about. Left
+	// running, it read 63 frames in that window and the server dropped it with a 1006
+	// (INFRA-179, measured 2026-11-06). The silent socket's point is made the moment its queue
+	// has been weighed.
+	_ = silent.connection.Close()
 
 	// The slow browser drains at its own rate until it holds everything the room does.
 	want := canonicalState(t, typing.state(t))
