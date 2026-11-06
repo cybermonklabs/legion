@@ -38,14 +38,14 @@ func TestTheBootLineNamesTheBoundsItsGoMemoryLimitGives(t *testing.T) {
 			"room_budget_bytes":         17_179_869_185,
 			"document_read_cache_bytes": 268_435_456,
 			"load_slots":                16,
-			"peer_write_queue_bytes":    62_914_560,
+			"peer_write_queue_bytes":    73_400_320,
 		}},
 		{"the 4 GiB pod the figures are calibrated on", 3_865_470_566, map[string]int64{
 			"go_memory_limit_bytes":     3_865_470_566,
 			"room_budget_bytes":         2_147_483_648,
 			"document_read_cache_bytes": 268_435_456,
 			"load_slots":                1,
-			"peer_write_queue_bytes":    62_914_560,
+			"peer_write_queue_bytes":    73_400_320,
 		}},
 	} {
 		t.Run(row.name, func(t *testing.T) {

@@ -28,11 +28,14 @@ import (
 
 const (
 	// peerWriteQueueBytesForTest mirrors peerWriteQueueBytes
-	// (internal/dispatch/docs/peer_update.go), the bytes one socket may hold queued and not yet
-	// taken off its queue. No drive takes the mirror on trust: the line ygo logs for every socket
-	// it closes for the budget names the budget it was closed against, and each drive fails
-	// unless that is this number.
-	peerWriteQueueBytesForTest = 60 << 20
+	// (internal/dispatch/docs/write_queue.go), the bytes one socket may hold queued and not yet
+	// taken off its queue: 70 MiB, the 64 MiB message floor a room may send one socket in one
+	// frame plus the 6,291,456 bytes of lag the budget allows beyond one such frame. It is the
+	// floor and not a figure of its own, so that no honest reader is closed for a frame it
+	// could not have avoided (INFRA-179). No drive takes the mirror on trust: the line ygo logs
+	// for every socket it closes for the budget names the budget it was closed against, and
+	// each drive fails unless that is this number.
+	peerWriteQueueBytesForTest = 70 << 20
 	// writeQueueFrameCap mirrors ygo's default PeerWriteQueueSize, 512 frames whatever their size
 	// (defaultPeerWriteQueueSize, sjawhar/ygo v1.55.1-sami.1, provider/websocket/server.go:224-228):
 	// the only bound on a peer's queue before the budget. The single-socket drive asks for that many
@@ -371,6 +374,12 @@ func runOfWords(t *testing.T, size int) string {
 // pod's 4,096 at its peak, and it held 1,570,798,216 to 2,141,035,272 bytes of what its
 // 3,865,470,566-byte limit bounds, 1.6 GiB under it at the most, with VmRSS at 1,589 to 2,096
 // MiB.
+//
+// Those figures were measured while a socket's budget was 60 MiB. It is 70 MiB now, the 64 MiB
+// message floor plus the lag the budget has always allowed beyond one such frame
+// (peerWriteQueueBytesForTest), so twenty sockets hold proportionally more before the budget
+// closes them. What holds this drive is its arithmetic against that constant, not the bytes
+// quoted above, which no assertion reads.
 //
 // Run on 2026-10-31 with the budget at zero, the drive fails on every socket: not one of the
 // twenty was closed by a budget within the two minutes it waits.
