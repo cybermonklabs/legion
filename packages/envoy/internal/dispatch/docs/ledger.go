@@ -622,10 +622,18 @@ func (l *Ledger) publish() {
 }
 
 // forkSlot is this transaction's slot of the pod's load concurrency, made on its first live
-// write (forks).
-func (l *Ledger) forkSlot() *forkSlot {
+// write (forks). A caller already holding one hands it over in ctx, and the transaction's forks
+// take that one rather than a second: a document socket's admission holds a slot from before
+// the budget weighs it until its room has loaded (ServeHTTP), and reads the document inside it,
+// so a fork made under that read would wait for a slot its own holder will not give back until
+// the read returns - at the calibration's one slot, for ever.
+func (l *Ledger) forkSlot(ctx context.Context) *forkSlot {
 	if l.forks == nil {
-		l.forks = &forkSlot{slot: newLoadSlot()}
+		held, carried := ctx.Value(loadSlotKey{}).(*loadSlot)
+		if !carried {
+			held = newLoadSlot()
+		}
+		l.forks = &forkSlot{slot: held, carried: carried}
 	}
 	return l.forks
 }

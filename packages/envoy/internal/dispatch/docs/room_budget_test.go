@@ -58,7 +58,7 @@ func TestTheRoomBudgetChargesARoomItsTrackedStateAtBothCopies(t *testing.T) {
 	other := budget.load("other", loaded)
 	budget.limit = other.weight - 1
 	ctx := context.Background()
-	if err := budget.refusal(ctx, time.Now().Add(time.Hour), 0); !errors.Is(err, errRoomBudgetFull) {
+	if _, err := budget.refusal(ctx, time.Now().Add(time.Hour), "room", 0); !errors.Is(err, errRoomBudgetFull) {
 		t.Fatalf("an admission past the limit was answered %v, want it refused", err)
 	}
 	if count := waiting(budget); count != 0 {
@@ -96,10 +96,21 @@ func TestAnAdmissionIsWeighedWithTheRoomItIsAboutToLoad(t *testing.T) {
 	const stored = 1_000_000
 	budget := &roomBudget{limit: roomWeight(stored) + roomWeight(stored)/2}
 	ctx := context.Background()
-	if err := budget.refusal(ctx, time.Now(), roomWeight(stored)); err != nil {
+	first, err := budget.refusal(ctx, time.Now(), "first", roomWeight(stored))
+	if err != nil {
 		t.Fatalf("the first admission was answered %v on an empty budget with room for it", err)
 	}
+	// A second socket to the same document shares that reservation rather than holding a second:
+	// one load serves both.
+	shared, err := budget.refusal(ctx, time.Now(), "first", roomWeight(stored))
+	if err != nil || shared.weight != 0 || budget.reserved != roomWeight(stored) {
+		t.Fatalf("a second admission to the same document was answered %v holding %d, with %d reserved; want it to share the first's %d",
+			err, shared.weight, budget.reserved, roomWeight(stored))
+	}
 	charge := budget.load("first", stored)
+	if budget.reserved != 0 || !first.settled || !shared.settled {
+		t.Fatalf("the room's load left %d bytes reserved, want every reservation of it settled", budget.reserved)
+	}
 	if charge == nil || budget.used != roomWeight(stored) {
 		t.Fatalf("the budget holds %d bytes once the first room loaded, want %d", budget.used, roomWeight(stored))
 	}
@@ -109,8 +120,8 @@ func TestAnAdmissionIsWeighedWithTheRoomItIsAboutToLoad(t *testing.T) {
 	if budget.used > budget.limit {
 		t.Fatalf("the charges are %d of %d bytes, so an admission weighed on the charges alone would pass", budget.used, budget.limit)
 	}
-	err := budget.refusal(ctx, time.Now(), roomWeight(stored))
-	if !errors.Is(err, errRoomBudgetFull) {
+	refused, err := budget.refusal(ctx, time.Now(), "second", roomWeight(stored))
+	if refused != nil || !errors.Is(err, errRoomBudgetFull) {
 		t.Fatalf("an admission whose room would cross the limit was answered %v, want it refused", err)
 	}
 	if count := waiting(budget); count != 0 {
@@ -118,8 +129,19 @@ func TestAnAdmissionIsWeighedWithTheRoomItIsAboutToLoad(t *testing.T) {
 	}
 	// A room small enough to fit what is left is admitted, and a room already charged is joined
 	// rather than weighed at all.
-	if err := budget.refusal(ctx, time.Now(), roomWeight(stored/4)); err != nil {
+	small, err := budget.refusal(ctx, time.Now(), "small", roomWeight(stored/4))
+	if err != nil {
 		t.Fatalf("an admission for a room that fits what is left was answered %v", err)
+	}
+	// Its reservation is weighed beside the charges: with it standing, a room of half the first
+	// one no longer fits, though the charges alone would leave room for it.
+	if _, err := budget.refusal(ctx, time.Now(), "another", roomWeight(stored/2)); !errors.Is(err, errRoomBudgetFull) {
+		t.Fatalf("an admission weighed beside a standing reservation was answered %v, want it refused", err)
+	}
+	// A reservation released by a socket that goes before its room loads leaves nothing behind.
+	budget.release(small)
+	if budget.reserved != 0 {
+		t.Fatalf("a released reservation left %d bytes reserved, want none", budget.reserved)
 	}
 	if !budget.join("first") {
 		t.Fatal("a socket joining the room the budget already charges was not joined")
@@ -159,7 +181,7 @@ func TestTheRoomBudgetsArithmetic(t *testing.T) {
 			budget := &roomBudget{limit: roomBudgetBytes}
 			admitted := int64(0)
 			for {
-				if err := budget.refusal(context.Background(), time.Now(), shape.weight); errors.Is(err, errRoomBudgetFull) {
+				if _, err := budget.refusal(context.Background(), time.Now(), "room", shape.weight); errors.Is(err, errRoomBudgetFull) {
 					break
 				} else if err != nil {
 					t.Fatalf("admit room %d: %v", admitted+1, err)
@@ -227,7 +249,7 @@ func TestTheRoomBudgetRefusesAnAdmissionOnlyOnceItsSweepHasEnded(t *testing.T) {
 	budget.load("held", 20)
 	<-sweeps
 	answered := make(chan error, 1)
-	go func() { answered <- budget.refusal(ctx, time.Now().Add(time.Minute), 0) }()
+	go func() { answered <- second(budget.refusal(ctx, time.Now().Add(time.Minute), "room", 0)) }()
 	waitFor(t, 5*time.Second, "the admission to wait", func() bool { return waiting(budget) == 1 })
 	select {
 	case err := <-answered:
@@ -259,7 +281,7 @@ func TestTheRoomBudgetRefusesAnAdmissionOnlyOnceItsSweepHasEnded(t *testing.T) {
 	}
 
 	passed := make(chan error, 1)
-	go func() { passed <- budget.refusal(ctx, time.Now().Add(time.Minute), 0) }()
+	go func() { passed <- second(budget.refusal(ctx, time.Now().Add(time.Minute), "room", 0)) }()
 	<-sweeps
 	waitFor(t, 5*time.Second, "the look past the limit to wait", func() bool { return waiting(budget) == 1 })
 	budget.swept(true)
@@ -288,7 +310,7 @@ func TestTheRoomBudgetKeepsEveryWaitingAdmissionAcrossASweep(t *testing.T) {
 	budget, sweeps := fakeSwept(roomWeight(20) - 1)
 	budget.load("held", 20)
 	admitted := make(chan error, 2)
-	admit := func() { admitted <- budget.refusal(ctx, deadline, 0) }
+	admit := func() { admitted <- second(budget.refusal(ctx, deadline, "room", 0)) }
 	go admit()
 	<-sweeps
 	waitFor(t, 5*time.Second, "the first admission to wait", func() bool { return waiting(budget) == 1 })
@@ -610,7 +632,9 @@ func TestTheRoomBudgetAdmissionWaitsForARoomWhoseBrowserJustLeft(t *testing.T) {
 	t.Cleanup(func() { service.SetRoomBudgetForTest(0) })
 
 	answered := make(chan error, 1)
-	go func() { answered <- service.budget.refusal(ctx, time.Now().Add(service.admissionWait), 0) }()
+	go func() {
+		answered <- second(service.budget.refusal(ctx, time.Now().Add(service.admissionWait), "room", 0))
+	}()
 	waitFor(t, 5*time.Second, "the admission to wait", func() bool { return waiting(&service.budget) == 1 })
 	select {
 	case err := <-answered:
@@ -649,7 +673,7 @@ func TestTheRoomBudgetAdmissionWaitsForARoomWhoseBrowserJustLeft(t *testing.T) {
 	service.SetRoomBudgetForTest(budgetUsed(service) - 1)
 	service.admissionWait = 500 * time.Millisecond
 	started := time.Now()
-	err := service.budget.refusal(ctx, time.Now().Add(service.admissionWait), 0)
+	_, err := service.budget.refusal(ctx, time.Now().Add(service.admissionWait), "room", 0)
 	if !errors.Is(err, errRoomBudgetFull) {
 		t.Fatalf("an admission nothing could make room for was answered %v, want it refused", err)
 	}
@@ -726,7 +750,9 @@ func TestTheRoomBudgetAdmitsABrowserOnceTheRoomAnEditingBrowserLeftIsClosed(t *t
 	t.Cleanup(func() { service.SetRoomBudgetForTest(0) })
 
 	answered := make(chan error, 1)
-	go func() { answered <- service.budget.refusal(ctx, time.Now().Add(service.admissionWait), 0) }()
+	go func() {
+		answered <- second(service.budget.refusal(ctx, time.Now().Add(service.admissionWait), "room", 0))
+	}()
 	waitFor(t, 5*time.Second, "the admission to wait", func() bool { return waiting(&service.budget) == 1 })
 	select {
 	case err := <-answered:
@@ -782,7 +808,9 @@ func TestTheRoomBudgetAdmissionWaitsForARoomAnApplyIsInside(t *testing.T) {
 	t.Cleanup(func() { service.SetRoomBudgetForTest(0) })
 
 	answered := make(chan error, 1)
-	go func() { answered <- service.budget.refusal(ctx, time.Now().Add(service.admissionWait), 0) }()
+	go func() {
+		answered <- second(service.budget.refusal(ctx, time.Now().Add(service.admissionWait), "room", 0))
+	}()
 	waitFor(t, 5*time.Second, "the admission to wait", func() bool { return waiting(&service.budget) == 1 })
 	select {
 	case err := <-answered:
@@ -1183,3 +1211,7 @@ func renderedLive(t *testing.T, service *Service, room string) string {
 	}
 	return markdown
 }
+
+// second is the error of a two-value answer, for a goroutine that sends only the error on a
+// channel (roomBudget.refusal, whose reservation such a test does not hold).
+func second(_ *roomReservation, err error) error { return err }

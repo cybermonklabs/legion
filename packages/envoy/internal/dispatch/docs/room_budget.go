@@ -104,6 +104,10 @@ type roomBudget struct {
 	// whose room would cross the limit waits for a close rather than being refused while a room
 	// nothing holds is still open.
 	wanted int64
+	// reserved is what the admissions already weighed hold for rooms whose loads have not run
+	// yet (roomReservation), which the budget weighs beside the charges: a room's reservation
+	// is released when its load charges the room, or when the socket that holds it goes.
+	reserved int64
 	// pending is whether the last sweep to end left a charged room that something other than a
 	// connected browser holds - a settlement, a writer, an append - and that will be closable once
 	// that ends; an admission still refused when no sweep runs and none is pending is refused at
@@ -130,6 +134,10 @@ type roomBudget struct {
 // instance's unload has not fired yet when its successor loads.
 type budgetedRoom struct {
 	charges []*roomCharge
+	// reservations is what the sockets admitted to this room hold for the load that has not
+	// run yet (roomReservation): the first admission's weight, and nothing for each later one,
+	// since one load serves them all. The room's load settles every one of them.
+	reservations []*roomReservation
 }
 
 // join reports whether room has a loaded instance the budget charges, which a socket joins
@@ -162,9 +170,19 @@ func (b *roomBudget) joinedLocked(room string) bool {
 	return true
 }
 
-// refusal is a budget with no room for an admission refusing it, once the sweeps the admission
-// starts have closed what they could before deadline or ctx ends (await); nil where there is
-// room, at once or by then.
+// roomReservation is the weight a socket's admission holds for the room it is about to load,
+// from the weighing until that room's load charges it (roomBudget.load) or the socket goes
+// (release). It is what keeps two admissions weighed at the same moment from each reading the
+// same headroom.
+type roomReservation struct {
+	room    string
+	weight  int64
+	settled bool
+}
+
+// refusal weighs an admission and holds what it needs until its room has loaded: it answers a
+// reservation, or a budget with no room for the admission refuses it, once the sweeps the
+// admission starts have closed what they could before deadline or ctx ends (await).
 //
 // weight is the room the admission is about to load, which the budget does not charge yet: the
 // bytes of the stored state the admission has already read and decoded for it (ServeHTTP's
@@ -176,19 +194,59 @@ func (b *roomBudget) joinedLocked(room string) bool {
 // read-only. Measured before this: fifty browsers at once, twenty-seven admitted, and every one
 // of the twenty-seven refused on its first edit (INFRA-179).
 //
-// It is not the reservation the cut deleted: nothing is cached, no count is read for it and no
-// flight is held. It is one length the admission has in hand, weighed once, and a room already
-// resident is weighed at nothing, since no load follows it. While the admission waits, what it
-// needs is wanted, so the sweeps close rooms for it as well as for the limit (short).
-func (b *roomBudget) refusal(ctx context.Context, deadline time.Time, weight int64) error {
+// The reservation is what makes it hold for a burst rather than for one: every admission in
+// flight is weighed against the others' rooms as well as against the rooms already open. Two
+// admissions to the SAME document reserve its weight once - the second shares the first's, at a
+// weight of nothing - since one load serves both. It is not the reservation the cut deleted:
+// nothing is cached, no count is read for it and no flight is held, only a length the admission
+// already holds. While an admission waits, what it needs is wanted, so the sweeps close rooms
+// for it as well as for the limit (short).
+func (b *roomBudget) refusal(ctx context.Context, deadline time.Time, room string, weight int64) (*roomReservation, error) {
 	b.mu.Lock()
 	defer b.unlock()
+	if entry := b.rooms[room]; entry != nil && len(entry.reservations) > 0 {
+		weight = 0
+	}
 	b.wanted += weight
 	defer func() { b.wanted -= weight }()
-	if b.await(ctx, deadline, func() bool { return b.used+weight <= b.limit }) {
-		return nil
+	if !b.await(ctx, deadline, func() bool { return b.used+b.reserved+weight <= b.limit }) {
+		return nil, fmt.Errorf("%w: %d charged and %d reserved of %d bytes, and the room asks %d",
+			errRoomBudgetFull, b.used, b.reserved, b.limit, weight)
 	}
-	return fmt.Errorf("%w: %d of %d bytes are charged and the room asks %d", errRoomBudgetFull, b.used, b.limit, weight)
+	reservation := &roomReservation{room: room, weight: weight}
+	entry := b.entry(room)
+	entry.reservations = append(entry.reservations, reservation)
+	b.reserved += weight
+	return reservation, nil
+}
+
+// release gives a reservation back, unless its room's load has already settled it. A nil
+// reservation releases nothing, which is what a socket that joined a charged room holds.
+func (b *roomBudget) release(reservation *roomReservation) {
+	if reservation == nil {
+		return
+	}
+	b.mu.Lock()
+	defer b.unlock()
+	b.settleLocked(reservation)
+}
+
+// settleLocked drops reservation from its room and from the reserved total, once. Its caller
+// holds mu.
+func (b *roomBudget) settleLocked(reservation *roomReservation) {
+	if reservation.settled {
+		return
+	}
+	reservation.settled = true
+	b.reserved -= reservation.weight
+	entry := b.rooms[reservation.room]
+	if entry == nil {
+		return
+	}
+	entry.reservations = slices.DeleteFunc(entry.reservations, func(held *roomReservation) bool {
+		return held == reservation
+	})
+	b.dropIfEmptyLocked(reservation.room, entry)
 }
 
 // await waits until fits reports room for an admission, and reports whether it does. Its caller
@@ -362,6 +420,11 @@ func (b *roomBudget) load(room string, stateBytes int64) *roomCharge {
 	entry := b.entry(room)
 	charge := &roomCharge{budget: b, room: room}
 	entry.charges = append(entry.charges, charge)
+	// The room is charged now, so every admission waiting for this load stops holding its
+	// weight: the charge is the real figure and the reservation was its estimate.
+	for _, reservation := range slices.Clone(entry.reservations) {
+		b.settleLocked(reservation)
+	}
 	b.reweighLocked(charge, roomWeight(stateBytes))
 	if b.opening == room && b.used > b.limit {
 		charge.closeOnceUnused = true
@@ -445,7 +508,7 @@ func (b *roomBudget) unmarkLocked(charge *roomCharge) {
 func (b *roomBudget) short() bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.used+b.wanted > b.limit
+	return b.used+b.reserved+b.wanted > b.limit
 }
 
 // figures is what the rooms' charges come to and the limit, for a sweep to log what each room it
@@ -598,7 +661,7 @@ func (b *roomBudget) entry(room string) *budgetedRoom {
 }
 
 func (b *roomBudget) dropIfEmptyLocked(room string, entry *budgetedRoom) {
-	if len(entry.charges) == 0 {
+	if len(entry.charges) == 0 && len(entry.reservations) == 0 {
 		delete(b.rooms, room)
 	}
 }

@@ -300,7 +300,7 @@ func (s *Service) joinLiveWrite(ctx context.Context, ledger *Ledger, artifactID 
 // A settlement that got past its supersession check before the write opened commits its own work,
 // and the one the write arms then finds nothing new.
 func (s *Service) openLiveWrite(ctx context.Context, ledger *Ledger, artifactID string) (*liveWrite, error) {
-	write := &liveWrite{artifactID: artifactID, clientID: crdt.NewClientID(), slot: ledger.forkSlot(), done: make(chan struct{})}
+	write := &liveWrite{artifactID: artifactID, clientID: crdt.NewClientID(), slot: ledger.forkSlot(ctx), done: make(chan struct{})}
 	for {
 		state := s.lockState(artifactID)
 		if state.reloading {
@@ -401,6 +401,11 @@ type forkSlot struct {
 	// forks is how many of the transaction's open forks hold the slot. It is given back once
 	// none does, and left as it is while one remains.
 	forks int
+	// carried is set where the slot is the caller's, handed over in its context rather than
+	// taken here (Ledger.forkSlot): a document socket's admission holds one across its read of
+	// the document, and a fork made under that read borrows it. The borrower never gives it
+	// back - its holder does, once the room it is admitting has loaded.
+	carried bool
 }
 
 // carriedBy is ctx carrying the transaction's load slot, so every decode and copy the write
@@ -447,14 +452,15 @@ func (w *liveWrite) coverFork(ctx context.Context) error {
 }
 
 // giveFork drops this write's share of the transaction's slot (releaseFork), and gives the slot
-// back once no fork of the transaction holds it.
+// back once no fork of the transaction holds it. A slot the transaction borrowed from its
+// caller is never given back here: its holder gives it back (forkSlot.carried).
 func (w *liveWrite) giveFork() {
 	if w.slot == nil || !w.holdsSlot {
 		return
 	}
 	w.slot.forks--
 	w.holdsSlot = false
-	if w.slot.forks == 0 {
+	if w.slot.forks == 0 && !w.slot.carried {
 		w.slot.slot.release()
 	}
 }
