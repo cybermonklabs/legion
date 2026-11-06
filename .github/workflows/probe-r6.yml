@@ -1,0 +1,75 @@
+name: probe-r6
+on:
+  push:
+    branches: ['probe/infra1066-r6']
+permissions:
+  checks: write
+jobs:
+  ci-ok:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Refuse a re-run attempt, as the verdict job's step does
+        if: ${{ github.run_attempt != '1' }}
+        env:
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          echo "::error::ci-ok is failure on attempt $RUN_ATTEMPT of this merge-group run, whatever the jobs of it did: a merge group is tested once."
+          exit 1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Wait for the other run's ci-ok job to conclude
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for _ in $(seq 1 90); do
+            state=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?check_name=ci-ok&filter=all&per_page=100" \
+              --jq '[.check_runs[] | select(.id != ${{ job.check_run_id }}) | "\(.id) \(.status) \(.external_id)"] | join(" | ")')
+            echo "others: $state"
+            case $state in *completed*) exit 0 ;; esac
+            sleep 10
+          done
+          echo "::error::the other run's ci-ok job never concluded"; exit 1
+      - name: Post a legacy ci-ok, with no external_id at all
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api -X POST "repos/$GITHUB_REPOSITORY/check-runs" -f name=ci-ok -f head_sha="$GITHUB_SHA" \
+            -f status=completed -f conclusion=failure \
+            -f 'output[title]=Every job changes selected succeeded' \
+            -f 'output[summary]=INFRA-1066 k28: the shape ci-ok-report.sh posted before the marker existed.' \
+            --jq '"legacy posted id=\(.id) external_id=[\(.external_id)]"'
+      - name: Post a marked ci-ok, as ci-ok-report.sh does now
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.sha }}
+          CHECK_NAME: ci-ok
+          CONCLUSION: failure
+          TITLE: a marked post the verdict step must correct
+          DETAILS_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EXTERNAL_ID: ci-ok-post:${{ github.run_id }}
+        run: |
+          export SUMMARY_FILE="$RUNNER_TEMP/s.md"
+          echo "INFRA-1066 k28: the early failing POST of this release." > "$SUMMARY_FILE"
+          .github/scripts/post-check-run.sh
+      - name: Read the head's four ci-ok check runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?check_name=ci-ok&filter=all&per_page=100" \
+            --jq '.check_runs[] | "before: id=\(.id) \(.status) \(.conclusion) external_id=[\(.external_id)]"'
+          echo "own: ${{ job.check_run_id }}"
+      - name: Reconcile, as the verdict job's last step does
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.sha }}
+          CHECK_RUN_ID: ${{ job.check_run_id }}
+          CONCLUSION: success
+        run: .github/scripts/ci-ok-reconcile.sh
+      - name: Read them back
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?check_name=ci-ok&filter=all&per_page=100" \
+            --jq '.check_runs[] | "after: id=\(.id) \(.conclusion) external_id=[\(.external_id)]"'
