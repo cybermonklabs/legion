@@ -1,0 +1,74 @@
+name: probe-k28
+on:
+  push:
+    branches: ['probe/infra1066-k28']
+permissions:
+  checks: write
+jobs:
+  ci-ok:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Wait for the other run's ci-ok job to conclude
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for _ in $(seq 1 60); do
+            state=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?check_name=ci-ok&filter=all&per_page=100" \
+              --jq '[.check_runs[] | select(.id != ${{ job.check_run_id }}) | "\(.id) \(.status) \(.conclusion) \(.external_id)"] | join(" | ")')
+            echo "others: $state"
+            case $state in *completed*) exit 0 ;; esac
+            sleep 10
+          done
+          echo "::error::the other run's ci-ok job never concluded"
+          exit 1
+      - name: Post a ci-ok with the marker, as a doomed merge group would
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.sha }}
+          CHECK_NAME: ci-ok
+          CONCLUSION: failure
+          TITLE: a posted ci-ok the verdict step must correct
+          DETAILS_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EXTERNAL_ID: ci-ok-post:${{ github.run_id }}
+        run: |
+          export SUMMARY_FILE="$RUNNER_TEMP/s.md"
+          echo "INFRA-1066 k28: stands in for the early failing POST of a group later re-run green." > "$SUMMARY_FILE"
+          .github/scripts/post-check-run.sh
+      - name: Read the head's three ci-ok check runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?check_name=ci-ok&filter=all&per_page=100" \
+            --jq '.check_runs[] | "before: id=\(.id) status=\(.status) conclusion=\(.conclusion) external_id=\(.external_id) suite=\(.check_suite.id)"'
+          echo "own: ${{ job.check_run_id }}"
+      - name: Reconcile, as the ci-ok job's last step does
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.sha }}
+          CHECK_RUN_ID: ${{ job.check_run_id }}
+          CONCLUSION: success
+        run: .github/scripts/ci-ok-reconcile.sh
+      - name: Read them back
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?check_name=ci-ok&filter=all&per_page=100" \
+            --jq '.check_runs[] | "after: id=\(.id) status=\(.status) conclusion=\(.conclusion) external_id=\(.external_id)"'
+      - name: The negative control, a copy with no marker filter
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.sha }}
+          CHECK_RUN_ID: ${{ job.check_run_id }}
+          CONCLUSION: failure
+        run: |
+          sed '/ci-ok-post:\*) ;;/,+4d' .github/scripts/ci-ok-reconcile.sh > "$RUNNER_TEMP/unfiltered.sh"
+          diff <(grep -c '' .github/scripts/ci-ok-reconcile.sh) <(grep -c '' "$RUNNER_TEMP/unfiltered.sh") || true
+          cp .github/scripts/gh-read.sh "$RUNNER_TEMP/gh-read.sh"
+          chmod +x "$RUNNER_TEMP/unfiltered.sh"
+          "$RUNNER_TEMP/unfiltered.sh"
+          gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?check_name=ci-ok&filter=all&per_page=100" \
+            --jq '.check_runs[] | "control: id=\(.id) conclusion=\(.conclusion) external_id=\(.external_id)"'
