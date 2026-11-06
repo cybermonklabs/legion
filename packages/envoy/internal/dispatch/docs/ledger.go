@@ -317,7 +317,21 @@ func flushCapture(flush *RoomFlush) roomCapture {
 // the commit returns, with its error and the states still locked; a capture with no state locks
 // nothing. A commit that fails marks nothing: the room's persistence stores the flushed updates
 // later.
+//
+// A commit whose caller has already gone is not made at all. The caller's context ends when its
+// client closes the connection, and `dispatch` closes at the deadline it gives every call
+// (packages/envoy-client/src/dispatch-http.ts, requestSignal): a write committed after that is
+// an edit the person was told had not landed and may send again, and the second send applies it
+// twice. pgx ends a commit whose context is already done, but the window it leaves is the whole
+// of the transaction's work before it, which under a loaded pod is where the time goes: measured
+// on a burst of 320 concurrent writes, the slowest applied write took 1 m 6.362 s against its
+// caller's 1 m deadline, and that caller read an error while the server answered 200
+// (INFRA-179). So the context is read here, once, immediately before the commit, where
+// everything the transaction waited for is behind it.
 func (s *Service) commitConsuming(ctx context.Context, tx pgx.Tx, captures []roomCapture, ended func(error)) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("the caller ended before its write committed: %w", err)
+	}
 	sorted := slices.Clone(captures)
 	slices.SortStableFunc(sorted, func(a, b roomCapture) int { return strings.Compare(a.room, b.room) })
 	locked := make([]roomCapture, 0, len(sorted))
