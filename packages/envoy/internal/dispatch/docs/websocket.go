@@ -520,23 +520,6 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	admitting := time.Now()
-	var err error
-	if !s.budget.join(room) {
-		err = s.budget.refusal(r.Context(), time.Now().Add(s.admissionWait))
-	}
-	if errors.Is(err, errRoomBudgetFull) {
-		refuseOverRoomBudget(w, r, room, err)
-		return
-	}
-	if err != nil {
-		// Anything but the budget's refusal is answered 503, which the editor's backoff retries;
-		// the line says why, and whether the browser had already gone.
-		slog.Warn("dispatch: a document socket's admission failed; answered 503", "room", room, "error", err,
-			"waited", time.Since(admitting), "request_ended", r.Context().Err() != nil)
-		http.Error(w, ErrServiceUnavailable.Error(), http.StatusServiceUnavailable)
-		return
-	}
 	// A browser editor normalizes a tree it cannot represent and writes the result back, so no
 	// connection - a first one, or a provider's reconnect - joins a room outside the Proof schema
 	// until it is replaced from markdown. An ask holding blocks off its content rule is inside it:
@@ -544,6 +527,10 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// `invalid`. The server decides it here, for every client at once, by the same stored document
 	// and rendering `/text` answers with (readDocument), so a socket is refused exactly when that
 	// read is ErrDocOutsideSchema.
+	//
+	// It runs before the budget weighs the admission, under the slot taken above, because what
+	// it reads is what the budget weighs: the stored state it decoded is the state the room is
+	// about to load, so its length is the weight of the room this admission adds.
 	tree, preload, err := s.loadTree(admissionSlot.carriedBy(r.Context()), room)
 	if err == nil && tree != nil {
 		if _, renderErr := documentMarkdown(tree); errors.Is(renderErr, ErrDocOutsideSchema) {
@@ -555,6 +542,30 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
+		http.Error(w, ErrServiceUnavailable.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	admitting := time.Now()
+	if !s.budget.join(room) {
+		// The weight is the room this admission is about to load, which the budget does not
+		// charge until that load ends: the stored state the read above decoded, at roomWeight.
+		// A read that left no preload loaded nothing and adds no room (heldTree), and a room
+		// the budget already charges is joined above and weighed at nothing.
+		weight := int64(0)
+		if preload != nil {
+			weight = roomWeight(int64(len(preload.loaded.Update)))
+		}
+		err = s.budget.refusal(r.Context(), time.Now().Add(s.admissionWait), weight)
+	}
+	if errors.Is(err, errRoomBudgetFull) {
+		refuseOverRoomBudget(w, r, room, err)
+		return
+	}
+	if err != nil {
+		// Anything but the budget's refusal is answered 503, which the editor's backoff retries;
+		// the line says why, and whether the browser had already gone.
+		slog.Warn("dispatch: a document socket's admission failed; answered 503", "room", room, "error", err,
+			"waited", time.Since(admitting), "request_ended", r.Context().Err() != nil)
 		http.Error(w, ErrServiceUnavailable.Error(), http.StatusServiceUnavailable)
 		return
 	}

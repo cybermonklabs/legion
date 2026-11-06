@@ -98,6 +98,12 @@ type roomBudget struct {
 	// starts a sweep, as it does while full is up.
 	waiting int
 	waiters atomic.Int32
+	// wanted is what the admissions waiting on the budget need together: each one's room, which
+	// the budget does not charge yet, at roomWeight of the stored state that admission read
+	// (refusal). A sweep closes rooms for it as well as for the limit (short), so an admission
+	// whose room would cross the limit waits for a close rather than being refused while a room
+	// nothing holds is still open.
+	wanted int64
 	// pending is whether the last sweep to end left a charged room that something other than a
 	// connected browser holds - a settlement, a writer, an append - and that will be closable once
 	// that ends; an admission still refused when no sweep runs and none is pending is refused at
@@ -156,18 +162,33 @@ func (b *roomBudget) joinedLocked(room string) bool {
 	return true
 }
 
-// refusal is a budget past its limit refusing an admission, once the sweeps the admission starts
-// have closed what they could before deadline or ctx ends (await); nil within the limit, at once
-// or by then. It is the whole of what an admission is weighed against: nothing is reserved for
-// the room it is about to load, and what keeps a burst of admissions from each reading the same
-// headroom is the load slot each of their loads takes (loadSlots).
-func (b *roomBudget) refusal(ctx context.Context, deadline time.Time) error {
+// refusal is a budget with no room for an admission refusing it, once the sweeps the admission
+// starts have closed what they could before deadline or ctx ends (await); nil where there is
+// room, at once or by then.
+//
+// weight is the room the admission is about to load, which the budget does not charge yet: the
+// bytes of the stored state the admission has already read and decoded for it (ServeHTTP's
+// preload), at roomWeight. So the admission is weighed as the budget will stand once its room
+// has loaded, which is what keeps it from taking the budget past its limit at all. That matters
+// beyond the arithmetic: the budget standing over its limit raises full, and full refuses every
+// insert in EVERY room of the pod with 4503 until a sweep can close something, which it cannot
+// while browsers hold those rooms - so an admission that crossed the limit made the whole pod
+// read-only. Measured before this: fifty browsers at once, twenty-seven admitted, and every one
+// of the twenty-seven refused on its first edit (INFRA-179).
+//
+// It is not the reservation the cut deleted: nothing is cached, no count is read for it and no
+// flight is held. It is one length the admission has in hand, weighed once, and a room already
+// resident is weighed at nothing, since no load follows it. While the admission waits, what it
+// needs is wanted, so the sweeps close rooms for it as well as for the limit (short).
+func (b *roomBudget) refusal(ctx context.Context, deadline time.Time, weight int64) error {
 	b.mu.Lock()
 	defer b.unlock()
-	if b.await(ctx, deadline, func() bool { return b.used <= b.limit }) {
+	b.wanted += weight
+	defer func() { b.wanted -= weight }()
+	if b.await(ctx, deadline, func() bool { return b.used+weight <= b.limit }) {
 		return nil
 	}
-	return fmt.Errorf("%w: %d of %d bytes are charged", errRoomBudgetFull, b.used, b.limit)
+	return fmt.Errorf("%w: %d of %d bytes are charged and the room asks %d", errRoomBudgetFull, b.used, b.limit, weight)
 }
 
 // await waits until fits reports room for an admission, and reports whether it does. Its caller
@@ -419,12 +440,12 @@ func (b *roomBudget) unmarkLocked(charge *roomCharge) {
 	}
 }
 
-// short is whether the rooms' charges leave the budget past its limit. A sweep closes rooms
-// while it holds.
+// short is whether the charges leave no room for the limit or for what the admissions waiting on
+// the budget need together (wanted). A sweep closes rooms while it holds.
 func (b *roomBudget) short() bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.used > b.limit
+	return b.used+b.wanted > b.limit
 }
 
 // figures is what the rooms' charges come to and the limit, for a sweep to log what each room it

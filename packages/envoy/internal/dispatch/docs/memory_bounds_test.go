@@ -130,7 +130,7 @@ func TestAServiceAtTheProductionLimitAdmitsFarMoreRoomsThanTheCalibration(t *tes
 			for {
 				// Deadline in the past: the budget answers from what it holds now rather
 				// than waiting for sweeps that have nothing to close.
-				if err := service.budget.refusal(context.Background(), time.Now()); err != nil {
+				if err := service.budget.refusal(context.Background(), time.Now(), 0); err != nil {
 					break
 				}
 				service.budget.load(fmt.Sprintf("room-%d", admitted), stateBytes)

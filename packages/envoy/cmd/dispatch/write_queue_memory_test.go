@@ -157,9 +157,12 @@ func requireBudgetFigures(t *testing.T, closed writeQueueClose, what string, lar
 // bound before the budget, a forty-one-byte ask for three megabytes held.
 type silentSocket struct {
 	room       string
-	connection *gws.Conn
-	// handoff is the whole-state frame the room answered the handshake with, in bytes: what one
-	// SyncStep1 makes the server hold for a socket that never reads.
+	// handoff is the whole answer the room made the handshake, in bytes: what one SyncStep1
+	// makes the server hold for a socket that never reads. Since sjawhar/ygo v1.55.1-sami.3
+	// that answer is a series of frames - Update messages targeting 64 KiB each, then one
+	// SyncStep2 carrying only what no Update could - so it is the sum of them and not the size
+	// of the last. Reading only the SyncStep2 would make a mebibyte of prose read as a couple
+	// of hundred bytes, and the queue these drives fill would never reach its budget.
 	handoff int
 }
 
@@ -182,6 +185,7 @@ func (p *memoryServer) openSilent(t *testing.T, artifactID string) *silentSocket
 	if err := connection.WriteMessage(gws.BinaryMessage, ask); err != nil {
 		t.Fatalf("ask document %s for its state: %v", artifactID, err)
 	}
+	answer := 0
 	for {
 		_, message, err := connection.ReadMessage()
 		if err != nil {
@@ -194,10 +198,14 @@ func (p *memoryServer) openSilent(t *testing.T, artifactID string) *silentSocket
 		if tag, err := decoder.ReadVarUint(); err != nil || tag != frameSync {
 			continue
 		}
-		if kind, _, err := ygsync.ReadSyncMessage(decoder.RemainingBytes()); err != nil || kind != ygsync.MsgSyncStep2 {
+		kind, _, err := ygsync.ReadSyncMessage(decoder.RemainingBytes())
+		if err != nil || (kind != ygsync.MsgSyncStep2 && kind != ygsync.MsgUpdate) {
 			continue
 		}
-		return &silentSocket{room: artifactID, connection: connection, handoff: len(message)}
+		answer += len(message)
+		if kind == ygsync.MsgSyncStep2 {
+			return &silentSocket{room: artifactID, connection: connection, handoff: answer}
+		}
 	}
 }
 

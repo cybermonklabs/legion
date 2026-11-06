@@ -58,7 +58,7 @@ func TestTheRoomBudgetChargesARoomItsTrackedStateAtBothCopies(t *testing.T) {
 	other := budget.load("other", loaded)
 	budget.limit = other.weight - 1
 	ctx := context.Background()
-	if err := budget.refusal(ctx, time.Now().Add(time.Hour)); !errors.Is(err, errRoomBudgetFull) {
+	if err := budget.refusal(ctx, time.Now().Add(time.Hour), 0); !errors.Is(err, errRoomBudgetFull) {
 		t.Fatalf("an admission past the limit was answered %v, want it refused", err)
 	}
 	if count := waiting(budget); count != 0 {
@@ -83,31 +83,74 @@ func TestTheRoomBudgetChargesARoomItsTrackedStateAtBothCopies(t *testing.T) {
 	}
 }
 
+// An admission is weighed as the budget will stand once its room has loaded, not as it stands
+// before: the weight it carries is the room it is about to load, at roomWeight of the stored
+// state the admission read for it. So a budget with room to spare still refuses an admission
+// whose own room would not fit, and the budget is never taken past its limit by admitting one.
+// That is what keeps the pod out of the state a full budget puts it in, where full refuses every
+// insert in every room until a sweep can close something (refusal, Service.weighPeerUpdate).
+//
+// A budget no service built never sweeps, so each refusal below is immediate and leaves nothing
+// waiting.
+func TestAnAdmissionIsWeighedWithTheRoomItIsAboutToLoad(t *testing.T) {
+	const stored = 1_000_000
+	budget := &roomBudget{limit: roomWeight(stored) + roomWeight(stored)/2}
+	ctx := context.Background()
+	if err := budget.refusal(ctx, time.Now(), roomWeight(stored)); err != nil {
+		t.Fatalf("the first admission was answered %v on an empty budget with room for it", err)
+	}
+	charge := budget.load("first", stored)
+	if charge == nil || budget.used != roomWeight(stored) {
+		t.Fatalf("the budget holds %d bytes once the first room loaded, want %d", budget.used, roomWeight(stored))
+	}
+	// Half a room is left, so an admission for a room of this size is refused although the
+	// charges themselves are still well inside the limit. Weighed the other way round - the
+	// charges alone - it would be admitted and its load would take the budget over.
+	if budget.used > budget.limit {
+		t.Fatalf("the charges are %d of %d bytes, so an admission weighed on the charges alone would pass", budget.used, budget.limit)
+	}
+	err := budget.refusal(ctx, time.Now(), roomWeight(stored))
+	if !errors.Is(err, errRoomBudgetFull) {
+		t.Fatalf("an admission whose room would cross the limit was answered %v, want it refused", err)
+	}
+	if count := waiting(budget); count != 0 {
+		t.Fatalf("a refused admission left %d admissions waiting, want none", count)
+	}
+	// A room small enough to fit what is left is admitted, and a room already charged is joined
+	// rather than weighed at all.
+	if err := budget.refusal(ctx, time.Now(), roomWeight(stored/4)); err != nil {
+		t.Fatalf("an admission for a room that fits what is left was answered %v", err)
+	}
+	if !budget.join("first") {
+		t.Fatal("a socket joining the room the budget already charges was not joined")
+	}
+}
+
 // The budget's arithmetic at the shapes its design is stated in, each room loaded into an empty
 // budget at the bytes of state its stored document holds. A room is charged
 // bytesOfHeapAStateByte in each of roomCopies copies for each byte of its state, 28 bytes a
 // state byte, whatever its shape renders: a mebibyte of prose, whose state is 3,035,240 bytes,
 // is charged 84,986,720, so twenty-five of them fit the budget; a document at the state cap
-// (maxRoomStateBytes) is charged 378,000,000, so five of those do; and the long-edited document,
+// (maxRoomStateBytes) is charged 469,762,048, so four of those do; and the long-edited document,
 // 5 KiB of prose carrying a million keystrokes in a 7,814,707-byte state, is charged
 // 218,811,796, so nine of those do.
 //
-// One more than fits is admitted each time, and the one after it refused: nothing is reserved
-// before a load, so an admission is weighed against the rooms already charged alone
-// (roomBudget.refusal) and the room it loads is what carries the charges past the limit. What
-// answers that room is the sweep and the hook's refusal of every apply that integrates anything
-// while nothing can be closed (roomBudget.full), not a cap on any room's charge: a room twice
-// the whole budget is admitted into an empty one and charged what its state comes to.
+// Exactly what fits is admitted and the next is refused: an admission carries the weight of the
+// room it is about to load (roomBudget.refusal), so the budget is never taken past its limit by
+// admitting one. No room has a ceiling of its own, though: a document twice the whole budget is
+// admitted into an empty one and charged what its state comes to, and what answers a room that
+// heavy once it is open is the sweep and the hook's refusal of every apply that integrates
+// anything while nothing can be closed (roomBudget.full).
 func TestTheRoomBudgetsArithmetic(t *testing.T) {
 	for _, shape := range []struct {
 		name           string
 		stateBytes     int64
 		weight, admits int64
 	}{
-		{"a room of a mebibyte of prose", 3_035_240, 84_986_720, 26},
-		{"a document at the state cap", maxRoomStateBytes, 378_000_000, 6},
-		{"the long-edited document", 7_814_707, 218_811_796, 10},
-		{"a document twice the whole budget", roomBudgetBytes, 60_129_542_144, 1},
+		{"a room of a mebibyte of prose", 3_035_240, 84_986_720, 25},
+		{"a document at the state cap", maxRoomStateBytes, 469_762_048, 4},
+		{"the long-edited document", 7_814_707, 218_811_796, 9},
+		{"a document twice the whole budget", roomBudgetBytes, 60_129_542_144, 0},
 	} {
 		t.Run(shape.name, func(t *testing.T) {
 			if weight := roomWeight(shape.stateBytes); weight != shape.weight {
@@ -116,7 +159,7 @@ func TestTheRoomBudgetsArithmetic(t *testing.T) {
 			budget := &roomBudget{limit: roomBudgetBytes}
 			admitted := int64(0)
 			for {
-				if err := budget.refusal(context.Background(), time.Now()); errors.Is(err, errRoomBudgetFull) {
+				if err := budget.refusal(context.Background(), time.Now(), shape.weight); errors.Is(err, errRoomBudgetFull) {
 					break
 				} else if err != nil {
 					t.Fatalf("admit room %d: %v", admitted+1, err)
@@ -129,6 +172,19 @@ func TestTheRoomBudgetsArithmetic(t *testing.T) {
 			}
 			if admitted != shape.admits {
 				t.Fatalf("the budget admitted %d rooms charged %d bytes each, want %d", admitted, shape.weight, shape.admits)
+			}
+			if budget.used > budget.limit {
+				t.Fatalf("the rooms admitted come to %d bytes against the %d-byte limit: an admission took the budget past it",
+					budget.used, budget.limit)
+			}
+			// No ceiling on one room: the heaviest shape is refused at admission by the budget,
+			// and loaded anyway where nothing weighed it, as the server's own work does.
+			if shape.admits == 0 {
+				charge := budget.load("server-opened", shape.stateBytes)
+				if charge.weight != shape.weight || budget.used != shape.weight {
+					t.Fatalf("a room the server opened over the budget is charged %d of %d bytes, want %d",
+						charge.weight, budget.used, shape.weight)
+				}
 			}
 		})
 	}
@@ -171,7 +227,7 @@ func TestTheRoomBudgetRefusesAnAdmissionOnlyOnceItsSweepHasEnded(t *testing.T) {
 	budget.load("held", 20)
 	<-sweeps
 	answered := make(chan error, 1)
-	go func() { answered <- budget.refusal(ctx, time.Now().Add(time.Minute)) }()
+	go func() { answered <- budget.refusal(ctx, time.Now().Add(time.Minute), 0) }()
 	waitFor(t, 5*time.Second, "the admission to wait", func() bool { return waiting(budget) == 1 })
 	select {
 	case err := <-answered:
@@ -203,7 +259,7 @@ func TestTheRoomBudgetRefusesAnAdmissionOnlyOnceItsSweepHasEnded(t *testing.T) {
 	}
 
 	passed := make(chan error, 1)
-	go func() { passed <- budget.refusal(ctx, time.Now().Add(time.Minute)) }()
+	go func() { passed <- budget.refusal(ctx, time.Now().Add(time.Minute), 0) }()
 	<-sweeps
 	waitFor(t, 5*time.Second, "the look past the limit to wait", func() bool { return waiting(budget) == 1 })
 	budget.swept(true)
@@ -232,7 +288,7 @@ func TestTheRoomBudgetKeepsEveryWaitingAdmissionAcrossASweep(t *testing.T) {
 	budget, sweeps := fakeSwept(roomWeight(20) - 1)
 	budget.load("held", 20)
 	admitted := make(chan error, 2)
-	admit := func() { admitted <- budget.refusal(ctx, deadline) }
+	admit := func() { admitted <- budget.refusal(ctx, deadline, 0) }
 	go admit()
 	<-sweeps
 	waitFor(t, 5*time.Second, "the first admission to wait", func() bool { return waiting(budget) == 1 })
@@ -554,7 +610,7 @@ func TestTheRoomBudgetAdmissionWaitsForARoomWhoseBrowserJustLeft(t *testing.T) {
 	t.Cleanup(func() { service.SetRoomBudgetForTest(0) })
 
 	answered := make(chan error, 1)
-	go func() { answered <- service.budget.refusal(ctx, time.Now().Add(service.admissionWait)) }()
+	go func() { answered <- service.budget.refusal(ctx, time.Now().Add(service.admissionWait), 0) }()
 	waitFor(t, 5*time.Second, "the admission to wait", func() bool { return waiting(&service.budget) == 1 })
 	select {
 	case err := <-answered:
@@ -593,7 +649,7 @@ func TestTheRoomBudgetAdmissionWaitsForARoomWhoseBrowserJustLeft(t *testing.T) {
 	service.SetRoomBudgetForTest(budgetUsed(service) - 1)
 	service.admissionWait = 500 * time.Millisecond
 	started := time.Now()
-	err := service.budget.refusal(ctx, time.Now().Add(service.admissionWait))
+	err := service.budget.refusal(ctx, time.Now().Add(service.admissionWait), 0)
 	if !errors.Is(err, errRoomBudgetFull) {
 		t.Fatalf("an admission nothing could make room for was answered %v, want it refused", err)
 	}
@@ -670,7 +726,7 @@ func TestTheRoomBudgetAdmitsABrowserOnceTheRoomAnEditingBrowserLeftIsClosed(t *t
 	t.Cleanup(func() { service.SetRoomBudgetForTest(0) })
 
 	answered := make(chan error, 1)
-	go func() { answered <- service.budget.refusal(ctx, time.Now().Add(service.admissionWait)) }()
+	go func() { answered <- service.budget.refusal(ctx, time.Now().Add(service.admissionWait), 0) }()
 	waitFor(t, 5*time.Second, "the admission to wait", func() bool { return waiting(&service.budget) == 1 })
 	select {
 	case err := <-answered:
@@ -726,7 +782,7 @@ func TestTheRoomBudgetAdmissionWaitsForARoomAnApplyIsInside(t *testing.T) {
 	t.Cleanup(func() { service.SetRoomBudgetForTest(0) })
 
 	answered := make(chan error, 1)
-	go func() { answered <- service.budget.refusal(ctx, time.Now().Add(service.admissionWait)) }()
+	go func() { answered <- service.budget.refusal(ctx, time.Now().Add(service.admissionWait), 0) }()
 	waitFor(t, 5*time.Second, "the admission to wait", func() bool { return waiting(&service.budget) == 1 })
 	select {
 	case err := <-answered:
