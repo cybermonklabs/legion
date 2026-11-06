@@ -157,6 +157,7 @@ func requireBudgetFigures(t *testing.T, closed writeQueueClose, what string, lar
 // bound before the budget, a forty-one-byte ask for three megabytes held.
 type silentSocket struct {
 	room       string
+	connection *gws.Conn
 	// handoff is the whole answer the room made the handshake, in bytes: what one SyncStep1
 	// makes the server hold for a socket that never reads. Since sjawhar/ygo v1.55.1-sami.3
 	// that answer is a series of frames - Update messages targeting 64 KiB each, then one
