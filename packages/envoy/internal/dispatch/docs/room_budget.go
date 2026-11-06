@@ -249,6 +249,16 @@ func (b *roomBudget) settleLocked(reservation *roomReservation) {
 	b.dropIfEmptyLocked(reservation.room, entry)
 }
 
+// awaitRoom waits for the budget's sweep to bring the charges back within the limit, and reports
+// whether they are: what an admission waits for, with a weight of nothing. A browser's update
+// about to be refused for the pressure waits for it too, so the rooms nothing is still using are
+// closed before anything is refused (Service.underPressure, the spec's R3 and A3).
+func (b *roomBudget) awaitRoom(ctx context.Context, deadline time.Time) bool {
+	b.mu.Lock()
+	defer b.unlock()
+	return b.await(ctx, deadline, func() bool { return b.used+b.reserved <= b.limit })
+}
+
 // await waits until fits reports room for an admission, and reports whether it does. Its caller
 // holds mu, which it gives up while it waits and holds again whenever it looks and when it
 // returns. While it waits, a room that becomes closable starts a sweep of its own (waiters,

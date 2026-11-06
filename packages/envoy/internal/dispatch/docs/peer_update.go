@@ -412,7 +412,7 @@ func (s *Service) weighPeerUpdate(info websocket.PeerUpdateInfo, apply func() er
 	}
 	rendering, measured := weighing.size()
 	allowance := peerApplyAllowance(int64(len(info.Update)), rendering, weighing.roomStateBytes(),
-		info.Doc.StructCount(), measured, s.budget.full.Load())
+		info.Doc.StructCount(), measured, s.underPressure(info.Room))
 	// A heavy update takes its slot before the apply and gives it back once the apply has
 	// returned, so the whole decode runs inside one slot; a keystroke takes none. The wait has
 	// no deadline, since the peer's read loop carries none and every holder gives its slot back
@@ -432,6 +432,35 @@ func (s *Service) weighPeerUpdate(info websocket.PeerUpdateInfo, apply func() er
 		return nil
 	}
 	return s.refusedByApply(info, allowance, scanning, err)
+}
+
+// peerPressureSweepWait is how long a browser's update waits for the budget's sweep before it is
+// refused for the pressure: the sweep closes the rooms nothing is still using, which is what R3
+// asks of Dispatch before it refuses anything and what A3 asks of it before any refusal. It is
+// two seconds, which is long enough for a sweep that has rooms to close - a close flushes the
+// room's updates and compacts them - and short enough that a person whose edit is going to be
+// refused is told within the time a keystroke's round trip already allows. It costs nothing on
+// an ordinary edit: the wait is reached only while the budget is full, which is one atomic read
+// away on every other update.
+const peerPressureSweepWait = 2 * time.Second
+
+// underPressure is whether room's next update is weighed under the budget's pressure: the budget
+// is full and a sweep could not make room within peerPressureSweepWait. The sweep runs here, on
+// the peer's read loop, because R3 puts closing the rooms nothing is still using before refusing
+// anything, and an admission already waits for exactly this sweep (roomBudget.refusal); an
+// update that would be refused for the budget waits for it too, and applies where it frees a
+// room. The line names how long the wait took, so what the sweep costs this path can be read
+// off a loaded pod.
+func (s *Service) underPressure(room string) bool {
+	if !s.budget.full.Load() {
+		return false
+	}
+	started := time.Now()
+	freed := s.budget.awaitRoom(context.Background(), started.Add(peerPressureSweepWait))
+	used, limit := s.budget.figures()
+	slog.Info("dispatch: a browser's update waited for the room budget's sweep before the pressure weighed it",
+		"room", room, "freed", freed, "waited_ms", time.Since(started).Milliseconds(), "charged", used, "limit", limit)
+	return !freed
 }
 
 // refusedBeforeApply is the one refusal the hook makes without applying: an update carrying the
