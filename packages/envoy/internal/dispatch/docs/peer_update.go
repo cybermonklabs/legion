@@ -434,10 +434,11 @@ func (s *Service) weighPeerUpdate(info websocket.PeerUpdateInfo, apply func() er
 // (refusesNextPeerUpdateForTest), which stands for a refusal of the rules below it.
 //
 // An update whose header the scan cannot read refuses nothing here and falls through to the
-// apply, which judges the update itself. ygo's own decoder accepts nothing the scan refuses
-// except an update carrying more structs than one update may decode (maxV2Items), which the
-// Structs allowance refuses with its own reason: refusing it here instead would close an honest
-// whole-state handoff of a rebuilt document at the decode cap with the wrong reason.
+// apply, which judges the update itself: ygo's own decoder refuses the same bytes, and the hook
+// answers that refusal DOC_UPDATE_REFUSED below. The scan has one bound the decoder's own apply
+// does not share - it reads no update carrying more structs than one update may decode
+// (maxV2Items) - and refusing such an update here would close an honest whole-state handoff of
+// a rebuilt document at the decode cap before the apply could weigh it at all.
 func (s *Service) refusedBeforeApply(info websocket.PeerUpdateInfo, weighing *roomWeighing) error {
 	if s.refusesNextPeerUpdateForTest(info.Room) {
 		refusal := documentUpdateRefused()
