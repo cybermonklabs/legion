@@ -116,3 +116,22 @@ const maxMessageBytes = 64 << 20
 // (its main); the drives of cmd/dispatch/write_queue_memory_test.go read those lines off the
 // server's stderr.
 const peerWriteQueueBytes = 70 << 20
+
+// syncFrameTargetBytes is the size ygo targets for each Update frame of its answer to a
+// SyncStep1, since sjawhar/ygo v1.55.1-sami.3: 64 KiB. Single-clock content goes over it whole,
+// and the last frame can too where the sender holds parked structs, so it is a target rather
+// than a cap; it is what the frames of an ordinary answer come out at, and so what sets how
+// many of them a queue must hold.
+const syncFrameTargetBytes = 64 << 10
+
+// peerWriteQueueFrames is ygo's Server.PeerWriteQueueSize, the frames one socket's queue may
+// hold whatever their size: what peerWriteQueueBytes allows at syncFrameTargetBytes each, and
+// one more so the byte budget is reached before the frame count is. ygo's own default is 512,
+// which at that frame size tops a queue out at about 33.5 MB - under the byte budget, so the
+// budget could never close anything and a frame's size would not be weighed at all. Measured
+// before this was set: a browser handing a room's whole state back 56 times offered a silent
+// socket 168,315,448 bytes, 2.3 times the budget, and no socket was closed; twenty such sockets
+// took 3.08 GB of relays and held about 21 MB each, which is 512 frames rather than the budget
+// (INFRA-179). Raising it costs no memory the budget does not already bound: the bytes close a
+// socket first by construction.
+const peerWriteQueueFrames = peerWriteQueueBytes/syncFrameTargetBytes + 1

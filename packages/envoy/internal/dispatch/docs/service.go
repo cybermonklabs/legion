@@ -742,11 +742,17 @@ func New(deps Deps) *Service {
 	// opens a document socket. It is a floor against a client that is not the editor, not the
 	// bound on what a document may hold, which is the peer update hook's (maxMessageBytes).
 	srv.MaxMessageBytes = maxMessageBytes
-	// ygo bounds a browser's write queue in frames alone without this, 512 of them whatever their
-	// size, so a socket that sends SyncStep1 frames it never reads the answers to can make the
-	// server hold 512 whole states of its room. The budget bounds those queued bytes instead, and
-	// closes a socket a frame reaches while the budget or more waits (MemoryBounds.PeerWriteQueue,
-	// peerWriteQueueBytes).
+	// ygo bounds a browser's write queue in frames as well as in bytes, and since sami.3 it
+	// answers a SyncStep1 in Update frames of at most syncFrameTargetBytes each, so its default
+	// of 512 frames tops a queue out at about 33.5 MB and the byte budget below could never be
+	// reached: measured, a browser handing a room's whole state back 56 times offered a silent
+	// socket 168,315,448 bytes, 2.3 times the budget, and no close was made (INFRA-179). The
+	// frame queue is therefore raised to what the byte budget allows at that frame size
+	// (peerWriteQueueFrames), so the bytes are what close a socket and a frame of any size is
+	// weighed by what it holds rather than by being one of 512.
+	srv.PeerWriteQueueSize = peerWriteQueueFrames
+	// The budget bounds those queued bytes, and closes a socket a frame reaches while the budget
+	// or more waits (MemoryBounds.PeerWriteQueue, peerWriteQueueBytes).
 	srv.PeerWriteQueueBytes = bounds.PeerWriteQueue
 
 	service.srv = newRoomServer(srv)
