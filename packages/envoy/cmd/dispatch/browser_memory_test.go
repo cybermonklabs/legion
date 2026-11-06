@@ -540,7 +540,11 @@ func TestTheRoomScanTotalIsReMeasuredByEachLoadOverARealSocket(t *testing.T) {
 			sent++
 			continue
 		}
-		requireRefused(t, applied, closed, contracts.DocumentTooLargeCloseCode, contracts.DocumentTooTangledCloseReason)
+		// A refusal whose allowance came from what is left of the room's scan total rather
+		// than from the frame's own bytes is the room asking to be rebuilt, not the frame
+		// being too tangled: DOC_NEEDS_REBUILD, which the editor offers the rebuild for
+		// (docs' documentNeedsRebuild, roomScans.roomUsedUp).
+		requireRefused(t, applied, closed, contracts.DocumentTooLargeCloseCode, contracts.DocumentNeedsRebuildCloseReason)
 		// The refusal closed this browser, so the drive reads the room through another and
 		// keeps the frame that was refused: it is the one the reload is weighed against.
 		setting.leave()
@@ -566,7 +570,7 @@ func TestTheRoomScanTotalIsReMeasuredByEachLoadOverARealSocket(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		requireRefused(t, applied, closed, contracts.DocumentTooLargeCloseCode, contracts.DocumentTooTangledCloseReason)
+		requireRefused(t, applied, closed, contracts.DocumentTooLargeCloseCode, contracts.DocumentNeedsRebuildCloseReason)
 		refusal := server.scanRefusals(t, logged)[logged-1]
 		t.Logf("the server logged %q", refusal[0])
 		allowance, allowanceErr := strconv.Atoi(refusal[5])
@@ -1018,17 +1022,20 @@ func TestTheRoomBudgetRefusesWhereItsOwnArithmeticSays(t *testing.T) {
 	fleet := memory.mebibyteFleet(t, func(int64) int { return burst + 4 })
 	// The budget's own arithmetic. A room is charged its stored state at one price over both
 	// copies the moment its load decodes it (roomWeightForTest, docs' chargeLoadedRoom), and an
-	// admission reserves nothing for the room it is about to load: it is refused only once what
-	// the open rooms already hold passes the limit (docs' roomBudget.refusal). So the room that
-	// crosses the limit is the last one admitted, not the next one refused, and the rooms open
-	// at the first refusal are the budget divided by one room's weight, and one more.
+	// admission carries the weight of the room it is about to load - read from the stored state
+	// under a slot of its own, released before the weighing - and holds it as a reservation
+	// until that room is charged (docs' roomBudget.refusal). So an admission is weighed against
+	// what the open rooms hold, plus what the admissions in flight have reserved, plus its own
+	// weight, and no admission can take the budget past its limit: the rooms open at the first
+	// refusal are the budget divided by one room's weight.
 	//
-	// What keeps that "within one room" true with nothing reserved is the pod's one load slot at
-	// the calibration (loadSlotsForTest): with one cold load at a time the budget sees each
-	// room's weight before the next load begins, so fifty admissions at once serialise into one
-	// after another rather than fifty of them reading the same headroom at the same moment.
-	rooms := int(roomBudgetBytesForTest/fleet.weight) + 1
-	t.Logf("a mebibyte of prose makes %d elements and a room of it is charged %d bytes: the %d-byte budget holds %d such rooms, the last of them the one that crosses the limit", fleet.elements, fleet.weight, roomBudgetBytesForTest, rooms)
+	// The reservation is what makes that true of fifty at once as of one after another. Without
+	// it, fifty admissions weighed before any of their rooms had charged anything would each
+	// read the same headroom and all pass: measured before it, twenty-four browsers arriving
+	// together were all admitted and their rooms charged 5,976,639,564 bytes against this
+	// 2,147,483,648-byte budget, with the pod's kernel charging 7,225 MiB of its 4,096.
+	rooms := int(roomBudgetBytesForTest / fleet.weight)
+	t.Logf("a mebibyte of prose makes %d elements and a room of it is charged %d bytes: the %d-byte budget holds %d such rooms, and no admission takes it past its limit", fleet.elements, fleet.weight, roomBudgetBytesForTest, rooms)
 	if rooms+gone+3 > len(fleet.copies) || rooms+2 > burst {
 		t.Fatalf("the budget holds %d rooms, too many for the %d copies and the burst of %d this drive opens", rooms, len(fleet.copies), burst)
 	}
@@ -1797,8 +1804,9 @@ func TestAFullServerRefusesWhatGrowsAndTakesWhatShrinks(t *testing.T) {
 		}
 		requireClose(t, closed, contracts.DocumentBusyCloseCode, contracts.DocumentBusyCloseReason, "the next browser on the full server")
 		requireRoomAbsent(t, server, fleet.copies[next], "the next browser on the full server")
-		if refusals := requireBudgetRefusals(t, server); refusals[len(refusals)-1].charged <= refusals[len(refusals)-1].limit {
-			t.Errorf("the full server refused the next browser at %d of %d bytes charged, want the budget past its limit", refusals[len(refusals)-1].charged, refusals[len(refusals)-1].limit)
+		if last := requireBudgetRefusals(t, server); last[len(last)-1].charged+last[len(last)-1].reserved+last[len(last)-1].asks <= last[len(last)-1].limit {
+			t.Errorf("the full server refused the next browser at %d charged and %d reserved of %d bytes asking %d, which fit: want a refusal the budget's arithmetic needed",
+				last[len(last)-1].charged, last[len(last)-1].reserved, last[len(last)-1].limit, last[len(last)-1].asks)
 		}
 
 		requireBusyAndUnchanged(t, memory, server, held[len(held)-1].room, grow, "an update that grows a document")
@@ -1839,11 +1847,12 @@ func TestAFullServerRefusesWhatGrowsAndTakesWhatShrinks(t *testing.T) {
 		for _, update := range shrinking {
 			shrinkBytes += len(update)
 		}
-		t.Logf("the budget charged %d of %d bytes before the shrinks and %d after them, %d more and %d past its limit, against the %d their own bytes are priced at over %d documents",
-			before.charged, before.limit, after.charged, after.charged-before.charged, after.charged-after.limit,
+		t.Logf("the budget charged %d of %d bytes before the shrinks and %d after them, %d more, against the %d their own bytes are priced at over %d documents",
+			before.charged, before.limit, after.charged, after.charged-before.charged,
 			roomWeightForTest(int64(shrunk*shrinkBytes)), shrunk)
-		if after.charged <= after.limit {
-			t.Errorf("after the shrinks the budget charged %d bytes, within its %d-byte limit: the server stopped being full, so what it refused above it would now admit", after.charged, after.limit)
+		if after.charged+after.reserved+after.asks <= after.limit {
+			t.Errorf("after the shrinks a browser was refused at %d charged and %d reserved of %d bytes asking %d, which fit: the server stopped being full, so what it refused above it would now admit",
+				after.charged, after.reserved, after.limit, after.asks)
 		}
 
 		// An API write to a document no room holds is applied on the full server and opens no
@@ -2477,12 +2486,12 @@ func TestABurstOfStructDenseDocumentsStaysUnderThePodsMemory(t *testing.T) {
 				continue
 			}
 			byBudget[opened.shape]++
-			t.Logf("%s was refused by the budget at %d of %d bytes charged, its own room weighed at %d", what, refusal.charged, refusal.limit, opened.weight)
+			t.Logf("%s was refused by the budget at %d charged and %d reserved of %d bytes, asking %d, its own room weighed at %d", what, refusal.charged, refusal.reserved, refusal.limit, refusal.asks, opened.weight)
 			switch {
 			case refusal.limit != roomBudgetBytesForTest:
 				t.Errorf("%s was refused against a budget of %d bytes, want %d", what, refusal.limit, roomBudgetBytesForTest)
-			case refusal.charged <= refusal.limit:
-				t.Errorf("%s was refused at %d of %d bytes charged, within the limit: refused earlier than the budget's arithmetic allows, which reserves nothing for the room it would load", what, refusal.charged, refusal.limit)
+			case refusal.charged+refusal.reserved+refusal.asks <= refusal.limit:
+				t.Errorf("%s was refused at %d charged and %d reserved of %d bytes asking %d, which fit: refused earlier than the budget's arithmetic allows", what, refusal.charged, refusal.reserved, refusal.limit, refusal.asks)
 			}
 		}
 	}
@@ -2792,9 +2801,10 @@ func TestTheHeaviestApplyBesideAFullCopyBoundStaysUnderThePodsMemory(t *testing.
 				t.Logf("the browser of agent-rewritten document %d was refused in %s with no budget line, which is the pod's %d load slots", index, result.took.Round(time.Millisecond), loadSlotsForTest)
 				continue
 			}
-			t.Logf("the browser of agent-rewritten document %d was refused by the budget in %s at %d of %d bytes charged, its own room weighed at %d", index, result.took.Round(time.Millisecond), refusal.charged, refusal.limit, agent.weight)
-			if refusal.charged <= refusal.limit {
-				t.Errorf("the browser of agent-rewritten document %d was refused with %+v, want a refusal past the %d-byte limit: an admission reserves nothing for the room it would load",
+			t.Logf("the browser of agent-rewritten document %d was refused by the budget in %s at %d charged and %d reserved of %d bytes, asking %d, its own room weighed at %d",
+				index, result.took.Round(time.Millisecond), refusal.charged, refusal.reserved, refusal.limit, refusal.asks, agent.weight)
+			if refusal.charged+refusal.reserved+refusal.asks <= refusal.limit {
+				t.Errorf("the browser of agent-rewritten document %d was refused with %+v, which fits the %d-byte limit: refused earlier than the budget's arithmetic allows",
 					index, refusal, roomBudgetBytesForTest)
 			}
 		}
@@ -3708,7 +3718,7 @@ func (p *memoryServer) chargedAgainstOneByte(t *testing.T, probe, when string) i
 		if refusals := budgetRefusalLine.FindAllStringSubmatch(p.output.String(), -1); len(refusals) > seen {
 			last := refusals[len(refusals)-1]
 			charged, chargedErr := strconv.ParseInt(last[1], 10, 64)
-			limit, limitErr := strconv.ParseInt(last[2], 10, 64)
+			limit, limitErr := strconv.ParseInt(last[3], 10, 64)
 			if chargedErr != nil || limitErr != nil || limit != 1 {
 				t.Fatalf("%s: the server refused the probe with %q, want what is charged against a budget of one byte", when, last[0])
 			}
@@ -4160,14 +4170,18 @@ func requireUnderThePod(t *testing.T, peak podPeak, step string) {
 }
 
 // budgetRefusalLine is the reason the room budget gives a refused browser, as the server logs it
-// (errRoomBudgetFull). It names what the open rooms are charged and the budget, and nothing of
-// the document refused: nothing is reserved for a room before it loads, so the whole of what an
-// admission is weighed against is what the rooms already open hold (docs' roomBudget.refusal).
-var budgetRefusalLine = regexp.MustCompile(`the open documents fill their memory budget: (\d+) of (\d+) bytes are charged`)
+// (errRoomBudgetFull): what the open rooms are charged, what the admissions in flight hold
+// reserved, the budget, and the weight of the room this admission would load. An admission
+// carries the weight of its own room - read from the stored state under a slot of its own,
+// released before the weighing - and holds it as a reservation until that room is charged, so
+// what it is weighed against is charged plus reserved plus its own (docs' roomBudget.refusal).
+var budgetRefusalLine = regexp.MustCompile(`the open documents fill their memory budget: (\d+) charged and (\d+) reserved of (\d+) bytes, and the room asks (\d+)`)
 
-// budgetRefusal is one refusal the server logged: what its rooms were charged and its budget.
+// budgetRefusal is one refusal the server logged: what its rooms were charged, what its
+// admissions in flight held reserved, its budget, and the weight the refused admission asked
+// for.
 type budgetRefusal struct {
-	charged, limit int64
+	charged, reserved, limit, asks int64
 }
 
 // requireBudgetRefusals is every refusal the server logged, failing the test unless there is one
@@ -4177,7 +4191,7 @@ func requireBudgetRefusals(t *testing.T, server *memoryServer) []budgetRefusal {
 	var refusals []budgetRefusal
 	for _, match := range budgetRefusalLine.FindAllStringSubmatch(server.output.String(), -1) {
 		var refusal budgetRefusal
-		for index, field := range []*int64{&refusal.charged, &refusal.limit} {
+		for index, field := range []*int64{&refusal.charged, &refusal.reserved, &refusal.limit, &refusal.asks} {
 			value, err := strconv.ParseInt(match[index+1], 10, 64)
 			if err != nil {
 				t.Fatalf("parse %q: %v", match[0], err)
@@ -4582,7 +4596,7 @@ func (h *memoryHarness) readCacheFill(t *testing.T) ([]string, int64) {
 
 // roomRefusalLine is the line the server logs for each browser the room budget refuses: its
 // document, and the budget's reason (refuseOverRoomBudget; budgetRefusalLine).
-var roomRefusalLine = regexp.MustCompile(`msg="dispatch: refuse a document socket; the open documents fill their memory budget" room=(\S+) error="the open documents fill their memory budget: (\d+) of (\d+) bytes are charged"`)
+var roomRefusalLine = regexp.MustCompile(`msg="dispatch: refuse a document socket; the open documents fill their memory budget" room=(\S+) error="the open documents fill their memory budget: (\d+) charged and (\d+) reserved of (\d+) bytes, and the room asks (\d+)"`)
 
 // budgetRefusalsByRoom is the last refusal the server logged for each document it refused a
 // browser of.
@@ -4591,7 +4605,7 @@ func budgetRefusalsByRoom(t *testing.T, server *memoryServer) map[string]budgetR
 	refusals := map[string]budgetRefusal{}
 	for _, match := range roomRefusalLine.FindAllStringSubmatch(server.output.String(), -1) {
 		var refusal budgetRefusal
-		for index, field := range []*int64{&refusal.charged, &refusal.limit} {
+		for index, field := range []*int64{&refusal.charged, &refusal.reserved, &refusal.limit, &refusal.asks} {
 			value, err := strconv.ParseInt(match[index+2], 10, 64)
 			if err != nil {
 				t.Fatalf("parse %q: %v", match[0], err)
