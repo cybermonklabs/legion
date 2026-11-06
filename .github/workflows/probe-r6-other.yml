@@ -1,0 +1,11 @@
+name: probe-r6-other
+on:
+  push:
+    branches: ['probe/infra1066-r6']
+permissions: {}
+jobs:
+  ci-ok:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - run: echo "another workflow run's own ci-ok job check run, which carries a UUID"
