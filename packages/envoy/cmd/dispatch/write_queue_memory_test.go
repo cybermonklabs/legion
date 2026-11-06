@@ -247,6 +247,41 @@ func (s *silentSocket) ended(within time.Duration) error {
 	}
 }
 
+// relayUntilClosed has a browser of the room hand the room's whole state back, over and over,
+// until the server has logged a close of its write-queue budget for that room or it has handed
+// back most times. It reports the bytes of one relayed frame and how many it sent.
+//
+// This is how a drive fills a socket's queue the way the byte budget is written for. The two
+// bounds on a socket's queue meet different floods:
+//
+//   - ygo's PeerWriteQueueSize, 512 frames, bounds a queue of sync answers. Since sjawhar/ygo
+//     v1.55.1-sami.3 a room answers a SyncStep1 with Update frames targeting at most 64 KiB and
+//     one SyncStep2 last, so 512 of them hold about 33.5 MB - under the byte budget, which such
+//     a flood therefore never reaches. That cap is the tighter bound and it is the one a flood
+//     of whole-state asks meets.
+//   - peerWriteQueueBytes bounds a queue of relayed frames. ygo relays another browser's frame
+//     as it arrived and does not split it (applySyncUpdate, provider/websocket/peer.go:271-290),
+//     so one can be as large as maxMessageBytes, 67,108,864: five of those are 320 MB with the
+//     frame queue a hundredth full. That is the case the byte budget exists for, and it is what
+//     this fill makes.
+func (p *memoryServer) relayUntilClosed(t *testing.T, room string, most int) (frame, sent int) {
+	t.Helper()
+	relaying := p.openBrowser(t, room)
+	defer relaying.leave()
+	handoff := relaying.stateFrame(relaying.state(t))
+	for sent = range most {
+		if len(writeQueueCloses(t, p)) > 0 {
+			return len(handoff), sent
+		}
+		applied, closed, err := relaying.send(handoff)
+		if err != nil || !applied {
+			t.Fatalf("handoff %d of %d bytes into room %s was answered applied %v, closed %v, %v; want it applied and the socket open",
+				sent+1, len(handoff), room, applied, closed, err)
+		}
+	}
+	return len(handoff), most
+}
+
 // writeQueueHeapMargin is how far above the budget and two whole-state frames the single-socket
 // drive lets the server's memory rise over what it held idle with the same room open. The budget
 // bounds the frames a socket holds queued, and the frame its writer is in the middle of is a
@@ -260,10 +295,19 @@ func (s *silentSocket) ended(within time.Duration) error {
 // off held 1,228,628,256 above idle, nine times the bound this margin makes.
 const writeQueueHeapMargin = 64 << 20
 
-// One socket that completes a mebibyte document's handshake and then asks for the room's whole
-// state 512 times over - ygo's frame cap, the only bound before the budget - without ever reading
-// an answer is closed by the server inside its write-queue budget, and what the server holds for
-// it stays inside that budget.
+// One socket that completes a mebibyte document's handshake and then never reads again, while
+// another browser of the room hands the room's whole state back over and over, is closed by the
+// server inside its write-queue budget, and what the server holds for it stays inside that
+// budget.
+//
+// The fill is relayed frames and not a flood of whole-state asks, because a socket's queue has
+// two bounds and they meet different floods (relayUntilClosed). ygo's 512-frame
+// PeerWriteQueueSize bounds a queue of sync answers, which since sjawhar/ygo v1.55.1-sami.3
+// arrive as Update frames of at most 64 KiB, so 512 of them hold about 33.5 MB and a flood of
+// asks meets that cap rather than this budget. peerWriteQueueBytes bounds a queue of relayed
+// frames, which ygo relays as they arrived and does not split, so one can be as large as the
+// message floor; that is the case this budget exists for, and the case this drive makes. Both
+// bounds are wanted and neither replaces the other.
 //
 // Measured on 2026-10-31 over three runs: each SyncStep1 makes the server queue a 3,005,633-byte
 // whole-state frame, so the frame cap alone would let this one socket hold 1,538,884,096 bytes -
@@ -299,31 +343,34 @@ func TestASocketThatNeverReadsIsClosedWithinItsWriteQueueBudget(t *testing.T) {
 
 	silent := server.openSilent(t, source)
 	var (
-		sent   int
-		asked  error
-		closed writeQueueClose
-		found  bool
+		relayed int
+		sent    int
+		closed  writeQueueClose
+		found   bool
 	)
+	// Enough handoffs to pass the budget twice over if nothing closed the socket, so a drive
+	// whose budget is off says what the server held rather than stopping early.
+	most := 2*peerWriteQueueBytesForTest/max(silent.handoff, 1) + 8
 	peak := server.peakResident(t, func() {
-		sent, asked = silent.flood(writeQueueFrameCap)
+		relayed, sent = server.relayUntilClosed(t, source, most)
 		closed, found = writeQueueCloseWithin(t, server, source, 2*time.Minute)
 	})
-	t.Logf("the socket asked for the room's whole state %d times of %d, %d bytes uploaded, and stopped at %v; the handshake's whole-state frame was %d bytes, so the 512-frame cap alone would have let it hold %d bytes",
-		sent, writeQueueFrameCap, sent*len(silent.askForState()), asked, silent.handoff, int64(writeQueueFrameCap)*int64(silent.handoff))
+	t.Logf("another browser handed the room's whole state back %d times of %d, each relayed whole as a %d-byte frame; the handshake's own answer was %d bytes in frames of at most 64 KiB, so the %d-frame cap alone would have let a flood of asks hold %d bytes",
+		sent, most, relayed, silent.handoff, writeQueueFrameCap, int64(writeQueueFrameCap)*64<<10)
 	// The memory the socket cost is reported before its close is required, so a drive without the
 	// budget says both what the server held and that nothing closed the socket.
-	bound := int64(peerWriteQueueBytesForTest) + 2*int64(silent.handoff) + writeQueueHeapMargin
+	bound := int64(peerWriteQueueBytesForTest) + 2*int64(relayed) + writeQueueHeapMargin
 	t.Logf("the flood: a pod's kernel would charge %d MiB, the runtime held %d bytes, %d above idle, against the %d bytes the budget, two frames and the margin allow",
 		peak.charged>>20, peak.held, peak.held-idle.held, bound)
 	if peak.held-idle.held > bound {
-		t.Errorf("the server held %d bytes more than it did idle while one socket that never reads asked for %d whole states, want no more than the %d-byte budget, two %d-byte frames and the %d-byte margin",
-			peak.held-idle.held, sent, peerWriteQueueBytesForTest, silent.handoff, int64(writeQueueHeapMargin))
+		t.Errorf("the server held %d bytes more than it did idle while one socket that never reads was relayed %d whole states, want no more than the %d-byte budget, two %d-byte frames and the %d-byte margin",
+			peak.held-idle.held, sent, peerWriteQueueBytesForTest, relayed, int64(writeQueueHeapMargin))
 	}
 	requireUnderThePod(t, peak, "one socket that never reads")
 	if !found {
-		t.Fatalf("the server logged no close of its write-queue budget for room %s while a socket that never reads asked it for %d whole states:\n%s", source, sent, server.output.tail())
+		t.Fatalf("the server logged no close of its write-queue budget for room %s while a socket that never reads was relayed %d whole states of %d bytes each:\n%s", source, sent, relayed, server.output.tail())
 	}
-	requireBudgetFigures(t, closed, "the socket that never reads", int64(silent.handoff))
+	requireBudgetFigures(t, closed, "the socket that never reads", int64(relayed))
 	t.Logf("the server closed it on the %s path with %d bytes queued and a %d-byte frame refused, against its %d-byte budget and %d-frame cap",
 		closed.path, closed.queued, closed.frame, closed.budget, closed.frames)
 	if err := silent.ended(2 * time.Minute); err == nil {
@@ -404,17 +451,18 @@ func TestTwentySocketsThatNeverReadStayUnderThePodsMemory(t *testing.T) {
 		silent[index] = server.openSilent(t, room)
 	}
 	type outcome struct {
-		sent  int
-		asked error
-		ended error
+		relayed int
+		sent    int
+		ended   error
 	}
 	outcomes := make([]outcome, sockets)
+	most := 2*peerWriteQueueBytesForTest/max(silent[0].handoff, 1) + 8
 	var closes map[string]writeQueueClose
 	peak := server.peakResident(t, func() {
 		var group sync.WaitGroup
-		for index := range outcomes {
+		for index, room := range rooms {
 			group.Go(func() {
-				outcomes[index].sent, outcomes[index].asked = silent[index].flood(floodFramesPerSocket)
+				outcomes[index].relayed, outcomes[index].sent = server.relayUntilClosed(t, room, most)
 			})
 		}
 		group.Wait()
@@ -427,24 +475,24 @@ func TestTwentySocketsThatNeverReadStayUnderThePodsMemory(t *testing.T) {
 		ending.Go(func() { outcomes[index].ended = silent[index].ended(2 * time.Minute) })
 	}
 	ending.Wait()
-	var queued, asked int64
+	var queued, relays int64
 	for index, result := range outcomes {
 		what := fmt.Sprintf("socket %d", index)
-		asked += int64(result.sent)
+		relays += int64(result.sent)
 		closed, found := closes[rooms[index]]
 		if !found {
-			t.Errorf("%s: the server logged no close of its write-queue budget for room %s, having been asked for %d whole states (%v)", what, rooms[index], result.sent, result.asked)
+			t.Errorf("%s: the server logged no close of its write-queue budget for room %s, having been relayed %d whole states of %d bytes each", what, rooms[index], result.sent, result.relayed)
 			continue
 		}
-		requireBudgetFigures(t, closed, what, int64(silent[index].handoff))
+		requireBudgetFigures(t, closed, what, int64(result.relayed))
 		if result.ended == nil {
 			t.Errorf("%s is still open, want the server to have closed it", what)
 		}
 		queued += closed.queued
 	}
-	t.Logf("%d sockets that never read asked for %d whole states in all and held %d bytes between them when they were closed; the frame cap alone would have let them hold %d",
-		sockets, asked, queued, int64(sockets)*int64(writeQueueFrameCap)*int64(silent[0].handoff))
-	if bound := int64(sockets) * (int64(peerWriteQueueBytesForTest) + int64(silent[0].handoff)); queued > bound {
+	t.Logf("%d sockets that never read were relayed %d whole states in all and held %d bytes between them when they were closed; the %d-frame cap alone, at the 64 KiB a sync answer's frames target, would have let them hold %d",
+		sockets, relays, queued, writeQueueFrameCap, int64(sockets)*int64(writeQueueFrameCap)*64<<10)
+	if bound := int64(sockets) * (int64(peerWriteQueueBytesForTest) + int64(outcomes[0].relayed)); queued > bound {
 		t.Errorf("the sockets held %d bytes, want no more than the %d the budget and one frame each allow", queued, bound)
 	}
 	requireUnderThePod(t, peak, "twenty sockets that never read")
