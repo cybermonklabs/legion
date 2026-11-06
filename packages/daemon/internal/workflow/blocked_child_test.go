@@ -207,9 +207,9 @@ func blockedNow(t *testing.T, pool *pgxpool.Pool) []record.BlockedIssue {
 	return blocked
 }
 
-// The opening of a tree's design gate starts every admitted member it was holding, but not one
-// that waits on an unfinished issue of its own: that child's own blockers hold it where the gate
-// left it.
+// The opening of a tree's design gate tells every phase holder of the tree and its architect, and
+// starts every admitted member it was holding, but not one that waits on an unfinished issue of
+// its own: that child's own blockers hold it where the gate left it.
 func TestTheGateOpeningDoesNotStartAHeldChild(t *testing.T) {
 	pool := migratedPool(t)
 	seedHeldTree(t, pool, record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 2})
@@ -228,7 +228,7 @@ func TestTheGateOpeningDoesNotStartAHeldChild(t *testing.T) {
 	if got := phaseOf(t, pool, "LEGION-210"); got != phase.Planning {
 		t.Fatalf("the child that waits on nothing = %s when the tree's gate opened, want planning", got)
 	}
-	assertOutboxKinds(t, pool, []string{"notice", "issue_branch", "dispatch_status", "supervise", "notice"})
+	assertOutboxKinds(t, pool, []string{"role_message", "role_message", "notice", "issue_branch", "dispatch_status", "supervise", "notice"})
 }
 
 // An unblocked child whose tree would not start it now is not started by this pass either: the
@@ -315,7 +315,7 @@ func TestALingerHandsOverTheAdmittedChildThatStillWaits(t *testing.T) {
 	// the outbox's drop guard and intake.Handover read it.
 	var writes int
 	if err := pool.QueryRow(t.Context(), `select count(*) from outbox where kind = 'dispatch_status' and issue = 'LEGION-209'
-		and payload->>'status' = 'todo' and payload->>'observedStatus' = 'todo' and payload->>'handOver' = 'true'
+		and payload->>'status' = 'todo' and payload->>'observedStatus' = 'todo' and payload->>'kind' = 'hand-over'
 		and payload->>'handOverTree' = 'LEGION-208' and payload->>'handOverLinger' = '4'`).Scan(&writes); err != nil || writes != 1 {
 		t.Fatalf("the blocked child's hand-over writes = %d, %v; want one fenced on LEGION-208's linger 4", writes, err)
 	}
