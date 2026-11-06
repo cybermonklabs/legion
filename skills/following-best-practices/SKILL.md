@@ -12,7 +12,7 @@ A design a person sends back usually skipped practices that everyone who builds 
 
 ## 1. Before you design
 
-Before you write a design, a recommendation or options, start a fresh subagent and send it only the problem: what must work, for whom, the constraints and numbers, the person's words that describe the problem, and the setup. Copy the problem statement and its given facts verbatim. Strip every proposed mechanism, solution shape, option, recommendation or leaning from the brief, so a design you already have in mind does not choose the answers. The brief contains no design.
+Before you write a design, recommendation or options, send a fresh scout/research subagent only the problem and the three questions below (plus their output schema and check script). The problem is what must work, for whom, the constraints and numbers, the person's words and the setup; copy the problem statement and its given facts verbatim. Strip every proposed mechanism, solution shape, direction, option, recommendation and tool/approach list, even from a scout brief: stating one before `research.md` and `table.md` are recorded is an ordering violation, not neutral research.
 
 ```text
 <The problem only.>
@@ -135,7 +135,22 @@ The decision ask MUST NOT be posted until BOTH reviewers' final comparisons have
 
 Run in this order: **local draft → two problem-first reviews → whole-proposal comparisons → both final replies → resolve findings and record verdicts → paste/arrival cross-review → first publication or decision ask**. Keep the proposal and its ask blocks local until that last stage; obtain live block ids and attach links afterward. Never publish first to prepare for review, and never post while a reviewer or the cross-review still runs.
 
-Start two fresh subagents, one per brief, and wait for each answer in the same turn, as in step 1. A fresh subagent starts with no history and gets only the text you send it. In each first-round reviewer's first message, give only the problem: what must work, for whom, the constraints and numbers, the person's words that describe the problem, and the setup. Do not include the proposal's title, design, options, decisions, recommendation or conclusion, or a person's words that state a proposal: a reviewer that reads the design first tends to accept it. After it answers, generate its comparison message by code that reads the WHOLE proposal file into the message, then send that full text to the same subagent and ask it to compare. Each reviewer's actual comparison message must contain every section and every table row, unchanged and unabridged. In both omp and Claude Code, read the file into the message by code, never inline by hand; a hand paste can truncate the proposal. A file path, file name, summary, abridged table or note in place of any section is not the proposal, even when the reviewer can read files. If your harness cannot message a finished subagent and wait for its answer, give a second fresh subagent the first reviewer's answer and the whole proposal's text, read into its message by code, and ask it only to make that comparison; in Claude Code, a message to a finished subagent resumes it in the background, so start that second subagent with `run_in_background: false` instead. Where your harness offers a subagent on a different model family, use it for these reviews, because a reviewer on the author's model shares its blind spots.
+Start two fresh reviewers, one per bar below. Their first message contains only the problem (what must work, for whom, the constraints and numbers, the person's words and the setup), not the proposal's title, design, options, decisions, recommendation or conclusion, including a person's proposed solution: reading a design first anchors the bar to it. After each answers, send the same reviewer its bar and the WHOLE proposal file, read into the message by code in both omp and Claude Code. Include every section and table row unchanged and unabridged; a hand paste can truncate it. A path, name, summary, abridged table or note cannot replace proposal text, even if the reviewer can read files. If the harness cannot message a finished reviewer and wait, start a fresh comparison reviewer with the same review brief, the first reviewer's bar and the whole code-copied proposal. Use a different model family when offered, because the author's family shares its blind spots.
+
+Prefix EVERY reviewer dispatch and relaunch with this brief, substituting its bar and stage; a replacement otherwise inherits the authoring task instead of the review:
+
+```text
+REVIEW task — you are the <best-practice/world-class> reviewer, not the spec author.
+Current stage: <1 or 2>. Stage 1: from the supplied problem alone, return the requested review bar. Stage 2: review THIS supplied proposal against THIS supplied bar, never write your own proposal.
+Do not load dispatch-first or dispatch-writing-specs, research or author a spec, edit files, or launch researchers. Your assignment is only this review.
+For the comparison return `Verdict: <one verdict>` then `Findings: <each gap and whether a stated case fact requires it, or none>`. Choose FOLLOWS BEST PRACTICE or DOES NOT FOLLOW BEST PRACTICE for that bar; WORLD-CLASS or NOT WORLD-CLASS for the world-class bar.
+```
+
+Wait within the same turn, at most 10 minutes per reviewer stage. In Claude Code use `run_in_background: true`, then `TaskOutput` with `block: true, timeout: 600000`; in omp start the task and `wait` within that bound. If the wait expires or a comparison returns without a verdict, launch one fresh replacement with the SAME review brief and stage inputs: problem only for stage 1; the established bar and whole code-copied proposal for stage 2. If the replacement also has no answer/verdict, record the missing review and keep publication and approval blocked; a progress message is not a verdict.
+
+Never call `TaskStop` to recover a reviewer. The self-stop trap is “the reviewer is stuck with no turns; let me stop it and relaunch”: the task id may be YOUR OWN, which stops the reviewer itself. The answer is a fresh reviewer with the same review brief, not stopping yourself or any task.
+
+The instant ANY reviewer reply arrives, run `date -u` as your NEXT action, before reading it, editing, messaging or dispatching: a clock read after edits records the edit time, not the reply's arrival. Save that output and the replying run id to a file at once; use this record for its final verdict's entry time, never a later clock or reviewer-written time.
 
 Best practice:
 
@@ -148,7 +163,7 @@ From this problem alone, list every best practice for this kind of problem: each
 Follow-up:
 <The WHOLE proposal file, read into this message by code: every section and every table row, unabridged.>
 
-List each best practice the proposal does not follow, and whether it states a fact of this case that rules the practice out. Skipping a practice to save work, time, money or a credential is a finding. End with FOLLOWS BEST PRACTICE, or the findings.
+List each best practice THIS proposal does not follow, and whether it states a case fact that rules the practice out. Saving work, time, money or a credential is a finding. Return the review brief's verdict and findings, never a spec.
 ```
 
 World-class:
@@ -162,11 +177,11 @@ Assume time and money are no object. World-class is not over-engineering and is 
 Follow-up:
 <The WHOLE proposal file, read into this message by code: every section and every table row, unabridged.>
 
-List each place it accepts less than that answer (a manual step, a workaround, a second system, a narrower scope, a temporary fix), and whether the proposal gives a fact of this case that requires it. End with WORLD-CLASS, or the findings.
+List each place THIS proposal accepts less than THIS bar (a manual step, workaround, second system, narrower scope or temporary fix), and whether it gives a case fact requiring it. Return the review brief's verdict and findings, never a spec.
 ```
 
 - Fix each finding from either review, or record it in the `### Best practice and world-class` entry with the fact or the cost that requires it. Never request approval while a finding is neither. A NOT WORLD-CLASS verdict whose findings are all fixed or recorded does not block the request.
-- Write the final round's verdicts of both reviewers in that entry, not in another section: one separate line or row per reviewer, each giving its own verdict, its OWN model (such as `anthropic/claude-opus-5`, never its role or agent name), the id of its run (the agent id or session id your harness gave it; the two reviewers are two runs with two ids) and the clock time (UTC) its final answer arrived. Never use a single shared model line for both reviewers: each reviewer's own model must appear on its own line or row, even when both used the same model. The instant each reviewer's final reply arrives, before reading it or taking any other action, run `date -u` and write that time and that reviewer's run id to a file at once. Copy that reviewer's entry time from this file. A `date -u` run after any intervening action is too late and must not supply the arrival time. Never write the time later from your own clock, from the time you edit the entry, or from text the reviewer or you wrote. Name the verdicts in the approval request, so the approver sees that the reviews ran and what they found.
+- Put both final-round verdicts inside `### Best practice and world-class`: one separate line or row per reviewer with its verdict, its OWN model (a model id, not a role or agent name), its harness run id, and its final reply's recorded UTC arrival time. The two reviewers must have two distinct run ids; give each its own model even when both used the same model. Copy each time from the arrival file above: `date -u` after any intervening action is too late, even within two minutes. Never substitute your edit time, a later clock, or time text you or the reviewer wrote. State both verdicts in the approval request, so the approver sees what the reviews found.
 
   Inside `### Best practice and world-class`, record the two reviewers separately:
 
