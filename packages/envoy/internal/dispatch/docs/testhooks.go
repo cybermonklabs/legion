@@ -53,6 +53,24 @@ func (s *Service) RoomLiveForTest(artifactID string) bool {
 	return s.srv.GetDoc(artifactID) != nil
 }
 
+// RoomChargesForTest is what the room budget charges each room it holds a charge for, beside the
+// budget's own used and limit (roomBudget.figures). It is the budget's own reading of which rooms
+// it still carries: a room whose charges were given back is absent from it, not zero, which is how
+// a real-process drive tells a room the budget closed from one it still holds open. It takes the
+// budget's lock for the length of the read and nothing else: it charges nothing, closes nothing
+// and loads nothing. It is mounted only through Dispatch's test-hook route.
+func (s *Service) RoomChargesForTest() (charges map[string]int64, used, limit int64) {
+	s.budget.mu.Lock()
+	defer s.budget.mu.Unlock()
+	charges = make(map[string]int64, len(s.budget.rooms))
+	for room, entry := range s.budget.rooms {
+		for _, charge := range entry.charges {
+			charges[room] += charge.weight
+		}
+	}
+	return charges, s.budget.used, s.budget.limit
+}
+
 // HoldNextAdmissionForTest makes the next socket to artifactID wait for wait before its admission
 // (ServeHTTP), so a browser test can keep a document's first sync waiting as long as a browser in a
 // burst waits for its room - for the load slot its load takes (loadSlots), all before the server

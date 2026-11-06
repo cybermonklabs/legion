@@ -1482,6 +1482,22 @@ func TestTheRoomBudgetFollowsGrowingRoomsAndClosesTheGoneOnesFirst(t *testing.T)
 				requireRefused(t, applied, closed, contracts.DocumentBusyCloseCode, contracts.DocumentBusyCloseReason)
 				growers[index] = nil
 				refusals = append(refusals, refusal{pass: pass, room: index, took: took[index], left: len(left)})
+				if len(refusals) == 1 {
+					// What the budget itself charges each room whose browsers went, at the
+					// first refusal: a room the budget has given a charge back for is absent
+					// from the read, not zero (roomCharges), so this says whether the ten
+					// rooms are still the budget's to close or were closed by the departure's
+					// own path before any sweep looked (INFRA-179).
+					charges, used, limit := server.roomCharges(t)
+					var held int64
+					for _, room := range left {
+						_, carried := charges[room]
+						held += charges[room]
+						t.Logf("at the first refusal the budget charges room %s, whose browsers went, %d bytes (carried %v)", room, charges[room], carried)
+					}
+					t.Logf("at the first refusal the budget charges %d bytes for the %d rooms whose browsers went, of %d used of %d, over the %d rooms it carries",
+						held, len(left), used, limit, len(charges))
+				}
 				// A refusal may come while every room whose browsers have gone is still
 				// charged, and that is the teardown window rather than a fault: ygo takes a
 				// leaving peer out of its room, flushes the room's pending updates to the
@@ -3958,6 +3974,24 @@ func (p *memoryServer) roomLive(t *testing.T, artifactID string) bool {
 		t.Fatalf("asking whether document %s is live: %d %.300s, want 200 and {live}", artifactID, answer.status, answer.body)
 	}
 	return *read.Live
+}
+
+// roomCharges asks the server what its room budget charges each room it holds a charge for, with
+// the budget's own used and limit, read from the budget itself rather than from the lines a close
+// logs (docs.Service.RoomChargesForTest). A room the budget has given a charge back for is absent
+// from the map, not zero.
+func (p *memoryServer) roomCharges(t *testing.T) (charges map[string]int64, used, limit int64) {
+	t.Helper()
+	answer := p.send(t, http.MethodGet, "/api/v1/artifacts/_test/room-charges", "", nil, http.Header{"X-Dispatch-User": {"alice"}})
+	var read struct {
+		Charges map[string]int64 `json:"charges"`
+		Used    *int64           `json:"used"`
+		Limit   *int64           `json:"limit"`
+	}
+	if answer.status != http.StatusOK || json.Unmarshal(answer.body, &read) != nil || read.Used == nil || read.Limit == nil {
+		t.Fatalf("asking the room budget what it charges each room: %d %.300s, want 200 and {charges, used, limit}", answer.status, answer.body)
+	}
+	return read.Charges, *read.Used, *read.Limit
 }
 
 // requireRoomAbsent fails the test unless the server says the document is not live (roomLive).

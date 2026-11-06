@@ -1965,6 +1965,19 @@ func (s *server) setRoomBudget(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, map[string]int64{"bytes": s.deps.Docs.SetRoomBudgetForTest(input.Bytes)})
 }
 
+// roomCharges answers what the room budget charges each room it holds a charge for, beside its own
+// used and limit: {charges: {room: bytes}, used, limit}. Test-only: mounted by routes() only when
+// Deps.TestHooksEnabled is set, so a real-process drive can read which rooms the budget still
+// carries rather than inferring it from the lines a close logs. It acts on the process its call
+// lands on alone, charges nothing and closes nothing.
+func (s *server) roomCharges(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAuthenticated(w, r) {
+		return
+	}
+	charges, used, limit := s.deps.Docs.RoomChargesForTest()
+	WriteJSON(w, http.StatusOK, map[string]any{"charges": charges, "used": used, "limit": limit})
+}
+
 // artifactRoomLive answers whether the document's room is resident in this server, a read that
 // loads and rebuilds nothing. Test-only: mounted by routes() only when Deps.TestHooksEnabled is
 // set, so a real-process drive can see that the room budget closed or refused a room.
