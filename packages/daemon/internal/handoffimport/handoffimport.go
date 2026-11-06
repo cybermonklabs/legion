@@ -339,15 +339,13 @@ const (
 // red; in reviewing an approval of the round the reviewer has not completed no longer stands; a
 // held issue may have been held from any phase, and the daemon's state does not say which, so it
 // waits too, since the retry that restores its phase would otherwise find the push. In merging the
-// merger builds its READY at the head it reads, and a push past that head makes the daemon refuse
-// or void that READY (READY_HEAD_MOVED), so the merger builds it again; in awaiting_merge a push
-// past READY's head withdraws that READY and sends the issue back to implementing.
+// merger merges the head it reads, and a push past that head is one nobody reviewed, so the
+// merger reads the branch again (dispatch://INFRA-714).
 var deferredUnderRecords = map[phase.Phase]string{
-	phase.Testing:       runAgain,
-	phase.Reviewing:     runAgain,
-	phase.Held:          runAgain,
-	phase.Merging:       mergeCarries,
-	phase.AwaitingMerge: mergeCarries,
+	phase.Testing:   runAgain,
+	phase.Reviewing: runAgain,
+	phase.Held:      runAgain,
+	phase.Merging:   mergeCarries,
 }
 
 // removal is what the attempt removes from the branch at head, whose .legion/ lists top, and
