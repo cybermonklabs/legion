@@ -1,0 +1,39 @@
+name: probe-reconcile
+on:
+  push:
+    branches: ['probe/infra1066-recon']
+permissions:
+  checks: write
+jobs:
+  prove:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Post a stale passing ci-ok, as a green attempt would leave behind
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          id=$(gh api -X POST "repos/$GITHUB_REPOSITORY/check-runs" -f name=ci-ok \
+            -f head_sha="$GITHUB_SHA" -f status=completed -f conclusion=success \
+            -f 'output[title]=a stale passing ci-ok' \
+            -f 'output[summary]=INFRA-1066 k27: stands in for a posted ci-ok a later attempt must correct.' \
+            --jq .id)
+          echo "stale=$id" >>"$GITHUB_OUTPUT"
+          echo "posted $id"
+        id: stale
+      - name: Reconcile it to this attempt's conclusion
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.sha }}
+          CHECK_RUN_ID: ${{ job.check_run_id }}
+          CONCLUSION: failure
+        run: .github/scripts/ci-ok-reconcile.sh
+      - name: Read it back
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/check-runs/${{ steps.stale.outputs.stale }}" \
+            --jq '"after: id=\(.id) conclusion=\(.conclusion) title=\(.output.title)"'
