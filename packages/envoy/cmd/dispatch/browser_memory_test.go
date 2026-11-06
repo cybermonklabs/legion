@@ -1521,7 +1521,10 @@ func TestAFullServerRefusesWhatGrowsAndTakesWhatShrinks(t *testing.T) {
 	const markAuthor = "user:bob"
 	memory := newMemoryHarness(t)
 	memory.env = append(memory.env, podServerEnv()...)
-	fleet := memory.mebibyteFleet(t, func(reserved int64) int { return int(roomBudgetBytesForTest/reserved) + 4 })
+	// The budget admits what it holds and one more, the room that crosses the limit, since an
+	// admission reserves nothing for the room it is about to load; the drive needs one past that
+	// for the refusal, and three it keeps for the writes at the end.
+	fleet := memory.mebibyteFleet(t, func(weight int64) int { return int(roomBudgetBytesForTest/weight) + 6 })
 	small, smallState := memory.smallDocuments(t, growers)
 	// Rounds a growing room can take while it stays under the element bound every server write
 	// obeys, so its settlement keeps writing: about seven, which across four rooms is several times
