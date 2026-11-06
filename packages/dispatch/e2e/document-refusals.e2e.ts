@@ -38,6 +38,8 @@ const NEEDS_REBUILD =
   "This document has been edited so much that it must be rebuilt before it can take this edit. Your other edits are kept.";
 const REBUILT_ELSEWHERE =
   "Someone else rebuilt this document, so the edits you had not sent could not be kept. Dispatch has reloaded the rebuilt document.";
+const TOO_TANGLED =
+  "Your last edit was not saved: Dispatch could not merge it into this document quickly enough. Your other edits are kept.";
 const UPDATE_REFUSED =
   "Your last edit was not saved: it holds content this document does not take.";
 const OUT_OF_ROOM = "Dispatch is out of room for open documents right now.";
@@ -728,32 +730,27 @@ test("a merge the server cannot scan through is dropped with its reason, and the
     // The hook chains tens of thousands of items onto the end of that text
     // (docs.Service.TangleBeyondOneApplyForTest), each naming the place Alice's paste names: a
     // real document is tangled that far only where as many items were made at one place while a
-    // browser was away, which no browser test can type.
+    // browser was away, which no browser test can type. Merging her paste scans the chain to its
+    // end, past the items one apply of hers is allowed (27,594 of them for her 36-byte frame,
+    // scanCeiling), while the room keeps most of its 1,000,000-item scan total, which is what
+    // makes this refusal the too-tangled one and not a rebuild's.
     const tangled = await postAsPage(offline, `/api/v1/artifacts/${artifactId}/_test/tangled`);
     expect(tangled.status(), await tangled.text()).toBe(204);
     await offline.close();
 
-    // Alice comes back, and her saved paste never reaches the server: her own browser drops it,
-    // because the chain's history parks it (pending-sync.ts, addsParking), and tells her so. It
-    // is her browser that tells her, not a refusal: the server never sees the frame, and the two
-    // replay rows above prove the replays that do reach it - into a small document and into one
-    // whose state needs many sync frames - both apply. Before this pull request cut the
-    // pre-apply decoder, the server estimated such a merge's scans from the frame's origins
-    // alone, over-charged it at the chain's whole length and closed the socket 4413
-    // DOC_TOO_TANGLED, so a refusal told her instead. That refusal is still real for a client
-    // that is not the editor, over a real socket, and is proven by
-    // TestAScanFrameIsRefusedWholeAndTheRoomIsAsItWas in packages/envoy/cmd/dispatch, which
-    // refuses an 8,290-byte frame scanning 28,013 items against an allowance of 27,485 and
-    // leaves the room byte for byte as it was.
+    // Alice comes back: her saved paste is sent, refused whole, and dropped with its reason. The
+    // room hands her the chain first, as a series of bounded frames, which is work this change's
+    // fork had to be made linear in the chain's length to do at all: before sjawhar/ygo
+    // v1.55.1-sami.7 the split walked its clients in the order the encoder writes them, against a
+    // chain whose dependencies run the other way, so this document's handover took about a
+    // hundred seconds of a pod's CPU and no browser of it ever synced (crdt/split.go).
     const page = await alice.newPage();
     const sockets = await recordDocumentSockets(page);
     await page.goto(`/issues/${issue.key}/spec`);
-    await expect(connectedDot(page)).toHaveText("connected");
-    await expect(
-      page.getByText(/could not be applied: the document was rebuilt since\./)
-    ).toBeVisible();
+    await expect(page.getByText(TOO_TANGLED)).toBeVisible();
     // Nothing to rebuild: the document is nowhere near a cap, only this one merge was too far.
     await expect(page.getByRole("button", { name: "Rebuild this document" })).toHaveCount(0);
+    await expect(connectedDot(page)).toHaveText("connected");
     await expect(documentEditor(page)).toContainText(TANGLE_POINT);
     await expect(documentEditor(page)).not.toContainText("tangled paste");
     await expect.poll(() => pendingEditCount(page, artifactId)).toBe(0);
@@ -761,13 +758,13 @@ test("a merge the server cannot scan through is dropped with its reason, and the
     expect(refused).not.toContain("tangled paste");
     expect(refused).toContain(TANGLE_POINT);
 
-    await typeAtEnd(page, "saved after the drop");
+    await typeAtEnd(page, "saved after the refusal");
     await expect
       .poll(async () => (await getArtifactText(artifactId)).markdown)
-      .toContain("saved after the drop");
+      .toContain("saved after the refusal");
     await expect.poll(() => pendingEditCount(page, artifactId)).toBe(0);
-    // Her browser dropped the paste, so no socket of hers was closed for it.
-    expect((await sockets()).closes.filter((code) => code === 4413)).toHaveLength(0);
+    // One refusal, and no reconnect that met it again.
+    expect((await sockets()).closes.filter((code) => code === 4413)).toHaveLength(1);
     expect((await getArtifactText(artifactId)).markdown).not.toContain("tangled paste");
   } finally {
     await alice.close();
