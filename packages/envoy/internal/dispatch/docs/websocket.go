@@ -588,6 +588,8 @@ func (s *Service) authorize(r *http.Request) (websocket.ConnectionConfig, bool) 
 	connection.actor = actor
 	connection.added = true
 	s.addConnection(room, connection.id, actor)
+	slog.Info("EXPERIMENT: admitted a document socket", "room", room, "open", open,
+		"schema", r.URL.Query().Get("schema_version"), "want", pmdoc.SchemaVersion())
 	return websocket.ConnectionConfig{
 		ReadOnly: schemaReadOnly(open, r.URL.Query().Get("schema_version")),
 	}, true
