@@ -439,12 +439,53 @@ func TestTheHeaviestWholeStateFrameTheServerStoresFitsTheMessageFloor(t *testing
 	if len(state) > serverStoredStateFrame+serverStoredStateFrame/100 {
 		t.Fatalf("the stored frame is %d bytes, past the %d the floor is set from by more than a hundredth: measure it again and set the floor from it", len(state), serverStoredStateFrame)
 	}
-	// The constant is not the derivation's own next whole mebibyte, 52 MiB (54,525,952): it stays
-	// at the 54 MiB this branch set before the cut, 2,097,152 bytes above what the derivation
-	// asks, which write_queue.go says plainly. What this holds is that it clears both terms and
-	// stays under the 64 MiB ygo allowed before, past which the design goes back to the architect.
+	// The floor is ygo's own old default, 64 MiB, and the state cap is a quarter of it, so the
+	// second term is the floor exactly and this holds the first: four times the heaviest frame
+	// the server's own writes store fits inside it.
 	if maxMessageBytes < floor || maxMessageBytes > 64<<20 {
 		t.Fatalf("the floor is %d bytes, want it at or above the %d the larger term asks, and at most the 64 MiB ygo allowed before", maxMessageBytes, floor)
+	}
+}
+
+// heaviestStateAtTheDecodeCap is the heaviest state measured of a document a person typed to the
+// decode cap: the branch's long-edited fixture, 14,427,285 bytes on 2026-11-06. It is the figure
+// the state cap and the message floor have to clear, and the one they did not clear when they
+// were written apart - a 13.5 MB cap under a 54 MiB floor left this document unable to take a
+// byte from any browser and unable to hand its state back, because four times it was over the
+// floor meant to clear it (write_queue.go, maxRoomStateBytes).
+const heaviestStateAtTheDecodeCap = 14_427_285
+
+// The state cap clears the heaviest state a document at the decode cap holds, and the message
+// floor clears four of them, so a room that reaches the cap can still hand its whole state over
+// and still take an edit. This is the arithmetic alone, so it runs everywhere and in no time;
+// TestTheHeaviestStateAtTheDecodeCapIsStillTheFigureBelow builds the document and holds the
+// figure itself to what it measures.
+func TestTheHeaviestStateAtTheDecodeCapFitsTheRoomsStateCapAndTheFloor(t *testing.T) {
+	if heaviestStateAtTheDecodeCap >= maxRoomStateBytes {
+		t.Fatalf("the heaviest state at the decode cap is %d bytes and the room's state cap %d: a document at the cap could take no byte from any browser",
+			heaviestStateAtTheDecodeCap, maxRoomStateBytes)
+	}
+	if 4*heaviestStateAtTheDecodeCap >= maxMessageBytes {
+		t.Fatalf("four times the heaviest state at the decode cap is %d bytes and the message floor %d: that document's handoff would be closed by the floor meant to clear it",
+			4*heaviestStateAtTheDecodeCap, maxMessageBytes)
+	}
+	if maxRoomStateBytes != maxMessageBytes/4 {
+		t.Fatalf("the state cap is %d and a quarter of the floor is %d: the two are one rule and are derived from one figure so they cannot drift",
+			maxRoomStateBytes, maxMessageBytes/4)
+	}
+}
+
+// The figure above is still what a document typed to the decode cap holds. It builds the
+// fixture, which takes about a million writes, so it carries the bounds' race skip as the other
+// fixtures at the cap do; the arithmetic it feeds is held by the test above at every build.
+func TestTheHeaviestStateAtTheDecodeCapIsStillTheFigureBelow(t *testing.T) {
+	skipAtTheBoundsUnderRace(t)
+	state := longEditedAtCapState(t)
+	t.Logf("a document typed to the decode cap holds %d bytes of state against the %d recorded; the state cap is %d and the floor %d",
+		len(state), heaviestStateAtTheDecodeCap, maxRoomStateBytes, maxMessageBytes)
+	if len(state) > heaviestStateAtTheDecodeCap+heaviestStateAtTheDecodeCap/100 {
+		t.Fatalf("the state is %d bytes, past the %d recorded by more than a hundredth: measure it again and set heaviestStateAtTheDecodeCap from it",
+			len(state), heaviestStateAtTheDecodeCap)
 	}
 }
 
@@ -498,13 +539,16 @@ func TestTheWriteQueueBudgetsArithmetic(t *testing.T) {
 	calibrated := BoundsForLimit(calibratedGoMemoryLimitBytes)
 	frames := roomFramesUnderTheBudget(calibrated.RoomBudget)
 	held := sockets*calibrated.PeerWriteQueue + frames + calibrated.RoomBudget
-	if frames != 76_695_844 || held != 3_482_470_692 || calibrated.Limit-held != 382_999_874 {
-		t.Errorf("at the calibration the rooms can send %d bytes of frames and the twenty sockets hold %d, leaving %d: the figures peerWriteQueueBytes quotes are 76,695,844, 3,482,470,692 and 382,999,874",
+	if frames != 76_695_844 || held != 3_692_185_892 || calibrated.Limit-held != 173_284_674 {
+		t.Errorf("at the calibration the rooms can send %d bytes of frames and the twenty sockets hold %d, leaving %d: the figures peerWriteQueueBytes quotes are 76,695,844, 3,692,185,892 and 173,284,674",
 			frames, held, calibrated.Limit-held)
 	}
-	if atSixtyFour := int64(sockets)*(64<<20) + frames + calibrated.RoomBudget; atSixtyFour != 3_566_356_772 || atSixtyFour > calibrated.Limit {
-		t.Errorf("%d sockets at a 64 MiB budget hold %d bytes beside a full room budget, against the %d-byte Go memory limit: the constant's account says 3,566,356,772, inside the limit",
-			sockets, atSixtyFour, calibrated.Limit)
+	// The budget is the message floor plus the lag it allows beyond one frame at the floor, so
+	// a socket is never closed for a frame it could not have avoided (write_queue.go), and the
+	// two move together whenever the floor does.
+	if int64(peerWriteQueueBytes) != int64(maxMessageBytes)+6_291_456 {
+		t.Errorf("the write-queue budget is %d bytes and the message floor %d: the budget is the floor plus the 6,291,456 bytes of lag it allows beyond one frame at the floor",
+			peerWriteQueueBytes, maxMessageBytes)
 	}
 }
 

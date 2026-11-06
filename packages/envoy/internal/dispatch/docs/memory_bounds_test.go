@@ -31,7 +31,7 @@ func TestTheMemoryBoundsAtTheCalibrationAreTodaysConstants(t *testing.T) {
 	}
 	// The figures the comments and the drives quote, held here so a change to the arithmetic
 	// that still agrees with the constants cannot move them unnoticed.
-	if want.RoomBudget != 2_147_483_648 || want.DocumentReadCache != 268_435_456 || want.PeerWriteQueue != 62_914_560 {
+	if want.RoomBudget != 2_147_483_648 || want.DocumentReadCache != 268_435_456 || want.PeerWriteQueue != 73_400_320 {
 		t.Fatalf("the constants are %+v, which is not the 4 GiB calibration this test and the drives are written against", want)
 	}
 	// What the limit leaves above the room budget and the cold reads' cache, three quarters of
