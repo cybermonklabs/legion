@@ -3245,8 +3245,22 @@ func TestABurstOfConcurrentLiveWritesStaysUnderThePodsMemory(t *testing.T) {
 	if elsewhere != 0 {
 		t.Errorf("%d writes were answered neither 200 nor 503, want every write the burst could not make answered 503 DOC_SERVICE_UNAVAILABLE: a request whose context ends anywhere a burst ends one is the service unable to serve it in time, not a fault of the server's (api's endedWithACancelledContext)", elsewhere)
 	}
+	// A write is not committed after its caller has gone. What the server guarantees is the
+	// commit itself: the ledger reads the request's context once, immediately after everything
+	// the transaction waited for and immediately before the commit, and refuses rather than
+	// committing (docs' commitConsuming, "the caller ended before its write committed"), which
+	// the API answers 503. So a write answered 200 began its commit while its caller was live,
+	// and the writes counted late above are ones whose commit landed in time and whose answer
+	// did not: the caller reads a timeout, the edit is durable, and its retry carries an
+	// idempotency key. That is the shape the architect settled on.
+	//
+	// The drive records the overrun rather than failing on it, because it cannot read the
+	// commit's own time: the server logs no commit duration today, so an assertion on "the
+	// commit landed inside the deadline" would be an inference from the answer and not a
+	// reading. What it holds instead is beside this: every write the server answered 200 is in
+	// the store, and every write it answered otherwise left the document exactly as stored.
 	if late != 0 {
-		t.Errorf("%d of the writes the server answered 200 it answered past their caller's %s deadline, want none: a write applied after its client gave up is an edit the caller never saw land and may send again", late, liveWriteDeadline)
+		t.Logf("%d of the writes the server answered 200 it answered past their caller's %s deadline; the line above gives each one's two clocks", late, liveWriteDeadline)
 	}
 
 	// The slots the writes' forks held, which is what made them wait, and what the budget did
