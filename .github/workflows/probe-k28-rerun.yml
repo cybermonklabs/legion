@@ -1,0 +1,14 @@
+name: probe-k28-rerun
+on:
+  push:
+    branches: ['probe/infra1066-rerun']
+permissions: {}
+jobs:
+  ci-ok:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Fail on the first attempt only
+        run: |
+          echo "attempt $GITHUB_RUN_ATTEMPT"
+          [ "$GITHUB_RUN_ATTEMPT" != 1 ]
