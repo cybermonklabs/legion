@@ -775,17 +775,17 @@ func TestAWriteLeavingParkedStructsPastTheDecodeCapIsRefusedAsUndecodable(t *tes
 }
 
 // The ceiling the decode cap's cheap filter answers on (structCeiling) is never below the struct
-// total, whatever clocks a browser's frame claims. A clock length in a V1 update is a varuint, so
+// count, whatever clocks a browser's frame claims. A clock length in a V1 update is a varuint, so
 // one GC run of a client the room has never seen claims every clock up to 2^53 - the most ygo
-// takes (structEnd, sjawhar/ygo v1.55.1-sami.1, crdt/update.go:1633-1638) and the most the walk
-// takes from a browser (maxEditorClock) - in about twelve bytes, and the hook admits it: a GC run
-// renders nothing and costs the room one struct with its two splits (peerWeighing.added). One
-// frame of 2,048 such groups, 34,819 bytes, is three structs each against the cap and sums to
-// exactly 2^64 clocks, which the sum of the room's state vector held in a uint64 wrapped away:
-// before plusCapped the room held 2,058 structs and its ceiling read 45, the clocks of its own
-// text alone. A ceiling below the total is a server write let through without the exact count
-// that answers for it (leavesPastDecodeCap), which is how a room is left past the decode cap and
-// its stored document left one no load decodes.
+// takes (structEnd, sjawhar/ygo v1.55.1-sami.1, crdt/update.go:1633-1638) and the most a
+// browser's frame can name (maxEditorClock) - in about twelve bytes, and the hook admits it: a
+// GC run renders nothing and integrates one struct, which is all its allowance is charged
+// (crdt.ApplyBudget). One frame of 2,048 such groups, 34,819 bytes, is three structs each
+// against the cap and sums to exactly 2^64 clocks, which the sum of the room's state vector
+// held in a uint64 wrapped away: before plusCapped the room held 2,058 structs and its ceiling
+// read 45, the clocks of its own text alone. A ceiling below the count is a server write let
+// through without the exact count that answers for it (leavesPastDecodeCap), which is how a room
+// is left past the decode cap and its stored document left one no load decodes.
 //
 // The clocks are claimed, not held: the room holds one struct for each run, so nothing here is
 // proportional to the span. What the test holds is only that the ceiling stays a ceiling.
