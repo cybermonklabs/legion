@@ -5,28 +5,27 @@ package docs
 // it before ygo closes it (peerWriteQueueBytes).
 
 // maxMessageBytes is the most one websocket message a browser sends may carry, ygo's
-// Server.MaxMessageBytes, whose own default is 64 MiB (sjawhar/ygo v1.55.1-sami.1,
-// provider/websocket/server.go:150-157). It is a floor against a client that is not the editor at
-// all, never the bound on a document: the bound is weighPeerUpdate's, which hands the apply an
+// Server.MaxMessageBytes, whose own default is this same 64 MiB (sjawhar/ygo v1.55.1-sami.6,
+// provider/websocket/server.go). It is a floor against a client that is not the editor at all,
+// never the bound on a document: the bound is weighPeerUpdate's, which hands the apply an
 // allowance ygo counts the frame against as it decodes it and rolls the whole apply back where
 // it passes, so a frame at this floor that the hook refuses costs the pod the frame itself and
 // nothing lasting.
 //
 // The floor has to clear every whole-state frame an editor hands over, since a frame over it is
 // closed by the websocket library with a code the editor reconnects on, a loop the editor's
-// handoff must never enter. What it has to clear is the larger of four times the heaviest frame
-// the server's own writes store, 4 x 12,598,044 = 50,392,176, and four times the most state one
-// room may hold, 4 x maxRoomStateBytes = 54,000,000, whose next whole mebibyte is 52 MiB
-// (54,525,952). The constant stays at the 54 MiB (56,623,104) this branch set before the cut:
-// 2,097,152 bytes above what the derivation asks, and under the 64 MiB ygo allowed before, past
-// which this design would have had to come back to the architect. A room at the state cap hands
-// over a frame about the size of its state, so four such handoffs fit the floor. Measured frames
-// sit well inside it: heaviestDocument at 5,360,879 bytes, and that document grown through the
-// creep allowance at 9,577,606 (TestTheHeaviestWholeStateFrameFitsTheMessageFloor,
-// TestTheHeaviestWholeStateFrameABrowserCanGrowFitsTheMessageFloor), and
-// TestTheHeaviestWholeStateFrameTheServerStoresFitsTheMessageFloor holds the floor over both of
-// its terms.
-const maxMessageBytes = 54 << 20
+// handoff must never enter. It is the one figure of the pair, and the most state one room may
+// hold is a quarter of it (maxRoomStateBytes, 16,777,216), so a room at the cap hands over a
+// frame about the size of its state and four such handoffs fit the floor by construction. They
+// were two figures before, 54 MiB against a 13.5 MB cap, and they drifted: the branch's own
+// long-edited document at the decode cap stores 14,427,285 bytes, over that cap and, four
+// times, over that floor, so its handoff would have been closed by the floor meant to clear it.
+// Measured frames sit far inside this one: the heaviest the server's own writes store is
+// 12,598,044 bytes, heaviestDocument is 5,360,879, and that document grown through the creep
+// allowance is 9,577,606 (TestTheHeaviestWholeStateFrameFitsTheMessageFloor,
+// TestTheHeaviestWholeStateFrameABrowserCanGrowFitsTheMessageFloor,
+// TestTheHeaviestWholeStateFrameTheServerStoresFitsTheMessageFloor).
+const maxMessageBytes = 64 << 20
 
 // peerWriteQueueBytes is ygo's Server.PeerWriteQueueBytes: the bytes of frames queued for one
 // browser's socket and not yet taken off that queue by its writer. ygo refuses a frame to a socket
@@ -56,10 +55,12 @@ const maxMessageBytes = 54 << 20
 //     or more waits closes a socket whatever it is doing: a budget at or under the largest frame
 //     would close an honest reader holding one such frame for the next frame, which it could not
 //     have avoided. The largest are a whole-state SyncStep2, which the hook's state cap holds to
-//     about maxRoomStateBytes, 13,500,000 bytes, and the SyncStep2 or Update ygo relays from
+//     about maxRoomStateBytes, 16,777,216 bytes, and the SyncStep2 or Update ygo relays from
 //     another browser of the room, which it relays as it arrived and the read limit holds to
-//     maxMessageBytes, 56,623,104, each with Hocuspocus's framing of the room name and the two
-//     tags, under 64 bytes. The budget clears the larger of the two by 6,291,456 bytes.
+//     maxMessageBytes, 67,108,864, each with Hocuspocus's framing of the room name and the two
+//     tags, under 64 bytes. The budget clears the larger of the two by 6,291,456 bytes, which is
+//     the margin it has always kept over the floor: the floor is what sets this figure, so the
+//     two moved together when the floor went from 54 MiB to 64 MiB.
 //
 //   - An honest reader on a slow link is never closed for lagging: those 6,291,456 bytes are what
 //     it may fall behind beyond the largest single frame, and a reader of an ordinary document the
@@ -79,22 +80,21 @@ const maxMessageBytes = 54 << 20
 //     at bytesOfHeapAStateByte in each of roomCopies copies (roomWeight), and a room's
 //     whole-state frame is about its state, so the rooms under a full budget can send
 //     2,147,483,648 / 28 = 76,695,844 bytes of frames between them. So the twenty hold
-//     20 x 62,914,560 + 76,695,844 = 1,334,987,044 bytes, which beside the full room budget is
-//     3,482,470,692, inside the limit with 382,999,874 bytes left. Measured on 2026-10-31 with
+//     20 x 73,400,320 + 76,695,844 = 1,544,702,244 bytes, which beside the full room budget is
+//     3,692,185,892, inside the limit with 173,284,674 bytes left. Measured on 2026-10-31 with
 //     twenty such sockets on twenty mebibyte documents
-//     (TestTwentySocketsThatNeverReadStayUnderThePodsMemory), they held 1,258,425,600 bytes
-//     between them over four runs, the last under sjawhar/ygo v1.54.1-sami.3, 62,921,280 each,
-//     and the server peaked at 1,552 to 2,093 MiB of the pod's 4,096 as its kernel would charge
-//     it, holding 1,570,798,216 to 2,141,035,272 bytes of what its limit bounds.
+//     (TestTwentySocketsThatNeverReadStayUnderThePodsMemory), at the 60 MiB this budget stood at
+//     before the floor moved, they held 1,258,425,600 bytes between them over four runs,
+//     62,921,280 each, and the server peaked at 1,552 to 2,093 MiB of the pod's 4,096 as its
+//     kernel would charge it, holding 1,570,798,216 to 2,141,035,272 bytes of what its limit
+//     bounds. That drive re-measures it at this budget; the arithmetic above is what it is held
+//     to.
 //
-// It stays at 60 MiB under the one price the budget now charges, which leaves those twenty
-// sockets more room than the six prices before it did: a socket's own queue is what dominates
-// the sum, and the budget is what bounds the frames beside it. 64 MiB, which the draft of this
-// against ygo's draft did not fit, would now fit the limit too -
-// 20 x 67,108,864 + 76,695,844 + 2,147,483,648 = 3,566,356,772, which leaves 299,113,794 of the
-// calibration's 3,865,470,566 - but nothing asks for it: the measurements above were taken at
-// 60 MiB, and a larger budget buys an honest reader nothing it does not already have, 6,291,456
-// bytes of lag beyond the largest frame it can be sent.
+// It is 70 MiB because the floor is 64 MiB: a budget at or under the largest frame a room can
+// send one socket would close an honest reader for a frame it could not have avoided, so this
+// is the floor plus the 6,291,456 bytes of lag it has always allowed beyond one such frame. It
+// was 60 MiB against a 54 MiB floor, which is the same rule at the figures before the state cap
+// and the floor were tied together (maxRoomStateBytes).
 //
 // It is the one bound here that does not scale with the Go memory limit (MemoryBounds). What
 // sizes it is the frames a room sends, and no frame bound scales: a budget at or under the
@@ -106,7 +106,7 @@ const maxMessageBytes = 54 << 20
 // rooms under a full budget can send grow with the budget, while these twenty queues stay 60 MiB
 // each. Below the calibration it is the limit, not the budget, that gives way: fewer than twenty
 // silent sockets fit beside a full room budget, and no budget that clears the largest frame
-// could make twenty fit, since twenty frames at the message floor are 1,132,462,080 bytes on
+// could make twenty fit, since twenty frames at the message floor are 1,342,177,280 bytes on
 // their own (TestTheWriteQueueBudgetsArithmetic weighs both limits).
 //
 // The close is logged at Warn, "peer queued bytes over budget; closing peer", with the room, the
@@ -115,4 +115,4 @@ const maxMessageBytes = 54 << 20
 // Server.Logger is unset (provider/websocket/server.go:168-174), which cmd/dispatch sets at boot
 // (its main); the drives of cmd/dispatch/write_queue_memory_test.go read those lines off the
 // server's stderr.
-const peerWriteQueueBytes = 60 << 20
+const peerWriteQueueBytes = 70 << 20

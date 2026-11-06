@@ -112,6 +112,15 @@ func (a *servicePersistenceAdapter) LoadDoc(room string) (_ []byte, err error) {
 		}
 	}()
 	if preload, ok := a.service.takePreload(room); ok {
+		// The preload carries the slot its socket's admission took before the room budget
+		// weighed it, so the load runs under that one and the budget weighs no further
+		// admission until this room has charged (ServeHTTP). A preload from a path that took
+		// none - a test's, or an admission that found the room resident - leaves this load to
+		// take its own, as every other load does.
+		if preload.slot != nil {
+			slot.release()
+			slot = preload.slot
+		}
 		_ = slot.take(context.Background())
 		load.read(preload.loaded.Version, preload.loaded.Update, preload.decoded, slot)
 		return nil, nil
@@ -325,21 +334,27 @@ func loadableHistory(update []byte) error {
 type preloadedDocument struct {
 	loaded  persistence.LoadResult
 	decoded decodedState
+	// slot is the load slot the socket's admission took before the room budget weighed it, held
+	// from then until the room's load has charged (ServeHTTP, LoadDoc). Whoever takes the
+	// preload takes the slot with it and gives it back; whoever drops a preload no load will
+	// take gives it back there and then.
+	slot *loadSlot
 }
 
-// take is the preload's state, which the preload gives up. Only the caller that took the preload
-// off Service.preloads calls it, so nothing else reads the preload meanwhile: the handler that
-// stored it only compares it (ServeHTTP).
+// take is the preload's state and its slot, which the preload gives up. Only the caller that
+// took the preload off Service.preloads calls it, so nothing else reads the preload meanwhile:
+// the handler that stored it only compares it (ServeHTTP).
 func (p *preloadedDocument) take() preloadedDocument {
 	taken := *p
 	p.decoded = decodedState{}
+	p.slot = nil
 	return taken
 }
 
 // takePreload is the state a socket's admission check loaded for room, while the durable head is
 // still the one it loaded: every write that changes a document's stored state raises its head (an
 // append, a rebuild), and compaction keeps both the head and the state. A stale or absent preload
-// is no answer, and the caller loads the room itself; a stale one's copy goes with it.
+// is no answer, and the caller loads the room itself; a stale one's copy and its slot go with it.
 func (s *Service) takePreload(room string) (preloadedDocument, bool) {
 	value, ok := s.preloads.LoadAndDelete(room)
 	if !ok {
@@ -348,6 +363,7 @@ func (s *Service) takePreload(room string) (preloadedDocument, bool) {
 	preload := value.(*preloadedDocument).take()
 	head, err := s.persistence.Head(context.Background(), room)
 	if err != nil || head != preload.loaded.Version {
+		preload.slot.release()
 		return preloadedDocument{}, false
 	}
 	return preload, true
@@ -356,10 +372,11 @@ func (s *Service) takePreload(room string) (preloadedDocument, bool) {
 // dropPreload drops the preload a socket's admission left for room, which no load will take: a
 // load of room has run since that admission stored it (onLoadDocument), so the socket joins the
 // room that load made. A copy left there would be a whole decode of the document beside the
-// room's two, held for as long as the socket stays.
+// room's two, held for as long as the socket stays, and its slot would be one the pod's load
+// concurrency never gets back.
 func (s *Service) dropPreload(room string) {
 	if value, ok := s.preloads.LoadAndDelete(room); ok {
-		value.(*preloadedDocument).take()
+		value.(*preloadedDocument).take().slot.release()
 	}
 }
 
@@ -375,12 +392,16 @@ func (s *Service) dropPreload(room string) {
 // copy.
 func (s *Service) leavePreload(room string, preload *preloadedDocument) (forget func()) {
 	if previous, replaced := s.preloads.Swap(room, preload); replaced {
-		previous.(*preloadedDocument).take()
+		previous.(*preloadedDocument).take().slot.release()
 	}
 	if s.srv.GetDoc(room) != nil && s.preloads.CompareAndDelete(room, preload) {
-		preload.take()
+		preload.take().slot.release()
 	}
-	return func() { s.preloads.CompareAndDelete(room, preload) }
+	return func() {
+		if s.preloads.CompareAndDelete(room, preload) {
+			preload.take().slot.release()
+		}
+	}
 }
 
 // documentSchemaCloseCode closes a document websocket whose room is outside the Proof schema
@@ -464,14 +485,38 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	// The room budget admits the browser before anything below loads the document: it joins a
 	// room the budget already charges, and is otherwise refused while the open rooms stand over
-	// the budget's limit and the sweeps it starts can close nothing (roomBudget.refusal). It
-	// reserves nothing for the room it is about to load; what keeps a burst of admissions from
-	// each reading the same headroom is the slot each of their loads takes (loadSlots).
+	// the budget's limit and the sweeps it starts can close nothing (roomBudget.refusal).
 	// maxLiveRooms stays the count backstop above.
+	//
+	// An admission whose room is not resident takes a load slot FIRST, before it is weighed, and
+	// holds it through the weighing, through its own read and decode (loadTree) and through the
+	// room's load, which takes the same slot off the preload (preloadedDocument.slot, LoadDoc).
+	// The budget charges a room only once its load has finished, so a burst of admissions weighed
+	// before any of their rooms had charged anything would each read the same headroom and all
+	// pass: measured before this ordering, twenty-four browsers arriving together were all
+	// admitted, their rooms charged 5,976,639,564 bytes against a 2,147,483,648-byte budget, and
+	// the pod's kernel charged 7,225 MiB of its 4,096 (INFRA-179). Queueing on the slots is what
+	// makes the budget see each room's weight before the next admission is weighed, which at the
+	// calibration's one slot turns fifty admissions at once into one after another, and at
+	// sixteen leaves a window of at most k rooms.
+	//
+	// A socket joining a room that is already resident takes no slot: its room is charged
+	// already, nothing is about to be decoded for it, and queueing it behind a cold load would
+	// make an open document's second browser wait for a stranger's.
 	if wait, held := s.admissionHolds.LoadAndDelete(room); held {
 		select {
 		case <-time.After(wait.(time.Duration)):
 		case <-r.Context().Done():
+			return
+		}
+	}
+	admissionSlot := newLoadSlot()
+	defer admissionSlot.release()
+	if s.srv.GetDoc(room) == nil {
+		if err := admissionSlot.take(r.Context()); err != nil {
+			slog.Warn("dispatch: a document socket's admission gave up waiting for a load slot; answered 503",
+				"room", room, "error", err)
+			http.Error(w, ErrServiceUnavailable.Error(), http.StatusServiceUnavailable)
 			return
 		}
 	}
@@ -499,7 +544,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// `invalid`. The server decides it here, for every client at once, by the same stored document
 	// and rendering `/text` answers with (readDocument), so a socket is refused exactly when that
 	// read is ErrDocOutsideSchema.
-	tree, preload, err := s.loadTree(r.Context(), room)
+	tree, preload, err := s.loadTree(admissionSlot.carriedBy(r.Context()), room)
 	if err == nil && tree != nil {
 		if _, renderErr := documentMarkdown(tree); errors.Is(renderErr, ErrDocOutsideSchema) {
 			err = renderErr
@@ -514,7 +559,19 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if preload != nil {
+		// The slot goes with the preload to the room's load, which takes it rather than one of
+		// its own (LoadDoc): the admission has held it since before it was weighed, and the
+		// budget must not weigh another admission until this room's load has charged. Whoever
+		// drops the preload without loading gives the slot back (dropPreload, takePreload's
+		// stale head, the forget below), and so does this handler's own deferred release, which
+		// a slot the load has already given back answers with nothing.
+		preload.slot = admissionSlot
 		defer s.leavePreload(room, preload)()
+	} else {
+		// No preload means no load of this handler's making: the room was resident by the time
+		// the tree was read, or the read answered from the room itself. The slot goes back at
+		// once rather than at the end of a socket that may stay open for hours.
+		admissionSlot.release()
 	}
 	connection := &connectionState{}
 	ctx := context.WithValue(r.Context(), connectionContextKey{}, connection)

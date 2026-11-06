@@ -92,13 +92,19 @@ const maxPeerInsertAtTheBound = 8 << 10
 // split and nothing can grow it further.
 const maxPeerByteCreep = 64 << 10
 
-// maxRoomStateBytes is the most encoded state one room may hold: 13.5 MB, a quarter of the
-// message floor (maxMessageBytes, 54 MiB), which is also about the state of a document at the
-// decode cap - the heaviest state the server's own writes store is 12,598,044 bytes
-// (dispatch://INFRA-179/artifact/infra179-simplify-measured-md). With the frame total gone, this
-// is what keeps a browser's whole-state handoff inside the floor A1 asks it to clear: a room at
-// the cap hands over a frame about the size of its state, and four such frames fit the floor.
-const maxRoomStateBytes = 13_500_000
+// maxRoomStateBytes is the most encoded state one room may hold: a quarter of the message floor,
+// derived from it here rather than written as a figure of its own, because the two are one rule.
+// With the frame total gone, this is what keeps a browser's whole-state handoff inside the floor
+// A1 asks it to clear: a room at the cap hands over a frame about the size of its state, and
+// four such frames fit the floor. Writing the two apart is what let them drift: at 13.5 MB
+// against a 54 MiB floor, the branch's own long-edited document at the decode cap, 14,427,285
+// bytes, was already past the cap, and four times it was past the floor - so that document could
+// take no byte from any browser and could not hand its state back either, which is a person's
+// document that stops working. At 16,777,216 it has 2,349,931 bytes to spare
+// (TestTheHeaviestStateAtTheDecodeCapFitsTheRoomsStateCapAndTheFloor). A room at the cap is
+// charged 16,777,216 x 28 = 469,762,048 bytes of the budget, so four such rooms fit the
+// calibration's 2 GiB.
+const maxRoomStateBytes = maxMessageBytes / 4
 
 // maxDecodedValuesPerApply is the most values one apply of a browser's update may decode: each
 // struct, each lib0 Any value at any depth, each Any map entry and each JSON member

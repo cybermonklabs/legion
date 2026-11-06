@@ -111,8 +111,11 @@ const (
 	roomCopiesForTest              = 2
 	maxPeerInsertAtTheBoundForTest = 8 << 10
 	maxPeerByteCreepForTest        = 64 << 10
-	maxRoomStateBytesForTest       = 13_500_000
-	maxMessageBytesForTest         = 54 << 20
+	maxMessageBytesForTest         = 64 << 20
+	// The state cap is a quarter of the message floor and is derived from it in the product, so
+	// a room at the cap hands over a frame about the size of its state and four such frames fit
+	// the floor; the mirror derives it the same way rather than naming a second number.
+	maxRoomStateBytesForTest = maxMessageBytesForTest / 4
 
 	// perFrameScanCeilingForTest mirrors perFrameScanCeiling,
 	// the most items one browser's update the room weighs may scan. The server names the allowance
@@ -2066,6 +2069,165 @@ func deleteRangesFrame(client uint64, n int) []byte {
 	})
 }
 
+// gcRunFrame is one client's update of a single GC run of length clocks starting at clock, with
+// an empty delete set: gcFrame's struct at a clock of the caller's choosing, so the run can be
+// appended past the clocks a room holds of that client rather than skipped as clocks it holds
+// already (sjawhar/ygo v1.55.1-sami.6, integrateGroup steps over a struct ending at or before
+// the client's clock, crdt/update.go:899-917, and appends one past them without integrating it,
+// :938-949).
+func gcRunFrame(client, clock, length uint64) []byte {
+	return encoding.EncodeBytes(func(encoder *encoding.Encoder) {
+		encoder.WriteVarUint(1)
+		encoder.WriteVarUint(1)
+		encoder.WriteVarUint(client)
+		encoder.WriteVarUint(clock)
+		encoder.WriteUint8(0)
+		encoder.WriteVarUint(length)
+		encoder.WriteVarUint(0)
+	})
+}
+
+const (
+	// hugeSpanAnsweredWithin is the bound the drive below holds the frame's answer to. A clock
+	// length in a V1 update is a varuint, so a frame of a few bytes can claim 2^40 clocks: a
+	// second is three orders of magnitude past the milliseconds a frame of one struct costs,
+	// and three orders under what any work in the clocks the frame claims would take - 2^40
+	// clocks at a nanosecond each is 18 minutes. The second is not a figure to relax: a room
+	// that misses it is doing work in the clocks a frame claimed rather than in the bytes it
+	// carried, which is the whole of what this drive is here to refuse.
+	hugeSpanAnsweredWithin = time.Second
+	// hugeSpanEditWithin is the bound it holds the keystroke after the frame and the reconnect
+	// after that to: ten seconds, which each of them is three orders of magnitude under on this
+	// pod and which no path linear in a claimed span could meet.
+	hugeSpanEditWithin = 10 * time.Second
+	// hugeSpanNewClient is the client of the frame below, above every client a stored document
+	// holds and above the 32 bits a browser's own id is drawn from (crdt.New).
+	hugeSpanNewClient = 1<<40 + 211
+)
+
+// A frame costs the server what its bytes carry, never what its clocks claim, over real document
+// sockets of a real server: a GC run of 2^40 clocks for a client the room has never seen, which
+// a browser writes in a handful of bytes because a clock length in a V1 update is a varuint.
+// A hostile browser can send it today, so what it meets is observable behaviour whatever answers
+// it; what changed with INFRA-179 is only which code does. The pre-apply walk that read a struct
+// and a delete range at a time, and the running totals it fed, are gone: the frame now goes
+// straight into ygo's bounded apply, where the hook's allowance counts what the apply decodes,
+// integrates and adds (crdt.ApplyBudget, docs' peerApplyAllowance) and nothing counts clocks.
+// ygo integrates a GC struct by appending it, never over its clocks (crdt/update.go:938-949), so
+// the apply costs the frame's bytes and the allowance's three comparisons.
+//
+// What the drive holds, against the room that took the frame:
+//
+//   - the frame is answered within hugeSpanAnsweredWithin, admitted or refused;
+//   - the answer is named here rather than left open: the frame carries one struct, no content
+//     and no root a browser may not name, so the allowance admits it and the socket stays open;
+//   - the room goes on serving its other browsers: the browser that only reads it answers a
+//     ping, a second browser's keystroke applies within hugeSpanEditWithin, the document's text
+//     carries that keystroke, and a browser reconnecting is given the whole document;
+//   - the pod's heap does not jump, by both figures every drive of this file is weighed by
+//     (requireUnderThePod): what a pod's kernel would charge, under the pod's 4 GiB, and what
+//     the Go memory limit bounds, within that limit and its margin.
+//
+// Then the stored history: the room settles what it took, the server is restarted so no room is
+// resident, and the document is loaded again and takes a keystroke. A load that walked the
+// clocks a stored GC run claims could not answer at all.
+func TestAFrameClaimingHugeClockSpansCostsOnlyItsBytes(t *testing.T) {
+	memory := newMemoryHarness(t)
+	memory.env = append(memory.env, podServerEnv()...)
+	server := memory.start(t)
+	requirePodGoMemoryLimit(t, server)
+	stored := server.upload(t, "json", memory.issue, "# Spans\n\n"+strings.Repeat("word ", 400)+"\n")
+	if stored.status != http.StatusCreated {
+		t.Fatalf("upload: status %d body %.300s, want 201", stored.status, stored.body)
+	}
+	memory.waitForSettlement(t, stored)
+	room := stored.artifactID
+	frame := gcRunFrame(hugeSpanNewClient, 0, 1<<40)
+
+	var answered, typed, resynced time.Duration
+	var applied bool
+	var closed *gws.CloseError
+	var state []byte
+	peak := server.peakResident(t, func() {
+		// A browser that only reads the room, which the frame must leave alone.
+		reader := server.openBrowser(t, room)
+		defer reader.leave()
+		sending := server.openBrowser(t, room)
+		defer sending.leave()
+		start := time.Now()
+		var err error
+		applied, closed, err = sending.send(sending.updateFrame(frame))
+		answered = time.Since(start)
+		if err != nil {
+			t.Fatalf("the %d-byte frame claiming 2^40 clocks was answered %v, want the room to answer it", len(frame), err)
+		}
+		if err := reader.ping(); err != nil {
+			t.Fatalf("the room stopped answering the browser that only reads it: %v", err)
+		}
+		typed = typedThrough(t, server, room, " typed-after-the-frame")
+		resynced, state = resyncedThrough(t, server, room)
+	})
+	t.Logf("a %d-byte frame claiming 2^40 clocks of a client the room has never seen: applied %v, closed %v, answered in %s; the keystroke after it applied in %s and a reconnect read the room's %d-byte state in %s",
+		len(frame), applied, closed, answered.Round(time.Microsecond), typed.Round(time.Microsecond), len(state), resynced.Round(time.Microsecond))
+	if answered > hugeSpanAnsweredWithin {
+		t.Fatalf("the room took %s to answer a %d-byte frame claiming 2^40 clocks, past the %s a frame costing only its bytes takes: something on the path is walking the clocks the frame claimed",
+			answered, len(frame), hugeSpanAnsweredWithin)
+	}
+	if !applied || closed != nil {
+		t.Fatalf("the frame was answered applied %v, closed %v; want it applied and the socket open: it carries one struct, no content and no root a browser may not name, so the apply's allowance admits it",
+			applied, closed)
+	}
+	if typed > hugeSpanEditWithin || resynced > hugeSpanEditWithin {
+		t.Fatalf("after the frame the keystroke took %s and the reconnect %s, past the %s each takes in a room no frame has made slow", typed, resynced, hugeSpanEditWithin)
+	}
+	if text := server.text(t, room); !strings.Contains(text, "typed-after-the-frame") {
+		t.Fatalf("the document's text is %d bytes and carries none of the keystroke after the frame", len(text))
+	}
+	requireUnderThePod(t, peak, "the frame claiming 2^40 clocks")
+
+	memory.waitForSettled(t, room)
+	server.stop(t)
+	restarted := memory.start(t)
+	requireRoomAbsent(t, restarted, room, "the room the frame was sent to")
+	load, reloaded := resyncedThrough(t, restarted, room)
+	after := typedThrough(t, restarted, room, " typed-after-the-reload")
+	t.Logf("after the restart the room loaded its %d-byte stored history in %s and took a keystroke in %s",
+		len(reloaded), load.Round(time.Microsecond), after.Round(time.Microsecond))
+	if load > hugeSpanEditWithin || after > hugeSpanEditWithin {
+		t.Fatalf("after the restart the room loaded in %s and took a keystroke in %s, past the %s each takes for a stored history no frame has made slow", load, after, hugeSpanEditWithin)
+	}
+}
+
+// typedThrough sends one browser's keystroke into the room over a socket of its own, appending
+// typed to the document's first paragraph of plain words, and returns how long the room took to
+// answer it applied.
+func typedThrough(t *testing.T, server *memoryServer, room, typed string) time.Duration {
+	t.Helper()
+	typist := server.openBrowser(t, room)
+	defer typist.leave()
+	keystroke := browserEdit(t, typist.state(t), func(tree *pmdoc.Node) {
+		paddingTexts(t, tree)[0].Text += typed
+	})
+	start := time.Now()
+	applied, closed, err := typist.send(typist.updateFrame(keystroke))
+	took := time.Since(start)
+	if err != nil || !applied || closed != nil {
+		t.Fatalf("the keystroke into %s was answered applied %v, closed %v, %v; want it applied and the socket open", room, applied, closed, err)
+	}
+	return took
+}
+
+// resyncedThrough opens a browser of its own on the room and asks it for the whole document, as a
+// browser reconnecting does, and returns how long the two took with the state it was given.
+func resyncedThrough(t *testing.T, server *memoryServer, room string) (time.Duration, []byte) {
+	t.Helper()
+	start := time.Now()
+	browser := server.openBrowser(t, room)
+	defer browser.leave()
+	state := browser.state(t)
+	return time.Since(start), state
+}
+
 const (
 	// maxUpdateItemsForTest mirrors docs' maxUpdateItems, the
 	// decode cap: the most structs a stored document's state may hold. The struct-dense drives
@@ -2296,6 +2458,13 @@ func TestTheHeaviestApplyBesideAFullCopyBoundStaysUnderThePodsMemory(t *testing.
 	building := time.Now()
 	memory := newMemoryHarness(t)
 	memory.env = append(memory.env, podServerEnv()...)
+	// The padding starts from the long-edited document 4,096 structs short of the decode cap,
+	// the heaviest struct-dense state this package can build: it stores 14,427,285 bytes, which
+	// the room's state cap - a quarter of the 64 MiB message floor, 16,777,216 - has 2,349,931
+	// bytes of room above, so the padding takes it to 16 KiB under the cap. That is the heaviest
+	// state a room may hold, and so the heaviest whole-state handoff a browser of such a room
+	// can send; four of those frames fit the floor, which is what the cap is derived to make
+	// true.
 	stored := memory.storedStates(t, longEditedTypedTo(t, maxUpdateItemsForTest),
 		paddedToTheRoomsStateCap(t, longEditedTypedTo(t, maxUpdateItemsForTest-4_096)))
 	longEdited := memory.storedShape(t, "the long-edited document at the decode cap", stored[0])
