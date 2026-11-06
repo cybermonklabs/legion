@@ -39,10 +39,13 @@ const measurementReportingMargin = time.Minute
 // of that pipe cannot keep this test waiting for it.
 const measurementOutputWait = 10 * time.Second
 
-// measuredAlone runs the calling test, or subtest, again in a process of its own and reports
-// whether this is that process, the one to measure in; the caller returns when it is not. A
-// collection costs as much as the heap the process holds, and a whole run of this package holds a
-// gigabyte or more by the time these tests run: on this pod the three of them took 108, 75 and
+// measuredAloneOutput runs the calling test, or subtest, again in a process of its own and
+// reports what that process printed and whether this is that process, the one to measure in; the
+// caller returns when it is not. A reading its caller needs where the readings meet - the
+// heaviest of shapes measured one process each - is read out of that output
+// (TestAResidentRoomsHeapPerByteOfItsState). A collection costs as much as the heap the process
+// holds, and a whole run of this package holds a gigabyte or more by the time these tests run:
+// on this pod the three of them took 108, 75 and
 // 16 s inside the package's run, against 2.5, 1.4 and 0.2 s in a process of their own, with the
 // same readings. The process runs the one test of that exact name, each level of it matched whole.
 // The test that started the process logs what the process printed and the process's peak resident
@@ -53,10 +56,10 @@ const measurementOutputWait = 10 * time.Second
 // as a group, once this test ends and in any case a minute before the run's own deadline
 // (measurementReportingMargin), and its output is waited for no longer than
 // measurementOutputWait past it.
-func measuredAlone(t *testing.T) bool {
+func measuredAloneOutput(t *testing.T) (string, bool) {
 	t.Helper()
 	if os.Getenv(heapPriceChild) == t.Name() {
-		return true
+		return "", true
 	}
 	levels := strings.Split(t.Name(), "/")
 	for i, level := range levels {
@@ -98,5 +101,13 @@ func measuredAlone(t *testing.T) bool {
 		}
 		t.Fatalf("the measurement in a process of its own failed: %v", err)
 	}
-	return false
+	return string(output), false
+}
+
+// measuredAlone is measuredAloneOutput for a measurement whose caller wants nothing of what the
+// process printed beyond the log and the failure it already reports.
+func measuredAlone(t *testing.T) bool {
+	t.Helper()
+	_, here := measuredAloneOutput(t)
+	return here
 }

@@ -737,13 +737,14 @@ func parkedFork(t *testing.T, parked int) *crdt.Doc {
 	return fork
 }
 
-// A write's fork whose parked structs take its struct total past the decode cap is refused, though
-// its clocks sum to a handful: the parked structs and the skips before them are in the state a
-// load decodes, and each can still split two structs once what it waits for arrives, but the state
-// vector counts none of them. The clock sum alone, the filter refuseUndecodable answered on before,
-// let such a fork through. The ceiling it answers on now (structCeiling) is never below the total,
-// and one fork short of the cap is still let through. The forks here have no room behind them, as a
-// cold write's has not (coldFork), so the fork's own total is what answers.
+// A write's fork whose parked structs take its ceiling past the decode cap is refused, though its
+// clocks sum to a handful: the parked structs and the skips before them are in the state a load
+// decodes, and each can still split two structs once what it waits for arrives, but the state
+// vector counts none of them. The clock sum alone, the filter refuseUndecodable answered on
+// before, let such a fork through. The ceiling it answers on now (structCeiling) counts what the
+// fork parks beside what it has integrated, and one fork short of the cap is still let through.
+// The forks here have no room behind them, as a cold write's has not (coldFork), so the fork's
+// own ceiling is what answers for the room its publish will load.
 func TestAWriteLeavingParkedStructsPastTheDecodeCapIsRefusedAsUndecodable(t *testing.T) {
 	skipAtTheBoundsUnderRace(t)
 	service := calibratedService()
@@ -752,9 +753,12 @@ func TestAWriteLeavingParkedStructsPastTheDecodeCapIsRefusedAsUndecodable(t *tes
 	if clocks := clockSum(past); clocks > 16 {
 		t.Fatalf("the fork's clocks sum to %d, want the handful its integrated text takes", clocks)
 	}
-	structs := countRoomStructs(past)
-	if structs <= maxUpdateItems || structCeiling(past) < structs {
-		t.Fatalf("the fork's struct total is %d and its ceiling %d, want the total past the %d cap and the ceiling at or above it", structs, structCeiling(past), maxUpdateItems)
+	// The fork has integrated a handful of structs, and what takes it past the cap is what it
+	// parks: the ceiling counts those, each twice over for the split its arrival can cause, and
+	// crdt.Doc.StructCount (countRoomStructs) counts none of them.
+	integrated, ceiling := countRoomStructs(past), structCeiling(past)
+	if integrated > 16 || ceiling <= maxUpdateItems {
+		t.Fatalf("the fork holds %d integrated structs with a ceiling of %d, want a handful integrated and the ceiling past the %d cap", integrated, ceiling, maxUpdateItems)
 	}
 	err := service.refuseUndecodable(context.Background(), cold, past, nil)
 	if !errors.Is(err, ErrDocumentTooLarge) || !strings.Contains(err.Error(), "this change would leave the document's live state past the 1048576 items ygo decodes in one update") {
@@ -762,8 +766,8 @@ func TestAWriteLeavingParkedStructsPastTheDecodeCapIsRefusedAsUndecodable(t *tes
 	}
 
 	short := parkedFork(t, 1000)
-	if structs := countRoomStructs(short); structCeiling(short) < structs {
-		t.Fatalf("the short fork's struct total is %d and its ceiling %d, want the ceiling at or above it", structs, structCeiling(short))
+	if ceiling := structCeiling(short); ceiling > maxUpdateItems {
+		t.Fatalf("the short fork's ceiling is %d, want it short of the %d cap", ceiling, maxUpdateItems)
 	}
 	if err := service.refuseUndecodable(context.Background(), cold, short, nil); err != nil {
 		t.Fatalf("refuseUndecodable of a fork far short of the cap: %v, want nil", err)

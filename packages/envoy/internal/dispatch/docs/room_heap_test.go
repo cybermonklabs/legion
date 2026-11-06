@@ -5,6 +5,7 @@ import (
 	"math"
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -84,16 +85,31 @@ func TestAResidentRoomsHeapPerByteOfItsState(t *testing.T) {
 			}})
 		}
 	}
-	// heaviest is what the shapes measured in this process held at their most, a share of the
-	// price; each row logs its own, and the rows measured in processes of their own report
-	// theirs in the output this one logs.
-	heaviest, heaviestShape := 0.0, ""
+	// heaviest is what the shapes held at their most, a share of the price, and heaviestShape
+	// which one that is. Each shape is measured in a process of its own, so each reading is read
+	// back out of what that process printed (heapReadingLine): the heaviest of them is known only
+	// here, where the readings meet. A run that measured every shape it did not skip is the only
+	// one that can weigh the price against the heaviest of them, so a run of one of them - the
+	// process a shape is measured in, which runs this test with that shape alone - weighs none.
+	heaviest, heaviestShape, read := 0.0, "", 0
+	measured := 0
 	for _, shape := range shapes {
+		if shape.heavy && !heavy {
+			t.Run(shape.name, func(t *testing.T) { t.Skip("set " + structHeapMeasurement + "=1 to run the heavy rows") })
+			continue
+		}
+		measured++
 		t.Run(shape.name, func(t *testing.T) {
-			if shape.heavy && !heavy {
-				t.Skip("set " + structHeapMeasurement + "=1 to run the heavy rows")
-			}
-			if !measuredAlone(t) {
+			output, here := measuredAloneOutput(t)
+			if !here {
+				perStateByte, ok := heapReading(output)
+				if !ok {
+					t.Fatalf("the measurement in a process of its own printed no reading (%q)", heapReadingLine)
+				}
+				read++
+				if perStateByte > heaviest {
+					heaviest, heaviestShape = perStateByte, shape.name
+				}
 				return
 			}
 			state := shape.state(t)
@@ -101,23 +117,42 @@ func TestAResidentRoomsHeapPerByteOfItsState(t *testing.T) {
 			perStateByte := float64(held) / float64(int64(len(state))*roomCopies)
 			t.Logf("%d B of state; heap held %d B, %.2f B a state byte for each of %d copies, %.3f of the %d-byte price",
 				len(state), held, perStateByte, roomCopies, perStateByte/bytesOfHeapAStateByte, bytesOfHeapAStateByte)
+			fmt.Printf("%s%.6f\n", heapReadingLine, perStateByte)
 			if perStateByte > bytesOfHeapAStateByte {
 				t.Errorf("the room holds %.2f B of heap a state byte for each copy, past the %d the room budget charges: measure the price again",
 					perStateByte, bytesOfHeapAStateByte)
 			}
-			if perStateByte > heaviest {
-				heaviest, heaviestShape = perStateByte, shape.name
-			}
 		})
 	}
-	if heaviest > 0 {
-		t.Logf("the heaviest shape measured in this process is %s at %.2f B a state byte, %.3f of the %d-byte price",
-			heaviestShape, heaviest, heaviest/bytesOfHeapAStateByte, bytesOfHeapAStateByte)
-		if heaviest < leastOfThePrice*bytesOfHeapAStateByte {
-			t.Errorf("the heaviest shape, %s, holds %.2f B of heap a state byte, under %.2f of the %d the room budget charges: the price is set far past every shape",
-				heaviestShape, heaviest, leastOfThePrice, bytesOfHeapAStateByte)
-		}
+	if read != measured {
+		return
 	}
+	t.Logf("the heaviest of the %d shapes measured is %s at %.2f B a state byte, %.3f of the %d-byte price",
+		read, heaviestShape, heaviest, heaviest/bytesOfHeapAStateByte, bytesOfHeapAStateByte)
+	if heaviest < leastOfThePrice*bytesOfHeapAStateByte {
+		t.Errorf("the heaviest shape, %s, holds %.2f B of heap a state byte, under %.2f of the %d the room budget charges: the price is set far past every shape",
+			heaviestShape, heaviest, leastOfThePrice, bytesOfHeapAStateByte)
+	}
+}
+
+// heapReadingLine is how a process measuring one shape's heap reports its reading to the process
+// that started it (measuredAloneOutput), which is where the shapes' readings meet.
+const heapReadingLine = "heap-bytes-a-state-byte: "
+
+// heapReading is the reading a measuring process printed, and whether it printed one.
+func heapReading(output string) (float64, bool) {
+	for line := range strings.SplitSeq(output, "\n") {
+		printed, found := strings.CutPrefix(strings.TrimSpace(line), heapReadingLine)
+		if !found {
+			continue
+		}
+		reading, err := strconv.ParseFloat(printed, 64)
+		if err != nil {
+			continue
+		}
+		return reading, true
+	}
+	return 0, false
 }
 
 // structHeapMeasurement is the environment variable that runs the heavy rows of

@@ -157,22 +157,36 @@ func waiting(budget *roomBudget) int {
 	return budget.waiting
 }
 
-// An admission the budget has no room for waits for the sweep it starts, and is refused only once
-// that sweep has ended with nothing left that something other than a browser holds; a second look
-// at a budget past its limit waits the same way, and passes once a room's retirement brings the
-// budget back within it.
+// An admission the budget has no room for waits for the sweeps it starts, and is refused only
+// once the last of them has ended with nothing left that something other than a browser holds.
+// There are two of them here: the charge that takes the budget past its limit starts one of its
+// own (unlock), and the admission that arrives while that one runs asks for it to run again
+// (sweepAgainLocked), since the first may have weighed the budget before the admission arrived.
+// A second look at a budget past its limit waits the same way, and passes once a room's
+// retirement brings the budget back within it.
 func TestTheRoomBudgetRefusesAnAdmissionOnlyOnceItsSweepHasEnded(t *testing.T) {
 	ctx := context.Background()
 	// A limit one byte under what the one charged room comes to, so the budget is over it.
 	budget, sweeps := fakeSwept(roomWeight(20) - 1)
 	budget.load("held", 20)
+	<-sweeps
 	answered := make(chan error, 1)
 	go func() { answered <- budget.refusal(ctx, time.Now().Add(time.Minute)) }()
-	<-sweeps
 	waitFor(t, 5*time.Second, "the admission to wait", func() bool { return waiting(budget) == 1 })
 	select {
 	case err := <-answered:
-		t.Fatalf("the admission was answered %v while its sweep ran", err)
+		t.Fatalf("the admission was answered %v while the charge's own sweep ran", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	budget.swept(false)
+	select {
+	case <-sweeps:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the sweep the admission asked for while the first ran never started")
+	}
+	select {
+	case err := <-answered:
+		t.Fatalf("the admission was answered %v while the sweep it asked for ran", err)
 	case <-time.After(100 * time.Millisecond):
 	}
 	budget.swept(false)
@@ -533,7 +547,10 @@ func TestTheRoomBudgetAdmissionWaitsForARoomWhoseBrowserJustLeft(t *testing.T) {
 		service.unlockState(left, state)
 	}
 	hold(true)
-	service.SetRoomBudgetForTest(budgetUsed(service))
+	// One byte under what the rooms are charged, so the budget stands over its limit: nothing is
+	// reserved for an admission any more (roomBudget.refusal), so the room that crosses the limit
+	// is the last one admitted and a limit at exactly what the rooms come to still fits one more.
+	service.SetRoomBudgetForTest(budgetUsed(service) - 1)
 	t.Cleanup(func() { service.SetRoomBudgetForTest(0) })
 
 	answered := make(chan error, 1)
@@ -573,7 +590,7 @@ func TestTheRoomBudgetAdmissionWaitsForARoomWhoseBrowserJustLeft(t *testing.T) {
 			service.unlockState(left, state)
 		}
 	})
-	service.SetRoomBudgetForTest(budgetUsed(service))
+	service.SetRoomBudgetForTest(budgetUsed(service) - 1)
 	service.admissionWait = 500 * time.Millisecond
 	started := time.Now()
 	err := service.budget.refusal(ctx, time.Now().Add(service.admissionWait))
@@ -649,7 +666,7 @@ func TestTheRoomBudgetAdmitsABrowserOnceTheRoomAnEditingBrowserLeftIsClosed(t *t
 	if !departed {
 		t.Fatal("while its settlement runs, the room whose browser left does not name that browser as departed")
 	}
-	service.SetRoomBudgetForTest(budgetUsed(service))
+	service.SetRoomBudgetForTest(budgetUsed(service) - 1)
 	t.Cleanup(func() { service.SetRoomBudgetForTest(0) })
 
 	answered := make(chan error, 1)
@@ -705,7 +722,7 @@ func TestTheRoomBudgetAdmissionWaitsForARoomAnApplyIsInside(t *testing.T) {
 	if !roomUnused(service, closable) {
 		t.Fatal("the room an apply is inside holds something in its state, so the sweep would leave it pending without the apply")
 	}
-	service.SetRoomBudgetForTest(budgetUsed(service))
+	service.SetRoomBudgetForTest(budgetUsed(service) - 1)
 	t.Cleanup(func() { service.SetRoomBudgetForTest(0) })
 
 	answered := make(chan error, 1)
@@ -747,10 +764,18 @@ func roomHasBrowser(service *Service, room string) bool {
 	return len(state.connected) > 0
 }
 
-// A room the server's own work loads while the budget is over its limit is closed once that work
-// no longer holds it, though the budget is back within its limit and not full by then, so nothing
-// else would close it before it retires a minute later. One a browser joins before the work ends is
-// the browser's: it is not closed while the browser holds it, nor once the browser has left.
+// A room the server's own work loads through the budget's one opening while the charges are
+// about to pass its limit is closed once that work no longer holds it, though the budget is back
+// within its limit and not full by then, so nothing else would close it before it retires a
+// minute later. One a browser joins before the work ends is the browser's: it is not closed
+// while the browser holds it, nor once the browser has left.
+//
+// The opening is what tells the server's own room from a browser's, now that nothing is reserved
+// for an admission: the budget marks the room its opening named, and only where that room's
+// charge takes the charges past the limit (roomBudget.load). So each room here is opened as
+// every opener of Server.Apply opens one - the opening booked first, under a limit the room's
+// own charge then crosses, and given back once the Apply has returned (publishLiveWrite,
+// settleRoomWithin, VerifyMark, docTree, captureLiveTextAndAuthors) - and one stands at a time.
 func TestTheRoomBudgetClosesARoomTheServerOpenedOverItOnceUnusedAndNeverABrowsersRoom(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -769,13 +794,18 @@ func TestTheRoomBudgetClosesARoomTheServerOpenedOverItOnceUnusedAndNeverABrowser
 		service.unlockState(room, state)
 	}
 
-	service.SetRoomBudgetForTest(1)
 	for _, room := range []string{opened, joined} {
-		if err := service.srv.Apply(ctx, room, func(*crdt.Doc, func(func(*crdt.Transaction))) { hold(room, true) }); err != nil && !errors.Is(err, websocket.ErrNoChanges) {
+		service.SetRoomBudgetForTest(budgetUsed(service) + 1)
+		if !service.budget.openServerRoom(room) {
+			t.Fatal("the budget refused the server's work an opening while the charges stood under its limit")
+		}
+		err := service.srv.Apply(ctx, room, func(*crdt.Doc, func(func(*crdt.Transaction))) { hold(room, true) })
+		service.budget.closeServerRoom()
+		if err != nil && !errors.Is(err, websocket.ErrNoChanges) {
 			t.Fatal(err)
 		}
 		if !service.budget.isMarked(room) {
-			t.Fatalf("a room the server opened over the budget was not marked to close once unused")
+			t.Fatalf("the room the server opened as its charge passed the budget's limit was not marked to close once unused")
 		}
 	}
 	service.SetRoomBudgetForTest(0)
