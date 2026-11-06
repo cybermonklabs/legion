@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -56,7 +55,7 @@ const (
 	// against the pod: the rooms typed and pasted into stayed 2.1 GiB under the limit and the
 	// step that fills the budget a gibibyte under it; the burst of fifty browsers read from
 	// 8,094 bytes under it to 57,442 over; the burst of struct-dense documents from 142,809,214
-	// under to 1,832,882 over; and the heaviest applies beside full copy bounds, whose frames and
+	// under to 1,832,882 over; and the heaviest applies beside the folds, whose frames and
 	// copies run to tens of MiB each, 5,240,914, 15,501,378 and 34,453,570 over. The 128 MiB this
 	// was then - three and a half times the worst of those - rested on three readings of that
 	// heaviest step, whose overshoot spreads far wider. Over ten runs of it at 5f70eeee on
@@ -359,9 +358,9 @@ func TestABrowsersUpdateIsBoundedByTheDocumentBound(t *testing.T) {
 // chain of tangledChain one-character items, each of a client of its own, so a run of them is never
 // merged into one item; then a frame whose items each name the chain's first item as their left
 // origin and no right origin, so each scans the whole chain, after a 256 KiB string at the chain's
-// end, which makes the room weigh the frame's apply and so give it the whole ceiling. It passes the
-// walker, the 8 KiB rule (the document is far under the bound), the struct total and the
-// apply-heap bound, and the room's bounded document refuses it at an allowance of the ceiling: its
+// end, which takes the frame past unslottedApplyBytesForTest and so gives its apply the whole
+// ceiling. It passes the byte bound (the document is far under it), the decode cap and the
+// room's state cap, and the room's bounded document refuses it at an allowance of the ceiling: its
 // browser is closed with 4413 and DOC_TOO_TANGLED, the room's encoded state is byte for byte what
 // it was, a browser joining after the refusal receives that state, the stored document once
 // settled holds it, and the budget's figures and the room's struct total, which the server logs at
@@ -384,10 +383,10 @@ func TestAScanFrameIsRefusedWholeAndTheRoomIsAsItWas(t *testing.T) {
 	setting := server.openBrowser(t, room)
 	t.Cleanup(setting.leave)
 	requireApplied(t, setting, chainFrame(t, setting.state(t)), fmt.Sprintf("a chain of %d one-character items", tangledChain))
-	// The room's count of what the chain added lands within roomCountIntervalForTest, and its
-	// settlement after the room's settle delay; once both have, nothing moves the budget's figures
-	// or the struct total but what the browsers below send.
-	time.Sleep(roomCountIntervalForTest + 2*time.Second)
+	// The chain's own bytes are on the room's charge the moment its drain commits (docs'
+	// renderedReplica.chargeAdded), so the only thing to wait for is the settlement after the
+	// room's settle delay; once it has landed, nothing moves the budget's figures or the room's
+	// count of structs but what the browsers below send.
 	memory.waitForSettled(t, room)
 	before := setting.state(t)
 
@@ -619,9 +618,11 @@ const (
 	// (sjawhar/ygo v1.55.1-sami.1, crdt/item.go:189-202).
 	tangledScanClient = 4_000_000
 	// scanFramePadding is the bytes of the string scanFrame opens with: its 256 KiB take the
-	// frame's own share of its apply-heap estimate past the 2 MiB under which the room does not
-	// weigh an apply (unweighedApplyHeapBytes, internal/dispatch/docs/peer_update.go), about nine
-	// bytes of estimate a frame byte, so the frame's allowance is the whole per-frame ceiling.
+	// frame past unslottedApplyBytesForTest, the size at which an apply of a browser's update
+	// takes a slot of the pod's load concurrency for its whole run
+	// (internal/dispatch/docs/copy_heap.go), so the frame is weighed as a slotted apply and its
+	// allowance is the whole per-frame ceiling rather than what an unslotted apply may hold
+	// (scanCeiling).
 	scanFramePadding = 256 << 10
 )
 
@@ -707,10 +708,11 @@ func canonicalState(t *testing.T, state []byte) []byte {
 }
 
 // scanRefusalLine is the line the server logs for each update its room refuses past its scan
-// allowance, with the budget's figures, the room's struct total and its scan total as the refusal
-// leaves them, and the allowance it was refused at (Service.weighPeerUpdate,
-// internal/dispatch/docs/peer_update.go).
-var scanRefusalLine = regexp.MustCompile(`msg="dispatch: refused a browser's update its room could not merge within its scan allowance" room=(\S+) update_bytes=\d+ charged=(\d+) limit=(\d+) struct_total=(\d+) allowance=(\d+) scan_total=(\d+) scans_left=(-?\d+)`)
+// allowance, with the budget's figures, the structs the room's document holds and its scan total
+// as the refusal leaves them, and the allowance it was refused at (Service.refusedByApply,
+// internal/dispatch/docs/peer_update.go). The count of structs is ygo's own
+// (crdt.Doc.StructCount) where it was the room's running struct total before the cut.
+var scanRefusalLine = regexp.MustCompile(`msg="dispatch: refused a browser's update its room could not merge within its scan allowance" room=(\S+) update_bytes=\d+ charged=(\d+) limit=(\d+) structs=(\d+) allowance=(\d+) scan_total=(\d+) scans_left=(-?\d+)`)
 
 // setRoomBudget sets the server's room budget to bytes through its test-only route, so a drive of
 // the document's own bounds is not refused by the budget first; the drive puts the real one back
@@ -848,14 +850,23 @@ func TestMarginFloodUpdatesStopAtTheRoomsStateCapAndTheFrameStaysUnderTheFloor(t
 }
 
 // The room budget refuses the browser its own arithmetic says it has no room for: documents of a
-// mebibyte of prose, each edited once, opened until one is refused with 4503 and DOC_BUSY, under the
-// Go limit a 4 GiB pod gives the server. A room is charged at both copies from its admission
-// (roomCopies), and an admission reserves the heaviest of
-// its stored version's elements, its stored history's structs and its rendered bytes at their
-// prices (copyHeap, storedRoomReservation), which for prose is its elements. So the refusals begin
-// within one room of the budget divided by that reservation, computed here from the server's
-// constants (mebibyteFleet) and held to the numbers the server logs, both when the browsers come
-// one after another and when fifty open at once.
+// mebibyte of prose, each edited once, opened until one is refused with 4503 and DOC_BUSY, under
+// the Go limit a 4 GiB pod gives the server. A room is charged its stored state at one price in
+// each of its two copies, 28 bytes a state byte, from the moment its load decodes that state
+// (roomWeightForTest, docs' chargeLoadedRoom). Nothing is reserved for a room before it loads,
+// so an admission is weighed against what the open rooms already hold and nothing else: the room
+// that crosses the limit is the last one admitted, not the next one refused, and the refusals
+// begin within one room of the budget divided by one room's weight, and one more. That
+// arithmetic is computed here from the server's constants (mebibyteFleet) and held to the
+// numbers the server logs, both when the browsers come one after another and when fifty open at
+// once.
+//
+// With nothing reserved, what keeps "within one room" true of fifty at once is the pod's load
+// concurrency: k is 1 at the calibration (loadSlotsForTest), so the cold loads take their slot
+// one at a time and the budget sees each room's weight before the next load begins. Fifty
+// admissions therefore serialise into one after another, each weighed against the rooms the ones
+// before it left charged, where k admissions at once would read the same headroom at the same
+// moment and the refusals would begin up to k rooms late.
 //
 // One after another, five of the browsers leave once they have edited, the last of them just before
 // the next browser asks, and no browser is refused while a room whose browser went is still
@@ -874,55 +885,55 @@ func TestMarginFloodUpdatesStopAtTheRoomsStateCapAndTheFrameStaysUnderTheFloor(t
 // Fifty at once, each browser hands back its whole state as soon as it has the room's, as the
 // editor does on every connect, and then edits: the budget admits within one room of the same
 // number and refuses the rest at admission, every browser one or the other and none answered 503,
-// though the counts of their fifty stored versions and the loads of their rooms share one bound
-// (storedCountWeight, podCopyHeaps) and the last of them waits for the ones before it; and no
-// admitted browser's handoff or first edit is refused, since a handoff of the state the room
-// holds adds nothing to its charge (deletedRuns) and each room's second copy was charged before
-// the edit made it.
+// though their rooms' loads share the pod's one load slot and the last of them waits for every
+// one before it; and no admitted browser's handoff or first edit is refused, since a handoff of
+// the state the room holds integrates nothing and so passes whatever the budget says, and the
+// room's whole weight was charged by its load before the edit arrived.
 //
-// What the fifty wait for is that bound. Measured on 2026-11-03 under sjawhar/ygo
-// v1.54.1-sami.3 on this two-processor pod, beside another role's tests on it, the server at the
-// pod's Go memory limit and the collector at the runtime's own ratio, the only one Dispatch runs
-// at, with bytesOfHeapAnElement at 500: a mebibyte of prose reserves 57,600,000 bytes at both
-// copies and the 2,147,483,648-byte budget holds 37 such rooms. One after another, the first
-// refusal came with 37 rooms held by browsers that stayed, once the five whose browsers went
-// were closed for it, and so did the last; the peak a pod's kernel would charge was 3,638 MiB
-// and the runtime held 3,759,040,168 bytes of the 3,865,470,566 its limit bounds, VmRSS 3,656
-// MiB. Fifty at once, 37 handed their state back and edited, the slowest answered after
-// 2m17.234s, 13 were refused at admission, the slowest after 26.439s, and none was answered 503;
-// the burst logged 121 grants of the copy bound, none holding all of it, the longest wait
-// 54.141 s and the longest hold 7.865 s; it charged 3,721 MiB and held 3,848,718,024 bytes,
-// VmRSS 3,770 MiB, the whole drive in 443 s. The same drive on 2026-11-01, with the pod to
-// itself, refused the thirteen by 10.471s and answered the last of the thirty-seven at
-// 1m15.215s, charging 3,629 and 3,730 MiB by step and holding 3,760,039,608 and 3,859,998,408
-// bytes, in 338 s.
+// The figures below were measured before the cut, when a mebibyte of prose reserved 57,600,000
+// bytes at admission by its elements' price and the 2,147,483,648-byte budget held 37 such
+// rooms. The one price charges such a room its stored state - about 3 MB - at 28 bytes a byte,
+// some 84 MB, so the budget now holds about 25 of them; the memory those rooms cost the pod is
+// what the readings below bound and what requireUnderThePod reads afresh on every run.
 //
-// Measured on 2026-10-29 over four runs on a three-processor sandbox, with the element price at
-// 470, where the same budget held 39 such rooms: 39 admitted and 11 refused every time, the last
-// refusal 16.1 to 20.5 s after the burst began and the last admission 1m12s to 1m23s, none
-// answered 503. In the run read line by line, the counts, 93,811,288 bytes each, asked for 7.1 s
-// of a wholly full bound between them; the decodes of the rooms' loads, 144,268,320 each, asked
-// for 42.8 s, two at a time in the 393,705,336-byte bound, which was 76.9% full over the burst and
-// never empty, and whose longest waiter waited 35.8 s. That work is the processor's: with the
-// server at GOMAXPROCS=1, the condition the memory spec sets for half a processor, the longest
-// hold grew from 4.5 s to 8.1 s and the last admission came at 2m3.5s. A browser of this burst is
-// answered no sooner than the loads before it can decode, whatever the counts do.
+// Measured on 2026-11-03 under sjawhar/ygo v1.54.1-sami.3 on this two-processor pod, beside
+// another role's tests on it, the server at the pod's Go memory limit and the collector at the
+// runtime's own ratio, the only one Dispatch runs at: one after another, the first refusal came
+// with 37 rooms held by browsers that stayed, once the five whose browsers went were closed for
+// it, and so did the last; the peak a pod's kernel would charge was 3,638 MiB and the runtime
+// held 3,759,040,168 bytes of the 3,865,470,566 its limit bounds, VmRSS 3,656 MiB. Fifty at
+// once, 37 handed their state back and edited, the slowest answered after 2m17.234s, 13 were
+// refused at admission, the slowest after 26.439s, and none was answered 503; the burst logged
+// 121 grants of the copy bound the slots replaced, the longest wait 54.141 s and the longest
+// hold 7.865 s; it charged 3,721 MiB and held 3,848,718,024 bytes, VmRSS 3,770 MiB, the whole
+// drive in 443 s. The same drive on 2026-11-01, with the pod to itself, refused the thirteen by
+// 10.471s and answered the last of the thirty-seven at 1m15.215s, charging 3,629 and 3,730 MiB
+// by step and holding 3,760,039,608 and 3,859,998,408 bytes, in 338 s.
 //
-// Those runs' peaks, 3,717 to 3,802 MiB, were read as VmRSS, which on that sandbox counts the
-// pages the runtime has released as well (peakResident). Read as a pod's kernel would charge it
-// and against the Go memory limit, both from the server's own trace (requireUnderThePod), the
-// run of 2026-10-29 charged 3,616 MiB with the browsers coming one after another and 3,727 MiB
-// over the burst, against VmRSS of 3,623 and 3,768 MiB, and held 3,755,968,168 and
-// 3,865,462,472 bytes of what the 3,865,470,566-byte limit bounds, 104 MiB and 8,094 bytes
-// under it; it refused the eleven by 24.3 s and admitted the last of the thirty-nine at
-// 1m37.7s, the whole drive in 388 s.
+// Those runs' peaks were read as VmRSS besides, which on this sandbox counts the pages the
+// runtime has released as well (peakResident). Read as a pod's kernel would charge it and
+// against the Go memory limit, both from the server's own trace (requireUnderThePod), a run of
+// 2026-10-29 charged 3,616 MiB with the browsers coming one after another and 3,727 MiB over the
+// burst, against VmRSS of 3,623 and 3,768 MiB, and held 3,755,968,168 and 3,865,462,472 bytes of
+// what the 3,865,470,566-byte limit bounds, 104 MiB and 8,094 bytes under it.
 func TestTheRoomBudgetRefusesWhereItsOwnArithmeticSays(t *testing.T) {
 	const burst, gone = 50, 5
 	memory := newMemoryHarness(t)
 	memory.env = append(memory.env, podServerEnv()...)
 	fleet := memory.mebibyteFleet(t, func(int64) int { return burst + 4 })
-	rooms := int(roomBudgetBytesForTest / fleet.reserved)
-	t.Logf("a mebibyte of prose makes %d elements and reserves %d bytes at admission: the %d-byte budget holds %d such rooms", fleet.elements, fleet.reserved, roomBudgetBytesForTest, rooms)
+	// The budget's own arithmetic. A room is charged its stored state at one price over both
+	// copies the moment its load decodes it (roomWeightForTest, docs' chargeLoadedRoom), and an
+	// admission reserves nothing for the room it is about to load: it is refused only once what
+	// the open rooms already hold passes the limit (docs' roomBudget.refusal). So the room that
+	// crosses the limit is the last one admitted, not the next one refused, and the rooms open
+	// at the first refusal are the budget divided by one room's weight, and one more.
+	//
+	// What keeps that "within one room" true with nothing reserved is the pod's one load slot at
+	// the calibration (loadSlotsForTest): with one cold load at a time the budget sees each
+	// room's weight before the next load begins, so fifty admissions at once serialise into one
+	// after another rather than fifty of them reading the same headroom at the same moment.
+	rooms := int(roomBudgetBytesForTest/fleet.weight) + 1
+	t.Logf("a mebibyte of prose makes %d elements and a room of it is charged %d bytes: the %d-byte budget holds %d such rooms, the last of them the one that crosses the limit", fleet.elements, fleet.weight, roomBudgetBytesForTest, rooms)
 	if rooms+gone+3 > len(fleet.copies) || rooms+2 > burst {
 		t.Fatalf("the budget holds %d rooms, too many for the %d copies and the burst of %d this drive opens", rooms, len(fleet.copies), burst)
 	}
@@ -1054,10 +1065,10 @@ func TestTheRoomBudgetRefusesWhereItsOwnArithmeticSays(t *testing.T) {
 		})
 		closes := leftClosed()
 		for _, made := range closes {
-			t.Logf("the budget closed %s, a room whose browser went, %d -> %d of %d bytes charged, to make room for %d", made.room, made.chargedBefore, made.charged, made.limit, made.makingRoomFor)
-			if made.limit != roomBudgetBytesForTest || made.makingRoomFor != fleet.reserved ||
-				made.chargedBefore+made.makingRoomFor <= made.limit || made.charged+made.makingRoomFor > made.limit {
-				t.Errorf("the budget closed a room at %d -> %d of %d bytes to make room for %d, want a close that a reservation of %d needed and that made room for it", made.chargedBefore, made.charged, made.limit, made.makingRoomFor, fleet.reserved)
+			t.Logf("the budget closed %s, a room whose browser went, %d -> %d of %d bytes charged", made.room, made.chargedBefore, made.charged, made.limit)
+			if made.limit != roomBudgetBytesForTest || made.chargedBefore-made.charged < fleet.weight {
+				t.Errorf("the budget closed a room at %d -> %d of %d bytes charged, giving back %d, want a close that gave back at least the %d a room of this document is charged",
+					made.chargedBefore, made.charged, made.limit, made.chargedBefore-made.charged, fleet.weight)
 			}
 		}
 		t.Logf("the first refusal came with %d rooms held by browsers that stayed, and the last, after one of them left and the next browser took its room, with %d (%v)", firstRefusal, len(stayed), final)
@@ -1066,13 +1077,13 @@ func TestTheRoomBudgetRefusesWhereItsOwnArithmeticSays(t *testing.T) {
 				t.Errorf("the %s refusal came with %d rooms held by browsers that stayed, want within one of the budget's %d", what, open, rooms)
 			}
 		}
-		refusals := requireBudgetRefusals(t, server, fleet.reserved)
+		refusals := requireBudgetRefusals(t, server)
 		if len(refusals) != 2 {
 			t.Errorf("the server logged %d refusals of the budget, want the two this drive asked for", len(refusals))
 		}
 		for index, refusal := range refusals {
-			if refusal.charged >= int64(len(stayed)+1)*fleet.reserved {
-				t.Errorf("at refusal %d the budget charged %d bytes, %d rooms' worth for the %d browsers that stayed: a room whose browser had gone was still charged", index+1, refusal.charged, refusal.charged/fleet.reserved, len(stayed))
+			if refusal.charged >= int64(len(stayed)+1)*fleet.weight {
+				t.Errorf("at refusal %d the budget charged %d bytes, %d rooms' worth for the %d browsers that stayed: a room whose browser had gone was still charged", index+1, refusal.charged, refusal.charged/fleet.weight, len(stayed))
 			}
 		}
 		// The last refusal's sweep finds no room whose browser went, and closes no room a browser
@@ -1166,10 +1177,10 @@ func TestTheRoomBudgetRefusesWhereItsOwnArithmeticSays(t *testing.T) {
 			}
 			group.Wait()
 		})
-		// What the browsers waited for: the counts of their stored versions and the decodes of
-		// their rooms' loads share the copy-heap bound (storedCountWeight, podCopyHeaps), and the
-		// line says how long its longest waiter waited and its longest holder held it.
-		logHeapGrants(t, "the burst", heapGrants(t, server.output.String()))
+		// What the browsers waited for: each room's load takes one slot of the pod's load
+		// concurrency, of which the calibration has one, so the loads run one after another and
+		// the line says how long the longest waiter waited and the longest holder held it.
+		logLoadSlots(t, "the burst", loadSlotHolds(t, server.output.String()))
 		applied, atAdmission, atHandoff, atEdit, unavailable := 0, 0, 0, 0, 0
 		var slowestAdmitted, slowestRefused time.Duration
 		for index, outcome := range outcomes {
@@ -1199,7 +1210,7 @@ func TestTheRoomBudgetRefusesWhereItsOwnArithmeticSays(t *testing.T) {
 		}
 		t.Logf("%d browsers at once: %d handed their state back and edited their rooms, the slowest answered after %s; %d refused at admission, the slowest after %s; %d answered 503; %d refused their handoff, %d their edit",
 			burst, applied, slowestAdmitted.Round(time.Millisecond), atAdmission, slowestRefused.Round(time.Millisecond), unavailable, atHandoff, atEdit)
-		requireBudgetRefusals(t, server, fleet.reserved)
+		requireBudgetRefusals(t, server)
 		if applied+atAdmission != burst {
 			t.Errorf("%d browsers were admitted and %d refused by the budget, want every one of the %d one or the other", applied, atAdmission, burst)
 		}
@@ -1225,25 +1236,27 @@ func TestTheRoomBudgetRefusesWhereItsOwnArithmeticSays(t *testing.T) {
 // prose (proseMarkdown), held by a socket that sends nothing, so a room whose growth is refused is
 // still held, and grown through a socket of its own in pastes of 64 KiB of the same prose
 // (pasteRounds), the same update bytes in every room, toward the document bound, as fast as the
-// client can: each paste is sent once the room has answered the last, room after room, never
-// waiting for a count. A grower the budget refuses reconnects into its room and sends its paste
-// again on the next pass, as the editor keeps a refused edit and sends it once room frees; the
-// growth ends once a pass after the counts have landed moves no room. Every fourth room's browsers
-// both leave once it renders more than 256 KiB, a quarter of the document bound: early enough that
-// every room, those that leave included, reaches that point within the budget (the nine tenths
-// below), where a room grown to the last paste is charged about a sixth of the budget.
+// client can: each paste is sent once the room has answered the last, room after room. A grower
+// the budget refuses reconnects into its room and sends its paste again on the next pass, as the
+// editor keeps a refused edit and sends it once room frees; the growth ends once a pass moves no
+// room. Every fourth room's browsers both leave once it renders more than 256 KiB, a quarter of
+// the document bound: early enough that every room, those that leave included, reaches that
+// point within the budget (the nine tenths below).
 //
 // How many rooms grow is computed from the server's own figures: a room of a copy the drive does
-// not grow takes the same pastes on a server of its own, and what the budget charges it once its
-// count has landed is read at the paste after which every fourth browser leaves and at the last
-// (roomChargesAfter). The drive grows the fewest rooms whose held rooms at the last paste are
-// charged past the budget by a twentieth, so the budget must refuse, and fails unless that many
-// rooms are charged under nine tenths of it at the leaving paste, so those browsers reach it. Until
-// a count lands, each paste's content is charged at the densest price
-// (bytesOfHeapAByteAtTheDensest), 137 MB for one of 64 KiB, so a client that does not
-// wait for the counts is refused growth sooner than the rooms' counted charges alone would refuse
-// it, and again each time its pastes outrun the counter; each such refusal is transient, and the
-// grower's next attempt is taken once the counts have landed.
+// not grow takes the same pastes on a server of its own, and what the budget charges it is read
+// at the paste after which every fourth browser leaves and at the last (roomChargesAfter). The
+// drive grows the fewest rooms whose held rooms at the last paste are charged past the budget by
+// a twentieth, so the budget must refuse, and fails unless that many rooms are charged under
+// nine tenths of it at the leaving paste, so those browsers reach it.
+//
+// A paste is on its room's charge the moment the room's observer drains it, at the paste's own
+// bytes over both copies (docs' renderedReplica.chargeAdded, roomWeightForTest), so a grower
+// that does not wait is weighed against what it has already written and nothing is outstanding
+// between a paste and the next. A room's tracked state therefore runs a little above the state
+// it holds - an update's bytes carry what its transaction deleted beside what it added - which
+// is the safe side for a budget and is why the drive reads each room's charge from the server
+// rather than pricing the pastes itself.
 //
 // What this proves is that the budget closes the rooms whose browsers went before it refuses any
 // growth: at the first refusal every fourth browser has gone and the budget has closed each of
@@ -1380,10 +1393,12 @@ func TestTheRoomBudgetFollowsGrowingRoomsAndClosesTheGoneOnesFirst(t *testing.T)
 			if idle {
 				break
 			}
-			// Each room's count of what it took lands within the measurer's interval
-			// (roomCountIntervalForTest) before the last pass.
+			// Nothing of a paste is outstanding once its room has answered it, so the only wait
+			// left before the last pass is the sweep's: a room whose browsers went is closable
+			// only once its settlement has committed (unusedLocked), and the pass below reads
+			// what the budget did with it.
 			idle = true
-			time.Sleep(roomCountIntervalForTest + 2*time.Second)
+			time.Sleep(5 * time.Second)
 		}
 		if len(refusals) == 0 {
 			t.Fatalf("every room took all %d pastes, want the budget to refuse growth once the held rooms pass it", len(rounds))
@@ -1420,12 +1435,12 @@ func TestTheRoomBudgetFollowsGrowingRoomsAndClosesTheGoneOnesFirst(t *testing.T)
 	}
 	t.Logf("%d pastes refused, the first on pass %d to room %d after it took %d, %d of them before any browser left; the next browser and every held room's insert refused, every held room's delete applied",
 		len(refusals), refusals[0].pass, refusals[0].room, refusals[0].took, early)
-	requireBudgetRefusals(t, server, small.reserved)
+	requireBudgetRefusals(t, server)
 	closes := closesOf(t, server, left, 0)
 	for _, made := range closes {
 		t.Logf("the budget closed %s, a room whose browsers went, %d -> %d of %d bytes charged", made.room, made.chargedBefore, made.charged, made.limit)
-		if made.limit != roomBudgetBytesForTest || made.chargedBefore+made.makingRoomFor <= made.limit {
-			t.Errorf("the budget closed a room at %d of %d bytes charged, making room for %d, want a close the budget's limit needed", made.chargedBefore, made.limit, made.makingRoomFor)
+		if made.limit != roomBudgetBytesForTest || made.chargedBefore <= made.limit || made.charged >= made.chargedBefore {
+			t.Errorf("the budget closed a room at %d -> %d of %d bytes charged, want a close the budget's limit needed and that gave the room's charge back", made.chargedBefore, made.charged, made.limit)
 		}
 	}
 	if len(closes) != len(left) || len(left) != rooms/4 {
@@ -1458,9 +1473,7 @@ func holdsMark(tree *pmdoc.Node, ref pmdoc.MarkRef) bool {
 // for it; an update that would grow a document already open is refused the same way, and the
 // document never gains it; so is one that adds elements and leaves the document no larger in bytes,
 // which a test of bytes would let through; and a hundred updates that shrink documents are applied
-// and stored, their deletes' charges keeping the budget within the pressure reserve past its limit
-// (pressureReserveBytes), as the line the server logs
-// for the next browser's refusal reads. Meanwhile an API write to a document no room holds is taken,
+// and stored. Meanwhile an API write to a document no room holds is taken,
 // and the unrecorded-mark sweep writes, in a room a browser holds and in one no room held when the
 // budget filled: each such room the server's own work opened over the budget is closed once its
 // settlement has ended (closeIfOpenedOverBudget), read from its absence (roomLive) and
@@ -1468,14 +1481,23 @@ func holdsMark(tree *pmdoc.Node, ref pmdoc.MarkRef) bool {
 // stays under the pod's throughout, and what its Go memory limit bounds within that limit
 // (requireUnderThePod).
 //
-// The budget is filled the way the server reaches a full one. An admission never takes it past its
-// limit, since a room is charged at both copies from its reservation on (roomCopies), so browsers
-// open documents of a mebibyte until the budget refuses one, which leaves less than one such room's
-// worth of it free and raises nothing; then small rooms opened first grow under their browsers, a
-// round of headings at a time, until what a round adds to its room's charge - the structure the
-// peer hook charges for its structs and the count of its elements (internal/dispatch/docs,
-// roomCharge) - takes the charges past the limit, a sweep finds nothing to close, and the budget is
-// full (roomBudget.full): the next round is refused.
+// Why the shrinks apply where everything else is refused: while the budget is full the allowance
+// the hook builds for a browser's update lets it integrate no item of its own and no byte of
+// content (docs' peerApplyAllowance, rulePressure), and a delete integrates neither. The splits
+// a delete makes in the items the document already held are not the update's own and are not
+// counted against it (crdt.ApplyBudget.Structs), so a cut that leaves a document shorter applies
+// where an insert of one character does not. Nothing is held in reserve for those deletes: the
+// pressure reserve the budget kept past its limit for them went with the cut, and what a delete
+// adds to its room is the bytes of the update that carried it, at the one price.
+//
+// The budget is filled the way the server reaches a full one. A room is charged its stored state
+// at the one price when its load decodes it and an admission reserves nothing of its own, so the
+// room that crosses the limit is the last one admitted: browsers open documents of a mebibyte
+// until the budget refuses one, which leaves it just past its limit or just under. Then small
+// rooms opened first grow under their browsers, a round of headings at a time, until what the
+// rounds' own bytes add to their rooms' charges (docs' renderedReplica.chargeAdded) takes the
+// charges past the limit, a sweep finds nothing to close, and the budget is full
+// (roomBudget.full): the next round is refused.
 //
 // Each refusal is read twice: an update's from its close frame and from its document, through the
 // server's text and through the store, never holding it; a browser's from its close frame and from
@@ -1618,7 +1640,6 @@ func TestAFullServerRefusesWhatGrowsAndTakesWhatShrinks(t *testing.T) {
 		took := make([]int, growers)
 		refusedRound := 0
 		for number, round := range rounds {
-			started := time.Now()
 			for index, grower := range growing {
 				if grower == nil {
 					continue
@@ -1639,9 +1660,9 @@ func TestAFullServerRefusesWhatGrowsAndTakesWhatShrinks(t *testing.T) {
 				break
 			}
 			t.Logf("round %d, %d elements a growing room: every growing room took it, %d MiB resident", number+1, round.size.Elements, server.resident(t, "VmRSS")>>20)
-			// Each growing room's count of this round lands within the measurer's interval
-			// (roomCountIntervalForTest) before the next round is sent.
-			time.Sleep(time.Until(started.Add(roomCountIntervalForTest + 2*time.Second)))
+			// A round is on its room's charge as soon as the room has answered it (docs'
+			// renderedReplica.chargeAdded), and the sweep that looks for something to close runs
+			// on the admission that needs it, so the next round follows at once.
 		}
 		if refusedRound == 0 {
 			t.Fatalf("all %d rounds of growth applied, want the budget to refuse growth once the rooms' counts take it past its limit", len(rounds))
@@ -1667,7 +1688,7 @@ func TestAFullServerRefusesWhatGrowsAndTakesWhatShrinks(t *testing.T) {
 		}
 		requireClose(t, closed, contracts.DocumentBusyCloseCode, contracts.DocumentBusyCloseReason, "the next browser on the full server")
 		requireRoomAbsent(t, server, fleet.copies[next], "the next browser on the full server")
-		if refusals := requireBudgetRefusals(t, server, fleet.reserved); refusals[len(refusals)-1].charged <= refusals[len(refusals)-1].limit {
+		if refusals := requireBudgetRefusals(t, server); refusals[len(refusals)-1].charged <= refusals[len(refusals)-1].limit {
 			t.Errorf("the full server refused the next browser at %d of %d bytes charged, want the budget past its limit", refusals[len(refusals)-1].charged, refusals[len(refusals)-1].limit)
 		}
 
@@ -1693,19 +1714,27 @@ func TestAFullServerRefusesWhatGrowsAndTakesWhatShrinks(t *testing.T) {
 			}
 			memory.waitForStoredText(t, room.room, func(text string) bool { return len(text) == want })
 		}
-		t.Logf("%d shrinks applied to %d documents on the full server, and stored; %d MiB resident", len(shrinking)*shrunk, shrunk, server.resident(t, "VmRSS")>>20)
-		// The shrinks' deletes were admitted within the pressure reserve, and the refusal of the
-		// next browser names what the rooms are charged once they have been.
+		// What the shrinks added to the budget is their own bytes at the one price: a delete
+		// carries no content, but the update that carried it is bytes the room's observer adds
+		// to the room's tracked state as it drains (docs' renderedReplica.chargeAdded). Nothing
+		// is held back for them - the pressure reserve the budget kept for this went with the
+		// cut - and the server is full the whole way through, which is what the refusal below
+		// reads.
 		if _, err := server.tryOpenBrowser(fleet.copies[next]); !errors.As(err, &closed) {
 			t.Fatalf("the next browser after the shrinks: %v, want its socket closed", err)
 		}
 		requireClose(t, closed, contracts.DocumentBusyCloseCode, contracts.DocumentBusyCloseReason, "the next browser after the shrinks")
-		refusals := requireBudgetRefusals(t, server, fleet.reserved)
+		refusals := requireBudgetRefusals(t, server)
 		before, after := refusals[len(refusals)-2], refusals[len(refusals)-1]
-		t.Logf("the budget charged %d of %d bytes before the shrinks and %d after them: %d past its limit, against the %d-byte pressure reserve",
-			before.charged, before.limit, after.charged, after.charged-after.limit, pressureReserveBytesForTest)
-		if after.charged > after.limit+pressureReserveBytesForTest {
-			t.Errorf("after the shrinks the budget charged %d bytes, %d past its %d-byte limit, want within the %d-byte pressure reserve", after.charged, after.charged-after.limit, after.limit, pressureReserveBytesForTest)
+		shrinkBytes := 0
+		for _, update := range shrinking {
+			shrinkBytes += len(update)
+		}
+		t.Logf("the budget charged %d of %d bytes before the shrinks and %d after them, %d more and %d past its limit, against the %d their own bytes are priced at over %d documents",
+			before.charged, before.limit, after.charged, after.charged-before.charged, after.charged-after.limit,
+			roomWeightForTest(int64(shrunk*shrinkBytes)), shrunk)
+		if after.charged <= after.limit {
+			t.Errorf("after the shrinks the budget charged %d bytes, within its %d-byte limit: the server stopped being full, so what it refused above it would now admit", after.charged, after.limit)
 		}
 
 		// An API write to a document no room holds is applied on the full server and opens no
@@ -1760,15 +1789,23 @@ func TestAFullServerRefusesWhatGrowsAndTakesWhatShrinks(t *testing.T) {
 const gcFloodClient = 5_000_000
 
 // A browser cannot push a document past the decode cap, over a real document socket of a real
-// server. A room is brought near the cap by an update of GC structs its struct total admits, and two
-// updates that would take it past - one of GC structs, one of delete ranges, each sized from the
-// structs the room's encoded state holds, the count the room confirms a refusal by
-// (countRoomStructs) - are each refused with 4413 and
-// DOC_TOO_LARGE, and the room is left as it was. Each GC struct counts itself and the two splits its
-// integration can cause against the cap; each delete range of a client the room does not hold
-// counts the two ends it can split and the parked range its tail leaves (peerWeighing.walkedDelete).
-// The stored document then loads in a new room of a new server, holding what the room
-// held before the refusals, within the cap.
+// server. A room is brought near the cap by an update of GC structs its allowance admits, and
+// one that would take it one struct past - sized from the structs the room's own document holds,
+// which is what the apply's allowance is built from (crdt.Doc.StructCount, docs'
+// peerApplyAllowance) - is refused with 4413 and DOC_TOO_LARGE and taken back out whole, leaving
+// the room as it was. The frame that takes the room to the cap exactly is admitted, and so is a
+// frame of delete ranges, which integrates nothing: the splits a delete makes in items the
+// document already held are not the update's own and are not counted against it
+// (crdt.ApplyBudget.Structs), so a document at the cap can still be trimmed. The stored document
+// then loads in a new room of a new server, within the cap.
+//
+// Before the cut the room kept a running struct total of its own and charged each struct of an
+// update with the two splits it could cause, which is why a frame of a third of the cap's
+// structs was refused where this one takes it; ygo counts what the apply integrates now, so the
+// drive asks for the exact frame the cap refuses. internal/dispatch/docs holds the same cap in
+// process (TestAnUpdateThatWouldTakeTheRoomPastTheDecodeCapIsRefused); what this drive adds is
+// that the room a real socket drove is left byte for byte as it was and that its stored history
+// loads again.
 func TestABrowserCannotPushADocumentPastTheDecodeCap(t *testing.T) {
 	const nearStructs = 340_000
 	memory := newMemoryHarness(t)
@@ -1787,26 +1824,35 @@ func TestABrowserCannotPushADocumentPastTheDecodeCap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("count the room's structs: %v", err)
 	}
-	over := int((maxUpdateItemsForTest-held)/(1+splitsAStructCanCauseForTest)) + 1
-	t.Logf("the room holds %d structs after an update of %d GC structs; an update of %d structs or delete ranges takes it past the %d-struct decode cap", held, nearStructs, over, maxUpdateItemsForTest)
-	for _, row := range []struct {
-		name   string
-		update []byte
-	}{
-		{"GC structs", gcFrame(gcFloodClient+1, over, 1)},
-		{"delete ranges", deleteRangesFrame(gcFloodClient+2, over)},
-	} {
-		refused := server.openBrowser(t, room)
-		t.Cleanup(refused.leave)
-		applied, closed, err := refused.send(refused.updateFrame(row.update))
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Logf("a %d-byte update of %d %s: applied %v, closed %v", len(row.update), over, row.name, applied, closed)
-		requireRefused(t, applied, closed, contracts.DocumentTooLargeCloseCode, contracts.DocumentTooLargeCloseReason)
-		if state := canonicalState(t, filling.state(t)); !bytes.Equal(state, before) {
-			t.Fatalf("the room holds a %d-byte state after the refused update of %s, want the %d-byte state it held", len(state), row.name, len(before))
-		}
+	left := int(maxUpdateItemsForTest - held)
+	t.Logf("the room holds %d structs after an update of %d GC structs, %d short of the %d-struct decode cap", held, nearStructs, left, maxUpdateItemsForTest)
+	if left < 2 {
+		t.Fatalf("the room is %d structs short of the cap, want room for the frame that reaches it and the one that passes it", left)
+	}
+	refusing := server.openBrowser(t, room)
+	t.Cleanup(refusing.leave)
+	past := gcFrame(gcFloodClient+1, left+1, 1)
+	applied, closed, err := refusing.send(refusing.updateFrame(past))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("a %d-byte update of %d GC structs, one past the cap: applied %v, closed %v", len(past), left+1, applied, closed)
+	requireRefused(t, applied, closed, contracts.DocumentTooLargeCloseCode, contracts.DocumentTooLargeCloseReason)
+	if state := canonicalState(t, filling.state(t)); !bytes.Equal(state, before) {
+		t.Fatalf("the room holds a %d-byte state after the refused update, want the %d-byte state it held", len(state), len(before))
+	}
+	// What the cap admits: the frame that reaches it exactly, and a frame of delete ranges,
+	// which integrates nothing of its own whatever the room already holds.
+	requireApplied(t, filling, gcFrame(gcFloodClient+2, left, 1), fmt.Sprintf("an update of %d GC structs, to the cap exactly", left))
+	requireApplied(t, filling, deleteRangesFrame(gcFloodClient+3, 64), "an update of 64 delete ranges into a room at the cap")
+	atTheCap := canonicalState(t, filling.state(t))
+	capped, err := docs.StateStructsForTest(atTheCap)
+	if err != nil {
+		t.Fatalf("count the room's structs at the cap: %v", err)
+	}
+	t.Logf("the room holds %d structs once the frame that reaches the cap and a frame of delete ranges have applied", capped)
+	if capped > maxUpdateItemsForTest {
+		t.Fatalf("the room holds %d structs, past the %d-struct cap: the allowance admitted more than what was left of it", capped, maxUpdateItemsForTest)
 	}
 	memory.waitForSettled(t, room)
 	server.stop(t)
@@ -1819,8 +1865,8 @@ func TestABrowserCannotPushADocumentPastTheDecodeCap(t *testing.T) {
 		t.Fatalf("count the reloaded room's structs: %v", err)
 	}
 	t.Logf("a new server's room loads the stored document as a %d-byte state of %d structs", len(state), loaded)
-	if !bytes.Equal(state, before) || loaded > maxUpdateItemsForTest {
-		t.Fatalf("a new room loads a %d-byte state of %d structs, want the %d-byte state the room held before the refusals, within the %d-struct cap", len(state), loaded, len(before), maxUpdateItemsForTest)
+	if !bytes.Equal(state, atTheCap) || loaded > maxUpdateItemsForTest {
+		t.Fatalf("a new room loads a %d-byte state of %d structs, want the %d-byte state the room held, within the %d-struct cap", len(state), loaded, len(atTheCap), maxUpdateItemsForTest)
 	}
 }
 
@@ -1836,29 +1882,33 @@ const (
 	reconnectRoundsMargin = 16 << 20
 )
 
-// An update the walk refuses is not applied, over a real document socket of a real server: the
+// An update the apply refuses is not applied, over a real document socket of a real server: the
 // room closes the browser that sent it with 4413 DOC_UPDATE_REFUSED, read from the close frame,
 // and the room's state vector and state are what they were, for a frame of valid GC structs
 // ending in one bad byte, which ygo's own apply refuses, leaving the document holding none of it
-// (sjawhar/ygo v1.55.1-sami.1, crdt/update.go:822-996, reearth/ygo#340), for a subdocument and for a struct under
-// a root the Proof editor never writes
-// (Service.weighPeerUpdate). Only that browser is closed: another reading
-// the room goes on reading it. The stored document, once settled, holds none of them.
+// (sjawhar/ygo v1.55.1-sami.6, crdt/update.go:822-996, reearth/ygo#340), for a subdocument, which
+// ygo refuses as bytes it will not read, and for a struct under a root the Proof editor never
+// writes, which ygo refuses by name as it decodes it (crdt.WithAllowedRoots, docs'
+// peerAllowedRoots). Only that browser is closed: another reading the room goes on reading it.
+// The stored document, once settled, holds none of them.
 //
-// Then the loop the code is there to end: the browser that was refused reconnects and sends the
-// same frame again, twenty rounds of it, as @hocuspocus/provider 2.x does after a close it does
-// not read as permanent. Each round is closed with the same code and reason, the room's state is
-// what it was after every one, and the server holds no more memory at the end than at the start
-// (requireFlatAcrossRounds), so a client that does not read the close costs the pod nothing that
+// The pre-apply walk that refused these three before the cut is gone; what refuses them now is
+// the apply itself, which rolls back whole, and internal/dispatch/docs holds each refusal in
+// process (TestAPeerUpdateYgoRefusesIsNeverApplied). What this drive adds is the loop the code
+// is there to end: the browser that was refused reconnects and sends the same frame again,
+// twenty rounds of it, as @hocuspocus/provider 2.x does after a close it does not read as
+// permanent. Each round is closed with the same code and reason, the room's state is what it was
+// after every one, and the server holds no more memory at the end than at the start, read from
+// its own trace (heldNow), so a client that does not read the close costs the pod nothing that
 // accumulates.
 //
 // Under sjawhar/ygo v1.51.3-sami.7 the room answered such a frame SyncStatus(0) and kept the
 // browser connected. Upstream reearth/ygo#304 was merged in the form that closes a browser whose
-// update the hook refused before the apply ran, with 4205 "Reset Connection" for a refusal that
+// update the hook refused, with 4205 "Reset Connection" for a refusal that
 // is no *websocket.PeerClose, which the provider reconnects at once after
 // (provider/websocket/peer_update.go:38-52, :139-151): every refusal the hook makes carries a
 // code and reason of Dispatch's own instead.
-func TestAnUpdateTheWalkerRefusesIsNotApplied(t *testing.T) {
+func TestAnUpdateTheApplyRefusesIsNotApplied(t *testing.T) {
 	const client = gcFloodClient
 	memory := newMemoryHarness(t)
 	server := memory.start(t)
@@ -2019,37 +2069,12 @@ const (
 	// build documents at it and fail unless their stored histories hold within 4,096 of it
 	// (requireAtTheDecodeCap).
 	maxUpdateItemsForTest = 1 << 20
-	// bytesOfHeapARenderedByteForTest mirrors bytesOfHeapARenderedByte,
-	// the third price of a copy beside its elements
-	// and its structs (copyHeap), from which storedShape computes what an admission
-	// reserves; the struct-dense drives fail unless the server's refusals name that reservation.
-	bytesOfHeapARenderedByteForTest = 12
-	// applyHeapBoundForTest mirrors docs.MemoryBounds.ApplyHeap at the calibration
-	// (internal/dispatch/docs/memory_bounds.go) and copyHeapBoundForTest its CopyHeap: a third
-	// each of what the Go limit
-	// leaves above the room budget, the cold reads' cache and the pressure reserve. The server
-	// names its bound in the line it logs for a grant (heapGrantLine), and the heaviest-apply drive
-	// fails unless each is this number.
-	applyHeapBoundForTest = 393_705_335
-	copyHeapBoundForTest  = 393_705_336
-	// copyHeapPerByteForTest mirrors copyHeapPerByte, what a full-state decode
-	// is granted for each byte of the state it decodes, so a state of more than 8,202,195 bytes is
-	// granted the whole copy bound and decodes alone among the copies.
-	copyHeapPerByteForTest = 48
-	// liveWriteHeapPerByteForTest mirrors liveWriteHeapPerByte, what a live write's fork is
-	// granted of the copy bound for each byte of the state it was built from, for the fork's
-	// whole life rather than for a decode alone (liveWriteWeight): a decode's own 48 and the 17 a
-	// byte the write keeps beside it. The server names each grant's weight in the line it logs
-	// for it (heapGrantLine), and TestABurstOfConcurrentLiveWritesStaysUnderThePodsMemory fails
-	// unless the grants of its writes' forks are this many times their document's stored state.
-	liveWriteHeapPerByteForTest = 65
-	// heaviestHandoffEstimate is the hook's estimate of the heaviest honest handoff at F, measured
-	// into the room holding it (peerWeighing.applyHeap):
-	// the long-edited document typed on until 4,096 structs short of the decode cap and padded to
-	// F, the shape the heaviest-apply drive hands back. The server logs no estimate, only that
-	// each handoff held the whole apply bound (heapGrantLine), which an estimate past
-	// applyHeapBoundForTest does; the drive quotes it in its arithmetic.
-	heaviestHandoffEstimate = 904_378_600
+	// worstCaseLoadSlotBytesForTest is what the pod's load concurrency may hold at once:
+	// loadSlotsForTest slots of loadSlotBytesForTest each, the sum the heaviest-apply drive adds
+	// to the room budget and the cold reads' cache to weigh its worst case against the Go limit.
+	// One slot covers one whole-document decode, one live write's fork or one apply of an update
+	// over unslottedApplyBytesForTest, whichever takes it.
+	worstCaseLoadSlotBytesForTest = loadSlotsForTest * loadSlotBytesForTest
 )
 
 // longEditFixturePath is the long-edited fixture (docs' longEditFixture),
@@ -2074,17 +2099,16 @@ const longEditFixturePath = "../../internal/dispatch/docs/testdata/long_edited_d
 // (longEditedTypedTo), and the document an agent rewrote whole through the API until the decode
 // cap refused a write (agentRewrittenDocument), about a million structs each - and eight documents
 // of a mebibyte of prose, the ordinary document A3 weighs
-// (TestTheRoomBudgetRefusesWhereItsOwnArithmeticSays). A struct-dense document is priced at
-// its structs (bytesOfHeapAStructHeldForTest), about 356 MB at both copies, where its elements
-// would price it at kilobytes, so the budget admits at most six of them, and the ordinary ones
-// the rest of it has room for.
+// (TestTheRoomBudgetRefusesWhereItsOwnArithmeticSays). Every room is charged its stored state at
+// one price over both copies (roomWeightForTest), and a struct-dense document's state is several
+// times a mebibyte of prose's, so the budget admits few of them and the ordinary ones what is
+// left.
 //
-// Every refusal is 4503 and DOC_BUSY at admission, with the document left unopened, and within the
-// budget's arithmetic: the line the server logs for it names what the open rooms were charged and
-// what the refused document needs, which must be that document's price as computed here from the
-// server's constants and its stored history (storedShape), and the two together must pass the
-// budget. An ordinary document is refused only so, needing what A3 reserves for it, so none is
-// refused earlier than A3 allows. Every admitted browser receives its document's whole state and
+// Every refusal is 4503 and DOC_BUSY at admission, with the document left unopened, and within
+// the budget's arithmetic: the line the server logs for it names what the open rooms were
+// charged against the budget, and that charge must already be past the limit, since an
+// admission reserves nothing for the room it is about to load and is refused only once what the
+// open rooms hold passes it. Every admitted browser receives its document's whole state and
 // answers a ping.
 func TestABurstOfStructDenseDocumentsStaysUnderThePodsMemory(t *testing.T) {
 	const copiesOfEach, ordinary = 8, "a mebibyte of prose"
@@ -2096,27 +2120,26 @@ func TestABurstOfStructDenseDocumentsStaysUnderThePodsMemory(t *testing.T) {
 	agent := memory.storedShape(t, "the agent-rewritten document", memory.agentRewrittenDocument(t))
 	fleet := memory.mebibyteFleet(t, func(int64) int { return copiesOfEach })
 	type opening struct {
-		shape    string
-		room     string
-		reserved int64
-		opened   *browser
-		closed   *gws.CloseError
-		err      error
+		shape  string
+		room   string
+		weight int64
+		opened *browser
+		closed *gws.CloseError
+		err    error
 	}
 	var burst []opening
 	for _, shape := range []storedShape{longEdited, agent} {
 		requireAtTheDecodeCap(t, shape)
 		for _, room := range memory.cloneDocuments(t, shape.id, copiesOfEach) {
-			burst = append(burst, opening{shape: shape.name, room: room, reserved: shape.reserved})
+			burst = append(burst, opening{shape: shape.name, room: room, weight: shape.weight})
 		}
 	}
 	for _, room := range fleet.copies {
-		burst = append(burst, opening{shape: ordinary, room: room, reserved: fleet.reserved})
+		burst = append(burst, opening{shape: ordinary, room: room, weight: fleet.weight})
 	}
-	t.Logf("the %d-byte budget holds %d struct-dense rooms of the heavier price and %d rooms of a mebibyte of prose, which reserves %d bytes (%d elements), as in A3; the documents took %s to build",
-		roomBudgetBytesForTest, roomBudgetBytesForTest/max(longEdited.reserved, agent.reserved), roomBudgetBytesForTest/fleet.reserved,
-		fleet.reserved, fleet.elements, time.Since(building).Round(time.Second))
-
+	t.Logf("the %d-byte budget holds %d struct-dense rooms of the heavier state and %d rooms of a mebibyte of prose, which is charged %d bytes (%d elements), as in A3; the documents took %s to build",
+		roomBudgetBytesForTest, roomBudgetBytesForTest/max(longEdited.weight, agent.weight), roomBudgetBytesForTest/fleet.weight,
+		fleet.weight, fleet.elements, time.Since(building).Round(time.Second))
 	server := memory.start(t)
 	requirePodGoMemoryLimit(t, server)
 	t.Cleanup(func() {
@@ -2144,7 +2167,7 @@ func TestABurstOfStructDenseDocumentsStaysUnderThePodsMemory(t *testing.T) {
 
 	refusals := budgetRefusalsByRoom(t, server)
 	admitted, refused := map[string]int{}, map[string]int{}
-	var admittedReserved int64
+	var admittedWeight int64
 	for index, opened := range burst {
 		what := fmt.Sprintf("browser %d, of %s", index, opened.shape)
 		switch {
@@ -2152,7 +2175,7 @@ func TestABurstOfStructDenseDocumentsStaysUnderThePodsMemory(t *testing.T) {
 			t.Errorf("%s: %v", what, opened.err)
 		case opened.opened != nil:
 			admitted[opened.shape]++
-			admittedReserved += opened.reserved
+			admittedWeight += opened.weight
 			if err := opened.opened.ping(); err != nil {
 				t.Errorf("%s was admitted and lost its room: %v", what, err)
 			}
@@ -2161,18 +2184,14 @@ func TestABurstOfStructDenseDocumentsStaysUnderThePodsMemory(t *testing.T) {
 			requireClose(t, opened.closed, contracts.DocumentBusyCloseCode, contracts.DocumentBusyCloseReason, what)
 			requireRoomAbsent(t, server, opened.room, what+"'s document")
 			refusal, logged := refusals[opened.room]
-			t.Logf("%s was refused at %d of %d bytes charged, needing %d against the %d computed for it", what, refusal.charged, refusal.limit, refusal.needs, opened.reserved)
+			t.Logf("%s was refused at %d of %d bytes charged, its own room weighed at %d", what, refusal.charged, refusal.limit, opened.weight)
 			switch {
 			case !logged:
 				t.Errorf("%s was refused and the server logged no refusal of its document %s", what, opened.room)
 			case refusal.limit != roomBudgetBytesForTest:
 				t.Errorf("%s was refused against a budget of %d bytes, want %d", what, refusal.limit, roomBudgetBytesForTest)
-			case refusal.needs == 0 && refusal.charged <= refusal.limit:
-				t.Errorf("%s was refused at %d of %d bytes charged before its document was weighed, want a refusal only past the limit", what, refusal.charged, refusal.limit)
-			case refusal.needs != 0 && refusal.needs != opened.reserved:
-				t.Errorf("%s was refused needing %d bytes, want the %d its stored history and rendering are priced at", what, refusal.needs, opened.reserved)
-			case refusal.needs != 0 && refusal.charged+refusal.needs <= refusal.limit:
-				t.Errorf("%s was refused at %d of %d bytes charged needing %d, which fit: refused earlier than the budget's arithmetic allows", what, refusal.charged, refusal.limit, refusal.needs)
+			case refusal.charged <= refusal.limit:
+				t.Errorf("%s was refused at %d of %d bytes charged, within the limit: refused earlier than the budget's arithmetic allows, which reserves nothing for the room it would load", what, refusal.charged, refusal.limit)
 			}
 		}
 	}
@@ -2180,26 +2199,28 @@ func TestABurstOfStructDenseDocumentsStaysUnderThePodsMemory(t *testing.T) {
 		t.Logf("%s: %d admitted, %d refused", shape, admitted[shape], refused[shape])
 	}
 	dense := admitted[longEdited.name] + admitted[agent.name]
-	t.Logf("%d browsers at once: %d admitted to struct-dense rooms and %d to rooms of prose, %d bytes reserved at admission against the %d-byte budget, in %s",
-		len(burst), dense, admitted[ordinary], admittedReserved, roomBudgetBytesForTest, took.Round(time.Second))
-	logHeapGrants(t, "the burst", heapGrants(t, server.output.String()))
-	if most := roomBudgetBytesForTest / min(longEdited.reserved, agent.reserved); dense == 0 || int64(dense) > most {
-		t.Errorf("%d struct-dense rooms were admitted, want at least one and no more than the %d their structs' price fits in the budget", dense, most)
+	t.Logf("%d browsers at once: %d admitted to struct-dense rooms and %d to rooms of prose, %d bytes charged by what was admitted against the %d-byte budget, in %s",
+		len(burst), dense, admitted[ordinary], admittedWeight, roomBudgetBytesForTest, took.Round(time.Second))
+	logLoadSlots(t, "the burst", loadSlotHolds(t, server.output.String()))
+	// Every admitted room but the last was weighed against a budget within its limit, so what
+	// the budget admits is what it holds and one more, the room that crossed it.
+	if most := roomBudgetBytesForTest/min(longEdited.weight, agent.weight) + 1; dense == 0 || int64(dense) > most {
+		t.Errorf("%d struct-dense rooms were admitted, want at least one and no more than the %d their states' weight fits in the budget, and the one that crosses it", dense, most)
 	}
 	requireUnderThePod(t, peak, "the burst of struct-dense documents")
 }
 
-// The worst case the room budget and the two heap bounds leave the pod, run at once under the Go
-// limit a 4 GiB pod gives the server: the budget full, the cold reads' cache full, honest handoffs
-// at F applying - each estimated past the apply-heap bound, so each holds the whole bound and
-// applies alone among the applies - and beside them struct-dense documents loading and folding,
-// each decode weighed past the copy-heap bound and holding all of it. An apply past its bound runs
-// alone among applies but not among copies, so this is the sum the bounds allow: 2 GiB of rooms,
-// 256 MiB of cache, a handoff estimated at 904 MB beside a copy at its whole 394 MB bound,
-// 3,714,003,040 bytes by the estimates, inside the 3,865,470,566-byte Go limit. The memory a
-// pod's kernel would charge the server stays under the pod's 4 GiB through every step, and what
-// the Go limit bounds stays within that limit and its margin (requireUnderThePod), and every
-// honest handoff, load and fold completes.
+// The worst case the room budget and the pod's load concurrency leave the pod, run at once under
+// the Go limit a 4 GiB pod gives the server: the budget full, the cold reads' cache full, honest
+// handoffs of the heaviest state a room may hold applying - each far over
+// unslottedApplyBytesForTest, so each takes a slot of the pod's load concurrency and holds it
+// across its whole apply - and beside them struct-dense documents loading and folding, each
+// decode taking a slot of its own. The calibration has one slot (loadSlotsForTest), so the three
+// kinds of heavy work queue for it one at a time, and this is the sum the bounds allow: 2 GiB of
+// rooms, 256 MiB of cache and one 600 MB slot, 3,015,919,104 bytes, inside the
+// 3,865,470,566-byte Go limit. The memory a pod's kernel would charge the server stays under the
+// pod's 4 GiB through every step, and what the Go limit bounds stays within that limit and its
+// margin (requireUnderThePod), and every honest handoff, load and fold completes.
 //
 // What the garbage of all that work does to that memory is the collector's, at the runtime's own
 // ratio: the server reads and sets no GOGC, and the boot line this drive reads at the start is
@@ -2232,73 +2253,77 @@ func TestABurstOfStructDenseDocumentsStaysUnderThePodsMemory(t *testing.T) {
 //
 // On one server: first the budget is filled by browsers that stay - a browser of an ordinary small
 // document, two rooms of the long-edited document typed on until 4,096 structs short of the decode
-// cap and padded to F by text nested under the margin (paddedToTheHeaviestFrame), whose browsers
-// later hand back, then copies of the long-edited document at the decode cap - leaving room, by
-// the budget's arithmetic computed here from the server's constants, for what typing adds to the
-// small document's room and one more document an agent rewrote to the decode cap, and not two.
+// cap and padded to the room's state cap by text nested under the margin
+// (paddedToTheRoomsStateCap), whose browsers later hand back, then copies of the long-edited
+// document at the decode cap - leaving room, by the budget's arithmetic computed here from the
+// server's constants, for what typing adds to the small document's room and one more document an
+// agent rewrote to the decode cap, and not two.
 // Then the cache is filled by cold reads of documents of the heaviest headings the element bound
-// admits, one more than its budget holds. Then, all at once, three browsers of the rooms at F hand
-// their whole state back with a few words typed, two browsers open two copies of the
-// agent-rewritten document, of which the budget admits one and refuses the other with 4503 within
-// its arithmetic, and four struct-dense documents no room holds are read cold.
+// admits, one more than its budget holds. Then, all at once, three browsers of the rooms at the
+// state cap hand their whole state back with a few words typed, two browsers open two copies of
+// the agent-rewritten document, of which the budget admits one and refuses the other with 4503
+// within its arithmetic, and four struct-dense documents no room holds are read cold.
+//
+// The state cap is what bounds the heaviest handoff now that the frame total is gone: a room may
+// hold maxRoomStateBytes of state and no more, a browser hands that state back as one frame, and
+// four such frames fit the message floor (docs' maxRoomStateBytes). Nothing a browser sends can
+// take a room there, so the drive stores the state itself, as a rebuild does (storedStates).
 //
 // Every one of those documents is built before the server starts and owes it no block index
 // (oweNoBlockIndex), so the only reads of them are the drive's own: a server left to index them
 // renders each whole within seconds of its boot, which both caches that rendering under the
 // document's stored stamp, so a cold read of it is answered from the cache and folds nothing, and
 // folds documents of a million structs beside the work the steps weigh. Each of the four cold
-// reads is then the first read of its document, and must fold its stored history under a grant of
-// the whole copy-heap bound.
+// reads is then the first read of its document, and must fold its stored history under a slot of
+// the pod's load concurrency.
 //
 // Through the cache's fill and the heavy step a person types in the small document's room, a
 // keystroke every 200 ms, each sent once the room has answered the last applied (startTyping).
-// Neither bound holds a keystroke - an ordinary room's update weighs too little to wait for the
-// apply bound and loads nothing - so every keystroke applies, in each step answered within 2 s at
-// the 99th percentile and none past 5 s: the person does not wait behind the heavy work.
+// No slot holds a keystroke - a one-character insert is far under unslottedApplyBytesForTest and
+// loads nothing - so every keystroke applies, in each step answered within 2 s at the 99th
+// percentile and none past 5 s: the person does not wait behind the heavy work.
 //
-// The server logs each grant of either bound that waited or held its whole bound (heapGrantLine),
-// from which the drive reads that a handoff holding the whole apply bound and a copy holding the
-// whole copy bound were held at the same moment, so the worst case did happen, and the longest wait
-// either bound made. It logs those beside each step's duration, each step's three readings of
-// what it left the server holding (requireUnderThePod), and the keystrokes' latencies at their
-// 50th, 90th and 99th percentiles and their most.
+// The server logs each slot a holder waited a tenth of a second or more for (loadSlotLine), from
+// which the drive reads that the handoffs and the folds did queue for the pod's one slot, so the
+// worst case did happen, and the longest wait it made. It logs those beside each step's
+// duration, each step's three readings of what it left the server holding (requireUnderThePod),
+// and the keystrokes' latencies at their 50th, 90th and 99th percentiles and their most.
 func TestTheHeaviestApplyBesideAFullCopyBoundStaysUnderThePodsMemory(t *testing.T) {
 	const folds = 4
 	building := time.Now()
 	memory := newMemoryHarness(t)
 	memory.env = append(memory.env, podServerEnv()...)
 	stored := memory.storedStates(t, longEditedTypedTo(t, maxUpdateItemsForTest),
-		paddedToTheHeaviestFrame(t, longEditedTypedTo(t, maxUpdateItemsForTest-4_096)))
+		paddedToTheRoomsStateCap(t, longEditedTypedTo(t, maxUpdateItemsForTest-4_096)))
 	longEdited := memory.storedShape(t, "the long-edited document at the decode cap", stored[0])
-	heaviest := memory.storedShape(t, "the long-edited document 4,096 structs short of the decode cap, padded to F", stored[1])
+	heaviest := memory.storedShape(t, "the long-edited document 4,096 structs short of the decode cap, padded to the room's state cap", stored[1])
 	agent := memory.storedShape(t, "the agent-rewritten document", memory.agentRewrittenDocument(t))
 	requireAtTheDecodeCap(t, longEdited)
 	requireAtTheDecodeCap(t, agent)
-	if heaviest.stateBytes > heaviestHandoffBoundForTest || heaviest.stateBytes+64<<10 < heaviestHandoffBoundForTest {
-		t.Fatalf("the padded document stores %d bytes of state, want within 64 KiB under F (%d)", heaviest.stateBytes, heaviestHandoffBoundForTest)
+	if heaviest.stateBytes > maxRoomStateBytesForTest || heaviest.stateBytes+64<<10 < maxRoomStateBytesForTest {
+		t.Fatalf("the padded document stores %d bytes of state, want within 64 KiB under the room's state cap (%d)", heaviest.stateBytes, maxRoomStateBytesForTest)
 	}
 	cached, cacheWeight := memory.readCacheFill(t)
 	heavyRooms := memory.cloneDocuments(t, heaviest.id, 2)
 	typedIDs, _ := memory.smallDocuments(t, 1)
 	typed := memory.storedShape(t, "the ordinary document a person types in", typedIDs[0])
 	typedGrowth := int64(typingKeystrokes * keystrokeChargeForTest)
-	fill := (roomBudgetBytesForTest - 2*heaviest.reserved - typed.reserved - typedGrowth - agent.reserved) / longEdited.reserved
-	free := roomBudgetBytesForTest - 2*heaviest.reserved - typed.reserved - fill*longEdited.reserved
-	if fill < 1 || free-typedGrowth < agent.reserved || free >= 2*agent.reserved {
-		t.Fatalf("two rooms at F, the typed room and %d at the decode cap leave %d of the %d-byte budget, want room for one agent-rewritten document (%d bytes) beside the %d its typing can add, and not for two before any typing",
-			fill, free, roomBudgetBytesForTest, agent.reserved, typedGrowth)
+	fill := (roomBudgetBytesForTest - 2*heaviest.weight - typed.weight - typedGrowth - agent.weight) / longEdited.weight
+	free := roomBudgetBytesForTest - 2*heaviest.weight - typed.weight - fill*longEdited.weight
+	if fill < 1 || free-typedGrowth < agent.weight || free >= 2*agent.weight {
+		t.Fatalf("two rooms at the state cap, the typed room and %d at the decode cap leave %d of the %d-byte budget, want room for one agent-rewritten document (%d bytes) beside the %d its typing can add, and not for two before any typing",
+			fill, free, roomBudgetBytesForTest, agent.weight, typedGrowth)
 	}
 	filling := memory.cloneDocuments(t, longEdited.id, int(fill))
 	lastRooms := memory.cloneDocuments(t, agent.id, 2)
 	folded := append(memory.cloneDocuments(t, agent.id, folds/2), memory.cloneDocuments(t, longEdited.id, folds/2)...)
-	worst := int64(roomBudgetBytesForTest) + documentReadBudgetForTest + heaviestHandoffEstimate + copyHeapBoundForTest
-	t.Logf("the budget: two rooms at F reserve %d bytes each, the room a person types in %d and up to %d more for its %d keystrokes, and %d rooms at the decode cap %d each, which leaves %d, room for one agent-rewritten document (%d) beside the typing and not two",
-		heaviest.reserved, typed.reserved, typedGrowth, typingKeystrokes, fill, longEdited.reserved, free, agent.reserved)
-	t.Logf("the bounds: a handoff at F is estimated at %d bytes, past the %d-byte apply bound, so it holds all of it; a fold or load of a struct-dense state is weighed at %d bytes a byte, %d for the agent's %d bytes and %d for the long-edited document's %d, past the %d-byte copy bound, so it holds all of it",
-		heaviestHandoffEstimate, applyHeapBoundForTest, copyHeapPerByteForTest, agent.stateBytes*copyHeapPerByteForTest, agent.stateBytes,
-		longEdited.stateBytes*copyHeapPerByteForTest, longEdited.stateBytes, copyHeapBoundForTest)
-	t.Logf("the worst case: the %d-byte budget, the %d-byte cache (%d documents of %d bytes each), the handoff's %d and the copy bound's %d come to %d bytes, against the %d-byte Go limit and the pod's %d; the documents took %s to build",
-		roomBudgetBytesForTest, documentReadBudgetForTest, len(cached), cacheWeight, heaviestHandoffEstimate, copyHeapBoundForTest, worst,
+	worst := int64(roomBudgetBytesForTest) + documentReadBudgetForTest + worstCaseLoadSlotBytesForTest
+	t.Logf("the budget: two rooms at the state cap are charged %d bytes each, the room a person types in %d and up to %d more for its %d keystrokes, and %d rooms at the decode cap %d each, which leaves %d, room for one agent-rewritten document (%d) beside the typing and not two",
+		heaviest.weight, typed.weight, typedGrowth, typingKeystrokes, fill, longEdited.weight, free, agent.weight)
+	t.Logf("the slots: a handoff of the %d bytes a room at the state cap holds is far over the %d-byte figure at which an apply takes a slot, and so is a fold of the agent's %d bytes or the long-edited document's %d, so each of them holds one of the pod's %d slots for its whole run",
+		heaviest.stateBytes, unslottedApplyBytesForTest, agent.stateBytes, longEdited.stateBytes, loadSlotsForTest)
+	t.Logf("the worst case: the %d-byte budget, the %d-byte cache (%d documents of %d bytes each) and the %d bytes the pod's %d load slots may hold come to %d bytes, against the %d-byte Go limit and the pod's %d; the documents took %s to build",
+		roomBudgetBytesForTest, documentReadBudgetForTest, len(cached), cacheWeight, int64(worstCaseLoadSlotBytesForTest), loadSlotsForTest, worst,
 		podGoMemoryLimit, podMemory, time.Since(building).Round(time.Second))
 	t.Logf("the drive's %d documents owe the server no block index, so the only reads of them are the drive's own", memory.oweNoBlockIndex(t))
 
@@ -2351,8 +2376,8 @@ func TestTheHeaviestApplyBesideAFullCopyBoundStaysUnderThePodsMemory(t *testing.
 	handoffs := make([][]byte, len(handing))
 	for index, handingBack := range handing {
 		handoffs[index] = typedHandoff(t, handingBack.state(t))
-		if len(handoffs[index]) > heaviestHandoffBoundForTest || len(handoffs[index])+64<<10 < heaviestHandoffBoundForTest {
-			t.Fatalf("handoff %d is %d bytes, want within 64 KiB under F (%d)", index, len(handoffs[index]), heaviestHandoffBoundForTest)
+		if len(handoffs[index]) > maxRoomStateBytesForTest || len(handoffs[index])+64<<10 < maxRoomStateBytesForTest {
+			t.Fatalf("handoff %d is %d bytes, want within 64 KiB under the room's state cap (%d)", index, len(handoffs[index]), maxRoomStateBytesForTest)
 		}
 	}
 	type outcome struct {
@@ -2423,7 +2448,7 @@ func TestTheHeaviestApplyBesideAFullCopyBoundStaysUnderThePodsMemory(t *testing.
 		keys []keystroke
 	}{
 		{"the cache's fill", slices.DeleteFunc(slices.Clone(keys), func(key keystroke) bool { return !key.sent.Before(step) })},
-		{"the heaviest applies beside full copy bounds", slices.DeleteFunc(slices.Clone(keys), func(key keystroke) bool { return key.sent.Before(step) })},
+		{"the heaviest applies beside the folds", slices.DeleteFunc(slices.Clone(keys), func(key keystroke) bool { return key.sent.Before(step) })},
 		{"both", keys},
 	} {
 		latency := keystrokeLatencies(during.keys)
@@ -2461,10 +2486,10 @@ func TestTheHeaviestApplyBesideAFullCopyBoundStaysUnderThePodsMemory(t *testing.
 			requireClose(t, result.closed, contracts.DocumentBusyCloseCode, contracts.DocumentBusyCloseReason, fmt.Sprintf("the browser of agent-rewritten document %d", index))
 			requireRoomAbsent(t, server, lastRooms[index], "a refused agent-rewritten document")
 			refusal, logged := refusals[lastRooms[index]]
-			t.Logf("the browser of agent-rewritten document %d was refused in %s at %d of %d bytes charged, needing %d", index, result.took.Round(time.Millisecond), refusal.charged, refusal.limit, refusal.needs)
-			if !logged || refusal.needs != agent.reserved || refusal.charged+refusal.needs <= refusal.limit || refusal.charged > refusal.limit {
-				t.Errorf("the browser of agent-rewritten document %d was refused with %+v (logged %v), want a refusal at no more than the %d-byte limit needing the %d its structs are priced at, past the limit together",
-					index, refusal, logged, roomBudgetBytesForTest, agent.reserved)
+			t.Logf("the browser of agent-rewritten document %d was refused in %s at %d of %d bytes charged, its own room weighed at %d", index, result.took.Round(time.Millisecond), refusal.charged, refusal.limit, agent.weight)
+			if !logged || refusal.charged <= refusal.limit {
+				t.Errorf("the browser of agent-rewritten document %d was refused with %+v (logged %v), want a refusal past the %d-byte limit: an admission reserves nothing for the room it would load",
+					index, refusal, logged, roomBudgetBytesForTest)
 			}
 		}
 	}
@@ -2478,31 +2503,24 @@ func TestTheHeaviestApplyBesideAFullCopyBoundStaysUnderThePodsMemory(t *testing.
 		}
 	}
 
-	grants := heapGrants(t, window)
-	var applyAlone, copyAlone []heapGrant
-	for _, grant := range grants {
-		switch {
-		case grant.bound == "apply" && grant.size != applyHeapBoundForTest, grant.bound == "copy" && grant.size != copyHeapBoundForTest:
-			t.Errorf("the server logged a grant of the %s bound of %d bytes, want the %s bound this package mirrors", grant.bound, grant.size, grant.bound)
-		case grant.alone && grant.bound == "apply":
-			applyAlone = append(applyAlone, grant)
-		case grant.alone:
-			copyAlone = append(copyAlone, grant)
-		}
+	holds := loadSlotHolds(t, window)
+	waited := 0
+	var longest time.Duration
+	for _, hold := range holds {
+		waited++
+		longest = max(longest, hold.waited)
 	}
-	logHeapGrants(t, "the heaviest applies beside full copy bounds", grants)
-	logHeapGrants(t, "the whole run", heapGrants(t, server.output.String()))
-	overlap, pairs := longestOverlap(applyAlone, copyAlone)
-	t.Logf("the heaviest applies beside full copy bounds, in %s: %d handoffs held the whole apply bound and %d decodes the whole copy bound; %d pairs of them were held at once, the longest for %s",
-		took.Round(time.Second), len(applyAlone), len(copyAlone), pairs, overlap.Round(time.Millisecond))
-	if len(applyAlone) < len(handing) {
-		t.Errorf("%d grants held the whole apply bound, want one for each of the %d handoffs at F", len(applyAlone), len(handing))
-	}
-	if len(copyAlone) < folds+1 {
-		t.Errorf("%d grants held the whole copy bound, want one for each of the %d cold reads and the load", len(copyAlone), folds)
-	}
-	if pairs == 0 {
-		t.Error("no handoff held the whole apply bound while a decode held the whole copy bound: the worst case did not happen")
+	logLoadSlots(t, "the heaviest applies beside the folds", holds)
+	logLoadSlots(t, "the whole run", loadSlotHolds(t, server.output.String()))
+	t.Logf("the heaviest applies beside the folds, in %s: %d holders waited for one of the pod's %d load slots, the longest for %s",
+		took.Round(time.Second), waited, loadSlotsForTest, longest.Round(time.Millisecond))
+	// The handoffs and the folds are each over unslottedApplyBytesForTest or a whole-document
+	// decode, so each takes a slot; the pod has one, so all but the first of them waited for it.
+	// That queue is the worst case happening: the heaviest apply and the heaviest decode asked
+	// for the pod's load concurrency at the same moment and took it in turn.
+	if want := len(handing) + folds; waited < want-1 {
+		t.Errorf("%d holders waited for a load slot, want at least the %d handoffs and %d folds less the one that found it free: the heavy work did not queue, so the worst case did not happen",
+			waited, len(handing), folds)
 	}
 	for _, measured := range []struct {
 		step string
@@ -2510,7 +2528,7 @@ func TestTheHeaviestApplyBesideAFullCopyBoundStaysUnderThePodsMemory(t *testing.
 	}{
 		{"the budget filled", filledPeak},
 		{"the cache filled", cachePeak},
-		{"the heaviest applies beside full copy bounds", worstPeak},
+		{"the heaviest applies beside the folds", worstPeak},
 	} {
 		requireUnderThePod(t, measured.peak, measured.step)
 	}
@@ -2520,35 +2538,62 @@ func TestTheHeaviestApplyBesideAFullCopyBoundStaysUnderThePodsMemory(t *testing.
 // real caller's write has. No deadline is the server's: its http.Server names ReadHeaderTimeout
 // and IdleTimeout and leaves WriteTimeout zero, deliberately, because the event stream is
 // long-lived (newHTTPServer, conn_age.go:46-53), and no handler of the API wraps a request's
-// context in a timeout of its own, so a write waits for its part of the copy-heap bound exactly as
-// long as its client keeps the request (docs' liveWrite.coverFork). The client is the one every
+// context in a timeout of its own, so a write waits for a load slot exactly as long as its
+// client keeps the request (docs' liveWrite.coverFork). The client is the one every
 // agent's `dispatch` command goes through, which bounds each HTTP call at
 // DISPATCH_TOOL_DEADLINE_MS, 60 seconds (packages/envoy-client/src/dispatch-http.ts:291,
 // requestSignal).
 const liveWriteDeadline = 60 * time.Second
 
 // A burst of concurrent API live writes to large documents, over a server whose room budget their
-// rooms charge, keeps the pod inside its memory, because every live write's fork holds a grant of
-// the pod-wide copy-heap bound for the fork's whole life: 65 bytes for each byte of the state the
-// fork was built from, from before the fork is built until it is dropped (docs' liveWriteWeight,
-// liveWriteHeapPerByteForTest). A mebibyte of prose stores about 2.93 to 3.01 MB of state, so one
-// write of such a document is granted some 190 to 196 MB of the 393,705,336-byte bound and three
-// of them cannot hold it at once: however many writes a swarm of agents sends at once, two forks
-// of a mebibyte stand at a time, and every other write waits for its grant inside its own request,
-// holding no copy of a document. Before this change a write's fork took no grant at all for the
-// usual warm path and the decode's grant alone for the cold one, and nothing pod-wide made two
-// hundred forks take turns (INFRA-179).
+// rooms charge, keeps the pod inside its memory, because every live write's fork holds one slot
+// of the pod's load concurrency for the fork's whole life: taken before the fork is built -
+// before the clone of a warm one and before the decode of a cold one - and given back only when
+// the fork is dropped (docs' liveWrite.coverFork, loadSlots). The calibration has one slot
+// (loadSlotsForTest), so however many writes a swarm of agents sends at once, one fork stands at
+// a time and every other write waits for a slot inside its own request, holding no copy of a
+// document and no database connection: a slot is taken before any connection is
+// (docs' copy_heap.go). Before INFRA-179 a write's fork took no grant at all for the usual warm
+// path and a decode's weighed grant alone for the cold one, and nothing pod-wide made two
+// hundred forks take turns.
 //
-// Measured on 2026-11-05 on a two-processor pod, 320 writes to documents of a mebibyte of prose
-// over a budget filled to its brim, all 36 of the rooms it holds resident: the fill charged 3,461
-// MiB of the pod's 4,096, holding 3,559,696,008 bytes of what the 3,865,470,566-byte Go limit
-// bounds, 305,774,558 under it, and the burst charged 3,657, holding 3,763,361,464 bytes,
-// 102,109,102 under it. The burst took 2 m 0 s: 16 writes applied, 62 were refused 503 for the
-// bound, and 242 were answered where their caller's deadline found them. Of the applied, the
-// slowest took 1 m 11.2 s and the median 38.8 s, and fifteen landed before the first refusal. The
-// copy bound's grants waited up to 56.367 s and were held up to 9.184 s, and the room budget
-// closed the 4 rooms the server's own work had opened over it. Three runs of it read 3,657 to
-// 3,681 MiB charged and 75,476,910 to 102,109,102 bytes under the limit.
+// The four findings this drive is here for, each of which it asserts:
+//
+//   - A write to a document no room holds is counted against the room budget or waits for it. A
+//     cold write's publish opens the room it publishes into only while the budget has an opening
+//     for one (docs' roomBudget.openServerRoom); over this fill it has none, so those writes
+//     publish into no room (docs' publishedWithoutARoom) and the settlements they leave owed
+//     take the budget's one opening in turn once a browser's room is closed, each such room
+//     charged to the budget while it stands and closed as soon as that settlement is done with
+//     it (closeIfOpenedOverBudget). The drive fails unless the budget closed rooms the server's
+//     own work opened over it, and unless every written document settled.
+//   - A person's keystroke is not starved by a burst of API writes. A keystroke takes no slot -
+//     a one-character insert is far under unslottedApplyBytesForTest and loads nothing - so the
+//     drive measures the 99th percentile and the worst, holds the percentile under 5 s and
+//     records the worst, which is the pod's own work and no bound of this package's.
+//   - A busy request answers 503 and not 500. A write whose wait for a slot ends with its
+//     request is refused errWriteBusy, which the API answers 503 DOC_SERVICE_UNAVAILABLE (docs'
+//     errWriteBusy, api's documentErrorCode); and a request whose context ends anywhere else -
+//     opening a transaction while every pooled connection is held, taking the owner's row,
+//     reading the stored history - is answered the same 503 with the same reason rather than the
+//     500 it was before (api's endedWithACancelledContext). The drive fails on any other status.
+//   - A write is not applied after its client gave up. The server's own access log says when it
+//     answered each write; the drive fails if any write it answered 200 was answered past its
+//     caller's deadline, so no edit lands behind a caller that has already read a timeout and
+//     may retry.
+//
+// Measured on 2026-11-05 on a two-processor pod, before the cut, 320 writes to documents of a
+// mebibyte of prose over a budget filled to its brim, all 36 of the rooms it then held resident:
+// the fill charged 3,461 MiB of the pod's 4,096, holding 3,559,696,008 bytes of what the
+// 3,865,470,566-byte Go limit bounds, 305,774,558 under it, and the burst charged 3,657, holding
+// 3,763,361,464 bytes, 102,109,102 under it. The burst took 2 m 0 s: 16 writes applied, 62 were
+// refused 503, and 242 were answered where their caller's deadline found them. Of the applied,
+// the slowest took 1 m 11.2 s and the median 38.8 s. The bound's holders waited up to 56.367 s
+// and held up to 9.184 s, and the room budget closed the 4 rooms the server's own work had
+// opened over it. Three runs of it read 3,657 to 3,681 MiB charged and 75,476,910 to
+// 102,109,102 bytes under the limit. The one price charges a room of a mebibyte of prose its
+// stored state at 28 bytes a byte, so the budget holds about 25 of them now rather than 36, and
+// the fill is that many: the shape of the burst is unchanged and its figures are read afresh.
 //
 // The same fill before the budget booked an opening for the server's own rooms (docs'
 // roomBudget.openServerRoom) took the pod past its memory: each applied cold write's publish
@@ -2560,27 +2605,21 @@ const liveWriteDeadline = 60 * time.Second
 // nothing refusing the server's own rooms, only a fill that kept room for them stayed inside the
 // pod.
 //
-// The grant itself is told from its absence the same way it always was. With it patched out -
-// liveWrite.coverFork made to return at once, the shape before INFRA-179 - no grant is logged at a
-// fork's weight, which is the check below; over the earlier fill that run applied 26 writes
-// against 21, refused none for a bound that no longer held them, held 3,865,466,584 bytes against
-// 3,798,709,944, and left a copy grant of a room's load waiting 1 m 36.7 s against 56.4 s.
-//
 // The burst is what a swarm of agents makes: writes to documents of many owners, all at once. Two
-// things of the pod bound how far such a burst gets before this bound is reached at all, and the
+// things of the pod bound how far such a burst gets before the slots are reached at all, and the
 // drive measures both rather than assuming either:
 //
-//   - The room budget bounds how many of these documents can be resident, since each reserves what
-//     its elements are priced at, at both copies (storedShape, roomBudgetBytesForTest): 36 of a
-//     mebibyte of prose. The drive opens browsers of every one of them, so the budget is full
+//   - The room budget bounds how many of these documents can be resident, since each is charged
+//     its stored state at the one price over both copies (storedShape, roomWeightForTest). The
+//     drive opens browsers of every one of them, so the budget is full
 //     before the burst begins and has no room for any room the burst would open, and writes to
 //     the rest cold - a write to a document no room holds reads the stored history and decodes it
 //     into its fork (docs' coldFork), which is the path that holds those bytes while it waits for
-//     its grant.
+//     its slot.
 //   - The shared pool bounds how many of them are live writes at any moment, since each write's
 //     handler holds one of its connections from the transaction it opens to the commit or rollback
 //     that ends it (api's begin, editArtifact), so a write past sharedPoolSizeForTest waits for a
-//     connection and not for the bound. A burst deeper than that pool therefore costs the pod no
+//     connection and not for a slot. A burst deeper than that pool therefore costs the pod no
 //     more memory than one the size of it, and only takes longer to drain.
 //
 // Every API write to a document takes its owner's row for the length of its transaction, so the
@@ -2591,7 +2630,7 @@ const liveWriteDeadline = 60 * time.Second
 // which takes its own artifact row, as writes to documents of different issues take different
 // issue rows.
 //
-// What the drive holds:
+// What the drive holds besides the four findings:
 //
 //   - Both figures a pod is weighed by stay within their bounds through the fill of the budget and
 //     through the burst (requireUnderThePod): what a pod's kernel would charge, under the pod's 4
@@ -2599,37 +2638,25 @@ const liveWriteDeadline = 60 * time.Second
 //   - No write is lost and none is half-made: a document whose write the server answered 200 holds
 //     that write's text in its latest stored version, and one whose write it answered anything else
 //     holds exactly the text and the history it was stored with.
-//   - The copy bound is what the writes waited for: the server logs a grant of it for each fork,
-//     weighed at 65 bytes a byte of the document's stored state, and those grants waited
-//     (heapGrantLine, logHeapGrants).
-//   - A person typing in an ordinary small room keeps typing through the burst, their keystrokes
-//     answered in a 99th percentile under 5 s (startTyping).
+//   - The slots are what the writes waited for: the server logs each slot a holder waited a
+//     tenth of a second or more for (loadSlotLine, logLoadSlots), and the burst leaves such
+//     lines.
 //
 // What it records rather than asserts, because each is the system working as it is written to:
 //
-//   - A caller's deadline is not what ends a write's wait. A write still waiting for its grant when
-//     its caller gives up is often left waiting and then applied, long after the caller read a
-//     timeout of its own: net/http ends a request's context when the server reads the end of the
-//     connection its client closed, and it starts the read that would see that end only once the
-//     handler has read the request's body to its end. So the 503 a write refused for want of the
-//     bound is answered (docs' errWriteBusy, api's documentErrorCode) is not the whole of what a
-//     real burst's callers meet, and a request whose context does end somewhere other than that
-//     wait - in a query, a lock or a slot - is answered 500 rather than 503. The drive counts the
-//     answers the server logged by status, how many of the writes it applied it answered past their
-//     caller's deadline, and what each handler failure was.
-//   - A cold write's publish opens the room it publishes into only while the room budget has an
-//     opening for one (docs' roomBudget.openServerRoom), and over this fill it has none, so those
-//     writes publish into no room (docs' publishedWithoutARoom) and the settlements they leave
-//     owed take the budget's one opening in turn once the browsers' rooms are closed. The drive
-//     records how many rooms the budget closed in the window and that every document settled.
+//   - A caller's deadline is not what ends a write's wait at the moment the caller gives up.
+//     net/http ends a request's context when the server reads the end of the connection its
+//     client closed, and it starts the read that would see that end only once the handler has
+//     read the request's body to its end, so a write may wait a little past its caller before
+//     its refusal lands. What the drive holds is the answer: no write the server answered 200
+//     was answered past the deadline.
 //   - While the charges stand past the limit every update that inserts anything is refused in
 //     every room with the transient 4503 DOC_BUSY, the person's keystrokes among them (docs'
-//     refusedUnderPressure, and TestAFullServerRefusesWhatGrowsAndTakesWhatShrinks). The drive
+//     rulePressure, and TestAFullServerRefusesWhatGrowsAndTakesWhatShrinks). The drive
 //     records how far the person got and that what stopped them, where anything did, was that
 //     refusal and nothing else.
-//   - One keystroke of that person's waits far longer than the percentile, behind the burst's own
-//     queue for the copy bound, which the work their room owes waits in beside the writes' forks.
-//     The drive logs every percentile and the worst of them.
+//   - One keystroke of that person's waits far longer than the percentile, behind the pod's own
+//     work. The drive logs every percentile and the worst of them.
 func TestABurstOfConcurrentLiveWritesStaysUnderThePodsMemory(t *testing.T) {
 	const writes, find, with = 320, "Section 0", "Section Zero"
 	building := time.Now()
@@ -2648,17 +2675,16 @@ func TestABurstOfConcurrentLiveWritesStaysUnderThePodsMemory(t *testing.T) {
 	// holds it (closeIfOpenedOverBudget). So this is the fill that asks whether the budget bounds
 	// the server's own rooms at all, and the answer is the opening it books for them (docs'
 	// roomBudget.openServerRoom): a publish that cannot have one publishes into no room.
-	full := int((roomBudgetBytesForTest-typed.reserved-typedGrowth)/source.reserved) - 1
+	full := int((roomBudgetBytesForTest-typed.weight-typedGrowth)/source.weight) - 1
 	if full < 2 || full >= writes {
-		t.Fatalf("the %d-byte budget holds %d documents reserving %d bytes each beside the typed room's %d and its typing's %d; want at least two and fewer than the %d documents written",
-			roomBudgetBytesForTest, full, source.reserved, typed.reserved, typedGrowth, writes)
+		t.Fatalf("the %d-byte budget holds %d documents charged %d bytes each beside the typed room's %d and its typing's %d; want at least two and fewer than the %d documents written",
+			roomBudgetBytesForTest, full, source.weight, typed.weight, typedGrowth, writes)
 	}
 	copies := memory.projectDocumentCopies(t, sourceID, writes)
-	grant := min(int64(len(state))*liveWriteHeapPerByteForTest, copyHeapBoundForTest)
-	t.Logf("%d documents of a mebibyte of prose, %d bytes of stored state each: the budget holds %d of them resident and every one of them is made resident here, which fills it to the brim; the fill reserves %d of the %d-byte budget beside the typed room's %d and its typing's %d, and %d documents are written cold; they took %s to build",
-		writes, len(state), full, int64(full)*source.reserved, roomBudgetBytesForTest, typed.reserved, typedGrowth, writes-full, time.Since(building).Round(time.Second))
-	t.Logf("the bound: a fork of %d bytes of state is granted %d bytes of the %d-byte copy bound at %d a byte, so %d forks of them stand at once; at most %d of the %d writes are live writes at any moment, one for each connection of the shared pool, and each cold fork waiting for its grant holds the %d stored bytes it read, %d bytes for all of them",
-		len(state), grant, copyHeapBoundForTest, liveWriteHeapPerByteForTest, copyHeapBoundForTest/grant, sharedPoolSizeForTest, writes, len(state), sharedPoolSizeForTest*len(state))
+	t.Logf("%d documents of a mebibyte of prose, %d bytes of stored state each: the budget holds %d of them resident and every one of them is made resident here, which fills it to the brim; the fill charges %d of the %d-byte budget beside the typed room's %d and its typing's %d, and %d documents are written cold; they took %s to build",
+		writes, len(state), full, int64(full)*source.weight, roomBudgetBytesForTest, typed.weight, typedGrowth, writes-full, time.Since(building).Round(time.Second))
+	t.Logf("the slots: a fork of a document of %d bytes of state holds one of the pod's %d load slots for its whole life, so %d of these forks stand at once; at most %d of the %d writes are live writes at any moment, one for each connection of the shared pool, and each cold fork waiting for its slot holds the %d stored bytes it read, %d bytes for all of them",
+		len(state), loadSlotsForTest, loadSlotsForTest, sharedPoolSizeForTest, writes, len(state), sharedPoolSizeForTest*len(state))
 	t.Logf("the drive's %d documents owe the server no block index, so the only reads of them are the drive's own", memory.oweNoBlockIndex(t))
 
 	server := memory.start(t)
@@ -2858,29 +2884,30 @@ func TestABurstOfConcurrentLiveWritesStaysUnderThePodsMemory(t *testing.T) {
 		t.Errorf("%d writes were applied, %d refused and %d answered otherwise, which is not the %d sent", applied, refused, elsewhere, writes)
 	}
 	if applied == 0 {
-		t.Errorf("none of the %d writes applied, want the burst to make the writes the bound has room for", writes)
+		t.Errorf("none of the %d writes applied, want the burst to make the writes the slots have room for", writes)
+	}
+	if elsewhere != 0 {
+		t.Errorf("%d writes were answered neither 200 nor 503, want every write the burst could not make answered 503 DOC_SERVICE_UNAVAILABLE: a request whose context ends anywhere a burst ends one is the service unable to serve it in time, not a fault of the server's (api's endedWithACancelledContext)", elsewhere)
+	}
+	if late != 0 {
+		t.Errorf("%d of the writes the server answered 200 it answered past their caller's %s deadline, want none: a write applied after its client gave up is an edit the caller never saw land and may send again", late, liveWriteDeadline)
 	}
 
-	// The grants the writes' forks held, which is what made them wait, and what the budget did
+	// The slots the writes' forks held, which is what made them wait, and what the budget did
 	// with the rooms of the documents written cold: a publish over this fill opens none (docs'
 	// publishedWithoutARoom), and the settlement each such write leaves owed opens one in its
 	// turn and gives it back, which the budget closes as soon as that settlement is done with it
 	// since the browsers of the fill hold it full (closeIfOpenedOverBudget, sweepRooms).
-	grants := heapGrants(t, window)
-	forks := 0
-	for _, logged := range grants {
-		if logged.bound != "copy" {
-			continue
-		}
-		if logged.weight == grant {
-			forks++
-		}
-	}
-	logHeapGrants(t, "the burst of concurrent live writes", grants)
+	holds := loadSlotHolds(t, window)
+	logLoadSlots(t, "the burst of concurrent live writes", holds)
+	opened := len(serverOpenedCloseLine.FindAllString(window, -1))
 	t.Logf("the room budget closed %d rooms the server's own work opened over it and swept %d unused rooms during the burst",
-		len(serverOpenedCloseLine.FindAllString(window, -1)), len(budgetCloseLine.FindAllString(window, -1)))
-	if forks == 0 {
-		t.Errorf("the server logged no grant of the copy bound weighed at the %d bytes a fork of these documents is granted, want one for each write that waited for it", grant)
+		opened, len(budgetCloseLine.FindAllString(window, -1)))
+	if len(holds) == 0 {
+		t.Errorf("the server logged no holder of a load slot that waited for one, want the forks of the writes that queued behind the pod's %d", loadSlotsForTest)
+	}
+	if opened == 0 {
+		t.Errorf("the room budget closed no room the server's own work opened over it, want the rooms the cold writes' settlements each took the budget's one opening for: either no write applied cold or those rooms were never charged to the budget")
 	}
 	for _, measured := range []struct {
 		step string
@@ -3833,15 +3860,16 @@ func requireBudgetRefusals(t *testing.T, server *memoryServer) []budgetRefusal {
 }
 
 // budgetCloseLine is the line the room budget's sweep logs for each unused room it closes, in the
-// budget's own figures (sweepRooms).
-var budgetCloseLine = regexp.MustCompile(`msg="dispatch: the room budget closed an unused document" room=(\S+) charged_before=(\d+) charged=(\d+) limit=(\d+) making_room_for=(\d+)`)
+// budget's own figures (sweepRooms). It names no figure for the admission the sweep was making
+// room for: nothing is reserved for a room before it loads, so what an admission waits for is
+// the charges coming back within the limit and nothing of its own (docs' roomBudget.refusal).
+var budgetCloseLine = regexp.MustCompile(`msg="dispatch: the room budget closed an unused document" room=(\S+) charged_before=(\d+) charged=(\d+) limit=(\d+)`)
 
 // budgetClose is one close the server logged: the room, what the budget charged before and after
-// the close, its limit, and the most an admission it refused needed since its last sweep, which
-// the sweep was making room for (roomBudget.wanted).
+// the close, and its limit.
 type budgetClose struct {
-	room                                         string
-	chargedBefore, charged, limit, makingRoomFor int64
+	room                          string
+	chargedBefore, charged, limit int64
 }
 
 // budgetCloses is every close of an unused room the server has logged, in the order it logged them.
@@ -3850,7 +3878,7 @@ func budgetCloses(t *testing.T, server *memoryServer) []budgetClose {
 	var closes []budgetClose
 	for _, match := range budgetCloseLine.FindAllStringSubmatch(server.output.String(), -1) {
 		closed := budgetClose{room: match[1]}
-		for index, field := range []*int64{&closed.chargedBefore, &closed.charged, &closed.limit, &closed.makingRoomFor} {
+		for index, field := range []*int64{&closed.chargedBefore, &closed.charged, &closed.limit} {
 			value, err := strconv.ParseInt(match[index+2], 10, 64)
 			if err != nil {
 				t.Fatalf("parse %q: %v", match[0], err)
@@ -4121,10 +4149,13 @@ func longEditedTypedTo(t *testing.T, structs int64) []byte {
 	return crdt.EncodeStateAsUpdateV1(doc, nil)
 }
 
-// paddedToTheHeaviestFrame is state with a text nested under its margin, pasted in one transaction
-// until the whole state stands 16 KiB short of F, as handoffAtTheHeaviestFrame pads its room:
-// what grows the frame and nothing else the hook weighs.
-func paddedToTheHeaviestFrame(t *testing.T, state []byte) []byte {
+// paddedToTheRoomsStateCap is state with a text nested under its margin, pasted in one
+// transaction until the whole state stands 16 KiB short of maxRoomStateBytes: the heaviest state
+// a room may hold under the cut, and so the heaviest whole-state handoff a browser of such a
+// room can send. Nothing a browser does can take a room past the cap (peerApplyAllowance's state
+// cap), so a drive that wants a room there stores the state itself (storedStates), as a rebuild
+// does.
+func paddedToTheRoomsStateCap(t *testing.T, state []byte) []byte {
 	t.Helper()
 	const paste, nestedKey = 256 << 10, "nested"
 	doc := crdt.New()
@@ -4138,9 +4169,9 @@ func paddedToTheHeaviestFrame(t *testing.T, state []byte) []byte {
 	if !isText {
 		t.Fatalf("the margin holds %T under %q, want the nested text", value, nestedKey)
 	}
-	left := heaviestHandoffBoundForTest - len(crdt.EncodeStateAsUpdateV1(doc, nil)) - 16<<10
+	left := maxRoomStateBytesForTest - len(crdt.EncodeStateAsUpdateV1(doc, nil)) - 16<<10
 	if left < 0 {
-		t.Fatalf("the state is %d bytes past F less 16 KiB, want it under", -left)
+		t.Fatalf("the state is %d bytes past the room's state cap less 16 KiB, want it under", -left)
 	}
 	chunk := strings.Repeat("p", paste)
 	doc.Transact(func(txn *crdt.Transaction) {
