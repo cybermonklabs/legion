@@ -2975,10 +2975,24 @@ jobs:
       # (.github/docker/browser.Dockerfile) and started here, in the background, on the same
       # 127.0.0.1:18333. Its data directory and its log go under $RUNNER_TEMP, which the run
       # keeps and the checkout never sees.
+      #
+      # The three flags after `-dir` are the image's, not weed's own defaults, and they come
+      # with the binary because its entrypoint does not: that image's /entrypoint.sh adds
+      # `-volume.max=0 -master.volumePreallocate -master.volumeSizeLimitMB=1024` to every
+      # `server` it runs, and copying the binary out left them behind. `-volume.max=0` is the
+      # one that bites. Without it a volume server takes 8 volumes and no more, the master
+      # grows seven for the first bucket it is asked about, and every later bucket is refused
+      # with `topo failed to pick 1 from 0 node candidates` and
+      # `create 7 volume, created 0: Not enough data nodes found!`. The suite makes one bucket
+      # per lane, so the readiness wait's own bucket worked and ten upload rows of run
+      # 42409479235 failed on 502s from the Dispatch server's PutObject, all of them for
+      # `dispatch-e2e-files-lane-*`.
       - name: Start an S3-compatible server for uploaded files
         run: |
           mkdir -p "$RUNNER_TEMP/weed"
-          nohup weed server -s3 -dir="$RUNNER_TEMP/weed" -ip=127.0.0.1 -s3.port=18333 > "$RUNNER_TEMP/weed.log" 2>&1 &
+          nohup weed server -s3 -dir="$RUNNER_TEMP/weed" -ip=127.0.0.1 -s3.port=18333 \
+            -volume.max=0 -master.volumePreallocate -master.volumeSizeLimitMB=1024 \
+            > "$RUNNER_TEMP/weed.log" 2>&1 &
       - name: Wait for the S3-compatible server
         # The readiness wait of the step that started it. An anonymous PUT makes the bucket, as
         # each lane makes its own (dispatch-e2e-files-lane-N) with the same request
@@ -3108,12 +3122,17 @@ jobs:
         env:
           DISPATCH_E2E_FILE_STORE_ENDPOINT: http://127.0.0.1:18333
           DISPATCH_E2E_FILE_STORE_BUCKET: dispatch-e2e-files
-      # What the run left behind, in the job's own log, where a reader of a failed row looks
-      # first. CI read `docker logs dispatch-e2e-files` for this before the job ran in a
-      # container of its own; the store's log is a file now, and the lanes' own servers write
-      # beside it. In the log and not only in the artifact below, because a path that resolves
-      # differently inside the container than the expression that names it uploads nothing and
-      # says so quietly, which is how run 42407623876 left its store's log unread.
+      # What the run left behind: in the job's own log, where a reader of a failed row looks
+      # first, and collected into one directory for the artifact below. CI read
+      # `docker logs dispatch-e2e-files` for the store before this job ran in a container of
+      # its own; the store's log is a file now, and the lanes' own servers write beside it.
+      #
+      # Collected rather than named one by one in the upload's `path:`, because only the first
+      # line of a multi-line path is translated into the container's own filesystem: a
+      # `${{ runner.temp }}` is the runner's `/home/runner/work/_temp`, the job writes the
+      # container's `/__w/_temp`, and upload-artifact reported `there will be 1 file uploaded`
+      # for a four-line path whose four files all existed (runs 42407623876 and 42409479235).
+      # One path is translated, so one directory is what the artifact takes.
       - name: What the run left behind
         if: always()
         run: |
@@ -3127,31 +3146,35 @@ jobs:
             echo "--- $log"
             tail -30 "$log"
           done
+          record="$RUNNER_TEMP/dispatch-e2e-record"
+          mkdir -p "$record/lanes"
+          for file in report.json memory-samples.txt cpu-samples.txt weed.log; do
+            [ -f "$RUNNER_TEMP/$file" ] && cp "$RUNNER_TEMP/$file" "$record/"
+          done
+          for log in "$RUNNER_TEMP"/dispatch-e2e-run-*/lane-*/log/*.log; do
+            [ -f "$log" ] || continue
+            lane=$(basename "$(dirname "$(dirname "$log")")")
+            mkdir -p "$record/lanes/$lane"
+            cp "$log" "$record/lanes/$lane/"
+          done
+          ls -lR "$record"
       # Always, not on failure alone: the memory and CPU readings are of the run that passed as
       # much as of the one that did not, and the report says what a green run ran. The file
-      # store's log is here too, where CI reached for `docker logs` before this job ran in a
-      # container of its own: it is the one record of what the store did under the lanes.
+      # store's log and the lanes' own logs are here too, where CI reached for `docker logs`
+      # before this job ran in a container of its own.
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
           name: dispatch-e2e-report-${{ github.run_attempt }}
-          path: |
-            ${{ runner.temp }}/report.json
-            ${{ runner.temp }}/memory-samples.txt
-            ${{ runner.temp }}/cpu-samples.txt
-            ${{ runner.temp }}/weed.log
-      # A failed row's trace says what the browser saw; these say what its lane's own servers did,
-      # which is where a lane-only failure (a port, a migration, a server that never came up) is
-      # legible. The glob is the run directory e2e/run.ts made under $TMPDIR, which the step
-      # above pointed at $RUNNER_TEMP; mkdtempSync gives the directory a random suffix, so the
-      # glob matches it however many lanes ran.
+          path: ${{ runner.temp }}/dispatch-e2e-record
+      # A failed row's trace says what the browser saw. What its lane's own servers did is in
+      # the record the step above collected, which every run keeps: a second path here would be
+      # the untranslated one that uploads nothing, for the reason that step's comment gives.
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure()
         with:
           name: dispatch-e2e-test-results-${{ github.run_attempt }}
-          path: |
-            packages/dispatch/e2e/test-results
-            ${{ runner.temp }}/dispatch-e2e-run-*/lane-*/log/*.log
+          path: packages/dispatch/e2e/test-results
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
