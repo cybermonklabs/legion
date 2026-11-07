@@ -416,3 +416,45 @@ test("a gate with no step for the primary document, and the longest awaiting lab
     await alice.close();
   }
 });
+
+// The same longest label with no gate at all: an ungated header draws that chip alone, with no
+// step list to share the row's width, and that header is what every deployment that publishes
+// no gate reads. The iPhone 13's own 390 px layout is the narrowest width any project draws
+// this header at before the widths below are set. @phone
+test("the longest awaiting label alone in an ungated header fits every width @phone", async ({
+  browser,
+}) => {
+  await createProject({ key: "WIDECHIP", name: "The chip alone" });
+  const issue = await createIssue({
+    project: "WIDECHIP",
+    spec: "The plan.",
+    title: "No gate, and the longest label the chip can carry",
+  });
+  await createIssueArtifact(issue.key, {
+    content: "# Verification\n\nOne check.\n",
+    name: "verification.md",
+  });
+  await requestApproval(issue.primary_artifact_id, { include_verification: true }, session);
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.goto(`/issues/${issue.key}`);
+    const chip = stateActions(page).getByRole("button", {
+      exact: true,
+      name: "Awaiting approval of spec.md v1 and verification.md v1",
+    });
+    await expect(chip).toBeVisible();
+    await expect(page.getByTestId("issue-approval-steps")).toHaveCount(0);
+
+    for (const width of [null, 320, 1440]) {
+      if (width !== null) {
+        await page.setViewportSize({ height: 844, width });
+      }
+      await assertWhole(chip);
+      await assertPageFits(page);
+    }
+  } finally {
+    await alice.close();
+  }
+});
