@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -174,7 +175,7 @@ type sessionRelays struct {
 	receiptWait time.Duration
 
 	ctx    context.Context
-	cancel context.CancelFunc
+	cancel context.CancelCauseFunc
 	owned  atomic.Bool
 	// stopChange unregisters the session cache's change callback.
 	stopChange func()
@@ -208,18 +209,18 @@ type sessionRelays struct {
 	nextToken atomic.Uint64
 }
 
-// relayCancelReason is why the loop cancelled a run. The run's own goroutine reads it once it has
-// returned, so the line it writes then names the reason, and a person reading that line needs no
-// source to hand. It is an unsigned integer over named constants rather than an atomic.Value over
-// a string type because this file already names its small sets that way (relayEvent,
-// relayOutcome), the store and the load allocate nothing, and the zero value is a constant of the
-// set, where an atomic.Value nothing has stored loads nil.
+// relayCancelReason is why the loop cancelled a run. It is the cause the cancellation carries
+// (context.WithCancelCause), which sets it atomically with the cancellation and propagates the
+// set's own cause to every run under it, so the run's goroutine reads the reason from its context
+// once it has returned, the line it writes then names it, and a person reading that line needs no
+// source to hand. It is an unsigned integer over named constants rather than a distinct error per
+// reason because this file already names its small sets that way (relayEvent, relayOutcome) and
+// the zero value is a constant of the set.
 type relayCancelReason uint32
 
 const (
-	// relayCancelUnknown: nothing recorded a reason. Every cancellation records one, except where
-	// the run returns before the loop that cancelled it reaches its entry; the word keeps the log
-	// field readable rather than empty.
+	// relayCancelUnknown: the context carries no cause of this set, which no cancellation of a
+	// run or of the set leaves behind; the word keeps the log field readable rather than empty.
 	relayCancelUnknown relayCancelReason = iota
 	// relayCancelNotOurs: the session is no longer this listener's to relay, because it registered
 	// again through another listener, its entry left consumer delivery, or this task lost its
@@ -251,17 +252,29 @@ func (r relayCancelReason) String() string {
 	}
 }
 
+// Error is the same word as String, so a reason is usable as the cause of a cancellation
+// (context.WithCancelCause), which takes an error.
+func (r relayCancelReason) Error() string { return r.String() }
+
+// relayCancelledFor is why the run on ctx was cancelled, as the line a stopped run writes names
+// it. A stop cancels the whole set's context (sessionRelays.stop), whose cause every run's
+// context carries, so a run that returned before the loop reached stopAll still says that the
+// listener is stopping.
+func relayCancelledFor(ctx context.Context) relayCancelReason {
+	reason, ok := context.Cause(ctx).(relayCancelReason)
+	if !ok {
+		return relayCancelUnknown
+	}
+	return reason
+}
+
 // relayRun is one start of a session's relay: it runs until it is stopped or replaced. A run whose
 // session stops answering pauses (relayPaused) and goes on probing it.
 type relayRun struct {
 	sessionID string
-	cancel    context.CancelFunc
+	cancel    context.CancelCauseFunc
 	// done is closed once the run's goroutine has returned.
 	done chan struct{}
-	// cancelReason is why the loop cancelled the run, a relayCancelReason. The loop stores it
-	// before it cancels the run and the run's own goroutine loads it after it has returned, so
-	// the two goroutines reach it through an atomic: a plain field here is a data race.
-	cancelReason atomic.Uint32
 	// restartedAt is the mark (sessionDelivery.mark) the run's last successful restart at the ack
 	// floor took before it read the session's topics and consumer, 0 before the first one
 	// (relayRun.restartedBefore).
@@ -290,32 +303,6 @@ type relayRun struct {
 	// loop for that run. A registration heard while the run was returning is never lost.
 	exitMu  sync.Mutex
 	exiting bool
-}
-
-// cancelFor cancels the run, recording why before the cancellation: the run's own goroutine reads
-// the reason once it has returned, so it must already be there when the run notices it is over.
-func (r *relayRun) cancelFor(reason relayCancelReason) {
-	r.cancelReason.Store(uint32(reason))
-	r.cancel()
-}
-
-// cancelledFor is why the loop cancelled the run, relayCancelUnknown when nothing recorded one.
-func (r *relayRun) cancelledFor() relayCancelReason {
-	return relayCancelReason(r.cancelReason.Load())
-}
-
-// cancelledFor is why run was cancelled, as the line a stopped run writes names it. A stop
-// cancels the whole set's context before the loop reaches stopAll (sessionRelays.stop), so a run
-// that returned in between carries no reason of its own; the set's own context is what says, in
-// that case, that the listener is stopping.
-func (m *sessionRelays) cancelledFor(run *relayRun) relayCancelReason {
-	if reason := run.cancelledFor(); reason != relayCancelUnknown {
-		return reason
-	}
-	if m.ctx.Err() != nil {
-		return relayCancelListenerStopping
-	}
-	return relayCancelUnknown
 }
 
 // wake has a paused run, or one waiting to retry, restart at once: the session registered. A wake
@@ -439,7 +426,7 @@ func startSessionRelays(delivery *sessionDelivery, cfg listenerDeliveryHandlerCo
 	if err := delivery.consumers.SubscribeReplies(inbox+".>", m.onReply); err != nil {
 		return nil, err
 	}
-	m.ctx, m.cancel = context.WithCancel(context.Background())
+	m.ctx, m.cancel = context.WithCancelCause(context.Background())
 	m.stopChange = cfg.sessions.OnChange(m.onChange)
 	delivery.relay = m
 	go m.loop()
@@ -510,7 +497,7 @@ func (m *sessionRelays) stop(ctx context.Context) {
 	m.eventsMu.Lock()
 	m.events = nil
 	m.eventsMu.Unlock()
-	m.cancel()
+	m.cancel(relayCancelListenerStopping)
 	select {
 	case <-m.loopDone:
 	case <-ctx.Done():
@@ -585,7 +572,7 @@ func (m *sessionRelays) apply(sessionID string, notice relayNotice) {
 	run := m.relays[sessionID]
 	if !m.wanted(sessionID) {
 		if run != nil {
-			run.cancelFor(relayCancelNotOurs)
+			run.cancel(relayCancelNotOurs)
 			delete(m.relays, sessionID)
 		}
 		return
@@ -598,7 +585,7 @@ func (m *sessionRelays) apply(sessionID string, notice relayNotice) {
 			m.start(sessionID, run.done)
 		}
 	case event&relayRestart != 0 && run.restartedBefore(notice.heard):
-		run.cancelFor(relayCancelNewEpoch)
+		run.cancel(relayCancelNewEpoch)
 		m.start(sessionID, run.done)
 	case event&relayResume != 0:
 		if !run.wake() {
@@ -613,7 +600,7 @@ func (m *sessionRelays) apply(sessionID string, notice relayNotice) {
 // happened.
 func (m *sessionRelays) stopAll(reason relayCancelReason) {
 	for sessionID, run := range m.relays {
-		run.cancelFor(reason)
+		run.cancel(reason)
 		delete(m.relays, sessionID)
 	}
 }
@@ -657,7 +644,7 @@ func (m *sessionRelays) listConsumers() map[string]*jetstream.ConsumerInfo {
 // start starts a run of sessionID's relay, once the run it replaces, previous, has returned. A run
 // started by the burst of gaining the durable binding takes the session's listed consumer.
 func (m *sessionRelays) start(sessionID string, previous <-chan struct{}) {
-	ctx, cancel := context.WithCancel(m.ctx)
+	ctx, cancel := context.WithCancelCause(m.ctx)
 	run := &relayRun{sessionID: sessionID, cancel: cancel, done: make(chan struct{}), resume: make(chan struct{}, 1), listed: m.listed[sessionID], listedAt: m.listedAt}
 	delete(m.listed, sessionID)
 	m.relays[sessionID] = run
@@ -858,13 +845,13 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 		// session no more, so a reader, and a test waiting for the hand-over, can order on it.
 		// One line per stopped run, so a listener that stops writes one for each session it was
 		// relaying.
-		m.logger.Info("session relay stopped; it gave the server back the messages it held, so the listener taking the session over is delivered them at once",
+		m.logger.Info("session relay stopped; it gave the server back the messages it held, so they are delivered again at once rather than after the consumer's ack wait",
 			slog.String("session_id", sessionID),
 			// The logger stamps every line with the machine id of the process it runs in; this
 			// field is the relay set's own, which a test rig names apart from its logger, and a
 			// second machine_id key in one record would leave a reader to guess which won.
 			slog.String("relay_machine_id", m.machineID),
-			slog.String("reason", m.cancelledFor(run).String()),
+			slog.String("reason", relayCancelledFor(ctx).String()),
 			slog.Int("returned", returned))
 	}()
 	if start.StreamID == "" {
@@ -949,18 +936,21 @@ func (m *sessionRelays) receiptDeadline(run *relayRun) (time.Time, bool) {
 	return run.unanswered[0].sentAt.Add(m.receiptWait), true
 }
 
-// forget drops every frame of run still awaiting an answer and returns them: a reply to one is
-// ignored from here on. It answers nothing to the server, so each dropped frame's message is
-// delivered again only once its ack wait has passed, or at the next restart at the ack floor.
-// That is right for a run that ended for a reason of its own, and wrong for one that was
+// forget drops every frame of run still awaiting an answer and returns them by their tokens: a
+// reply to one is ignored from here on. It answers nothing to the server, so each dropped frame's
+// message is delivered again only once its ack wait has passed, or at the next restart at the ack
+// floor. That is right for a run that ended for a reason of its own, and wrong for one that was
 // cancelled, which calls release instead.
-func (m *sessionRelays) forget(run *relayRun) []*relayFrame {
+//
+// It hands back the run's own map rather than a copy of it, since the map is the run's no longer:
+// the common caller throws the result away, and framesMu, the one lock every session's replies
+// wait on, is held over no allocation.
+func (m *sessionRelays) forget(run *relayRun) map[string]*relayFrame {
 	m.framesMu.Lock()
 	defer m.framesMu.Unlock()
-	dropped := make([]*relayFrame, 0, len(run.outstanding))
-	for token, frame := range run.outstanding {
+	dropped := run.outstanding
+	for token := range dropped {
 		delete(m.frames, token)
-		dropped = append(dropped, frame)
 	}
 	run.outstanding = nil
 	run.unanswered = nil
@@ -973,18 +963,31 @@ func (m *sessionRelays) forget(run *relayRun) []*relayFrame {
 // MaxDeliver = -1 (internal/bus/session_consumers.go:471): a message returned here and delivered
 // again spends no redelivery budget. It returns how many messages it returned.
 func (m *sessionRelays) release(run *relayRun) int {
-	dropped := m.forget(run)
+	dropped := slices.Collect(maps.Values(m.forget(run)))
 	// The frames were published in stream order, so the order they were sent in is the order the
 	// server is asked to deliver them again in. No nak is sent under framesMu: it is a publish,
 	// and the lock answers every session's replies.
 	slices.SortFunc(dropped, func(a, b *relayFrame) int { return a.sentAt.Compare(b.sentAt) })
-	returned := 0
+	returned, failed := 0, 0
+	var firstErr error
 	for _, frame := range dropped {
 		if err := frame.acker.NakWithDelay(0); err != nil {
-			m.logger.Warn("session relay could not return a frame's message to the server", slog.String("session_id", run.sessionID), slog.String("error", err.Error()))
+			failed++
+			if firstErr == nil {
+				firstErr = err
+			}
 			continue
 		}
 		returned++
+	}
+	if failed > 0 {
+		// A nak fails because the connection is closed or its reconnect buffer is full, which is
+		// the shutdown burst where every relay releases at once, so the failures of one run are
+		// one line naming the first error rather than up to MaxAckPending lines of the same.
+		m.logger.Warn("session relay could not return some frames' messages to the server",
+			slog.String("session_id", run.sessionID),
+			slog.Int("failed", failed),
+			slog.String("error", firstErr.Error()))
 	}
 	return returned
 }

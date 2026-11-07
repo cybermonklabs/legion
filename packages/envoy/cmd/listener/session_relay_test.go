@@ -745,7 +745,7 @@ func TestSessionConsumerOwnershipMovesWithTheSessionToOneRelayer(t *testing.T) {
 	// wording is there so a reworded line fails here rather than leaving the row ordered on
 	// nothing. The 30 s WaitForOutput allows is a hang guard, not an assertion window.
 	first.WaitForOutput(t,
-		`"msg":"session relay stopped; it gave the server back the messages it held, so the listener taking the session over is delivered them at once"`,
+		`"msg":"session relay stopped; it gave the server back the messages it held, so they are delivered again at once rather than after the consumer's ack wait"`,
 		`"relay_machine_id":"relay-first"`,
 		`"session_id":"`+sessionID+`"`)
 	after := publishEach("through the second")

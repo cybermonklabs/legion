@@ -735,10 +735,10 @@ func TestNakWithDelayRedelivers(t *testing.T) {
 	}
 }
 
-// awaitAckPending waits up to 5 s for sessionID's consumer to hold want messages awaiting an ack
+// waitForAckPending waits up to 5 s for sessionID's consumer to hold want messages awaiting an ack
 // and answers the info that read it: an ack and a nak are both a publish the server answers
 // nothing to, so the count follows the call rather than arriving with it.
-func awaitAckPending(t *testing.T, consumers *SessionConsumers, sessionID string, want int) *jetstream.ConsumerInfo {
+func waitForAckPending(t *testing.T, consumers *SessionConsumers, sessionID string, want int) *jetstream.ConsumerInfo {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
@@ -789,7 +789,7 @@ func TestReleaseReturnsTheMessagesThePullHoldsUnread(t *testing.T) {
 	}
 	// One pull request asks for a whole batch, so the server delivered all three: the two this
 	// row never read sit unread in the pull's queue, and they are what the consumer awaits.
-	held := awaitAckPending(t, consumers, session, 2)
+	held := waitForAckPending(t, consumers, session, 2)
 	t.Logf("before Release the consumer has NumWaiting %d and NumAckPending %d", held.NumWaiting, held.NumAckPending)
 	if returned := pull.Release(); returned != 2 {
 		t.Fatalf("Release returned %d messages, want the two the pull held unread", returned)
@@ -806,7 +806,7 @@ func TestReleaseReturnsTheMessagesThePullHoldsUnread(t *testing.T) {
 	if len(back) != 2 || back[stored[1]] != 2 || back[stored[2]] != 2 {
 		t.Fatalf("after Release the next pull got %v, want %d and %d back, each as a second delivery", back, stored[1], stored[2])
 	}
-	released := awaitAckPending(t, consumers, session, 0)
+	released := waitForAckPending(t, consumers, session, 0)
 	t.Logf("after Release the consumer has NumWaiting %d and NumAckPending %d", released.NumWaiting, released.NumAckPending)
 }
 

@@ -54,9 +54,12 @@ const (
 	// sessionPullDrainWait and sessionPullDrainPoll bound how long Release waits for the pull's
 	// inbox subscription to go invalid, which is nats.go having handed over every message it held
 	// unread. A subscription on a local server drains in well under a millisecond, so the wait is
-	// reached only by a connection that is gone, and a run that ends costs it once.
+	// reached only by a connection that is gone, and a run that ends costs it once. The poll is
+	// the 10 ms the connection's own drain waits at (Client.drainDeliveries): nats.go runs a
+	// subscription's drain on a goroutine that flushes once and then re-checks on a 100 ms sleep,
+	// so a finer poll observes nothing sooner and only takes the subscription's mutex oftener.
 	sessionPullDrainWait = time.Second
-	sessionPullDrainPoll = 2 * time.Millisecond
+	sessionPullDrainPoll = 10 * time.Millisecond
 )
 
 // ErrSessionPullStalled ends a pull (SessionPull.Next) that heard nothing from the server, no
@@ -269,7 +272,7 @@ func (p *SessionPull) Release() int {
 	// The inbox is drained, not unsubscribed: an unsubscribe drops what nats.go holds unread,
 	// which is what this returns. A drain hands those messages to receive, which queues them.
 	if err := p.sub.Drain(); err != nil {
-		_ = p.sub.Unsubscribe()
+		p.Stop()
 	}
 	for deadline := time.Now().Add(sessionPullDrainWait); p.sub.IsValid() && time.Now().Before(deadline); {
 		time.Sleep(sessionPullDrainPoll)
