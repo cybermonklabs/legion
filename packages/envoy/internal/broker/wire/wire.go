@@ -43,7 +43,9 @@ type ApproverGrantResp struct {
 	// The grant's id, which the revoke route takes.
 	GrantID string `json:"grant_id"`
 	// How the session got it: "automatic" (the policy gave it without asking) or "approval".
-	Granted string `json:"granted"`
+	// GrantsForApprover writes one of the two (machine_read.go, policy.Automatic and
+	// policy.Approval), so it is a closed set.
+	Granted string `json:"granted" enum:"automatic,approval"`
 	// The credential-request record its approval rests on; null for an automatic grant.
 	RecordID *string `json:"record_id"`
 	// The session holding it.
@@ -222,14 +224,17 @@ type RecordResponse struct {
 type DecisionResponse struct {
 	// The machine credential the approval minted.
 	CredentialID *string `json:"credential_id"`
-	// "approved".
-	State string `json:"state"`
+	// "approved": decideMachineLogin writes this body for an approval alone
+	// (handlers_ui_records.go), and a denial answers StateResponse instead.
+	State string `json:"state" enum:"approved"`
 }
 
 // StateResponse is what a denial, a cancel or a revoke answers.
 type StateResponse struct {
-	// The state the call left the request, record or grant in: "denied", "cancelled" or "revoked".
-	State string `json:"state"`
+	// The state the call left the request, record or grant in: "denied", "cancelled" or
+	// "revoked". Every writer of this body states one of the three as a literal (a denial, a
+	// cancel, a grant's revoke and a launcher credential's).
+	State string `json:"state" enum:"denied,cancelled,revoked"`
 }
 
 // MachineLookupRequest is the body POST /v1/machine-logins/lookup takes, which Dispatch relays

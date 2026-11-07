@@ -837,7 +837,7 @@ export class DispatchApiClient {
   /** One read of a route the document holds, named by its own path pattern: `params` fills the
    *  pattern's `{name}`s and `query` its query parameters, and what it answers is the document's
    *  `200` body for that route. No read states a response shape of its own. */
-  private read<P extends PathsOf<"get">>(
+  private async read<P extends PathsOf<"get">>(
     pattern: P,
     params: PathParams<Op<P, "get">>,
     query?: QueryParams<Op<P, "get">>,
@@ -847,7 +847,7 @@ export class DispatchApiClient {
     return this.json<Json200<Op<P, "get">>>(routeUrl(pattern, params, query), init, deadlineMs);
   }
 
-  private post<P extends PathsOf<"post">>(
+  private async post<P extends PathsOf<"post">>(
     pattern: P,
     params: PathParams<Op<P, "post">>,
     body: RequestBody<Op<P, "post">> | FormBody<Op<P, "post">>,
@@ -856,7 +856,7 @@ export class DispatchApiClient {
     return this.send<Answer<Op<P, "post">>>(writeRequest("post", pattern, params, body), bounds);
   }
 
-  private put<P extends PathsOf<"put">>(
+  private async put<P extends PathsOf<"put">>(
     pattern: P,
     params: PathParams<Op<P, "put">>,
     body: RequestBody<Op<P, "put">>,
@@ -865,7 +865,7 @@ export class DispatchApiClient {
     return this.send<Answer<Op<P, "put">>>(writeRequest("put", pattern, params, body), bounds);
   }
 
-  private patch<P extends PathsOf<"patch">>(
+  private async patch<P extends PathsOf<"patch">>(
     pattern: P,
     params: PathParams<Op<P, "patch">>,
     body: RequestBody<Op<P, "patch">>,
@@ -874,7 +874,7 @@ export class DispatchApiClient {
     return this.send<Answer<Op<P, "patch">>>(writeRequest("patch", pattern, params, body), bounds);
   }
 
-  private remove<P extends PathsOf<"delete">>(
+  private async remove<P extends PathsOf<"delete">>(
     pattern: P,
     params: PathParams<Op<P, "delete">>,
     bounds: WriteBounds
@@ -885,7 +885,7 @@ export class DispatchApiClient {
   /** The block schema. The route answers pre-rendered JSON bytes (`pmdoc.SchemaJSON`), so the
    *  document gives its body no schema at all; `BlockSchema` is generated from the same source
    *  those bytes are rendered from, so this one read names what it is answered with. */
-  getBlockSchema(): Promise<BlockSchema> {
+  async getBlockSchema(): Promise<BlockSchema> {
     return this.json<BlockSchema>(routeUrl("/api/v1/schema/blocks", {}));
   }
 
@@ -1072,7 +1072,7 @@ export class DispatchApiClient {
    *  event's `payload` as `unknown`, because Go carries it as the bytes it was written as and no
    *  OpenAPI schema can say which payload belongs to which `type`; `DispatchEvent` is that union
    *  over the same bytes, so this one response shape is named here rather than read. */
-  getIssueEvents(
+  async getIssueEvents(
     key: string,
     query: Query<"/api/v1/issues/{key}/events", "get"> = {}
   ): Promise<DispatchEvent[]> {
@@ -1127,7 +1127,7 @@ export class DispatchApiClient {
    *  list is unpaged, so only a reader that draws the threads asks for them. The response the
    *  document gives the route leaves `thread` out, since asking for it is what makes it present,
    *  so this one read names what it is answered with. */
-  listIssueAskThreads(
+  async listIssueAskThreads(
     key: string,
     state: "all" | "open" | "answered" = "all"
   ): Promise<IssueAskThreadRow[]> {
@@ -1207,7 +1207,9 @@ export class DispatchApiClient {
   }
 
   reopenComment(id: string, bounds: WriteBounds) {
-    return this.post("/api/v1/comments/{id}/reopen", { id }, {}, bounds);
+    // The route takes no body at all: reopenComment resolves the person from the credential
+    // (comment_actions.go), which is why the document declares none.
+    return this.post("/api/v1/comments/{id}/reopen", { id }, undefined, bounds);
   }
 
   editComment(id: string, input: Body<"/api/v1/comments/{id}", "patch">, bounds: WriteBounds) {
@@ -1389,7 +1391,7 @@ export class DispatchApiClient {
 
   /** Record the caller's last read version of a document: the Spec tab marks each block that
    *  changed since it. */
-  putDocumentRead(id: string, version: number, bounds: WriteBounds) {
+  async putDocumentRead(id: string, version: number, bounds: WriteBounds) {
     return this.send(documentReadRequest(id, version), bounds);
   }
 

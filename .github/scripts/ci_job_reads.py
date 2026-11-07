@@ -852,9 +852,6 @@ GATES = [
         (f"{DAEMON}/internal/intake/testdata/dispatch/server-started.json", "packages/contracts/src/dispatch-api.test.ts:293-300"),
         (f"{ENVOY}/internal/contracts/generated.go", "packages/contracts/scripts/gen-go.test.ts:6,54-58 and gen-go.ts's outputs list (--check compares the committed file)"),
         (f"{ENVOY}/internal/dispatch/pmdoc/schema_generated.go", "packages/contracts/scripts/gen-go.test.ts:7-10,54-58 and gen-go.ts's outputs list (the block schema's shape, generated from schemas/block-schema.schema.json)"),
-        (f"{ENVOY}/internal/dispatch/api/routes_table.go", f"{at('contracts', 'Check the Dispatch API types are generated from the OpenAPI document')}: the table `go run ./cmd/dispatch openapi` emits schemas/dispatch-openapi.json from, which check:api renders into src/dispatch-api.generated.ts"),
-        (f"{ENVOY}/internal/dispatch/api/routes_shapes.go", "the Go types each of that table's rows takes and answers (routeShapes), read by the same emitter"),
-        (f"{ENVOY}/internal/dispatch/api/openapi.go", "the emitter itself: its schema names and its required-field rules decide what check:api compares against"),
     ) + biome(at("contracts", "Lint contracts")) + bun_job("contracts") + CI_SELF),
 
     gate("conflicts_script", "conflicts-script", reads=reads(
@@ -1018,7 +1015,7 @@ GATES = [
     ], exact=[
         # `go run` is not one of the three forms the reducer reads, so the step is pinned whole
         # and this Run stands for the command it compiles.
-        pinned_step("envoy-go", "Check the OpenAPI document is generated from the route table", ENVOY,
+        pinned_step("envoy-go-checks", "Check the OpenAPI document is generated from the route table", ENVOY,
                     "go run ./cmd/dispatch openapi --check", [
                         (ENVOY, ["./cmd/dispatch"],
                          "go run ./cmd/dispatch openapi --check, which emits the document from the "

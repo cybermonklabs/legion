@@ -22,14 +22,6 @@ import (
 
 	"github.com/swaggest/jsonschema-go"
 	"github.com/swaggest/openapi-go/openapi31"
-
-	"github.com/sjawhar/envoy/internal/broker/wire"
-	"github.com/sjawhar/envoy/internal/dispatch/delivery"
-	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
-	"github.com/sjawhar/envoy/internal/dispatch/docs"
-	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
-	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
 // OpenAPIDocumentPath is where the emitted document is committed, from the repository root. The
@@ -47,226 +39,6 @@ const openAPISchemaPrefix = "#/components/schemas/"
 const openAPISessionParameter = "the session the caller's credential acts for, where that " +
 	"credential proved none; a credential that proved a session is refused a parameter naming " +
 	"another (403 ACTOR_SESSION_MISMATCH)"
-
-// schemaNames overrides the schema name a Go type is declared under. It exists so a Go type whose
-// name differs from the name its TypeScript consumers import can keep that name: the default is
-// the Go type's own name with its first letter upper-cased, and a schema's name is the name
-// openapi-typescript renders it as, which is the name every TypeScript consumer imports it by.
-// A schema named anything else would rename an export for no reason.
-//
-// Every row was measured against packages/contracts/src/dispatch-api.ts: the Go type's property
-// set equals the property set of the interface it is named for, that interface's `extends` chain
-// flattened, so the name it takes means what its consumers already import. A row naming a Go type
-// the document does not reflect fails the emit, so the table cannot rot.
-var schemaNames = map[reflect.Type]string{
-	// GET /api/v1/issues/{key}/summary's answer, against model.IssueSummary, the row GET
-	// /api/v1/issues lists. The list row holds the name, since the dashboard reads its issues
-	// through it; this is the reference card, which its TypeScript consumers already import as
-	// IssueReferenceSummary (packages/contracts/src/dispatch-api.ts).
-	reflect.TypeOf(issueSummary{}): "IssueReferenceSummary",
-	// The owner of a GET /api/v1/asks/open row, against model.OpenAskOwner, which three routes
-	// answer (GET /api/v1/me/answers, /me/replies and /agents/{session_id}/answers) and whose
-	// shape is what the TypeScript OpenAskOwner says. This one carries the issue's assignee
-	// besides, so the two are not one schema.
-	reflect.TypeOf(openAskOwner{}): "OpenAskItemOwner",
-
-	// This package's own shapes, whose Go names say what the handler called them and whose
-	// TypeScript names say what a client reads.
-	reflect.TypeOf(acceptedComment{}):          "AcceptSuggestionResponse",
-	reflect.TypeOf(acceptedDelivery{}):         "AcceptedMessageDelivery",
-	reflect.TypeOf(agentResponse{}):            "Agent",
-	reflect.TypeOf(userAskSnooze{}):            "AskSnooze",
-	reflect.TypeOf(claimAnswer{}):              "ClaimedIssue",
-	reflect.TypeOf(commentInput{}):             "CreateCommentInput",
-	reflect.TypeOf(createAgentTokenResponse{}): "CreatedAgentToken",
-	reflect.TypeOf(documentSummary{}):          "DocumentReferenceSummary",
-	reflect.TypeOf(inboxAsk{}):                 "InboxRow",
-	reflect.TypeOf(issueDetail{}):              "IssueDetails",
-	reflect.TypeOf(rankInput{}):                "IssueRankInput",
-	reflect.TypeOf(issueSummaryDocument{}):     "IssueReferenceSummaryDocument",
-	reflect.TypeOf(replyRead{}):                "MessageReplyResult",
-	reflect.TypeOf(checkResultInput{}):         "RecordCheckResultInput",
-	reflect.TypeOf(relatedRequest{}):           "RelatedCheckInput",
-
-	// The model and document packages, whose one-word names would take a word of the API's own.
-	reflect.TypeOf(model.Mention{}):        "CommentMention",
-	reflect.TypeOf(model.NodeParent{}):     "GraphNodeParent",
-	reflect.TypeOf(model.SearchArtifact{}): "SearchArtifactRef",
-	reflect.TypeOf(docs.RebuildReport{}):   "ArtifactRebuildReport",
-	reflect.TypeOf(pmdoc.Candidate{}):      "TargetCandidate",
-
-	// The broker's wire shapes, which the relay rows answer; each is one of Dispatch's
-	// credential pages rather than a shape of the broker's own naming.
-	reflect.TypeOf(wire.PendingResponse{}):   "CredentialPendingResponse",
-	reflect.TypeOf(wire.PendingEntry{}):      "CredentialPendingRow",
-	reflect.TypeOf(wire.RecordSessionResp{}): "CredentialSession",
-
-	// The delivery package's views, whose `View` suffix is a Go naming of the read and no part
-	// of what a client imports, and the measures its pages carry, whose one-word names
-	// (Status, Timing, Cell, Day) belong to delivery alone.
-	reflect.TypeOf(delivery.DeliveryComponentView{}):     "DeliveryComponent",
-	reflect.TypeOf(measures.DailyPoint{}):                "DeliveryDailyPoint",
-	reflect.TypeOf(measures.DeployFlagCounts{}):          "DeliveryDeployFlagCounts",
-	reflect.TypeOf(measures.DeployJobTiming{}):           "DeliveryDeployJobTiming",
-	reflect.TypeOf(measures.FailingJob{}):                "DeliveryFailingJob",
-	reflect.TypeOf(measures.FlagCounts{}):                "DeliveryFlagCounts",
-	reflect.TypeOf(measures.JobTiming{}):                 "DeliveryJobTiming",
-	reflect.TypeOf(measures.Status{}):                    "DeliveryKpiStatus",
-	reflect.TypeOf(measures.LeadTimeCell{}):              "DeliveryLeadTimeCell",
-	reflect.TypeOf(measures.LeadTimeDay{}):               "DeliveryLeadTimeDay",
-	reflect.TypeOf(measures.LeadTimeTiming{}):            "DeliveryLeadTimeTiming",
-	reflect.TypeOf(delivery.DeliveryPRView{}):            "DeliveryPR",
-	reflect.TypeOf(delivery.DeliveryRunView{}):           "DeliveryRun",
-	reflect.TypeOf(delivery.DeliveryRunDetailView{}):     "DeliveryRunDetail",
-	reflect.TypeOf(delivery.DeliveryRunJobView{}):        "DeliveryRunJob",
-	reflect.TypeOf(delivery.DeliveryRunJobDetailView{}):  "DeliveryRunJobDetail",
-	reflect.TypeOf(delivery.DeliveryRunProductionView{}): "DeliveryRunProduction",
-	reflect.TypeOf(measures.Result{}):                    "DeliveryMeasures",
-	reflect.TypeOf(delivery.SessionGroup{}):              "DeliverySessionGroup",
-	reflect.TypeOf(measures.Spread{}):                    "DeliverySpread",
-	reflect.TypeOf(measures.Targets{}):                   "DeliveryTargets",
-	reflect.TypeOf(measures.Timing{}):                    "DeliveryTiming",
-	reflect.TypeOf(measures.Cell{}):                      "DeliveryTimingCell",
-	reflect.TypeOf(measures.Day{}):                       "DeliveryTimingDay",
-	reflect.TypeOf(delivery.UnownedIssue{}):              "DeliveryUnownedIssue",
-	reflect.TypeOf(delivery.DeliveryWaitingPRView{}):     "DeliveryWaitingPR",
-	reflect.TypeOf(itemblocks.Carried{}):                 "CarriedBlock",
-}
-
-// rawField is what one json.RawMessage field's bytes carry, for rawFieldSchemas. GoType names the
-// Go type the bytes hold, which is reflected like any other, so a rename fails to compile rather
-// than leaving a reference to a schema nothing declares; Fragment writes the schema out where no
-// Go type names it (a login, a timestamp, a bounded integer).
-type rawField struct {
-	// GoType is a zero value of the Go type the bytes hold; nil where Fragment describes them.
-	GoType any
-	// Fragment is the schema the bytes hold, where no Go type names it; nil where GoType does.
-	Fragment map[string]any
-	// Nullable is a field whose bytes may be the JSON literal null as well as a value.
-	Nullable bool
-}
-
-// rawFieldSchemas names the Go type a json.RawMessage field carries, for the fields whose three
-// states (absent, null, a value) are why the handler holds the bytes unparsed.
-//
-// A field named here is left out of its object's `required` by its json tag alone: absent is one
-// of the three states the handler reads, so a document that required every such field would deny
-// a write the server takes. The two whose handler does refuse an absent field say so with
-// `required:"true"`, the tag jsonschema-go reads, as every other request field does. An entry
-// whose key names no field of any emitted type fails the emit, so the table cannot rot.
-var rawFieldSchemas = map[string]any{
-	// parseAnswerPrecondition (ask_transitions.go): absent is no precondition, null the
-	// precondition that the value is unset, a string the value it must hold.
-	"answerAskInput.expected_answer_at": rawField{Fragment: openAPITimestamp, Nullable: true},
-	"answerAskInput.expected_edited_at": rawField{Fragment: openAPITimestamp, Nullable: true},
-	// parseIssueAssignee (issue_assignee.go) reads create and update alike: null clears the
-	// assignee, a string names a person who has signed in (400 ASSIGNEE_NOT_ALLOWED otherwise).
-	"createIssueInput.assignee": rawField{Fragment: openAPIPersonEmail, Nullable: true},
-	"updateIssueInput.assignee": rawField{Fragment: openAPIPersonEmail, Nullable: true},
-	// parseIssueComponents (issue_components.go) reads create and update alike: null is back to
-	// inheriting, an object the mode and what it needs.
-	"createIssueInput.components": rawField{GoType: issueComponentsInput{}, Nullable: true},
-	"updateIssueInput.components": rawField{GoType: issueComponentsInput{}, Nullable: true},
-	// parseIssueParent (issue_parent.go): null is no parent, a string the parent's issue key.
-	"updateIssueInput.parent": rawField{Fragment: openAPIIssueKey, Nullable: true},
-	// parseIssuePriority (issue_create.go), read by create and update alike.
-	"createIssueInput.priority": rawField{Fragment: openAPIIssuePriority, Nullable: true},
-	"updateIssueInput.priority": rawField{Fragment: openAPIIssuePriority, Nullable: true},
-	// parseIssueRepo (issue_repo.go): null clears the repository, a string is "owner/name".
-	"createIssueInput.repo": rawField{Fragment: openAPIRepository, Nullable: true},
-	"updateIssueInput.repo": rawField{Fragment: openAPIRepository, Nullable: true},
-	// putProjectDefaultAssignee (project_default_assignee.go): null clears the default, a string
-	// names a person who has signed in. Absent is refused (400 INVALID_PROJECT), so a PUT of `{}`
-	// cannot wipe a default, which is why the handler holds the bytes rather than a *string.
-	"projectDefaultAssigneeInput.assignee": rawField{Fragment: openAPIPersonEmail, Nullable: true},
-	// An upload refuses `primary` whenever it carries one, JSON or multipart (artifacts.go):
-	// primary is fixed at issue creation. The field is described so a client reading the document
-	// knows what the bytes would have to be, never because one may send them.
-	"jsonArtifactUpload.primary": rawField{Fragment: map[string]any{
-		"type": "boolean",
-		"description": "refused whenever present, JSON or multipart (400 ARTIFACT_INPUT): " +
-			"an artifact is made the issue's spec at issue creation and never by an upload",
-	}},
-}
-
-// The schemas rawFieldSchemas writes out, where no Go type names what a field's bytes hold.
-var (
-	openAPITimestamp = map[string]any{
-		"type": "string", "format": "date-time",
-		"description": "an RFC3339 timestamp",
-	}
-	openAPIPersonEmail = map[string]any{
-		"type": "string", "format": "email",
-		"description": "the lowercase email of a person who has signed in to Dispatch",
-	}
-	openAPIIssueKey = map[string]any{
-		"type":        "string",
-		"description": "an issue key, such as CORE-123",
-	}
-	openAPIIssuePriority = map[string]any{
-		"type": "integer", "minimum": 0, "maximum": 3,
-		"description": "an issue priority, P0 to P3",
-	}
-	openAPIRepository = map[string]any{
-		"type":        "string",
-		"description": `a GitHub repository as "owner/name"`,
-	}
-)
-
-// openAPIOptionalRequestBodies are the routes whose handler takes an empty body as well as one it
-// decodes, which is what makes their request body optional; every other route's handler refuses an
-// empty body (decodeJSON) and its body is required. Each is read from the handler, named here by
-// the route it serves.
-var openAPIOptionalRequestBodies = map[string]string{
-	// decodeOptionalJSON: a cookie caller sends no body, a bearer names its session in `actor`.
-	"DELETE /api/v1/settings/repo-projects/{owner}/{repo}":              "deleteRepoProject",
-	"DELETE /api/v1/projects/{key}/architecture-sources/{owner}/{repo}": "deleteArchitectureSource",
-	"DELETE /api/v1/delivery/session-groups/{id}":                       "deleteDeliverySessionGroup",
-	"POST /api/v1/comments/{id}/resolve":                                "commentAction",
-	"POST /api/v1/comments/{id}/accept":                                 "commentAction",
-	"POST /api/v1/comments/{id}/reject":                                 "commentAction",
-	"POST /api/v1/artifacts/{id}/approval-requests":                     "requestArtifactApproval",
-	// changeAskFollower decodes optionally for a credential holding the person scope, which acts
-	// for any session, and requires the body of every other, which names its own session in it.
-	"PUT /api/v1/asks/{id}/followers/{session_id}":    "changeAskFollower",
-	"DELETE /api/v1/asks/{id}/followers/{session_id}": "changeAskFollower",
-	// reopenComment resolves the person from the credential and reads no body at all.
-	"POST /api/v1/comments/{id}/reopen": "reopenComment",
-	// decisionFor relays the body to the broker and reads one field off it: an empty body is a
-	// decision with no code (credential_requests.go).
-	"POST /api/v1/credential-requests/{id}/approve": "decisionFor",
-	"POST /api/v1/credential-requests/{id}/deny":    "decisionFor",
-	// publishAgentStreamFrame reads the frame's bytes whole and parses them as JSON only under
-	// ?as=responder, so every other call carries whatever bytes it likes, none included.
-	"POST /api/v1/agents/{session_id}/stream/_test/publish": "publishAgentStreamFrame",
-}
-
-// openAPIMultipartSchema is the multipart/form-data body the three upload routes take beside
-// their JSON one: the fields multipartArtifactUpload reads (artifacts.go, around the
-// content-type switch). `primary` and `content` are refused in a multipart body, so neither is
-// here; the file is the one part an upload cannot leave out.
-var openAPIMultipartSchema = map[string]any{
-	"type": "object",
-	"properties": map[string]any{
-		"file": map[string]any{
-			"type": "string", "format": "binary",
-			"description": "the uploaded bytes; its kind is read from them, whatever the part declares",
-		},
-		"name": map[string]any{
-			"type":        "string",
-			"description": "the artifact's name, trimmed",
-		},
-		"summary": map[string]any{
-			"type":        "string",
-			"description": "what this version changed, trimmed",
-		},
-		"actor": map[string]any{
-			"type":        "string",
-			"description": "the acting session as one JSON object, as the JSON body's `actor` field",
-		},
-	},
-	"required": []any{"file"},
-}
 
 // WriteOpenAPI writes the OpenAPI 3.1 document of every route the table mounts with its test hooks
 // in, two spaces to the level and a newline at its end. Two runs on one tree write identical
@@ -300,9 +72,9 @@ type openAPIEmitter struct {
 	// the second name, and a TypeScript consumer would import a type called `IssueSummaryType2`.
 	schemaOwners map[string]reflect.Type
 	// rawFragments is each rawFieldSchemas row resolved to the schema its field carries.
-	rawFragments map[string]map[string]any
+	rawFragments map[rawFieldKeyOf]map[string]any
 	// rawFieldsSeen is every rawFieldSchemas row a reflected field matched.
-	rawFieldsSeen map[string]bool
+	rawFieldsSeen map[rawFieldKeyOf]bool
 	// requestBodies are the Go types the document reflects as a request body and nowhere else,
 	// whose required set is the fields that tag themselves required rather than the fields Go's
 	// marshaller always writes (openAPIRequestBodyTypes).
@@ -319,8 +91,8 @@ func newOpenAPIEmitter() (*openAPIEmitter, []reflect.Type) {
 	emitter := &openAPIEmitter{
 		reflector:     openapi31.NewReflector(),
 		schemaOwners:  map[string]reflect.Type{},
-		rawFragments:  map[string]map[string]any{},
-		rawFieldsSeen: map[string]bool{},
+		rawFragments:  map[rawFieldKeyOf]map[string]any{},
+		rawFieldsSeen: map[rawFieldKeyOf]bool{},
 		requestBodies: bodies,
 		schemas:       map[reflect.Type]map[string]any{},
 	}
@@ -560,7 +332,7 @@ func openAPIReachFields(owner, t reflect.Type, into map[reflect.Type]bool, carri
 		if name == "" {
 			name = field.Name
 		}
-		if row, named := rawFieldSchemas[owner.Name()+"."+name].(rawField); named && row.GoType != nil {
+		if row, named := rawFieldSchemas[rawFieldKeyOf{Owner: owner, Field: name}]; named && row.GoType != nil {
 			held := reflect.TypeOf(row.GoType)
 			if carried != nil {
 				*carried = append(*carried, held)
@@ -619,6 +391,12 @@ func (e *openAPIEmitter) interceptProp(p jsonschema.InterceptPropParams) error {
 		}
 		return openAPIApplyFragment(p.PropertySchema, fragment)
 	}
+	// A tag states the values the field takes, and for a slice field those are the values of its
+	// elements: an `enum` the reflector put on the array itself would make the document say the
+	// field is one of those strings rather than a list of them.
+	if err := openAPIEnumOntoItems(p.PropertySchema, p.Field); err != nil {
+		return err
+	}
 	if !openAPIOmitsEmpty(p.Field.Tag.Get("json")) {
 		if !e.requestBodies[openAPIStructOf(p.ParentSchema.ReflectType)] {
 			p.ParentSchema.Required = append(p.ParentSchema.Required, p.Name)
@@ -630,6 +408,36 @@ func (e *openAPIEmitter) interceptProp(p jsonschema.InterceptPropParams) error {
 		p.PropertySchema.RemoveType(jsonschema.Null)
 	}
 	return nil
+}
+
+// openAPIEnumOntoItems moves a slice field's enum from the array to its items. jsonschema-go
+// reads an `enum` tag onto the schema of the field it is written on, which for a []string is the
+// array, and the document then says the field is one of those strings rather than a list of them
+// (ProjectGatedStepsInput.steps was generated as `"decisions" | "criteria" | "spec" | null`
+// before this). A field that is no slice keeps its enum where the reflector put it, which is
+// where it belongs.
+func openAPIEnumOntoItems(schema *jsonschema.Schema, field reflect.StructField) error {
+	if schema == nil || len(schema.Enum) == 0 || openAPIElementOf(field.Type) == nil {
+		return nil
+	}
+	if schema.Items == nil || schema.Items.SchemaOrBool == nil || schema.Items.SchemaOrBool.TypeObject == nil {
+		return fmt.Errorf("the enum tag of the slice field %s names no items schema to carry it", field.Name)
+	}
+	schema.Items.SchemaOrBool.TypeObject.Enum = schema.Enum
+	schema.Enum = nil
+	return nil
+}
+
+// openAPIElementOf is the element type of a slice or array, through the pointers around it, and
+// nil for a type that holds no list.
+func openAPIElementOf(t reflect.Type) reflect.Type {
+	for t != nil && t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t == nil || (t.Kind() != reflect.Slice && t.Kind() != reflect.Array) {
+		return nil
+	}
+	return t.Elem()
 }
 
 // openAPIOmitsEmpty is whether a json tag leaves its field out of the object when the value is
@@ -666,15 +474,15 @@ func openAPIAllowNullRef(schema *jsonschema.Schema, field reflect.Type) {
 
 // rawFieldKey answers the rawFieldSchemas key of one property, "<go type name>.<json field name>",
 // and whether that table names it.
-func (e *openAPIEmitter) rawFieldKey(p jsonschema.InterceptPropParams) (bool, string) {
+func (e *openAPIEmitter) rawFieldKey(p jsonschema.InterceptPropParams) (bool, rawFieldKeyOf) {
 	if p.ParentSchema == nil || p.ParentSchema.ReflectType == nil {
-		return false, ""
+		return false, rawFieldKeyOf{}
 	}
-	owner := p.ParentSchema.ReflectType.Name()
-	if owner == "" {
-		return false, ""
+	owner := openAPIStructOf(p.ParentSchema.ReflectType)
+	if owner == nil {
+		return false, rawFieldKeyOf{}
 	}
-	key := owner + "." + p.Name
+	key := rawFieldKeyOf{Owner: owner, Field: p.Name}
 	_, named := rawFieldSchemas[key]
 	return named, key
 }
@@ -683,16 +491,12 @@ func (e *openAPIEmitter) rawFieldKey(p jsonschema.InterceptPropParams) (bool, st
 // route is walked: a row naming a Go type is reflected here, so the schema it refers to is
 // declared and nothing refers to a schema the document does not hold.
 func (e *openAPIEmitter) resolveRawFields() error {
-	keys := slices.Sorted(maps.Keys(rawFieldSchemas))
+	keys := openAPISortedRawFieldKeys()
 	// The written-out rows first: a row naming a Go type is reflected, and that type's own
 	// properties may be rows of this table too.
 	for _, pass := range []bool{false, true} {
 		for _, key := range keys {
-			row, ok := rawFieldSchemas[key].(rawField)
-			if !ok {
-				return fmt.Errorf("rawFieldSchemas row %s is a %T, and every row is a rawField",
-					key, rawFieldSchemas[key])
-			}
+			row := rawFieldSchemas[key]
 			if (row.GoType != nil) != pass {
 				continue
 			}
@@ -714,6 +518,23 @@ func (e *openAPIEmitter) resolveRawFields() error {
 		}
 	}
 	return nil
+}
+
+// openAPISortedRawFieldKeys is rawFieldSchemas' keys in one order, so a failure of the resolver
+// reads the same way twice. A reflect.Type has no ordering of its own, so the rows sort by the
+// owner's name and then the field's, which is unique because the owner is the type itself.
+func openAPISortedRawFieldKeys() []rawFieldKeyOf {
+	keys := make([]rawFieldKeyOf, 0, len(rawFieldSchemas))
+	for key := range rawFieldSchemas {
+		keys = append(keys, key)
+	}
+	slices.SortFunc(keys, func(a, b rawFieldKeyOf) int {
+		if owner := strings.Compare(a.Owner.String(), b.Owner.String()); owner != 0 {
+			return owner
+		}
+		return strings.Compare(a.Field, b.Field)
+	})
+	return keys
 }
 
 // openAPIApplyFragment writes a schema written as JSON onto the property schema reflection built,
@@ -917,10 +738,14 @@ func (e *openAPIEmitter) queryParameters(params any) ([]openapi31.ParameterOrRef
 		reflected.RemoveType(jsonschema.Null)
 		// The reflector is handed the field's type alone, so the field's own tags do not reach
 		// it: a parameter the handler takes one spelling of carries that spelling in an `enum`
-		// tag, and this is where it is read.
+		// tag, and this is where it is read. A repeatable parameter's values are its elements',
+		// so the enum goes on the items, as it does for a body field.
 		if values, tagged := field.Tag.Lookup("enum"); tagged {
 			for _, value := range strings.Split(values, ",") {
 				reflected.Enum = append(reflected.Enum, value)
+			}
+			if err := openAPIEnumOntoItems(&reflected, field); err != nil {
+				return nil, fmt.Errorf("%s.%s: %w", structure.Name(), field.Name, err)
 			}
 		}
 		schema, err := reflected.ToSchemaOrBool().ToSimpleMap()
@@ -938,7 +763,7 @@ func (e *openAPIEmitter) queryParameters(params any) ([]openapi31.ParameterOrRef
 
 // requestBody is the row's JSON body, and the multipart body beside it where the route takes one.
 // It is required where the handler refuses an empty body and optional where it takes one
-// (openAPIOptionalRequestBodies). A route whose body Dispatch does not model carries
+// (routeShape.OptionalRequest). A route whose body Dispatch does not model carries
 // OpaqueRequest, and the body is an object of any shape with that reason on it: saying nothing
 // is honest, where naming a type that covers one arm of the body would promise a client a
 // contract the route does not hold it to.
@@ -967,7 +792,7 @@ func (e *openAPIEmitter) requestBody(shape routeShape, name string) (*openapi31.
 	if shape.Multipart {
 		body.Content["multipart/form-data"] = openapi31.MediaType{Schema: openAPIMultipartSchema}
 	}
-	if _, optional := openAPIOptionalRequestBodies[name]; !optional {
+	if !shape.OptionalRequest {
 		body.WithRequired(true)
 	}
 	return body, nil

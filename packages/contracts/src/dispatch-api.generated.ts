@@ -2785,7 +2785,8 @@ export interface components {
       /** Format: date-time */
       expires_at: null | string;
       grant_id: string;
-      granted: string;
+      /** @enum {string} */
+      granted: "automatic" | "approval";
       names: string[] | null;
       record_id: null | string;
     };
@@ -3549,7 +3550,8 @@ export interface components {
     };
     DecisionResponse: {
       credential_id: null | string;
-      state: string;
+      /** @enum {string} */
+      state: "approved";
     };
     DeliveryComponent: {
       parent: null | string;
@@ -4712,8 +4714,7 @@ export interface components {
     };
     ProjectGatedStepsInput: {
       actor?: components["schemas"]["Actor"] | null;
-      /** @enum {null|array} */
-      steps: "decisions" | "criteria" | "spec" | null;
+      steps: null | ("decisions" | "criteria" | "spec")[];
     };
     PutArchitectureSourceInput: {
       actor?: components["schemas"]["Actor"] | null;
@@ -4898,7 +4899,8 @@ export interface components {
     SearchAsk: {
       answer?: components["schemas"]["AskAnswer"];
       resolution?: components["schemas"]["AskResolution"];
-      state: string;
+      /** @enum {string} */
+      state: "open" | "answered" | "resolved";
     };
     SearchCoverage: {
       identity: null | string;
@@ -4933,7 +4935,8 @@ export interface components {
     SearchOwner: {
       artifact_id?: string;
       key?: string;
-      kind: string;
+      /** @enum {string} */
+      kind: "issue" | "document";
       name?: string;
       project?: string;
       slug?: string;
@@ -4998,7 +5001,8 @@ export interface components {
       path: string;
     };
     StateResponse: {
-      state: string;
+      /** @enum {string} */
+      state: "denied" | "cancelled" | "revoked";
     };
     Subscriber: {
       /** Format: int64 */
@@ -5142,7 +5146,8 @@ export interface components {
       summary: null | string;
     };
     WhoamiAgent: {
-      kind: string;
+      /** @enum {string} */
+      kind: "agent";
       owner: null | string;
       project: null | string;
       scopes: string[] | null;
@@ -5150,7 +5155,8 @@ export interface components {
       session: null | string;
     };
     WhoamiUser: {
-      kind: string;
+      /** @enum {string} */
+      kind: "user";
       login: string;
       scopes: string[] | null;
     };
@@ -7238,11 +7244,7 @@ export interface operations {
       };
       cookie?: never;
     };
-    requestBody?: {
-      content: {
-        "application/json": components["schemas"]["ActorInput"];
-      };
-    };
+    requestBody?: never;
     responses: {
       /** @description OK */
       200: {

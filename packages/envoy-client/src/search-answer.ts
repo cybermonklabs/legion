@@ -75,9 +75,6 @@ export function askStateLines(ask: SearchAsk | undefined): string[] {
       return ask.answer === undefined
         ? [`  Closed with no answer: ${closed}`]
         : [`  Closed after an answer: ${closed}`, ...answerLines("Last answer", ask.answer)];
-    default:
-      // The wire type is an open string: a state this build does not know names itself.
-      return [`  Answer state ${ask.state}; open the link to read the ask.`];
   }
 }
 

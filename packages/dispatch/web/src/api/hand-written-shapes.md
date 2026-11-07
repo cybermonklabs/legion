@@ -75,10 +75,22 @@ Each is in `packages/contracts/src/dispatch-api.ts`:
   per event type, and is what every event read is typed as. The payloads themselves travel the
   message bus rather than an HTTP body.
 - **The closed string enums** (`AskUrgency`, `IssuePriority`, `CheckWhen`, `IssueRouteStatus`,
-  and their kind) and the `const` arrays they are read from, which `scripts/gen-go.ts` renders
-  into Go. The document widens each to `string`, because the Go
-  field is a string; a surface that needs the closed list narrows a value to it at the boundary
-  rather than widening itself.
+  and their kind) and the `const` arrays they are read from. Each array is a value and not only
+  a type: `dispatch-tools.ts` builds the MCP tools' `z.enum` from it and the dashboard renders
+  its dropdown from it, and a schema in the generated document gives a type and no value. The
+  document still widens these fields to `string`, because their Go fields carry no `enum:` tag;
+  a surface that needs the closed list narrows a value to it at the boundary rather than
+  widening itself.
+- **The discriminants that are closed in the document now, and so are narrowed nowhere by
+  hand.** A string field is no longer widened merely because Go spells it `string`: the emitter
+  reads an `enum:` tag off the Go field and renders the set as a union, so a discriminant whose
+  set is fixed and written by its own handler is closed where it is declared. Those are
+  `ApproverGrantResp.granted` (`"automatic" | "approval"`), `DecisionResponse.state`
+  (`"approved"`) and `StateResponse.state` (`"denied" | "cancelled" | "revoked"`),
+  `SearchAsk.state` (`"open" | "answered" | "resolved"`), `SearchOwner.kind`
+  (`"issue" | "document"`), and each whoami body's `kind` (`"user"` on `WhoamiUser`, `"agent"`
+  on `WhoamiAgent`), which makes `WhoamiResponse` a discriminated union a reader narrows on
+  `kind`.
 - **The helpers no route answers** — `Advised<T>` and `DocumentAdvised<T>` (the advice envelope
   is a merge the document writes as an `allOf`, and the two differ in which advice a write
   carries), `DispatchServiceErrorShape`, `ArtifactVersionBlob`/`ArtifactVersionContent` (the byte

@@ -516,7 +516,9 @@ type IssueSummaryPage struct {
 // An issue owner carries Key, Title and Status; a document owner carries Project, Slug,
 // ArtifactID and Name.
 type SearchOwner struct {
-	Kind       string `json:"kind"`
+	// Kind is "issue" or "document": scanSearchRows reads the column the search query writes as
+	// `case when r.owner_artifact_id is null then 'issue' else 'document' end` (search.go).
+	Kind       string `json:"kind" enum:"issue,document"`
 	Key        string `json:"key,omitempty"`
 	Title      string `json:"title,omitempty"`
 	Status     string `json:"status,omitempty"`
@@ -546,7 +548,9 @@ type SearchIssue struct {
 // document settlement retracted while it was answered, and nil when nobody answered.
 // Answer.Selected is an empty list, never null, when the answer chose no option.
 type SearchAsk struct {
-	State      string         `json:"state"` // "open" | "answered" | "resolved"
+	// State is "open", "answered" or "resolved": it is the asks row's own state, which
+	// asks_state_check holds to those three (migration 0007_ask_resolution).
+	State      string         `json:"state" enum:"open,answered,resolved"`
 	Answer     *AskAnswer     `json:"answer,omitempty"`
 	Resolution *AskResolution `json:"resolution,omitempty"`
 }

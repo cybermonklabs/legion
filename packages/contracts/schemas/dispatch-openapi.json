@@ -3161,15 +3161,6 @@
             }
           }
         ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ActorInput"
-              }
-            }
-          }
-        },
         "responses": {
           "default": {
             "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
@@ -11198,6 +11189,10 @@
             "type": "string"
           },
           "granted": {
+            "enum": [
+              "automatic",
+              "approval"
+            ],
             "type": "string"
           },
           "names": {
@@ -14827,6 +14822,9 @@
             ]
           },
           "state": {
+            "enum": [
+              "approved"
+            ],
             "type": "string"
           }
         },
@@ -20126,12 +20124,12 @@
             ]
           },
           "steps": {
-            "enum": [
-              "decisions",
-              "criteria",
-              "spec"
-            ],
             "items": {
+              "enum": [
+                "decisions",
+                "criteria",
+                "spec"
+              ],
               "type": "string"
             },
             "type": [
@@ -20930,6 +20928,11 @@
             "$ref": "#/components/schemas/AskResolution"
           },
           "state": {
+            "enum": [
+              "open",
+              "answered",
+              "resolved"
+            ],
             "type": "string"
           }
         },
@@ -21063,6 +21066,10 @@
             "type": "string"
           },
           "kind": {
+            "enum": [
+              "issue",
+              "document"
+            ],
             "type": "string"
           },
           "name": {
@@ -21308,6 +21315,11 @@
       "StateResponse": {
         "properties": {
           "state": {
+            "enum": [
+              "denied",
+              "cancelled",
+              "revoked"
+            ],
             "type": "string"
           }
         },
@@ -22005,6 +22017,9 @@
       "WhoamiAgent": {
         "properties": {
           "kind": {
+            "enum": [
+              "agent"
+            ],
             "type": "string"
           },
           "owner": {
@@ -22054,6 +22069,9 @@
       "WhoamiUser": {
         "properties": {
           "kind": {
+            "enum": [
+              "user"
+            ],
             "type": "string"
           },
           "login": {

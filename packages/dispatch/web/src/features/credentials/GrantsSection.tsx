@@ -9,11 +9,11 @@ import { credentialGrantsQuery } from "./grants";
 import { type RevocableColumn, RevocableList } from "./RevocableList";
 
 /** How a grant came to be, for its Live grants row: the policy's, or the person who approved it.
- *  The broker names an approver on every grant someone approved and none on an automatic one, so
- *  the name itself is what says which this is. */
+ *  The broker writes which of the two on every grant (`granted`, "automatic" or "approval"), so
+ *  that field is what this reads; `approver` is the name to show once it says someone approved,
+ *  and a grant the policy gave has none. */
 function grantedBy(grant: ApproverGrantResp): string {
-  const approver = grant.approver;
-  return approver === null ? "Automatically" : `Approved by ${approver}`;
+  return grant.granted === "automatic" ? "Automatically" : `Approved by ${grant.approver}`;
 }
 
 /**

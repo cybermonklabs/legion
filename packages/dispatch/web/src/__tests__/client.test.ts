@@ -638,7 +638,7 @@ test("API client sends the documented method and JSON body for mutations", async
   });
 });
 
-test("API client sends comment edits and reopen actions to their endpoints", async () => {
+test("API client sends comment edits to their endpoint, and the reopen with no body at all", async () => {
   const stub = stubFetch();
   const api = createApiClient(stub.fetch);
 
@@ -650,7 +650,11 @@ test("API client sends comment edits and reopen actions to their endpoints", asy
     ["POST", "/api/v1/comments/comment-1/reopen"],
   ]);
   expect(JSON.parse(stub.requests[0]?.body as string)).toEqual({ body: "Revised comment" });
-  expect(JSON.parse(stub.requests[1]?.body as string)).toEqual({});
+  // `POST /api/v1/comments/{id}/reopen` takes no request body: the route reads the person from
+  // the caller's own credential (`comment_actions.go`), so the document declares none for it and
+  // the client sends none, which leaves the request without a body and without a Content-Type.
+  expect(stub.requests[1]?.body).toBeUndefined();
+  expect(stub.requests[1]?.init?.headers).not.toHaveProperty("Content-Type");
 });
 
 test("API client sends repository project mapping requests to their settings routes", async () => {

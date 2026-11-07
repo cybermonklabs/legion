@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -71,7 +72,7 @@ func TestEveryQueryKeyAHandlerReadsIsNamedByItsParameters(t *testing.T) {
 		// by the multipart body instead, since that is the read the body reaches the handler
 		// by; a Get or Has of the same name is a query parameter and nothing else, so a body
 		// field does not excuse it.
-		for _, key := range slices.Sorted(sortedKeys(queryKeys)) {
+		for _, key := range slices.Sorted(maps.Keys(queryKeys)) {
 			if _, excepted := queryKeyExceptions[key]; excepted || allowed.params[key] {
 				continue
 			}
@@ -79,7 +80,7 @@ func TestEveryQueryKeyAHandlerReadsIsNamedByItsParameters(t *testing.T) {
 				"add it to that route's query struct, or to queryKeyExceptions with the reason it is not "+
 				"a parameter of the route", filepath.Base(file), key)
 		}
-		for _, key := range slices.Sorted(sortedKeys(formKeys)) {
+		for _, key := range slices.Sorted(maps.Keys(formKeys)) {
 			if _, excepted := queryKeyExceptions[key]; excepted || queryKeys[key] {
 				continue
 			}
@@ -99,22 +100,6 @@ func TestEveryQueryKeyAHandlerReadsIsNamedByItsParameters(t *testing.T) {
 			"a read whose key is a parameter of a helper is invisible to a static walk; pin the new one in "+
 			"queryKeysReadThroughAHelper, and check by hand that its key is named by a parameters struct",
 			unresolved, want)
-	}
-}
-
-// sortedKeys is iteration over a set in one order, so a failure reads the same way twice.
-func sortedKeys(set map[string]bool) func(func(string) bool) {
-	return func(yield func(string) bool) {
-		keys := make([]string, 0, len(set))
-		for key := range set {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		for _, key := range keys {
-			if !yield(key) {
-				return
-			}
-		}
 	}
 }
 

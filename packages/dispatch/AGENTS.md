@@ -987,12 +987,13 @@ offers no button that can only fail.
 `GrantsSection.tsx` renders on `/settings` only where the pending list is not `null`: every live
 grant of a session the viewer operates, automatic or approved by anyone, and every grant the viewer
 approved (`grants.ts`'s `credentialGrantsQuery`, `?approver=me`). Each row names how it was
-granted (the broker's `granted`: "Automatically", or "Approved by" its `approver`; `CredentialGrant`
-is a union on `granted`, so an automatic grant has a null approver and record and an approved one
-has both), a pod enrollment's slot under its enrollment - the broker's `enrollment.slot`
-(`implementer-g3`, null without one), which is what tells two roles' grants in one pod apart, since
-they share the pod's kind and runtime id - and has a Revoke button that POSTs `{}` to
-`/api/v1/credential-grants/{id}/revoke`. Only its operator sees an automatic grant, and revoking
+granted (the broker's `granted`: "Automatically", or "Approved by" its `approver`; the generated
+`ApproverGrantResp.granted` is the closed union `"automatic" | "approval"`, which the Go field's
+`enum` tag states, so the page reads the discriminant the broker writes rather than inferring it
+from a null approver), a pod enrollment's slot under its enrollment - the broker's
+`enrollment.slot` (`implementer-g3`, null without one), which is what tells two roles' grants in
+one pod apart, since they share the pod's kind and runtime id - and has a Revoke button that POSTs
+to `/api/v1/credential-grants/{id}/revoke`. Only its operator sees an automatic grant, and revoking
 one makes that session ask before it gets those secrets again: its other automatic grants of them
 end with it.
 The list also holds, for every signed-in person, every live grant that belongs to no person: one

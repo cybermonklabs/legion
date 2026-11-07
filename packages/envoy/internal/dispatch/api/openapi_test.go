@@ -227,6 +227,66 @@ func TestOpenAPIRequestBodySchemasRequireWhatTheirFieldsTag(t *testing.T) {
 	}
 }
 
+// An `enum` tag states the values a field takes, and for a slice field those are the values of
+// its elements. jsonschema-go puts the tag's enum on the schema of the field it is written on,
+// which for a []string is the array, and a document that said so would promise a client one of
+// those strings where the route takes a list of them: ProjectGatedStepsInput.steps was generated
+// as `"decisions" | "criteria" | "spec" | null` until openAPIEnumOntoItems moved it. So every
+// enum of the document sits where its Go field says, and a reader of the schema can tell which.
+func TestEveryEnumSitsWhereItsGoFieldPutsIt(t *testing.T) {
+	_, document := readOpenAPI(t)
+	read := 0
+	for name, declared := range document.Components.Schemas {
+		var schema struct {
+			Properties map[string]struct {
+				Enum  []string `json:"enum"`
+				Type  any      `json:"type"`
+				Items *struct {
+					Enum []string `json:"enum"`
+				} `json:"items"`
+			} `json:"properties"`
+		}
+		if err := json.Unmarshal(declared, &schema); err != nil {
+			t.Errorf("read schema %s: %v", name, err)
+			continue
+		}
+		for property, value := range schema.Properties {
+			if len(value.Enum) == 0 {
+				continue
+			}
+			read++
+			if openAPITypeHolds(value.Type, "array") {
+				t.Errorf("%s.%s is an array and carries the enum %v on the array itself: a list's "+
+					"values are its items', so the document says the field is one of them rather "+
+					"than a list of them", name, property, value.Enum)
+			}
+		}
+		for property, value := range schema.Properties {
+			if value.Items != nil && len(value.Items.Enum) > 0 {
+				read++
+				if !openAPITypeHolds(value.Type, "array") {
+					t.Errorf("%s.%s carries an enum on its items and is no array", name, property)
+				}
+			}
+		}
+	}
+	if read == 0 {
+		t.Fatal("the document declares no enum at all, so this test proves nothing")
+	}
+}
+
+// openAPITypeHolds answers whether a schema's `type`, which is one name or a list of them, holds
+// the one named.
+func openAPITypeHolds(declared any, want string) bool {
+	switch value := declared.(type) {
+	case string:
+		return value == want
+	case []any:
+		return slices.Contains(value, any(want))
+	}
+	return false
+}
+
 // holdOpenAPIRequiredToTags holds one request body's schema to its Go fields' tags, and every
 // unnamed struct it holds to theirs: those are written where they stand rather than declared, so
 // nothing else reaches them. It answers how many schemas it read, so a walk that silently found

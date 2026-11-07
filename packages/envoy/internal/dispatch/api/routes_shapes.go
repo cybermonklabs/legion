@@ -28,7 +28,10 @@ type routeAnswer struct {
 // routeShape is what one row of the table takes and answers, in Go types an OpenAPI document is
 // reflected out of (INFRA-1406). It stands beside the table for the reason writeClasses and
 // routeScopes do: routeRow is a positional literal, Go leaves no field out of one, and a sixth
-// column would have to be written on all 179 rows. routes() stamps it onto the row.
+// column would have to be written on every row of the table, GET rows included. No row carries
+// its shape: routes() stamps the write class and the OAuth scopes onto the row it builds, and
+// nothing stamps this (routes_table.go), so the emitter and the two mount guards read the map
+// here. routes_shapes_test.go pins how many rows it holds.
 type routeShape struct {
 	// Status is the status the route answers when it succeeds.
 	Status int
@@ -44,6 +47,12 @@ type routeShape struct {
 	Also []routeAnswer
 	// Request is a zero value of the request body's Go type, nil for a route that takes none.
 	Request any
+	// OptionalRequest is a route whose handler takes an empty body as well as one it decodes
+	// (decodeOptionalJSON, or a handler that reads a field off bytes it relays). Every other
+	// route with a Request refuses an empty body (decodeJSON), which is what makes the body
+	// required. It stands here rather than in a table of its own so that each fact about a row's
+	// request is stated once, under the row, and cannot go stale when the row is renamed.
+	OptionalRequest bool
 	// Multipart is a route that takes multipart/form-data as well as JSON.
 	Multipart bool
 	// Params is a zero value of the route's query-parameter struct, each field tagged
@@ -406,7 +415,7 @@ var routeShapes = map[string]routeShape{
 	"PUT /api/v1/settings/repo-projects/{owner}/{repo}": {
 		Status: http.StatusOK, Response: model.RepoProject{}, Request: putRepoProjectInput{},
 	},
-	"DELETE /api/v1/settings/repo-projects/{owner}/{repo}": {Status: http.StatusNoContent, Request: actorInput{}},
+	"DELETE /api/v1/settings/repo-projects/{owner}/{repo}": {Status: http.StatusNoContent, Request: actorInput{}, OptionalRequest: true},
 	"GET /api/v1/github/app-installation/{owner}/{repo}":   {Status: http.StatusOK, Response: appInstallationResponse{}},
 	"GET /api/v1/settings/architecture-sources":            {Status: http.StatusOK, Response: []model.ArchitectureSource{}},
 	"GET /api/v1/projects/{key}/architecture-sources":      {Status: http.StatusOK, Response: []model.ArchitectureSource{}},
@@ -420,7 +429,7 @@ var routeShapes = map[string]routeShape{
 		Status: http.StatusOK, Response: model.ArchitectureSource{}, Request: putArchitectureSourceInput{},
 	},
 	"DELETE /api/v1/projects/{key}/architecture-sources/{owner}/{repo}": {
-		Status: http.StatusNoContent, Request: actorInput{},
+		Status: http.StatusNoContent, Request: actorInput{}, OptionalRequest: true,
 	},
 	"POST /api/v1/projects/{key}/architecture-sources/{owner}/{repo}/sync": {Status: http.StatusOK, Response: model.ArchitectureSource{}},
 	"POST /api/v1/projects/{key}/architecture-sources/sync":                {Status: http.StatusOK, Response: []model.ArchitectureSource{}},
@@ -458,7 +467,7 @@ var routeShapes = map[string]routeShape{
 	"PATCH /api/v1/delivery/session-groups/{id}": {
 		Status: http.StatusOK, Response: delivery.SessionGroup{}, Request: updateDeliverySessionGroupInput{},
 	},
-	"DELETE /api/v1/delivery/session-groups/{id}": {Status: http.StatusNoContent, Request: actorInput{}},
+	"DELETE /api/v1/delivery/session-groups/{id}": {Status: http.StatusNoContent, Request: actorInput{}, OptionalRequest: true},
 	"GET /api/v1/me/agent-tokens":                 {Status: http.StatusOK, Response: []model.AgentToken{}},
 	"POST /api/v1/me/agent-tokens": {
 		Status: http.StatusCreated, Response: createAgentTokenResponse{}, Request: createAgentTokenInput{},
@@ -608,8 +617,8 @@ var routeShapes = map[string]routeShape{
 	"GET /api/v1/asks/open":                           {Status: http.StatusOK, Response: openAsksResponse{}, Params: openAsksQuery{}},
 	"GET /api/v1/asks/{id}":                           {Status: http.StatusOK, Response: askRead{}},
 	"GET /api/v1/asks/{id}/followers":                 {Status: http.StatusOK, Response: askFollowersRead{}},
-	"PUT /api/v1/asks/{id}/followers/{session_id}":    {Status: http.StatusNoContent, Request: actorInput{}},
-	"DELETE /api/v1/asks/{id}/followers/{session_id}": {Status: http.StatusNoContent, Request: actorInput{}},
+	"PUT /api/v1/asks/{id}/followers/{session_id}":    {Status: http.StatusNoContent, Request: actorInput{}, OptionalRequest: true},
+	"DELETE /api/v1/asks/{id}/followers/{session_id}": {Status: http.StatusNoContent, Request: actorInput{}, OptionalRequest: true},
 	"PATCH /api/v1/asks/{id}":                         {Status: http.StatusOK, Response: model.Ask{}, Request: editAskInput{}},
 	"POST /api/v1/asks/{id}/answer":                   {Status: http.StatusOK, Response: model.Ask{}, Request: answerAskInput{}},
 	"POST /api/v1/asks/{id}/resolve":                  {Status: http.StatusOK, Response: model.Ask{}, Request: resolveAskInput{}},
@@ -619,8 +628,8 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/issues/{key}/comments": {
 		Status: http.StatusCreated, Response: commentWriteResponse{}, Request: commentInput{}, Advice: writeAdvice{},
 	},
-	"POST /api/v1/comments/{id}/resolve": {Status: http.StatusOK, Response: model.Comment{}, Request: actorInput{}},
-	"POST /api/v1/comments/{id}/reopen":  {Status: http.StatusOK, Response: model.Comment{}, Request: actorInput{}},
+	"POST /api/v1/comments/{id}/resolve": {Status: http.StatusOK, Response: model.Comment{}, Request: actorInput{}, OptionalRequest: true},
+	"POST /api/v1/comments/{id}/reopen":  {Status: http.StatusOK, Response: model.Comment{}},
 	"GET /api/v1/comments/{id}":          {Status: http.StatusOK, Response: commentRead{}},
 	"GET /api/v1/comments/{id}/blocks":   {Status: http.StatusOK, Response: model.ItemBlocks{}},
 	"POST /api/v1/comments/{id}/deliveries": {
@@ -635,9 +644,9 @@ var routeShapes = map[string]routeShape{
 			{Status: http.StatusOK, Body: model.CommentDelivery{}},
 		},
 	},
-	"POST /api/v1/comments/{id}/accept": {Status: http.StatusOK, Response: acceptedComment{}, Request: actorInput{}},
+	"POST /api/v1/comments/{id}/accept": {Status: http.StatusOK, Response: acceptedComment{}, Request: actorInput{}, OptionalRequest: true},
 	"PATCH /api/v1/comments/{id}":       {Status: http.StatusOK, Response: model.Comment{}, Request: editCommentInput{}},
-	"POST /api/v1/comments/{id}/reject": {Status: http.StatusOK, Response: model.Comment{}, Request: actorInput{}},
+	"POST /api/v1/comments/{id}/reject": {Status: http.StatusOK, Response: model.Comment{}, Request: actorInput{}, OptionalRequest: true},
 	"GET /api/v1/artifacts/{id}/asks":   {Status: http.StatusOK, Response: []model.Ask{}, Params: artifactAsksQuery{}},
 	"POST /api/v1/artifacts/{id}/asks": {
 		Status: http.StatusCreated, Response: model.Ask{}, Request: createAskInput{}, Advice: writeAdvice{},
@@ -662,7 +671,7 @@ var routeShapes = map[string]routeShape{
 		Status: http.StatusCreated, Response: model.ArtifactReview{}, Request: createPlanReviewInput{},
 	},
 	"POST /api/v1/artifacts/{id}/approval-requests": {
-		Status: http.StatusCreated, Response: approvalRequestResponse{}, Request: approvalRequestInput{},
+		Status: http.StatusCreated, Response: approvalRequestResponse{}, Request: approvalRequestInput{}, OptionalRequest: true,
 		// An open request that already stood, or a document already approved throughout,
 		// answers the same shape at 200: nothing was appended (reviews.go).
 		Also: []routeAnswer{{Status: http.StatusOK, Body: approvalRequestResponse{}}},
@@ -759,12 +768,12 @@ var routeShapes = map[string]routeShape{
 	},
 	"POST /api/v1/credential-requests/{id}/approve": {
 		// POST /v1/credential-requests/{record}/approve (agentsecrets.Client.Approve).
-		Status: http.StatusOK, Response: wire.DecisionResponse{}, Request: credentialDecisionInput{},
+		Status: http.StatusOK, Response: wire.DecisionResponse{}, Request: credentialDecisionInput{}, OptionalRequest: true,
 	},
 	"POST /api/v1/credential-requests/{id}/deny": {
 		// POST /v1/credential-requests/{record}/deny (agentsecrets.Client.Deny), which answers
 		// the terminal state rather than a credential.
-		Status: http.StatusOK, Response: wire.StateResponse{}, Request: credentialDecisionInput{},
+		Status: http.StatusOK, Response: wire.StateResponse{}, Request: credentialDecisionInput{}, OptionalRequest: true,
 	},
 	"POST /api/v1/credential-requests/machine-lookup": {
 		// POST /v1/machine-logins/lookup (agentsecrets.Client.MachineLookup). Dispatch forwards
@@ -814,6 +823,9 @@ var routeShapes = map[string]routeShape{
 		// hold its caller to, so the body is an object of any shape.
 		OpaqueRequest: "the frame to publish, read whole and published unparsed; under " +
 			"?as=responder it is read as {\"responding\": bool} instead",
+		// publishAgentStreamFrame parses those bytes as JSON only under ?as=responder, so every
+		// other call carries whatever bytes it likes, none included.
+		OptionalRequest: true,
 	},
 	"GET /api/v1/artifacts/_test/rooms":                          {Status: http.StatusOK, Response: residentRooms{}},
 	"GET /api/v1/artifacts/{id}/_test/room-counters":             {Status: http.StatusOK, Response: docs.RoomCounters{}},

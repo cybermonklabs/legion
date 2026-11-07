@@ -107,7 +107,8 @@ func (s *server) listUsers(w http.ResponseWriter, r *http.Request) {
 
 // whoamiUser is the body GET /api/v1/whoami answers a person at a browser.
 type whoamiUser struct {
-	Kind   string   `json:"kind"`
+	// Always "user": whoami writes this body for a person at a browser alone.
+	Kind   string   `json:"kind" enum:"user"`
 	Login  string   `json:"login"`
 	Scopes []string `json:"scopes"`
 }
@@ -115,7 +116,9 @@ type whoamiUser struct {
 // whoamiAgent is the body GET /api/v1/whoami answers every credential that is not a person's
 // browser session.
 type whoamiAgent struct {
-	Kind    string   `json:"kind"`
+	// Always "agent": whoami writes this body for every credential that is not a person's
+	// browser session, the personal token holding the person scope included.
+	Kind    string   `json:"kind" enum:"agent"`
 	Owner   *string  `json:"owner"`
 	Project *string  `json:"project"`
 	Scopes  []string `json:"scopes"`

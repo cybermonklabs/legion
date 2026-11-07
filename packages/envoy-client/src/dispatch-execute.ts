@@ -2884,9 +2884,10 @@ export function formatOpenAsksSummary(response: OpenAsksResponse, baseUrl: strin
 /** The person a credential acts for, as `GET /api/v1/whoami` names them: the owner of a personal
  *  or broker-issued token, and a signed-in person's own login in the canonical lowercase every
  *  stored login and assignee carries. `null` for a credential that acts for nobody, which the
- *  shared token and a service-account token are. */
+ *  shared token and a service-account token are. The route says which of the two bodies it sent
+ *  in `kind`, so the union narrows on that. */
 function whoamiPerson(identity: WhoamiResponse): string | null {
-  return "login" in identity ? identity.login.toLowerCase() : identity.owner;
+  return identity.kind === "user" ? identity.login.toLowerCase() : identity.owner;
 }
 
 /** How much of an ask's question the Inbox summary's line carries. The event summaries' head
@@ -3943,12 +3944,14 @@ export async function executeDispatchTool(
     const client = dispatchClient();
     const identity = await client.whoami();
     const owner = whoamiPerson(identity);
-    // A Dispatch that predates verified service tokens omits the field entirely.
-    const service = "service" in identity ? (identity.service ?? null) : null;
-    // So does one that predates broker-issued tokens, which are the only credential that proves
-    // a session of its own: read either omission as that older build, not as "no session".
-    const proved = "session" in identity ? (identity.session ?? null) : null;
-    const project = "project" in identity ? (identity.project ?? null) : null;
+    // The three fields only the agent body carries, and which a Dispatch older than verified
+    // service tokens or broker-issued tokens leaves out of it: an absent field reads as null
+    // here, exactly as "this credential names none" does.
+    const agent = identity.kind === "agent" ? identity : undefined;
+    const service = agent?.service ?? null;
+    // A broker-issued token is the only credential that proves a session of its own.
+    const proved = agent?.session ?? null;
+    const project = agent?.project ?? null;
     // The session Dispatch records the writes as: the one the credential proved, else this host's.
     const session = proved ?? sessionId;
     const unowned =

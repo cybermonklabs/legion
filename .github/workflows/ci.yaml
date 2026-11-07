@@ -906,12 +906,10 @@ jobs:
               - 'packages/envoy/internal/contracts/generated.go'
               - 'packages/envoy/internal/dispatch/pmdoc/schema_generated.go'
               # `bun run check:api` renders schemas/dispatch-openapi.json into
-              # src/dispatch-api.generated.ts and compares, and `go run ./cmd/dispatch openapi`
-              # writes that document from the route table and the Go types beside it: a change to
-              # either leaves this job's check to judge the committed TypeScript.
-              - 'packages/envoy/internal/dispatch/api/routes_table.go'
-              - 'packages/envoy/internal/dispatch/api/routes_shapes.go'
-              - 'packages/envoy/internal/dispatch/api/openapi.go'
+              # src/dispatch-api.generated.ts and compares, and reads no Go at all
+              # (scripts/gen-api.ts:6), so the Go that document is emitted from is not named here:
+              # a change to it is judged by envoy-go-checks' `openapi --check`, which runs on every
+              # push and whose filter selects both that Go and this document.
             # The conflict measurement script's lint, typecheck and tests: its own directory (tests
             # and fixtures included; it imports nothing outside it), the Bun install and Bun it runs
             # (the root manifest and lockfile pin its TypeScript and Bun types), and Biome.
@@ -1198,6 +1196,10 @@ jobs:
               # imports @legion/contracts.
               - 'packages/proof-editor/**'
               - 'packages/contracts/src/**'
+              # internal/dispatch/api/openapi_test.go's
+              # TestTheCommittedOpenAPIDocumentIsWhatTheEmitterWrites reads the committed document,
+              # so an edit of it alone must start this job.
+              - 'packages/contracts/schemas/dispatch-openapi.json'
               # Fixtures its Go tests read: cmd/listener/api_test.go:191,
               # internal/contracts/dedupe_test.go:14, golden_test.go:72,
               # internal/dispatch/api/delivery_live_diff_test.go:982,1011,
@@ -1283,6 +1285,10 @@ jobs:
               - '.github/workflows/ci.yaml'
               - *go_workspace
               - 'packages/envoy/**'
+              # internal/dispatch/api/openapi_test.go's
+              # TestTheCommittedOpenAPIDocumentIsWhatTheEmitterWrites reads the committed document,
+              # so an edit of it alone must start this job.
+              - 'packages/contracts/schemas/dispatch-openapi.json'
               # internal/dispatch/api/delivery_live_diff_test.go:982,1011.
               - 'packages/contracts/fixtures/live/**'
             # The document service's own race job. Not packages/envoy/**, as envoy_go_race has:
@@ -3534,6 +3540,9 @@ jobs:
       - name: Check Go contracts are generated from the shared schema
         run: bun run check:go
         working-directory: packages/contracts
+      - name: Check the OpenAPI document is generated from the route table
+        run: go run ./cmd/dispatch openapi --check
+        working-directory: packages/envoy
       - name: Check pmdoc fixtures are up to date
         run: bun run check
         working-directory: packages/envoy/internal/dispatch/pmdoc/gen
@@ -3648,24 +3657,6 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-test-{0}-', runner.os) }}
-      - name: Check Go formatting
-        run: |
-          unformatted=$(gofmt -l .)
-          if [ -n "$unformatted" ]; then
-            echo "::error::gofmt -l lists files that are not gofmt-formatted; run gofmt -w on them:"
-            echo "$unformatted"
-            exit 1
-          fi
-        working-directory: packages/envoy
-      - name: Check Go contracts are generated from the shared schema
-        run: bun run check:go
-        working-directory: packages/contracts
-      - name: Check the OpenAPI document is generated from the route table
-        run: go run ./cmd/dispatch openapi --check
-        working-directory: packages/envoy
-      - name: Check pmdoc fixtures are up to date
-        run: bun run check
-        working-directory: packages/envoy/internal/dispatch/pmdoc/gen
       # The server's version and the pgvector version it offers, read from the service itself, so
       # the run shows which Postgres the tests below ran on.
       - name: Postgres service version
