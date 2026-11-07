@@ -118,14 +118,7 @@ permissions:
   actions: read
   checks: write
 
-# A `|` between proxy entries makes a go command fall through to the next source after ANY error,
-# where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
-# proxy.golang.org reset a download mid-stream and turned envoy-infra-go red on a module whose
-# hash go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same
-# bytes straight from the source and checks them against go.sum, so this is a second path, not a
-# weaker check.
 env:
-  GOPROXY: https://proxy.golang.org|direct
   # ci-ok's map of every job but those CI_OK_ALWAYS_RUN names to the `changes` output its `if:`
   # tests, and
   # the list of those jobs whose `if:` also admits only pull_request (ci-ok.sh and ci-ok.jq say how
@@ -307,12 +300,25 @@ jobs:
           # would under the default, `some` (any pattern matches), where a `!` pattern would match
           # every file outside it. .github/scripts/check-image-trigger-paths.sh reads the filters
           # that gate an image build (worker_image, envoy_smoke) under this quantifier, and only as
-          # flat lists of globs, so those two name no anchor.
+          # flat lists of globs, so those two name no anchor standing for a list. The one anchor
+          # they do name, ci_router below, is on the glob itself, which leaves their lists flat.
           predicate-quantifier: some-with-excludes
           # The first keys are no job's gate: each is a group many filters share, written once and
           # named by every filter that needs it through its anchor, which dorny/paths-filter
           # flattens into the list that names it.
           filters: |
+            # ci.yaml, which every gate filter below names through this anchor: every job's `if:`
+            # is in this file, so every job reads it - which is why ci_job_reads.py declares
+            # CI_SELF on every gate. Each gate filter also names the ci-job-<job id>.yaml file
+            # holding its own job's steps, so a change to one of those files selects that job
+            # alone. This entry stays beside them because a change to ci.yaml does reach every
+            # job: dropping it would make each job's `if:` test a second output of changes, which
+            # .github/scripts/ci_filter_coverage.py refuses (a job's `if:` tests exactly one), and
+            # an output written as a disjunction instead would select exactly what this pattern
+            # selects. The anchor is on the glob rather than on the list, since envoy_smoke and
+            # worker_image name it too and the image check above reads those two as flat lists.
+            ci_router:
+              - &ci_router '.github/workflows/ci.yaml'
             # A frozen Bun install and the Bun it runs: `bun install --frozen-lockfile` reads the
             # root manifest, the lockfile, the patches package.json:50-59 applies, and the manifest
             # of every workspace package.json:19-31 lists; .github/actions/setup-bun installs the
@@ -692,7 +698,8 @@ jobs:
 
             # `go vet -tags e2e ./...` in packages/daemon.
             typecheck:
-              - '.github/workflows/ci.yaml'
+              - *ci_router
+              - '.github/workflows/ci-job-typecheck.yaml'
               - *go_workspace
               - 'packages/daemon/**'
               - *daemon_envoy_deps
@@ -734,7 +741,8 @@ jobs:
             # The claude-envoy job: the build above, and what its lint, typecheck, pack and whole
             # test suite read beyond it.
             claude_envoy:
-              - '.github/workflows/ci.yaml'
+              - *ci_router
+              - '.github/workflows/ci-job-claude-envoy.yaml'
               # .bun-version is also read by scripts/build.ts:23: the build depends on the Bun it
               # pins.
               - *bun_install
@@ -758,7 +766,8 @@ jobs:
             # detector, the rest in the plain step, and the daemon
             # scripts/e2e/stage1-skeleton.sh builds) and every file the job's other steps read.
             test:
-              - '.github/workflows/ci.yaml'
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
               - *bun_install
               - *biome
               - *daemon_go_tests
@@ -813,7 +822,7 @@ jobs:
             # on.push.paths, which check-ci-filters.sh holds equal to this filter, so the list
             # names all three workflow files.
             docs:
-              - '.github/workflows/ci.yaml'
+              - *ci_router
               - '.github/workflows/docs-pages.yaml'
               - '.github/workflows/docs-site.yaml'
               - *bun_install
@@ -877,7 +886,8 @@ jobs:
               # from this script (docs/site/repo-paths.ts) rather than holding as literals.
               - '.github/scripts/repo-paths.sh'
             contracts:
-              - '.github/workflows/ci.yaml'
+              - *ci_router
+              - '.github/workflows/ci-job-contracts.yaml'
               - *bun_install
               - *biome
               - 'packages/contracts/**'
@@ -907,12 +917,14 @@ jobs:
             # and fixtures included; it imports nothing outside it), the Bun install and Bun it runs
             # (the root manifest and lockfile pin its TypeScript and Bun types), and Biome.
             conflicts_script:
-              - '.github/workflows/ci.yaml'
+              - *ci_router
+              - '.github/workflows/ci-job-conflicts-script.yaml'
               - *bun_install
               - *biome
               - 'scripts/conflicts/**'
             envoy_client:
-              - '.github/workflows/ci.yaml'
+              - *ci_router
+              - '.github/workflows/ci-job-envoy-client.yaml'
               - *bun_install
               - *biome
               - 'packages/envoy-client/**'
@@ -936,7 +948,8 @@ jobs:
               - 'packages/envoy/internal/brokerclient/testdata/wire.json'
             # The private workspace package both Oh My Pi plugins import.
             pi_shared:
-              - '.github/workflows/ci.yaml'
+              - *ci_router
+              - '.github/workflows/ci-job-pi-shared.yaml'
               - *bun_install
               - *biome
               - 'packages/pi-shared/**'
@@ -962,7 +975,8 @@ jobs:
             # installed through the mise install-jj leaves, and the skills and daemon prompts its
             # skills guard reads (src/skills-guard.test.ts:29-33).
             pi_envoy:
-              - '.github/workflows/ci.yaml'
+              - *ci_router
+              - '.github/workflows/ci-job-pi-envoy.yaml'
               - *bun_install
               - *biome
               - 'packages/pi-envoy/**'
@@ -994,7 +1008,8 @@ jobs:
             # controller-start-omp.test.ts), and every file its tests and typecheck read outside
             # the package.
             pi_legion:
-              - '.github/workflows/ci.yaml'
+              - *ci_router
+              - '.github/workflows/ci-job-pi-legion.yaml'
               - *bun_install
               - *biome
               - 'packages/pi-legion/**'
@@ -1057,14 +1072,16 @@ jobs:
               # scripts/skill-scenarios/rig.test.ts:13,129,1009 and rig.sh:215.
               - 'scripts/e2e/lib/**'
               - *omp_install
-            # The browser suite's two-process mode (dispatch-browser-multiprocess), and with it
-            # the half of the one-process job's inputs that job shares, which the dispatch filter
-            # below names through this anchor. The Dispatch server both lanes serve
+            # What both browser lanes read, named through this anchor by the two filters below:
+            # the whole of the two-process job's list but its own workflow file, and the half of
+            # the one-process job's inputs that job shares. The Dispatch server both lanes serve
             # (e2e/run-server.sh:135) and the dev OIDC issuer the sign-in lane signs the browser
             # in at (e2e/run-signin-issuer.sh:34 builds it), on the socket
-            # scripts/e2e/lib/held-port.py holds (run-server.sh:37).
-            dispatch_browser_multiprocess: &dispatch_browser_multiprocess
-              - '.github/workflows/ci.yaml'
+            # scripts/e2e/lib/held-port.py holds (run-server.sh:37). Each lane's own
+            # ci-job-*.yaml file stays outside the anchor: it is a file that lane's job reads
+            # and the other's does not.
+            dispatch_browser_shared: &dispatch_browser_shared
+              - *ci_router
               - *bun_install
               - 'packages/dispatch/**'
               - 'packages/proof-editor/**'
@@ -1091,14 +1108,19 @@ jobs:
               - 'packages/envoy/internal/broker/store/**'
               - 'packages/envoy/internal/oidc/oidctest/*'
               - 'packages/envoy/internal/ratelimit/*'
-            # The browser suite's one-process mode (dispatch): everything the two-process job
-            # reads, and what only this one does - Playwright's own install, the file store its
+            # The browser suite's two-process mode (dispatch-browser-multiprocess).
+            dispatch_browser_multiprocess:
+              - *dispatch_browser_shared
+              - '.github/workflows/ci-job-dispatch-browser-multiprocess.yaml'
+            # The browser suite's one-process mode (dispatch): everything both lanes read, and
+            # what only this one does - Playwright's own install, the file store its
             # upload specs need, the dispatch CLI one spec runs, and the real secrets broker
             # another approves a request on. The live and decision-block fixtures and going's
             # golden are in neither: the unit tests that read them are dispatch_ui's, and no
             # browser lane runs one.
             dispatch:
-              - *dispatch_browser_multiprocess
+              - *dispatch_browser_shared
+              - '.github/workflows/ci-job-dispatch.yaml'
               # The install step runs it, so a change to it must re-run this job.
               - '.github/scripts/playwright-deps-current.sh'
               # The apt list the install step installs, so a change to it must re-run this job.
@@ -1138,7 +1160,8 @@ jobs:
             # dispatch filter above: what their lint, typecheck, unit tests and the dashboard's
             # build and asset checks read. No Go and no Dispatch server: the job runs neither.
             dispatch_ui:
-              - '.github/workflows/ci.yaml'
+              - *ci_router
+              - '.github/workflows/ci-job-dispatch-ui.yaml'
               - *bun_install
               - *biome
               - 'packages/dispatch/**'
@@ -1174,7 +1197,8 @@ jobs:
               - 'packages/envoy-client/src/**'
               - 'packages/envoy-client/test/**'
             envoy_go:
-              - '.github/workflows/ci.yaml'
+              - *ci_router
+              - '.github/workflows/ci-job-envoy-go.yaml'
               - *bun_install
               - *go_workspace
               # Its unit step tests every package of the envoy module, and
@@ -1201,13 +1225,20 @@ jobs:
               - '.github/actions/pull-test-images/**'
               # Its natslive step takes that tag's test list from this script at run time.
               - '.github/scripts/go-tagged-tests.sh'
+              # The three jobs whose tag steps lean on this job's untagged run of ./cmd/dispatch
+              # and ./cmd/broker: each runs only what its tag adds, so a change that starts one
+              # must start this job too (check-ci-filters.sh's rule 15).
+              - '.github/workflows/ci-job-dispatch-memory.yaml'
+              - '.github/workflows/ci-job-dispatch-multiprocess.yaml'
+              - '.github/workflows/ci-job-broker-multiprocess.yaml'
             # envoy-go's fast half (envoy-go-checks): the format, generated-contract and pmdoc
             # checks, the seven shell-script tests, and the build and pack of the envoy commands.
             # gofmt -l . walks every .go file under packages/envoy, those tests and the scripts
             # they drive live there, and `go build ./cmd/dispatch ./cmd/listener` compiles
             # packages of that module alone.
             envoy_go_checks:
-              - '.github/workflows/ci.yaml'
+              - *ci_router
+              - '.github/workflows/ci-job-envoy-go-checks.yaml'
               - *bun_install
               - *go_workspace
               - 'packages/envoy/**'
@@ -1226,7 +1257,8 @@ jobs:
             # packages/envoy), the envoy packages its tests compile, and the Dispatch server and
             # listener infra/core/permissions_live_test.go:298-299 builds in the root workspace.
             envoy_infra_go:
-              - '.github/workflows/ci.yaml'
+              - *ci_router
+              - '.github/workflows/ci-job-envoy-infra-go.yaml'
               - *go_workspace
               - 'packages/envoy/infra/**'
               - *dispatch_server
@@ -1254,12 +1286,16 @@ jobs:
             # filter keeps the wide root rather than the package list that closure would give. No
             # bun_install anchor: no test of these packages runs bun.
             envoy_go_race:
-              - '.github/workflows/ci.yaml'
+              - *ci_router
+              - '.github/workflows/ci-job-envoy-go-race.yaml'
               - *go_workspace
               - 'packages/envoy/**'
               # listener-server-change takes its -run from this script, and this is the job that
-              # runs cmd/listener's untagged tests, so it must run whenever the script changes.
+              # runs cmd/listener's untagged tests, so it must run whenever the script changes -
+              # and whenever that job's own definition does, for the same reason
+              # (check-ci-filters.sh's rule 15).
               - '.github/scripts/go-tagged-tests.sh'
+              - '.github/workflows/ci-job-listener-server-change.yaml'
               # The fixture cmd/listener/api_test.go:191,436,480 reads.
               - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
             # The API race job. internal/dispatch/api's lock_level_test.go:120-133 walks every
@@ -1267,7 +1303,8 @@ jobs:
             # review_write_guard_test.go:44 use the same walk), so this filter keeps the wide root
             # rather than the package list its closure would give.
             envoy_go_race_api:
-              - '.github/workflows/ci.yaml'
+              - *ci_router
+              - '.github/workflows/ci-job-envoy-go-race-api.yaml'
               - *go_workspace
               - 'packages/envoy/**'
               # internal/dispatch/api/delivery_live_diff_test.go:982,1011.
@@ -1278,7 +1315,12 @@ jobs:
             # -race`), one pattern per directory, with the testdata of each directory that has
             # one and what those packages embed.
             envoy_go_race_docs:
-              - '.github/workflows/ci.yaml'
+              - *ci_router
+              # Two jobs run this package under the detector and share this filter, so it names
+              # both of their files (ci_job_reads.py gates envoy-go-race-docs and
+              # envoy-go-docs-finalizers on it).
+              - '.github/workflows/ci-job-envoy-go-race-docs.yaml'
+              - '.github/workflows/ci-job-envoy-go-docs-finalizers.yaml'
               # The race step runs the package under this sampler (the step's comment says why).
               - '.github/scripts/race_memory.py'
               - *go_workspace
@@ -1329,7 +1371,8 @@ jobs:
             # not here. cmd/dispatch/nats_unreachable_test.go, which carries no tag, starts the
             # in-process NATS (its line 47).
             dispatch_memory:
-              - '.github/workflows/ci.yaml'
+              - *ci_router
+              - '.github/workflows/ci-job-dispatch-memory.yaml'
               - *go_workspace
               - *dispatch_command_tests
               - 'packages/envoy/internal/testnats/*'
@@ -1337,7 +1380,8 @@ jobs:
               - '.github/scripts/go-tagged-tests.sh'
             # `go test -tags multiprocess ./cmd/dispatch`, the same closure as dispatch_memory.
             dispatch_multiprocess:
-              - '.github/workflows/ci.yaml'
+              - *ci_router
+              - '.github/workflows/ci-job-dispatch-multiprocess.yaml'
               - *go_workspace
               - *dispatch_command_tests
               - 'packages/envoy/internal/testnats/*'
@@ -1349,7 +1393,8 @@ jobs:
             # starts, and the Dispatch packages cmd/listener's tests drive - each package's
             # testdata included.
             listener_server_change:
-              - '.github/workflows/ci.yaml'
+              - *ci_router
+              - '.github/workflows/ci-job-listener-server-change.yaml'
               - *go_workspace
               - *listener_command
               # What cmd/listener's test binary compiles that `go list -deps ./cmd/listener` does
@@ -1420,7 +1465,8 @@ jobs:
             # `go test -tags multiprocess ./cmd/broker`, and the agent-secrets binary
             # cmd/broker/outage_test.go:317-318 builds.
             broker_multiprocess:
-              - '.github/workflows/ci.yaml'
+              - *ci_router
+              - '.github/workflows/ci-job-broker-multiprocess.yaml'
               - *go_workspace
               - 'packages/envoy/cmd/broker/*'
               - 'packages/envoy/cmd/agent-secrets/*'
@@ -1470,14 +1516,15 @@ jobs:
             # the job's tests compile: TestSmoke in the root workspace, and envoy-infra's host live
             # tests and plugin in the infra one.
             # .github/scripts/check-image-trigger-paths.sh fails the build when this list misses a
-            # file the image build reads; it reads this filter only as a flat list, so it names no
-            # anchor. check-ci-filters.sh holds it to the rest: the job's go commands and its other
+            # file the image build reads; it reads this filter only as a flat list, so the one
+            # anchor it names is ci_router, which stands for a single glob and leaves the list
+            # flat. check-ci-filters.sh holds it to the rest: the job's go commands and its other
             # steps' reads.
             envoy_smoke:
-              - '.github/workflows/ci.yaml'
+              - *ci_router
               # The job's steps, which build the image and smoke it: check-image-trigger-paths.sh
               # counts the workflow file holding a build step among the image's inputs, so a
-              # change to it must start the build. The other filters still name ci.yaml alone.
+              # change to it must start the build.
               - '.github/workflows/ci-job-envoy-smoke.yaml'
               # The image: the Dockerfile, its context's .dockerignore, the web stage's frozen
               # install (every workspace manifest) and the Bun pin that stage holds its own Bun
@@ -1544,7 +1591,8 @@ jobs:
             # shared TypeScript renderer, so a change to either side, or to the contracts both
             # read, runs it.
             envoy_e2e_local:
-              - '.github/workflows/ci.yaml'
+              - *ci_router
+              - '.github/workflows/ci-job-envoy-e2e-local.yaml'
               - *bun_install
               - *go_workspace
               - 'packages/envoy/scripts/e2e-local.sh'
@@ -1566,7 +1614,8 @@ jobs:
             # (test/envoy-stack.ts) build natsd and the listener with go build in workspace mode and
             # run each plugin's NATS client through them; the plugins inline pi-shared.
             envoy_session_stall:
-              - '.github/workflows/ci.yaml'
+              - *ci_router
+              - '.github/workflows/ci-job-envoy-session-stall.yaml'
               - *bun_install
               - *go_workspace
               - 'packages/envoy/**'
@@ -1596,9 +1645,10 @@ jobs:
             # .github/scripts/check-image-trigger-paths.sh fails the build when this list misses a
             # file the image build reads, including a new top-level directory of packages/envoy, or
             # matches a file it does not read other than the two workflow files; it reads this
-            # filter only as a flat list, so it names no anchor.
+            # filter only as a flat list, so the one anchor it names is ci_router, which stands
+            # for a single glob and leaves the list flat.
             worker_image:
-              - '.github/workflows/ci.yaml'
+              - *ci_router
               - '.github/workflows/worker-image.yaml'
               - 'package.json'
               - 'bun.lock'
@@ -1666,7 +1716,8 @@ jobs:
             # it because scripts/go-third-party-notices.sh reads each target's `go list -deps`: a
             # new import changes the notices with no module file changed.
             go_notices:
-              - '.github/workflows/ci.yaml'
+              - *ci_router
+              - '.github/workflows/ci-job-lint.yaml'
               - &any_go_change ['**/*.go', '**/go.mod', '**/go.sum', '**/go.work', '**/go.work.sum']
               - '.github/go-release-targets.json'
               - '.github/agent-secrets-client-targets.json'
@@ -1743,7 +1794,8 @@ jobs:
               - '.github/scripts/check-ci-images.sh'
               - '.github/scripts/ci_images.py'
               - '.github/actions/install-crane/**'
-              - '.github/workflows/ci.yaml'
+              - *ci_router
+              - '.github/workflows/ci-job-ci-images.yaml'
 
   # Reads the whole tree, so it runs on every non-draft run, also when `changes` failed.
   lint:
