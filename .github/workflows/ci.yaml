@@ -5352,21 +5352,21 @@ jobs:
   #
   # timeout-minutes (the header's Budgets note): this job's unretried duration is what it costs
   # when its own injected faults are the only thing wrong — the sum of the budgets the report
-  # steps enforce, plus its rig. The recover half's 240 + 300 + 300 + 300 + 800 + 700 + 300 =
-  # 2940 s, the stall half's 670 + 510 + 1110 + 1110 + 1110 + 1710 + 360 = 6580 s, the carried
+  # steps enforce, plus its rig. The recover half's 240 + 300 + 480 + 480 + 800 + 900 + 300 =
+  # 3500 s, the stall half's 670 + 510 + 1110 + 1110 + 1110 + 1710 + 360 = 6580 s, the carried
   # dependency's 600 s, and about 330 s for the checkout, the three tool installs, the cache
   # emptying, the unfaulted install the stalled Playwright site needs and the 31 rig steps.
-  # That is 10450 s. Every faulted site runs its retries out inside its own report budget
+  # That is 11010 s. Every faulted site runs its retries out inside its own report budget
   # above, so the term the rule adds is this job's slowest download that is not a faulted
   # site: install-jj, whose curl of the mise archive is 8 x 60 + 127 = 607 s and whose
   # `mise install` of the jj release is 5 x 60 + 150 = 450 s, 1057 s together — above the unfaulted
-  # workspace install's 1050 s and the ci-ok report's 600 s. So 10450 + 1057 = 11507 s, or
-  # 192 minutes.
+  # workspace install's 1050 s and the ci-ok report's 600 s. So 11010 + 1057 = 12067 s, or
+  # 202 minutes.
   download-retry:
     needs: changes
     if: needs.changes.outputs.download_retry == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 192
+    timeout-minutes: 202
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -5388,6 +5388,14 @@ jobs:
       # over a warm cache would download nothing and prove nothing.
 
       # --- the recovering fault: 504 for 60 s, then the request passes (check #0946ed09) -------
+
+      # A recover site's budget is not its measured recovery: an attempt already in flight when
+      # the window closes runs to its own bound, and the attempt after it is the first that can
+      # succeed, so each budget carries two full bounds, the sleeps between the first three
+      # attempts, and the site's own cost. The workspace install is where that was measured
+      # rather than reasoned — run 42383790553's job 128436795602: attempt 1 failed at 56 s,
+      # attempt 2 reached its 180 s bound, attempt 3 installed in 40 s, 306 s in all against the
+      # 300 s this budget held then.
 
       # curl of a release asset. curl makes the attempts itself, in the spelling
       # .github/actions/install-changie explains: 8, the last starting 127 s after the first,
@@ -5451,7 +5459,7 @@ jobs:
         run: >-
           .github/scripts/download-retry-proof.sh report recover-claude
           --what "the pinned Claude Code (bun add, 5 attempts of 180 s)"
-          --outcome ${{ steps.recover-claude.outcome }} --attempts 5 --floor 0 --budget 300
+          --outcome ${{ steps.recover-claude.outcome }} --attempts 5 --floor 0 --budget 480
 
       # bun install --frozen-lockfile, the install every job of this workflow makes, in the very
       # spelling they make it in.
@@ -5475,7 +5483,7 @@ jobs:
         run: >-
           .github/scripts/download-retry-proof.sh report recover-install
           --what "the workspace's dependencies (bun install --frozen-lockfile, 5 attempts of 180 s)"
-          --outcome ${{ steps.recover-install.outcome }} --attempts 5 --floor 0 --budget 300
+          --outcome ${{ steps.recover-install.outcome }} --attempts 5 --floor 0 --budget 480
 
       # go mod download. This proxy faults every host, which is what a Go fault has to do: with
       # `|direct` in GOPROXY a go command falls through to the module's own source after any
@@ -5525,7 +5533,7 @@ jobs:
         run: >-
           .github/scripts/download-retry-proof.sh report recover-playwright
           --what "Playwright's Chromium (bunx playwright install, 5 attempts of 300 s)"
-          --outcome ${{ steps.recover-playwright.outcome }} --attempts 5 --floor 0 --budget 700
+          --outcome ${{ steps.recover-playwright.outcome }} --attempts 5 --floor 0 --budget 900
 
       # A gh api read, in the spelling .github/scripts/ci-ok-report.sh reads this same route
       # with. That script is not run here because it posts ci-ok; the read is what retries, and
