@@ -1329,7 +1329,7 @@ describe("dispatchToolSpecs", () => {
     ],
     [
       "dispatch_message",
-      "keep --issue whenever the frame you answer gave one. A BTW, Aside or Steer frame carries a reply_with command: answer with it, on that issue. On Oh My Pi an Agents-page Send or Aside arrives as a user message: answer in the conversation, with no dispatch message.",
+      "keep --issue whenever the frame you answer gave one. A frame that wants a reply carries a reply_with command: answer with it, on that issue. A mention of a comment that joins no ask thread and answers no comment wants nothing back and carries none; where you answer one anyway, its card names the comment. On Oh My Pi an Agents-page Send or Aside arrives as a user message: answer in the conversation, with no dispatch message.",
     ],
     [
       "dispatch_ask",
