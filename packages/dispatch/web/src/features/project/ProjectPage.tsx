@@ -26,10 +26,9 @@ import { NotFoundPage } from "../shell/NotFoundPage";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { useUserPreference } from "../shell/userPreference";
 import { DocumentList } from "./DocumentList";
-import { EpicsView } from "./EpicsView";
 import { IssueBoard } from "./IssueBoard";
 import { IssueFilters } from "./IssueFilters";
-import { IssueList } from "./IssueList";
+import { IssueList, type ListGrouping, listGroupings } from "./IssueList";
 
 type ProjectTab = "architecture" | "issues" | "documents";
 
@@ -39,15 +38,20 @@ const tabs: readonly TabDefinition<ProjectTab>[] = [
   { id: "documents", label: "Documents" },
 ];
 
-type IssueView = "list" | "board" | "epics";
+type IssueView = "list" | "board";
 
 export function ProjectPage(): ReactNode {
   const location = useLocation();
   const navigate = useNavigate();
   const [issueView, setIssueView] = useUserPreference<IssueView>(
     "project.issue-view",
-    (stored) => (stored === "board" || stored === "epics" ? stored : "list"),
+    (stored) => (stored === "board" ? "board" : "list"),
     (view) => view
+  );
+  const [grouping, setGrouping] = useUserPreference<ListGrouping>(
+    "project.list-grouping",
+    (stored) => listGroupings.find((option) => option.id === stored)?.id ?? "status",
+    (value) => value
   );
   const [showEdges, setShowEdges] = useUserPreference(
     "project.board-edges",
@@ -205,7 +209,7 @@ export function ProjectPage(): ReactNode {
             className={`order-6 inline-flex shrink-0 rounded-xl border p-1 md:order-4 md:ml-auto ${borderDefault}`}
           >
             <legend className="sr-only">Issue view</legend>
-            {(["list", "board", "epics"] as const).map((view) => (
+            {(["list", "board"] as const).map((view) => (
               <button
                 aria-pressed={issueView === view}
                 className={`min-h-11 rounded-lg px-3 text-sm font-medium md:min-h-9 md:px-2 ${
@@ -215,10 +219,28 @@ export function ProjectPage(): ReactNode {
                 onClick={() => setIssueView(view)}
                 type="button"
               >
-                {view === "list" ? "List" : view === "board" ? "Board" : "Epics"}
+                {view === "list" ? "List" : "Board"}
               </button>
             ))}
           </fieldset>
+        ) : null}
+        {activeTab === "issues" && issueView === "list" ? (
+          <label
+            className={`order-7 inline-flex min-h-11 shrink-0 items-center gap-2 rounded-xl border px-3 text-sm md:order-4 md:min-h-9 md:px-2 ${borderDefault} ${textSecondaryOnCanvas}`}
+          >
+            Group by
+            <select
+              className={`rounded-lg px-1 py-0.5 font-medium ${surfaceMutedBg}`}
+              onChange={(event) => setGrouping(event.target.value as ListGrouping)}
+              value={grouping}
+            >
+              {listGroupings.map((option) => (
+                <option key={option.id} value={option.id}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
         ) : null}
         {activeTab === "issues" && issueView === "board" ? (
           <button
@@ -267,19 +289,15 @@ export function ProjectPage(): ReactNode {
       >
         {activeTab === "issues" ? (
           <>
-            {issueView === "epics" ? null : (
-              <IssueFilters
-                key={route.project}
-                project={route.project}
-                showStatus={issueView === "list"}
-              />
-            )}
+            <IssueFilters
+              key={route.project}
+              project={route.project}
+              showStatus={issueView === "list"}
+            />
             {issueView === "list" ? (
-              <IssueList project={route.project} />
-            ) : issueView === "board" ? (
-              <IssueBoard lanes={lanes} project={route.project} showEdges={showEdges} />
+              <IssueList grouping={grouping} project={route.project} />
             ) : (
-              <EpicsView project={route.project} />
+              <IssueBoard lanes={lanes} project={route.project} showEdges={showEdges} />
             )}
           </>
         ) : null}

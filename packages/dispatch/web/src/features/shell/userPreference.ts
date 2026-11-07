@@ -9,6 +9,7 @@ export type UserPreference =
   | "project.board-lanes"
   | "project.issue-filters"
   | "project.issue-view"
+  | "project.list-grouping"
   | "shell.margin"
   | "shell.margin-width"
   | "shell.sidebar";
