@@ -12,11 +12,11 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// R18 review: the claimant's copy waited on an unnamed role mention; the attempt's lease lapses
-// while still unpinned and the role still unnamed, so the batch writes a fallback row for the
-// claimant. The fallback pass must not publish that row while the attempt is still owed a resend
-// (Resending), since the resend may pin the claimant.
-func TestR18UnnamedFallbackRowWaitsForResend(t *testing.T) {
+// The claimant's copy waited on an unnamed role mention; the attempt's lease lapses while still
+// unpinned and the role still unnamed, so the batch writes a fallback row for the claimant. The
+// fallback pass must not publish that row while the attempt is still owed a resend (Resending),
+// since the resend may pin the claimant.
+func TestAFallbackRowWaitsWhileItsUnnamedMentionIsOwedAResend(t *testing.T) {
 	const role = "unnamed-by-the-outbox"
 	const holder = "ses_claimant"
 	ctx := store.WithTransactionTracking(context.Background())
@@ -78,9 +78,9 @@ func keysOf(items []contracts.Envelope) []string {
 	return keys
 }
 
-// R18 review: the claimant's copy waits on an unnamed role mention; the owner's next event bound
-// for the claimant must not overtake it.
-func TestR18ClaimantWaitingCopyKeepsOrder(t *testing.T) {
+// The claimant's copy waits on an unnamed role mention; the owner's next event bound for the
+// claimant must not overtake it.
+func TestAClaimantsWaitingCopyKeepsTheOwnersEventOrder(t *testing.T) {
 	const role = "unnamed-by-the-outbox"
 	const holder = "ses_claimant"
 	ctx := store.WithTransactionTracking(context.Background())
@@ -127,41 +127,4 @@ func TestR18ClaimantWaitingCopyKeepsOrder(t *testing.T) {
 	if !slices.Equal(order, want) {
 		t.Errorf("claimant received %v, want %v", order, want)
 	}
-}
-
-// R18 review: the outbox first reads the comment after the unnamed attempt's lease lapsed with the
-// send still owed (Resending). The thread author's copy: published now, or held for the resend?
-func TestR18AuthorPastLeaseUnnamed(t *testing.T) {
-	const role = "unnamed-by-the-outbox"
-	const author = "ses_author"
-	ctx := store.WithTransactionTracking(context.Background())
-	target := "role:" + role
-
-	rig := newRoleRig(t)
-	rig.silent(t, contracts.RoleTopicPrefix+role)
-	wrote := rig.receiver(t, author, true)
-
-	alice := model.Actor{Kind: "user", ID: "alice"}
-	seedIssue(t, rig.database, "T-1", nil)
-	rootID := seedComment(t, rig.database, "T-1", model.Actor{Kind: "session", ID: author}, "root", nil)
-	body := "@" + target + " please look"
-	commentID := seedComment(t, rig.database, "T-1", alice, body, &rootID)
-	comment := appendEvent(t, rig.database, rig.broker, model.Event{
-		IssueKey: new("T-1"), Type: "comment.created", Actor: alice,
-		Payload: model.CommentEventPayload{
-			Comment: model.Comment{ID: commentID, IssueKey: new("T-1"), Body: body, ReplyTo: &rootID,
-				Mentions: []model.Mention{{Target: target, Delivery: "steer"}}},
-		},
-	})
-	seedDelivery(t, rig.database, commentID, target, "", "pending")
-	if _, err := rig.database.Pool.Exec(ctx, `
-		update comment_deliveries set created_at = now() - $2::interval, claimed_at = now() - $2::interval
-		where comment_id = $1 and target = $3
-	`, commentID, model.DeliveryClaimLapse+time.Minute, target); err != nil {
-		t.Fatal(err)
-	}
-	holding(t, rig.deps()).scan(ctx, unfenced{})
-	publishFallbackCopies(ctx, rig.deps(), unfenced{})
-	time.Sleep(time.Second)
-	t.Logf("author past lease: event published=%v author got %v", publishedAt(t, rig.database, comment.ID) != nil, keysOf(wrote.received()))
 }

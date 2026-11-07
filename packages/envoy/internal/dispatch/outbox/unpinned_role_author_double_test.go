@@ -44,7 +44,7 @@ import (
 // What model.DeliveryClaimLapse bounds is the publishing of that copy and not the double: a
 // copy goes out under the event's own key only while the attempt is live, past which the
 // attempt's state is every session's and every copy of the comment is the fallback pass's
-// (unpinnedRoleMentions.resendingUnnamed, TestR18UnnamedFallbackRowWaitsForResend). The mention
+// (unpinnedRoleMentions.resendingUnnamed, TestAFallbackRowWaitsWhileItsUnnamedMentionIsOwedAResend). The mention
 // it stands beside lands whenever its send does - the sweep resends an attempt past that lease,
 // and a sender holding it queued sends it when its lane reaches it - which no lease bounds.
 //

@@ -74,7 +74,7 @@ func seedCreatedAttempt(t *testing.T, database *store.Store, commentID, target, 
 // copy such a mention may yet be pinned to that the outbox does send carries the key that
 // mention would carry there (TestACopyAnUnnamedRoleMentionMayBePinnedToCarriesThatMentionsKey).
 // Past that lease every copy of the comment is the fallback pass's, this one and a thread
-// session's alike (TestR18UnnamedFallbackRowWaitsForResend).
+// session's alike (TestAFallbackRowWaitsWhileItsUnnamedMentionIsOwedAResend).
 func TestACommentAnUnansweredRoleMentionWhoseHolderTheOutboxCannotNameReachesThatSessionOnce(t *testing.T) {
 	const role = "claimed-after-the-comment-was-published"
 	const holder = "ses_claims_the_issue_and_takes_the_role"
