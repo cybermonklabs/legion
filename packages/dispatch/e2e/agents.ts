@@ -2,6 +2,7 @@ import { DELIVERY_CAPABILITIES } from "@legion/contracts";
 import { expect, type Locator, type Page } from "@playwright/test";
 
 import type { BroadcastCreated, CreateBroadcastInput } from "../web/src/api/types";
+import type { AgentGroup } from "../web/src/features/agents/agent-groups";
 import { createAsk, createComment, createIssue, createProject } from "./api";
 import { harnessPorts } from "./harness-ports";
 import { type KeyedWrite, keyedWrite, watchWrites } from "./keyed-writes";
@@ -193,13 +194,14 @@ export async function getUnsubscribeCalls(): Promise<{ session_id: string; topic
 
 // The Agents page's keyboard rows, in `keyboard-agents.e2e.ts`, `keyboard-palette.e2e.ts` and the
 // picker spec the WebKit and Firefox projects also run, share one page: two live sessions, each
-// with Dispatch activity of its own, so both are listed rows rather than folded into `Inactive` or
-// `No Dispatch activity`.
-// The Planner's open ask waits on the viewer, which puts it above the Reviewer. Neither carries a
-// `last_seen`: the fake Envoy answers every read of a session seeded without one with the current
-// time, so a shared seed never ages into Inactive. A time computed here would: this module is
-// evaluated once per Playwright worker, at the first spec that imports it, and the time would age
-// with every spec the worker runs after that, until the sessions fold under `Inactive`.
+// with Dispatch activity of its own, so both sit under `Active` rather than under `Idle` or
+// `Quiet`.
+// The Planner's open ask waits on the viewer, which puts it under `Needs you`, above the
+// Reviewer. Neither carries a `last_seen`: the fake Envoy answers every read of a session seeded
+// without one with the current time, so a shared seed never ages into `Quiet`. A time computed
+// here would: this module is evaluated once per Playwright worker, at the first spec that
+// imports it, and the time would age with every spec the worker runs after that, until the
+// sessions fell under `Quiet`.
 export const plannerSession: FakeSession = {
   capabilities: ["aside", "btw"],
   dir: "/srv/planner",
@@ -259,4 +261,39 @@ export function shownAgentRows(page: Page): Locator {
  *  (`toBeVisible`, `toBeHidden` with `toHaveCount(1)`, or `toHaveCount(0)`). */
 export function agentRow(page: Page, sessionID: string): Locator {
   return page.locator(`[data-agent-row="${sessionID}"]`);
+}
+
+/** One of the page's four group headings (INFRA-812, R7), whose accessible name is the group's
+ *  name and its count: `Idle (3)`, or `Idle (3, 1 selected)` once a row of it is selected. */
+export function agentGroupToggle(page: Page, group: AgentGroup): Locator {
+  return page.getByTestId(`agents-group-toggle-${group}`);
+}
+
+/** Collapses `group` if it is open, or opens it if it is closed: every group is open when the
+ *  page loads, so a row that needs one shut says so. */
+export async function toggleAgentGroup(page: Page, group: AgentGroup): Promise<void> {
+  const toggle = agentGroupToggle(page, group);
+  const expanded = await toggle.getAttribute("aria-expanded");
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-expanded", expanded === "true" ? "false" : "true");
+}
+
+/** The group, machine or role filter's trigger. Each of the three is a `MultiSelect` (R7), named
+ *  by what it filters rather than by what is ticked in it. */
+export function agentFilter(page: Page, filter: "group" | "machine" | "role"): Locator {
+  return page.getByRole("button", { name: `Filter by ${filter}` });
+}
+
+/** Ticks or unticks one option of a filter and closes its popover, so the portalled panel never
+ *  covers the control the row drives next. */
+export async function pickAgentFilter(
+  page: Page,
+  filter: "group" | "machine" | "role",
+  option: string
+): Promise<void> {
+  const trigger = agentFilter(page, filter);
+  if ((await trigger.getAttribute("aria-expanded")) === "false") await trigger.click();
+  await page.getByRole("option", { exact: true, name: option }).click();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("listbox")).toHaveCount(0);
 }

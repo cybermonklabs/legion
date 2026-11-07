@@ -77,6 +77,7 @@ import { MarkdownBody } from "../refs/MarkdownBody";
 import { buildInboxPath, buildIssuePath } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { closestMatching, focusOnDocument } from "../shell/roving";
+import { MD_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { AgentMessageComposer, type AgentReply, agentSendKey } from "./AgentMessageComposer";
@@ -583,6 +584,7 @@ function AgentRow({
   expanded,
   hidden,
   liveAgents,
+  mdViewport,
   needsYou,
   onExpand,
   onPin,
@@ -603,6 +605,10 @@ function AgentRow({
    *  scroll. */
   hidden: boolean;
   liveAgents: readonly Agent[];
+  /** Which side of `md` the page is on, read once for the whole list (`MD_VIEWPORT_QUERY` in
+   *  `AgentsPage`): the directory below it shows the whole path, and from it the last segment
+   *  with the path one hover away. One listener for two hundred rows, not two hundred. */
+  mdViewport: boolean;
   /** This session's open questions that wait on the reader themselves: whose next move is a
    *  person's, on an issue assigned to them, and not snoozed. */
   needsYou: number;
@@ -628,9 +634,11 @@ function AgentRow({
   // The row's attributes name the session as its `AgentName` does: by its current registry title.
   const label = text.sessionText(agent.session_id, agent.title);
   const machineAndDir = `${agent.host} · ${agent.dir}`;
-  // The row is one line, so the directory keeps the segment that names the session's work and
-  // the whole path is the hover its `title` is.
-  const shownDir = `${agent.host} · ${lastPathSegment(agent.dir)}`;
+  // From `md` the row is one line, so the directory keeps the segment that names the session's
+  // work and the whole path is the hover its `title` is. Below `md` it has a line of its own
+  // under the name and a phone has no hover to ask that `title` with, so it shows the path
+  // whole.
+  const shownDir = `${agent.host} · ${mdViewport ? lastPathSegment(agent.dir) : agent.dir}`;
   const unreadReplies =
     useQuery(userAgentStateQuery()).data?.[agent.session_id]?.unread_replies ?? 0;
   // What the row holds itself is the reply the composer is answering; the page holds the rest.
@@ -659,11 +667,12 @@ function AgentRow({
       hidden={hidden}
       tabIndex={-1}
     >
-      {/* One line, whatever the row holds and whatever the width: with six hundred of them a
-          second line is six hundred lines, and the window's saving (R7) is paid back in paint.
-          Nothing wraps; the name and the directory are what give way, each to an ellipsis with
-          its whole text one hover away. */}
-      <div className="flex items-center gap-x-2 overflow-hidden px-3 py-1.5">
+      {/* One line from `md`: with six hundred rows a second line is six hundred lines, and the
+          window's saving (R7) is paid back in paint. The name and the directory are what give
+          way, each to an ellipsis with its whole text one hover away. Below `md` the directory
+          wraps to a line of its own (the span below), which is the shape the row had before
+          this change and what keeps the name a box wide enough to tap on a phone. */}
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 overflow-hidden px-3 py-1.5 md:flex-nowrap">
         <input
           aria-label={`Select ${label} for broadcast`}
           checked={selected}
@@ -709,12 +718,17 @@ function AgentRow({
             title
           </CopyButton>
         )}
-        {/* The directory takes the width the rest of the line leaves and keeps the segment that
-            names the session's work, with the machine before it and the whole path one hover
-            away. It is the row's one stretching item, so a row with little else in it still
-            reads its directory in full. */}
+        {/* The directory. From `md` it takes the width the rest of the line leaves and keeps
+            the segment that names the session's work, with the machine before it and the whole
+            path one hover away. Below `md` it takes a line of its own under the name
+            (`order-last basis-full`, the shape the page drew before INFRA-812) and shows the
+            whole path: a phone has no hover to ask with, and on one line a 390 px row squeezed
+            both this and the name button to nothing, which left the name untappable - the live
+            link beside it took the press - and the directory unpainted. It is the row's one
+            stretching item from `md`, so a row with little else in it still reads its directory
+            in full. */}
         <span
-          className={`min-w-0 flex-1 truncate text-xs ${textMutedOnCanvas}`}
+          className={`order-last basis-full text-xs [overflow-wrap:anywhere] md:order-none md:min-w-0 md:flex-1 md:basis-auto md:truncate ${textMutedOnCanvas}`}
           data-agent-dir=""
           title={machineAndDir}
         >
@@ -1322,6 +1336,10 @@ function useListWindow(keys: readonly string[], kept: ReadonlySet<string>): List
 export function AgentsPage(): ReactNode {
   useDocumentTitle("Agents · Dispatch");
   const { agents, error, isError, isPending } = useAgents(true, true);
+  // Which side of Tailwind's `md` the page is on, read once for the list rather than once per
+  // row: it decides what each row's directory shows, and a list of two hundred rows is two
+  // hundred listeners otherwise.
+  const mdViewport = useMediaQuery(MD_VIEWPORT_QUERY);
   const inbox = useQuery(inboxQuery());
   // Until `/auth/whoami` answers, no question is counted as the reader's.
   const viewer = useQuery(whoAmIQuery()).data?.login;
@@ -1550,6 +1568,7 @@ export function AgentsPage(): ReactNode {
       hidden={hidden}
       key={agent.session_id}
       liveAgents={agents}
+      mdViewport={mdViewport}
       needsYou={needsYouBySession.get(agent.session_id) ?? 0}
       onExpand={(open) => expandRow(agent.session_id, open)}
       onPin={() => togglePin(agent.session_id)}

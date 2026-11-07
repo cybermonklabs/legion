@@ -12,6 +12,7 @@ import {
   setAgentStreamResponder,
 } from "./api";
 import { expectConsecutiveLinksClear, expectUncovered } from "./layout";
+import { FRONT_LIVE_VIEW, frontLiveView } from "./live-views";
 import { resetDatabase } from "./seed";
 import { MESSAGE_REFUSED, navigateInApp, refusePosts } from "./sends";
 import { asUser } from "./users";
@@ -178,6 +179,9 @@ interface LiveViewLayout {
   visualBottom: number;
   composerTop: number;
   composerBottom: number;
+  /** The row under the message box (R6), which is the view's last element: its own edges. */
+  footerTop: number;
+  footerBottom: number;
   /** The newest turn's bottom edge, and the thread's own top edge and scroll position. */
   newestBottom: number;
   threadTop: number;
@@ -186,18 +190,25 @@ interface LiveViewLayout {
   mainPaddingBottom: number;
   threadScrollHeight: number;
   threadClientHeight: number;
+  /** The live view's own bottom edge: the row under the message box, or the line under that
+   *  row where a switch or a notice puts one. */
+  viewBottom: number;
 }
 
 function liveViewLayout(page: Page): Promise<LiveViewLayout> {
-  return page.evaluate(() => {
-    const byTestId = (testId: string) => {
-      const element = document.querySelector<HTMLElement>(`[data-testid="${testId}"]`);
+  return page.evaluate((front) => {
+    const view = document.querySelector<HTMLElement>(front);
+    if (view === null) throw new Error("no live view in front");
+    const byTestId = (testId: string, root: ParentNode = view) => {
+      const element = root.querySelector<HTMLElement>(`[data-testid="${testId}"]`);
       if (element === null) throw new Error(`no ${testId}`);
       return element;
     };
-    const main = byTestId("main-content");
+    const main = byTestId("main-content", document);
     const thread = byTestId("agent-thread");
+    const conversation = byTestId("agent-conversation").getBoundingClientRect();
     const composer = byTestId("agent-composer").getBoundingClientRect();
+    const footer = byTestId("agent-composer-footer").getBoundingClientRect();
     const turns = thread.querySelectorAll('[data-testid^="agent-message-"]');
     const newest = turns[turns.length - 1]?.getBoundingClientRect();
     if (newest === undefined) throw new Error("no turns");
@@ -207,6 +218,8 @@ function liveViewLayout(page: Page): Promise<LiveViewLayout> {
       composerBottom: composer.bottom,
       composerTop: composer.top,
       documentHeight: document.documentElement.scrollHeight,
+      footerBottom: footer.bottom,
+      footerTop: footer.top,
       mainBottom: main.getBoundingClientRect().bottom,
       mainPaddingBottom: Number.parseFloat(getComputedStyle(main).paddingBottom),
       newestBottom: newest.bottom,
@@ -214,10 +227,11 @@ function liveViewLayout(page: Page): Promise<LiveViewLayout> {
       threadScrollHeight: thread.scrollHeight,
       threadScrollTop: thread.scrollTop,
       threadTop: thread.getBoundingClientRect().top,
+      viewBottom: conversation.bottom,
       viewportHeight: window.innerHeight,
       visualBottom: viewport.offsetTop + viewport.height,
     };
-  });
+  }, FRONT_LIVE_VIEW);
 }
 
 /** The page never scrolls, its header and composer are on screen, and the thread is the one
@@ -227,13 +241,20 @@ async function expectViewportBound(page: Page): Promise<void> {
   const layout = await liveViewLayout(page);
   expect(layout.documentHeight).toBeLessThanOrEqual(layout.viewportHeight + 1);
   expect(await page.evaluate(() => window.scrollY)).toBe(0);
-  // The composer ends one page gutter above the visual viewport's bottom, not merely on screen:
-  // a composer overflowing a collapsed thread would still be inside the window.
-  expect(layout.composerBottom).toBe(layout.visualBottom - layout.mainPaddingBottom);
+  // The view's last element is the row under the message box (R6), and it ends one page gutter
+  // above the visual viewport's bottom, not merely on screen: a composer overflowing a
+  // collapsed thread would still be inside the window. The message box sits whole above it.
+  expect(layout.viewBottom).toBe(layout.visualBottom - layout.mainPaddingBottom);
+  expect(layout.composerBottom).toBeLessThanOrEqual(layout.footerTop);
   await expect(page.getByRole("link", { name: "← Agents" })).toBeInViewport({ ratio: 1 });
-  await expect(page.getByTestId("agent-composer")).toBeInViewport({ ratio: 1 });
+  await expect(frontLiveView(page).getByTestId("agent-composer")).toBeInViewport({ ratio: 1 });
+  await expect(frontLiveView(page).getByTestId("agent-composer-footer")).toBeInViewport({
+    ratio: 1,
+  });
   expect(layout.threadScrollHeight).toBeGreaterThan(layout.threadClientHeight);
-  await page.getByTestId("agent-thread").evaluate((thread) => thread.scrollTo(0, 0));
+  await frontLiveView(page)
+    .getByTestId("agent-thread")
+    .evaluate((thread) => thread.scrollTo(0, 0));
   await expect(page.getByText("Turn 0:")).toBeInViewport();
   expect((await liveViewLayout(page)).composerBottom).toBe(layout.composerBottom);
 }
@@ -243,19 +264,21 @@ async function expectViewportBound(page: Page): Promise<void> {
  *  there, and WebKit delivers scroll events a frame later than Chromium: a keyboard raised before
  *  delivery raced the event and left the newest turn behind in about half of WebKit's runs. */
 async function scrollThreadTo(page: Page, top: number | "bottom"): Promise<void> {
-  await page.getByTestId("agent-thread").evaluate(
-    (thread, target) =>
-      new Promise<void>((resolve) => {
-        const to = target === "bottom" ? thread.scrollHeight - thread.clientHeight : target;
-        if (Math.abs(thread.scrollTop - to) < 1) {
-          resolve();
-          return;
-        }
-        thread.addEventListener("scroll", () => resolve(), { once: true });
-        thread.scrollTo(0, to);
-      }),
-    top
-  );
+  await frontLiveView(page)
+    .getByTestId("agent-thread")
+    .evaluate(
+      (thread, target) =>
+        new Promise<void>((resolve) => {
+          const to = target === "bottom" ? thread.scrollHeight - thread.clientHeight : target;
+          if (Math.abs(thread.scrollTop - to) < 1) {
+            resolve();
+            return;
+          }
+          thread.addEventListener("scroll", () => resolve(), { once: true });
+          thread.scrollTo(0, to);
+        }),
+      top
+    );
 }
 
 /** Whether <main> carries a keyboard cap, and whether that cap is at or below <main>'s own
@@ -278,8 +301,8 @@ function mainCap(page: Page): Promise<{ capped: boolean; fitsOwnHeight: boolean 
  *  This is what "the page left me where I was" means to a reader, and it survives the browser's
  *  own scroll anchoring moving `scrollTop` when something above them grows. */
 function topmostTurn(page: Page): Promise<{ id: string; top: number }> {
-  return page.evaluate(() => {
-    const thread = document.querySelector<HTMLElement>('[data-testid="agent-thread"]');
+  return page.evaluate((front) => {
+    const thread = document.querySelector<HTMLElement>(`${front} [data-testid="agent-thread"]`);
     if (thread === null) throw new Error("no agent-thread");
     const edge = thread.getBoundingClientRect().top;
     for (const turn of thread.querySelectorAll<HTMLElement>("[data-message-id]")) {
@@ -289,7 +312,7 @@ function topmostTurn(page: Page): Promise<{ id: string; top: number }> {
       }
     }
     throw new Error("no turn in view");
-  });
+  }, FRONT_LIVE_VIEW);
 }
 
 /** The newest turn is in view: its bottom edge is inside the thread and above the composer. */
@@ -318,7 +341,7 @@ async function rebuildThroughResubscribe(sessionID: string, next: object): Promi
  *  with the composer behind the keyboard), and the composer then sits one page gutter above the
  *  visual viewport's bottom edge. */
 async function raiseKeyboard(page: Page, height: number, offsetTop = 0): Promise<void> {
-  await page.getByTestId("agent-composer").locator("textarea").focus();
+  await frontLiveView(page).getByTestId("agent-composer").locator("textarea").focus();
   const sameTask = await page.evaluate(
     ({ visualHeight, visualTop }) => {
       const viewport = window.visualViewport;
@@ -338,7 +361,7 @@ async function raiseKeyboard(page: Page, height: number, offsetTop = 0): Promise
   await expect
     .poll(async () => {
       const layout = await liveViewLayout(page);
-      return layout.visualBottom - layout.mainPaddingBottom - layout.composerBottom;
+      return layout.visualBottom - layout.mainPaddingBottom - layout.viewBottom;
     })
     .toBe(0);
   expect((await liveViewLayout(page)).visualBottom).toBe(offsetTop + height);
@@ -354,11 +377,11 @@ async function lowerKeyboard(page: Page): Promise<void> {
     Reflect.deleteProperty(viewport, "offsetTop");
     viewport.dispatchEvent(new Event("resize"));
   });
-  await page.getByTestId("agent-composer").locator("textarea").blur();
+  await frontLiveView(page).getByTestId("agent-composer").locator("textarea").blur();
   await expect
     .poll(async () => {
       const layout = await liveViewLayout(page);
-      return layout.viewportHeight - layout.mainPaddingBottom - layout.composerBottom;
+      return layout.viewportHeight - layout.mainPaddingBottom - layout.viewBottom;
     })
     .toBe(0);
 }
@@ -376,9 +399,8 @@ test("the conversation view replays what the session held, streams its next turn
   const page = await context.newPage();
   try {
     await page.goto("/agents");
-    // A session Dispatch has never heard from sits in a collapsed fold, its row mounted and
-    // hidden until the fold opens.
-    await page.getByRole("button", { name: /No Dispatch activity/ }).click();
+    // The session has no Dispatch activity, so its row is under `Idle`, and every group is open
+    // when the page loads (INFRA-812, R7).
     // The row's live link, which `AgentName` draws beside the row's toggle.
     await agentRow(page, planner.session_id)
       .getByRole("link", { name: "Open live conversation with Planner" })
@@ -519,10 +541,11 @@ test("Enter sends mid-turn in the delivery mode the person picked", async ({ bro
   }
 });
 
-// An empty box is the one thing that refuses Send mid-turn, and Send says why: on its title, as
-// its accessible description, and on a line in the composer a reader with no pointer can see.
-// Neither a click nor Enter sends. With text, Send is pressable and the line says how to send.
-test("mid-turn, an empty box refuses Send, says why on screen, and sends nothing", async ({
+// An empty box is the one thing that refuses Send mid-turn, and Send says why: on its title and
+// as its accessible description at rest, and on a line in the composer once a person has
+// pressed it, which a reader with no pointer can see. Neither a click nor Enter sends. With
+// text, Send is pressable and the line reads nothing again.
+test("mid-turn, an empty box refuses Send, says why on screen once it is pressed, and sends nothing", async ({
   browser,
 }) => {
   await publishAgentStreamFrame(planner.session_id, replay, "replay");
@@ -535,19 +558,24 @@ test("mid-turn, an empty box refuses Send, says why on screen, and sends nothing
     await publishAgentStreamFrame(planner.session_id, assistantFrame(4, "Working", true));
     await expect(assistant.last()).toContainText("Working");
 
-    const composer = page.getByTestId("agent-composer");
+    const composer = frontLiveView(page).getByTestId("agent-composer");
     const field = composer.locator("textarea");
     const send = composer.getByRole("button", { exact: true, name: "Send" });
-    const reason = composer.getByText("Type a message first.", { exact: true });
-    const hint = composer.getByText("Enter to send · Shift+Enter for a new line", { exact: true });
+    const hint = composer.getByTestId("agent-composer-hint");
     await expect(send).toBeDisabled();
     await expect(send).toHaveAccessibleDescription("Type a message first.");
     await expect(send).toHaveAttribute("title", "Type a message first.");
-    // `toBeVisible` passes for an `sr-only` line, a 1 px box, so its height is the check.
-    await expect(reason).toBeVisible();
-    expect((await reason.boundingBox())?.height ?? 0).toBeGreaterThan(8);
+    // At rest the line under the box reads nothing: how to send is a rule of the page, which
+    // the question mark under the box holds (INFRA-812, R6), and the reason belongs to a press
+    // nobody has made yet.
+    await expect(hint).toHaveText("");
+
     const sent = (await getSentMessages()).length;
     await send.click({ force: true });
+    // The press was refused, and now the line says why. `toBeVisible` passes for an `sr-only`
+    // line, a 1 px box, so its height is the check.
+    await expect(hint).toHaveText("Type a message first.");
+    expect((await hint.boundingBox())?.height ?? 0).toBeGreaterThan(8);
     await field.press("Enter");
     await page.waitForTimeout(500);
     expect(await getSentMessages()).toHaveLength(sent);
@@ -555,8 +583,7 @@ test("mid-turn, an empty box refuses Send, says why on screen, and sends nothing
     await field.fill("status?");
     await expect(send).toBeEnabled();
     await expect(send).not.toHaveAttribute("aria-describedby");
-    await expect(reason).toHaveCount(0);
-    await expect(hint).toBeVisible();
+    await expect(hint).toHaveText("");
   } finally {
     await context.close();
   }
@@ -741,7 +768,12 @@ test("a session that has published nothing renders as empty, not as a conversati
     await expect(page.getByTestId("agent-thread-empty")).toHaveText(
       "Nothing yet. This session's next turn appears here as it happens."
     );
-    await expect(page.getByText(/relayed while this page is open/)).toBeVisible();
+    // What this view keeps of the conversation is no longer printed on the page: it is one of
+    // the three rules the question mark under the message box holds (INFRA-812, R6).
+    await frontLiveView(page).getByTestId("agent-help").click();
+    await expect(frontLiveView(page).getByTestId("agent-help-popover")).toContainText(
+      "relayed while this page is open"
+    );
   } finally {
     await context.close();
   }
@@ -992,7 +1024,10 @@ test("at desktop width the live view fills the main column beside the navigation
     await expect(page.getByRole("complementary", { name: "Navigation" })).toBeVisible();
     await expectViewportBound(page);
     const layout = await liveViewLayout(page);
-    expect(layout.composerBottom).toBe(layout.mainBottom - layout.mainPaddingBottom);
+    // The view ends at the main column's gutter: the row under the message box, or the line a
+    // switch or a notice puts under that row, with the message box whole above the row.
+    expect(layout.viewBottom).toBe(layout.mainBottom - layout.mainPaddingBottom);
+    expect(layout.composerBottom).toBeLessThanOrEqual(layout.footerTop);
     expect(layout.mainBottom).toBe(layout.viewportHeight);
   } finally {
     await context.close();
@@ -1250,7 +1285,9 @@ test("opening a session, switching to another, and reloading each land the reade
   );
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
-  const jump = page.getByTestId("jump-to-latest");
+  // This row leaves one view for another, so two are mounted at once and each has a pill of its
+  // own: what the reader is looking at is the one in front (D5).
+  const jump = frontLiveView(page).getByTestId("jump-to-latest");
   try {
     await page.goto(`/agents/${first.session_id}/live`);
     await expect(page.getByText("The first session's last word.")).toBeInViewport();

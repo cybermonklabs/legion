@@ -145,14 +145,19 @@ function livePath(sessionID: string): string {
   return `/agents/${sessionID}/live`;
 }
 
-/** On a phone, the header's settings never push the page sideways: the document is no wider than
- *  the 390 px screen, and each rendered piece of the header's settings lies inside it. */
+/** On a phone, the session's settings never push the page sideways: the document is no wider
+ *  than the 390 px screen, and every piece of them is whole on that screen once the reader has
+ *  it in view. The row under the message box scrolls sideways itself (INFRA-812, R6), so a
+ *  picker can start beyond the right edge until that row is scrolled to it; what must never
+ *  happen is the page scrolling, or a piece that cannot be brought onto the screen at all. */
 async function expectNoSidewaysScroll(page: Page, testInfo: TestInfo): Promise<void> {
   if (!PHONE_PROJECTS.includes(testInfo.project.name)) return;
-  const widths = await page.evaluate(() => ({
-    clientWidth: document.documentElement.clientWidth,
-    scrollWidth: document.documentElement.scrollWidth,
-  }));
+  const pageWidths = async () =>
+    page.evaluate(() => ({
+      clientWidth: document.documentElement.clientWidth,
+      scrollWidth: document.documentElement.scrollWidth,
+    }));
+  const widths = await pageWidths();
   expect(widths.clientWidth).toBe(390);
   expect(widths.scrollWidth).toBe(widths.clientWidth);
   for (const selector of [
@@ -165,11 +170,14 @@ async function expectNoSidewaysScroll(page: Page, testInfo: TestInfo): Promise<v
   ]) {
     const element = page.locator(selector);
     if ((await element.count()) === 0) continue;
+    await element.scrollIntoViewIfNeeded();
     const box = await element.boundingBox();
     expect(box, selector).not.toBeNull();
     expect(box?.x ?? -1, selector).toBeGreaterThanOrEqual(0);
     expect((box?.x ?? 0) + (box?.width ?? 0), selector).toBeLessThanOrEqual(widths.clientWidth);
   }
+  // Bringing each piece into view scrolled the row it sits in, never the page.
+  expect(await pageWidths()).toEqual(widths);
 }
 
 /** The header's pickers and the shown values, as a reader finds them. */

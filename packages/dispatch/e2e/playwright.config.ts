@@ -171,13 +171,17 @@ const multiprocessProjects = [
 ];
 
 // The specs whose rows are read from the wall clock: that a document write answers in under a
-// second (`heavy-document-writes.e2e.ts`), and that a card's draw holds the main thread for less
+// second (`heavy-document-writes.e2e.ts`), that a card's draw holds the main thread for less
 // than one (`heavy-bodies.e2e.ts` and `nested-directive.e2e.ts`, both through
-// `main-thread-hold.ts`). Four lanes on one machine leave such a claim unmeasurable - the wall
-// time of a write holds what the other three lanes took as surely as the work the server did -
-// so these files run in the `-alone` projects at the end of this list, after every other project
-// and one row at a time, and in no project above them (sjawhar/legion#2612).
-const clockSpecs = /(heavy-bodies|heavy-document-writes|nested-directive)\.e2e\.ts/;
+// `main-thread-hold.ts`), and what a live view costs in time - that one comes back inside half
+// a second and paints inside 100 ms with no task longer than 50
+// (`agent-workspace-timing.e2e.ts`, INFRA-812's D14). Four lanes on one machine leave such a
+// claim unmeasurable - the wall time of a write holds what the other three lanes took as surely
+// as the work the server did - so these files run in the `-alone` projects at the end of this
+// list, after every other project and one row at a time, and in no project above them
+// (sjawhar/legion#2612).
+const clockSpecs =
+  /(agent-workspace-timing|heavy-bodies|heavy-document-writes|nested-directive)\.e2e\.ts/;
 
 // Every project that runs four lanes wide. The `-alone` projects below name all of them, so a
 // project added here is one more the clock rows wait for.
@@ -294,7 +298,7 @@ const parallelProjects = [
  * A project whose dependency has a failing row is not run at all: in a red run these rows are
  * left unrun rather than measured beside whatever the failing row's retry is doing.
  *
- * A command line that names one of these three files runs the whole suite, since a project's
+ * A command line that names one of these files runs the whole suite, since a project's
  * dependencies are pulled in whole: a file filter narrows a project it selects, never a project
  * selected to run before it. `--no-deps` is how one of these files is run by itself, and such a
  * run is as quiet as the machine it is on.
@@ -302,7 +306,10 @@ const parallelProjects = [
  * Each engine keeps the rows it ran. `heavy-bodies.e2e.ts` ran in `chromium`, `firefox` and
  * `webkit`, for the reasons written above those projects, and runs here in all three;
  * `heavy-document-writes.e2e.ts`, which drives no browser, and `nested-directive.e2e.ts` ran in
- * `chromium` alone and run in `chromium-alone` alone.
+ * `chromium` alone and run in `chromium-alone` alone, as does
+ * `agent-workspace-timing.e2e.ts`, whose rows time the live view in the one engine the timed
+ * halves are claimed for (INFRA-812's D14; the untimed halves of those checks stay in
+ * `chromium` and `iphone`, in `agent-view.e2e.ts`).
  */
 const aloneProjects = [
   {

@@ -33,7 +33,7 @@ import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { AgentRuntimeThread } from "./AgentRuntimeThread";
 import { sessionCommands, sessionSettingsView } from "./conversation";
 import { MessageBoxHelp } from "./MessageBoxHelp";
-import { SessionSettings } from "./SessionSettings";
+import { SessionSettings, SessionSwitchLines } from "./SessionSettings";
 import { type SwitchRequest, switchCommand, useSessionSwitch } from "./use-session-switch";
 import { type AgentStreamStatus, useAgentStream } from "./useAgentStream";
 
@@ -335,12 +335,7 @@ export function AgentConversationPage({
               </span>
             </>
           )}
-          <SessionSettings
-            onPick={onPick}
-            pending={switchPending}
-            status={sessionSwitch.status}
-            view={settings}
-          />
+          <SessionSettings onPick={onPick} pending={switchPending} view={settings} />
         </div>
         <span className="flex shrink-0 items-center gap-1">
           <ContextRing
@@ -354,6 +349,9 @@ export function AgentConversationPage({
           />
         </span>
       </div>
+      {/* Under the row, not in it: a line of prose in the row's sideways scroller shrinks to a
+          sliver beside the pickers (`SessionSwitchLines`). */}
+      <SessionSwitchLines notice={settings.notice} status={sessionSwitch.status} />
     </div>
   );
 }

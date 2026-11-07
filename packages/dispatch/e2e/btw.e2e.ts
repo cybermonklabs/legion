@@ -139,7 +139,6 @@ test("/btw with nothing after it keeps an agent's direct composer from sending, 
     });
     await page.goto("/agents");
     const agents = page.getByRole("region", { name: "Agents" });
-    await agents.getByRole("button", { name: /^No Dispatch activity/ }).click();
     const card = agents
       .locator("article")
       .filter({ has: page.getByRole("heading", { level: 2, name: "worker" }) });

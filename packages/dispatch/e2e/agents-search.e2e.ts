@@ -1,5 +1,13 @@
 import { expect, test } from "@playwright/test";
-import { agentRow, type FakeSession, openAgents, setLiveSessions, shownAgentRows } from "./agents";
+import {
+  agentGroupToggle,
+  agentRow,
+  type FakeSession,
+  openAgents,
+  setLiveSessions,
+  shownAgentRows,
+  toggleAgentGroup,
+} from "./agents";
 import { createAsk, createComment, createIssue, createProject } from "./api";
 import { resetDatabase } from "./seed";
 import { asUser } from "./users";
@@ -35,10 +43,11 @@ test.beforeEach(async () => {
   await resetDatabase();
 });
 
-/** All three sessions live, each with Dispatch activity of its own so none folds under `No
- *  Dispatch activity`: the Scrum session's open ask waits on the viewer, which lists it first, and
- *  the Release session comments last, which lists it above the Archivist. Returns the issue key the
- *  Scrum session's ask names - the only issue key any session's ask names. */
+/** All three sessions live, each with Dispatch activity of its own so none of them is `Idle` or
+ *  `Quiet`: the Scrum session's open ask waits on the viewer, which lists it under `Needs you`
+ *  first, and the Release session comments last, which lists it above the Archivist under
+ *  `Active`. Returns the issue key the Scrum session's ask names - the only issue key any
+ *  session's ask names. */
 async function seed(): Promise<string> {
   await setLiveSessions([scrum, release, archivist]);
   await createProject({ key: "CORE", name: "Core" });
@@ -147,8 +156,8 @@ test("the query survives a reload through the page's address, / focuses the box 
   }
 });
 
-// Unseen for 45 minutes, so it sits under the closed `Inactive` fold; the time is this spec's own,
-// evaluated when the worker reaches it.
+// Unseen for 45 minutes and with nothing waiting on the reader, so it sits under `Quiet`; the
+// time is this spec's own, evaluated when the worker reaches it.
 const stale: FakeSession = {
   capabilities: ["aside"],
   dir: "/workspaces/ledger",
@@ -158,7 +167,7 @@ const stale: FakeSession = {
   session_id: "ledger-session",
   title: "Ledger reconciler",
 };
-// Live but never heard from in Dispatch, so it sits under the closed `No Dispatch activity` fold.
+// Live but never heard from in Dispatch, so it sits under `Idle`.
 const silent: FakeSession = {
   capabilities: ["aside"],
   dir: "/workspaces/quiet",
@@ -168,7 +177,7 @@ const silent: FakeSession = {
   title: "Quiet watcher",
 };
 
-test("a search shows a matching session that only a closed fold holds, and clearing it folds the session away again", async ({
+test("a search shows a matching session a group the reader closed holds, and clearing it hands the groups back as they were", async ({
   browser,
 }) => {
   await seed();
@@ -179,25 +188,34 @@ test("a search shows a matching session that only a closed fold holds, and clear
     const page = await alice.newPage();
     await openAgents(page);
     const titles = shownAgentRows(page).locator("h2");
-    const inactive = page.getByRole("button", { name: /^Inactive \(1/ });
-    const quiet = page.getByRole("button", { name: /^No Dispatch activity \(1/ });
-    // Both folds start closed, and the windowed list draws no row of a closed fold that the
-    // reader has not opened: those rows are in no part of the page.
-    await expect(inactive).toHaveAttribute("aria-expanded", "false");
+    const idle = agentGroupToggle(page, "idle");
+    const quiet = agentGroupToggle(page, "quiet");
+    // Every group opens with the page, so the reader closes the two this row is about; the
+    // windowed list then draws no row of either, and those rows are in no part of the page.
+    await expect(titles).toHaveText([
+      "Scrum planning",
+      "Release notes",
+      "Archivist",
+      "Quiet watcher",
+      "Ledger reconciler",
+    ]);
+    await toggleAgentGroup(page, "idle");
+    await toggleAgentGroup(page, "quiet");
     await expect(agentRow(page, stale.session_id)).toHaveCount(0);
     await expect(titles).toHaveText(["Scrum planning", "Release notes", "Archivist"]);
 
+    // Searching is how a reader finds a session they cannot see, so it opens every group.
     const search = page.getByRole("searchbox", { name: "Search agents" });
     await search.fill("ledger");
     await expect(titles).toHaveText(["Ledger reconciler"]);
-    await expect(inactive).toHaveAttribute("aria-expanded", "true");
+    await expect(quiet).toHaveAttribute("aria-expanded", "true");
     await search.fill("quiet-host");
     await expect(titles).toHaveText(["Quiet watcher"]);
 
-    // Clearing hands the folds back closed, as the reader left them.
+    // Clearing hands the groups back closed, as the reader left them.
     await search.fill("");
     await expect(titles).toHaveText(["Scrum planning", "Release notes", "Archivist"]);
-    await expect(inactive).toHaveAttribute("aria-expanded", "false");
+    await expect(idle).toHaveAttribute("aria-expanded", "false");
     await expect(quiet).toHaveAttribute("aria-expanded", "false");
     await expect(agentRow(page, stale.session_id)).toHaveCount(0);
   } finally {

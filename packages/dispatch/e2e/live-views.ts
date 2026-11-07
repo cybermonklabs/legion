@@ -55,6 +55,18 @@ export function drawnLiveViews(page: Page): Locator {
   return page.locator('[data-testid="agent-live-view"]');
 }
 
+/** The live view the address names, which is the one the reader is looking at. */
+export const FRONT_LIVE_VIEW = '[data-testid="agent-live-view"][data-front="true"]';
+
+/** The one live view the reader is looking at. Two views can be in the DOM at once - the one in
+ *  front and the one lingering behind it - and the lingering one keeps its own transcript, its
+ *  own composer and its own `Jump to latest`, so a page-wide locator for anything inside a live
+ *  view can match it too. Everything a row reads about the view a reader is on goes through
+ *  this, or through `FRONT_LIVE_VIEW` where the read is a `page.evaluate` of its own. */
+export function frontLiveView(page: Page): Locator {
+  return page.locator(FRONT_LIVE_VIEW);
+}
+
 /**
  * The page's JavaScript heap, in bytes, where the browser gives it. Only Chromium reports
  * `performance.memory`, so a check reads `null` as "this browser does not say" rather than as

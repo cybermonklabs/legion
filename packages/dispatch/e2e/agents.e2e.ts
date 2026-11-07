@@ -3,17 +3,20 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { expect, type Locator, type Page, test } from "@playwright/test";
 import type { CreateBroadcastInput, Message } from "../web/src/api/types";
 import {
+  agentGroupToggle,
   agentRow,
   BROADCAST_REFUSED,
   broadcastSends,
   type FakeSession,
   getSentMessages,
   isBroadcastInput,
+  pickAgentFilter,
   postedBroadcasts,
   refuseBroadcasts,
   setLiveSessions,
   setSessionLive,
   shownAgentRows,
+  toggleAgentGroup,
 } from "./agents";
 import {
   createAgentMessage,
@@ -83,10 +86,10 @@ test.beforeEach(async () => {
   await resetDatabase();
 });
 
-// SLOW(>=2s): one page tour over four sessions - order, folds, pills, pin, clipboard and an
+// SLOW(>=2s): one page tour over four sessions - order, groups, pills, pin, clipboard and an
 // issue-less BTW conversation. Every second is a step the row asserts, and the seed's order is
 // what "who needs you first" is read against, so its writes keep theirs.
-test("Agents puts who needs you first, folds silent and inactive sessions, shows one whose-turn pill per side, pins a card, copies identifiers, and holds an issue-less BTW conversation @phone", async ({
+test("Agents puts who needs you first, groups the rest by what each is doing, shows one whose-turn pill per side, pins a card, copies identifiers, and holds an issue-less BTW conversation @phone", async ({
   browser,
 }, testInfo) => {
   await setLiveSessions([planner, reviewer, silent, archivist]);
@@ -139,52 +142,54 @@ test("Agents puts who needs you first, folds silent and inactive sessions, shows
     await expect(plannerCard).toBeVisible();
     await expect(reviewerCard).toBeVisible();
 
-    // Who needs you comes first, whatever Dispatch heard most recently; a live session Dispatch
-    // never heard from and a session unseen for ten minutes each sit under a collapsed fold.
+    // Who needs you comes first, whatever Dispatch heard most recently, and the other three
+    // groups follow in the order a person reads them: the Reviewer spoke a moment ago, the
+    // Silent session is one Dispatch has never heard from, and the Archivist was last seen
+    // forty-five minutes ago.
     const silentCard = agentRow(page, silent.session_id);
     const archivistCard = agentRow(page, archivist.session_id);
-    const quietToggle = agents.getByRole("button", { name: "No Dispatch activity (1)" });
-    const inactiveToggle = agents.getByRole("button", { name: "Inactive (1)" });
-    await expect(quietToggle).toHaveAttribute("aria-expanded", "false");
-    await expect(inactiveToggle).toHaveAttribute("aria-expanded", "false");
-    // The windowed list draws no row of a closed fold the reader has not opened: those rows are
-    // in no part of the page, which is what `toHaveCount(0)` says and `toBeHidden` would not.
-    await expect(silentCard).toHaveCount(0);
-    await expect(archivistCard).toHaveCount(0);
+    const idleToggle = agentGroupToggle(page, "idle");
+    const quietToggle = agentGroupToggle(page, "quiet");
+    await expect(agentGroupToggle(page, "needs-you")).toHaveAccessibleName("Needs you (1)");
+    await expect(agentGroupToggle(page, "active")).toHaveAccessibleName("Active (1)");
+    await expect(idleToggle).toHaveAccessibleName("Idle (1)");
+    await expect(quietToggle).toHaveAccessibleName("Quiet (1)");
+    // Every group is open when the page loads (R7): all four rows are drawn, in group order.
     const shownTitles = shownAgentRows(page).locator("h2");
-    await expect(shownTitles).toHaveText(["Planner", "Reviewer"]);
-    // Each collapsed fold owns its own row: the second toggle starts below the first one, even
-    // on the phone where the global inline-flex button rule would otherwise line them up.
+    await expect(shownTitles).toHaveText(["Planner", "Reviewer", "Silent", "Archivist"]);
+    // Each heading owns its own row: a group's heading starts below the row above it, even on
+    // the phone where the global inline-flex button rule would otherwise line them up.
+    const idleBox = await idleToggle.boundingBox();
     const quietBox = await quietToggle.boundingBox();
-    const inactiveBox = await inactiveToggle.boundingBox();
-    if (quietBox === null || inactiveBox === null) throw new Error("fold toggles not laid out");
-    expect(inactiveBox.y).toBeGreaterThanOrEqual(quietBox.y + quietBox.height);
+    if (idleBox === null || quietBox === null) throw new Error("group headings not laid out");
+    expect(quietBox.y).toBeGreaterThanOrEqual(idleBox.y + idleBox.height);
     await page.screenshot({
       fullPage: true,
-      path: testInfo.outputPath(`agents-folded-${width}.png`),
+      path: testInfo.outputPath(`agents-groups-${width}.png`),
     });
 
-    await quietToggle.click();
-    await expect(quietToggle).toHaveAttribute("aria-expanded", "true");
-    await expect(shownTitles).toHaveText(["Planner", "Reviewer", "Silent"]);
+    // The windowed list draws no row of a closed group the reader has not opened: those rows
+    // are in no part of the page, which is what `toHaveCount(0)` says and `toBeHidden` would
+    // not.
+    await toggleAgentGroup(page, "idle");
+    await expect(shownTitles).toHaveText(["Planner", "Reviewer", "Archivist"]);
+    await expect(silentCard).toHaveCount(0);
+    await toggleAgentGroup(page, "idle");
+    await expect(shownTitles).toHaveText(["Planner", "Reviewer", "Silent", "Archivist"]);
     await expect(silentCard.getByText("No Dispatch activity", { exact: true })).toBeVisible();
     // The row's state is the shared running state: the session is listed, so it is running.
     await expect(silentCard.getByRole("img", { exact: true, name: "Running" })).toBeVisible();
-    await quietToggle.click();
-    await expect(silentCard).toHaveCount(1);
-    await expect(silentCard).toBeHidden();
 
-    await inactiveToggle.click();
-    await expect(inactiveToggle).toHaveAttribute("aria-expanded", "true");
-    await expect(shownTitles).toHaveText(["Planner", "Reviewer", "Archivist"]);
-    // Still listed, so still running: the fold says it has been quiet, and the mark's `title`
+    // Still listed, so still running: the group says it has been quiet, and the mark's `title`
     // says for how long.
     const archivistState = archivistCard.getByRole("img", { exact: true, name: "Running" });
     await expect(archivistState).toBeVisible();
     await expect(archivistState).toHaveAttribute("title", /^Running · seen \d+ minutes ago$/);
     await archivistCard.getByRole("button", { exact: true, name: "Archivist" }).click();
     await expect(archivistCard.getByRole("textbox", { name: "Comment" })).toBeVisible();
-    await inactiveToggle.click();
+    // A row the reader opened and a closed group now hides stays mounted, hidden, with
+    // everything it holds.
+    await toggleAgentGroup(page, "quiet");
     await expect(archivistCard).toHaveCount(1);
     await expect(archivistCard).toBeHidden();
     await expect(plannerCard.getByRole("img", { exact: true, name: "Running" })).toBeVisible();
@@ -261,7 +266,10 @@ test("Agents puts who needs you first, folds silent and inactive sessions, shows
       "aria-pressed",
       "true"
     );
-    await expect(shownTitles).toHaveText(["Reviewer", "Planner"]);
+    // A pin no longer lifts a row out of its group (D3): the Reviewer stays under Active,
+    // below the Planner that needs the reader, with the Silent row under it. The Archivist's
+    // group is still closed, so its row is not drawn.
+    await expect(shownTitles).toHaveText(["Planner", "Reviewer", "Silent"]);
 
     const plannerToggle = plannerCard.getByRole("button", { exact: true, name: "Planner" });
     await plannerToggle.click();
@@ -453,8 +461,7 @@ test("a session's untargeted reply lands in the open conversation", async ({ bro
   await setLiveSessions([planner]);
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Untargeted reply" });
-  // Dispatch activity of its own, so the card sits in the open list rather than behind the
-  // "No Dispatch activity" fold.
+  // Dispatch activity of its own, so the card sits under `Active` at the top of the list.
   await createComment(
     issue.key,
     { body: "Looking at it." },
@@ -616,7 +623,7 @@ test("the header checkbox selects and clears only the rows the filters match, by
 }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium", "one browser proves the selection rule");
   // No `last_seen`: the fixture answers every read with the current time, so none of them ages
-  // into Inactive.
+  // into Quiet.
   const session = (id: string, title: string, role: string): FakeSession => ({
     capabilities: ["aside", "btw"],
     dir: `/workspaces/${id}`,
@@ -646,26 +653,21 @@ test("the header checkbox selects and clears only the rows the filters match, by
     // match the composer's `Broadcast to X of Y selected` heading.
     const count = (text: string) => expect(header).toHaveAccessibleDescription(text);
 
-    // Every session is silent, so every row is under the collapsed fold, and the header still
-    // counts them: matching means what the filters match, folded or not. Selecting them says so
-    // on the fold, so nothing is picked out of sight.
+    // Dispatch has heard from none of them, so all four are Idle, and the header counts them:
+    // matching means what the filters match, in a closed group or an open one. Selecting them
+    // says so on the group's heading, so nothing is picked out of sight.
     await count("4 matching");
     await expect(agents.getByRole("button", { name: /^Select all/ })).toHaveCount(0);
     await header.click();
     await count("4 of 4 matching selected");
-    await expect(
-      agents.getByRole("button", { name: "No Dispatch activity (4, 4 selected)" })
-    ).toBeVisible();
+    await expect(agentGroupToggle(page, "idle")).toHaveAccessibleName("Idle (4, 4 selected)");
     await agents.getByRole("button", { name: "Clear selection" }).click();
     await count("4 matching");
-    await agents.getByRole("button", { name: "No Dispatch activity (4)" }).click();
 
     // A row ticked under no filter, which the role filter below hides.
     await row("Reviewer").check();
-    await expect(
-      agents.getByRole("button", { name: "No Dispatch activity (4, 1 selected)" })
-    ).toBeVisible();
-    await agents.getByRole("combobox", { name: "Role" }).selectOption("planner");
+    await expect(agentGroupToggle(page, "idle")).toHaveAccessibleName("Idle (4, 1 selected)");
+    await pickAgentFilter(page, "role", "planner");
     await expect(row("Reviewer")).toBeHidden();
     await count("2 matching · 1 selected outside the filter");
     await expect(header).not.toBeChecked();
@@ -707,9 +709,9 @@ test("the header checkbox selects and clears only the rows the filters match, by
     // Build the filtered selection again and send it. The set the server receives is pinned by
     // name, not by the `Send to N` count the page computes: the matching planners plus the
     // hand-ticked Reviewer, never the Tester the filter hides.
-    await agents.getByRole("combobox", { name: "Role" }).selectOption("");
+    await pickAgentFilter(page, "role", "planner");
     await row("Reviewer").check();
-    await agents.getByRole("combobox", { name: "Role" }).selectOption("planner");
+    await pickAgentFilter(page, "role", "planner");
     await header.click();
     await expect(chips).toHaveText(["Reviewer ✕", "Planner A ✕", "Planner B ✕"]);
     await composer.getByRole("textbox", { name: "Broadcast message" }).fill("Report status.");
@@ -879,8 +881,8 @@ async function wholeCardsAbove(agents: Locator, composer: Locator): Promise<numb
   return boxes.filter((box) => wholeAbove(box, composerTop)).length;
 }
 
-// SLOW(>=2s): 40 recipient chips rendered for real, the fold opened, and the composer measured
-// empty and filled at each compact size; the layout under measurement is what the row proves.
+// SLOW(>=2s): 40 recipient chips rendered for real and the composer measured empty and filled
+// at each compact size; the layout under measurement is what the row proves.
 test("on a phone the open composer keeps its height budget at forty recipients, empty or filled, keeps its message box steady, and keeps every chip reachable", async ({
   browser,
 }, testInfo) => {
@@ -907,9 +909,9 @@ test("on a phone the open composer keeps its height budget at forty recipients, 
     const scrollFirstCardToTop = () =>
       row(0).evaluate((element) => element.closest("article")?.scrollIntoView({ block: "start" }));
 
-    const fold = agents.getByRole("button", { name: /^No Dispatch activity \(40/ });
-    await fold.click();
-    await expect(fold).toHaveAttribute("aria-expanded", "true");
+    // All forty are Idle, and every group is open when the page loads (R7), so the window has
+    // drawn the first rows already.
+    await expect(agentGroupToggle(page, "idle")).toHaveAccessibleName("Idle (40)");
     await row(0).check();
     await row(1).check();
     await expect(
@@ -1261,10 +1263,9 @@ test.describe("the composer's notices share one slot, highest first, within budg
         await expect.soft(fixture.excludedLine, at).toHaveCount(0);
       });
       await page.setViewportSize({ height: 664, width: 390 });
-      await fixture.agents.getByRole("button", { name: /^No Dispatch activity/ }).click();
-      await fixture.agents
-        .getByRole("checkbox", { name: "Select Planner 101 for broadcast" })
-        .uncheck();
+      // One recipient off the selection, taken out at the chip the composer shows for it: the
+      // list is windowed, and the hundred-and-first row is not drawn at this scroll position.
+      await fixture.composer.getByTitle("Remove Planner 101 from this broadcast").click();
       await expect(
         fixture.composer.getByRole("heading", { name: "Broadcast to 100 of 110 selected" })
       ).toBeVisible();
@@ -1596,9 +1597,10 @@ test("a selection over the broadcast limit says so and never asks the server", a
       composer.getByText("At most 100 recipients per broadcast; this one would reach 101.")
     ).toBeVisible();
 
-    // One fewer is within the limit: the reason goes and Send comes back.
-    await agents.getByRole("button", { name: /^No Dispatch activity/ }).click();
-    await agents.getByRole("checkbox", { name: "Select Planner 101 for broadcast" }).uncheck();
+    // One fewer is within the limit: the reason goes and Send comes back. The row itself is not
+    // drawn - the list is windowed and the hundred-and-first row is far below the window - so
+    // the recipient comes off at the chip the composer shows for it.
+    await composer.getByTitle("Remove Planner 101 from this broadcast").click();
     await expect(composer.getByText(/^At most 100 recipients/)).toHaveCount(0);
     await expect(composer.getByRole("button", { name: "Send to 100" })).toBeEnabled();
   } finally {
@@ -1738,7 +1740,7 @@ test("a session that registers under the filter after select-all is not swept in
     const agents = page.getByRole("region", { name: "Agents" });
     const header = agents.getByRole("checkbox", { name: "Select all matching agents" });
     const composer = page.getByRole("region", { name: "Broadcast" });
-    await agents.getByRole("combobox", { name: "Role" }).selectOption("planner");
+    await pickAgentFilter(page, "role", "planner");
     await header.click();
     await expect(header).toHaveAccessibleDescription("2 of 2 matching selected");
 
@@ -1790,9 +1792,19 @@ test("the Agents page loads through one dropped request for its agents", async (
   }
 });
 
-test("an agent row keeps to one line at every width, its long name and path each one hover away @phone", async ({
+// The row's two shapes (INFRA-812, k12). From `md` it is one line, because with six hundred
+// rows a second line is six hundred lines; below `md` the age and the directory take lines of
+// their own under the name, because on one line a 390 px row squeezed the name button to a
+// sliver the live link beside it took the press from, and left the directory unpainted. At
+// neither width is the row taller than the one the page drew before this change.
+test("an agent row is one line at 1440, and at 390 puts the age and the whole path under the name @phone", async ({
   browser,
-}) => {
+}, testInfo) => {
+  const isPhone = testInfo.project.name === "iphone";
+  // The row the page drew before this change, measured with these same three sessions at the
+  // commit this branch builds on (7567aeb6): 90 px at 1440 with the 64-character name wrapped
+  // over two lines, 198 px at 390. k12 holds the new row to no more than that at either width.
+  const tallestRowPx = isPhone ? 198 : 90;
   // The row is sized against what these fixtures put in it, so each one's length is asserted
   // here rather than trusted: a shorter name would prove nothing about the row's width.
   const name64 = "Legion implementer · INFRA-92 — the whole name shows on this row";
@@ -1826,7 +1838,8 @@ test("an agent row keeps to one line at every width, its long name and path each
   const shortName: FakeSession = { ...unbrokenName, session_id: "short-name-session", title: "S" };
   await setLiveSessions([longName, unbrokenName, shortName]);
 
-  // Each session comments once, so none of the three is grouped by an activity the others lack.
+  // Each session comments once, so all three are Active and none is grouped by an activity the
+  // others lack.
   await createProject({ key: "ROW", name: "Row" });
   const issue = await createIssue({ project: "ROW", title: "Agent row widths" });
   for (const session of [longName, unbrokenName, shortName]) {
@@ -1840,6 +1853,8 @@ test("an agent row keeps to one line at every width, its long name and path each
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
+    // The laptop width the row is designed against; the phone project is 390 px already.
+    if (!isPhone) await page.setViewportSize({ height: 900, width: 1440 });
     await page.goto("/agents");
 
     // The names first: each is what its row is about, and checking them before the directory
@@ -1857,27 +1872,79 @@ test("an agent row keeps to one line at every width, its long name and path each
     // Neither long name pushes the page wider than the viewport.
     await assertPageFits(page);
 
-    // One line: the row with a 64-character name and a 70-character path is exactly as tall as
-    // the row with a one-character name beside it, because both shorten instead of wrapping.
-    // With six hundred rows a second line is six hundred lines (R7).
+    // Neither long row is taller than the row this page drew before the change, at this width.
     const control = await agentRow(page, shortName.session_id).boundingBox();
     expect(control?.height).toBeGreaterThan(0);
-    for (const session of [longName, unbrokenName]) {
+    for (const session of [longName, unbrokenName, shortName]) {
       const box = await agentRow(page, session.session_id).boundingBox();
       expect(
         box?.height,
-        `the row of ${session.title} is ${box?.height}px tall against the control's ${control?.height}px`
-      ).toBe(control?.height);
+        `the row of ${session.title} is ${box?.height}px tall, against the ${tallestRowPx}px row ` +
+          `this page drew before the change at ${isPhone ? 390 : 1440}px`
+      ).toBeLessThanOrEqual(tallestRowPx);
     }
 
-    // The directory keeps the segment that names the session's work at every width, with the
-    // machine before it and the whole path one hover away. It is painted: a span squeezed to no
-    // width can be hovered nowhere, so what the `title` promises could be read nowhere.
-    const directory = agentRow(page, longName.session_id).locator("[data-agent-dir]");
-    await expect(directory).toHaveText("build-host · features");
+    const row = agentRow(page, longName.session_id);
+    const directory = row.locator("[data-agent-dir]");
+    const name = row.locator("[data-agent-toggle]");
+    // The age is the row's own last-activity time, the one `time` a collapsed row holds.
+    const age = row.locator("time").first();
+    // The whole path is the directory's `title` at every width, hover or no hover.
     await expect(directory).toHaveAttribute("title", `build-host · ${dir70}`);
     await expect(directory).toBeVisible();
+    // It is painted: a span squeezed to no width can be hovered nowhere and read nowhere.
     expect((await directory.boundingBox())?.width ?? 0).toBeGreaterThan(0);
+
+    if (isPhone) {
+      // A phone has no hover to ask a `title` with, so the directory shows the path whole, on a
+      // line of its own under the name, with the age on its own line above it.
+      await expect(directory).toHaveText(`build-host · ${dir70}`);
+      const nameBox = await name.boundingBox();
+      const ageBox = await age.boundingBox();
+      const directoryBox = await directory.boundingBox();
+      expect(ageBox?.y ?? 0, "the age is on a line under the name").toBeGreaterThanOrEqual(
+        (nameBox?.y ?? 0) + (nameBox?.height ?? 0)
+      );
+      expect(
+        directoryBox?.y ?? 0,
+        "the directory is on a line under the age"
+      ).toBeGreaterThanOrEqual((ageBox?.y ?? 0) + (ageBox?.height ?? 0));
+      // The defect this shape fixes: at 390 on one line the name was a sliver, and a tap on it
+      // landed on the live link beside it. The name is a box wide enough to open the row with.
+      await name.click();
+      await expect(page).toHaveURL(/\/agents$/);
+      await expect(name).toHaveAttribute("aria-expanded", "true");
+    } else {
+      // One line: the row with a 64-character name and a 70-character path is exactly as tall
+      // as the row with a one-character name beside it.
+      for (const session of [longName, unbrokenName]) {
+        const box = await agentRow(page, session.session_id).boundingBox();
+        expect(
+          box?.height,
+          `the row of ${session.title} is ${box?.height}px tall against the control's ${control?.height}px`
+        ).toBe(control?.height);
+      }
+      // The directory keeps the segment that names the session's work, with the machine before
+      // it, beside the name on the one line, and the whole path one hover away.
+      await expect(directory).toHaveText("build-host · features");
+      const nameBox = await name.boundingBox();
+      const directoryBox = await directory.boundingBox();
+      expect(directoryBox?.y ?? 0, "the directory is on the name's line").toBeLessThan(
+        (nameBox?.y ?? 0) + (nameBox?.height ?? 0)
+      );
+      // The name is one hover away too: it is cut to its ceiling on screen, and the whole name
+      // is the `title` asserted above.
+      const clipped = await name
+        .locator("span")
+        .first()
+        .evaluate((element) => ({
+          client: element.clientWidth,
+          scroll: element.scrollWidth,
+        }));
+      expect(clipped.scroll, "the 64-character name is shortened on screen").toBeGreaterThan(
+        clipped.client
+      );
+    }
   } finally {
     await context.close();
     await setLiveSessions([]);
@@ -1907,8 +1974,8 @@ test("an agent row's directory is still shown beside the longest name in use, so
   const shortName: FakeSession = { ...longName, session_id: "short-name-row", title: "Short" };
   await setLiveSessions([longName, shortName]);
 
-  // A live session Dispatch has never heard from sits in the closed `No Dispatch activity` fold,
-  // where its row is hidden and nothing about it can be measured, so each one comments once.
+  // Dispatch activity of its own, so both rows sit under `Active`, at the top of the list where
+  // the window draws them and their widths can be measured.
   await createProject({ key: "DIR", name: "Directory" });
   const issue = await createIssue({ project: "DIR", title: "Agent row directory" });
   for (const session of [longName, shortName]) {

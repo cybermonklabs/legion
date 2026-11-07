@@ -177,11 +177,7 @@ test("a picture pasted into a direct message on the Agents page shows inline and
   try {
     const page = await alice.newPage();
     await page.goto("/agents");
-    // A session with no Dispatch activity yet is listed under its fold.
-    await page
-      .getByRole("region", { name: "Agents" })
-      .getByRole("button", { name: "No Dispatch activity (1)" })
-      .click();
+    // A session with no Dispatch activity yet is listed under `Idle`, which is open.
     const row = agentRow(page, planner.session_id);
     await row.getByRole("button", { exact: true, name: "Planner" }).click();
     const field = row.getByRole("textbox", { name: "Comment" });

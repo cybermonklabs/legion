@@ -4,10 +4,12 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { ComponentProps } from "react";
 
 import type { SessionSettingsView } from "./conversation";
-import { SessionSettings } from "./SessionSettings";
+import { SessionSettings, SessionSwitchLines } from "./SessionSettings";
 import type { SwitchRequest } from "./use-session-switch";
 
-type Props = ComponentProps<typeof SessionSettings>;
+/** What the page passes the row: the pickers' props, and the switch status the lines under the
+ *  row show. */
+type Props = ComponentProps<typeof SessionSettings> & { status: string | undefined };
 
 afterEach(cleanup);
 
@@ -53,8 +55,9 @@ interface Header {
   update: (props: Partial<Omit<Props, "onPick">>) => void;
 }
 
-/** The header's settings, as the page renders them: a session reporting `reportedView()` with no
- *  switch pending, unless `props` say otherwise. */
+/** The row's settings as the page renders them - the pickers, and the switch's lines under the
+ *  row (`SessionSwitchLines`) - for a session reporting `reportedView()` with no switch
+ *  pending, unless `props` say otherwise. */
 function renderSettings(props: Partial<Omit<Props, "onPick">> = {}): Header {
   const onPick = mock((_request: SwitchRequest) => {});
   let current: Props = {
@@ -64,12 +67,18 @@ function renderSettings(props: Partial<Omit<Props, "onPick">> = {}): Header {
     view: reportedView(),
     ...props,
   };
-  const { rerender } = render(<SessionSettings {...current} />);
+  const draw = ({ status, ...settings }: Props) => (
+    <>
+      <SessionSettings {...settings} />
+      <SessionSwitchLines notice={settings.view.notice} status={status} />
+    </>
+  );
+  const { rerender } = render(draw(current));
   return {
     onPick,
     update: (next) => {
       current = { ...current, ...next };
-      rerender(<SessionSettings {...current} />);
+      rerender(draw(current));
     },
   };
 }

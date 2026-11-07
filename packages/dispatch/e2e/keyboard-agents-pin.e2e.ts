@@ -4,6 +4,7 @@ import {
   agentRow,
   type FakeSession,
   openAgents,
+  pickAgentFilter,
   plannerSession,
   reviewerSession,
   seedAgents,
@@ -19,16 +20,16 @@ import { asUser } from "./users";
 // `web/src/features/shell/useDwell.ts`, which exports nothing a spec can import.
 const DWELL_MS = 1_000;
 
-// What an Agents row keeps when it moves between the open list and a fold - by Shift+P, or by
-// its fold closing - or when a filter hides it. The page keeps every row in one keyed list
-// (`AgentsPage.tsx`), so the row that moves is the same row: these rows pin what it still holds
-// when it lands - focus, whether it is open, its draft, its issue, a reply in progress, a send or
-// an upload still out, and the unread set it opened with - and that while a closed fold hides
-// it, it marks nothing read.
+// What an Agents row keeps when a pin moves it within its group, when its group closes over it,
+// or when a filter hides it. The page keeps every row in one keyed list (`AgentsPage.tsx`), so
+// the row that moves is the same row: these rows pin what it still holds when it lands - focus,
+// whether it is open, its draft, its issue, a reply in progress, a send or an upload still out,
+// and the unread set it opened with - and that while a closed group hides it, it marks nothing
+// read.
 
-/** `seedAgents`, plus `Quiet` and `Silent`: live sessions with no Dispatch activity, which fold
- *  under `No Dispatch activity` until one is pinned - the rows a pin moves across - and any
- *  `others` a row needs beside them. */
+/** `seedAgents`, plus `Quiet` and `Silent`: live sessions with no Dispatch activity, which the
+ *  page lists under `Idle` - the rows a pin moves within - and any `others` a row needs beside
+ *  them. */
 async function seedWithFold(others: readonly FakeSession[] = []): Promise<void> {
   await seedAgents();
   const folded = (id: string, title: string): FakeSession => ({
@@ -48,24 +49,31 @@ async function seedWithFold(others: readonly FakeSession[] = []): Promise<void> 
   ]);
 }
 
-/** Opens the fold and roves to its last row, `Silent`, the way a keyboard reader gets there: from
- *  the page, since `j` from the toggle just clicked would go on from the toggle's place. */
+/** Roves to `Silent` the way a keyboard reader gets there: from the page, stepping down with
+ *  `j` until that row holds focus, rather than counting presses, since where the row sits
+ *  among the Idle rows is the pin's to decide; the first row below asserts that place
+ *  explicitly. */
 async function roveToSilent(page: Page): Promise<Locator> {
   const row = agentRow(page, "silent-session");
-  await page.getByRole("button", { name: /^No Dispatch activity/ }).click();
   await expect(row).toBeVisible();
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
-  for (const _ of [1, 2, 3, 4]) await page.keyboard.press("j");
+  for (const _ of [1, 2, 3, 4]) {
+    await page.keyboard.press("j");
+    if (await row.evaluate((node) => node === document.activeElement)) break;
+  }
   await expect(row).toBeFocused();
   return row;
 }
 
-/** Back on the row itself - a click on its directory, beside its controls, which is how a reader
- *  leaves a written composer without its Discard prompt - and pinned from the keyboard. */
-async function pinFromRow(row: Locator): Promise<void> {
+/** Back on the row itself - a click on its directory, beside its controls, which is how a
+ *  reader leaves a written composer without its Discard prompt - and pinned from the keyboard.
+ *  Shift+P toggles, so each caller starts from an unpinned row (`e2e/seed.ts` clears the pins
+ *  between rows) and this waits for the pin it made. */
+async function pinFromRow(row: Locator, title: string): Promise<void> {
   await row.locator("[data-agent-dir]").click();
   await expect(row).toBeFocused();
   await row.page().keyboard.press("Shift+P");
+  await expect(row.getByRole("button", { exact: true, name: `Unpin ${title}` })).toBeVisible();
 }
 
 test.beforeEach(async () => {
@@ -76,63 +84,54 @@ test.beforeEach(async () => {
 });
 
 test.describe("agents page pins", () => {
-  // A pin moves the row's node, which can drop focus to the document, or hides it in a closed
-  // fold. Focus follows the row to where it lands - or, when it lands in a closed fold, to that
-  // fold's toggle - so the next `j`/`k` go on from the reader's place instead of from the top.
-  test("Shift+P keeps focus on the row it moves, or on the fold it moves into", async ({
-    browser,
-  }) => {
+  // A pin moves the row's node to the top of its own group, which can drop focus to the
+  // document. Focus follows the row to where it lands, so the next `j`/`k` go on from the
+  // reader's place instead of from the top of the list.
+  test("Shift+P keeps focus on the row it moves to the top of its group", async ({ browser }) => {
     await seedWithFold();
     const context = await asUser(browser, "alice");
     try {
       const page = await context.newPage();
       await openAgents(page);
       const rows = shownAgentRows(page);
-      const fold = page.getByRole("button", { name: /^No Dispatch activity/ });
       const silentRow = await roveToSilent(page);
 
-      // Out of the fold and to the top of the open list; `j` then goes on from there.
+      // To the top of `Idle`, above the Quiet session, and no further: a pin no longer lifts a
+      // row out of its group (INFRA-812's D3). `j` then goes on from there.
       await page.keyboard.press("Shift+P");
       await expect(silentRow.getByRole("button", { name: "Unpin Silent" })).toBeVisible();
-      await expect(rows.nth(0)).toHaveAttribute("data-agent-row", "silent-session");
+      await expect(rows.nth(2)).toHaveAttribute("data-agent-row", "silent-session");
       await expect(silentRow).toBeFocused();
       await page.keyboard.press("j");
-      await expect(rows.nth(1)).toBeFocused();
+      await expect(rows.nth(3)).toBeFocused();
       await page.keyboard.press("k");
       await expect(silentRow).toBeFocused();
 
-      // Back into the open fold.
+      // Unpinned, it is back under the Quiet session, where its title orders it.
       await page.keyboard.press("Shift+P");
       await expect(silentRow.getByRole("button", { name: "Pin Silent" })).toBeVisible();
       await expect(rows.nth(3)).toHaveAttribute("data-agent-row", "silent-session");
       await expect(silentRow).toBeFocused();
 
-      // Into a closed fold, where the row is hidden: the fold's toggle takes focus.
-      await page.keyboard.press("Shift+P");
-      await expect(silentRow).toBeFocused();
-      await fold.click();
-      await expect(fold).toHaveAttribute("aria-expanded", "false");
-      await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
-      await page.keyboard.press("j");
-      await expect(silentRow).toBeFocused();
-      await page.keyboard.press("Shift+P");
+      // The group closed over it: the row is mounted, hidden, and its heading counts it.
+      await page.getByTestId("agents-group-toggle-idle").click();
       await expect(silentRow).toHaveCount(1);
       await expect(silentRow).toBeHidden();
-      await expect(fold).toHaveAccessibleName("No Dispatch activity (2)");
-      await expect(fold).toBeFocused();
+      await expect(page.getByTestId("agents-group-toggle-idle")).toHaveAccessibleName("Idle (2)");
     } finally {
       await context.close();
     }
   });
 
-  // The fold's toggle that a pin hands focus to sits between the rows, so `j` goes on to the
-  // first row shown after it and `k` to the last one before it, not to either end of the list.
-  test("j and k go on from the fold's toggle a pin left focus on", async ({ browser }) => {
+  // A group's heading is an item of the one list, between the rows above it and its own, so `j`
+  // goes on to the first row shown after it and `k` to the last one before it, not to either
+  // end of the list. A heading whose rows are folded away is stepped over like any other.
+  test("j and k go on from a group's heading", async ({ browser }) => {
     await seedWithFold([
       {
         capabilities: ["aside", "btw"],
         dir: "/srv/stale",
-        // Unseen for ten minutes, so it folds under Inactive, below the other fold.
+        // Unseen for ten minutes, so it is `Quiet`, the last group of the list.
         last_seen: Date.now() - 45 * 60_000,
         machine_id: "box-1",
         roles: ["tester"],
@@ -144,26 +143,25 @@ test.describe("agents page pins", () => {
     try {
       const page = await context.newPage();
       await openAgents(page);
-      const fold = page.getByRole("button", { name: /^No Dispatch activity/ });
-      await page.getByRole("button", { name: /^Inactive/ }).click();
-      const silentRow = await roveToSilent(page);
+      const idle = page.getByTestId("agents-group-toggle-idle");
+      const quiet = page.getByTestId("agents-group-toggle-quiet");
 
-      // Pinned to the top, the quiet fold closed, then back from the top into it.
-      await page.keyboard.press("Shift+P");
-      await expect(silentRow).toBeFocused();
-      await fold.click();
-      await expect(fold).toHaveAttribute("aria-expanded", "false");
-      await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
-      await page.keyboard.press("j");
-      await expect(silentRow).toBeFocused();
-      await page.keyboard.press("Shift+P");
-      await expect(silentRow).toBeHidden();
-      await expect(fold).toBeFocused();
-      await expect(shownAgentRows(page)).toHaveCount(3);
-
+      await quiet.focus();
       await page.keyboard.press("j");
       await expect(agentRow(page, "stale-session")).toBeFocused();
-      await fold.focus();
+      await idle.focus();
+      await page.keyboard.press("k");
+      await expect(agentRow(page, reviewerSession.session_id)).toBeFocused();
+      await idle.focus();
+      await page.keyboard.press("j");
+      await expect(agentRow(page, "quiet-session")).toBeFocused();
+
+      // With `Idle` closed its rows are out of the walk: `k` from `Quiet` steps over that
+      // heading to the last row still shown above it.
+      await idle.click();
+      await expect(idle).toHaveAttribute("aria-expanded", "false");
+      await expect(shownAgentRows(page)).toHaveCount(3);
+      await quiet.focus();
       await page.keyboard.press("k");
       await expect(agentRow(page, reviewerSession.session_id)).toBeFocused();
     } finally {
@@ -197,8 +195,8 @@ test.describe("agents page pins", () => {
       await page.keyboard.type(" can you take this");
       await expect(field).toHaveValue("@Silent can you take this");
 
-      await pinFromRow(silentRow);
-      await expect(rows.nth(0)).toHaveAttribute("data-agent-row", "silent-session");
+      await pinFromRow(silentRow, "Silent");
+      await expect(rows.nth(2)).toHaveAttribute("data-agent-row", "silent-session");
       await expect(silentRow).toBeFocused();
       await expect(opener).toHaveAttribute("aria-expanded", "true");
       await expect(toggle).toContainText("CORE-1");
@@ -246,9 +244,9 @@ test.describe("agents page pins", () => {
       await silentRow.getByRole("button", { name: "Reply" }).first().click();
       await expect(cancelReply).toBeVisible();
       await field.fill("Yes, go ahead");
-      await pinFromRow(silentRow);
+      await pinFromRow(silentRow, "Silent");
 
-      await expect(rows.nth(0)).toHaveAttribute("data-agent-row", "silent-session");
+      await expect(rows.nth(2)).toHaveAttribute("data-agent-row", "silent-session");
       await expect(silentRow).toBeFocused();
       await expect(cancelReply).toBeVisible();
       await expect(field).toHaveValue("Yes, go ahead");
@@ -295,7 +293,7 @@ test.describe("agents page pins", () => {
       await silentRow.getByRole("button", { name: "Reply" }).first().click();
       await expect(silentRow.getByRole("button", { name: "Cancel reply" })).toBeVisible();
       await field.fill("Yes, go ahead");
-      await pinFromRow(silentRow);
+      await pinFromRow(silentRow, "Silent");
       await expect(silentRow).toBeFocused();
       await expect(field).toHaveValue("Yes, go ahead");
       await opener.click();
@@ -341,9 +339,9 @@ test.describe("agents page pins", () => {
       await page.keyboard.type("Status please");
       await page.keyboard.press("Control+Enter");
       await expect(field).toBeDisabled();
-      await pinFromRow(silentRow);
+      await pinFromRow(silentRow, "Silent");
 
-      await expect(rows.nth(0)).toHaveAttribute("data-agent-row", "silent-session");
+      await expect(rows.nth(2)).toHaveAttribute("data-agent-row", "silent-session");
       await expect(silentRow).toBeFocused();
       await expect(silentRow.getByRole("button", { exact: true, name: "Silent" })).toHaveAttribute(
         "aria-expanded",
@@ -382,8 +380,8 @@ test.describe("agents page pins", () => {
       const uploading = silentRow.getByRole("button", { name: "Uploading file…" });
       await expect(uploading).toBeDisabled();
 
-      await pinFromRow(silentRow);
-      await expect(shownAgentRows(page).nth(0)).toHaveAttribute("data-agent-row", "silent-session");
+      await pinFromRow(silentRow, "Silent");
+      await expect(shownAgentRows(page).nth(2)).toHaveAttribute("data-agent-row", "silent-session");
       await expect(uploading).toBeDisabled();
       upload.release();
       await expect(field).toHaveValue(/^@Silent\s+dispatch:\/\/\S*notes/);
@@ -403,7 +401,8 @@ test.describe("agents page pins", () => {
       // Steer, so the message the row sends is delivered and the list holds only what is read.
       capabilities: ["aside", "btw", "steer"],
       dir: "/srv/stale",
-      // Unseen for ten minutes, so it folds under Inactive whatever it has said.
+      // Unseen for ten minutes, so the row is `Quiet` once its replies are read; until then
+      // its unread replies put it under `Needs you`.
       last_seen: Date.now() - 45 * 60_000,
       machine_id: "box-1",
       roles: ["tester"],
@@ -430,7 +429,6 @@ test.describe("agents page pins", () => {
       const conversation = staleRow.getByRole("list", { name: "Conversation with Stale" });
       const field = staleRow.getByRole("textbox", { name: "Comment" });
 
-      await page.getByRole("button", { name: /^Inactive/ }).click();
       await staleRow.getByRole("button", { exact: true, name: "Stale" }).click();
       await expect(conversation).toContainText("Second answer");
       await expect(conversation).toContainText("First answer");
@@ -447,8 +445,8 @@ test.describe("agents page pins", () => {
       await expect(conversation).toContainText("Third question");
       await expect(conversation).toContainText("First answer");
 
-      await pinFromRow(staleRow);
-      await expect(shownAgentRows(page).nth(0)).toHaveAttribute("data-agent-row", "stale-session");
+      await pinFromRow(staleRow, "Stale");
+      await expect(staleRow.getByRole("button", { name: "Unpin Stale" })).toBeVisible();
       await expect(conversation).toContainText("Third question");
       await expect(conversation).toContainText("Second answer");
       await expect(conversation).toContainText("First answer");
@@ -458,17 +456,18 @@ test.describe("agents page pins", () => {
     }
   });
 
-  // A row in a closed fold is out of sight however open it is - folded by the reader, by Shift+P,
-  // or by its agent going quiet for ten minutes. A reply that lands then stays unread, on the
-  // navigation's badge, until the reader can see it, which is when the fold opens again.
-  test("a row hidden in a closed fold marks nothing read, and reopening the fold shows the reply", async ({
+  // A row in a closed group is out of sight however open it is - folded by the reader, or
+  // moved there by its agent going quiet for ten minutes. A reply that lands then stays unread,
+  // on the navigation's badge, until the reader can see it, which is when the group opens
+  // again.
+  test("a row hidden in a closed group marks nothing read, and reopening the group shows the reply", async ({
     browser,
   }) => {
     await seedAgents();
     const stale: FakeSession = {
       capabilities: ["aside", "btw", "steer"],
       dir: "/srv/stale",
-      // Unseen for ten minutes, so it folds under Inactive whatever it has said.
+      // Unseen for ten minutes, so the row is `Quiet` once its replies are read.
       last_seen: Date.now() - 45 * 60_000,
       machine_id: "box-1",
       roles: ["tester"],
@@ -502,22 +501,26 @@ test.describe("agents page pins", () => {
       await openAgents(page);
       const staleRow = agentRow(page, stale.session_id);
       const conversation = staleRow.getByRole("list", { name: "Conversation with Stale" });
-      const fold = page.getByRole("button", { name: /^Inactive/ });
+      // The row is under `Needs you` while a reply is unread, and `Active` once reading it
+      // makes Dispatch activity of its own.
       // What the navigation's badge shows, read from the server.
       const unread = async () =>
         (await (await page.request.get("/api/v1/me/agents/state")).json())[stale.session_id]
           ?.unread_replies ?? 0;
 
-      await fold.click();
       await staleRow.getByRole("button", { exact: true, name: "Stale" }).click();
       await expect(conversation).toContainText("First answer");
       await expect.poll(() => readMarks.length).toBeGreaterThan(0);
       await expect.poll(unread).toBe(0);
       const marked = readMarks.length;
 
-      // The fold closes over the open row: it stays mounted, hidden, and its list still hears
-      // the reply the agent sends now.
-      await fold.click();
+      // Every group closes over the open row: it stays mounted, hidden, and its list still
+      // hears the reply the agent sends now. All four, because the reply below is what moves
+      // the row - reading one made it `Active`, and an unread one lifts it into `Needs you` -
+      // and a row that resurfaced in a group the reader left open would be on screen again.
+      for (const group of ["needs-you", "active", "idle", "quiet"]) {
+        await page.getByTestId(`agents-group-toggle-${group}`).click();
+      }
       await expect(staleRow).toBeHidden();
       await expect(staleRow).toHaveCount(1);
       const refetched = page.waitForResponse(
@@ -536,7 +539,11 @@ test.describe("agents page pins", () => {
       expect(readMarks).toHaveLength(marked);
       expect(await unread()).toBe(1);
 
-      await fold.click();
+      // Open again: every group, since which one holds the row now is the page's own reading
+      // of an unread reply it may not have refreshed yet.
+      for (const group of ["needs-you", "active", "idle", "quiet"]) {
+        await page.getByTestId(`agents-group-toggle-${group}`).click();
+      }
       await expect(conversation).toContainText("Second answer");
       await expect.poll(() => readMarks.length).toBeGreaterThan(marked);
       await expect.poll(unread).toBe(0);
@@ -545,27 +552,25 @@ test.describe("agents page pins", () => {
     }
   });
 
-  // The same loss by the other road into a closed fold: Shift+P hands an open, pinned row back
-  // to it.
-  // SLOW(>=2s): the reply has to reach a page that is already loaded, twice - hidden in the
-  // fold, then on screen - and each arrival waits out the page's own refresh of the agents
+  // The same loss by the other road out of sight: a filter the reader sets over an open row,
+  // pinned or not. A pin no longer moves a row out of its group (INFRA-812's D3), so Shift+P is
+  // no longer a way into hiding; the filter is.
+  // SLOW(>=2s): the reply has to reach a page that is already loaded, twice - hidden by the
+  // filter, then on screen - and each arrival waits out the page's own refresh of the agents
   // list, which is the path the read mark is written on.
-  test("an open row Shift+P unpins into a closed fold marks nothing read there", async ({
-    browser,
-  }) => {
+  test("an open row a filter hides marks nothing read there", async ({ browser }) => {
     await seedAgents();
-    const inactive = (id: string, title: string, minutes: number): FakeSession => ({
+    const stale: FakeSession = {
       capabilities: ["aside", "btw", "steer"],
-      dir: `/srv/${id}`,
-      last_seen: Date.now() - minutes * 60_000,
+      dir: "/srv/stale",
+      // Unseen for ten minutes with nothing waiting on the reader, so the row is `Quiet`.
+      last_seen: Date.now() - 45 * 60_000,
       machine_id: "box-1",
       roles: ["tester"],
-      session_id: `${id}-session`,
-      title,
-    });
-    // Two inactive sessions, so the fold stays on the page while one of them is pinned out.
-    const stale = inactive("stale", "Stale", 45);
-    await setLiveSessions([plannerSession, reviewerSession, stale, inactive("old", "Old", 50)]);
+      session_id: "stale-session",
+      title: "Stale",
+    };
+    await setLiveSessions([plannerSession, reviewerSession, stale]);
     const context = await asUser(browser, "alice");
     try {
       const page = await context.newPage();
@@ -573,19 +578,15 @@ test.describe("agents page pins", () => {
       // the page's own clock is what spends it below.
       await page.clock.install();
       await openAgents(page);
-      const fold = page.getByRole("button", { name: /^Inactive/ });
       const staleRow = agentRow(page, stale.session_id);
       const unread = async () =>
         (await (await page.request.get("/api/v1/me/agents/state")).json())[stale.session_id]
           ?.unread_replies ?? 0;
 
-      await fold.click();
-      await staleRow.getByRole("button", { name: "Pin Stale" }).click();
-      await expect(shownAgentRows(page).nth(0)).toHaveAttribute("data-agent-row", "stale-session");
-      await fold.click();
+      // Open, then hidden by a role filter it does not match.
       await staleRow.getByRole("button", { exact: true, name: "Stale" }).click();
       await expect(staleRow.getByRole("textbox", { name: "Comment" })).toBeVisible();
-      await pinFromRow(staleRow);
+      await pickAgentFilter(page, "role", "planner");
       await expect(staleRow).toHaveCount(1);
       await expect(staleRow).toBeHidden();
 
@@ -612,7 +613,7 @@ test.describe("agents page pins", () => {
       expect(await unread()).toBe(1);
 
       // On screen again, the reply is read.
-      await fold.click();
+      await pickAgentFilter(page, "role", "planner");
       await expect(staleRow.getByText("Yes, here")).toBeVisible();
       await expect.poll(unread).toBe(0);
     } finally {
@@ -634,7 +635,6 @@ test.describe("agents page pins", () => {
       const row = agentRow(page, plannerSession.session_id);
       const field = row.getByRole("textbox", { name: "Comment" });
       const notice = row.getByText("Couldn't send — Dispatch refused the message");
-      const role = page.getByRole("combobox", { exact: true, name: "Role" });
       const refuse = await refusePosts(page, "**/api/v1/agents/*/messages", MESSAGE_REFUSED);
 
       await page.keyboard.press("j");
@@ -644,13 +644,13 @@ test.describe("agents page pins", () => {
       await page.keyboard.press("Control+Enter");
       await expect(field).toBeDisabled();
 
-      await role.selectOption("reviewer");
+      await pickAgentFilter(page, "role", "reviewer");
       await expect(row).toHaveCount(1);
       await expect(row).toBeHidden();
       refuse();
       // The refusal lands while the row is hidden, in the row's own composer.
       await expect(notice).toBeAttached();
-      await role.selectOption("");
+      await pickAgentFilter(page, "role", "reviewer");
 
       await expect(row).toBeVisible();
       await expect(row.getByRole("button", { exact: true, name: "Planner" })).toHaveAttribute(

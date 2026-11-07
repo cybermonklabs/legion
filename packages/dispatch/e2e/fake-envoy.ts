@@ -83,7 +83,7 @@ let state = emptyState();
 /** A row in the real registry always carries a recent `last_seen` (the heartbeat). A seed that
  *  omits it means "live now", so it is stamped on every read rather than once at seeding: a
  *  session seeded into a long-lived harness (one started by hand and reused with
- *  `DISPATCH_E2E_REUSE_SERVERS=1`) would otherwise fold under Inactive ten minutes later. Only a
+ *  `DISPATCH_E2E_REUSE_SERVERS=1`) would otherwise fall under `Quiet` ten minutes later. Only a
  *  seed that sets `last_seen` can be stale. One read stamps every row with the same `now`, so
  *  sessions seeded together tie, as the server's sorts by `last_seen` expect of one read. */
 function asSeen(session: FakeSession, now: number): FakeSession {

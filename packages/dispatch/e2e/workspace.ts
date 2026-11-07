@@ -24,9 +24,9 @@ import { sessionIds } from "./session-ids";
 // folds), a direct message, a broadcast and an issue's Conversation. `e2e/workspace.e2e.ts`
 // proves each surface renders non-empty.
 
-// Four sessions carry no `last_seen`, which the fake Envoy answers as "live now" on every read, so
-// they never age into Inactive however long an instance runs. The Archivist is the one that must:
-// twenty minutes stale already, it only grows staler after this module is evaluated.
+// Four sessions carry no `last_seen`, which the fake Envoy answers as "live now" on every read,
+// so they never fall under `Quiet` however long an instance runs. The Archivist is the one that
+// must: twenty minutes stale already, it only grows staler after this module is evaluated.
 export const workspaceSessions: FakeSession[] = [
   {
     capabilities: ["aside", "btw", "steer"],
@@ -60,8 +60,8 @@ export const workspaceSessions: FakeSession[] = [
     session_id: sessionIds.observer,
     title: "Observer",
   },
-  // Twenty minutes stale: the Agents page folds it under Inactive (`AgentsPage.tsx`'s
-  // `INACTIVE_AFTER_MS`, ten minutes).
+  // Twenty minutes stale: the Agents page lists it under `Quiet` (`agent-groups.ts`'s
+  // `QUIET_AFTER_MS`, ten minutes).
   {
     capabilities: ["aside", "btw"],
     dir: "/workspaces/archivist",

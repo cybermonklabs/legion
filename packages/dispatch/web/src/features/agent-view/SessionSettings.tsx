@@ -130,26 +130,25 @@ function useKeySteps(
 }
 
 /**
- * The session's model and thinking level in the live view's header, and the pickers that switch
- * them (INFRA-195), with the line about the latest switch and the notice that says why a session
- * shows less. `view` is `sessionSettingsView`'s answer; a pick hands `onPick` what was picked, and
- * the page sends it. While a switch is pending the pickers are held (`aria-disabled`): they keep
- * focus and their keys still step, but nothing picks until the switch ends. A picker's own keys
- * only step its choice and `Enter` picks it (`useKeySteps`); the values shown, once not being
- * stepped, are the session's reported ones alone: a picker snaps back to them, and moves only when
- * the session reports the switch.
+ * The session's model and thinking level in the row under the message box, and the pickers that
+ * switch them (INFRA-195). `view` is `sessionSettingsView`'s answer; a pick hands `onPick` what
+ * was picked, and the page sends it. While a switch is pending the pickers are held
+ * (`aria-disabled`): they keep focus and their keys still step, but nothing picks until the
+ * switch ends. A picker's own keys only step its choice and `Enter` picks it (`useKeySteps`);
+ * the values shown, once not being stepped, are the session's reported ones alone: a picker
+ * snaps back to them, and moves only when the session reports the switch.
  *
- * The status and the notice sit on lines of their own at the header's end (`order-last`).
+ * This renders the pickers alone. The line about the latest switch and the notice that says why
+ * a session shows less are `SessionSwitchLines`, which the page puts under the row rather than
+ * in it.
  */
 export function SessionSettings({
   onPick,
   pending,
-  status,
   view,
 }: {
   onPick: (request: SwitchRequest) => void;
   pending: boolean;
-  status: string | undefined;
   view: SessionSettingsView;
 }): ReactNode {
   const model = view.reported ? view.settings.model : view.model;
@@ -180,21 +179,41 @@ export function SessionSettings({
           thinking={view.settings.thinking}
         />
       ) : null}
+    </>
+  );
+}
+
+/**
+ * What the latest switch is doing, and why a session shows less than the pickers: each on a
+ * line of its own under the row the pickers sit in (INFRA-812, R6).
+ *
+ * Under the row rather than in it, because the row holds the seven parts R6 names and scrolls
+ * sideways at a phone width: a line of prose inside that scroller is a flex item like any
+ * other, shrinks to a sliver beside the pickers and stacks a word per line, which made the row
+ * taller than the transcript on a 390 px screen and pushed the message box under the keyboard.
+ * A line under the row is read where it always was, at any width.
+ */
+export function SessionSwitchLines({
+  notice,
+  status,
+}: {
+  notice: string | undefined;
+  status: string | undefined;
+}): ReactNode {
+  return (
+    <>
       {status === undefined ? null : (
         <p
-          className={`order-last basis-full text-xs break-words whitespace-pre-wrap ${textMutedOnCanvas}`}
+          className={`mt-1 text-xs break-words whitespace-pre-wrap ${textMutedOnCanvas}`}
           data-testid="agent-switch-status"
           role="status"
         >
           {status}
         </p>
       )}
-      {view.notice === undefined ? null : (
-        <p
-          className={`order-last basis-full text-xs ${textMutedOnCanvas}`}
-          data-testid="agent-settings-notice"
-        >
-          {view.notice}
+      {notice === undefined ? null : (
+        <p className={`mt-1 text-xs ${textMutedOnCanvas}`} data-testid="agent-settings-notice">
+          {notice}
         </p>
       )}
     </>
