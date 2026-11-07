@@ -157,11 +157,10 @@ func newRebuilder(log *slog.Logger, live *config.Live) *rebuilder {
 // it is. A test that deliberately puts another holder in a name's place uses replace.
 //
 // The order is load-bearing, which is why the rule is here and not left to the registry's
-// behaviour: rebuilder.observe builds the holders of one change in registration order, and the
-// repository mapping is registered before the intake consumers so a mapping read made between
-// their two rebuilds works out what GitHub intake is to hear under the equivalence the
-// consumers' filter was just built with, never under one older than it
-// (workflowRuntime.connect, refreshMapping).
+// behaviour: rebuilder.observe builds the holders of one change in registration order. What that
+// buys the pair it matters for, the repository mapping and the intake consumers, and what
+// registering them the other way round would cost, is said where they are registered
+// (workflowRuntime.connect).
 //
 // A holder built from a credential is registered having just been built from it, so what that
 // credential says now is recorded here: without it the first reread after boot would count every
@@ -184,18 +183,6 @@ func (r *rebuilder) register(holders ...rebuilt) {
 			r.credentialDigests[h.holder()] = credentials.credentials(r.live.Snapshot())
 		}
 	}
-}
-
-// replace puts holder in the place its name already holds, which register refuses. Nothing in
-// the daemon replaces a holder: a test that wants to see what a rebuild of one does — a read of
-// the repository mapping made the instant the intake consumers' rebuild returns, say — wraps
-// the holder the daemon built and puts it back under the same name, so the order every other
-// holder was registered in is the order the test observes.
-func (r *rebuilder) replace(holder rebuilt) {
-	if _, known := r.holders[holder.holder()]; !known {
-		r.order = append(r.order, holder.holder())
-	}
-	r.holders[holder.holder()] = holder
 }
 
 // observe is what config.Live calls once every apply has settled: it is registered with

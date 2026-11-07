@@ -3,14 +3,17 @@ package daemon
 import (
 	"context"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -104,6 +107,125 @@ func TestAChangedNatsSeedRebuildsTheNatsClient(t *testing.T) {
 	}
 	if w.nats.intake() == nil {
 		t.Fatal("the rebuilt client carries no durable consumers")
+	}
+}
+
+// A changed `nats_urls` moves the daemon to the server the change names: the holder opens a
+// connection there, moves this project's durable consumers onto it, and closes the connection
+// it had. `nats_urls` is one of the keys this change promises applies with no restart.
+//
+// Every other rebuild test here reconnects to the one test server, so none of them can tell a
+// client rebuilt on the configuration the change settled from one rebuilt on the configuration
+// the daemon booted with: both answer the caller `rebuilt`, both leave a connected client, and
+// in production the second hears nothing the change asked for. This one moves the daemon
+// between two servers, so the connection and the durables are read on the server the change
+// named and nowhere else.
+func TestAChangedNatsURLMovesTheDaemonToTheServerTheChangeNames(t *testing.T) {
+	// The server the daemon boots on is the package's shared one; the server it is moved to
+	// runs in this process (startNATSServer), since testnats serves one shared server and the
+	// containers it starts need a Docker a Sandbox pod has not got.
+	booted, moved := testnats.URL(t), startNATSServer(t)
+	// Envoy's notification stream is what this project's durable consumers are opened on, so
+	// the server the daemon is moved to carries one as the server it booted on does.
+	notificationsStreamOn(t, booted)
+	movedStream := notificationsStreamOn(t, moved)
+	w, live, rebuild := bootedNATSHolder(t, booted)
+	before := w.nats.connection()
+	if got := before.ConnectedUrl(); got != booted {
+		t.Fatalf("the daemon booted on %q, want the server its configuration named, %q", got, booted)
+	}
+
+	applied, failed := routeChange(t, live, rebuild, map[string]any{"nats_urls": []string{moved}})
+
+	if len(applied) != 1 || applied[0].Path != "nats_urls" || applied[0].Holder != config.HolderNATS {
+		t.Fatalf("the apply reported %+v, want one nats_urls change the operator is told the NATS holder holds", applied)
+	}
+	if len(failed) != 0 {
+		t.Fatalf("the route was told %v, want the move made: a rebuild that failed keeps the connection it has", failed)
+	}
+	after := w.nats.connection()
+	if after == before {
+		t.Fatal("the changed nats_urls left the daemon on the connection it had, want the client rebuilt")
+	}
+	if !after.IsConnected() {
+		t.Fatalf("the rebuilt NATS client is not connected: %v", after.LastError())
+	}
+	if got := after.ConnectedUrl(); got != moved {
+		t.Fatalf("the rebuilt NATS client is connected to %q, want the server the change named, %q", got, moved)
+	}
+	if w.nats.intake() == nil {
+		t.Fatal("the moved client carries no durable consumers")
+	}
+	// The connection alone is not the move: what the daemon reads are its durable consumers,
+	// and a rebuild that dialled the new server while its consumers stayed on the old one
+	// would hear every event on a server the configuration no longer names. They are read on
+	// the server the change named, through a client of the test's own.
+	project := live.Snapshot().Project
+	for _, durable := range []string{"legion-go-" + project + "-dispatch", "legion-go-" + project + "-github", "legion-go-" + project + "-wake"} {
+		consumer, err := movedStream.Consumer(t.Context(), durable)
+		if err != nil {
+			t.Fatalf("read %s on the server the change named: %v", durable, err)
+		}
+		info, err := consumer.Info(t.Context())
+		if err != nil {
+			t.Fatalf("read %s's state on the server the change named: %v", durable, err)
+		}
+		if info.Config.Durable != durable {
+			t.Fatalf("the consumer read as %s on the server the change named is %s", durable, info.Config.Durable)
+		}
+	}
+	// And what GitHub intake hears there is this project's own repository (grantWorkflow's
+	// mapping), worked out by the handover the move ran and written onto the durable the move
+	// opened, never copied from the server the daemon left.
+	if filters := githubFiltersOf(t, movedStream, project); !slices.Contains(filters, "notifications.github.sjawhar.legion.>") {
+		t.Fatalf("the GitHub durable on the server the change named filters on %v, want this project's repository among them", filters)
+	}
+	if !before.IsClosed() {
+		t.Fatal("the connection the move replaced was not closed")
+	}
+}
+
+// The control of the move above: a `nats_urls` the daemon cannot open is answered `failed` for
+// that path, carrying the open's own error, and the daemon is left on the server it had.
+//
+// The apply itself succeeds — the daemon runs on the URL the operator set, and its next rebuild
+// dials that one — so the only thing that tells the caller the move did not happen is the
+// failure the route carries (rebuilder.route, api.SettingsRebuildFailures). Until that answer
+// existed the rebuilder logged the failure and told the caller `rebuilt`: a move that never
+// happened read exactly like one that did, and this control could not be written.
+func TestANatsURLTheDaemonCannotOpenIsAnsweredFailed(t *testing.T) {
+	booted := testnats.URL(t)
+	notificationsStreamOn(t, booted)
+	w, live, rebuild := bootedNATSHolder(t, booted)
+	before := w.nats.connection()
+
+	// Nothing listens on port 1 here, and no server a test starts can be given it: each takes a
+	// port the kernel picks. nats.go retries no failed first connect (natsauth.Connect sets no
+	// RetryOnFailedConnect), so the open answers at once with no servers available.
+	const dead = "nats://127.0.0.1:1"
+	applied, failed := routeChange(t, live, rebuild, map[string]any{"nats_urls": []string{dead}})
+
+	if len(applied) != 1 || applied[0].Path != "nats_urls" || applied[0].Holder != config.HolderNATS {
+		t.Fatalf("the apply reported %+v, want one nats_urls change the operator is told the NATS holder holds", applied)
+	}
+	why, told := failed["nats_urls"]
+	if !told {
+		t.Fatalf("the route was answered %v, want nats_urls carrying what the daemon could not do for it", failed)
+	}
+	if !strings.Contains(why, config.HolderNATS+": connect Envoy NATS:") {
+		t.Fatalf("nats_urls was answered %q, want the NATS holder's own failure to open the connection the change named", why)
+	}
+	if after := w.nats.connection(); after != before {
+		t.Fatal("the daemon left the connection it had for a URL it could not open")
+	}
+	if !before.IsConnected() || before.IsClosed() {
+		t.Fatalf("the daemon's connection is connected=%v closed=%v after a move it could not make, want it serving as it was",
+			before.IsConnected(), before.IsClosed())
+	}
+	// The change is applied for all that, and it is the rebuild alone that failed: the daemon
+	// runs on the URL the operator set, and its next rebuild dials that one.
+	if urls := live.Snapshot().NatsURLs; !slices.Equal(urls, []string{dead}) {
+		t.Fatalf("the settings hold %v, want the change applied: it is the rebuild that failed, not the apply", urls)
 	}
 }
 
@@ -571,4 +693,100 @@ func (h *heardPullRequests) repositories() []string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return slices.Clone(h.repos)
+}
+
+// startNATSServer runs a JetStream NATS server in this process, on a loopback port the kernel
+// picks and a store of t's own, and returns its client URL. It is shut down when t ends, before
+// t's temporary directory goes.
+//
+// It is here because testnats hands out one shared server per test binary and the servers it
+// starts itself are containers, which a Sandbox pod has no Docker for: a test that moves the
+// daemon from one NATS server to another needs a second one whatever the host is.
+// packages/envoy's own rig starts its servers the same way (internal/testnats' Server.launch).
+func startNATSServer(t *testing.T) string {
+	t.Helper()
+	srv, err := natsserver.NewServer(&natsserver.Options{
+		Host: "127.0.0.1", Port: -1, JetStream: true, StoreDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("create a NATS server: %v", err)
+	}
+	go srv.Start()
+	t.Cleanup(func() {
+		srv.Shutdown()
+		srv.WaitForShutdown()
+	})
+	if !srv.ReadyForConnections(10 * time.Second) {
+		t.Fatal("the NATS server did not accept connections within 10s")
+	}
+	return srv.ClientURL()
+}
+
+// notificationsStreamOn creates Envoy's notification stream on the NATS server at url, through a
+// client of the test's own that is closed when t ends, and returns it: the stream this project's
+// durable consumers are opened on, which every NATS test here creates before the daemon connects.
+func notificationsStreamOn(t *testing.T, url string) jetstream.Stream {
+	t.Helper()
+	probe, err := nats.Connect(url, nats.Timeout(5*time.Second))
+	if err != nil {
+		t.Fatalf("connect to the NATS server at %s: %v", url, err)
+	}
+	t.Cleanup(probe.Close)
+	js, err := jetstream.New(probe)
+	if err != nil {
+		t.Fatalf("open JetStream on %s: %v", url, err)
+	}
+	return testnats.CreateStream(t, js, jetstream.StreamConfig{Name: "ENVOY_NOTIFICATIONS", Subjects: []string{"notifications.>"}})
+}
+
+// bootedNATSHolder is a daemon's NATS holder booted on url, built as workflowRuntime.connect
+// builds it: the daemon's own openNATS and handover, the consumers hearing what this project
+// heard at boot, and the open run on the context boot gives it — readinessAttempt's own,
+// cancelled the moment the open returns — so a rebuild that kept boot's context fails here as it
+// fails in a daemon. It answers the workflow, the settings holder a change goes through, and the
+// rebuilder that holder's changes are observed by, with the holder stopped when t ends.
+func bootedNATSHolder(t *testing.T, url string) (*workflowRuntime, *config.Live, *rebuilder) {
+	t.Helper()
+	w := grantWorkflow(t, &syncBuffer{})
+	live := liveSettings(t, "nats_urls: ["+url+"]")
+	heard, err := w.heardAtBoot(t.Context())
+	if err != nil {
+		t.Fatalf("read the repositories this project hears about: %v", err)
+	}
+	booting, bootOver := context.WithTimeout(t.Context(), bootTimeout)
+	open := func(ctx context.Context, c config.Config) (*nats.Conn, *intake.Consumers, error) {
+		return openNATS(ctx, w, c, func(string) (string, bool) { return "", false }, intake.ConsumerSpec{
+			Project: c.Project, Repositories: heard, AckWait: c.WorkerRPCTimeout, NakDelay: time.Second, Logger: w.log,
+		})
+	}
+	conn, consumers, err := open(booting, *live.Snapshot())
+	if err != nil {
+		t.Fatalf("open the workflow's NATS: %v", err)
+	}
+	rebuild := newRebuilder(w.log, config.Settled(*live.Snapshot()))
+	live.OnChange(rebuild.observe)
+	w.nats = newNATSHolder(conn, consumers, w.log, open, &w.mappingMu, w.natsHandover)
+	bootOver()
+	rebuild.register(w.nats)
+	t.Cleanup(w.stop)
+	return w, live, rebuild
+}
+
+// routeChange is one settings change made the way the settings route makes it: through the
+// rebuilder's own way into the holder (rebuilder.route), which answers what this change's own
+// rebuilds could not do beside what it applied. The apply helper of live_settings_test.go calls
+// the holder directly, and can say nothing of a rebuild that failed.
+func routeChange(t *testing.T, live *config.Live, rebuild *rebuilder, overlay map[string]any) ([]config.Change, api.SettingsRebuildFailures) {
+	t.Helper()
+	route := rebuild.route(func(_ context.Context, _ config.Caller, by string, changes map[string]any) ([]config.Change, []config.Refusal, error) {
+		return live.Apply(config.SourceRoute, by, changes)
+	})
+	applied, refused, failed, err := route(t.Context(), config.CallerOperator, "someone", overlay)
+	if err != nil {
+		t.Fatalf("apply %v: %v", overlay, err)
+	}
+	if len(refused) != 0 {
+		t.Fatalf("apply %v refused %+v, want every path applied", overlay, refused)
+	}
+	return applied, failed
 }

@@ -37,6 +37,17 @@ func connectAsBootDoes(t *testing.T, w *workflowRuntime, cfg config.Config, rebu
 	return w.connect(bounded, cfg, rebuild, lookup)
 }
 
+// replace puts holder in the place its name already holds, which register refuses. Nothing in
+// the daemon replaces a holder, so this is the tests' own: a test that wants to see what a
+// rebuild of one does — a read of the repository mapping made the instant the intake consumers'
+// rebuild returns, say — wraps the holder the daemon built and puts it back under the same name,
+// so the order every other holder was registered in is the order the test observes. The name is
+// one a registration has already given a place, which is the only case a test has: a name no
+// holder holds is a registration, and register is where a registration goes.
+func (r *rebuilder) replace(holder rebuilt) {
+	r.holders[holder.holder()] = holder
+}
+
 // A NATS rebuild on a daemon that booted as a daemon boots. Boot calls connect inside
 // readinessAttempt, whose deferred cancel ends that context as soon as connect returns
 // (readiness.go:28-30, daemon.go's serve), while the holder connect leaves behind rebuilds for

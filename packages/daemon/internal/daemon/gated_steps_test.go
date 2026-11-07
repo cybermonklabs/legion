@@ -2,12 +2,15 @@ package daemon
 
 import (
 	"context"
+	"log/slog"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // gating is the daemon's settings holder with `gates.design` naming steps, which is where the
@@ -117,31 +120,51 @@ func TestGatedStepsPublishWithoutADispatchClientIsRefused(t *testing.T) {
 //
 // The change goes through the daemon's own path: the settings holder applies it, its observers
 // run (config.Live.Apply), and the publish the change queues is run by the outbox as the boot's
-// own is.
+// own is — on the wake the commit that wrote the row sends the row's lane
+// (projectRecords.EnqueueGatedSteps), which is what has the row published rather than waiting
+// on the lanes' next sweep (queueGatedStepsPublish). The lanes run on a clock this test holds
+// still and fires nothing, so the sweep the boot armed is the only one there is and it never
+// runs: a publish that lands here landed on the wake alone.
 func TestALiveDesignGateChangeIsPublishedToTheProjectRow(t *testing.T) {
-	ctx := context.Background()
 	live := liveSettings(t, "gates:", "  design: [spec]")
 	project := live.Snapshot().Project
 	pool := isolatedOutboxPool(t)
-	records := record.NewStore()
-	w := &workflowRuntime{pool: pool, records: records, dispatchProject: project, live: live, log: quietLogger()}
-	rebuild := newRebuilder(w.log, live)
+	clock := microClock()
+	// The holder writes its row due at the wall clock (queueGatedStepsPublish), so the lanes'
+	// held clock stands a minute past it and the row is due the moment its lane looks. What
+	// this test turns on is what wakes that lane, not when a row falls due.
+	clock.advance(time.Minute)
+	client := &outboxDispatch{}
+	var logged syncBuffer
+	log := slog.New(slog.NewTextHandler(&logged, nil))
+	runner := &outbox{pool: pool, dispatchProject: project, dispatch: client, log: log}
+	// The store the daemon's workflow writes through, which wakes the row's lane as the write
+	// commits; the holder writes its publish through this one.
+	runner.records = projectRecords{Store: record.NewStore(), project: project, wake: runner.wake, log: log}
+	w := &workflowRuntime{pool: pool, records: runner.records, dispatchProject: project, live: live, log: log}
+	rebuild := newRebuilder(log, live)
 	live.OnChange(rebuild.observe)
 	rebuild.register(newGatedStepsHolder(w))
+	stop := runLanes(t, runner, clock)
 
 	apply(t, live, map[string]any{"gates.design": []any{"criteria", "spec"}})
 
-	client := &outboxDispatch{}
-	runner := &outbox{pool: pool, dispatchProject: project, records: records, dispatch: client,
-		now: func() time.Time { return time.Now().UTC() }, log: quietLogger()}
-	if err := runner.RunOnce(ctx); err != nil {
-		t.Fatalf("run the publish the change queued: %v", err)
-	}
+	testwait.Eventually(t, "the publish the change queued ran on its lane", func() bool {
+		return outboxRows(t, pool) == 0
+	})
+	// Joining the lanes is what makes what the lane recorded this goroutine's to read.
+	stop()
 	if want := [][]string{{"criteria", "spec"}}; !reflect.DeepEqual(client.gatedSteps, want) {
 		t.Fatalf("Dispatch was sent %v, want %v: the list the change settled, published without a restart", client.gatedSteps, want)
 	}
 	if want := []string{project}; !reflect.DeepEqual(client.gatedStepsOf, want) {
 		t.Fatalf("the publish went to %v, want %v, the one project this daemon serves", client.gatedStepsOf, want)
+	}
+	if _, sweeps := clock.armed(outboxLease); sweeps != 1 {
+		t.Fatalf("sweep timers armed = %d, want the one Run armed and never fired: the publish ran on the wake of its own commit", sweeps)
+	}
+	if strings.Contains(logged.String(), "written outside a commit scope") {
+		t.Fatalf("the change's publish was written outside a commit scope, so its lane was woken before the row was there:\n%s", logged.String())
 	}
 }
 

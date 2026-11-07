@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -12,7 +11,6 @@ import (
 	"slices"
 	"strconv"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -244,65 +242,6 @@ type ClaimActivityStore interface {
 	PutClaimActivity(ctx context.Context, token claim.Token, activity claim.SessionActivity) (bool, error)
 }
 
-// HeldSettings is the configuration the API server holds: everything it reads from legion.yaml
-// and nothing else, in one value, so a settings change swaps one pointer rather than reaching
-// into a server that is answering requests. It is not the state's settings report (Settings),
-// which is every setting the daemon runs on.
-type HeldSettings struct {
-	// OperatorToken is the bearer every operator route compares against (`operator_token_file`);
-	// empty admits no one.
-	OperatorToken string
-	// Steps are the design-gate steps the deployment gates (`gates.design`, config.Gates.Steps),
-	// in the order it named them: what the controller secret route answers `legion controller
-	// start`, and what register_gate resolves a registration's step against. The empty list
-	// gates no step.
-	Steps []record.DesignStep
-	// RepositoryRenames is the deployment's repository equivalence (`repository_renames`): the
-	// rule that says which owner's installation holds a repository recorded under the name a
-	// transfer moved it away from, which the controller's gh bundle reads
-	// (appauth.ControllerCredential). The zero value configures none.
-	RepositoryRenames ghrepo.Renames
-	// MergeRules is the merge policy an issue's project configures. Nil has no special policy.
-	MergeRules func(project string) config.MergeRules
-	// SettingsRoute is the settings route's projected-token arm: the verifier of the cluster
-	// issuer and audience `settings_route` names, and the ServiceAccounts it admits. The zero
-	// value leaves that route to the operator bearer alone.
-	SettingsRoute SettingsRouteAuth
-}
-
-// LiveSettings is HeldSettings behind the pointer every request reads through. The holder hashes
-// the operator bearer once per Store, never per request, so a swap costs a request nothing.
-type LiveSettings struct {
-	current atomic.Pointer[settledSettings]
-}
-
-// settledSettings is one HeldSettings with the operator bearer already hashed.
-type settledSettings struct {
-	HeldSettings
-	operatorSet  bool
-	operatorHash [sha256.Size]byte
-}
-
-// NewLiveSettings holds s, which Store replaces.
-func NewLiveSettings(s HeldSettings) *LiveSettings {
-	live := &LiveSettings{}
-	live.Store(s)
-	return live
-}
-
-// Store replaces the settings every later request reads. A request already in a route keeps the
-// ones it began on: it read the pointer once.
-func (l *LiveSettings) Store(s HeldSettings) {
-	next := &settledSettings{HeldSettings: s}
-	if s.OperatorToken != "" {
-		next.operatorSet, next.operatorHash = true, sha256.Sum256([]byte(s.OperatorToken))
-	}
-	l.current.Store(next)
-}
-
-// load is the settings this request reads.
-func (l *LiveSettings) load() *settledSettings { return l.current.Load() }
-
 type server struct {
 	state             StateSource
 	stateTransactions StateTransactions
@@ -511,30 +450,6 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		Handler:           mux,
 		ReadHeaderTimeout: readHeaderTimeout,
 	}
-}
-
-// steps, renames and mergeRulesOf are the settings this request reads: the one place each is
-// read from, so the daemon's swap of them (LiveSettings.Store) reaches every route.
-func (s *server) steps() []record.DesignStep { return s.settings.load().Steps }
-
-func (s *server) renames() ghrepo.Renames { return s.settings.load().RepositoryRenames }
-
-// mergeRulesOf is the merge policy project configures, the zero policy when none is configured.
-func (s *server) mergeRulesOf(project string) config.MergeRules {
-	rules := s.settings.load().MergeRules
-	if rules == nil {
-		return config.MergeRules{}
-	}
-	return rules(project)
-}
-
-// operatorBearer is whether a request's Authorization header carries the operator's bearer:
-// given is what followed "Bearer ", and carried whether the header had that prefix at all. The
-// two hashes are compared in constant time, so neither the token nor its length leaks through
-// the comparison, and a daemon holding no operator token admits nobody.
-func (s *server) operatorBearer(given string, carried bool) bool {
-	current := s.settings.load()
-	return current.operatorSet && carried && secureBearerEqual(current.operatorHash, given)
 }
 
 // decision is the context a route runs a decision of token's claim on. It outlives the request,
