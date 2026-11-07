@@ -41,13 +41,22 @@ import {
 
 /**
  * What R6 allows a `view` block to cost the reader, over what the same document without one
- * costs at the same build. It read 10,000 until a person raised it to 15,000
- * (dispatch://INFRA-682/ask/78430e75-b453-402d-924c-9506a00c6073, the spec approved at version
- * 11), having been shown what 10,000 would have cost: the four-frame budget and the repaint
- * splice both removed, which together bought 1,434 bytes and still left the change 2,646 over,
- * and which made a streamed agent turn rebuild a block's frame on every repaint.
+ * costs at the same build. It read 10,000, then 15,000, and is now the 16,000 a person approved
+ * (dispatch://INFRA-682/ask/ac338237-efb6-4ec0-b477-6ea4da57cd49, the spec approved at version
+ * 13). Each rise was measured before it was asked for rather than after: 10,000 would have cost
+ * the four-frame budget and the repaint splice, which together bought 1,434 bytes and still left
+ * the change 2,646 over while making a streamed agent turn rebuild a block's frame on every
+ * repaint; and 15,000 would have cost about 500 bytes more from a list of parts every one of
+ * which is a message a reader meets or a limit already kept - the two fixes a review found, a
+ * page mid-navigation still receiving data and an older version arriving last, are among the
+ * bytes this last rise paid for.
+ *
+ * This number bounds the SAME-BUILD difference, which is the form that can live on `main`. A5's
+ * own sentence bounds the cross-build growth against the commit before the change, which counts
+ * every file such a document loads, so moving code between chunks changes it by nothing; that
+ * measurement is made by hand per round and quoted on the pull request.
  */
-const BUDGET_BYTES = 15_000;
+const BUDGET_BYTES = 16_000;
 
 const CAPTION = "Attempts of the kernel boot loop.";
 
@@ -238,7 +247,7 @@ test.beforeEach(async () => {
  * chunks; the line the row prints holds both counts and both sums, so a reader of the output can
  * see that each number is a whole page rather than a remainder of the one before it.
  */
-test("a view block costs the reader at most 15,000 more bytes of JavaScript @alone", async ({
+test("a view block costs the reader at most 16,000 more bytes of JavaScript @alone", async ({
   browser,
 }) => {
   const fixture = await seedView();
