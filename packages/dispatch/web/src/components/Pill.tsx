@@ -78,7 +78,17 @@ function approvalTone(state: string): keyof typeof approvalPill {
 }
 
 /** The approval pill's full class string, for hosts whose chip must stay an interactive
- * element (ApprovalChip's button opens the review history) while looking identical. */
+ * element (ApprovalChip's button opens the review history) while looking identical.
+ *
+ * It wraps and it shrinks, for every host that draws it: the longest label the chip can carry
+ * (`Awaiting approval of spec.md v1 and verification.md v1`, one request covering a spec and
+ * its Verification document) is wider than a 320 px phone, and a pill that could neither wrap
+ * nor shrink pushed the whole page sideways. The label is never clamped, ellipsized or hidden
+ * behind a `title`, so a phone reader still reads all of it; `[overflow-wrap:anywhere]` is what
+ * lets a long document name break, and so drops the pill's min-content width to something a
+ * narrow row can hold. Both utilities belong to this one string rather than being appended by a
+ * host, for the reason `pillShapeClassName` records above: two conflicting Tailwind utilities
+ * are settled by the generated CSS's order, not the attribute's. */
 export function approvalPillClassName(state: ArtifactApproval["state"]): string {
-  return `inline-flex shrink-0 items-center rounded-full border px-2 py-1 text-xs font-medium whitespace-nowrap ${approvalPill[approvalTone(state)]}`;
+  return `inline-flex min-w-0 items-center rounded-full border px-2 py-1 text-center text-xs font-medium [overflow-wrap:anywhere] ${approvalPill[approvalTone(state)]}`;
 }

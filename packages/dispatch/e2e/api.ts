@@ -12,7 +12,7 @@ import {
   repoParams,
   routeUrl,
 } from "../web/src/api/paths";
-import type { Actor } from "../web/src/api/types";
+import type { Actor, GatedStep } from "../web/src/api/types";
 import { harnessPorts } from "./harness-ports";
 import { type DispatchProcess, pinnedTo } from "./harness-processes";
 
@@ -347,6 +347,24 @@ function del<P extends PathsOf<"delete">>(
 
 export function createProject(input: Body<"/api/v1/projects", "post">, login = "alice") {
   return post("/api/v1/projects", { body: input }, { login });
+}
+
+/** `PUT /api/v1/projects/{key}/gated-steps`: the design-gate steps the Legion deployment that
+ *  serves `project` gates, in the order it gates them, published as that deployment's daemon
+ *  publishes them - over the agent bearer, naming its session in `actor`, since the list is the
+ *  daemon's own configuration rather than a choice a person makes. The empty list is a
+ *  deployment that gates nothing. */
+export function setGatedSteps(
+  project: string,
+  steps: GatedStep[],
+  options: ApiOptions = { as: "agent" }
+): Promise<{ project: string; steps: GatedStep[] }> {
+  return request<{ project: string; steps: GatedStep[] }>(
+    `/api/v1/projects/${encodeURIComponent(project)}/gated-steps`,
+    "PUT",
+    { steps },
+    options
+  );
 }
 
 /** Maps `repo` (`owner/name`) to a project, as the Settings page does; `default: true` makes it the

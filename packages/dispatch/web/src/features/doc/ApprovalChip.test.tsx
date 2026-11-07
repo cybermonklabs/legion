@@ -103,6 +103,32 @@ test("a stale approval's label and title carry both the approved and latest vers
   }
 });
 
+// The longest label the chip draws is wider than a phone, and the pill answers that by wrapping
+// rather than by hiding any of it: the button carries the whole label as its own text, and no
+// `title` stands in for words a reader would otherwise not see (a tooltip is no reading on a
+// phone, as the step reason line below the list says too).
+test("the longest awaiting label is the chip's whole text, with no title standing in for it", () => {
+  const view = renderChip(
+    artifact({
+      documents: [
+        { artifact_id: "artifact-1", name: "spec.md", requested_version: 1, version: 1 },
+        { artifact_id: "artifact-2", name: "verification.md", requested_version: 1, version: 1 },
+      ],
+      latest_version: 1,
+      state: "awaiting",
+    }),
+    "header"
+  );
+  try {
+    const label = "Awaiting approval of spec.md v1 and verification.md v1";
+    const chip = screen.getByRole("button", { name: label });
+    expect(chip.textContent).toBe(label);
+    expect(chip.title).toBe("");
+  } finally {
+    view.unmount();
+  }
+});
+
 test("the header hides Approve for a current approval but offers Request changes", () => {
   const view = renderChip(artifact({ latest_version: 3, state: "approved", version: 3 }), "header");
   try {
