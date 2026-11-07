@@ -129,11 +129,20 @@ jobs:
           while read -r act sha; do
             case $act in dispatch) ;; *) continue ;; esac
             # The dispatch retries too: it is the act this whole backstop exists to perform, and
-            # a 502 on it would leave the untested commit on main with no run at all. A dispatch
-            # GitHub accepted and then failed to answer is retried into a second run of ci.yaml
-            # on the same tip, which costs a duplicate run and tests the same tree twice; no run
-            # at all is the outcome this workflow was written to prevent. The loop is over the
-            # acts the decision wrote, not over the attempts: the attempts are the helper's.
+            # a 502 on it would leave the untested commit on main with no run at all. It is a
+            # write, so a repeat is a cost rather than nothing: a dispatch GitHub accepted and
+            # then failed to answer is retried into a second run of ci.yaml on the same tip.
+            # Read ci.yaml's own `concurrency:` block for what that costs: off a pull request
+            # the group is `ci-<sha>` and `cancel-in-progress` is false, so the second run
+            # queues behind the first rather than running beside it or cancelling it. The cost
+            # is therefore the same tree tested twice in sequence, and never a run that was
+            # about to pass being cancelled. No run at all is the outcome this workflow was
+            # written to prevent, so a repeat whose worst case is a queued duplicate is the
+            # cheaper side. This is why a write is retried here where dispatch://INFRA-1544
+            # excepts a mutation from its own ring: that non-goal is about a call whose repeat
+            # is not safe, and this call's repeat is benign while its failure mode is the
+            # absence the backstop exists to prevent. The loop is over the acts the decision
+            # wrote, not over the attempts: the attempts are the helper's.
             retry_fetch "the ci.yaml dispatch" 30 -- \
               gh workflow run ci.yaml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME"
             echo "::notice::$sha reached $GITHUB_REF_NAME with no passing merge-group ci-ok, so ci.yaml was started on $GITHUB_REF_NAME, whose tip contains it"
