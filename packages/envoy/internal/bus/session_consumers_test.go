@@ -460,24 +460,37 @@ func TestRestartAtFloorWithAMessageAwaitingAnAckCreatesTheConsumerAgain(t *testi
 	requireNoMessage(t, again, 300*time.Millisecond)
 }
 
-// waitForAckFloor waits for the server to have taken the acks that bring sessionID's ack floor to
-// floor: an ack is a publish the server answers nothing to.
-func waitForAckFloor(t *testing.T, consumers *SessionConsumers, sessionID string, floor uint64) {
+// waitUntil polls ready every 20 ms until it reports true, and fails the test after 5 s naming
+// want, which is what the caller waited for, and the reading ready last took. One bound serves
+// every caller: each waits on a state that follows a publish the server answers nothing to -- an
+// ack, a nak, a delivery -- so the state arrives a moment after the call that caused it rather
+// than with it, and the server it arrives at is in this process.
+func waitUntil(t *testing.T, want string, ready func() (bool, string)) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
+		done, got := ready()
+		if done {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("waited 5s for %s; %s", want, got)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// waitForAckFloor waits for the server to have taken the acks that bring sessionID's ack floor to
+// floor.
+func waitForAckFloor(t *testing.T, consumers *SessionConsumers, sessionID string, floor uint64) {
+	t.Helper()
+	waitUntil(t, fmt.Sprintf("the ack floor of %s to reach %d", sessionID, floor), func() (bool, string) {
 		info, err := consumers.Info(context.Background(), sessionID)
 		if err != nil {
 			t.Fatalf("info: %v", err)
 		}
-		if info.AckFloor.Stream == floor {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the ack floor stayed %d, want %d", info.AckFloor.Stream, floor)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return info.AckFloor.Stream == floor, fmt.Sprintf("it stayed %d", info.AckFloor.Stream)
+	})
 }
 
 // A restart whose floor lies below the stream's first sequence, the messages after the floor gone
@@ -736,25 +749,20 @@ func TestNakWithDelayRedelivers(t *testing.T) {
 	}
 }
 
-// waitForAckPending waits up to 5 s for sessionID's consumer to hold want messages awaiting an ack
-// and answers the info that read it: an ack and a nak are both a publish the server answers
-// nothing to, so the count follows the call rather than arriving with it.
+// waitForAckPending waits for sessionID's consumer to hold want messages awaiting an ack and
+// answers the info that read it.
 func waitForAckPending(t *testing.T, consumers *SessionConsumers, sessionID string, want int) *jetstream.ConsumerInfo {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		info, err := consumers.Info(context.Background(), sessionID)
+	var info *jetstream.ConsumerInfo
+	waitUntil(t, fmt.Sprintf("the consumer of %s to hold %d messages awaiting an ack", sessionID, want), func() (bool, string) {
+		read, err := consumers.Info(context.Background(), sessionID)
 		if err != nil {
 			t.Fatalf("info: %v", err)
 		}
-		if info.NumAckPending == want {
-			return info
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the consumer holds %d messages awaiting an ack, want %d", info.NumAckPending, want)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		info = read
+		return info.NumAckPending == want, fmt.Sprintf("it holds %d", info.NumAckPending)
+	})
+	return info
 }
 
 // Release gives the server back, at once, every message the pull holds that its caller never
@@ -816,19 +824,12 @@ func TestReleaseReturnsTheMessagesThePullHoldsUnread(t *testing.T) {
 // pull's inbox subscription queues each message when nats.go hands it over.
 func waitForQueued(t *testing.T, pull *SessionPull, want int) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	waitUntil(t, fmt.Sprintf("the pull of consumer %s to hold %d messages unread", pull.name, want), func() (bool, string) {
 		pull.mu.Lock()
 		held := len(pull.queue)
 		pull.mu.Unlock()
-		if held == want {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the pull holds %d messages unread, want %d", held, want)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return held == want, fmt.Sprintf("it holds %d", held)
+	})
 }
 
 // A hand-over that could not reach the server at all says so, rather than reporting a whole

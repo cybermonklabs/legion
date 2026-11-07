@@ -695,6 +695,60 @@ func TestSessionConsumerRelayLosingItsSessionReturnsTheMessageItHolds(t *testing
 	}
 }
 
+// A hand-over that could not reach the server says so: its line names the error and counts
+// nothing returned, rather than reporting a whole hand-over. A reader told the messages were
+// given back expects the session's next owner to be delivered them at once, while in truth every
+// one of them waits out bus.SessionConsumerAckWait (60 s).
+func TestSessionConsumerRelayHandOverThatReachesNoServerSaysSo(t *testing.T) {
+	// The receipt wait is longer than the row, so the relay cannot pause, and so forget the frame
+	// it holds, before the row takes the session away.
+	rig := newRelayRigReceipt(t, relayPauseFirst, relayPauseMax, 30*time.Second)
+	sessionID := "ses_relay_handover_lost_" + id.New()
+	// A nil answer leaves the stand-in silent, so the frame stays outstanding and its message
+	// stays delivered and unacked.
+	standIn := startSessionStandIn(t, rig.url, sessionID, nil)
+	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
+	stored, _ := rig.storeEvent(t, contracts.AgentSubject(sessionID))
+	requireFrames(t, standIn.collect(t, 1, 5*time.Second), stored)
+	awaitAckState(t, rig.consumers, sessionID, 1, 0)
+
+	// Closing the listener's own session-consumer connection leaves the hand-over nothing to
+	// reach the server with, as a listener whose connection is gone when it loses the session
+	// has: the nak of the frame the run holds and the drain of its pull both fail on it. The
+	// test reads the consumers through a connection of its own, which this leaves open.
+	rig.deps.consumers.close()
+	rig.relays.setOwned(false)
+
+	const failed = `"msg":"session relay stopped; it could not give the server back every message it held, and each one it did not is delivered again only after the consumer's ack wait"`
+	const whole = `"msg":"session relay stopped; it gave the server back the messages it held, so they are delivered again at once rather than after the consumer's ack wait"`
+	awaitLogLine(t, rig, failed, 15*time.Second)
+	// The log is read once the hand-over line is in it: before that the run has written neither
+	// line, and a missing line of a whole hand-over would say nothing.
+	logs := rig.harness.logs.String()
+	var line string
+	for candidate := range strings.SplitSeq(logs, "\n") {
+		if strings.Contains(candidate, failed) && strings.Contains(candidate, `"session_id":"`+sessionID+`"`) {
+			line = candidate
+		}
+	}
+	if line == "" {
+		t.Fatalf("no line reports a failed hand-over of session %s:\n%s", sessionID, logs)
+	}
+	var record struct {
+		Returned *int   `json:"returned"`
+		Error    string `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(line), &record); err != nil {
+		t.Fatalf("decode the hand-over line of session %s: %v\n%s", sessionID, err, line)
+	}
+	if record.Returned == nil || *record.Returned != 0 || record.Error == "" {
+		t.Fatalf("the hand-over line of session %s must count nothing returned and name what failed:\n%s", sessionID, line)
+	}
+	if strings.Contains(logs, whole) {
+		t.Fatalf("the run reported a whole hand-over as well, having reached the server with nothing at all:\n%s", logs)
+	}
+}
+
 // A relay that loses its session while it holds many messages gives every one of them back: the
 // listener the session moves to is delivered all 200, each exactly once, each as a second
 // delivery, and in stream order, rather than waiting out bus.SessionConsumerAckWait (60 s) for
