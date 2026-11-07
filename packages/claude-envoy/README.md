@@ -78,11 +78,11 @@ message from Dispatch's Agents page as that person's own turn.
   messages to a role it holds, and every followed topic the stream stores, in stream order. The
   server answers each frame `received` as it decodes and `done` once the session has it: in a
   Legion pane once the bridge reports that Claude Code took the delivery, and in a terminal
-  session once the mod has stored the row in the turn running (`$.session.append`), or, while
-  the session is idle, once Claude Code has written the row of the prompt the card became
-  (`$.prompt.submit`). Envoy sends a frame no row answered again, and the mod writes each Envoy
-  event once, by its event id (`writeOnce` in `hooks/mod-writer.ts`), so the repeat is answered
-  with the row the first write made.
+  session once the mod reports the write: a row stored in the turn running
+  (`$.session.append`), or, while the session is idle, a prompt the engine took
+  (`$.prompt.submit`). Envoy sends a frame the mod reported no write for again, and the mod
+  writes each Envoy event once, by its event id (`writeOnce` in `hooks/mod-writer.ts`), so the
+  repeat is answered from the first write's record.
   A frame not taken yet when Claude Code stops, or published while the session was not running
   or disconnected, comes again and is delivered once, for up to 72 hours.
   Team and other ad-hoc topics, which the

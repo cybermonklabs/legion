@@ -165,8 +165,9 @@ export interface ModSession {
    * which one prompt of the mod's quotes in full when the turn ends without a request having
    * read it (`unreadRowPrompt`).
    *
-   * It resolves when the mod answers with the row the card became, and on nothing else: the
-   * row is the proof the session has the card. A session that cannot take it — stopped, wedged,
+   * It resolves when the mod answers with the write the card became - a row appended, or a
+   * prompt the engine took - and on nothing else: that answer is the proof the session has the
+   * card. A session that cannot take it — stopped, wedged,
    * gone — answers nothing, so this rejects when `showMs` is up, the frame goes unanswered, and
    * Envoy sends the card again (check k7's SIGSTOP, message, SIGKILL and `claude --resume <id>`
    * clause). That resend is written once: the mod records the row each `eventId` became and

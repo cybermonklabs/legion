@@ -33,7 +33,7 @@ skipped, already shown or a late BTW, which is passed over. In a Legion pane the
 resolves when `legion claude-bridge` answers its inbox, which it does once Claude Code re-emits
 the delivery as the user message it took (`--replay-user-messages`); in a terminal session it
 resolves once the mod has stored the row, and while the session is idle the card is a prompt
-instead and the write resolves on the row Claude Code writes for that prompt (`show`). A write
+instead and the write resolves once the mod reports that the engine took it (`show`). A write
 that fails
 answers `nak`, and from the frame's third delivery `done` with a notice naming it; a frame that
 arrives after a `/clear` moved the session to another id is answered `nak`. The core copies of
@@ -312,8 +312,9 @@ above says how to run it).
   handoff v6: rows 8 and 10 of session 225642d4 carried the one card, and two subtests of the
   `envoy-session-stall` lane read it twice). A card that arrives during a turn keeps the row
   and the unread-row prompt behind it.
-- Answer a card's Envoy frame on the row the mod answers with, and on nothing else: the row is
-  the proof the session has the message. Nothing else is: a `$.prompt.submit` can wait for a
+- Answer a card's Envoy frame on the write the mod reports - a row appended, or a prompt the
+  engine took - and on nothing else: that answer is the proof the session has the message.
+  Nothing else is: a `$.prompt.submit` can wait for a
   turn already running before the engine takes it, and a request handed to a poll is a write
   into a socket buffer that a SIGSTOPped process never reads (INFRA-1026 review, round eleven,
   repro `R-A`). `show` waits up to `SHOW_TIMEOUT_MS` and rejects without an answer, which leaves

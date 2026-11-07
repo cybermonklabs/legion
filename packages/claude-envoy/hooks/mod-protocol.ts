@@ -606,7 +606,7 @@ export interface ModCallArguments {
     /**
      * The Envoy event this message is, which the mod's write is idempotent by: it records the
      * row each id became and answers a replay of that id with the recorded row, writing
-     * nothing (`$.store`, `./mod.ts`). Every message that reached the session as a frame of
+     * nothing (`$.store`, `./mod-writer.ts`). Every message that reached the session as a frame of
      * Envoy's carries it — a card and a person's own message alike, since a person's message
      * whose answer is late comes again as a card under that same id and must be the one write
      * (`../src/mod-session.ts`, `deliver`). The Dispatch attempt records nothing of that: it
@@ -644,7 +644,8 @@ export interface ModCallResults {
   /**
    * The row the message became, and which write wrote it, or why nothing was written.
    *
-   * The row is the proof: a caller answers its Envoy frame on this uuid and on nothing else.
+   * The mod's answer is the proof: a caller answers its Envoy frame on a write this reports - a
+   * row appended, or a prompt the engine took - and on nothing else.
    * `as` says which write the mod made — `row` for a `$.session.append` into the turn running,
    * `prompt` for a `$.prompt.submit` an idle session took — and every answer carries it, a
    * refusal included, because that is what a caller reads a refusal by: a prompt the session
