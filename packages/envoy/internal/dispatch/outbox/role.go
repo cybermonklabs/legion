@@ -336,9 +336,11 @@ func resolveRoles(ctx context.Context, deps Deps, names []string) map[string]rol
 // the same cause, the outbox and the sender resolving the holder separately a round trip apart:
 // a role this read names H1 for can be pinned to H2, whose copies this read holds by nothing
 // and whose key is H1's. What model.DeliveryClaimLapse bounds is the publishing and not the
-// double: such a copy goes out only while the attempt is live, past which every copy is the
-// fallback pass's, while the mention it stands beside lands whenever its send does - the
-// staging measured the two 7.2 s and 11.8 s apart - which no lease bounds
+// double: such a copy goes out under the event's own key only while the attempt is live, past
+// which a copy bound for a session's own topic is the fallback pass's and a forward carrying no
+// key for that mention waits on in the event's list, while the mention it stands beside lands
+// whenever its send does - the staging measured the two 6.9 s and 11.4 s apart, the copies at
+// +0.275 s and +0.401 s and the mentions at +7.221 s and +11.765 s - which no lease bounds
 // (TestAnUnnamedRoleMentionPinnedToTheThreadAuthorShowsItTheCommentTwice,
 // TestAnUnnamedRoleMentionPinnedToAFollowerShowsItTheCommentTwice,
 // TestAnUnnamedRoleMentionPinnedToAPrimaryDocumentAuthorShowsItTheCommentTwice).

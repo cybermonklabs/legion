@@ -43,14 +43,17 @@ import (
 //
 // What model.DeliveryClaimLapse bounds is the publishing of that copy and not the double: a
 // copy goes out under the event's own key only while the attempt is live, past which the
-// attempt's state is every session's and every copy of the comment is the fallback pass's
-// (unpinnedRoleMentions.resendingUnnamed, TestAFallbackRowWaitsWhileItsUnnamedMentionIsOwedAResend). The mention
+// attempt's state is every session's, a copy bound for a session's own topic is the fallback
+// pass's and a forward that carries no key for that mention waits on in the event's list
+// (unpinnedRoleMentions.resendingUnnamed, TestAFallbackRowWaitsWhileItsUnnamedMentionIsOwedAResend,
+// TestAForwardWaitsForTwoUnnamedMentionsPastTheirLease). The mention
 // it stands beside lands whenever its send does - the sweep resends an attempt past that lease,
 // and a sender holding it queued sends it when its lane reaches it - which no lease bounds.
 //
 // Measured on the real binaries at this head, 20 comments in this very staging: 2 of the 20
 // reached this session twice, the author copy first both times (+0.275 s and +0.401 s) and the
-// mention after it (+7.221 s and +11.765 s, within that lease and under its own key), while the
+// mention after it (+7.221 s and +11.765 s, within that lease and under its own key, which is
+// 6.9 s and 11.4 s after the copy), while the
 // other 18 reached it once. With the same session also the issue's claimant it was 0 of 20,
 // because then its copy is one this head holds back until the attempt settles
 // (TestACommentAnUnansweredRoleMentionWhoseHolderTheOutboxCannotNameReachesThatSessionOnce).
