@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -333,7 +334,9 @@ func stoppedWaitingImplementer(t *testing.T, h *harness) claim.Token {
 }
 
 // freshSessionLine is admission's waiting line and the facts it is read from, read exactly as a
-// promotion reads them: the order in which the next slot is offered.
+// promotion reads them — blockers.JudgeLine, the one place the line is judged, which fills the
+// held set and the children-first waits the line cannot judge itself: the order in which the
+// next slot is offered.
 func freshSessionLine(t *testing.T, h *harness, records record.Store) ([]record.LineEntry, record.LineFacts) {
 	t.Helper()
 	var (
@@ -355,8 +358,8 @@ func freshSessionLine(t *testing.T, h *harness, records record.Store) ([]record.
 		if facts, err = record.ReadLineFacts(h.ctx, tx, records, testDispatchProject, issues, config.DesignGateRootIssues.Steps()); err != nil {
 			return err
 		}
-		line = record.Waiting(issues, slots, facts)
-		return nil
+		_, facts, line, err = blockers.JudgeLine(h.ctx, tx, records, testDispatchProject, issues, slots, facts, nil)
+		return err
 	}); err != nil {
 		t.Fatalf("read the waiting line: %v", err)
 	}

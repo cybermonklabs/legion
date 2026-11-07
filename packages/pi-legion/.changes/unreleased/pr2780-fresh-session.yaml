@@ -6,7 +6,10 @@ body: |-
   claim — which is what a session a provider keeps refusing needs, and it also puts that claim's
   run of provider-error turns back to zero, so the controller can be told a second time. A phase
   worker that comes back owing no task is started through its issue's current phase, so the new
-  session is handed that phase's work rather than nothing. It is the
+  session is handed that phase's work rather than nothing. When the workflow refuses that phase's
+  restart, the answer carries `phaseNotRestarted` rather than being empty: the claim is back in a
+  new session owing no task, the sentence says why nothing restarted its phase, and the
+  controller asks again once that cause is gone. It is the
   same daemon operation `legion claims retry --fresh-session` runs for an operator, called through
   the controller's own grant. A new session loses everything the old one held, and the daemon
   refuses a claim in a turn (`CLAIM_IN_A_TURN`), a claim whose launch is in flight

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
+	legionclaim "github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 )
 
@@ -46,16 +47,20 @@ func TestClaimsRetryFreshSessionSendsTheFreshSessionBody(t *testing.T) {
 
 // A fresh session whose phase restart the workflow refused answers 200 with the claim and that
 // refusal (api.FreshSessionResponse.PhaseNotRestarted, served on the operator's retry as
-// api.OperatorClaim.PhaseNotRestarted), where the route once answered 409. The claim's own line
-// says the claim is back, so the refusal is a line of its own under it: without it an operator
-// reads a success and no word of the work nothing handed the claim. Every other answer carries
-// no refusal and prints the claim's line alone.
+// api.OperatorClaim.PhaseNotRestarted). The claim's own line says the claim is back, so the
+// refusal is a line of its own under it: without it an operator reads a success and no word of
+// the work nothing handed the claim. Every other answer carries no refusal and prints the
+// claim's line alone.
+//
+// The claim is a phase worker's, since that is the only claim the daemon writes this answer for:
+// an architect is never started through a phase at all (api's freshSession).
 func TestARetryWhosePhaseRestartWasRefusedPrintsTheRefusalUnderTheClaim(t *testing.T) {
-	retried := api.OperatorClaim{Token: architectClaim, Tree: "LEGION-208", Issue: "LEGION-208",
-		Role: "architect", Generation: 3, State: "launching", PluginContract: api.DaemonAPIVersion}
-	line := string(architectClaim) + " architect LEGION-208 launching 3 " + thisBinarysContract + " - -\n"
-	refusal := "LEGION-208 is still held after the retry of its phase implementing, so nothing relaunched " +
-		string(architectClaim) + ": its tree lingers, and a lingering tree's members stay where they stood"
+	const implementerClaim = legionclaim.Token("legion-legion-legion-209-implementer")
+	retried := api.OperatorClaim{Token: implementerClaim, Tree: "LEGION-208", Issue: "LEGION-209",
+		Role: "implementer", Generation: 3, State: "launching", PluginContract: api.DaemonAPIVersion}
+	line := string(implementerClaim) + " implementer LEGION-209 launching 3 " + thisBinarysContract + " - -\n"
+	refusal := "LEGION-209 is still held after the retry of its phase implementing, so nothing relaunched " +
+		string(implementerClaim) + ": its tree lingers, and a lingering tree's members stay where they stood"
 	for _, tc := range []struct {
 		name  string
 		claim api.OperatorClaim

@@ -458,11 +458,13 @@ func (m *Machine) runParkedLaunchNow(ctx context.Context, ev Event) error {
 		return nil
 	}
 	if pending := m.claim.Pending; pending != nil {
-		replaced, err := m.replaceOwedTask(ctx, pending,
-			"supervise: the operator's task replaces the one a provider error took back, and the launch parked over the claim's process runs for it")
+		owed, attempt := pending.ID, pending.ProviderErrorRetries
+		replaced, err := m.replaceOwedTask(ctx)
 		if err != nil || !replaced {
 			return err
 		}
+		m.log.Info("supervise: the operator's task replaces the one a provider error took back, and the launch parked over the claim's process runs for it",
+			"owed", owed, "attempt", attempt)
 	}
 	waiting := m.wake
 	m.wake = nil

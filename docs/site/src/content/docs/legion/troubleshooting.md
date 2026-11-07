@@ -536,6 +536,12 @@ refuses has forgotten the session all the same: the claim keeps its state and it
 daemon's log names the session it dropped, and the same command works once the refusal's cause
 is gone. What a refusal does on its own, before any of this, is in the paragraphs above and in
 [Starting fresh when a session is lost or wedged](https://github.com/sjawhar/legion/blob/main/docs/kubernetes.md#starting-fresh-when-a-session-is-lost-or-wedged).
+When the workflow refused that phase's restart — a lingering tree, whose members stay where they
+stood, is the usual cause — the command prints a second line under the claim's own, saying the
+claim is back in a new session owing no task and why nothing restarted its phase, and the
+controller's `fresh_session` answers that same sentence as `phaseNotRestarted` rather than an
+empty answer: the claim is running with no work, so clear what the line names and run the
+command again to hand the claim its phase's task.
 
 When a failed architect's session was lost with its volume, clear the stopped claim's matching
 record before retrying:

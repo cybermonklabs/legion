@@ -227,8 +227,8 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 		if (id != "" && pending.ID == id && pending.Task == task) || delivered {
 			return nil
 		}
-		replaced, err := m.replaceOwedTask(ctx, pending,
-			"supervise: a newer task replaces the one a provider error took back", "delivery", id)
+		owed, attempt := pending.ID, pending.ProviderErrorRetries
+		replaced, err := m.replaceOwedTask(ctx)
 		if err != nil {
 			return err
 		}
@@ -238,6 +238,8 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 			}
 			return &RefusedError{State: m.claim.State, Request: "deliver", Err: ErrDeliveryPending}
 		}
+		m.log.Info("supervise: a newer task replaces the one a provider error took back",
+			"owed", owed, "attempt", attempt, "delivery", id)
 	}
 	if delivered {
 		m.log.Info("supervise: the row's task was already given; not queued again", "row", request.Row, "delivery", id)

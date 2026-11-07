@@ -181,6 +181,13 @@ func roleList() string {
 // machine answers a refusal: the caller reads an error and the phase runs on in the session the
 // provider keeps refusing.
 //
+// What this order costs is the session id of a refused start, which the forget has dropped by
+// then. The claim such a refusal leaves behind records no session, so its next accepted start
+// spawns a fresh agent rather than resuming the one it had. Only the claim's record of the
+// session goes: the session and its file stand, and this logs the id it dropped, so an operator
+// who wanted that session can read it there. A forget that loses the race to the lane, by
+// contrast, leaves no way at all to drop the session the request was for.
+//
 // The resume goes before the phase's restart, so the claim is back in its new session before
 // anything the workflow may refuse is asked for. Only an operator's own suspension holds the
 // start a restart queues (supervise's Claim.RuleHolds, which the outbox's start row and
@@ -203,13 +210,6 @@ func roleList() string {
 // stopped behind a suspension no rule of the daemon's lifts and the controller's own door
 // cannot — the controller asks for a fresh session and a compaction, never a resume, so such a
 // worker would stand until an operator resumed it.
-//
-// What this order costs is the session id of a refused start, which the forget has dropped by
-// then. The claim such a refusal leaves behind records no session, so its next accepted start
-// spawns a fresh agent rather than resuming the one it had. Only the claim's record of the
-// session goes: the session and its file stand, and this logs the id it dropped, so an operator
-// who wanted that session can read it there. A forget that loses the race to the lane, by
-// contrast, leaves no way at all to drop the session the request was for.
 //
 // Two states and one claim are refused. A claim in a turn is refused because suspending it would
 // cut that turn off, and the turn may be the one that ends the run; the caller is told to ask
