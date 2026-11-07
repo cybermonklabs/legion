@@ -397,7 +397,7 @@ jobs:
           DISPATCH_E2E_FILE_STORE_BUCKET: dispatch-e2e-files
       # This leg's half of the run's report. Always, not on failure alone: the merge job reads
       # every leg's blob, and a leg whose blob is missing fails it by name.
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: dispatch-browser-blob-shard-${{ matrix.shard }}-${{ github.run_attempt }}
@@ -406,7 +406,7 @@ jobs:
             ${{ runner.temp }}/rows
       # Always, not on failure alone: the memory and CPU readings are of the run that passed as
       # much as of the one that did not.
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: dispatch-browser-samples-shard-${{ matrix.shard }}-${{ github.run_attempt }}
@@ -425,7 +425,7 @@ jobs:
       # the merge job's flake reading exists to explain among it. The trace it carries is of the
       # attempt that failed: the config's `trace: 'retain-on-first-failure'` records the first
       # attempt and keeps it when that attempt failed. A green run's upload is small.
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: dispatch-browser-test-results-shard-${{ matrix.shard }}-${{ github.run_attempt }}
@@ -690,7 +690,7 @@ jobs:
         working-directory: packages/dispatch
       # This leg's half of the run's report. Always, not on failure alone: the merge job reads
       # every leg's blob, and a leg whose blob is missing fails it by name.
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: dispatch-browser-blob-alone-${{ matrix.project }}-${{ github.run_attempt }}
@@ -700,7 +700,7 @@ jobs:
       # Always, not on failure alone: the memory and CPU readings are of the run that passed as
       # much as of the one that did not, and on this job they are also what says the machine was
       # quiet while it measured.
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: dispatch-browser-samples-alone-${{ matrix.project }}-${{ github.run_attempt }}
@@ -719,7 +719,7 @@ jobs:
       # is retried and none is reported flaky; a row that fails fails the leg, and the trace it
       # carries is of its one attempt, which the config's `trace: 'retain-on-first-failure'`
       # keeps. A green run's upload is small.
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: dispatch-browser-test-results-alone-${{ matrix.project }}-${{ github.run_attempt }}
@@ -857,7 +857,7 @@ jobs:
       # `retries: 0` (e2e/playwright.config.ts), so a row that fails fails this job and this
       # upload runs. The shard job's copy is `if: always()` because a retried row there can pass
       # and leave the job green.
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
           name: dispatch-browser-multiprocess-test-results-${{ github.run_attempt }}
@@ -913,7 +913,7 @@ jobs:
       # pattern matches them all; two attempts of one leg hold the same inner paths, so merging
       # them into one directory let one attempt overwrite the other in an order nothing fixes.
       - name: Download every leg's blob report
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: dispatch-browser-blob-*
           path: ${{ runner.temp }}/blobs
@@ -957,7 +957,7 @@ jobs:
         working-directory: packages/dispatch
       - name: Upload the merged report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dispatch-browser-report-${{ github.run_attempt }}
           path: |
