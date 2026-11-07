@@ -4,11 +4,13 @@
 #
 # One row per distinct upstream image. Each row holds:
 #
-#   upstream  where the image comes from: the image's own Docker Hub reference.
+#   upstream  where the image comes from: the image's own reference at its own registry. Every
+#             row but the playwright one below names Docker Hub, which is why the rest of this
+#             file says Docker Hub where it means the upstream registry.
 #             .github/scripts/mirror-ci-images.sh copies the repository of this reference at the
 #             row's digest, and never the tag it names, so the bytes it lands are this row's
 #             bytes whatever upstream did since. That script copies only a row the package does
-#             not hold, so this repository reads Docker Hub a few times a year.
+#             not hold, so this repository reads an upstream registry a few times a year.
 #   tag       the copy's tag in the package. A tag keeps the manifest from being a package
 #             version nothing names, which a retention policy may remove. The rule is the
 #             upstream repository's last path element, then the upstream tag when the row names
@@ -67,6 +69,17 @@ images:
   - upstream: docker.io/chrislusf/seaweedfs:3.97
     tag: seaweedfs-3.97-bb05d66d
     digest: sha256:bb05d66d2963b1cc48073190781c3dd29e2c4c88a2ae2986bf58e38c86d89c6e
+
+  # The Playwright container the Dispatch browser suite's visual job compares its snapshots in
+  # (.github/workflows/dispatch-browser.yaml's visual job, packages/dispatch/e2e/visual-run.sh).
+  # A baseline is a rendering, so the fonts, the freetype and the browser build that made it
+  # decide every pixel of it: the container is what makes one taken by a person and one taken by
+  # CI the same image. Microsoft publishes it and nobody else does, so this is the one row whose
+  # upstream is not Docker Hub. Its tag is the Playwright release bun.lock resolves, and
+  # .github/scripts/check-playwright-image.sh fails the build when the two disagree.
+  - upstream: mcr.microsoft.com/playwright:v1.64.1-noble
+    tag: playwright-v1.64.1-noble-2f05f8a7
+    digest: sha256:2f05f8a734509a7b3f26a912639488ee08f58a7b292d14d62271bcff9038768f
 
   # The judge container of pi-legion's skill scenarios: rig.sh's judge_image.
   - upstream: docker.io/library/ubuntu@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
