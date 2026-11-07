@@ -106,12 +106,19 @@ jobs:
           # PYTHONDONTWRITEBYTECODE keeps the import from leaving a __pycache__ in the tree.
           row=$(PYTHONDONTWRITEBYTECODE=1 python3 - <<'PY'
           import yaml
+          from pathlib import Path
 
           IMAGES = ".github/ci-images.yaml"
           DOCKERFILE = ".github/docker/browser.Dockerfile"
 
           document = yaml.safe_load(open(IMAGES))
-          built = [row for row in document["images"] if row.get("built") == DOCKERFILE]
+          # Matched as a path and not as a string, because .github/scripts/check-ci-images.sh
+          # reads the same key as one (Path(source).is_file(), Path(source).stem). A row written
+          # `./.github/docker/browser.Dockerfile` passes that gate -- the file is there and the
+          # stem is still `browser`, so its tag rule holds -- and a string match would find no
+          # row here, force publish=true on every run, and push an image no row names.
+          built = [row for row in document["images"]
+                   if Path(str(row.get("built", ""))) == Path(DOCKERFILE)]
           if len(built) > 1:
               raise SystemExit(
                   f"::error file={IMAGES}::{len(built)} rows of this file are built from "
@@ -274,7 +281,11 @@ jobs:
       # the digest the row already names, which is the image every consumer pins either way. The
       # author of the push that writes the row reads this digest out of this job's log, so it is
       # printed on a line of its own, and the size and layer count are printed beside it so that
-      # a build whose image grew says so where it happened.
+      # a build whose image grew says so where it happened. The tag is derived here a second
+      # time, exactly as the `Tag what this build pushed` step above derives it, because a run
+      # that published nothing never ran that step and still has to name the tag the row
+      # carries; .github/scripts/check-ci-images.sh's tag_rule is where that rule lives, and
+      # both copies here must give what it gives.
       - name: Record the digest
         id: record
         env:

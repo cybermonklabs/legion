@@ -82,10 +82,11 @@ import yaml
 from ci_images import upstream_parts
 
 GOLANG = "library/golang"
-# The two kinds of row, spelled as check-ci-images.sh spells them: a row carrying `upstream:`
-# is one this script copies, and a row carrying `built:` is one this repository builds.
-UPSTREAM = "upstream"
-BUILT = "built"
+# The two kinds of row, which .github/scripts/check-ci-images.sh names: a row carrying
+# `upstream:` is one this script copies, and a row carrying `built:` is one this repository
+# builds. Each kind is written below as the literal word, because no constant of this heredoc
+# can reach the loop that reads these lines, and that loop tests the same literal: the
+# producing side and the consuming side spell the kind alike on purpose.
 
 document = yaml.safe_load(open(".github/ci-images.yaml"))
 registry = document["registry"]
@@ -96,7 +97,7 @@ for row in document["images"]:
     # that exists, and the kind column is what keeps the row away from `crane copy`.
     built = row.get("built")
     if built:
-        print("\t".join((registry, row["tag"], row["digest"], built, BUILT, "")))
+        print("\t".join((registry, row["tag"], row["digest"], built, "built", "")))
         continue
     # The row's upstream without the digest it may carry, and that same string at the row's
     # digest, which is what the copy asks for: crane drops a tag written before the `@`.
@@ -107,7 +108,7 @@ for row in document["images"]:
     # is how rule 7 of check-ci-images.sh reads the same tag.
     _, repository, tag, _ = upstream_parts(row["upstream"])
     claimed_go = tag.partition("-")[0] if repository == GOLANG else ""
-    print("\t".join((registry, row["tag"], row["digest"], source, UPSTREAM, claimed_go)))
+    print("\t".join((registry, row["tag"], row["digest"], source, "upstream", claimed_go)))
 PY
 )
 if [ -z "$rows" ]; then

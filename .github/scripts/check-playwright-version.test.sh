@@ -152,4 +152,51 @@ check "fails" "$(is "$status" 1)"
 check "says the base names no digest" "$(contains "$out" 'which names no digest')"
 check "and what to write instead" "$(contains "$out" 'write ghcr.io/cybermonklabs/legion/ci@<digest>')"
 
+echo "case: a bun.lock resolving no playwright"
+root=$(fixture lock-without-playwright)
+# The client's own entry, not @playwright/test's and not playwright-core's: those two resolve
+# alongside it, and neither is the package this gate reads the release out of.
+sed -i '/^    "playwright": \["playwright@/d' "$root/bun.lock"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "says the lockfile resolves no playwright" \
+  "$(contains "$out" 'bun.lock resolves no playwright')"
+check "and names the entry it looked for" \
+  "$(contains "$out" 'the entry reads "playwright": \["playwright@<version>"')"
+
+echo "case: a Dockerfile whose every FROM opens a named stage"
+root=$(fixture no-base-from)
+sed -i "s|^FROM ghcr.io/cybermonklabs/legion/ci@$BASE_DIGEST\$|FROM ghcr.io/cybermonklabs/legion/ci@$BASE_DIGEST AS base|" \
+  "$root/.github/docker/browser.Dockerfile"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "says the file holds no base FROM" \
+  "$(contains "$out" '.github/docker/browser.Dockerfile holds no base FROM')"
+check "and says what makes every FROM a stage" "$(contains "$out" 'opens a named build stage (AS <name>)')"
+
+echo "case: a base FROM landing on a row this repository builds"
+root=$(fixture base-built-row)
+sed -i "s|upstream: mcr.microsoft.com/playwright:v$FIXTURE_VERSION-noble|built: .github/docker/browser.Dockerfile|" \
+  "$root/.github/ci-images.yaml"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the row's kind" \
+  "$(contains "$out" 'carries built: .github/docker/browser.Dockerfile and no upstream:')"
+check "and says why no release can be read from it" \
+  "$(contains "$out" 'an image this repository builds is a copy of no published Playwright')"
+check "reported at the row's built: key" \
+  "$(contains "$out" '^::error file=.github/ci-images.yaml,line=6::.github/ci-images.yaml:6:')"
+
+echo "case: a row whose upstream tag carries no Playwright release"
+root=$(fixture tag-without-release)
+sed -i "s|playwright:v$FIXTURE_VERSION-noble|playwright:latest|" "$root/.github/ci-images.yaml"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the tag it could not read a release out of" \
+  "$(contains "$out" 'whose tag latest carries no Playwright release')"
+check "and says how Playwright publishes its image" \
+  "$(contains "$out" 'Playwright publishes its image as v<X.Y.Z>-<variant>')"
+check "reported at the row's upstream: key" \
+  "$(contains "$out" '^::error file=.github/ci-images.yaml,line=6::.github/ci-images.yaml:6:')"
+
 summary "check-playwright-version.sh"

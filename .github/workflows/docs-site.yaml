@@ -165,7 +165,7 @@ jobs:
           name: docs-failed-shots-${{ github.run_attempt }}
           path: |
             docs/site/media/.work/failed-shots
-
+            docs/site/media/.work/harness
           if-no-files-found: ignore
       # Generates the reference pages, then builds the site; starlight-links-validator fails it on a
       # broken internal link. The build writes dist/THIRD_PARTY_NOTICES.txt (docs/site/astro.config.mjs),

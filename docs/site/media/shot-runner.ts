@@ -79,29 +79,37 @@ async function recordTimeElements(
   seededAt: string
 ): Promise<void> {
   const capturedAt = new Date().toISOString();
-  const ratio = await page.evaluate(() => window.devicePixelRatio);
   const origin = (await element?.boundingBox()) ?? { x: 0, y: 0 };
-  const times = page.locator("time");
-  const elements = [];
-  for (let i = 0; i < (await times.count()); i++) {
-    const one = times.nth(i);
-    const box = await one.boundingBox();
-    elements.push({
-      dateTime: await one.getAttribute("datetime"),
-      title: await one.getAttribute("title"),
-      text: (await one.innerText()).trim(),
-      viewport: box,
-      image:
-        box === null
-          ? null
-          : {
-              x: Math.round((box.x - origin.x) * ratio),
-              y: Math.round((box.y - origin.y) * ratio),
-              width: Math.round(box.width * ratio),
-              height: Math.round(box.height * ratio),
-            },
-    });
-  }
+  // One `evaluate`, and not a locator call per attribute, because this reading has to be a
+  // snapshot: the page goes on deriving its relative labels from the clock after the screenshot
+  // is written, so a scan spread over one round trip per attribute could record text the PNG
+  // does not hold, which is the one thing the file exists to be right about. An `evaluate` runs
+  // as a single JS task, so no text, box or node identity moves inside it.
+  const { ratio, elements: times } = await page.evaluate(() => ({
+    ratio: window.devicePixelRatio,
+    // `getBoundingClientRect()` answers a zero box for an element with no box at all, where
+    // Playwright's own `boundingBox()` answers null; `getClientRects()` is what tells the two
+    // apart, and a reader of this file needs that difference kept. `querySelectorAll` sees the
+    // main frame alone, which is every frame a locator saw here too.
+    elements: [...document.querySelectorAll("time")].map((el) => {
+      const box = el.getClientRects().length === 0 ? null : el.getBoundingClientRect();
+      return {
+        dateTime: el.getAttribute("datetime"),
+        title: el.getAttribute("title"),
+        text: el.innerText.trim(),
+        viewport: box && { x: box.x, y: box.y, width: box.width, height: box.height },
+      };
+    }),
+  }));
+  const elements = times.map((one) => ({
+    ...one,
+    image: one.viewport && {
+      x: Math.round((one.viewport.x - origin.x) * ratio),
+      y: Math.round((one.viewport.y - origin.y) * ratio),
+      width: Math.round(one.viewport.width * ratio),
+      height: Math.round(one.viewport.height * ratio),
+    },
+  }));
   const out = join(WORK, "time-elements", `${set}-${id}.json`);
   mkdirSync(dirname(out), { recursive: true });
   await Bun.write(
@@ -169,9 +177,9 @@ export async function runShotSet<Seeded>(
           ...(shot.allowEmpty ?? []),
         ]);
         const options = { animations: "disabled", caret: "hide", path: out } as const;
-        const subject = shot.element?.(page, seeded) ?? page;
-        await subject.screenshot(options);
-        await recordTimeElements(page, shot.element?.(page, seeded), set.set, shot.id, seededAt);
+        const element = shot.element?.(page, seeded);
+        await (element ?? page).screenshot(options);
+        await recordTimeElements(page, element, set.set, shot.id, seededAt);
         console.log(`${set.set}/${shot.id}: ${relative(REPO, out)}`);
       } catch (error) {
         doing = "keeping what its page showed";

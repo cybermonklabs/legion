@@ -42,12 +42,16 @@ e2e_port="${DISPATCH_E2E_PORT:-8777}"
 broker_port="${REAL_BROKER_PORT:-0}"
 e2e_dir="$(cd "$(dirname "$0")" && pwd)"
 
-# The three binaries this script starts, read here rather than below because the path is made
-# absolute against the caller's directory and this script changes to packages/envoy before it
-# uses it: DISPATCH_E2E_BROKER_BIN_DIR names a directory holding broker, dev-oidc-issuer and
-# requestseed that the caller built, which this run executes instead of building them from this
-# checkout (run-server.sh's DISPATCH_E2E_SERVER_BIN is the precedent). CI's dispatch job is
-# handed them by the job that builds them, since it runs in a container with no Go toolchain.
+# The three binaries the broker's harness needs, read here rather than below because the path is
+# made absolute against the caller's directory and this script changes to packages/envoy before
+# it uses it: DISPATCH_E2E_BROKER_BIN_DIR names a directory holding broker, dev-oidc-issuer and
+# requestseed that the caller built, which this run uses instead of building them from this
+# checkout (run-server.sh's DISPATCH_E2E_SERVER_BIN is the precedent). This script execs exactly
+# one of the first two per invocation and never runs requestseed: e2e/real-broker.ts runs that
+# one itself, out of packages/envoy/out/dispatch-e2e-broker, the fixed path the build below
+# writes to and the one ci.yaml downloads the prebuilt binaries into, which is why the check
+# below asks a directory handed over here for it too. CI's dispatch job is handed them by the
+# job that builds them, since it runs in a container with no Go toolchain.
 # Unset, the build below is this checkout's, as it always was: a developer's machine and an
 # issue pod set this no more than they set DISPATCH_E2E_SERVER_BIN. The build is skipped only
 # when the caller hands the directory over, never on a comparison of what is newer than what: a

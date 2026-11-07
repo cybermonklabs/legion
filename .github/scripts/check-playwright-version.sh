@@ -262,13 +262,20 @@ elif base is not None:
                 f"carries, and {LOCKFILE}:{lock_line} resolves "
                 f"playwright@{lock_version or '<none>'}",
             ))
+        # `upstream:` and `built:` are the two row kinds, spelled as
+        # .github/scripts/check-ci-images.sh spells them; that check owns the rule that a row
+        # carries exactly one of the two, and this one only reads which kind it got. A row
+        # carrying neither key reaches here too, since the rule refusing it is that check's, so
+        # the message says so rather than quoting a `built:` the row has not got. The line is
+        # the row's `built:` key, as every other field-level message of this gate names the key
+        # it is about; key_line falls back to the row's own line when there is no such key.
         elif not isinstance(row.get("upstream"), str):
             problems.append(at(
-                CI_IMAGES, line_of(row),
+                CI_IMAGES, key_line(row, "built"),
                 f"the row {DOCKERFILE}:{from_line} builds on carries "
-                f"built: {one_line(row.get('built'))} and no upstream: — an image this "
-                f"repository builds is a copy of no published Playwright, so nothing here says "
-                f"which release it carries, and {LOCKFILE}:{lock_line} resolves "
+                f"built: {one_line(row.get('built') or '<neither key>')} and no upstream: — an "
+                f"image this repository builds is a copy of no published Playwright, so nothing "
+                f"here says which release it carries, and {LOCKFILE}:{lock_line} resolves "
                 f"playwright@{lock_version or '<none>'}",
             ))
         else:

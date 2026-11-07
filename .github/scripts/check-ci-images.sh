@@ -165,6 +165,7 @@ import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import NamedTuple
 
 import yaml
 
@@ -418,7 +419,21 @@ rows = document.get("images")
 if not isinstance(rows, list) or not rows:
     fatal(f"{CI_IMAGES}:{key_line(document, 'images')}: images is empty, so nothing is checked")
 
-readable: list[tuple[int, str, str, str, str]] = []  # line, kind, source, tag, digest
+
+class Row(NamedTuple):
+    """One row of .github/ci-images.yaml this check could read: the line it is written on, and
+    the four things the rules below read it for. `kind` is UPSTREAM or BUILT, and `source` is
+    what that kind says the row's bytes came from: the upstream reference for an UPSTREAM row,
+    and the Dockerfile this repository builds the image from for a BUILT one."""
+
+    line: int
+    kind: str
+    source: str
+    tag: str
+    digest: str
+
+
+readable: list[Row] = []
 for row in rows:
     line = line_of(row) or key_line(document, "images")
     if not isinstance(row, dict):
@@ -499,7 +514,7 @@ for row in rows:
             f"{one_line(digest)}, which is not sha256: and 64 hex characters. {read_it}"
         )
         continue
-    readable.append((line, kind, source, tag.strip(), digest.strip()))
+    readable.append(Row(line, kind, source, tag.strip(), digest.strip()))
 
 
 def verdict(what: str, summary: str) -> None:
@@ -563,7 +578,7 @@ if MODE == PACKAGE:
     problems = []
     held = 0
     if readable:
-        statuses = manifest_status([row[4] for row in readable])
+        statuses = manifest_status([row.digest for row in readable])
         for line, kind, source, tag, digest in readable:
             status = statuses.get(digest)
             if status == "200":
@@ -593,43 +608,43 @@ if MODE == PACKAGE:
     )
 
 
-def tag_rule(kind: str, source: str, digest: str) -> str:
+def tag_rule(row: Row) -> str:
     """The tag the rule gives a row. For a row the mirror copies: the upstream repository's last
     path element, then the upstream tag when the row names one, then the first eight hex
     characters of the digest. For a row this repository builds: the stem of the Dockerfile that
     builds it, which is its name without the .Dockerfile suffix, then those same eight
     characters."""
-    short = digest.partition(":")[2][:8]
-    if kind == BUILT:
-        return f"{Path(source).stem}-{short}"
-    _, path, carried, _ = upstream_parts(source)
+    short = row.digest.partition(":")[2][:8]
+    if row.kind == BUILT:
+        return f"{Path(row.source).stem}-{short}"
+    _, path, carried, _ = upstream_parts(row.source)
     parts = [part for part in (path.rpartition("/")[2], carried, short) if part]
     return "-".join(parts)
 
 
-by_digest: dict[str, tuple[int, str, str, str, str]] = {}
-by_tag: dict[str, tuple[int, str, str, str, str]] = {}
+by_digest: dict[str, Row] = {}
+by_tag: dict[str, Row] = {}
 for row in readable:
     line, kind, source, tag, digest = row
     earlier = by_digest.get(digest)
     if earlier is not None:
         problems.append(
             f"{CI_IMAGES}:{line}: {digest} is also the digest of the row for "
-            f"{one_line(earlier[2])} on line {earlier[0]}. The row is what says which image a "
-            f"digest is, so one digest names one row: delete one of them."
+            f"{one_line(earlier.source)} on line {earlier.line}. The row is what says which "
+            f"image a digest is, so one digest names one row: delete one of them."
         )
     else:
         by_digest[digest] = row
     earlier = by_tag.get(tag)
     if earlier is not None:
         problems.append(
-            f"{CI_IMAGES}:{line}: tag {tag} is also the tag of the row for {one_line(earlier[2])} "
-            f"on line {earlier[0]}, and the second copy would move the tag off the first row's "
-            f"digest. Give one of them another tag."
+            f"{CI_IMAGES}:{line}: tag {tag} is also the tag of the row for "
+            f"{one_line(earlier.source)} on line {earlier.line}, and the second copy would move "
+            f"the tag off the first row's digest. Give one of them another tag."
         )
     else:
         by_tag[tag] = row
-    wanted = tag_rule(kind, source, digest)
+    wanted = tag_rule(row)
     if tag != wanted:
         gives = "upstream" if kind == UPSTREAM else "Dockerfile"
         problems.append(
@@ -755,13 +770,13 @@ def judge(path: str, line: int, text: str, how: str) -> None:
     # bump's first commit lands, so the row a Go FROM names is read here against that ARG. A
     # built row is an image this repository builds and never a copy of library/golang, so it
     # carries no upstream tag to read a Go version out of.
-    if row[1] != UPSTREAM:
+    if row.kind != UPSTREAM:
         return
-    _, row_repository, carried, _ = upstream_parts(row[2])
+    _, row_repository, carried, _ = upstream_parts(row.source)
     if row_repository == GOLANG_REPOSITORY and carried.partition("-")[0] != go_pin:
         version = one_line(carried) if carried else "no version this check can read"
         problems.append(
-            f"{path}:{line}: {how} names the row for {one_line(row[2])} on line {row[0]} of "
+            f"{path}:{line}: {how} names the row for {one_line(row.source)} on line {row.line} of "
             f"{CI_IMAGES}, which copies Go {version}, and {WORKER_DOCKERFILE} pins "
             f"ARG GO_VERSION={go_pin}. A stage that builds with another Go is not the Go the "
             f"worker's toolchain stage downloads, so name the row at {go_pin} here. Raising Go "
