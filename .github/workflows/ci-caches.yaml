@@ -494,7 +494,9 @@ jobs:
           outputs: type=cacheonly
           provenance: false
           cache-from: type=gha,scope=envoy-listener-bun-deps
-          cache-to: ${{ github.ref == 'refs/heads/main' && 'type=gha,mode=min,scope=envoy-listener-bun-deps,ignore-error=true' || '' }}
+          # PROBE ONLY (dispatch://INFRA-1526, k5): the probe branch's own ref in place of
+          # refs/heads/main, so this branch's fill writes an entry its own runs can read.
+          cache-to: ${{ github.ref == 'refs/heads/probe/infra-1526' && 'type=gha,mode=min,scope=envoy-listener-bun-deps,ignore-error=true' || '' }}
 
       # The second stage, under its own scope. It is built in a step of its own rather than as
       # one build's by-product: go-deps sits on a base image of its own and on no part of
@@ -511,4 +513,78 @@ jobs:
           outputs: type=cacheonly
           provenance: false
           cache-from: type=gha,scope=envoy-listener-go-deps
-          cache-to: ${{ github.ref == 'refs/heads/main' && 'type=gha,mode=min,scope=envoy-listener-go-deps,ignore-error=true' || '' }}
+          # PROBE ONLY (dispatch://INFRA-1526, k5): as the step above.
+          cache-to: ${{ github.ref == 'refs/heads/probe/infra-1526' && 'type=gha,mode=min,scope=envoy-listener-go-deps,ignore-error=true' || '' }}
+
+  # PROBE ONLY (dispatch://INFRA-1526, k9): the one arm64 surface this change can reach before
+  # the merge. It builds this change's Dockerfile and main's copy of it, which this branch
+  # commits beside it, on the runner label release-envoy-listener.yaml's arm64 leg uses, and
+  # reads the same three commands k4 reads from each image. It pushes nothing, publishes no tag
+  # and attests nothing, and it never reaches the pull request. No docker/setup-buildx-action:
+  # with Docker's own driver the build needs no BuildKit image of its own, and it reads no cache.
+  envoy-listener-arm-probe:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build the listener image on arm64 as this change leaves it
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        env:
+          BUILDX_METADATA_PROVENANCE: disabled
+          DOCKER_BUILD_SUMMARY: "false"
+        with:
+          context: .
+          file: packages/envoy/docker/Dockerfile
+          load: true
+          provenance: false
+          tags: legion-envoy-arm-probe:${{ github.sha }}
+
+      - name: Build the listener image on arm64 as main leaves it
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        env:
+          BUILDX_METADATA_PROVENANCE: disabled
+          DOCKER_BUILD_SUMMARY: "false"
+        with:
+          context: .
+          file: packages/envoy/docker/Dockerfile.baseline
+          load: true
+          provenance: false
+          tags: legion-envoy-arm-baseline:${{ github.sha }}
+
+      - name: Compare the two arm64 images file by file
+        env:
+          CHANGED: legion-envoy-arm-probe:${{ github.sha }}
+          BASELINE: legion-envoy-arm-baseline:${{ github.sha }}
+        run: |
+          set -eu
+          read_image() {
+            image="$1"; out="$2"
+            docker run --rm --user 0 --entrypoint find "$image" / -xdev -type f -printf '%p %s\n' | sort > "$out"
+          }
+          read_image "$CHANGED" /tmp/changed.txt
+          read_image "$BASELINE" /tmp/baseline.txt
+          normalise() {
+            sed -E 's#(/srv/dispatch-web/.*)-[A-Za-z0-9_-]{8,}\.#\1-HASH.#' "$1" | sort
+          }
+          normalise /tmp/changed.txt > /tmp/changed.norm
+          normalise /tmp/baseline.txt > /tmp/baseline.norm
+          echo "=== normalised listing difference (baseline then changed; empty is the pass)"
+          diff /tmp/baseline.norm /tmp/changed.norm && echo "(empty)"
+          echo "=== size multiset difference (empty is the pass)"
+          diff <(awk '{print $2}' /tmp/baseline.txt | sort -n) <(awk '{print $2}' /tmp/changed.txt | sort -n) && echo "(empty)"
+          echo "=== file counts"
+          wc -l /tmp/baseline.txt /tmp/changed.txt
+          for image in "$BASELINE" "$CHANGED"; do
+            echo "=== $image binaries"
+            docker run --rm --user 0 --entrypoint sha256sum "$image" \
+              /usr/local/bin/envoy-listener /usr/local/bin/envoy-dispatch \
+              /usr/local/bin/envoy-broker /usr/local/bin/agent-secrets
+            echo "=== $image notices"
+            docker run --rm --user 0 --entrypoint sha256sum "$image" \
+              /usr/share/doc/legion/THIRD_PARTY_NOTICES /srv/dispatch-web/THIRD_PARTY_NOTICES.txt
+          done
