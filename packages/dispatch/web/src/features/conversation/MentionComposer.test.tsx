@@ -2501,25 +2501,20 @@ test("a stopped send the reader comes back to a day later says its key has run o
     }
   );
   jest.useFakeTimers();
+  const user = userOnFakeClock();
   const { view } = renderComposer({ owner: { kind: "session", sessionId: "A" } });
 
   try {
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
-    fireEvent.change(field, { target: { value: "Status please" } });
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Send" }));
-    });
+    await user.type(field, "Status please");
+    await user.click(screen.getByRole("button", { name: "Send" }));
     await failToTheDeadline();
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Stop trying" }));
-    });
+    await user.click(screen.getByRole("button", { name: "Stop trying" }));
     await tick(0);
     const tried = createAgentMessage.mock.calls.length;
 
     await tick(IDEMPOTENCY_KEY_TTL_MS);
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-    });
+    await user.click(screen.getByRole("button", { name: "Retry" }));
     await tick(0);
     expect(createAgentMessage).toHaveBeenCalledTimes(tried);
     expect(screen.getByText(new SendExpiredError().message)).toBeTruthy();
