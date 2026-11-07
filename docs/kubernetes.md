@@ -4941,8 +4941,8 @@ each issue's pod (every role of it alike) and the image probe's.
   `legion claims stop` is not a second way to do that:
   it ends the agent's process and retires its claim, and for a phase worker no pass the daemon makes on its own starts that claim again, not even the one that refills a slot whose worker holds no task.
   The stop leaves the issue where it stood, in its phase, and if it held an admission slot it keeps that slot, with no worker in it;
-  an issue still waiting for a slot leaves the waiting line, because the stop ends the start it was owed:
-  a retired claim is no claim failure, so the stop writes no workflow fact and the issue's architect is not told.
+  an issue still waiting for a slot leaves the waiting line, because the next admission pass ends the start it was owed, unless a relaunch of that worker queued before the stop is still waiting to run.
+  A retired claim is no claim failure, so the stop writes no workflow fact and the issue's architect is not told.
   What starts a stopped phase worker again is the workflow's own next start of its role:
   a backward move into its phase, the promotion of a re-admitted root, or a production check's look after the issue's merge;
   the retry of a held issue is a fourth, and it starts the worker only after something else has held the issue, since the stop holds nothing.

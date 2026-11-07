@@ -2042,8 +2042,8 @@ func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues 
 // issue stood in the line's first part with the old row's place and took a slot ahead of its
 // own root.
 //
-// A row the fences keep is weighed once more, against the claim it would start: an operator's
-// stop of that worker ends the row too, since the row would otherwise start the stopped worker
+// A row the fences keep is weighed once more, against the claim it would start: a stop of that
+// worker ends the row too, since the row would otherwise start the stopped worker
 // again the moment a slot came (stopOutlivedStart). That second read is one batched RoleRuns
 // call over the rows the fences kept, and no read at all when they kept none.
 //

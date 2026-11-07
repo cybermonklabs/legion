@@ -283,7 +283,7 @@ func capFiller(t *testing.T, pool *pgxpool.Pool, root, key string) {
 // two rows lock is the pass's answer rather than the guard.
 //
 // The repair of a start that can no longer act (finishFencedStarts) ends an owed start row whose
-// worker the operator stopped, because the row would otherwise start that worker again the moment
+// worker was stopped, because the row would otherwise start that worker again the moment
 // a slot came. It is held to exactly that: the second group varies the stop rule's first term,
 // the claim's state, over a worker at work and the two suspends, and reads that every row the
 // fences keep is still owed after the pass; and the third reads the three terms of the rule
