@@ -106,7 +106,7 @@ func TestTheStateServedToAPodBeforeTheStallRecordContractLeavesTheNextCallersSta
 // be a key no pod is ever served; one below would serve it to a plugin whose schema refuses the
 // body for it.
 func TestTheStallRecordContractIsTheNumberTheBumpTakes(t *testing.T) {
-	const addedStallRecord = 56
+	const addedStallRecord = 57
 	if stallRecordContract != addedStallRecord {
 		t.Fatalf("stallRecordContract = %d, want %d, the contract whose entry in version.go adds the claim views' `step`",
 			stallRecordContract, addedStallRecord)

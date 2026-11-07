@@ -335,7 +335,7 @@ function daemonState(architect: string | undefined): LegionState {
       "INFRA-1274": {
         ...(architect === undefined
           ? {}
-          : { architect: { session: "ses_architect", state: architect, pluginContract: 56 } }),
+          : { architect: { session: "ses_architect", state: architect, pluginContract: 57 } }),
       },
     },
   } as unknown as LegionState;
@@ -411,7 +411,7 @@ test("a session never publishes to the role its own session holds", async () => 
   });
   rig.state = {
     issues: {
-      "INFRA-1300": { architect: { session: "ses_sub", state: "working", pluginContract: 56 } },
+      "INFRA-1300": { architect: { session: "ses_sub", state: "working", pluginContract: 57 } },
     },
   } as unknown as LegionState;
   await rig.teller.tellOverdue(evidenceOf());
