@@ -490,7 +490,7 @@ func invalidKey(key any, err error) error {
 // the KV operation markers nats.go's KV decodes for it today -- the KV-Operation header's DEL and
 // PURGE, which the legacy kvs.get and the jetstream package's own kvs.get both answer
 // ErrKeyDeleted for -- to tell a deleted record from a live one, in each of the two reads the
-// repair makes (session.SessionRegistry.Refresh, store.Registry.Refresh). The window the direct
+// repair makes (session.SessionRegistry.Refresh, store.Registry.RefreshAt). The window the direct
 // get leaves is one write wide and is closed without that decoding: a delete and a registration
 // each repair the session's consumer from the bucket's newest record and row (cmd/listener's
 // registeredTarget, which states what a copy behind costs that repair), and the session's next

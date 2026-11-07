@@ -5,10 +5,20 @@ package main
 // takes no lock of this process, so the bucket is what orders the two: a write built from the row
 // that registration replaced would leave the session answered 200 for a topic its consumer does
 // not filter on, and a filter update keeps the consumer's position, so every message published on
-// that topic in the window would be skipped for good. The four writes - a registration's confirm,
-// a delete's restore, an unsubscribe's refollow and a relay restart - are fenced on the row they
-// were built from (fenceFilterWrite), and each case below holds one of them open over a
-// registration on another listener and then publishes on the topic that registration added.
+// that topic in the window would be skipped for good. The five writes - a registration's confirm,
+// a delete's restore, an unsubscribe's refollow, a registration this listener did not answer
+// (settleUnanswered, whose cases are session_consumer_unanswered_registration_test.go's) and a
+// relay restart - are fenced on the row they were built from (fenceFilterWrite), and each case
+// below holds one of them open over a registration on another listener and then publishes on the
+// topic that registration added.
+//
+// Two defences stand in that window, and a case pins one of them at a time. A row stored before
+// a write's read is kept by that read being of the bucket and never of this listener's cache,
+// which the watch stopped in such a case stands for one that has not delivered the row yet; the
+// fence finds nothing moved and corrects nothing. A row stored after that read is kept by the
+// fence alone: the read answered the row that registration replaced, so an older row's filter is
+// what lands, and only a pass planned from the newest row takes the consumer back. The refollow
+// and the relay restart have a case of each order.
 //
 // The last two cases hold a confirm open over such a registration in every pass rather than in
 // one: the fence writes again from the newest row until the row stops moving, and a row that
@@ -27,7 +37,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/store"
 )
 
@@ -82,7 +91,7 @@ func TestAConfirmKeepsTheTopicARegistrationOnAnotherListenerAddedUnderItsRead(t 
 	a.deps.consumers.beforeRepairPlan, a.deps.consumers.afterRepairPlan = nil, nil
 	b.deps.consumers.afterRegisterFilter = nil
 
-	requireConsumerFilters(t, a, sessionID, kept, added)
+	requireFilters(t, a, sessionID, kept, added)
 	b.store(t, "notifications.dispatch.issue.CONFIRMFENCEADD.comment")
 	b.awaitPending(t, sessionID, 1)
 }
@@ -91,7 +100,7 @@ func TestAConfirmKeepsTheTopicARegistrationOnAnotherListenerAddedUnderItsRead(t 
 // of the bucket and its consumer call. The delete is made on a second listener, as a reaper pass
 // or a clean stop on another task makes it: it deletes the record first and the consumer after
 // it, and the restore gives the consumer back to the session whose registration landed in between
-// (deleteConsumer, restoreRegistered). The hook holds that restore between its read and its write
+// (deleteConsumer, repairRegistered). The hook holds that restore between its read and its write
 // while a registration adds a topic, stores its row and creates the consumer filtered on it.
 func TestARestoreKeepsTheTopicARegistrationAddedUnderItsRead(t *testing.T) {
 	registering := newSessionConsumerRig(t)
@@ -121,7 +130,7 @@ func TestARestoreKeepsTheTopicARegistrationAddedUnderItsRead(t *testing.T) {
 	}
 	deleting.deps.consumers.afterRepairPlan = nil
 
-	requireConsumerFilters(t, registering, sessionID, kept, added)
+	requireFilters(t, registering, sessionID, kept, added)
 	registering.store(t, "notifications.dispatch.issue.RESTOREFENCEADD.comment")
 	registering.awaitPending(t, sessionID, 1)
 }
@@ -153,7 +162,7 @@ func TestARefollowKeepsTheTopicARegistrationOnAnotherListenerAddedUnderItsRead(t
 	if answer.Delivery == nil || answer.Delivery.Mode != deliveryModeConsumer {
 		t.Fatalf("the registration on the other listener answered delivery %+v, want mode %s", answer.Delivery, deliveryModeConsumer)
 	}
-	requireConsumerFilters(t, b, sessionID, kept, added)
+	requireFilters(t, b, sessionID, kept, added)
 	row, _, err := b.harness.registry.RefreshAt(context.Background(), sessionID)
 	if err != nil || !slices.Contains(row.Topics, added) {
 		t.Fatalf("the bucket's row is %+v (%v), want %s among its topics: the registration above was answered 200 for it", row, err, added)
@@ -163,7 +172,7 @@ func TestARefollowKeepsTheTopicARegistrationOnAnotherListenerAddedUnderItsRead(t
 	if status := <-answered; status != http.StatusOK {
 		t.Fatalf("the unsubscribe answered %d, want 200", status)
 	}
-	requireConsumerFilters(t, b, sessionID, kept, added)
+	requireFilters(t, b, sessionID, kept, added)
 	b.store(t, "notifications.dispatch.issue.REFOLLOWFENCEADD.comment")
 	b.awaitPending(t, sessionID, 1)
 }
@@ -186,7 +195,7 @@ func TestARelayRestartKeepsTheTopicARegistrationOnAnotherListenerAddedUnderItsRe
 	if answer.Delivery == nil || answer.Delivery.Mode != deliveryModeConsumer {
 		t.Fatalf("the registration on the other listener answered delivery %+v, want mode %s", answer.Delivery, deliveryModeConsumer)
 	}
-	requireConsumerFilters(t, b, sessionID, kept, added)
+	requireFilters(t, b, sessionID, kept, added)
 
 	ctx, cancel := context.WithTimeout(context.Background(), consumerFilterFenceWait)
 	defer cancel()
@@ -196,8 +205,67 @@ func TestARelayRestartKeepsTheTopicARegistrationOnAnotherListenerAddedUnderItsRe
 	}
 	pull.Stop()
 
-	requireConsumerFilters(t, b, sessionID, kept, added)
+	requireFilters(t, b, sessionID, kept, added)
 	b.store(t, "notifications.dispatch.issue.RESTARTFENCEADD.comment")
+	b.awaitPending(t, sessionID, 1)
+}
+
+// An unsubscribe's refollow keeps the topic a registration on another listener stored under its
+// write. The hook below stores that row and sets the consumer's filter on it after the refollow
+// has read the bucket and before its own consumer call, which is where a registration answered
+// on another listener lands: the refollow's write then goes over that filter carrying the row it
+// replaced, and nothing outside the fence reads the consumer again, so the pass planned from the
+// newest row is the whole of the repair (fenceFilterWrite). This listener's watch is left
+// running: the row the fence corrects to is the bucket's, whatever the cache holds.
+func TestARefollowKeepsTheTopicARegistrationOnAnotherListenerStoredUnderItsWrite(t *testing.T) {
+	a := newSessionConsumerRig(t)
+	b := newSessionConsumerRig(t)
+	const sessionID = "ses_refollow_fence_write"
+	const kept = "notifications.dispatch.issue.REFOLLOWWRITEKEPT.>"
+	const dropped = "notifications.dispatch.issue.REFOLLOWWRITEDROP.>"
+	const added = "notifications.dispatch.issue.REFOLLOWWRITEADD.>"
+	a.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept, dropped))
+
+	var once sync.Once
+	a.deps.consumers.afterStoredRowRead = func() {
+		once.Do(func() { b.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept, added)) })
+	}
+	a.post(t, "/v1/interests/unsubscribe", `{"session_id":"`+sessionID+`","topics":["`+dropped+`"]}`)
+	a.deps.consumers.afterStoredRowRead = nil
+
+	requireFilters(t, b, sessionID, kept, added)
+	b.store(t, "notifications.dispatch.issue.REFOLLOWWRITEADD.comment")
+	b.awaitPending(t, sessionID, 1)
+}
+
+// A relay restart keeps the topic a registration on another listener stored under its write. The
+// restart's own call is the fence's first pass, made before the fence runs, so the hook below
+// stores that row between the restart's read of the session's topics and that call: what the
+// restart leaves on the consumer is the row it replaced, and the pass after it is what sets the
+// filter the newest row asks for (sessionRelays.settleFilter).
+func TestARelayRestartKeepsTheTopicARegistrationOnAnotherListenerStoredUnderItsWrite(t *testing.T) {
+	a := newRelayRigUnowned(t, relayPauseFirst, relayPauseMax)
+	b := newSessionConsumerRig(t)
+	const sessionID = "ses_restart_fence_write"
+	const kept = "notifications.dispatch.issue.RESTARTWRITEKEPT.>"
+	const added = "notifications.dispatch.issue.RESTARTWRITEADD.>"
+	a.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept))
+
+	var once sync.Once
+	a.deps.consumers.afterStoredRowRead = func() {
+		once.Do(func() { b.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept, added)) })
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), consumerFilterFenceWait)
+	defer cancel()
+	_, pull, outcome := a.relays.restart(ctx, &relayRun{sessionID: sessionID})
+	a.deps.consumers.afterStoredRowRead = nil
+	if pull == nil {
+		t.Fatalf("the restart of %s pulled nothing, outcome %v", sessionID, outcome)
+	}
+	pull.Stop()
+
+	requireFilters(t, b, sessionID, kept, added)
+	b.store(t, "notifications.dispatch.issue.RESTARTWRITEADD.comment")
 	b.awaitPending(t, sessionID, 1)
 }
 
@@ -232,7 +300,7 @@ func TestARepairWhoseConsumerCallAnsweredNothingTriesAgainOverTheRowThatMoved(t 
 	t.Cleanup(func() { rig.deps.consumers.consumers.SetCreateFault(nil) })
 
 	// The delete the session reaper or a clean stop makes, whose restore gives the consumer back
-	// to a session the bucket still holds a record for (deleteConsumer, restoreRegistered).
+	// to a session the bucket still holds a record for (deleteConsumer, repairRegistered).
 	ctx, cancel := context.WithTimeout(context.Background(), consumerFilterFenceWait)
 	defer cancel()
 	if err := rig.deps.consumers.deleteConsumer(ctx, rig.deps, sessionID); err != nil {
@@ -241,7 +309,7 @@ func TestARepairWhoseConsumerCallAnsweredNothingTriesAgainOverTheRowThatMoved(t 
 	rig.deps.consumers.afterRepairPlan = nil
 	rig.deps.consumers.consumers.SetCreateFault(nil)
 
-	requireConsumerFilters(t, rig, sessionID, kept, added)
+	requireFilters(t, rig, sessionID, kept, added)
 	rig.store(t, "notifications.dispatch.issue.LOSTANSWERADD.comment")
 	rig.awaitPending(t, sessionID, 1)
 }
@@ -275,7 +343,7 @@ func TestAFenceWhoseRowStopsMovingEndsOnTheNewestRow(t *testing.T) {
 	if moves != filterFenceAttempts-1 {
 		t.Fatalf("the row moved under %d of the repair's passes, want %d, one short of the fence's own", moves, filterFenceAttempts-1)
 	}
-	requireConsumerFilters(t, a, sessionID, topics...)
+	requireFilters(t, a, sessionID, topics...)
 	if logs := a.harness.logs.String(); strings.Contains(logs, fenceExhaustionLine) {
 		t.Errorf("a fence that ended on the newest row must report nothing left behind:\n%s", logs)
 	}
@@ -308,7 +376,7 @@ func TestAFenceOutOfPassesNamesBothRevisionsAndLeavesTheFilterToTheNextHeartbeat
 		t.Fatalf("the repair made %d passes, want the %d the fence allows", passes, filterFenceAttempts)
 	}
 	// The row of the last pass's plan, which is the one before the row that outran its write.
-	requireConsumerFilters(t, a, sessionID, topics[:len(topics)-1]...)
+	requireFilters(t, a, sessionID, topics[:len(topics)-1]...)
 	wrote, newest := requireFenceExhaustionLogged(t, a, sessionID)
 	if newest <= wrote {
 		t.Errorf("the line names revision %d written and %d newest, want a newest above it", wrote, newest)
@@ -316,7 +384,7 @@ func TestAFenceOutOfPassesNamesBothRevisionsAndLeavesTheFilterToTheNextHeartbeat
 
 	// The next heartbeat, which writes the session's row and the filter of it.
 	a.subscribe(t, consumerRegistration(sessionID, "epoch-1", topics...))
-	requireConsumerFilters(t, a, sessionID, topics...)
+	requireFilters(t, a, sessionID, topics...)
 	b.store(t, "notifications.dispatch.issue.FENCEOUT"+strconv.Itoa(passes)+".comment")
 	b.awaitPending(t, sessionID, 1)
 }
@@ -349,15 +417,4 @@ func requireFenceExhaustionLogged(t *testing.T, rig *sessionConsumerRig, session
 	}
 	t.Fatalf("the fence left %s on an older row and logged nothing:\n%s", sessionID, logs)
 	return 0, 0
-}
-
-// requireConsumerFilters fails the test unless sessionID's consumer filters on its agent subject
-// and topics, and nothing else.
-func requireConsumerFilters(t *testing.T, rig *sessionConsumerRig, sessionID string, topics ...string) {
-	t.Helper()
-	want := append([]string{contracts.AgentSubject(sessionID)}, topics...)
-	slices.Sort(want)
-	if got := rig.filters(t, sessionID); !slices.Equal(got, want) {
-		t.Fatalf("the consumer of %s filters on %v, want %v", sessionID, got, want)
-	}
 }

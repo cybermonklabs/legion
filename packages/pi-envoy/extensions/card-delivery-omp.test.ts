@@ -172,9 +172,6 @@ const RpcStateSchema = z.object({
   queuedMessages: z.object({ steering: z.array(z.string()) }),
 });
 
-/** The subjects a `/v1/replay` request asks the listener for the stream's position on. */
-const ReplaySubjectsSchema = z.array(z.object({ subject: z.string() }));
-
 /** A running session with pi-envoy, a real NATS connection to it, and what it sent the stand-in. */
 interface CardSession {
   readonly root: string;
@@ -191,7 +188,6 @@ interface CardSession {
   /**
    * Relays one late BTW to the session as the listener relays a session's consumer, and resolves
    * with the body it carries once the session has answered the frame `done`: the card is written.
-   * Only a session started with `consumer` has a relay subject open to take it.
    */
   lateBtw(label: string): Promise<string>;
   /** Sends one RPC command and resolves with its response frame. */
@@ -241,22 +237,16 @@ async function until<T>(
  * the first open-asks read until `releaseSetup`: envoy.ts's `before_agent_start` awaits it (for a
  * session its run-end nudge could reach, which this one is: a UI over RPC, a side turn, Dispatch
  * configured, neither a Legion pane nor a subagent), so the host is setting the first prompt up,
- * busy with no run, until the read is answered or `OPEN_ASKS_TIMEOUT_MS` (3 s) runs out. With
- * `consumer` the stand-in answers every registration that asks for consumer delivery with a relay
- * on the session's own deliver subject, and serves the replay route: the session then takes the
- * frames this test publishes there (`lateBtw`) instead of the core copies its agent subject
- * carries. Without it every registration is answered as an earlier listener does, no `delivery`
- * field at all, which reads as the core path.
+ * busy with no run, until the read is answered or `OPEN_ASKS_TIMEOUT_MS` (3 s) runs out.
  */
 async function startSession(
   options: {
     readonly config?: readonly string[];
     readonly holdStartup?: boolean;
     readonly holdSetup?: boolean;
-    readonly consumer?: boolean;
   } = {}
 ): Promise<CardSession> {
-  const { config = [], holdStartup = false, holdSetup = false, consumer = false } = options;
+  const { config = [], holdStartup = false, holdSetup = false } = options;
   const { binary, nats } = setup();
   const { root, home, workspace, sessions } = await ompRoot(binary, "card-delivery-omp-", cleanup);
 
@@ -314,21 +304,6 @@ async function startSession(
     }
     if (/^\/api\/v1\/messages\/[^/]+\/deliveries\/\d+\/reply$/.test(url.pathname)) {
       return Response.json({}, { status: 201 });
-    }
-    // A consumer session's replay route, over a stream holding nothing: every subject's cursor
-    // starts, so none is left marked `from_start`, which would make every registration ask for no
-    // relay (`ReplayEngine.startPending`). A core session's replay read is answered as every other
-    // path is, as it always was.
-    if (consumer && url.pathname === "/v1/replay") {
-      return Response.json({
-        stream: { created: "2026-10-01T00:00:00Z", first_seq: 0, last_seq: 0 },
-        subjects: ReplaySubjectsSchema.parse(body.subjects ?? []).map(({ subject }) => ({
-          subject,
-          messages: [],
-          next_after: 0,
-          more: false,
-        })),
-      });
     }
     // The Envoy listener: registration and any read answer with an interest. A held startup
     // holds the first registration.
@@ -859,15 +834,15 @@ test.skipIf(skip)(
 // written to the transcript as one card and nothing more. That is the only path `handCard` hands
 // an inert card on, and the state it stamps is `inert` whatever the host is doing, since
 // `UnwrittenFrames` holds the card until the host is settled and hands it only then (`hostSettled`).
-// What `lateBtw` publishes is a relay frame, so a late BTW reaches a session under consumer delivery alone: this
-// session is the only one that registers for it, and the stand-in answers it a relay on the
-// session's own deliver subject. The state is read off the file the host wrote, as the two cases
-// above read theirs: an inert card the host persisted without `handOver` would be read, in a later
-// reading of the stored transcripts, as a card written before any state was stamped at all.
+// What `lateBtw` publishes is a relay frame, so a late BTW reaches the session over its own
+// consumer's relay subject, which the stand-in answers every registration with. The state is read
+// off the file the host wrote, as the two cases above read theirs: an inert card the host
+// persisted without `handOver` would be read, in a later reading of the stored transcripts, as a
+// card written before any state was stamped at all.
 test.skipIf(skip)(
   "a late BTW is written as an inert card, and its hand-over state reaches the file",
   async () => {
-    const session = await startSession({ consumer: true });
+    const session = await startSession();
     // An inert card is handed only to a settled host; one sent before that waits for one.
     await session.settled();
     const btw = await session.lateBtw("i1");

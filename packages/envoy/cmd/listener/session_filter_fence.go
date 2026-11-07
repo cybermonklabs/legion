@@ -43,16 +43,17 @@ const filterFenceAttempts = 5
 // fenceFilterWrite makes a write of a session consumer's filter and lets no write built from an
 // interest row another writer has replaced stand.
 //
-// Every such write is built from a bucket read and lands at the server after it
-// (repairRegistered, storedFilterWrite, sessionRelays.settleFilter). A row stored between the two
-// makes what lands an older row's filter, over the filter a newer registration set, and the
-// session is then answered 200 for a topic its consumer does not filter on; because a filter
-// update keeps the consumer's position, the messages that pass in that window are skipped for
-// good. The server holds no conditional consumer update to write that filter under, so the fence
-// is the interest row's KV revision read again after the write (storedTopics): write answers the
-// revision of the row it built its write from, and while the bucket answers a higher one
-// (rowMovedUnder) the loop plans and writes again, ending when the row the write was built from
-// is still the newest.
+// Every such write is built from a bucket read and lands at the server after it: the repair of a
+// session's consumer (repairRegistered), the unsubscribe's refollow and the registration this
+// listener did not answer, which both write through storedFilterWrite, and the relay restart
+// (sessionRelays.settleFilter). A row stored between the two makes what lands an older row's
+// filter, over the filter a newer registration set, and the session is then answered 200 for a
+// topic its consumer does not filter on; because a filter update keeps the consumer's position,
+// the messages that pass in that window are skipped for good. The server holds no conditional
+// consumer update to write that filter under, so the fence is the interest row's KV revision read
+// again after the write (storedTopics): write answers the revision of the row it built its write
+// from, and while the bucket answers a higher one (rowMovedUnder) the loop plans and writes
+// again, ending when the row the write was built from is still the newest.
 //
 // A loop that ends on an older row's filter converges no further here: it logs that at WARN,
 // naming the session, the revision it wrote from and the one the bucket answered, and leaves the
@@ -209,6 +210,9 @@ func (m *sessionDelivery) storedFilterStep(ctx context.Context, registry *store.
 		m.logger.Warn("session consumer filter left unchanged: the session's interests could not be read",
 			slog.String("session_id", sessionID), slog.String("after", after), slog.String("error", err.Error()))
 		return 0, false
+	}
+	if m.afterStoredRowRead != nil {
+		m.afterStoredRowRead()
 	}
 	if err := m.consumers.UpdateFilter(ctx, sessionID, sessionConsumerFilter(sessionID, topics)); err != nil {
 		if !errors.Is(err, bus.ErrSessionConsumerNotFound) {

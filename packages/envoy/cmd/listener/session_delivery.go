@@ -192,12 +192,21 @@ type sessionDelivery struct {
 	// once drives the first pass alone.
 	beforeRepairPlan func()
 	afterRepairPlan  func()
+	// afterStoredRowRead runs in a write of the stored row's filter after the bucket's newest
+	// interest row is read and before the consumer call that writes it: every pass of one
+	// (storedFilterStep), and the relay restart's own first write, whose row the restart reads
+	// (sessionRelays.storedFilter); nil unless a test sets it. A registration on another
+	// listener that stores its row in that window is what the write puts an older row's filter
+	// over, and only a test that can write there can build that order and prove the fence
+	// corrects it (fenceFilterWrite). It runs for every such read, so a test that moves the row
+	// once moves it under the first write alone.
+	afterStoredRowRead func()
 	// locks keeps the consumer calls made for one session one at a time: a registration's create or
 	// filter update, an unsubscribe's filter update, the relay's restart at the ack floor, which
 	// deletes the consumer and creates it again when a message awaits an ack, and the delete the
 	// session reaper or a clean stop makes, which reads the session's record again under the lock
 	// and gives the consumer back to a session that registered meanwhile (deleteConsumer,
-	// restoreRegistered). An unsubscribe and a restart read the session's stored topics under the
+	// repairRegistered). An unsubscribe and a restart read the session's stored topics under the
 	// lock; a registration filters on the plan it is about to store and holds the lock from that
 	// filter through the plan's write and on through the write of its session entry
 	// (registerPass), so a delete made on this listener runs wholly before such a
@@ -259,7 +268,7 @@ func (m *sessionDelivery) close() {
 // deletes nothing.
 //
 // The delete reads the session's record again from the bucket once it has deleted
-// (restoreRegistered) and gives the consumer back to a session whose record is there, since
+// (repairRegistered) and gives the consumer back to a session whose record is there, since
 // every delete of a consumer follows the delete of that session's record: a record that is
 // there again was written by a registration that landed in between, and that registration was
 // answered 200 with consumer delivery. d is the listener's stores that read and the create
@@ -277,7 +286,7 @@ func (m *sessionDelivery) close() {
 //
 // The ack floor is read before the delete and under the lock: a consumer the stream no longer
 // holds has no floor to read, and the floor is where the consumer must come back, so that a
-// session that races a delete is not offered again what it has acked (restoreRegistered).
+// session that races a delete is not offered again what it has acked (registeredTarget).
 //
 // One budget covers the floor read, the delete, and the record read and create that may follow
 // it, as one budget covers a registration's whole pass: the wait for the lock is outside it, so
@@ -294,7 +303,12 @@ func (m *sessionDelivery) deleteConsumer(ctx context.Context, d *listenerDeps, s
 	if err := m.consumers.Delete(ctx, sessionID); err != nil {
 		return err
 	}
-	m.restoreRegistered(ctx, d, sessionID, floor)
+	// The restore. A record the bucket holds now that this session's consumer is gone was
+	// written by a registration that landed between the delete of that record and this delete
+	// of the consumer, and that registration was answered 200 with consumer delivery, so the
+	// consumer comes back on the filter and the start the record and the bucket's newest row
+	// ask for (registeredTarget).
+	m.repairRegistered(ctx, d, sessionID, floor, repairAfterDelete)
 	return nil
 }
 
@@ -365,19 +379,9 @@ func (m *sessionDelivery) confirmRegistered(ctx context.Context, d *listenerDeps
 	m.repairRegistered(ctx, d, sessionID, ackFloor, repairAfterRegistration)
 }
 
-// restoreRegistered gives sessionID its consumer back when the bucket holds a record for it: the
-// delete of a consumer follows the delete of that session's record (the reaper's pass, a clean
-// stop), so a record that is there once the consumer is gone was written by a registration that
-// landed in between, and that registration was answered 200 with consumer delivery. It is the
-// delete's side of the repair both sides make (deleteConsumer, confirmRegistered), on the filter
-// and the start the bucket asks for (registeredTarget).
-func (m *sessionDelivery) restoreRegistered(ctx context.Context, d *listenerDeps, sessionID string, ackFloor uint64) {
-	m.repairRegistered(ctx, d, sessionID, ackFloor, repairAfterDelete)
-}
-
 // repairAfterRegistration and repairAfterDelete name what a repair of a session's consumer
 // follows, which its log line carries: the registration that wrote the session's entry
-// (confirmRegistered) or the delete that took the consumer away (restoreRegistered).
+// (confirmRegistered) or the delete that took the consumer away (deleteConsumer).
 const (
 	repairAfterRegistration = "registration"
 	repairAfterDelete       = "delete"

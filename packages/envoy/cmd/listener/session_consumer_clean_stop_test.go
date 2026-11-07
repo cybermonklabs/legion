@@ -143,7 +143,7 @@ const keptStopSilence = 4 * relayRetryFirst
 // Deleting a kept consumer and giving it back is not the same thing, which is why this row reads
 // the consumer's own creation and what the session receives rather than only whether a consumer
 // exists: a delete restores the consumer of every session whose record is in the bucket
-// (sessionDelivery.restoreRegistered), and a kept record is one, so a stop that deleted it leaves
+// (sessionDelivery.deleteConsumer), and a kept record is one, so a stop that deleted it leaves
 // a consumer behind it. The replacement is a new consumer created at the sequence after the ack
 // floor, so every frame the session holds unacked is sent to it again, and the relay pulling the
 // consumer that went relays nothing until its retry.

@@ -929,10 +929,11 @@ func followWhileLocked(t *testing.T, rig *sessionConsumerRig, sessionID, topic s
 	}
 }
 
-// requireFilters fails the test unless sessionID's consumer filters on its agent subject and topic.
-func requireFilters(t *testing.T, rig *sessionConsumerRig, sessionID, topic string) {
+// requireFilters fails the test unless sessionID's consumer filters on its agent subject and
+// topics, and nothing else: the stored topics as they stood when that filter was last written.
+func requireFilters(t *testing.T, rig *sessionConsumerRig, sessionID string, topics ...string) {
 	t.Helper()
-	want := []string{contracts.AgentSubject(sessionID), topic}
+	want := append([]string{contracts.AgentSubject(sessionID)}, topics...)
 	slices.Sort(want)
 	if got := rig.filters(t, sessionID); !slices.Equal(got, want) {
 		t.Fatalf("the consumer of %s filters on %v, want %v: the stored topics as they stood when its filter was last written", sessionID, got, want)

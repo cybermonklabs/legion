@@ -198,7 +198,7 @@ type SessionConsumerStart struct {
 	// such a consumer has delivered nothing. For one the call found it is the consumer's own
 	// floor, which is at or above StartSeq-1 and says nothing about where the consumer was
 	// created: a session that has acked for days is recreated from AckFloor+1 and not from
-	// StartSeq (the listener restores a consumer a delete took, sessionDelivery.restoreRegistered).
+	// StartSeq (the listener restores a consumer a delete took, sessionDelivery.deleteConsumer).
 	AckFloor uint64
 }
 

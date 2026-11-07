@@ -181,7 +181,7 @@ func TestASessionThatRacesADeleteThroughItsEntryWriteIsOfferedNothingItAcked(t *
 	// The delete reads the bucket on the listener's direct connection, as every call but the
 	// entry write makes here: what this case holds open is that write alone. deleteConsumer
 	// reads the record and the session's stored topics through the stores it is given
-	// (restoreRegistered), and nothing else of them.
+	// (repairRegistered), and nothing else of them.
 	deleteDeps := &listenerDeps{registry: rig.harness.registry, sessions: rig.harness.sessions}
 
 	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
@@ -319,7 +319,7 @@ func TestARegistrationsOwnRepairDoesNotOfferTheAckedFramesAgain(t *testing.T) {
 
 // A delete made while a registration holds the session's lock gives the consumer back with the
 // topics that registration stored, never with the ones it is replacing. The restore filters the
-// consumer it creates on the session's stored interest row (restoreRegistered), and a
+// consumer it creates on the session's stored interest row (registeredTarget), and a
 // registration holds the lock from the consumer call that set its filter through the write of
 // that row (sessionDelivery.consumerFor, listenerDeps.registerPass), so a delete made on this
 // listener reads that row wholly before the filter call or wholly after the write.
