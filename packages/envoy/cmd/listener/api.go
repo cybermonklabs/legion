@@ -761,9 +761,9 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 // is still there (deleteSessionConsumer). A session that registers again while this route deletes
 // its consumer keeps one too: the delete reads that session's record again from the bucket once
 // it has deleted, so a record the registration wrote restores the consumer, and a registration
-// on another listener, which this delete's lock does not reach, reads the consumer again after
-// its own entry write and creates it there (sessionDelivery.deleteConsumer,
-// sessionDelivery.confirmRegistered).
+// on another listener, which this delete's lock does not reach, repairs the consumer from the
+// bucket's newest record and interest row after its own entry write
+// (sessionDelivery.deleteConsumer, sessionDelivery.confirmRegistered).
 //
 // A request presenting a broker access token may remove only the registration of the session
 // that token names, and is refused 403 for any other (sessionNotBound): this route acts as the
@@ -1934,6 +1934,16 @@ func (e *sessionEntryWriteError) Unwrap() error { return e.cause }
 // is the plan's, the interest row's or the session entry's, the last as a
 // sessionEntryWriteError with no registration beside it.
 //
+// A registration that is not answered leaves the filter of its last pass on the session's
+// consumer, and no entry of its own behind for the repair that judges that filter
+// (sessionDelivery.confirmRegistered): the plan it filtered on may be one nothing stored - every
+// plan outrun, the row written and the entry refused - while the registration that won the row
+// was answered 200 for topics the filter leaves out. So every exit that answers no registration
+// holds the filter to the row the bucket holds first (sessionDelivery.settleUnanswered), on a
+// context the client's own cannot cancel but this registration's store budget bounds, since the
+// answer waits on it. A registration refused before any consumer call was sent has set no filter
+// and settles nothing (deliveryRefusal.filtered).
+//
 // ctx bounds the store work (sendRequestBudget) and registerCtx the consumer calls, which take
 // the request's own context as they always have.
 func (d *listenerDeps) registerSession(
@@ -1946,6 +1956,28 @@ func (d *listenerDeps) registerSession(
 	// The gap any pass of this registration found, which the answer below carries whichever pass
 	// answers.
 	gap := false
+	// Whether a pass of this registration sent a consumer call, which is the call that sets the
+	// filter: what settle holds to the bucket's newest row.
+	filtered := false
+	settle := func() {
+		if !filtered {
+			return
+		}
+		// The settle outlives the client's own context, as the confirm of an answered
+		// registration does: the filter it holds to the bucket's row stands whatever the client
+		// does with this answer. It does not outlive the budget this registration's store work
+		// had (sendRequestBudget), because the answer waits on it: a bucket that stopped
+		// answering has spent that budget already, and a fence that cannot read the bucket can
+		// judge nothing anyway (fenceFilterWrite), so holding the 503 for it would only spend
+		// the caller's attempt (write_routes_frozen_bus_test.go).
+		settleCtx := context.WithoutCancel(ctx)
+		if deadline, ok := ctx.Deadline(); ok {
+			var cancel context.CancelFunc
+			settleCtx, cancel = context.WithDeadline(settleCtx, deadline)
+			defer cancel()
+		}
+		d.consumers.settleUnanswered(settleCtx, d, body.SessionID)
+	}
 	for attempt := 1; attempt <= registrationPlanAttempts; attempt++ {
 		plan := store.InterestPlan{}
 		var err error
@@ -1955,12 +1987,18 @@ func (d *listenerDeps) registerSession(
 			plan, err = d.registry.PlanInterestAfterConflict(ctx, body.SessionID, planned)
 		}
 		if err != nil {
+			settle()
 			return registeredSession{}, nil, err
 		}
 		registered, answered, refusal, err := d.registerPass(ctx, registerCtx, machineID, body, plan)
 		if refusal != nil {
+			filtered = filtered || refusal.filtered
+			settle()
 			return registeredSession{}, refusal, nil
 		}
+		// The pass was given its consumer, so its call was sent and the filter it carried is the
+		// plan's.
+		filtered = true
 		// The gap is read out of each pass's answer and never back out of it: only the pass
 		// that creates the consumer is told of a gap, and a later pass finds the consumer
 		// already made and answers none (sessionDelivery.consumerFor).
@@ -1983,9 +2021,11 @@ func (d *listenerDeps) registerSession(
 			logger.Warn("listener plans the session's interest again: another writer stored the row",
 				slog.String("session_id", body.SessionID), slog.Int("plans", attempt))
 		default:
+			settle()
 			return registeredSession{}, nil, err
 		}
 	}
+	settle()
 	return registeredSession{}, nil, fmt.Errorf("write %s's interest record: %w after %d plans",
 		body.SessionID, store.ErrInterestPlanConflict, registrationPlanAttempts)
 }
@@ -2053,11 +2093,13 @@ func (d *listenerDeps) registerPass(
 	// Every registration answered writes the session's entry: it holds the session's consumer
 	// and is relayed (sessionDelivery.register), which is the only way a message reaches a
 	// session. The entry is what tells every other reader that the session is registered, and
-	// the consumer read after it is this registration's side of the invariant that a session
-	// answered 200 with consumer delivery holds a consumer, whatever delete raced it, on
-	// whatever listener: a delete on another listener whose record read came before this write
-	// found no record to restore from, and this read finds the consumer it took gone and creates
-	// it again (sessionDelivery.confirmRegistered).
+	// the repair made after it is this registration's side of the invariant that a session
+	// answered 200 with consumer delivery holds a consumer filtered on the topics it was
+	// answered for, whatever delete raced it, on whatever listener: a delete on another
+	// listener whose record read came before this write found no record to restore from, and
+	// this repair reads the bucket's newest record and interest row and makes the consumer what
+	// they ask for, creating it where that delete took it away and setting its filter where the
+	// live one is not what that row builds (sessionDelivery.confirmRegistered).
 	if outcome.relayed() {
 		previous, err := d.sessions.Get(body.SessionID)
 		registered.epochChanged = err != nil || previous.Delivery != session.DeliveryConsumer || previous.Epoch != outcome.epoch

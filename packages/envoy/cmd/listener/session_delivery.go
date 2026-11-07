@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -100,6 +101,12 @@ type deliveryRefusal struct {
 	status int
 	Error  string `json:"error"`
 	Reason string `json:"reason"`
+	// filtered is set on the one refusal decided after a consumer call was sent, the call that
+	// failed (consumerFor): that call may have set the session consumer's filter to the plan it
+	// was made for, so the registration that is not answered holds the filter to the row the
+	// bucket holds before it returns (registerSession, sessionDelivery.settleUnanswered). Every
+	// other refusal is decided before anything is sent.
+	filtered bool
 }
 
 // sessionDeliveryOutcome is what sessionDelivery.register did for one registration.
@@ -412,7 +419,10 @@ func (m *sessionDelivery) repairRegistered(ctx context.Context, d *listenerDeps,
 			m.logger.Warn("listener could not repair the consumer of a session the bucket holds a record for",
 				slog.String("session_id", sessionID), slog.String("after", after), slog.Any("filter", want.filter),
 				slog.Uint64("consumer_start", want.start), slog.String("error", err.Error()))
-			return 0, false
+			// A call the server answered changed nothing, so there is nothing for the fence to
+			// hold; a call whose answer did not come back may have set this row's filter, and
+			// the loop judges it as it judges a write that answered (consumerCallAnswered).
+			return want.revision, !consumerCallAnswered(err)
 		case start.Created:
 			m.logger.Warn("listener created the consumer of a session the bucket holds a record for again",
 				slog.String("session_id", sessionID), slog.String("after", after), slog.Any("filter", want.filter),
@@ -460,10 +470,12 @@ const filterFenceAttempts = 3
 //
 // write plans its write from a bucket read, makes it, and answers the KV revision of the interest
 // row it was built from with whether the loop goes on: false where nothing landed - it planned no
-// write, the call failed, or the call found the consumer already as the row asks - since a write
-// that did not land puts no older row's filter over anything. It takes the pass it is in, counted
-// from 0, for a caller whose first write is already made. Every failure is logged by write
-// itself, which names what it was doing.
+// write, the server answered its call with a refusal, or the call found the consumer already as
+// the row asks - since a write that did not land puts no older row's filter over anything. A
+// call whose answer did not come back is not such an answer: the server may have applied it, so
+// write answers true for one and the loop judges the filter it may have left
+// (consumerCallAnswered). It takes the pass it is in, counted from 0, for a caller whose first
+// write is already made. Every failure is logged by write itself, which names what it was doing.
 func fenceFilterWrite(ctx context.Context, registry *store.Registry, sessionID string, write func(attempt int) (uint64, bool)) {
 	for attempt := range filterFenceAttempts {
 		wrote, ok := write(attempt)
@@ -695,10 +707,15 @@ func versionPart(version string, i int) (int, bool) {
 // another identity, creates it at the first message the stream holds on the session's own agent
 // subject, and at the stream's end only when it holds none (bus.SessionConsumers.Ensure). The
 // filter is the topics the registration is about to store, so a message published on a newly
-// followed topic once the registration is answered is the consumer's to deliver.
+// followed topic once the registration is answered is the consumer's to deliver. It is a plan
+// and not a row the bucket holds, so something judges it against the bucket afterwards every
+// time: the repair that follows the session entry of a registration that is answered
+// (confirmRegistered), and the settle of one that is not (registerSession,
+// sessionDelivery.settleUnanswered).
 //
 // It returns the session's lock held over that filter, which the caller releases (register); a
-// refusal decided before the lock was taken returns noUnlock.
+// refusal decided before the lock was taken returns noUnlock. A refusal decided after the call
+// was sent says the filter may be on the consumer (deliveryRefusal.filtered).
 func (m *sessionDelivery) consumerFor(ctx context.Context, body subscribeBody, topics []string) (sessionDeliveryOutcome, *deliveryRefusal, func()) {
 	if body.Delivery == nil || !body.Delivery.Consumer {
 		// A registration with no delivery field asks for nothing this listener delivers, so it is
@@ -744,7 +761,15 @@ func (m *sessionDelivery) consumerFor(ctx context.Context, body subscribeBody, t
 	unlock := m.locks.lock(body.SessionID)
 	start, err := m.consumers.Ensure(ctx, body.SessionID, sessionConsumerFilter(body.SessionID, topics), startSeq)
 	if err != nil {
-		return sessionDeliveryOutcome{}, m.refused(body.SessionID, err), unlock
+		// A call the server answered - the grant it may not make, the stream's consumer cap, a
+		// consumer it refused - set no filter, and the registration settles nothing for it: a
+		// hub without the grant would otherwise call the server once per refused registration,
+		// which the no-grant backoff exists to stop. A call whose answer did not come back may
+		// have set the plan's filter, and that one is settled against the bucket's newest row
+		// before the registration answers (registerSession, consumerCallAnswered).
+		refusal := m.refused(body.SessionID, err)
+		refusal.filtered = !consumerCallAnswered(err)
+		return sessionDeliveryOutcome{}, refusal, unlock
 	}
 	m.granted()
 	gap := start.Gap
@@ -853,6 +878,15 @@ func (m *sessionDelivery) granted() {
 	m.noGrantLogged = false
 }
 
+// filterAfterUnsubscribe and filterAfterUnansweredRegistration name what a write of a session
+// consumer's filter built from the bucket's newest row follows, which its log line carries
+// (storedFilterWrite): the unsubscribe that removed topics from the row (refollow), or the
+// registration this listener could not answer (settleUnanswered).
+const (
+	filterAfterUnsubscribe            = "unsubscribe"
+	filterAfterUnansweredRegistration = "unanswered registration"
+)
+
 // refollow sets the filter of sessionID's consumer to its stored interest topics after a change
 // that removed some (an unsubscribe), when the session's entry records consumer delivery; a
 // session whose entry records none, an entry the previous build wrote, or whose consumer is gone,
@@ -865,7 +899,7 @@ func (m *sessionDelivery) granted() {
 // listener's own calls, so a registration here that stored more topics and wrote its filter first
 // is not overwritten with the set read before it, and the bucket read is what carries a
 // registration on another listener, whose row this listener's watch need not have delivered yet.
-// The write is fenced on the row it was built from (fenceFilterWrite), since the bucket orders
+// The write is fenced on the row it was built from (storedFilterWrite), since the bucket orders
 // the writers the lock does not.
 func (m *sessionDelivery) refollow(ctx context.Context, d *listenerDeps, sessionID string) {
 	if m == nil || m.consumers == nil {
@@ -879,22 +913,83 @@ func (m *sessionDelivery) refollow(ctx context.Context, d *listenerDeps, session
 	defer cancel()
 	unlock := m.locks.lock(sessionID)
 	defer unlock()
+	m.storedFilterWrite(ctx, d, sessionID, filterAfterUnsubscribe)
+}
+
+// settleUnanswered holds the filter of a registration this listener did not answer to the row
+// the bucket holds. A registration filters the session's consumer on the plan it is about to
+// store, before it stores it (consumerFor), and the repair that follows its session entry is
+// what judges that filter against the bucket's newest record and row (confirmRegistered). A
+// registration that reaches no entry - every plan it made was outrun, or its entry write failed
+// (registerSession) - leaves the filter of a plan nothing stored over the filter the
+// registration that won the row set: that session is answered 200 for a topic its consumer does
+// not filter on, and a filter update keeps the consumer's position, so every message published
+// on that topic until its next heartbeat is skipped for good.
+//
+// It writes the filter alone and creates no consumer, where the repair of an answered
+// registration creates one: this registration was answered nothing, so it promises no consumer,
+// and a session whose consumer a delete took away has one again at its next registration. A
+// session the bucket holds no row for is left filtering on its own agent subject alone, which is
+// every topic such a row would name.
+//
+// It takes the session's lock, as every consumer call this listener makes for a session does, so
+// its caller holds none: the pass that set the filter has released it by then (registerPass).
+func (m *sessionDelivery) settleUnanswered(ctx context.Context, d *listenerDeps, sessionID string) {
+	if m == nil || m.consumers == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
+	defer cancel()
+	unlock := m.locks.lock(sessionID)
+	defer unlock()
+	m.storedFilterWrite(ctx, d, sessionID, filterAfterUnansweredRegistration)
+}
+
+// storedFilterWrite sets the filter of sessionID's consumer to the topics the bucket's newest row
+// holds, fenced on the revision that row was read at (fenceFilterWrite), and creates no consumer:
+// a consumer the stream does not hold is left to the session's next registration. after names
+// what the write follows, for the log. The caller holds the session's lock and bounds ctx.
+func (m *sessionDelivery) storedFilterWrite(ctx context.Context, d *listenerDeps, sessionID, after string) {
 	fenceFilterWrite(ctx, d.registry, sessionID, func(int) (uint64, bool) {
 		row, revision, err := d.registry.RefreshAt(ctx, sessionID)
 		topics, err := interestTopics(row, err)
 		if err != nil {
 			m.logger.Warn("session consumer filter left unchanged: the session's interests could not be read",
-				slog.String("session_id", sessionID), slog.String("error", err.Error()))
+				slog.String("session_id", sessionID), slog.String("after", after), slog.String("error", err.Error()))
 			return 0, false
 		}
 		if err := m.consumers.UpdateFilter(ctx, sessionID, sessionConsumerFilter(sessionID, topics)); err != nil {
 			if !errors.Is(err, bus.ErrSessionConsumerNotFound) {
-				m.logger.Warn("session consumer filter update failed", slog.String("session_id", sessionID), slog.String("error", err.Error()))
+				m.logger.Warn("session consumer filter update failed",
+					slog.String("session_id", sessionID), slog.String("after", after), slog.String("error", err.Error()))
 			}
-			return 0, false
+			// A call the server answered set no filter; one whose answer did not come back may
+			// have set this row's, and the loop judges it (consumerCallAnswered).
+			return revision, !consumerCallAnswered(err)
 		}
 		return revision, true
 	})
+}
+
+// consumerCallAnswered reports whether err is the server's own answer to a consumer call, which
+// says that call changed nothing: a JetStream API error (a create or an update the server
+// refused, bus.ErrConsumerLimitReached among them), a call the connection's grant may not make
+// (bus.ErrConsumerNotGranted, which wraps bus.ErrPublishDenied), a consumer the stream does not
+// hold (bus.ErrSessionConsumerNotFound), and a session id no consumer can be named after
+// (bus.ErrNoSessionConsumerName), which is refused before anything is sent.
+//
+// Every other failure leaves the call ambiguous: a request that timed out, a context that ended
+// under it, a connection that went are answers that did not come back, and the server may have
+// applied the call all the same. A fenced filter write treats one as a write that may stand
+// (fenceFilterWrite), because an older row's filter left on a consumer with nothing to read it
+// again is exactly what that fence is there to catch; the cost of being wrong is one bucket read
+// and one consumer call that changes nothing.
+func consumerCallAnswered(err error) bool {
+	var api *jetstream.APIError
+	return errors.As(err, &api) ||
+		errors.Is(err, bus.ErrConsumerNotGranted) ||
+		errors.Is(err, bus.ErrSessionConsumerNotFound) ||
+		errors.Is(err, bus.ErrNoSessionConsumerName)
 }
 
 // interestTopics is the topics of the interest row a read of the interest registry answered

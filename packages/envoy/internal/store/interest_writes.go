@@ -17,7 +17,9 @@ import (
 // deleteInterest deletes sessionID's interest at the revision it reads (bus.KeyValue.DeleteAtRead),
 // each bucket call waiting no longer than ctx (bus.Bounded). A delete ctx abandoned may still land
 // after this answer, and that is safe: it deletes only the revision it read, so a write that landed
-// since is kept, and a key it found absent it deletes at none, as DeleteAtRead always has.
+// since is kept. A record the read found absent is left alone, delete and all, so a registration
+// that stored the session's row between that read and this delete keeps it; the cache is brought
+// in line with the bucket either way (reconcileDeleted).
 func (r *Registry) deleteInterest(ctx context.Context, sessionID string) error {
 	// The fence read before the delete is the bucket's this handle reaches only when the read under
 	// way began in its epoch (kvwatch.Copy.FenceFor).
@@ -110,31 +112,62 @@ func (r *Registry) Upsert(item Interest, topics []string) (Interest, error) {
 // stamped with the registry's clock, each bucket call waiting no longer than ctx (bus.Bounded): an
 // HTTP route passes its request's own context. It returns the record as it now stands. A record
 // this build cannot decode (ErrMalformedInterest) is replaced by item and topics alone, and the
-// registry logs that at WARN naming the session. A write ctx abandoned may still land after this
-// answer. That is safe: it writes the record the caller's retry writes again, it rides the
-// connection ahead of any write this listener sends on it later, so it cannot undo one, and
-// against another listener's write it is last-writer-wins, as every Put already is.
+// registry logs that at WARN naming the session.
+//
+// The row it merges into is the one the bucket holds, read with its revision (getWithRevision)
+// and never from the cache, and the write is one compare-and-swap at that revision
+// (putInterestAt), as an unsubscribe's is (removeInterestTopics). A role claim - the one
+// production caller, through SetRoleWithPrevious - built from a cached row a write on another
+// listener has not reached would otherwise store that row back: every topic an unsubscribe
+// removed comes back into the record, and every topic a registration was answered 200 for since
+// is dropped from it, with nothing to put it there again. A refused write is another writer
+// storing the row between this read and it, so the row is read and built again, up to
+// interestWriteAttempts times, past which the caller sees ErrInterestTopicsNotMerged and nothing
+// is stored. A write ctx abandoned may still land after this answer, and that is safe for the
+// reason an unsubscribe's is: it stores over the one revision it read, so it cannot undo a write
+// that landed after it.
 //
 // A heartbeat re-sends the same topics every 90 seconds, so UpsertWithin returns the current row
-// without writing when the encoding of merged equals that of the row it holds, apart from
-// UpdatedAt, and the row is younger than InterestRefreshAge. An unchanged row is thus rewritten
-// once per InterestRefreshAge, its UpdatedAt lags the session's last heartbeat by less than that,
-// and Reap adds InterestRefreshAge to its grace window (InterestReapAllowance), so that lag never
-// shortens a paused session's grace. A changed row is written, and so is a record it cannot
-// decode; any other failed read refuses the write (mergeForUpsert). The session row
-// (session.SessionRegistry.Put) is written on every heartbeat: its bucket's MaxAge is the liveness
-// clock, and NATS connect notices ($SYS) are not available to replace it.
+// without writing when the encoding of merged equals that of the row it read, apart from
+// UpdatedAt, and the row is younger than InterestRefreshAge. The row judged is the row the write
+// would be fenced on, so the decision not to write is made against what the bucket holds. An
+// unchanged row is thus rewritten once per InterestRefreshAge, its UpdatedAt lags the session's
+// last heartbeat by less than that, and Reap adds InterestRefreshAge to its grace window
+// (InterestReapAllowance), so that lag never shortens a paused session's grace. A changed row is
+// written, and so is a record it cannot decode; any other failed read refuses the write
+// (mergeForUpsert). The session row (session.SessionRegistry.Put) is written on every heartbeat:
+// its bucket's MaxAge is the liveness clock, and NATS connect notices ($SYS) are not available to
+// replace it.
 //
 // It reads the session's roles itself (controllerLaneRoles). A caller that already read them to
 // decide the same topics elsewhere, the listener's registration route filtering a session
 // consumer, plans once and writes that plan instead (PlanInterest, UpsertPlanned).
 func (r *Registry) UpsertWithin(ctx context.Context, item Interest, topics []string) (Interest, error) {
-	cur, getErr := r.Get(ctx, item.SessionID)
-	roles, err := r.controllerLaneRoles(item.SessionID, cur.Topics, item.Topics, topics)
-	if err != nil {
-		return Interest{}, err
+	for range interestWriteAttempts {
+		cur, revision, getErr := r.getWithRevision(ctx, item.SessionID, true)
+		roles, err := r.controllerLaneRoles(item.SessionID, cur.Topics, item.Topics, topics)
+		if err != nil {
+			return Interest{}, err
+		}
+		merged, buf, unchanged, err := r.interestRow(cur, getErr, item, InterestPlan{Roles: roles, Topics: topics})
+		if err != nil {
+			return Interest{}, err
+		}
+		if unchanged {
+			return cur, nil
+		}
+		written, epoch, stored, err := r.putInterestAt(ctx, merged.SessionID, buf, revision)
+		if err != nil {
+			return Interest{}, err
+		}
+		if !stored {
+			continue
+		}
+		r.recordInterest(merged, written, epoch, getErr)
+		return merged, nil
 	}
-	return r.upsert(ctx, cur, getErr, item, InterestPlan{Roles: roles, Topics: topics})
+	return Interest{}, fmt.Errorf("merge topics into %s's interest record: %w after %d attempts",
+		item.SessionID, ErrInterestTopicsNotMerged, interestWriteAttempts)
 }
 
 // PlanInterest plans the interest row a registration of sessionID naming requested will store:
@@ -205,8 +238,21 @@ var ErrInterestPlanConflict = errors.New("the interest record changed under the 
 // call's: the filter of the session's consumer is built from the plan, so a plan made here would
 // store a row the filter was never set for, and the two would name different sets until the
 // session's next heartbeat (InterestPlan, cmd/listener's subscribeHandler).
+//
+// The row it merges and judges is read from the bucket, and a bucket that answers a revision
+// that is not the plan's is ErrInterestPlanConflict before anything is written: that row is one
+// no plan of this registration merged and no filter of it was set for, and reading the cache
+// here would hide it. The skip a heartbeat takes (interestRow) is why the read cannot wait for
+// the compare-and-swap to catch it: a skip decided against a cached row stores nothing, so the
+// swap that would have refused it never runs, and the registration is answered 200 from a row
+// the bucket does not hold. What is left open is the window between this read and the write or
+// the skip, which is one call wide rather than the seconds the consumer call takes: a row
+// stored inside it refuses the write, and the skip inside it answers from the row that moved.
 func (r *Registry) UpsertPlanned(ctx context.Context, item Interest, plan InterestPlan) (Interest, error) {
-	cur, getErr := r.Get(ctx, item.SessionID)
+	cur, revision, getErr := r.getWithRevision(ctx, item.SessionID, true)
+	if revision != plan.Revision {
+		return Interest{}, fmt.Errorf("write %s's interest record: %w", item.SessionID, ErrInterestPlanConflict)
+	}
 	merged, buf, unchanged, err := r.interestRow(cur, getErr, item, plan)
 	if err != nil {
 		return Interest{}, err
@@ -214,41 +260,22 @@ func (r *Registry) UpsertPlanned(ctx context.Context, item Interest, plan Intere
 	if unchanged {
 		return cur, nil
 	}
-	revision, epoch, stored, err := r.putInterestAt(ctx, merged.SessionID, buf, plan.Revision)
+	written, epoch, stored, err := r.putInterestAt(ctx, merged.SessionID, buf, plan.Revision)
 	if err != nil {
 		return Interest{}, err
 	}
 	if !stored {
 		return Interest{}, fmt.Errorf("write %s's interest record: %w", item.SessionID, ErrInterestPlanConflict)
 	}
-	r.recordInterest(merged, revision, epoch, getErr)
-	return merged, nil
-}
-
-// upsert is UpsertWithin's write, over the row cur that getErr reports the read of and the plan
-// its caller decided. It writes unconditionally, where UpsertPlanned compares and swaps:
-// UpsertWithin reads and writes within the one call, so no window stands between them for
-// another writer to lose a topic in, and UpsertWithin's own docstring says why a write of its
-// that lands after its answer is safe.
-func (r *Registry) upsert(ctx context.Context, cur Interest, getErr error, item Interest, plan InterestPlan) (Interest, error) {
-	merged, buf, unchanged, err := r.interestRow(cur, getErr, item, plan)
-	if err != nil {
-		return Interest{}, err
-	}
-	if unchanged {
-		return cur, nil
-	}
-	revision, epoch, err := r.putInterest(ctx, merged.SessionID, buf)
-	if err != nil {
-		return Interest{}, err
-	}
-	r.recordInterest(merged, revision, epoch, getErr)
+	r.recordInterest(merged, written, epoch, getErr)
 	return merged, nil
 }
 
 // interestRow is the row a write of item under plan over the row cur that getErr reports the read
 // of stores, and its encoding, or unchanged when the bucket already holds that row young enough
-// to leave alone (UpsertWithin's heartbeat skip).
+// to leave alone (the heartbeat skip of UpsertWithin and UpsertPlanned). cur is the row of the
+// read the write is fenced on, so the decision not to write is made against the row the fence
+// would judge.
 func (r *Registry) interestRow(cur Interest, getErr error, item Interest, plan InterestPlan) (merged Interest, buf []byte, unchanged bool, err error) {
 	now := r.now().UnixMilli()
 	merged, err = mergeForUpsert(cur, getErr, item, now, plan)
@@ -292,18 +319,6 @@ func (r *Registry) recordInterest(merged Interest, revision, epoch uint64, getEr
 			slog.Any("topics", merged.Topics),
 		)
 	}
-}
-
-// putInterest writes sessionID's interest record, waiting no longer than ctx (bus.Bounded), and
-// returns its revision with the epoch of the handle it was written through, which the cache needs
-// to drop a result from a bucket since recreated (kvwatch.Copy.Put).
-func (r *Registry) putInterest(ctx context.Context, sessionID string, value []byte) (uint64, uint64, error) {
-	kv, epoch := r.watcher.Handle()
-	revision, answered, err := bus.Bounded(ctx, func() (uint64, error) { return kv.Put(sessionID, value) })
-	if !answered {
-		return 0, epoch, fmt.Errorf("write %s's interest record: %w", sessionID, err)
-	}
-	return revision, epoch, err
 }
 
 // putInterestAt writes sessionID's interest record only while its latest revision is revision,
@@ -432,17 +447,17 @@ func (r *Registry) Remove(ctx context.Context, sessionID string, topics []string
 	return r.removeInterestTopics(ctx, sessionID, topics)
 }
 
-// removeInterestAttempts bounds the times removeInterestTopics builds the row again after the
-// bucket refused the write or delete it built. Each refusal is another writer storing the
-// session's row between this call's read and its write, which only a registration, a role claim
-// or another unsubscribe of the same session does; three attempts cover a burst of those and
-// still end, rather than letting one unsubscribe spin against a writer that keeps winning. The
-// registration's loop is bounded the same way and for the same reason (registrationPlanAttempts
-// in cmd/listener).
-const removeInterestAttempts = 3
+// interestWriteAttempts bounds the times a writer of an interest row builds that row again after
+// the bucket refused the write or delete it built: an unsubscribe's (removeInterestTopics) and a
+// role claim's (UpsertWithin). Each refusal is another writer storing the session's row between
+// that call's read and its write, which only a registration, a role claim or an unsubscribe of
+// the same session does; three attempts cover a burst of those and still end, rather than
+// letting one writer spin against another that keeps winning. The registration's loop is
+// bounded the same way and for the same reason (registrationPlanAttempts in cmd/listener).
+const interestWriteAttempts = 3
 
 // ErrInterestTopicsNotRemoved is an unsubscribe every attempt of which the bucket refused
-// (removeInterestAttempts): each attempt built the row from the newest row the bucket held and
+// (interestWriteAttempts): each attempt built the row from the newest row the bucket held and
 // wrote it under that row's revision, and another writer stored the row in between every time.
 // Nothing is stored for a refused write, so the record holds what the writer that won it stored,
 // the topics this unsubscribe asked to remove among them, and its session keeps receiving them.
@@ -450,6 +465,14 @@ const removeInterestAttempts = 3
 // registration whose plans run out (ErrInterestPlanConflict, cmd/listener's writeStoreError),
 // and the plugin's retry removes the topics from the row that won.
 var ErrInterestTopicsNotRemoved = errors.New("the interest record changed under every attempt to remove topics from it")
+
+// ErrInterestTopicsNotMerged is the same for a write that merges topics in (UpsertWithin): every
+// attempt built the row from the newest row the bucket held and was refused it. Nothing is
+// stored, so the record holds what the writer that won it stored and none of the topics this
+// call asked to add. Its one production caller is a role claim (SetRoleWithPrevious), which
+// writes no claim after it, so POST /v1/roles/set answers the bus-unavailable 503 for it
+// (cmd/listener's writeStoreError) and the role stays where the writer that won it left it.
+var ErrInterestTopicsNotMerged = errors.New("the interest record changed under every attempt to merge topics into it")
 
 // removeInterestTopics removes topics from sessionID's interest record, deleting it when none is
 // left or topics is empty, each bucket call waiting no longer than ctx.
@@ -460,7 +483,7 @@ var ErrInterestTopicsNotRemoved = errors.New("the interest record changed under 
 // stale row's topics, dropping from the record a topic the other listener's registration was
 // answered 200 for, and no later write puts it back. The first attempt reads the cache, the row
 // the bucket holds in every pass but the raced one; a refused write reads the bucket itself and
-// builds the row again (getWithRevision), up to removeInterestAttempts times, past which the
+// builds the row again (getWithRevision), up to interestWriteAttempts times, past which the
 // caller sees ErrInterestTopicsNotRemoved and nothing is stored. The delete of a record the
 // removal empties is fenced on that same revision (deleteInterestAt) for the same reason, and a
 // delete the bucket did not take - a row written since, or a cache hit that named no revision -
@@ -476,7 +499,7 @@ func (r *Registry) removeInterestTopics(ctx context.Context, sessionID string, t
 	if len(topics) == 0 {
 		return r.deleteInterest(ctx, sessionID)
 	}
-	for attempt := range removeInterestAttempts {
+	for attempt := range interestWriteAttempts {
 		item, revision, err := r.getWithRevision(ctx, sessionID, attempt > 0)
 		if errors.Is(err, ErrMalformedInterest) {
 			r.logger().Warn("registry left an interest record it cannot decode unchanged",
@@ -519,7 +542,7 @@ func (r *Registry) removeInterestTopics(ctx context.Context, sessionID string, t
 		return nil
 	}
 	return fmt.Errorf("remove topics from %s's interest record: %w after %d attempts",
-		sessionID, ErrInterestTopicsNotRemoved, removeInterestAttempts)
+		sessionID, ErrInterestTopicsNotRemoved, interestWriteAttempts)
 }
 
 func first(value string, fallback string) string {

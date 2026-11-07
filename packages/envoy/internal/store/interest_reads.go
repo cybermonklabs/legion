@@ -33,11 +33,11 @@ func (r *Registry) Get(ctx context.Context, sessionID string) (Interest, error) 
 // RefreshAt is Get read from the bucket and never from the cache, with the bucket revision the
 // row it answers was read at, for a caller whose answer must hold a write its own cache need not
 // hold yet: the listener's repair of a session's consumer, which filters it on the row of a
-// registration made on another listener (cmd/listener's repairRegistered, as
-// session.SessionRegistry.Refresh reads that session's record). The row read is cached as Get's
-// own bucket read is, and a row this build cannot decode is ErrMalformedInterest here too. The
-// bucket read is a direct get: bus.KeyValue.Get states that limit and why this build leaves it
-// standing, and cmd/listener's registeredTarget what it costs the repair reading this.
+// registration made on another listener (cmd/listener's registeredTarget, which reads that
+// session's record beside this row through session.SessionRegistry.Refresh). The row read is
+// cached as Get's own bucket read is, and a row this build cannot decode is ErrMalformedInterest
+// here too. The bucket read is a direct get: bus.KeyValue.Get states that limit and why this
+// build leaves it standing, and registeredTarget what it costs the repair reading this.
 //
 // The revision is what a write of the filter built from this row is fenced on (cmd/listener's
 // fenceFilterWrite): a row the bucket answers at a higher revision afterwards moved under that

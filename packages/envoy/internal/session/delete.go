@@ -21,8 +21,9 @@ import (
 // Delete deletes sessionID's entry at the revision it reads (bus.KeyValue.DeleteAtRead), each
 // bucket call waiting no longer than ctx (bus.Bounded): DELETE /v1/sessions/<session_id> passes its
 // request's own context. A delete ctx abandoned may still land after this answer, and that is safe:
-// it deletes only the revision it read, so a registration that landed since is kept, and a key it
-// found absent it deletes at none, as DeleteAtRead always has.
+// it deletes only the revision it read, so a registration that landed since is kept, and an entry
+// the read found absent is left alone rather than deleted at no revision, which would take the
+// entry a registration wrote between that read and the delete.
 func (r *SessionRegistry) Delete(ctx context.Context, sessionID string) error {
 	// The fence read before the delete is the bucket's this handle reaches only when the read under
 	// way began in its epoch (kvwatch.Copy.FenceFor).

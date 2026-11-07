@@ -712,7 +712,10 @@ func (m *sessionRelays) restart(ctx context.Context, run *relayRun) (bus.Session
 		return bus.SessionConsumerStart{}, nil, relayRetry
 	}
 	start, err := m.delivery.consumers.RestartAtFloor(callCtx, sessionID, filter)
-	if err == nil {
+	// A restart the server answered with a refusal left no filter of this row on the consumer; a
+	// restart whose answer did not come back may have created it on that filter, so it is settled
+	// against the bucket's newest row like one that answered (consumerCallAnswered).
+	if err == nil || !consumerCallAnswered(err) {
 		m.settleFilter(callCtx, sessionID, revision)
 	}
 	unlock()
@@ -756,11 +759,12 @@ func (m *sessionRelays) storedFilter(ctx context.Context, sessionID string) ([]s
 // The caller holds the session's lock, as it does for the restart's own call, so the corrections
 // are ordered with every other consumer call this listener makes for the session. A consumer gone
 // by the time a correction is sent is left to the session's next registration, as the restart
-// itself leaves it.
+// itself leaves it. A restart whose answer did not come back is settled here too, since it may
+// have created the consumer on the filter it carried (restart, consumerCallAnswered).
 func (m *sessionRelays) settleFilter(ctx context.Context, sessionID string, wrote uint64) {
 	fenceFilterWrite(ctx, m.registry, sessionID, func(attempt int) (uint64, bool) {
 		if attempt == 0 {
-			return wrote, true // the restart's own write, already made
+			return wrote, true // the restart's own write, made or possibly made
 		}
 		filter, revision, ok := m.storedFilter(ctx, sessionID)
 		if !ok {
@@ -771,7 +775,9 @@ func (m *sessionRelays) settleFilter(ctx context.Context, sessionID string, wrot
 				m.logger.Warn("session relay could not set the filter of the consumer it restarted to the topics the bucket holds for it",
 					slog.String("session_id", sessionID), slog.String("error", err.Error()))
 			}
-			return 0, false
+			// A call the server answered set no filter; one whose answer did not come back may
+			// have set this row's, and the loop judges it (consumerCallAnswered).
+			return revision, !consumerCallAnswered(err)
 		}
 		return revision, true
 	})

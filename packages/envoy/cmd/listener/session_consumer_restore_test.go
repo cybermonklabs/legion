@@ -325,10 +325,10 @@ func TestARegistrationsOwnRepairDoesNotOfferTheAckedFramesAgain(t *testing.T) {
 // listener reads that row wholly before the filter call or wholly after the write.
 //
 // A delete that took no lock reads it in between: it gives back a consumer filtered on the row
-// the session followed before, and the registration's own read leaves it there, since it asks
-// only whether a consumer exists (confirmRegistered). Every message published on the topic the
-// session was answered 200 for is then skipped until its next heartbeat, which is the loss the
-// lock exists for.
+// the session followed before, and only the registration's own repair takes it off there, which
+// reads the bucket again after the entry write (confirmRegistered). Under the lock the delete
+// never reads that row in between, so the restore filters on the row this registration stored
+// and no message published on the topic it was answered 200 for waits on a second repair.
 //
 // The interleaving is built rather than waited for: the hook runs under the registration's lock,
 // after its consumer call and before its row, and leaves that window once the delete waits for

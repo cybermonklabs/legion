@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/store"
 )
 
 // consumerFilterFenceWait bounds the calls the cases below make themselves: the delete whose
@@ -189,6 +190,51 @@ func TestARelayRestartKeepsTheTopicARegistrationOnAnotherListenerAddedUnderItsRe
 	requireConsumerFilters(t, b, sessionID, kept, added)
 	b.store(t, "notifications.dispatch.issue.RESTARTFENCEADD.comment")
 	b.awaitPending(t, sessionID, 1)
+}
+
+// A consumer call whose answer did not come back is judged by the fence as a write that may
+// have landed: the server applies such a call and only its answer is lost, so an older row's
+// filter can stand on the consumer with nothing to read it again (consumerCallAnswered). The
+// repair below is held open over a write of the session's row that sets no filter - a role
+// claim's - and its consumer call is faulted with the deadline a lost answer reads as. The loop
+// reads the bucket, finds the row moved under that call, and makes the consumer what the newest
+// row asks for; a loop that took the failure for "nothing landed" would leave the session with
+// no consumer at all.
+func TestARepairWhoseConsumerCallAnsweredNothingTriesAgainOverTheRowThatMoved(t *testing.T) {
+	rig := newSessionConsumerRig(t)
+	const sessionID = "ses_lost_answer_fence"
+	const kept = "notifications.dispatch.issue.LOSTANSWERKEPT.>"
+	const added = "notifications.dispatch.issue.LOSTANSWERADD.>"
+	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept))
+
+	var moved, faulted sync.Once
+	rig.deps.consumers.afterRepairPlan = func() {
+		moved.Do(func() {
+			if _, err := rig.harness.registry.Upsert(store.Interest{SessionID: sessionID, MachineID: "test-machine"}, []string{added}); err != nil {
+				t.Errorf("store %s on the session's row: %v", added, err)
+			}
+		})
+	}
+	rig.deps.consumers.consumers.SetCreateFault(func(string) error {
+		var answer error
+		faulted.Do(func() { answer = context.DeadlineExceeded })
+		return answer
+	})
+	t.Cleanup(func() { rig.deps.consumers.consumers.SetCreateFault(nil) })
+
+	// The delete the session reaper or a clean stop makes, whose restore gives the consumer back
+	// to a session the bucket still holds a record for (deleteConsumer, restoreRegistered).
+	ctx, cancel := context.WithTimeout(context.Background(), consumerFilterFenceWait)
+	defer cancel()
+	if err := rig.deps.consumers.deleteConsumer(ctx, rig.deps, sessionID); err != nil {
+		t.Fatalf("the delete of %s's consumer: %v", sessionID, err)
+	}
+	rig.deps.consumers.afterRepairPlan = nil
+	rig.deps.consumers.consumers.SetCreateFault(nil)
+
+	requireConsumerFilters(t, rig, sessionID, kept, added)
+	rig.store(t, "notifications.dispatch.issue.LOSTANSWERADD.comment")
+	rig.awaitPending(t, sessionID, 1)
 }
 
 // requireConsumerFilters fails the test unless sessionID's consumer filters on its agent subject

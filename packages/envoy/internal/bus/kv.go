@@ -52,9 +52,9 @@ type KeyValue struct {
 	// streams is the same connection's jetstream context, which every read of the bucket's stream
 	// goes through (ReadStreamState): each read fetches the stream afresh. The jetstream handle's
 	// own Status stores the info it read in the handle's shared stream value with no lock (the
-	// `s.info = &cached` of nats.go's `(*stream).Status`, over the handle `mapStreamToKVS` built),
-	// so two reads of one handle at once -- a
-	// watcher's stream probe beside its completion check -- race on it.
+	// `s.info = &cached` of nats.go's `(*stream).Info`, which `(*kvs).Status` calls on the stream
+	// `mapStreamToKVS` built that handle over), so two reads of one handle at once -- a watcher's
+	// stream probe beside its completion check -- race on it.
 	streams jetstream.JetStream
 }
 
@@ -591,23 +591,31 @@ func (kv KeyValue) Delete(key string, opts ...nats.DeleteOpt) error {
 }
 
 // DeleteAtRead deletes key at the revision it reads, so a write that lands in between is kept, and
-// returns that revision, 0 when there was none to read. A key it may not read (ErrRefused) it may not
-// write either, since a write is held to the longest bound and nats.go refuses a key outside its
-// alphabet everywhere, so nothing can land in between: that key is deleted at no revision, as a key
-// it finds missing is, and a key outside the alphabet is refused by the delete too.
+// returns that revision, 0 when there was none to read.
+//
+// A key the read finds missing is deleted at no revision at all, which fences nothing: nats.go
+// sends no expected-last-subject-sequence header for revision 0, so that delete would take
+// whatever the bucket holds, and a write that landed between the read and it - a registration
+// storing the row this delete read none of - would be deleted whole. So no delete is made for it:
+// the key is reported absent, at revision 0, and there is nothing there to remove.
+//
+// A key it may not read (ErrRefused) it may not write either, since a write is held to the longest
+// bound and nats.go refuses a key outside its alphabet everywhere, so nothing can land in between:
+// that key is deleted at no revision, which removes a key an earlier build stored past the write
+// bound, and a key outside the alphabet is refused by the delete too.
 func (kv KeyValue) DeleteAtRead(key string) (uint64, error) {
 	entry, err := kv.Get(key)
-	var revision uint64
-	var opts []nats.DeleteOpt
 	switch {
 	case err == nil:
-		revision = entry.Revision()
-		opts = append(opts, nats.LastRevision(revision))
-	case errors.Is(err, nats.ErrKeyNotFound), errors.Is(err, ErrRefused):
+		revision := entry.Revision()
+		return revision, kv.Delete(key, nats.LastRevision(revision))
+	case errors.Is(err, nats.ErrKeyNotFound):
+		return 0, nil
+	case errors.Is(err, ErrRefused):
+		return 0, kv.Delete(key)
 	default:
 		return 0, err
 	}
-	return revision, kv.Delete(key, opts...)
 }
 
 func (kv KeyValue) Purge(key string, opts ...nats.DeleteOpt) error {

@@ -2401,10 +2401,12 @@ func TestSetRoleRollsBackWhenInterestUpsertFails(t *testing.T) {
 		t.Fatalf("seed role claim: %v", err)
 	}
 
+	// The claimant has no row, so the write that merges its role topic in is the create of one at
+	// the revision its read answered, which is none (UpsertWithin).
 	useKV(t, reg, &failingKeyValue{
-		KeyValue:  kv,
-		failPutAt: 1,
-		err:       errors.New("injected interest write failure"),
+		KeyValue:     kv,
+		failCreateAt: 1,
+		err:          errors.New("injected interest write failure"),
 	})
 	if _, err := reg.SetRole(newSession, "example-host", role, false); err == nil {
 		t.Fatal("SetRole must return the failed interest upsert")
@@ -2501,8 +2503,8 @@ func TestSetRoleSucceedsWhenOldHolderCleanupFails(t *testing.T) {
 	}
 
 	// The cleanup of the old holder's role topic is a compare-and-swap on the row the bucket
-	// holds (removeInterestTopics), and the only one this handle sees: the claimant's own row is
-	// written unconditionally before it.
+	// holds (removeInterestTopics), and the only update this handle sees: the claimant has no row
+	// of its own, so the write before it creates one (UpsertWithin).
 	useKV(t, reg, &failingKeyValue{
 		KeyValue:     kv,
 		failUpdateAt: 1,
