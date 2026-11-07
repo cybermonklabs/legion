@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
-# Copies every image .github/ci-images.yaml names into the package that file's `registry:` names,
-# so no CI job fetches an image from a third-party registry (sjawhar/legion#2512). `crane copy`
-# keeps the manifest digest, so a copy's digest is its upstream's digest, and every consumer names
-# that one string.
+# Copies every image .github/ci-images.yaml names an upstream for into the package that file's
+# `registry:` names, so no CI job fetches an image from a third-party registry
+# (sjawhar/legion#2512). `crane copy` keeps the manifest digest, so a copy's digest is its
+# upstream's digest, and every consumer names that one string. A row carrying `built:` where a
+# copied row carries `upstream:` is an image this repository builds rather than copies:
+# .github/workflows/browser-image.yaml builds and pushes it, this script copies nothing for it,
+# and the package mode of .github/scripts/check-ci-images.sh is what reads whether the package
+# holds it.
 #
 # Per row: `crane digest <registry>:<tag>` reads the digest the tag points at now. A tag that
 # already points at the row's digest is held, and nothing is copied, so the common run copies
@@ -49,10 +53,11 @@
 # `bun --version` that is not that file's content.
 #
 # It prints one line for each row the package already holds, two for each row it copies (the
-# copy it starts, then the digest that copy landed at), one more before either for each
-# library/golang row (the reference it read and the Go those bytes carry), and one summary line
-# at the end. It copies with `crane` from PATH (.github/actions/install-crane installs it)
-# under a login that may write the package.
+# copy it starts, then the digest that copy landed at), one for each row this repository builds
+# rather than copies, one more before either copy line for each library/golang row (the
+# reference it read and the Go those bytes carry), and one summary line at the end, which
+# accounts for every row. It copies with `crane` from PATH (.github/actions/install-crane
+# installs it) under a login that may write the package.
 #
 # Run from anywhere: .github/scripts/mirror-ci-images.sh
 # CI runs it in ci.yaml's ci-images job, before the package mode of
@@ -77,10 +82,22 @@ import yaml
 from ci_images import upstream_parts
 
 GOLANG = "library/golang"
+# The two kinds of row, spelled as check-ci-images.sh spells them: a row carrying `upstream:`
+# is one this script copies, and a row carrying `built:` is one this repository builds.
+UPSTREAM = "upstream"
+BUILT = "built"
 
 document = yaml.safe_load(open(".github/ci-images.yaml"))
 registry = document["registry"]
 for row in document["images"]:
+    # A row this repository builds names a Dockerfile where a copied row names an upstream, and
+    # nothing here copies it: .github/workflows/browser-image.yaml builds and pushes it. That
+    # Dockerfile goes in the source column, so the line the loop below prints names the thing
+    # that exists, and the kind column is what keeps the row away from `crane copy`.
+    built = row.get("built")
+    if built:
+        print("\t".join((registry, row["tag"], row["digest"], built, BUILT, "")))
+        continue
     # The row's upstream without the digest it may carry, and that same string at the row's
     # digest, which is what the copy asks for: crane drops a tag written before the `@`.
     labelled = row["upstream"].partition("@")[0]
@@ -90,7 +107,7 @@ for row in document["images"]:
     # is how rule 7 of check-ci-images.sh reads the same tag.
     _, repository, tag, _ = upstream_parts(row["upstream"])
     claimed_go = tag.partition("-")[0] if repository == GOLANG else ""
-    print("\t".join((registry, row["tag"], row["digest"], source, claimed_go)))
+    print("\t".join((registry, row["tag"], row["digest"], source, UPSTREAM, claimed_go)))
 PY
 )
 if [ -z "$rows" ]; then
@@ -130,7 +147,17 @@ check_go() {
 
 held=0
 copied=0
-while IFS=$'\t' read -r registry tag digest source claimed_go; do
+built=0
+while IFS=$'\t' read -r registry tag digest source kind claimed_go; do
+  if [ "$kind" = "built" ]; then
+    # Nothing to copy, and nothing to read: .github/workflows/browser-image.yaml builds this
+    # row's image and pushes it into the package, so this script writes no tag for it and
+    # `crane digest` here would read one nothing writes. `check-ci-images.sh package` is what
+    # reads whether the package holds this row, as it does for every other row.
+    echo "built  $registry:$tag $digest ($source)"
+    built=$((built + 1))
+    continue
+  fi
   have=$(crane digest "$registry:$tag" 2>/dev/null || true)
   if [ "$have" = "$digest" ]; then
     # The Go check on the package's own copy: `crane copy` kept the manifest digest, so those
@@ -158,4 +185,4 @@ while IFS=$'\t' read -r registry tag digest source claimed_go; do
   echo "copied $registry:$tag $digest"
   copied=$((copied + 1))
 done <<<"$rows"
-echo "$held row(s) already in the package, $copied copied"
+echo "$held row(s) already in the package, $copied copied, $built built by this repository"

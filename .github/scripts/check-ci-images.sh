@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
 # A GitHub-hosted runner shares one anonymous pull quota with every other runner on its address,
 # so a CI job that fetches an image from a third-party registry fails for a reason the change
-# under test did not cause. Every image a CI job of this repository fetches is therefore one copy
-# in one package this repository publishes, ghcr.io/cybermonklabs/legion/ci, and every reference names
-# that copy by digest. .github/ci-images.yaml holds one row per distinct upstream image, and
-# .github/scripts/mirror-ci-images.sh copies the rows the package does not hold yet with
-# `crane copy`, which keeps the manifest digest. ci.yaml's ci-images job runs that script and
-# then the package mode of this check, in that order. That job is the one copy path, and it runs
-# on a pull request, on a merge group and on a push to main. This check holds the two sides to
-# each other.
+# under test did not cause. Every image a CI job of this repository fetches is therefore one
+# image in one package this repository publishes, ghcr.io/cybermonklabs/legion/ci, and every
+# reference names it by digest. .github/ci-images.yaml holds one row per image, and a row is
+# one of two kinds. A row carrying `upstream:` is a copy of a third-party image:
+# .github/scripts/mirror-ci-images.sh makes it with `crane copy`, which keeps the manifest
+# digest. A row carrying `built:` is an image this repository builds itself, from the
+# Dockerfile that key names, and .github/workflows/browser-image.yaml builds and pushes it. A
+# row carries exactly one of the two keys, because each of them says where the row's bytes came
+# from. ci.yaml's ci-images job runs the copy script and then the package mode of this check,
+# in that order. That job is the one copy path, and it runs on a pull request, on a merge group
+# and on a push to main. This check holds the two sides to each other.
 #
 # THE TWO MODES. This check takes one mode argument, and runs that half alone. A call that names
 # no mode, or that names more than one, fails naming both.
@@ -31,19 +34,23 @@
 #
 # IN TREE MODE:
 #
-#   1. a row this check cannot read: a row that is not a mapping, a missing or empty `upstream`,
-#      `tag` or `digest`, or a digest that is not `sha256:` and 64 hex characters. A tag is
-#      required because an untagged manifest is a package version nothing names, and a retention
-#      policy may delete a digest a job pins.
+#   1. a row this check cannot read: a row that is not a mapping, a row carrying both
+#      `upstream` and `built` or neither of them, a missing or empty `upstream`, `built`, `tag`
+#      or `digest`, a `built` naming a file this tree does not hold, or a digest that is not
+#      `sha256:` and 64 hex characters. A tag is required because an untagged manifest is a
+#      package version nothing names, and a retention policy may delete a digest a job pins.
 #   2. two rows with the same digest, two rows with the same tag, or a tag that is not the one
-#      its own row's upstream and digest give it. The row is what says which image a digest is
-#      — which upstream it copies, and which version that upstream carries — so one digest
-#      names one row and one row names one tag. The digest in the tag is what makes one tag
-#      name one digest: a row that moves to a new digest takes a new tag with it, the digest it
-#      leaves keeps the tag it had, and no copy moves a tag off a digest a consumer pins. The
-#      tag a row must carry is the upstream repository's last path element, then the upstream
-#      tag when the row names one, then the first eight hex characters of the digest. This
-#      check reads the whole string, not the eight characters alone.
+#      its own row gives it. The row is what says which image a digest is — which upstream it
+#      copies and which version that upstream carries, or which Dockerfile of this repository
+#      builds it — so one digest names one row and one row names one tag. The digest in the tag
+#      is what makes one tag name one digest: a row that moves to a new digest takes a new tag
+#      with it, the digest it leaves keeps the tag it had, and no copy moves a tag off a digest
+#      a consumer pins. The tag an `upstream` row must carry is the upstream repository's last
+#      path element, then the upstream tag when the row names one, then the first eight hex
+#      characters of the digest. The tag a `built` row must carry is its Dockerfile's name
+#      without the `.Dockerfile` suffix, then those same eight characters, so
+#      .github/docker/browser.Dockerfile at sha256:1a2b3c4d… is browser-1a2b3c4d. This check
+#      reads the whole string, not the eight characters alone.
 #   3. a version this repository pins elsewhere that no row carries: no `oven/bun` row at the
 #      version `.bun-version` locks, with or without the `-slim` suffix, or no `library/golang`
 #      row at `ARG GO_VERSION` of packages/daemon/docker/worker.Dockerfile. A row for another
@@ -68,9 +75,13 @@
 # IN PACKAGE MODE:
 #
 #   8. a row whose digest the package does not hold: the manifest is read with an anonymous
-#      `HEAD` against ghcr.io. Its message names .github/ci-images.yaml and says that ci.yaml's
-#      ci-images job copies a row before this mode reads the package, so the usual remedy is to
-#      merge the row and let that job run.
+#      `HEAD` against ghcr.io. A `built` row is in the package like any other, because the
+#      build pushes it there. The message of an `upstream` row names .github/ci-images.yaml and
+#      says that ci.yaml's ci-images job copies a row before this mode reads the package, so
+#      the usual remedy is to merge the row and let that job run. The message of a `built` row
+#      names its Dockerfile and .github/workflows/browser-image.yaml instead: that build runs
+#      in the push that adds the Dockerfile, and the row carrying the digest it pushed lands in
+#      a later push.
 #
 # CI'S REACH is every .github/workflows/*.yaml, every .github/actions/*/action.yml, and each
 # other file a CI job runs that names an image. The first two kinds come from those two globs;
@@ -203,6 +214,12 @@ REPOSITORY = "cybermonklabs/legion/ci"
 CI_IMAGES = Path(".github/ci-images.yaml")
 MIRROR_SCRIPT = ".github/scripts/mirror-ci-images.sh"
 MIRROR_JOB = "ci.yaml's ci-images job"
+# The two kinds of row, and the workflow that publishes a row of the second kind. A row
+# carrying `upstream:` is a copy MIRROR_SCRIPT makes; a row carrying `built:` is an image this
+# repository builds from the Dockerfile that key names, which nothing copies.
+UPSTREAM = "upstream"
+BUILT = "built"
+BUILD_WORKFLOW = ".github/workflows/browser-image.yaml"
 BUN_PIN = Path(".bun-version")
 WORKER_DOCKERFILE = Path("packages/daemon/docker/worker.Dockerfile")
 # The two upstream repositories a pin of this repository names: rule 3 asks for a row at each
@@ -228,6 +245,7 @@ ACCEPT = ",".join(
 # Every file a CI job runs that names a container image. Each entry is a file: a directory would
 # grow a file this check never read.
 REACH = (
+    ".github/docker/browser.Dockerfile",
     "packages/envoy/docker/Dockerfile",
     "packages/envoy/infra/host/heldportwrapper/Dockerfile",
     "packages/daemon/docker/worker.Dockerfile",
@@ -404,36 +422,88 @@ rows = document.get("images")
 if not isinstance(rows, list) or not rows:
     fatal(f"{CI_IMAGES}:{key_line(document, 'images')}: images is empty, so nothing is checked")
 
-readable: list[tuple[int, str, str, str]] = []  # line, upstream, tag, digest
+readable: list[tuple[int, str, str, str, str]] = []  # line, kind, source, tag, digest
 for row in rows:
     line = line_of(row) or key_line(document, "images")
     if not isinstance(row, dict):
-        problems.append(f"{CI_IMAGES}:{line}: this row is not a mapping of upstream, tag, digest")
-        continue
-    upstream, tag, digest = (row.get(key) for key in ("upstream", "tag", "digest"))
-    if not isinstance(upstream, str) or not upstream.strip():
         problems.append(
-            f"{CI_IMAGES}:{key_line(row, 'upstream')}: this row has no upstream, and "
-            f"{MIRROR_SCRIPT} copies from it"
+            f"{CI_IMAGES}:{line}: this row is not a mapping of upstream or built, tag, digest"
         )
         continue
-    if not isinstance(tag, str) or not tag.strip():
+    upstream, built, tag, digest = (
+        row.get(key) for key in ("upstream", "built", "tag", "digest")
+    )
+    # A row is one kind or the other, and each key says where the row's bytes came from: a row
+    # with both says two different things about one digest, and a row with neither says nothing
+    # about it at all. The kind decides what the rules below read a row's source as, so it is
+    # settled here, before the keys every row holds are read.
+    if upstream is not None and built is not None:
         problems.append(
-            f"{CI_IMAGES}:{key_line(row, 'tag')}: the row for {one_line(upstream)} has no tag. "
+            f"{CI_IMAGES}:{key_line(row, 'built')}: this row carries both `upstream:` and "
+            f"`built:`, and a row is one or the other: a copy {MIRROR_SCRIPT} makes, or an image "
+            f"this repository builds. A row with both says two different things about where its "
+            f"bytes came from. Delete the key that is not this row's."
+        )
+        continue
+    if upstream is None and built is None:
+        problems.append(
+            f"{CI_IMAGES}:{line}: this row carries neither `upstream:` nor `built:`, and a row "
+            f"is one or the other: `upstream:` is the image {MIRROR_SCRIPT} copies from, and "
+            f"`built:` is the Dockerfile this repository builds the image from. Give it one of "
+            f"the two."
+        )
+        continue
+    if built is not None:
+        kind = BUILT
+        if not isinstance(built, str) or not built.strip():
+            problems.append(
+                f"{CI_IMAGES}:{key_line(row, 'built')}: this row's built is {one_line(built)}, "
+                f"and it names the Dockerfile this repository builds the image from."
+            )
+            continue
+        source = built.strip()
+        if not Path(source).is_file():
+            problems.append(
+                f"{CI_IMAGES}:{key_line(row, 'built')}: this row is built from "
+                f"{one_line(source)}, and this tree holds no such file, so nothing builds the "
+                f"row. Name the Dockerfile {BUILD_WORKFLOW} builds, or delete the row."
+            )
+            continue
+    else:
+        kind = UPSTREAM
+        if not isinstance(upstream, str) or not upstream.strip():
+            problems.append(
+                f"{CI_IMAGES}:{key_line(row, 'upstream')}: this row has no upstream, and "
+                f"{MIRROR_SCRIPT} copies from it"
+            )
+            continue
+        source = upstream.strip()
+    if not isinstance(tag, str) or not tag.strip():
+        rule = (
+            "the upstream repository's last path element, then the upstream tag when this row "
+            "names one, then the first eight hex characters of the digest"
+            if kind == UPSTREAM
+            else "the Dockerfile's name without the .Dockerfile suffix, then the first eight "
+            "hex characters of the digest"
+        )
+        problems.append(
+            f"{CI_IMAGES}:{key_line(row, 'tag')}: the row for {one_line(source)} has no tag. "
             f"An untagged manifest is a package version nothing names, and a retention policy "
-            f"may delete a digest a job pins. Give it one: the upstream repository's last path "
-            f"element, then the upstream tag when this row names one, then the first eight hex "
-            f"characters of the digest."
+            f"may delete a digest a job pins. Give it one: {rule}."
         )
         continue
     if not isinstance(digest, str) or not DIGEST.fullmatch(digest.strip()):
+        read_it = (
+            f"Read it with `crane digest {one_line(source)}`."
+            if kind == UPSTREAM
+            else f"It is the digest {BUILD_WORKFLOW} pushed when it built {one_line(source)}."
+        )
         problems.append(
-            f"{CI_IMAGES}:{key_line(row, 'digest')}: the row for {one_line(upstream)} has digest "
-            f"{one_line(digest)}, which is not sha256: and 64 hex characters. Read it with "
-            f"`crane digest {one_line(upstream)}`."
+            f"{CI_IMAGES}:{key_line(row, 'digest')}: the row for {one_line(source)} has digest "
+            f"{one_line(digest)}, which is not sha256: and 64 hex characters. {read_it}"
         )
         continue
-    readable.append((line, upstream.strip(), tag.strip(), digest.strip()))
+    readable.append((line, kind, source, tag.strip(), digest.strip()))
 
 
 def verdict(what: str, summary: str) -> None:
@@ -497,17 +567,28 @@ if MODE == PACKAGE:
     problems = []
     held = 0
     if readable:
-        statuses = manifest_status([row[3] for row in readable])
-        for line, upstream, tag, digest in readable:
+        statuses = manifest_status([row[4] for row in readable])
+        for line, kind, source, tag, digest in readable:
             status = statuses.get(digest)
             if status == "200":
                 held += 1
-            elif status is not None:
+            elif status is not None and kind == UPSTREAM:
                 problems.append(
                     f"{CI_IMAGES}:{line}: {REGISTRY}@{digest} ({tag}, the copy of "
-                    f"{one_line(upstream)}) is not in the package: a manifest HEAD answered "
+                    f"{one_line(source)}) is not in the package: a manifest HEAD answered "
                     f"{status}. {MIRROR_JOB} copies a row of {CI_IMAGES} before this mode reads "
                     f"the package, so merge this row, or re-run that job, before a job pins the "
+                    f"digest."
+                )
+            elif status is not None:
+                # A built row is in the package like any other, because the build pushes it
+                # there; nothing copies it, so the remedy names the build and not the mirror.
+                problems.append(
+                    f"{CI_IMAGES}:{line}: {REGISTRY}@{digest} ({tag}, the image "
+                    f"{BUILD_WORKFLOW} builds from {one_line(source)}) is not in the package: a "
+                    f"manifest HEAD answered {status}. That build runs in the push that adds "
+                    f"{one_line(source)}, and the row carrying the digest it pushed lands in a "
+                    f"later push, so let that build run, or re-run it, before a job pins the "
                     f"digest."
                 )
     verdict(
@@ -516,24 +597,29 @@ if MODE == PACKAGE:
     )
 
 
-def tag_rule(upstream: str, digest: str) -> str:
-    """The tag the rule gives a row: the upstream repository's last path element, then the
-    upstream tag when the row names one, then the first eight hex characters of the digest."""
-    _, path, carried, _ = upstream_parts(upstream)
+def tag_rule(kind: str, source: str, digest: str) -> str:
+    """The tag the rule gives a row. For a row the mirror copies: the upstream repository's last
+    path element, then the upstream tag when the row names one, then the first eight hex
+    characters of the digest. For a row this repository builds: the stem of the Dockerfile that
+    builds it, which is its name without the .Dockerfile suffix, then those same eight
+    characters."""
     short = digest.partition(":")[2][:8]
+    if kind == BUILT:
+        return f"{Path(source).stem}-{short}"
+    _, path, carried, _ = upstream_parts(source)
     parts = [part for part in (path.rpartition("/")[2], carried, short) if part]
     return "-".join(parts)
 
 
-by_digest: dict[str, tuple[int, str, str, str]] = {}
-by_tag: dict[str, tuple[int, str, str, str]] = {}
+by_digest: dict[str, tuple[int, str, str, str, str]] = {}
+by_tag: dict[str, tuple[int, str, str, str, str]] = {}
 for row in readable:
-    line, upstream, tag, digest = row
+    line, kind, source, tag, digest = row
     earlier = by_digest.get(digest)
     if earlier is not None:
         problems.append(
             f"{CI_IMAGES}:{line}: {digest} is also the digest of the row for "
-            f"{one_line(earlier[1])} on line {earlier[0]}. The row is what says which image a "
+            f"{one_line(earlier[2])} on line {earlier[0]}. The row is what says which image a "
             f"digest is, so one digest names one row: delete one of them."
         )
     else:
@@ -541,16 +627,17 @@ for row in readable:
     earlier = by_tag.get(tag)
     if earlier is not None:
         problems.append(
-            f"{CI_IMAGES}:{line}: tag {tag} is also the tag of the row for {one_line(earlier[1])} "
+            f"{CI_IMAGES}:{line}: tag {tag} is also the tag of the row for {one_line(earlier[2])} "
             f"on line {earlier[0]}, and the second copy would move the tag off the first row's "
             f"digest. Give one of them another tag."
         )
     else:
         by_tag[tag] = row
-    wanted = tag_rule(upstream, digest)
+    wanted = tag_rule(kind, source, digest)
     if tag != wanted:
+        gives = "upstream" if kind == UPSTREAM else "Dockerfile"
         problems.append(
-            f"{CI_IMAGES}:{line}: tag {tag} is not {wanted}, the tag this row's upstream and "
+            f"{CI_IMAGES}:{line}: tag {tag} is not {wanted}, the tag this row's {gives} and "
             f"digest give it. The last eight characters are what keeps one tag on one digest. A "
             f"tag without them is a tag another digest of the same image can take, and the copy "
             f"that takes it moves the tag off the digest consumers pin. The rest names the image "
@@ -583,8 +670,12 @@ if not go_pin:
     fatal(f"{WORKER_DOCKERFILE} declares no ARG GO_VERSION=<version>, which a golang row copies")
 
 carried_by: dict[str, list[str]] = {BUN_REPOSITORY: [], GOLANG_REPOSITORY: []}
-for _, upstream, _, _ in readable:
-    _, repository, carried, _ = upstream_parts(upstream)
+for _, kind, source, _, _ in readable:
+    # A built row's source is a Dockerfile of this repository and no upstream repository at
+    # all, so it is neither the oven/bun row nor the library/golang row this rule asks for.
+    if kind != UPSTREAM:
+        continue
+    _, repository, carried, _ = upstream_parts(source)
     if repository in carried_by:
         carried_by[repository].append(carried)
 if not any(carried in {bun_pin, f"{bun_pin}-slim"} for carried in carried_by[BUN_REPOSITORY]):
@@ -665,12 +756,16 @@ def judge(path: str, line: int, text: str, how: str) -> None:
         )
         return
     # Rule 7. Rule 3 admits a library/golang row beside the one the ARG names, which is what a
-    # bump's first commit lands, so the row a Go FROM names is read here against that ARG.
-    _, row_repository, carried, _ = upstream_parts(row[1])
+    # bump's first commit lands, so the row a Go FROM names is read here against that ARG. A
+    # built row is an image this repository builds and never a copy of library/golang, so it
+    # carries no upstream tag to read a Go version out of.
+    if row[1] != UPSTREAM:
+        return
+    _, row_repository, carried, _ = upstream_parts(row[2])
     if row_repository == GOLANG_REPOSITORY and carried.partition("-")[0] != go_pin:
         version = one_line(carried) if carried else "no version this check can read"
         problems.append(
-            f"{path}:{line}: {how} names the row for {one_line(row[1])} on line {row[0]} of "
+            f"{path}:{line}: {how} names the row for {one_line(row[2])} on line {row[0]} of "
             f"{CI_IMAGES}, which copies Go {version}, and {WORKER_DOCKERFILE} pins "
             f"ARG GO_VERSION={go_pin}. A stage that builds with another Go is not the Go the "
             f"worker's toolchain stage downloads, so name the row at {go_pin} here. Raising Go "

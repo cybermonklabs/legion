@@ -45,6 +45,7 @@ BUN_SLIM=sha256:2c3d4e5f607182932c3d4e5f607182932c3d4e5f607182932c3d4e5f60718293
 GOLANG=sha256:3d4e5f60718293a43d4e5f60718293a43d4e5f60718293a43d4e5f60718293a4
 GOLANG_NEXT=sha256:5f60718293a4b5c65f60718293a4b5c65f60718293a4b5c65f60718293a4b5c6
 UNKNOWN=sha256:9f8e7d6c5b4a30219f8e7d6c5b4a30219f8e7d6c5b4a30219f8e7d6c5b4a3021
+BROWSER=sha256:60718293a4b5c6d760718293a4b5c6d760718293a4b5c6d760718293a4b5c6d7
 REGISTRY=ghcr.io/cybermonklabs/legion/ci
 
 # The stand-in for the manifest HEAD: the package holds every digest but the ones MISSING names.
@@ -79,7 +80,7 @@ fixture() {
     echo "  FAIL: the fixture name '$1' is already taken by an earlier case" >&2
     return 1
   fi
-  mkdir -p "$root/.github/scripts" "$root/.github/workflows" \
+  mkdir -p "$root/.github/scripts" "$root/.github/workflows" "$root/.github/docker" \
     "$root/.github/actions/pull-test-images" \
     "$root/packages/envoy/docker" "$root/packages/envoy/infra/host/heldportwrapper" \
     "$root/packages/daemon/docker" "$root/packages/daemon/internal/testnats" \
@@ -136,6 +137,13 @@ runs:
       run: |
         image=$(sed -n "s/^const Image = \"\(.*\)\"$/\1/p" "$file")
         docker pull "$image"
+YAML
+  # The Dockerfile a `built:` row names. Every fixture holds it, because CI's reach names it
+  # and the check fails on a reach file that is gone; the row itself is the business of the
+  # cases that call browser_row below.
+  cat > "$root/.github/docker/browser.Dockerfile" <<YAML
+FROM $REGISTRY@$NATS
+RUN echo the browser host image
 YAML
   cat > "$root/packages/envoy/docker/Dockerfile" <<YAML
 FROM $REGISTRY@$GOLANG AS build
@@ -200,6 +208,31 @@ golang_next_row() {
   - upstream: docker.io/library/golang:1.26.3-alpine
     tag: golang-1.26.3-alpine-5f607182
     digest: $GOLANG_NEXT
+YAML
+}
+
+# browser_row <root>: appends the row for the image this repository builds rather than copies,
+# the one .github/workflows/browser-image.yaml pushes. Its tag is the rule a built row's tag
+# follows: the Dockerfile's name without the .Dockerfile suffix, then the first eight hex
+# characters of the digest.
+browser_row() {
+  cat >> "$1/.github/ci-images.yaml" <<YAML
+  - built: .github/docker/browser.Dockerfile
+    tag: browser-60718293
+    digest: $BROWSER
+YAML
+}
+
+# browser_job <root> <digest>: appends a job that runs in a container at that digest, the shape
+# every job that can launch WebKit or Firefox takes.
+browser_job() {
+  cat >> "$1/.github/workflows/ci.yaml" <<YAML
+  browser:
+    runs-on: ubuntu-24.04
+    container:
+      image: $REGISTRY@$2
+    steps:
+      - run: bun test
 YAML
 }
 
@@ -312,6 +345,69 @@ run_check tree "$root"
 check "a row whose upstream names no tag fails the same way" "$(is "$status" 1)"
 check "and is named the digest alone" "$(contains "$out" 'Name this row ubuntu-9f8e7d6c')"
 
+echo "case: a row this repository builds, and the job that runs in it"
+# A built row carries the Dockerfile it is built from where a copied row carries its upstream.
+# Nothing copies it — .github/workflows/browser-image.yaml pushes it — but the package holds it
+# like any other row, so the package mode reads it like any other row.
+root=$(fixture built-row)
+browser_row "$root"
+browser_job "$root" "$BROWSER"
+run_check tree "$root"
+check "the tree mode exits 0" "$(is "$status" 0)"
+check "counts the built row with the rest" "$(contains "$out" 'holds 5 row(s);')"
+run_check package "$root"
+check "the package mode exits 0" "$(is "$status" 0)"
+check "and reports it held like the others" \
+  "$(contains "$out" 'holds 5 row(s), 5 of them in the package')"
+
+echo "case: a row carrying both upstream: and built:"
+root=$(fixture row-both-kinds)
+cat >> "$root/.github/ci-images.yaml" <<YAML
+  - upstream: docker.io/library/ubuntu@$UNKNOWN
+    built: .github/docker/browser.Dockerfile
+    tag: browser-60718293
+    digest: $BROWSER
+YAML
+run_check tree "$root"
+check "fails" "$(is "$status" 1)"
+check "says a row is one kind or the other" \
+  "$(contains "$out" 'this row carries both .upstream:. and .built:., and a row is one or the other')"
+check "and why both cannot stand" \
+  "$(contains "$out" 'two different things about where its bytes came from')"
+
+echo "case: a row carrying neither upstream: nor built:"
+root=$(fixture row-neither-kind)
+cat >> "$root/.github/ci-images.yaml" <<YAML
+  - tag: browser-60718293
+    digest: $BROWSER
+YAML
+run_check tree "$root"
+check "fails" "$(is "$status" 1)"
+check "names both keys" "$(contains "$out" 'this row carries neither .upstream:. nor .built:.')"
+check "and says what each of them is" \
+  "$(contains "$out" 'the Dockerfile this repository builds the image from')"
+
+echo "case: a built row whose tag is not its Dockerfile's name and the digest"
+root=$(fixture built-tag-wrong)
+browser_row "$root"
+sed -i 's/tag: browser-60718293/tag: browser-image/' "$root/.github/ci-images.yaml"
+run_check tree "$root"
+check "fails" "$(is "$status" 1)"
+check "names the tag the rule gives it" \
+  "$(contains "$out" "tag browser-image is not browser-60718293, the tag this row's Dockerfile and digest give it")"
+check "and what to name the row" "$(contains "$out" 'Name this row browser-60718293')"
+
+echo "case: a built row whose Dockerfile this tree does not hold"
+root=$(fixture built-file-missing)
+browser_row "$root"
+sed -i 's|built: .github/docker/browser.Dockerfile|built: .github/docker/gone.Dockerfile|' \
+  "$root/.github/ci-images.yaml"
+run_check tree "$root"
+check "fails" "$(is "$status" 1)"
+check "names the path it looked for" \
+  "$(contains "$out" 'this row is built from .github/docker/gone.Dockerfile')"
+check "and says nothing builds the row" "$(contains "$out" 'so nothing builds the row')"
+
 echo "case: rule 3 — a version pinned elsewhere that no row carries"
 root=$(fixture bun-drift)
 sed -i 's|upstream: docker.io/oven/bun:1.3.14|upstream: docker.io/oven/bun:1.4.2|' \
@@ -369,6 +465,15 @@ run_check tree "$root"
 check "a digest outside the file fails" "$(is "$status" 1)"
 check "names the file to add it to" "$(contains "$out" 'names a digest no row of .github/ci-images.yaml holds')"
 check "and the line to edit" "$(contains "$out" 'nats-server.ts:1:')"
+
+# A job's container is read from the parsed YAML, like a service's image, and rule 6 reads its
+# digest against the rows whatever kind of row holds it.
+root=$(fixture container-digest-unknown)
+browser_job "$root" "$UNKNOWN"
+run_check tree "$root"
+check "a container on a digest outside the file fails" "$(is "$status" 1)"
+check "names the container it read" \
+  "$(contains "$out" "this job's container image names a digest no row of .github/ci-images.yaml holds")"
 
 echo "case: rule 7 — a reference on a golang row at another version than ARG GO_VERSION"
 # A bump's first commit lands the next Go's row beside the pinned one, and rule 3 admits it. A

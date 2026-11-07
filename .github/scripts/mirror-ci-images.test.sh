@@ -3,8 +3,9 @@
 # the package already holds, it asks for the row's digest and never an upstream tag, a run whose
 # package holds every row reads nothing outside that package, it refuses a library/golang row —
 # held or being copied — whose image carries another Go than the row's tag names, it reads which
-# repository a row names as .github/scripts/ci_images.py does, and it fails naming the row when
-# a copy lands at another digest.
+# repository a row names as .github/scripts/ci_images.py does, it copies nothing and reads no
+# registry for a row this repository builds rather than copies, and it fails naming the row
+# when a copy lands at another digest.
 #
 # NO CASE REACHES THE NETWORK. Every case puts a stand-in `crane` first on PATH, which reads and
 # writes a stand-in registry under $CRANE_STATE: `tags` is one `<reference>\t<digest>` line per
@@ -48,6 +49,7 @@ NATS=sha256:0a1b2c3d4e5f60710a1b2c3d4e5f60710a1b2c3d4e5f60710a1b2c3d4e5f6071
 BUN=sha256:1b2c3d4e5f6071821b2c3d4e5f6071821b2c3d4e5f6071821b2c3d4e5f607182
 GOLANG=sha256:3d4e5f60718293a43d4e5f60718293a43d4e5f60718293a43d4e5f60718293a4
 OTHER=sha256:9f8e7d6c5b4a30219f8e7d6c5b4a30219f8e7d6c5b4a30219f8e7d6c5b4a3021
+BROWSER=sha256:60718293a4b5c6d760718293a4b5c6d760718293a4b5c6d760718293a4b5c6d7
 REGISTRY=ghcr.io/cybermonklabs/legion/ci
 
 # The stand-in crane: `digest` prints what the registry's tag points at, and exits 1 where it
@@ -174,6 +176,18 @@ YAML
   printf '%s\t%s\n' "$REGISTRY@$GOLANG" "$version" >> "$root/state/configs"
 }
 
+# browser_row <root>: appends the row this repository builds rather than copies, the image
+# .github/workflows/browser-image.yaml pushes. The stand-in registry is given no tag and no
+# upstream for it: a run that read either would be a run that reached a registry for a row
+# nothing copies.
+browser_row() {
+  cat >> "$1/.github/ci-images.yaml" <<YAML
+  - built: .github/docker/browser.Dockerfile
+    tag: browser-60718293
+    digest: $BROWSER
+YAML
+}
+
 # run_mirror <root>: runs the script under test against that tree, with the stand-in crane first
 # on PATH, setting `out` to its combined output and `status` to its exit code. Not a subshell, so
 # both survive the call.
@@ -192,7 +206,8 @@ run_mirror "$root"
 check "exits 0" "$(is "$status" 0)"
 check "names the copy" "$(contains "$out" "copy   docker.io/oven/bun:1.3.14@$BUN -> $REGISTRY:bun-1.3.14-1b2c3d4e")"
 check "and the digest it landed at" "$(contains "$out" "copied $REGISTRY:bun-1.3.14-1b2c3d4e $BUN")"
-check "counts the row it held" "$(contains "$out" '^1 row(s) already in the package, 1 copied$')"
+check "counts the row it held" \
+  "$(contains "$out" '^1 row(s) already in the package, 1 copied, 0 built by this repository$')"
 check "copied that row alone" "$(is "$(cat "$root/state/copied")" "docker.io/oven/bun:1.3.14@$BUN")"
 check "and the package now holds its digest" "$(contains "$(cat "$root/state/package")" "$BUN")"
 # An upstream tag floats, so a reference without a digest names other bytes on another day.
@@ -207,7 +222,27 @@ run_mirror "$root"
 check "exits 0" "$(is "$status" 0)"
 check "holds both rows" "$(contains "$out" "held   $REGISTRY:bun-1.3.14-1b2c3d4e $BUN")"
 check "copies nothing" "$(is "$(cat "$root/state/copied")" "")"
-check "and says so" "$(contains "$out" '^2 row(s) already in the package, 0 copied$')"
+check "and says so" \
+  "$(contains "$out" '^2 row(s) already in the package, 0 copied, 0 built by this repository$')"
+
+echo "case: a row this repository builds, beside the rows it copies"
+# A built row names the Dockerfile .github/workflows/browser-image.yaml builds the image from,
+# and that workflow pushes it: this script copies nothing for it and asks no registry about it.
+# The rows beside it are copied as they always were, and the summary accounts for all three.
+root=$(fixture builds-one-row)
+browser_row "$root"
+run_mirror "$root"
+check "exits 0" "$(is "$status" 0)"
+check "names the row it builds and the Dockerfile that builds it" \
+  "$(contains "$out" "^built  $REGISTRY:browser-60718293 $BROWSER (\.github/docker/browser\.Dockerfile)$")"
+check "copies the row the package lacks" \
+  "$(contains "$out" "copied $REGISTRY:bun-1.3.14-1b2c3d4e $BUN")"
+check "copies the built row nowhere" \
+  "$(is "$(cat "$root/state/copied")" "docker.io/oven/bun:1.3.14@$BUN")"
+check "counts every row" \
+  "$(contains "$out" '^1 row(s) already in the package, 1 copied, 1 built by this repository$')"
+check "and asks crane about it nowhere" \
+  "$(is "$(contains "$(cat "$root/state/references")" 'browser')" false)"
 
 echo "case: a run whose package holds every row"
 # The common run: the package holds each row, and nothing is copied. Every read it makes is a
@@ -221,7 +256,8 @@ printf '%s\t%s\n' "$REGISTRY:golang-1.27.1-alpine-3d4e5f60" "$GOLANG" >> "$root/
 printf '%s\n%s\n' "$BUN" "$GOLANG" >> "$root/state/package"
 run_mirror "$root"
 check "exits 0" "$(is "$status" 0)"
-check "holds every row" "$(contains "$out" '^3 row(s) already in the package, 0 copied$')"
+check "holds every row" \
+  "$(contains "$out" '^3 row(s) already in the package, 0 copied, 0 built by this repository$')"
 check "reads the Go of the package's own copy" \
   "$(contains "$out" "go     $REGISTRY@$GOLANG carries Go 1.27.1, the version its upstream tag names")"
 check "copies nothing" "$(is "$(cat "$root/state/copied")" "")"
@@ -313,8 +349,8 @@ check "and says what to do" "$(contains "$out" 're-run the ci-images job')"
 
 echo "case: the gate's check 8 before the copy, and after it"
 # ci.yaml's ci-images job runs this script and then the gate's package mode, in that order,
-# because that mode reads which rows the package holds. Here the stand-in package holds every row
-# of .github/ci-images.yaml but the last one.
+# because that mode reads which rows the package holds. Here the stand-in package holds every
+# row of .github/ci-images.yaml but the last one this script copies.
 state="$work/ordering"
 mkdir -p "$state"
 : > "$state/copied"
@@ -327,8 +363,13 @@ import yaml
 repository, state = sys.argv[1], sys.argv[2]
 document = yaml.safe_load(open(f"{repository}/.github/ci-images.yaml"))
 registry, rows = document["registry"], document["images"]
+# The rows this script copies. A row carrying `built:` names a Dockerfile and no upstream:
+# nothing copies it, and the stand-in package holds it from the start, as the real package
+# holds it from the push that built it.
+copied = [row for row in rows if "built" not in row]
+held_back = copied[-1]
 with open(f"{state}/upstreams", "w") as upstreams, open(f"{state}/configs", "w") as configs:
-    for row in rows:
+    for row in copied:
         # The reference the script reads for this row: its upstream without the digest it may
         # carry, at the row's digest. The copy asks for that string, and the Go check reads the
         # config of that same string.
@@ -344,10 +385,14 @@ with open(f"{state}/upstreams", "w") as upstreams, open(f"{state}/configs", "w")
             configs.write(f"{source}\t{go}\n")
             configs.write(f"{registry}@{row['digest']}\t{go}\n")
 with open(f"{state}/tags", "w") as tags, open(f"{state}/package", "w") as package:
-    for row in rows[:-1]:
-        tags.write(f"{registry}:{row['tag']}\t{row['digest']}\n")
+    for row in rows:
+        if row is held_back:
+            continue
+        # A built row is in the package and under no tag this script writes.
+        if "built" not in row:
+            tags.write(f"{registry}:{row['tag']}\t{row['digest']}\n")
         package.write(f"{row['digest']}\n")
-print(rows[-1]["tag"])
+print(held_back["tag"])
 PY
 )
 
