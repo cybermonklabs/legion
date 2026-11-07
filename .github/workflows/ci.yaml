@@ -2966,6 +2966,45 @@ jobs:
       - name: Build the dashboard the lanes serve
         run: bun run build:web
         working-directory: packages/dispatch
+      # What the lanes' databases are, read from the same binaries they use and before they
+      # use them: packages/dispatch/e2e/harness-postgres.ts runs `initdb` once per run and
+      # copies the data directory per lane, and this starts one of those clusters and asks it.
+      # The suite's own lanes leave nothing behind to read afterwards, since e2e/run.ts removes
+      # its run directory when it ends, so the server version and the extension this job's
+      # image carries are recorded here or nowhere. It also times what the provider costs,
+      # which is the figure harness-postgres.ts records for itself.
+      - name: Read the lanes' PostgreSQL and time its provider
+        run: |
+          bin=/usr/lib/postgresql/18/bin
+          work="$RUNNER_TEMP/pg-reading"
+          rm -rf "$work"
+          mkdir -p "$work/template"
+          start=$(date +%s.%N)
+          "$bin/initdb" -D "$work/template/pgdata" -U postgres --auth=trust --no-sync -E UTF8 > /dev/null
+          after_initdb=$(date +%s.%N)
+          "$bin/pg_ctl" -D "$work/template/pgdata" -l "$work/template/postgres.log" \
+            -o "-p 55432 -h 127.0.0.1 -k $work/template" -w start > /dev/null
+          url="postgres://postgres@127.0.0.1:55432/postgres?sslmode=disable"
+          "$bin/psql" "$url" -v ON_ERROR_STOP=1 -c 'create database dispatch_e2e' > /dev/null
+          lane="postgres://postgres@127.0.0.1:55432/dispatch_e2e?sslmode=disable"
+          "$bin/psql" "$lane" -v ON_ERROR_STOP=1 -c 'create extension vector' > /dev/null
+          "$bin/psql" "$lane" -XAt -v ON_ERROR_STOP=1 -c 'select version()'
+          "$bin/psql" "$lane" -XAt -v ON_ERROR_STOP=1 \
+            -c "select 'vector ' || extversion from pg_extension where extname = 'vector'"
+          "$bin/pg_ctl" -D "$work/template/pgdata" -m fast -w stop > /dev/null
+          after_template=$(date +%s.%N)
+          for lane_number in 0 1 2 3; do
+            mkdir -p "$work/lane-$lane_number"
+            cp -a "$work/template/pgdata" "$work/lane-$lane_number/pgdata"
+          done
+          done_at=$(date +%s.%N)
+          awk -v a="$start" -v b="$after_initdb" -v c="$after_template" -v d="$done_at" 'BEGIN {
+            printf "initdb:               %.2f s\n", b - a
+            printf "template db + vector: %.2f s\n", c - b
+            printf "four lane copies:     %.2f s\n", d - c
+            printf "the whole provider:   %.2f s\n", d - a
+          }'
+          rm -rf "$work"
       # The file store the browser suite uploads through: the server runs with
       # DISPATCH_FILE_STORE_BUCKET set (e2e/run-server.sh reads
       # DISPATCH_E2E_FILE_STORE_ENDPOINT), so every upload and download the dashboard makes goes
@@ -2987,6 +3026,13 @@ jobs:
       # per lane, so the readiness wait's own bucket worked and ten upload rows of run
       # 42409479235 failed on 502s from the Dispatch server's PutObject, all of them for
       # `dispatch-e2e-files-lane-*`.
+      #
+      # So, for whoever moves the seaweedfs row of .github/ci-images.yaml to a new version:
+      # read that image's /entrypoint.sh again and reconcile these flags with its `server`
+      # case, because they are the script's and this job runs the binary without it. The row
+      # pins a digest, so the entrypoint cannot change under this job between bumps, which is
+      # what makes the rule a read at bump time rather than a check on every run. Read it with
+      # `crane export ghcr.io/cybermonklabs/legion/ci@<the row's digest> - | tar -xO entrypoint.sh`.
       - name: Start an S3-compatible server for uploaded files
         run: |
           mkdir -p "$RUNNER_TEMP/weed"
