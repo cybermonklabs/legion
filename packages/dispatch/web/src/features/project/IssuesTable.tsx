@@ -14,6 +14,8 @@ import {
   type Column,
   type ColumnDef,
   type ColumnFiltersState,
+  type ColumnOrderState,
+  type ColumnSizingState,
   type ExpandedState,
   type FilterFn,
   flexRender,
@@ -33,8 +35,9 @@ import {
   useReactTable,
   type VisibilityState,
 } from "@tanstack/react-table";
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { useVirtualizer } from "@tanstack/react-virtual";
+import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 
 import { api } from "../../api/client";
 import { projectIssuesQuery, whoAmIQuery } from "../../api/queries";
@@ -149,8 +152,8 @@ function withinOneEdit(a: string, b: string): boolean {
 
 /** Every word of the query must appear in the row (match-sorter's contains ranking), or, for a
  *  word of five letters or more, a word of the row must be one typo away from it. */
-const fuzzy: FilterFn<Item> = (row, _id, query: string) => {
-  const haystack = row.original.search;
+function matchesSearch(item: Item, query: string): boolean {
+  const haystack = item.search;
   const words = haystack.toLowerCase().split(/[^a-z0-9]+/);
   return query
     .trim()
@@ -161,7 +164,8 @@ const fuzzy: FilterFn<Item> = (row, _id, query: string) => {
         rankItem(haystack, word, { threshold: rankings.CONTAINS }).passed ||
         (word.length >= 5 && words.some((candidate) => withinOneEdit(candidate, word)))
     );
-};
+}
+const fuzzy: FilterFn<Item> = (row, _id, query: string) => matchesSearch(row.original, query);
 
 /** One scale for the lifecycle: lightest at triage, darkest at done, so the bar reads left to
  *  right as work moving through. */
@@ -191,6 +195,30 @@ const defaults: Saved = {
   visibility: { asks: false, updated: false },
   pageSize: 50,
 };
+/** The "All rows" page size: rows are virtualized, so one page of every row costs what 40 do. */
+const ALL_ROWS = 100_000;
+/** The unlabelled last column that holds a row's Start next button. */
+const ACTION_WIDTH = 104;
+/** Columns that stay put while the table scrolls sideways: what tells one row from another. */
+const PINNED = ["select", "priority", "key", "title"];
+/** Starting widths in pixels; a person's drag on a header edge overrides them. */
+const COLUMN_SIZES: Record<string, number> = {
+  select: 40,
+  priority: 104,
+  queue: 96,
+  key: 104,
+  title: 380,
+  status: 128,
+  phase: 140,
+  epic: 220,
+  assignee: 180,
+  author: 200,
+  labels: 200,
+  claim: 220,
+  asks: 96,
+  created: 120,
+  updated: 120,
+};
 const savedKey = (project: string) => `issues-table.v2.${project}`;
 function loadSaved(project: string): Saved {
   try {
@@ -200,11 +228,84 @@ function loadSaved(project: string): Saved {
   }
 }
 
+/** The view a link carries: search, sort, grouping, every column filter, page and page size, so
+ *  a copied URL opens the same view and Back undoes a change. */
+function readUrl(params: URLSearchParams): Partial<Saved> & { search?: string; page?: number } {
+  const out: Partial<Saved> & { search?: string; page?: number } = {};
+  const sort = params.get("sort");
+  if (sort !== null) {
+    out.sorting = sort
+      .split(",")
+      .filter(Boolean)
+      .map((part) => ({ id: part.replace(/^-/, ""), desc: part.startsWith("-") }));
+  }
+  if (params.has("group")) out.grouping = params.get("group") ? [params.get("group") ?? ""] : [];
+  const filterKeys = [...new Set([...params.keys()].filter((key) => key.startsWith("f.")))];
+  if (filterKeys.length > 0 || params.has("nofilter")) {
+    out.filters = filterKeys.map((key) => {
+      const id = key.slice(2);
+      return { id, value: id === "title" ? params.get(key) : params.getAll(key) };
+    });
+  }
+  if (params.has("q")) out.search = params.get("q") ?? "";
+  if (params.has("page")) out.page = Math.max(0, Number(params.get("page")) - 1);
+  if (params.has("size")) out.pageSize = Number(params.get("size")) || defaults.pageSize;
+  return out;
+}
+
+function writeUrl(
+  params: URLSearchParams,
+  state: {
+    sorting: SortingState;
+    grouping: GroupingState;
+    filters: ColumnFiltersState;
+    search: string;
+    page: number;
+    pageSize: number;
+  }
+): URLSearchParams {
+  const next = new URLSearchParams(params);
+  for (const key of [...next.keys()]) {
+    if (key.startsWith("f.") || ["sort", "group", "q", "page", "size", "nofilter"].includes(key)) {
+      next.delete(key);
+    }
+  }
+  next.set("sort", state.sorting.map((sort) => `${sort.desc ? "-" : ""}${sort.id}`).join(","));
+  next.set("group", state.grouping[0] ?? "");
+  if (state.filters.length === 0) next.set("nofilter", "1");
+  for (const filter of state.filters) {
+    for (const value of Array.isArray(filter.value) ? filter.value : [filter.value]) {
+      next.append(`f.${filter.id}`, String(value));
+    }
+  }
+  if (state.search !== "") next.set("q", state.search);
+  if (state.page > 0) next.set("page", String(state.page + 1));
+  next.set("size", String(state.pageSize));
+  return next;
+}
+
+interface Layout {
+  sizing: ColumnSizingState;
+  order: ColumnOrderState;
+}
+const layoutKey = (project: string) => `issues-table.layout.${project}`;
+function loadLayout(project: string): Layout {
+  try {
+    return {
+      sizing: {},
+      order: [],
+      ...JSON.parse(localStorage.getItem(layoutKey(project)) ?? "{}"),
+    };
+  } catch {
+    return { sizing: {}, order: [] };
+  }
+}
+
 export function IssuesTable({ project }: { project: string }): ReactNode {
   const queryClient = useQueryClient();
   const text = useAgentText();
   const login = useQuery(whoAmIQuery()).data?.login;
-  const issues = useQuery(projectIssuesQuery(project, []));
+  const [params, setParams] = useSearchParams();
   const legion = useQuery({
     queryKey: ["prototype-legion-phases"],
     queryFn: async () => {
@@ -215,19 +316,26 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
     },
     staleTime: Number.POSITIVE_INFINITY,
   });
-  const saved = useMemo(() => loadSaved(project), [project]);
-  const [sorting, setSorting] = useState<SortingState>(saved.sorting);
-  const [grouping, setGrouping] = useState<GroupingState>(saved.grouping);
-  const [filters, setFilters] = useState<ColumnFiltersState>(saved.filters);
-  const [visibility, setVisibility] = useState<VisibilityState>(saved.visibility);
+  // A link's view wins over the one this browser last left; either wins over the defaults. Read
+  // once per project: the URL is written from the state after that, never read back.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the URL seeds the state only once
+  const initial = useMemo(() => ({ ...loadSaved(project), ...readUrl(params) }), [project]);
+  const layout = useMemo(() => loadLayout(project), [project]);
+  const [sorting, setSorting] = useState<SortingState>(initial.sorting);
+  const [grouping, setGrouping] = useState<GroupingState>(initial.grouping);
+  const [filters, setFilters] = useState<ColumnFiltersState>(initial.filters);
+  const [visibility, setVisibility] = useState<VisibilityState>(initial.visibility);
   const [pagination, setPagination] = useState<PaginationState>({
-    pageIndex: 0,
-    pageSize: saved.pageSize,
+    pageIndex: initial.page ?? 0,
+    pageSize: initial.pageSize,
   });
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState(initial.search ?? "");
+  const [sizing, setSizing] = useState<ColumnSizingState>(layout.sizing);
+  const [order, setOrder] = useState<ColumnOrderState>(layout.order);
   const [expanded, setExpanded] = useState<ExpandedState>(true);
   const [selection, setSelection] = useState<RowSelectionState>({});
   const [openFilter, setOpenFilter] = useState<string>();
+  const [dragColumn, setDragColumn] = useState<string>();
   const [moved, setMoved] = useState<ReadonlySet<string>>(new Set());
   const [notice, setNotice] = useState<string>();
   const [busy, setBusy] = useState(false);
@@ -236,8 +344,33 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
       savedKey(project),
       JSON.stringify({ sorting, grouping, filters, visibility, pageSize: pagination.pageSize })
     );
-  }, [project, sorting, grouping, filters, visibility, pagination.pageSize]);
+    setParams(
+      (current) =>
+        writeUrl(current, {
+          sorting,
+          grouping,
+          filters,
+          search,
+          page: pagination.pageIndex,
+          pageSize: pagination.pageSize,
+        }),
+      { replace: true }
+    );
+  }, [project, sorting, grouping, filters, visibility, search, pagination, setParams]);
+  useEffect(() => {
+    localStorage.setItem(layoutKey(project), JSON.stringify({ sizing, order }));
+  }, [project, sizing, order]);
 
+  // Open issues load first and are what a person works on; closed ones (the bulk of a project
+  // over time) load only once the Status filter lets Done through.
+  const statusPicked = (filters.find((filter) => filter.id === "status")?.value ?? []) as string[];
+  const wantsDone = statusPicked.length === 0 || statusPicked.includes("done");
+  const openIssues = useQuery({
+    queryKey: [...projectIssuesQueryKey(project, []), "open"],
+    queryFn: () => api.listIssues({ project, open: true }),
+  });
+  const everyIssue = useQuery({ ...projectIssuesQuery(project, []), enabled: wantsDone });
+  const issues = wantsDone && everyIssue.data !== undefined ? everyIssue : openIssues;
   const all = issues.data ?? [];
   const epics = useMemo(() => all.filter(isEpic), [all]);
   const items = useMemo<Item[]>(() => {
@@ -277,226 +410,240 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
   }, [all, legion.data, text]);
 
   const columns = useMemo<ColumnDef<Item>[]>(
-    () => [
-      {
-        id: "select",
-        enableSorting: false,
-        enableHiding: false,
-        enableColumnFilter: false,
-        enableGrouping: false,
-        header: ({ table }) => (
-          <input
-            aria-label="Select every row on this page"
-            checked={table.getIsAllPageRowsSelected()}
-            className={checkboxAccent}
-            onChange={table.getToggleAllPageRowsSelectedHandler()}
-            type="checkbox"
-          />
-        ),
-        cell: ({ row }) => (
-          <input
-            aria-label={`Select ${row.original.issue.key}`}
-            checked={row.getIsSelected()}
-            className={checkboxAccent}
-            onChange={row.getToggleSelectedHandler()}
-            type="checkbox"
-          />
-        ),
-      },
-      {
-        id: "priority",
-        header: "Priority",
-        accessorFn: (item) => item.issue.priority ?? undefined,
-        sortUndefined: "last",
-        sortDescFirst: false,
-        filterFn: inPicks,
-        getGroupingValue: (item) => String(item.issue.priority ?? ""),
-        meta: {
-          facet: (item) => String(item.issue.priority ?? ""),
-          show: priorityName,
-          order: ["0", "1", "2", "3", ""],
-        },
-        cell: ({ row }) => (
-          <PriorityControl
-            disabled={row.original.issue.status === "done"}
-            issueKey={row.original.issue.key}
-            priority={row.original.issue.priority}
-          />
-        ),
-      },
-      {
-        id: "queue",
-        header: "Queue",
-        accessorFn: (item) => item.queue,
-        sortUndefined: "last",
-        sortDescFirst: false,
-        filterFn: inPicks,
-        enableGrouping: false,
-        meta: {
-          facet: (item) => (item.queue === undefined ? "Not queued" : "Queued"),
-          order: ["Queued", "Not queued"],
-        },
-        cell: ({ getValue }) => {
-          const place = getValue<number | undefined>();
-          return place === undefined ? null : (
-            <span className="font-semibold tabular-nums" title="Legion starts issues in this order">
-              #{place}
-            </span>
-          );
-        },
-      },
-      {
-        id: "key",
-        header: "Key",
-        accessorFn: (item) => item.issue.key,
-        sortingFn: (a, b) =>
-          Number(a.original.issue.key.split("-")[1]) - Number(b.original.issue.key.split("-")[1]),
-        filterFn: inPicks,
-        enableGrouping: false,
-        meta: { facet: (item) => item.issue.key },
-        cell: ({ row }) => (
-          <span className="font-semibold whitespace-nowrap">{row.original.issue.key}</span>
-        ),
-      },
-      {
-        id: "title",
-        header: "Title",
-        accessorFn: (item) => item.issue.title,
-        filterFn: "includesString",
-        enableGrouping: false,
-        meta: { text: true },
-        cell: ({ row }) => (
-          <Link
-            className={`${linkText} ${linkHoverText}`}
-            to={buildIssuePath({ key: row.original.issue.key, kind: "issue" })}
-            {...referenceTriggerProps({ key: row.original.issue.key, kind: "issue" })}
-          >
-            <span className={textPrimaryOnCanvas}>{row.original.issue.title}</span>
-          </Link>
-        ),
-      },
-      {
-        id: "status",
-        header: "Status",
-        accessorFn: (item) => item.issue.status,
-        sortingFn: (a, b) =>
-          issueStatuses.indexOf(a.original.issue.status as IssueStatus) -
-          issueStatuses.indexOf(b.original.issue.status as IssueStatus),
-        filterFn: inPicks,
-        meta: {
-          facet: (item) => item.issue.status,
-          show: (value) => statusLabel(value as IssueStatus),
-          order: issueStatuses,
-        },
-        cell: ({ getValue }) => <StatusPill>{statusLabel(getValue<IssueStatus>())}</StatusPill>,
-      },
-      {
-        id: "phase",
-        header: "Legion phase",
-        accessorFn: (item) => item.phase,
-        filterFn: inPicks,
-        meta: { facet: (item) => item.phase },
-        cell: ({ getValue }) => {
-          const phase = getValue<string>();
-          return phase === NO_PHASE ? null : (
-            <span className={`whitespace-nowrap ${textSecondaryOnCanvas}`}>{phase}</span>
-          );
-        },
-      },
-      {
-        id: "epic",
-        header: "Epic",
-        accessorFn: (item) => item.epic,
-        filterFn: inPicks,
-        meta: { facet: (item) => item.epic },
-        cell: ({ getValue }) => (
-          <span className={`line-clamp-2 ${textSecondaryOnCanvas}`}>{getValue<string>()}</span>
-        ),
-      },
-      {
-        id: "assignee",
-        header: "Assignee",
-        accessorFn: (item) => item.issue.assignee ?? "Unassigned",
-        filterFn: inPicks,
-        meta: { facet: (item) => item.issue.assignee ?? "Unassigned" },
-        cell: ({ getValue }) => (
-          <span className={`whitespace-nowrap ${textSecondaryOnCanvas}`}>{getValue<string>()}</span>
-        ),
-      },
-      {
-        id: "author",
-        header: "Created by",
-        accessorFn: (item) => item.author,
-        filterFn: inPicks,
-        meta: { facet: (item) => item.author },
-        cell: ({ getValue }) => (
-          <span className={`line-clamp-2 ${textSecondaryOnCanvas}`}>{getValue<string>()}</span>
-        ),
-      },
-      {
-        id: "labels",
-        header: "Labels",
-        accessorFn: (item) => (item.issue.labels ?? []).join(", "),
-        filterFn: inPicks,
-        enableGrouping: false,
-        meta: { facet: (item) => item.issue.labels ?? [] },
-        cell: ({ row }) => (
-          <span className="flex flex-wrap gap-1">
-            {(row.original.issue.labels ?? []).map((label) => (
-              <LabelPill key={label}>{label}</LabelPill>
-            ))}
-          </span>
-        ),
-      },
-      {
-        id: "claim",
-        header: "Claimed by",
-        accessorFn: (item) => item.claimedBy,
-        filterFn: inPicks,
-        meta: { facet: (item) => item.claimedBy },
-        cell: ({ row }) => <ClaimChip claim={row.original.issue.claim} />,
-      },
-      {
-        id: "asks",
-        header: "Open asks",
-        accessorFn: (item) => item.issue.open_asks,
-        sortDescFirst: true,
-        filterFn: inPicks,
-        enableGrouping: false,
-        meta: { facet: (item) => String(item.issue.open_asks) },
-        cell: ({ getValue }) =>
-          getValue<number>() === 0 ? null : <AttentionBadge count={getValue<number>()} />,
-      },
-      {
-        id: "created",
-        header: "Created",
-        accessorFn: (item) => item.issue.created_at ?? item.issue.updated_at,
-        filterFn: inPicks,
-        getGroupingValue: (item) => ageOf(item.issue.created_at ?? item.issue.updated_at),
-        meta: {
-          facet: (item) => ageOf(item.issue.created_at ?? item.issue.updated_at),
-          order: AGES,
-        },
-        cell: ({ getValue }) => (
-          <span className={`whitespace-nowrap text-xs ${textMutedOnCanvas}`}>
-            <Timestamp at={getValue<string>()} />
-          </span>
-        ),
-      },
-      {
-        id: "updated",
-        header: "Updated",
-        accessorFn: (item) => item.issue.updated_at,
-        filterFn: inPicks,
-        getGroupingValue: (item) => ageOf(item.issue.updated_at),
-        meta: { facet: (item) => ageOf(item.issue.updated_at), order: AGES },
-        cell: ({ getValue }) => (
-          <span className={`whitespace-nowrap text-xs ${textMutedOnCanvas}`}>
-            <Timestamp at={getValue<string>()} />
-          </span>
-        ),
-      },
-    ],
+    () =>
+      (
+        [
+          {
+            id: "select",
+            enableSorting: false,
+            enableHiding: false,
+            enableColumnFilter: false,
+            enableGrouping: false,
+            header: ({ table }) => (
+              <input
+                aria-label="Select every row on this page"
+                checked={table.getIsAllPageRowsSelected()}
+                className={checkboxAccent}
+                onChange={table.getToggleAllPageRowsSelectedHandler()}
+                type="checkbox"
+              />
+            ),
+            cell: ({ row }) => (
+              <input
+                aria-label={`Select ${row.original.issue.key}`}
+                checked={row.getIsSelected()}
+                className={checkboxAccent}
+                onChange={row.getToggleSelectedHandler()}
+                type="checkbox"
+              />
+            ),
+          },
+          {
+            id: "priority",
+            header: "Priority",
+            accessorFn: (item) => item.issue.priority ?? undefined,
+            sortUndefined: "last",
+            sortDescFirst: false,
+            filterFn: inPicks,
+            getGroupingValue: (item) => String(item.issue.priority ?? ""),
+            meta: {
+              facet: (item) => String(item.issue.priority ?? ""),
+              show: priorityName,
+              order: ["0", "1", "2", "3", ""],
+            },
+            cell: ({ row }) => (
+              <PriorityControl
+                disabled={row.original.issue.status === "done"}
+                issueKey={row.original.issue.key}
+                priority={row.original.issue.priority}
+              />
+            ),
+          },
+          {
+            id: "queue",
+            header: "Queue",
+            accessorFn: (item) => item.queue,
+            sortUndefined: "last",
+            sortDescFirst: false,
+            filterFn: inPicks,
+            enableGrouping: false,
+            meta: {
+              facet: (item) => (item.queue === undefined ? "Not queued" : "Queued"),
+              order: ["Queued", "Not queued"],
+            },
+            cell: ({ getValue }) => {
+              const place = getValue<number | undefined>();
+              return place === undefined ? null : (
+                <span
+                  className="font-semibold tabular-nums"
+                  title="Legion starts issues in this order"
+                >
+                  #{place}
+                </span>
+              );
+            },
+          },
+          {
+            id: "key",
+            header: "Key",
+            accessorFn: (item) => item.issue.key,
+            sortingFn: (a, b) =>
+              Number(a.original.issue.key.split("-")[1]) -
+              Number(b.original.issue.key.split("-")[1]),
+            filterFn: inPicks,
+            enableGrouping: false,
+            meta: { facet: (item) => item.issue.key },
+            cell: ({ row }) => (
+              <span className="font-semibold whitespace-nowrap">{row.original.issue.key}</span>
+            ),
+          },
+          {
+            id: "title",
+            header: "Title",
+            accessorFn: (item) => item.issue.title,
+            filterFn: "includesString",
+            enableGrouping: false,
+            meta: { text: true },
+            cell: ({ row }) => (
+              <Link
+                className={`${linkText} ${linkHoverText}`}
+                to={buildIssuePath({ key: row.original.issue.key, kind: "issue" })}
+                {...referenceTriggerProps({ key: row.original.issue.key, kind: "issue" })}
+              >
+                <span className={textPrimaryOnCanvas}>{row.original.issue.title}</span>
+              </Link>
+            ),
+          },
+          {
+            id: "status",
+            header: "Status",
+            accessorFn: (item) => item.issue.status,
+            sortingFn: (a, b) =>
+              issueStatuses.indexOf(a.original.issue.status as IssueStatus) -
+              issueStatuses.indexOf(b.original.issue.status as IssueStatus),
+            filterFn: inPicks,
+            meta: {
+              facet: (item) => item.issue.status,
+              show: (value) => statusLabel(value as IssueStatus),
+              order: issueStatuses,
+            },
+            cell: ({ getValue }) => <StatusPill>{statusLabel(getValue<IssueStatus>())}</StatusPill>,
+          },
+          {
+            id: "phase",
+            header: "Legion phase",
+            accessorFn: (item) => item.phase,
+            filterFn: inPicks,
+            meta: { facet: (item) => item.phase },
+            cell: ({ getValue }) => {
+              const phase = getValue<string>();
+              return phase === NO_PHASE ? null : (
+                <span className={`whitespace-nowrap ${textSecondaryOnCanvas}`}>{phase}</span>
+              );
+            },
+          },
+          {
+            id: "epic",
+            header: "Epic",
+            accessorFn: (item) => item.epic,
+            filterFn: inPicks,
+            meta: { facet: (item) => item.epic },
+            cell: ({ getValue }) => (
+              <span className={`line-clamp-2 ${textSecondaryOnCanvas}`}>{getValue<string>()}</span>
+            ),
+          },
+          {
+            id: "assignee",
+            header: "Assignee",
+            accessorFn: (item) => item.issue.assignee ?? "Unassigned",
+            filterFn: inPicks,
+            meta: { facet: (item) => item.issue.assignee ?? "Unassigned" },
+            cell: ({ getValue }) => (
+              <span className={`whitespace-nowrap ${textSecondaryOnCanvas}`}>
+                {getValue<string>()}
+              </span>
+            ),
+          },
+          {
+            id: "author",
+            header: "Created by",
+            accessorFn: (item) => item.author,
+            filterFn: inPicks,
+            meta: { facet: (item) => item.author },
+            cell: ({ getValue }) => (
+              <span className={`line-clamp-2 ${textSecondaryOnCanvas}`}>{getValue<string>()}</span>
+            ),
+          },
+          {
+            id: "labels",
+            header: "Labels",
+            accessorFn: (item) => (item.issue.labels ?? []).join(", "),
+            filterFn: inPicks,
+            enableGrouping: false,
+            meta: { facet: (item) => item.issue.labels ?? [] },
+            cell: ({ row }) => (
+              <span className="flex flex-wrap gap-1">
+                {(row.original.issue.labels ?? []).map((label) => (
+                  <LabelPill key={label}>{label}</LabelPill>
+                ))}
+              </span>
+            ),
+          },
+          {
+            id: "claim",
+            header: "Claimed by",
+            accessorFn: (item) => item.claimedBy,
+            filterFn: inPicks,
+            meta: { facet: (item) => item.claimedBy },
+            cell: ({ row }) => <ClaimChip claim={row.original.issue.claim} />,
+          },
+          {
+            id: "asks",
+            header: "Open asks",
+            accessorFn: (item) => item.issue.open_asks,
+            sortDescFirst: true,
+            filterFn: inPicks,
+            enableGrouping: false,
+            meta: { facet: (item) => String(item.issue.open_asks) },
+            cell: ({ getValue }) =>
+              getValue<number>() === 0 ? null : <AttentionBadge count={getValue<number>()} />,
+          },
+          {
+            id: "created",
+            header: "Created",
+            accessorFn: (item) => item.issue.created_at ?? item.issue.updated_at,
+            filterFn: inPicks,
+            getGroupingValue: (item) => ageOf(item.issue.created_at ?? item.issue.updated_at),
+            meta: {
+              facet: (item) => ageOf(item.issue.created_at ?? item.issue.updated_at),
+              order: AGES,
+            },
+            cell: ({ getValue }) => (
+              <span className={`whitespace-nowrap text-xs ${textMutedOnCanvas}`}>
+                <Timestamp at={getValue<string>()} />
+              </span>
+            ),
+          },
+          {
+            id: "updated",
+            header: "Updated",
+            accessorFn: (item) => item.issue.updated_at,
+            filterFn: inPicks,
+            getGroupingValue: (item) => ageOf(item.issue.updated_at),
+            meta: { facet: (item) => ageOf(item.issue.updated_at), order: AGES },
+            cell: ({ getValue }) => (
+              <span className={`whitespace-nowrap text-xs ${textMutedOnCanvas}`}>
+                <Timestamp at={getValue<string>()} />
+              </span>
+            ),
+          },
+        ] as ColumnDef<Item>[]
+      ).map((column) => ({
+        ...column,
+        size: COLUMN_SIZES[column.id ?? ""] ?? 140,
+        minSize: column.id === "select" ? 36 : 64,
+        enableResizing: column.id !== "select",
+      })),
     []
   );
 
@@ -512,8 +659,15 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
       globalFilter: search,
       expanded,
       rowSelection: selection,
+      columnSizing: sizing,
+      columnOrder: order,
+      // What identifies a row stays in view while the rest scrolls sideways.
+      columnPinning: { left: PINNED },
     },
     getRowId: (item) => item.issue.key,
+    onColumnSizingChange: setSizing,
+    onColumnOrderChange: setOrder,
+    columnResizeMode: "onChange",
     onSortingChange: setSorting,
     onGroupingChange: setGrouping,
     onColumnFiltersChange: (update) => {
@@ -529,6 +683,8 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
     getColumnCanGlobalFilter: (column) => column.id === "title",
     enableRowSelection: (row) => !row.getIsGrouped(),
     autoResetPageIndex: false,
+    // A page holds leaf rows, so a big group spans pages instead of making one page huge.
+    paginateExpandedRows: true,
     // A new grouping keeps every group open, and the grouped column stays where it was.
     autoResetExpanded: false,
     groupedColumnMode: false,
@@ -637,6 +793,55 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
     );
   };
 
+  // The table scrolls in a box of its own that ends at the bottom of the window, so its header
+  // sticks (a sticky header sticks to its nearest scrolling ancestor), its sideways scrollbar is
+  // always on screen, and the pager under it never scrolls away.
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [boxTop, setBoxTop] = useState(0);
+  useLayoutEffect(() => {
+    const place = () =>
+      setBoxTop((scrollRef.current?.getBoundingClientRect().top ?? 0) + window.scrollY);
+    place();
+    window.addEventListener("resize", place);
+    return () => window.removeEventListener("resize", place);
+  });
+  // A page past the first that opens in the middle of a group repeats that group's header.
+  const pageRows = table.getRowModel().rows;
+  const continued =
+    pageRows[0] !== undefined && !pageRows[0].getIsGrouped()
+      ? pageRows[0].getParentRow()
+      : undefined;
+  const displayRows: { row: Row<Item>; continued?: boolean }[] = [
+    ...(continued === undefined ? [] : [{ row: continued, continued: true }]),
+    ...pageRows.map((row) => ({ row })),
+  ];
+  // Only the rows in view are in the page: 2,000 rows on one page cost what 40 do.
+  const virtualizer = useVirtualizer({
+    count: displayRows.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: (index) => (displayRows[index]?.row.getIsGrouped() ? 48 : 64),
+    overscan: 12,
+  });
+  /** The issues every filter but this column's lets through, with the search: a column's counts
+   *  say what picking a value would show, as faceted search does. */
+  const facetItems = (columnId: string) =>
+    items.filter(
+      (item) =>
+        (search.trim() === "" || matchesSearch(item, search)) &&
+        filters.every((filter) => {
+          if (filter.id === columnId) return true;
+          const column = table.getColumn(filter.id);
+          if (column === undefined) return true;
+          if (column.columnDef.meta?.text) {
+            return item.issue.title.toLowerCase().includes(String(filter.value).toLowerCase());
+          }
+          const picks = filter.value as string[];
+          return (
+            picks.length === 0 || facetsOf(column, item).some((value) => picks.includes(value))
+          );
+        })
+    );
+
   if (issues.isPending) return <LoadingSkeleton label="Loading issues" />;
   if (issues.isError) return <p className={dangerText}>Could not load issues.</p>;
 
@@ -705,6 +910,16 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
               </button>
             );
           })}
+          {statusCounts.has("done") ? null : (
+            <button
+              className={`shrink-0 px-2 text-[11px] font-medium ${statusTone.done}`}
+              onClick={() => statusColumn?.setFilterValue(["done"])}
+              title="Closed issues load when you show them"
+              type="button"
+            >
+              Done: load
+            </button>
+          )}
         </div>
       </div>
 
@@ -762,57 +977,114 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
         </p>
       )}
 
-      <div className={`overflow-x-auto rounded-xl border ${borderDefault}`}>
-        <table className="w-full border-collapse text-sm">
-          <thead className={`sticky top-0 z-10 ${surfaceBg}`}>
+      <div
+        className={`overflow-auto rounded-xl border ${borderDefault}`}
+        ref={scrollRef}
+        style={{ maxHeight: `max(360px, calc(100dvh - ${Math.round(boxTop)}px - 64px))` }}
+      >
+        <table
+          className="table-fixed border-separate border-spacing-0 text-sm"
+          style={{ width: table.getTotalSize() + ACTION_WIDTH }}
+        >
+          <thead>
             {table.getHeaderGroups().map((group) => (
-              <tr className={`border-b ${borderDefault}`} key={group.id}>
-                {group.headers.map((header) => (
-                  <th
-                    className={`px-2 py-2 text-left align-middle text-xs font-semibold ${textSecondaryOnCanvas} ${header.column.id === "title" ? "min-w-80" : ""}`}
-                    key={header.id}
-                  >
-                    <span className="flex items-center justify-between gap-1">
-                      {header.column.getCanSort() ? (
-                        <button
-                          className="flex items-center gap-1 whitespace-nowrap"
-                          onClick={header.column.getToggleSortingHandler()}
-                          title="Sort (shift-click to add a second sort)"
-                          type="button"
-                        >
-                          {flexRender(header.column.columnDef.header, header.getContext())}
-                          <span className={textMutedOnCanvas}>
-                            {{ asc: "▲", desc: "▼" }[header.column.getIsSorted() as string] ?? ""}
-                          </span>
-                        </button>
-                      ) : (
-                        flexRender(header.column.columnDef.header, header.getContext())
-                      )}
-                      {header.column.getCanFilter() ? (
-                        <ColumnFilter
-                          column={header.column}
-                          items={items}
-                          onOpenChange={(open) =>
-                            setOpenFilter(open ? header.column.id : undefined)
-                          }
-                          open={openFilter === header.column.id}
+              <tr key={group.id}>
+                {group.headers.map((header) => {
+                  const pinned = header.column.getIsPinned() === "left";
+                  return (
+                    <th
+                      className={`sticky top-0 border-b px-2 py-2 text-left align-middle text-xs font-semibold ${borderDefault} ${surfaceBg} ${textSecondaryOnCanvas} ${pinned ? "z-30" : "z-20"} ${pinned && header.column.getIsLastColumn("left") ? "border-r" : ""}`}
+                      key={header.id}
+                      onDragOver={(event) => {
+                        if (dragColumn !== undefined && !pinned) event.preventDefault();
+                      }}
+                      onDrop={() => {
+                        if (dragColumn === undefined || pinned || dragColumn === header.column.id) {
+                          return;
+                        }
+                        const current = table.getAllLeafColumns().map((column) => column.id);
+                        const next = current.filter((id) => id !== dragColumn);
+                        next.splice(next.indexOf(header.column.id), 0, dragColumn);
+                        setOrder(next);
+                        setDragColumn(undefined);
+                      }}
+                      style={{
+                        width: header.getSize(),
+                        left: pinned ? header.column.getStart("left") : undefined,
+                      }}
+                    >
+                      <span className="flex items-center justify-between gap-1">
+                        {header.column.getCanSort() ? (
+                          <button
+                            className="flex min-w-0 items-center gap-1 truncate whitespace-nowrap"
+                            draggable={!pinned}
+                            onClick={header.column.getToggleSortingHandler()}
+                            onDragEnd={() => setDragColumn(undefined)}
+                            onDragStart={() => setDragColumn(header.column.id)}
+                            title={
+                              pinned
+                                ? "Sort (shift-click to add a second sort)"
+                                : "Sort (shift-click to add a second sort); drag to move the column"
+                            }
+                            type="button"
+                          >
+                            {flexRender(header.column.columnDef.header, header.getContext())}
+                            <span className={textMutedOnCanvas}>
+                              {{ asc: "▲", desc: "▼" }[header.column.getIsSorted() as string] ?? ""}
+                            </span>
+                          </button>
+                        ) : (
+                          flexRender(header.column.columnDef.header, header.getContext())
+                        )}
+                        {header.column.getCanFilter() ? (
+                          <ColumnFilter
+                            column={header.column}
+                            items={
+                              openFilter === header.column.id ? facetItems(header.column.id) : items
+                            }
+                            onOpenChange={(open) =>
+                              setOpenFilter(open ? header.column.id : undefined)
+                            }
+                            open={openFilter === header.column.id}
+                          />
+                        ) : null}
+                      </span>
+                      {header.column.getCanResize() ? (
+                        <span
+                          aria-hidden
+                          className={`absolute top-0 right-0 h-full w-1.5 cursor-col-resize touch-none select-none ${header.column.getIsResizing() ? "bg-sky-500" : "hover:bg-sky-300"}`}
+                          onDoubleClick={() => header.column.resetSize()}
+                          onMouseDown={header.getResizeHandler()}
+                          onTouchStart={header.getResizeHandler()}
                         />
                       ) : null}
-                    </span>
-                  </th>
-                ))}
-                <th className="w-24" />
+                    </th>
+                  );
+                })}
+                <th
+                  className={`sticky top-0 z-20 border-b ${borderDefault} ${surfaceBg}`}
+                  style={{ width: ACTION_WIDTH }}
+                />
               </tr>
             ))}
           </thead>
           <tbody>
-            {table.getRowModel().rows.map((row) =>
-              row.getIsGrouped() ? (
+            {virtualizer.getVirtualItems()[0] ? (
+              <tr aria-hidden style={{ height: virtualizer.getVirtualItems()[0]?.start ?? 0 }} />
+            ) : null}
+            {virtualizer.getVirtualItems().map((virtual) => {
+              const entry = displayRows[virtual.index];
+              if (entry === undefined) return null;
+              const { row } = entry;
+              return row.getIsGrouped() ? (
                 <GroupRow
                   columns={visibleColumns}
+                  continued={entry.continued}
                   epics={epics}
                   grouping={grouping[0] ?? ""}
-                  key={row.id}
+                  index={virtual.index}
+                  key={`${entry.continued ? "continued-" : ""}${row.id}`}
+                  measure={virtualizer.measureElement}
                   onMerge={mergeEpic}
                   onRename={renameEpic}
                   onStartAll={(keys) => startNext(keys)}
@@ -820,18 +1092,27 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
                 />
               ) : (
                 <tr
-                  className={`group border-b align-top ${borderDefault} ${moved.has(row.original.issue.key) ? selectedCardBg : surfaceMutedHoverBg}`}
+                  className={`group align-top ${moved.has(row.original.issue.key) ? selectedCardBg : ""}`}
+                  data-index={virtual.index}
                   key={row.id}
+                  ref={virtualizer.measureElement}
                 >
-                  {row.getVisibleCells().map((cell) => (
-                    <td
-                      className={`px-2 py-2 ${row.depth > 0 && cell.column.id === "select" ? "pl-6" : ""}`}
-                      key={cell.id}
-                    >
-                      {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                    </td>
-                  ))}
-                  <td className="px-2 py-2 text-right">
+                  {row.getVisibleCells().map((cell) => {
+                    const pinned = cell.column.getIsPinned() === "left";
+                    return (
+                      <td
+                        className={`overflow-hidden border-b px-2 py-2 ${borderDefault} ${pinned ? `sticky z-10 ${moved.has(row.original.issue.key) ? selectedCardBg : surfaceBg}` : ""} ${pinned && cell.column.getIsLastColumn("left") ? "border-r" : ""} ${row.depth > 0 && cell.column.id === "select" ? "pl-6" : ""} ${cell.column.id === "title" ? "[&_a]:line-clamp-2" : ""}`}
+                        key={cell.id}
+                        style={{
+                          width: cell.column.getSize(),
+                          left: pinned ? cell.column.getStart("left") : undefined,
+                        }}
+                      >
+                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                      </td>
+                    );
+                  })}
+                  <td className={`border-b px-2 py-2 text-right ${borderDefault}`}>
                     {row.original.queue !== undefined && row.original.queue > 1 ? (
                       <button
                         className={`rounded-md border px-2 py-0.5 text-xs whitespace-nowrap opacity-0 group-hover:opacity-100 focus:opacity-100 ${borderDefault} ${surfaceBg}`}
@@ -844,8 +1125,17 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
                     ) : null}
                   </td>
                 </tr>
-              )
-            )}
+              );
+            })}
+            {virtualizer.getVirtualItems().length > 0 ? (
+              <tr
+                aria-hidden
+                style={{
+                  height:
+                    virtualizer.getTotalSize() - (virtualizer.getVirtualItems().at(-1)?.end ?? 0),
+                }}
+              />
+            ) : null}
           </tbody>
         </table>
         {leafCount === 0 ? (
@@ -859,8 +1149,9 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
           {grouping.length > 0 ? ` in ${groupCount} groups` : ""}
         </span>
         <span className="ml-auto">
-          Rows {rowsOnPages === 0 ? 0 : pageIndex * pageSize + 1}–
-          {Math.min((pageIndex + 1) * pageSize, rowsOnPages)} of {rowsOnPages}
+          {pageSize >= ALL_ROWS
+            ? `All ${rowsOnPages} rows`
+            : `Rows ${rowsOnPages === 0 ? 0 : pageIndex * pageSize + 1}–${Math.min((pageIndex + 1) * pageSize, rowsOnPages)} of ${rowsOnPages}`}
         </span>
         <Action disabled={!table.getCanPreviousPage()} onClick={() => table.previousPage()}>
           ‹ Previous
@@ -877,9 +1168,9 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
           onChange={(event) => table.setPageSize(Number(event.target.value))}
           value={pageSize}
         >
-          {[25, 50, 100, 250].map((size) => (
+          {[25, 50, 100, 250, ALL_ROWS].map((size) => (
             <option key={size} value={size}>
-              {size} per page
+              {size >= ALL_ROWS ? "All rows" : `${size} per page`}
             </option>
           ))}
         </select>
@@ -892,6 +1183,11 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
           role="toolbar"
         >
           <span className="mr-1 font-semibold">{selectedKeys.length} selected</span>
+          {selectedKeys.length < leafCount ? (
+            <Action disabled={busy} onClick={() => table.toggleAllRowsSelected(true)}>
+              Select all {leafCount} matching
+            </Action>
+          ) : null}
           <Action disabled={busy} onClick={() => startNext(selectedKeys)}>
             Start next
           </Action>
@@ -1021,7 +1317,14 @@ function GroupRow({
   onRename,
   onMerge,
   onStartAll,
+  continued,
+  index,
+  measure,
 }: {
+  /** A repeat of the header of a group the page opens in the middle of. */
+  continued?: boolean;
+  index: number;
+  measure: (element: Element | null) => void;
   row: Row<Item>;
   grouping: string;
   columns: number;
@@ -1047,7 +1350,7 @@ function GroupRow({
     .filter(([, count]) => count > 0);
   const next = Math.min(...leaves.map((leaf) => leaf.original.queue ?? Number.POSITIVE_INFINITY));
   return (
-    <tr className={`border-b ${borderDefault} ${surfaceMutedBg}`}>
+    <tr className={surfaceMutedBg} data-index={index} ref={measure}>
       <td className="px-2 py-2" colSpan={columns}>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
           <button
@@ -1058,6 +1361,9 @@ function GroupRow({
           >
             <span className={`w-4 ${textMutedOnCanvas}`}>{row.getIsExpanded() ? "▾" : "▸"}</span>
             {shown}
+            {continued ? (
+              <span className={`font-normal ${textMutedOnCanvas}`}>(continued)</span>
+            ) : null}
             <span className={`font-normal ${textMutedOnCanvas}`}>
               {leaves.length} {leaves.length === 1 ? "issue" : "issues"}
               {Number.isFinite(next) ? ` · next in queue #${next}` : ""}
