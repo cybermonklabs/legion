@@ -151,12 +151,18 @@ test("made and removed the directory of a describe whose rows were all skipped",
  *
  * The row asserts the name, not a duration: a row that reads a clock reads the machine it runs
  * on, which is the class this whole change removes. It is **not** a control for the alert, and
- * measurement says no row can be: the replaced pattern passes this row unchanged at a hundred
- * thousand dashes, and the input that would make it quadratic - many dashes followed by one
- * other character - cannot reach the maker at all, since such a prefix makes a name longer than
- * NAME_MAX and `mkdtemp` refuses it with ENAMETOOLONG. So the finding is static rather than
- * reachable, the fix removes the pattern instead of suppressing the rule, and what this row
- * keeps is the behaviour the rewrite had to preserve: the trim, at a length no caller writes.
+ * measurement says no row through the maker can be. The replaced pattern passes this row
+ * unchanged at a hundred thousand dashes, because an all-dash prefix matches in one pass: both
+ * forms cost well under a millisecond there, and the counted scan is the slower of the two.
+ * The input that backtracks is many dashes followed by one other character, and it cannot pass
+ * the maker, since such a prefix makes a name longer than `NAME_MAX` that `mkdtemp` refuses
+ * with `ENAMETOOLONG`. That refusal comes *after* the work rather than instead of it, though:
+ * the template runs on the prefix before `mkdtemp` is ever called, so the cost is real and
+ * grows quadratically - measured at 60,000 dashes and one `x`, the pattern takes about 7,200 ms
+ * where the counted scan takes 0.04. The control is therefore a comparison of the two
+ * implementations directly, not a row; the fix removes the pattern instead of suppressing the
+ * rule; and what this row keeps is the behaviour the rewrite had to preserve: the trim, at a
+ * length no caller writes.
  */
 describe("a pathological prefix", () => {
   const makeDirectory = temporaryDirectories("test-fixtures-dashes");
