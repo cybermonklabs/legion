@@ -3327,6 +3327,25 @@ const threadResolve = (ids: string[], at: string, by = "reviewer") => ({
   ],
   exit: 0,
 });
+/** One thread resolved by the call the reference prints, with a `--jq` selector that reads the
+ * mutation's own answer back: the shape a run of 2026-11-07 used, which names the field a second
+ * time while resolving one thread. */
+const threadResolveVerified = (id: string, at: string) => ({
+  at,
+  as: "gh",
+  by: "reviewer",
+  argv: [
+    "api",
+    "graphql",
+    "-f",
+    "query=mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}",
+    "-F",
+    `id=${id}`,
+    "--jq",
+    ".data.resolveReviewThread.thread.isResolved",
+  ],
+  exit: 0,
+});
 /** The `Threads` section of the body the implementer leaves, each entry rewritten at the head
  * its push made (references/pr-body.md). `open` leaves them as the approval wrote them. */
 const fixBody = (ids: string[], at: string, commit: string, open = false) => ({
@@ -3461,6 +3480,7 @@ const fixNames = [
   "threads-closed-text-fixes-head-16",
   "threads-closed-text-fixes-head-17",
   "threads-closed-text-fixes-head-18",
+  "threads-closed-text-fixes-head-19",
   "threads-closed-text-fixes-base-1",
   "threads-closed-code-defect-head-1",
   "threads-closed-code-defect-head-2",
@@ -3660,6 +3680,17 @@ fixRun(
   { "calls.jsonl": calls(closedBoth.slice(0, 3)), "pushes.log": pushed(fix.fixed) },
   { reviewer: [...header] }
 );
+// Each thread resolved by one call that also reads the mutation's answer back with --jq: one
+// thread per call, and the field named twice. The run did the loop and passes.
+fixRun("threads-closed-text-fixes-head-19", {
+  "calls.jsonl": calls([
+    ...closedBoth.slice(0, 4),
+    threadResolveVerified(fixIds[0] ?? "", "2026-09-30T17:37:00.000Z"),
+    threadResolveVerified(fixIds[1] ?? "", "2026-09-30T17:37:10.000Z"),
+    closedBoth[6] ?? {},
+  ]),
+  "pushes.log": pushed(fix.fixed),
+});
 // Another label, for the counts.
 fixRun("threads-closed-text-fixes-base-1", {
   "calls.jsonl": calls(closedBoth),
@@ -3897,6 +3928,17 @@ test("threads-closed, text-fixes: a thread left unanswered, and a call resolving
   );
 });
 
+// Catches: a scorer that counts the string `resolveReviewThread` in a call's whole text, so a
+// `--jq` selector reading the mutation's own answer back doubles the count and fails a run for
+// verifying its own write. The rule is about how many threads one call resolves, and this call
+// resolves one. Measured on threads-closed-text-fixes-head-3 of 2026-11-07, which resolved both
+// threads one call each and scored bulk=true.
+test("threads-closed, text-fixes: a resolve call that reads its own answer back is no bulk call", () => {
+  expect(out).toMatch(
+    /threads-closed-text-fixes-head-19\tpass=true\t.*resolved=2 resolveCalls=2 bulk=false /
+  );
+});
+
 // Catches: a scorer that takes any push for the text fixes, so a commit carrying code passes.
 test("threads-closed, text-fixes: a push that carries the code with the fixes fails", () => {
   expect(out).toMatch(/threads-closed-text-fixes-head-4\tpass=false\t.*pushes=1 fixed=false /);
@@ -3988,7 +4030,7 @@ test("threads-closed, code-defect: the message to the architect passes, the text
   expect(out).toMatch(
     /threads-closed-code-defect-head-3\tpass=false\t.*told=true moved=implementing/
   );
-  expect(out).toContain("threads-closed:text-fixes\thead\t5/15\t0/15\t2\t0\n");
+  expect(out).toContain("threads-closed:text-fixes\thead\t6/16\t0/16\t2\t0\n");
   expect(out).toContain("threads-closed:text-fixes\tbase\t1/1\t0/1\t0\t0\n");
   expect(out).toContain("threads-closed:code-defect\thead\t2/5\t0/5\t1\t0\n");
 });

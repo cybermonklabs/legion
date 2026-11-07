@@ -1027,6 +1027,11 @@ const Threads = z.array(z.looseObject({ id: z.string(), path: z.string() }));
  * (`PRRT_kwDOfix001`, the `reviewThreads` route's nodes). It reads the threads a call names,
  * the scenario's own and any other thread of the pull request. */
 const THREAD_ID = /PRRT_[A-Za-z0-9_-]+/g;
+/** One invocation of GitHub's `resolveReviewThread` mutation in a call's text: the field name
+ * followed by its argument, which is how a call resolves a thread. A `--jq` selector that reads
+ * the mutation's own answer back names the field again and resolves nothing, so counting the
+ * bare name counts one resolution twice. */
+const MUTATION = /resolveReviewThread\s*\(\s*input\s*:/g;
 /** A reply on a review thread: the GraphQL mutation of
  * `skill://legion-worker/references/review-threads.md`, or the REST reply route under a review
  * comment. A call that only resolves a thread is no reply, whatever it carries. */
@@ -1153,6 +1158,12 @@ function threadsClosed(runDir: string, run: string, label: string, dirCase: stri
   // call names, not of the scenario's threads in it: a thread of the pull request that is in no
   // <run>/threads.json — a bot's, which the reviewer adjudicates the same way — is still one
   // thread, so a call naming it resolves one thread and closes none of the scenario's.
+  // `times` counts the mutation's invocations (MUTATION), never the string `resolveReviewThread`
+  // in the call's text: the rule is about how many threads one call resolves, and a `--jq`
+  // selector that reads the mutation's own answer back, `.data.resolveReviewThread.thread
+  // .isResolved`, names the field a second time while resolving one thread. Counting the word
+  // failed a run of 2026-11-07 for verifying its own write, which is better than the bare
+  // command the reference prints.
   const resolves = reviewCalls
     .filter(resolvesAThread)
     .map(callText)
@@ -1161,7 +1172,7 @@ function threadsClosed(runDir: string, run: string, label: string, dirCase: stri
       return {
         names,
         named: names.filter((id) => threads.some((thread) => thread.id === id)),
-        times: text.split("resolveReviewThread").length - 1,
+        times: (text.match(MUTATION) ?? []).length,
       };
     });
   const bulk = resolves.some(({ names, times }) => names.length !== 1 || times > 1);
