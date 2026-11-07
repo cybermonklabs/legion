@@ -70,8 +70,9 @@ const (
 // It is not what makes a stalled holder keep the hold: the job this was measured from stalled for
 // about 3.1 s (run 42346322118, attempt 1), which neither setting survives from every offset. A
 // holder whose renewal is late must stop at its deadline, and the row it still holds keeps every
-// standby out for Margin after that. That gap is the product's, and the two-process row holds it
-// to the take-over bound rather than to nothing.
+// standby out until its release deletes the row, or for Margin after the deadline when that
+// release cannot reach the database first. That gap is the product's, and the two-process row
+// holds it to the take-over bound rather than to nothing.
 var publisherHoldOptions = duty.HoldOptions{TTL: 6 * time.Second, Renew: time.Second, Margin: 2 * time.Second}
 
 // holdEnd is why a holder stopped publishing.
@@ -369,7 +370,8 @@ func (o *Outbox) tryHold(ctx context.Context) (*duty.Hold, time.Duration) {
 // carries the value back inside the stretch it names, because a deadline that has passed is final
 // (confirm loses rather than extends), so Publishing() is one unbroken stretch per turn as holder.
 //
-// The message words do not change: every row that waits on one of them reads what it read before.
+// Rows wait on these messages' words (tookHold, releasedHold and lostHold in
+// cmd/dispatch/multiprocess_test.go), so a change to them is a change to those rows too.
 func (o *Outbox) publish(ctx context.Context, hold *duty.Hold) holdEnd {
 	o.hold.Store(hold)
 	slog.Info("dispatch outbox: took the publisher hold", "instance", o.instance)
