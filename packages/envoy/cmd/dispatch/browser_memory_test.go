@@ -2998,11 +2998,17 @@ const liveWriteDeadline = 60 * time.Second
 //     the rest cold - a write to a document no room holds reads the stored history and decodes it
 //     into its fork (docs' coldFork), which is the path that holds those bytes while it waits for
 //     its slot.
-//   - The shared pool bounds how many of them are live writes at any moment, since each write's
-//     handler holds one of its connections from the transaction it opens to the commit or rollback
-//     that ends it (api's begin, editArtifact), so a write past sharedPoolSizeForTest waits for a
-//     connection and not for a slot. A burst deeper than that pool therefore costs the pod no
-//     more memory than one the size of it, and only takes longer to drain.
+//   - The API's write limit bounds how many of them hold a connection at any moment, since a
+//     write waits at that limit before it opens its transaction and so before it takes a
+//     connection (api's apiWriteLimit, begin). A write past apiWriteLimitForTest waits holding
+//     nothing, and the connections the limit leaves - sixteen of the pool's sixty-four - stay
+//     free for the callers that take one without a transaction: the room workers' durable
+//     appends, and the pooled reads a document's text is answered from. Without it a burst
+//     held every connection of the pool while it queued on the pod's load concurrency, and the
+//     room worker's append of a person's keystroke waited 58,217 ms for one, which is what the
+//     worst keystroke was waiting on (INFRA-179's keystroke measurement). A burst deeper than
+//     the limit therefore costs the pod no more memory than one the size of it, and only takes
+//     longer to drain.
 //
 // Every API write to a document takes its owner's row for the length of its transaction, so the
 // owner cannot close under the write (api's requireOpenOwnerStatus, ownerRowLock, "for no key
@@ -3023,6 +3029,14 @@ const liveWriteDeadline = 60 * time.Second
 //   - The slots are what the writes waited for: the server logs each slot a holder waited a
 //     tenth of a second or more for (loadSlotLine, logLoadSlots), and the burst leaves such
 //     lines.
+//   - A person typing in a small resident room is answered through the whole burst, the worst
+//     keystroke included: the drive logs every percentile and the worst of them, and holds both
+//     under 5 s, well inside the ten seconds ygo allows one message.
+//   - An ordinary read is answered beside that typing: a GET of a document's text, timed the
+//     way the keystrokes are, through the same burst. It is the other half of what the write
+//     limit buys - sixty connections held by writes would starve a reader as surely as they
+//     starve the room's worker - and the drive holds its 90th percentile under 2 s and records
+//     the worst, which the document service's own read and not a connection sets.
 //
 // What it records rather than asserts, because each is the system working as it is written to:
 //
@@ -3037,8 +3051,6 @@ const liveWriteDeadline = 60 * time.Second
 //     rulePressure, and TestAFullServerRefusesWhatGrowsAndTakesWhatShrinks). The drive
 //     records how far the person got and that what stopped them, where anything did, was that
 //     refusal and nothing else.
-//   - One keystroke of that person's waits far longer than the percentile, behind the pod's own
-//     work. The drive logs every percentile and the worst of them.
 func TestABurstOfConcurrentLiveWritesStaysUnderThePodsMemory(t *testing.T) {
 	const writes, find, with = 320, "Section 0", "Section Zero"
 	building := time.Now()
@@ -3065,8 +3077,9 @@ func TestABurstOfConcurrentLiveWritesStaysUnderThePodsMemory(t *testing.T) {
 	copies := memory.projectDocumentCopies(t, sourceID, writes)
 	t.Logf("%d documents of a mebibyte of prose, %d bytes of stored state each: the budget holds %d of them resident and every one of them is made resident here, which fills it to the brim; the fill charges %d of the %d-byte budget beside the typed room's %d and its typing's %d, and %d documents are written cold; they took %s to build",
 		writes, len(state), full, int64(full)*source.weight, roomBudgetBytesForTest, typed.weight, typedGrowth, writes-full, time.Since(building).Round(time.Second))
-	t.Logf("the slots: a fork of a document of %d bytes of state holds one of the pod's %d load slots for its whole life, so %d of these forks stand at once; at most %d of the %d writes are live writes at any moment, one for each connection of the shared pool, and each cold fork waiting for its slot holds the %d stored bytes it read, %d bytes for all of them",
-		len(state), loadSlotsForTest, loadSlotsForTest, sharedPoolSizeForTest, writes, len(state), sharedPoolSizeForTest*len(state))
+	t.Logf("the slots and the pool: a fork of a document of %d bytes of state holds one of the pod's %d load slots for its whole life, so %d of these forks stand at once; at most %d of the %d writes hold a connection at any moment, which is the API's write limit, and the %d waiting at it hold none of the %d the shared pool has - the %d the limit leaves are what the room workers' appends and the drive's own reader take",
+		len(state), loadSlotsForTest, loadSlotsForTest, apiWriteLimitForTest, writes, writes-apiWriteLimitForTest,
+		sharedPoolSizeForTest, sharedPoolSizeForTest-apiWriteLimitForTest)
 	t.Logf("the drive's %d documents owe the server no block index, so the only reads of them are the drive's own", memory.oweNoBlockIndex(t))
 
 	server := memory.start(t)
@@ -3099,6 +3112,10 @@ func TestABurstOfConcurrentLiveWritesStaysUnderThePodsMemory(t *testing.T) {
 
 	// From here through the burst a person types in the room they opened first.
 	typist := startTyping(t, typing)
+	// The ordinary read beside the typing: the same document's text over the API, every
+	// typingInterval, answered from the pooled reads the write limit keeps connections free
+	// for (api's apiWriteLimit, getArtifactText).
+	reading := startReading(t, server, typedIDs[0])
 	type outcome struct {
 		status int
 		took   time.Duration
@@ -3137,6 +3154,29 @@ func TestABurstOfConcurrentLiveWritesStaysUnderThePodsMemory(t *testing.T) {
 	latency := keystrokeLatencies(keys)
 	t.Logf("keystrokes in the ordinary room during the burst: %d, each answered applied in p50 %s, p90 %s, p99 %s, at most %s",
 		len(keys), latency.p50, latency.p90, latency.p99, latency.max)
+	reads, readErr := reading.finish()
+	readLatency := keystrokeLatencies(reads)
+	t.Logf("reads of that room's text over the API during the burst: %d, each answered in p50 %s, p90 %s, p99 %s, at most %s",
+		len(reads), readLatency.p50, readLatency.p90, readLatency.p99, readLatency.max)
+	if readErr != nil {
+		t.Errorf("a read of a document's text during the burst was not answered 200: %v", readErr)
+	}
+	if len(reads) == 0 {
+		t.Errorf("no read of a document's text was made during the burst, want one every %s", typingInterval)
+	}
+	// What the write limit answers for in this read is the connections, and they are not what
+	// its tail is. Instrumented over this burst, the worst read of the three the route makes
+	// spent 14 ms taking the artifact's row and 97 ms reading its latest version - both pooled
+	// reads, both outside the limit - and 50,544 ms inside the document service's own read of
+	// the live document, which the pod's work under a full room budget bounds and no
+	// connection does. So the drive holds the percentile an ordinary reader feels, and records
+	// the worst beside it, as it does for the heaviest keystroke. Measured over two runs of
+	// this fill: p50 128 and 156 ms, p90 277 and 317 ms, p99 2.311 and 3.301 s
+	// (dispatch://INFRA-179, the keystroke measurement).
+	if readLatency.p90 >= 2*time.Second {
+		t.Errorf("reads of a document's text during the burst were answered in p90 %s, at most %s, want a 90th percentile under 2 s: an ordinary read is waiting behind the burst's writes for a connection",
+			readLatency.p90, readLatency.max)
+	}
 	switch {
 	case typingErr == nil:
 	case strings.Contains(typingErr.Error(), contracts.DocumentBusyCloseReason):
@@ -3170,31 +3210,43 @@ func TestABurstOfConcurrentLiveWritesStaysUnderThePodsMemory(t *testing.T) {
 	if len(keys) == 0 {
 		t.Errorf("the person typed nothing during the burst, want a keystroke every %s", typingInterval)
 	}
-	// Most keystrokes are answered as promptly as an unloaded room answers them, and one is not.
-	// What the worst one waits on is the pod's own work, and none of the bounds: the keystroke's
-	// path takes no part of the copy bound (the one holder in it, the replica's build from a
-	// base, takes only what is free at once and never waits, docs' holdFreeCopy), no part of the
-	// apply bound (an insert of one character is far under docs' unweighedApplyHeapBytes, so it
-	// is never held, docs' weighPeerUpdate) and no pooled connection (its durable append is the
-	// room's own persistence worker's, handed over a buffered channel, and that worker takes its
+	// Every keystroke is answered as promptly as an unloaded room answers them, the worst of
+	// them included, because the keystroke's path meets none of the pod's bounds and nothing
+	// the burst holds: no part of the copy bound (the one holder in it, the replica's build
+	// from a base, takes only what is free at once and never waits, docs' holdFreeLoad), no
+	// slot of the pod's load concurrency (an insert of one character is far under docs'
+	// unslottedApplyBytes, so it is never held, docs' weighPeerUpdate), no wait on the room
+	// budget's sweep (the pressure refuses at once and the editor retries, docs'
+	// underPressure) and no pooled connection (its durable append is the room's own
+	// persistence worker's, handed over a buffered channel, and that worker takes its
 	// connection off this goroutine, docs' withRoomLock).
 	//
-	// The worst is not a repeatable figure and the drive does not hold it to one. Measured on
-	// 2026-11-05 over three runs of this fill, all of them with the heap inside the Go limit:
-	// p50 19 to 76 ms, p90 109 to 379 ms, p99 382 ms to 1.37 s, and a worst keystroke of
-	// 11.015 s, 12.87 s and 1 m 1.286 s. Over five runs of the earlier fill that kept rooms free
-	// for the burst's own it was 10.9 to 11.3 s, with the fork's grant patched out 17.022 s, and
-	// over the brim fill before the budget booked an opening for the server's own rooms - whose
-	// heap stood 713,885,218 bytes past the Go limit - 1 m 5.795 s. So the heap's overshoot is
-	// not what sets it: two processors carrying 64 writers' forks, renders and collections are,
-	// and nothing in this drive bounds that. All of them are against the p99 under 2 s and none
-	// over 5 s an ordinary room answers in beside the heaviest applies
-	// (TestTheHeaviestApplyBesideAFullCopyBoundStaysUnderThePodsMemory). So the drive holds the
-	// percentile a person feels as typing and records the worst; a keystroke the room never
-	// answers is the typist's own error above (browserAnswerWithin).
+	// That last one is what the worst keystroke used to wait on, and it is why this holds the
+	// worst and not only the percentile. Nothing bounded how many of the API's transactions
+	// were open at once, so the burst held every connection of the shared pool while it queued
+	// on the pod's one load slot; the typed room's own append then waited 58,217 ms of its
+	// 58,557 for a connection, with the pool at 63 of 64 acquired and one idle as that wait
+	// began; ygo's 256-deep hand-off channel for the room filled behind it; and the keystroke
+	// whose apply blocked on that hand-off took 9,908 ms, every millisecond of it after the
+	// room's own update observer had returned. Measured over five runs at that code: p50 5 to
+	// 19 ms, p90 76 to 195 ms, p99 359 ms to 1.601 s, and a worst keystroke of 9.913 s,
+	// 10.461 s, 10.679 s, 30.075 s and 30.273 s - two of them past the ten seconds ygo allows
+	// one message, which is the socket dropped with no close frame. With the API's write limit
+	// keeping sixteen of the pool's connections free of it (api's apiWriteLimit) the figures
+	// are the ones the log line above reports (INFRA-179's keystroke measurement).
+	//
+	// So the drive holds both: the percentile a person feels as typing, under the p99 under 2 s
+	// and none over 5 s an ordinary room answers in beside the heaviest applies
+	// (TestTheHeaviestApplyBesideAFullCopyBoundStaysUnderThePodsMemory), and the worst one,
+	// under the same 5 s, which is well inside ygo's ten-second message deadline. A keystroke
+	// the room never answers is the typist's own error above (browserAnswerWithin).
 	if latency.p99 >= 5*time.Second {
 		t.Errorf("keystrokes in an ordinary room during the burst were answered in p99 %s, at most %s, want a 99th percentile under 5 s: typing waited behind the writes further than any burst has made it",
 			latency.p99, latency.max)
+	}
+	if latency.max >= 5*time.Second {
+		t.Errorf("the worst keystroke in an ordinary room during the burst was answered in %s, want every one of them under 5 s and so well inside ygo's %s message deadline: a person's keystroke is waiting on machinery the burst uses again",
+			latency.max, 10*time.Second)
 	}
 
 	// What the server answered each write, read from its own access log beside what its caller
@@ -3342,11 +3394,19 @@ func TestABurstOfConcurrentLiveWritesStaysUnderThePodsMemory(t *testing.T) {
 }
 
 // sharedPoolSizeForTest mirrors store's sharedPoolSize, the connections every request reads and
-// writes through. A write's handler holds one from the transaction it opens to the commit or
-// rollback that ends it, so no more than this many API writes are live writes at one moment and a
-// burst past it waits for a connection rather than for a memory bound. A wrong mirror moves only
-// what TestABurstOfConcurrentLiveWritesStaysUnderThePodsMemory logs of its burst's arithmetic.
-const sharedPoolSizeForTest = 64
+// writes through, and apiWriteLimitForTest mirrors api's apiWriteLimit, how many of them the
+// API's own transactions may hold at once. A write's handler holds one connection from the
+// transaction it opens to the commit or rollback that ends it, and it waits at the limit
+// before it opens that transaction, so a burst holds no more than the limit and the rest of
+// the pool serves the callers that take a connection without a transaction: the room workers'
+// durable appends, and the pooled reads a document's text is answered from. A wrong mirror
+// moves only what TestABurstOfConcurrentLiveWritesStaysUnderThePodsMemory logs of its burst's
+// arithmetic; what the drive holds of the two is measured, in the keystrokes and the reads it
+// times through the burst.
+const (
+	sharedPoolSizeForTest = 64
+	apiWriteLimitForTest  = 48
+)
 
 // editAnswerLine is the line the server logs for each edit it served (accesslog.Handler,
 // accesslog.Message): the document in the path, the status it answered and how long the request
@@ -3612,6 +3672,69 @@ func keystrokeLatencies(keys []keystroke) latencies {
 		return took[max((len(took)*percent+99)/100-1, 0)].Round(time.Millisecond)
 	}
 	return latencies{p50: rank(50), p90: rank(90), p99: rank(99), max: took[len(took)-1].Round(time.Millisecond)}
+}
+
+// reader is the ordinary read a drive runs beside a person's typing: a GET of a document's text
+// over the API every typingInterval, timed as a keystroke is (startReading).
+type reader struct {
+	stop     chan struct{}
+	done     chan struct{}
+	stopOnce sync.Once
+	mu       sync.Mutex
+	reads    []keystroke
+	err      error
+}
+
+// startReading reads artifactID's text over the API every typingInterval, from the moment it is
+// called until finish, recording how long each read took as the typist records a keystroke. It
+// is the drive's reader arm: that route answers from two pooled reads and opens no transaction
+// (api's getArtifactText), so what it measures is whether the pool still has a connection for a
+// caller the API's write limit does not hold (api's apiWriteLimit). The first read that is
+// answered anything but 200, or that the host refuses outright, stops it and is what finish
+// reports.
+func startReading(t *testing.T, server *memoryServer, artifactID string) *reader {
+	t.Helper()
+	person := &reader{stop: make(chan struct{}), done: make(chan struct{})}
+	go func() {
+		defer close(person.done)
+		ticker := time.NewTicker(typingInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-person.stop:
+				return
+			case <-ticker.C:
+			}
+			sent := time.Now()
+			answer, err := server.trySend(http.MethodGet, "/api/v1/artifacts/"+artifactID+"/text", "", nil,
+				http.Header{"X-Dispatch-User": {"alice"}})
+			person.mu.Lock()
+			person.reads = append(person.reads, keystroke{sent: sent, took: time.Since(sent)})
+			switch {
+			case err != nil:
+				person.err = fmt.Errorf("read %d: %w", len(person.reads), err)
+			case answer.status != http.StatusOK:
+				person.err = fmt.Errorf("read %d: status %d body %.300s", len(person.reads), answer.status, answer.body)
+			}
+			failed := person.err != nil
+			person.mu.Unlock()
+			if failed {
+				return
+			}
+		}
+	}()
+	t.Cleanup(func() { person.finish() })
+	return person
+}
+
+// finish stops the reading, and is every read it made and why the last was not answered 200, if
+// it was not.
+func (r *reader) finish() ([]keystroke, error) {
+	r.stopOnce.Do(func() { close(r.stop) })
+	<-r.done
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.reads), r.err
 }
 
 // requireBusyAndUnchanged sends update to room from a browser of its own and fails the test unless
