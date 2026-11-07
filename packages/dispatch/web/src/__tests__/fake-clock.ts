@@ -33,15 +33,21 @@ export async function jump(ms: number): Promise<void> {
 
 /** Restores the real clock a test installed `jest.useFakeTimers()` for, first running whatever a
  *  zero-delay timer left on the fake clock would do: one left behind holds up the next test's
- *  `waitFor`, which moves the clock that test installed rather than the real one. */
+ *  `waitFor`, which moves the clock that test installed rather than the real one. That last step
+ *  runs inside `act`, since a write waiting on such a timer continues into React's state as it
+ *  fires, and a test rendering a component would otherwise update outside `act`. */
 export function realClock(): void {
   act(() => jest.advanceTimersByTime(1));
   jest.useRealTimers();
 }
 
-/** Runs `body` on the fake clock, putting the real one back after it whether `body` passed or
- *  threw (`realClock`, so a millisecond runs before the real clock comes back): the shape a test
- *  that waits a product timer out takes, so no later test inherits a clock that never moves. */
+/** Lets every promise a write chained run as far as it goes without the clock moving. */
+export async function settle(): Promise<void> {
+  for (let turn = 0; turn < 30; turn += 1) await Promise.resolve();
+}
+
+/** Runs `body` on the fake clock, so a write that waits out a backoff waits no real time, and
+ *  brings the real clock back through `realClock` however `body` ends. */
 export async function onFakeClock(body: () => Promise<void>): Promise<void> {
   jest.useFakeTimers();
   try {

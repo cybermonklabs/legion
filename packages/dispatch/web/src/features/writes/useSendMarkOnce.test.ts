@@ -63,6 +63,7 @@ function renderMark(send: (value: string) => Promise<void>, initial: Props) {
   return { client, hook: { ...hook, unmount }, keys, sent, succeeded: () => succeeded };
 }
 
+/** Lets every promise the store chained run, in an `act` so React applies what they changed. */
 async function settle(): Promise<void> {
   await act(async () => {
     for (let turn = 0; turn < 30; turn += 1) await Promise.resolve();
