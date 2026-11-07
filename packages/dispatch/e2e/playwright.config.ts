@@ -174,21 +174,28 @@ const expectTimeout = 15_000;
 // artifact of 201 ci.yaml runs between 2026-11-05T08:51:42Z and 2026-11-05T20:27:47Z (78
 // merge_group, 119 pull_request, 4 push).
 //
-// The population is the one this number governs, and the filter is the point of it: the 300,539
-// results that passed on rows of the spec files this tree has whose tests set no timeout of
-// their own. Left out are 1,812 results of 15 spec files this tree does not have, which are
-// other branches' rows, and every row of the 20 files that call `test.setTimeout` or
-// `test.slow` (the refilling files among them, whose rows ask for 120 s to 300 s): this budget
-// is not theirs, and reading them into it would raise it for rows it never applies to. Both of
-// those counts move when the base moves, since they are of this tree's own file list rather
-// than of the window, and this reading is of the base this branch merged forward
-// (`main` at b7866f96): seven of the files that were another branch's when this was first
-// measured are the base's now.
-// Over that population: median
-// 2,509 ms, 95th percentile 6,788 ms, 99th 10,030 ms, 99.9th 15,605 ms, maximum 29,856 ms
+// The population is the one this number governs, and the filter is the point of it: the results
+// that passed, in that window, on rows of the spec files this tree has whose tests set no
+// timeout of their own. A file is out of the filter if it calls `test.setTimeout`,
+// `testInfo.setTimeout` or `test.slow()` - `test.slow` triples the per-test timeout to 180 s,
+// which is why `threads-order.e2e.ts` is not governed by this budget - and the files that do are
+// this tree's own list rather than the window's, so their number moves whenever the base moves.
+// Derive it rather than read it here:
+//
+//   grep -lE 'test\.setTimeout|testInfo\.setTimeout|test\.slow\(\)' e2e/*.e2e.ts
+//
+// and the window's own results are left out the same way when their spec file is not one this
+// tree has, which is other branches' rows. Two counts of files used to stand in this comment and
+// each aged at a base move, the second time through a `test.slow()` a reader's eye skipped; the
+// command above cannot age.
+//
+// Over that population, read at the base this branch merged forward (`main` at b7866f96d7fe):
+// 300,533 results, median 2,509 ms, 95th percentile 6,788 ms, 99th 10,030 ms, maximum 29,856 ms
 // (deep-links.e2e.ts's "emitted document item hrefs select and scroll their anchored quote" in
-// WebKit). Over the whole of what this tree has, rows with their own timeout included, the
-// maximum is 126,560 ms, and the 21 results above this budget are all in three rows of
+// WebKit). The 99.9th percentile is about 15.6 s, and no figure for it is quoted here because
+// two readers of the same population measure it 4 ms apart by their percentile convention. Over
+// the whole of what this tree has, rows with their own timeout included, the maximum is
+// 126,560 ms, and the 21 results above this budget are all in three rows of
 // agent-list-refilling.e2e.ts, whose rows ask for 150 s to 300 s themselves.
 //
 // The budget is twice the governed maximum, so a healthy row has as long again as the slowest
