@@ -553,6 +553,34 @@ test("a streamed user message tagged with a person's message but saying somethin
   ).toEqual(["Merge only after review.", "Merge now, skip review."]);
 });
 
+// R4. A person's `!command` is run by the session, which publishes the person's line, what the
+// command printed and how it ended as one user message tagged with that message's Dispatch id
+// (INFRA-812's D12). The line is theirs, so the report takes the stored copy's place rather
+// than standing under it, and the pair is one turn under Dispatch's own key.
+test("a shell command's report takes over the person's own message rather than doubling it", async () => {
+  renderLiveView({
+    agentState: {},
+    messages: [{ message: message("m1", "!cat missing.txt"), replies: [] }],
+    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    replay: [
+      userFrame(
+        1,
+        Date.parse("2026-09-27T21:16:16Z"),
+        "!cat missing.txt\n\ncat: missing.txt: No such file or directory\n\nThe command ended with exit status 1.",
+        "m1"
+      ),
+    ],
+  });
+
+  const thread = await screen.findByTestId("agent-thread");
+  await within(thread).findByText("cat: missing.txt: No such file or directory");
+  const own = within(thread).getAllByTestId("agent-message-user");
+  expect(own).toHaveLength(1);
+  expect(own[0].textContent).toContain("!cat missing.txt");
+  expect(own[0].textContent).toContain("The command ended with exit status 1.");
+  expect(own[0].getAttribute("data-message-id")).toBe("dispatch:m1");
+});
+
 // Send is the terminal's Enter: the default wherever the session takes a steer. A session that
 // takes only asides (a Claude Code session) would refuse one, so Aside is its default.
 test("the live view sends as Send by default where the session takes it, and as Aside where it does not", async () => {

@@ -262,8 +262,10 @@ that until the run ends. The phase-stall section of `packages/pi-legion/AGENTS.m
 miss costs a phase worker. Which turns the page shows
 twice: one the record missed, which the stream carries untagged; and a prompt template or file
 command, whose streamed user message is the expanded text while Dispatch stores what the person
-typed, and the page takes the stored copy away only when the two texts are equal
-(`AgentRuntimeThread.tsx`, a guard against a forged tag on an open bus). A `/skill:` shows once:
+typed, and the page takes the stored copy away only when the streamed turn is that message
+(`takesOverStored` in `AgentRuntimeThread.tsx`, a guard against a forged tag on an open bus):
+the two texts are equal, or the body is a `!command` and the streamed text opens with that whole
+body and a blank line, which is the report above. A `/skill:` shows once:
 the stream carries no custom message, so the page shows Dispatch's stored copy alone. A typed turn
 the host starts under a new id (queued across a branch or a move-off, or a session change during
 its `sendUserInput`) is untagged by the record there, and shows once: Dispatch stored the Send

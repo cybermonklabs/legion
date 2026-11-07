@@ -35,6 +35,25 @@ function dispatchId(messageId: string): string {
 }
 
 /**
+ * Whether a streamed user turn is the stored message it names, so the view draws the pair once
+ * rather than one under the other.
+ *
+ * A turn saying exactly what the person sent is that message. So is the report of a person's
+ * `!command` (INFRA-812, R4): the session runs the line itself and publishes the person's line,
+ * what the command printed and how it ended as one user message, because the person ran it and
+ * the host wrote nothing (`shellCommandReport` in `packages/pi-envoy/src/typed-shell.ts`). Its
+ * first line is the message's whole body and a blank line follows it, so the turn still says
+ * what the person said and the rest of it is the session's answer to that line.
+ *
+ * Anything else is left to show beside the stored copy: the bus is open to any client, and a
+ * tag is no licence to put words in a person's mouth.
+ */
+function takesOverStored(text: string, body: string): boolean {
+  if (text === body) return true;
+  return body.startsWith("!") && text.startsWith(`${body}\n\n`);
+}
+
+/**
  * Everything that reads the conversation, in one component so a boundary can be put around it.
  *
  * assistant-ui converts every message while the runtime is built, so a message it refuses throws
@@ -94,7 +113,8 @@ export function AgentRuntimeThread({
     // naming whoever wrote it. An untagged one is returned unchanged and its stored copy is never
     // taken, so it shows twice (`packages/pi-envoy/AGENTS.md` says which turns go untagged). Any
     // bus client can publish a tag, so only a person's stored message can be one, and only a
-    // streamed message saying exactly what that person sent replaces its stored copy.
+    // streamed message saying what that person sent, or answering their `!` line, replaces its
+    // stored copy (`takesOverStored`).
     const byID = new Map(
       storedMessages
         .filter((message) => message.author.kind === "user")
@@ -105,7 +125,9 @@ export function AgentRuntimeThread({
     const streamed = toThreadMessages(conversation).map((message) => {
       const turn = turns.get(message.id ?? "");
       const source = byID.get(turn?.dispatchMessageId ?? "");
-      if (turn === undefined || source === undefined || turn.text !== source.body) return message;
+      if (turn === undefined || source === undefined || !takesOverStored(turn.text, source.body)) {
+        return message;
+      }
       taken.add(source.id);
       // The streamed turn keeps the key the stored copy would have had, so it is one turn under
       // one key for `useLiveFollow` whether the reader sees this frame or, after a rebuild that

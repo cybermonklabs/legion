@@ -313,7 +313,10 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   the session has accepted the attempt with Dispatch, so the live view shows it from the stream,
   where the session took it. When the stream tags it with its Dispatch id (`dispatchTurns` in
   `features/agent-view/conversation.ts`), the view hides Dispatch's stored copy only when the
-  streamed text equals it, and still names its author when that is not the viewer. A turn the
+  streamed turn is that message (`takesOverStored` in `AgentRuntimeThread.tsx`): the streamed
+  text equals the body, or the body is a `!command` and the text opens with that whole body and
+  a blank line, which is the report the session publishes for a person's shell command
+  (INFRA-812, R4). It still names its author when that is not the viewer. A turn the
   stream missed shows twice, as the streamed message and stored copy; so does a prompt template or
   file command whose streamed message is its expansion rather than the stored `/name …`.
   `packages/pi-envoy/AGENTS.md` says which turns the session leaves untagged. The live view's
