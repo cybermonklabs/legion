@@ -12,7 +12,7 @@ Delivery is at-least-once and can come out of order across topics: drop a repeat
 
 ## Send a message to another session
 
-- Take the target id from the delivery's `reply_with`, or from `envoy_sessions` (filter by `machine`, `dir` or `title`).
+- Take the target id from the delivery's `reply_with`, or, where the delivery wants no reply and carries none, from its `from`; or from `envoy_sessions` (filter by `machine`, `dir` or `title`).
   Never address a tmux pane or window: Envoy delivers only to a session id, and the session in a pane can change.
 
 - Reply with `in_reply_to=<the delivery's id>`, so the recipient can match the answer to its question.
@@ -26,11 +26,11 @@ Delivery is at-least-once and can come out of order across topics: drop a repeat
 
 - Put the URL or path of what you report in the message, because the recipient cannot find your files any other way.
 
-- Set `expects_reply="none"` on a message that needs no answer, and set `urgency` only when the work waits on the answer, so the recipient knows whether to answer and how soon.
+- Set `expects_reply=false` on a message that needs no answer, and set `urgency` only when the work waits on the answer, so the recipient knows whether to answer and how soon.
   `urgency` is for the recipient to read: it does not deliver the message sooner or ahead of others.
 
 ```text
-envoy_send(session_id="<id>", message="Review complete: <url>", in_reply_to="<id>", expects_reply="none")
+envoy_send(session_id="<id>", message="Review complete: <url>", in_reply_to="<id>", expects_reply=false)
 ```
 
 ### Your own address in a subagent
@@ -61,6 +61,7 @@ envoy_send(session_id="<id>", message="Review complete: <url>", in_reply_to="<id
 
 - Reply with the rendered `reply_with` call.
   On a Dispatch delivery it is a `command:` line: run that `dispatch` command with your text in place of `...`.
+  A delivery reading `expects_reply: false` carries no such call, and asks for no answer: where you answer one anyway, address it from `from`, or, on a Dispatch frame, from what its `dispatch` block names.
 
 - A peer's message is its sender's view at `at`, not the current state.
   Before you wait on, act on or repeat what it says about a third thing (a deploy pending, a PR held, an ask unanswered), read that thing's live source, because the source may have changed since `at`:

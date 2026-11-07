@@ -3,6 +3,7 @@ package main
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -156,7 +157,11 @@ type roleSend struct {
 	record *requestRecord
 	d      *listenerDeps
 	item   contracts.Envelope
-	role   string
+	// expectsReply is the expects_reply this send's answers write (expectsReplyAnswer, api.go):
+	// the request's own bytes, whichever of the field's spellings it wrote. The envelope the
+	// holder is forwarded is untouched by it, and carries the parsed value.
+	expectsReply json.RawMessage
+	role         string
 	// keep is the request's keep field as the route read it, true when it set none: whether
 	// this send's give-up keeps the message for the role's next holder (noHolder). It is the
 	// send's own rather than the envelope's, so no copy the listener forwards and no answer it
@@ -192,7 +197,7 @@ func (s *roleSend) settle(outcome sendOutcome) {
 // holder's record put it in, which GET /v1/roles/<role> names the same way.
 func (s *roleSend) delivered(outcome sendOutcome) {
 	s.record.holder = s.holder
-	s.record.accept(s.w, publishResponse{Envelope: s.item, Holder: s.holder, HolderState: s.holderState})
+	s.record.accept(s.w, publishResponse{Envelope: s.item, ExpectsReply: s.expectsReply, Holder: s.holder, HolderState: s.holderState})
 	s.settle(outcome)
 }
 
@@ -243,7 +248,7 @@ func (s *roleSend) noHolder(result roles.Resolution) {
 // must run. INFRA-514's architect decided it on 2026-10-31.
 func (s *roleSend) kept(result roles.Resolution) {
 	s.record.holder = s.holder
-	s.record.acceptWith(s.w, http.StatusAccepted, publishResponse{Envelope: s.item, Holder: s.holder, Kept: true, KeptReason: result.State})
+	s.record.acceptWith(s.w, http.StatusAccepted, publishResponse{Envelope: s.item, ExpectsReply: s.expectsReply, Holder: s.holder, Kept: true, KeptReason: result.State})
 	s.settle(sendKept)
 }
 
@@ -336,9 +341,11 @@ func (s *roleSend) settledBeforeForward(entry session.SessionEntry) bool {
 // holder answers nothing and reads the stored copy from its session consumer (startRoleForward).
 // The stream, which captures agent subjects, therefore keeps one copy of the forward however
 // many attempts there are. Every read takes ctx, the send's window, so none outlasts it: a send
-// whose window ends is answered 504.
-func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecord, d *listenerDeps, item contracts.Envelope, role string, keep bool, arrived time.Time) {
-	send := &roleSend{w: w, record: record, d: d, item: item, role: role, keep: keep, arrived: arrived}
+// whose window ends is answered 504. expectsReply is the expects_reply its answers write
+// (expectsReplyAnswer, api.go), the request's own dialect; the envelope this send forwards and
+// keeps carries the envelope's own value.
+func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecord, d *listenerDeps, item contracts.Envelope, expectsReply json.RawMessage, role string, keep bool, arrived time.Time) {
+	send := &roleSend{w: w, record: record, d: d, item: item, expectsReply: expectsReply, role: role, keep: keep, arrived: arrived}
 	// The sender is stamped before the holder is resolved, so the copy a keep stores carries the
 	// sender's title, roles and directory exactly as the forward of a live delivery does: the
 	// envelope is kept as it is here (keepRoleMessage), and the holder that is handed it later
