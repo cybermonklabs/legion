@@ -64,11 +64,11 @@ func TestTheStateShowsEveryIssueItsTreesMemoryDraw(t *testing.T) {
 	}
 }
 
-// contract46Issue is every key the issue record of the last strict reader before memoryContract
-// knows (packages/contracts/src/legion-api.ts's legionIssue, unchanged from 46 through 48): one
-// key more and it refuses the whole state, which is every `read_record` of every worker in a pod
-// one release behind.
-var contract46Issue = []string{
+// issueBeforeMemoryContract is every key the issue record of the last strict reader before
+// memoryContract knows (packages/contracts/src/legion-api.ts's legionIssue, unchanged from
+// supervise.PodUpdateContract to the contract below memoryContract): one key more and it refuses
+// the whole state, which is every `read_record` of every worker in a pod one release behind.
+var issueBeforeMemoryContract = []string{
 	"key", "generation", "phase", "status", "repo", "defaultBranch", "holdReason", "architect",
 	"workers", "pullRequest", "designGate", "slot", "waitingOn", "check",
 }
@@ -76,13 +76,15 @@ var contract46Issue = []string{
 // The route authenticates nobody, so it knows a plugin by the pod the request came from: a pod
 // whose claims record a contract below memoryContract is served issues with only the keys
 // the last strict reader before it knows, and the rest of the body as it is. The six downgrades
-// compose, band by band: a pod at 46 to 48 is served the update rounds it reads and none of the
-// memory draws, the trees, the wakes the pacing holds, the gated steps and the setting sources;
-// a pod at 49 or 50 the memory draws as well; a pod at 51 or 52 the trees too; a pod at 53 or 54
-// the wakes too; a pod at 55 the gated steps too; a pod below 46 none of the six; and a pod at
-// this contract, a pod whose claims record none and a caller in no pod — the operator's `legion
-// state`, whose memory line reads the draws and whose queue line reads the wakes — are served
-// all of them.
+// compose, band by band: a pod from supervise.PodUpdateContract to below memoryContract is
+// served the update rounds it reads and none of the memory draws, the trees, the wakes the
+// pacing holds, the gated steps and the setting sources; a pod from memoryContract to below
+// treeContract the memory draws as well; one from treeContract to below wakesWaitingContract
+// the trees too; one from wakesWaitingContract to below gatedStepsContract the wakes too; one
+// from gatedStepsContract to below settingSourcesContract the gated steps too; a pod below
+// supervise.PodUpdateContract none of the six; and a pod at this contract, a pod whose claims
+// record none and a caller in no pod — the operator's `legion state`, whose memory line reads
+// the draws and whose queue line reads the wakes — are served all of them.
 func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 	full := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(memoryContract-1))
 	fullWakes, fullCarried := wakesServed(t, full)
@@ -108,19 +110,19 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(memoryContract - 1), rounds: true},
 		{name: "a pod below PodUpdateContract, below all six", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
 		{name: "the same pod asking over IPv6", remote: "[::ffff:" + statePodAddr + "]:41000", claims: podClaims(memoryContract - 1), rounds: true},
-		// The band at 49 and 50, above memoryContract and below treeContract: the memory group
-		// is served, and the two tree keys, `wakesWaiting`, the gated steps and the setting
-		// sources are not.
+		// The band from memoryContract to below treeContract: the memory group is served, and
+		// the two tree keys, `wakesWaiting`, the gated steps and the setting sources are not.
+		// This row is at memoryContract, its lower edge.
 		{name: "a pod at memoryContract", remote: statePodAddr + ":41000", claims: podClaims(memoryContract), memory: true, rounds: true},
-		// The band at 51 and 52, from treeContract to below wakesWaitingContract: the trees are
-		// served too, and neither `wakesWaiting`, the gated steps nor the setting sources are.
-		// This row is at treeContract, its lower edge.
+		// The band from treeContract to below wakesWaitingContract: the trees are served too,
+		// and neither `wakesWaiting`, the gated steps nor the setting sources are. This row is
+		// at treeContract, its lower edge.
 		{name: "a pod at treeContract", remote: statePodAddr + ":41000", claims: podClaims(treeContract), memory: true, trees: true, rounds: true},
-		// The band at 53 and 54, from wakesWaitingContract to below gatedStepsContract:
-		// everything but the gated steps and the setting sources is served.
+		// The band from wakesWaitingContract to below gatedStepsContract: everything but the
+		// gated steps and the setting sources is served.
 		{name: "a pod at wakesWaitingContract", remote: statePodAddr + ":41000", claims: podClaims(wakesWaitingContract), memory: true, trees: true, rounds: true, wakes: true},
-		// The band at 55, from gatedStepsContract to below settingSourcesContract: everything
-		// but the three fields that contract added is served.
+		// The band from gatedStepsContract to below settingSourcesContract: everything but the
+		// three fields that contract added is served.
 		{name: "a pod at gatedStepsContract", remote: statePodAddr + ":41000", claims: podClaims(gatedStepsContract), memory: true, trees: true, rounds: true, wakes: true, steps: true},
 		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), memory: true, trees: true, rounds: true, wakes: true, steps: true, sources: true},
 		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), memory: true, trees: true, rounds: true, wakes: true, steps: true, sources: true},
@@ -147,7 +149,7 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 					continue
 				}
 				for field := range view {
-					if !slices.Contains(contract46Issue, field) {
+					if !slices.Contains(issueBeforeMemoryContract, field) {
 						t.Errorf("issue view %v carries %q, which the strict reader before memoryContract refuses", view, field)
 					}
 				}

@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/notify"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/stream"
@@ -58,6 +59,20 @@ func (b liveBudgets) Timeouts() supervise.Timeouts {
 		LaunchBackoff:         launchBackoffFirst,
 		PodUpdateRetask:       cfg.PodUpdateRetask,
 	}
+}
+
+// gatedStepsOf are the design-gate steps live says the project gates (`gates.design`,
+// config.Gates.Steps), read from the settings holder as the decision that needs them is made
+// rather than held from the boot, so a change of the gate reaches the next decision with
+// nothing rebuilt. The empty list gates no step.
+//
+// A reader a test built by hand holds no settings holder at all (nil live); it reads as the
+// shipped list, the one step spec, which is what an unset `gates.design` resolves to.
+func gatedStepsOf(live *config.Live) []record.DesignStep {
+	if live == nil {
+		return config.Gates{}.Steps()
+	}
+	return live.Snapshot().Gates.Steps()
 }
 
 // sandboxOf is the Agent Sandbox runtime behind rt: rt itself, or the one the runtime holder

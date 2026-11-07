@@ -197,17 +197,9 @@ type workflowRuntime struct {
 // gatedSteps are the design-gate steps the project gates (`gates.design`), read from the
 // settings holder as the decision that needs them is made: the send-time narrowing of a held
 // architect task reads them, and a catch-up it writes to another tree's architect is composed
-// under them (rootTask, workflow.CatchUpTheTreesOwed). The empty list gates no step
-// (config.Gates.Steps), so a change of the gate reaches the next decision with nothing rebuilt.
-//
-// A runtime a test built by hand holds no settings at all; it reads as the shipped list, the
-// one step spec, which is what an unset `gates.design` resolves to.
-func (w *workflowRuntime) gatedSteps() []record.DesignStep {
-	if w.live == nil {
-		return config.Gates{}.Steps()
-	}
-	return w.live.Snapshot().Gates.Steps()
-}
+// under them (rootTask, workflow.CatchUpTheTreesOwed). A runtime a test built by hand holds no
+// settings at all, which gatedStepsOf reads as the shipped list.
+func (w *workflowRuntime) gatedSteps() []record.DesignStep { return gatedStepsOf(w.live) }
 
 // readyReleaseTimeout bounds one release of ready architects' waiting notices
 // (outbox.releaseWaiting): a read of a project's waiting notices and their trees, then one update,
@@ -543,28 +535,28 @@ func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, rebuil
 	}
 	// A rebuild's connection is opened with the set the consumers hear as it starts, and the
 	// consumers it opened are handed, at the swap, the set the daemon is to hear then: worked
-	// out again from the mapping, the records and the renames the rebuild's own configuration
-	// carries (natsHandover, natsHearing), under one hold of the lock every fact applies under
+	// out again from the mapping, the records and the mapping's own renames (natsHandover,
+	// natsHearing), under one hold of the lock every fact applies under
 	// (serializeFacts, intake.SerializeFacts) and under the lock a mapping read is made under
 	// (mappingMu). natsHolder.rebuild is where both holds are explained, and what they cost.
 	rebuildOpen := func(ctx context.Context, c config.Config) (*nats.Conn, *intake.Consumers, error) {
 		return open(ctx, c, w.nats.intake().Repositories())
 	}
 	w.nats = newNATSHolder(conn, consumers, w.log, rebuildOpen, &w.mappingMu, w.natsHandover)
-	// The mapping is registered before the consumers, and that order is this daemon's answer to
-	// a mapping read that would narrow the GitHub durable's filter with renames older than the
-	// ones it was built with. rebuilder.observe builds holders in the order they were registered,
-	// and a `repository_renames` change names both (config.Classes' row, Also). Registered the
-	// other way round, the GitHub durable filters on the new pair's subjects from the swap on
-	// while w.repositories.Renames() still answers the pair before it, and the first mapping
-	// read the rebuild's own hold of mappingMu lets through (refreshMapping) works out what
-	// GitHub intake is to hear under those older renames and hands the consumers the narrower
-	// set: the merges, check runs and reviews GitHub publishes under the name the repository
-	// moved to are then stepped past by JetStream's own filter, and nothing redelivers them.
-	// This way round the gap is the other way about and costs nothing a reader can observe:
-	// the mapping's own rebuild is a lock and an assignment that cannot fail
-	// (mappingHolder.rebuild), it reaches no filter, and the consumers' filter — which only a
-	// rebuild widens — is widened in the very next holder the same observe builds.
+	// The mapping is registered before the consumers, and that order is what has the consumers'
+	// rebuild build its filter with the equivalence the change settled: rebuilder.observe builds
+	// holders in the order they were registered, a `repository_renames` change names both
+	// (config.Classes' row, Also), and what the rebuilt consumers are to hear is worked out
+	// under the mapping's own renames (natsHearing). Registered the other way round, that
+	// rebuild would work it out under the pair w.repositories.Renames() still answered — the one
+	// before the change — and leave the name the repository moved to off the GitHub durable's
+	// FilterSubjects, as would the first mapping read the rebuild's own hold of mappingMu lets
+	// through (refreshMapping): the merges, check runs and reviews GitHub publishes under that
+	// name would be stepped past by JetStream's own filter, with nothing to redeliver them,
+	// until something unrelated read the mapping again. This way round the mapping's own
+	// rebuild — a lock and an assignment that cannot fail (mappingHolder.rebuild), reaching no
+	// filter — has settled the equivalence before the very next holder the same observe builds
+	// widens the filter with it.
 	rebuild.register(newMappingHolder(w.repositories), w.nats)
 	w.bootID = fmt.Sprintf("%d", time.Now().UnixNano())
 	return nil
@@ -572,17 +564,16 @@ func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, rebuil
 
 // natsHandover is the handover of a NATS rebuild (natsHolder.rebuild): under one hold of the
 // lock every fact applies under (serializeFacts, intake.SerializeFacts) it works out, on that
-// hold's own transaction and for renames — the renames of the configuration the rebuild is
-// building from (natsHearing) — what the consumers that rebuild opened are to hear, hands it to
-// them, and calls swap, the holder's own swap of its connection, its consumers and its
-// generation. Holding all three is what keeps a mapping read, which takes that same lock across
-// its own SetRepositories (refreshMapping), from setting its repositories on the consumers the
-// rebuild is replacing; natsHolder.rebuild says what that hold costs. Nothing after the set can
-// fail, so a handover that returns an error never reached swap and the holder serves what it
-// served before.
-func (w *workflowRuntime) natsHandover(ctx context.Context, consumers *intake.Consumers, renames ghrepo.Renames, swap func()) error {
+// hold's own transaction and under the mapping's own renames (natsHearing), what the consumers
+// that rebuild opened are to hear, hands it to them, and calls swap, the holder's own swap of
+// its connection, its consumers and its generation. Holding all three is what keeps a mapping
+// read, which takes that same lock across its own SetRepositories (refreshMapping), from
+// setting its repositories on the consumers the rebuild is replacing; natsHolder.rebuild says
+// what that hold costs. Nothing after the set can fail, so a handover that returns an error
+// never reached swap and the holder serves what it served before.
+func (w *workflowRuntime) natsHandover(ctx context.Context, consumers *intake.Consumers, swap func()) error {
 	return w.serializeFacts(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		heard, err := w.natsHearing(ctx, tx, renames)
+		heard, err := w.natsHearing(ctx, tx)
 		if err != nil {
 			return fmt.Errorf("work out the repositories the rebuilt consumers are to hear: %w", err)
 		}

@@ -84,8 +84,10 @@ type outbox struct {
 	stateDir        string
 	// live is the daemon's settings holder, where every row that states a value the daemon
 	// decides by now reads it: the design-gate steps the project gates (gatedSteps) and the stop
-	// bound a carried child's suspension is given (workerStopTimeout). Every runner is built
-	// with one, a test's own as much as the daemon's.
+	// bound a carried child's suspension is given (workerStopTimeout). The daemon's own runner is
+	// always built with one; a runner a test built by hand may hold none, which gatedStepsOf
+	// reads as the shipped list, while workerStopTimeout reads the holder itself, so a test whose
+	// row stops a worker gives the runner one.
 	live *config.Live
 	log  *slog.Logger
 	// backstop is how long after a release its one open phase's worker is woken whatever else
@@ -195,16 +197,9 @@ func newOutbox(pool *pgxpool.Pool, records record.Store, client dispatch.Client,
 // start task names (workflow.QueueCatchUp). They are read at the write rather than held from the
 // boot, so a change of the gate reaches the next catch-up with nothing rebuilt — a tree whose
 // architect is told the steps after an operator moved them is told the ones the daemon decides
-// by.
-//
-// A runner a test built by hand holds no settings at all; it reads as the shipped list, the one
-// step spec, which is what an unset `gates.design` resolves to.
-func (r *outbox) gatedSteps() []record.DesignStep {
-	if r.live == nil {
-		return config.Gates{}.Steps()
-	}
-	return r.live.Snapshot().Gates.Steps()
-}
+// by. A runner a test built by hand holds no settings at all, which gatedStepsOf reads as the
+// shipped list.
+func (r *outbox) gatedSteps() []record.DesignStep { return gatedStepsOf(r.live) }
 
 // workerStopTimeout is how long a stop this runner asks for leaves the process to end
 // (`worker_stop_timeout_seconds`), as the daemon is running on it now: the very bound the

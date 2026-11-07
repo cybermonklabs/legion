@@ -2054,7 +2054,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 			wakes:        s.waitingWakes,
 			repositories: p.repositories,
 			caches:       repositoryCachesOf(s.runtime),
-			gatedSteps:   func() []record.DesignStep { return p.live.Snapshot().Gates.Steps() },
+			live:         p.live,
 			settings:     reported.get,
 			sources:      sources,
 			commit:       p.commit,
@@ -2219,11 +2219,12 @@ type source struct {
 	// caches is the Kubernetes runtime's repository caches with their last health reads
 	// (sandbox.Runtime.RepositoryCaches); nil under a runtime that keeps none.
 	caches func() []sandbox.CacheStatus
-	// gatedSteps are the design-gate steps the deployment gates (`gates.design`,
-	// config.Gates.Steps), which every root of the state answers its own state of; the empty
-	// list gates none. It is read at every read of the state, from the settings holder, so an
-	// operator's change of the gate reaches the next read with nothing rebuilt.
-	gatedSteps func() []record.DesignStep
+	// live is the daemon's settings holder, which the state's design-gate steps are read from
+	// (`gates.design`, gatedStepsOf): the steps the deployment gates, which every root of the
+	// state answers its own state of, and the empty list gates none. They are read at every read
+	// of the state, so an operator's change of the gate reaches the next read with nothing
+	// rebuilt. A source a test built by hand holds none, and reads the shipped list.
+	live *config.Live
 	// settings is the resolved configuration as the state shows it, read at every read of the
 	// state: it is rebuilt at every applied settings change (reportedSettings), so the state
 	// reports the value the daemon is running on beside where that value came from.
@@ -2385,12 +2386,8 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	records := projectRecords{Store: s.records, project: s.project}
 	now := time.Now().UTC()
 	// The gate is read once for this state, so the issues' steps and the stranded claims' are
-	// the same list even if an operator moves the gate while the body is being built. A source
-	// a test built by hand reads none, and takes the shipped list, the one step spec.
-	steps := config.Gates{}.Steps()
-	if s.gatedSteps != nil {
-		steps = s.gatedSteps()
-	}
+	// the same list even if an operator moves the gate while the body is being built.
+	steps := gatedStepsOf(s.live)
 	state, err := projection.Project(ctx, tx, records, s.project, steps, claims, s.reports(), now)
 	if err != nil {
 		return api.State{}, nil, err

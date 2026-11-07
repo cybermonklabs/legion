@@ -12,9 +12,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
-	"maps"
 	"slices"
-	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -22,7 +20,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/classify"
-	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/controller"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -340,74 +337,6 @@ type DaemonInfo struct {
 	Boots         int       `json:"boots"`
 	FirstBootAt   time.Time `json:"firstBootAt"`
 	StartedAt     time.Time `json:"startedAt"`
-}
-
-// SettingSource is where one setting's value came from: Source is `file`, the configuration file
-// the daemon read, or `route`, a change the settings route applied (config.SourceFile,
-// config.SourceRoute); By is whoever asked for it, empty for the file; and At is when the daemon
-// took that value — its boot for a value the file alone decides, and the moment of the change for
-// one the route applied.
-type SettingSource struct {
-	Source string    `json:"source"`
-	By     string    `json:"by,omitempty"`
-	At     time.Time `json:"at"`
-}
-
-// SettingProvenance is where each setting of the running daemon came from, which the state
-// carries beside its settings (State.SettingSources). It holds one entry per dotted path the
-// class table names (config.Paths), the file's own until a change names that path, and it is the
-// daemon's one observer of that question: it is registered with config.Live.OnChange, so every
-// change the daemon applies — the file read again, or the settings route — is recorded here by
-// the same path the change carries.
-type SettingProvenance struct {
-	now func() time.Time
-	mu  sync.Mutex
-	// sources is every path's latest source, keyed as the class table writes the path.
-	sources map[string]SettingSource
-}
-
-// NewSettingProvenance is the provenance of a daemon that has just read its file: every settable
-// path is the file's, as of loadedAt.
-func NewSettingProvenance(loadedAt time.Time) *SettingProvenance {
-	sources := map[string]SettingSource{}
-	for _, path := range config.Paths() {
-		sources[path] = SettingSource{Source: config.SourceFile, At: loadedAt.UTC()}
-	}
-	return &SettingProvenance{now: func() time.Time { return time.Now().UTC() }, sources: sources}
-}
-
-// Restore lays the route changes a store kept over the file's own provenance, path for path. It
-// is where the daemon's store of route changes hands back what it kept across a restart: those
-// changes are the values the daemon is running on, and the state must name them as the route's
-// rather than the file's. A path the class table does not name is recorded as it is given: the
-// store holds what a route applied, and this reports it.
-func (p *SettingProvenance) Restore(stored map[string]SettingSource) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	maps.Copy(p.sources, stored)
-}
-
-// Observe records one applied settings change per path, which is what config.Live.OnChange hands
-// every observer. It runs under the settings holder's lock and reads nothing of the
-// configuration: a path's value is Settings' business, and only where it came from is this one's.
-func (p *SettingProvenance) Observe(_ *config.Config, applied []config.Change) {
-	if len(applied) == 0 {
-		return
-	}
-	at := p.now()
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	for _, change := range applied {
-		p.sources[change.Path] = SettingSource{Source: change.Source, By: change.By, At: at}
-	}
-}
-
-// Sources is the provenance as the state carries it, a copy the caller may hold while the daemon
-// applies the next change.
-func (p *SettingProvenance) Sources() map[string]SettingSource {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return maps.Clone(p.sources)
 }
 
 // Admission is the issue cap and the issues under it, in Dispatch rank order. Concurrency is
