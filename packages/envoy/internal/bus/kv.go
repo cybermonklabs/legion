@@ -120,6 +120,22 @@ func bucketMissing(err error) bool {
 		errors.Is(err, nats.ErrStreamNotFound) || errors.Is(err, jetstream.ErrStreamNotFound)
 }
 
+// namedRequest is err, a JetStream request's answer, with request, the request that drew it, in
+// front of it: `KV_envoy_webhook_redelivery STREAM.INFO: context deadline exceeded`. A caller
+// wraps the whole of EnsureKeyValue in one line of its own (`open envoy_webhook_redelivery KV
+// bucket: ...`, internal/dispatch/redeliver/sweep.go:117), and that line names the bucket but not
+// which of the bucket's requests went unanswered, which is the one thing a start that timed out
+// is read for. The answer is wrapped with %w, so every errors.Is through the name still reads the
+// server's own error: EnsureKeyValue's switch reads nats.ErrBucketNotFound and
+// nats.ErrStreamNameAlreadyInUse through it, and so does a caller of its own. nil is returned as
+// it is, so a call that answered is named nothing.
+func namedRequest(request string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%s: %w", request, err)
+}
+
 // EnsureKeyValue opens the KV bucket config names on conn, through js, creating it with config when
 // it does not exist. config.Replicas is the deployment's replica count (ReplicasEnvVar): a new
 // bucket is created at it, and an existing bucket with fewer copies is raised to it
@@ -134,8 +150,17 @@ func bucketMissing(err error) bool {
 // server answers that create "stream name already in use"), is waited for on the member answering
 // before the handle is opened on it (awaitBucketApplied), since a clustered create is answered
 // before every member has applied it.
+//
+// The error names the request that drew it, the bucket's stream and the JetStream request made of
+// it: `KV_envoy_webhook_redelivery STREAM.INFO: ...` for the lookup of the bucket, which this
+// call makes first and makes again while it waits a member out, and
+// `KV_envoy_webhook_redelivery STREAM.CREATE: ...` for the create (namedRequest). A raise names
+// itself (raiseReplicas), and a refused create names the setting behind it after the request:
+// `KV_envoy_interests STREAM.CREATE: ENVOY_NATS_REPLICAS=3: ...`.
 func EnsureKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig) (KeyValue, error) {
+	lookup := "KV_" + config.Bucket + " STREAM.INFO"
 	kv, err := js.KeyValue(config.Bucket)
+	err = namedRequest(lookup, err)
 	created := false
 	switch {
 	case errors.Is(err, nats.ErrBucketNotFound):
@@ -149,8 +174,10 @@ func EnsureKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyV
 			kv, err = awaitBucketApplied(config.Bucket, bucketMissing, func() (nats.KeyValue, error) {
 				return js.KeyValue(config.Bucket)
 			})
+			err = namedRequest(lookup, err)
 		} else {
-			err = refusedSettings(err, nil, &nats.StreamConfig{Replicas: config.Replicas})
+			err = namedRequest("KV_"+config.Bucket+" STREAM.CREATE",
+				refusedSettings(err, nil, &nats.StreamConfig{Replicas: config.Replicas}))
 		}
 		created = err == nil
 	case err == nil:
