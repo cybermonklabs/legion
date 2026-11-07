@@ -1788,6 +1788,11 @@ jobs:
       - name: Check every Bun install reads .bun-version
         run: .github/scripts/check-bun-version.sh
 
+      # This job runs on every change too, and the gate reads only the tree: bun.lock, the
+      # browser image's Dockerfile and that image's row.
+      - name: Check the browser image's Playwright is the one bun.lock resolves
+        run: .github/scripts/check-playwright-version.sh
+
       - name: Check frozen Bun installs copy every workspace manifest
         run: .github/scripts/check-bun-workspace-manifests.sh
 
@@ -2111,6 +2116,9 @@ jobs:
 
       - name: Test the Bun pin check
         run: .github/scripts/check-bun-version.test.sh
+
+      - name: Test the Playwright version check
+        run: .github/scripts/check-playwright-version.test.sh
 
       - name: Test the frozen Bun workspace manifest check
         run: .github/scripts/check-bun-workspace-manifests.test.sh
