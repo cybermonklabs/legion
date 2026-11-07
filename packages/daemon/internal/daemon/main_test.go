@@ -19,8 +19,8 @@ import (
 // all three, so a developer may set any of them by hand. It drops the migrated template
 // isolatedOutboxPool clones its databases from (testpg.Main), makes the one database this run's
 // tests write in (testdb.RunDatabaseMain), removes the directory the tests' Envoy binaries were
-// built into (testbuild.Main), and removes the NATS container the package's tests share
-// (testnats.Main).
+// built into (testbuild.Main), and fails the run if a NATS server a test started is still
+// running after the last test (testnats.Main).
 //
 // The run's database is legion_daemon_run_<random> on the server LEGION_TEST_PG_DSN names,
 // dropped when the run ends; testDSN hands it to every test, and a daemon migrates Legion's

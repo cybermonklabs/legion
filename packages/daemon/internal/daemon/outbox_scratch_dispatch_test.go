@@ -289,10 +289,9 @@ func startScratchDispatch(t *testing.T) (string, string) {
 }
 
 // startScratchDispatchWithNATS is startScratchDispatch with its events turned on: the same server,
-// publishing every issue event on natsURL, which is the NATS server the test holds
+// publishing every issue event on natsURL, which is the NATS server the test started
 // (testnats.URL). Dispatch reconciles the ENVOY_NOTIFICATIONS stream there on its first
-// connection, which it makes in the background once it starts, so the caller creates none — and
-// must take the NATS server before this call, since testnats.URL empties it of every stream.
+// connection, which it makes in the background once it starts, so the caller creates none.
 func startScratchDispatchWithNATS(t *testing.T, natsURL string) (string, string) {
 	t.Helper()
 	if natsURL == "" {

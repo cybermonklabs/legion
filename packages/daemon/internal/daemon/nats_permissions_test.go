@@ -42,7 +42,12 @@ const (
 // The deployment and this proof share daemonpermissions.Grant: core wraps the same values as the
 // NATS server grant, while this test drives the daemon's real connection, durable consumers,
 // acknowledgements, and exceptions subscription through it.
+//
+// Its subject is the published server images themselves, so it runs each of them in a container
+// rather than the nats-server the rest of the package's NATS tests link in, and skips where no
+// container runtime answers.
 func TestDaemonPermissionsOnRealServers(t *testing.T) {
+	testnats.RequireContainerRuntime(t)
 	for _, image := range testnatsimages.Images {
 		t.Run(image.Name, func(t *testing.T) {
 			t.Run("the daemon restarts, reads its consumers' lag, acknowledges Dispatch, GitHub and the listener's wake, and receives exceptions", func(t *testing.T) {
@@ -298,7 +303,7 @@ func startDaemonGrantServer(t *testing.T, image string, grant daemonpermissions.
 	}); err != nil {
 		t.Fatalf("encode the daemon permissions: %v", err)
 	}
-	server, uri := testnats.StartNkeyAuthorizedUsers(t, image,
+	server, uri := testnats.StartContainerNkeyAuthorizedUsers(t, image,
 		testnats.NkeyUser{Public: daemonPublic, Permissions: strings.TrimSpace(permissions.String())},
 		testnats.NkeyUser{Public: adminPublic})
 	admin, err := natsauth.Connect([]string{uri}, adminSeed, nats.Timeout(5*time.Second))

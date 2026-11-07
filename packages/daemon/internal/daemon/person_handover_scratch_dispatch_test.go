@@ -235,12 +235,12 @@ type personHandoverRig struct {
 // personHandoverSpec is the spec every issue of these proofs is created with.
 const personHandoverSpec = "# Plan\n\nThe service ships behind a flag.\n"
 
-// newPersonHandoverRig takes the NATS server, starts the scratch Dispatch with its events on it,
+// newPersonHandoverRig starts the NATS server, starts the scratch Dispatch with its events on it,
 // and readies the daemon's configuration, its database and the project without booting it: the
 // boot proof writes to Dispatch before the first boot. admissionCap is the daemon's cap.
 func newPersonHandoverRig(t *testing.T, admissionCap int) *personHandoverRig {
 	t.Helper()
-	// The NATS server is taken first: testnats.URL empties it of every stream, and Dispatch
+	// The NATS server is started first: it is this test's own (testnats.URL), and Dispatch
 	// reconciles ENVOY_NOTIFICATIONS on it on its first connection, which the daemon then consumes
 	// from.
 	natsURL := testnats.URL(t)

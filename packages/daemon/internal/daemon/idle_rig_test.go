@@ -81,9 +81,8 @@ const idleRigTick = 250 * time.Millisecond
 //   - the scripted Oh My Pi: packages/daemon/internal/capabilities/image_test.go's fakeOmp, grown
 //     a registration, a role claim and a record of every delivery (idle_rig_agent_test.go);
 //   - Postgres through internal/testpg's database (isolatedOutboxPool) and NATS through
-//     internal/testnats. This pod has no Docker, so testnats serves the nats-server
-//     LEGION_TEST_NATS_URL and LEGION_TEST_NATS_MONITOR_URL name rather than a container, which is
-//     what that package does when both are set;
+//     internal/testnats, which runs the nats-server this binary links in, so the rig needs no
+//     container runtime and this pod has none;
 //   - the real Envoy listener, built from packages/envoy/cmd/listener and run as its own process
 //     (idle_rig_listener_test.go).
 type idleWakeRig struct {

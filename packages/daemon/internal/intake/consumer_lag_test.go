@@ -179,7 +179,7 @@ func TestConsumerLagCountsEveryConsumerWhileNATSRefusesTheOldestMessageRead(t *t
 	ctx := context.Background()
 	daemonSeed, daemonPublic := testnats.User(t)
 	adminSeed, adminPublic := testnats.User(t)
-	_, uri := testnats.StartNkeyAuthorizedUsers(t, testnats.Image,
+	_, uri := testnats.StartNkeyAuthorizedUsers(t,
 		testnats.NkeyUser{Public: daemonPublic, Permissions: `{ publish: { deny: ["$JS.API.STREAM.MSG.GET.>"] } }`},
 		testnats.NkeyUser{Public: adminPublic})
 	admin := jetStreamAs(t, uri, adminSeed)

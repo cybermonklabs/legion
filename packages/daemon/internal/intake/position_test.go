@@ -17,10 +17,17 @@ import (
 
 // A Dispatch consumer recreated after messages already landed on the stream — deleted and
 // reopened, or a first boot against a stream that already carries history — starts at
-// DeliverNewPolicy: it will never receive those older messages, so its ack floor can never reach
-// a target the listing read against them. DispatchPosition's idle, not the ack floor alone, is
-// what tells Reconcile nothing more is ever coming for a record those messages already advanced
-// past.
+// DeliverNewPolicy: it will never receive those older messages. DispatchPosition's idle is what
+// tells Reconcile nothing more is ever coming for a record those messages already advanced past,
+// and this test asserts it directly.
+//
+// It once also asserted that the ack floor stayed short of the target, so that idle alone closed
+// the gap. That was a property of the nats-server the fixture's container ran, not of this code:
+// against a stream whose last sequence is 2, 2.10.22 creates a DeliverNew consumer with
+// AckFloor.Stream 0, while 2.15.1 — the server this module links in and the one the deployment
+// talks to — creates it at the stream's last sequence (measured: AckFloor.Stream 2, LastSeq 2).
+// No construction of a fresh consumer can put the floor behind the target there, so the guard
+// asserted the old server's internals and is gone.
 func TestDispatchPositionIsIdleForARecreatedConsumerBehindPreExistingMessages(t *testing.T) {
 	js, _ := testJetStream(t)
 	spec := consumerSpec(&lockedBuffer{})
@@ -45,9 +52,6 @@ func TestDispatchPositionIsIdleForARecreatedConsumerBehindPreExistingMessages(t 
 	}
 	if !position.Idle {
 		t.Fatalf("idle = false for a freshly (re)created consumer with nothing it can ever deliver from before it existed, want true")
-	}
-	if position.AckFloorStream >= target {
-		t.Fatalf("ack_floor = %d, target = %d; want ack_floor short of target so idle is what closes the gap, not the floor", position.AckFloorStream, target)
 	}
 }
 
