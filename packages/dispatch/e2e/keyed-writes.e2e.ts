@@ -747,8 +747,8 @@ test("a retried upload survives a reload with its file @webkit @firefox", async 
     // Either could change and the hook would then delay nothing, the window would be 3.3 ms
     // again, and this row would pass with the product reverted. So the page counts the opens
     // whose success it actually held back - an open it matched by name but whose handler it
-    // never caught counts for nothing - and the row asserts that count rises across the press
-    // and across the Retry: a selector that cannot fail is no guard
+    // never caught counts for nothing - and the row asserts that count at its end, where no
+    // wait of its own can close a window: a selector that cannot fail is no guard
     // (`packages/dispatch/AGENTS.md`, "Two rules keep an assertion honest").
     await page.addInitScript(() => {
       let held = 0;
@@ -809,9 +809,6 @@ test("a retried upload survives a reload with its file @webkit @firefox", async 
     };
     await page.goto(`/issues/${issue.key}`);
     await openArtifacts();
-    // The load's own reads of the database are already counted by now; what the press adds is
-    // what the assertion below reads.
-    const beforePress = await opensHeld();
     await page.getByLabel("Upload artifact").setInputFiles({
       buffer: Buffer.from("kept through a retry\n"),
       mimeType: "application/octet-stream",
@@ -821,13 +818,6 @@ test("a retried upload survives a reload with its file @webkit @firefox", async 
     const indicator = pendingWrites(page);
     await expect(indicator.getByRole("status")).toHaveText("Saving 1 change…");
     await expect.poll(() => keys.length).toBe(1);
-    // The press's own open was held back: the hook caught the handler of the open the press's
-    // put made and called it a second late. Polled rather than read at once, so that this says
-    // only that the hook is live - whether the attempt waited for the keep is what the artifact
-    // assertion below says, and a tree without the fix must reach that assertion rather than
-    // stop here. With the hook delaying nothing - another database name, or a page that listens
-    // for `success` another way - the count never rises and the row stops here instead.
-    await expect.poll(() => opensHeld()).toBeGreaterThan(beforePress);
 
     // The held attempt leaves the write out and kept, so the reloaded page makes it again on its
     // own - and this time Dispatch's verdict refuses it, in the indicator, with Retry.
@@ -840,15 +830,10 @@ test("a retried upload survives a reload with its file @webkit @firefox", async 
 
     // The Retry is the person's new write under a key of its own, and the kept file moves to it.
     answers = "hold";
-    const beforeRetry = await opensHeld();
     await indicator.getByRole("button", { exact: true, name: "Retry" }).click();
     await expect.poll(() => keys.length).toBe(3);
     expect(keys[2]).toEqual(expect.any(String));
     expect(keys[2]).not.toBe(refused);
-    // And the Retry's own open with it: one of the opens the Retry made - the put under the new
-    // key, and the delete of the old one behind it - was held back the same way. Polled for the
-    // same reason as the press's.
-    await expect.poll(() => opensHeld()).toBeGreaterThan(beforeRetry);
 
     // The reload comes before that attempt lands: what goes out after it is the resumed write,
     // made from the file the Retry moved.
@@ -867,6 +852,16 @@ test("a retried upload survives a reload with its file @webkit @firefox", async 
         `select count(*) from artifact_versions v join artifacts a on a.id = v.artifact_id where a.issue_key = '${issue.key}' and a.name = 'once.bin'`
       )
     ).toBe("1");
+    // Everything above rests on the hook at the head of this row still delaying the page's own
+    // opens of the kept-files database, which in turn rests on two facts of `kept-files.ts`
+    // this file cannot see: the database's name, and its setting the open handler by
+    // assignment. Either could change and the hook would delay nothing, the windows would be
+    // 3.3 ms again, and this row would pass with the product reverted. So the last load's
+    // count of the opens the hook actually held back - an open matched by name whose handler
+    // it never caught counts for nothing - is asserted here, after every step whose timing
+    // the row depends on, where reading it costs the row nothing and no wait of its own can
+    // close a window the row is meant to reload inside.
+    expect(await opensHeld()).toBeGreaterThan(0);
   } finally {
     await alice.close();
   }
