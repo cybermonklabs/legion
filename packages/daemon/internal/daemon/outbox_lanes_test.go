@@ -142,9 +142,8 @@ func (g *gatedPublisher) Publish(ctx context.Context, topic, message string, pay
 // postingDispatch is Dispatch as a message post meets it: the bodies posted, by issue, and no
 // message read back, so each row posts once. It is read while a lane posts.
 type postingDispatch struct {
-	mu        sync.Mutex
-	posted    map[string][]string
-	bodyReads int
+	mu     sync.Mutex
+	posted map[string][]string
 }
 
 func (d *postingDispatch) ListIssues(context.Context, string, []string) ([]dispatch.IssueSummary, error) {
@@ -198,28 +197,6 @@ func (d *postingDispatch) postsTo(issue string) int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return len(d.posted[issue])
-}
-
-// bodiesTo is every message posted on issue, in the order it was posted.
-func (d *postingDispatch) bodiesTo(issue string) []string {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return append([]string(nil), d.posted[issue]...)
-}
-
-// countRead records one read of an issue's messages, which echoingDispatch answers from what was
-// posted: a test that is about when the daemon reads them at all counts them (reads).
-func (d *postingDispatch) countRead() {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.bodyReads++
-}
-
-// reads is how many times the messages of any issue were read back.
-func (d *postingDispatch) reads() int {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return d.bodyReads
 }
 
 // laneBoard is one issue's Dispatch board as a lane writes it: it refuses the first failures
