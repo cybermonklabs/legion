@@ -138,6 +138,17 @@ jobs:
         timeout-minutes: 15
         env:
           DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      # Every shot this run took, on every run and not on a failure alone. The pages' images are
+      # made rather than committed, so nothing else in this repository can say whether two builds
+      # render them the same, and the one question that cannot be answered by reading is whether
+      # a change to what the runner has installed moved a glyph. This is how that question is
+      # answered: download this artifact from two runs and compare the two directories byte for
+      # byte (dispatch://INFRA-1443, which took Playwright's `tools` fonts off this runner).
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: docs-screenshots-${{ github.run_attempt }}
+          path: docs/site/public/media
+          if-no-files-found: error
       # What each failed shot's page showed, and the harness's process logs: a hang leaves the
       # Dispatch server's goroutines at the end of dispatch.log.
       - if: failure()
