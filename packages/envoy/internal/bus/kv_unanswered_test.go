@@ -33,10 +33,11 @@ func accountInfoSubject() string { return "$JS.API.INFO" }
 
 // unansweredRelay is a TCP relay between a client and a real NATS server that counts the requests
 // the client sends on one subject and drops the first drops of them: the request never reaches the
-// server, as a server whose meta leader is changing leaves one unanswered, so no answer is ever
-// published and the caller's wait runs out with the deadline it held. Everything else both sides
-// send is relayed untouched, so the connection is a real one on a real server and every other
-// request is answered as it always is.
+// server, as a member of a metadata group younger than lostQuorumInterval, or one that has not
+// yet seen its leader go, leaves one unanswered (sentAgain), so no answer is ever published and
+// the caller's wait runs out with the deadline it held. Everything else both sides send is
+// relayed untouched, so the connection is a real one on a real server and every other request is
+// answered as it always is.
 //
 // The requests a start makes of a bucket are nats.go's own: the lookup and the create are sent
 // inside js.KeyValue and js.CreateKeyValue, and the jetstream handle wrapKeyValue opens is built
