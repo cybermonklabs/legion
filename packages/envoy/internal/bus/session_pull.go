@@ -288,14 +288,14 @@ func (p *SessionPull) Detach() error {
 		// unread, which is what Release returns. A drain hands those messages to receive, which
 		// queues them.
 		if err := p.sub.Drain(); err != nil {
-			// The subscription is stopped all the same, since nothing else can end it, and the
-			// failure is the caller's to hear rather than the silence it used to get: the
-			// caller is about to nak the messages of this consumer it holds elsewhere in the
-			// belief that no interest of this pull's is left to take them, while the messages
-			// nats.go had buffered unread went out with the drain -- they reach neither Release
-			// nor the server, so the consumer delivers them again only once their ack wait has
-			// passed. The poll below would end at once anyway, on a subscription already
-			// invalid, and report nothing of this.
+			// Drain fails only on a closed connection (nats.go v1.53.1: ErrConnectionClosed;
+			// its other error, a subscription with no connection, cannot arise here). The close
+			// has already ended the subscription and thrown away what nats.go held unread, so
+			// those messages reach neither Release nor the server and are delivered again only
+			// once their ack wait has passed. The poll below would end at once on the invalid
+			// subscription and report nothing, so the failure is returned here instead. Stop is
+			// kept as a guard for any other drain failure; on a closed connection it does
+			// nothing.
 			p.Stop()
 			p.detachErr = fmt.Errorf("bus: the inbox subscription of the pull of consumer %q could not be drained, so the messages nats.go held unread are lost: %w", p.name, err)
 			return
@@ -306,7 +306,7 @@ func (p *SessionPull) Detach() error {
 		if p.sub.IsValid() {
 			// The caller is about to nak messages of this consumer in the belief that no
 			// interest of this pull's is left to take them, so a drain that never finished is
-			// worth a word rather than the silence it used to get.
+			// reported.
 			p.detachErr = fmt.Errorf("bus: the inbox subscription of the pull of consumer %q did not drain within %s", p.name, sessionPullDrainWait)
 		}
 	})
