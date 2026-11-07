@@ -964,30 +964,8 @@ GATES = [
       + install_jj("pi-legion") + install_omp("pi-legion") + setup_go("pi-legion", f"{DAEMON}/go.mod")
       + biome(at("pi-legion", "Lint pi-legion")) + bun_job("pi-legion") + CI_SELF),
 
-    gate("dispatch", "dispatch", runs=[
-        # The test step runs packages/dispatch/e2e/__tests__, two files of which start
-        # `bash e2e/run-server.sh` to prove its refusals (harness-signin.test.ts:81,85 and
-        # round-robin-proxy.test.ts:378,381). Those rows stop at a refusal, before the build on
-        # run-server.sh:330, so the claim is wider than what the job reaches; it is kept because
-        # the job starts the script at all, and it is what holds this job's `env:` to
-        # ENV_ALLOWED (ci.yaml's comment above the job's timeout-minutes). The browser rows that
-        # do reach the build are the dispatch_browser gate's.
-        script_run(RUN_SERVER, DISPATCH_SERVER_BUILD, "started by packages/dispatch/e2e/__tests__/harness-signin.test.ts:81,85 and "
-                   f"round-robin-proxy.test.ts:378,381, which run `bash e2e/run-server.sh` in {at('dispatch-ui', 'Test dispatch dashboard')}",
-                   ENVOY, ["./cmd/dispatch"], mode="build"),
-    ], reads=reads(
-        ("packages/dispatch/**", f"{at('dispatch', 'Build the dashboard the lanes serve')} (build:web) in packages/dispatch"),
-        ("packages/proof-editor/**", f"packages/dispatch/web/vite.config.ts:127-147, read by the build:web of {at('dispatch', 'Build the dashboard the lanes serve')}"),
-        (CONTRACTS_SRC, f"{at('dispatch', 'Build contracts for dispatch e2e')}; packages/dispatch/web/vite.config.ts:117-126 aliases"),
-        # envoy-client's sources, and broker-client's with them, are the shared read below.
-        (f"{ENVOY}/internal/dispatch/pmdoc/schema/blocks.json", "packages/dispatch/web/src/__tests__/setup.ts:7, features/refs/markdown-engine.test.ts:3"),
-        ("scripts/e2e/lib/held-port.py", "packages/dispatch/e2e/run-server.sh:80 holds the server's port through it"),
-        ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:11 (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),
-    ) + envoy_client_dep("imported by packages/envoy-client/bin/dispatch.ts, which cli-body-cap.e2e.ts:17 runs")
-      + setup_go("dispatch", f"{ENVOY}/go.mod") + bun_job("dispatch") + CI_SELF),
-
-    # The dashboard's and the proof editor's fast checks, split out of the dispatch job above
-    # (ci.yaml's comment on dispatch-ui says why). No go command runs here.
+    # The dashboard's and the proof editor's fast checks (ci.yaml's comment on dispatch-ui says
+    # what they are). No go command runs here.
     gate("dispatch_ui", "dispatch-ui", reads=reads(
         ("packages/dispatch/**", f"{at('dispatch-ui', 'Lint dispatch dashboard')}, typecheck, test, build, check:classes and check:asset-sizes in packages/dispatch"),
         ("packages/proof-editor/**", f"{at('dispatch-ui', 'Lint proof editor')}, typecheck and test; packages/dispatch/web/vite.config.ts:127-147"),
@@ -1040,7 +1018,6 @@ GATES = [
         ("packages/proof-editor/**", "packages/dispatch/web/vite.config.ts:127-147 (build:web)"),
         (CONTRACTS_SRC, f"{at_browser('Build contracts for dispatch e2e')}; packages/dispatch/web/vite.config.ts:117-126 aliases"),
         ("packages/envoy-client/bin/dispatch.ts", "packages/dispatch/e2e/cli-body-cap.e2e.ts:52,57,65 run it through e2e/dispatch-cli.ts:8"),
-        (ENVOY_CLIENT_SRC, "imported by packages/envoy-client/bin/dispatch.ts, which cli-body-cap.e2e.ts:52,57,65 run"),
         (f"{ENVOY}/internal/dispatch/pmdoc/schema/blocks.json", "packages/dispatch/e2e/engine-reading.ts:10"),
         (f"{ENVOY}/internal/tests3/seaweedfs.go", f"{at_browser('Pull the file store image')} names it to the action, and "
          f"{at_browser('Start an S3-compatible server for uploaded files')} reads const Image; "
@@ -1064,7 +1041,9 @@ GATES = [
         (".github/playwright-apt-packages.txt", f"{at_browser(BROWSER_INSTALL)} and the alone job's step of "
          "that name both run .github/scripts/playwright-install.sh, which reads it as the apt list it installs"),
         ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:11 (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),
-    ) + setup_go(BROWSER_SHARD, f"{ENVOY}/go.mod", BROWSER_SITE) + bun_job(BROWSER_SHARD, BROWSER_SITE)
+    ) + envoy_client_dep("imported by packages/envoy-client/bin/dispatch.ts, which "
+                         "packages/dispatch/e2e/cli-body-cap.e2e.ts:52,57,65 run")
+      + setup_go(BROWSER_SHARD, f"{ENVOY}/go.mod", BROWSER_SITE) + bun_job(BROWSER_SHARD, BROWSER_SITE)
       + CI_SELF + BROWSER_SITE_SELF),
 
     gate("claude_envoy", "claude-envoy", reads=CLAUDE_ENVOY_BUILD + biome(at("claude-envoy", "Lint Claude Envoy plugin")) + bun_job("claude-envoy") + CI_SELF),

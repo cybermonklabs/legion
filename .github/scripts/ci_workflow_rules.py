@@ -15,8 +15,9 @@ it reads itself.
 
 It sits beside that engine (and workflow_paths.py, the path model) in the repository it checks,
 and imports the engine's names for the two workflow files, the repository root, the checks
-main's ruleset requires and the three
-helpers that read an `if:`, and the path model's reader of a workflow's `on:`. main()
+main's ruleset requires, the three
+helpers that read an `if:` and the walk that says where each ci.yaml job's steps are (its own,
+and those of a local workflow it calls), and the path model's reader of a workflow's `on:`. main()
 imports this module rather than the other way round, so the one import of the engine here is of
 a module Python has finished loading by then.
 """
@@ -27,8 +28,8 @@ from collections import defaultdict
 
 import yaml
 
-from ci_filter_coverage import (CACHE_WORKFLOW, REPO, REQUIRED_CHECKS, WORKFLOW, called_workflow, conditions,
-                                script_lines, squash, where_if)
+from ci_filter_coverage import (CACHE_WORKFLOW, REPO, REQUIRED_CHECKS, WORKFLOW, conditions, script_lines,
+                                squash, step_holders, where_if)
 from workflow_paths import events
 
 
@@ -139,29 +140,36 @@ def path_lines(value) -> list:
     return [line.strip() for line in str(value).splitlines() if line.strip()]
 
 
-def cache_steps(document: dict, action: str) -> list:
-    """Every actions/cache/<action> step of a workflow, as (its job, its family, its with:)."""
-    return [(job_id, cache_family(str((step.get("with") or {}).get("key", ""))), step.get("with") or {})
-            for job_id, job in (document.get("jobs") or {}).items()
+def job_cache_steps(job: dict, action: str) -> list:
+    """Every actions/cache/<action> step of one job, as (its family, its with:)."""
+    return [(cache_family(str((step.get("with") or {}).get("key", ""))), step.get("with") or {})
             for step in ((job or {}).get("steps") or [])
             if str((step or {}).get("uses", "")).split("@")[0] == f"actions/cache/{action}"]
 
 
-def restoring_workflows(document: dict) -> list:
-    """Where a restore of ci.yaml's run can be, as (the file, its document): ci.yaml, and every
-    local workflow one of its jobs calls. Such a job's steps are in the called file, cache steps
-    among them - dispatch-browser.yaml's shard and alone jobs restore the browser and apt
-    archive families for ci.yaml's dispatch-browser job - so a save paired against ci.yaml alone
-    would read as a fill nobody wants."""
-    workflows = [(WORKFLOW, document)]
-    seen = {WORKFLOW}
-    for job in (document.get("jobs") or {}).values():
-        path = called_workflow(job or {})
-        if not path or path in seen or not (REPO / path).is_file():
+def cache_steps(document: dict, action: str) -> list:
+    """Every actions/cache/<action> step of a workflow, as (its job, its family, its with:)."""
+    return [(job_id, family, given)
+            for job_id, job in (document.get("jobs") or {}).items()
+            for family, given in job_cache_steps(job or {}, action)]
+
+
+def restores_of(document: dict) -> dict:
+    """Every restore of ci.yaml's run, as family -> [(where it is, its with:)]. Where a restore
+    can be is where its job's steps are, which is the engine's step_holders walk: ci.yaml's own
+    jobs, and the jobs of each local workflow one of them calls - dispatch-browser.yaml's shard
+    and alone jobs restore the browser and apt archive families for ci.yaml's dispatch-browser
+    job - so a save paired against ci.yaml alone would read as a fill nobody wants. That walk
+    lists the jobs of a workflow once per caller, and those are the same jobs, so each is taken
+    once."""
+    restores, seen = defaultdict(list), set()
+    for _, path, job_id, _, job in step_holders(document, document.get("jobs") or {}, {}):
+        if (path, job_id) in seen:
             continue
-        seen.add(path)
-        workflows.append((path, yaml.safe_load((REPO / path).read_text()) or {}))
-    return workflows
+        seen.add((path, job_id))
+        for family, given in job_cache_steps(job, "restore"):
+            restores[family].append((f"job {job_id} of {path}", given))
+    return restores
 
 
 def check_cache_round_trip(document: dict, problems: list) -> None:
@@ -181,10 +189,7 @@ def check_cache_round_trip(document: dict, problems: list) -> None:
     if not (REPO / CACHE_WORKFLOW).is_file():
         return
     caches = yaml.safe_load((REPO / CACHE_WORKFLOW).read_text()) or {}
-    restores = defaultdict(list)
-    for path, restoring in restoring_workflows(document):
-        for job_id, family, given in cache_steps(restoring, "restore"):
-            restores[family].append((f"job {job_id} of {path}", given))
+    restores = restores_of(document)
     for job_id, family, given in cache_steps(caches, "save"):
         key, paths = str(given.get("key", "")).rstrip(), path_lines(given.get("path", ""))
         if family not in restores:

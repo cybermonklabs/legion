@@ -1508,9 +1508,11 @@ against servers a person started (`DISPATCH_E2E_REUSE_SERVERS=1`),
 
 Every browser row of the suite runs in `.github/workflows/dispatch-browser.yaml`, which
 `.github/workflows/ci.yaml`'s `dispatch-browser` job calls with one of two lanes.
-A pull request runs the `pull-request` lane: the projects `chromium` and `iphone`, split over four
+A pull request without the label `full-ci` runs the `pull-request` lane: the projects `chromium`
+and `iphone`, split over four
 shard machines, each leg running `--shard=N/4` with four workers.
-A merge group, a push to main and the nightly (`.github/workflows/dispatch-browser-nightly.yaml`)
+A merge group, a pull request carrying `full-ci`, a `workflow_dispatch` and the nightly
+(`.github/workflows/dispatch-browser-nightly.yaml`)
 run the `full` lane: all eight parallel projects over those same four shards, the three `-alone`
 projects each on a machine of its own with `--no-deps` and one worker, and the two-process job.
 Each shard leg exports the worker count and the pgvector digest on the browser step's own command
@@ -1521,8 +1523,8 @@ reduction.
 The `merge` job of that workflow joins every leg's blob report into one report, publishes the
 run's rows, its flake rate and the legs that did not succeed, and is the one job of the workflow
 that reports ci-ok, so a run gets one verdict and not seven.
-The `dispatch` job of `.github/workflows/ci.yaml` keeps the dashboard's lint, typecheck, unit tests
-and build, and runs no browser row.
+The `dispatch-ui` job of `.github/workflows/ci.yaml` keeps the dashboard's lint, typecheck, unit
+tests and build, beside the proof editor's, and runs no browser row.
 A role does not run the whole suite in an issue pod — two CPUs do not carry it — it runs the files
 it is working on.
 

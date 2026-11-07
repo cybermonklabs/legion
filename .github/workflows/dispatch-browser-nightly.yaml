@@ -1,10 +1,11 @@
 name: Dispatch browser nightly
 
 # The full browser lane, once a night and on request. ci.yaml's dispatch-browser job runs the
-# pull-request lane on a change, the two projects a pull request is held to, and the full lane -
-# all eight parallel projects, the three `-alone` ones and the two-process job - on every other
-# event, so the merge group and the push to main each run it. This run covers a day with no such
-# event (.github/workflows/dispatch-browser.yaml, which holds every step).
+# pull-request lane on a pull request that carries no `full-ci` label, the two projects a pull
+# request is held to, and the full lane - all eight parallel projects, the three `-alone` ones
+# and the two-process job - on every other run, so the merge group runs it on the tree a change
+# lands as. This run covers a day with no such event, and is what runs the full lane on main's
+# tip (.github/workflows/dispatch-browser.yaml, which holds every step).
 #
 # What a red run does, and what it does not. The run fails, and its merged report, every leg's
 # blob and the failed legs' traces are artifacts of that run; GitHub mails the default branch's

@@ -1346,6 +1346,47 @@ check "fails" "$(is "$status" 1)"
 check "names the job and the family" \
   "$(contains "$out" "job fill's actions/cache/restore of family go-app has restore-keys")"
 
+# A job of ci.yaml that calls a local workflow gives it its steps, cache steps among them: the
+# real dispatch-browser job restores the browser and apt archive families in the shard and alone
+# jobs of dispatch-browser.yaml. So the rule reads those jobs' restores as it reads ci.yaml's
+# own, and names the file that holds them. Read over ci.yaml alone, the fill below would be a
+# family nothing restores.
+#
+# suite_cache <root>: a second family, go-suite, that ci-caches.yaml's fill job saves and only
+# the called workflow's `rows` job restores. Call it after cache_workflow and calls_workflow.
+suite_cache() {
+  cat >> "$1/.github/workflows/ci-caches.yaml" <<'YAML'
+      - if: steps.go-app.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-suite-${{ runner.os }}
+YAML
+  replace "$1/.github/workflows/suite.yaml" "      - name: Build the app" \
+    $'      - id: go-suite-cache\n        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0\n        with:\n          path: |\n            ~/go/pkg/mod\n            ~/.cache/go-build\n          key: go-suite-${{ runner.os }}\n      - name: Build the app'
+}
+
+echo "case: a family only a called workflow's job restores"
+root=$(fixture cache-called-workflow)
+cache_workflow "$root"
+calls_workflow "$root"
+suite_cache "$root"
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a called workflow's restore key that drifted from the save's"
+root=$(fixture cache-called-workflow-drift)
+cache_workflow "$root"
+calls_workflow "$root"
+suite_cache "$root"
+replace "$root/.github/workflows/suite.yaml" 'key: go-suite-${{ runner.os }}' 'key: go-suite-${{ runner.os }}-v2'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the called workflow's job and both keys" \
+  "$(contains "$out" 'job fill saves family go-suite under key .*, but job rows of .github/workflows/suite.yaml restores it under .*-v2')"
+
 # ci-caches.yaml's race build fills the cache ci.yaml's race step restores, so the packages it
 # compiles are DAEMON_RACE_PACKAGES, each spelled as a go command spells it. A package on one
 # side alone fails nothing by itself - the fill holds a race binary no job restores, or the step
@@ -1797,8 +1838,8 @@ echo "case: the slow-suite list a reader is given names the jobs the label gates
 # one by one. The set it must equal is derivable from the jobs rather than from the outputs: a
 # slow suite is a job whose `if:` tests a changes output whose own expression carries the
 # `full-ci` term. Reading the outputs alone is not enough, because two jobs can share one output
-# - main's envoy-go-docs-finalizers rides envoy_go_race_docs - and then the guide can name eight
-# jobs while nine are held back. Nothing else holds the two together, so a job another tree adds
+# - main's envoy-go-docs-finalizers rides envoy_go_race_docs - and then the guide can name seven
+# jobs while eight are held back. Nothing else holds the two together, so a job another tree adds
 # or deletes, which a forward merge then brings here, leaves the guide naming a job that does not
 # exist or missing one that does, in the file every agent of this repository loads.
 mismatch=$(PYTHONDONTWRITEBYTECODE=1 python3 - "$script_dir/../workflows/ci.yaml" "$script_dir/../../AGENTS.md" <<'PY'

@@ -78,23 +78,21 @@
 # The 22-minute budget each calling step carries is this script's own retry arithmetic, not its
 # measured maximum, which the bounds make unreachable: two bounded attempts of `apt-get update`
 # at 90 s, two of the download at 300 s, then, where both of those time out, one 90 s read of the
-# fallback origin's indexes and a third 300 s download attempt, then the unpack, the keeping of
-# the archives for the cache, the decoder guard, the browser download and the one apt simulation
+# fallback origin's indexes and a third 300 s download attempt, then the unpack,
+# the decoder guard, the browser download and the one apt simulation
 # of the list check, none of which touch the Ubuntu mirror. So the arithmetic is
-# 2 x 90 + 2 x 300 + 90 + 300 = 1170 s of bounded apt, 13.6 s of unpack, 1.1 s of keeping, 0.4 s
+# 2 x 90 + 2 x 300 + 90 + 300 = 1170 s of bounded apt, 13.6 s of unpack, 0.4 s
 # of decoder guard, about 90 s for the browsers and 1.6 s for the list check:
-# 1170 + 13.6 + 1.1 + 0.4 + 90 + 1.6 = 1276.7 s, rounded up to 22 min. The budget has to carry
+# 1170 + 13.6 + 0.4 + 90 + 1.6 = 1275.6 s, rounded up to 22 min. The budget has to carry
 # the fallback's own update, because the path that needs every one of those bounds is the path on
 # which the script still succeeds. The seeding of restored .deb files is not a term of that sum:
 # the run that needs every one of those bounds is the cold one, which seeds nothing, and on the
-# run that does seed, the copy is the keeping's 1.1 s in the other direction.
+# run that does seed, the copy takes about a second.
 #
-# The five readings after the bounded apt are job 128209099649's, of cybermonklabs/legion#2888 at
+# The four readings after the bounded apt are job 128209099649's, of cybermonklabs/legion#2888 at
 # 5ff42456, at its 182 packages. The unpack is the 13.6 s from `Download complete and in download
 # only mode` at 23:14:13.884 to the last line of the unbounded install at 23:14:27.475. The
-# keeping is the 1.1 s to `apt archives: seeded 0 .deb files, keeping 182` at 23:14:28.541, which
-# is 114 MB copied out of apt's directory for the cache the calling job restores. The decoder
-# guard is the 0.4 s to `the decoders WebKit plays through are in the registry: ...` at
+# decoder guard is the 0.4 s to `the decoders WebKit plays through are in the registry: ...` at
 # 23:14:28.984. The browsers and the list check together are the 1.6 s to `The pinned list is
 # current: ...` at 23:14:30.540 - but that job restored its browsers from the Actions cache
 # (`Cache hit for: playwright-Linux-7f68fc...`, 482 MB, at 23:13:54), so that 1.6 s is no reading
@@ -172,22 +170,23 @@
 # origin's update stopped at 90 s and a third download attempt stopped at 300 s. The step fails
 # by its own name in at most 1170 s, against the job budget that would otherwise cancel the leg.
 #
-# The .deb files of that list are cached between runs, and the two halves of that cache sit on
-# either side of this file. The calling job's `actions/cache/restore` of ~/apt-archives is a
-# workflow step, because a script cannot call an action; the seeding of what it found and the
-# keeping of what apt downloaded are here, below. apt takes a file in its archive directory whose
+# The .deb files of that list are cached between runs, and this file holds one half of that
+# cache. The calling job's `actions/cache/restore` of ~/apt-archives is a workflow step, because
+# a script cannot call an action; the seeding of what it found is here, below. The entry itself
+# is filled by .github/workflows/ci-caches.yaml's apt-debs job, which downloads the same list on
+# a push to main - the only event that writes the default branch's cache scope - so no caller of
+# this script saves anything. apt takes a file in its archive directory whose
 # name and size match the index without fetching it and without hashing it (the pkgAcqArchive
 # constructor in apt-pkg/acquire-item.cc, lines 3499-3507 of apt 2.7.14, compares the size
-# alone), so a restored file is trusted as the push to main that wrote the entry left it. The key
+# alone), so a restored file is trusted as the fill that wrote the entry left it. The key
 # names the Playwright version bun.lock pins, because that version decides Playwright's list, and
 # the runner image, because the image decides which versions apt resolves, so an image roll
 # misses the entry rather than restoring files the new image's indexes no longer name. It names
 # neither `step_tools` nor the versions apt resolves from updates published after the image was
 # built, and an entry is written once and never replaced, so a package that changes under one key
-# is fetched on every run until the key moves. Only a push to main writes an entry, from the
-# shard job's first leg alone. A pull-request or merge-queue run restores main's entry where one
-# exists under its key and otherwise fetches the whole set, and every bound above is that cold
-# case.
+# is fetched on every run until the key moves. A pull-request or merge-queue run restores main's
+# entry where one exists under its key and otherwise fetches the whole set, and every bound above
+# is that cold case.
 set -euo pipefail
 shopt -s inherit_errexit
 
@@ -300,19 +299,7 @@ fi
 # shellcheck disable=SC2086 # the pinned list splits into words, one package each
 sudo apt-get install -y --no-install-recommends $apt_list
 
-# What apt has now, kept for the calling job's cache save. That save runs only on a push to main
-# whose restore missed, since an entry is never replaced, so on a hit or a branch run this copy
-# goes unused. apt's archive directory is root's and the cache action runs as the runner user, so
-# the copies change hands.
-shopt -s nullglob
-kept=(/var/cache/apt/archives/*.deb)
-shopt -u nullglob
-mkdir -p "$HOME/apt-archives"
-[ "${#kept[@]}" -eq 0 ] || {
-  sudo cp "${kept[@]}" "$HOME/apt-archives/"
-  sudo chown "$(id -u):$(id -g)" "$HOME"/apt-archives/*.deb
-}
-echo "apt archives: seeded ${#seeded[@]} .deb files, keeping ${#kept[@]}"
+echo "apt archives: seeded ${#seeded[@]} .deb files"
 
 # Is each decoder WebKit plays through in the GStreamer registry? One call per element:
 # `gst-inspect-1.0 --exists` reads one element argument and discards the rest, so a single call
