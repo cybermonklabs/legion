@@ -3,7 +3,10 @@
 // that server's namespace, and the printing the write-up quotes.
 //
 // Experiments 1 to 6 measure Temporal and take its address; experiments 7 to 9 measure
-// DBOS, which is a library rather than a server, and take a PostgreSQL URL instead.
+// DBOS, which is a library rather than a server, and take a PostgreSQL URL instead;
+// experiments 10 to 12 measure Restate, which is a server that calls the application,
+// and take its two loopback addresses, the restate-server binary and the binary of the
+// service process the server is to call.
 //
 // Every experiment prints its measured numbers as plain `name: value` lines and then
 // exactly one verdict line, `experiment N: PASS` or `experiment N: FAIL`.
@@ -50,6 +53,21 @@ type Config struct {
 	// experiments 7, 8 and 9 start as a second process. Empty means "the dbosworker
 	// next to the running binary".
 	DBOSWorker string
+	// RestateIngress and RestateAdmin are the loopback addresses of the Restate
+	// server that experiments 10, 11 and 12 measure: the ingress an invocation is
+	// started through, and the admin API a deployment is registered with and an
+	// invocation's state is read from.
+	RestateIngress string
+	RestateAdmin   string
+	// RestateServer is the absolute path of a restate-server executable. When it
+	// names one, the experiment starts the server itself, which is what a runner
+	// will do; when it is empty, the experiment measures a server already answering
+	// at RestateAdmin and RestateIngress.
+	RestateServer string
+	// RestateService is the absolute path of the built cmd/restateservice binary,
+	// the process holding the handlers that Restate calls. Empty means "the
+	// restateservice next to the running binary".
+	RestateService string
 }
 
 // WorkDir is the scratch directory the experiment may write in: what -work-dir named,
@@ -80,23 +98,58 @@ func RequirePostgresDSN(cfg Config) error {
 // process: what -dbos-worker named, or the dbosworker beside the running binary, which
 // is where a runner that builds both of them puts it.
 func DBOSWorker(cfg Config) (string, error) {
-	path := cfg.DBOSWorker
+	return executable(cfg.DBOSWorker, "-dbos-worker", "dbosworker", "go build -o %s ./cmd/dbosworker")
+}
+
+// RestateService is the cmd/restateservice binary the Restate experiments start as a
+// separate process: what -restate-service named, or the restateservice beside the
+// running binary, which is where a runner that builds both of them puts it.
+func RestateService(cfg Config) (string, error) {
+	return executable(cfg.RestateService, "-restate-service", "restateservice", "go build -o %s ./cmd/restateservice")
+}
+
+// RestateServer is the restate-server executable the Restate experiments start, and
+// the empty string when none was given and none is beside the running binary: that is
+// not an error, because an experiment may instead be pointed at a server somebody
+// else runs.
+func RestateServer(cfg Config) (string, error) {
+	if cfg.RestateServer == "" {
+		self, err := os.Executable()
+		if err != nil {
+			return "", fmt.Errorf("-restate-server is empty and this binary's own path is unknown: %w", err)
+		}
+		beside := filepath.Join(filepath.Dir(self), "restate-server")
+		if info, err := os.Stat(beside); err != nil || info.IsDir() || info.Mode()&0o111 == 0 {
+			return "", nil
+		}
+		return beside, nil
+	}
+	return executable(cfg.RestateServer, "-restate-server", "restate-server", "")
+}
+
+// executable resolves one binary flag: an absolute path that exists and can be run,
+// defaulting to a name beside the running binary. build, when it is not empty, is the
+// command that produces it, named in the error so a failed run says what to do.
+func executable(path, flag, beside, build string) (string, error) {
 	if path == "" {
 		self, err := os.Executable()
 		if err != nil {
-			return "", fmt.Errorf("-dbos-worker is empty and this binary's own path is unknown: %w", err)
+			return "", fmt.Errorf("%s is empty and this binary's own path is unknown: %w", flag, err)
 		}
-		path = filepath.Join(filepath.Dir(self), "dbosworker")
+		path = filepath.Join(filepath.Dir(self), beside)
 	}
 	if !filepath.IsAbs(path) {
-		return "", fmt.Errorf("-dbos-worker %q must be an absolute path", path)
+		return "", fmt.Errorf("%s %q must be an absolute path", flag, path)
 	}
 	info, err := os.Stat(path)
 	if err != nil {
-		return "", fmt.Errorf("-dbos-worker: %w (build it with: go build -o %s ./cmd/dbosworker)", err, path)
+		if build != "" {
+			return "", fmt.Errorf("%s: %w (build it with: %s)", flag, err, fmt.Sprintf(build, path))
+		}
+		return "", fmt.Errorf("%s: %w", flag, err)
 	}
 	if info.IsDir() || info.Mode()&0o111 == 0 {
-		return "", fmt.Errorf("-dbos-worker %q is not an executable file", path)
+		return "", fmt.Errorf("%s %q is not an executable file", flag, path)
 	}
 	return path, nil
 }
