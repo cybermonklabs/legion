@@ -80,6 +80,18 @@ const MORE_ACTIONS_GROUP_ID = "search-group-more-actions";
 const PROJECTS_GROUP_ID = "search-group-projects";
 const RECENT_GROUP_ID = "search-group-recent";
 
+/** How long the bar waits after a keystroke before it searches the words alone. Short enough
+ *  that the list answers the letter just typed, long enough that a fast typist sends one search
+ *  for a word rather than one for each of its letters. */
+const KEYSTROKE_DEBOUNCE_MS = 150;
+/** How long the bar waits after the last keystroke before it searches by meaning as well as by
+ *  words. It has to be clearly longer than the keystroke's wait, or every burst of typing would
+ *  pay for an embedding; and short enough that the re-ranked list still reads as part of typing
+ *  rather than as something that happened later. Half a second is both: more than three times
+ *  the keystroke's wait, and longer than the gap between the letters of a word typed at any
+ *  speed a person types at, so a reader who is still typing never pays for it. */
+export const MEANING_PAUSE_MS = 500;
+
 interface ActionRow {
   action: KeymapAction;
   id: string;
@@ -409,15 +421,23 @@ function PaletteDialog({
   onClose: () => void;
 }): ReactNode {
   const [query, setQuery] = useState("");
+  // The two queries the bar searches, one per tier. `debouncedQuery` is the keystroke's, and
+  // asks the route for the keyword leg alone (`keywords_only`), which embeds nothing: an
+  // embedding behind each keystroke is a second of waiting on a deployment whose embedder is
+  // live, and the words answer in tens of milliseconds. `restedQuery` is the pause's, made once
+  // the reader stops typing, and asks for the whole search - meaning as well as words - whose
+  // fused order then replaces the list the keystrokes painted. Every keystroke starts both waits
+  // again, so a reader still typing pays for no embedding.
   const [debouncedQuery, setDebouncedQuery] = useState("");
-  // The query the reader submitted with Enter, and the only search the bar makes by meaning as
-  // well as by words. Every other search is a keystroke's, and asks the route for the keyword
-  // leg alone (`keywords_only`), which embeds nothing: an embedding behind each keystroke is a
-  // second of waiting on a deployment whose embedder is live, and the words answer in tens of
-  // milliseconds. The next keystroke clears it, so the list the reader types into is always the
-  // keyword one.
-  const [submitted, setSubmitted] = useState("");
-  const [activeId, setActiveId] = useState<string | null>(null);
+  const [restedQuery, setRestedQuery] = useState("");
+  // The highlight: the row the reader sees highlighted, held by its id, beside the query whose
+  // hits were listed when it was last decided ("" while none were). The two are one state
+  // because they are read together, to tell a fresh query's first hits - which take the head -
+  // from the same query's hits re-ranked, which never move the highlight.
+  const [active, setActive] = useState<{ readonly hits: string; readonly id: string | null }>({
+    hits: "",
+    id: null,
+  });
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
@@ -479,24 +499,44 @@ function PaletteDialog({
   const queryEnabled = !tooShort && !tooLong;
 
   useEffect(() => {
-    const timeout = window.setTimeout(() => setDebouncedQuery(searchText), 150);
-    return () => window.clearTimeout(timeout);
+    // The words in the box have just changed, so the meaning search the keystroke before it was
+    // heading for is withdrawn: the timer below is cleared when it has not fired, and where it
+    // had, dropping its query here leaves that search with no reader, which aborts the request
+    // through the signal React Query hands the search below.
+    setRestedQuery("");
+    const keystroke = window.setTimeout(() => setDebouncedQuery(searchText), KEYSTROKE_DEBOUNCE_MS);
+    const pause = window.setTimeout(() => setRestedQuery(searchText), MEANING_PAUSE_MS);
+    return () => {
+      window.clearTimeout(keystroke);
+      window.clearTimeout(pause);
+    };
   }, [searchText]);
 
   // The chips narrow every leg of the search, so they belong to the request and to the key the
   // answer is kept under: a chip added or dropped is another search, not another reading of
-  // this one. The page's project rides with them, under the parameter that narrows nothing. The
-  // one conditional of the bar is beside them: a search of anything but the submitted query is
-  // a keystroke's, and asks for the keyword leg alone.
-  const request: SearchRequest = {
-    ...searchRequest(filters, pageProject),
-    ...(debouncedQuery === submitted ? {} : { keywords_only: true }),
-  };
-  const search = useQuery({
+  // this one. The page's project rides with them, under the parameter that narrows nothing.
+  const narrowed = searchRequest(filters, pageProject);
+  // The two tiers, each its own answer under its own key: the keystroke's words-only search,
+  // and the pause's whole search. Keeping them apart is what lets the keyword list stay painted
+  // while the meaning search is still out, and what keeps an answer the reader has moved on
+  // from off the list - it lands under the key it was asked for, which the list no longer
+  // reads.
+  const keywordRequest: SearchRequest = { ...narrowed, keywords_only: true };
+  const keywords = useQuery({
     enabled: debouncedQuery.length >= 2 && debouncedQuery.length <= SEARCH_QUERY_MAX,
-    queryFn: () => api.search(debouncedQuery, request),
-    queryKey: ["search", debouncedQuery, request],
+    queryFn: ({ signal }) => api.search(debouncedQuery, keywordRequest, { signal }),
+    queryKey: ["search", debouncedQuery, keywordRequest],
   });
+  const meaning = useQuery({
+    enabled: restedQuery.length >= 2 && restedQuery.length <= SEARCH_QUERY_MAX,
+    queryFn: ({ signal }) => api.search(restedQuery, narrowed, { signal }),
+    queryKey: ["search", restedQuery, narrowed],
+  });
+  // What the list reads: the fused order once the pause's search of the query in hand has
+  // answered, and the keyword order until then. Everything below - the hits, the operators the
+  // query was read as, the degraded line and the message under the list - reads this one
+  // answer, so the list, what it says about itself and the highlight all speak of one search.
+  const search = restedQuery === debouncedQuery && meaning.data !== undefined ? meaning : keywords;
   // The project chip's own list, which every open of the bar offers, and the rows a query that
   // names a project leads to.
   const projects = useQuery(projectsQuery());
@@ -659,18 +699,27 @@ function PaletteDialog({
     ...hitGroups.flatMap((group) => group.rows),
     ...footSections.flatMap((section) => section.options.map((option) => option.row)),
   ];
+  // The hits the highlight is decided against: the query they answer, "" while the list holds
+  // none.
+  const listedQuery = showHits ? debouncedQuery : "";
   // The highlight is the row the reader sees highlighted, held by its id: hits arriving below
-  // the actions, or a refetch re-ranking them, leave it on that row. A new query sends it to the
-  // head, and so does its row leaving the list; the head it lands on is then adopted, so the row
-  // coming back does not take the highlight back from it. The head is the first row unless that
-  // is one of the foot rows - the two offers and the More actions, which come last: with
-  // only those listed, nothing is highlighted, and Enter runs nothing until the reader arrows.
-  const chosen = rows.findIndex((row) => row.id === activeId);
-  const activeIndex = chosen === -1 && rows.length > footRows ? 0 : chosen;
+  // the actions, or an answer re-ranking them, leave it on that row. The first hits of a query
+  // send it to the head, and the head it lands on is then adopted, so a row coming back does
+  // not take the highlight back from it. The head is the first row unless that is one of the
+  // foot rows - the two offers and the More actions, which come last: with only those listed,
+  // nothing is highlighted, and Enter runs nothing until the reader arrows.
+  // A row that leaves a list already answering this query takes the highlight with it and
+  // leaves it on no row: that is the pause's fused order dropping a row the keystrokes' hits
+  // held. Sending it to the head there would move the selection under the reader's hand, and
+  // the next Enter would open a row they never chose - so nothing is highlighted, and Enter
+  // does nothing, until they arrow.
+  const chosen = rows.findIndex((row) => row.id === active.id);
+  const reranked = listedQuery !== "" && listedQuery === active.hits;
+  const activeIndex = chosen === -1 && !reranked && rows.length > footRows ? 0 : chosen;
   const activeRow = rows[activeIndex];
   const shownId = activeRow?.id ?? null;
-  if (shownId !== activeId) {
-    setActiveId(shownId);
+  if (shownId !== active.id || listedQuery !== active.hits) {
+    setActive({ hits: listedQuery, id: shownId });
   }
   // Focus stays in the input while the arrows move the highlight (`aria-activedescendant`), so
   // the list scrolls the highlighted row into its own view: an issue page offers more rows than
@@ -740,12 +789,15 @@ function PaletteDialog({
     }
     return false;
   };
-  // While the query's search is out - its first answer, or a refetch behind a cached one - its
-  // hits can still arrive above the More actions, so an arrow aimed at the list now would land
-  // on whatever row then sits there: until the search answers, the arrows walk only the rows
-  // above the More actions, and with none they do nothing. A highlight the reader moved into the
-  // More actions after an earlier answer keeps moving over the whole list. `isFetching`, not the
-  // message's `isPending`: with a stale cached answer `isPending` is false while the refetch runs.
+  // While the search the list shows is out - its first answer, or a refetch behind a cached one
+  // - its hits can still arrive above the More actions, so an arrow aimed at the list now would
+  // land on whatever row then sits there: until the search answers, the arrows walk only the
+  // rows above the More actions, and with none they do nothing. A highlight the reader moved
+  // into the More actions after an earlier answer keeps moving over the whole list. The pause's
+  // search running behind a painted keyword list is not this case: it re-ranks rows already
+  // listed, and the highlight is held by id, so no row moves out from under an arrow.
+  // `isFetching`, not the message's `isPending`: with a stale cached answer `isPending` is false
+  // while the refetch runs.
   const searchOut = waitingForQuery || (queryEnabled && search.isFetching);
   const firstMore = rows.length - footRows;
   const walkable = searchOut && activeIndex < firstMore ? firstMore : rows.length;
@@ -764,20 +816,10 @@ function PaletteDialog({
             ? 0
             : walkable - 1
           : stepActive(activeIndex, delta, walkable);
-      setActiveId(rows[next]?.id ?? null);
+      setActive({ hits: listedQuery, id: rows[next]?.id ?? null });
     } else if (event.key === "Enter" && activeRow !== undefined) {
       event.preventDefault();
       selectRow(activeRow);
-    } else if (event.key === "Enter" && queryEnabled) {
-      // Every Enter that opens a hit or runs an action is above, and does what it always did.
-      // This one is the Enter that opened nothing, which submits the words instead: the route
-      // then runs unchanged, by meaning as well as by words wherever the deployment's embedder
-      // is live, and its fused order replaces the list. The debounce is flushed with it, so an
-      // Enter pressed inside that window submits the words as they stand rather than the ones
-      // the timer had.
-      event.preventDefault();
-      setSubmitted(searchText);
-      setDebouncedQuery(searchText);
     }
   };
 
@@ -832,11 +874,9 @@ function PaletteDialog({
               className={`block w-full rounded-lg border px-3 py-2 text-sm outline-none ${inputClasses(true)}`}
               onChange={(event) => {
                 setQuery(event.target.value);
-                // A new query re-ranks the list, so the highlight returns to its head, and the
-                // submission it was made for is spent: what the next keystroke searches is the
-                // keyword leg again, which embeds nothing.
-                setActiveId(null);
-                setSubmitted("");
+                // A new query is a new list, so the highlight is undecided again and the first
+                // hits to answer it take the head.
+                setActive({ hits: "", id: null });
               }}
               onKeyDown={handleKeyDown}
               placeholder="Search Dispatch"

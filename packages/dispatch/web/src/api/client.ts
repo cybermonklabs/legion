@@ -1054,7 +1054,9 @@ export class DispatchApiClient {
    *  leaving it out searches by meaning too wherever an embedder is configured. The route
    *  refuses a value it cannot read under its own code (`INVALID_PROJECT`,
    *  `INVALID_NUMBER_PROJECT`, `INVALID_STATUS`, `INVALID_AUTHOR`, `INVALID_UPDATED_SINCE`,
-   *  `INVALID_KEYWORDS_ONLY`). */
+   *  `INVALID_KEYWORDS_ONLY`). The bar searches while a person types, so it passes the `signal`
+   *  of the search it is still interested in: an aborted request ends the route's own work with
+   *  it, the embedding a search by meaning had asked for included. */
   search(
     query: string,
     options: {
@@ -1065,9 +1067,12 @@ export class DispatchApiClient {
       updated_since?: string;
       keywords_only?: boolean;
       limit?: number;
-    } = {}
+    } = {},
+    init: { signal?: AbortSignal } = {}
   ): Promise<SearchResponse> {
-    return this.json<SearchResponse>(pathWithQuery("/api/v1/search", { q: query, ...options }));
+    return this.json<SearchResponse>(pathWithQuery("/api/v1/search", { q: query, ...options }), {
+      signal: init.signal,
+    });
   }
 
   /**

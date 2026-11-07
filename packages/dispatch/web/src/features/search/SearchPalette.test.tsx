@@ -59,6 +59,10 @@ function searchAnswer(hits: SearchResult[]): SearchResponse & SearchResultsPage 
   };
 }
 
+/** The last argument of every search the bar makes: React Query's own abort signal, which the
+ *  bar hands the client so a search it has moved on from is dropped rather than waited for. */
+const aborts = { signal: expect.anything() };
+
 function CurrentRoute(): ReactNode {
   const location = useLocation();
   return <output data-testid="current-route">{`${location.pathname}${location.search}`}</output>;
@@ -371,7 +375,11 @@ test("names the limit instead of querying over it, and queries at it", async () 
 
     fireEvent.change(input, { target: { value: "x".repeat(SEARCH_QUERY_MAX) } });
     await waitFor(() =>
-      expect(search).toHaveBeenCalledWith("x".repeat(SEARCH_QUERY_MAX), { keywords_only: true })
+      expect(search).toHaveBeenCalledWith(
+        "x".repeat(SEARCH_QUERY_MAX),
+        { keywords_only: true },
+        aborts
+      )
     );
   } finally {
     search.mockRestore();
@@ -439,27 +447,71 @@ test("a refetch that re-ranks the hits leaves the highlight on the hit the reade
   }
 });
 
-test("a highlighted hit that drops out hands the highlight to the head, which keeps it", async () => {
+/** The bar's two searches of one query, each answering its own list: `words` for the keystroke's
+ *  search, which asks for the keyword leg alone, and `fused` for the search the pause makes,
+ *  which asks for the whole of it. */
+function bothTiers(
+  words: SearchResult[],
+  fused: SearchResult[]
+): (query: string, options?: { keywords_only?: boolean }) => Promise<SearchResponse> {
+  return (_query, options = {}) =>
+    Promise.resolve(searchAnswer(options.keywords_only === true ? words : fused));
+}
+
+test("a pause searches by meaning too, and its order re-ranks the list under the highlight", async () => {
   const [first, second] = [issueHit("LEGION-3"), issueHit("LEGION-4")];
-  const search = spyOn(api, "search").mockResolvedValue(searchAnswer([first, second]));
+  const search = spyOn(api, "search").mockImplementation(
+    bothTiers([first, second], [second, first])
+  );
+  const view = renderPalette();
+
+  try {
+    const input = await searchFor("astrolabe");
+    expect(optionIds()).toEqual([optionId(first), optionId(second)]);
+    expect(input.getAttribute("aria-activedescendant")).toBe(optionId(first));
+    expect(search.mock.calls).toHaveLength(1);
+    expect(search.mock.calls[0]?.[1]).toEqual({ keywords_only: true });
+
+    // The pause asks the same query again, without the flag, and the fused order it answers
+    // replaces the list. The highlighted row is still in that list, so it keeps the highlight
+    // and Enter still opens the row the reader is looking at.
+    await waitFor(() => expect(search.mock.calls).toHaveLength(2), { timeout: 3000 });
+    expect(search.mock.calls[1]?.[0]).toBe("astrolabe");
+    expect(search.mock.calls[1]?.[1]).toEqual({});
+    await waitFor(() => expect(optionIds()).toEqual([optionId(second), optionId(first)]));
+    expect(input.getAttribute("aria-activedescendant")).toBe(optionId(first));
+
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(screen.getByTestId("current-route").textContent).toBe("/issues/LEGION-3");
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+test("a re-rank that drops the highlighted hit leaves no row highlighted, and Enter opens nothing", async () => {
+  const [first, second] = [issueHit("LEGION-3"), issueHit("LEGION-4")];
+  const search = spyOn(api, "search").mockImplementation(bothTiers([first, second], [first]));
   const view = renderPalette();
 
   try {
     const input = await searchFor("astrolabe");
     fireEvent.keyDown(input, { key: "ArrowDown" });
-    const [head, arrowed] = screen.getAllByRole("option").map((option) => option.id);
-    expect(input.getAttribute("aria-activedescendant")).toBe(arrowed ?? "");
+    expect(input.getAttribute("aria-activedescendant")).toBe(optionId(second));
 
-    search.mockResolvedValue(searchAnswer([first]));
-    await view.queryClient.refetchQueries();
-    await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(1));
-    expect(input.getAttribute("aria-activedescendant")).toBe(head ?? "");
+    // The pause's order drops the row the reader had arrowed to. Nothing takes its place: the
+    // head would be a row they never chose, and the next Enter would open it.
+    await waitFor(() => expect(optionIds()).toEqual([optionId(first)]), { timeout: 3000 });
+    expect(input.getAttribute("aria-activedescendant")).toBeNull();
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(screen.getByTestId("current-route").textContent).toBe("/");
 
-    // The row coming back does not take the highlight back from the one the reader now sees.
-    search.mockResolvedValue(searchAnswer([first, second]));
-    await view.queryClient.refetchQueries();
-    await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(2));
-    expect(input.getAttribute("aria-activedescendant")).toBe(head ?? "");
+    // The reader's own arrow says which row, and Enter then opens that one.
+    fireEvent.keyDown(input, { key: "ArrowDown" });
+    expect(input.getAttribute("aria-activedescendant")).toBe(optionId(first));
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(screen.getByTestId("current-route").textContent).toBe("/issues/LEGION-3");
   } finally {
     search.mockRestore();
     view.unmount();
@@ -975,15 +1027,16 @@ test("a chip narrows the search, reads back in the person's words, and comes off
 
   try {
     await searchFor("astrolabe");
-    expect(search).toHaveBeenLastCalledWith("astrolabe", { keywords_only: true });
+    expect(search).toHaveBeenLastCalledWith("astrolabe", { keywords_only: true }, aborts);
 
     fireEvent.click(screen.getByRole("button", { name: "Status" }));
     fireEvent.click(screen.getByRole("button", { name: "In progress" }));
     await waitFor(() =>
-      expect(search).toHaveBeenLastCalledWith("astrolabe", {
-        keywords_only: true,
-        status: "in_progress",
-      })
+      expect(search).toHaveBeenLastCalledWith(
+        "astrolabe",
+        { keywords_only: true, status: "in_progress" },
+        aborts
+      )
     );
 
     const chip = screen.getByRole("button", { name: "Remove Status In progress" });
@@ -1010,10 +1063,11 @@ test("the page's project is the search's context, not a chip narrowing it", asyn
   try {
     await searchFor("astrolabe");
 
-    expect(search).toHaveBeenLastCalledWith("astrolabe", {
-      keywords_only: true,
-      number_project: "LEGION",
-    });
+    expect(search).toHaveBeenLastCalledWith(
+      "astrolabe",
+      { keywords_only: true, number_project: "LEGION" },
+      aborts
+    );
     expect(screen.queryByRole("button", { name: /^Remove Project/ })).toBeNull();
     expect(screen.getByRole("button", { name: "Project" })).not.toBeNull();
   } finally {
