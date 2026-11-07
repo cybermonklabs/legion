@@ -366,18 +366,40 @@ func (o *Outbox) tryHold(ctx context.Context) (*duty.Hold, time.Duration) {
 // Publishing() turned false; scan's check before it starts a batch, and a send fenced mid-batch,
 // are that deadline itself. The one path that touches the hold not at all is a recordBatch that
 // found the hold another's (scanBatch): the deadline is then up to TTL - Margin ahead while
-// Publishing() stayed true until the store of nil below, so there it is serve's return. Nothing
-// carries the value back inside the stretch it names, because a deadline that has passed is final
-// (confirm loses rather than extends), so Publishing() is one unbroken stretch per turn as holder.
+// Publishing() stayed true until the store of nil below, so there it is returned, the clock read
+// taken just after that store. Nothing carries the value back inside the stretch it names,
+// because a deadline that has passed is final (confirm loses rather than extends), so
+// Publishing() is one unbroken stretch per turn as holder.
+//
+// The two clock reads sit deliberately on the outside of the two stores of o.hold, because each
+// is read against a /healthz read of the same process, and each has to err on the side that
+// leaves the reader's disagreement a real one. o.hold.Store(nil) runs before returned is read,
+// so returned - and so stopped, which is no later than it - is at or after the moment
+// Publishing() turned false. Taken the other way round, as this was until INFRA-1568, the stretch
+// between the clock read and the store is one in which Publishing() can still answer true, and
+// answer it honestly, while stopped already names a moment in the past: a health read issued in
+// there is then read as a process that answered "publishing" after it had stopped. That stretch
+// is microseconds unless this goroutine is pre-empted between the two statements, which is
+// exactly what a loaded runner does.
+//
+// started is read before o.hold.Store(hold) for the same reason from the other end: the
+// attribute is then at or before the moment Publishing() turned true, so a health read that
+// answered "not publishing" and fell before started agrees with the log, and one after it is a
+// real disagreement. It is logged as an RFC3339Nano string, as stopped is, because slog's text
+// handler writes a time.Time to the millisecond; the line's own time is truncated the same way,
+// and the log call comes after the store, so without the attribute a reader cannot date the
+// start to better than a millisecond plus whatever ran in between.
 //
 // Rows wait on these messages' words (tookHold, releasedHold and lostHold in
 // cmd/dispatch/multiprocess_test.go), so a change to them is a change to those rows too.
 func (o *Outbox) publish(ctx context.Context, hold *duty.Hold) holdEnd {
+	started := time.Now()
 	o.hold.Store(hold)
-	slog.Info("dispatch outbox: took the publisher hold", "instance", o.instance)
+	slog.Info("dispatch outbox: took the publisher hold", "instance", o.instance,
+		"started", started.Format(time.RFC3339Nano))
 	end := o.serve(ctx, hold)
-	returned := time.Now()
 	o.hold.Store(nil)
+	returned := time.Now()
 	stopped := hold.Deadline()
 	if returned.Before(stopped) {
 		stopped = returned
