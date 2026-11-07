@@ -10,6 +10,7 @@ Dispatch is a record for the people who decide, never a log of your work.
 - Use the `dispatch` command; the HTTP API only for what no command does. `dispatch <command> --help` gives its rules and an example.
 - Put long text on stdin: `--<field>-file -` with a quoted here-document (`<<'EOF'`); give object and list fields as JSON.
 - Exit 1 is a refusal, 2 a usage error. A refusal lists each problem: fix them all, then call once.
+- Dispatch is yours to improve: a command that is hard to use, or that stores, changes or loses something wrongly, is a defect to report, never to work around. Open an issue for it with a repro, correctness first, and tell `notifications.role.legion-<project>-controller`.
 
 ## Asks and ask blocks
 
