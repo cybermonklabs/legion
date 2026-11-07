@@ -41,6 +41,15 @@ const autoMergeTimeout = 30 * time.Second
 // minutes, and the 90th percentile of every pull_request run was 17.
 const mergeWaitWarn = time.Hour
 
+// queueConflictBound is how long GitHub's merge queue must keep reporting a ready_merge row's
+// entry UNMERGEABLE, built all that time on the same commit, before the row takes the entry's own
+// head to be what the queue cannot merge and sends the issue back to implementing (queueConflict).
+// The row retries on the outbox's backoff, which is capped at 64 seconds (retryBackoff), so ten
+// minutes is at least nine reads of the entry: one odd read — GitHub's queue rebuilding entries
+// around a merge that has just landed — decides nothing, and the return completes within twenty
+// minutes of the first UNMERGEABLE read, the bound plus the one backoff that follows it.
+const queueConflictBound = 10 * time.Minute
+
 // autoMergeDisable disarms pull request payload.Number as the implement App, which submits READY's
 // merge (ghautomerge.Disarm), deciding by the record when it runs, never by when the row was queued:
 // while the issue awaits its merge, the merger's READY commit is the head whose arm is kept, and
@@ -81,8 +90,11 @@ func (r *outbox) autoMergeDisable(ctx context.Context, row record.OutboxRow, pay
 // merge-removed). A refusal a retry would meet again (ghautomerge.Refused) and a disagreement with
 // the record that has stood on GitHub longer than ghautomerge.LagBound (ghautomerge.Lagging.Stalled)
 // end it too, the architect told (permanentRefusal, finishRefused); every other failure retries. A
-// wait GitHub has left standing longer than mergeWaitWarn tells the architect once that the merge
-// is still waiting (merge-waiting, rememberWait), and the row waits on.
+// merge-queue entry GitHub keeps reporting unmergeable while it is built on the base branch's own
+// tip sends the issue back to implementing as well (queueConflict), since nothing ahead of such an
+// entry in the queue can be what makes it unmergeable. A wait GitHub has left standing longer than
+// mergeWaitWarn tells the architect once that the merge is still waiting (merge-waiting,
+// rememberWait), and the row waits on.
 func (r *outbox) readyMerge(ctx context.Context, row record.OutboxRow, payload record.ReadyMerge) error {
 	ctx, cancel := context.WithTimeout(ctx, autoMergeTimeout)
 	defer cancel()
@@ -103,8 +115,15 @@ func (r *outbox) readyMerge(ctx context.Context, row record.OutboxRow, payload r
 	var armed *ghautomerge.Armed
 	var failed *ghautomerge.MergeFailed
 	switch {
-	case errors.As(err, &armed) && !payload.Armed:
-		if remembered := r.rememberWait(ctx, row, payload, true, err); remembered != nil {
+	case errors.As(err, &armed):
+		// Every arm or entry is decided, whether or not the row has seen one before: the entry
+		// GitHub cannot merge is read run after run, and the marks queueConflict writes on the
+		// payload stand on the copy rememberWait writes next, so neither write loses the other's.
+		returned, conflict := r.queueConflict(ctx, row, &payload, armed)
+		if conflict != nil || returned {
+			return conflict
+		}
+		if remembered := r.rememberWait(ctx, row, payload, !payload.Armed, err); remembered != nil {
 			return remembered
 		}
 		return err
@@ -130,6 +149,65 @@ func (r *outbox) readyMerge(ctx context.Context, row record.OutboxRow, payload r
 	}
 	r.log.Info("outbox submitted a READY merge", "row", row.ID, "issue", row.Issue, "repo", repo.String(), "number", payload.Number, "head", payload.Head, "outcome", outcome)
 	return nil
+}
+
+// queueConflict decides the one merge-queue state in which the entry's own head is what GitHub's
+// queue cannot merge, and says whether it sent the issue back to implementing, which ends the row:
+// the queue reports the entry UNMERGEABLE (armed.QueueState) while it has built that entry on the
+// tip of the pull request's own base branch (armed.QueueBase, armed.BaseTip, both from the one
+// read). An entry built on that tip has nothing ahead of it in the queue to blame — no earlier
+// entry's merge is in it — so what is left is the head conflicting with the base. Every other
+// state (QUEUED, AWAITING_CHECKS, MERGEABLE, LOCKED, and one this daemon does not know), an entry
+// the queue has built nothing for yet, and an entry built on anything but the base branch's tip
+// do nothing at all: they neither write the marks nor clear them, since the queue rebuilds its
+// entries as it merges what stands before them and a state read in the middle of that decides
+// nothing. GitHub's mergeable and mergeStateStatus say nothing here and are never read for it:
+// while an entry is queued GitHub answers UNKNOWN for both, which is what left a conflicting pull
+// request sitting in the queue for hours (dispatch://INFRA-1442).
+//
+// The first such read is marked on the payload (record.ReadyMerge.Unmergeable,
+// UnmergeableBase), one transaction under the row's lease as rememberWait writes Warned, and a
+// replacement that did not take — the row's lease gone to another worker — changes nothing, since
+// that worker reads the entry itself. An entry GitHub rebuilds onto another base commit replaces
+// the mark and starts the clock again. Only a mark that has stood queueConflictBound at the same
+// base commit returns the issue, through the workflow (intake.MergeQueueConflict) under a key of
+// this issue, head and base commit, so a later read of the same entry applies nothing twice. The
+// entry is left where it is: the merge queue's own removal is the disarm's (ghautomerge.Disarm),
+// which the withdrawal the workflow makes queues.
+func (r *outbox) queueConflict(ctx context.Context, row record.OutboxRow, payload *record.ReadyMerge, armed *ghautomerge.Armed) (bool, error) {
+	if armed.QueueState != "UNMERGEABLE" || armed.QueueBase == "" || armed.QueueBase != armed.BaseTip {
+		return false, nil
+	}
+	now := r.now().UTC()
+	if payload.Unmergeable.IsZero() || payload.UnmergeableBase != armed.QueueBase {
+		payload.Unmergeable, payload.UnmergeableBase = now, armed.QueueBase
+		if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+			_, err := r.records.ReplaceOutboxPayload(ctx, tx, row.ID, row.LeaseToken, *payload)
+			return err
+		}); err != nil {
+			return false, fmt.Errorf("record the merge-queue entry outbox row %d found unmergeable: %w", row.ID, err)
+		}
+		return false, nil
+	}
+	if now.Sub(payload.Unmergeable) < queueConflictBound {
+		return false, nil
+	}
+	reason := fmt.Sprintf("the head conflicts with %s: GitHub's merge queue reports its entry unmergeable while the entry is built on %s's own tip %s; merge %s forward",
+		armed.BaseName, armed.BaseName, armed.QueueBase, armed.BaseName)
+	fact := intake.MergeQueueConflict{Issue: row.Issue, Number: payload.Number, Head: payload.Head, Base: armed.BaseName, BaseCommit: armed.QueueBase, Reason: reason}
+	key := fmt.Sprintf("merge-queue-conflict:%s:%s:%s", row.Issue, payload.Head, armed.QueueBase)
+	applied, err := intake.ApplyFact(ctx, r.pool, "outbox", key, fact, r.handlers...)
+	if err != nil {
+		return false, fmt.Errorf("send %s back to implementing on its merge-queue conflict: %w", row.Issue, err)
+	}
+	// The workflow moves only an issue that still awaits that READY (workflow's
+	// mergeQueueConflict), and a fact already applied moves nothing.
+	message := "outbox READY merge is unmergeable in the merge queue on its base branch's tip; the workflow sends the issue back to implementing if it still awaits that READY"
+	if applied.Duplicate {
+		message = "outbox READY merge is unmergeable in the merge queue on its base branch's tip; that conflict was already applied, so nothing changed"
+	}
+	r.log.Info(message, "row", row.ID, "issue", row.Issue, "number", payload.Number, "head", payload.Head, "base", armed.BaseName, "baseCommit", armed.QueueBase)
+	return true, nil
 }
 
 // rememberWait records on row what its wait learned that its next run must know, and tells the

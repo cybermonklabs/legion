@@ -65,6 +65,31 @@ func (e *Engine) mergeFailed(ctx context.Context, tx pgx.Tx, fact intake.MergeFa
 	return intake.Result{}, e.transition(ctx, tx, *issue, TriggerChecksRed, "", record.PhaseRow{}, pr, fact.Reason)
 }
 
+// mergeQueueConflict sends an issue back to implementing when GitHub's merge queue reports its
+// entry for the READY's head unmergeable while the queue has built that entry on the tip of the
+// pull request's own base branch (intake.MergeQueueConflict): nothing ahead of the entry in the
+// queue can be the cause there, so the head itself conflicts with the base, which moves the issue
+// as a red head does, on the same awaiting_merge row (TriggerChecksRed). The implementer's task
+// and the architect's checks-red notice name the branch to merge forward, and the READY's
+// withdrawal is told with its disarm (withdrawReady). Only an issue still awaiting that READY, on
+// the open pull request the fact names, moves: one that has left it, a by-hand READY, or another
+// READY head changes nothing, and a tree that lingers holds the issue where it is (transition).
+func (e *Engine) mergeQueueConflict(ctx context.Context, tx pgx.Tx, fact intake.MergeQueueConflict) (intake.Result, error) {
+	issue, err := e.store.Issue(ctx, tx, fact.Issue)
+	if err != nil || issue == nil || issue.Phase != phase.AwaitingMerge {
+		return intake.Result{}, err
+	}
+	merger, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleMerger)
+	if err != nil || merger.MergeNote != "" || merger.HandoffCommit != fact.Head {
+		return intake.Result{}, err
+	}
+	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	if err != nil || pr == nil || pr.Number != fact.Number || pr.State != record.PullRequestOpen {
+		return intake.Result{}, err
+	}
+	return intake.Result{}, e.transition(ctx, tx, *issue, TriggerChecksRed, "", record.PhaseRow{}, pr, fact.Reason)
+}
+
 // holdReadyToItsHead holds a merger's READY to the pull request's head before anything of it is
 // recorded, and records that head. A push can land after the route read the head READY names and
 // before this completion commits: accepted, that READY would leave the issue awaiting a merge of a

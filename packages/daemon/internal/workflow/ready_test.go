@@ -285,6 +285,86 @@ func TestAWithdrawalOfAMergeTheQueueFailedCarriesEveryFailingRun(t *testing.T) {
 	}
 }
 
+// A conflict GitHub's merge queue found is the transition back to implementing (INFRA-1442): the
+// queue reporting its entry for READY's head unmergeable while it is built on the base branch's
+// own tip, which the ready_merge row reads from GitHub (intake.MergeQueueConflict), moves the
+// issue from awaiting_merge to implementing as a red head does. The implementer is started with
+// the branch to merge forward named and its round counted, the architect is told checks-red, the
+// READY's withdrawal is posted and published to the merge queue role, and its disarm is queued.
+// Only the READY the issue still awaits moves: another READY head, a READY a person merges and an
+// issue that has left awaiting_merge change nothing, and the same conflict read again, which the
+// row applies under the same key, moves nothing the second time.
+func TestAConflictFoundInTheQueueSendsTheAwaitedREADYBackToImplementing(t *testing.T) {
+	const byHand = "MANUAL_MERGE_REQUIRED: pull request #42 matches a by_hand merge rule; do not auto-arm it"
+	const reason = "the head conflicts with main: GitHub's merge queue reports its entry unmergeable while the entry is built on main's own tip base-tip; merge main forward"
+	for _, tc := range []struct {
+		name             string
+		at               phase.Phase
+		ready, mergeNote string
+		moves            bool
+	}{
+		{name: "awaiting that READY", at: phase.AwaitingMerge, ready: "head", moves: true},
+		{name: "awaiting another READY head", at: phase.AwaitingMerge, ready: "older"},
+		{name: "awaiting a READY a person merges", at: phase.AwaitingMerge, ready: "head", mergeNote: byHand},
+		{name: "back in implementing", at: phase.Implementing, ready: "head"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: tc.at,
+				Generation: 1, Status: "retro", Rank: "U"})
+			seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head"})
+			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim"})
+			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleMerger, Claim: "merge-claim", HandoffCommit: tc.ready, Summary: readyPacket, MergeNote: tc.mergeNote})
+			apply := applyFacts(t, pool, readyEngine("merge-queue"))
+			fact := intake.MergeQueueConflict{Issue: "LEGION-208", Number: 42, Head: "head", Base: "main", BaseCommit: "base-tip", Reason: reason}
+			if result := apply("merge-queue-conflict:LEGION-208:head:base-tip", fact); result.Refusal != nil {
+				t.Fatalf("apply the merge queue's conflict = %+v", result.Refusal)
+			}
+			task := startTask(t, pool, claim.RoleImplementer)
+			publishes := mergeQueuePublishes(t, pool)
+			if !tc.moves {
+				if got := issuePhase(t, pool); got != tc.at || task != "" || len(noticeKinds(t, pool, "LEGION-208")) != 0 || len(publishes) != 0 {
+					t.Fatalf("phase %s, implementer task %q, notices %v, publishes %v; want %s and nothing told", got, task, noticeKinds(t, pool, "LEGION-208"), publishes, tc.at)
+				}
+				return
+			}
+			if got := issuePhase(t, pool); got != phase.Implementing {
+				t.Fatalf("phase %s after the merge queue found the conflict, want implementing", got)
+			}
+			if !strings.Contains(task, "merge main forward") || !strings.Contains(task, "merge queue") {
+				t.Fatalf("the implementer's task %q, want it to name the branch to merge forward and the merge queue", task)
+			}
+			if rounds := implementerRounds(t, pool); rounds != 1 {
+				t.Fatalf("the implementer's rounds %d, want the return counted once", rounds)
+			}
+			if kinds := noticeKinds(t, pool, "LEGION-208"); !slices.Contains(kinds, "checks-red") {
+				t.Fatalf("notices %v, want the architect told checks-red", kinds)
+			}
+			if len(publishes) != 1 || !strings.Contains(publishes[0].Packet, "READY withdrawn") || !strings.Contains(publishes[0].Packet, "merge main forward") {
+				t.Fatalf("merge queue publishes %v, want the READY's withdrawal naming the branch to merge forward", publishes)
+			}
+			withdrawn := false
+			for _, body := range messageBodies(t, pool) {
+				withdrawn = withdrawn || strings.HasPrefix(body, "READY withdrawn for LEGION-208") && strings.Contains(body, "merge main forward")
+			}
+			if !withdrawn {
+				t.Fatalf("Dispatch messages %q, want the READY's withdrawal among them", messageBodies(t, pool))
+			}
+			var disarms int
+			if err := pool.QueryRow(context.Background(), "select count(*) from outbox where kind = 'auto_merge_disable'").Scan(&disarms); err != nil || disarms != 1 {
+				t.Fatalf("disarms %d (%v), want the withdrawal's one", disarms, err)
+			}
+			// The row reads the same entry again and applies the same fact under the same key.
+			if result := apply("merge-queue-conflict:LEGION-208:head:base-tip", fact); !result.Duplicate {
+				t.Fatalf("the same conflict applied again = %+v, want it answered as already applied", result)
+			}
+			if rounds, again := implementerRounds(t, pool), mergeQueuePublishes(t, pool); rounds != 1 || len(again) != 1 {
+				t.Fatalf("after the same conflict again the implementer's rounds %d and publishes %v, want the one return's", rounds, again)
+			}
+		})
+	}
+}
+
 // A READY the design gate refused is posted when a human approves: the packet is kept with the
 // merger's completion across the refusal, and nothing is posted before the approval.
 func TestAREADYTheGateRefusedIsPostedWhenAHumanApproves(t *testing.T) {

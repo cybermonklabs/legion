@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -951,6 +952,208 @@ func TestAMergeFailureAlreadyAppliedIsNotLoggedAsSendingTheIssueBack(t *testing.
 	}
 }
 
+// A queued pull request whose merge GitHub's merge queue cannot make goes back to implementing
+// (INFRA-1442), and the entry's own state is what says so: while an entry is queued GitHub answers
+// the pull request's mergeable UNKNOWN, so a daemon reading that field alone leaves a conflicting
+// pull request sitting in the queue for hours. The row acts on the one state in which the entry's
+// own head is the cause — UNMERGEABLE while the queue has built the entry on the tip of the pull
+// request's own base branch, where nothing ahead of it in the queue can be to blame — and only
+// once that has stood queueConflictBound, so one odd read decides nothing. Every other entry
+// state, an entry the queue has built nothing for, and an entry built on another commit than the
+// base branch's tip neither write the marks nor clear them, and an entry GitHub rebuilds onto
+// another base starts the clock again. What GitHub answers for the pull request's own mergeability
+// changes none of it.
+func TestAnUnmergeableEntryOnItsBaseBranchesTipSendsTheIssueBackToImplementing(t *testing.T) {
+	for _, tc := range []struct {
+		name                  string
+		queueState, queueBase string
+		// mergeable and mergeState are GitHub's own answers for the pull request, which this
+		// decision never reads: every row has the queue's entry decide it.
+		mergeable, mergeState string
+		// gap is how long after the first read the row reads again; a zero gap reads once.
+		gap time.Duration
+		// rebuilt is the commit GitHub rebuilds the entry onto, moving the base branch to it,
+		// between the two reads.
+		rebuilt string
+		want    phase.Phase
+		// wantBase is the entry base commit the row's mark stands at afterwards, "" for no mark,
+		// and markLate says the mark stands at the second read rather than the first.
+		wantBase string
+		markLate bool
+	}{
+		{name: "unmergeable on the base branch's tip, read once", queueState: "UNMERGEABLE", queueBase: queueBaseTip,
+			want: phase.AwaitingMerge, wantBase: queueBaseTip},
+		{name: "unmergeable on the base branch's tip, read again at the bound", queueState: "UNMERGEABLE", queueBase: queueBaseTip,
+			gap: queueConflictBound, want: phase.Implementing},
+		{name: "unmergeable on the base branch's tip, read again past the bound", queueState: "UNMERGEABLE", queueBase: queueBaseTip,
+			gap: queueConflictBound + time.Minute, want: phase.Implementing},
+		{name: "unmergeable on the base branch's tip, read twice inside the bound", queueState: "UNMERGEABLE", queueBase: queueBaseTip,
+			gap: queueConflictBound - time.Minute, want: phase.AwaitingMerge, wantBase: queueBaseTip},
+		{name: "unmergeable on another entry's commit", queueState: "UNMERGEABLE", queueBase: "entry-ahead",
+			gap: queueConflictBound + time.Minute, want: phase.AwaitingMerge},
+		{name: "unmergeable with no commit the queue has built", queueState: "UNMERGEABLE",
+			gap: queueConflictBound + time.Minute, want: phase.AwaitingMerge},
+		{name: "queued on the base branch's tip", queueState: "QUEUED", queueBase: queueBaseTip,
+			gap: queueConflictBound + time.Minute, want: phase.AwaitingMerge},
+		{name: "awaiting its checks on the base branch's tip", queueState: "AWAITING_CHECKS", queueBase: queueBaseTip,
+			gap: queueConflictBound + time.Minute, want: phase.AwaitingMerge},
+		{name: "mergeable on the base branch's tip", queueState: "MERGEABLE", queueBase: queueBaseTip,
+			gap: queueConflictBound + time.Minute, want: phase.AwaitingMerge},
+		{name: "locked on the base branch's tip", queueState: "LOCKED", queueBase: queueBaseTip,
+			gap: queueConflictBound + time.Minute, want: phase.AwaitingMerge},
+		{name: "in a state the daemon does not know", queueState: "BLOCKED_BY_SOMETHING_NEW", queueBase: queueBaseTip,
+			gap: queueConflictBound + time.Minute, want: phase.AwaitingMerge},
+		{name: "unmergeable while GitHub reports the pull request mergeable and clean", queueState: "UNMERGEABLE", queueBase: queueBaseTip,
+			mergeable: "true", mergeState: "CLEAN", gap: queueConflictBound + time.Minute, want: phase.Implementing},
+		{name: "unmergeable while GitHub has yet to compute the pull request's mergeability", queueState: "UNMERGEABLE", queueBase: queueBaseTip,
+			mergeable: "null", mergeState: "UNKNOWN", gap: queueConflictBound + time.Minute, want: phase.Implementing},
+		{name: "unmergeable on a base the queue rebuilds the entry onto", queueState: "UNMERGEABLE", queueBase: queueBaseTip,
+			gap: queueConflictBound + time.Minute, rebuilt: "rebuilt-tip", want: phase.AwaitingMerge, wantBase: "rebuilt-tip", markLate: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mergeState := tc.mergeState
+			if mergeState == "" {
+				mergeState = "UNKNOWN"
+			}
+			github := newQueueGitHub(t, mergeState)
+			github.set(func(g *armableGitHub) {
+				g.queued, g.queueState, g.queueBase, g.mergeable = true, tc.queueState, tc.queueBase, tc.mergeable
+			})
+			pool := isolatedOutboxPool(t)
+			records := record.NewStore()
+			seedReadyMerge(t, pool, records, "LEGION-208", awaitingREADY)
+			now := time.Now().UTC().Truncate(time.Second)
+			enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208", record.ReadyMerge{Number: 42, Head: "ready-head", Queued: now}, now))
+			clock := now
+			runner := mergeRunner(pool, records, github.url, quietLogger(), func() time.Time { return clock })
+			runner.handlers = []intake.Handler{workflow.New(records, workflow.Config{Project: "LEGION", Steps: config.DesignGateRootIssues.Steps()}, quietLogger())}
+			if err := runner.RunOnce(context.Background()); err != nil {
+				t.Fatalf("the row's first read of the entry: %v", err)
+			}
+			if tc.gap != 0 {
+				if tc.rebuilt != "" {
+					github.set(func(g *armableGitHub) { g.queueBase, g.baseTip = tc.rebuilt, tc.rebuilt })
+				}
+				clock = now.Add(tc.gap)
+				if err := runner.RunOnce(context.Background()); err != nil {
+					t.Fatalf("the row's read %s on: %v", tc.gap, err)
+				}
+			}
+			var at string
+			if err := pool.QueryRow(context.Background(), "select phase from issues where key = 'LEGION-208'").Scan(&at); err != nil || at != string(tc.want) {
+				t.Fatalf("LEGION-208 in %q (%v), want %s", at, err, tc.want)
+			}
+			mark, base, standing := unmergeableMark(t, pool)
+			if tc.want == phase.Implementing {
+				if standing {
+					t.Fatalf("the ready_merge row still stands (mark %s at %s), want it ended by the return", mark, base)
+				}
+				var reason string
+				if err := pool.QueryRow(context.Background(), `select payload->>'reason' from outbox where kind = 'notice' and payload->>'kind' = 'checks-red'`).Scan(&reason); err != nil {
+					t.Fatalf("read the architect's checks-red notice: %v", err)
+				}
+				for _, want := range []string{"conflicts with " + queueBaseBranch, "merge " + queueBaseBranch + " forward", "merge queue", queueBaseTip} {
+					if !strings.Contains(reason, want) {
+						t.Fatalf("the checks-red reason %q, want it to name %q", reason, want)
+					}
+				}
+				return
+			}
+			if !standing {
+				t.Fatal("the ready_merge row is gone, want it still waiting on GitHub's queue")
+			}
+			want := time.Time{}
+			if tc.wantBase != "" {
+				want = now
+				if tc.markLate {
+					want = now.Add(tc.gap)
+				}
+			}
+			if base != tc.wantBase || !mark.Equal(want) {
+				t.Fatalf("the row's first unmergeable read is %s on %q, want %s on %q", mark, base, want, tc.wantBase)
+			}
+		})
+	}
+}
+
+// The guard of the deciding state: for an entry the queue reports unmergeable while it is built on
+// another entry's commit, one the queue has built nothing for, and one whose unmergeable read is
+// younger than queueConflictBound, the merge row sends no mutation at all — it neither submits the
+// head again nor takes the entry out of the queue, which only a withdrawal's disarm does — and
+// leaves the record where it was: the issue awaiting its merge at the head it recorded, with no
+// round counted against anyone.
+func TestTheMergeRowSendsNoMutationForAnEntryItHasNotDecided(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		queueBase string
+		gap       time.Duration
+	}{
+		{name: "unmergeable on another entry's commit", queueBase: "entry-ahead", gap: queueConflictBound + time.Minute},
+		{name: "unmergeable with no commit the queue has built", gap: queueConflictBound + time.Minute},
+		{name: "unmergeable on the base branch's tip inside the bound", queueBase: queueBaseTip, gap: queueConflictBound - time.Minute},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			github := newQueueGitHub(t, "UNKNOWN")
+			github.set(func(g *armableGitHub) { g.queued, g.queueState, g.queueBase = true, "UNMERGEABLE", tc.queueBase })
+			pool := isolatedOutboxPool(t)
+			records := record.NewStore()
+			seedReadyMerge(t, pool, records, "LEGION-208", awaitingREADY)
+			now := time.Now().UTC().Truncate(time.Second)
+			enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208", record.ReadyMerge{Number: 42, Head: "ready-head", Queued: now}, now))
+			clock := now
+			runner := mergeRunner(pool, records, github.url, quietLogger(), func() time.Time { return clock })
+			runner.handlers = []intake.Handler{workflow.New(records, workflow.Config{Project: "LEGION", Steps: config.DesignGateRootIssues.Steps()}, quietLogger())}
+			for _, step := range []time.Duration{0, tc.gap} {
+				clock = now.Add(step)
+				if err := runner.RunOnce(context.Background()); err != nil {
+					t.Fatalf("the row's read %s on: %v", step, err)
+				}
+			}
+			// The fake fails a merge or a dequeue itself: these are the enables and disables it
+			// counts, and the only mutations left for the row to have sent.
+			if disables, arms := github.counts(); disables != 0 || arms != 0 {
+				t.Fatalf("disables %d and arms %d, want no mutation at all for an entry the row has not decided", disables, arms)
+			}
+			var at, head string
+			var rounds int
+			if err := pool.QueryRow(context.Background(), `select i.phase, p.head_sha, coalesce((select sum(rounds) from phases where issue = 'LEGION-208'), 0)
+				from issues i join pull_requests p on p.issue = i.key where i.key = 'LEGION-208'`).Scan(&at, &head, &rounds); err != nil {
+				t.Fatalf("read LEGION-208's record: %v", err)
+			}
+			if at != string(phase.AwaitingMerge) || head != "ready-head" || rounds != 0 {
+				t.Fatalf("LEGION-208 in %q at %q with %d rounds counted, want it awaiting its merge at ready-head with none", at, head, rounds)
+			}
+		})
+	}
+}
+
+// unmergeableMark is the first UNMERGEABLE read the one ready_merge row holds and the commit the
+// merge queue had built its entry on at that read (record.ReadyMerge.Unmergeable,
+// UnmergeableBase), the zero time and "" where the row holds no mark, and standing false where no
+// ready_merge row is left at all.
+func unmergeableMark(t *testing.T, pool *pgxpool.Pool) (mark time.Time, base string, standing bool) {
+	t.Helper()
+	var at, on *string
+	if err := pool.QueryRow(context.Background(),
+		`select payload->>'unmergeable', payload->>'unmergeableBase' from outbox where kind = 'ready_merge'`).Scan(&at, &on); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return time.Time{}, "", false
+		}
+		t.Fatalf("read the ready_merge row's unmergeable mark: %v", err)
+	}
+	if at != nil {
+		read, err := time.Parse(time.RFC3339Nano, *at)
+		if err != nil {
+			t.Fatalf("parse the row's unmergeable read %q: %v", *at, err)
+		}
+		mark = read.UTC()
+	}
+	if on != nil {
+		base = *on
+	}
+	return mark, base, true
+}
+
 // Any other removal of an arm or queue entry the row saw at READY's head (a person dequeuing the
 // pull request, a person turning its auto-merge off) is not the row's to undo (LEGION-800): the row
 // ends, submitting nothing more, and tells the architect once (merge-removed), naming what was
@@ -1086,20 +1289,34 @@ func TestAREADYMergeRowWaitingOnAnArmEndsOnceTheMergeMovesTheRecord(t *testing.T
 // armableGitHub is GitHub's GraphQL API for acme/widgets#42 at ready-head as a ready_merge row and a
 // disarm read and change it: the pull request's state and merge state, whether its base requires a
 // merge queue (its repository allowing auto-merge either way), whether it is armed for auto-merge or
-// sits in the merge queue, and its timeline of arms and removals. An enablePullRequestAutoMerge at
-// ready-head enqueues it on a merge-queue base GitHub reports mergeable now and arms auto-merge
-// otherwise, as GitHub does, and a disablePullRequestAutoMerge turns auto-merge off; each lands on
+// sits in the merge queue, what state the queue has that entry in and the commit the queue built it
+// on (queueState, queueBase: QUEUED on nothing built yet when empty), the branch the pull request
+// merges into with that branch's tip (baseName, baseTip: queueBaseBranch at queueBaseTip when
+// empty), what GitHub answers for the pull request's own mergeability (mergeable: null when
+// empty), and its timeline of arms and removals. An enablePullRequestAutoMerge at ready-head
+// enqueues it on a merge-queue base GitHub reports mergeable now and arms auto-merge otherwise,
+// as GitHub does, and a disablePullRequestAutoMerge turns auto-merge off; each lands on
 // the timeline as the implement App's (implementApp), and both are counted (arms counts every
 // enable). A removal outside the daemon is remove's.
 type armableGitHub struct {
-	url               string
-	mu                sync.Mutex
-	state, mergeState string
-	queueRequired     bool
-	armed, queued     bool
-	timeline          []string
-	disables, arms    int
+	url                   string
+	mu                    sync.Mutex
+	state, mergeState     string
+	mergeable             string
+	queueRequired         bool
+	armed, queued         bool
+	queueState, queueBase string
+	baseName, baseTip     string
+	timeline              []string
+	disables, arms        int
 }
+
+// queueBaseBranch is the branch acme/widgets#42 merges into and queueBaseTip the commit that
+// branch is at, the commit the merge queue builds an entry on that nothing stands before.
+const (
+	queueBaseBranch = "main"
+	queueBaseTip    = "base-tip"
+)
 
 // implementApp is the implement App's login as GitHub's timeline names an actor: its bot login
 // without the [bot] suffix that GraphQL's viewer gives it.
@@ -1156,10 +1373,27 @@ func serveArmable(t *testing.T, g *armableGitHub) *armableGitHub {
 				autoMerge = `{"enabledAt":"2026-10-11T00:00:00Z"}`
 			}
 			if g.queued {
-				entry = `{"enqueuedAt":"2026-10-11T00:05:00Z"}`
+				queueState, queueBase := g.queueState, "null"
+				if queueState == "" {
+					queueState = "QUEUED"
+				}
+				if g.queueBase != "" {
+					queueBase = fmt.Sprintf(`{"oid":%q}`, g.queueBase)
+				}
+				entry = fmt.Sprintf(`{"enqueuedAt":"2026-10-11T00:05:00Z","state":%q,"baseCommit":%s}`, queueState, queueBase)
 			}
-			_, _ = fmt.Fprintf(w, `{"data":{"repository":{"autoMergeAllowed":true,"pullRequest":{"id":"PR_42","state":%q,"title":"feat(daemon): merge the accepted READY head","headRefOid":"ready-head","mergeStateStatus":%q,"updatedAt":%q,"isMergeQueueEnabled":%t,"autoMergeRequest":%s,"mergeQueueEntry":%s}}}}`,
-				g.state, g.mergeState, time.Now().UTC().Format(time.RFC3339), g.queueRequired, autoMerge, entry)
+			mergeable, baseName, baseTip := g.mergeable, g.baseName, g.baseTip
+			if mergeable == "" {
+				mergeable = "null"
+			}
+			if baseName == "" {
+				baseName = queueBaseBranch
+			}
+			if baseTip == "" {
+				baseTip = queueBaseTip
+			}
+			_, _ = fmt.Fprintf(w, `{"data":{"repository":{"autoMergeAllowed":true,"pullRequest":{"id":"PR_42","state":%q,"title":"feat(daemon): merge the accepted READY head","mergeable":%s,"headRefOid":"ready-head","mergeStateStatus":%q,"updatedAt":%q,"isMergeQueueEnabled":%t,"autoMergeRequest":%s,"mergeQueueEntry":%s,"baseRef":{"name":%q,"target":{"oid":%q}}}}}}`,
+				g.state, mergeable, g.mergeState, time.Now().UTC().Format(time.RFC3339), g.queueRequired, autoMerge, entry, baseName, baseTip)
 		}
 	}))
 	t.Cleanup(server.Close)

@@ -731,18 +731,28 @@ func (AutoMergeDisable) OutboxKind() OutboxKind { return OutboxKindAutoMergeDisa
 // (ghautomerge.Submit). Warned is the row having told the issue's architect once that GitHub has
 // not completed the merge it submitted (merge-waiting, the daemon's mergeWaitWarn), which keeps it
 // from telling again however much longer it waits, and Queued is the moment the workflow queued
-// this submission, which that wait is measured from. A queue of the same issue and head starts the
-// row over unarmed, unwarned and at a fresh Queued (readyMergeConflict): the upsert replaces the
-// payload, so a reopen resets the clock and the once-flag together and the two can never disagree,
-// as they would were the wait measured from the row's created_at, which the upsert leaves at the
-// original queueing. A row a daemon before Queued enqueued carries the zero time, and its executor
-// measures that one from created_at, which is what it was measured from then.
+// this submission, which that wait is measured from. Unmergeable is the moment of the first read
+// that found the merge queue's entry for Head UNMERGEABLE while the queue had built it on
+// UnmergeableBase, the commit named there, which that read found to be the tip of the pull
+// request's own base branch: an entry built on its base branch's tip has nothing ahead of it in
+// the queue to blame, so its own head is what the queue cannot merge, and a mark that still
+// stands at the same base commit once the daemon's queueConflictBound has passed sends the issue
+// back to implementing. The two are written and read together, so an entry GitHub rebuilds onto
+// another base replaces the pair and starts the clock again. A queue of the same issue and head
+// starts the row over unarmed, unwarned, with no mark at all and at a fresh Queued
+// (readyMergeConflict): the upsert replaces the whole payload, so a reopen resets the clock, the
+// once-flag and the mark together and they can never disagree, as they would were the wait
+// measured from the row's created_at, which the upsert leaves at the original queueing. A row a
+// daemon before Queued enqueued carries the zero time, and its executor measures that one from
+// created_at, which is what it was measured from then.
 type ReadyMerge struct {
-	Number int       `json:"number"`
-	Head   string    `json:"head"`
-	Armed  bool      `json:"armed,omitempty"`
-	Warned bool      `json:"warned,omitempty"`
-	Queued time.Time `json:"queued,omitzero"`
+	Number          int       `json:"number"`
+	Head            string    `json:"head"`
+	Armed           bool      `json:"armed,omitempty"`
+	Warned          bool      `json:"warned,omitempty"`
+	Queued          time.Time `json:"queued,omitzero"`
+	Unmergeable     time.Time `json:"unmergeable,omitzero"`
+	UnmergeableBase string    `json:"unmergeableBase,omitempty"`
 }
 
 func (ReadyMerge) OutboxKind() OutboxKind { return OutboxKindReadyMerge }

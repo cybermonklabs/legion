@@ -28,6 +28,9 @@ import (
 // the base branch's tip when empty), the branch the pull request merges into and that branch's tip
 // (baseName, baseTip: baseBranch at baseTip when empty), its timeline of arms and removals as
 // GraphQL's viewer (viewer, the implement App's bot when empty) reads it, and every mutation sent.
+// withdrawing says the test drives Disarm, the one path in this tree that takes an entry out of
+// the merge queue: the fake fails a dequeuePullRequest from anywhere else, since a submission
+// that dequeued an entry would rebuild every entry queued behind it.
 // requeue is GitHub enqueueing again a pull request it dequeues while its auto-merge is still
 // enabled; failDisable answers the disable with an error, stuckArm answers it as done while
 // leaving auto-merge enabled, refuseSubmit answers an enable or merge with GitHub's refusal,
@@ -50,6 +53,7 @@ type github struct {
 	armed, queued                  bool
 	queueState, queueBase          string
 	baseName, baseTip              string
+	withdrawing                    bool
 	requeue, failDisable, stuckArm bool
 	refuseSubmit, refuseType       string
 	movedOnRefuse                  string
@@ -223,6 +227,9 @@ func (g *github) serve(t *testing.T) string {
 			g.armed = g.armed && g.stuckArm
 			_, _ = w.Write([]byte(`{"data":{"disablePullRequestAutoMerge":{"clientMutationId":null}}}`))
 		case strings.Contains(request.Query, "dequeuePullRequest"):
+			if !g.withdrawing {
+				t.Errorf("dequeue of %v, want none: the withdrawal's Disarm is the one path that takes an entry out of the merge queue", request.Variables["id"])
+			}
 			g.mutations = append(g.mutations, fmt.Sprintf("dequeue %v", request.Variables["id"]))
 			g.queued = g.requeue && g.armed
 			_, _ = w.Write([]byte(`{"data":{"dequeuePullRequest":{"clientMutationId":null}}}`))
@@ -435,7 +442,7 @@ func TestDisarmTurnsOffEverythingArmedUnlessTheHeadIsTheKeptREADYHead(t *testing
 		{"a pull request GitHub does not have", "pullRequest", false, false, "", nil, Disarmed{Missing: true}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			g := &github{notFound: tc.notFound, head: "head", armed: tc.armed, queued: tc.queued}
+			g := &github{notFound: tc.notFound, head: "head", armed: tc.armed, queued: tc.queued, withdrawing: true}
 			client := githubrest.Client{Token: "token", API: githubrest.GraphQLAPI(g.serve(t))}
 			got, err := Disarm(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, keeping(tc.keep))
 			if err != nil || got != tc.wantDisarmed {
@@ -457,7 +464,7 @@ func TestDisarmTurnsOffEverythingArmedUnlessTheHeadIsTheKeptREADYHead(t *testing
 // still enabled, so Disarm disables auto-merge first: dequeued first, the pull request would be
 // back in the queue, still armed, as Disarm reported it disarmed.
 func TestDisarmDisablesAutoMergeBeforeItDequeues(t *testing.T) {
-	g := &github{head: "head", armed: true, queued: true, requeue: true}
+	g := &github{head: "head", armed: true, queued: true, requeue: true, withdrawing: true}
 	client := githubrest.Client{Token: "token", API: githubrest.GraphQLAPI(g.serve(t))}
 	if _, err := Disarm(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, keeping("")); err != nil {
 		t.Fatalf("Disarm = %v", err)
@@ -472,7 +479,7 @@ func TestDisarmDisablesAutoMergeBeforeItDequeues(t *testing.T) {
 // A disable GitHub refuses does not leave the queue entry standing: Disarm still takes the pull
 // request out of the merge queue, then fails with the refused disable, so the row retries it.
 func TestDisarmDequeuesEvenWhenTheDisableFails(t *testing.T) {
-	g := &github{head: "head", armed: true, queued: true, failDisable: true}
+	g := &github{head: "head", armed: true, queued: true, failDisable: true, withdrawing: true}
 	client := githubrest.Client{Token: "token", API: githubrest.GraphQLAPI(g.serve(t))}
 	_, err := Disarm(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, keeping(""))
 	if err == nil || !strings.Contains(err.Error(), "disable the auto-merge") {
@@ -489,7 +496,7 @@ func TestDisarmDequeuesEvenWhenTheDisableFails(t *testing.T) {
 // when anything it was to turn off is still armed: a mutation GitHub answered as done is not proof
 // the merge is off.
 func TestDisarmFailsWhenTheArmIsStillOnAfterItsMutations(t *testing.T) {
-	g := &github{head: "head", armed: true, stuckArm: true}
+	g := &github{head: "head", armed: true, stuckArm: true, withdrawing: true}
 	client := githubrest.Client{Token: "token", API: githubrest.GraphQLAPI(g.serve(t))}
 	if _, err := Disarm(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, keeping("")); err == nil || !strings.Contains(err.Error(), "still armed") {
 		t.Fatalf("Disarm with the arm still on afterwards = %v, want an error saying it is still armed", err)
@@ -500,7 +507,7 @@ func TestDisarmFailsWhenTheArmIsStillOnAfterItsMutations(t *testing.T) {
 // is no answer about the pull request: Disarm fails, so its row retries and the failure is logged,
 // rather than finishing as though there were nothing to disarm.
 func TestDisarmFailsWhenGitHubCannotFindTheRepository(t *testing.T) {
-	g := &github{notFound: "repository"}
+	g := &github{notFound: "repository", withdrawing: true}
 	client := githubrest.Client{Token: "token", API: githubrest.GraphQLAPI(g.serve(t))}
 	got, err := Disarm(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, keeping(""))
 	if err == nil || got.Missing {
@@ -891,6 +898,50 @@ func TestAnArmedWaitCarriesTheMergeQueueEntryAndBaseOfItsRead(t *testing.T) {
 			want.Number, want.Repo, want.Head = 42, ghrepo.MustParse("acme/widgets"), "head"
 			if *armed != want {
 				t.Fatalf("Armed = %+v, want %+v", *armed, want)
+			}
+		})
+	}
+}
+
+// An entry GitHub's merge queue cannot merge is a wait like any other entry (Armed), and the wait
+// carries what the one read found of it: the queue's UNMERGEABLE state, the commit the queue built
+// the entry on, and the branch the pull request merges into with that branch's tip. Submit sends
+// no mutation at all for it — it neither submits the head again nor takes the entry out of the
+// queue — whatever GitHub answers for the pull request's own merge state, which says nothing about
+// an entry: what the daemon makes of the state is its row's (the daemon's queueConflict).
+func TestAnUnmergeableEntryIsAWaitCarryingTheQueuesOwnState(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		g    *github
+		want Armed
+	}{
+		{name: "built on the base branch's tip",
+			g:    &github{head: "head", mergeState: "UNKNOWN", queueRequired: true, queued: true, queueState: "UNMERGEABLE", queueBase: baseOid},
+			want: Armed{QueueState: "UNMERGEABLE", QueueBase: baseOid, BaseName: baseBranch, BaseTip: baseOid}},
+		{name: "built on an entry queued ahead of it",
+			g:    &github{head: "head", mergeState: "UNKNOWN", queueRequired: true, queued: true, queueState: "UNMERGEABLE", queueBase: "entry-ahead"},
+			want: Armed{QueueState: "UNMERGEABLE", QueueBase: "entry-ahead", BaseName: baseBranch, BaseTip: baseOid}},
+		{name: "on another base branch, while GitHub reports the pull request clean",
+			g: &github{head: "head", mergeState: "CLEAN", queueRequired: true, queued: true, queueState: "UNMERGEABLE", queueBase: "release-tip",
+				baseName: "release", baseTip: "release-tip"},
+			want: Armed{QueueState: "UNMERGEABLE", QueueBase: "release-tip", BaseName: "release", BaseTip: "release-tip"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := githubrest.Client{Token: "token", API: githubrest.GraphQLAPI(tc.g.serve(t))}
+			_, err := Submit(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, "head", true, keeping("head"))
+			var armed *Armed
+			if !errors.As(err, &armed) || !errors.Is(err, wait.ErrWaiting) {
+				t.Fatalf("Submit on an unmergeable entry = %v, want an Armed wait", err)
+			}
+			want := tc.want
+			want.Number, want.Repo, want.Head = 42, ghrepo.MustParse("acme/widgets"), "head"
+			if *armed != want {
+				t.Fatalf("Armed = %+v, want %+v", *armed, want)
+			}
+			tc.g.mu.Lock()
+			defer tc.g.mu.Unlock()
+			if len(tc.g.mutations) != 0 {
+				t.Fatalf("mutations %v, want none for an entry the queue holds", tc.g.mutations)
 			}
 		})
 	}
