@@ -211,15 +211,20 @@ const expectTimeout = 15_000;
 // maximum is 126,560 ms, and the 21 results above this budget are all in three rows of
 // agent-list-refilling.e2e.ts, whose rows ask for 150 s to 300 s themselves.
 //
-// The budget is twice the governed maximum (2.01), so a healthy row has as long again as the
-// slowest one ever took, and a row that hangs still fails inside a minute: 4.0 times that
-// population's 99.9th percentile and 24 times its median, and no governed result of the window
-// reaches it. One thing the window cannot show, and this comment will not claim: every governed
-// row in it ran under Playwright's 30 s default, so no governed result could exceed 30 s, and 27
-// of them hit that deadline and timed out - 19 in pictures.e2e.ts, 5 in deep-links.e2e.ts, 2 in
-// keyed-writes.e2e.ts and one in the very row that set the maximum. The 29,856 ms maximum is the
-// slowest result that survived the cap rather than the slowest a row would take, which is an
-// argument for this budget rather than a measurement of where a row settles.
+// What the window bounds, and what it does not. The population is passing results, and every
+// governed row of the window ran under Playwright's 30 s default, so a row that wanted longer was
+// killed rather than measured: 27 governed results timed out at that cap and are not in the
+// population at all - 19 in pictures.e2e.ts on chromium, 5 in deep-links.e2e.ts on firefox and
+// one on WebKit, which is the very row that set the figure below, and 2 in keyed-writes.e2e.ts on
+// WebKit, each ending between 30,000 and 30,006 ms. So 29,856 ms is the slowest result that
+// survived the cap, not the distribution's maximum, and the tail above 30 s is unknown.
+//
+// The budget does not rest on that figure being a maximum. It is sized to let a healthy row
+// finish, and the distribution of rows that did finish says what healthy costs: 60 s is 2.01
+// times the slowest survivor, 4.0 times the 99.9th percentile and 24 times the median, no
+// governed result of the window reaches it, and nothing in the window shows a row finishing its
+// work and needing more. A censored tail changes what the maximum means, not what the budget has
+// to cover; a row that hangs still fails inside a minute.
 // It lengthens no row's work; a row that needs it has already lost whatever it was waiting for.
 // Raise it only from a measurement of the same shape, over the same population.
 const testTimeout = 60_000;
