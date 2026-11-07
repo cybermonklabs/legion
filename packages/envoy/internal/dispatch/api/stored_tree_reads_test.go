@@ -35,12 +35,12 @@ func storedTreeOf(t *testing.T, database *store.Store, text string) (json.RawMes
 func storedTreeIn(t *testing.T, database *store.Store, mode pmdoc.DisplayMode, text string) (json.RawMessage, bool) {
 	t.Helper()
 	stored, err := texttrees.New(database.Pool).Read(
-		context.Background(), mode, [][32]byte{texttrees.Sum(text)},
+		context.Background(), mode, [][32]byte{pmdoc.TextSum(text)},
 	)
 	if err != nil {
 		t.Fatalf("read the stored tree of %q: %v", text, err)
 	}
-	tree, held := stored[texttrees.Sum(text)]
+	tree, held := stored[pmdoc.TextSum(text)]
 	return tree, held
 }
 
@@ -73,8 +73,8 @@ func commentingIssue(t *testing.T, handler http.Handler, project, body string) s
 }
 
 // A comment list read after a restart makes no display tree: every tree it answers is the bytes
-// the write stored, copied out of text_trees and into the process's display cache
-// (primeDisplayTrees), and pmdoc.DisplayTreeBuilds - which counts readings of markdown and
+// the write stored, copied out of text_trees by the request's display tree reader and into the
+// process's display cache, and pmdoc.DisplayTreeBuilds - which counts readings of markdown and
 // nothing else - does not move.
 //
 // The restart is the cache's state for this text and not the process's age: the cache is keyed by
@@ -228,8 +228,8 @@ func TestACommentListReadsItsStoredTreesInOneStatement(t *testing.T) {
 // A read inside a read-only transaction stores nothing and reads nothing: it holds a pooled
 // connection already, and a second one taken while one is held is the deadlock
 // store.ErrNestedAcquire refuses (docs loads a document and compacts it inside such a
-// transaction). Every text comes back as one to read, and the shaping answers its trees as it
-// always did. Outside the transaction the same pair stores, which is what makes the skip the
+// transaction). Every text is read where it stands, and the shaping answers its trees as it
+// always did. Outside the transaction the same store writes, which is what makes the skip the
 // held connection's doing and not the text's.
 func TestAReadInsideAReadOnlyTransactionStoresNoTree(t *testing.T) {
 	_, database, deps := newTestServer(t, testServerOptions{})
@@ -241,16 +241,15 @@ func TestAReadInsideAReadOnlyTransactionStoresNoTree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open the read-only transaction: %v", err)
 	}
-	missing := served.primeDisplayTrees(held, body)
-	if len(missing) != 1 || missing[0] != body {
-		t.Fatalf("the prime under a held connection answered %q, want the one text it was given", missing)
+	reader := served.readDisplayTrees(held, true, "a read-only transaction")
+	read := commentRead{Comment: model.Comment{Body: body}}
+	read.shape(reader)
+	reader.resolve()()
+	if read.BodyTree == nil {
+		t.Errorf("the shaping inside the read-only transaction answered no tree of %q", body)
 	}
-	served.storeDisplayTrees(held, "a read-only transaction", missing...)
 	if _, stored := storedTreeOf(t, database, body); stored {
 		t.Errorf("the read inside the read-only transaction stored a tree of %q", body)
-	}
-	if read := newCommentRead(model.Comment{Body: body}, true); read.BodyTree == nil {
-		t.Errorf("the shaping inside the read-only transaction answered no tree of %q", body)
 	}
 	if err := tx.Rollback(context.Background()); err != nil {
 		t.Fatalf("roll the read-only transaction back: %v", err)
@@ -260,6 +259,59 @@ func TestAReadInsideAReadOnlyTransactionStoresNoTree(t *testing.T) {
 	if _, stored := storedTreeOf(t, database, body); !stored {
 		t.Errorf("the same store outside the transaction stored no tree of %q", body)
 	}
+}
+
+// A broadcast read is one of the routes that draw a stored text, and it reads that text's tree
+// the way every other route does: from the table where the table holds it, and from the
+// markdown where it does not, storing what it read. The two arms are two sends, because the
+// first read leaves its body's tree in this process's display cache, which stands in front of
+// the table for every later read of that text.
+func TestABroadcastReadTakesItsStoredTreeAndStoresAMiss(t *testing.T) {
+	const (
+		storedBody   = "The **deploy** is held: send status, please."
+		unstoredBody = "The *rollback* is rehearsed: carry on, all of you."
+	)
+	listener, _ := newBroadcastListener(t, broadcastSessions)
+	handler, database := newTargetedMessageHandler(t, listener.URL)
+	send := func(body string) string {
+		t.Helper()
+		sent := postBroadcast(t, handler, map[string]any{
+			"body": body, "delivery": "steer", "session_ids": []string{"planner", "tester"},
+		}, "alice")
+		if sent.Code != http.StatusCreated {
+			t.Fatalf("send the broadcast %q: status=%d body=%s", body, sent.Code, sent.Body.String())
+		}
+		created := decodeBody[broadcastResponse](t, sent)
+		awaitBroadcastDeliveries(t, handler, created.ID)
+		return created.ID
+	}
+	stored, unstored := send(storedBody), send(unstoredBody)
+	if _, held := storedTreeOf(t, database, storedBody); !held {
+		t.Fatalf("the send stored no display tree of %q, so the read has nothing to copy", storedBody)
+	}
+
+	builds := pmdoc.DisplayTreeBuilds()
+	response := treesRequest(t, handler, "/api/v1/broadcasts/"+stored, true)
+	if built := pmdoc.DisplayTreeBuilds() - builds; built != 0 {
+		t.Errorf("the broadcast read made %d display trees with its body's tree stored, want none", built)
+	}
+	requireAnsweredTree(t, response, "body_tree", storedBody)
+
+	// The same read of a text the table holds no tree for reads that text once - the body and
+	// every recipient's copy of it are one text - and stores what it read.
+	if _, err := database.Pool.Exec(context.Background(), `delete from text_trees`); err != nil {
+		t.Fatalf("drop the stored trees: %v", err)
+	}
+	builds = pmdoc.DisplayTreeBuilds()
+	answered := treesRequest(t, handler, "/api/v1/broadcasts/"+unstored, true)
+	if built := pmdoc.DisplayTreeBuilds() - builds; built != 1 {
+		t.Errorf("the broadcast read made %d display trees for one unstored body, want 1", built)
+	}
+	if _, held := storedTreeOf(t, database, unstoredBody); !held {
+		t.Fatalf("the read answered %q and stored no tree of it", unstoredBody)
+	}
+	requireAnsweredTree(t, answered, "body_tree", unstoredBody)
+	requireAnsweredTree(t, answered, "recipients.0.message.body_tree", unstoredBody)
 }
 
 // A past version is read in the version mode, which keeps the attributes the server wrote, and

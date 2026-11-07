@@ -36,43 +36,55 @@ func varyOnDisplayTrees(handler http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// displayTreeBuilds makes one reading of one text at a time. A read fills the trees of its rows
-// on several processors at once (fillReads), and the display cache holds a tree only once it is
-// built, so without this the goroutines of one read - and two readers of one text at once -
-// would each parse it. The key is the text itself: one reading per text, which is what the
-// cache is keyed by (its SHA-256 and the mode, and this builds only DisplayLatest).
+// displayTreeBuilds makes one reading of one text at a time. A request reads the texts the table
+// held no tree of on several processors at once (buildDisplayTrees), and the display cache holds
+// a tree only once it is built, so without this the goroutines of one read - and two readers of
+// one text at once - would each parse it. The key is the text itself: one reading per text,
+// which is what the cache is keyed by (its SHA-256 and the mode, and this builds only
+// DisplayLatest, the one mode a list is read in).
 var displayTreeBuilds singleflight.Group
 
-// displayTree is the tree a stored text is shown as, or nil for an empty text, which needs none.
+// displayTree is the tree a cut of a stored text is shown as, or nil for an empty text, which
+// needs none: a snippet, a first line, a thread subject (contracts.OneLineSummary). A cut is
+// read where it stands and never registered with a request's reader, because nothing stores a
+// row for it - asking the table would be a query for a text no writer stores, and storing it
+// would be a row no reader takes. Every whole stored text goes through the reader instead
+// (displayTreeReader).
 func displayTree(markdown string) json.RawMessage {
+	if markdown == "" {
+		return nil
+	}
+	return builtDisplayTree(pmdoc.TextSum(markdown), markdown, pmdoc.DisplayLatest)
+}
+
+// builtDisplayTree is the tree of a text whose sum its caller already holds, read once however
+// many goroutines want it. A mode other than the latest one is read outside the singleflight:
+// its one reader is a past version's own text, which no list repeats and no second shaper asks
+// for at the same moment.
+func builtDisplayTree(sum [32]byte, markdown string, mode pmdoc.DisplayMode) json.RawMessage {
+	if mode != pmdoc.DisplayLatest {
+		return pmdoc.DisplayJSONOf(sum, markdown, mode)
+	}
 	built, _, _ := displayTreeBuilds.Do(markdown, func() (any, error) {
-		return pmdoc.DisplayJSON(markdown, pmdoc.DisplayLatest), nil
+		return pmdoc.DisplayJSONOf(sum, markdown, mode), nil
 	})
 	tree, _ := built.(json.RawMessage)
 	return tree
 }
 
-// displayTreeOf is displayTree for a text a row may not hold at all.
-func displayTreeOf(markdown *string) json.RawMessage {
-	if markdown == nil {
-		return nil
-	}
-	return displayTree(*markdown)
-}
-
-// fillReads shapes the count rows of one answer, each by its own index, on as many processors as
-// the process may use. A read of a 200-comment issue after a restart builds 200 trees, every one
-// of them a cache miss and each a markdown parse; one after another that is the whole cost of
-// the read (the cold read's profile), and the processors sit idle. Each fill writes only its own
-// row, so the answer's bytes and their order are what they were.
+// buildDisplayTrees reads the count texts of one request that the table held no tree of, each by
+// its own index, on as many processors as the process may use. A read of a 200-comment issue
+// after a restart reads 200 texts, each a markdown parse; one after another that is the whole
+// cost of the read (the cold read's profile), and the processors sit idle. Each build writes
+// only its own text's tree, so the answer's bytes and their order are what they were.
 //
-// With no trees to build, and for a list too short to be worth a goroutine, the rows are shaped
-// where they stand: the shaping then only re-wraps what the row already held.
-func fillReads(trees bool, count int, fill func(index int)) {
+// A single text, and a process that may use one processor, are read where they stand: a
+// goroutine would cost more than it saves.
+func buildDisplayTrees(count int, build func(index int)) {
 	workers := runtime.GOMAXPROCS(0)
-	if !trees || count < 2 || workers < 2 {
+	if count < 2 || workers < 2 {
 		for index := range count {
-			fill(index)
+			build(index)
 		}
 		return
 	}
@@ -80,21 +92,31 @@ func fillReads(trees bool, count int, fill func(index int)) {
 		workers = count
 	}
 	var wait sync.WaitGroup
-	rows := make(chan int)
+	texts := make(chan int)
 	for range workers {
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
-			for index := range rows {
-				fill(index)
+			for index := range texts {
+				build(index)
 			}
 		}()
 	}
 	for index := range count {
-		rows <- index
+		texts <- index
 	}
-	close(rows)
+	close(texts)
 	wait.Wait()
+}
+
+// shapeBuilt shapes one row of a response that reads its texts where they stand rather than
+// from the table: a write's own answer, which carries the text the request has just written and
+// stored the tree of. The shaping is the shaping every read uses, over a reader of its own that
+// is resolved before the row is handed back (builtDisplayTrees).
+func shapeBuilt(trees bool, shape func(reader *displayTreeReader)) {
+	reader := builtDisplayTrees(trees)
+	shape(reader)
+	reader.resolve()
 }
 
 // The read shapes below are the dashboard's own view of a stored row: each embeds the row the
@@ -103,10 +125,10 @@ func fillReads(trees bool, count int, fill func(index int)) {
 // itself, because an event payload carries that row and no payload gains a field; an event's own
 // trees ride in the envelope's `trees` map instead (eventDisplayTrees).
 //
-// Each shape is built from its row by shape(trees), called once the row is final - after the part
-// ids, the reach and everything else a read attaches - and just before the answer is written.
-// With trees false it only re-wraps what the row already held, so the bytes are the bytes the
-// route wrote before this existed.
+// Each shape is built from its row by shape(reader), called once the row is final - after the
+// part ids, the reach and everything else a read attaches - and before the request's reader is
+// resolved, which is what fills every tree field at once. With no reader it only re-wraps what
+// the row already held, so the bytes are the bytes the route wrote before this existed.
 
 // askOptionRead is one answer choice with the trees of its label and description.
 type askOptionRead struct {
@@ -145,92 +167,84 @@ type askRead struct {
 	Resolution   *askResolutionRead       `json:"resolution,omitempty"`
 }
 
-// shape rebuilds the shadowing fields from the ask they stand in front of, and reads each of its
-// texts for display when the caller asked for the trees.
-func (a *askRead) shape(trees bool) {
-	a.Options = askOptionReads(a.Ask.Options, trees)
-	a.Answer = newAskAnswerWithTree(a.Ask.Answer, trees)
+// shape rebuilds the shadowing fields from the ask they stand in front of, and registers each of
+// its texts with the request's reader. The texts are texttrees.AskShownTexts, the list this read
+// and the background fill of the trees share.
+func (a *askRead) shape(reader *displayTreeReader) {
+	a.Options = askOptionReads(a.Ask.Options, reader)
+	a.Answer = newAskAnswerWithTree(a.Ask.Answer, reader)
 	a.Resolution = nil
 	if a.Ask.Resolution != nil {
-		resolution := askResolutionRead{AskResolution: *a.Ask.Resolution}
-		if trees {
-			resolution.ReasonTree = displayTree(a.Ask.Resolution.Reason)
-		}
-		a.Resolution = &resolution
+		resolution := &askResolutionRead{AskResolution: *a.Ask.Resolution}
+		reader.text(&resolution.ReasonTree, a.Ask.Resolution.Reason)
+		a.Resolution = resolution
 	}
-	if trees {
-		a.QuestionTree = displayTree(a.Ask.Question)
-	}
+	reader.text(&a.QuestionTree, a.Ask.Question)
 }
 
 // askOptionReads is the options with their trees, keeping an absent list absent so a row that
 // carried no options still writes null rather than an empty list.
-func askOptionReads(options []model.AskOption, trees bool) []askOptionRead {
+func askOptionReads(options []model.AskOption, reader *displayTreeReader) []askOptionRead {
 	if options == nil {
 		return nil
 	}
 	reads := make([]askOptionRead, len(options))
 	for index, option := range options {
 		reads[index] = askOptionRead{AskOption: option}
-		if trees {
-			reads[index].LabelTree = displayTree(option.Label)
-			reads[index].DescriptionTree = displayTree(option.Description)
-		}
+		reader.text(&reads[index].LabelTree, option.Label)
+		reader.text(&reads[index].DescriptionTree, option.Description)
 	}
 	return reads
 }
 
-// newAskRead is one ask shaped for the dashboard.
+// newAskRead is one ask shaped for a response of its own: a write's answer, which reads its
+// texts where they stand (shapeBuilt). A read of several asks shapes them through askReads, over
+// the request's own reader.
 func newAskRead(ask model.Ask, trees bool) askRead {
 	read := askRead{Ask: ask}
-	read.shape(trees)
+	shapeBuilt(trees, read.shape)
 	return read
 }
 
 // askReads is a list of asks shaped for the dashboard, an absent list staying absent.
-func askReads(asks []model.Ask, trees bool) []askRead {
+func askReads(asks []model.Ask, reader *displayTreeReader) []askRead {
 	if asks == nil {
 		return nil
 	}
 	reads := make([]askRead, len(asks))
-	fillReads(trees, len(asks), func(index int) {
-		reads[index] = newAskRead(asks[index], trees)
-	})
+	for index := range asks {
+		reads[index].Ask = asks[index]
+		reads[index].shape(reader)
+	}
 	return reads
 }
 
 // askAnswerReads is a thread's answers with the trees of their texts.
-func askAnswerReads(answers []model.AskAnswer, trees bool) []model.AskAnswerWithTree {
+func askAnswerReads(answers []model.AskAnswer, reader *displayTreeReader) []model.AskAnswerWithTree {
 	if answers == nil {
 		return nil
 	}
 	reads := make([]model.AskAnswerWithTree, len(answers))
-	fillReads(trees, len(answers), func(index int) {
+	for index := range answers {
 		reads[index] = model.AskAnswerWithTree{AskAnswer: answers[index]}
-		if trees {
-			reads[index].TextTree = displayTreeOf(answers[index].Text)
-		}
-	})
+		reader.textOf(&reads[index].TextTree, answers[index].Text)
+	}
 	return reads
 }
 
 // askEditReads is an ask's recorded rewordings, each previous content carrying its trees.
-func askEditReads(edits []model.AskEdit, trees bool) []askEditRead {
+func askEditReads(edits []model.AskEdit, reader *displayTreeReader) []askEditRead {
 	if edits == nil {
 		return nil
 	}
 	reads := make([]askEditRead, len(edits))
-	fillReads(trees, len(edits), func(index int) {
-		edit := edits[index]
-		previous := askEditPreviousRead{
+	for index, edit := range edits {
+		reads[index] = askEditRead{AskEdit: edit, Previous: askEditPreviousRead{
 			AskEditPrevious: edit.Previous,
-			Options:         askOptionReads(edit.Previous.Options, trees),
-		}
-		if trees {
-			previous.QuestionTree = displayTree(edit.Previous.Question)
-		}
-		reads[index] = askEditRead{AskEdit: edit, Previous: previous}
-	})
+			Options:         askOptionReads(edit.Previous.Options, reader),
+		}}
+		reader.text(&reads[index].Previous.QuestionTree, edit.Previous.Question)
+	}
 	return reads
 }
 
@@ -242,14 +256,12 @@ type replyBlockRead struct {
 
 // newReplyBlockRead is the block a reply answers shaped for the dashboard, nil for a reply that
 // names none.
-func newReplyBlockRead(block *model.ReplyBlock, trees bool) *replyBlockRead {
+func newReplyBlockRead(block *model.ReplyBlock, reader *displayTreeReader) *replyBlockRead {
 	if block == nil {
 		return nil
 	}
 	read := &replyBlockRead{ReplyBlock: *block}
-	if trees {
-		read.TextTree = displayTree(block.Text)
-	}
+	reader.text(&read.TextTree, block.Text)
 	return read
 }
 
@@ -261,31 +273,31 @@ type commentRead struct {
 	ReplyBlock *replyBlockRead `json:"reply_block"`
 }
 
-// shape rebuilds the shadowing fields from the comment and reads its texts for display when the
-// caller asked for the trees.
-func (c *commentRead) shape(trees bool) {
-	c.ReplyBlock = newReplyBlockRead(c.Comment.ReplyBlock, trees)
-	if trees {
-		c.BodyTree = displayTree(c.Comment.Body)
-	}
+// shape rebuilds the shadowing fields from the comment and registers its texts with the
+// request's reader.
+func (c *commentRead) shape(reader *displayTreeReader) {
+	c.ReplyBlock = newReplyBlockRead(c.Comment.ReplyBlock, reader)
+	reader.text(&c.BodyTree, c.Comment.Body)
 }
 
-// newCommentRead is one comment shaped for the dashboard.
+// newCommentRead is one comment shaped for a response of its own, its texts read where they
+// stand (shapeBuilt).
 func newCommentRead(comment model.Comment, trees bool) commentRead {
 	read := commentRead{Comment: comment}
-	read.shape(trees)
+	shapeBuilt(trees, read.shape)
 	return read
 }
 
 // commentReads is a list of comments shaped for the dashboard, an absent list staying absent.
-func commentReads(comments []model.Comment, trees bool) []commentRead {
+func commentReads(comments []model.Comment, reader *displayTreeReader) []commentRead {
 	if comments == nil {
 		return nil
 	}
 	reads := make([]commentRead, len(comments))
-	fillReads(trees, len(comments), func(index int) {
-		reads[index] = newCommentRead(comments[index], trees)
-	})
+	for index := range comments {
+		reads[index].Comment = comments[index]
+		reads[index].shape(reader)
+	}
 	return reads
 }
 
@@ -299,31 +311,31 @@ type shapedMessage struct {
 	ReplyBlock *replyBlockRead `json:"reply_block"`
 }
 
-// shape rebuilds the shadowing fields from the message and reads its texts for display when the
-// caller asked for the trees.
-func (m *shapedMessage) shape(trees bool) {
-	m.ReplyBlock = newReplyBlockRead(m.Message.ReplyBlock, trees)
-	if trees {
-		m.BodyTree = displayTree(m.Message.Body)
-	}
+// shape rebuilds the shadowing fields from the message and registers its texts with the
+// request's reader.
+func (m *shapedMessage) shape(reader *displayTreeReader) {
+	m.ReplyBlock = newReplyBlockRead(m.Message.ReplyBlock, reader)
+	reader.text(&m.BodyTree, m.Message.Body)
 }
 
-// newShapedMessage is one message shaped for the dashboard.
+// newShapedMessage is one message shaped for a response of its own, its texts read where they
+// stand (shapeBuilt).
 func newShapedMessage(message model.Message, trees bool) shapedMessage {
 	read := shapedMessage{Message: message}
-	read.shape(trees)
+	shapeBuilt(trees, read.shape)
 	return read
 }
 
 // shapedMessages is a list of messages shaped for the dashboard, an absent list staying absent.
-func shapedMessages(messages []model.Message, trees bool) []shapedMessage {
+func shapedMessages(messages []model.Message, reader *displayTreeReader) []shapedMessage {
 	if messages == nil {
 		return nil
 	}
 	reads := make([]shapedMessage, len(messages))
-	fillReads(trees, len(messages), func(index int) {
-		reads[index] = newShapedMessage(messages[index], trees)
-	})
+	for index := range messages {
+		reads[index].Message = messages[index]
+		reads[index].shape(reader)
+	}
 	return reads
 }
 
@@ -334,56 +346,47 @@ type artifactReviewRead struct {
 }
 
 // artifactReviewReads is a document's reviews shaped for the dashboard.
-func artifactReviewReads(reviews []model.ArtifactReview, trees bool) []artifactReviewRead {
+func artifactReviewReads(reviews []model.ArtifactReview, reader *displayTreeReader) []artifactReviewRead {
 	if reviews == nil {
 		return nil
 	}
 	reads := make([]artifactReviewRead, len(reviews))
-	fillReads(trees, len(reviews), func(index int) {
+	for index := range reviews {
 		reads[index] = artifactReviewRead{ArtifactReview: reviews[index]}
-		if trees {
-			reads[index].ReasonTree = displayTreeOf(reviews[index].Reason)
-		}
-	})
+		reader.textOf(&reads[index].ReasonTree, reviews[index].Reason)
+	}
 	return reads
 }
 
-// attachApprovalTrees fills the tree of each document's approval reason. It runs where a route
-// answers a reader rather than in attachApprovals, which every read of a document goes through,
-// request or not: only a reader is shown the reason, and only one that asked for the trees.
-func attachApprovalTrees(trees bool, artifacts []model.Artifact) {
-	if !trees {
-		return
-	}
-	fillReads(trees, len(artifacts), func(index int) {
+// attachApprovalTrees registers the reason of each document's approval with the request's
+// reader. It runs where a route answers a reader rather than in attachApprovals, which every
+// read of a document goes through, request or not: only a reader is shown the reason, and only
+// one that asked for the trees.
+func attachApprovalTrees(reader *displayTreeReader, artifacts []model.Artifact) {
+	for index := range artifacts {
 		if approval := artifacts[index].Approval; approval != nil {
-			approval.ReasonTree = displayTreeOf(approval.Reason)
+			reader.textOf(&approval.ReasonTree, approval.Reason)
 		}
-	})
+	}
 }
 
-// attachNodeTrees fills the tree of a graph node's own text and of the text a pinned block
-// reference recorded, for a caller that asked for them: a reference's title is read from the
-// tree of the block it names, as an ask's and a comment's titles are read from theirs.
-func attachNodeTrees(node *model.GraphNode, trees bool) {
-	if !trees {
-		return
-	}
-	node.TextTree = displayTree(node.Text)
+// attachNodeTrees registers a graph node's own text and the text a pinned block reference
+// recorded: a reference's title is read from the tree of the block it names, as an ask's and a
+// comment's titles are read from theirs.
+func attachNodeTrees(node *model.GraphNode, reader *displayTreeReader) {
+	reader.text(&node.TextTree, node.Text)
 	if node.Pin != nil {
-		node.Pin.TextTree = displayTree(node.Pin.Text)
+		reader.text(&node.Pin.TextTree, node.Pin.Text)
 	}
 }
 
 // newAskAnswerWithTree is an answer a read gives with the tree of its text, nil where nobody
 // answered. A search hit's ask and a person's answer history both read one.
-func newAskAnswerWithTree(answer *model.AskAnswer, trees bool) *model.AskAnswerWithTree {
+func newAskAnswerWithTree(answer *model.AskAnswer, reader *displayTreeReader) *model.AskAnswerWithTree {
 	if answer == nil {
 		return nil
 	}
 	read := &model.AskAnswerWithTree{AskAnswer: *answer}
-	if trees {
-		read.TextTree = displayTreeOf(answer.Text)
-	}
+	reader.textOf(&read.TextTree, answer.Text)
 	return read
 }

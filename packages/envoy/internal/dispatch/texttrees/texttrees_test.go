@@ -23,7 +23,7 @@ func TestAStoredTreeIsReadBackAsTheTreeTheTextIsShownAs(t *testing.T) {
 	if err := table.Store(ctx, pmdoc.DisplayLatest, body, question); err != nil {
 		t.Fatalf("store two texts: %v", err)
 	}
-	stored, err := table.Read(ctx, pmdoc.DisplayLatest, [][32]byte{texttrees.Sum(body), texttrees.Sum(question)})
+	stored, err := table.Read(ctx, pmdoc.DisplayLatest, [][32]byte{pmdoc.TextSum(body), pmdoc.TextSum(question)})
 	if err != nil {
 		t.Fatalf("read the two trees: %v", err)
 	}
@@ -32,12 +32,12 @@ func TestAStoredTreeIsReadBackAsTheTreeTheTextIsShownAs(t *testing.T) {
 	}
 	for _, text := range []string{body, question} {
 		want := pmdoc.DisplayJSON(text, pmdoc.DisplayLatest)
-		if got := stored[texttrees.Sum(text)]; !bytes.Equal(got, want) {
+		if got := stored[pmdoc.TextSum(text)]; !bytes.Equal(got, want) {
 			t.Errorf("the stored tree of %q is\n\t%s\nwant\n\t%s", text, got, want)
 		}
 	}
 	// A sum nothing stored is simply absent, which is how its caller knows to read the text.
-	unstored, err := table.Read(ctx, pmdoc.DisplayLatest, [][32]byte{texttrees.Sum("Nothing stored this.")})
+	unstored, err := table.Read(ctx, pmdoc.DisplayLatest, [][32]byte{pmdoc.TextSum("Nothing stored this.")})
 	if err != nil {
 		t.Fatalf("read an unstored sum: %v", err)
 	}
@@ -57,8 +57,8 @@ func TestStoringATextAgainKeepsTheRowItHas(t *testing.T) {
 		t.Fatalf("store the text: %v", err)
 	}
 	// The sum is handed to a query of the test's own as the bytes the column holds: pgx encodes a
-	// byte slice as bytea and knows no plan for the array Sum answers.
-	sum := texttrees.Sum(body)
+	// byte slice as bytea and knows no plan for the array pmdoc.TextSum answers.
+	sum := pmdoc.TextSum(body)
 	var created string
 	if err := database.Pool.QueryRow(ctx,
 		`select created_at::text from text_trees where sum = $1`, sum[:]).Scan(&created); err != nil {
@@ -98,7 +98,7 @@ func TestTheTwoModesOfOneTextAreTwoRows(t *testing.T) {
 	if err := table.Store(ctx, pmdoc.DisplayVersion, text); err != nil {
 		t.Fatalf("store the version reading: %v", err)
 	}
-	sum := texttrees.Sum(text)
+	sum := pmdoc.TextSum(text)
 	var rows int
 	if err := database.Pool.QueryRow(ctx,
 		`select count(*) from text_trees where sum = $1`, sum[:]).Scan(&rows); err != nil {
@@ -108,12 +108,12 @@ func TestTheTwoModesOfOneTextAreTwoRows(t *testing.T) {
 		t.Fatalf("the table holds %d rows for one text in two modes, want 2", rows)
 	}
 	for _, mode := range []pmdoc.DisplayMode{pmdoc.DisplayLatest, pmdoc.DisplayVersion} {
-		stored, err := table.Read(ctx, mode, [][32]byte{texttrees.Sum(text)})
+		stored, err := table.Read(ctx, mode, [][32]byte{pmdoc.TextSum(text)})
 		if err != nil {
 			t.Fatalf("read mode %d: %v", mode, err)
 		}
 		want := pmdoc.DisplayJSON(text, mode)
-		if got := stored[texttrees.Sum(text)]; !bytes.Equal(got, want) {
+		if got := stored[pmdoc.TextSum(text)]; !bytes.Equal(got, want) {
 			t.Errorf("mode %d answered\n\t%s\nwant\n\t%s", mode, got, want)
 		}
 	}
@@ -130,7 +130,7 @@ func TestATreeStoredAtOneVersionIsNotReadAtAnother(t *testing.T) {
 	}
 	restore := pmdoc.SetDisplayTreeVersionForTest(pmdoc.DisplayTreeVersion + 1)
 	defer restore()
-	stored, err := table.Read(ctx, pmdoc.DisplayLatest, [][32]byte{texttrees.Sum(text)})
+	stored, err := table.Read(ctx, pmdoc.DisplayLatest, [][32]byte{pmdoc.TextSum(text)})
 	if err != nil {
 		t.Fatalf("read at the next version: %v", err)
 	}
@@ -142,14 +142,14 @@ func TestATreeStoredAtOneVersionIsNotReadAtAnother(t *testing.T) {
 	if err := table.Store(ctx, pmdoc.DisplayLatest, text); err != nil {
 		t.Fatalf("store at the next version: %v", err)
 	}
-	if stored, err = table.Read(ctx, pmdoc.DisplayLatest, [][32]byte{texttrees.Sum(text)}); err != nil {
+	if stored, err = table.Read(ctx, pmdoc.DisplayLatest, [][32]byte{pmdoc.TextSum(text)}); err != nil {
 		t.Fatalf("read the next version's row: %v", err)
 	}
 	if len(stored) != 1 {
 		t.Errorf("the read at version %d answered %d rows, want its own", pmdoc.DisplayTreeVersionNow(), len(stored))
 	}
 	restore()
-	if stored, err = table.Read(ctx, pmdoc.DisplayLatest, [][32]byte{texttrees.Sum(text)}); err != nil {
+	if stored, err = table.Read(ctx, pmdoc.DisplayLatest, [][32]byte{pmdoc.TextSum(text)}); err != nil {
 		t.Fatalf("read this version's row again: %v", err)
 	}
 	if len(stored) != 1 {
@@ -186,7 +186,7 @@ func TestATableWithNoPoolAnswersAnError(t *testing.T) {
 	if err := table.Store(ctx, pmdoc.DisplayLatest, "A text."); err == nil {
 		t.Error("the store on a table with no pool answered no error")
 	}
-	if _, err := table.Read(ctx, pmdoc.DisplayLatest, [][32]byte{texttrees.Sum("A text.")}); err == nil {
+	if _, err := table.Read(ctx, pmdoc.DisplayLatest, [][32]byte{pmdoc.TextSum("A text.")}); err == nil {
 		t.Error("the read on a table with no pool answered no error")
 	}
 }

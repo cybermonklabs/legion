@@ -46,11 +46,11 @@ func seed(t *testing.T, database *store.Store, statements ...string) {
 // holds one at all.
 func storedTreeOf(t *testing.T, fill *store.Pool, text string) ([]byte, bool) {
 	t.Helper()
-	stored, err := texttrees.New(fill).Read(context.Background(), pmdoc.DisplayLatest, [][32]byte{texttrees.Sum(text)})
+	stored, err := texttrees.New(fill).Read(context.Background(), pmdoc.DisplayLatest, [][32]byte{pmdoc.TextSum(text)})
 	if err != nil {
 		t.Fatalf("read the stored tree of %.40q: %v", text, err)
 	}
-	tree, held := stored[texttrees.Sum(text)]
+	tree, held := stored[pmdoc.TextSum(text)]
 	return tree, held
 }
 

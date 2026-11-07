@@ -570,9 +570,10 @@ func storeTexts(ctx context.Context, table texttrees.Table, texts []string) erro
 //
 // Two versions, not one, because a rolling deploy runs two builds at once and a rollback runs the
 // build before this one again. Rows of the version the other build reads are rows it would
-// otherwise miss on, and every miss stores the row back (api's readDisplayTrees): deleting them
-// would cost those pods a markdown read per text and undo the delete at the same time, and a pass
-// of that build would start again and never end while this one kept deleting what it wrote.
+// otherwise miss on, and every miss is stored back by the read that made it (api's display tree
+// reader): deleting them would cost those pods a markdown read per text and undo the delete at
+// the same time, and a pass of that build would start again and never end while this one kept
+// deleting what it wrote.
 // Older versions than those two no running build can ask for, since no deploy rolls back past the
 // build before this one.
 //

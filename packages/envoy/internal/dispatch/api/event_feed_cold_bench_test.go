@@ -112,10 +112,11 @@ func BenchmarkTheActivityFeedsColdRead(b *testing.B) {
 }
 
 // BenchmarkTheActivityFeedsColdStages measures each step a cold read with trees pays over a cold
-// read without them, one at a time and on the same page of 200 comment events: the priming query
-// that reads the stored trees, the cache puts that take them, the shaping that keys them by path,
-// the JSON encode of the answer and its compression, the last two measured both ways so the
-// difference the trees make in each is what the arm names.
+// read without them, one at a time and on the same page of 200 comment events: the one pass that
+// registers every payload's texts with the request's reader, the query that reads their stored
+// trees, the cache puts that take them, the fill that keys them by path, the JSON encode of the
+// answer and its compression, the last two measured both ways so the difference the trees make
+// in each is what the arm names.
 //
 // The steps are the handler's own calls in the handler's order (listIssueEvents), so what they
 // add up to is the step list of the read itself and not a model of it.
@@ -137,7 +138,7 @@ func BenchmarkTheActivityFeedsColdStages(b *testing.B) {
 	sums := make([][32]byte, 0, len(texts))
 	seen := make(map[[32]byte]struct{}, len(texts))
 	for _, text := range texts {
-		sum := texttrees.Sum(text)
+		sum := pmdoc.TextSum(text)
 		if _, repeated := seen[sum]; repeated {
 			continue
 		}
@@ -157,8 +158,10 @@ func BenchmarkTheActivityFeedsColdStages(b *testing.B) {
 	b.Run("the texts of the page", func(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
-			if found := eventDisplayTexts(nil, events...); len(found) != len(texts) {
-				b.Fatalf("the page carries %d texts, want %d", len(found), len(texts))
+			reader := builtDisplayTrees(true)
+			attachEventTrees(events, reader)
+			if len(reader.texts) != len(sums) {
+				b.Fatalf("the page registered %d texts, want %d", len(reader.texts), len(sums))
 			}
 		}
 	})
@@ -195,13 +198,17 @@ func BenchmarkTheActivityFeedsColdStages(b *testing.B) {
 		}
 		for b.Loop() {
 			copy(shaped, events)
-			attachEventTrees(shaped, true)
+			reader := builtDisplayTrees(true)
+			attachEventTrees(shaped, reader)
+			reader.resolve()
 		}
 	})
 
 	withTrees := make([]model.Event, len(events))
 	copy(withTrees, events)
-	attachEventTrees(withTrees, true)
+	shaping := builtDisplayTrees(true)
+	attachEventTrees(withTrees, shaping)
+	shaping.resolve()
 	plain, err := encodeListAnswer(events)
 	if err != nil {
 		b.Fatalf("encode the feed without trees: %v", err)

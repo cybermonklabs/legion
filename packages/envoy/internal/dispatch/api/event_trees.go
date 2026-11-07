@@ -17,41 +17,49 @@ import (
 // ("payload.body", "payload.options.0.label").
 const eventPayloadPrefix = "payload"
 
-// attachEventTrees fills the trees of every listed event, for a caller that asked for them. The
-// REST event lists do this only under the header; a /ws/live frame always does, since a browser
-// can set no header on a socket (liveEventFrame). The events are filled on as many processors as
-// the process may use, as a list of rows is (fillReads): on a cold cache every event's text is a
-// markdown parse of its own, and each fill writes the trees of its own event.
-func attachEventTrees(events []model.Event, trees bool) {
-	if !trees {
+// attachEventTrees registers the trees of every listed event with the request's reader, which
+// fills them when it resolves. The REST event lists carry them only under the header, so a
+// caller that asked for none has no reader and nothing is read; a /ws/live frame always carries
+// them, since a browser can set no header on a socket (liveEventFrame).
+//
+// Each payload is read for its texts once. The texts, their sums, the one query of their stored
+// trees and the reading of what that query did not answer all belong to the reader, so nothing
+// here walks a payload a second time and no text is hashed twice.
+func attachEventTrees(events []model.Event, reader *displayTreeReader) {
+	if reader == nil {
 		return
 	}
-	fillReads(trees, len(events), func(index int) {
-		events[index].Trees = eventDisplayTrees(events[index])
-	})
+	for index := range events {
+		event := &events[index]
+		eventPayloadTexts(events[index], func(path, text string) {
+			reader.textInto(func(tree json.RawMessage) {
+				if event.Trees == nil {
+					event.Trees = make(map[string]json.RawMessage, 1)
+				}
+				event.Trees[path] = tree
+			}, text)
+		})
+	}
 }
 
-// eventDisplayTrees is the display tree of every stored text the event's payload carries, keyed
+// eventDisplayTrees is the display tree of every stored text one event's payload carries, keyed
 // by that text's path: the body a comment or a message event carries, and an ask event's
 // question, options, answer text and resolution reason, the question and options an edit
 // replaced among them. The texts themselves are found by eventPayloadTexts, which the publish
 // path reads the same payload with to store those trees (storeEventDisplayTrees).
 //
+// It reads each text where it stands rather than from the table: its one caller is a live
+// frame, which is no request and has no reader of its own, and whose event the publish path is
+// storing the trees of at that moment.
+//
 // The map is made on the first text there is a tree for, so an event with no text, and one whose
 // every text failed to encode, answers nil and costs no map.
 func eventDisplayTrees(event model.Event) map[string]json.RawMessage {
-	var trees map[string]json.RawMessage
-	eventPayloadTexts(event, func(path, text string) {
-		tree := displayTree(text)
-		if tree == nil {
-			return
-		}
-		if trees == nil {
-			trees = make(map[string]json.RawMessage, 1)
-		}
-		trees[path] = tree
-	})
-	return trees
+	reader := builtDisplayTrees(true)
+	events := []model.Event{event}
+	attachEventTrees(events, reader)
+	reader.resolve()
+	return events[0].Trees
 }
 
 // eventPayloadTexts calls visit for every stored text the event's payload carries, under that

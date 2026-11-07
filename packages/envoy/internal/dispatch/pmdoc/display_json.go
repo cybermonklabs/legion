@@ -18,9 +18,9 @@ import (
 const DisplayCacheBytes = 64 << 20
 
 // TextSum names one stored text: its SHA-256, which is what the display cache keys a reading of
-// that text by (displayCacheKey) and what the stored trees are keyed by too (texttrees.Sum). A
+// that text by (displayCacheKey) and what the stored trees are keyed by too (texttrees). A
 // caller that holds the sum asks this package for a reading without the text and without hashing
-// it a second time (HoldsDisplayTree, PutStoredDisplayTree).
+// it a second time (DisplayJSONOf, HeldDisplayTree, PutStoredDisplayTree).
 func TextSum(text string) [32]byte { return sha256.Sum256([]byte(text)) }
 
 // DisplayJSON is the ProseMirror tree markdown is shown as (ReadForDisplay), encoded as the JSON
@@ -35,12 +35,25 @@ func DisplayJSON(markdown string, mode DisplayMode) json.RawMessage {
 	if markdown == "" {
 		return nil
 	}
-	key := displayCacheKey{sum: TextSum(markdown), mode: mode}
+	return DisplayJSONOf(TextSum(markdown), markdown, mode)
+}
+
+// DisplayJSONOf is DisplayJSON for a caller that already holds the text's sum: a read that
+// hashed each of its texts once to ask the table for their stored trees (api's display tree
+// reader) reads the misses through this, so the text is never hashed a second time.
+//
+// The sum must be TextSum of markdown. It is the key this reading is both looked up and kept
+// under, so a sum of another text would answer that text's tree.
+func DisplayJSONOf(sum [32]byte, markdown string, mode DisplayMode) json.RawMessage {
+	if markdown == "" {
+		return nil
+	}
+	key := displayCacheKey{sum: sum, mode: mode}
 	if tree, held := displayCache.Get(key); held {
 		return tree
 	}
 	displayTreeBuilds.Add(1)
-	tree := DisplayTreeToStore(markdown, mode)
+	tree := encodeDisplayTree(markdown, mode)
 	if tree == nil {
 		return nil
 	}
@@ -56,10 +69,7 @@ func DisplayJSON(markdown string, mode DisplayMode) json.RawMessage {
 // holds the trees readers were served, and filling it with the tree of every text written would
 // make one writer's long document the eviction of the bodies a hundred readers are re-reading,
 // which is what TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound measures - but taking a
-// tree the cache already holds evicts nothing and holds nothing new. It is also where the trees
-// the same request just read are: a read that found no stored tree shapes its answer through
-// DisplayJSON and then stores what it shaped, and without this that second step would read every
-// one of those texts a second time.
+// tree the cache already holds evicts nothing and holds nothing new.
 //
 // It counts no build either (DisplayTreeBuilds), on a hit or on a miss, since no response was
 // read to make it.
@@ -70,6 +80,13 @@ func DisplayTreeToStore(markdown string, mode DisplayMode) json.RawMessage {
 	if tree, held := displayCache.Get(displayCacheKey{sum: TextSum(markdown), mode: mode}); held {
 		return tree
 	}
+	return encodeDisplayTree(markdown, mode)
+}
+
+// encodeDisplayTree reads markdown for display in mode and encodes that reading, or answers nil
+// where the encoding failed - which only an attribute no JSON holds could cause, and which is
+// logged and costs a reader the markdown beside the tree and never the answer.
+func encodeDisplayTree(markdown string, mode DisplayMode) json.RawMessage {
 	tree, err := json.Marshal(ReadForDisplay(markdown, mode).toDisplayJSON())
 	if err != nil {
 		slog.Warn("dispatch: display tree encoding failed", "error", err)
@@ -78,17 +95,16 @@ func DisplayTreeToStore(markdown string, mode DisplayMode) json.RawMessage {
 	return tree
 }
 
-// HoldsDisplayTree reports whether the display cache already holds the tree of the text whose
-// SHA-256 is sum, read in mode. It is the key DisplayJSON looks that reading up under
-// (displayCacheKey), which is the key the stored trees are keyed by too (texttrees.Sum), so a
-// caller holding the sum can ask without the text and without hashing it again.
+// HeldDisplayTree is the display tree this process already holds of the text whose SHA-256 is
+// sum, read in mode, and whether it holds one at all. It is the key DisplayJSONOf looks that
+// reading up under (displayCacheKey), which is the key the stored trees are keyed by too, so a
+// caller holding the sum asks without the text and without hashing it again.
 //
-// A caller asks this to leave a text out of a read it would otherwise make - the priming query
-// of the stored trees (api's primeDisplayTrees) - so the answer is about this process alone and
-// says nothing about the table. It marks the entry used, as the shaping that follows it would.
-func HoldsDisplayTree(sum [32]byte, mode DisplayMode) bool {
-	_, held := displayCache.Get(displayCacheKey{sum: sum, mode: mode})
-	return held
+// A caller asks this to leave a text out of a read it would otherwise make - the query of the
+// stored trees a request's display tree reader runs - so the answer is about this process alone
+// and says nothing about the table. It marks the entry used, as the shaping that follows does.
+func HeldDisplayTree(sum [32]byte, mode DisplayMode) (json.RawMessage, bool) {
+	return displayCache.Get(displayCacheKey{sum: sum, mode: mode})
 }
 
 // PutStoredDisplayTree puts a tree this process did not read - the text_trees row of the text

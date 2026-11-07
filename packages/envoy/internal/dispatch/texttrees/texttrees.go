@@ -47,10 +47,14 @@ func For(st *store.Store) Table {
 // errNoPool is every method's answer on a table with no pool behind it.
 var errNoPool = errors.New("texttrees: no database pool")
 
-// Sum names the text one tree is of: pmdoc.TextSum, the key that package holds its own cache of
-// read trees under, so a row of this table and an entry of that cache are found by the same
-// bytes and the two agree on what one text is.
-func Sum(text string) [32]byte { return pmdoc.TextSum(text) }
+// Tree is one text's display tree ready to store: the sum the row is keyed by (pmdoc.TextSum)
+// and the bytes of the reading. A caller that has just read a text for display holds both
+// already - a read fills its answer's fields from them - so it stores them as they stand
+// (StoreTreesFor) rather than handing the text back to be hashed and looked up again.
+type Tree struct {
+	Sum  [32]byte
+	Tree json.RawMessage
+}
 
 // StoreFor stores the display trees of texts through st's pool, under the one policy every path
 // that writes a stored text keeps (api's storeDisplayTrees, docs' storeVersionTrees,
@@ -72,14 +76,16 @@ func StoreFor(ctx context.Context, st *store.Store, mode pmdoc.DisplayMode, text
 	return For(st).Store(ctx, mode, texts...)
 }
 
-// Store reads each of texts for display in mode and stores the trees, keyed by the text's Sum, the
-// mode and the display parser version this process runs at (pmdoc.DisplayTreeVersionNow). A text
-// whose tree is already stored keeps the stored one: the key is the reading, so two rows for one
-// key would hold the same bytes.
-//
-// The whole batch is one statement. A request that writes several texts - an ask's question and
-// every option's label and description - stores them in one round trip, and a text repeated among
-// them is sent once.
+// StoreTreesFor is StoreFor for trees their caller has already read (api's display tree reader
+// stores the misses of its one query this way): the same policy, and no text read a second time.
+func StoreTreesFor(ctx context.Context, st *store.Store, mode pmdoc.DisplayMode, trees []Tree) error {
+	if len(trees) == 0 || store.HoldsPooledConnection(ctx) {
+		return nil
+	}
+	return For(st).StoreTrees(ctx, mode, trees)
+}
+
+// Store reads each of texts for display in mode and stores the trees (StoreTrees).
 //
 // An empty text has no tree (pmdoc.DisplayJSON) and no row, and neither has one whose encoding
 // failed: a reader shown no tree falls back to the markdown beside it, exactly as it does for a
@@ -88,21 +94,43 @@ func (t Table) Store(ctx context.Context, mode pmdoc.DisplayMode, texts ...strin
 	if t.pool == nil {
 		return errNoPool
 	}
-	sums := make([][]byte, 0, len(texts))
-	trees := make([][]byte, 0, len(texts))
-	seen := make(map[[32]byte]struct{}, len(texts))
+	trees := make([]Tree, 0, len(texts))
 	for _, text := range texts {
 		tree := pmdoc.DisplayTreeToStore(text, mode)
 		if tree == nil {
 			continue
 		}
-		sum := Sum(text)
-		if _, repeated := seen[sum]; repeated {
+		trees = append(trees, Tree{Sum: pmdoc.TextSum(text), Tree: tree})
+	}
+	return t.StoreTrees(ctx, mode, trees)
+}
+
+// StoreTrees stores each of trees, keyed by its sum, the mode it was read in and the display
+// parser version this process runs at (pmdoc.DisplayTreeVersionNow). A text whose tree is
+// already stored keeps the stored one: the key is the reading, so two rows for one key would
+// hold the same bytes.
+//
+// The whole batch is one statement. A request that writes several texts - an ask's question and
+// every option's label and description - stores them in one round trip, and a tree repeated
+// among them is sent once. A tree with no bytes is no reading and is left out.
+func (t Table) StoreTrees(ctx context.Context, mode pmdoc.DisplayMode, trees []Tree) error {
+	if t.pool == nil {
+		return errNoPool
+	}
+	sums := make([][]byte, 0, len(trees))
+	encoded := make([][]byte, 0, len(trees))
+	seen := make(map[[32]byte]struct{}, len(trees))
+	for _, tree := range trees {
+		if len(tree.Tree) == 0 {
 			continue
 		}
-		seen[sum] = struct{}{}
+		if _, repeated := seen[tree.Sum]; repeated {
+			continue
+		}
+		seen[tree.Sum] = struct{}{}
+		sum := tree.Sum
 		sums = append(sums, sum[:])
-		trees = append(trees, tree)
+		encoded = append(encoded, tree.Tree)
 	}
 	if len(sums) == 0 {
 		return nil
@@ -112,7 +140,7 @@ func (t Table) Store(ctx context.Context, mode pmdoc.DisplayMode, texts ...strin
 		select stored.sum, $1, $2, stored.tree
 		from unnest($3::bytea[], $4::bytea[]) as stored (sum, tree)
 		on conflict do nothing
-	`, int16(mode), pmdoc.DisplayTreeVersionNow(), sums, trees); err != nil {
+	`, int16(mode), pmdoc.DisplayTreeVersionNow(), sums, encoded); err != nil {
 		return fmt.Errorf("store %d display trees: %w", len(sums), err)
 	}
 	return nil

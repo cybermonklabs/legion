@@ -159,8 +159,10 @@ func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	trees := wantsDisplayTrees(r)
-	threads, err := s.loadAskThreads(r.Context(), askIDs, trees)
+	// The Inbox's asks and the threads under them are one read of the stored trees: each row
+	// registers its texts with this reader, and one query answers the page.
+	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r), "inbox")
+	threads, err := s.loadAskThreads(r.Context(), askIDs, reader)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -170,7 +172,8 @@ func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 		// The row's shape is taken once the ask is final: attachAskReadFields has just written
 		// the part ids of its options and of its answer into the row these fields stand in
 		// front of.
-		asks[index].shape(trees)
+		asks[index].shape(reader)
 	}
+	defer reader.resolve()()
 	WriteJSON(w, http.StatusOK, asks)
 }

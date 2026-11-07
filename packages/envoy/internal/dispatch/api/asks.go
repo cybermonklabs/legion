@@ -758,37 +758,36 @@ func (s *server) listIssueAsks(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	trees := wantsDisplayTrees(r)
-	var texts []string
-	if trees {
-		texts = askReadDisplayTexts(nil, asks...)
-	}
-	defer s.readDisplayTrees(r.Context(), trees, r.PathValue("key"), texts)()
+	// One reader for the whole page: the asks' texts, and the replies, rewordings and answers of
+	// every thread the list carries, are one query and one store.
+	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r), r.PathValue("key"))
 	rows := make([]issueAskRow, len(asks))
 	for index := range asks {
-		rows[index] = issueAskRow{askRead: newAskRead(asks[index], trees)}
+		rows[index].askRead.Ask = asks[index]
+		rows[index].askRead.shape(reader)
 		if reply, ok := lastReplies[asks[index].ID]; ok {
 			rows[index].LastReply = &reply
 		}
 	}
 	if withThread {
-		if err := s.attachIssueAskThreads(r.Context(), rows, trees); err != nil {
+		if err := s.attachIssueAskThreads(r.Context(), rows, reader); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
 	}
+	defer reader.resolve()()
 	WriteJSON(w, http.StatusOK, rows)
 }
 
 // attachIssueAskThreads hangs each row's thread off it. loadAskThreads leaves `answers` empty -
 // an Inbox row, its other caller, is an open ask and can have none - so this list, which does
 // carry answered asks, merges them over the same ask ids itself.
-func (s *server) attachIssueAskThreads(ctx context.Context, rows []issueAskRow, trees bool) error {
+func (s *server) attachIssueAskThreads(ctx context.Context, rows []issueAskRow, reader *displayTreeReader) error {
 	askIDs := make([]string, len(rows))
 	for index := range rows {
 		askIDs[index] = rows[index].ID
 	}
-	threads, err := s.loadAskThreads(ctx, askIDs, trees)
+	threads, err := s.loadAskThreads(ctx, askIDs, reader)
 	if err != nil {
 		return err
 	}
@@ -797,22 +796,11 @@ func (s *server) attachIssueAskThreads(ctx context.Context, rows []issueAskRow, 
 		return err
 	}
 	// The answers this list merges are its own read: loadAskThreads reads none, so the only one
-	// already primed is the single answer each ask row carries, and an ask answered twice shows
-	// the superseded one here.
-	var texts []string
-	if trees {
-		for _, byAsk := range answers {
-			texts = askAnswerDisplayTexts(texts, byAsk)
-		}
-	}
-	var subject string
-	if len(askIDs) > 0 {
-		subject = askIDs[0]
-	}
-	defer s.readDisplayTrees(ctx, trees, subject, texts)()
+	// the list's reader already holds is the single answer each ask row carries, and an ask
+	// answered twice shows the superseded one here.
 	for index := range rows {
 		thread := threads[rows[index].ID]
-		thread.Answers = askAnswerReads(answers[rows[index].ID], trees)
+		thread.Answers = askAnswerReads(answers[rows[index].ID], reader)
 		rows[index].Thread = &thread
 	}
 	return nil
@@ -891,27 +879,24 @@ func (s *server) getAsk(w http.ResponseWriter, r *http.Request) {
 	}
 	// The single-ask read is a thread with the ask beside it, so it and every Inbox or ask-list
 	// thread serialise through one definition and carry the same keys.
-	trees := wantsDisplayTrees(r)
+	//
 	// The ask, its replies, the wordings it went through and every answer it was given are one
 	// read of the table: the whole page the dashboard draws from this route in one query.
-	var texts []string
-	if trees {
-		texts = askReadDisplayTexts(nil, ask)
-		texts = commentDisplayTexts(texts, replies...)
-		texts = askEditDisplayTexts(texts, edits)
-		texts = askAnswerDisplayTexts(texts, answers)
-	}
-	defer s.readDisplayTrees(r.Context(), trees, ask.ID, texts)()
-	WriteJSON(w, http.StatusOK, struct {
+	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r), ask.ID)
+	read := struct {
 		Ask askRead `json:"ask"`
 		askThread
-	}{Ask: newAskRead(ask, trees), askThread: askThread{
-		Replies:   commentReads(replies, trees),
-		Edits:     askEditReads(edits, trees),
-		Answers:   askAnswerReads(answers, trees),
+	}{askThread: askThread{
+		Replies:   commentReads(replies, reader),
+		Edits:     askEditReads(edits, reader),
+		Answers:   askAnswerReads(answers, reader),
 		Followers: followers,
 		askReach:  reaches[ask.ID],
-	}})
+	}}
+	read.Ask.Ask = ask
+	read.Ask.shape(reader)
+	defer reader.resolve()()
+	WriteJSON(w, http.StatusOK, read)
 }
 
 // loadAskEdits reads every rewording of an ask back from its ask.edited events,

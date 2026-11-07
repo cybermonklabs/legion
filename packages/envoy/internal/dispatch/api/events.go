@@ -68,12 +68,11 @@ func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	var texts []string
-	if trees {
-		texts = eventDisplayTexts(nil, events...)
-	}
-	defer s.readDisplayTrees(r.Context(), trees, r.PathValue("key"), texts)()
-	attachEventTrees(events, trees)
+	// One pass over the page: the reader takes each payload's texts as the shaping registers
+	// them, reads their stored trees in one query and fills what the table did not hold.
+	reader := s.readDisplayTrees(r.Context(), trees, r.PathValue("key"))
+	attachEventTrees(events, reader)
+	defer reader.resolve()()
 	encoded, err := encodeListAnswer(events)
 	if err != nil {
 		s.writeHandlerError(w, err)

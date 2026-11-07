@@ -76,7 +76,7 @@ func (s *server) listMyAnswers(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	trees := wantsDisplayTrees(r)
+	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r), model.CanonicalLogin(caller.ID))
 	response := model.MyAnswersResponse{Rows: []model.MyAnswerRow{}, Limit: limit, Offset: offset}
 	for rows.Next() {
 		var row model.MyAnswerRow
@@ -125,15 +125,6 @@ func (s *server) listMyAnswers(w http.ResponseWriter, r *http.Request) {
 		} else {
 			row.Reply = &model.MyAnswerReply{ID: *replyID, Body: *body}
 		}
-		if trees {
-			row.QuestionTree = displayTree(row.Question)
-			if row.Answer != nil && row.Answer.Text != nil {
-				row.Answer.TextTree = displayTree(*row.Answer.Text)
-			}
-			if row.Reply != nil {
-				row.Reply.BodyTree = displayTree(row.Reply.Body)
-			}
-		}
 		response.Total = int(total)
 		response.Rows = append(response.Rows, row)
 	}
@@ -141,5 +132,20 @@ func (s *server) listMyAnswers(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, fmt.Errorf("list my answers: %w", err))
 		return
 	}
+	// Each row's texts are registered once the page is whole: the question the answer was given
+	// to, the text written with it and the body of a reply, all of them stored texts the table
+	// holds the trees of. A row of a slice still being appended to is a row the reader must not
+	// hold the address of.
+	for index := range response.Rows {
+		row := &response.Rows[index]
+		reader.text(&row.QuestionTree, row.Question)
+		if row.Answer != nil {
+			reader.textOf(&row.Answer.TextTree, row.Answer.Text)
+		}
+		if row.Reply != nil {
+			reader.text(&row.Reply.BodyTree, row.Reply.Body)
+		}
+	}
+	defer reader.resolve()()
 	WriteJSON(w, http.StatusOK, response)
 }

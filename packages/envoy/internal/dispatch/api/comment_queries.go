@@ -74,12 +74,10 @@ func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner
 		s.writeHandlerError(w, err)
 		return
 	}
-	var texts []string
-	if trees {
-		texts = commentDisplayTexts(nil, comments...)
-	}
-	defer s.readDisplayTrees(r.Context(), trees, name, texts)()
-	encoded, err := encodeListAnswer(commentReads(comments, trees))
+	reader := s.readDisplayTrees(r.Context(), trees, name)
+	reads := commentReads(comments, reader)
+	defer reader.resolve()()
+	encoded, err := encodeListAnswer(reads)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -193,16 +191,15 @@ func (s *server) getComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	trees := wantsDisplayTrees(r)
-	var texts []string
-	if trees {
-		texts = commentDisplayTexts(commentDisplayTexts(nil, comments[0]), replies...)
-	}
-	defer s.readDisplayTrees(r.Context(), trees, comment.ID, texts)()
-	WriteJSON(w, http.StatusOK, struct {
+	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r), comment.ID)
+	read := struct {
 		Comment commentRead   `json:"comment"`
 		Replies []commentRead `json:"replies"`
-	}{Comment: newCommentRead(comments[0], trees), Replies: commentReads(replies, trees)})
+	}{Replies: commentReads(replies, reader)}
+	read.Comment.Comment = comments[0]
+	read.Comment.shape(reader)
+	defer reader.resolve()()
+	WriteJSON(w, http.StatusOK, read)
 }
 
 // replyChainQuery is every comment transitively replying to the row(s) matching

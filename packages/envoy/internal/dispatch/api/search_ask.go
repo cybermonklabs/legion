@@ -15,7 +15,7 @@ import (
 // events are read only when the page holds a resolved ask. One query reads every ask hit's row,
 // and a page with no ask hit reads nothing. An ask removed after the search ran has no row left
 // and keeps Ask nil.
-func (s *server) attachAskStates(ctx context.Context, q queryer, results []model.SearchResult, trees bool) error {
+func (s *server) attachAskStates(ctx context.Context, q queryer, results []model.SearchResult, reader *displayTreeReader) error {
 	indexByID := map[string]int{}
 	var askIDs []string
 	for index := range results {
@@ -44,7 +44,7 @@ func (s *server) attachAskStates(ctx context.Context, q queryer, results []model
 		}
 		results[indexByID[ask.ID]].Ask = &model.SearchAsk{
 			State:      ask.State,
-			Answer:     newAskAnswerWithTree(ask.Answer, trees),
+			Answer:     newAskAnswerWithTree(ask.Answer, reader),
 			Resolution: ask.Resolution,
 		}
 	}
@@ -59,7 +59,7 @@ func (s *server) attachAskStates(ctx context.Context, q queryer, results []model
 		}
 		for _, id := range resolvedIDs {
 			if history := answers[id]; len(history) > 0 {
-				results[indexByID[id]].Ask.Answer = newAskAnswerWithTree(&history[len(history)-1], trees)
+				results[indexByID[id]].Ask.Answer = newAskAnswerWithTree(&history[len(history)-1], reader)
 			}
 		}
 	}

@@ -170,7 +170,7 @@ func sequentialIssueRead(t *testing.T, deps Deps, key string) []byte {
 		Issue:             issue,
 		Progress:          progress,
 		Artifacts:         artifacts,
-		OpenAsks:          issueOpenAsksOf(asks, replies, false),
+		OpenAsks:          issueOpenAsksOf(asks, replies, nil),
 		Children:          children,
 		ReferencedByCount: counts[issue.Key],
 	})

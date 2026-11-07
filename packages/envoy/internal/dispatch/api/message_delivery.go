@@ -928,7 +928,7 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 			}
 			// The hydration wrote the block into the row the shape stands in front of, so the
 			// shape is taken again over it (display_trees.go).
-			read.shape(wantsDisplayTrees(r))
+			shapeBuilt(wantsDisplayTrees(r), read.shape)
 		}
 		response = read
 		if posted != nil {

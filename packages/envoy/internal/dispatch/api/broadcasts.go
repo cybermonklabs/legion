@@ -83,11 +83,10 @@ type broadcast struct {
 	CreatedAt time.Time       `json:"created_at"`
 }
 
-// attachTrees reads the broadcast's body for display when the caller asked for the trees.
-func (b *broadcast) attachTrees(trees bool) {
-	if trees {
-		b.BodyTree = displayTree(b.Body)
-	}
+// attachTrees registers the broadcast's body with the request's reader, which fills the tree
+// from the table's row of that text or, where there is none, from a reading of it.
+func (b *broadcast) attachTrees(reader *displayTreeReader) {
+	reader.text(&b.BodyTree, b.Body)
 }
 
 // broadcastSummary is one row of the broadcast list: the send, how many sessions it reached,
@@ -230,7 +229,9 @@ func (s *server) createBroadcast(w http.ResponseWriter, r *http.Request) {
 	}
 	sending := context.WithoutCancel(r.Context())
 	s.detached.goDetached(func() { s.deliverBroadcast(sending, sends, input.Delivery, actor) })
-	created.attachTrees(wantsDisplayTrees(r))
+	// The send's own answer carries the body it has just stored the tree of, so it is read where
+	// it stands rather than from the table.
+	shapeBuilt(wantsDisplayTrees(r), created.attachTrees)
 	WriteJSON(w, http.StatusCreated, broadcastCreated{broadcastRead: created, Excluded: excluded})
 }
 
@@ -625,7 +626,7 @@ func (s *server) listBroadcasts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rows.Close()
-	trees := wantsDisplayTrees(r)
+	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r), "broadcasts")
 	summaries := []broadcastSummary{}
 	for rows.Next() {
 		var summary broadcastSummary
@@ -641,13 +642,18 @@ func (s *server) listBroadcasts(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
-		summary.attachTrees(trees)
 		summaries = append(summaries, summary)
 	}
 	if err := rows.Err(); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The bodies are registered once the list is whole: a row of a slice still being appended to
+	// is a row the reader must not hold the address of.
+	for index := range summaries {
+		summaries[index].attachTrees(reader)
+	}
+	defer reader.resolve()()
 	WriteJSON(w, http.StatusOK, summaries)
 }
 
@@ -691,12 +697,16 @@ func (s *server) readBroadcast(ctx context.Context, id string, trees bool) (broa
 	if err := json.Unmarshal(author, &read.Author); err != nil {
 		return broadcastRead{}, err
 	}
-	read.attachTrees(trees)
-	recipients, err := s.loadBroadcastRecipients(ctx, read.ID, trees)
+	// The body, every recipient's message and every reply under them are one read of the stored
+	// trees, and what the table did not hold is stored behind the answer.
+	reader := s.readDisplayTrees(ctx, trees, id)
+	read.attachTrees(reader)
+	recipients, err := s.loadBroadcastRecipients(ctx, read.ID, reader)
 	if err != nil {
 		return broadcastRead{}, err
 	}
 	read.Recipients = recipients
+	defer reader.resolve()()
 	return read, nil
 }
 
@@ -705,7 +715,7 @@ func (s *server) readBroadcast(ctx context.Context, id string, trees bool) (broa
 // have no position; their request order was never stored, so they retain the created_at and id
 // fallback order. created_at cannot order one current broadcast because all of its rows share
 // the one transaction's now().
-func (s *server) loadBroadcastRecipients(ctx context.Context, broadcastID string, trees bool) ([]broadcastRecipient, error) {
+func (s *server) loadBroadcastRecipients(ctx context.Context, broadcastID string, reader *displayTreeReader) ([]broadcastRecipient, error) {
 	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select `+messageColumns+`
 		from messages
@@ -743,14 +753,13 @@ func (s *server) loadBroadcastRecipients(ctx context.Context, broadcastID string
 	if err := hydrateThreadReplyBlocks(ctx, s.deps.Store.Pool, messages, replies); err != nil {
 		return nil, err
 	}
-	recipients := make([]broadcastRecipient, 0, len(messages))
-	for _, message := range messages {
+	recipients := make([]broadcastRecipient, len(messages))
+	for index, message := range messages {
 		message.Deliveries = deliveries[message.ID]
-		recipients = append(recipients, broadcastRecipient{
-			SessionID: strings.TrimPrefix(messageTarget(message.Target), "session:"),
-			Message:   newShapedMessage(message, trees),
-			Replies:   shapedMessages(replies[message.ID], trees),
-		})
+		recipients[index].SessionID = strings.TrimPrefix(messageTarget(message.Target), "session:")
+		recipients[index].Message.Message = message
+		recipients[index].Message.shape(reader)
+		recipients[index].Replies = shapedMessages(replies[message.ID], reader)
 	}
 	return recipients, nil
 }

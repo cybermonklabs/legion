@@ -611,10 +611,14 @@ func (s *server) readIssue(ctx context.Context, key string, trees bool) (issueDe
 	if err := s.readIssueDetails(ctx, artifactPointers(read.Artifacts), askReadPointers(asks)); err != nil {
 		return issueDetail{}, err
 	}
-	// The approvals are read by the second batch, so their reasons are read for display after
-	// it, where the sequential loader read them after loadArtifacts.
-	attachApprovalTrees(trees, read.Artifacts)
-	read.OpenAsks = issueOpenAsksOf(asks, replies, trees)
+	// The approvals are read by the second batch, so their reasons are registered after it,
+	// where the sequential loader read them after loadArtifacts. The reasons and the open asks'
+	// texts are one query of the stored trees, and what it did not hold is stored behind the
+	// read.
+	reader := s.readDisplayTrees(ctx, trees, key)
+	attachApprovalTrees(reader, read.Artifacts)
+	read.OpenAsks = issueOpenAsksOf(asks, replies, reader)
+	defer reader.resolve()()
 	return read, nil
 }
 
@@ -646,12 +650,12 @@ type issueOpenAsk struct {
 
 // issueOpenAsksOf pairs each ask with the newest reply in its thread, the shape the detail
 // response lists; an ask nobody has replied to carries a null last_reply. Each ask is read as
-// the dashboard reads one (newAskRead), carrying the trees of its texts when the caller asked
-// for them.
-func issueOpenAsksOf(asks []model.Ask, replies map[string]model.AskLastReply, trees bool) []issueOpenAsk {
+// the dashboard reads one (askRead.shape), its texts registered with the request's reader.
+func issueOpenAsksOf(asks []model.Ask, replies map[string]model.AskLastReply, reader *displayTreeReader) []issueOpenAsk {
 	openAsks := make([]issueOpenAsk, len(asks))
 	for index, ask := range asks {
-		openAsks[index] = issueOpenAsk{askRead: newAskRead(ask, trees)}
+		openAsks[index].askRead.Ask = ask
+		openAsks[index].askRead.shape(reader)
 		if reply, ok := replies[ask.ID]; ok {
 			openAsks[index].LastReply = &reply
 		}

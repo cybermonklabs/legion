@@ -2,8 +2,10 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"strconv"
+	"sync"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -21,123 +23,77 @@ import (
 // and changes no answer. Nothing else is reported: the answer a reader is given is the same either
 // way.
 //
+// Every write stores the latest mode, which is what a reader of a comment, a message, an ask or a
+// document's head is shown. A past version is read in the version mode, which no write produces,
+// so its tree is stored by the first read of it (getArtifactVersion) and by nothing else.
+//
 // The store itself is texttrees.StoreFor, the one policy every path that writes a stored text
 // keeps, which is also why a caller still holding a pooled connection stores nothing.
 func (s *server) storeDisplayTrees(ctx context.Context, subject string, texts ...string) {
-	s.storeDisplayTreesIn(ctx, pmdoc.DisplayLatest, subject, texts...)
-}
-
-// storeDisplayTreesIn is storeDisplayTrees in one named mode. Every write stores the latest
-// mode, which is what a reader of a comment, a message, an ask or a document's head is shown; a
-// past version is read in the version mode, which no write produces, so its tree is stored by
-// the first read of it (getArtifactVersion) and by nothing else.
-func (s *server) storeDisplayTreesIn(ctx context.Context, mode pmdoc.DisplayMode, subject string, texts ...string) {
-	if err := texttrees.StoreFor(ctx, s.deps.Store, mode, texts...); err != nil {
-		slog.Warn("dispatch: store display trees failed", "subject", subject, "mode", int(mode), "error", err)
+	if err := texttrees.StoreFor(ctx, s.deps.Store, pmdoc.DisplayLatest, texts...); err != nil {
+		slog.Warn("dispatch: store display trees failed", "subject", subject, "error", err)
 	}
 }
 
-// primeDisplayTrees puts the stored display tree of each of texts into this process's display
-// cache (pmdoc.PutStoredDisplayTree), so the shaping that follows copies the stored bytes
-// instead of reading the markdown again, and answers the texts the table holds no tree for.
+// displayTreeReader is one request's reading of the display trees its answer carries: every
+// route that shows a stored text's tree has one, and no route reads a text for display on its
+// own account.
 //
-// The whole read is one query, however many texts the answer carries: a comment list of two
-// hundred bodies after a restart is one round trip, not one per body and not two hundred
-// markdown parses. A text repeated among them - the same body quoted twice - is asked for once.
+// A request's shaping registers each tree field it is about to fill beside the text that fills
+// it (text, textOf, textInto), hashing that text once; resolve then runs one query for the sums
+// the process does not already hold, fills every registered field - from the stored bytes where
+// the table had them and from a reading of the markdown where it did not - and answers the store
+// of what was read, which the handler defers:
 //
-// A text whose tree this process already holds is not asked for at all: the cache is keyed by
-// exactly what the table is keyed by (pmdoc.HoldsDisplayTree), and what the shaping is about to
-// be answered from is the cache either way. One new comment moves both lists' validators, so the
-// read after a write is this case and not the restart: 199 of the 200 bodies of a feed are where
-// the comment list left them, and the query that is left asks for the one that is new.
+//	reader := s.readDisplayTrees(r.Context(), trees, issueKey)
+//	rows := commentReads(comments, reader)
+//	defer reader.resolve()()
+//	WriteJSON(w, http.StatusOK, rows)
 //
-// What a held text costs is that this read no longer learns whether the table holds its row. A
-// text this process read for itself - one whose tree the shaping built because no row answered
-// for it, and whose store then failed - is not asked for again until this process restarts; the
-// fill pass (texttreefill) stores it meanwhile, and no answer is different either way, since a
-// reader is served the tree this process holds.
+// The store stands after the answer is written because it is the next reader's saving and not
+// this one's, and a store that fails has changed no answer.
 //
-// It stores nothing. A text answered as missing is read for display by the shaping exactly as it
-// was before there was a table, and the request stores it afterwards (storeDisplayTrees), on a
-// connection of its own and outside any transaction of its caller's.
+// A caller that asked for no tree has no reader at all: every method below answers at once on a
+// nil receiver, so a route shapes its rows the one way whether or not the header was sent, and
+// neither reads the table nor writes to it when it was not.
 //
-// A caller still holding a pooled connection reads nothing and every text is missing. A document
-// load and a compaction shape their answer inside a read-only transaction (docs/persistence.go,
-// docs/compaction.go), and a second connection taken while one is held is the deadlock
-// store.ErrNestedAcquire refuses; the reader then builds its trees as it did before, which is
-// the one thing this is always allowed to fall back to.
-//
-// A failed read is logged at warning and answers every text as missing too: a table that cannot
-// be queried costs a reader time and never an answer.
-func (s *server) primeDisplayTrees(ctx context.Context, texts ...string) (missing []string) {
-	return s.primeDisplayTreesIn(ctx, pmdoc.DisplayLatest, texts...)
+// Only a stored text is registered. A cut - a snippet, a first line, a thread subject - is one
+// line of a longer stored text, which nothing stores a row for: it is read where it stands
+// (displayTree), since registering it would ask the table for a text no writer stores and store
+// a row no reader takes.
+type displayTreeReader struct {
+	// server is the server whose table the trees are read from and stored to, and nil for a
+	// reader that reads every text for display itself: a write's own response, which answers the
+	// text it has just stored the tree of, and a live frame, which has no request behind it.
+	server  *server
+	ctx     context.Context
+	mode    pmdoc.DisplayMode
+	subject string
+	// mu guards the registrations alone. A list is shaped where it stands, so the lock is
+	// uncontended on every route today; it is held because a shaper that fans out stays safe.
+	mu    sync.Mutex
+	texts []readDisplayText
+	at    map[[32]byte]int
 }
 
-// primeDisplayTreesIn is primeDisplayTrees in one named mode: the latest mode for everything a
-// write stores, the version mode for a past version's own text.
-func (s *server) primeDisplayTreesIn(ctx context.Context, mode pmdoc.DisplayMode, texts ...string) (missing []string) {
-	if len(texts) == 0 {
-		return nil
-	}
-	distinct := make([]string, 0, len(texts))
-	sums := make([][32]byte, 0, len(texts))
-	seen := make(map[[32]byte]struct{}, len(texts))
-	for _, text := range texts {
-		// An empty text has no tree and no row (pmdoc.DisplayJSON), so it is neither asked for
-		// nor answered as missing: there would be nothing to read and nothing to store.
-		if text == "" {
-			continue
-		}
-		sum := texttrees.Sum(text)
-		if _, repeated := seen[sum]; repeated {
-			continue
-		}
-		seen[sum] = struct{}{}
-		if pmdoc.HoldsDisplayTree(sum, mode) {
-			continue
-		}
-		distinct = append(distinct, text)
-		sums = append(sums, sum)
-	}
-	if len(sums) == 0 {
-		return nil
-	}
-	if store.HoldsPooledConnection(ctx) {
-		return distinct
-	}
-	stored, err := texttrees.For(s.deps.Store).Read(ctx, mode, sums)
-	if err != nil {
-		slog.Warn("dispatch: read display trees failed", "texts", len(sums), "error", err)
-		return distinct
-	}
-	// The capacity is exactly what the table did not answer for, which on a list this process
-	// has already served is none: that read allocates nothing here and its request writes
-	// nothing afterwards.
-	missing = make([]string, 0, len(sums)-len(stored))
-	for index, sum := range sums {
-		tree, held := stored[sum]
-		if !held {
-			missing = append(missing, distinct[index])
-			continue
-		}
-		pmdoc.PutStoredDisplayTree(sum, mode, tree)
-	}
-	return missing
+// readDisplayText is one distinct text of a request, the fields its tree fills, and that tree
+// once resolve has it. A text registered twice - one body quoted in two rows - is one of these,
+// so it is hashed once, asked for once and read once.
+type readDisplayText struct {
+	text   string
+	sum    [32]byte
+	tree   json.RawMessage
+	fields []*json.RawMessage
+	into   []func(json.RawMessage)
 }
 
-// readDisplayTrees primes the display trees of a read that carries them and answers the store of
-// whatever the table did not hold, which a caller defers:
-//
-//	defer s.readDisplayTrees(r.Context(), trees, issueKey, texts)()
-//
-// The prime runs where the call stands, before the shaping it serves. The store runs when the
-// function holding the defer returns - in a handler, after the answer is written - because it is
-// the next reader's saving and not this one's, and a store that fails has changed no answer.
-//
-// A caller that asked for no tree neither reads the table nor writes to it: no field of the
-// response would carry what either found.
-func (s *server) readDisplayTrees(ctx context.Context, trees bool, subject string, texts []string) func() {
-	return s.readDisplayTreesIn(ctx, pmdoc.DisplayLatest, trees, subject, texts)
+// readDisplayTrees is the reader of a request that answers stored texts in the latest mode,
+// which is everything a write stores: a comment, a message, an ask, a broadcast, a document's
+// head. subject is what a failed store is logged under - the issue, or the id of the row the
+// texts belong to - and trees is what the caller asked for (wantsDisplayTrees), a false answering
+// no reader at all.
+func (s *server) readDisplayTrees(ctx context.Context, trees bool, subject string) *displayTreeReader {
+	return s.readDisplayTreesIn(ctx, pmdoc.DisplayLatest, trees, subject)
 }
 
 // readVersionDisplayTrees is readDisplayTrees for a past version's text, which is read in the
@@ -145,16 +101,189 @@ func (s *server) readDisplayTrees(ctx context.Context, trees bool, subject strin
 // version said. No write stores that mode, so the first read of a version stores its tree and
 // every later read of it copies those bytes - the one place a read, rather than a write, is
 // where a tree first reaches the table.
-func (s *server) readVersionDisplayTrees(ctx context.Context, trees bool, subject string, texts []string) func() {
-	return s.readDisplayTreesIn(ctx, pmdoc.DisplayVersion, trees, subject, texts)
+func (s *server) readVersionDisplayTrees(ctx context.Context, trees bool, subject string) *displayTreeReader {
+	return s.readDisplayTreesIn(ctx, pmdoc.DisplayVersion, trees, subject)
 }
 
-func (s *server) readDisplayTreesIn(ctx context.Context, mode pmdoc.DisplayMode, trees bool, subject string, texts []string) func() {
-	if !trees || len(texts) == 0 {
+func (s *server) readDisplayTreesIn(ctx context.Context, mode pmdoc.DisplayMode, trees bool, subject string) *displayTreeReader {
+	if !trees {
+		return nil
+	}
+	return &displayTreeReader{server: s, ctx: ctx, mode: mode, subject: subject}
+}
+
+// builtDisplayTrees is the reader of an answer whose texts are read where they stand: a write's
+// own response, which carries the text the request has just written and stored the tree of, and
+// a live frame, which is no request. It reads no row and stores none - the write beside it does
+// both - and is the same reader otherwise, so one shaping serves a read and a write alike.
+func builtDisplayTrees(trees bool) *displayTreeReader {
+	if !trees {
+		return nil
+	}
+	return &displayTreeReader{mode: pmdoc.DisplayLatest}
+}
+
+// text registers field as the tree of markdown, to be filled by resolve. An empty text has no
+// tree and no row (pmdoc.DisplayJSON), so it is neither asked for nor read: its field stays nil,
+// which is the field left out of the answer.
+//
+// field must stand where it will still stand when resolve runs - a row of a slice the shaping no
+// longer appends to, or a value on the heap - because what is filled is the field this points
+// at and not a copy of it.
+func (r *displayTreeReader) text(field *json.RawMessage, markdown string) {
+	if r == nil || markdown == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	slot := r.slotOf(markdown)
+	slot.fields = append(slot.fields, field)
+}
+
+// textOf is text for a text a row may not hold at all.
+func (r *displayTreeReader) textOf(field *json.RawMessage, markdown *string) {
+	if markdown == nil {
+		return
+	}
+	r.text(field, *markdown)
+}
+
+// textInto registers assign to be given the tree of markdown, for a tree that stands somewhere
+// no field can be pointed at: an event's trees are a map keyed by the payload path, whose values
+// have no address. assign is called once, by resolve, and never for a text with no tree.
+func (r *displayTreeReader) textInto(assign func(json.RawMessage), markdown string) {
+	if r == nil || markdown == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	slot := r.slotOf(markdown)
+	slot.into = append(slot.into, assign)
+}
+
+// slotOf is markdown's own slot, made on its first registration. The caller holds the lock, and
+// the pointer is used before the next registration can move the slice.
+func (r *displayTreeReader) slotOf(markdown string) *readDisplayText {
+	sum := pmdoc.TextSum(markdown)
+	if index, held := r.at[sum]; held {
+		return &r.texts[index]
+	}
+	if r.at == nil {
+		r.at = make(map[[32]byte]int, 8)
+	}
+	r.at[sum] = len(r.texts)
+	r.texts = append(r.texts, readDisplayText{text: markdown, sum: sum})
+	return &r.texts[len(r.texts)-1]
+}
+
+// resolve fills every registered field and answers the store of the texts the table held no tree
+// for, which the handler runs once the answer is written.
+//
+// It is three steps over the texts registered, each of them once over the whole request:
+//
+//   - The trees this process already holds are taken from its display cache, by the sum the text
+//     was registered under (pmdoc.HeldDisplayTree). One new comment moves both lists' validators,
+//     so the read after a write is this case and not the restart: 199 of the 200 bodies of a feed
+//     are where the comment list left them. Such a text is neither asked for nor stored, which
+//     costs this read learning whether the table holds its row - a tree this process built and
+//     failed to store waits for the fill pass (texttreefill) or a restart - and saves it the only
+//     query it would otherwise make.
+//   - The rest are one query, however many texts the answer carries: a comment list of two
+//     hundred bodies after a restart is one round trip, not one per body and not two hundred
+//     markdown parses. What it answers is put in the display cache as well as into the fields, so
+//     the next request for the same text asks nothing.
+//   - What the table did not hold is read for display, on as many processors as the process may
+//     use, exactly as every read did before there was a table, and stored afterwards on a
+//     connection of its own and outside any transaction of the caller's.
+//
+// A caller still holding a pooled connection reads nothing from the table and stores nothing: a
+// document load and a compaction shape their answers inside read-only transactions
+// (docs/persistence.go, docs/compaction.go), and a second connection taken while one is held is
+// the deadlock store.ErrNestedAcquire refuses. The reader then builds every tree, which is the
+// one thing it is always allowed to fall back to. A failed query costs the same and no answer.
+func (r *displayTreeReader) resolve() func() {
+	if r == nil || len(r.texts) == 0 {
 		return func() {}
 	}
-	missing := s.primeDisplayTreesIn(ctx, mode, texts...)
-	return func() { s.storeDisplayTreesIn(ctx, mode, subject, missing...) }
+	ask := make([][32]byte, 0, len(r.texts))
+	for index := range r.texts {
+		if tree, held := pmdoc.HeldDisplayTree(r.texts[index].sum, r.mode); held {
+			r.texts[index].tree = tree
+			continue
+		}
+		ask = append(ask, r.texts[index].sum)
+	}
+	stored := r.storedTrees(ask)
+	missing := make([]int, 0, len(ask))
+	for index := range r.texts {
+		if r.texts[index].tree != nil {
+			continue
+		}
+		if tree, held := stored[r.texts[index].sum]; held {
+			r.texts[index].tree = tree
+			pmdoc.PutStoredDisplayTree(r.texts[index].sum, r.mode, tree)
+			continue
+		}
+		missing = append(missing, index)
+	}
+	buildDisplayTrees(len(missing), func(at int) {
+		slot := &r.texts[missing[at]]
+		slot.tree = builtDisplayTree(slot.sum, slot.text, r.mode)
+	})
+	for index := range r.texts {
+		tree := r.texts[index].tree
+		if tree == nil {
+			continue
+		}
+		for _, field := range r.texts[index].fields {
+			*field = tree
+		}
+		for _, assign := range r.texts[index].into {
+			assign(tree)
+		}
+	}
+	return r.storeOf(missing)
+}
+
+// storedTrees is the table's tree of each of sums, and nothing at all where there is no table to
+// ask, where a connection of the caller's is already held, or where the query failed - each of
+// which leaves every text to be read for display, as it was before there was a table.
+func (r *displayTreeReader) storedTrees(sums [][32]byte) map[[32]byte]json.RawMessage {
+	if r.server == nil || len(sums) == 0 || store.HoldsPooledConnection(r.ctx) {
+		return nil
+	}
+	stored, err := texttrees.For(r.server.deps.Store).Read(r.ctx, r.mode, sums)
+	if err != nil {
+		slog.Warn("dispatch: read display trees failed", "texts", len(sums), "error", err)
+		return nil
+	}
+	return stored
+}
+
+// storeOf is the store of the trees the request read for itself, which its handler runs after
+// the answer is written, and nothing at all for a reader that reads no table or that missed on
+// nothing. The trees are stored as they were read: the texts are neither hashed nor read a
+// second time.
+func (r *displayTreeReader) storeOf(missing []int) func() {
+	if r.server == nil || len(missing) == 0 {
+		return func() {}
+	}
+	built := make([]texttrees.Tree, 0, len(missing))
+	for _, index := range missing {
+		if r.texts[index].tree == nil {
+			continue
+		}
+		built = append(built, texttrees.Tree{Sum: r.texts[index].sum, Tree: r.texts[index].tree})
+	}
+	if len(built) == 0 {
+		return func() {}
+	}
+	return func() {
+		if err := texttrees.StoreTreesFor(r.ctx, r.server.deps.Store, r.mode, built); err != nil {
+			slog.Warn("dispatch: store display trees failed",
+				"subject", r.subject, "mode", int(r.mode), "error", err)
+		}
+	}
 }
 
 // storeEventDisplayTrees stores the display trees of every stored text the published events carry
@@ -181,67 +310,11 @@ func (s *server) storeEventDisplayTrees(ctx context.Context, events []model.Even
 }
 
 // eventDisplayTexts appends every stored text the events carry a tree for, found by the reader
-// the shaping uses (eventPayloadTexts), so what a read primes and stores is exactly what that
-// read answers.
+// the shaping uses (eventPayloadTexts), so what the publish path stores is exactly what a read
+// of those events answers.
 func eventDisplayTexts(texts []string, events ...model.Event) []string {
 	for _, event := range events {
 		eventPayloadTexts(event, func(_, text string) { texts = append(texts, text) })
-	}
-	return texts
-}
-
-// commentDisplayTexts appends every stored text a comment is shown with: its body, and the
-// excerpt of the block it answers (commentRead.shape).
-func commentDisplayTexts(texts []string, comments ...model.Comment) []string {
-	for _, comment := range comments {
-		texts = append(texts, comment.Body)
-		if comment.ReplyBlock != nil {
-			texts = append(texts, comment.ReplyBlock.Text)
-		}
-	}
-	return texts
-}
-
-// messageDisplayTexts is commentDisplayTexts for messages, which are shown exactly as comments
-// are (shapedMessage.shape).
-func messageDisplayTexts(texts []string, messages ...model.Message) []string {
-	for _, message := range messages {
-		texts = append(texts, message.Body)
-		if message.ReplyBlock != nil {
-			texts = append(texts, message.ReplyBlock.Text)
-		}
-	}
-	return texts
-}
-
-// askReadDisplayTexts appends every stored text each of asks is shown with (askRead.shape),
-// which is texttrees.AskShownTexts, the list this read and the background fill of the trees
-// share: a write stores the texts it wrote (texttrees.AskWrittenTexts), and a reader is shown
-// those and what the transitions wrote.
-func askReadDisplayTexts(texts []string, asks ...model.Ask) []string {
-	for _, ask := range asks {
-		texts = texttrees.AskShownTexts(texts, ask.Question, ask.Options, ask.Answer, ask.Resolution)
-	}
-	return texts
-}
-
-// askAnswerDisplayTexts appends the text of each answer a thread lists (askAnswerReads).
-func askAnswerDisplayTexts(texts []string, answers []model.AskAnswer) []string {
-	for _, answer := range answers {
-		if answer.Text != nil {
-			texts = append(texts, *answer.Text)
-		}
-	}
-	return texts
-}
-
-// askEditDisplayTexts appends the texts each recorded rewording is shown with: the question and
-// the option labels and descriptions it replaced (askEditReads). No row holds them any more, and
-// every reading of the ask's history shows them, so the publish path stored them
-// (storeEventDisplayTrees) and this is the read that copies them back.
-func askEditDisplayTexts(texts []string, edits []model.AskEdit) []string {
-	for _, edit := range edits {
-		texts = texttrees.AskWrittenTexts(texts, edit.Previous.Question, edit.Previous.Options)
 	}
 	return texts
 }

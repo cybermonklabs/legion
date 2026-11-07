@@ -21,12 +21,12 @@ func requireStoredTree(t *testing.T, database *store.Store, what, text string) {
 		t.Fatalf("%s: the test's text is empty, which has no tree and stores no row", what)
 	}
 	stored, err := texttrees.New(database.Pool).Read(
-		context.Background(), pmdoc.DisplayLatest, [][32]byte{texttrees.Sum(text)},
+		context.Background(), pmdoc.DisplayLatest, [][32]byte{pmdoc.TextSum(text)},
 	)
 	if err != nil {
 		t.Fatalf("%s: read the stored tree: %v", what, err)
 	}
-	tree, held := stored[texttrees.Sum(text)]
+	tree, held := stored[pmdoc.TextSum(text)]
 	if !held {
 		t.Fatalf("%s: the table holds no display tree of %q", what, text)
 	}
@@ -196,7 +196,7 @@ func TestABroadcastStoresTheOneTreeOfItsBody(t *testing.T) {
 	created := decodeBody[broadcastResponse](t, sent)
 	awaitBroadcastDeliveries(t, handler, created.ID)
 	requireStoredTree(t, database, "a broadcast's body", body)
-	sum := texttrees.Sum(body)
+	sum := pmdoc.TextSum(body)
 	var rows int
 	if err := database.Pool.QueryRow(context.Background(),
 		`select count(*) from text_trees where sum = $1`, sum[:]).Scan(&rows); err != nil {

@@ -44,10 +44,11 @@ func (s *server) getArchitectureTree(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if wantsDisplayTrees(r) {
-		for _, component := range components {
-			component.ProseTree = displayTree(component.Prose)
-		}
+	// The components' prose is registered here and filled once, after the issues are attached:
+	// the trees are the table's rows where it holds them, and the read stores what it did not.
+	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r), project)
+	for _, component := range components {
+		reader.text(&component.ProseTree, component.Prose)
 	}
 	issues, err := loadTreeIssues(r.Context(), pool, project)
 	if err != nil {
@@ -59,6 +60,9 @@ func (s *server) getArchitectureTree(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The trees are filled before the components are copied into the answer, and the store of
+	// what the table did not hold runs once the answer is written.
+	defer reader.resolve()()
 	tree.Components = make([]model.ArchitectureTreeComponent, 0, len(components))
 	tree.Unassigned = []model.ArchitectureTreeIssueRef{}
 	tree.NotArchitectural = []model.ArchitectureTreeNone{}

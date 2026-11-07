@@ -299,7 +299,10 @@ func (s *server) listArtifactReviews(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	WriteJSON(w, http.StatusOK, artifactReviewReads(reviews, wantsDisplayTrees(r)))
+	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r), artifact.ID)
+	reads := artifactReviewReads(reviews, reader)
+	defer reader.resolve()()
+	WriteJSON(w, http.StatusOK, reads)
 }
 
 // POST /api/v1/artifacts/{id}/reviews  {state, reason?}  (the person and approve scopes)
@@ -574,7 +577,11 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if settled {
-		attachApprovalTrees(trees, []model.Artifact{artifact})
+		// The approval's reason is read where it stands: this answer carries what the request
+		// has just written, and the write beside it stored the tree.
+		shapeBuilt(trees, func(reader *displayTreeReader) {
+			attachApprovalTrees(reader, []model.Artifact{artifact})
+		})
 		WriteJSON(w, http.StatusOK, response{Ask: nil, ArtifactID: artifact.ID, Version: version,
 			Approval: *artifact.Approval, Coverage: coverage, CoverageUnread: coverageUnread})
 		return
@@ -628,7 +635,9 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	if len(events) > 0 {
 		status = http.StatusCreated
 	}
-	attachApprovalTrees(trees, []model.Artifact{artifact})
+	shapeBuilt(trees, func(reader *displayTreeReader) {
+		attachApprovalTrees(reader, []model.Artifact{artifact})
+	})
 	var askAnswer *askRead
 	if ask != nil {
 		read := newAskRead(*ask, trees)

@@ -768,7 +768,7 @@ func (s *server) readMessage(ctx context.Context, issueKey, id string, trees boo
 // trees is whether the caller asked for the display trees (wantsDisplayTrees).
 //
 // Every read of a message passes here, so this is where a message's trees are taken from the
-// table and what the table did not hold is stored back (readDisplayTrees).
+// table and what the table did not hold is stored back (displayTreeReader).
 func (s *server) hydrateMessageThreads(ctx context.Context, roots []model.Message, trees bool) ([]messageRead, error) {
 	rootIDs := make([]string, len(roots))
 	for index, root := range roots {
@@ -785,26 +785,19 @@ func (s *server) hydrateMessageThreads(ctx context.Context, roots []model.Messag
 	if err := hydrateThreadReplyBlocks(ctx, s.deps.Store.Pool, roots, replies); err != nil {
 		return nil, err
 	}
-	var texts []string
-	if trees {
-		texts = messageDisplayTexts(nil, roots...)
-		for _, root := range roots {
-			texts = messageDisplayTexts(texts, replies[root.ID]...)
-		}
-	}
 	var subject string
 	if len(rootIDs) > 0 {
 		subject = rootIDs[0]
 	}
-	defer s.readDisplayTrees(ctx, trees, subject, texts)()
-	reads := make([]messageRead, 0, len(roots))
-	for _, root := range roots {
+	reader := s.readDisplayTrees(ctx, trees, subject)
+	reads := make([]messageRead, len(roots))
+	for index, root := range roots {
 		root.Deliveries = deliveries[root.ID]
-		reads = append(reads, messageRead{
-			Message: newShapedMessage(root, trees),
-			Replies: shapedMessages(replies[root.ID], trees),
-		})
+		reads[index].Message.Message = root
+		reads[index].Message.shape(reader)
+		reads[index].Replies = shapedMessages(replies[root.ID], reader)
 	}
+	defer reader.resolve()()
 	return reads, nil
 }
 
