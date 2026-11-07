@@ -337,7 +337,9 @@ What each part is for:
 - **`project`** is the Dispatch project key, and it must also be a key of `projects`, which names
   each Dispatch project the daemon runs (its repositories are [Dispatch's mapping](#the-projects-repositories)). A project may name a
   `merge_queue_role`, a role that receives a copy of every `READY`, and a notice withdrawing it
-  when the head's own CI turns red before the merge, or the head starts conflicting with its base.
+  when the head's own CI turns red before the merge, when the head starts conflicting with its
+  base, or when GitHub's merge queue reports its entry for that head unmergeable on the base
+  branch's own tip.
   Its optional `merge.by_hand` mapping holds regular-expression paths, each matched anywhere in a
   changed path, so anchor one (`^migrations/versions/`) to mean a directory. A pull request whose
   change touches one is `READY` with a `MANUAL_MERGE_REQUIRED:` note: the merger does not auto-arm
