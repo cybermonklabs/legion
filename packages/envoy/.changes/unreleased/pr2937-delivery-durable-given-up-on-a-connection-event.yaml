@@ -5,11 +5,14 @@ body: |-
   Both delivery intakes now give their durable up at the disconnect, before nats.go can re-send
   the subscription, and return to the lease-gated bind poll, which takes the durable again only
   while it is free; a process with no connection stands by rather than asking the server for its
-  durable over a dead link. What the returned process had in flight is handed back to the process
-  that keeps the durable as soon as the link is live, instead of waiting out the durable's
-  five-minute ack wait in that process's four-slot window. A connection event now costs the
-  holder its binding and one poll, about two seconds of live delivery.
-  `bus.Client.DrainSubscription` drains the handle while the client's connection is live, as it
-  always did, and unsubscribes it when it is not: a drain begun while the link is down leaves the
-  server reporting the durable push-bound to a client that delivers nothing, for the life of that
-  connection, which no process can take over.
+  durable over a dead link. What the returned process had in flight is answered once the link is
+  live rather than left to the durable's five-minute ack wait in the next holder's four-slot
+  window: a handling it finished meanwhile is acknowledged, and one its give-up abandoned is
+  handed back for the keeper to redo. A connection event costs the holder its binding and one
+  poll, and the give-up waits for the handlers still running, up to its 15 s budget, before the
+  process stands by for the durable again.
+  `bus.Client.DrainSubscription` drains the handle while the client has a live connection, as it
+  always did, and unsubscribes it when it has none: a drain begun while the link is down leaves
+  the server reporting the durable push-bound to a client that delivers nothing, for the life of
+  that connection, which no process can take over. A drain the link drops under is unsubscribed
+  at that event too, before the reconnect can re-send it.
