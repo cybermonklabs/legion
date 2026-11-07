@@ -1548,3 +1548,6 @@ func shutdownListener(logger *logging.Logger, parts listenerParts, loops listene
 	logger.Info("envoy-listener shutdown complete")
 	os.Exit(1)
 }
+
+// PROBE ONLY (dispatch://INFRA-1526, k5): one changed listener source line, so the second
+// cached read rebuilds the Go layers and imports the two dependency stages.
