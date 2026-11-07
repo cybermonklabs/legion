@@ -1011,6 +1011,10 @@ jobs:
               - 'packages/pi-shared/src/**'
               - 'packages/pi-shared/test/**'
               - 'packages/envoy-client/src/**'
+              # extensions/legion.test.ts reaches the Envoy plugin's own test helper for a
+              # registration answer (packages/envoy-client/test/subscribe-answer.ts), so the tsc
+              # program of this package compiles that file too.
+              - 'packages/envoy-client/test/subscribe-answer.ts'
               # And @legion/broker-client with it (ci_job_reads.py's envoy_client_dep).
               - 'packages/broker-client/**'
               - 'packages/contracts/src/**'
