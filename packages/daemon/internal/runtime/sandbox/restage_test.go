@@ -465,10 +465,14 @@ func ownerRuleOwners(repos []ghrepo.Repository, pair ghrepo.Rename) []string {
 // owner, while the rule now adds it only when the project serves the pair's `to` repository, so
 // the new set can lose a name and never gain one — and in state B, the one state where the two
 // differ, the `from` owner is in the set anyway, as the owner of a repository the project serves
-// under its own name (ownerRuleOwners above answers renamedDirs for both states). movedGhDirs
-// compares one way, naming only what the daemon serves and the pod does not project, so a set
-// that cannot gain a name moves no pod: no update round is opened over a gh directory, no issue
-// pod is replaced, and the role's own addresses stay where they are.
+// under its own name (ownerRuleOwners above answers renamedDirs for both states). The owner
+// directories are the whole of what is compared, here and in the runtime: in state B the bundle
+// also cuts a repository directory under the recorded owner, for the repository it serves beside
+// the one the role writes to, and movedGhDirs runs both sides through ghOwnerDirs, which drops
+// every name holding a slash, so no repository directory is an address a pod can lack.
+// movedGhDirs compares one way, naming only what the daemon serves and the pod does not project,
+// so a set that cannot gain an owner name moves no pod: no update round is opened over a gh
+// directory, no issue pod is replaced, and the role's own addresses stay where they are.
 //
 // Those addresses are the rest of what this holds, in each state: the role's generation is started
 // with GH_CONFIG_DIR naming the directory of the owner the issue's record names — the directory
@@ -479,11 +483,11 @@ func TestARenamedIssuesPodIsUnmovedInEitherOwnerSetState(t *testing.T) {
 	stateA := []ghrepo.Repository{servingSmoke}
 	stateB := []ghrepo.Repository{servingSmoke, otherOfRecordedOwner}
 	for state, repos := range map[string][]ghrepo.Repository{"A": stateA, "B": stateB} {
-		serves := appauth.GitHubDirs(func() []ghrepo.Repository { return repos }, ghrepo.MustRenames(smokeRename),
-			nil, appauth.Roles, recordedSmoke)
+		serves := ghOwnerDirs(appauth.GitHubDirs(func() []ghrepo.Repository { return repos }, ghrepo.MustRenames(smokeRename),
+			nil, appauth.Roles, recordedSmoke))
 		owned := ownerRuleOwners(repos, smokeRename)
 		if !slices.Equal(serves, renamedDirs) || !slices.Equal(owned, renamedDirs) {
-			t.Fatalf("state %s serves %q by the repository rule and %q by the owner predicate it replaces, want %q from both: the new set gains no name, so a pod built under the old one lacks no directory",
+			t.Fatalf("state %s serves the owner directories %q by the repository rule and %q by the owner predicate it replaces, want %q from both: the new set gains no owner name, so a pod built under the old one lacks no directory",
 				state, serves, owned, renamedDirs)
 		}
 	}

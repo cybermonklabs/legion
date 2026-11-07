@@ -423,15 +423,36 @@ func TestGitHubCredentialBundlesARenamedPairAsOneOwner(t *testing.T) {
 // directory name, which is why each asserts the whole set against GitHubDirs as well: a pod's gh
 // projection is fixed when the pod is created, so a name this rule added or dropped would be
 // drift the sweep answers with an update round over every worker in the pod.
+//
+// Two further cases are that state with a third repository of the old owner served, which is
+// where composing the pair with the per-repository directories took reach away: a write lease
+// names one repository, so the old owner's directory reaches nothing else of that owner's own,
+// and the repository directories cut for the owner that serves the role's repository are cut
+// for the owner the pair moved it to. So each repository the issue's recorded owner serves
+// beside the one the role writes to holds a directory of its own, read-only and minted for that
+// owner (bundleDirs' recorded clause), and every case here asserts as well that no directory
+// outside the two a write lease may stand in holds a writing token.
+//
+// One of those cases is that state with the tree recorded on the pair's `from`, which is the
+// tree the failure stopped: it is pinned here so that no later change can re-break the case
+// this rule exists for, and it may not be deleted. The last case is the two clauses cutting
+// one directory name, where R3 gives the directory the lease of the repository its own name
+// resolves to.
 func TestEveryServedOwnerKeepsItsOwnReadLeaseWhileAPairResolves(t *testing.T) {
-	repos := projectRepos("Cybermonklabs/legion", "acme/widgets", "sjawhar/oh-my-pi")
+	base := projectRepos("Cybermonklabs/legion", "acme/widgets", "sjawhar/oh-my-pi")
 	renames := ghrepo.MustRenames(legionRename)
 	for _, tc := range []struct {
-		name   string
+		name string
+		// served is the project's repositories where they are not the table's own three.
+		served []string
 		repo   ghrepo.Repository
 		dirs   []string
 		tokens map[string]string
 		minted []string
+		// writing are the directories R3's writing clause names, the only ones a write token
+		// may stand in: the issue's recorded owner's, and that of the owner whose installation
+		// serves the repository the role writes to.
+		writing []string
 	}{
 		{
 			// sjawhar's own repository is the issue's, so the sjawhar directory holds its write
@@ -446,7 +467,8 @@ func TestEveryServedOwnerKeepsItsOwnReadLeaseWhileAPairResolves(t *testing.T) {
 				"sjawhar":              "implement-token-for-sjawhar/oh-my-pi",
 				"sjawhar/legion":       "implement-read-for-cybermonklabs/legion",
 			},
-			minted: []string{"acme/widgets", "cybermonklabs/legion", "sjawhar/oh-my-pi"},
+			minted:  []string{"acme/widgets", "cybermonklabs/legion", "sjawhar/oh-my-pi"},
+			writing: []string{"sjawhar"},
 		},
 		{
 			// The issue is the moved repository's, recorded under the name GitHub has, so the
@@ -459,18 +481,120 @@ func TestEveryServedOwnerKeepsItsOwnReadLeaseWhileAPairResolves(t *testing.T) {
 				"cybermonklabs": "implement-token-for-cybermonklabs/legion",
 				"sjawhar":       "implement-read-for-sjawhar/oh-my-pi",
 			},
-			minted: []string{"acme/widgets", "cybermonklabs/legion", "sjawhar/oh-my-pi"},
+			minted:  []string{"acme/widgets", "cybermonklabs/legion", "sjawhar/oh-my-pi"},
+			writing: []string{"cybermonklabs"},
+		},
+		{
+			// The production failure of 2026-11-06, which is why this case may not be deleted.
+			// The pair resolving while the old owner serves one other repository is the state
+			// adding sjawhar/oh-my-pi to the project's mapping put production in, and the owner
+			// test the rename rule replaced read that one repository as the old owner being the
+			// project's own, stopped resolving the pair, and left 47 trees unable to push. A
+			// tree recorded on the pair's `from` is such a tree: its recorded owner's directory
+			// and the directory of the owner whose installation serves the repository now hold
+			// the one write lease, minted for cybermonklabs, so a role writes the repository
+			// GitHub holds through either name — and sjawhar/oh-my-pi, which the recorded owner
+			// serves beside it, keeps a read-only directory of its own.
+			name: "an issue recorded on the pair's from while the old owner serves one other repository",
+			repo: ghrepo.MustParse("sjawhar/legion"),
+			dirs: []string{"acme", "cybermonklabs", "sjawhar", "sjawhar/oh-my-pi"},
+			tokens: map[string]string{
+				"acme":             "implement-read-for-acme/widgets",
+				"cybermonklabs":    "implement-token-for-cybermonklabs/legion",
+				"sjawhar":          "implement-token-for-cybermonklabs/legion",
+				"sjawhar/oh-my-pi": "implement-read-for-sjawhar/oh-my-pi",
+			},
+			minted:  []string{"acme/widgets", "cybermonklabs/legion", "sjawhar/oh-my-pi"},
+			writing: []string{"cybermonklabs", "sjawhar"},
+		},
+		{
+			// The old owner serves a third repository beside the issue's own. The write lease
+			// in its directory names the issue's repository alone, so the third one holds a
+			// directory of its own, read-only and minted for the old owner over it alone: the
+			// repository directories the serving clause cuts are cybermonklabs's, the owner
+			// that serves the role's repository being the old owner here but the pair's `to`
+			// owning what that clause reads.
+			name:   "an issue on the old owner's other repository while it serves a third",
+			served: []string{"Cybermonklabs/legion", "acme/widgets", "sjawhar/oh-my-pi", "sjawhar/tools"},
+			repo:   ghrepo.MustParse("sjawhar/oh-my-pi"),
+			dirs:   []string{"acme", "cybermonklabs", "cybermonklabs/legion", "sjawhar", "sjawhar/legion", "sjawhar/tools"},
+			tokens: map[string]string{
+				"acme":                 "implement-read-for-acme/widgets",
+				"cybermonklabs":        "implement-read-for-cybermonklabs/legion",
+				"cybermonklabs/legion": "implement-read-for-cybermonklabs/legion",
+				"sjawhar":              "implement-token-for-sjawhar/oh-my-pi",
+				"sjawhar/legion":       "implement-read-for-cybermonklabs/legion",
+				"sjawhar/tools":        "implement-read-for-sjawhar/tools",
+			},
+			minted:  []string{"acme/widgets", "cybermonklabs/legion", "sjawhar/oh-my-pi", "sjawhar/tools"},
+			writing: []string{"sjawhar"},
+		},
+		{
+			// The issue is the moved repository's, recorded under the name the old owner had,
+			// so the old owner's directory holds the write lease for the repository the pair's
+			// `to` serves and reaches neither of the old owner's own two. Each of those holds a
+			// directory of its own, minted for the old owner, while the sjawhar directory keeps
+			// the cybermonklabs write lease, which is the one entry the cybermonklabs directory
+			// holds too.
+			name:   "an issue on the moved repository as the record names it, the old owner serving two",
+			served: []string{"Cybermonklabs/legion", "acme/widgets", "sjawhar/oh-my-pi", "sjawhar/tools"},
+			repo:   ghrepo.MustParse("sjawhar/legion"),
+			dirs:   []string{"acme", "cybermonklabs", "sjawhar", "sjawhar/oh-my-pi", "sjawhar/tools"},
+			tokens: map[string]string{
+				"acme":             "implement-read-for-acme/widgets",
+				"cybermonklabs":    "implement-token-for-cybermonklabs/legion",
+				"sjawhar":          "implement-token-for-cybermonklabs/legion",
+				"sjawhar/oh-my-pi": "implement-read-for-sjawhar/oh-my-pi",
+				"sjawhar/tools":    "implement-read-for-sjawhar/tools",
+			},
+			minted:  []string{"acme/widgets", "cybermonklabs/legion", "sjawhar/oh-my-pi", "sjawhar/tools"},
+			writing: []string{"cybermonklabs", "sjawhar"},
+		},
+		{
+			// Both owners serve a repository called tools, so the two clauses name the one
+			// directory sjawhar/tools: the serving clause cuts the repository directories for
+			// cybermonklabs, the owner that serves the role's repository, and the recorded
+			// clause cuts them for sjawhar, the owner the issue is recorded on. R3 gives that
+			// directory the lease of the repository its own name resolves to — sjawhar's own
+			// tools, which the project serves under that name — and cybermonklabs/tools stays
+			// reachable through the directory named for it, so one directory name never answers
+			// for two repositories.
+			name:   "an issue recorded on the pair's from while both owners serve a repository of one name",
+			served: []string{"Cybermonklabs/legion", "cybermonklabs/tools", "sjawhar/tools"},
+			repo:   ghrepo.MustParse("sjawhar/legion"),
+			dirs:   []string{"cybermonklabs", "cybermonklabs/tools", "sjawhar", "sjawhar/tools"},
+			tokens: map[string]string{
+				"cybermonklabs":       "implement-token-for-cybermonklabs/legion",
+				"cybermonklabs/tools": "implement-read-for-cybermonklabs/tools",
+				"sjawhar":             "implement-token-for-cybermonklabs/legion",
+				"sjawhar/tools":       "implement-read-for-sjawhar/tools",
+			},
+			minted:  []string{"cybermonklabs/legion", "cybermonklabs/tools", "sjawhar/tools"},
+			writing: []string{"cybermonklabs", "sjawhar"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			repos := base
+			if tc.served != nil {
+				repos = projectRepos(tc.served...)
+			}
 			var minted []string
 			credential := GitHubCredential(countingTokens{minted: &minted}, repos, renames, nil, quietBundleLog())
 			bundle, err := credential(context.Background(), claim.RoleImplementer, tc.repo)
 			if err != nil {
 				t.Fatalf("credential: %v", err)
 			}
-			if got := bundleTokens(t, bundle); !maps.Equal(got, tc.tokens) {
-				t.Errorf("tokens = %v, want %v", got, tc.tokens)
+			tokens := bundleTokens(t, bundle)
+			if !maps.Equal(tokens, tc.tokens) {
+				t.Errorf("tokens = %v, want %v", tokens, tc.tokens)
+			}
+			// The write lease stands in the directories R3's writing clause names and in no
+			// other: a repository directory the recorded clause adds is read-only, as is every
+			// directory of an owner the issue is not recorded on.
+			for dir, token := range tokens {
+				if strings.Contains(token, "-token-for-") != slices.Contains(tc.writing, dir) {
+					t.Errorf("%s holds %q; the writing token stands in %q and nowhere else", dir, token, tc.writing)
+				}
 			}
 			if !slices.Equal(minted, tc.minted) {
 				t.Errorf("minted for %v, want %v: one lease per scope, each owner's own", minted, tc.minted)
