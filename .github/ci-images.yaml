@@ -113,3 +113,12 @@ images:
   - upstream: docker.io/library/postgres@sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4
     tag: postgres-979bccfd
     digest: sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4
+
+  # Playwright's own published browser image, the base of .github/docker/browser.Dockerfile.
+  # Its upstream tag carries the Playwright release bun.lock resolves, and
+  # .github/scripts/check-playwright-version.sh refuses a head where the two disagree. It is the
+  # one row whose upstream is not Docker Hub: Microsoft publishes this image on its own registry
+  # alone, and the copy below is what every build and every CI job reads.
+  - upstream: mcr.microsoft.com/playwright:v1.64.1-noble
+    tag: playwright-v1.64.1-noble-2f05f8a7
+    digest: sha256:2f05f8a734509a7b3f26a912639488ee08f58a7b292d14d62271bcff9038768f
