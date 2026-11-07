@@ -1,23 +1,22 @@
-Experiment 3, a session-bound activity.
-Recorded 2026-11-07T19:22:06Z by docs/research/temporal-evaluation-2026-11/run.sh,
+Experiment 3, Temporal: a session-bound activity, with its worker killed.
+Recorded 2026-11-07T22:39:42Z by docs/research/temporal-evaluation-2026-11/run.sh,
 from the branch of dispatch://INFRA-1546 based on commit 09bf32cc0298db50261183a12e129ad324b03cee,
-against Temporal server 1.32.2 from the pinned command temporal 1.10.0,
-on the Temporal Go SDK v1.50.0, in one Legion pod.
+in one Legion worker pod, against a real server or a real PostgreSQL.
 This is a transcript of one run, not a golden file: nothing re-records it.
 ------------------------------------------------------------------------------
-session-task-queue: exp3-session-1794079251851042241
-workflow-task-queue: exp3-workflow-1794079251851042241
-[worker1] sessionworker: pid=9788
-worker1-started-pid: 9788
-worker1-reported-pid: 9788
-workflow-id: exp3-kill-1794079251851042241
-run-id: 01a1b774-deca-7700-8d20-f98bf0613e99
+session-task-queue: exp3-session-1794090965510575345
+workflow-task-queue: exp3-workflow-1794090965510575345
+[worker1] sessionworker: pid=28421
+worker1-started-pid: 28421
+worker1-reported-pid: 28421
+workflow-id: exp3-kill-1794090965510575345
+run-id: 01a1b827-9b5b-77ff-9077-fef31b9a3d7c
 session-activity-running-before-kill: true
 kill-sent: true
-killed-pid: 9788
+killed-pid: 28421
 kill-signal: SIGKILL
 session-created: true
-session-id: e0ece89b-30e5-4018-a286-20fcead128ad
+session-id: a62229df-56f2-4e87-a721-ca2e7b028848
 session-host: legion-infra-infra-1546
 session-activity-result: none
 workflow-wait-error-type: *internal.CanceledError
@@ -35,15 +34,17 @@ session-activity-start-count: 0
 session-activity-starts-after-kill: 0
 session-activity-final-event: ActivityTaskCancelRequested
 workflow-observed-session-failure: true
-[worker2] sessionworker: pid=9796
+[worker2] sessionworker: pid=28432
 second-worker-started: true
-worker2-started-pid: 9796
+worker2-started-pid: 28432
 history-event-count-after-restart: 18
 session-activity-start-count-after-restart: 0
 session-activity-final-event-after-restart: ActivityTaskCancelRequested
 session-activity-resumed-after-restart: false
 killed-run-status-after-restart: Completed
+[worker2] time=2026-11-07T22:36:20.303Z level=WARN msg="RecordActivityHeartbeat with error" Namespace=e3 TaskQueue=exp3-session-1794090965510575345 WorkerID=28432@legion-infra-infra-1546@ ActivityID=6 ActivityType=internalSessionCreationActivity Attempt=1 WorkflowType=exp3SessionWorkflow WorkflowID=exp3-fresh-1794090978769878835 RunID=01a1b827-cdd5-720f-b24b-2bb11c31c764 Error=canceled
+[worker2] time=2026-11-07T22:36:20.304Z level=ERROR msg="Activity error." Namespace=e3 TaskQueue=exp3-session-1794090965510575345 WorkerID=28432@legion-infra-infra-1546@ WorkflowID=exp3-fresh-1794090978769878835 RunID=01a1b827-cdd5-720f-b24b-2bb11c31c764 ActivityType=internalSessionCreationActivity Attempt=1 Error="context canceled"
 new-session-after-restart: succeeded
-new-session-activity-ran-on: pid=9796 host=legion-infra-infra-1546
+new-session-activity-ran-on: pid=28432 host=legion-infra-infra-1546
 new-session-host: legion-infra-infra-1546
 experiment 3: PASS

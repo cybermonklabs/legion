@@ -1,19 +1,23 @@
 #!/usr/bin/env bash
 #
-# check-citations.sh resolves every citation the answer of INFRA-1546 carries.
+# check-citations.sh resolves every citation the two documents of INFRA-1546 carry:
+#
+#   the answer   dispatch://INFRA-1546/artifact/temporal-evaluation-md
+#   the plan     dispatch://INFRA-1546/artifact/implementation-plan-md
 #
 #   bash docs/research/temporal-evaluation-2026-11/check-citations.sh
 #   bash docs/research/temporal-evaluation-2026-11/check-citations.sh --self-test
 #
-# It reads the answer live from Dispatch, so it checks what a reader reads rather than
-# a copy. It prints one line per citation and ends with
+# It reads both of them live from Dispatch, so it checks what a reader reads rather
+# than a copy. It prints one line per citation, naming in its third column the document
+# that citation came from, and ends with one summary over both documents together:
 #
 #   citations: N resolved, M unreachable, 0 failed
 #
 # It runs from the repository root, or from anywhere else: it finds its own directory
 # and the repository root from there, and it writes nothing.
 #
-# The grammar it implements, which the answer follows and the directory's README
+# The grammar it implements, which both documents follow and the directory's README
 # states:
 #
 #   Code         (`packages/daemon/internal/record/store.go`, `record.Postgres.Enqueue`)
@@ -31,7 +35,7 @@
 #                under packages/daemon/internal/store/migrations; a column resolves
 #                when a migration creates that table with the column or alters the
 #                table to add it.
-#   Experiment   experiment 1 .. experiment 6. It resolves when that experiment's
+#   Experiment   experiment 1 .. experiment 18. It resolves when that experiment's
 #                recorded output is committed beside this script, and it counts as a
 #                citation, so a section whose only evidence is a measurement is not a
 #                section with no citation.
@@ -45,15 +49,27 @@
 # identifier cited in the code form that the file holds only as a string; a table no
 # migration creates; a dispatch:// reference that does not read; a web address with no
 # read date beside it; an address answering 404 or 410; and a document with no citation
-# at all, because an empty set of citations is no evidence.
+# at all, because an empty set of citations is no evidence. That last rule holds per
+# document: each of the two must carry evidence of its own. A document that does not
+# exist, or that Dispatch will not read, is refused by name before any citation of
+# either document is resolved.
 #
 # --self-test runs the resolver over a fixture of deliberately broken citations held in
 # this script and over a set of well-formed ones, so a tester can show the check
-# refuses what it claims to refuse without editing the live document.
+# refuses what it claims to refuse without editing a live document.
 
 set -o errexit -o nounset -o pipefail
 
-readonly answer_ref='dispatch://INFRA-1546/artifact/temporal-evaluation-md'
+# The documents this script checks: the label every line of theirs carries, and the
+# reference it is read from. The two arrays are read in step.
+readonly -a document_labels=(
+	answer
+	plan
+)
+readonly -a document_refs=(
+	'dispatch://INFRA-1546/artifact/temporal-evaluation-md'
+	'dispatch://INFRA-1546/artifact/implementation-plan-md'
+)
 readonly migrations_dir='packages/daemon/internal/store/migrations'
 readonly repo_marker='packages/daemon/internal/workflow/table.go'
 readonly web_timeout=20
@@ -81,7 +97,7 @@ readonly \
 	literal_pattern='\(`[^`]+`, `"[^"]*"`\)' \
 	column_pattern='the `[A-Za-z0-9_]+` column of `[A-Za-z0-9_]+`' \
 	table_pattern='the `[A-Za-z0-9_]+` table' \
-	experiment_pattern='[Ee]xperiment [1-6]' \
+	experiment_pattern='[Ee]xperiment (1[0-8]|[1-9])([^0-9]|$)' \
 	dispatch_pattern='dispatch://[A-Za-z0-9._/@#-]+' \
 	web_pattern='https://[^][:space:]`")<>]+( \(read [0-9]{4}-[0-9]{2}-[0-9]{2}\))?'
 
@@ -90,6 +106,15 @@ readonly \
 count_resolved=0
 count_unreachable=0
 count_failed=0
+# The document whose citations are being resolved, printed in every line below.
+# resolve_document sets it.
+document_label=''
+
+reset_counts() {
+	count_resolved=0
+	count_unreachable=0
+	count_failed=0
+}
 
 report() {
 	local status=$1 kind=$2 text=$3 detail=${4:-}
@@ -99,9 +124,9 @@ report() {
 	failed) count_failed=$((count_failed + 1)) ;;
 	esac
 	if [[ -n "$detail" ]]; then
-		printf '%-11s %-7s %s: %s\n' "$status" "$kind" "$text" "$detail"
+		printf '%-11s %-7s %-10s %s: %s\n' "$status" "$kind" "$document_label" "$text" "$detail"
 	else
-		printf '%-11s %-7s %s\n' "$status" "$kind" "$text"
+		printf '%-11s %-7s %-10s %s\n' "$status" "$kind" "$document_label" "$text"
 	fi
 }
 
@@ -261,17 +286,18 @@ resolve_web() {
 
 # --- resolving a whole document -----------------------------------------------------
 
-# Prints one line per citation of the document given as the first argument and leaves
-# the three counts in count_resolved, count_unreachable and count_failed. The same
-# citation written twice is one citation.
+# Prints one line per citation of the document given as the second argument, each line
+# naming the document by the label given as the first, and adds what it finds to the
+# three counts, which the caller resets. The same citation written twice is one
+# citation, and a document carrying no citation at all is itself a refusal, so a
+# document says nothing about what another one carries.
 resolve_document() {
-	local document=$1
+	local document=$2 before
 	local -a matches
 	local match path rest ident table column digit ref url dated
 
-	count_resolved=0
-	count_unreachable=0
-	count_failed=0
+	document_label=$1
+	before=$((count_resolved + count_unreachable + count_failed))
 
 	mapfile -t matches < <(grep -oE "$literal_pattern" <<<"$document" | sort -u)
 	for match in "${matches[@]}"; do
@@ -307,7 +333,7 @@ resolve_document() {
 		resolve_table "$match" "$table"
 	done
 
-	mapfile -t matches < <(grep -oE "$experiment_pattern" <<<"$document" | tr 'E' 'e' | sort -u)
+	mapfile -t matches < <(grep -oE "$experiment_pattern" <<<"$document" | tr 'E' 'e' | sed -E 's/[^0-9]+$//' | sort -u)
 	for match in "${matches[@]}"; do
 		digit=${match##* }
 		resolve_experiment "$match" "$digit"
@@ -332,7 +358,7 @@ resolve_document() {
 		resolve_web "$match" "$url" "$dated"
 	done
 
-	if ((count_resolved + count_unreachable + count_failed == 0)); then
+	if ((count_resolved + count_unreachable + count_failed == before)); then
 		report failed document 'the whole document' \
 			'it carries no citation at all, and an empty set of citations is no evidence'
 	fi
@@ -380,7 +406,8 @@ self_test() {
 	local failures=0
 
 	printf 'self-test, the broken half: every line below must be a refusal\n\n'
-	resolve_document "$(broken_fixture)"
+	reset_counts
+	resolve_document broken "$(broken_fixture)"
 	summary
 	if ((count_failed != broken_fixture_citations || count_resolved != 0)); then
 		printf 'self-test: expected %d refusals and no resolved citation, got %d refusals, %d resolved and %d unreachable\n' \
@@ -391,7 +418,8 @@ self_test() {
 	fi
 
 	printf '\nself-test, a document with no citation at all: it must be refused\n\n'
-	resolve_document ''
+	reset_counts
+	resolve_document empty ''
 	summary
 	if ((count_failed != 1)); then
 		printf 'self-test: a document with no citation was not refused\n' >&2
@@ -401,7 +429,8 @@ self_test() {
 	fi
 
 	printf '\nself-test, the well-formed half: every line below must resolve\n\n'
-	resolve_document "$(well_formed_fixture)"
+	reset_counts
+	resolve_document well-formed "$(well_formed_fixture)"
 	summary
 	if ((count_failed != 0)); then
 		printf 'self-test: %d well-formed citations did not resolve\n' "$count_failed" >&2
@@ -417,26 +446,38 @@ self_test() {
 	return 0
 }
 
-# --- the live answer ----------------------------------------------------------------
+# --- the live documents -------------------------------------------------------------
 
-check_answer() {
-	local document status=0
-	document=$(dispatch doc-read --ref "$answer_ref" 2>&1) || status=$?
-	if ((status != 0)); then
-		printf 'check-citations: the answer does not exist yet. Reading %s failed:\n' "$answer_ref" >&2
-		printf '%s\n' "$document" >&2
-		printf 'check-citations: there is nothing to resolve until that document is written. Run this script with --self-test to exercise the resolver meanwhile.\n' >&2
-		return 1
-	fi
+# Reads both documents before resolving either, so a document Dispatch will not read is
+# refused on its own rather than after a screenful of another document's citations.
+check_documents() {
+	local -a texts=()
+	local i label ref text status
+	for i in "${!document_refs[@]}"; do
+		label=${document_labels[i]}
+		ref=${document_refs[i]}
+		status=0
+		text=$(dispatch doc-read --ref "$ref" 2>&1) || status=$?
+		if ((status != 0)); then
+			printf 'check-citations: the %s does not read. Reading %s failed:\n' "$label" "$ref" >&2
+			printf '%s\n' "$text" >&2
+			printf 'check-citations: there is nothing to resolve until that document is written. Run this script with --self-test to exercise the resolver meanwhile.\n' >&2
+			return 1
+		fi
+		texts[i]=$text
+	done
 
-	resolve_document "$document"
+	reset_counts
+	for i in "${!document_refs[@]}"; do
+		resolve_document "${document_labels[i]}" "${texts[i]}"
+	done
 	summary
 	((count_failed == 0))
 }
 
 main() {
 	case "${1:-}" in
-	'') check_answer ;;
+	'') check_documents ;;
 	--self-test) self_test ;;
 	*)
 		printf 'usage: check-citations.sh [--self-test]\n' >&2
