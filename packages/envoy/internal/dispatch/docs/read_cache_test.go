@@ -266,8 +266,11 @@ func TestALoadedDocumentIsTheLoadedStateDecoded(t *testing.T) {
 // A history whose updates merge past ygo's item cap does not decode: LoadDocument names it as the
 // one state a rebuild repairs (ErrDocumentUnloadable), and so does a read of it, not wrapped in
 // the unavailable service any failed room or store answers.
+//
+// Serial, for the reason TestRebuildDocumentRestoresDocumentThatCannotLoad (rebuild_test.go) is:
+// oversizedHistory builds a million-item document, which the race detector shadows at about four
+// bytes a byte, and two such tests at once passed the race job's memory bound.
 func TestAnUndecodableHistoryLoadsAsDocumentUnloadable(t *testing.T) {
-	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before\n")
 	versioned := NewPgVersioned(database)

@@ -202,14 +202,22 @@ func TestShutdownSettlesEveryOtherRoomWhileOneRoomsQueuedAppendIsHeld(t *testing
 		t.Fatal("the held room's append never reached the store")
 	}
 
-	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), roomWait(t))
+	// Shutdown returns once its drain budget has ended, and what it does then - the quiet room's
+	// settlement, every room's close - is the service's own work, which takes as long as the
+	// loaded machine takes: the wait on its return is the budget plus the package's own wait,
+	// not the budget plus a second production duration. CI job 128420803760 spent the five
+	// seconds that was and failed here by name. The call's own context outlasts that wait, so a
+	// Shutdown that never returns fails here rather than returning its context's deadline, which
+	// reads like the drain budget's.
+	returnBy := shutdownTestBudget + roomWait(t)
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), returnBy+roomWait(t))
 	defer cancelShutdown()
 	shutdown := make(chan error, 1)
 	go func() { shutdown <- service.shutdown(shutdownCtx, shutdownTestBudget) }()
 	var shutdownErr error
 	select {
 	case shutdownErr = <-shutdown:
-	case <-time.After(shutdownTestBudget + 5*time.Second):
+	case <-time.After(returnBy):
 		t.Fatal("Shutdown did not return once its drain budget ended")
 	}
 	appends.let()
@@ -272,10 +280,18 @@ func TestShutdownSettlesABurstOfAppendsIncludingOneRecordedAfterItsScan(t *testi
 		t.Fatal(err)
 	}
 
-	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), roomWait(t))
+	// The budget is the hold below plus the package's own wait: what is left of it once the
+	// appends are let go has to cover two durable appends and the settlement after them, which
+	// takes as long as the loaded machine takes. A fraction of production's nine seconds is not
+	// that - at two thirds of it this row returned with 0.17 s of its budget left on a loaded
+	// two-core pod, and on CI job 128420803760 it ran out of it altogether ("Shutdown returned
+	// context deadline exceeded ... the document's latest version is 1"). The call's own context
+	// outlasts the budget, so the budget is what ends the drain.
+	budget := shutdownBurstHold + roomWait(t)
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), budget+roomWait(t))
 	defer cancelShutdown()
 	shutdown := make(chan error, 1)
-	go func() { shutdown <- service.shutdown(shutdownCtx, shutdownBurstTestBudget) }()
+	go func() { shutdown <- service.shutdown(shutdownCtx, budget) }()
 	waitFor(t, 10*time.Second, "Shutdown to have scanned the room", func() bool {
 		return service.shuttingDown(artifactID)
 	})
@@ -286,11 +302,9 @@ func TestShutdownSettlesABurstOfAppendsIncludingOneRecordedAfterItsScan(t *testi
 	waitFor(t, 10*time.Second, "both appends to be recorded as outstanding", func() bool {
 		return service.room(artifactID).durableAppends.Load() >= 2
 	})
-	// Both appends stay queued past the five ninths of the budget the pre-fix one was, and land
-	// with the rest of it to spare. What is left of the budget has to cover two appends and the
-	// settlement after them, so this row runs on two thirds of production's rather than the third
-	// the others take.
-	time.Sleep(shutdownBurstTestBudget*5/9 + 200*time.Millisecond)
+	// Both appends stay queued for the hold, well past the scan a pre-fix Shutdown stopped at,
+	// and land with the rest of the budget to spare.
+	time.Sleep(shutdownBurstHold)
 	first.let()
 	select {
 	case <-second.entered:
@@ -347,15 +361,20 @@ func TestShutdownReturnsNilForARenderStillRunningPastItsDrainBudget(t *testing.T
 			return
 		}
 		once.Do(func() { close(entered) })
-		// Finish 3.4 s past the per-room drain budget - the measured overrun - with 1.6 s of the
-		// reserve still to spare. A plain sleep, not a context wait: a render or commit already
-		// running does not stop the instant drainCtx's deadline passes either.
+		// Finish 3.4 s past the per-room drain budget - the measured overrun - well inside the
+		// reserve the deadline above keeps past it. A plain sleep, not a context wait: a render
+		// or commit already running does not stop the instant drainCtx's deadline passes either.
 		time.Sleep(ShutdownDrainBudget + 3400*time.Millisecond)
 	}
 
-	// The document service's own production deadline: ShutdownDrainBudget plus the 5 s reserve
-	// cmd/dispatch/shutdown.go's documentShutdownTimeout now adds past it.
-	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), ShutdownDrainBudget+5*time.Second)
+	// The document service's own production deadline - ShutdownDrainBudget plus the 5 s reserve
+	// cmd/dispatch/shutdown.go's documentShutdownTimeout adds past it - and the package's own
+	// wait on top of it. That reserve is measured against the render's 3.4 s overrun alone,
+	// while the rest of Shutdown (reaching the hook, the refused commit, the worker's return)
+	// takes as long as the loaded machine takes: under load on a two-core pod Shutdown returned
+	// 13.03 s into the 14 s, and on CI job 128420803760 it ran out ("Shutdown returned document
+	// settlement unconfirmed at shutdown ... context deadline exceeded").
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), ShutdownDrainBudget+5*time.Second+roomWait(t))
 	defer cancelShutdown()
 	shutdown := make(chan error, 1)
 	go func() { shutdown <- service.Shutdown(shutdownCtx) }()
@@ -423,15 +442,17 @@ func TestShutdownLeavesASettlementThatMustWriteIntoItsRoomToResume(t *testing.T)
 }
 
 // shutdownTestBudget is the drain budget the rows above that must wait one out pass to
-// s.shutdown, a third of production's: every relation they check is a fraction of the budget - a
-// settlement held past it, a pair of appends queued past five ninths of it - so the third keeps
-// each one while the test waits three seconds instead of nine. The burst row's budget is two
-// thirds, since what is left of it has to cover two appends and the settlement after them.
-// TestShutdownReturnsNilForARenderStillRunningPastItsDrainBudget runs the production budget end
-// to end, through Shutdown.
+// s.shutdown, a third of production's: the relation they check is a fraction of the budget - a
+// settlement held past it - so the third keeps it while the test waits three seconds instead of
+// nine. shutdownBurstHold is how long the burst row keeps both of its appends queued, five
+// ninths of that budget, so they are still outstanding well past the room scan a pre-fix
+// Shutdown stopped at; that row's budget is the hold plus roomWait, because what is left of a
+// budget after the hold has to cover real work on a loaded machine rather than a fraction of
+// production's nine seconds. TestShutdownReturnsNilForARenderStillRunningPastItsDrainBudget
+// runs the production budget end to end, through Shutdown.
 const (
-	shutdownTestBudget      = ShutdownDrainBudget / 3
-	shutdownBurstTestBudget = ShutdownDrainBudget * 2 / 3
+	shutdownTestBudget = ShutdownDrainBudget / 3
+	shutdownBurstHold  = shutdownTestBudget*5/9 + 200*time.Millisecond
 )
 
 // newShutdownTestService is a document service whose settlements wait an hour, so a test's

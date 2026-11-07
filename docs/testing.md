@@ -57,7 +57,7 @@ repository's do call it: `packages/envoy` alone has about 3,700 such calls, whic
 CI's `envoy-go` job inside its limit (dispatch://INFRA-1075).
 A test may call it only when it reads and writes nothing the whole process shares.
 
-Three kinds of test must not, and each of them has already been found by the failure of a
+Four kinds of test must not, and each of them has already been found by the failure of a
 different test rather than of itself:
 
 - **One that swaps process-wide state**:
@@ -79,10 +79,24 @@ different test rather than of itself:
   `internal/dispatch/store/storetest` and `internal/broker/store/storetest` give each test a
   database of its own, so this is about what a test names for itself.
 
+- **One whose document is so large that two at once pass a race job's memory bound.**
+
+  `packages/envoy/internal/dispatch/docs` builds a million-item ygo document in three tests
+  (`TestRebuildDocumentRestoresDocumentThatCannotLoad`,
+  `TestARebuildWhoseSeedPassesTheItemCapIsRefusedAsTooLarge`,
+  `TestAnUndecodableHistoryLoadsAsDocumentUnloadable`) and documents of hundreds of kilobytes in
+  `TestAMarginWriteMatchesTheWholeDocumentWrite`, and the race detector shadows about four bytes
+  a byte. Two of the million-item three at once took `envoy-go-race-docs` to 8,939,044 kB against
+  `race_memory.py`'s bound of 8,388,608 kB (run 42397241249); the five rebuild tests alone at
+  `-parallel 2` peaked at 9,207,356 kB and serialised at 5,311,220 kB. This is the one kind
+  measured rather than reasoned: the job's sampler names the tests that were running at its
+  highest sample, and a test is made serial only once a run of that family on its own has shown
+  the peak.
+
 Find them through the helpers, not line by line:
 every one of those found so far reached its swap through a helper two or three calls away, and a
 file-by-file read missed them.
-Where a test stays serial, say in a comment beside it which of the three it is, so the next pass
+Where a test stays serial, say in a comment beside it which of the four it is, so the next pass
 over the package does not undo it.
 
 Prefer the cause to the exclusion.

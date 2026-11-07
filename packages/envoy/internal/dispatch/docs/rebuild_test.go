@@ -73,8 +73,18 @@ func rebuildDocument(t *testing.T, service *Service, artifactID string, markdown
 // latest saved version, advances the durable cursor, and leaves the artifact's version history.
 // Until the rebuild's transaction ends its room refuses loads and a second rebuild, which would
 // read the old history the transaction has not yet replaced; once it commits, the room opens.
+//
+// Serial, like the other two tests that build a million-item document -
+// TestARebuildWhoseSeedPassesTheItemCapIsRefusedAsTooLarge below and
+// TestAnUndecodableHistoryLoadsAsDocumentUnloadable (read_cache_test.go). Each holds about three
+// gigabytes under the race detector, which shadows about four bytes a byte, and two of them at
+// once is what took envoy-go-race-docs over race_memory.py's bound of 8,388,608 kB: in the job's
+// own run the step stood at 3,423,328 kB with this test beside the item-cap one and reached
+// 8,939,044 kB with it beside the undecodable one (run 42397241249, job 128477192418), and those
+// five rebuild tests on their own at -parallel 2 peaked at 9,207,356 kB, where the same five
+// serialised peaked at 5,311,220 kB. The race lane stays inside its bound and the plain lane
+// loses one test's overlap (dispatch://INFRA-1075, docs/testing.md).
 func TestRebuildDocumentRestoresDocumentThatCannotLoad(t *testing.T) {
-	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before\n")
 	persistence := NewPgVersioned(database)
@@ -244,8 +254,11 @@ func TestARebuildFromTheLatestVersionRestoresItWhateverItWeighs(t *testing.T) {
 // as too large to store, as an append of such an update is (AppendUpdateTx), not failed as a fault:
 // the route answers it 413 CAP_EXCEEDED rather than 500. 160,000 empty list items make about 1.12
 // million items, from 320 KB of markdown, and replace no history.
+//
+// Serial, for the reason TestRebuildDocumentRestoresDocumentThatCannotLoad is: a million-item
+// document under the race detector, and two such tests at once passed the race job's memory
+// bound.
 func TestARebuildWhoseSeedPassesTheItemCapIsRefusedAsTooLarge(t *testing.T) {
-	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before\n")
 	items := strings.Repeat("-\n", 160_000)

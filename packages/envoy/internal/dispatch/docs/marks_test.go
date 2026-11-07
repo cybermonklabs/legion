@@ -83,8 +83,11 @@ func TestMarkQuoteJoinsTheCallerTransaction(t *testing.T) {
 	}
 }
 
+// Serial: it measures a span, the wait VerifyMark spends on a mark no browser writes, and holds
+// it to MarkWait's 300 ms within a tolerance of 250 ms to a second. A parallel neighbour's work
+// is measured with it: on CI job 128420803760 the wait read 1.767431231s. The tolerance and the
+// bound stay as they are, and the measurement runs with the machine to itself.
 func TestVerifyMarkWaitsForTheBrowserUpdate(t *testing.T) {
-	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "")
 	service := New(Deps{

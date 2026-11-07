@@ -743,6 +743,8 @@ the `docs` package's is `envoy-go-race-docs` and the `api` package's is `envoy-g
 Each race job runs only when a file its own filter in `.github/workflows/ci.yaml` names changes
 — `envoy_go_race_docs`, the closure of the `docs` package alone, whose job gives it a 60-minute deadline, and `envoy_go_race_api` for the API;
 see Critical conventions for what keeps those filters current.
+`envoy-go-race-docs` runs the package at `-parallel 2` under `race_memory.py`, which fails the step when the largest process of the run passes 8,388,608 kB, and the tests that build a million-item ygo document are serial so that no two of them are resident at once: `TestRebuildDocumentRestoresDocumentThatCannotLoad` and `TestARebuildWhoseSeedPassesTheItemCapIsRefusedAsTooLarge` (`docs/rebuild_test.go`), and `TestAnUndecodableHistoryLoadsAsDocumentUnloadable` (`docs/read_cache_test.go`), as `TestAMarginWriteMatchesTheWholeDocumentWrite` is for its hundreds-of-kilobytes sources.
+Two of the three at once is what took the job to 8,939,044 kB (run 42397241249, job 128477192418); those five rebuild tests on their own peaked at 9,207,356 kB at `-parallel 2` and at 5,311,220 kB serialised (dispatch://INFRA-1075, `docs/testing.md`).
 
 A cleanup this package registers captures nothing that reaches the document it is attached to.
 `runtime.AddCleanup` says what that costs: "If ptr is reachable from cleanup or arg, ptr will never be collected and the cleanup will never run."
