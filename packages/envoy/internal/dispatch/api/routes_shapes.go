@@ -93,6 +93,10 @@ type relatedQuery struct {
 	// ExcludeIssue leaves that issue of the project and everything it holds out of the results
 	// and out of the word statistics; an issue of another project is 400 EXCLUDE_ISSUE_INPUT.
 	ExcludeIssue string `query:"exclude_issue"`
+	// ExcludeIssues, repeatable, leaves each of at most relatedExcludeLimit issues of the
+	// project out of the results alone, leaving the word statistics as they are; a longer list,
+	// or a key the project does not hold, is 400 EXCLUDE_ISSUE_INPUT.
+	ExcludeIssues []string `query:"exclude_issues"`
 	// KeywordsOnly, `true`, skips meaning search; any value but true or false is 400.
 	KeywordsOnly bool `query:"keywords_only"`
 }
