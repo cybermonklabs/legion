@@ -2,8 +2,12 @@
  * Container directives nest at most 32 deep (INFRA-581). The read-only engine draws an opener
  * standing inside 32 open directive containers as the line of text it is, and the default mode
  * refuses it naming its line, as the document service refuses a 33rd nested typed block. Bodies
- * that nest `:::` thousands deep, which froze a reader's tab for about a minute, parse in well
- * under a second in both modes.
+ * that nest `:::` thousands deep, which froze a reader's tab for about a minute, are read here
+ * for what they produce and what they cost: the read-only engine's parse for its text, the
+ * default mode's for the line its refusal names, and both for their cost, within
+ * `parseCpuBudgetMs` of CPU time and growing no faster than the body does. A row reads each body
+ * at its full size and at an eighth of it, in CPU time rather than wall time (tests/cpu-time.ts),
+ * because a busy machine stretches wall time without the parse doing any more work.
  */
 
 import { expect, test } from "bun:test";
@@ -11,6 +15,13 @@ import { readFileSync } from "node:fs";
 import type { Node as ProseMirrorNode } from "@milkdown/kit/prose/model";
 import type { BlockSchema } from "../src/block-schema.js";
 import { createHeadlessProof } from "../src/lib-headless.js";
+import {
+  CpuTimedError,
+  expectCostGrowsLinearly,
+  fastestCpuTimeOf,
+  growthStep,
+  parseCpuBudgetMs,
+} from "./cpu-time";
 
 /** The document service's own block schema: its callout takes `block+`, so callouts nest. */
 const serverBlockSchema: BlockSchema = JSON.parse(
@@ -22,14 +33,54 @@ const serverBlockSchema: BlockSchema = JSON.parse(
 
 const maxNesting = 32;
 
-/** 2,000 nested unclosed openers, then one long line: 31,000 characters. */
-const inputUnclosed = ":::a\n".repeat(2000) + "x".repeat(21000);
-/** 1,000 nested openers, then 1,000 closing lines. */
-const inputClosed = ":::a\n".repeat(1000) + ":::\n".repeat(1000);
+/**
+ * A body that nests `:::` deeply, as a reader was sent it and as a row measures it.
+ *
+ * `grow` builds the body at a size of the dimension whose growth costs, which is the openers of
+ * both bodies. A row builds the body at `full` and at an eighth of that size, so the two parses
+ * differ by their input and by nothing else. This mirrors `HeavyShape` in
+ * tests/heavy-bodies.test.ts.
+ */
+type DirectiveBody = {
+  name: string;
+  /** The body at `size` of its growing dimension. */
+  grow: (size: number) => string;
+  /** The size at which the body is the one the reader was sent. */
+  full: number;
+  /** What a parse of the full body produces in the read-only engine. */
+  expectDoc: (doc: ProseMirrorNode) => void;
+  /** What the default mode refuses the full body with. */
+  refusedInDefaultMode: RegExp;
+};
 
-/** The most a parse of either input may take: about 60 s and 15 s before INFRA-581, about 0.3 s
- *  after it. */
-const parseBudgetMs = 5_000;
+/** The long line's characters for each opener, so `grow` scales the two together. */
+const lineCharsPerOpener = 21_000 / 2_000;
+
+/** The two bodies, each at the size a reader was sent it. */
+const bodies: DirectiveBody[] = [
+  {
+    name: "2,000 nested unclosed openers then a long line",
+    grow: (size) => ":::a\n".repeat(size) + "x".repeat(Math.round(size * lineCharsPerOpener)),
+    full: 2_000,
+    expectDoc: (doc) => {
+      // The openers past the bound, and the long line, are the text of the 32 paragraphs the
+      // bound allows and of the one that holds the rest.
+      expect(doc.childCount).toBe(33);
+      expect(doc.textContent.length).toBe(30_968);
+    },
+    refusedInDefaultMode: /line 33\b/,
+  },
+  {
+    name: "1,000 nested openers then 1,000 closing lines",
+    grow: (size) => ":::a\n".repeat(size) + ":::\n".repeat(size),
+    full: 1_000,
+    expectDoc: (doc) => {
+      expect(doc.childCount).toBe(35);
+      expect(doc.textContent.length).toBe(8_965);
+    },
+    refusedInDefaultMode: /line 33\b/,
+  },
+];
 
 /**
  * `depth` callouts nested inside one another and closed, the innermost holding a paragraph. A
@@ -75,17 +126,29 @@ async function defaultProof() {
   return createHeadlessProof({ blockSchema: serverBlockSchema });
 }
 
-/** How long `parse` takes, in milliseconds; a refusal it throws still counts its time. */
-function timed(parse: () => unknown): number {
-  const started = performance.now();
+/**
+ * The cost of a parse the mode refuses, with the refusal itself. `fastestCpuTimeOf` samples a
+ * refused parse as many times as it samples any other work, and raises a `CpuTimedError` whose
+ * `cpuMs` is the least reading and whose `cause` is the refusal, so a row reads both from it.
+ * This mirrors `refusedCostOf` in tests/heavy-bodies.test.ts, which importing would run the
+ * tests of that file.
+ */
+function refusedCostOf(parse: () => unknown): CpuTimedError {
   try {
-    parse();
-  } catch {
-    // The default mode refuses both inputs; what is measured is how long it takes to.
+    fastestCpuTimeOf(parse);
+  } catch (error) {
+    if (error instanceof CpuTimedError) return error;
+    throw error;
   }
-  return performance.now() - started;
+  throw new Error("the parse was expected to be refused and was not");
 }
 
+// The `60_000` the four rows below carry replaces bun's own default of 5,000 ms, which is real
+// elapsed time and so is decided by the machine's load rather than by the parse. It is a hang
+// guard, not a bound on work: on bun 1.4.4 a per-test limit cannot interrupt a synchronous body,
+// and is reported once that body returns, so what ends a hang is the `dispatch-ui` job's
+// `timeout-minutes: 15` in .github/workflows/ci.yaml. Each of the four costs 9 to 33 ms here
+// with the machine quiet, over seven readings of each, so the limit is 1,800 times the dearest.
 test("read-only draws the 33rd nested opener and every line after it as text", async () => {
   // Each level's opener is followed by a line of its own, so every line drawn as text can be
   // found by its words; the openers past the bound are left unclosed, as the reported body's were.
@@ -109,21 +172,21 @@ test("read-only draws the 33rd nested opener and every line after it as text", a
   for (let level = 1; level <= maxNesting + 1; level++) {
     expect(doc.textContent).toContain(`level ${level} words`);
   }
-});
+}, 60_000);
 
 test("read-only nests 32 callouts as 32 typed blocks", async () => {
   const doc = (await readOnlyProof()).parseMarkdown(nestedCallouts(maxNesting));
   expect(calloutDepth(doc)).toBe(maxNesting);
   expect(innermostCallout(doc)?.textContent).toBe("a");
   expect(doc.textContent).not.toContain(":::");
-});
+}, 60_000);
 
 test("the default mode nests 32 callouts as 32 typed blocks", async () => {
   const doc = (await defaultProof()).parseMarkdown(nestedCallouts(maxNesting));
   expect(calloutDepth(doc)).toBe(maxNesting);
   expect(innermostCallout(doc)?.textContent).toBe("a");
   expect(doc.textContent).not.toContain(":::");
-});
+}, 60_000);
 
 test("the default mode refuses a 33rd nested callout, naming its line", async () => {
   const proof = await defaultProof();
@@ -133,21 +196,41 @@ test("the default mode refuses a 33rd nested callout, naming its line", async ()
   };
   expect(parse).toThrow(/line 33\b/);
   expect(parse).toThrow(/32/);
-});
+}, 60_000);
 
-for (const [name, input] of [
-  ["2,000 nested unclosed openers then a long line", inputUnclosed],
-  ["1,000 nested openers then 1,000 closing lines", inputClosed],
-] as const) {
-  test(`read-only parses ${name} in under 5 s`, async () => {
+// The `300_000` each row below carries is a hang guard, not the bound on work: on bun 1.4.4 a
+// per-test limit cannot interrupt a synchronous body, and is reported once that body returns, so
+// what ends a hang is the `dispatch-ui` job's `timeout-minutes: 15` in .github/workflows/ci.yaml.
+// `parseCpuBudgetMs` is the bound on work.
+for (const body of bodies) {
+  const smallInput = body.grow(Math.floor(body.full / growthStep));
+  const fullInput = body.grow(body.full);
+
+  test(`read-only parses ${body.name} at a cost proportional to its length`, async () => {
     const proof = await readOnlyProof();
-    const took = timed(() => proof.parseMarkdown(input));
-    expect(took, `the parse took ${Math.round(took)} ms`).toBeLessThan(parseBudgetMs);
+    const smallCost = fastestCpuTimeOf(() => proof.parseMarkdown(smallInput));
+    let doc: ProseMirrorNode | undefined;
+    const fullCost = fastestCpuTimeOf(() => {
+      doc = proof.parseMarkdown(fullInput);
+    });
+    expect(fullCost, `the full size cost ${Math.round(fullCost)} ms of CPU time`).toBeLessThan(
+      parseCpuBudgetMs
+    );
+    expectCostGrowsLinearly(`the read-only engine's parse of ${body.name}`, smallCost, fullCost);
+    if (doc === undefined) throw new Error("the measured parse produced no document");
+    body.expectDoc(doc);
   }, 300_000);
 
-  test(`the default mode parses or refuses ${name} in under 5 s`, async () => {
+  test(`the default mode refuses ${body.name} at a cost proportional to its length`, async () => {
     const proof = await defaultProof();
-    const took = timed(() => proof.parseMarkdown(input));
-    expect(took, `the parse took ${Math.round(took)} ms`).toBeLessThan(parseBudgetMs);
+    const small = refusedCostOf(() => proof.parseMarkdown(smallInput));
+    const full = refusedCostOf(() => proof.parseMarkdown(fullInput));
+    expect(full.cpuMs, `the full size cost ${Math.round(full.cpuMs)} ms of CPU time`).toBeLessThan(
+      parseCpuBudgetMs
+    );
+    expectCostGrowsLinearly(`the default mode's refusal of ${body.name}`, small.cpuMs, full.cpuMs);
+    const refusal = full.cause;
+    if (!(refusal instanceof Error)) throw refusal;
+    expect(refusal.message).toMatch(body.refusedInDefaultMode);
   }, 300_000);
 }
