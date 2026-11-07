@@ -16,9 +16,10 @@ import { harnessPorts } from "./harness-ports";
 // What it answers is a unit vector of `dimension` floats drawn from the text's own hash, so two
 // texts that are not the same are near-orthogonal: a cosine of about 0 ± 0.03 at this width,
 // well under the floor search keeps a meaning hit above (searchMeaningFloor, 0.25). A row that
-// wants a hit by meaning seeds a marker through `/__fixture/markers`: every text holding that
-// marker is embedded as the marker itself, so a query and the item it should find share one
-// vector and nothing else comes near either.
+// wants a hit by meaning seeds a group of words through `/__fixture/markers`: every text
+// holding one of a group's words is embedded as that group, so a query and the item a row means
+// it to find take one vector - a cosine of exactly 1 - while nothing else comes near either.
+// The words are matched without regard to case, as the dev embedder reads a text's words.
 
 /** Cohere Embed v4's width, which the server asks for and the embeddings column is sized for
  *  (`embed.Dimension`). An answer of any other width is refused by the client. */
@@ -45,8 +46,9 @@ export interface FakeEmbedCalls {
 
 /** Every piece of fixture state this listener holds; `PUT /__fixture/reset` replaces it whole. */
 interface FakeEmbedderState {
-  /** The markers a row seeded: a text holding one is embedded as that marker. */
-  markers: readonly string[];
+  /** The marker groups a row seeded, lower-cased: a text holding a word of one is embedded as
+   *  that group. */
+  markers: readonly (readonly string[])[];
   calls: FakeEmbedCall[];
 }
 
@@ -91,10 +93,13 @@ function vectorOf(text: string): number[] {
   return vector.map((component) => component * scale);
 }
 
-/** The text a vector is drawn from: the first seeded marker the text holds, so a query and the
- *  item a row means it to find share one vector, and the text itself where it holds none. */
+/** The text a vector is drawn from: the group whose words the text holds, so a query and the
+ *  item a row means it to find are one text to this fake, and the text itself where it holds
+ *  none of them. */
 function keyOf(text: string): string {
-  return state.markers.find((marker) => text.includes(marker)) ?? text;
+  const lowered = text.toLowerCase();
+  const group = state.markers.findIndex((words) => words.some((word) => lowered.includes(word)));
+  return group === -1 ? text : `marker group ${group}`;
 }
 
 // FAKE_EMBEDDER_PORT, or with it unset port 0, so the OS chooses; the line at the end reports
@@ -121,8 +126,17 @@ const server = Bun.serve({
       return Response.json(body);
     }
     if (request.method === "PUT" && url.pathname === "/__fixture/markers") {
-      const markers = (await request.json()) as string[];
-      state = { ...state, markers };
+      const markers = (await request.json()) as string[][];
+      state = {
+        ...state,
+        markers: markers.map((words) => words.map((word) => word.toLowerCase())),
+      };
+      return Response.json({ ok: true });
+    }
+    if (request.method === "PUT" && url.pathname === "/__fixture/calls") {
+      // The calls alone, so a row that made the server embed while it was setting its fixture
+      // up can start counting from zero without seeding its markers again.
+      state = { ...state, calls: [] };
       return Response.json({ ok: true });
     }
     if (request.method === "PUT" && url.pathname === "/__fixture/reset") {

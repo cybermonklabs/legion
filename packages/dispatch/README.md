@@ -94,6 +94,17 @@ credential-request feature is on, and tests seed its pending requests with
 deployment that configures none (`AGENTS.md` has the switch). It also starts
 `e2e/plain-http-proxy.ts` for the plain-HTTP project.
 
+`DISPATCH_E2E_EMBEDDER=fake` starts one listener more, `e2e/fake-embedder.ts`, and points the
+server's meaning search at it: the server calls it as it calls Bedrock, and it counts the calls
+it was asked for, so a row reads back how many embeddings a stretch of typing cost. The rows of
+`e2e/search-tiers.e2e.ts` need it and are skipped without it, since a suite whose assertions
+count search hits counts the keyword answers Dispatch gives a deployment with no embedder:
+
+```bash
+cd packages/dispatch
+DISPATCH_E2E_EMBEDDER=fake bun run e2e -- --project=chromium --project=iphone search-tiers
+```
+
 Run the local harness with its isolated database available:
 
 ```bash
@@ -307,6 +318,7 @@ Its `A9` section needs a server with an embedder, so the harness is started with
 (`e2e/run-server.sh`); without one that section prints its `SKIP:` line and every other section
 runs. The harness leaves the embedder off by default, so that a suite whose assertions count
 search hits counts the keyword answers Dispatch gives a deployment with no embedder.
+
 Against `bun run dispatch:local`:
 
 ```bash

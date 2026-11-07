@@ -1660,11 +1660,14 @@ and a server that makes no call to Bedrock - which it would otherwise make for
 every indexed text and every query, on the file store's static keys, and be
 refused 403. `DISPATCH_TEST_EMBEDDER_OFF=0` builds the embedder again, for a
 run that means to prove that path. Its default is the one default of the four
-that is not fixed: `0` where this harness builds the dev embedder for the run
-(`DISPATCH_DEV_EMBEDDER`, which the server reads beside dev sign-in alone, so
-`DISPATCH_E2E_EMBEDDER=1` under `DISPATCH_E2E_SIGNIN=oidc` builds none), `1`
-everywhere else, so the runs that read a vector the queue wrote need say it
-once and no other run reaches Bedrock.
+that is not fixed: `0` where this harness builds an embedder for the run - the
+dev embedder (`DISPATCH_DEV_EMBEDDER`, which the server reads beside dev
+sign-in alone, so `DISPATCH_E2E_EMBEDDER=1` under `DISPATCH_E2E_SIGNIN=oidc`
+builds none), or the fake embedder (`DISPATCH_E2E_EMBEDDER=fake`, the listener
+`e2e/fake-embedder.ts`, which the server calls as it calls Bedrock and which
+counts the calls it was asked for) - and `1` everywhere else, so the runs that
+read a vector the queue wrote, or count the embeddings a stretch of typing
+cost, need say it once and no other run reaches Bedrock.
 
 Proof uses collaborative cursor decorations at the desktop `xl` breakpoint and above. Compact
 layouts intentionally omit the remote cursor plugin because its edge widget disrupts mobile

@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 import { usesFakeBroker } from "./harness-broker";
+import { usesFakeEmbedder } from "./harness-embedder";
 import type { HarnessListenerKey } from "./harness-ports";
 import { harnessProcessCount } from "./harness-processes";
 import { usesRealBroker } from "./harness-real-broker";
@@ -200,8 +201,9 @@ function realBrokerListeners(): HarnessListener[] {
 // the plain-HTTP proxy, which forwards to the server's origin. A deployed run starts only those
 // marked `deployed`: its Dispatch server is already up, and the fake GitHub serves only a server
 // this run starts. The fake broker is listed exactly when the harness switch points this run's
-// server at it (e2e/harness-broker.ts), never for a deployed run, and the real broker and its
-// issuer exactly when a spec of this run can reach them (e2e/harness-real-broker.ts).
+// server at it (e2e/harness-broker.ts), never for a deployed run, the real broker and its
+// issuer exactly when a spec of this run can reach them (e2e/harness-real-broker.ts), and the
+// fake embedder exactly when this run's server embeds there (e2e/harness-embedder.ts).
 // e2e/harness-start.ts is the only starter: e2e/run.ts (Playwright), `bun run dispatch:local`
 // (e2e/local-instance.ts) and the docs media harness all start this table through it.
 export const harnessListeners: readonly HarnessListener[] = [
@@ -233,6 +235,19 @@ export const harnessListeners: readonly HarnessListener[] = [
           key: "fakeBroker" as const,
           name: "the fake secrets broker",
           report: /^fake broker listener on 127\.0\.0\.1:(\d+)$/,
+        },
+      ]
+    : []),
+  ...(usesFakeEmbedder
+    ? [
+        {
+          argv: ["bun", script("fake-embedder.ts")],
+          bootMs: listenerBootMs,
+          deployed: false,
+          id: "fake-embedder",
+          key: "fakeEmbedder" as const,
+          name: "the fake embedder",
+          report: /^fake embedder listener on 127\.0\.0\.1:(\d+)$/,
         },
       ]
     : []),

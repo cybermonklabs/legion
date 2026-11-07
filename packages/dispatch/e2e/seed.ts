@@ -1,6 +1,7 @@
 import { resetFakeEnvoy } from "./agents";
 import { forgetSessions, quiesceDocuments, resetLogins } from "./api";
 import { resetFakeBroker } from "./fake-broker-helpers";
+import { resetFakeEmbedder } from "./fake-embedder-helpers";
 import { resetFakeGithub } from "./fake-github-helpers";
 import { measured } from "./measure";
 import { sql } from "./psql";
@@ -244,10 +245,12 @@ async function resetDatabaseOnce(): Promise<void> {
  * It also clears the fake Envoy, whose
  * process-local subscriptions outlive an emptied database and otherwise match recycled issue keys,
  * the fake broker, whose seeded credential requests would otherwise reach every later row's
- * Inbox, and the fake GitHub, whose installations would otherwise let a later row's reconcile
- * succeed against repositories it never seeded; those resets wait on nothing in the database, so
- * they run beside the quiesce and delete, which keep their order. All settle before this returns,
- * a failed one included, so a reset that fails never leaves another running into the next test's.
+ * Inbox, the fake GitHub, whose installations would otherwise let a later row's reconcile
+ * succeed against repositories it never seeded, and the fake embedder, whose counted calls and
+ * seeded markers belong to the row that made them; those resets wait on nothing in the database,
+ * so they run beside the quiesce and delete, which keep their order. All settle before this
+ * returns, a failed one included, so a reset that fails never leaves another running into the
+ * next test's.
  * The delete takes `user_sessions` with it and the inserts above put alice's and bob's rows back
  * at generation 0, so their cookies authenticate again and e2e/api.ts keeps those two
  * (`forgetSessions`, which also forgets every other login's and every browser sign-in since the
@@ -255,7 +258,7 @@ async function resetDatabaseOnce(): Promise<void> {
  * (e2e/users.ts).
  *
  * The two sides are the timing fixture's parts `reset-sql` and `reset-fakes` (e2e/measure.ts):
- * the three fakes are one part, settled together so one failing still lets the others finish.
+ * the fakes are one part, settled together so one failing still lets the others finish.
  */
 export async function resetDatabase(): Promise<void> {
   const resets = await Promise.allSettled([
@@ -265,6 +268,7 @@ export async function resetDatabase(): Promise<void> {
         resetFakeEnvoy(),
         resetFakeBroker(),
         resetFakeGithub(),
+        resetFakeEmbedder(),
       ]);
       for (const fake of fakes) if (fake.status === "rejected") throw fake.reason;
     }),

@@ -116,6 +116,7 @@ export const harnessVariables = {
   dispatchA: "DISPATCH_E2E_PORT_A",
   dispatchB: "DISPATCH_E2E_PORT_B",
   fakeBroker: "FAKE_BROKER_PORT",
+  fakeEmbedder: "FAKE_EMBEDDER_PORT",
   fakeEnvoy: "FAKE_ENVOY_PORT",
   fakeGithub: "FAKE_GITHUB_PORT",
   plainHttp: "PLAIN_HTTP_PORT",
@@ -180,6 +181,7 @@ export function harnessPorts(
     dispatchA: harnessPort(env, harnessVariables.dispatchA),
     dispatchB: harnessPort(env, harnessVariables.dispatchB),
     fakeBroker: harnessPort(env, harnessVariables.fakeBroker),
+    fakeEmbedder: harnessPort(env, harnessVariables.fakeEmbedder),
     fakeEnvoy: harnessPort(env, harnessVariables.fakeEnvoy),
     fakeGithub: harnessPort(env, harnessVariables.fakeGithub),
     plainHttp: harnessPort(env, harnessVariables.plainHttp),
@@ -191,7 +193,8 @@ export function harnessPorts(
       entry.port !== 0 &&
       (harnessProcessCount === 2 || (entry !== ports.dispatchA && entry !== ports.dispatchB)) &&
       (harnessSignIn === "oidc" || entry !== ports.signinIssuer) &&
-      (usesRealBroker || (entry !== ports.devIssuer && entry !== ports.realBroker))
+      (usesRealBroker || (entry !== ports.devIssuer && entry !== ports.realBroker)) &&
+      (usesFakeEmbedder || entry !== ports.fakeEmbedder)
   );
   const collisions = [...new Set(given.map((entry) => entry.port))]
     .map((port) => ({
