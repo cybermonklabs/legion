@@ -1430,8 +1430,13 @@ That reason is required of each site, and `.github/scripts/check-fireevent-reaso
 requires it: Biome's rule reads imports, so a file that already carries the ignore line absorbs any
 number of new `fireEvent` calls with nothing to report, which is what a forward merge of the default
 branch brings — no conflict, no lint error, no type error.
-That check reads every `fireEvent` call under `packages/dispatch/web/src` and refuses one with no
-comment in the five lines above it; `ci.yaml`'s lint job runs it.
+That check reads every `fireEvent` call under `packages/dispatch/web/src`, both the
+`fireEvent.click(node)` form and the direct `fireEvent(node, event)` one, and refuses a call with no
+comment line in the five lines above it; `ci.yaml`'s lint job runs it and its test job runs
+`check-fireevent-reasons.test.sh`.
+A comment is a line whose trimmed text begins `//`, `/*`, `*` or `{/*`, and nothing else is: a `*`
+or a `//` elsewhere on a line is code, so neither an arithmetic line above a call nor a URL in a
+string on the call's own line satisfies it.
 It buys one thing, that no call is added silently, and it does not judge the reason: any comment
 satisfies it, so whether user-event really has no form for that interaction is a reviewer's to say.
 Its window is five lines rather than the line above, because a site's reason often sits above the

@@ -2118,6 +2118,9 @@ jobs:
       - name: Test the plugin-name check
         run: .github/scripts/check-plugin-names.test.sh
 
+      - name: Test the fireEvent reason check
+        run: .github/scripts/check-fireevent-reasons.test.sh
+
       - name: Test the release credential check
         run: .github/scripts/check-release-credentials.test.sh
 

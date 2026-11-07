@@ -32,9 +32,13 @@
 # refuse that shape while buying nothing. It still refuses a reason written only at the top of the
 # file, which is the case this exists for.
 #
-# A call inside a comment is not a call: a line whose own text holds `//` before the call is read as
-# prose and passed over, which is what lets a reason name `fireEvent.mouseDown` while explaining why
-# a site keeps it.
+# A comment is a line whose trimmed text begins with `//`, `/*`, `*` or JSX's `{/*`, and nothing
+# else is. A line holding `//` or `*` anywhere else is code: `const n = 3 * 2;` above a call, and a
+# URL in a string on the call's own line, both used to satisfy this check and now do not. A call
+# written inside such a comment is prose and is not counted, which is what lets a reason name
+# `fireEvent.mouseDown` while explaining why a site keeps it.
+#
+# Both forms of the API count: `fireEvent.click(node)` and the direct `fireEvent(node, event)`.
 #
 # Run from anywhere: .github/scripts/check-fireevent-reasons.sh
 # CI runs it in ci.yaml's lint job.
@@ -48,8 +52,11 @@ import sys
 from pathlib import Path
 
 ROOT = Path("packages/dispatch/web/src")
-CALL = re.compile(r"\bfireEvent\s*\.")
+CALL = re.compile(r"\bfireEvent\b\s*[.(]")
 WINDOW = 5
+# A comment line, and the only thing this reads as one: the trimmed text begins a comment. A `//`
+# or a `*` anywhere else on a line is code, which is what the two bypasses this closes relied on.
+COMMENT = re.compile(r"^\s*(//|/\*|\*|\{/\*)")
 
 sites = 0
 bare: list[tuple[Path, int, str]] = []
@@ -59,15 +66,11 @@ for path in sorted(ROOT.rglob("*")):
         continue
     lines = path.read_text().splitlines()
     for index, line in enumerate(lines):
-        match = CALL.search(line)
-        if match is None:
-            continue
-        comment = line.find("//")
-        if comment != -1 and comment < match.start():
+        if CALL.search(line) is None or COMMENT.match(line):
             continue
         sites += 1
         above = lines[max(0, index - WINDOW) : index]
-        if any("//" in previous or "/*" in previous or "*" in previous for previous in above):
+        if any(COMMENT.match(previous) for previous in above):
             continue
         bare.append((path, index + 1, line.strip()))
 
@@ -78,6 +81,7 @@ if bare:
         file=sys.stderr,
     )
     for path, line, text in bare:
+        print(f"::error file={path},line={line}::{path}:{line}: {text}")
         print(f"  {path}:{line}", file=sys.stderr)
         print(f"    {text}", file=sys.stderr)
     print(
