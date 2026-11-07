@@ -1,0 +1,190 @@
+/**
+ * CPU time, for the rows that bound what a parse costs.
+ *
+ * A parse's wall time counts every moment the scheduler leaves this process off a core, so a busy
+ * machine stretches it without the parse doing any more work. That is what made the rows reading
+ * `performance.now()` fail on a loaded runner. CPU time leaves that wait out. It is not immune to
+ * load: a busy machine still slows this process's own CPU time through shared caches and clock
+ * frequency, so a growth check samples each side more than once.
+ *
+ * This module is a port of the Go package `packages/envoy/internal/cputest` (`Process`,
+ * `resolution` and `Measure`) and of `cpuTimeOf`, `fastestOf`, `growthVerdict` and `growsLinearly`
+ * in `packages/envoy/internal/dispatch/pmdoc/linear_test.go`. Read those for the longer account.
+ *
+ * `process.cpuUsage()` counts the whole process, so a row that times a call by it runs no other
+ * measured work beside that call: the rows using this module parse one document at a time.
+ */
+
+import { expect } from "bun:test";
+import process from "node:process";
+
+/**
+ * The step a growth check compares across: the full shape against an eighth of it.
+ *
+ * With `linearSlack` the check's bound is 32. The highest healthy ratio measured in this pod is
+ * 14.46, and a cost growing with the square of its input reads about 64 at this step, so a healthy
+ * parse and a quadratic one fall on opposite sides of the bound. See
+ * `packages/envoy/internal/cputest`, which this module ports.
+ */
+export const growthStep = 8;
+
+/**
+ * How many times past the size step a cost may grow and still read as linear.
+ *
+ * The slack pays for the measurement's own error: each of the two readings is wrong by up to
+ * 4 per cent (see `windowSteps`) before the machine's noise, and the highest healthy ratio
+ * measured in this pod is 14.46 against a bound of 32. The slack must stay below `growthStep`, or
+ * the arithmetic stops discriminating: at a slack of 8 the bound would be 64, which a quadratic's
+ * 64 only equals rather than passes. `linearSlack` in
+ * `packages/envoy/internal/dispatch/pmdoc/linear_test.go` is 3 at the same step; this pod's own
+ * throughput moves by tens of per cent between windows, which is what the fourth covers.
+ */
+export const linearSlack = 4;
+
+/**
+ * The most CPU time one parse of a shape at its full size may cost, on any runner.
+ *
+ * The highest healthy reading measured in this pod is 3,570 ms ("49 items nested by indentation
+ * then blank lines", default mode, under 12 busy loops), so this carries 3.4 times of slack for a
+ * slower machine. The one broken parser measured costs 205,220 ms, which clears the budget 17
+ * times. It is a bound on work, not a hang guard: a parse that hangs is ended by the CI job's
+ * `timeout-minutes`, never by this number. Both readings were taken with `cpuTimeOf` below, the
+ * port of `packages/envoy/internal/cputest`.
+ */
+export const parseCpuBudgetMs = 12_000;
+
+/**
+ * How many changes of the CPU clock `cpuClockStepMs` waits for. A sample that also counts another
+ * thread's CPU time reads a larger step, never a smaller one, so the least of a few is the clock's
+ * own step (`resolutionSamples` in `packages/envoy/internal/cputest`).
+ */
+const clockStepSamples = 5;
+
+/**
+ * How many clock steps a timed window must last before `cpuTimeOf` divides it by its runs
+ * (`windowSteps` in `packages/envoy/internal/cputest`).
+ *
+ * A reading is wrong by up to one step at each end, so 50 steps keeps that error near 4 per cent.
+ * Without it a 20 ms parse reads 10, 20 or 30 ms on this pod's 10 ms clock, and a ratio built from
+ * two such readings is noise.
+ */
+const windowSteps = 50;
+
+/** How many readings `fastestCpuTimeOf` takes when its caller names no count. */
+const defaultSamples = 2;
+
+/** This process's total CPU time since it started, user and system, in milliseconds. */
+function processCpuMs(): number {
+  const usage = process.cpuUsage();
+  return (usage.user + usage.system) / 1000;
+}
+
+/** What `cpuClockStepMs` measured, kept so the measurement runs once. */
+let clockStepMs = 0;
+
+/**
+ * The smallest step `process.cpuUsage()` moves in on this machine, in milliseconds: the least
+ * difference between two readings that differ, over `clockStepSamples` spins. It is measured once
+ * and kept. A Linux kernel moves the clock in steps far under a millisecond; gVisor moves it in
+ * 10 ms steps, so there a call shorter than 10 ms reads as 0 or as 10 ms.
+ */
+export function cpuClockStepMs(): number {
+  if (clockStepMs === 0) clockStepMs = measureCpuClockStepMs();
+  return clockStepMs;
+}
+
+function measureCpuClockStepMs(): number {
+  let step = 0;
+  for (let sample = 0; sample < clockStepSamples; sample++) {
+    const started = processCpuMs();
+    let next = processCpuMs();
+    while (next === started) next = processCpuMs();
+    if (step === 0 || next - started < step) step = next - started;
+  }
+  return step;
+}
+
+/**
+ * What a throw inside a measured window costs. `cpuTimeOf` gives the throw back to its caller
+ * rather than swallowing it, so a row can assert the cost of a parse that refuses its input and
+ * then assert the refusal itself.
+ */
+export class CpuTimedError extends Error {
+  /** The CPU time one run cost: the window the throw ended, divided by the runs it managed. */
+  readonly cpuMs: number;
+
+  constructor(cpuMs: number, cause: unknown) {
+    super(`the work threw after ${Math.round(cpuMs)} ms of CPU time`, { cause });
+    this.name = "CpuTimedError";
+    this.cpuMs = cpuMs;
+  }
+}
+
+/**
+ * The CPU time one run of `work` costs, in milliseconds.
+ *
+ * It runs `work` once in a timed window, and runs it more times in the next window until a window
+ * lasts `windowSteps` clock steps, then divides that window by its runs. A shorter window is
+ * discarded, never averaged in. This is `Measure` in `packages/envoy/internal/cputest`: the run
+ * count doubles, or jumps straight to a quarter past the window when the window so far says that
+ * is further, so a run a little slower than this window's average still lands the next window past
+ * the mark.
+ *
+ * A throw ends the measurement at once, with no further runs, and reaches the caller as a
+ * `CpuTimedError` carrying the original throw as its `cause` and the reading as its `cpuMs`.
+ */
+export function cpuTimeOf(work: () => unknown): number {
+  const want = windowSteps * cpuClockStepMs();
+  let runs = 1;
+  for (;;) {
+    let ran = 0;
+    const started = processCpuMs();
+    try {
+      for (let run = 0; run < runs; run++) {
+        ran++;
+        work();
+      }
+    } catch (cause) {
+      throw new CpuTimedError((processCpuMs() - started) / ran, cause);
+    }
+    const took = processCpuMs() - started;
+    if (took >= want) return took / runs;
+    if (took <= 0) {
+      runs *= 10;
+      continue;
+    }
+    runs = Math.max(runs * 2, Math.floor((runs * want * 5) / (took * 4)) + 1);
+  }
+}
+
+/**
+ * The least of `samples` readings of `cpuTimeOf`.
+ *
+ * Both sides of a growth check take the same number of samples. Sampling the small side more often
+ * than the large one biases the baseline low under bursty load and inflates the ratio, which is the
+ * defect `linear_test.go`'s own `sampleCount` comment records from its third round.
+ */
+export function fastestCpuTimeOf(work: () => unknown, samples = defaultSamples): number {
+  let best = cpuTimeOf(work);
+  for (let sample = 1; sample < samples; sample++) {
+    const took = cpuTimeOf(work);
+    if (took < best) best = took;
+  }
+  return best;
+}
+
+/**
+ * Fails when `full`, the cost at the full size, grew more than `linearSlack` times faster than the
+ * input did at `growthStep` (`growthVerdict` in `linear_test.go`). Both costs are in milliseconds.
+ *
+ * It does not catch a parse that is 3 times slower and still linear, and it reads two measurements
+ * each wrong by up to 4 per cent before the machine's own noise, which is what the slack pays for.
+ */
+export function expectCostGrowsLinearly(name: string, small: number, full: number): void {
+  const bound = linearSlack * growthStep;
+  const ratio = full / small;
+  const reading = `${Math.round(full)} ms at the full size against ${Math.round(small)} ms`;
+  const grew = `at an eighth of it, ${ratio.toFixed(1)} times for an input ${growthStep} times`;
+  const message = `${name} cost ${reading} ${grew} larger (at most ${bound} times)`;
+  expect(full, message).toBeLessThanOrEqual(bound * small);
+}
