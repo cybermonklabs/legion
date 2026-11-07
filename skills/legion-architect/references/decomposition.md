@@ -45,8 +45,8 @@ EOF
   proof of the root's acceptance, or a part of the architect's own work, and say where it folds:
   the root's pull request or an open child's. Then name every root requirement neither its pull
   request nor a child carries, every child spec that narrows one, and what of the root's goal the
-  list leaves undelivered."* `wait` for its verdict, a job of its own, and answer each before you
-  file any of it. A child survives it only when it needs a repository or a deploy order of its
+  list leaves undelivered."* `wait` for its verdict, a job of its own, and answer each before
+  filing. A child survives it only when it needs a repository or a deploy order of its
   own: its code is in a repository no open pull request of this tree is in, or it must be applied
   on its own before other work of the tree can build on it. A repeated change — the same edit per
   program, directory or instance of this tree's own work — is one child, never one per instance.
