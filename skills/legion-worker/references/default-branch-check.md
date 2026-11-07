@@ -40,15 +40,16 @@ answers. Use the value it gives as-is, never re-typed:
    base=$(gh pr view <n> -R <owner>/<repo> --json baseRefName -q '.baseRefName | @json')
    ```
 
-2. Else the branch your issue's plan or the deployment's instructions names. That name is text
-   you read, so quote it the same way rather than typing it into a command: write it with your
-   file tool to `$TMPDIR/<issue>-base`, then
+2. Else the branch your issue's plan, your task or the deployment's instructions names. That
+   name is text you read, so quote it the same way rather than typing it into a command: write
+   it with your file tool to `$TMPDIR/<issue>-base`, then
    `base=$(jq -Rs 'rtrimstr("\n")' "$TMPDIR/<issue>-base")`.
 3. Else `$default`.
 
-Fetch that base before a revset names it. A revset that names a bookmark your workspace does not
-hold is a hard error, and your pod's own fetch brings the default branch and the issue branches
-alone:
+Your workspace holds the repository's default branch and the issue branches, so where `$base` is
+one of those the revset below resolves already. Fetch any other base once in the turn, before a
+revset names it, since a revset that names a bookmark your workspace does not hold is a hard
+error:
 
 ```sh
 jj -R "$LEGION_WORKSPACE" git fetch --branch "$base"

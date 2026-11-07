@@ -44,9 +44,10 @@ Every path it cites is in cybermonklabs/legion.
   Resolve the conflict with a forward merge instead of a rewrite — merge the branch's own
   bookmark with the destination in one new commit, so nothing existing is rewritten and nothing
   built on your prior commits, in this tree or another, ever moves. `base` is the pull request's
-  base branch (the repository's default branch unless the pull request is stacked), read as a jj
-  string literal: jj parses a bare bookmark name as an expression, and a name pasted between
-  quotes can close them itself (`release"@origin|"stable` would select `release` and `stable`), so
+  base branch (the repository's default branch, unless the issue's base is another branch or the
+  pull request is stacked), read as a jj string literal: jj parses a bare bookmark name as an
+  expression, and a name pasted between quotes can close them itself
+  (`release"@origin|"stable` would select `release` and `stable`), so
   the revset is built from the serialized name alone:
 
   ```bash
@@ -79,28 +80,34 @@ branch before any role started, so the branch is moved onto the base once, by th
 commits. That role does this:
 
 1. **Read the base as a jj string literal**, as the merge recipe above reads it. A branch name
-   can hold `|`, `(` or `)`, and jj reads those characters as revset syntax. The name is in the
-   plan or in the instructions, and the first role to commit has no pull request to read it
-   from, so write it with your file tool to `$TMPDIR/<KEY>-base` rather than typing it into a
-   command, then `base=$(jq -Rs 'rtrimstr("\n")' "$TMPDIR/<KEY>-base")`. Once a pull request is
-   open, `base=$(gh pr view <n> -R <owner>/<repo> --json baseRefName -q '.baseRefName | @json')`
-   gives the same quoted form. Why the name is never typed:
-   `skill://legion-worker/references/default-branch-check.md`.
+   can hold `|`, `(` or `)`, and jj reads those characters as revset syntax, so the name is never
+   typed into a command. `skill://legion-worker/references/default-branch-check.md` owns that
+   argument and the three sources `$base` is read from; the first role to commit has no pull
+   request to read it from, so its source is the second, the name the plan, your task or the
+   instructions gives: write it with your file tool to `$TMPDIR/<issue>-base`, then
+   `base=$(jq -Rs 'rtrimstr("\n")' "$TMPDIR/<issue>-base")`.
 2. **Fetch the base by name**: `jj -R "$LEGION_WORKSPACE" git fetch --branch "$base"`. A pod's
    workspace holds the default branch and the issue branches, and need not hold any other. The
    one quoted value serves both `--branch`, which takes a string pattern, and the revsets below.
-3. **Start the work at the base's tip**: `jj -R "$LEGION_WORKSPACE" new "${base}@origin"`. Then
-   commit as every role commits: `jj -R "$LEGION_WORKSPACE" split -m "<message>" <paths…>`.
+3. **Start the work at the base's tip, before you edit a file**:
+   `jj -R "$LEGION_WORKSPACE" new "${base}@origin"`. Where `@` already holds changes of yours,
+   move it rather than leave them behind on the default branch:
+   `jj -R "$LEGION_WORKSPACE" rebase -r @ -d "${base}@origin"`, which rewrites nothing anyone
+   else holds, since `@` has no descendants. Then commit as every role commits:
+   `jj -R "$LEGION_WORKSPACE" split -m "<message>" <paths…>`.
 4. **Move the issue's bookmark onto that commit**:
    `jj -R "$LEGION_WORKSPACE" bookmark set legion/<KEY> -r @- --allow-backwards`. Write `-r @-`,
    never `-r @`: after a split, `@` is an undescribed commit, and `jj git push` refuses a commit
    with no description.
 5. **Push the ordinary way**: `jj -R "$LEGION_WORKSPACE" git push --bookmark legion/<KEY>`. jj
    takes the lease itself. There is no force flag here, and none is wanted.
-6. **Open the pull request on that base**: `gh pr create --base <the base's plain name> --repo
-   <owner>/<repo> …`. Pass the name itself here, never `$base`: `$base` carries its own quote
-   characters for jj's revset parser, and `gh` would read those quotes as part of the branch
-   name.
+6. **Open the pull request on that base.** `gh` takes the plain name, which `$base` does not
+   hold: `$base` carries the quote characters jj's revset parser needs, and `gh` would read them
+   as part of the branch name. Recover the plain name through a variable rather than type it,
+   since the name is untrusted text either way: `plain=$(printf %s "$base" | jq -r .)`, then
+   `cd "$TMPDIR" && gh pr create --base "$plain" --head legion/<KEY> --repo <owner>/<repo> …`. The
+   `--head` and the directory with no `.git` above it are what `gh pr create --repo` needs; from
+   inside the workspace it answers `failed to run git: fatal: not a git repository`.
 7. **Merge a conflict forward with that base**, never with the repository's default branch. The
    recipe in *Reintegrating the base* above reads `baseRefName`, so it already names the base the
    pull request takes, and it needs no change.
