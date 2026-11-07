@@ -61,6 +61,16 @@
 #       The probe's own two requests are the proxy's first lines, and `report` leaves them out
 #       of the site's counts: the state file carries the line count they reached.
 #
+#       Two things here are worth reusing in any fault rig, and both are about not depending on
+#       a client's behaviour. Read every probe twice — what the client read, and whether the
+#       proxy logged a line for the request at all. The second reading is the one that survives
+#       a client nobody has thought of: a bypassed request leaves no line whatever caused it,
+#       whether it was a variable, a client's own proxy configuration or a client honouring only
+#       CONNECT. And derive the unfaulted control from the fault's own input rather than naming
+#       a host of its own, so the control cannot drift from what it controls for: here both
+#       targets come from the same `--hosts`, so a change to the fault moves the control with it
+#       and no edit can leave them describing different things.
+#
 #   clear
 #       Kills any proxy still running and refuses the job if a proxy variable carries a value in
 #       its environment: the rig writes none to $GITHUB_ENV, so the steps after it — the ci-ok
