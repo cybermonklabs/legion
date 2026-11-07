@@ -89,13 +89,16 @@ func TestATurnStartSurvivesABrokenDatabaseConnection(t *testing.T) {
 	// The claim's next decision makes the write the database did not take. A second agent_start is
 	// a turn already in flight, which the table ignores — the repair at the head of the decision is
 	// the whole of what this drives.
+	//
+	// Both facts are waited for together. They are written by one goroutine but not at one
+	// moment, and reading either the instant the other arrives is a race the daemon does not owe
+	// the test: the row reading `working` is what the repair wrote, and the line is what the
+	// daemon says about having written it.
 	sh.send(shimwire.AgentStart{})
-	testwait.Eventually(t, "the claim to read working in the database", func() bool {
-		return storedClaimState(t, pool, token) == supervise.StateWorking
+	testwait.Eventually(t, "the claim to read working in the database and the daemon to log the write it owed", func() bool {
+		return storedClaimState(t, pool, token) == supervise.StateWorking &&
+			strings.Contains(logs.String(), loggedMessage(owedWriteMadeLine))
 	})
-	if !strings.Contains(logs.String(), loggedMessage(owedWriteMadeLine)) {
-		t.Fatalf("the daemon never logged %q: %s", owedWriteMadeLine, logs.String())
-	}
 
 	// No daemon was restarted: the one boot this test started is the one that wrote the row.
 	if count, _ := boots(t, cfg); count != 1 {
