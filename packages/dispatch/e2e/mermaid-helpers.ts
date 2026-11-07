@@ -336,22 +336,40 @@ export async function delayMermaidChunks(
   return () => asked;
 }
 
+/** One of Mermaid's chunks by the rollup name Vite writes into the middle of its file name
+ *  (`assets/mermaid-chunk-<rollup name>-<hash>.js`, `web/vite.config.ts`): a type's definition
+ *  chunk carries its own module's name and Mermaid's hash after it
+ *  (`mermaid-chunk-timeline-definition-SEUHKTQE-<vite hash>.js`), a layout engine carries the
+ *  engine's (`dagre`, `cose-bilkent`, `elk`, `swimlanes`), and Mermaid's own core is
+ *  `mermaid.core`. The pattern stops at the name, so neither hash is written into a row. */
+export function mermaidChunkNamed(name: string): RegExp {
+  return new RegExp(`/assets/mermaid-chunk-${name.replaceAll(".", "\\.")}-[^/]+\\.js$`);
+}
+
 /** What a row drives the failed-chunk route with: how many chunk requests were refused, and the
- *  call that stops refusing them, so the same worker can be watched loading its renderer on a
- *  later source. */
+ *  call that stops refusing them, so the same worker can be watched loading its renderer, or
+ *  drawing the source it could not draw before, on a later source. */
 export interface FailedMermaidChunks {
   failed(): number;
   serveThemAgain(): void;
 }
 
-/** Fails every request `context` makes for one of Mermaid's chunks, as a browser whose
- *  connection dropped or whose deploy moved them does, until `serveThemAgain` runs; from then
- *  on each chunk is served as it would have been. The worker itself is untouched, so the row
- *  reads what a running worker that cannot load its second renderer does to the page. */
-export async function failMermaidChunks(context: BrowserContext): Promise<FailedMermaidChunks> {
+/** Fails every request `context` makes for a Mermaid chunk `pattern` matches, as a browser
+ *  whose connection dropped or whose deploy moved them does, until `serveThemAgain` runs; from
+ *  then on each is served as it would have been. The worker itself is untouched, so a row
+ *  reads what a running worker that cannot fetch what it needs does to the page.
+ *
+ *  The default pattern fails them all, so the worker stops at the renderer module's own chunk
+ *  with Mermaid never loaded; `mermaidChunkNamed(...)` fails the one chunk a redeploy moved,
+ *  and then the worker loads Mermaid and reaches the fetch that this source's own type or
+ *  layout makes, inside the parse, the warm render or the draw. */
+export async function failMermaidChunks(
+  context: BrowserContext,
+  pattern: RegExp = mermaidChunks
+): Promise<FailedMermaidChunks> {
   let failed = 0;
   let failing = true;
-  await context.route(mermaidChunks, async (route) => {
+  await context.route(pattern, async (route) => {
     if (!failing) {
       await route.continue();
       return;
@@ -362,51 +380,6 @@ export async function failMermaidChunks(context: BrowserContext): Promise<Failed
   return {
     failed: () => failed,
     serveThemAgain: () => {
-      failing = false;
-    },
-  };
-}
-
-/** One of Mermaid's chunks by the rollup name Vite writes into the middle of its file name
- *  (`assets/mermaid-chunk-<rollup name>-<hash>.js`, `web/vite.config.ts`): a type's definition
- *  chunk carries its own module's name and Mermaid's hash after it
- *  (`mermaid-chunk-timeline-definition-SEUHKTQE-<vite hash>.js`), a layout engine carries the
- *  engine's (`dagre`, `cose-bilkent`, `elk`, `swimlanes`), and Mermaid's own core is
- *  `mermaid.core`. The pattern stops at the name, so neither hash is written into a row. */
-function mermaidChunkNamed(name: string): RegExp {
-  return new RegExp(`/assets/mermaid-chunk-${name.replaceAll(".", "\\.")}-[^/]+\\.js$`);
-}
-
-/** What a row drives the one-chunk route with: how many requests for that chunk were refused,
- *  and the call that stops refusing it, so the same worker can be watched drawing the source it
- *  could not draw before. */
-export interface FailedMermaidChunk {
-  failed(): number;
-  serveItAgain(): void;
-}
-
-/** Fails every request `context` makes for the one Mermaid chunk `name` names, and serves every
- *  other one, until `serveItAgain` runs. Where `failMermaidChunks` fails them all and so stops
- *  at the renderer module's own chunk, with Mermaid never loaded, this is the chunk a redeploy
- *  moved: the worker loads Mermaid and reaches the fetch that this source's own type or layout
- *  makes, inside the parse, the warm render or the draw. */
-export async function failOneMermaidChunk(
-  context: BrowserContext,
-  name: string
-): Promise<FailedMermaidChunk> {
-  let failed = 0;
-  let failing = true;
-  await context.route(mermaidChunkNamed(name), async (route) => {
-    if (!failing) {
-      await route.continue();
-      return;
-    }
-    failed += 1;
-    await route.abort("failed");
-  });
-  return {
-    failed: () => failed,
-    serveItAgain: () => {
       failing = false;
     },
   };
@@ -436,7 +409,13 @@ export async function recordMermaidChunks(
  *  the drawing carries: Mermaid prefixes every rule that has a selector with the drawing's own id
  *  (`#dispatch-mermaid-<n>`, `mermaid-upstream.ts`), where beautiful-mermaid's sheet styles `text`
  *  with its own font and prefixes nothing. `"neither"` where the host holds no drawing or one
- *  whose sheet is neither renderer's, so a row's failure says what it found. */
+ *  whose sheet is neither renderer's, so a row's failure says what it found.
+ *
+ *  The mounted sheet is the page's own CSS engine's serialization of the rules it read, not the
+ *  renderer's text (`sanitizeMermaidSvg`, `@legion/proof-editor/mermaid`), so neither marker may
+ *  be matched as its renderer spells it: beautiful-mermaid writes
+ *  `font-family: 'Inter', system-ui, sans-serif`, and the engine serializes that family
+ *  unquoted. Match what a serialization keeps. */
 export function rendererOf(preview: Locator): Promise<MermaidRendererName | "neither"> {
   return preview.evaluate((host) => {
     const drawing = host.shadowRoot?.querySelector("svg");
@@ -445,7 +424,7 @@ export function rendererOf(preview: Locator): Promise<MermaidRendererName | "nei
       "\n"
     );
     if (/#dispatch-mermaid-\d+/.test(sheet)) return "mermaid";
-    if (sheet.includes("font-family: 'Inter'")) return "beautiful-mermaid";
+    if (/font-family:\s*'?Inter'?,/.test(sheet)) return "beautiful-mermaid";
     return "neither";
   });
 }

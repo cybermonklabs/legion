@@ -164,10 +164,12 @@ export function showMermaidSvg(host: HTMLElement, svg: SVGSVGElement, sheet: str
  * markup, where that line is written into presentation attributes, and its escaped spelling
  * `fill:\75rl(https://…)`; a kept `foreignObject` holds nothing but `ALLOWED_XHTML_ELEMENTS`
  * carrying `ALLOWED_XHTML_ATTRIBUTES`, so no `<img>`, `<a>` or `href` survives in a label; and
- * each `<style>` loses every `@import` at-rule, whatever it imports, and every declaration that
- * fetches, which is where the same `classDef` paint lands in upstream Mermaid's markup
- * (`withoutFetchingRules`), the whole sheet going instead where what is left still fetches. The
- * parser and every node come from `document` and its window, never from the global scope.
+ * each kept `<style>` is rebuilt from the rules `document`'s own CSS parser reads in it, less
+ * every rule that fetches, which is where the same `classDef` paint lands in upstream Mermaid's
+ * markup, and the whole sheet goes instead where what that parser left still fetches or still
+ * holds an `@import` (`sanitizedSheet`). The parser and every node come from `document` and its
+ * window, never from the global scope, so the engine that reads a sheet here is the engine that
+ * reads it when the page mounts it.
  */
 export function sanitizeMermaidSvg(
   markup: string,
@@ -177,7 +179,7 @@ export function sanitizeMermaidSvg(
   const view = document.defaultView;
   if (view === null) throw new Error("sanitizeMermaidSvg needs a document that has a window");
   const root = parse === "xml" ? xmlRoot(view, markup) : htmlRoot(view, markup);
-  return document.adoptNode(sanitizeElement(root, parse, "svg")) as SVGSVGElement;
+  return document.adoptNode(sanitizeElement(root, view, parse, "svg")) as SVGSVGElement;
 }
 
 /** The root of an XML parse: the markup must parse, and its root must be the SVG namespace's
@@ -221,151 +223,85 @@ function fetches(text: string): boolean {
   return FETCHING_FUNCTION.test(text.replace(LOCAL_URL, ""));
 }
 
-/** The `@import` at-keyword and no longer name, tested at one index rather than searched for.
- *  Every `@import` goes, whatever it imports: a quoted target is no fetching function, so an
- *  `@import` a CSS comment separates from a quoted URL would be refused by nothing below, and
- *  this is the only gate on the sheet. A spelling whose keyword is escaped (`@\69mport`, which
- *  a browser reads as this one) is not matched here and needs none: the backslash refusal over
- *  the whole sheet takes it. */
-const IMPORT_KEYWORD = /@import(?![\w\-\\])/iy;
+/** The `@import` at-keyword, searched for over the whole of what the parser left. The engine
+ *  below drops every `@import` rule of the text it is given, because `replaceSync` is specified
+ *  to; this is the second gate, so that an engine that read the sheet differently from the one
+ *  that will mount it cannot carry an import past this module. Nothing else here would see one:
+ *  a quoted target is no fetching function. An escaped spelling (`@\69mport`, which a browser
+ *  reads as this one) needs no pattern of its own, since a backslash refuses the sheet. */
+const IMPORT_RULE = /@import/i;
 
-/** An unquoted `url(`, tested three characters before its `(`: the one CSS token that holds a
- *  `;`, `{` or `}` the way a quoted string does, so `@import url(https://e.example/a;b.css)`
- *  writes a `;` that ends nothing. A quoted one needs no rule of its own, because the string
- *  inside it is read as a string. */
-const UNQUOTED_URL = /(?<![\w\-\\])url\(\s*(?!["'])/iy;
-
-/** Where the sheet ends before a token does. It is what `String.indexOf` answers for a closing
- *  character that is not there, so the reader tests for it without a test of its own. */
-const NOT_CLOSED = -1;
-
-/** One past the token that begins at `at`, `char` being the character there: a quoted string or
- *  an unquoted `url(…)`, the two a `;`, `{` or `}` inside ends nothing in. `at + 1` where the
- *  `(` opens anything else, and `NOT_CLOSED` where the sheet ends before the token does. */
-function tokenEnd(sheet: string, at: number, char: string): number {
-  if (char === "(") {
-    if (at < 3) return at + 1;
-    UNQUOTED_URL.lastIndex = at - 3;
-    if (!UNQUOTED_URL.test(sheet)) return at + 1;
-    const closed = sheet.indexOf(")", at + 1);
-    return closed === NOT_CLOSED ? NOT_CLOSED : closed + 1;
-  }
-  const closed = sheet.indexOf(char, at + 1);
-  return closed === NOT_CLOSED ? NOT_CLOSED : closed + 1;
-}
-
-/** One past the `@import` rule whose keyword ends at `from`: past the `;` that ends it, past the
- *  block a `{` opens, at the `}` that closes the rule around it, or at the end of the sheet,
- *  whichever comes first — which is how a browser's own parser consumes an at-rule it does not
- *  take. */
-function importEnd(sheet: string, from: number): number {
-  let depth = 0;
-  let at = from;
-  while (at < sheet.length) {
-    const char = sheet.charAt(at);
-    if (char === '"' || char === "'" || char === "(") {
-      const end = tokenEnd(sheet, at, char);
-      if (end === NOT_CLOSED) return sheet.length;
-      at = end;
-      continue;
-    }
-    if (char === ";" && depth === 0) return at + 1;
-    if (char === "{") depth += 1;
-    else if (char === "}") {
-      if (depth === 0) return at;
-      depth -= 1;
-      if (depth === 0) return at + 1;
-    }
-    at += 1;
-  }
-  return sheet.length;
-}
-
-/** `sheet` with every `@import` rule gone and every declaration that fetches with it, read in
- *  one pass whose cost is the sheet's length. The page's main thread pays that cost for every
- *  drawing it mounts (`answerOf`, `mermaid-diagrams.ts`), outside the worker's five-second
- *  bound, so no pattern here may scan a run of the text again at each of its characters: a
- *  regular expression reading a declaration as `property:value` did, and a 20,000-character
- *  class name a `classDef` can write, or a run of `:` a `classDef` value can write, froze the
- *  tab of every reader of the comment that held it (INFRA-925 review).
+/**
+ * `sheet` as the window's own CSS parser reads it: the rules that parser yields, each in its
+ * own serialization, less every rule that fetches — and nothing at all where what is left still
+ * fetches or still holds an `@import`.
  *
- *  The pass cuts the text at each `;`, `{` and `}` that stands outside a quoted string and
- *  outside an unquoted `url(…)`, which is how a browser's own tokenizer reads those characters.
- *  A piece that ends at a `{` is a prelude — a selector, `@media`'s query, `@keyframes`' name —
- *  and is kept whatever it holds, so a selector's own `:` (`g:hover{`) ends no property. A piece
- *  that ends at a `;` or at its block's `}` is a declaration when it holds a `:` anywhere but at
- *  its first character, and that one goes when it fetches, its siblings in the rule staying, as
- *  a kept element keeps every attribute but the one that fetches. The pieces the pass cannot cut
- *  — the text after the last terminator, and everything after a string or a `url(` the sheet
- *  ends before — are handed on as they stand, for the whole-sheet refusal below to judge.
+ * None of the author's text is copied through. `view.CSSStyleSheet` is the engine that reads
+ * this sheet when the page mounts it, so where a token ends, what a comment hides, what an
+ * escape spells and what `@import` means are its answers rather than ours. Three rounds of
+ * INFRA-925 answered them in a reader of our own and each reader was got past: an escaped
+ * `\75rl(`, an unquoted `url(` holding the `;` that was taken for the end of a rule, and a
+ * comment holding one quote, which opened a string that ran on to the quote opening an
+ * `@import`'s target, so the keyword was never tested. A rule the engine did not understand it
+ * drops, and a declaration it did not understand with it, so what reaches the page is the part
+ * of the author's text that engine read — never text that passed because our reader did not
+ * read it either.
  *
- *  What reaches a sheet differs between the renderers, which is why the fetch rule has to run
- *  here as well as over attributes: beautiful-mermaid writes an author's `classDef` or `style`
- *  line into presentation attributes, where the attribute rule filters it, while Mermaid writes
- *  it into the drawing's own `<style>` (`createCssStyles`). So
- *  `classDef evil mask-image:url(https://evil.example/m.png)` is drawn as a rule of the sheet,
- *  matching a `<g class="node evil …">` of the same drawing, and fetches as soon as the drawing
- *  is mounted. Mermaid's own DOMPurify does not run in the worker (see
- *  `ALLOWED_XHTML_ELEMENTS`), so this is the only gate on that text, which a comment or a
- *  document may also hold whole. */
-function withoutFetchingRules(sheet: string): string {
+ * A rule goes whole rather than in part, by the test the attribute pass makes
+ * (`FETCHING_FUNCTION`, once the local `url(#id)` references a drawing makes to its own markers
+ * and gradients are taken out): `cssText` serializes an `@media`, `@supports` or `@layer` with
+ * the rules nested inside it and an `@font-face` with its `src`, so one test over it reaches
+ * what a walk of the top level alone would miss, and `image-set("https://…" 1x)` fetches with
+ * no `url(` anywhere in it. The cost is the author's own rule: a `classDef` whose paint fetches
+ * loses the colour beside it too.
+ *
+ * Then the whole sheet is refused where anything that fetches, any backslash or any `@import`
+ * is left in the serialization — one linear pass over text the parser has already bounded.
+ * The engine serializes a selector's odd characters as escapes, so an author's own class name
+ * can refuse the sheet it is written into; that costs that author their drawing's styling and
+ * no other reader anything.
+ *
+ * What reaches a sheet differs between the renderers, which is why the fetch rule has to run
+ * here as well as over attributes: beautiful-mermaid writes an author's `classDef` or `style`
+ * line into presentation attributes, where the attribute rule filters it, while Mermaid writes
+ * it into the drawing's own `<style>` (`createCssStyles`) without escaping it. So
+ * `classDef evil mask-image:url(https://evil.example/m.png)` is drawn as a rule of the sheet,
+ * matching a `<g class="node evil …">` of the same drawing, and fetches as soon as the drawing
+ * is mounted. Mermaid's own DOMPurify does not run in the worker (see `ALLOWED_XHTML_ELEMENTS`),
+ * so this is the only gate on that text.
+ *
+ * An author reaches the start of a sheet, not only the middle of one: the page reads Mermaid's
+ * markup with the HTML parser (`htmlRoot`), which in SVG content ends the drawing's `<style>`
+ * at an author's own `</style>` and opens the element after it, so a `classDef` carrying
+ * `</style><style>` writes a second sheet of its own that the allowlist keeps and this function
+ * reads whole.
+ *
+ * The page's main thread pays this cost for every drawing it mounts (`answerOf`,
+ * `mermaid-diagrams.ts`), outside the worker's five-second bound, so it has to grow with the
+ * sheet's length: a regular expression reading a declaration as `property:value` did not, and a
+ * 20,000-character class name a `classDef` can write, or a run of `:` a `classDef` value can
+ * write, froze the tab of every reader of the comment that held it (INFRA-925 review).
+ */
+function sanitizedSheet(view: Window & typeof globalThis, sheet: string): string {
+  const parsed = new view.CSSStyleSheet();
+  parsed.replaceSync(sheet);
   let kept = "";
-  let cut = 0;
-  let separator = false;
-  let at = 0;
-  while (at < sheet.length) {
-    const char = sheet.charAt(at);
-    if (char === "@") {
-      IMPORT_KEYWORD.lastIndex = at;
-      if (IMPORT_KEYWORD.test(sheet)) {
-        kept += sheet.slice(cut, at);
-        at = importEnd(sheet, IMPORT_KEYWORD.lastIndex);
-        cut = at;
-        separator = false;
-        continue;
-      }
-    }
-    if (char === '"' || char === "'" || char === "(") {
-      const end = tokenEnd(sheet, at, char);
-      if (end === NOT_CLOSED) break;
-      at = end;
-      continue;
-    }
-    if (char === ":") {
-      separator ||= at > cut;
-    } else if (char === "{") {
-      kept += sheet.slice(cut, at + 1);
-      cut = at + 1;
-      separator = false;
-    } else if (char === ";" || char === "}") {
-      const declaration = sheet.slice(cut, char === ";" ? at + 1 : at);
-      if (!separator || !fetches(declaration)) kept += declaration;
-      if (char === "}") kept += "}";
-      cut = at + 1;
-      separator = false;
-    }
-    at += 1;
+  for (const rule of parsed.cssRules) {
+    if (!fetches(rule.cssText)) kept += `${rule.cssText}\n`;
   }
-  return kept + sheet.slice(cut);
-}
-
-/** `sheet` as `withoutFetchingRules` reads it, or nothing at all where what that leaves still
- *  fetches. */
-function withoutFetchingDeclarations(sheet: string): string {
-  const kept = withoutFetchingRules(sheet);
-  // Nothing that fetches may be left anywhere in the text, inside a declaration the pass took
-  // apart or outside one: text it could not — a string left unterminated, a `{` where no rule
-  // opens — would still be a rule to a browser's own parser, so such a sheet goes whole rather
-  // than in part. No drawing reaches this: measured over one source of each of the 37 types
-  // Mermaid registers and over beautiful-mermaid's two sheets, no sheet holds a `url(` at all
-  // once its `@import` is gone, and none holds a backslash.
-  return fetches(kept) ? "" : kept;
+  return fetches(kept) || IMPORT_RULE.test(kept) ? "" : kept;
 }
 
 /** Sanitizes `element` and its subtree in place, and answers it in the namespace `subtree`
  *  belongs in — itself where the parse already put it there, else the rebuilt node that took its
- *  place in the tree. */
-function sanitizeElement(element: Element, parse: MermaidParse, subtree: Subtree): Element {
+ *  place in the tree. `view` is the window the markup was parsed with, whose CSS parser reads a
+ *  kept `<style>` (`sanitizedSheet`): the parse's own document has no window of its own. */
+function sanitizeElement(
+  element: Element,
+  view: Window & typeof globalThis,
+  parse: MermaidParse,
+  subtree: Subtree
+): Element {
   const kept = inNamespace(element, NAMESPACES[subtree]);
   for (const attribute of Array.from(kept.attributes)) {
     const name = attribute.name.toLowerCase();
@@ -382,12 +318,12 @@ function sanitizeElement(element: Element, parse: MermaidParse, subtree: Subtree
     }
   }
   if (kept.localName === "style") {
-    kept.textContent = withoutFetchingDeclarations(kept.textContent ?? "");
+    kept.textContent = sanitizedSheet(view, kept.textContent ?? "");
     return kept;
   }
   const below: Subtree = kept.localName === "foreignObject" ? "xhtml" : subtree;
   for (const child of Array.from(kept.children)) {
-    if (allows(child, parse, below)) sanitizeElement(child, parse, below);
+    if (allows(child, parse, below)) sanitizeElement(child, view, parse, below);
     else child.remove();
   }
   return kept;

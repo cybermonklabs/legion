@@ -20,11 +20,10 @@
  * `{ id, rendererUnavailable, cause }` (a chunk that would not load, which says nothing about
  * the source, so the page stores nothing and asks again). Under the same id it posts the phase
  * it is entering before each step of a job — `loading` before each download Mermaid needs,
- * `drawing` before the source's own parse where `prepare` has to make one and before the layout
- * itself — so the page bounds a download and the work on the source differently
- * (`worker-queue.ts`, `mermaid-diagrams.ts`), and no job is unbounded. Everything a source needs
- * is downloaded under `loading`, the type's own definition chunk and the layout engine that
- * source chooses included (`mermaid-upstream.ts`, `prepare`), so no part of a cold cache is
+ * `drawing` before the layout itself — so the page bounds a download and the work on the
+ * source differently (`worker-queue.ts`, `mermaid-diagrams.ts`), and no job is unbounded.
+ * Everything a source needs is downloaded under `loading`, the type's own definition chunk and
+ * its layout engine included (`mermaid-upstream.ts`, `prepare`), so no part of a cold cache is
  * spent on the render bound.
  */
 import { renderMermaidMarkup } from "@legion/proof-editor/mermaid-render";
@@ -305,17 +304,18 @@ async function mermaidRenderer(report?: ReportPhase): Promise<MermaidRenderer> {
  * - `{ rendererUnavailable, cause }`, a chunk that would not load, which says nothing about the
  *   source: the page stores nothing for it and asks again.
  *
- * A chunk that would not load is read the same way wherever it happens: the renderer module's
- * own import, Mermaid's, the type's definition chunk, the warm render's layout engine, or a
- * layout inside the draw itself. `failedChunkFetch` is what tells it from everything Mermaid
- * refuses a source for, and anything it does not recognise is read as a refusal, for the reason
- * that module gives.
+ * A chunk that would not load is read the same way wherever `prepare` or `draw` meets it: the
+ * type's definition chunk, the warm render's layout engine, or a layout inside the draw
+ * itself. `failedChunkFetch` is what tells it from everything Mermaid refuses a source for,
+ * and anything it does not recognise is read as a refusal, for the reason that module gives.
+ * The catch around `mermaidRenderer` reads nothing with it: every throw there -- the renderer
+ * module's own import, Mermaid's, `initialize`'s -- is answered `rendererUnavailable`, since
+ * none of them has read a character of the source.
  *
  * Everything Mermaid downloads happens while the job is under the load bound: the renderer
- * module, Mermaid itself, then `prepare`, which fetches this source's type definition chunk and
- * the layout engine that source chooses (`mermaid-upstream.ts`). `drawing` is posted when what
- * is left is work on the source itself -- the layout, and the parse `prepare` has to make for a
- * source carrying front matter or a directive -- which is what `RENDER_TIME_LIMIT_MS` is a
+ * module, Mermaid itself, then `prepare`, which fetches this source's type definition chunk
+ * and that type's layout engine (`mermaid-upstream.ts`). `drawing` is posted when what is left
+ * is work on the source itself -- the layout -- which is what `RENDER_TIME_LIMIT_MS` is a
  * bound on.
  */
 export async function answerMermaidRequest(
@@ -337,11 +337,7 @@ export async function answerMermaidRequest(
     return { id, rendererUnavailable: true, cause: causeOf(error) };
   }
   try {
-    await renderer.prepare(
-      source,
-      () => report?.("loading"),
-      () => report?.("drawing")
-    );
+    await renderer.prepare(source, () => report?.("loading"));
     report?.("drawing");
     return { id, markup: await renderer.draw(source), renderer: "mermaid" };
   } catch (error) {

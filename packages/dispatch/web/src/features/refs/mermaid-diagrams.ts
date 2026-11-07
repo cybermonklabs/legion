@@ -67,9 +67,7 @@
  * gets `unavailable`), logs once, and none is started again until the window's next `online`
  * event. A worker that runs but cannot fetch one of Mermaid's chunks answers the one source it
  * was holding the same way — `unavailable`, nothing cached — and goes on taking the sources
- * behind it, so one failed download refuses no later source. That path arranges no `online`
- * recovery and needs none: the worker is still running, nothing is remembered for the source,
- * and the next paint of a body that holds it asks for it again.
+ * behind it, so one failed download refuses no later source.
  *
  * Drawn results are cached by source (the sanitized SVG, cloned per use, or the refusal), the
  * newest 32. A cached source draws in the layout effect that painted its body, so a body re-painted
@@ -240,8 +238,7 @@ function noteSettled(): void {
  * is the other thing, and is not the source's fault: it is answered as a missing worker is
  * (`rendererUnavailable`), nothing is kept for the source, and the next paint of a body that
  * holds it asks again — of the same worker, which is still running and may well draw the
- * source after it. That is the whole of the retry: the `online` listener belongs to the page
- * that has no worker at all (`noWorkerFrom`), and `recover` would have nothing to clear here.
+ * source after it (`answerOf` says why that path arranges no recovery of its own).
  *
  * A job is under one of two bounds, which the worker's phase replies arm:
  * `RENDERER_LOAD_LIMIT_MS` while the worker is downloading what that source needs, and

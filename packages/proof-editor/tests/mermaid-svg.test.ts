@@ -74,8 +74,18 @@ describe("mermaidSvgElement", () => {
     expect(rawStyle).toContain("@import");
     const style = svg.getElementsByTagName("style")[0]?.textContent ?? "";
     expect(style.trim()).not.toBe("");
-    expect(style).not.toContain("@import");
-    expect(style).toBe(rawStyle.replace(/@import[^\n]*;/g, ""));
+    expect(style).not.toMatch(/@import|googleapis/i);
+    // The mounted sheet is built from the rules the document's own CSS parser read, in that
+    // parser's own serialization, so it is never the author's text: beautiful-mermaid's `svg`
+    // rule comes through with the twelve custom properties every colour of the drawing reads.
+    expect(style).toContain("svg { --_text: var(--fg); --_text-sec: var(--muted, color-mix(");
+    expect(style).toContain("--_key-badge: color-mix(in srgb, var(--fg) 10%, var(--bg)); }");
+    // happy-dom 20.14.0 drops the rule that follows an `@import` it removed, which in this
+    // sheet is `text { font-family: 'Inter', system-ui, sans-serif; }`. A browser keeps it:
+    // measured over this same sheet in Chromium 1248, a constructed `CSSStyleSheet` holds two
+    // rules after `replaceSync` where happy-dom holds one. What a browser's own engine makes
+    // of a drawing's sheet is read by `packages/dispatch/e2e/mermaid.e2e.ts`.
+    expect(style).not.toContain("font-family");
   });
 
   test("drops an author's classDef and style url() paint and keeps the arrowhead markers", () => {
@@ -149,13 +159,17 @@ describe("sanitizeMermaidSvg", () => {
     }
   });
 
+  // `text { fill: red; }` stands before the three `@import`s because happy-dom 20.14.0 drops
+  // the rule that follows an `@import` it removed (recorded in `mermaidSvgElement` above),
+  // where a browser keeps it; this order lets the row read what the filter keeps rather than
+  // what that parser loses.
   const hostile = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
       viewBox="0 0 10 10" onload="window.hit = 1">
     <style>
+      text { fill: red; }
       @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500&amp;display=swap');
       @IMPORT "https://evil.example/sheet.css";
       @import url(https://evil.example/a;b.css) screen;
-      text { fill: red; }
     </style>
     <script>window.hit = 1</script>
     <foreignObject><div xmlns="http://www.w3.org/1999/xhtml">html</div></foreignObject>
@@ -229,102 +243,151 @@ describe("sanitizeMermaidSvg", () => {
     expect(local?.getAttribute("data-label")).toBe("a\\b (x.example)");
   });
 
-  // What the sheet reader makes of each shape the review of INFRA-925 tried it with, and of
-  // each behaviour the rule it replaced had. The reader cuts the text at every `;`, `{` and `}`
-  // that stands outside a quoted string and outside an unquoted `url(…)`; a piece that ends at
-  // a `{` is a prelude and stays, and a piece that fetches and holds a `:` of its own is a
-  // declaration and goes. Where it cannot take the text apart, nothing that fetches may be left
-  // anywhere in it, so the sheet goes whole.
+  // What the filter makes of each shape the review of INFRA-925 tried it with, and of each
+  // behaviour the readers it replaced had. The sheet is no longer read by this package: the
+  // window's own CSS parser reads it (`new view.CSSStyleSheet().replaceSync`), the rules it
+  // yields are serialized by it, every rule whose text fetches is left out, and the whole
+  // sheet goes where what is left still fetches, holds a backslash or holds an `@import`.
+  //
+  // Under bun that parser is happy-dom's, not a browser's, and the two differ where it is
+  // recorded below. Each difference is the same way round — happy-dom keeps less, so what
+  // this row reads is never weaker than what a reader's browser applies — except the one
+  // marked, where happy-dom is the laxer tokenizer and the rule that follows drops the fetch
+  // anyway. What a browser's own engine makes of a drawing's sheet is read end to end by
+  // `packages/dispatch/e2e/mermaid.e2e.ts`.
   const SHEET_READINGS: readonly { name: string; sheet: string; kept: string }[] = [
     {
-      name: "a fetching paint goes and its siblings in the rule stay",
+      name: "a rule whose paint fetches goes whole, and the rule beside it stays",
       sheet:
         "#d .evil rect{fill:#ff0000!important;mask-image:url(https://evil.example/m.png)!important;" +
-        "marker-end:url(#d_pointEnd)!important;}",
-      kept: "#d .evil rect{fill:#ff0000!important;marker-end:url(#d_pointEnd)!important;}",
+        "marker-end:url(#d_pointEnd)!important;}#d .a rect{fill:#f00;}",
+      kept: "#d .a rect { fill: #f00; }\n",
     },
     {
       name: "an upper-case URL(, and a value that wraps before its (",
       sheet:
         "#d .a rect{mask-image:URL(https://evil.example/a);fill:#f00;}" +
         "#d .b rect{mask-image:url\n(https://evil.example/b);fill:#0f0;}",
-      kept: "#d .a rect{fill:#f00;}#d .b rect{fill:#0f0;}",
+      kept: "",
     },
     {
       name: "the escaped spelling of url(, which CSS decodes",
       sheet: "#d .a rect{mask-image:\\75rl(https://evil.example/a);fill:#f00;}",
-      kept: "#d .a rect{fill:#f00;}",
+      kept: "",
     },
     {
+      // happy-dom understands neither spelling and drops both declarations, so the two rules
+      // stay without them. Chromium understands `image-set(…)`, so there the rule holds it and
+      // the rule goes — which is why the test here is `FETCHING_FUNCTION` rather than `url(`
+      // alone: this function fetches with a bare string and no `url(` anywhere in it.
       name: "image-set and its prefixed spelling",
       sheet:
         "#d .a rect{background:image-set('https://evil.example/a' 1x);fill:#f00;}" +
         "#d .b rect{background:-webkit-image-set('https://evil.example/b' 1x);fill:#0f0;}",
-      kept: "#d .a rect{fill:#f00;}#d .b rect{fill:#0f0;}",
+      kept: "#d .a rect { fill: #f00; }\n#d .b rect { fill: #0f0; }\n",
     },
     {
       name: "a local url(#id) the drawing makes to its own marker, followed by a remote one",
       sheet: "#d .a rect{marker-end:url(#d_pointEnd) url(https://evil.example/a);fill:#f00;}",
-      kept: "#d .a rect{fill:#f00;}",
+      kept: "",
     },
     {
-      // `u/**/rl(` is an identifier, a comment and another identifier to a browser's tokenizer,
-      // never the `url(` function token, so it fetches nothing and the declaration stays.
+      // `u/**/rl(` is an identifier, a comment and another identifier to a CSS tokenizer,
+      // never the `url(` function token, so it fetches nothing. Both engines refuse the
+      // declaration; happy-dom serializes what is left of it with the comment taken out,
+      // which reads as `url(` to the test here and takes the rule, where Chromium drops the
+      // declaration outright and keeps the `fill` beside it. Neither fetches anything.
       name: "a comment inside the word url, which is no function token",
       sheet: "#d .a rect{mask-image:u/**/rl(https://evil.example/a);fill:#f00;}",
-      kept: "#d .a rect{mask-image:u/**/rl(https://evil.example/a);fill:#f00;}",
+      kept: "",
     },
     {
       name: "a selector's own colon, a var() and a media query, which end no property",
       sheet: "@media (min-width:100px){g:hover text{fill:var(--mermaid-text-color);}}",
-      kept: "@media (min-width:100px){g:hover text{fill:var(--mermaid-text-color);}}",
+      kept: "@media (min-width:100px) {\n  g:hover text { fill: var(--mermaid-text-color); }\n}\n",
     },
     {
-      name: "a keyframe's own blocks",
+      name: "a keyframe's own blocks, which the engine serializes by percentage",
       sheet: "@keyframes dash{to{stroke-dashoffset:0;}}",
-      kept: "@keyframes dash{to{stroke-dashoffset:0;}}",
+      kept: "@keyframes dash { \n  100% { stroke-dashoffset: 0; }\n}\n",
     },
     {
-      name: "an @font-face src, whose declaration goes and whose rule stays",
+      // `cssText` serializes an at-rule with everything nested in it, so one test over the
+      // rule reaches an `@font-face`'s `src` and an `@media`'s own declarations alike.
+      name: "an @font-face src, which takes its rule and so the whole sheet",
       sheet: "@font-face{font-family:x;src:url(https://evil.example/f.woff);}",
-      kept: "@font-face{font-family:x;}",
+      kept: "",
     },
     {
       name: "a declaration a } ends rather than a ;",
       sheet: "#d .a rect{fill:#f00;mask-image:url(https://evil.example/a) }",
-      kept: "#d .a rect{fill:#f00;}",
+      kept: "",
     },
     {
       name: "a } that closes nothing",
       sheet: "#d .a rect{fill:#f00;}}#d .b rect{mask-image:url(https://evil.example/b);}",
-      kept: "#d .a rect{fill:#f00;}}#d .b rect{}",
+      kept: "#d .a rect { fill: #f00; }\n",
     },
     {
       name: "a declaration the sheet ends before its ; does, which no cut reaches",
       sheet: "#d .a rect{fill:#f00;mask-image:url(https://evil.example/a)",
-      kept: "",
+      kept: "#d .a rect {  }\n",
     },
     {
+      // The one place happy-dom is the laxer tokenizer: it ends the string where Chromium runs
+      // it on to the end of the sheet, so happy-dom reads two rules and Chromium one, whose
+      // text then holds the `url(` and takes the whole sheet. Either way the fetch is gone.
       name: "a string the sheet ends before, which the reader cannot take apart",
       sheet: '#d .a rect{content:"x;}#d .b rect{mask-image:url(https://evil.example/b);}',
-      kept: "",
+      kept: '#d .a rect { content: "x; }\n',
     },
     {
       name: "an @import a comment separates from its quoted target",
       sheet: '@import/**/"https://evil.example/c.css";\ntext{fill:red;}',
-      kept: "\ntext{fill:red;}",
+      kept: "",
+    },
+    {
+      // The text round 3's reviewer wrote: to the reader this package used to carry, the quote
+      // inside the comment opened a string that ran on to the quote opening the target, so the
+      // keyword was never tested and the sheet went through whole, `@import` and all. A CSS
+      // parser reads a comment as a comment.
+      name: "the reviewer's @import behind a comment holding one quote",
+      sheet: "/*'*/@import 'https://e.example/x.css'",
+      kept: "",
+    },
+    {
+      name: "a quoted @import with no comment and no ; of its own",
+      sheet: "@import 'https://e.example/x.css'",
+      kept: "",
+    },
+    {
+      // happy-dom drops the rule that follows an `@import` it removed, where Chromium keeps
+      // `text { fill: red; }`. Neither keeps the import.
+      name: "a quoted @import before a rule of the author's own",
+      sheet: "@import 'https://e.example/x.css';text{fill:red;}",
+      kept: "",
+    },
+    {
+      name: "a comment that is never closed, which runs to the end of the sheet",
+      sheet: "text{fill:red;}/* @import 'https://e.example/x.css'",
+      kept: "text { fill: red; }\n",
+    },
+    {
+      name: "the reviewer's text after a rule, where the rule survives and the import does not",
+      sheet: "text{fill:red}/*'*/@import 'https://e.example/x.css'",
+      kept: "text { fill: red; }\n",
     },
     {
       name: "the Google Fonts @import, whose quoted URL holds the ; that would end a rule",
       sheet:
         "@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500');\n" +
         "text{fill:red;}",
-      kept: "\ntext{fill:red;}",
+      kept: "",
     },
     {
       name: "an @import whose unquoted URL holds a ;, and the media query after it",
       sheet: "@import url(https://evil.example/a;b.css) screen;\ntext{fill:red;}",
-      kept: "\ntext{fill:red;}",
+      kept: "",
     },
     {
       name: "an at-rule other than @import that fetches, which takes the whole sheet with it",
@@ -359,27 +422,37 @@ describe("sanitizeMermaidSvg", () => {
         `#dispatch-mermaid-0 .evil ${shape}{fill:${"a:".repeat(800)}"x !important !important; }`
     )
     .join("");
+  // One comment and no end to it, which is where round 3's reader ran a string to the end of
+  // the sheet. A CSS parser reads it as a comment that ends with the sheet and keeps the rule
+  // before it.
+  const UNTERMINATED_COMMENT_SHEET = `text{fill:red}/*${"a".repeat(40_000)}`;
 
   // The page's own thread reads the sheet, where the worker's five-second bound does not reach
-  // (`answerOf` calls `mermaidSvgElement`, `mermaid-diagrams.ts`), so a reader whose cost grows
+  // (`answerOf` calls `mermaidSvgElement`, `mermaid-diagrams.ts`), so a filter whose cost grows
   // faster than the sheet freezes the tab of every reader of the comment that holds it. The
-  // bound is wall-clock because that is the harm: 1,000 ms for both sheets together. Measured
-  // on this pod (2 vCPU, bun 1.4.4), four runs of the pair: 14 to 18 ms with the one-pass
-  // reader. This row at the head it was written against took 4,770 ms (2,355 ms for the
-  // selector and 2,312 ms for the run of colons, measured apart), where the regular expression
-  // that read a declaration as `property:value` began a scan at each character of a selector
-  // holding no `:` and at each `:` of the run. So the bound stands at more than fifty times
-  // what the reader costs, which a machine fifty times slower than this one still meets, and
-  // the reading it refuses misses it by a factor of four and three quarters.
+  // bound is wall-clock because that is the harm: 1,000 ms for the three sheets together.
+  // Measured on this pod (2 vCPU, bun 1.4.4), four runs of the three: 20 to 29 ms with the
+  // window's own parser (25 ms for the selector, 3 ms for the run of colons, 2 ms for the
+  // comment), against 14 to 18 ms for the two the one-pass reader of round 3 read. This row at
+  // the head it was first written against took 4,770 ms (2,355 ms for the selector and
+  // 2,312 ms for the run of colons, measured apart), where a regular expression reading a
+  // declaration as `property:value` began a scan at each character of a selector holding no
+  // `:` and at each `:` of the run. So the bound stands at more than thirty times what the
+  // filter costs, and the reading it refuses misses it by a factor of four and three quarters.
   test("reads a long selector and a long run of colons in time with the sheet's length", () => {
     const began = performance.now();
     const selector = filteredSheet(LONG_SELECTOR_SHEET);
     const colons = filteredSheet(COLON_RUN_SHEET);
+    const comment = filteredSheet(UNTERMINATED_COMMENT_SHEET);
     const took = performance.now() - began;
 
-    // Neither sheet fetches, so the reader keeps both whole: the cost is all this row measures.
-    expect(selector).toBe(LONG_SELECTOR_SHEET);
-    expect(colons).toBe(COLON_RUN_SHEET);
+    // No sheet here fetches, so every rule of all three comes through, in the parser's own
+    // serialization rather than the author's text: the cost is what this row measures.
+    expect(selector).toContain(`.${LONG_CLASS_NAME} rect { fill: #ff0000 !important; }`);
+    expect(selector).toContain(`.${LONG_CLASS_NAME} path { fill: #ff0000 !important; }`);
+    expect(selector).toHaveLength(LONG_SELECTOR_SHEET.length + 30);
+    expect(colons).toContain(`fill: ${"a:".repeat(800)}"x !important !important;`);
+    expect(comment).toBe("text { fill: red; }\n");
     expect(took).toBeLessThan(1_000);
   });
 
@@ -531,18 +604,19 @@ describe("sanitizeMermaidSvg, over upstream Mermaid's drawings", () => {
     const svg = sanitizeMermaidSvg(MERMAID_BLOCK_CLASSDEF_DRAWING, document, "xml");
 
     const sheet = svg.getElementsByTagName("style")[0]?.textContent ?? "";
-    // The author's `classDef` is a rule of the sheet, and only its fetching declaration goes:
-    // the colour beside it and the reference to the drawing's own marker stay, as a kept
-    // element keeps every attribute but the one that fetches.
-    expect(sheet).toContain(
-      "#dispatch-mermaid-0 .evil rect{fill:#ff0000!important;" +
-        "marker-end:url(#dispatch-mermaid-0_block-pointEnd)!important;}"
-    );
+    // The author's `classDef` is five rules of the sheet, one per shape Mermaid styles, and
+    // every one of them fetches, so every one goes whole — the colour and the marker
+    // reference beside the paint with it. That is what reading the sheet by rule costs the
+    // author who wrote the paint, and it costs no other reader anything: Mermaid's own theme
+    // is the other 52 rules of the recording, and all 52 come through.
+    expect(recorded.match(/\.evil/g)).toHaveLength(5);
+    expect(recorded.match(/\{/g)).toHaveLength(57);
+    expect(sheet).not.toContain(".evil");
     expect(sheet).not.toContain("evil.example");
-    // Nothing else of the sheet moved: Mermaid's whole theme is the recording, less the five
-    // `mask-image` declarations the author's `classDef` wrote into its five shape rules.
-    expect(sheet).toBe(
-      recorded.replaceAll("mask-image:url(https://evil.example/m.png)!important;", "")
+    expect(sheet.match(/\{/g)).toHaveLength(52);
+    expect(sheet).toContain(
+      "#dispatch-mermaid-0 { font-family: var(--mermaid-font-family); " +
+        "font-size: var(--mermaid-font-size); fill: var(--mermaid-text-color); }"
     );
 
     // The marker that declaration's neighbour points at is still drawn, and so is the edge

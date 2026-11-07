@@ -14,9 +14,9 @@
  * A source is drawn in two steps rather than one (`MermaidRenderer`), because the page bounds a
  * download and a layout differently: everything Mermaid fetches for a source is fetched in
  * `prepare`, so `draw` is the layout alone. The source's own parse is neither a download nor
- * the layout: `prepare` leaves it to `draw` wherever it can, and where it cannot -- a source
- * carrying front matter or a directive, whose layout `prepare` has to read -- it says so, so
- * the page bounds that parse as drawing.
+ * the layout, and `prepare` leaves it to `draw`: nothing here reads the source's own config,
+ * since `layout`, the one config key that could have sent a render for a chunk of its own, is
+ * on the `secure` list mermaid is configured with below.
  *
  * Every colour below is a literal, measured against the two page backgrounds Dispatch draws on
  * (`#f8fafc` light, `#020618` dark), except the seven keys mermaid accepts a CSS custom property
@@ -25,9 +25,6 @@
  * `Unsupported color format: "var(--x)"` for a custom property in any key it derives a colour
  * from or fades, which is every other one.
  */
-// Type-only, so it is erased: naming mermaid's config type here adds no edge to its chunks.
-import type { MermaidConfig } from "mermaid";
-
 import { failedChunkFetch } from "./mermaid-chunk-fetch";
 import { installDomShim, LAYOUT_WIDTH } from "./mermaid-dom-shim";
 import { MERMAID_SOURCES, type MermaidSource } from "./mermaid-sources";
@@ -43,17 +40,17 @@ export const MERMAID_MAX_SOURCE_CHARS = 50_000;
  */
 export interface MermaidRenderer {
   /**
-   * Downloads what `source` needs and nothing else: its type's definition chunk and the layout
-   * engine that source's own config chooses, both by drawing the smallest source of its type
-   * and throwing the drawing away (`warmLayoutFor`). `beganDownload` is called before each of
-   * those downloads, so the worker re-arms the page's load bound on each rather than leaving
-   * the second to run out what is left of the first's.
+   * Downloads what `source` needs and nothing else: its type's definition chunk and that
+   * type's layout engine, both by drawing the smallest source of its type and throwing the
+   * drawing away (`warmLayoutFor`). `beganDownload` is called once, before that warm render,
+   * and the one arm covers both downloads: they are two dynamic imports mermaid makes inside
+   * one `render`, with nothing between them to re-arm on. A source whose type has no stand-in
+   * is parsed instead, which is the one other download here, and that parse is armed the same
+   * way.
    *
-   * `beganReading` is called before the one thing here that is the source's own CPU work
-   * rather than a download: the parse that reads the config of a source carrying front matter
-   * or a directive. The page bounds that as drawing, so a slow source is never refused in
-   * words that say its renderer did not load. Most sources carry neither and are not parsed
-   * here at all, so the only parse a reader pays for is `draw`'s own.
+   * Nothing of `source` is read for its config: `layout` is on the renderer's `secure` list,
+   * so a source chooses no layout engine and the warm needs to carry nothing of the source's
+   * own text. The only parse a reader pays for is `draw`'s.
    *
    * It throws what Mermaid throws for a source Mermaid refuses -- a parse error, an unknown
    * type, a source past `MERMAID_MAX_SOURCE_CHARS` -- which is the refusal the reader is
@@ -61,7 +58,7 @@ export interface MermaidRenderer {
    * (`failedChunkFetch`, `mermaid-render.worker.ts`). A warm that failed for any other reason
    * is swallowed: the render that follows is what answers for the source.
    */
-  prepare(source: string, beganDownload: () => void, beganReading: () => void): Promise<void>;
+  prepare(source: string, beganDownload: () => void): Promise<void>;
   /** Draws `source`, which `prepare` has already loaded everything for. */
   draw(source: string): Promise<string>;
 }
@@ -241,58 +238,11 @@ function colorSlots(): Record<string, string> {
 let nextRenderId = 0;
 let nextWarmId = 0;
 
-/** The warm renders this worker has already run and seen succeed (`warmLayoutFor`), each keyed
- *  by its diagram type and the layout its source chose, so the second source of a type that
- *  chooses the same layout pays for no second warm render, and a type a source asks for a
- *  second layout of is warmed again for that one. A warm is recorded only once it has drawn:
- *  one that failed is tried again by the next source of its type rather than leaving that type
- *  cold for the life of the worker. */
-const warmedLayouts = new Set<string>();
-
-/** The diagram types whose definition chunk this worker has already downloaded, by having
- *  parsed or drawn a source of that type. A source that carries a config of its own is parsed
- *  for it (`prepare`), and that parse must not be the one that downloads the chunk; a type
- *  already here needs no stand-in parse before it. */
-const loadedTypes = new Set<string>();
-
-/** The layout a source's own config chooses, as the smallest directive that would choose it
- *  again: `layout` at the top level, and `layout` inside a diagram's own section, which is
- *  where mermaid looks first for an appearance key (`resolveAppearance`, mermaid's `config.ts`
- *  reads `config[<diagram>].layout` before `config.layout`). `null` for a source that names
- *  none, which draws with whatever its type's own default is -- the thing the stand-in draws
- *  with too. */
-type LayoutChoice = Record<string, string | { layout: string }> | null;
-
-/** The layout choice in a source's own config, as `mermaid.parse` answers it (front matter and
- *  directives, with every `secure` key already deleted). The keys are read in sorted order, so
- *  two sources that choose the same layout in a different order of keys are one warm. */
-function layoutChosenIn(config: MermaidConfig): LayoutChoice {
-  // mermaid's config is an interface, so it carries no index signature and `Object.entries`
-  // would read its values as `any`: the same object, named as the bag of unknowns walked here.
-  const keyed = config as Record<string, unknown>;
-  const chosen: Record<string, string | { layout: string }> = {};
-  const entries = Object.entries(keyed).sort(([one], [other]) => (one < other ? -1 : 1));
-  for (const [key, value] of entries) {
-    if (key === "layout") {
-      if (typeof value === "string") chosen.layout = value;
-    } else if (typeof value === "object" && value !== null && "layout" in value) {
-      const nested: unknown = value.layout;
-      if (typeof nested === "string") chosen[key] = { layout: nested };
-    }
-  }
-  return Object.keys(chosen).length === 0 ? null : chosen;
-}
-
-/** Whether `source` carries a config of its own at all. mermaid reads one from two places and
- *  no other: front matter, a `---` fence the source opens with (`matchFrontMatter` skips only
- *  spaces and tabs before it, so a `---` anywhere else is not one), and a `%%{...}%%` directive,
- *  which `directiveRegex` matches nowhere without that opener. A source with neither names no
- *  layout, whatever its text says, so it is never parsed to find out. The test is wider than
- *  mermaid's own on purpose: a source it says yes to that carries nothing simply pays the parse
- *  this saves everywhere else. */
-function carriesConfig(source: string): boolean {
-  return source.trimStart().startsWith("---") || source.includes("%%{");
-}
+/** The diagram types this worker has already warmed and seen draw (`warmLayoutFor`), so the
+ *  second source of a type pays for no second warm render. A warm is recorded only once it has
+ *  drawn: one that failed is tried again by the next source of its type rather than leaving
+ *  that type cold for the life of the worker. */
+const warmedTypes = new Set<string>();
 
 /** The one load, kept so a second source pays for neither the import nor `initialize` again. */
 let loading: Promise<MermaidRenderer> | null = null;
@@ -338,11 +288,29 @@ async function load(): Promise<MermaidRenderer> {
     // gantt sizes itself to its host element's `offsetWidth`, which no worker has, so it is laid
     // out at the width the shim's `screen` is (`LAYOUT_WIDTH`).
     gantt: { useWidth: LAYOUT_WIDTH },
-    // What a source's own directive may not change. mermaid's default list protects `secure`
-    // itself and the size limits; the four below it are the palette and the sanitizer's own
-    // level, and a source-level `themeCSS` carrying `url(https://...)` would otherwise reach
-    // the drawing's `<style>` and fetch at render and again at mount. Read from the installed
-    // package rather than restated here, so a key mermaid adds to its own list stays protected.
+    // What a source's own front matter or directive may not change. mermaid's default list
+    // protects `secure` itself and the size limits; the keys below it are the palette, the
+    // sanitizer's own level, and the three that would otherwise make a source fetch inside
+    // `render`. A source-level `themeCSS` carrying `url(https://...)` would reach the
+    // drawing's `<style>` and fetch at render and again at mount. Read from the installed
+    // package rather than restated here, so a key mermaid adds to its own list stays
+    // protected. mermaid deletes each of these from a source's config before it reads it, and
+    // `sanitize` walks nested objects, so a key written inside a diagram's own section
+    // (`flowchart: { layout: ... }`) goes the same way as one written at the top.
+    //
+    // `layout` names the engine a diagram is laid out by, which mermaid imports as a chunk of
+    // its own inside `render` (`dagre`, `swimlane`, `cose-bilkent`, `elk` with the ELK
+    // algorithms, the last 1,513,480 bytes built). A source that chose one would download it
+    // under the reader's five seconds, since the warm above draws the type's stand-in and the
+    // stand-in has no such choice. No requirement here asks Dispatch to honour a source's
+    // layout choice, so the key is refused rather than carried into the warm: the warm and the
+    // render then agree by construction, both taking the bundle's own default for the type.
+    // What it costs an author is measured: a source whose front matter or directive names
+    // `dagre`, `cose-bilkent`, `elk` or `swimlane` is laid out by its type's default engine
+    // instead, which is what every source that names none already gets. A type that chooses
+    // its own engine is untouched, because that choice is no config key of the source's:
+    // `flowchart-elk`'s own detector sets it, a swimlane and a state diagram carry it in
+    // mermaid's default config, and a mindmap reads `mindmap.layoutAlgorithm`.
     //
     // The last two are the only keys left that make a source fetch inside `render`. A `$$...$$`
     // label draws `MathML is unsupported in this environment.` in this worker, because the
@@ -361,6 +329,7 @@ async function load(): Promise<MermaidRenderer> {
       "themeVariables",
       "fontFamily",
       "theme",
+      "layout",
       "legacyMathML",
       "forceLegacyMathML",
     ],
@@ -375,8 +344,9 @@ async function load(): Promise<MermaidRenderer> {
   /**
    * Downloads what a diagram of `standIn`'s type needs and has not been downloaded in this
    * worker yet -- its definition chunk and its layout engine -- by drawing the smallest source
-   * of that type there is (`mermaid-sources.ts`), under the layout `chosen` names, and throwing
-   * the drawing away.
+   * of that type there is (`mermaid-sources.ts`) and throwing the drawing away. One
+   * `beganDownload` covers both: they are two dynamic imports of one render, which cannot be
+   * re-armed between.
    *
    * Mermaid registers its layout engines as dynamic imports of a chunk of its own
    * (`registerDefaultLayoutLoaders`: `dagre`, `swimlane`, `cose-bilkent` and `elk` with the ELK
@@ -395,13 +365,10 @@ async function load(): Promise<MermaidRenderer> {
    * with the library by a row of its own (`mermaid-diagrams.test.tsx`), so a type a Mermaid
    * upgrade adds cannot reach here with no stand-in.
    *
-   * It is the *source's own* layout, not the stand-in's default, because `layout` is no
-   * `secure` key: a source that names `dagre`, `cose-bilkent`, `elk` or `swimlane` in its front
-   * matter or a directive lays out with that engine, and a stand-in drawn without it would warm
-   * the wrong chunk and leave the right one to load inside `draw`. The choice is carried as a
-   * directive on the stand-in rather than resolved here, so mermaid resolves it for the warm
-   * exactly as it will for the render: the same diagram type scope, the same site config, the
-   * same directive (`resolveAppearance`).
+   * It is the stand-in *as `mermaid-sources.ts` holds it*: nothing of the reader's source is
+   * put into the text rendered here, and no directive is built by joining strings. `layout` is
+   * on the `secure` list above, so no source chooses an engine of its own; the warm and the
+   * render reach the same one because both take the bundle's own default for that type.
    *
    * A warm is recorded only once it has drawn. One that failed warms nothing and refuses
    * nothing -- the reader's own render is what answers for the source -- and the next source of
@@ -410,30 +377,20 @@ async function load(): Promise<MermaidRenderer> {
    * render below would fail on the same fetch, and that is no answer about the source
    * (`mermaid-render.worker.ts` answers `rendererUnavailable` for it).
    */
-  async function warmLayoutFor(
-    standIn: MermaidSource,
-    chosen: LayoutChoice,
-    beganDownload: () => void
-  ): Promise<void> {
-    const directive = chosen === null ? "" : `%%{init: ${JSON.stringify(chosen)}}%%\n`;
-    const key = `${standIn.id}\n${directive}`;
-    if (warmedLayouts.has(key)) return;
+  async function warmLayoutFor(standIn: MermaidSource, beganDownload: () => void): Promise<void> {
+    if (warmedTypes.has(standIn.id)) return;
     beganDownload();
     try {
-      await mermaid.render(
-        `dispatch-mermaid-warm-${nextWarmId++}`,
-        `${directive}${standIn.source}`
-      );
+      await mermaid.render(`dispatch-mermaid-warm-${nextWarmId++}`, standIn.source);
     } catch (error) {
       if (failedChunkFetch(error)) throw error;
       return;
     }
-    warmedLayouts.add(key);
-    loadedTypes.add(standIn.id);
+    warmedTypes.add(standIn.id);
   }
 
   return {
-    async prepare(source: string, beganDownload: () => void, beganReading: () => void) {
+    async prepare(source: string, beganDownload: () => void) {
       guardLength(source);
       // Synchronous, and it reads the source's front matter and its directives itself, so the
       // type is known without parsing a character of the body; a source whose first line names
@@ -451,27 +408,9 @@ async function load(): Promise<MermaidRenderer> {
         // that download is still under the load bound, as every other one is.
         beganDownload();
         await mermaid.parse(source);
-        loadedTypes.add(diagramType);
         return;
       }
-      let chosen: LayoutChoice = null;
-      if (carriesConfig(source)) {
-        if (!loadedTypes.has(standIn.id)) {
-          // The stand-in's parse, which downloads the type's definition chunk, so the parse
-          // below is the source's own CPU work and nothing else.
-          beganDownload();
-          await mermaid.parse(standIn.source);
-          loadedTypes.add(standIn.id);
-        }
-        // That CPU work: a 49,005-character sequenceDiagram takes about two seconds of it. The
-        // page bounds it as drawing, so a source slow to parse is never refused in words that
-        // say its renderer did not load. It throws what Mermaid refuses the source for, which
-        // is the reader's own refusal; a parse asked to suppress that answers `false` instead,
-        // and this one is not.
-        beganReading();
-        chosen = layoutChosenIn((await mermaid.parse(source)).config);
-      }
-      await warmLayoutFor(standIn, chosen, beganDownload);
+      await warmLayoutFor(standIn, beganDownload);
     },
     async draw(source: string) {
       const { svg } = await mermaid.render(`dispatch-mermaid-${nextRenderId++}`, source);

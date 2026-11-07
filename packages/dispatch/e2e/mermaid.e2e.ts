@@ -32,12 +32,14 @@
 // every timeline row shows its source as code under `Invalid mermaid header`, both routing rows
 // fail, and the two bound rows have no second renderer to wait for.
 //
-// Two rows read what a chunk that will not load, and a source that chooses its own layout, do
-// to the page. A chunk the browser cannot fetch is no refusal of the source, wherever it is
-// fetched: the block stays as its own code, nothing is kept for it, and the same worker draws
-// it once that chunk is served. And the layout engine a source's own front matter or directive
-// names is downloaded under the load bound, like everything else that source needs, so a
-// mindmap that asks for dagre draws with every chunk held back past the render bound.
+// Three rows read what a chunk that will not load, and a source that writes a layout of its
+// own, do to the page. A chunk the browser cannot fetch is no refusal of the source, wherever
+// it is fetched: the block stays as its own code, nothing is kept for it, and the same worker
+// draws it once that chunk is served. A source's `layout` is refused (it is on the renderer's
+// `secure` list), so a mindmap that asks for dagre is laid out by its own default engine,
+// which the worker warmed, and draws with every chunk held back past the render bound; and
+// nothing a source writes reaches the text of that warm, so a `layout` carrying a graph of its
+// own has that graph drawn nowhere.
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { type BrowserContext, expect, type Locator, type Page, test } from "@playwright/test";
@@ -62,9 +64,9 @@ import {
   expectWorkerHeld,
   failMermaidChunks,
   failMermaidWorkersOnCall,
-  failOneMermaidChunk,
   holdMermaidWorkers,
   holdWorkerSource,
+  mermaidChunkNamed,
   recordMermaidAnswers,
   recordMermaidChunks,
   recordMermaidWorkers,
@@ -614,6 +616,55 @@ test("hostile diagram markup in a comment runs nothing and fetches nothing", asy
     await page.goto(`/issues/${issue.key}/conversation`);
     const card = await openCommentThread(page, comment.id, "Hostile:");
     await expectNothingHostile(page, card, card.locator(".dispatch-mermaid-preview"), requested);
+  } finally {
+    await alice.close();
+  }
+});
+
+/** A `block-beta` whose `classDef` ends the drawing's own `<style>` and opens one of its own,
+ *  holding an `@import` a CSS comment stands in front of. Mermaid writes a `classDef` into that
+ *  `<style>` without escaping it, and the page reads Mermaid's markup with the HTML parser,
+ *  which in SVG content ends the element at the author's `</style>` and opens the `<style>`
+ *  written after it — a sheet of the author's own, at its very start, which the element
+ *  allowlist keeps. Round 3 of INFRA-925 found this text fetched: to the reader this repository
+ *  carried then, the quote inside the comment opened a string that ran on to the quote opening
+ *  the target, so the `@import` was never read as one and the sheet went through whole. */
+const SPLIT_SHEET_SOURCE =
+  "block-beta\n  a\n  classDef x stroke:'</style><style>/*'*/@import " +
+  "'https://hostile.example/sheet.css'</style>'\n  class a x";
+
+// SLOW(>=2s): Mermaid's chunks load before this source is drawn at all; the download is the
+// whole cost, and the margin below is a quarter of a second of it.
+test("a classDef that opens a style element of its own imports nothing and fetches nothing", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({
+    project: "CORE",
+    spec: diagramBody("Split sheet:", SPLIT_SHEET_SOURCE),
+    title: "Split sheet source",
+  });
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const requested = await recordHostileRequests(alice);
+    const page = await alice.newPage();
+    await openSpec(page, issue.key, "Split sheet:");
+    const preview = documentEditor(page).locator(".proof-mermaid-preview");
+    await expect(diagramIn(preview)).toBeVisible();
+    // Reading every mounted sheet is the positive signal the absence below is taken after: the
+    // drawing is installed and the styles of its shadow root have been resolved, which is the
+    // pass that would start an `@import`'s own fetch.
+    const mounted = await preview.evaluate((element) =>
+      element.shadowRoot === null
+        ? null
+        : Array.from(element.shadowRoot.querySelectorAll("style"), (style) => style.textContent)
+    );
+    expect(mounted, "the preview holds a shadow root").not.toBeNull();
+    expect(mounted?.filter((sheet) => sheet?.includes("hostile.example"))).toEqual([]);
+    expect(mounted?.filter((sheet) => /@import/i.test(sheet ?? ""))).toEqual([]);
+    await sleep(REQUEST_MARGIN_MS);
+    expect(requested).toEqual([]);
   } finally {
     await alice.close();
   }
@@ -1835,13 +1886,15 @@ test("a flowchart-elk and a mindmap draw when every Mermaid chunk loads slower t
   }
 });
 
-// SLOW(>=2s): a source that chooses its own layout, under the same every-chunk delay. A mindmap
-// lays out with cose-bilkent unless its config says otherwise, and `layout` is no `secure` key,
-// so this one's front matter sends it to dagre instead. The warm render has to carry that
-// choice: a stand-in drawn with the type's own default warms cose-bilkent and leaves dagre to
-// load inside the render, where six seconds is past the five the reader's draw is bounded by.
-// Before this change the block showed `Unable to render Mermaid diagram: it did not finish
-// within 5 seconds`.
+// SLOW(>=2s): a source that writes a layout of its own, under the same every-chunk delay.
+// `layout` is on the renderer's `secure` list, so mermaid deletes this front matter's `dagre`
+// before it reads the source, and the mindmap is laid out by the engine its own type chooses,
+// cose-bilkent, which the warm render of its stand-in has already downloaded. So nothing of
+// this source is left to fetch inside the draw, where six seconds would be past the five a
+// reader's draw is bounded by. Before this change `layout` was no `secure` key and the warm
+// carried the source's choice as a directive built from the source's own text, which a `}%%`
+// in that text could close (the row below); before the change before that, the block showed
+// `Unable to render Mermaid diagram: it did not finish within 5 seconds`.
 test("a mindmap whose front matter chooses dagre draws when every Mermaid chunk loads slower than the render limit", async ({
   browser,
 }, testInfo) => {
@@ -1861,7 +1914,7 @@ test("a mindmap whose front matter chooses dagre draws when every Mermaid chunk 
     const page = await alice.newPage();
     await openSpec(page, issue.key, "Chosen layout:");
     const editor = documentEditor(page);
-    // Well past the render limit the dagre download alone would be refused under, and well
+    // Well past the render limit any one of those downloads would be refused under, and well
     // inside the load bound every download of this job is really under.
     await expect(diagramIn(editor)).toBeVisible({ timeout: DELAYED_DRAW_TIMEOUT_MS });
     await expect(diagramIn(editor)).toContainText("Dispatch");
@@ -1871,6 +1924,76 @@ test("a mindmap whose front matter chooses dagre draws when every Mermaid chunk 
       chunks(),
       "the page asked for Mermaid's chunks, so the delay was on its path"
     ).toBeGreaterThan(0);
+  } finally {
+    await alice.close();
+  }
+});
+
+/** A front-matter `layout` whose value closes the directive a warm render once built from it
+ *  and writes a flowchart of 501 nodes behind it. `JSON.stringify` escapes no `}%%`, and
+ *  Mermaid's `directiveRegex` ends a directive at the first one, so everything after it was
+ *  the stand-in's own diagram text. The value ends in `%%{init:`, which pairs with the `"}}%%`
+ *  the closed directive leaves after it: mermaid reads that pair as a second directive and
+ *  takes it out too, so what is left is the injected graph and nothing else. The source itself
+ *  is an `info` diagram, the one registered type whose source is a single line, and a lone
+ *  word is a node to Mermaid's flowchart parser, so the injected graph ran on into the
+ *  stand-in rather than being cut short by a line that parser would refuse.
+ *
+ *  At the commit before this change, drawn through `mermaid-upstream.ts` on this pod, that
+ *  warm laid the author's 501 nodes out with ELK while the job was under the load bound:
+ *  `loading@0.01s reading@0.17s loading@0.19s prepared@8.59s drawn@8.61s`, where the `info`
+ *  diagram the reader asked for took the last 0.02 s of it. */
+function graphInsideALayoutValue(): string {
+  const edges = Array.from({ length: 500 }, (_, index) => `n${index}---n${index + 1}`).join(";");
+  return `---\nconfig:\n  layout: 'x}%%graph TD;${edges};%%{init:'\n---\n${sourceOf("info")}`;
+}
+
+// SLOW(>=2s): Mermaid's chunks load before this one-line diagram is drawn; the download is the
+// whole cost.
+//
+// Nothing a source writes is put into the text the warm render draws. The row reads the chunks
+// the page asked for rather than how long anything took: the flowchart of 501 nodes this
+// source's `layout` value carries needs Mermaid's flowchart definition chunk and ELK's layout
+// engine, and an `info` diagram needs neither, so a page that asked for neither drew no part
+// of that text. The reading is the same on any machine, where the clock is not: the eight and
+// a half seconds the warm spent on those nodes before this change are an unremarkable pause on
+// a fast runner and most of the thirty-second load bound on a slow one.
+test("a layout value carrying a graph of its own has that graph drawn nowhere", async ({
+  browser,
+}, testInfo) => {
+  test.skip(
+    testInfo.project.name !== "chromium",
+    "the warm render is the worker's, in every engine"
+  );
+  test.setTimeout(180_000);
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({
+    project: "CORE",
+    spec: diagramBody("Injected graph:", graphInsideALayoutValue()),
+    title: "Injected graph",
+  });
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const asked = await recordMermaidChunks(alice);
+    const page = await alice.newPage();
+    await openSpec(page, issue.key, "Injected graph:");
+    const editor = documentEditor(page);
+    const preview = editor.locator(".proof-mermaid-preview");
+    // The source's own diagram: one line of Mermaid's own version text, drawn by Mermaid, with
+    // the block's status element (shown only for a reason) still hidden.
+    await expect(diagramIn(preview)).toBeVisible();
+    expect(await rendererOf(preview)).toBe("mermaid");
+    await expect(editor.locator(".proof-mermaid-status:visible")).toHaveCount(0);
+    const { chunks } = asked();
+    expect(chunks.length, "the page asked for Mermaid's chunks").toBeGreaterThan(0);
+    const flowchartChunks = chunks.filter(
+      (url) => mermaidChunkNamed("flowDiagram").test(url) || mermaidChunkNamed("elk").test(url)
+    );
+    expect(
+      flowchartChunks,
+      "the page asked for a chunk only the graph inside the layout value needs"
+    ).toEqual([]);
   } finally {
     await alice.close();
   }
@@ -1982,7 +2105,7 @@ test("a timeline whose own type chunk will not load shows its source, and draws 
 
   const alice = await asUser(browser, "alice");
   try {
-    const chunk = await failOneMermaidChunk(alice, "timeline-definition");
+    const chunk = await failMermaidChunks(alice, mermaidChunkNamed("timeline-definition"));
     const page = await alice.newPage();
     await recordMermaidWorkers(page);
     const consoleErrors: string[] = [];
@@ -2016,7 +2139,7 @@ test("a timeline whose own type chunk will not load shows its source, and draws 
 
     // The same source, asked for again by the next paint of the same body: nothing was stored
     // for it, so the page asks rather than reading back a refusal.
-    chunk.serveItAgain();
+    chunk.serveThemAgain();
     await page.getByRole("button", { exact: true, name: "Collapse thread" }).click();
     const reopened = await openCommentThread(
       page,
@@ -2612,6 +2735,8 @@ test("a classDef whose paint would fetch draws in its own colour, and fetches no
     await openSpec(page, issue.key, "Class paint:");
     const preview = documentEditor(page).locator(".proof-mermaid-preview");
     await expect(diagramIn(preview)).toBeVisible();
+    // The drawing itself survives the rule's removal: only the author's own rule went.
+    await expect(diagramIn(preview)).toContainText("Dispatch");
     // The source took the real Mermaid path: beautiful-mermaid writes a `classDef` into
     // presentation attributes, and would prove nothing about what a sheet carries.
     expect(await rendererOf(preview)).toBe("mermaid");
@@ -2625,13 +2750,21 @@ test("a classDef whose paint would fetch draws in its own colour, and fetches no
       return { fill: resolved.fill, mask: resolved.maskImage };
     });
     expect(painted, "the drawing holds the node the author's classDef painted").not.toBeNull();
-    // The colour of that rule is kept and only the declaration that fetches is gone, as a kept
-    // element keeps every attribute but the one that fetches.
-    expect(painted).toEqual({ fill: "rgb(255, 0, 0)", mask: "none" });
+    // A rule carrying a fetch goes whole, because the sheet is kept by rule: the engine's own
+    // parser reads it and a rule it yields is kept or dropped entire, so no part of one we
+    // failed to understand can stay behind. The author's `classDef` wrote its colour and its
+    // `mask-image` into one rule, so the colour goes with the fetch and the node keeps
+    // Mermaid's own node fill (`MARK_FILL_PRIMARY`, `#314158`, `mermaid-upstream.ts`). That
+    // costs the author who wrote the fetch their own paint, and costs no other reader
+    // anything; it is not a defect to be fixed by keeping part of the rule.
+    expect(painted).toEqual({ fill: "rgb(49, 65, 88)", mask: "none" });
     const ownStyles = await preview.evaluate((element) =>
       Array.from(element.shadowRoot?.querySelectorAll("style") ?? [], (style) => style.textContent)
     );
     expect(ownStyles.filter((style) => style?.includes("hostile.example"))).toEqual([]);
+    expect(ownStyles.filter((style) => style?.includes(".evil"))).toEqual([]);
+    // Mermaid's own theme is untouched beside it: the sheet still styles the drawing.
+    expect(ownStyles).toContainEqual(expect.stringContaining("#dispatch-mermaid-0 .node rect"));
     await sleep(REQUEST_MARGIN_MS);
     expect(requested).toEqual([]);
   } finally {
