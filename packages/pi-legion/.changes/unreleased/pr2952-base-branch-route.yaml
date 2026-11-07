@@ -1,0 +1,17 @@
+kind: Changed
+body: |-
+  `skill://legion-worker` tells a worker which branch its pull request takes: the repository's
+  default branch unless the deployment's instructions, the issue's plan or the task names
+  another, opened with `gh pr create --base <base>`, and a planner whose issue belongs on another
+  base writes that base into its plan.
+  `references/conflicts-and-rewrites.md` carries the route for an issue whose base is not the
+  default branch, under the heading *Starting on a base that is not the default branch*: read the
+  base as a jj string literal, fetch it by name, start the work at its tip, move `legion/<KEY>`
+  onto it with `jj bookmark set --allow-backwards`, push the ordinary way, and open the pull
+  request with `--base`. That planned move is the second sanctioned non-fast-forward bookmark
+  move, and both texts that counted them now count two.
+  `references/default-branch-check.md` takes its range from the branch the work stands on rather
+  than the repository's default branch, so a worker on a base that shares no history with the
+  default reads its own commits instead of that base's whole history. It keeps its unconditional
+  stop for a repository whose live default branch disagrees with the one the addressing line
+  names.
