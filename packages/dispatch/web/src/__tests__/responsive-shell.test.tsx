@@ -110,7 +110,6 @@ function renderShellAt(width: number, inbox: InboxRow[] = [], unreadThreads = 0)
       route_status_reason: null,
       key: issue.key,
       open_asks: 0,
-      gated_steps: [],
       progress: { tasks: null, children: null },
       last_seq: 0,
       labels: [],
