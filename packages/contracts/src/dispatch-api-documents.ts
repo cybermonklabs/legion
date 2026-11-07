@@ -39,8 +39,10 @@ export type Version = z.output<typeof VersionSchema>;
 export type ArtifactReviewState = "approved" | "changes_requested";
 
 /** The part an issue's document plays beside its spec: `verification` for the document created
- *  as `verification.md`, `plan` for the one created as `plan.md`. */
-export const DocumentRoleSchema = z.enum(["verification", "plan"]);
+ *  as `verification.md`, `plan` for the one created as `plan.md`, `decisions` for the one
+ *  created as `decisions.md`. `decisions` is absent from a Dispatch older than the design
+ *  gate's steps. */
+export const DocumentRoleSchema = z.enum(["verification", "plan", "decisions"]);
 
 export type DocumentRole = z.output<typeof DocumentRoleSchema>;
 
@@ -162,9 +164,10 @@ export const artifactFields = {
   kind: z.enum(["doc", "image", "file"]),
   primary: z.boolean(),
   /** The part an issue's document plays beside its spec: `verification` for the document created
-   *  as `verification.md`, `plan` for the one created as `plan.md`. It is set when the document
-   *  is created and never changes; absent for every other document and from a Dispatch older
-   *  than document roles. */
+   *  as `verification.md`, `plan` for the one created as `plan.md`, `decisions` for the one
+   *  created as `decisions.md`. It is set when the document is created and never changes; absent
+   *  for every other document and from a Dispatch older than document roles. A `decisions.md`
+   *  stored before Dispatch knew that role carries no role, and is found by its slug instead. */
   role: DocumentRoleSchema.optional(),
   created_by: ActorSchema,
   created_at: z.string(),

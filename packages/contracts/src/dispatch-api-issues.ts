@@ -178,11 +178,13 @@ export const issueFields = {
   updated_at: z.string(),
   closed_at: z.string().nullable(),
   primary_artifact_id: z.string(),
-  /** The issue's Verification document, the one created as `verification.md`, and its Plan, the
-   *  one created as `plan.md` (`Artifact.role`); `""` when the issue holds none. Absent from a
-   *  Dispatch older than document roles. */
+  /** The issue's Verification document, the one created as `verification.md`, its Plan, the one
+   *  created as `plan.md`, and its decisions document, the one created as `decisions.md`
+   *  (`Artifact.role`); `""` when the issue holds none. Absent from a Dispatch older than
+   *  document roles, and `decisions_artifact_id` from one older than the design gate's steps. */
   verification_artifact_id: z.string().optional(),
   plan_artifact_id: z.string().optional(),
+  decisions_artifact_id: z.string().optional(),
   last_seq: z.number().int(),
 };
 
@@ -576,6 +578,13 @@ export const issueEventChangesFields = {
    *  issue was taken from and the one it was given to, for the two together the sorted union of
    *  both, and for any other status move `[]`. */
   thread_logins: z.array(z.string()).optional(),
+  /** On an `issue.created` whose create went past the near-copy refusal with `force`: `past`
+   *  names the issues that refusal named, and is the empty list when the check did not answer.
+   *  A forced create the refusal would not have stopped carries no `forced` at all. */
+  forced: z
+    .strictObject({ past: z.array(z.string()) })
+    .readonly()
+    .optional(),
 };
 
 export const IssueEventChangesSchema = z.strictObject(issueEventChangesFields).readonly();
@@ -591,10 +600,10 @@ export const WrittenIssueEventPayloadSchema = z
 export type IssueEventPayload = z.output<typeof WrittenIssueEventPayloadSchema>;
 
 /**
- * What a reader of the bus makes of an `issue.*` payload: the nine fields Dispatch clients read
+ * What a reader of the bus makes of an `issue.*` payload: the ten fields Dispatch clients read
  * today, each optional because an event retained from before a field existed carries none, and
  * everything else dropped. A frame is untrusted, so a malformed display field must not discard a
- * valid event header.
+ * valid event header, and `forced` is read loosely for the same reason.
  */
 export const IssueEventPayloadSchema = z.object({
   title: issueFields.title.optional(),
@@ -606,6 +615,7 @@ export const IssueEventPayloadSchema = z.object({
   changed: issueEventChangesFields.changed,
   ancestors: issueEventChangesFields.ancestors,
   thread_logins: issueEventChangesFields.thread_logins,
+  forced: z.object({ past: z.array(z.string()) }).optional(),
 });
 
 /**

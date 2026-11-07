@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { ASK_URGENCIES, DOC_EDIT_OPS } from "./dispatch-tools";
+import { GATED_STEPS } from "./legion-roles";
 
 /**
  * Who writes, what a write points at, and the records a project is made of: the shapes every
@@ -310,12 +311,22 @@ export const ExternalLinkSchema = z
 
 export type ExternalLink = z.output<typeof ExternalLinkSchema>;
 
+/** A design-gate step a Legion deployment gates, as Dispatch stores it: `decisions` names the
+ *  root issue's decisions document, `criteria` its Verification document, `spec` its primary
+ *  document. */
+export type GatedStep = (typeof GATED_STEPS)[number];
+
 /** `project.created` and `project.updated` carry the project row itself. */
 export const ProjectSchema = z
   .strictObject({
     key: z.string(),
     name: z.string(),
     open_asks: z.number().int().optional(),
+    /** The design-gate steps the Legion deployment that serves this project gates, in the order
+     *  it gates them, as its daemon last published them. The empty list is a deployment that
+     *  gates nothing and one that has not published yet alike: neither holds a step waiting for
+     *  a person. */
+    gated_steps: z.array(z.enum(GATED_STEPS)).optional(),
     created_at: z.string(),
   })
   .readonly();

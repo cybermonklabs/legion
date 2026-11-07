@@ -115,7 +115,8 @@ It prints `WARNING: LIKELY CLEANUP/FINALIZER ISSUES`, then one `is reachable fro
 The rule covers the cleanup's argument as well as its closure, so an argument that reaches the object is the same defect: the room load `keepInstance` passed reached a document of its own, which is the finding this job made on a head where the closure itself was already weak, and the comment on that cleanup names the path it took (dispatch://INFRA-1085).
 A run that reports nothing is no proof on its own: the check runs at a garbage collection, so a short run can pass with the path present.
 `GOGC=10` beside the detector makes a single test likelier to fire it, not certain, so repeat the run before you read a quiet one as a clean one: with this fix reversed, `TestALiveWritesAskBlockKeepsItsWriterWhenAnotherProcessSettlesIt` under `GOGC=10 GODEBUG=checkfinalizers=1` fired in 2 of 3 runs for the implementer and in 1 of 6 for the reviewer, and at the fixed head it was quiet in 9 of 9.
-CI runs that command in `envoy-go-docs-finalizers` (`.github/workflows/ci.yaml`), on every change the `envoy_go_race_docs` filter selects.
+CI runs that command in `envoy-go-docs-finalizers` (`.github/workflows/ci.yaml`), which the `envoy_go_race_docs` filter selects.
+It is one of the eight slow suites: a pull request runs it only with the label `full-ci`, and the merge queue runs it on the tree the change lands as, which is where its result normally comes from.
 
 That job runs the command with `-v` for a second check Go's detector does not make:
 the package's `TestMain` prints `docs: <built> services built, <alive> still alive after <duration>` once the tests have run, and the line after it names each test that built a service still alive at the end of the run.
@@ -147,9 +148,18 @@ composes with the `TestMain` a package already has
 (`testpg.Main(prefix, func() int { return testnats.Main(m) })`).
 `packages/envoy/internal/dispatch/store/storetest`'s `Open` is the same fixture for Dispatch's
 schema.
-`Database` is still there for a test that wants an empty database: `internal/store`'s and
-`internal/record`'s own tests apply part of the migration set by hand and assert what `Migrate`
-then returns, which a migrated clone would not let them do.
+`testdb.Database` is still there for a test that wants an empty database: `internal/record`'s own tests
+apply part of the migration set by hand and assert what `Migrate` then returns, which a migrated
+clone would not let them do.
+`internal/store`'s own tests take that same `Database`, from the leaf package
+`packages/daemon/internal/testpg/testdb` that holds it: `internal/testpg` imports `internal/store`
+to migrate the template its `Clone` copies, so a test binary of `internal/store` cannot import
+`internal/testpg` back, and the half of the fixture that needs no schema sits in `testdb`, which
+imports nothing of the module and so is open to every package of it.
+A package whose tests migrate into the database their DSN names, rather than taking one each,
+takes one database for its whole run instead: `testdb.RunDatabaseMain` from its `TestMain`, and
+`testdb.RunDatabaseFor` wherever it reads the DSN (`internal/daemon`, whose daemons migrate the
+database they are given).
 
 A test that needs one of envoy's binaries takes it from
 `packages/daemon/internal/testbuild`'s `EnvoyBinary`, which builds each command once per test

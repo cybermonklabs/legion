@@ -78,6 +78,11 @@ export interface DispatchToolResult {
   /** What the caller should hear beside the result rather than in it: the dispatch CLI writes
    *  each line to stderr. The text already says what the reader needs. */
   readonly warnings?: readonly string[];
+  /** The call was answered and did nothing: Dispatch refused the write and the text says so.
+   *  A tool reads the text, so this rides beside it; the dispatch CLI exits 1 on it, which is
+   *  what `skill://dispatch` promises a refusal is, so a script that reads the status is not
+   *  told a create happened. */
+  readonly refused?: boolean;
 }
 
 export interface ResolvedArtifact {

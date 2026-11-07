@@ -716,8 +716,10 @@ type HandoffComplete struct {
 	// the delivery whose turn is running, or the run the claim is left serving once that turn
 	// ends. A child taken back to todo can leave the prior run's worker live: its completion names
 	// that prior generation and is refused. Nothing on the worker's own request tells the two apart,
-	// since the claim token is stable across runs and the session is kept live. The route refuses a
-	// claim that has taken no task, so a fact reaching the workflow always names a run.
+	// since the claim token is stable across runs and the session is kept live. For a claim serving
+	// no run the route takes the run of the task the claim is holding, when that task is of the
+	// issue's own current generation and phase, and refuses a completion it can attribute to no run
+	// at all, so a fact reaching the workflow always names a run.
 	Generation uint64
 	Summary    string
 	Verdict    string
@@ -804,7 +806,11 @@ func (SignOff) isFact() {}
 // that person, since it goes to the controller when nobody in the tree can hear it (the daemon's
 // parkDecision).
 type GateRegistered struct {
-	Issue                   string
+	Issue string
+	// Step is the design-gate step this registration records, which register_gate resolved
+	// against the deployment's list and bound to ArtifactID (api's gateRegister). The zero value
+	// is the step spec, as it is in the row the registration writes (record.Store.PutGate).
+	Step                    record.DesignStep
 	ArtifactID              string
 	Version                 int
 	ApprovedVersion         int

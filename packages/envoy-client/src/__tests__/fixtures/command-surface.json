@@ -787,6 +787,15 @@
         },
         {
           "method": "GET",
+          "path": "/api/v1/me/replies?kind=reply,agent",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        },
+        {
+          "method": "GET",
           "path": "/api/v1/whoami",
           "headers": {
             "Accept": "application/json",
@@ -811,6 +820,8 @@
         "Waiting on agents 0",
         "",
         "Later 0",
+        "",
+        "Unread threads 0",
         "",
         "Credential requests 0"
       ]
