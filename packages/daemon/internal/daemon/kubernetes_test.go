@@ -176,7 +176,7 @@ func TestAKubernetesDaemonRefusesALegacyPerClaimSandboxBeforeItOpensItsStore(t *
 	}))
 	defer apiServer.Close()
 	cfg := kubernetesConfig(t, apiServer.URL)
-	cfg.PostgresDSN = "postgres://legion:legion@127.0.0.1:1/legion?sslmode=disable&connect_timeout=1"
+	cfg.PostgresDSN = unreachablePostgres
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -232,6 +232,7 @@ func TestAKubernetesDaemonServesItsWorkerStreamOnTCPAndRunsNoHostPaneMachinery(t
 	record := &built{}
 	o := fakeRuntime(fake.NewRuntime(), record)
 	o.workflowTokens, o.githubAPI = tokens, repositoriesGitHub(t)
+	o.environ = workflowEnviron(t)
 	var logged syncBuffer
 	logger := slog.New(slog.NewJSONHandler(&logged, nil))
 	ctx, cancel := context.WithCancel(context.Background())
@@ -381,6 +382,7 @@ func TestOpenSupervisionAdvertisesAdvertiseHostNotTheWildcardBind(t *testing.T) 
 	record := &built{}
 	o := fakeRuntime(fake.NewRuntime(), record)
 	o.workflowTokens, o.githubAPI = &workflowTokenRecorder{}, repositoriesGitHub(t)
+	o.environ = workflowEnviron(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- run(ctx, cfg, quietLogger(), o) }()

@@ -540,6 +540,7 @@ func TestABootResumesASuspendedClaimThatOwnsItsIssuesPhase(t *testing.T) {
 	rt := fake.NewRuntime()
 	o := fakeRuntime(rt, &built{})
 	o.workflowTokens = &workflowTokenRecorder{}
+	o.environ = workflowEnviron(t)
 
 	startDaemon(t, cfg, o)
 

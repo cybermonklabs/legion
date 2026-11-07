@@ -42,6 +42,7 @@ func TestAHeldNoticeReachesTheControllerTopicAndItsRetriesNeverResendTheArchitec
 	rt.ScriptSpawn(fake.SpawnResult{Err: errors.New("pane launch failed")})
 	o := fakeRuntime(rt, &built{})
 	o.workflowTokens = &workflowTokenRecorder{}
+	o.environ = workflowEnviron(t)
 	d := startDaemon(t, cfg, o)
 
 	token, err := claim.ProjectToken(cfg.Project)

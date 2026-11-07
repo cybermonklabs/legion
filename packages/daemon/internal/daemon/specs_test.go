@@ -13,7 +13,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
-	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -635,16 +634,12 @@ func TestSpawnSpecCarriesTheStallLimitsTheDaemonHolds(t *testing.T) {
 		"LEGION_STALL_WAITING_MS":  "900000",
 		"LEGION_STALL_RESUME_MS":   "15000",
 	}
-	for name, value := range held {
-		t.Setenv(name, value)
-	}
-	// The fourth is one this daemon does not hold: fixtureenv.Unset takes it out of this process
-	// and puts the shell's own value, if it had one, back after the test.
-	fixtureenv.Unset(t, "LEGION_STALL_ARCHITECT_AFTER")
-
+	// The fourth, LEGION_STALL_ARCHITECT_AFTER, is one this daemon does not hold: the environment
+	// below answers for the three alone, as a daemon started without it does.
 	bot := runtime.GitIdentity{Name: "legion-implement[bot]", Email: "9+legion-implement[bot]@users.noreply.github.com"}
 	s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, repositories: noRepositoriesView,
-		identity: func(context.Context, claim.Role, ghrepo.Repository) (runtime.GitIdentity, error) { return bot, nil }}
+		stallLimits: lookup(held),
+		identity:    func(context.Context, claim.Role, ghrepo.Repository) (runtime.GitIdentity, error) { return bot, nil }}
 	token, err := claim.NewToken("s1", "S1-2", claim.RoleImplementer)
 	if err != nil {
 		t.Fatal(err)

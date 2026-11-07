@@ -106,6 +106,7 @@ func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
 	rt.InPod = true
 	o := fakeRuntime(rt, &built{})
 	o.workflowTokens = &workflowTokenRecorder{}
+	o.environ = workflowEnviron(t)
 	o.githubAPI = blockersGitHub(t)
 	o.controllerFirstWake = time.Hour
 	d := startDaemon(t, cfg, o)

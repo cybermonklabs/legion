@@ -472,6 +472,9 @@ func TestTheGateRefusesAManifestItCannotRead(t *testing.T) {
 func TestTheLoadProbeRunsWhatAPaneRunsAndPassesOnTheLoadedMarker(t *testing.T) {
 	f := newFakeOmp(t, "yes")
 	gate, logged := gateUnder(t, f, contractCurrent)
+	// This process's own environment, which every test of the package shares: the probe's is the
+	// gate's map alone (pluginGate.run sets cmd.Env), and only a variable the daemon itself holds
+	// proves the probe inherited none of it.
 	t.Setenv("LEGION_DAEMON_ONLY_SECRET", "the daemon's own")
 
 	if err := gate.verify(context.Background()); err != nil {
@@ -855,12 +858,14 @@ func TestRunGatesThePluginUnderThePaneEnvironmentBeforeItBoots(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			cfg := testConfig(t)
 			home := t.TempDir()
-			t.Setenv("HOME", home)
-			t.Setenv("OMP_PROFILE", "gate")
 			writeManifest(t, manifestAt(filepath.Join(home, ".omp", "profiles", "gate")), testCase.legion)
 			f := newFakeOmp(t, testCase.step)
 			o := fakeRuntime(fake.NewRuntime(), &built{})
 			o.runtime = nil
+			// The daemon's own environment, which the pane environment the gate probes under is
+			// read from (gateEnvironment): the home holding the profile's installed plugin, and
+			// the profile that names it.
+			o.environ = append(os.Environ(), "HOME="+home, "OMP_PROFILE=gate")
 			o.getenv = func(name string) string {
 				if name == "LEGION_OMP_PATH" {
 					return f.path
@@ -893,13 +898,14 @@ func TestRunGatesThePluginUnderThePaneEnvironmentBeforeItBoots(t *testing.T) {
 func TestTheTmuxGateAsksForWhatTheRolePromptsName(t *testing.T) {
 	cfg := testConfig(t)
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("OMP_PROFILE", "gate")
 	writeManifest(t, manifestAt(filepath.Join(home, ".omp", "profiles", "gate")),
 		`{"daemonApiVersion":`+strconv.Itoa(api.DaemonAPIVersion)+`}`)
 	f := newFakeOmp(t, "no")
 	o := fakeRuntime(fake.NewRuntime(), &built{})
 	o.runtime = nil
+	// The home and profile of the daemon's own environment, which the gate's pane environment is
+	// read from (gateEnvironment).
+	o.environ = append(os.Environ(), "HOME="+home, "OMP_PROFILE=gate")
 	o.getenv = func(name string) string {
 		if name == "LEGION_OMP_PATH" {
 			return f.path
@@ -940,15 +946,17 @@ esac
 		t.Fatal(err)
 	}
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("OMP_PROFILE", "gate")
-	t.Setenv("PATH", stub+":"+os.Getenv("PATH"))
-	t.Setenv("GEMINI_API_KEY", "the-daemons-own")
 	writeManifest(t, manifestAt(filepath.Join(home, ".omp", "profiles", "gate")),
 		`{"daemonApiVersion":`+strconv.Itoa(api.DaemonAPIVersion)+`}`)
 	f := newFakeOmp(t, "no")
 	o := fakeRuntime(fake.NewRuntime(), &built{})
 	o.runtime = nil
+	// The daemon's own environment: the home and profile the gate's pane environment is read
+	// from, the PATH the key's `secrets` is found on (config.MaterializeProviderKeys), and the
+	// daemon's own value of the key, which the pane environment drops and the probe below must
+	// not see.
+	o.environ = append(os.Environ(), "HOME="+home, "OMP_PROFILE=gate",
+		"PATH="+stub+":"+os.Getenv("PATH"), "GEMINI_API_KEY=the-daemons-own")
 	o.getenv = func(name string) string {
 		if name == "LEGION_OMP_PATH" {
 			return f.path

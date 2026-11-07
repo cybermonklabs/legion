@@ -140,8 +140,11 @@ type overrides struct {
 	clock supervise.Clock
 	// getenv is the environment the OMP invocation is resolved against; nil is the process's.
 	getenv func(string) string
-	// environ is the environment provider keys are resolved under (`secrets get`) and the NATS
-	// nkey seed is read from when the configuration names no file; nil is the process's.
+	// environ is the daemon's own environment, every boot read of it: the provider keys resolved
+	// under it (`secrets get`), the NATS nkey seed read from it when the configuration names no
+	// file, each daemon tool's LEGION_<TOOL>_PATH override and the PATH they are found on
+	// (resolveTools), and the pane environment the plugin gate probes under (gateEnvironment).
+	// nil is the process's.
 	environ []string
 	// orphanSweep is how often orphans are reconciled; zero is orphanSweepInterval.
 	orphanSweep time.Duration
@@ -802,7 +805,7 @@ func prepareTmux(cfg config.Config, log *slog.Logger, o overrides, dispatchToken
 		return err
 	}
 	if p.newRuntime == nil {
-		env, err := gateEnvironment(os.Environ(), cfg.StateDir, providerEnvDir, cfg.Runtime.Tmux)
+		env, err := gateEnvironment(o.environment(), cfg.StateDir, providerEnvDir, cfg.Runtime.Tmux)
 		if err != nil {
 			return err
 		}
@@ -1293,6 +1296,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 			commitIssueTrailerRepos: cfg.Projects[cfg.Project].CommitIssueTrailerRepos, same: p.repositories.same,
 			backend: cfg.BackendFor, hostWorkspaces: !rt.ProvisionsWorkspaces(), ensureWorkspace: p.ensureWorkspace,
 			memoryInstructions: p.memoryInstructions, memoryGroup: treeMemoryGroup(st),
+			stallLimits: os.LookupEnv,
 		},
 		Identity:      adoptIdentity(p.identity, p.repository),
 		Secrets:       p.secretsEnroller,

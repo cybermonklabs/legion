@@ -96,6 +96,11 @@ type specs struct {
 	// through the workflow); nil for a daemon with no workflow, whose launches work no repository.
 	hostWorkspaces  bool
 	ensureWorkspace func(ctx context.Context, issue string, repo ghrepo.Repository, defaultBranch string) error
+	// stallLimits is the daemon's own environment, which every worker launch's stall limits are
+	// read from (stallLimitVariables). Boot sets os.LookupEnv; it is nil only in a test whose
+	// specs literal leaves it out, and such a specs holds no limit at all, as memoryGroup's nil
+	// leaves a launch without memory.
+	stallLimits func(string) (string, bool)
 }
 
 // rolePromptPath is where a claim's role prompt is kept for every launch of it.
@@ -225,9 +230,11 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 	}
 	// After the git identity, which replaces spec.Env rather than merging into it: the stall
 	// limits are merged into whatever map the launch holds by then (stallLimitVariables).
-	for _, name := range stallLimitVariables {
-		if value, ok := os.LookupEnv(name); ok {
-			spec.Env[name] = value
+	if s.stallLimits != nil {
+		for _, name := range stallLimitVariables {
+			if value, ok := s.stallLimits(name); ok {
+				spec.Env[name] = value
+			}
 		}
 	}
 	return spec, nil
@@ -257,9 +264,10 @@ func (s specs) issueTrailer(repository ghrepo.Repository, issue string) string {
 // long the worker waits for a reminder after a settle, how long after a resume on an open phase,
 // and how long a reply that said what it waits on buys. A worker told none of them runs on the
 // defaults its plugin holds (packages/pi-shared/src/stall-limits.ts), so the daemon passes exactly
-// the ones its own environment holds and no more. Both runtimes forward spec.Env verbatim — a
-// pane's -e pairs (runtime/tmux's panePairs) and a pod launcher's start command (runtime/sandbox's
-// mainEnvironment) — so workerSpawnSpec is the one seam that serves both.
+// the ones the environment it was given holds and no more (stallLimits). Both runtimes forward
+// spec.Env verbatim — a pane's -e pairs (runtime/tmux's panePairs) and a pod launcher's start
+// command (runtime/sandbox's mainEnvironment) — so workerSpawnSpec is the one seam that serves
+// both.
 var stallLimitVariables = []string{
 	"LEGION_STALL_ARCHITECT_AFTER",
 	"LEGION_STALL_REMINDER_MS",

@@ -143,6 +143,7 @@ func newNoRequiredChecksLive(t *testing.T) *noRequiredChecksLive {
 	rt.InPod = true
 	o := fakeRuntime(rt, &built{})
 	o.workflowTokens = &workflowTokenRecorder{}
+	o.environ = workflowEnviron(t)
 	o.githubAPI = r.github.url
 	r.d = startDaemonWithin(t, r.cfg, o, r.log(), 60*time.Second)
 	return r

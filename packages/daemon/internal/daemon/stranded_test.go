@@ -244,6 +244,7 @@ func TestABootNamesTheClaimsNothingWillWake(t *testing.T) {
 	var logs syncBuffer
 	o := fakeRuntime(fake.NewRuntime(), &built{})
 	o.workflowTokens = &workflowTokenRecorder{}
+	o.environ = workflowEnviron(t)
 	reported := strandedReportDone(&o)
 
 	d := startDaemonLogging(t, cfg, o, slog.New(slog.NewJSONHandler(&logs, nil)))
@@ -309,6 +310,7 @@ func TestABootWithOnlyIdleSuspendedClaimsReportsNothing(t *testing.T) {
 	var logs syncBuffer
 	o := fakeRuntime(fake.NewRuntime(), &built{})
 	o.workflowTokens = &workflowTokenRecorder{}
+	o.environ = workflowEnviron(t)
 	reported := strandedReportDone(&o)
 
 	d := startDaemonLogging(t, cfg, o, slog.New(slog.NewJSONHandler(&logs, nil)))

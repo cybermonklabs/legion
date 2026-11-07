@@ -148,6 +148,7 @@ func newHandoffRecordsLive(t *testing.T) *handoffRecordsLive {
 	r.seed()
 	o := fakeRuntime(r.rt, r.built)
 	o.workflowTokens = &workflowTokenRecorder{}
+	o.environ = workflowEnviron(t)
 	o.githubAPI = r.github
 	r.d = startDaemonWithin(t, r.cfg, o, r.log(), 2*time.Minute)
 	r.note("Dispatch %s (database of its own, NATS off), project %s mapped to %s; daemon at dispatch_url %s",

@@ -180,7 +180,7 @@ func (rig *checkWakeRig) boot(t *testing.T) {
 	go func() {
 		done <- run(ctx, rig.cfg, slog.New(slog.NewJSONHandler(rig.logs, nil)), overrides{
 			listen: heldListen, runtime: fakeRuntime(rig.rt, rig.built).runtime, clock: stillClock{},
-			workflowTokens: &workflowTokenRecorder{}, githubAPI: rig.github.url,
+			environ: workflowEnviron(t), workflowTokens: &workflowTokenRecorder{}, githubAPI: rig.github.url,
 		})
 	}()
 	t.Cleanup(func() {

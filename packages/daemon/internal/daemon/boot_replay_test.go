@@ -284,6 +284,7 @@ func TestABootReplaysEveryTerminalFactBeforeItAdmitsAnyHello(t *testing.T) {
 	var record built
 	o := fakeRuntime(&bootReconcileHeld{Runtime: fake.NewRuntime(), hello: hello}, &record)
 	o.workflowTokens = &workflowTokenRecorder{}
+	o.environ = workflowEnviron(t)
 	type acked struct {
 		conn    net.Conn
 		applied int

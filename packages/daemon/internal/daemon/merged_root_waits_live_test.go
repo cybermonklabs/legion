@@ -249,6 +249,7 @@ func (r *mergedRootWaitsLive) boot() {
 	r.t.Helper()
 	o := fakeRuntime(r.rt, r.built)
 	o.workflowTokens = &workflowTokenRecorder{}
+	o.environ = workflowEnviron(r.t)
 	o.githubAPI = r.github
 	r.d = startDaemonWithin(r.t, r.cfg, o, r.log(), 60*time.Second)
 }

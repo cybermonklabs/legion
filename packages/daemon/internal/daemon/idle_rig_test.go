@@ -185,7 +185,6 @@ func newIdleWakeRig(t *testing.T, issues ...string) *idleWakeRig {
 	rig.kube.onPodReady = rig.podReady
 	rig.kube.onPodGone = rig.pods.podGone
 	rig.kube.run(t)
-	t.Setenv(idleRigURLVariable, rig.agents.url)
 
 	for i, name := range issues {
 		rig.issues = append(rig.issues, rig.seed(name, cfg.Project+"-"+strconv.Itoa(i+1), i))
@@ -300,6 +299,9 @@ func idleRigUser(t *testing.T, pool *pgxpool.Pool) string {
 // so the rig runs the same against either.
 func idleRigSessionPassword(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
+	// This process's own libpq environment, which every test of the package shares: the rig's
+	// launchers run in this process (launcher.Run on a goroutine of idleRigPods.podReady), and
+	// their pgx client reads the password from the environment of the process it runs in.
 	t.Setenv("PGPASSWORD", pool.Config().ConnConfig.Password)
 }
 
@@ -423,6 +425,7 @@ func (r *idleWakeRig) boot() {
 	go func() {
 		done <- run(ctx, r.cfg, logger, overrides{
 			listen: heldListen, runtime: r.newRuntime, clock: stillClock{}, idleTick: idleRigTick,
+			environ:        workflowEnviron(r.t),
 			workflowTokens: idleRigAppTokens{workflowTokenRecorder: &workflowTokenRecorder{}}, githubAPI: repositoriesGitHub(r.t),
 		})
 	}()
@@ -588,7 +591,7 @@ func (r *idleWakeRig) newRuntime(ctx context.Context, listener *stream.Listener,
 		return []string{strings.Split(liveRepo, "/")[0]}
 	}
 	opts.Mapped = func() []ghrepo.Repository { return nil }
-	opts.Tools.Legion = idleRigLegionTool(r.t, tools)
+	opts.Tools.Legion = idleRigLegionTool(r.t, tools, r.agents.url)
 	opts.Agent = idleRigAgentTool(r.t, tools)
 	opts.DaemonURL = r.cfg.DaemonURL
 	opts.EnvoyURL = r.cfg.EnvoyURL

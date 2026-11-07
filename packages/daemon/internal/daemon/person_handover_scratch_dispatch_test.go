@@ -285,6 +285,7 @@ func (r *personHandoverRig) boot() {
 	rt.InPod = true
 	o := fakeRuntime(rt, &built{})
 	o.workflowTokens = &workflowTokenRecorder{}
+	o.environ = workflowEnviron(t)
 	o.githubAPI = r.github
 	o.controllerFirstWake = time.Hour
 	r.rt = rt

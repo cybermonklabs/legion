@@ -239,6 +239,8 @@ func TestTheImageProbeRequiresTheRolePromptsReferences(t *testing.T) {
 func TestTheImageProbeResolvesARelativePluginRoot(t *testing.T) {
 	f := newImageOmp(t, []string{"available"}, []string{"yes"}, []string{"refuses"})
 	home := imageHome(t, contractCurrent)
+	// This process's own working directory, which every test of the package shares: a relative
+	// plugin root is resolved against it, so it is the subject here.
 	t.Chdir(home)
 
 	err := ProbeImage(context.Background(), ImageProbe{

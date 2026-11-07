@@ -59,8 +59,10 @@ import (
 const testOperatorToken = "operator-bearer-for-daemon-tests"
 
 // packageDSN is LEGION_TEST_PG_DSN as the test process was given it, read before any test runs.
-// It names the devbox or CI Postgres this package's template and every clone of it live on, and
-// tells a value a test set for itself from the one the run was started with.
+// It names the devbox or CI Postgres this package's template and every clone of it live on. No
+// test sets it for itself: one that needs another Postgres — an unreachable one, say — fills
+// config.Config.PostgresDSN after testConfig and leaves the variable this whole process shares
+// alone.
 var packageDSN = os.Getenv("LEGION_TEST_PG_DSN")
 
 // testDSN is a database of this test's own, carrying every migration, cloned from the template
@@ -71,20 +73,18 @@ var packageDSN = os.Getenv("LEGION_TEST_PG_DSN")
 // project: a slot's index, an issue's key, a pull request's repository and branch, a processed
 // event's source and id, a consumer's position, the advisory lock a tree's lifecycle takes. Two
 // tests sharing a database collide on all of those.
-//
-// A test that sets LEGION_TEST_PG_DSN itself, to a server its own test needs, gets the value it
-// set: it is pointing at a Postgres this process has no template on.
 func testDSN(t *testing.T) string {
 	t.Helper()
-	dsn := os.Getenv("LEGION_TEST_PG_DSN")
-	if dsn == "" {
+	if packageDSN == "" {
 		t.Skip(testdb.SkipMessage)
-	}
-	if dsn != packageDSN {
-		return dsn
 	}
 	return testpg.Clone(t, "legion_daemon_test")
 }
+
+// unreachablePostgres is a DSN nothing answers: port 1 takes no connection, and connect_timeout=1
+// bounds the attempt. A test whose daemon must refuse before it opens a store, or must never open
+// one at all, puts it in config.Config.PostgresDSN in place of the test database testConfig gives.
+const unreachablePostgres = "postgres://legion:legion@127.0.0.1:1/legion?sslmode=disable&connect_timeout=1"
 
 // shortTempDir is a state directory short enough for the worker stream's unix socket: a socket
 // path is bounded at 108 bytes, and t.TempDir() spells the whole test name. The budget asked of
@@ -182,6 +182,7 @@ func TestThePortsHandedToADaemonCannotBeTakenBeforeItBinds(t *testing.T) {
 	record := &built{}
 	o := fakeRuntime(fake.NewRuntime(), record)
 	o.workflowTokens = &workflowTokenRecorder{}
+	o.environ = workflowEnviron(t)
 	startDaemon(t, cfg, o)
 	record.mu.Lock()
 	streamAddress := record.address
@@ -1124,7 +1125,7 @@ func TestWorkflowBootServingNoRepositoryReportsWhatItLeftOut(t *testing.T) {
 	go func() {
 		done <- run(ctx, cfg, quietLogger(), overrides{
 			listen: heldListen, runtime: fakeRuntime(fake.NewRuntime(), &built{}).runtime, clock: stillClock{},
-			workflowTokens: tokens, githubAPI: repositoriesGitHub(t),
+			environ: workflowEnviron(t), workflowTokens: tokens, githubAPI: repositoriesGitHub(t),
 		})
 	}()
 	t.Cleanup(func() {
@@ -1181,7 +1182,7 @@ func TestWorkflowBootWhoseEveryInstallationReadFailsAnswersItsState(t *testing.T
 	go func() {
 		done <- run(ctx, cfg, slog.New(slog.NewJSONHandler(&logged, nil)), overrides{
 			listen: heldListen, runtime: fakeRuntime(fake.NewRuntime(), &built{}).runtime, clock: stillClock{},
-			workflowTokens: tokens, githubAPI: repositoriesGitHub(t),
+			environ: workflowEnviron(t), workflowTokens: tokens, githubAPI: repositoriesGitHub(t),
 		})
 	}()
 	t.Cleanup(func() {
@@ -1250,6 +1251,7 @@ func TestWorkflowBootLogsItsDependencyOrder(t *testing.T) {
 			listen:         heldListen,
 			runtime:        fakeRuntime(fake.NewRuntime(), &built{}).runtime,
 			clock:          stillClock{},
+			environ:        workflowEnviron(t),
 			workflowTokens: tokens,
 			githubAPI:      repositoriesGitHub(t),
 		})
@@ -1366,7 +1368,7 @@ func TestAnIssueMovedWhileBootListsIsStillAdmitted(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- run(ctx, cfg, quietLogger(), overrides{
-			listen:  heldListen,
+			listen: heldListen, environ: workflowEnviron(t),
 			runtime: fakeRuntime(fake.NewRuntime(), &built{}).runtime, clock: stillClock{}, workflowTokens: &workflowTokenRecorder{},
 			githubAPI: github.url,
 		})
@@ -1436,7 +1438,7 @@ func TestRunRefusesToBootWithoutTheNotificationStream(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- run(ctx, cfg, quietLogger(), overrides{
-			listen:  heldListen,
+			listen: heldListen, environ: workflowEnviron(t),
 			runtime: fakeRuntime(fake.NewRuntime(), &built{}).runtime, clock: stillClock{}, workflowTokens: &workflowTokenRecorder{},
 			githubAPI: repositoriesGitHub(t),
 		})
@@ -1461,7 +1463,7 @@ func TestRunStopsWithTheErrorWhenItsIntakeEnds(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- run(ctx, cfg, quietLogger(), overrides{
-			listen:  heldListen,
+			listen: heldListen, environ: workflowEnviron(t),
 			runtime: fakeRuntime(fake.NewRuntime(), &built{}).runtime, clock: stillClock{}, workflowTokens: &workflowTokenRecorder{},
 			githubAPI: repositoriesGitHub(t),
 		})
@@ -1524,6 +1526,7 @@ func TestRunWaitsThroughADispatch503BeforeServing(t *testing.T) {
 	cfg.DispatchURL = dispatchServer.URL
 	o := fakeRuntime(fake.NewRuntime(), &built{})
 	o.workflowTokens = &workflowTokenRecorder{}
+	o.environ = workflowEnviron(t)
 	startDaemon(t, cfg, o)
 
 	if got := requests.Load(); got < 3 {
@@ -1571,7 +1574,9 @@ func TestRunWaitsForTheRepositoryMappingThroughADispatchOutage(t *testing.T) {
 	}
 }
 
-// workflowConfig is a Stage 3 configuration over natsURL and a Dispatch that lists no issues.
+// workflowConfig is a Stage 3 configuration over natsURL and a Dispatch that lists no issues. The
+// daemon it configures names a project, so its boot resolves the daemon's tools and must be given
+// workflowEnviron as its environment (overrides.environ).
 func workflowConfig(t *testing.T, natsURL string) config.Config {
 	t.Helper()
 	cfg := testConfig(t)
@@ -1588,13 +1593,6 @@ func workflowConfig(t *testing.T, natsURL string) config.Config {
 		}
 	}))
 	t.Cleanup(dispatchServer.Close)
-	// Boot reads this process's environment, so the real gh is named here: the first gh on a
-	// machine's PATH may be a script, which boot refuses (RefuseScriptGH).
-	executable, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("LEGION_GH_PATH", executable)
 	cfg.DispatchURL = dispatchServer.URL
 	cfg.DispatchTokenFile = filepath.Join(t.TempDir(), "dispatch-token")
 	if err := os.WriteFile(cfg.DispatchTokenFile, []byte("dispatch-test-token\n"), 0o600); err != nil {
@@ -1603,6 +1601,21 @@ func workflowConfig(t *testing.T, natsURL string) config.Config {
 	cfg.Projects = map[string]config.Project{cfg.Project: {}}
 	cfg.NatsURLs = []string{natsURL}
 	return cfg
+}
+
+// workflowEnviron is the environment a workflowConfig daemon boots with (overrides.environ): this
+// process's own, with LEGION_GH_PATH naming the real gh. Boot resolves the tools of a daemon whose
+// project is configured, and the first gh on a machine's PATH may be a script, which it refuses
+// (RefuseScriptGH); this test binary is a compiled program, so it stands in for gh. The name
+// travels in the environment the daemon is given rather than this process's own, which every test
+// of the package shares.
+func workflowEnviron(t *testing.T) []string {
+	t.Helper()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return append(os.Environ(), "LEGION_GH_PATH="+executable)
 }
 
 func workflowJetStream(t *testing.T, natsURL string) jetstream.JetStream {

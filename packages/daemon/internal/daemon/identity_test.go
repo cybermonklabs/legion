@@ -11,7 +11,6 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -34,8 +33,8 @@ func TestSpawnSpecCarriesTheRoleAppIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The six below are the whole of Env only for a daemon holding none of the stall limits a
-	// launch is told beside them (stallLimitVariables): this test's daemon holds none.
-	fixtureenv.Unset(t, stallLimitVariables...)
+	// launch is told beside them (stallLimitVariables): this specs names no environment to read
+	// them from, so it holds none.
 	bot := runtime.GitIdentity{Name: "legion-implementer[bot]", Email: "7+legion-implementer[bot]@users.noreply.github.com"}
 	var asked []string
 	s := specs{stateDir: stateDir, project: "s1", repositories: noRepositoriesView,

@@ -138,6 +138,7 @@ func bootsOrExitsLogging(t *testing.T, cfg config.Config, tokens appauth.Tokens,
 			listen:         heldListen,
 			runtime:        fakeRuntime(fake.NewRuntime(), &built{}).runtime,
 			clock:          stillClock{},
+			environ:        workflowEnviron(t),
 			workflowTokens: tokens,
 			githubAPI:      repositoriesGitHub(t),
 		})

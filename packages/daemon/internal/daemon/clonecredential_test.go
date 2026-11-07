@@ -53,17 +53,16 @@ func TestTmuxBootRewritesEveryOlderClonesCredentialHelper(t *testing.T) {
 	// The clone's helper keys are read with `git config --get-all`, which lists every scope, and the
 	// host's own config can carry the very helper asserted here (`gh auth setup-git` writes the
 	// github.com one to ~/.gitconfig). Neither the global nor the system file may reach the test,
-	// and each reader is shut out of them by the measure that fits it. The fix-up runs its git
-	// through workspace.execRunner.Run, which builds that child's environment out of this
-	// process's own, so the two t.Setenv lines below are the measure for it. That child needs no
+	// and each reader is shut out of them by the measure that fits it. The fix-up runs the git
+	// boot resolved (tools) through workspace.execRunner.Run, which builds that child's
+	// environment out of this process's own, so the git it is given is a wrapper that names
+	// os.DevNull for both files in the environment of the one git it runs. That child needs no
 	// measure against the environment's own scope: the runner drops the pod's GIT_CONFIG_* block
 	// itself (withoutGitConfigPairs, internal/workspace/config.go:256 and :577-581). The test's
 	// own git helper and its `git init` below read nothing of this process's environment: each
 	// carries fixtureenv.Isolated, which shuts out the files and the environment block alike.
-	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
-	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
 	cfg := config.Config{Project: "WIDGETS", StateDir: t.TempDir(), Runtime: config.Runtime{Name: "tmux"}}
-	tools := map[string]string{"git": realGit}
+	tools := map[string]string{"git": gitWithoutHostConfig(t)}
 	var logs bytes.Buffer
 	log := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
@@ -151,4 +150,21 @@ func TestTmuxBootRewritesEveryOlderClonesCredentialHelper(t *testing.T) {
 	if got := strings.TrimSpace(git(t, clones[1], "config", "credential.useHttpPath")); got != "true" || !strings.Contains(logs.String(), clones[1]) {
 		t.Errorf("credential.useHttpPath = %q after the fix-up, log %q; want true and a line naming %s", got, logs.String(), clones[1])
 	}
+}
+
+// gitWithoutHostConfig is the real git with the host's global and system configuration shut out:
+// a wrapper script that names os.DevNull for both files and execs git, so the one child it starts
+// reads neither. The fix-up's git is started by workspace.execRunner out of this process's own
+// environment, and the daemon's resolved tools are where this test says which git that is, so the
+// two names travel with that child rather than in the environment every test of the package
+// shares.
+func gitWithoutHostConfig(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "git")
+	script := "#!/bin/sh\nGIT_CONFIG_GLOBAL=" + os.DevNull + "\nGIT_CONFIG_SYSTEM=" + os.DevNull +
+		"\nexport GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM\nexec " + realGit + " \"$@\"\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write the git wrapper: %v", err)
+	}
+	return path
 }

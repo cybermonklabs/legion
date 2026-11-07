@@ -27,8 +27,8 @@ import (
 // asked Dispatch anything would fail or show it.
 func probeBootConfig(t *testing.T, server string) (config.Config, *atomic.Int32) {
 	t.Helper()
-	t.Setenv("LEGION_TEST_PG_DSN", "postgres://legion:legion@127.0.0.1:1/legion?sslmode=disable&connect_timeout=1")
 	cfg := kubernetesConfig(t, server)
+	cfg.PostgresDSN = unreachablePostgres
 	var dispatched atomic.Int32
 	dispatch := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		dispatched.Add(1)

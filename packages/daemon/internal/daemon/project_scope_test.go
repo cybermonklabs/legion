@@ -118,7 +118,7 @@ func TestAnotherProjectsIssuesAreNotThisDaemonsToAdmit(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- run(runCtx, cfg, quietLogger(), overrides{
-			listen:  heldListen,
+			listen: heldListen, environ: workflowEnviron(t),
 			runtime: fakeRuntime(fake.NewRuntime(), &built{}).runtime, clock: stillClock{}, workflowTokens: &workflowTokenRecorder{},
 			githubAPI: github.url,
 		})
