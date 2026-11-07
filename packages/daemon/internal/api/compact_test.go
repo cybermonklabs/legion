@@ -300,7 +300,8 @@ func TestACompactionRefusedForAClaimInATurnNamesTheCompaction(t *testing.T) {
 // stored working over the dead process, not being compacted, with a launch waiting its turn
 // (supervise's TestACompactionWhoseRelaunchWaitsItsTurnLeavesTheOwedTaskToThatTurn). No turn is
 // running and nothing will end one: the launch's own turn is the whole of what the claim waits
-// for.
+// for, and nothing is held over it, which is the window the fixture below adds
+// (suspensionHeldOverTheParkedRelaunch).
 //
 // The pacing is installed before the claim is created, because a machine takes its deps where
 // it is built, and it holds nothing until the death below: the launches that make the claim
@@ -350,14 +351,18 @@ func workingUnderAParkedRelaunch(t *testing.T, h *harness) claim.Token {
 	if view.WakeWaiting == nil || view.WakeWaiting.Kind != supervise.WakeLaunch {
 		t.Fatalf("the claim's waiting wake is %+v, want the relaunch the pacing holds", view.WakeWaiting)
 	}
+	if view.SuspensionHeld {
+		t.Fatalf("the claim reports a suspension held by %s, want none: nothing was asked of it while it waited",
+			view.SuspensionHeldBy)
+	}
 	return token
 }
 
-// A claim whose relaunch waits its paced turn is in no turn at all, and the compaction says so:
-// the refusal names the relaunch's turn, which comes by itself, rather than a turn's end.
-// Answered "in a turn", a controller would ask again after a turn nothing will end, in the one
-// window the compaction exists to recover from.
-func TestACompactionRefusedWhileTheRelaunchWaitsItsTurnSaysTheClaimIsNotRunning(t *testing.T) {
+// A claim whose relaunch waits its paced turn is a claim between states with a launch in
+// flight, and the compaction says so: the refusal names the relaunch's turn, which comes by
+// itself, rather than a turn's end. Answered "in a turn", a controller would ask again after a
+// turn nothing will end, in the one window the compaction exists to recover from.
+func TestACompactionRefusedWhileTheRelaunchWaitsItsTurnSaysTheClaimIsUnsettled(t *testing.T) {
 	for _, door := range compactDoors() {
 		t.Run(door.name, func(t *testing.T) {
 			h := compactHarness(t, nil)
@@ -365,19 +370,19 @@ func TestACompactionRefusedWhileTheRelaunchWaitsItsTurnSaysTheClaimIsNotRunning(
 
 			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
 
-			wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimNotRunning,
-				string(token)+" runs no Oh My Pi session to compact: the daemon is starting its process again, "+
+			wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimUnsettled,
+				string(token)+" has a relaunch in flight: the daemon is starting its process again, "+
 					"and that relaunch waits its turn in the wake pacing. The turn comes by itself; ask again once "+
-					string(token)+" is running.")
+					string(token)+" is running, which is when a compaction reaches it")
 		})
 	}
 }
 
-// The other door answers the same window in its own words, and it points at no operation at
-// all: a fresh session of such a claim is refused here too, so a caller sent to it would be
-// sent in a circle. What it is told to wait for is the relaunch's turn, as the compaction's
-// refusal says. The claim is left exactly as the park left it.
-func TestAFreshSessionRefusedWhileTheRelaunchWaitsItsTurnSaysTheClaimIsNotRunning(t *testing.T) {
+// The other door answers the same window in the same code and names itself: a fresh session of
+// such a claim is refused here too, so a caller sent to the other recovery would be sent in a
+// circle. What it is told to wait for is the relaunch's turn, as the compaction's refusal says.
+// The claim is left exactly as the park left it.
+func TestAFreshSessionRefusedWhileTheRelaunchWaitsItsTurnSaysTheClaimIsUnsettled(t *testing.T) {
 	for _, door := range freshSessionDoors() {
 		t.Run(door.name, func(t *testing.T) {
 			h := compactHarness(t, nil)
@@ -385,13 +390,71 @@ func TestAFreshSessionRefusedWhileTheRelaunchWaitsItsTurnSaysTheClaimIsNotRunnin
 
 			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
 
-			wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimNotRunning,
-				string(token)+" runs no agent to start a fresh session from: the daemon is starting its process again, "+
+			wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimUnsettled,
+				string(token)+" has a relaunch in flight: the daemon is starting its process again, "+
 					"and that relaunch waits its turn in the wake pacing. The turn comes by itself; ask again once "+
-					string(token)+" is running.")
+					string(token)+" is running, which is when a fresh session reaches it")
 			if after := h.stored(token); after.State != supervise.StateWorking || after.Session != "ses_implementer" {
 				t.Errorf("the refused claim is %s recording session %q, want the working claim the park left on the session it had",
 					after.State, after.Session)
+			}
+		})
+	}
+}
+
+// suspensionHeldOverTheParkedRelaunch is that window with an operator's suspension held over
+// it: the suspend arrives while the claim is stored working, so the machine holds it for the
+// turn's end rather than stopping anything, and the park keeps its launch. The launch's turn
+// ends the held suspension instead of launching (supervise's wakeNow, endHeld), so this claim
+// comes out suspended rather than running.
+func suspensionHeldOverTheParkedRelaunch(t *testing.T, h *harness) claim.Token {
+	t.Helper()
+	token := workingUnderAParkedRelaunch(t, h)
+	recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/suspend", nil)
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("the suspend of the parked claim = %d, want the 202 of one held for the turn's end; body %s",
+			recorder.Code, recorder.Body)
+	}
+	m, _ := h.supervisor.Machine(token)
+	view := m.View()
+	if view.State != supervise.StateWorking || !view.SuspensionHeld {
+		t.Fatalf("the claim is %s holding %v, want the working claim with the operator's suspension held",
+			view.State, view.SuspensionHeld)
+	}
+	if view.WakeWaiting == nil || view.WakeWaiting.Kind != supervise.WakeLaunch {
+		t.Fatalf("the claim's waiting wake is %+v, want the relaunch the pacing still holds", view.WakeWaiting)
+	}
+	return token
+}
+
+// A suspension held over the claim is read out of that window, because the launch's turn ends
+// the suspension rather than launching: the claim comes out suspended, and "ask again once it
+// is running" would be a wait for something no turn brings. Both recoveries answer such a claim
+// in a turn, whose end is the suspension's own, and the suspended claim that end leaves is one
+// a fresh session reaches.
+func TestARecoveryRefusedUnderAHeldSuspensionSaysTheClaimIsInATurn(t *testing.T) {
+	for _, door := range compactDoors() {
+		t.Run(door.name, func(t *testing.T) {
+			h := compactHarness(t, nil)
+			token := suspensionHeldOverTheParkedRelaunch(t, h)
+
+			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
+
+			wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimInATurn,
+				string(token)+" is in a turn: a compaction would abort that turn, so ask again after the turn ends")
+		})
+	}
+	for _, door := range freshSessionDoors() {
+		t.Run(door.name, func(t *testing.T) {
+			h := compactHarness(t, nil)
+			token := suspensionHeldOverTheParkedRelaunch(t, h)
+
+			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
+
+			wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimInATurn,
+				string(token)+" is in a turn: a fresh session would cut that turn off, so ask again after the turn ends")
+			if m, _ := h.supervisor.Machine(token); !m.View().SuspensionHeld {
+				t.Errorf("the refused claim holds no suspension, want the one the refusal left held")
 			}
 		})
 	}

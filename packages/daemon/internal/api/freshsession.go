@@ -40,8 +40,9 @@ const (
 	// claimInATurn: cutting a running turn off would lose the turn that may be the one ending
 	// the run of provider errors, so both recoveries refuse a claim in one (refuseInATurn).
 	claimInATurn = "CLAIM_IN_A_TURN"
-	// claimUnsettled: a claim between states — queued, or with a launch in flight — has no agent
-	// to stop, no stopped process to start and no session to compact.
+	// claimUnsettled: a claim between states has no settled agent for either recovery to act on
+	// — one queued, one with a launch in flight, and one stored working under a launch the wake
+	// pacing parks, which waits for that launch as much as the other two (refuseParkedRelaunch).
 	claimUnsettled = "CLAIM_UNSETTLED"
 )
 
@@ -214,17 +215,17 @@ func roleList() string {
 // Two states and one claim are refused. A claim in a turn is refused because suspending it would
 // cut that turn off, and the turn may be the one that ends the run; the caller is told to ask
 // again after it, and so is a claim that entered a turn between the read below and the machine's
-// lock, whose suspension the machine refuses rather than holds (suspendForFreshSession). A claim
-// left working over a process the daemon is starting again is in no turn at all, and no turn
-// will end to let this route in: it is told to ask again once that relaunch has had its paced
-// turn, which comes by itself (relaunchWaits). A claim between states — queued, or with a
-// launch in flight — is refused because it has no agent to stop and its suspension would be
-// held for the one it is still waiting for, and the request would answer long after the claim
-// moved on. The project's controller is refused whatever
-// state it is in: its keeper starts it, as that keeper alone is told when it must
-// (supervise's operatorRetry refuses the controller's retry for the same reason), and the
-// controller's own door cannot name it at all, since `controller` is no role a claim token is
-// built from (claimFreshSession).
+// lock, whose suspension the machine refuses rather than holds (suspendForFreshSession), and a
+// claim a held suspension stops at the end of its turn, which this route reaches once that
+// suspension has landed (relaunchWaits). A claim between states — queued, with a launch in
+// flight, or stored working under a launch the wake pacing parks — is refused because it has no
+// settled agent to stop: its suspension would be held for the launch it is still waiting for,
+// and the request would answer long after the claim moved on. The parked launch's turn comes by
+// itself, so that claim is told to ask again once it has run (refuseParkedRelaunch). The
+// project's controller is refused whatever state it is in: its keeper starts it, as that keeper
+// alone is told when it must (supervise's operatorRetry refuses the controller's retry for the
+// same reason), and the controller's own door cannot name it at all, since `controller` is no
+// role a claim token is built from (claimFreshSession).
 func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token) (status int, notRestarted string, ok bool) {
 	c := m.Claim()
 	if c.Role == claim.RoleController {
@@ -234,10 +235,7 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 	}
 	switch {
 	case c.State == supervise.StateWorking && relaunchWaits(m.View()):
-		writeFailure(w, http.StatusConflict, claimNotRunning, fmt.Sprintf(
-			"%s runs no agent to start a fresh session from: the daemon is starting its process again, and that relaunch waits its turn in the wake pacing. The turn comes by itself; ask again once %s is running.",
-			token, token))
-		return 0, "", false
+		return 0, "", refuseParkedRelaunch(w, token, freshSessionOp)
 	case c.State == supervise.StateWorking:
 		return 0, "", refuseInATurn(w, token, freshSessionOp)
 	case startsAgain(c.State):
@@ -291,6 +289,46 @@ func refuseInATurn(w http.ResponseWriter, token claim.Token, op controllerOp) bo
 	writeFailure(w, http.StatusConflict, claimInATurn, fmt.Sprintf(
 		"%s is in a turn: %s, so ask again after the turn ends", token, op.cutsTheTurn))
 	return false
+}
+
+// refuseParkedRelaunch is the refusal of a claim stored working while a launch the daemon's
+// wake pacing holds waits over it (relaunchWaits), which both recoveries give: such a claim is
+// a claim between states with a launch in flight, which is what claimUnsettled says, and the
+// operation names itself as the one that reaches the claim once that launch has had its turn
+// (controllerOp). It always reports false, so a caller returns it as its own answer.
+//
+// The refusal names no session and no agent, because the claim may still have both: the park
+// can hold over a process that is alive and in a turn of its own (supervise's repoint), and
+// what every such claim has in common is the launch, not what it is running under it.
+func refuseParkedRelaunch(w http.ResponseWriter, token claim.Token, op controllerOp) bool {
+	writeFailure(w, http.StatusConflict, claimUnsettled, fmt.Sprintf(
+		"%s has a relaunch in flight: the daemon is starting its process again, and that relaunch waits its turn in the wake pacing. The turn comes by itself; ask again once %s is running, which is when %s reaches it",
+		token, token, op.name))
+	return false
+}
+
+// relaunchWaits is whether a launch the daemon's wake pacing holds waits over this claim
+// (supervise.ClaimView.WakeWaiting, supervise.WakeLaunch), with no suspension held to take the
+// claim out of working ahead of it. Read of a claim that is working and is not being compacted,
+// it is the window a death under a compaction leaves when the pacing parks the relaunch: the
+// claim is stored working over the process it lost, with nothing in a turn and nothing that
+// will end one, and what it waits for is that launch's turn, which comes by itself (supervise's
+// TestACompactionWhoseRelaunchWaitsItsTurnLeavesTheOwedTaskToThatTurn). Both recoveries read
+// it, because both answer such a claim "in a turn" without it.
+//
+// A turn that started under a launch parked over a process that is still alive reads the same
+// here (supervise's repoint), and the refusal is as true of it: that launch replaces the
+// process at its turn, so the claim is running again after it either way. Nothing the claim
+// records tells the two apart — a park writes nothing of the claim, and the dead process is
+// kept until the turn — so neither door says which of the two it found.
+//
+// A suspension held over the claim is read out here, because the launch's turn ends that
+// suspension instead of launching (supervise's wakeNow, endHeld): the claim comes out
+// suspended, so "ask again once it is running" would be a wait for something no turn brings.
+// Such a claim keeps the refusal of a claim in a turn, which is true of it — the suspension is
+// held for that turn's end — and a fresh session reaches the suspended claim it leaves.
+func relaunchWaits(view supervise.ClaimView) bool {
+	return !view.SuspensionHeld && view.WakeWaiting != nil && view.WakeWaiting.Kind == supervise.WakeLaunch
 }
 
 // startsAgain is whether a claim's process is already gone, so the fresh session starts it rather
