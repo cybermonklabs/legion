@@ -5399,7 +5399,14 @@ describe("askgate.ts, the entry", () => {
       { type: "tool_call", toolName: "dispatch_comment", toolCallId: "t1", input: COMMENT },
       ctx
     );
-    return { result, entries, warnings };
+    // `again` runs ANOTHER call through the binding this one made, so a test can change a
+    // setting and see whether the live gate reads it or the value it bound with.
+    const again = (toolCallId: string) =>
+      handlers.get("tool_call")?.(
+        { type: "tool_call", toolName: "dispatch_comment", toolCallId, input: COMMENT },
+        ctx
+      );
+    return { result, entries, warnings, again };
   }
   // The one setting the entry declares on omp's registry. A machine writes it in its own config
   // layer, so the entry must read today's value at the call rather than the one it bound with.
@@ -5414,6 +5421,27 @@ describe("askgate.ts, the entry", () => {
       { roles: { askgate: DEVBOX_GATE }, primary: DEVBOX_PRIMARY }
     );
     expect(declared.entries).toMatchObject([{ decision: "allow", outcome: "verdict" }]);
+  });
+  test("one bound gate reads the declaration again at each call, not the value it bound with", async () => {
+    const bound = await gateOnce({}, { roles: { askgate: DEVBOX_GATE }, primary: DEVBOX_PRIMARY });
+    expect(bound.entries).toMatchObject([{ outcome: "skipped", reason: "primary on anthropic" }]);
+    // No new binding: the same handler, after the machine's config changed under it.
+    sharedAccountSetting = ["anthropic", "model-gateway"];
+    await bound.again("t2");
+    expect(bound.entries[1]).toMatchObject({ decision: "allow", outcome: "verdict" });
+  });
+  // A host build that offers no operator-only view offers nothing safe to read: the merged
+  // settings carry the repository's own layer, which the agent under review can write.
+  test("a host with no grant authority declares nothing, whatever the merged settings hold", async () => {
+    const authority = mergedSettings.grantAuthority;
+    try {
+      Reflect.deleteProperty(mergedSettings, "grantAuthority");
+      sharedAccountSetting = ["anthropic", "model-gateway"];
+      const none = await gateOnce({}, { roles: { askgate: DEVBOX_GATE }, primary: DEVBOX_PRIMARY });
+      expect(none.entries).toMatchObject([{ outcome: "skipped", reason: "primary on anthropic" }]);
+    } finally {
+      mergedSettings.grantAuthority = authority;
+    }
   });
   test("a value that is not a list of provider ids declares nothing, a list with a non-string in it too", async () => {
     sharedAccountSetting = "anthropic,model-gateway";

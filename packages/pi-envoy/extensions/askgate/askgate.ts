@@ -358,14 +358,17 @@ async function loadAskGate(
     complete,
     fallbackModels,
     // Read at each call, so a machine's edit reaches a running session as every other setting
-    // does, and read through the host's own grant authority: a repository's settings file is
-    // writable by the agent under review, and a declaration from there would let that agent send
-    // its transcript to another account's model. The operator's layers alone decide it. YAML
-    // gives whatever was written, so anything that is not a list of strings, a list with one
-    // entry that is not a string included, is no declaration at all and reads as the empty list
-    // rather than deciding part of the question.
+    // does, and read ONLY through the host's own grant authority: a repository's settings file
+    // is writable by the agent under review, and a declaration from there would let that agent
+    // send its transcript to another account's model. A host build that offers no such view
+    // offers nothing safe to read, so it declares nothing rather than falling back to the
+    // merged settings, which carry that project layer. YAML gives whatever was written, so
+    // anything that is not a list of strings, a list with one entry that is not a string
+    // included, is no declaration at all and reads as the empty list rather than deciding part
+    // of the question.
     sharedAccountProviders: () => {
-      const authority = settings.grantAuthority?.() ?? settings;
+      const authority = settings.grantAuthority?.();
+      if (authority === undefined) return [];
       const value = sharedAccounts.get(authority);
       if (!Array.isArray(value) || value.some((id) => typeof id !== "string")) return [];
       return value as string[];

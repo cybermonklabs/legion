@@ -357,8 +357,8 @@ const SHUTDOWN_GRACE_MS = 1_000;
 const SHUTDOWN_WAIT_MS = 1_500;
 /**
  * The outcomes of a call the gate let through without a verdict and without deciding on its
- * arguments: the gate's own failure, a stop it took, its halt, or a session whose model is on
- * another provider. No review stands behind the bytes, so the command the agent wrote runs as
+ * arguments: the gate's own failure, a stop it took, its halt, or a session whose model is on an
+ * account the gate's model is not billed to. No review stands behind the bytes, so the command the agent wrote runs as
  * written, and its marker binds the argv alone: a file an earlier call of the same message changes
  * still posts, since there is no reviewed copy for it to differ from.
  */
@@ -3720,7 +3720,7 @@ export function createAskGate(deps: Deps): (pi: Pi) => void {
       }
       // A review, or a pass the gate took over the dry run's arguments (a rebuttal, a breaker
       // trip), binds those arguments and the files' digests; a call no verdict stands behind (a
-      // halt and another provider among them) is argv-only. The mint reads the command the
+      // halt and another account among them) is argv-only. The mint reads the command the
       // handler finally returns, the override comment put back, whose argv is what bash hands the
       // CLI. A call this entry already refused mints nothing: no command of it runs.
       let minted: ToolCallResult;

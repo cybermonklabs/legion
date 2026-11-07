@@ -85,7 +85,8 @@ declare module "@oh-my-pi/pi-coding-agent/config/settings" {
     /**
      * A read-only view of the operator's own layers, without the project layer: a repository's
      * settings file is writable by the agent, so anything that authorizes a model is read here.
-     * Optional: a host build without it hands back the settings themselves.
+     * Optional: a host build without it offers no safe view, and a caller that authorizes
+     * anything must then read nothing rather than fall back to the merged settings.
      */
     grantAuthority?(): Settings;
   }
