@@ -3,8 +3,10 @@ body: |-
   Opening a KV bucket now sends its stream lookup and its create again when the NATS server leaves
   either unanswered, up to three sends, instead of ending the caller with `open <bucket> KV bucket:
   context deadline exceeded`. nats.go sends each JetStream request once, and a server whose
-  metadata leader is changing answers neither of these two.
+  metadata leader is changing answers none of the three a bucket open makes: the lookup's
+  `STREAM.INFO`, the account `INFO` nats.go sends before a create, and the `STREAM.CREATE` itself.
 
-  The error of a bucket that could not be opened now names the request that drew it,
-  `KV_<bucket> STREAM.INFO` or `KV_<bucket> STREAM.CREATE`, so a log that held only the bucket's
-  name says which request went unanswered.
+  The error of a bucket that could not be opened now names the step that drew no answer,
+  `KV_<bucket> STREAM.INFO` or `KV_<bucket> create ($JS.API.INFO, STREAM.CREATE)`, so a log that
+  held only the bucket's name says which step it was. The create is named for every request it
+  sends, since the account info is the first of them to be dropped.
