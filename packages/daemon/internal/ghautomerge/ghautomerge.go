@@ -355,6 +355,15 @@ func (a *Armed) Is(target error) bool { return target == wait.ErrWaiting }
 // Routine is always true: only the repository's own rules hold an armed pull request back.
 func (a *Armed) Routine() bool { return true }
 
+// UnmergeableOnBaseTip says whether GitHub's merge queue reports the entry unmergeable
+// (QueueState UNMERGEABLE) while it has built that entry on the tip of the pull request's own
+// base branch (QueueBase, BaseTip, both from the one read): the one state in which nothing ahead
+// of the entry in the queue can be what the queue cannot merge, so the head itself is. An entry
+// the queue has built nothing for yet answers false, as every other state does.
+func (a *Armed) UnmergeableOnBaseTip() bool {
+	return a.QueueState == "UNMERGEABLE" && a.QueueBase != "" && a.QueueBase == a.BaseTip
+}
+
 // MergeFailed is the merge queue taking pull request Number out at READY's Head because its merge
 // failed: GitHub's removal for Reason failed_checks, or for a reason GitHub gives no other meaning
 // with a run that failed on Commit, the commit the queue built for it (its merge_group runs ran on
@@ -456,6 +465,16 @@ func (c *ConflictRemoval) Ended() *Removed {
 	removal := c.Removal
 	return &removal
 }
+
+// WithBase says whether GitHub's merge state has the head conflicting with the base itself
+// (DIRTY), the one of the two conflicts GitHub's single reason covers that no further submission
+// can merge.
+func (c *ConflictRemoval) WithBase() bool { return c.MergeState == "DIRTY" }
+
+// Uncomputed says whether GitHub has computed no merge state for the pull request yet (UNKNOWN),
+// which tells the two conflicts apart not at all: GitHub answers it while the entry is still
+// queued, and computes the state freely once it is out.
+func (c *ConflictRemoval) Uncomputed() bool { return c.MergeState == "UNKNOWN" }
 
 // Merging is the merge queue having taken pull request Number of Repo out at READY's Head to merge
 // it, after the row saw it queued there, while GitHub has yet to show it merged. It is a wait

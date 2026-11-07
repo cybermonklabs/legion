@@ -376,7 +376,7 @@ func TestAConflictFoundInTheQueueSendsTheAwaitedREADYBackToImplementing(t *testi
 			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim"})
 			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleMerger, Claim: "merge-claim", HandoffCommit: tc.ready, Summary: readyPacket, MergeNote: tc.mergeNote})
 			apply := applyFacts(t, pool, readyEngine("merge-queue"))
-			fact := intake.MergeQueueConflict{Issue: "LEGION-208", Number: 42, Head: "head", Base: "main", BaseCommit: "base-tip", Reason: reason}
+			fact := intake.MergeQueueConflict{Issue: "LEGION-208", Number: 42, Head: "head", Reason: reason}
 			if result := apply("merge-queue-conflict:LEGION-208:head:base-tip", fact); result.Refusal != nil {
 				t.Fatalf("apply the merge queue's conflict = %+v", result.Refusal)
 			}

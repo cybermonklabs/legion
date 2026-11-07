@@ -701,7 +701,7 @@ func (e *Engine) settleRound(ctx context.Context, tx pgx.Tx, issue record.Issue,
 // Rounds rises for every backward move, whatever its cause: a completion's key is built from it
 // (api/handoff.go's handoffPosition), so two passes through one phase that counted the same
 // number would collide, and the second's completion would be answered as already received. What
-// the cap reads is Rounds less the rounds a conflict with the base caused (conflictRound,
+// the cap reads is Rounds less the rounds a conflict with the base caused (classify.ConflictRound,
 // record.PhaseRow.ConflictRounds). A head that stopped merging into its base is the daemon's own
 // news, answered by a forward merge: nobody rejected the work for it, and an issue whose base
 // branch moves under it often enough would otherwise reach the cap without a single review
@@ -714,7 +714,7 @@ func (e *Engine) recordRound(ctx context.Context, tx pgx.Tx, issue string, pr *r
 		return err
 	}
 	row.Rounds++
-	if conflictRound(pr) {
+	if pr != nil && classify.ConflictRound(*pr) {
 		row.ConflictRounds++
 	}
 	if err := e.store.PutPhase(ctx, tx, row); err != nil {
@@ -730,17 +730,4 @@ func (e *Engine) recordRound(ctx context.Context, tx pgx.Tx, issue string, pr *r
 		return err
 	}
 	return e.notice(ctx, tx, issue, record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: message})
-}
-
-// conflictRound says whether a backward move made now is a round a conflict with the base caused:
-// the record holds the pull request's own recorded head as conflicting
-// (record.PullRequest.ConflictingHead), whichever read judged it so and whatever fact is making
-// the move. The exemption keys on that mark rather than on the cause, because every way back out
-// of a conflicting head is the same round of work - the return the merge queue's own state makes,
-// the conflict the two-minute pass finds, a reviewer's request for changes, a worker's backward
-// move, a tester's fail - and the implementer answers each of them with one forward merge. That
-// merge moves the recorded head, the mark no longer equals it, and the next rejection counts,
-// which is how the exemption ends without a write of its own.
-func conflictRound(pr *record.PullRequest) bool {
-	return pr != nil && pr.ConflictingHead != "" && pr.ConflictingHead == pr.HeadSHA
 }

@@ -50,16 +50,8 @@ func (e *Engine) queueReadyMerge(ctx context.Context, tx pgx.Tx, issue string, m
 // left it, a by-hand READY, or another READY head changes nothing, and a tree that lingers holds the
 // issue where it is (transition).
 func (e *Engine) mergeFailed(ctx context.Context, tx pgx.Tx, fact intake.MergeFailed) (intake.Result, error) {
-	issue, err := e.store.Issue(ctx, tx, fact.Issue)
-	if err != nil || issue == nil || issue.Phase != phase.AwaitingMerge {
-		return intake.Result{}, err
-	}
-	merger, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleMerger)
-	if err != nil || merger.MergeNote != "" || merger.HandoffCommit != fact.Head {
-		return intake.Result{}, err
-	}
-	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
-	if err != nil || pr == nil || pr.Number != fact.Number || pr.State != record.PullRequestOpen {
+	issue, pr, err := e.awaitingMergeOf(ctx, tx, fact.Issue, fact.Number, fact.Head)
+	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
 	return intake.Result{}, e.transition(ctx, tx, *issue, TriggerChecksRed, "", record.PhaseRow{}, pr, fact.Reason)
@@ -81,16 +73,8 @@ func (e *Engine) mergeFailed(ctx context.Context, tx pgx.Tx, fact intake.MergeFa
 // which review_round_cap does not count, and so is every further move back until the
 // implementer's forward merge moves the recorded head off it (recordRound).
 func (e *Engine) mergeQueueConflict(ctx context.Context, tx pgx.Tx, fact intake.MergeQueueConflict) (intake.Result, error) {
-	issue, err := e.store.Issue(ctx, tx, fact.Issue)
-	if err != nil || issue == nil || issue.Phase != phase.AwaitingMerge {
-		return intake.Result{}, err
-	}
-	merger, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleMerger)
-	if err != nil || merger.MergeNote != "" || merger.HandoffCommit != fact.Head {
-		return intake.Result{}, err
-	}
-	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
-	if err != nil || pr == nil || pr.Number != fact.Number || pr.State != record.PullRequestOpen {
+	issue, pr, err := e.awaitingMergeOf(ctx, tx, fact.Issue, fact.Number, fact.Head)
+	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
 	if pr.ConflictingHead != fact.Head {
@@ -100,6 +84,29 @@ func (e *Engine) mergeQueueConflict(ctx context.Context, tx pgx.Tx, fact intake.
 		}
 	}
 	return intake.Result{}, e.transition(ctx, tx, *issue, TriggerChecksRed, "", record.PhaseRow{}, pr, fact.Reason)
+}
+
+// awaitingMergeOf is key's issue record and the pull request record it awaits the merge on, when
+// the issue still awaits the merge of head on open pull request number, and nil for both when it
+// does not: the issue is in awaiting_merge, its merger's READY is no by-hand one
+// (record.PhaseRow.MergeNote) and stands at head, and the pull request the record holds is
+// number, still open. It is the one guard the merge queue's two answers share (mergeFailed,
+// mergeQueueConflict): neither moves an issue that has left the READY, a by-hand READY or another
+// READY head. A read that fails answers its error, and nil for both.
+func (e *Engine) awaitingMergeOf(ctx context.Context, tx pgx.Tx, key string, number int, head string) (*record.Issue, *record.PullRequest, error) {
+	issue, err := e.store.Issue(ctx, tx, key)
+	if err != nil || issue == nil || issue.Phase != phase.AwaitingMerge {
+		return nil, nil, err
+	}
+	merger, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleMerger)
+	if err != nil || merger.MergeNote != "" || merger.HandoffCommit != head {
+		return nil, nil, err
+	}
+	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	if err != nil || pr == nil || pr.Number != number || pr.State != record.PullRequestOpen {
+		return nil, nil, err
+	}
+	return issue, pr, nil
 }
 
 // holdReadyToItsHead holds a merger's READY to the pull request's head before anything of it is

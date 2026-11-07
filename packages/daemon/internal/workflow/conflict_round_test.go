@@ -122,7 +122,7 @@ func TestAConflictRoundCountsAgainstNoCap(t *testing.T) {
 		{
 			name: "the return the merge queue's own state makes", at: phase.AwaitingMerge, status: "retro", from: phase.Implementing,
 			id: "merge-queue-conflict:LEGION-208:" + conflictedHead,
-			fact: intake.MergeQueueConflict{Issue: "LEGION-208", Number: 42, Head: conflictedHead, Base: "main", BaseCommit: "base-tip",
+			fact: intake.MergeQueueConflict{Issue: "LEGION-208", Number: 42, Head: conflictedHead,
 				Reason: "the head conflicts with main: GitHub's merge queue reports its entry unmergeable while the entry is built on main's own tip base-tip; merge main forward"},
 		},
 		{

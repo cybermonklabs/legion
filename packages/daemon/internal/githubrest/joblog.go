@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"time"
 )
 
@@ -80,12 +79,7 @@ func (c Client) JobLog(ctx context.Context, id int64) (string, error) {
 		if response.StatusCode == http.StatusForbidden && !limited {
 			return "", ErrJobLogForbidden
 		}
-		refused := &Answer{Method: http.MethodGet, Path: c.answerPath(request.URL), Status: response.StatusCode, Body: strings.TrimSpace(string(body)),
-			RateLimited: limited, RetryAfter: retryAfter(response, body, time.Now())}
-		if refused.RateLimited {
-			refused.Budget = spent(response.Header, response.Header.Get("X-RateLimit-Remaining") == "0", BudgetCore)
-		}
-		return "", refused
+		return "", c.refusal(http.MethodGet, request.URL, response, body, limited, BudgetCore)
 	}
 	ring, at, wrapped, read := make([]byte, JobLogTail), 0, false, 0
 	for {

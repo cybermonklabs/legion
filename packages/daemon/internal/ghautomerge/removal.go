@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
@@ -164,7 +166,7 @@ func removal(ctx context.Context, github, logs githubrest.Client, repo ghrepo.Re
 		removed := &Removed{Number: number, Head: head, Actor: other.actor(), Reason: other.removalReason(), Detail: other.detail(),
 			Queue: other.Type == "RemovedFromMergeQueueEvent", ByGitHub: self != "" && other.actor() == self, At: other.CreatedAt,
 			Runs: failingRuns(ctx, logs, other.BeforeCommit.page())}
-		if other.Type == "RemovedFromMergeQueueEvent" && other.Reason == "merge_conflict" {
+		if removed.Queue && other.Reason == "merge_conflict" {
 			return &ConflictRemoval{Removal: *removed, MergeState: mergeState}
 		}
 		return removed
@@ -258,9 +260,15 @@ func (t *timelineItem) detail() string {
 // failed to start, action required, stale), and a commit status in failure or error. A cancelled
 // run is no failure here: a person's dequeue cancels every run in flight. A commit status is no
 // Actions job and has no log of its own, so its line is what it has always been.
+//
+// The logs are read at once, jobLogReads at a time, each line written into the place its check
+// has among checks, so the lines read in the order the checks came whatever order the reads
+// finish in.
 func failingRuns(ctx context.Context, logs githubrest.Client, checks []checkContext) []string {
-	var runs []string
-	for _, check := range checks {
+	lines := make([]string, len(checks))
+	var group errgroup.Group
+	group.SetLimit(jobLogReads)
+	for i, check := range checks {
 		switch check.Type {
 		case "CheckRun":
 			result := classify.RunResult(strings.ToLower(check.Status), strings.ToLower(check.Conclusion))
@@ -271,15 +279,34 @@ func failingRuns(ctx context.Context, logs githubrest.Client, checks []checkCont
 			if check.CheckSuite != nil && check.CheckSuite.WorkflowRun != nil && check.CheckSuite.WorkflowRun.URL != "" {
 				url = check.CheckSuite.WorkflowRun.URL
 			}
-			runs = append(runs, fmt.Sprintf("%s (%s, %s)%s", check.Name, result, url, jobFailures(ctx, logs, check.JobID)))
+			group.Go(func() error {
+				lines[i] = fmt.Sprintf("%s (%s, %s)%s", check.Name, result, url, jobFailures(ctx, logs, check.JobID))
+				return nil
+			})
 		case "StatusContext":
 			if check.State == "FAILURE" || check.State == "ERROR" {
-				runs = append(runs, fmt.Sprintf("%s (%s, %s)", check.Context, strings.ToLower(check.State), check.TargetURL))
+				lines[i] = fmt.Sprintf("%s (%s, %s)", check.Context, strings.ToLower(check.State), check.TargetURL)
 			}
+		}
+	}
+	_ = group.Wait() // no log read ever fails a removal: each failure of one is told in its own line
+	var runs []string
+	for _, line := range lines {
+		if line != "" {
+			runs = append(runs, line)
 		}
 	}
 	return runs
 }
+
+// jobLogReads is how many of a removal's failing jobs have their logs read at once. One read is
+// bounded at githubrest.JobLogTimeout, ten seconds, a third of the whole budget the merge row
+// that reads them runs under (the daemon's autoMergeTimeout): three failing jobs — an ordinary
+// matrix shape — read one after another would spend all of it, the row's context would end and
+// the removal would never be told. Read at once they cost about one read rather than their sum,
+// and the limit is what holds a merge group with dozens of failing jobs to eight reads of GitHub
+// open at a time rather than one per job.
+const jobLogReads = 8
 
 // jobFailures is what the log of Actions job id says failed, written as the end of that run's own
 // line: the tests the log names as failed and the first line naming one (failingTests), or, when

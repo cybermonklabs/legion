@@ -126,13 +126,19 @@ func (r *outbox) readyMerge(ctx context.Context, row record.OutboxRow, payload r
 		}
 		return head, err
 	}
+	// The further submission the queue's conflict removal can call for is this same submission at
+	// the same head, with nothing armed: it is built here, where keep is, so the decision that
+	// makes it takes the submission rather than the four values it is made of.
+	resubmit := func(ctx context.Context) (ghautomerge.Outcome, error) {
+		return ghautomerge.Submit(ctx, github, logs, repo, payload.Number, payload.Head, false, keep)
+	}
 	outcome, err := ghautomerge.Submit(ctx, github, logs, repo, payload.Number, payload.Head, payload.Armed, keep)
 	// The queue's conflict removal is decided before the arms below, since what the row does with
 	// it — a further submission, a wait for GitHub's merge state, or the end of the row — is read
 	// off that decision's own answer, which those arms then handle as any other.
 	var conflicted *ghautomerge.ConflictRemoval
 	if errors.As(err, &conflicted) {
-		outcome, err = r.conflictRemoval(ctx, row, &payload, conflicted, github, logs, repo, keep)
+		outcome, err = r.conflictRemoval(ctx, row, &payload, conflicted, resubmit)
 	}
 	var armed *ghautomerge.Armed
 	var failed *ghautomerge.MergeFailed
@@ -141,9 +147,9 @@ func (r *outbox) readyMerge(ctx context.Context, row record.OutboxRow, payload r
 		// Every arm or entry is decided, whether or not the row has seen one before: the entry
 		// GitHub cannot merge is read run after run, and the marks queueConflict writes on the
 		// payload stand on the copy rememberWait writes next, so neither write loses the other's.
-		returned, conflict := r.queueConflict(ctx, row, &payload, armed)
-		if conflict != nil || returned {
-			return conflict
+		returned, failure := r.queueConflict(ctx, row, &payload, armed)
+		if failure != nil || returned {
+			return failure
 		}
 		if remembered := r.rememberWait(ctx, row, payload, !payload.Armed, err); remembered != nil {
 			return remembered
@@ -197,16 +203,13 @@ func (r *outbox) readyMerge(ctx context.Context, row record.OutboxRow, payload r
 // entry is left where it is: the merge queue's own removal is the disarm's (ghautomerge.Disarm),
 // which the withdrawal the workflow makes queues.
 func (r *outbox) queueConflict(ctx context.Context, row record.OutboxRow, payload *record.ReadyMerge, armed *ghautomerge.Armed) (bool, error) {
-	if armed.QueueState != "UNMERGEABLE" || armed.QueueBase == "" || armed.QueueBase != armed.BaseTip {
+	if !armed.UnmergeableOnBaseTip() {
 		return false, nil
 	}
 	now := r.now().UTC()
 	if payload.Unmergeable.IsZero() || payload.UnmergeableBase != armed.QueueBase {
 		payload.Unmergeable, payload.UnmergeableBase = now, armed.QueueBase
-		if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
-			_, err := r.records.ReplaceOutboxPayload(ctx, tx, row.ID, row.LeaseToken, *payload)
-			return err
-		}); err != nil {
+		if err := r.markPayload(ctx, row, *payload); err != nil {
 			return false, fmt.Errorf("record the merge-queue entry outbox row %d found unmergeable: %w", row.ID, err)
 		}
 		return false, nil
@@ -216,7 +219,7 @@ func (r *outbox) queueConflict(ctx context.Context, row record.OutboxRow, payloa
 	}
 	reason := fmt.Sprintf("the head conflicts with %s: GitHub's merge queue reports its entry unmergeable while the entry is built on %s's own tip %s; merge %s forward",
 		armed.BaseName, armed.BaseName, armed.QueueBase, armed.BaseName)
-	fact := intake.MergeQueueConflict{Issue: row.Issue, Number: payload.Number, Head: payload.Head, Base: armed.BaseName, BaseCommit: armed.QueueBase, Reason: reason}
+	fact := intake.MergeQueueConflict{Issue: row.Issue, Number: payload.Number, Head: payload.Head, Reason: reason}
 	key := fmt.Sprintf("merge-queue-conflict:%s:%s:%s", row.Issue, payload.Head, armed.QueueBase)
 	applied, err := intake.ApplyFact(ctx, r.pool, "outbox", key, fact, r.handlers...)
 	if err != nil {
@@ -264,14 +267,15 @@ func (r *outbox) queueConflict(ctx context.Context, row record.OutboxRow, payloa
 // the workflow's queue of a new READY at a new head, which replaces the whole payload, so a
 // second removal of the same head, this one's own re-queue of the pull request included, ends the
 // row. The entry is left where it is on every path: taking one out is the disarm's alone
-// (ghautomerge.Disarm).
+// (ghautomerge.Disarm). resubmit is that further submission, built by readyMerge beside the
+// keep both submissions ask: the same submission at the same head with nothing armed.
 func (r *outbox) conflictRemoval(ctx context.Context, row record.OutboxRow, payload *record.ReadyMerge, conflict *ghautomerge.ConflictRemoval,
-	github, logs githubrest.Client, repo ghrepo.Repository, keep ghautomerge.Keep) (ghautomerge.Outcome, error) {
+	resubmit func(context.Context) (ghautomerge.Outcome, error)) (ghautomerge.Outcome, error) {
 	now := r.now().UTC()
 	switch {
-	case payload.Resubmitted, conflict.MergeState == "DIRTY":
+	case payload.Resubmitted, conflict.WithBase():
 		return "", conflict.Ended()
-	case conflict.MergeState == "UNKNOWN":
+	case conflict.Uncomputed():
 		if !payload.ConflictUnknown.IsZero() {
 			if now.Sub(payload.ConflictUnknown) >= conflictUnknownBound {
 				return "", conflict.Ended()
@@ -279,10 +283,7 @@ func (r *outbox) conflictRemoval(ctx context.Context, row record.OutboxRow, payl
 			return "", conflict
 		}
 		payload.ConflictUnknown = now
-		if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
-			_, err := r.records.ReplaceOutboxPayload(ctx, tx, row.ID, row.LeaseToken, *payload)
-			return err
-		}); err != nil {
+		if err := r.markPayload(ctx, row, *payload); err != nil {
 			return "", fmt.Errorf("record the merge state GitHub had not computed when outbox row %d read its conflict removal: %w", row.ID, err)
 		}
 		return "", conflict
@@ -312,7 +313,21 @@ func (r *outbox) conflictRemoval(ctx context.Context, row record.OutboxRow, payl
 	}
 	r.log.Warn("outbox READY merge was taken out of the merge queue for a conflict GitHub's merge state leaves with an entry ahead of it; it is submitted once more",
 		"row", row.ID, "issue", row.Issue, "number", payload.Number, "head", payload.Head, "mergeState", conflict.MergeState, "removal", conflict.Error())
-	return ghautomerge.Submit(ctx, github, logs, repo, payload.Number, payload.Head, false, keep)
+	return resubmit(ctx)
+}
+
+// markPayload writes payload back to row under the row's lease, in a transaction of its own: the
+// mark a merge row's decision leaves for its next run (queueConflict's unmergeable entry,
+// conflictRemoval's uncomputed merge state), which nothing else accompanies. A replacement that
+// did not take — the row's lease gone to another worker — is no failure here, since that worker
+// reads GitHub itself; a write that failed is, and its caller says which mark it was.
+// rememberWait's write and conflictRemoval's own are not this: each enqueues a row with the
+// payload, under the transaction's commit hooks, and reads whether the replacement took.
+func (r *outbox) markPayload(ctx context.Context, row record.OutboxRow, payload record.ReadyMerge) error {
+	return pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		_, err := r.records.ReplaceOutboxPayload(ctx, tx, row.ID, row.LeaseToken, payload)
+		return err
+	})
 }
 
 // rememberWait records on row what its wait learned that its next run must know, and tells the

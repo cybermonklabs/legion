@@ -137,14 +137,6 @@ def number_in(text: str, what: str) -> int:
     return int(match.group(1))
 
 
-def line_of(text: str) -> int:
-    """The line the declaration is on, so a problem names where to edit."""
-    for number, line in enumerate(text.splitlines(), start=1):
-        if DECLARED.match(line):
-            return number
-    return 1
-
-
 def payload_field(payload: dict, *path: str) -> str:
     value: object = payload
     for key in path:
@@ -226,8 +218,13 @@ def take(repository: str, base_number: int) -> str:
     return f"Take {free}, the lowest number above the base's that no open pull request declares"
 
 
-def write_it_in() -> str:
-    return f"and write it in each of the {len(SITES)} files that hold the number: {', '.join(SITES)}"
+def renumber(repository: str, base_number: int) -> str:
+    """How every refusal ends: the number to take (take), and the files to write it in, which
+    hold the number together."""
+    return (
+        f"{take(repository, base_number)}, and write it in each of the {len(SITES)} files that "
+        f"hold the number: {', '.join(SITES)}"
+    )
 
 
 event_name = os.environ.get("GITHUB_EVENT_NAME", "")
@@ -268,13 +265,13 @@ except FileNotFoundError:
         DECLARATION,
         f"{DECLARATION} is missing from this checkout, so what contract this change declares "
         f"cannot be read; the base, {base_is}, carries {base_number}. "
-        f"{take(repository, base_number)}, {write_it_in()}",
+        f"{renumber(repository, base_number)}",
     )
 except (OSError, UnicodeDecodeError) as error:
     fatal(
         DECLARATION,
         f"could not read {DECLARATION} in this checkout: {one_line(error)}; the base, {base_is}, "
-        f"carries {base_number}. {take(repository, base_number)}, {write_it_in()}",
+        f"carries {base_number}. {renumber(repository, base_number)}",
     )
 match = DECLARED.search(tree_text)
 if match is None:
@@ -282,7 +279,7 @@ if match is None:
         DECLARATION,
         f"{DECLARATION} declares no `const DaemonAPIVersion = <number>` line, so what contract "
         f"this change declares cannot be read; the base, {base_is}, carries {base_number}. "
-        f"{take(repository, base_number)}, {write_it_in()}",
+        f"{renumber(repository, base_number)}",
     )
 tree_number = int(match.group(1))
 
@@ -302,12 +299,15 @@ if tree_text.rstrip("\n") == base_text.rstrip("\n"):
     )
     raise SystemExit(0)
 
+# The line the declaration is on, so the refusal names where to edit: the newlines before the
+# match the search above already holds.
+line = tree_text.count("\n", 0, match.start()) + 1
 fatal(
     DECLARATION,
-    f"{DECLARATION}:{line_of(tree_text)}: this change touches {DECLARATION} and declares daemon "
+    f"{DECLARATION}:{line}: this change touches {DECLARATION} and declares daemon "
     f"API contract {tree_number}, which is not above the {base_number} the base carries "
     f"({base_is}). A daemon and the plugin in its pods must agree on this number, so two changes "
     f"cannot both declare one: the second to land is renumbered after its review has run. "
-    f"{take(repository, base_number)}, {write_it_in()}",
+    f"{renumber(repository, base_number)}",
 )
 PY
