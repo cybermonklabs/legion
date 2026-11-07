@@ -50,9 +50,9 @@ type intakeMessage struct {
 
 // heldMessage is one message the stop holds and the answer that message is owed: a negative
 // acknowledgement for one this process did not finish handling (giveBack), and an
-// acknowledgement for one whose handler finished while the stop was under way
-// (acknowledgeWhenLive). Both are publishes, which a client reconnecting refuses, so both wait
-// for the live connection the stop waits for.
+// acknowledgement for one whose own acknowledgement the bus refused while the stop was under way
+// (acknowledgeOrHold). Both are publishes, and a client with no live connection refuses one, so
+// both wait for the connection the stop waits for and are published over it (answerHeld).
 type heldMessage struct {
 	msg *natsgo.Msg
 	// handled is set for a message its handler finished: the stop acknowledges it rather than
@@ -140,20 +140,21 @@ func stopContext(ctx context.Context) (stopping context.Context, release func())
 // redelivers them to the next holder when their ack wait expires.
 //
 // Either way it waits for the messages in their handlers until ctx ends: one that finishes by
-// then is held for an acknowledgement (deliver, acknowledgeWhenLive), and the handlers still
-// running when ctx ends are given up -- their context is cancelled, so a GitHub call that does
-// not answer is abandoned -- and their messages held for the hand-back the rest are in (deliver,
-// giveBack). Only once no handler is running, and the client has a connection to answer over,
-// does it answer what it holds, each message by its own kind: an acknowledgement for one whose
-// handler finished, and a negative acknowledgement for every message that was waiting behind its
-// key, every message a given-up handler held, and every message the callback was handed
-// meanwhile, so the server redelivers those at once -- to the next holder, which can then not
-// start a pull request's or run's next message while this process still works on the one before
-// it. A message the callback is handed after that is answered at once. It returns once a drain
-// it began has ended -- at the latest intakeDrainWait after the last handler returned, or as ctx
-// ends if that is sooner, when it unsubscribes instead -- and at once where it unsubscribed.
-// Either path gives up the subscription's registration on the client, so that no reconnect binds
-// it again and a later subscribe on the same client starts afresh.
+// then is acknowledged, and held for the stop only where the bus refused that acknowledgement
+// (deliver, acknowledgeOrHold), and the handlers still running when ctx ends are given up --
+// their context is cancelled, so a GitHub call that does not answer is abandoned -- and their
+// messages held for the hand-back the rest are in (deliver, giveBack). Only once no handler is
+// running, and the client has a connection to answer over, does it answer what it holds, each
+// message by its own kind: an acknowledgement for one whose handler finished and whose own
+// acknowledgement was refused, and a negative acknowledgement for every message that was
+// waiting behind its key, every message a given-up handler held, and every message the callback
+// was handed meanwhile, so the server redelivers those at once -- to the next holder, which can
+// then not start a pull request's or run's next message while this process still works on the
+// one before it. A message the callback is handed after that is answered at once. It returns
+// once a drain it began has ended -- at the latest intakeDrainWait after the last handler
+// returned, or as ctx ends if that is sooner, when it unsubscribes instead -- and at once where
+// it unsubscribed. Either path gives up the subscription's registration on the client, so that
+// no reconnect binds it again and a later subscribe on the same client starts afresh.
 //
 // Two callers run it, both Run's: as its ctx ends, under its stop deadline (stopContext), and on a
 // connection event, under a budget of its own (giveUpOnConnectionChange). The second is the stop
@@ -184,8 +185,9 @@ func (in *Intake) StopDelivering(ctx context.Context) {
 // Between the handler wait and the answers it waits for a live connection (awaitLiveConnection):
 // an acknowledgement, negative or not, is a publish, and a stop a connection event runs begins
 // while the link is down, where the client refuses one. Each held message is then answered by
-// its own kind (heldMessage): acknowledged when its handler finished inside the stop, handed
-// back when this process did not finish it.
+// its own kind (heldMessage), over the connection the client holds now (answerHeld):
+// acknowledged when its handler finished inside the stop and its own acknowledgement was
+// refused, handed back when this process did not finish it.
 func (d *intakeDelivery) stop(ctx context.Context) {
 	giveUp := context.AfterFunc(ctx, d.abandon)
 	defer giveUp()
@@ -219,11 +221,7 @@ func (d *intakeDelivery) stop(ctx context.Context) {
 		d.held = nil
 		d.mu.Unlock()
 		for _, entry := range held {
-			if entry.handled {
-				acknowledge(entry.msg)
-				continue
-			}
-			negativelyAcknowledge(entry.msg)
+			d.answerHeld(entry)
 		}
 		// nats.go ends a drain on a goroutine of its own, once the callback has run every message
 		// the client had buffered, and reports it only by the subscription turning invalid.
@@ -295,29 +293,88 @@ func (d *intakeDelivery) giveBack(msg *natsgo.Msg) {
 	negativelyAcknowledge(msg)
 }
 
-// acknowledgeWhenLive acknowledges msg, the message of a handler that has finished: at once,
-// which is what every message of a delivery nobody is stopping gets, unless a stop is under way
-// and has not yet answered what it holds (stopping, released), where the stop acknowledges it
-// instead, once it has a live connection to acknowledge over (stop, awaitLiveConnection).
+// acknowledgeOrHold acknowledges msg, the message of a handler that has finished, and holds it
+// for the stop only when that acknowledgement was refused and this delivery has not released
+// what it holds (released). The acknowledgement goes first because holding one protects
+// nothing, unlike giveBack, whose hold keeps the next holder from starting a key's next
+// message while this process is still on the one before it. A stop with a live link is this
+// process shutting down, and there a handler that finished at the first second would otherwise
+// wait for the slowest handler or for the budget (intakeStopBudget, up to 15 s) while its
+// message holds one of the next holder's four in-flight slots (intakeMaxAckPending) -- during a
+// rolling deploy, the slots of the process taking over.
 //
-// An acknowledgement is a publish, and the stop a connection event runs begins with the link
-// down, where the bus refuses one and the Nak acknowledge falls back on alike. The message would
-// then stay outstanding for the whole ack wait (intakeAckWait) although its handling had
-// finished, holding one of the next holder's four in-flight slots (intakeMaxAckPending) for
-// every second of it, and four such handlers would stop that holder being delivered anything.
-// Held instead, it is acknowledged on the connection that comes back: an acknowledgement is
-// published at the message's own reply subject, which belongs to the consumer and not to this
-// subscription, so the server takes it after this subscription has ended (nats.go's
-// Msg.ackReply).
-func (d *intakeDelivery) acknowledgeWhenLive(msg *natsgo.Msg) {
+// What is held is therefore a refused answer rather than every answer. An acknowledgement is a
+// publish, and the stop a connection event runs begins with the link down, where the bus refuses
+// one; the message would then stay outstanding for the whole ack wait (intakeAckWait) although
+// its handling had finished, and four such handlers would stop the next holder being delivered
+// anything. A refused Ack leaves the message unacknowledged -- nats.go sets ackd only where the
+// publish succeeded (js.go:3661-3664) -- so the stop can answer it again (answerHeld). Reading
+// the refusal rather than the stopping flag also covers the handler that finishes between the
+// TCP drop and the disconnect callback, before stopping is set, whose acknowledgement is refused
+// with no stop yet to hold it.
+//
+// Once the stop has released, there is nobody left to answer the message: the refusal is logged
+// and the message handed back, as acknowledge does for every other caller, and the ack wait is
+// the backstop when that hand-back is refused too.
+func (d *intakeDelivery) acknowledgeOrHold(msg *natsgo.Msg) {
+	err := msg.Ack()
+	if err == nil {
+		return
+	}
 	d.mu.Lock()
-	if d.stopping.Load() && !d.released {
+	if !d.released {
 		d.held = append(d.held, heldMessage{msg: msg, handled: true})
 		d.mu.Unlock()
 		return
 	}
 	d.mu.Unlock()
-	acknowledge(msg)
+	slog.Error("dispatch delivery: acknowledge message", "subject", msg.Subject, "error", err)
+	negativelyAcknowledge(msg)
+}
+
+// intakeAckBody and intakeNakBody are the bodies NATS reads an acknowledgement and a negative
+// acknowledgement as. They are nats.go's own ackAck and ackNak (js.go:3865-3866), which that
+// package keeps unexported, so they are named here rather than imported: a held answer is
+// published by hand (answerHeld) and cannot go through Msg.Ack or Msg.Nak.
+var (
+	intakeAckBody = []byte("+ACK")
+	intakeNakBody = []byte("-NAK")
+)
+
+// answerHeld answers one message the stop held, over the connection the client holds now
+// (bus.Client.Connection) rather than over the one the message arrived on. Msg.Ack and Msg.Nak
+// publish on the connection of the message's own subscription (sub.conn, js.go:3608-3610), and
+// removeSub never changes that field, so where the client closed that connection and dialled a
+// replacement (internal/bus/recovery.go's onClosed) the connection awaitLiveConnection returned
+// on is the replacement while those answers go out on the closed one and fail with
+// ErrConnectionClosed. Every held message, finished or abandoned, would then wait out the whole
+// ack wait (intakeAckWait) in the next holder's four-slot window. The answer is published at the
+// message's own reply subject, which belongs to the consumer and not to this subscription, so
+// any connection of the account can make it and the server takes it after this subscription has
+// ended.
+//
+// An answer this cannot make -- a message with no reply subject, a client with no connection, or
+// a publish the connection refuses -- is logged at ERROR with the message and the answer it was:
+// this is the last chance the process has to answer, and what follows it is the ack wait.
+func (d *intakeDelivery) answerHeld(entry heldMessage) {
+	body, answer := intakeNakBody, "hand back"
+	if entry.handled {
+		body, answer = intakeAckBody, "acknowledge"
+	}
+	connection := d.nats.Connection()
+	switch {
+	case entry.msg.Reply == "":
+		slog.Error("dispatch delivery: the held message carries no reply subject to answer at",
+			"subject", entry.msg.Subject, "answer", answer)
+	case connection == nil:
+		slog.Error("dispatch delivery: no NATS connection to answer the held message over",
+			"subject", entry.msg.Subject, "answer", answer, "ack_wait", intakeAckWait())
+	default:
+		if err := connection.Publish(entry.msg.Reply, body); err != nil {
+			slog.Error("dispatch delivery: answer the held message",
+				"subject", entry.msg.Subject, "answer", answer, "ack_wait", intakeAckWait(), "error", err)
+		}
+	}
 }
 
 // intakeDrainWait bounds how long stop waits for the drain to end once every handler has returned.

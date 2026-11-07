@@ -13,8 +13,14 @@ package delivery
 //
 // A fourth row holds the other half of that accounting: a handler that finishes while the link
 // is down -- the ordinary outage, since the give-up abandons a handler only once its budget has
-// ended -- has its message acknowledged on the connection that comes back, so the process that
-// keeps the durable is never handed work that was already done.
+// ended -- has its message acknowledged once the link is back, so the process that keeps the
+// durable is never handed work that was already done.
+//
+// A fifth row drives that acknowledgement on the other of the two paths a connection comes back
+// by: a holder whose client closed the connection the message arrived on and dialled a
+// replacement. The answer cannot go out on the message's own subscription there -- that
+// connection is closed and refuses every publish -- so it is published over the connection the
+// client holds then (intake_delivery.go's answerHeld).
 
 import (
 	"encoding/json"
@@ -170,15 +176,16 @@ func TestAMessageInFlightWhenTheDurableIsGivenUpReachesTheProcessThatKeepsIt(t *
 // drive: the give-up abandons a handler only when its budget ends, so a handling of about a
 // second finishes inside the outage, with the stop already under way. Its acknowledgement is a
 // publish exactly as a hand-back is, and the bus buffers none while the client reconnects
-// (opts.ReconnectBufSize = -1, internal/bus/connect.go), so the delivery holds it with what it
-// hands back and the stop makes it on the connection that comes back (acknowledgeWhenLive,
-// intake_delivery.go's stop).
+// (opts.ReconnectBufSize = -1, internal/bus/connect.go), so the handler's own acknowledgement is
+// refused, the delivery holds it with what it hands back, and the stop makes it once the link is
+// back (acknowledgeOrHold, intake_delivery.go's stop).
 //
 // An acknowledgement made then reaches the server although the subscription it arrived on has
-// been unsubscribed: nats.go publishes it at the message's own reply subject, which belongs to
-// the consumer, over the subscription's connection, and checks nothing about the subscription
-// itself (Msg.ackReply, js.go). The holder here reconnects in place, so that connection is the
-// one it had.
+// been unsubscribed: it is published at the message's own reply subject, which belongs to the
+// consumer, and nothing about the subscription is read (intake_delivery.go's answerHeld). The
+// holder here reconnects in place, so the connection it is published over is the one the
+// message arrived on; the row below drives the holder whose connection was replaced, where it
+// is not.
 //
 // What the row reads is the durable's own outstanding count (NumAckPending, deliveryAckPending).
 // 0 says the server took the acknowledgement and the keeper's four in-flight slots are free
@@ -189,18 +196,22 @@ func TestAMessageInFlightWhenTheDurableIsGivenUpReachesTheProcessThatKeepsIt(t *
 // deliveryConsumerConfig() on the durable, whose AckWait is intakeAckWait(), and that has a
 // one-minute floor whatever a row does to its inputs -- five minutes here, since the row leaves
 // intakeMessageTimeout and intakeMaxAckPending as they are. It is far longer than the stop needs
-// (the acknowledgement goes out as the client reports connected, inside the give-up's 10 s
-// budget) and far shorter than the wait a refused acknowledgement leaves, so neither a slow pod
-// nor the server's own redelivery decides the row.
+// (the acknowledgement goes out as the client reports connected, inside the give-up's budget)
+// and far shorter than the wait a refused acknowledgement leaves, so neither a slow pod nor the
+// server's own redelivery decides the row.
 func TestAHandlerThatFinishesDuringTheOutageIsAcknowledgedWhenTheLinkIsBack(t *testing.T) {
-	// The give-up's own budget, shrunk as the row above shrinks it, and restored in a cleanup
-	// registered before the intakes are started, so the restore runs after both Runs have
-	// returned. Here it bounds the stop's wait for a live connection rather than its wait for a
-	// handler: the keeper's bind poll (durableBindInterval, 2 s) and nats.go's reconnect wait
-	// (1 s) have the link back well inside 10 s, and a stop whose wait ended would acknowledge
-	// over a dead link, which is a failure this row reports rather than hides.
+	// The give-up's own budget, and restored in a cleanup registered before the intakes are
+	// started, so the restore runs after both Runs have returned. Here it bounds the stop's wait
+	// for a live connection rather than its wait for a handler, which the row releases itself:
+	// the budget has to cover the cut, the keeper's bind (a durableBindInterval poll, 2 s, plus
+	// the consumer lease and the bind confirmation), the restore and nats.go's one-second
+	// reconnect, and a budget that runs out instead fails the row as "never acknowledged", which
+	// names the wrong cause. 30 s rather than the 15 s of the binary because this pod runs the
+	// row in 4 to 6 s and a loaded CI runner has to fit in too; a larger budget costs the row
+	// nothing, since the handler is released early and the budget only bounds waits that end
+	// when the link is back, inside the row's own 60 s bound.
 	budget := intakeStopBudget
-	intakeStopBudget = 10 * time.Second
+	intakeStopBudget = 30 * time.Second
 	t.Cleanup(func() { intakeStopBudget = budget })
 
 	processes := startConnectionEventProcesses(t, holderHoldsItsFirstFetch)
@@ -258,6 +269,101 @@ func TestAHandlerThatFinishesDuringTheOutageIsAcknowledgedWhenTheLinkIsBack(t *t
 	// there, once, and neither given back nor redone.
 	if holderHandled := processes.holderFetches.Load(); holderHandled != 1 {
 		t.Errorf("the process that gave the durable up fetched the pull request %d time(s), want the one handling it finished during the outage",
+			holderHandled)
+	}
+}
+
+// A handler that finishes once its client has closed the connection its message arrived on and
+// dialled a replacement has that message acknowledged all the same, and the process that took
+// the durable over is never handed it (INFRA-1551, R2). This is the row above's measurement on
+// the second of the two paths a connection comes back by, and the one the row above cannot
+// reach: there the holder reconnects in place, so the message's own subscription carries a live
+// connection again and Msg.Ack would answer it.
+//
+// Here it would not. Msg.Ack and Msg.Nak publish on the connection of the message's own
+// subscription (sub.conn, nats.go's js.go:3608-3610), which the client closed; a publish on it
+// is refused with ErrConnectionClosed however long the stop waits, and the message would wait
+// out the five-minute ack wait in the keeper's four-slot window although its handling was done.
+// What answers it is the stop publishing at the message's reply subject -- the consumer's, not
+// this subscription's -- over the connection the client holds then (intake_delivery.go's
+// answerHeld). Sent through Msg.Ack instead, this row fails with the message still outstanding.
+//
+// The order of the three steps is what puts the row on that path. The cut is the connection
+// event the stop begins at; the keeper takes the durable over before the connection is closed,
+// as the replaced-connection row above does it, since a connection replaced while the durable
+// is free is not the state this row is about; and the hold is released last, so the handler
+// finishes with its connection closed and its own acknowledgement refused there.
+//
+// What the row reads is the row above's: the durable's outstanding count (NumAckPending,
+// deliveryAckPending), 0 within 60 s, which is a fifth of the ack wait the row cannot change,
+// and the keeper's fetch count, which stays 0 because the work was done here.
+func TestAHandlerThatFinishesWhenTheHoldersConnectionWasReplacedIsAcknowledgedAllTheSame(t *testing.T) {
+	// The give-up's own budget, raised and restored as the row above does it and for its
+	// reasons, with one more wait to cover here: the client's redial of the connection this row
+	// closes, which backs off from a second (internal/bus/recovery.go's recoverUntilHealthy). A
+	// larger budget still costs the row nothing -- the handler is released early, so the budget
+	// only bounds waits that end when the client is connected again -- and a budget that ran out
+	// would fail the row as "never acknowledged", which names the wrong cause.
+	budget := intakeStopBudget
+	intakeStopBudget = 30 * time.Second
+	t.Cleanup(func() { intakeStopBudget = budget })
+
+	processes := startConnectionEventProcesses(t, holderHoldsItsFirstFetch)
+	// The row releases the hold itself; this is for a row that fails before it gets there, and
+	// is registered after the intakes are started so it runs before their stops do.
+	t.Cleanup(processes.holderHeld.release)
+
+	// One envelope while the holder is the only bound process, and nothing done until its
+	// handler is inside its GitHub fetch.
+	publishPullRequestEnvelope(t, processes.keeperClient, "acme", "widgets", 1, mergedPullRequest(1))
+	processes.holderHeld.awaitEntered(t)
+
+	// The cut is the connection event: the holder's stop begins at it, with the handler still in
+	// that fetch.
+	processes.proxy.Cut()
+	waitFor(t, 30*time.Second, func() bool {
+		return !intakeHoldsSubscription(processes.holder)
+	}, func() string {
+		return fmt.Sprintf("the process cut off from NATS never gave its delivery subscription up: it holds a live one = %t, the standby holds one = %t",
+			intakeHoldsSubscription(processes.holder), intakeHoldsSubscription(processes.keeper))
+	})
+	processes.awaitKeeper(t)
+	// The close is this row's path: the client cannot reconnect this connection in place any
+	// more, so it dials a replacement, and the connection the stop answers over is not the one
+	// the message arrived on.
+	processes.holderClient.Connection().Close()
+	processes.holderHeld.release()
+
+	// Read before the restore, so the row knows the acknowledgement it waits for below is the
+	// stop's own: while the link is down nothing has reached the server for this message.
+	if pending := deliveryAckPending(processes.keeperClient); pending != 1 {
+		t.Fatalf("the durable has %d message(s) outstanding while the holder is cut off, want the 1 its finished handler is holding (-1 reads as a consumer this test could not read)",
+			pending)
+	}
+	processes.proxy.Restore()
+	// 60 s, as the replaced-connection row above gives it: the client dials its replacement
+	// rather than having nats.go reconnect in place, and that dial backs off from a second.
+	awaitHolderConnectedAgain(t, processes.holderClient, processes.hooked, 60*time.Second)
+
+	waitFor(t, 60*time.Second, func() bool {
+		return deliveryAckPending(processes.keeperClient) == 0
+	}, func() string {
+		return fmt.Sprintf("the durable still has %d message(s) outstanding %s after the link came back: the handling that finished once the holder's connection had been replaced was never acknowledged -- an answer made on the closed connection the message arrived on is refused -- so it holds one of the keeper's %d in-flight slots until the %s ack wait expires; the keeper fetched the pull request %d time(s) and the process that gave the durable up %d time(s)",
+			deliveryAckPending(processes.keeperClient), 60*time.Second, intakeMaxAckPending, intakeAckWait(),
+			processes.keeperFetches.Load(), processes.holderFetches.Load())
+	})
+	// A second of quiet before the keeper's count is read, so a delivery to it -- which the
+	// server hands a bound subscriber within moments of deciding to -- is counted rather than
+	// missed.
+	time.Sleep(time.Second)
+	if keeperHandled := processes.keeperFetches.Load(); keeperHandled != 0 {
+		t.Errorf("the process that keeps the durable fetched the pull request %d time(s), want 0: the other process finished that handling, and its acknowledgement is what keeps this one from redoing it",
+			keeperHandled)
+	}
+	// The holder's one fetch is the handling that finished while its connection was being
+	// replaced: the work was done there, once, and neither given back nor redone.
+	if holderHandled := processes.holderFetches.Load(); holderHandled != 1 {
+		t.Errorf("the process that gave the durable up fetched the pull request %d time(s), want the one handling it finished while its connection was replaced",
 			holderHandled)
 	}
 }

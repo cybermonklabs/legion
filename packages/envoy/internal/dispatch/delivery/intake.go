@@ -905,14 +905,15 @@ func subscribeDurable(client *bus.Client, wanted natsgo.ConsumerConfig, deliverS
 
 // deliver handles one message on its key's goroutine: it routes the envelope's payload by the
 // settings the cache holds under intakeMessageTimeout, and answers it through the delivery, which
-// acknowledges it when the link is live (acknowledgeWhenLive): a malformed envelope has nothing
-// to retry, and a route error (a failed GitHub call, or that deadline passing) is caught up by the
-// next reconcile pass rather than by NATS redelivery -- see the package doc comment. The deadline
-// is what makes intakeAckWait a bound rather than a hope: without it one stuck GitHub call could
-// hold an in-flight slot past the ack wait and have the message redelivered underneath it. An
-// envelope route does not handle (an empty payload, or a kind route sends to no handler) is
-// acknowledged and nothing else: no log line and no freshness write. One it handles records the
-// event's time, whatever its handler decided.
+// acknowledges it and holds that acknowledgement for the stop only where the bus refused it
+// (acknowledgeOrHold): a malformed envelope has nothing to retry, and a route error (a failed
+// GitHub call, or that deadline passing) is caught up by the next reconcile pass rather than by
+// NATS redelivery -- see the package doc comment. The deadline is what makes intakeAckWait a
+// bound rather than a hope: without it one stuck GitHub call could hold an in-flight slot past
+// the ack wait and have the message redelivered underneath it. An envelope route does not handle
+// (an empty payload, or a kind route sends to no handler) is acknowledged and nothing else: no
+// log line and no freshness write. One it handles records the event's time, whatever its handler
+// decided.
 //
 // The one message it does not acknowledge is one whose handling the stop gave up (handling
 // cancelled, StopDelivering): that is handed back through the delivery (giveBack), so the next
@@ -921,11 +922,13 @@ func subscribeDurable(client *bus.Client, wanted natsgo.ConsumerConfig, deliverS
 // finished just before the stop gave it up writes the same facts again.
 //
 // Both answers go through the delivery rather than straight to NATS, and for one reason: the
-// stop a connection event runs begins with the link down, where the bus refuses a publish, so
-// the delivery holds either answer until the stop has waited for a live connection and makes it
-// then (acknowledgeWhenLive, giveBack). A handler that finished inside such a stop would
-// otherwise hold one of the next holder's in-flight slots for the whole ack wait, for work that
-// was done. handling is read from the delivery too, and nothing else calls deliver.
+// stop a connection event runs begins with the link down, where the bus refuses a publish. A
+// hand-back the delivery holds until the stop has a live connection and makes it then
+// (giveBack); an acknowledgement is made at once and held only where the bus refused it
+// (acknowledgeOrHold), since a message whose handling is done holds one of the next holder's
+// in-flight slots for the whole ack wait while it is neither acknowledged nor held, and holding
+// one the bus took protects nothing. handling is read from the delivery too, and nothing else
+// calls deliver.
 func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 	msg, handling := message.msg, d.handling
 	defer func() {
@@ -934,7 +937,7 @@ func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 			d.giveBack(msg)
 			return
 		}
-		d.acknowledgeWhenLive(msg)
+		d.acknowledgeOrHold(msg)
 	}()
 	ctx, cancel := context.WithTimeout(handling, intakeMessageTimeout)
 	defer cancel()
