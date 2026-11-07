@@ -180,6 +180,29 @@ func TestDeliveryBudgets(t *testing.T) {
 			errBoom.Error()); len(lines) != 1 {
 			t.Fatalf("logged %v, want the unwritten record named once", lines)
 		}
+
+		// The other half of the same fix, and the half a guard written the obvious way does not
+		// reach: carrying the failed write past loses nothing, because settle writes the record
+		// again at the next decision. Reading the stored row after another sweep would prove
+		// none of it — that sweep's own send fails too, and its putPending writes the row — so
+		// the decision after the store recovers must be one that touches no delivery. An
+		// operator's suspension is that decision, and it retires nothing here because this task
+		// carries no phase (settle's `suspended` branch reads p.Phase), which is the one line
+		// this case depends on: give the task a phase and settle retires it instead.
+		//
+		// The assertion is that the stored row equals the row memory holds, not that it holds
+		// some count, so it reads the same against whichever write settle makes
+		// (putClaimAndPending today) and fails if settle stops making one at all.
+		h.store.fail("PutDelivery", nil)
+		h.must(RequestSuspend{Claim: testToken, By: SuspendedByOperator})
+
+		stored := h.store.load(testToken).Pending
+		if stored == nil {
+			t.Fatal("the store holds no delivery at all after the suspension settled")
+		}
+		if mem := h.pending(); stored.SendFailures != mem.SendFailures || stored.LastSendError != mem.LastSendError {
+			t.Fatalf("the store holds %+v, want the record memory holds, %+v: the carried-past write is lost", stored, mem)
+		}
 	})
 
 	// The far side's text never reaches the store as it arrived (scrubSendError). It is the
