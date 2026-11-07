@@ -82,14 +82,19 @@ import { SUBJECT_MAX_BYTES, SUBJECT_SEGMENT_REPLACED } from "../src/subject";
 
 type ScalarKind = "string" | "integer" | "boolean";
 
+// The slice of JSON Schema that schemas/envelope.schema.json uses. A property with no `type` is
+// one whose values are not of a single JSON type, such as a mixed literal set; it names the Go
+// type holding it through `x-go-type`, which is hand-written beside the generated file and
+// validates itself.
 type Prop = {
-  type: ScalarKind | "array" | "object";
-  enum?: string[];
+  type?: ScalarKind | "array" | "object";
+  enum?: (string | boolean)[];
   minLength?: number;
   properties?: Record<string, Prop>;
   required?: string[];
   items?: Prop;
   additionalProperties?: Prop | false;
+  "x-go-type"?: string;
 };
 
 type Schema = {
@@ -553,6 +558,10 @@ function mapValues(prop: Prop): Prop | undefined {
 }
 
 function envelopeKind(prop: Prop, req: Set<string>, key: string) {
+  // A property whose Go type is hand-written beside the generated file holds it whole: the type
+  // decides what the field reads off the wire and writes back, and validates itself.
+  const goType = prop["x-go-type"];
+  if (goType) return goType;
   if (prop.type === "object") {
     const values = mapValues(prop);
     if (values) {
@@ -568,6 +577,7 @@ function envelopeKind(prop: Prop, req: Set<string>, key: string) {
     }
     return "[]string";
   }
+  if (!prop.type) throw new Error(`${key} has no type and no x-go-type`);
   const base = map[prop.type];
   if (req.has(key) || prop.type === "string") return base;
   return `*${base}`;
@@ -591,11 +601,26 @@ function check(access: string, path: string, prop: Prop, depth = 1) {
   throw new Error(`unsupported required envelope type for ${path}`);
 }
 
-function enums(key: string, prop: Prop, optional: boolean) {
+// What Validate() says about one property's value: the type's own Validate() when the property
+// names a hand-written Go type, else a switch over the words its enum holds.
+function valueChecks(key: string, prop: Prop, optional: boolean) {
+  if (prop["x-go-type"]) {
+    return `\tif err := e.${name(key)}.Validate(); err != nil {\n\t\treturn err\n\t}`;
+  }
   if (!prop.enum?.length) return "";
   const n = name(key);
   const indent = optional ? "\t\t" : "\t";
-  const list = prop.enum.map((item) => `"${item}"`).join(", ");
+  // The switch below reads a Go string, and the optional case leans on `""` being its zero
+  // value, so a set holding anything else needs a Go type of its own to read and validate it
+  // (`x-go-type`, answered above). Refuse such a set rather than emit Go that does not compile.
+  const list = prop.enum
+    .map((item) => {
+      if (typeof item !== "string") {
+        throw new Error(`${key}'s enum holds ${JSON.stringify(item)} and names no x-go-type`);
+      }
+      return `"${item}"`;
+    })
+    .join(", ");
   const body = [
     `${indent}switch e.${n} {`,
     `${indent}case ${list}:`,
@@ -668,8 +693,8 @@ function renderEnvelope(schema: Schema) {
       ];
     })
     .join("\n");
-  const enumChecks = keys
-    .map((key) => enums(key, schema.properties[key], !req.has(key)))
+  const propertyChecks = keys
+    .map((key) => valueChecks(key, schema.properties[key], !req.has(key)))
     .filter(Boolean)
     .join("\n");
   // A map property is the Go map envelopeKind names it, so it has neither a struct of its own nor
@@ -681,7 +706,7 @@ function renderEnvelope(schema: Schema) {
     .map((key) => objectChecks(key, schema.properties[key]))
     .filter(Boolean)
     .join("\n");
-  const validate = [checks, optionalStringChecks, enumChecks, nestedChecks, "\treturn nil"]
+  const validate = [checks, optionalStringChecks, propertyChecks, nestedChecks, "\treturn nil"]
     .filter(Boolean)
     .join("\n");
   const nested = objects
