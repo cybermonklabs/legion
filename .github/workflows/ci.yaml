@@ -5319,7 +5319,7 @@ jobs:
         id: recover-changie-proxy
         run: >-
           .github/scripts/download-retry-proof.sh start recover-changie
-          --mode recover --recover-after 60 --hosts github.com,githubusercontent.com
+          --mode fail --hosts github.com,githubusercontent.com
       - id: recover-changie
         continue-on-error: true
         # install-changie's own retry arithmetic: 8 x 60 + 127 = 607 s -> 11 min.
@@ -5340,7 +5340,7 @@ jobs:
         id: recover-omp-proxy
         run: >-
           .github/scripts/download-retry-proof.sh start recover-omp
-          --mode recover --recover-after 60 --hosts github.com,githubusercontent.com,jdx.dev
+          --mode fail --hosts github.com,githubusercontent.com,jdx.dev
       - id: recover-omp
         continue-on-error: true
         # install-omp's own retry arithmetic: 5 x 60 + 150 = 450 s -> 8 min.
@@ -5360,7 +5360,7 @@ jobs:
         id: recover-claude-proxy
         run: >-
           .github/scripts/download-retry-proof.sh start recover-claude
-          --mode recover --recover-after 60 --hosts npmjs.org
+          --mode fail --hosts npmjs.org
       - id: recover-claude
         continue-on-error: true
         # install-claude-code's own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
@@ -5381,7 +5381,7 @@ jobs:
         id: recover-install-proxy
         run: >-
           .github/scripts/download-retry-proof.sh start recover-install
-          --mode recover --recover-after 60 --hosts npmjs.org
+          --mode fail --hosts npmjs.org
       - name: bun install --frozen-lockfile under the recovering fault
         id: recover-install
         continue-on-error: true
@@ -5406,7 +5406,7 @@ jobs:
       # so nothing else is cut off by it.
       - name: Start the recovering fault for the Go modules
         id: recover-go-proxy
-        run: .github/scripts/download-retry-proof.sh start recover-go --mode recover --recover-after 60
+        run: .github/scripts/download-retry-proof.sh start recover-go --mode fail
       - name: Download packages/envoy's Go modules under the recovering fault
         id: recover-go
         continue-on-error: true
@@ -5430,7 +5430,7 @@ jobs:
         id: recover-playwright-proxy
         run: >-
           .github/scripts/download-retry-proof.sh start recover-playwright
-          --mode recover --recover-after 60 --hosts playwright.dev
+          --mode fail --hosts playwright.dev
       - name: Install Playwright's Chromium under the recovering fault
         id: recover-playwright
         continue-on-error: true
@@ -5456,7 +5456,7 @@ jobs:
         id: recover-gh-proxy
         run: >-
           .github/scripts/download-retry-proof.sh start recover-gh
-          --mode recover --recover-after 60 --hosts api.github.com
+          --mode fail --hosts api.github.com
       - name: Read the run's artifact list under the recovering fault
         id: recover-gh
         continue-on-error: true
@@ -5506,9 +5506,13 @@ jobs:
           .github/scripts/download-retry-proof.sh start stall-changie
           --mode stall --hosts github.com,githubusercontent.com
       - id: stall-changie
+        # The control: this branch's install-changie curl has no --max-time, so no attempt of
+        # it ever ends against a host that sends nothing. Five minutes stands in for its own
+        # budget, so the control costs five minutes and shows the one thing it is for: a site
+        # with no bound consumes whatever budget it is under.
         continue-on-error: true
         # install-changie's own retry arithmetic: 8 x 60 + 127 = 607 s -> 11 min.
-        timeout-minutes: 11
+        timeout-minutes: 5
         uses: ./.github/actions/install-changie
         env:
           http_proxy: ${{ steps.stall-changie-proxy.outputs.proxy }}
@@ -5781,7 +5785,7 @@ jobs:
       - name: Start the recovering fault for the worker image build
         id: worker-proxy
         run: >-
-          .github/scripts/download-retry-proof.sh start worker --mode recover --recover-after 60
+          .github/scripts/download-retry-proof.sh start worker --mode fail
           --bind docker-bridge
           --hosts debian.org,npmjs.org,github.com,githubusercontent.com,jdx.dev,nodejs.org,awscli.amazonaws.com,go.dev,dl.k8s.io,googleapis.com,golang.org,googlesource.com,postgresql.org
       - name: Build the worker image under the recovering fault
@@ -5805,7 +5809,7 @@ jobs:
       - name: Start the recovering fault for the Envoy image build
         id: envoy-proxy
         run: >-
-          .github/scripts/download-retry-proof.sh start envoy --mode recover --recover-after 60
+          .github/scripts/download-retry-proof.sh start envoy --mode fail
           --bind docker-bridge
           --hosts debian.org,npmjs.org,golang.org,googlesource.com,github.com,githubusercontent.com
       - name: Build the Envoy image under the recovering fault
@@ -5826,7 +5830,7 @@ jobs:
       - name: Start the recovering fault for the held-port image build
         id: heldport-proxy
         run: >-
-          .github/scripts/download-retry-proof.sh start heldport --mode recover --recover-after 60
+          .github/scripts/download-retry-proof.sh start heldport --mode fail
           --bind docker-bridge
           --hosts golang.org,googlesource.com,github.com,githubusercontent.com
       - name: Build the held-port image under the recovering fault
