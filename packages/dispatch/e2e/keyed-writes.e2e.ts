@@ -723,9 +723,7 @@ test("a 20 MB upload repeated while its first request runs is answered 409 KEY_I
 // @webkit @firefox: whether the engine's IndexedDB gives a kept upload its `File` back across a
 // reload - WebKit's stores no `File` at all, which is why this row keeps the bytes with the name
 // and type and rebuilds the `File` on the way out (`web/src/features/writes/kept-files.ts`).
-test("a retried upload survives a reload with its file @webkit @firefox", async ({
-  browser,
-}, testInfo) => {
+test("a retried upload survives a reload with its file @webkit @firefox", async ({ browser }) => {
   await createProject({ key: "KW", name: "Keyed writes" });
   const issue = await createIssue({ project: "KW", title: "A retried upload" });
   const path = `/api/v1/issues/${issue.key}/artifacts`;
@@ -733,6 +731,39 @@ test("a retried upload survives a reload with its file @webkit @firefox", async 
   try {
     const page = await alice.newPage();
     page.on("dialog", (dialog) => void dialog.accept());
+    // The defect this row guards was a 3.3 ms race - the page named a kept file IndexedDB had
+    // not committed yet - and no load this suite can put on a runner reproduces a window that
+    // narrow. So the row holds the window open itself: the page's own IndexedDB open of the
+    // kept-files database answers its caller a second late, which is longer than every step
+    // between the press and the reload. Only the kept-files database is delayed, so the
+    // editor's store (`dispatch-pending-edits`) and every other page read are untouched, and
+    // both windows the product closes are held open at once: the one at the press
+    // (`Writes.run`) and the one at the Retry (`Writes.retry`). The delay is paid by each of
+    // the three loads, and by the resumed read after the last of them, which the 10 s bound
+    // below absorbs; the row runs in about 19 s against Playwright's 30 s default.
+    await page.addInitScript(() => {
+      const open = IDBFactory.prototype.open;
+      IDBFactory.prototype.open = function delayed(name: string, version?: number) {
+        const request = open.call(this, name, version);
+        if (name !== "dispatch-kept-files") return request;
+        // The page's handler is taken off the request and called a second after the browser
+        // opened the database, so the page waits where it would have gone on.
+        // `Event` here is this file's Dispatch event, so the handler's type is read off
+        // `IDBRequest` itself rather than written out.
+        let onsuccess: IDBRequest["onsuccess"] = null;
+        Object.defineProperty(request, "onsuccess", {
+          configurable: true,
+          get: () => onsuccess,
+          set: (handler: IDBRequest["onsuccess"]) => {
+            onsuccess = handler;
+          },
+        });
+        request.addEventListener("success", (event) => {
+          setTimeout(() => onsuccess?.call(request, event), 1_000);
+        });
+        return request;
+      };
+    });
     // A multipart body is no JSON, so the row keeps each attempt's key alone. The listener is the
     // page's, so it keeps counting across the reloads.
     const keys: (string | undefined)[] = [];
@@ -754,10 +785,6 @@ test("a retried upload survives a reload with its file @webkit @firefox", async 
       });
     });
     const openArtifacts = async () => {
-      if (testInfo.project.name === "iphone") {
-        const reviewPanel = page.getByRole("button", { name: /review panel/i });
-        if ((await reviewPanel.getAttribute("aria-expanded")) === "true") await reviewPanel.click();
-      }
       await page.getByRole("tab", { name: "Artifacts" }).click();
     };
     await page.goto(`/issues/${issue.key}`);

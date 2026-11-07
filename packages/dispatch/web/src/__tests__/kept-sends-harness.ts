@@ -22,6 +22,7 @@ export function memoryFiles(): KeptFiles & { readonly rows: Map<string, File> } 
     put: async (key, login, file) => {
       rows.set(key, { file, login });
       files.set(key, file);
+      return true;
     },
     rows: files,
   };
