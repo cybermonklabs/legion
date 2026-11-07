@@ -698,10 +698,15 @@ RACE_IMPOSSIBLE_SCRIPT = race_impossible_script(RACE_IMPOSSIBLE_PACKAGES)
 RUN_SERVER = "packages/dispatch/e2e/run-server.sh"
 BUILD_BINARIES = "docs/site/scripts/build-binaries.sh"
 DISPATCH_SERVER_BUILD = "flock ./.dispatch-e2e.lock go build -o ./dispatch-e2e ./cmd/dispatch"
-RUN_BROKER = "packages/dispatch/e2e/run-broker.sh"
-# One go build of the three commands the real broker's harness rows start, under a lock.
-BROKER_BUILD = 'flock "$bin/.build.lock" go build -o "$bin/" ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed'
+# The three commands of the real broker's harness rows, and the Dispatch server with them: the
+# dispatch-binaries job builds all four, since the dispatch job runs them in a container and so
+# runs no go command of its own (ci.yaml says why).
 BROKER_PKGS = ["./cmd/broker", "./cmd/dev-oidc-issuer", "./internal/broker/brokertest/requestseed"]
+DISPATCH_BINARIES = "dispatch-binaries"
+DISPATCH_BINARIES_STEP = "Build the binaries the browser suite runs"
+DISPATCH_BINARIES_SCRIPT = """\
+mkdir -p "$RUNNER_TEMP/dispatch-e2e-bin"
+CGO_ENABLED=0 go build -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed"""
 SIGNIN_ISSUER = "packages/dispatch/e2e/run-signin-issuer.sh"
 BROWSER_MP = "dispatch-browser-multiprocess"
 BROWSER_MP_SPECS = "Browser-test dispatch dashboard against two server processes"
@@ -939,13 +944,10 @@ GATES = [
       + install_jj("pi-legion") + install_omp("pi-legion") + setup_go("pi-legion", f"{DAEMON}/go.mod")
       + biome(at("pi-legion", "Lint pi-legion")) + bun_job("pi-legion") + CI_SELF),
 
-    gate("dispatch", "dispatch", runs=[
-        script_run(RUN_SERVER, DISPATCH_SERVER_BUILD, f"started by packages/dispatch/e2e/harness-listeners.ts's dispatchServer, which e2e/run.ts starts in "
-                   f"{at('dispatch', 'Browser-test dispatch dashboard')}", ENVOY, ["./cmd/dispatch"], mode="build"),
-        script_run(RUN_BROKER, BROKER_BUILD, f"started by packages/dispatch/e2e/harness-listeners.ts's realBrokerListeners, which e2e/run.ts "
-                   f"starts in {at('dispatch', 'Browser-test dispatch dashboard')} for e2e/broker-approval.e2e.ts (a one-process run on the "
-                   "fake broker, e2e/harness-real-broker.ts)", ENVOY, BROKER_PKGS, mode="build"),
-    ], reads=reads(
+    # No runs: the dispatch job runs in a container and so runs no go command at all, its own or
+    # a script's. run-server.sh and run-broker.sh execute the binaries the dispatch-binaries job
+    # below built and hands over, and the gate on that job carries the closure they compile.
+    gate("dispatch", "dispatch", reads=reads(
         ("packages/dispatch/**", f"{at('dispatch', 'Build the dashboard the lanes serve')} (build:web) and "
                                  f"{at('dispatch', 'Browser-test dispatch dashboard')} (the harness and Playwright) in packages/dispatch"),
         ("packages/proof-editor/**", f"packages/dispatch/web/vite.config.ts:104-123, read by the build:web of {at('dispatch', 'Build the dashboard the lanes serve')}"),
@@ -954,14 +956,24 @@ GATES = [
         # envoy-client's sources, and broker-client's with them, are the shared read below.
         (ENVOY_CLIENT_SRC, "imported by packages/envoy-client/bin/dispatch.ts, which cli-body-cap.e2e.ts:17 runs"),
         (f"{ENVOY}/internal/dispatch/pmdoc/schema/blocks.json", "packages/dispatch/web/src/__tests__/setup.ts:7, features/refs/markdown-engine.test.ts:3, e2e/engine-reading.ts:10"),
-        (f"{ENVOY}/internal/tests3/seaweedfs.go", f"{at('dispatch', 'Pull the file store image')} names it to the action, and "
-         f"{at('dispatch', 'Start an S3-compatible server for uploaded files')} reads const Image; "
-         f"{at('dispatch', 'Wait for the S3-compatible server')} waits for the container it started"),
-        (".github/actions/pull-test-images/**", at("dispatch", "Pull the file store image")),
         ("scripts/e2e/lib/held-port.py", "packages/dispatch/e2e/run-server.sh:80 holds each lane's server port through it"),
         ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:11 (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),
     ) + envoy_client_dep("imported by packages/envoy-client/bin/dispatch.ts, which cli-body-cap.e2e.ts:17 runs")
-      + setup_go("dispatch", f"{ENVOY}/go.mod") + bun_job("dispatch") + CI_SELF),
+      + bun_job("dispatch") + CI_SELF),
+
+    # A second gate on the dispatch filter: this job builds the four commands the dispatch job's
+    # scripts built before it moved into a container, so it compiles that closure and no other,
+    # and check-ci-filters.sh keys a claim by (job, step), so the two gates claim different steps
+    # and do not collide. The step names an output (-o) and pins CGO_ENABLED on the line, neither
+    # of which the simple form reduces, so the step is pinned whole; the Run carries that
+    # CGO_ENABLED, since the closure go lists without cgo is the one this build compiles.
+    gate("dispatch", DISPATCH_BINARIES, exact=[
+        pinned_step(DISPATCH_BINARIES, DISPATCH_BINARIES_STEP, ENVOY, DISPATCH_BINARIES_SCRIPT, [
+            (ENVOY, ["./cmd/dispatch"] + BROKER_PKGS,
+             "CGO_ENABLED=0 go build of the Dispatch server, the real broker, its dev OIDC issuer and the seeding step",
+             {"mode": "build", "env": {"CGO_ENABLED": "0"}}),
+        ]),
+    ], reads=setup_go(DISPATCH_BINARIES, f"{ENVOY}/go.mod") + CI_SELF),
 
     # The dashboard's and the proof editor's fast checks, split out of the dispatch job above
     # (ci.yaml's comment on dispatch-ui says why). No go command runs here.

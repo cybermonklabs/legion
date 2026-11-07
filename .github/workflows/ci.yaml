@@ -52,7 +52,7 @@ name: CI
 # actions/cache/restore: go-daemon (typecheck, test and pi-legion), go-docs (docs, and the build job
 # of docs-pages.yaml, which saves it), go-envoy (envoy-e2e-local and envoy-session-stall, which
 # build the same listener and natsd, listener-server-change and envoy-go-checks, which build the
-# listener, and dispatch, dispatch-browser-multiprocess, envoy-go-race-docs and
+# listener, and dispatch-binaries, dispatch-browser-multiprocess, envoy-go-race-docs and
 # envoy-go-docs-finalizers), go-envoy-test (envoy-go alone: it builds the test binary of every
 # package of the envoy module, a set no other job builds), go-envoy-infra (envoy-infra-go) and
 # go-notices (lint's notices step). Every family but go-docs is filled by
@@ -139,6 +139,7 @@ env:
       "pi-envoy": "pi_envoy",
       "pi-legion": "pi_legion",
       "dispatch": "dispatch",
+      "dispatch-binaries": "dispatch",
       "dispatch-ui": "dispatch_ui",
       "dispatch-browser-multiprocess": "dispatch_browser_multiprocess",
       "claude-envoy": "claude_envoy",
@@ -2753,20 +2754,114 @@ jobs:
           changes: ${{ toJSON(needs.changes) }}
           job-status: ${{ job.status }}
 
-  # The browser suite, one of the nine slow suites: the dashboard's lint, typecheck, unit tests,
-  # build and asset checks are dispatch-ui's above.
-  dispatch:
+  # The Go binaries the browser suite's lanes run, built here and handed to the `dispatch` job
+  # below through an artifact. That job runs in a container, and
+  # .github/scripts/ci_filter_coverage.py's shell_reason counts a `container:` as something that
+  # can move what a go command compiles, so a go command there would fall out of
+  # check-ci-filters.sh's reduction and be counted as reading every Go file of the repository,
+  # which is the opposite of what the `dispatch` filter is for. So the builds live here, in a job
+  # with no container, and the suite's own scripts execute what this job built instead of
+  # building it (packages/dispatch/e2e/run-server.sh's DISPATCH_E2E_SERVER_BIN and
+  # run-broker.sh's DISPATCH_E2E_BROKER_BIN_DIR).
+  #
+  # It takes no filter of its own: the four commands it builds are the ones that job's scripts
+  # built before, so the Go closure has not moved and the `dispatch` filter already names every
+  # file of it. It shares that filter, that `changes` output and one entry of CI_OK_SELECTED_BY
+  # with the job below, as envoy-go-docs-finalizers shares envoy-go-race-docs'.
+  dispatch-binaries:
     needs: changes
     if: needs.changes.outputs.dispatch == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
+    # A backstop and not a measurement, this job being new: it checks out, restores the Go cache
+    # and runs one `go build` of four commands, which is the shape of this file's other
+    # build-only jobs, and ci-images and envoy-infra-go both carry 15.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          cache: false
+      # go-envoy, restored only: this job builds the Dispatch server and the real broker's three
+      # commands, not the listener and natsd ci-caches.yaml's envoy job builds to fill the
+      # family, and no job here saves it. Without it this build is a cold one. The dispatch job
+      # below restored the same family for exactly this build until it moved here.
+      - id: go-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-{0}-', runner.os) }}
+      # One `go build -o <directory>/` writes one binary per package, each named after it:
+      # dispatch, broker, dev-oidc-issuer and requestseed. CGO_ENABLED=0 is pinned on the build
+      # rather than left to the runner's default, so each binary is static by construction: the
+      # job below runs them in a container of its own image, and a binary with a PT_INTERP has a
+      # glibc there to disagree with. They are written under $RUNNER_TEMP, so the checkout stays
+      # clean.
+      - name: Build the binaries the browser suite runs
+        run: |
+          mkdir -p "$RUNNER_TEMP/dispatch-e2e-bin"
+          CGO_ENABLED=0 go build -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed
+        working-directory: packages/envoy
+      # One name for the whole run, with no `github.run_attempt` in it: a re-run of a run's
+      # failed jobs re-runs the dispatch job without this one, and that attempt must find the
+      # artifact this job uploaded on the attempt before.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dispatch-e2e-binaries
+          path: ${{ runner.temp }}/dispatch-e2e-bin
+          if-no-files-found: error
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          changes: ${{ toJSON(needs.changes) }}
+          job-status: ${{ job.status }}
+
+  # The browser suite, one of the nine slow suites: the dashboard's lint, typecheck, unit tests,
+  # build and asset checks are dispatch-ui's above.
+  dispatch:
+    needs:
+      - changes
+      - dispatch-binaries
+    if: needs.changes.outputs.dispatch == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    runs-on: ubuntu-24.04
+    # The image this repository builds and publishes for every CI job that can launch WebKit or
+    # Firefox (.github/docker/browser.Dockerfile, the one `built:` row of .github/ci-images.yaml,
+    # tag browser-5f5aca44): Playwright's browser host with PostgreSQL 18 and pgvector, the
+    # SeaweedFS `weed` binary, gh, jq, yq, python3, flock and a DejaVu core font baked in, so
+    # this job installs no browser host package from Ubuntu's mirror pool at run time
+    # (dispatch://INFRA-1443). The digest is written out as a literal rather than through an
+    # expression because .github/scripts/check-ci-images.sh reads a `container:` image out of the
+    # parsed YAML and refuses one holding a `${{ }}`, which it cannot resolve to a row.
+    #
+    # --user 1001 is the image's own pwuser, and the uid the runner owns $GITHUB_WORKSPACE and
+    # every bind mount with: initdb refuses to run as root and refuses a uid with no passwd
+    # entry, so the lanes' clusters need exactly this uid, and a job that is not root keeps
+    # Chromium's own sandbox on. --ipc=host is Playwright's own Docker guidance: without it the
+    # container gets Docker's default 64 MB of /dev/shm and Chromium runs out of shared memory
+    # mid-page. --init gives the container a pid 1 that reaps the browsers' orphans, which four
+    # lanes of them make many of.
+    container:
+      image: ghcr.io/cybermonklabs/legion/ci@sha256:5f5aca44f3ada006603a0ff98681f879f0825fdffcb14004d33361df4b92df83
+      options: --user 1001 --ipc=host --init
     # The browser suite runs one lane per Playwright worker, each with a Postgres, a harness and
     # a file-store bucket of its own (packages/dispatch/e2e/run.ts), so this job has no
     # `postgres:` service and no job-level DATABASE_URL: a run of more than one lane refuses a
     # caller-set DATABASE_URL, since one database cannot serve lanes that truncate it per row.
-    # The lanes' image and worker count are set on the browser step's own command line, not in an
-    # `env:`: a name outside ci_filter_coverage.py's ENV_ALLOWED in this job's or any of its
-    # steps' `env:` drops run-server.sh's `go build` out of check-ci-filters.sh's reduction, which
-    # then counts it as reading every Go file of the repository.
+    # The lanes' Postgres and worker count are set on the browser step's own command line, where
+    # they have always been.
+    #
+    # This job runs no `go` command, directly or through a script of its own: the
+    # dispatch-binaries job above builds every binary the suite's scripts would have built, for
+    # the reason that job's head gives, and for the same reason this job pins no
+    # `defaults.run.shell` and no step-level `shell:`.
     #
     # The job budget below and the browser step's are measured: GitHub's jobs API over the
     # 397 of the newest 400 ci.yaml runs that could be read, created between 2026-11-05T04:52:45Z
@@ -2799,25 +2894,56 @@ jobs:
     # above the sum of the step budgets, so it never fires first.
     timeout-minutes: 59
     steps:
+      # The first step of this container's first run, and of every run after it: these readings
+      # are what decide the container's own shape, and they are deliberate rather than left over
+      # from the spike. `id -u`, `id -g`, `id` and $HOME say which user the job really runs as
+      # and whether that uid has a passwd entry and a home, which is what initdb refuses to run
+      # without. The `ls -ld` of $GITHUB_WORKSPACE, $RUNNER_TEMP, /__w, /__e, /github/home and
+      # /opt/hostedtoolcache says which of the runner's own directories uid 1001 can write, and
+      # the ownership of /opt/hostedtoolcache and $RUNNER_TEMP is what decides whether a setup
+      # action can install a tool at this uid at all. /dev/shm's mode and size decide whether
+      # `--shm-size=2g` replaces `--ipc=host` in this job's container options above, since
+      # shared memory is the one thing Chromium needs the host's IPC namespace for. nproc,
+      # free -m and df say what four lanes share. `go` and `docker` are expected MISSING: this
+      # job runs no go command, as the head above says, and a job inside a container can start
+      # no container. `bun` is expected MISSING too, since ./.github/actions/setup-bun installs
+      # it further down.
+      - name: Read what this container gives the suite
+        run: |
+          id -u
+          id -g
+          id
+          echo "HOME=$HOME"
+          ls -ld "$GITHUB_WORKSPACE" "$RUNNER_TEMP" /__w /__e /github/home /opt/hostedtoolcache || true
+          ls -ld /dev/shm
+          df -h /dev/shm
+          nproc
+          free -m || true
+          df -h /tmp "$RUNNER_TEMP"
+          for tool in psql initdb pg_ctl pg_config python3 flock gh jq yq weed git openssl unzip tar curl node bun go docker sudo; do
+            printf '%-14s %s\n' "$tool" "$(command -v "$tool" || echo MISSING)"
+          done
+          pg_config --version
+          python3 --version
+          node --version
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - id: setup-go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      # What the dispatch-binaries job built, in place of this job's own actions/setup-go and
+      # go-envoy cache restore, which are gone: with no go command left here they bought
+      # nothing, and the restore was there only for the build run-server.sh no longer does.
+      # The directory is the one run-broker.sh built the broker's three binaries in, which is
+      # where packages/dispatch/e2e/real-broker.ts:30-31 runs requestseed from; the server
+      # binary rides along in it and is named by path below.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          go-version-file: packages/envoy/go.mod
-          cache: false
-      # go-envoy, restored only: each lane's run-server.sh builds the Dispatch server, not the
-      # listener and natsd ci-caches.yaml's envoy job builds to fill the family, and no job here
-      # saves it. Without it that build is a cold `go build` in every lane.
-      - id: go-cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/go/pkg/mod
-            ~/.cache/go-build
-          key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ format('go-envoy-{0}-', runner.os) }}
+          name: dispatch-e2e-binaries
+          path: packages/envoy/out/dispatch-e2e-broker
+      # actions/upload-artifact keeps no executable bit, so all four arrive at mode 0644.
+      # run-server.sh:201-203 and run-broker.sh refuse a path that is not executable, and that
+      # refusal would otherwise surface in a lane's own log, far from this cause.
+      - name: Make the downloaded binaries executable
+        run: chmod +x packages/envoy/out/dispatch-e2e-broker/*
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       - name: Build contracts for dispatch e2e
@@ -2833,36 +2959,32 @@ jobs:
       - name: Build the dashboard the lanes serve
         run: bun run build:web
         working-directory: packages/dispatch
-      # The file store the step below starts, pulled first for the reason the action gives. The
-      # image comes from ghcr.io/cybermonklabs/legion/ci, a registry this repository publishes, so a
-      # failed pull is a fault of this repository. The action must show it, not retry it.
-      - name: Pull the file store image
-        uses: ./.github/actions/pull-test-images
-        with:
-          consts: packages/envoy/internal/tests3/seaweedfs.go Image
+      # The file store the browser suite uploads through: the server runs with
+      # DISPATCH_FILE_STORE_BUCKET set (e2e/run-server.sh reads
+      # DISPATCH_E2E_FILE_STORE_ENDPOINT), so every upload and download the dashboard makes goes
+      # through the store, as production's does. CI ran it as a `docker run` of this
+      # repository's copy of the SeaweedFS image; a job inside a container can neither start a
+      # container nor reach one, so that image's `weed` binary is baked into this job's image
+      # (.github/docker/browser.Dockerfile) and started here, in the background, on the same
+      # 127.0.0.1:18333. Its data directory and its log go under $RUNNER_TEMP, which the run
+      # keeps and the checkout never sees.
       - name: Start an S3-compatible server for uploaded files
-        # The browser suite runs the server with DISPATCH_FILE_STORE_BUCKET set (e2e/run-server.sh
-        # reads DISPATCH_E2E_FILE_STORE_ENDPOINT), so every upload and download the dashboard makes
-        # goes through the file store, as production's does. Same image as the Go tests
-        # (internal/tests3), read from its declaration again to name it for the docker run below.
         run: |
-          image=$(sed -n 's/^const Image = "\(.*\)"$/\1/p' ../envoy/internal/tests3/seaweedfs.go)
-          [ -n "$image" ] || { echo "::error::no const Image in packages/envoy/internal/tests3/seaweedfs.go"; exit 1; }
-          docker run -d --name dispatch-e2e-files -p 127.0.0.1:18333:8333 "$image" server -s3 -dir=/data -ip=0.0.0.0 -s3.port=8333
-        working-directory: packages/dispatch
+          mkdir -p "$RUNNER_TEMP/weed"
+          nohup weed server -s3 -dir="$RUNNER_TEMP/weed" -ip=127.0.0.1 -s3.port=18333 > "$RUNNER_TEMP/weed.log" 2>&1 &
       - name: Wait for the S3-compatible server
-        # The readiness wait of the step that started the container. An anonymous PUT makes the
-        # bucket; each lane makes its own (dispatch-e2e-files-lane-N) with the same request
-        # (e2e/run.ts), so this one proves the store answers a PUT and serves the one-lane run
-        # its own bucket.
+        # The readiness wait of the step that started it. An anonymous PUT makes the bucket; each
+        # lane makes its own (dispatch-e2e-files-lane-N) with the same request (e2e/run.ts), so
+        # this one proves the store answers a PUT and serves the one-lane run its own bucket. A
+        # wait that runs out prints the log the step above redirected, which is what a job in a
+        # container has in place of `docker logs`.
         run: |
           for attempt in $(seq 1 60); do
             curl -sf -o /dev/null http://127.0.0.1:18333/ && break
-            [ "$attempt" -lt 60 ] || { docker logs dispatch-e2e-files; exit 1; }
+            [ "$attempt" -lt 60 ] || { cat "$RUNNER_TEMP/weed.log"; exit 1; }
             sleep 1
           done
           curl -sf -X PUT -o /dev/null http://127.0.0.1:18333/dispatch-e2e-files
-        working-directory: packages/dispatch
       - name: Browser-test dispatch dashboard
         # `bun run e2e` builds the SPA itself, which would build it a second time in this job.
         # Calling the wrapper directly reuses the "Build the dashboard the lanes serve" step's
@@ -2874,16 +2996,18 @@ jobs:
         # server.
         #
         # DISPATCH_E2E_WORKERS is how many lanes e2e/run.ts starts, one per Playwright worker,
-        # each a harness, a bucket and a Postgres of its own, that last one a `docker run` of
-        # DISPATCH_E2E_PG_IMAGE (e2e/harness-postgres.ts). They are set on the command line, not
-        # in this step's `env:`, for the reason the job's head gives.
+        # each a harness, a bucket and a Postgres of its own, that last one an initdb and a
+        # pg_ctl out of DISPATCH_E2E_PG_BIN (e2e/harness-postgres.ts), this image's PostgreSQL 18
+        # with pgvector. They are set on the command line, not in this step's `env:`, for the
+        # reason the job's head gives.
         #
         # MemAvailable every 5 s for the length of this step, kept for the upload below and its
-        # lowest value printed at the end: the lanes' Postgres containers run outside this job's
-        # cgroup, so /proc/meminfo is the one reading that counts them. The JSON report goes
-        # beside the list reporter's output, so a green run reports what it ran too. Both sample
-        # files and that report are written under $RUNNER_TEMP, beside the lanes' own run
-        # directory: a file this step wrote into the checkout would leave it dirty afterwards.
+        # lowest value printed at the end: four lanes' browsers, servers and Postgres clusters
+        # share one machine, and /proc/meminfo is the reading that counts them all. The JSON
+        # report goes beside the list reporter's output, so a green run reports what it ran too.
+        # Both sample files and that report are written under $RUNNER_TEMP, beside the lanes'
+        # own run directory: a file this step wrote into the checkout would leave it dirty
+        # afterwards.
         #
         # Beside it, the same 5 s tick records where the CPU goes, which is the bound a run of
         # four lanes on four vCPU hits (INFRA-317): one line per process of a named group, with
@@ -2896,8 +3020,8 @@ jobs:
         # what is lost is a process that lived and died inside one tick, and the last seconds of
         # one that died between ticks. `everything else` is the machine's own busy time
         # (/proc/stat) less the named groups, so a reader sees the whole step without
-        # downloading the samples: it holds that loss, the runner's own work, the file-store
-        # container and the sampler itself.
+        # downloading the samples: it holds that loss, the runner's own work, the file store
+        # and the sampler itself.
         timeout-minutes: 33
         run: |
           # $RUNNER_TEMP holds everything this step writes, the run directory of e2e/run.ts
@@ -2927,9 +3051,15 @@ jobs:
           done &
           sampler=$!
           trap 'kill "$sampler" 2>/dev/null || true' EXIT
-          # pgvector, the copy in ghcr.io/cybermonklabs/legion/ci (.github/ci-images.yaml) this
-          # job's service used before the lanes.
-          export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+          # This image's own PostgreSQL 18 with pgvector, through e2e/harness-postgres.ts's
+          # binaries provider: initdb and pg_ctl live in that directory alone, and a job inside a
+          # container has no docker to run the image provider's digest with.
+          export DISPATCH_E2E_PG_BIN=/usr/lib/postgresql/18/bin
+          # What the dispatch-binaries job built, which run-server.sh and run-broker.sh execute
+          # instead of building: the server by its path, the broker's three by the directory that
+          # holds them.
+          export DISPATCH_E2E_SERVER_BIN="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker/dispatch"
+          export DISPATCH_E2E_BROKER_BIN_DIR="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker"
           export DISPATCH_E2E_WORKERS=4
           export PLAYWRIGHT_JSON_OUTPUT_NAME="$RUNNER_TEMP/report.json"
           status=0
@@ -4591,6 +4721,7 @@ jobs:
       - pi-envoy
       - pi-legion
       - dispatch-ui
+      - dispatch-binaries
       - dispatch
       - dispatch-browser-multiprocess
       - claude-envoy

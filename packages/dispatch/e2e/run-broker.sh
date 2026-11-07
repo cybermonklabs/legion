@@ -42,6 +42,28 @@ e2e_port="${DISPATCH_E2E_PORT:-8777}"
 broker_port="${REAL_BROKER_PORT:-0}"
 e2e_dir="$(cd "$(dirname "$0")" && pwd)"
 
+# The three binaries this script starts, read here rather than below because the path is made
+# absolute against the caller's directory and this script changes to packages/envoy before it
+# uses it: DISPATCH_E2E_BROKER_BIN_DIR names a directory holding broker, dev-oidc-issuer and
+# requestseed that the caller built, which this run executes instead of building them from this
+# checkout (run-server.sh's DISPATCH_E2E_SERVER_BIN is the precedent). CI's dispatch job is
+# handed them by the job that builds them, since it runs in a container with no Go toolchain.
+# Unset, the build below is this checkout's, as it always was: a developer's machine and an
+# issue pod set this no more than they set DISPATCH_E2E_SERVER_BIN. The build is skipped only
+# when the caller hands the directory over, never on a comparison of what is newer than what: a
+# test like that has to be right about every input go list names, and when it is wrong it serves
+# a stale broker and the suite tests the wrong build.
+prebuilt_bin="${DISPATCH_E2E_BROKER_BIN_DIR:-}"
+if [ -n "$prebuilt_bin" ]; then
+  [[ "$prebuilt_bin" == /* ]] || prebuilt_bin="$PWD/$prebuilt_bin"
+  for binary in broker dev-oidc-issuer requestseed; do
+    if [ ! -x "$prebuilt_bin/$binary" ]; then
+      echo "run-broker.sh: DISPATCH_E2E_BROKER_BIN_DIR=$DISPATCH_E2E_BROKER_BIN_DIR holds no executable $binary" >&2
+      exit 2
+    fi
+  done
+fi
+
 # The broker's own OpenID Connect client at the issuer, whose secret both processes read from a
 # file: a throwaway value committed beside this script, as e2e/fake-broker-account-token is. Every
 # signed-in person's hd claim names the domain the broker requires.
@@ -96,10 +118,17 @@ cd "$e2e_dir/../../envoy"
 # Built first and exec'd, as run-server.sh does its server, so the pid Playwright started is the
 # listener's. One build of the three binaries per checkout, under a lock, so the two listeners
 # starting at once build them once: the second waits, and Go rewrites nothing that did not change.
-# out/ is ignored, so nothing built here is tracked.
-bin=out/dispatch-e2e-broker
-mkdir -p "$bin"
-flock "$bin/.build.lock" go build -o "$bin/" ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed
+# out/ is ignored, so nothing built here is tracked. The work directory is made whether or not
+# this run builds: the fake secrets file below is written in it, and with the binaries handed
+# over it is the only thing this script still writes there.
+work=out/dispatch-e2e-broker
+mkdir -p "$work"
+if [ -n "$prebuilt_bin" ]; then
+  bin="$prebuilt_bin"
+else
+  bin="$work"
+  flock "$work/.build.lock" go build -o "$work/" ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed
+fi
 
 if [ "$mode" = issuer ]; then
   # One client, the broker's, whose secret the issuer reads from the file once at its start. An
@@ -124,7 +153,7 @@ env -u PGHOSTADDR psql "$DATABASE_URL" -X -q -v ON_ERROR_STOP=1 \
 
 # The fake Secrets Manager: a human-tier secret each of the suite's people owns, which a pod's
 # request waits on that person to approve, and a shared one anyone signed in may approve.
-fake_secrets_file="$PWD/$bin/fake-secrets-$broker_database.json"
+fake_secrets_file="$PWD/$work/fake-secrets-$broker_database.json"
 (
   umask 077
   cat >"$fake_secrets_file" <<EOF

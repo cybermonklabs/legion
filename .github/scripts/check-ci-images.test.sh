@@ -120,11 +120,8 @@ jobs:
     steps:
       - uses: ./.github/actions/pull-test-images
       - run: docker pull $REGISTRY@$NATS
-      # The three shapes IMAGE_FROM covers in the real tree, so this fixture holds its entries
+      # The two shapes IMAGE_FROM covers in the real tree, so this fixture holds its entries
       # to a command each, as the check demands.
-      - run: |
-          image=\$(sed -n 's/^const Image = "\\(.*\\)"\$/\\1/p' packages/envoy/internal/tests3/seaweedfs.go)
-          docker pull "\$image"
       - run: docker run --rm "\$ENVOY_SMOKE_IMAGE" ls
 YAML
   cat > "$root/.github/actions/pull-test-images/action.yml" <<'YAML'

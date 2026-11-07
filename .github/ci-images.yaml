@@ -139,3 +139,11 @@ images:
   - upstream: mcr.microsoft.com/playwright:v1.64.1-noble
     tag: playwright-v1.64.1-noble-2f05f8a7
     digest: sha256:2f05f8a734509a7b3f26a912639488ee08f58a7b292d14d62271bcff9038768f
+
+  # The browser image this repository builds from the row above, and the one row of this file
+  # with `built:` where every other has `upstream:`: .github/workflows/browser-image.yaml builds
+  # and pushes it, and nothing copies it. Every CI job that can launch WebKit or Firefox runs in
+  # it, pinned at this digest by a `container:` of .github/workflows/ci.yaml.
+  - built: .github/docker/browser.Dockerfile
+    tag: browser-5f5aca44
+    digest: sha256:5f5aca44f3ada006603a0ff98681f879f0825fdffcb14004d33361df4b92df83
