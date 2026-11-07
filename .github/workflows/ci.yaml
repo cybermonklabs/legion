@@ -124,7 +124,8 @@ env:
       "envoy-session-stall": "envoy_session_stall",
       "ci-filters": "ci_filters",
       "ci-images": "ci_images",
-      "worker-image": "worker_image"
+      "worker-image": "worker_image",
+      "browser-image": "browser_image"
     }
   CI_OK_PULL_REQUEST_ONLY: '["worker-image"]'
 
@@ -142,6 +143,7 @@ jobs:
       # its skip as one changes chose.
       docs: ${{ github.event_name != 'push' && steps.filter.outputs.docs || 'false' }}
       worker_image: ${{ steps.filter.outputs.worker_image }}
+      browser_image: ${{ steps.filter.outputs.browser_image }}
       contracts: ${{ steps.filter.outputs.contracts }}
       conflicts_script: ${{ steps.filter.outputs.conflicts_script }}
       envoy_client: ${{ steps.filter.outputs.envoy_client }}
@@ -1397,6 +1399,32 @@ jobs:
               # builds no worker image, and a fragment stays where it was written, so no pattern
               # here matches nothing.
               - '!packages/*/.changes/**'
+            # Every file the browser image's build reads, for the browser-image job
+            # (.github/workflows/browser-image.yaml, which the build reads too): that build's
+            # context is .github/docker, so every file under it reaches the build, and the
+            # Dockerfile it builds is the only file there today.
+            # .github/ci-images.yaml is deliberately not named, and adding it back fails the
+            # build. The build does read that file: its `row` step reads the registry and the
+            # digest of the row built from that Dockerfile out of it at run time, and its
+            # publish decision is that digest and the label the image at it carries. But
+            # .github/scripts/check-image-trigger-paths.sh reads what a build reads from its
+            # context and its Dockerfile alone, and it refuses a path matched by a filter that
+            # decides nothing but an image build and that no build reads by that reading:
+            # "browser_image matches .github/ci-images.yaml, which no image build reads, so a
+            # pull request touching only that builds an image for nothing; narrow the filter".
+            # worker_image above leaves .github/scripts/repo-paths.sh out for that same reason,
+            # though its build job runs that script.
+            # Nothing is lost by leaving it out. A change to the row alone builds nothing, and
+            # the digest a row names is one the package already holds: the ci-images job, whose
+            # filter does name that file, is what reads whether it does
+            # (.github/scripts/check-ci-images.sh package), and the push that writes the row
+            # pins a `container:` in this file, which this filter names.
+            # That check also fails the build when this list misses a file the image build reads;
+            # it reads this filter only as a flat list, so it names no anchor.
+            browser_image:
+              - '.github/workflows/ci.yaml'
+              - '.github/workflows/browser-image.yaml'
+              - '.github/docker/**'
             # lint's notices step: the Go packages it loads for every release target (`legion`,
             # the listener, the agent-secrets binaries and client, every envoy-infra command), the
             # workspaces they build in, the target lists and the notices script. Its go build lines
@@ -4140,6 +4168,30 @@ jobs:
     # step) and its `attest` job's id-token and attestations: write. A pull request run still skips
     # `attest` (its `if:` requires `github.event_name != 'pull_request'`), and, passing no
     # `attest_digest`, leaves it empty, so the build job runs.
+    permissions:
+      contents: read
+      packages: write
+      actions: read
+      checks: write
+      id-token: write
+      attestations: write
+    with:
+      ci-ok-changes: ${{ toJSON(needs.changes) }}
+
+  # The browser image's build: browser-image.yaml builds .github/docker/browser.Dockerfile and
+  # pushes it when its bytes are not in the package already. It runs on a merge group and a push
+  # as well as on a pull request, so the image a merged head's `container:` jobs pin is built
+  # from that head, and so the attest job of that workflow, which no pull request run reaches,
+  # has an event to run on.
+  browser-image:
+    needs: changes
+    if: needs.changes.outputs.browser_image == 'true'
+    uses: ./.github/workflows/browser-image.yaml
+    # GitHub refuses a run whose calling job grants less than the called workflow's jobs declare,
+    # whatever their `if:`: its workflow-level block (the build's packages: write, and the
+    # actions: read and checks: write of its ci-ok-report step) and its `attest` job's id-token
+    # and attestations: write. A pull request run still skips `attest` (its `if:` requires
+    # `github.event_name != 'pull_request'`).
     permissions:
       contents: read
       packages: write
