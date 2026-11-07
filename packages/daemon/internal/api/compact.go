@@ -184,14 +184,12 @@ func (s *server) compact(w http.ResponseWriter, r *http.Request, m *supervise.Ma
 		writeFailure(w, http.StatusInternalServerError, compactionFailed, err.Error())
 		return CompactResponse{}, false
 	case errors.Is(err, supervise.ErrCompactNotTaken):
-		// Nothing was asked of Oh My Pi and nothing was sent: the take could not be written, the
-		// claim lost its process before the ask, its shim is not connected, or a launch the wake
-		// pacing holds waits its turn to replace the process its session runs on. The caller is
-		// told the operation failed rather than told a compaction that did not run, which carries
-		// the claim's task with it. The line is a Warn, as the process-gone answer below is:
-		// three of those four causes are routine — a process or a connection that went while the
-		// request was in flight, and the daemon's own wake pacing — and the fourth, a write the
-		// store refused, carries its error on this line for a reader either way.
+		// Nothing was asked of Oh My Pi and nothing was sent, for one of the causes
+		// supervise.ErrCompactNotTaken names. The caller is told the operation failed rather than
+		// told a compaction that did not run, which carries the claim's task with it. The line is
+		// a Warn, as the process-gone answer below is: most of those causes are a process or a
+		// connection that went while the request was in flight, or the daemon's own wake pacing,
+		// and a write the store refused carries its error on this line for a reader either way.
 		s.log.Warn("api: the claim was not taken for a compaction", "claim", token, "error", err)
 		writeFailure(w, http.StatusConflict, compactionFailed, err.Error())
 		return CompactResponse{}, false
