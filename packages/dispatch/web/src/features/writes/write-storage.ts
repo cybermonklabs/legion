@@ -308,17 +308,6 @@ export class WriteStorage {
     this.#confirm(write.key, write.state.status === "refused" || write.presentation === "quiet");
   }
 
-  /** Keeps nothing of `write`, and confirms leaving while it is out all the same: an upload
-   *  whose file this browser did not keep, which no record may name, since a record naming a
-   *  file that is not there is one a reload drops with nothing shown and nothing sent. What was
-   *  kept under its key before goes, as it does for a write the storage refuses. A page with no
-   *  storage at all has always behaved this way for every write.  */
-  keepNothing(write: KeptWrite): void {
-    if (this.#retired) return;
-    this.#remove(`${ENTRY_PREFIX}${write.key}`);
-    this.#confirm(write.key, write.state.status === "refused" || write.presentation === "quiet");
-  }
-
   /** Drops the write kept under `key`: it landed, or the reader dropped its refusal. */
   forget(key: string): void {
     if (this.#retired) return;
