@@ -4937,7 +4937,12 @@ each issue's pod (every role of it alike) and the image probe's.
   a rule narrower than the agents' URL parser, so a value load accepts never turns Dispatch off in an agent.
   The controller's `slack_post` refuses a reply linking an address inside the cluster.
   Like every `pod.env` variable, it reaches an agent with the start command of its next generation, so set it in the same restart that installs this release, which relaunches the controller once.
-  To hand a later change to a running agent, start its next generation with `legion claims suspend` and then `legion claims resume`, which resumes its session; `legion claims stop` starts it fresh.
+  To hand a later change to a running agent, start its next generation with `legion claims suspend` and then `legion claims resume`, which resumes its session.
+  `legion claims stop` is not a second way to do that:
+  it ends the agent's process and retires its claim, and for a phase worker no pass the daemon makes on its own starts that claim again, not even the one that refills a slot whose worker holds no task.
+  What starts a stopped phase worker again is the workflow's own next start of its role:
+  a backward move into its phase, the retry of a held issue, the promotion of a re-admitted root, or a production check's look after the issue's merge;
+  each of these brings the worker back in the session the claim kept.
 
 - **The Legion machine-user sign-in.**
   `legion model-token` is a model `apiKey` command that signs a pod in to Cognito with its projected service-account token and prints the access token;
