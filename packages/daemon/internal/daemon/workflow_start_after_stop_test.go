@@ -224,38 +224,6 @@ func lingerTree(t *testing.T, pool *pgxpool.Pool, records record.Store, key stri
 	}
 }
 
-// applyAdmissionFact applies one fact through the pair of handlers the daemon applies a Dispatch
-// event through — the workflow, then admission — against the daemon's database. The rows it
-// writes wake no outbox lane of the daemon's (projectRecords is what wakes them), so the passes
-// the daemon's own ticks make while those rows wait are passes over the state the fact left.
-func applyAdmissionFact(t *testing.T, pool *pgxpool.Pool, handlers []intake.Handler, eventID string, fact intake.Fact) {
-	t.Helper()
-	result, err := intake.ApplyFact(context.Background(), pool, "dispatch", eventID, fact, handlers...)
-	if err != nil || result.Refusal != nil {
-		t.Fatalf("apply %s = %+v, %v; want it accepted", eventID, result.Refusal, err)
-	}
-}
-
-// stopTheWorker is what each subtest does before its start: the daemon's own passes over the
-// fixture write the worker nothing, the operator stops it over their route, and the passes after
-// the stop start nothing of it. It answers how many launches of that claim the runtime had been
-// asked for by the stop, which is the number the start after it is read against.
-func stopTheWorker(t *testing.T, pool *pgxpool.Pool, rt *fake.Runtime, d *daemon, issue string, token claim.Token) int {
-	t.Helper()
-	passed(t, pool, "before the stop")
-	nothingStartedTheWorker(t, pool, rt, issue, token, len(launchesOf(rt, token)), "before the stop")
-	launches := len(launchesOf(rt, token))
-	if status, body := d.request(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/stop", nil, true); status != http.StatusOK {
-		t.Fatalf("the operator's stop of %s = %d; body %s; want 200, the stop made", token, status, body)
-	}
-	if state := d.claim(token).State; state != string(supervise.StateRetired) {
-		t.Fatalf("%s reads %s straight after the stop, want %s: the stop route ends the claim", token, state, supervise.StateRetired)
-	}
-	passed(t, pool, "after the stop")
-	nothingStartedTheWorker(t, pool, rt, issue, token, launches, "three passes after the stop")
-	return launches
-}
-
 // startedAgain reads that start brought the stopped worker back on the claim it kept: one more
 // launch of that claim, and that launch a resume of the session the claim recorded rather than a
 // fresh pane, the recorded session and session file untouched, and the budgets its earlier run
@@ -316,11 +284,12 @@ func startedAgain(t *testing.T, cfg config.Config, rt *fake.Runtime, kept superv
 //
 // The third is the one the change could break. Admission's promotion of a re-admitted root writes
 // the member's start as two rows — the relaunch and the task that waits for the issue's slot
-// (workflow.StartOrOwe) — and the claim it writes them for is still retired. A pass between that
-// promotion and the outbox's run of the relaunch therefore meets exactly the state the repair of
-// a fenced start acts on, and must leave the task row alone: the second queued start is what says
-// a start of the workflow is already on its way. That subtest makes those passes and reads the
-// row still there, and then reads it delivered.
+// (workflow.StartOrOwe) — and the claim it writes them for is still retired. The passes that
+// subtest makes after the promotion therefore meet the repair of a fenced start with the task
+// row owed: while the relaunch is still queued the claim is retired and the second queued start
+// is what keeps the row, and once the relaunch has run the claim is retired no longer. Which of
+// the two a pass meets is the outbox's to decide, and the row must stand either way. That
+// subtest makes those passes and reads the row still there, and then reads it delivered.
 func TestAWorkflowStartStartsAStoppedWorkerAgain(t *testing.T) {
 	t.Run("a backward move into the worker's phase", func(t *testing.T) {
 		pool, cfg, o, rt := startedAgainDaemon(t)
@@ -343,8 +312,8 @@ func TestAWorkflowStartStartsAStoppedWorkerAgain(t *testing.T) {
 
 		before := stopTheWorker(t, pool, rt, d, root, implementer)
 
-		applyWorkflowFact(t, pool, startedAgainEngine(cfg), "backward:"+root, intake.BackwardMove{Issue: root,
-			Requester: claim.RoleImplementer, To: phase.Implementing, Reason: "the retro found work the change still needs"})
+		applyFact(t, pool, "api", "backward:"+root, intake.BackwardMove{Issue: root, Requester: claim.RoleImplementer,
+			To: phase.Implementing, Reason: "the retro found work the change still needs"}, startedAgainEngine(cfg))
 		if stands := d.state().Issues[root].Phase; stands != phase.Implementing {
 			t.Fatalf("%s stands at %s after the move back, want %s: the move is what starts the phase again", root, stands, phase.Implementing)
 		}
@@ -369,17 +338,7 @@ func TestAWorkflowStartStartsAStoppedWorkerAgain(t *testing.T) {
 
 		before := stopTheWorker(t, pool, rt, d, root, implementer)
 
-		// The stop fails no claim, so the hold is applied here as the daemon applies it when the
-		// worker of a live phase is gone (workflow's claimFailed): the issue leaves its phase for
-		// `held`, which is the phase the architect's retry acts on.
-		engine := startedAgainEngine(cfg)
-		applyWorkflowFact(t, pool, engine, "worker-died:"+root, intake.ClaimFailed{Issue: root,
-			Role: claim.RoleImplementer, Reason: "the operator stopped it"})
-		if stands := d.state().Issues[root].Phase; stands != phase.Held {
-			t.Fatalf("%s stands at %s, want %s: the worker of its phase is gone, so the phase is held for its architect to decide", root, stands, phase.Held)
-		}
-
-		applyWorkflowFact(t, pool, engine, "retry:"+root, intake.RetryOrEscalate{Issue: root, Decision: intake.RetryDecision})
+		heldAndRetried(t, pool, d, startedAgainEngine(cfg), root, claim.RoleImplementer)
 		if stands := d.state().Issues[root].Phase; stands != phase.Implementing {
 			t.Fatalf("%s stands at %s after the retry, want %s: the retry puts the issue back in the phase its worker was stopped in", root, stands, phase.Implementing)
 		}
@@ -429,18 +388,25 @@ func TestAWorkflowStartStartsAStoppedWorkerAgain(t *testing.T) {
 		// so waits for the cap (admit's startMidPhaseMembers through workflow.StartOrOwe).
 		engine := startedAgainEngine(cfg)
 		handlers := []intake.Handler{engine, admit.New(record.NewStore(), engine, cfg.AdmissionCap, cfg.Project, quietLogger())}
-		applyAdmissionFact(t, pool, handlers, "todo-again:"+root, intake.DispatchIssue{Key: root, ResolvedRepo: startedAgainRepo,
-			Seq: 6, Type: "issue.updated", Status: "todo", Title: root, Rank: root, HandedOver: true})
-		owed := startedAgainOwedTask(t, pool, member, claim.RoleImplementer)
-		if !slices.Contains(startRowsOf(t, pool, member), owed) {
+		applyFact(t, pool, "dispatch", "todo-again:"+root, intake.DispatchIssue{Key: root, ResolvedRepo: startedAgainRepo,
+			Seq: 6, Type: "issue.updated", Status: "todo", Title: root, Rank: root, HandedOver: true}, handlers...)
+		// The row the promotion writes for the member's task, spelled as startRowsOf spells a
+		// start row: the implementer's, in the phase the member stands in, waiting for the
+		// member's own admission slot.
+		const owed = "implementer implementing needsSlot=true"
+		if rows := startRowsOf(t, pool, member); !slices.Contains(rows, owed) {
 			t.Fatalf("after the re-admission %s owes the start rows %v, want %q among them: the promotion writes the member's task as a row of its own",
-				member, startRowsOf(t, pool, member), owed)
+				member, rows, owed)
 		}
 
-		// The passes between the promotion and the outbox's run of the relaunch. Each meets the
-		// retired claim with the task row still owed, which is what the repair of a fenced start
-		// acts on, and each must leave the row alone: the relaunch queued beside it says the
-		// workflow is starting this role again.
+		// Three passes over what the re-admission left. What each of them meets is the outbox's
+		// to decide, since its lanes are live here: while the relaunch row is still queued a pass
+		// meets the retired claim with the task row owed beside that relaunch, which is the state
+		// the stop rule weighs and the second queued start is what keeps the row from; once the
+		// relaunch has run the claim is no longer retired, and the rule's first term keeps it.
+		// The row stands either way, which is what these passes read. The term that keeps it
+		// while the relaunch is still queued is locked on its own by the admit row LEGION-710 (a
+		// retired claim whose relaunch row is still queued, slot_repair_test.go).
 		passed(t, pool, "after the re-admission")
 		if rows := startRowsOf(t, pool, member); !slices.Contains(rows, owed) {
 			t.Fatalf("three passes after the re-admission %s owes the start rows %v, want %q still among them: the start the promotion wrote is the way back, not a start the stop outlived",
@@ -482,8 +448,8 @@ func TestAWorkflowStartStartsAStoppedWorkerAgain(t *testing.T) {
 		// The issue reaches the one phase a merge closes it from, as the rest of its run would
 		// leave it, and GitHub reports the merge.
 		finish(t, pool, record.NewStore(), root)
-		applyWorkflowFact(t, pool, startedAgainEngine(cfg), "merged:"+root, intake.PullRequestMerged{
-			Repo: startedAgainRepo, Number: 42, MergeSHA: "0bada55e0bada55e0bada55e0bada55e0bada55e"})
+		applyFact(t, pool, "api", "merged:"+root, intake.PullRequestMerged{Repo: startedAgainRepo, Number: 42,
+			MergeSHA: "0bada55e0bada55e0bada55e0bada55e0bada55e"}, startedAgainEngine(cfg))
 		testwait.Eventually(t, "the merge to open "+root+"'s production check", func() bool {
 			var open bool
 			if err := pool.QueryRow(context.Background(),
@@ -503,20 +469,6 @@ func TestAWorkflowStartStartsAStoppedWorkerAgain(t *testing.T) {
 			return pending != nil && pending.CheckLook.Look == 1
 		})
 	})
-}
-
-// startedAgainOwedTask is the start row of issue that carries role's task and waits for the
-// issue's admission slot, spelled as startRowsOf spells it, so that a read of every start the
-// issue owes can be held to this one row.
-func startedAgainOwedTask(t *testing.T, pool *pgxpool.Pool, issue string, role claim.Role) string {
-	t.Helper()
-	var stands string
-	if err := pool.QueryRow(context.Background(), `select coalesce(payload->>'phase', '')
-		from outbox where issue = $1 and kind = 'supervise' and payload->>'op' = 'start'
-		and payload->>'needsSlot' = 'true' and payload->>'role' = $2 order by id limit 1`, issue, string(role)).Scan(&stands); err != nil {
-		t.Fatalf("read the start %s owes its %s and holds for its slot: %v", issue, role, err)
-	}
-	return string(role) + " " + stands + " needsSlot=true"
 }
 
 // seedMergeablePullRequest records the open pull request of issue that the merge below closes it

@@ -8,7 +8,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
-	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -31,25 +30,19 @@ import (
 // prove nothing.
 func TestARetiredWorkersSlotIsNotRepaired(t *testing.T) {
 	const root, member = "LEGION-240", "LEGION-241"
-	// stopped records a tree that runs, its member slotted mid-testing, and the member's tester
-	// claim in state with suspendedBy, holding that phase's confirmed task. Nothing else differs
-	// between the two runs: the claim's session, its task and the slot are the same in both.
+	// stopped records the fixture every row of slot_repair_test.go's first group is written from
+	// (seedSlotRepairRow), so the slot this test reads and the slots that hold the repair's rule
+	// to the stop are one fixture: the root waiting in accepting while its member works, so it
+	// holds no slot of its own and the member's is the one slot the cap gives out; the member
+	// slotted mid-testing at generation 1; the tester's phases row with the assignment a repair
+	// hands back; and the claim in state with suspendedBy, holding that phase's task confirmed.
+	// Nothing else differs between the two runs: the claim's session, its task and the slot are
+	// the same in both.
 	stopped := func(t *testing.T, state supervise.ClaimState, suspendedBy supervise.SuspendSource) *pgxpool.Pool {
 		t.Helper()
 		pool := migratedPool(t)
-		// The root waits in accepting while its member works, so it holds no slot of its own and
-		// the member's is the one slot the cap gives out.
-		putIssue(t, pool, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-			Project: testProject, Title: "root", Tree: root, Phase: phase.Accepting, Generation: 1, Status: "needs_review",
-			DispatchStatus: "needs_review", Rank: "A", HandedOver: true, LastDispatchSeq: 1})
-		seedLifecycle(t, pool, root)
-		parent := root
-		putIssue(t, pool, record.Issue{Key: member, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-			Project: testProject, Title: "member", Tree: root, Parent: &parent, Phase: phase.Testing, Generation: 1,
-			Status: "testing", DispatchStatus: "testing", Rank: "B", LastDispatchSeq: 2})
-		takeSlot(t, pool, member)
-		token := putWorkerClaim(t, pool, root, member, claim.RoleTester, 1, state, suspendedBy)
-		putWorkerTask(t, pool, token, 1, phase.Testing, true)
+		seedSlotRepairRow(t, pool, slotRepairRow{root: root, key: member, stands: phase.Testing, generation: 1,
+			state: state, suspendedBy: suspendedBy, taskGeneration: 1, confirmed: true})
 		return pool
 	}
 	// The fact that drives the Dispatch pass: a todo issue of the project nobody handed to Legion,
@@ -86,15 +79,8 @@ func TestARetiredWorkersSlotIsNotRepaired(t *testing.T) {
 	resumable := stopped(t, supervise.StateSuspended, supervise.SuspendedByDaemon)
 	applyFact(t, resumable, quiet(t, 1), "dispatch-1", elsewhere)
 	rows := startsOf(t, resumable, member)
-	var relaunch, tasked []midPhaseStart
-	for _, row := range rows {
-		if row.task == "" {
-			relaunch = append(relaunch, row)
-			continue
-		}
-		tasked = append(tasked, row)
-	}
-	if len(tasked) != 1 || tasked[0].role != claim.RoleTester || !tasked[0].needsSlot || len(relaunch) != 1 {
+	owed := owedStarts(t, resumable, member)
+	if len(rows) != 2 || len(owed) != 1 || owed[0].role != claim.RoleTester || owed[0].task == "" {
 		t.Fatalf("the suspended tester of %s has the start rows %+v, want exactly one carrying a task, the tester's, marked for the issue's slot, beside its one relaunch: the repair acts on this fixture, so what the retired run above reads is the claim's state",
 			member, rows)
 	}

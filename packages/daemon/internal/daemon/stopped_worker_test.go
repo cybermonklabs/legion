@@ -25,8 +25,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// stopTickInterval is how often the daemon of these two tests applies its controller tick, which
-// is one admission pass each (workflowRuntime.tickController). Both tests drive the daemon's own
+// stopTickInterval is how often the daemon of the stop's tests applies its controller tick, which
+// is one admission pass each (workflowRuntime.tickController). They drive the daemon's own
 // ticks rather than applying a ControllerTick of their own, as boot_slots_test.go and
 // hold_place_test.go do, because what each test reads is what the outbox did with the rows a pass
 // wrote: a pass of the test's own writes through a store that wakes no outbox lane, so a row it
@@ -35,9 +35,9 @@ import (
 // these tests, so it is short; no other timer of the daemon is armed anywhere near as soon.
 const stopTickInterval = 20 * time.Millisecond
 
-// stoppedWorkerDaemon is the configuration both tests boot: its own database, its own project,
-// the shipped defaults, and a controller tick every stopTickInterval from shortly after the
-// runtime starts.
+// stoppedWorkerDaemon is the configuration the stop's tests boot: its own database, its own
+// project, the shipped defaults, and a controller tick every stopTickInterval from shortly after
+// the runtime starts.
 func stoppedWorkerDaemon(t *testing.T) (*pgxpool.Pool, config.Config, overrides, *fake.Runtime) {
 	t.Helper()
 	pool := isolatedOutboxPool(t)
@@ -140,6 +140,39 @@ func nothingStartedTheWorker(t *testing.T, pool *pgxpool.Pool, rt *fake.Runtime,
 		t.Fatalf("%s the runtime was asked for %d launches of %s, want the %d it had been asked for before the stop: a stopped worker is not launched again",
 			when, len(launches), token, before)
 	}
+}
+
+// theOperatorStops is the stop itself, over the route an operator uses, and the two reads that
+// say the route made it: the request is answered 200, and the claim reads retired from the next
+// read of the operator's own list. Every test of the stop goes through here, so none of them
+// reads what a pass did to a claim the route left in some other state.
+func theOperatorStops(t *testing.T, d *daemon, token claim.Token) {
+	t.Helper()
+	if status, body := d.request(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/stop", nil, true); status != http.StatusOK {
+		t.Fatalf("the operator's stop of %s = %d; body %s; want 200, the stop made", token, status, body)
+	}
+	if state := d.claim(token).State; state != string(supervise.StateRetired) {
+		t.Fatalf("%s reads %s straight after the stop, want %s: the stop route ends the claim", token, state, supervise.StateRetired)
+	}
+}
+
+// stopTheWorker is what a test whose issue owes its worker nothing does before its start: the
+// daemon's own passes over the fixture write the worker nothing, the operator stops it over
+// their route, and the passes after the stop start nothing of it. It answers how many launches
+// of that claim the runtime had been asked for by the stop, which is the number the start after
+// it is read against.
+//
+// A test whose issue owes its worker a start row before the stop calls theOperatorStops itself:
+// the read here that the issue owes no start reads that row and fails on it.
+func stopTheWorker(t *testing.T, pool *pgxpool.Pool, rt *fake.Runtime, d *daemon, issue string, token claim.Token) int {
+	t.Helper()
+	passed(t, pool, "before the stop")
+	nothingStartedTheWorker(t, pool, rt, issue, token, len(launchesOf(rt, token)), "before the stop")
+	launches := len(launchesOf(rt, token))
+	theOperatorStops(t, d, token)
+	passed(t, pool, "after the stop")
+	nothingStartedTheWorker(t, pool, rt, issue, token, launches, "three passes after the stop")
+	return launches
 }
 
 // outOfTheLine reads that issue waits for an admission slot in no part of the line the state
@@ -334,9 +367,7 @@ func TestAStopEndsTheOwedStartOfAWaitingIssue(t *testing.T) {
 			line, member)
 	}
 	launches := len(launchesOf(rt, tester))
-	if status, body := d.request(http.MethodPost, "/legion/v1/operator/claims/"+string(tester)+"/stop", nil, true); status != http.StatusOK {
-		t.Fatalf("the operator's stop of %s = %d; body %s; want 200, the stop made", tester, status, body)
-	}
+	theOperatorStops(t, d, tester)
 
 	// The first read, with both slots still held. The repair ends the owed row on the first pass
 	// that meets the retired claim, whether a slot is free or not, so the issue is out of the line
@@ -353,19 +384,9 @@ func TestAStopEndsTheOwedStartOfAWaitingIssue(t *testing.T) {
 	nothingStartedTheWorker(t, pool, rt, member, tester, launches, "three passes after the slot came free")
 	outOfTheLine(t, d, member, "once a slot stood free")
 
-	// The way back. The stop fails no claim, so the hold is applied here as the daemon applies it
-	// when the worker of a live phase is gone (workflow's claimFailed): the issue leaves its phase
-	// for `held`, which is the phase the architect's retry acts on.
-	engine := workflow.New(record.NewStore(), workflow.Config{Project: cfg.Project, Repositories: testRepositories}, quietLogger())
-	applyWorkflowFact(t, pool, engine, "worker-died:"+member, intake.ClaimFailed{Issue: member, Role: claim.RoleTester,
-		Reason: "the operator stopped it"})
-	if stands := d.state().Issues[member].Phase; stands != phase.Held {
-		t.Fatalf("%s stands at %s, want %s: the worker of its phase is gone, so the phase is held for its architect to decide", member, stands, phase.Held)
-	}
-
-	// The architect's retry of the held phase restores it and writes the pair again, so the issue
-	// owes its tester a start once more and stands in the line for a slot.
-	applyWorkflowFact(t, pool, engine, "retry:"+member, intake.RetryOrEscalate{Issue: member, Decision: intake.RetryDecision})
+	// The way back, which the stop leaves open: the issue is held and its architect retries the
+	// held phase, which writes the start pair again.
+	heldAndRetried(t, pool, d, startedAgainEngine(cfg), member, claim.RoleTester)
 	if owed := startRowsOf(t, pool, member); len(owed) == 0 {
 		t.Fatalf("after the retry of the held phase %s owes the start rows %v, want the relaunch and the task the retry writes: the retry is the way back the repair leaves",
 			member, owed)
@@ -378,14 +399,144 @@ func TestAStopEndsTheOwedStartOfAWaitingIssue(t *testing.T) {
 	})
 }
 
-// applyWorkflowFact applies one fact of the workflow's own through engine, against the daemon's
-// database, as the route that carries it applies it (intake.ApplyFact): the daemon's handlers see
-// what it wrote on their next pass. The event id is the test's, so it is never one of the
-// daemon's.
-func applyWorkflowFact(t *testing.T, pool *pgxpool.Pool, engine *workflow.Engine, eventID string, fact intake.Fact) {
+// A slot freed by the pass that meets a stop goes past the stopped issue to the next issue in
+// the line. The stop ends the start its issue was owed, and the issue is out of the line of that
+// same pass, so the one free slot reaches the issue behind it and the stopped issue holds no
+// slot after it.
+//
+// This is what the repair's place in the pass decides (admit's promoteHolds). The line offers a
+// slot to any unslotted issue that owes its worker a start, and reads no claim at all
+// (record.Waiting), so a stopped worker's issue stands in it exactly as it stood before the stop
+// — and stands first, its row being the oldest. Ending the rows after the line was judged
+// therefore granted that issue the free slot and then deleted the row it was granted for: a slot
+// held with nobody in it, and the issue behind it still waiting for one. The repair runs before
+// the line is judged now, and the pass re-reads what it ended.
+//
+// The fixture is TestAStopEndsTheOwedStartOfAWaitingIssue's with a second waiting member behind
+// the stopped one: two roots hold the cap's two slots, and two members of the first root's tree
+// each owe their tester the task half of a start. Their order in the line is read before the
+// stop, since the whole test is which of the two the one free slot reaches.
+//
+// The stop and the slot coming free have to reach the daemon as one state: a pass that met the
+// stop with the cap still full would end the owed row with no slot to give out, and the pass
+// that freed the slot would have nothing left to decide. So the test makes both while it holds
+// the lock every fact applies under (intake.SerializeFacts, which boot_replay_test.go's live
+// fact holds in the same way). The daemon's own ticks wait on that lock, and the first pass to
+// take it once the test lets it go is the pass this test is about: one pass, with the retired
+// claim and the free slot both in front of it.
+func TestAFreedSlotGoesPastTheStoppedIssueToTheNextInLine(t *testing.T) {
+	pool, cfg, o, rt := stoppedWorkerDaemon(t)
+	cfg.AdmissionCap = 2
+	project, err := claim.ProjectToken(cfg.Project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, stopped, next, other := cfg.Project+"-1", cfg.Project+"-2", cfg.Project+"-3", cfg.Project+"-4"
+	stoppedTester, err := claim.NewToken(project, stopped, claim.RoleTester)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextTester, err := claim.NewToken(project, next, claim.RoleTester)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The members' own tree, whose root is at work and holds one of the two slots, and a tree of
+	// another root holding the other: the cap is full until this test frees the second, which is
+	// the one slot the two members compete for.
+	for _, at := range []string{root, other} {
+		seedWorkflowTree(t, cfg.PostgresDSN, project, record.Issue{Key: at, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+			Project: cfg.Project, Tree: at, Title: "root " + at, Phase: phase.Implementing, Generation: 1, Status: "in_progress",
+			DispatchStatus: "in_progress", HandedOver: true, Rank: "A"})
+	}
+	// Both members wait as TestAStopEndsTheOwedStartOfAWaitingIssue's does: in a worker phase
+	// with no slot, the relaunch half of the start already run and its tester ready, the task
+	// half owed. The stopped one is written first, which is what puts it ahead of the other in
+	// the line (record.Waiting orders that part by the age of the row the issue is owed).
+	waiting := func(key, rank string, tester claim.Token) {
+		t.Helper()
+		parent := root
+		seedWaitingMember(t, cfg.PostgresDSN, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+			Project: cfg.Project, Tree: root, Parent: &parent, Title: "member " + key, Phase: phase.Testing, Generation: 1,
+			Status: "testing", DispatchStatus: "testing", Rank: rank},
+			supervise.Claim{Token: tester, Project: project, Tree: root, Issue: key, Role: claim.RoleTester, Generation: 1,
+				State: supervise.StateReady, Session: "ses_" + key, SessionFile: filepath.Join(cfg.StateDir, key+".jsonl"),
+				PluginContract: api.DaemonAPIVersion, Locator: workingPane(tester)},
+			record.SuperviseRequest{Op: "start", Tree: root, Role: claim.RoleTester, Generation: 1, Phase: phase.Testing,
+				Task: "Test the change.", NeedsSlot: true})
+		writePrompt(t, cfg, tester)
+	}
+	waiting(stopped, "B", stoppedTester)
+	waiting(next, "C", nextTester)
+	d := startDaemon(t, cfg, o)
+
+	passed(t, pool, "before the stop")
+	line := []string{stopped, next}
+	if waits := d.state().Admission.Waiting; !slices.Equal(waits, line) {
+		t.Fatalf("the waiting line is %v, want %v before the stop: both members owe their tester a start and hold no slot, and the oldest owed row stands first, so the issue about to be stopped is the one the next free slot would reach",
+			waits, line)
+	}
+	launches := len(launchesOf(rt, stoppedTester))
+
+	// The stop and the end of the other root's work, under the lock every fact takes, so that the
+	// first pass after them is one pass with both.
+	lock, err := pool.Begin(context.Background())
+	if err != nil {
+		t.Fatalf("open the transaction the fact lock is held in: %v", err)
+	}
+	// A failed read below must not leave the lock held: the pool's close at cleanup waits for
+	// this connection.
+	defer func() { _ = lock.Rollback(context.Background()) }()
+	if err := intake.SerializeFacts(context.Background(), lock); err != nil {
+		t.Fatalf("take the lock every fact applies under, which holds the daemon's passes: %v", err)
+	}
+	theOperatorStops(t, d, stoppedTester)
+	finish(t, pool, record.NewStore(), other)
+	if err := lock.Rollback(context.Background()); err != nil {
+		t.Fatalf("let the daemon's passes have the fact lock back: %v", err)
+	}
+
+	passed(t, pool, "after the stop and the freed slot")
+	nothingStartedTheWorker(t, pool, rt, stopped, stoppedTester, launches, "three passes after the stop that freed a slot")
+	outOfTheLine(t, d, stopped, "after the pass that met the stop with a slot free")
+	held := slotHolders(t, pool)
+	if !slices.Contains(held, next) {
+		t.Fatalf("the admission slots are held by %v, want %s among them: the pass that ended the stopped issue's owed start judged the line after it, so the slot the other root gave back goes to the issue behind it",
+			held, next)
+	}
+	if slices.Contains(held, stopped) {
+		t.Fatalf("the admission slots are held by %v, want %s to hold none: the pass ended the start it was owed before it judged the line, so nothing offered it the freed slot",
+			held, stopped)
+	}
+}
+
+// applyFact applies one fact against the daemon's database, under the source and through the
+// handlers the route that carries it applies it under (intake.ApplyFact): a fact of the
+// workflow's own under `api` through the engine, and a Dispatch event under `dispatch` through
+// the pair of handlers the daemon applies one through, the workflow then admission. The rows it
+// writes wake no outbox lane of the daemon's (projectRecords is what wakes them), so the passes
+// the daemon's own ticks make while those rows wait are passes over the state the fact left. The
+// event id is the test's, so it is never one of the daemon's.
+func applyFact(t *testing.T, pool *pgxpool.Pool, source, eventID string, fact intake.Fact, handlers ...intake.Handler) {
 	t.Helper()
-	result, err := intake.ApplyFact(context.Background(), pool, "api", eventID, fact, engine)
+	result, err := intake.ApplyFact(context.Background(), pool, source, eventID, fact, handlers...)
 	if err != nil || result.Refusal != nil {
 		t.Fatalf("apply %s = %+v, %v; want it accepted", eventID, result.Refusal, err)
 	}
+}
+
+// heldAndRetried is the way back from a stop, which is the one start of the workflow's own that
+// a stopped worker's own issue reaches: the stop fails no claim, so the hold is applied here as
+// the daemon applies it when the worker of a live phase is gone (workflow's claimFailed), the
+// issue is read standing at held, and the architect's retry of that held phase is applied. What
+// the retry then writes is each caller's own read: the phase it put the issue back in, the start
+// rows it wrote, or the launch they reach.
+func heldAndRetried(t *testing.T, pool *pgxpool.Pool, d *daemon, engine *workflow.Engine, issue string, role claim.Role) {
+	t.Helper()
+	applyFact(t, pool, "api", "worker-died:"+issue, intake.ClaimFailed{Issue: issue, Role: role,
+		Reason: "the operator stopped it"}, engine)
+	if held := d.state().Issues[issue].Phase; held != phase.Held {
+		t.Fatalf("%s stands at %s, want %s: the worker of its phase is gone, so the phase is held for its architect to decide",
+			issue, held, phase.Held)
+	}
+	applyFact(t, pool, "api", "retry:"+issue, intake.RetryOrEscalate{Issue: issue, Decision: intake.RetryDecision}, engine)
 }
