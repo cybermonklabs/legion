@@ -7,6 +7,7 @@ import {
   type KeptTab,
   keptTab,
   keyMinted,
+  type MemoryFiles,
   memoryFiles,
   UnloadTarget,
 } from "../../__tests__/kept-sends-harness";
@@ -20,7 +21,6 @@ import {
   type WriteRequest,
 } from "../../api/client";
 import { reachable, routeOf, unreachable } from "../../api/reachability";
-import type { KeptFiles } from "./kept-files";
 import {
   KEYED_SEND_ATTEMPT_MS,
   OneRequestPerWriteError,
@@ -104,6 +104,57 @@ function statusWrite(
     ? writes.run({ ...press, write: attemptOf(patch, answer) })
     : writes.run({ ...press, request: sends.answer({ ...patch }, answer), target: fields.target });
 }
+
+/** An upload of `file` to CORE-1, as the Artifacts tab presses one. */
+function uploadOf(file: File): WriteRequest {
+  const body = new FormData();
+  body.set("name", file.name);
+  body.set("file", file);
+  return { body, method: "POST", path: "/api/v1/issues/CORE-1/artifacts" };
+}
+
+/** Presses an upload of `file` in `writes`, its attempts answered by `answer`. */
+function uploadWrite(writes: Writes, file: File, answer: () => Promise<unknown>): Promise<unknown> {
+  return writes.run({
+    detail: null,
+    file,
+    kind: plainWrite,
+    label: `Upload of ${file.name}`,
+    presentation: "indicator",
+    write: attemptOf(uploadOf(file), answer),
+  });
+}
+
+/** A browser's kept files whose `put` answers only when the test releases it, with the answer
+ *  the test chooses: the window in which the page holds a file it has not kept yet. */
+function heldFiles(): MemoryFiles & {
+  /** The keys whose put is still unanswered. */
+  pending: () => string[];
+  /** Answers the put under `key`: `kept` false is a browser that kept nothing of it. */
+  release: (key: string, kept?: boolean) => Promise<void>;
+} {
+  const files = memoryFiles();
+  const held = new Map<string, { file: File; login: string; answer: (kept: boolean) => void }>();
+  return {
+    ...files,
+    pending: () => [...held.keys()],
+    put: (key, login, file) => {
+      const { promise, resolve } = Promise.withResolvers<boolean>();
+      held.set(key, { answer: resolve, file, login });
+      return promise;
+    },
+    release: async (key, kept = true) => {
+      const pending = held.get(key);
+      if (pending === undefined) return;
+      held.delete(key);
+      if (kept) await files.put(key, pending.login, pending.file);
+      pending.answer(kept);
+    },
+  };
+}
+
+const spec = new File(["spec body"], "spec.md", { type: "text/markdown" });
+const once = new File(["spec body"], "once.bin", { type: "application/octet-stream" });
 
 const unavailable = new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" });
 const verdict = new ApiError(422, { code: "KEY_REUSED", error: "the key names another write" });
@@ -347,31 +398,13 @@ test("an upload's file survives a reload and the upload resumes with it", async 
   await onFakeClock(async () => {
     const tab = keptTab();
     const files = memoryFiles();
-    const file = new File(["spec body"], "spec.md", { type: "text/markdown" });
-    const form = new FormData();
-    form.set("name", "spec.md");
-    form.set("file", file);
-    const upload: WriteRequest = {
-      body: form,
-      method: "POST",
-      path: "/api/v1/issues/CORE-1/artifacts",
-    };
     const send = spyOn(api, "send").mockResolvedValue({ artifact: {}, version: {} } as never);
     const before = new Writes(signedIn(), tab.page(), files);
     try {
-      void before
-        .run({
-          detail: null,
-          file,
-          kind: plainWrite,
-          label: "Upload of spec.md",
-          presentation: "indicator",
-          write: attemptOf(upload, () => Promise.withResolvers<never>().promise),
-        })
-        .catch(() => {});
+      void uploadWrite(before, spec, () => Promise.withResolvers<never>().promise).catch(() => {});
       await settle();
       const key = row(before)?.key ?? "";
-      expect(files.rows.get(key)).toBe(file);
+      expect(files.rows.get(key)).toBe(spec);
       expect(tab.kept(key)).toMatchObject({
         request: {
           form: [
@@ -407,29 +440,11 @@ test("a retried upload's file moves to its new key, and a reload resumes it ther
   await onFakeClock(async () => {
     const tab = keptTab();
     const files = memoryFiles();
-    const file = new File(["spec body"], "spec.md", { type: "text/markdown" });
-    const form = new FormData();
-    form.set("name", "spec.md");
-    form.set("file", file);
-    const upload: WriteRequest = {
-      body: form,
-      method: "POST",
-      path: "/api/v1/issues/CORE-1/artifacts",
-    };
     const send = spyOn(api, "send").mockResolvedValue({ artifact: {}, version: {} } as never);
     const before = new Writes(signedIn(), tab.page(), files);
     try {
       let answer: () => Promise<unknown> = () => Promise.reject(verdict);
-      void before
-        .run({
-          detail: null,
-          file,
-          kind: plainWrite,
-          label: "Upload of spec.md",
-          presentation: "indicator",
-          write: attemptOf(upload, () => answer()),
-        })
-        .catch(() => {});
+      void uploadWrite(before, spec, () => answer()).catch(() => {});
       await settle();
       const refused = row(before);
       expect(refused?.status).toBe("refused");
@@ -455,57 +470,6 @@ test("a retried upload's file moves to its new key, and a reload resumes it ther
     }
   });
 });
-
-/** A browser's kept files whose `put` answers only when the test releases it, with the answer
- *  the test chooses: the window in which the page holds a file it has not kept yet. */
-function heldFiles(): KeptFiles & {
-  readonly rows: Map<string, File>;
-  /** The keys whose put is still unanswered. */
-  pending: () => string[];
-  /** Answers the put under `key`: `kept` false is a browser that kept nothing of it. */
-  release: (key: string, kept?: boolean) => Promise<void>;
-} {
-  const files = memoryFiles();
-  const held = new Map<string, { file: File; login: string; answer: (kept: boolean) => void }>();
-  return {
-    ...files,
-    pending: () => [...held.keys()],
-    put: (key, login, file) => {
-      const { promise, resolve } = Promise.withResolvers<boolean>();
-      held.set(key, { answer: resolve, file, login });
-      return promise;
-    },
-    release: async (key, kept = true) => {
-      const pending = held.get(key);
-      if (pending === undefined) return;
-      held.delete(key);
-      if (kept) await files.put(key, pending.login, pending.file);
-      pending.answer(kept);
-    },
-  };
-}
-
-/** An upload of `file` to CORE-1, as the Artifacts tab presses one. */
-function uploadOf(file: File): WriteRequest {
-  const body = new FormData();
-  body.set("name", file.name);
-  body.set("file", file);
-  return { body, method: "POST", path: `/api/v1/issues/CORE-1/artifacts` };
-}
-
-const once = new File(["spec body"], "once.bin", { type: "application/octet-stream" });
-
-/** Presses an upload of `file` in `writes`, its attempts answered by `answer`. */
-function uploadWrite(writes: Writes, file: File, answer: () => Promise<unknown>): Promise<unknown> {
-  return writes.run({
-    detail: null,
-    file,
-    kind: plainWrite,
-    label: `Upload of ${file.name}`,
-    presentation: "indicator",
-    write: attemptOf(uploadOf(file), answer),
-  });
-}
 
 // W25. The page never keeps, and never sends, anything that points at an upload's file before
 // that file is kept: a record naming a key IndexedDB holds no file under is a write a reload

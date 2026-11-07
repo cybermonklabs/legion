@@ -1,8 +1,13 @@
 import type { KeptFiles } from "../features/writes/kept-files";
 import { WriteStorage } from "../features/writes/write-storage";
 
-/** A browser's kept upload files, in memory: what IndexedDB holds for the page across a reload. */
-export function memoryFiles(): KeptFiles & { readonly rows: Map<string, File> } {
+/** A browser's kept upload files, in memory: what IndexedDB holds for the page across a reload,
+ *  with `rows` the files it holds now. */
+export interface MemoryFiles extends KeptFiles {
+  readonly rows: Map<string, File>;
+}
+
+export function memoryFiles(): MemoryFiles {
   const rows = new Map<string, { login: string; file: File }>();
   const files = new Map<string, File>();
   return {
