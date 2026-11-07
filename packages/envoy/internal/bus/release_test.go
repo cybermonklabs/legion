@@ -203,6 +203,112 @@ func TestDrainSubscriptionEndsWhatARestoreBoundAfterTheSubscriptionEnded(t *test
 	}
 }
 
+// A caller that gives its subscription up while the client's connection is down leaves the durable
+// free, so another process can take it over: DrainSubscription unsubscribes the handle rather than
+// draining it, because a drain begun while the link is down writes no UNSUB and the reconnect
+// sends the draining subscription anew, leaving the server reporting the durable push-bound to a
+// client that delivers nothing. The server is read from a second client connected to it directly:
+// the giving-up client's own reads run over the link under test, and can say nothing while it is
+// down.
+func TestDrainSubscriptionWhileTheConnectionIsDownLeavesNoPushBindingBehind(t *testing.T) {
+	_, uri := startNATS(t)
+	relay := startRelayProxy(t, uri)
+	client, err := bus.ConnectOwningStream([]string{relay.url()})
+	if err != nil {
+		t.Fatalf("connect through the relay: %v", err)
+	}
+	defer client.Close()
+	direct, err := bus.ConnectOwningStream([]string{uri})
+	if err != nil {
+		t.Fatalf("connect the second client: %v", err)
+	}
+	defer direct.Close()
+	consumer := releaseDurable(t, direct, "released")
+	hooked := make(chan struct{}, 8)
+	client.AddReconnectHook(func(*natsgo.Conn) error {
+		hooked <- struct{}{}
+		return nil
+	})
+
+	var stopped atomic.Int32
+	sub := bindCounting(t, client, consumer, &stopped)
+	awaitPushBound(t, direct, consumer, true, "the durable to take the subscription's binding")
+
+	relay.refuse.Store(true)
+	relay.drop()
+	waitFor(t, 10*time.Second, "the client to start reconnecting", client.Conn.IsReconnecting)
+	publishReleaseProbe(t, direct, "notifications.github.test.released")
+
+	drained, err := client.DrainSubscription(sub)
+	if err != nil {
+		t.Fatalf("give the subscription up while the connection is down: %v", err)
+	}
+	// Reported rather than fatal, so a run where the give-up drained instead reaches the server's
+	// own answer below and says both what the call returned and what the durable was left as.
+	if drained != nil {
+		t.Errorf("DrainSubscription returned %p to wait on; an unsubscribe leaves no handle to wait on", drained)
+	}
+
+	relay.refuse.Store(false)
+	// The reconnect is where a drain would show: nats.go sends every subscription the connection
+	// still holds anew, so the checks below read the durable only once that resend has landed.
+	awaitHook(t, hooked)
+	awaitPushBound(t, direct, consumer, false, "the durable to be left free by the give-up")
+	if client.SubOK() {
+		t.Fatal("SubOK reports a subscription bound after it was given up")
+	}
+	if got := stopped.Load(); got != 0 {
+		t.Fatalf("the given-up subscription's handler was handed %d message(s) after the reconnect", got)
+	}
+
+	var fresh atomic.Int32
+	bindCounting(t, direct, consumer, &fresh)
+	waitFor(t, 10*time.Second, "the second client to be handed what was published meanwhile", func() bool { return fresh.Load() == 1 })
+	if got := stopped.Load(); got != 0 {
+		t.Fatalf("the given-up subscription's handler was handed %d message(s)", got)
+	}
+}
+
+// A caller that gives its subscription up while the client's connection is live still drains it:
+// the handle comes back for the caller to wait on, the handler is handed what the client had
+// buffered, and the client holds no subscription once the drain ends.
+func TestDrainSubscriptionWhileTheConnectionIsLiveStillDrains(t *testing.T) {
+	_, uri := startNATS(t)
+	client, err := bus.ConnectOwningStream([]string{uri})
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer client.Close()
+	consumer := releaseDurable(t, client, "released")
+
+	var handled atomic.Int32
+	sub := bindCounting(t, client, consumer, &handled)
+	awaitPushBound(t, client, consumer, true, "the durable to take the subscription's binding")
+	publishReleaseProbe(t, client, "notifications.github.test.released")
+	// The drain hands the handler what the client has buffered and nothing new, so the message must
+	// have left the server before the drain's UNSUB reaches it. The consumer's own count of what it
+	// delivered is the last thing a test can read before the message is the client's.
+	waitFor(t, 10*time.Second, "the durable to deliver the message", func() bool {
+		info, err := client.JS().ConsumerInfo(bus.Stream, consumer)
+		return err == nil && info.Delivered.Consumer >= 1
+	})
+
+	drained, err := client.DrainSubscription(sub)
+	if err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	if drained != sub {
+		t.Fatalf("DrainSubscription returned %p to wait on, want the handle Subscribe returned (%p)", drained, sub)
+	}
+	waitFor(t, 10*time.Second, "the drain to end", func() bool { return !drained.IsValid() })
+	if got := handled.Load(); got != 1 {
+		t.Fatalf("the drained subscription's handler was handed %d message(s), want the one published before the drain", got)
+	}
+	if client.SubOK() {
+		t.Fatal("SubOK reports a subscription bound after it was drained")
+	}
+}
+
 // DrainSubscription of a handle a later Subscribe replaced drains and gives up nothing: the
 // replacement stays the client's subscription, and a recovery onto a replacement connection binds
 // it again.

@@ -769,17 +769,32 @@ func (c *Client) registerSubscription(next recoverableSubscription, conn *nats.C
 
 // DrainSubscription ends for good the JetStream registration the Subscribe that returned sub made:
 // it gives the registration up, so that no reconnect or recovery binds it again and a later
-// Subscribe, on any subject, registers anew, and drains the subscription the client held for it.
-// It returns that subscription, for its caller to wait until it is no longer valid, which is how
-// nats.go reports the drain's end; the handler is handed what the client had buffered meanwhile,
-// and nothing new. That subscription is sub until the client replaces its connection, and after
-// that the handle the client bound on the new connection: sub went with the old one, and draining
-// it would fail while the rebound handle went on delivering. With no valid handle to drain (the
-// connection was replaced and the registration not bound again yet) it returns nil, having given
-// the registration up all the same. A sub the client no longer holds -- one a later Subscribe
-// replaced -- gives up and drains nothing, and returns nil. A bind of the registration in flight,
-// a restore's, is waited for first, as registerSubscription does, so what it bound is the handle
-// drained.
+// Subscribe, on any subject, registers anew, and ends the subscription the client held for it.
+// While the client's connection is live it drains that subscription and returns it, for its caller
+// to wait until it is no longer valid, which is how nats.go reports the drain's end; the handler is
+// handed what the client had buffered meanwhile, and nothing new. That subscription is sub until
+// the client replaces its connection, and after that the handle the client bound on the new
+// connection: sub went with the old one, and draining it would fail while the rebound handle went
+// on delivering. With no valid handle to end (the connection was replaced and the registration not
+// bound again yet) it returns nil, having given the registration up all the same. A sub the client
+// no longer holds -- one a later Subscribe replaced -- gives up and ends nothing, and returns nil.
+// A bind of the registration in flight, a restore's, is waited for first, as registerSubscription
+// does, so what it bound is the handle ended.
+//
+// While the connection is down it unsubscribes the handle instead, and so returns nil: an
+// unsubscribe leaves the handle invalid at once, and there is nothing left to wait on. The two
+// cases differ because of what a drain begun while the link is down leaves behind. In nats.go
+// v1.53.1, Conn.unsubscribe in drain mode keeps the subscription in the connection's list, starts
+// checkDrained on a goroutine, and writes the UNSUB only when the connection is not reconnecting.
+// checkDrained opens with a flush, which does not return until the connection is back; meanwhile
+// doReconnect's resendSubscriptions sends a SUB for every subscription the connection still holds,
+// the draining one among them. checkDrained then drops it from the client without ever writing an
+// UNSUB, so the server goes on reporting the durable push-bound, to a client that delivers nothing,
+// for the life of that connection, and no other process can take the durable over. An unsubscribe
+// drops the subscription from the connection's list at once, so the reconnect's resend does not
+// find it, and the UNSUB it would have written is not needed: the server released that interest
+// with the connection that dropped. Dispatch's delivery intake gives its subscription up exactly
+// when its link is down (INFRA-1551), which is why this is the rule rather than a caller's choice.
 func (c *Client) DrainSubscription(sub *nats.Subscription) (*nats.Subscription, error) {
 	if sub == nil {
 		return nil, nil
@@ -795,6 +810,12 @@ func (c *Client) DrainSubscription(sub *nats.Subscription) (*nats.Subscription, 
 	*subscription = recoverableSubscription{transport: jetStreamSubscription}
 	c.subscriptionsMu.Unlock()
 	if active == nil || !active.IsValid() {
+		return nil, nil
+	}
+	if !c.Connected() {
+		if err := active.Unsubscribe(); err != nil {
+			return nil, err
+		}
 		return nil, nil
 	}
 	if err := active.Drain(); err != nil {
