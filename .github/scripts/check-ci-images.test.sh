@@ -120,6 +120,11 @@ jobs:
       - uses: ./.github/actions/pull-test-images
       - run: docker pull $REGISTRY@$NATS
       - run: docker run --rm "\$ENVOY_SMOKE_IMAGE" ls
+      # The fourth shape: the download-retry-images job pulls every base image of the three
+      # Dockerfiles by reading the file it wrote from their FROM lines, which is the ci.yaml
+      # `image` entry of IMAGE_FROM (dispatch://INFRA-1545).
+      - run: |
+          while read -r image; do docker pull "\$image"; done < "\$RUNNER_TEMP/base-images"
 YAML
   # The third shape IMAGE_FROM covers lives in the file that holds it in the real tree: the
   # browser suite's own workflow, whose shard job starts the file store from the digest a Go

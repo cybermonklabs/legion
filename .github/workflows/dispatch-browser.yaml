@@ -100,11 +100,11 @@ jobs:
     #
     # The rule is in this file's head. The browser step's maximum is the full lane's 419 s, so
     # 419 x 1.15 = 482 s -> 9 min, which is the bound this issue's R1 asks of the longest
-    # shard's browser step. The install step keeps its 22 minutes, which is
+    # shard's browser step. The install step keeps its 98 minutes, which is
     # .github/scripts/playwright-install.sh's retry arithmetic rather than a measured maximum,
     # for the reason that file's head gives.
     #
-    # The job budget contains the install step's own 22 minutes, because this file's rule builds a
+    # The job budget contains the install step's own 98 minutes, because this file's rule builds a
     # job budget from its steps' budgets. A warm install is far inside that: it fetches none of
     # the list's 114 MB (`Need to get 0 B/114 MB of archives.`, job 128209099649 of
     # cybermonklabs/legion#2888 at 5ff42456) and runs the 90 s bound of the `apt-get update` that
@@ -129,14 +129,26 @@ jobs:
     # jobs fill both entries, on a push to main and on a workflow_dispatch of that file, each of
     # which writes the default branch's cache scope, and this workflow restores them.
     #
-    # So the job budget is the install step's 1320 s, the browser step's 540 s and 92 s of every
-    # other step summed: 1952 s -> 33 min.
+    # So the job budget is the install step's 5880 s, the browser step's 540 s, the Go download
+    # step's 1080 s, the bun install step's 1080 s and 92 s of every other step summed:
+    # 8672 s -> 145 min.
+    #
+    # Three of those terms are new on this head (dispatch://INFRA-1545). The install step's
+    # 5880 s is .github/scripts/playwright-install.sh's own retry arithmetic, where it was
+    # 1320 s before that script's phases were retried; the Go download step's 1080 s and the bun
+    # install step's 1080 s are each one `retry_fetch` call's 5 x 180 + 150 s. A retried step's
+    # ceiling is its own arithmetic and not a measured maximum, and it is reached only against a
+    # host that accepts the connection and then sends nothing, which is the one fault where
+    # every attempt runs its whole bound.
+    #
+    # The 92 s row still holds the seconds the `bun install` step spent before it had a budget
+    # of its own, so this sum counts those seconds twice. That is margin, not a gap.
     #
     # The 114 MB cold draw is still a tail rather than a cost of the lane: it is paid once per
     # cache key, on the first run after a Playwright upgrade or an image roll, and it is the same
     # class of tail as the 1004 s leg below. It is accounted in this pull request's body, cited to
     # dispatch://INFRA-1443. What this budget costs instead: a leg that is going to fail its
-    # install holds a runner for up to 33 min before it says so.
+    # install holds a runner for up to 145 min before it says so.
     #
     # The 1004 s leg sets none of that, and is named here as the tail it is. Its install stalled
     # 627 s on the apt download where every other install of the two runs took 19 to 49 s, and
@@ -150,7 +162,7 @@ jobs:
     # eight projects the full lane's four shards run, of which 1,058 are in the two the
     # pull-request lane runs. The remaining 55 are the three `-alone` projects', which the alone
     # job runs.
-    timeout-minutes: 33
+    timeout-minutes: 145
     strategy:
       fail-fast: false
       # Four legs. The count is written here and in the `--shard` denominator of the browser step
@@ -178,8 +190,30 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-{0}-', runner.os) || '' }}
+      # The modules each lane's run-server.sh builds the Dispatch server from, downloaded once
+      # and retried before the first step that compiles (the Retries note in ci.yaml's header;
+      # the retried unit is the download, never the build). 180 s per attempt: the slowest cold
+      # `go mod download` measured is 113 s, for packages/envoy/infra, against 77 s for
+      # packages/envoy, each on an empty module cache on 2026-11-07, so the bound is 1.6 times
+      # the slowest of them; an attempt it kills leaves what it fetched in the module cache for
+      # the next one to resume from, which a tarball fetch cannot do. The restore above makes
+      # the common run cost nothing.
+      - name: Download the Go modules this job builds
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
       - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+      # Retried like every install of this repository's CI (ci.yaml's Retries note); 180 s per
+      # attempt, the bound every Bun install of this repository's CI carries: 20.70 s cold on a
+      # pod, against at most 11 s over 180 observations in CI.
+      - name: bun install --frozen-lockfile
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
       - name: Build contracts for dispatch e2e
         # e2e/agent-view.e2e.ts imports AGENT_STREAM_LIMITS and capAgentStreamText as values
         # (LEGION-548), which Playwright's own Node resolution reads from contracts' built
@@ -249,10 +283,10 @@ jobs:
       # decoder guard, the browser download and the check that the
       # list has not fallen behind Playwright - and the measurements behind each bound, which
       # are its head comment. A script, not a composite action, for the reason this file's head
-      # gives: the step keeps its own `timeout-minutes`, which this one's 22 minutes are the
+      # gives: the step keeps its own `timeout-minutes`, which this one's 98 minutes are the
       # script's retry arithmetic for, and the two jobs stop holding two copies of the same body.
       - name: Install the lane's Playwright browsers
-        timeout-minutes: 22
+        timeout-minutes: 98
         run: |
           # The engines this lane's projects launch. The pull-request lane launches Chromium
           # rows only - its two projects are `chromium` and `iphone`, and `iphone` is an iPhone
@@ -467,11 +501,11 @@ jobs:
     # row holds neither of them.
     #
     # The rule is in this file's head. The browser step's maximum is webkit-alone's 141 s, so
-    # 141 x 1.15 = 162 s -> 3 min. The install step keeps its 22 minutes, which is
+    # 141 x 1.15 = 162 s -> 3 min. The install step keeps its 98 minutes, which is
     # .github/scripts/playwright-install.sh's retry arithmetic rather than a measured maximum,
     # for the reason that file's head gives.
     #
-    # The job budget contains the install step's own 22 minutes, because this file's rule builds a
+    # The job budget contains the install step's own 98 minutes, because this file's rule builds a
     # job budget from its steps' budgets. A warm install is far inside that: it fetches none of
     # the list's 114 MB (`Need to get 0 B/114 MB of archives.`, job 128209099649 of
     # cybermonklabs/legion#2888 at 5ff42456) and runs the 90 s bound of the `apt-get update` that
@@ -492,20 +526,32 @@ jobs:
     # 23:13:54 with the install step starting at 23:14:00, so those 482 MB landed inside 6 s and
     # this cache's 114 MB are under that. They are counted here as 7 s on top of the 82 s row.
     #
-    # So the job budget is the install step's 1320 s, the browser step's 180 s and 89 s of every
-    # other step summed: 1589 s -> 27 min.
+    # So the job budget is the install step's 5880 s, the browser step's 180 s, the Go download
+    # step's 1080 s, the bun install step's 1080 s and 89 s of every other step summed:
+    # 8309 s -> 139 min.
+    #
+    # Three of those terms are new on this head (dispatch://INFRA-1545), as they are in the
+    # shard job. The install step's 5880 s is .github/scripts/playwright-install.sh's own retry
+    # arithmetic, where it was 1320 s before that script's phases were retried; the Go download
+    # step's 1080 s and the bun install step's 1080 s are each one `retry_fetch` call's
+    # 5 x 180 + 150 s. A retried step's ceiling is its own arithmetic and not a measured
+    # maximum, and it is reached only against a host that accepts the connection and then sends
+    # nothing, which is the one fault where every attempt runs its whole bound.
+    #
+    # The 89 s row still holds the seconds the `bun install` step spent before it had a budget
+    # of its own, so this sum counts those seconds twice. That is margin, not a gap.
     #
     # The 114 MB cold draw is still a tail rather than a cost of this job: it is paid once per
     # cache key, on the first run after a Playwright upgrade or an image roll, and it is the same
     # class of tail as the shard job's 627 s apt stall. It is accounted in this pull request's
     # body, cited to dispatch://INFRA-1443. What this budget costs instead: a leg that is going to
-    # fail its install holds a runner for up to 27 min before it says so.
+    # fail its install holds a runner for up to 139 min before it says so.
     #
     # Three legs of one run is a thin reading, and these are the projects whose rows are read
     # from the wall clock, so a slower machine moves them further than it moves a parallel row.
     # The 15 per cent the rule adds is what carries that, and a leg that outran it fails the
     # browser step by name, which is a reading of its own.
-    timeout-minutes: 27
+    timeout-minutes: 139
     strategy:
       fail-fast: false
       matrix:
@@ -530,8 +576,30 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-{0}-', runner.os) || '' }}
+      # The modules each lane's run-server.sh builds the Dispatch server from, downloaded once
+      # and retried before the first step that compiles (the Retries note in ci.yaml's header;
+      # the retried unit is the download, never the build). 180 s per attempt: the slowest cold
+      # `go mod download` measured is 113 s, for packages/envoy/infra, against 77 s for
+      # packages/envoy, each on an empty module cache on 2026-11-07, so the bound is 1.6 times
+      # the slowest of them; an attempt it kills leaves what it fetched in the module cache for
+      # the next one to resume from, which a tarball fetch cannot do. The restore above makes
+      # the common run cost nothing.
+      - name: Download the Go modules this job builds
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
       - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+      # Retried like every install of this repository's CI (ci.yaml's Retries note); 180 s per
+      # attempt, the bound every Bun install of this repository's CI carries: 20.70 s cold on a
+      # pod, against at most 11 s over 180 observations in CI.
+      - name: bun install --frozen-lockfile
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
       - name: Build contracts for dispatch e2e
         # This job is a matrix and each leg runs one project, so the readers here are not the
         # shard job's. The two every leg runs: e2e/heavy-bodies.ts:7, which imports
@@ -587,11 +655,11 @@ jobs:
       # The shard job's install step, with one difference: the engine it installs is this leg's
       # own, not the whole lane's set. Both run .github/scripts/playwright-install.sh, whose
       # head holds the pinned apt list, the bounded apt attempts, the fallback origin, the
-      # seeding of the .deb files the restore above carries, and the 22-minute
+      # seeding of the .deb files the restore above carries, and the 98-minute
       # arithmetic this step's budget is; nothing on this machine changes what it says, so it is
       # not repeated here.
       - name: Install the lane's Playwright browsers
-        timeout-minutes: 22
+        timeout-minutes: 98
         run: |
           # One engine, this leg's: each project of the matrix runs one browser and its name is
           # that browser with `-alone` after it (chromium-alone is Desktop Chrome,
@@ -753,15 +821,27 @@ jobs:
     # The rule, and why the budgets sit on the steps rather than on the job alone, are in this
     # file's head; this job states only what it measured and what that rule gives here. 202 s x
     # 1.15 = 232 s -> 4 min for the dashboard step, 13 s x 1.15 = 15 s -> the two-minute floor
-    # for the sign-in step, and 4 min for the install step, for the reason its own comment gives.
+    # for the sign-in step, and 28 min for the install step, which is that step's own retry
+    # arithmetic and no measured maximum, for the reason its own comment gives.
     # The job budget is the sum of its step budgets plus the measured maximum of every step
-    # without one, rounded up: 4 + 4 + 2 min plus 135 s = 13 min. With budgets on the steps, the
-    # `if: failure()` upload below still runs, which a cancelled job skips.
+    # without one: the install step's 1680 s, the dashboard step's 240 s, the sign-in step's
+    # 120 s, the Go download step's 1080 s, the bun install step's 1080 s and the 135 s row
+    # above - 4335 s -> 73 min. With budgets on the steps, the `if: failure()` upload below
+    # still runs, which a cancelled job skips.
+    #
+    # Three of those terms are new on this head (dispatch://INFRA-1545): the install step's
+    # 1680 s, which was 240 s until its download went through the retry, and 1080 s each for
+    # the Go download step and the bun install step, which is one `retry_fetch` call's
+    # 5 x 180 + 150 s. A retried step's ceiling is reached only against a host that accepts the
+    # connection and then sends nothing, which is the one fault where every attempt runs its
+    # whole bound. The 135 s row still holds the seconds the `bun install` step spent before it
+    # had a budget of its own, so this sum counts those seconds twice; that is margin, not a
+    # gap.
     #
     # The move into this workflow changed none of that: the job runs the same steps on the same
     # machine, and this head's full-lane run, 42316487530, falls inside every figure above - 9 s
     # install, 191 s dashboard, 12 s sign-in, 96 s in the steps without a budget, 313 s whole.
-    timeout-minutes: 13
+    timeout-minutes: 73
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -796,8 +876,31 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-{0}-', runner.os) || '' }}
+      # The modules run-server.sh builds the Dispatch server from, downloaded once and retried
+      # before the first step that compiles (the Retries note in ci.yaml's header; the retried
+      # unit is the download, never the build). This job builds that server once, in the step
+      # below, and both its processes start from what that build wrote. 180 s per attempt: the
+      # slowest cold `go mod download` measured is 113 s, for packages/envoy/infra, against
+      # 77 s for packages/envoy, each on an empty module cache on 2026-11-07, so the bound is
+      # 1.6 times the slowest of them; an attempt it kills leaves what it fetched in the module
+      # cache for the next one to resume from, which a tarball fetch cannot do. The restore
+      # above makes the common run cost nothing.
+      - name: Download the Go modules this job builds
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
       - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+      # Retried like every install of this repository's CI (ci.yaml's Retries note); 180 s per
+      # attempt, the bound every Bun install of this repository's CI carries: 20.70 s cold on a
+      # pod, against at most 11 s over 180 observations in CI.
+      - name: bun install --frozen-lockfile
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
       - name: Build contracts for dispatch e2e
         # The e2e helpers the specs import read some of contracts' values from its built dist/,
         # through Playwright's own Node resolution (the shard job's step of the same name).
@@ -825,20 +928,30 @@ jobs:
         # fonts-noto-color-emoji are on the image already. A row that later needs CJK or Thai
         # glyphs would fail visibly.
         #
-        # The 4-minute budget: this step downloads browsers only, and Playwright makes up to
-        # five attempts, across its download hosts, inside it. Of the 339 s maximum above,
-        # measured in job 127214381394, 317 s were the Ubuntu mirror serving 21.1 MB at
-        # 66.4 kB/s, which this step no longer asks for; Chromium, its headless shell and
-        # ffmpeg downloaded in 6 s there. Healthy today is a 20 s median and a 34 s 95th
-        # percentile for the whole step.
+        # What the 339 s maximum above was: measured in job 127214381394, 317 s of it were the
+        # Ubuntu mirror serving 21.1 MB at 66.4 kB/s, which this step no longer asks for, and
+        # Chromium, its headless shell and ffmpeg downloaded in 6 s there. Healthy today is a
+        # 20 s median and a 34 s 95th percentile for the whole step.
         #
         # No browser cache here: it would save about 4 s, since the three archives - Chrome for
         # Testing, its headless shell and ffmpeg - download in 8 to 9 s, and it would add about
         # 250 MiB to a cache store already holding 18.6 GB in 162 entries, where each existing
         # playwright-Linux- entry is 481 MiB. The shard job's restore stays and is worth its
         # place; one here would not be.
-        timeout-minutes: 4
-        run: bunx playwright install chromium
+        # Its own retry arithmetic: 5 x 300 + 150 = 1650 s -> 28 min. It was 4 min, Playwright's
+        # own attempts over this step's measured maximum, until the call gained the retry below
+        # (dispatch://INFRA-1545).
+        timeout-minutes: 28
+        run: |
+          # The download retries through .github/scripts/ci-retry.sh (the Retries note in
+          # ci.yaml's header). 300 s per attempt: this step measured at most 15 s across the 20
+          # most recent successful ci.yaml push runs on main, where the browsers came from the
+          # runner image's cache - the 339 s in the table above is a wider window and almost all
+          # of it an apt fetch this step no longer makes - and a cold Chromium is about 210 s, so
+          # the bound is 20 times the measured maximum and above that cold figure. The step's
+          # `timeout-minutes` above is this call and nothing else: 5 x 300 + 150 = 1650 s.
+          . "$GITHUB_WORKSPACE/.github/scripts/ci-retry.sh"
+          retry_fetch "Playwright's Chromium" 300 -- bunx playwright install chromium
         working-directory: packages/dispatch
       - name: Browser-test dispatch dashboard against two server processes
         # Builds the dashboard twice (A's and B's, with distinct build ids) and runs the
@@ -884,25 +997,43 @@ jobs:
     needs: [shard, alone, multiprocess]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
-    # The budget is measured. This job ran 27 s on the pull-request lane of this head
-    # (42334424798) and 22 s on its full lane (42316487530); over the twelve merge jobs of this
-    # branch's ten ci.yaml runs the maximum is 37 s, on the green second attempt of 42328655988.
-    # No step here carries a budget of its own, so by the rule in this file's head the job's
-    # budget is that maximum: 37 x 1.15 = 43 s, which the rule's two-minute floor raises to
-    # 2 min.
+    # The budget is measured, and three of this job's steps now carry one of their own. The job
+    # ran 27 s on the pull-request lane of this head (42334424798) and 22 s on its full lane
+    # (42316487530); over the twelve merge jobs of this branch's ten ci.yaml runs the maximum is
+    # 37 s, on the green second attempt of 42328655988. By the rule in this file's head the
+    # budget is the sum of the step budgets plus the measured maximum of every step without one:
+    # the bun install step's 1080 s, reading one's 360 s for the jobs it reads, the ci-ok report
+    # step's 720 s and that 37 s - 2197 s -> 37 min.
+    #
+    # Each of those three budgets is new on this head (dispatch://INFRA-1545), and each is its
+    # step's own retry arithmetic rather than a measured maximum: 5 x 180 + 150 s for the
+    # install, 5 x 30 + 150 s for the jobs read, and 2 x (5 x 30 + 150) s for the two ladders
+    # the ci-ok report runs, each rounded to a whole minute strictly above it. A step reaches
+    # that ceiling only against a host that accepts the connection and then sends nothing,
+    # which is the one fault where every attempt runs its whole bound. The 37 s maximum still
+    # holds the seconds the install and the jobs read spent before they had budgets of their
+    # own, so this sum counts those seconds twice; that is margin, not a gap.
     #
     # What that sample does not hold: no browser step failed in any of those runs, so no blob
     # report in them carries a failed row's trace, and the download, the merge and reading
     # three's per-leg merge all grow with those. A job cancelled at this budget posts no ci-ok,
     # so the run is red and read again from the jobs API; it cannot pass a verdict it never
     # reached.
-    timeout-minutes: 2
+    timeout-minutes: 37
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+      # Retried like every install of this repository's CI (ci.yaml's Retries note); 180 s per
+      # attempt, the bound every Bun install of this repository's CI carries: 20.70 s cold on a
+      # pod, against at most 11 s over 180 observations in CI.
+      - name: bun install --frozen-lockfile
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
       # Every leg's blob report and row count, one directory per artifact. Each artifact holds a
       # blob-report/ and a rows/ directory, so the zips land together and the counts land beside
       # them rather than among them: `merge-reports` reads the zips of the directory it is given.
@@ -969,6 +1100,10 @@ jobs:
       # different places.
       - name: Reading one, the rows
         if: always()
+        # Its own retry arithmetic: the jobs read below, 5 x 30 + 150 = 300 s -> 6 min, the
+        # next whole minute strictly above it, which is what rule 8 of
+        # .github/scripts/check-download-retry.sh asks (dispatch://INFRA-1545).
+        timeout-minutes: 6
         run: |
           blobs="$RUNNER_TEMP/selected-blobs/blob-report"
           counts="$RUNNER_TEMP/selected-blobs/rows"
@@ -1002,9 +1137,17 @@ jobs:
           # over every page. The array holds the page objects, which is why the filter opens
           # `.[].jobs[]`.
           pages="$RUNNER_TEMP/jobs-pages.json"
-          gh api --paginate --slurp \
+          # The read retries through the one helper (the Retries note in ci.yaml's header),
+          # bounded at 30 s an attempt, the bound every `gh api` read of this repository's CI
+          # carries. gh writes the pages into the file inside the command the helper runs, as
+          # .github/scripts/ci-ok-report.sh's own read does, so each attempt starts that file
+          # over; a redirection written outside the call is applied once, by this shell, and
+          # what a killed attempt left would still be in front of the next attempt's array.
+          . .github/scripts/ci-retry.sh
+          # shellcheck disable=SC2016 # $1 and $2 are sh -c's own arguments, expanded by that shell
+          retry_fetch "this run's jobs" 30 -- sh -c 'gh api --paginate --slurp "$1" > "$2"' gh-api \
             "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?filter=all&per_page=100" \
-            > "$pages" || {
+            "$pages" || {
             echo "::error::this run's jobs could not be read, so the legs this lane owed are unknown"
             exit 1
           }
@@ -1253,6 +1396,11 @@ jobs:
       # nightly workflow passes no `ci-ok-changes`, and the step skips.
       - name: Report ci-ok when this job decides a merge-group run
         if: always() && inputs.ci-ok-changes != ''
+        # Its own retry arithmetic: ci-ok-report.sh's `gh api` read and post-check-run.sh's POST
+        # of the check run, 2 x (5 x 30 + 150) = 600 s. 720 s and not rule 8's minimum of 660 s:
+        # this step posts the required ci-ok check, and a budget that cuts it between those two
+        # ladders loses the check run rather than reporting a failure (ci.yaml's Budgets note).
+        timeout-minutes: 12
         uses: ./.github/actions/ci-ok-report
         with:
           job: dispatch-browser

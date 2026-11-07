@@ -75,15 +75,17 @@
 # unable to launch. This paragraph is a standing refusal, not a record of a design that was taken
 # out: nobody is to re-derive a reduced list.
 #
-# The 22-minute budget each calling step carries is this script's own retry arithmetic, not its
+# The 98-minute budget each calling step carries is this script's own retry arithmetic, not its
 # measured maximum, which the bounds make unreachable: two bounded attempts of `apt-get update`
 # at 90 s, two of the download at 300 s, then, where both of those time out, one 90 s read of the
-# fallback origin's indexes and a third 300 s download attempt, then the unpack,
-# the decoder guard, the browser download and the one apt simulation
-# of the list check, none of which touch the Ubuntu mirror. So the arithmetic is
-# 2 x 90 + 2 x 300 + 90 + 300 = 1170 s of bounded apt, 13.6 s of unpack, 0.4 s
-# of decoder guard, about 90 s for the browsers and 1.6 s for the list check:
-# 1170 + 13.6 + 0.4 + 90 + 1.6 = 1275.6 s, rounded up to 22 min. The budget has to carry
+# fallback origin's indexes and a third 300 s download attempt, then the unpack, the decoder
+# guard, the browsers' own five bounded attempts and the one apt simulation of the list check,
+# none of which touch the Ubuntu mirror. So the arithmetic is 2 x 90 + 2 x 300 + 90 + 300 =
+# 1170 s of bounded apt, 13.6 s of unpack, 0.4 s of decoder guard, 5 x 900 + 150 = 4650 s for
+# the browsers - five attempts of 900 s with the 150 s of sleeps .github/scripts/ci-retry.sh
+# puts between them - and 1.6 s for the list check: 1170 + 13.6 + 0.4 + 4650 + 1.6 = 5835.6 s,
+# rounded up to 98 min. The browsers are the term that makes this step now: they are four fifths
+# of that sum, where every bounded apt phase together is a fifth of it. The budget has to carry
 # the fallback's own update, because the path that needs every one of those bounds is the path on
 # which the script still succeeds. The seeding of restored .deb files is not a term of that sum:
 # the run that needs every one of those bounds is the cold one, which seeds nothing, and on the
@@ -96,12 +98,16 @@
 # 23:14:28.984. The browsers and the list check together are the 1.6 s to `The pinned list is
 # current: ...` at 23:14:30.540 - but that job restored its browsers from the Actions cache
 # (`Cache hit for: playwright-Linux-7f68fc...`, 482 MB, at 23:13:54), so that 1.6 s is no reading
-# of the cold browser download and the budget has to carry the cold case. That is what the 90 s
-# term is: an estimate for the cold browsers, not a reading, which the package set does not
-# reach. The list check is measured inside that 1.6 s, so 1.6 s is the term the reading supports
-# for it. The whole step took 30 s in that job, 23:14:00 to 23:14:30: one reading at this package
-# set, not a distribution. Each is one reading, so each moves a little from run to run; the
-# margin the sum leaves under 22 min is what carries that.
+# of the cold browser download. The list check is measured inside that 1.6 s, so 1.6 s is the
+# term the reading supports for it. The whole step took 30 s in that job, 23:14:00 to 23:14:30:
+# one reading at this package set, not a distribution. Each is one reading, so each moves a
+# little from run to run; the margin the sum leaves under 98 min is what carries that.
+#
+# The browser term is no reading: it is what the step waits for where every attempt of the
+# download is killed at its bound, and the bound itself is the measurement. 900 s per attempt:
+# the three cold browser downloads took 634 s together across the 20 most recent successful
+# ci.yaml push runs on main, against 28 s on the runs where the cache served them, so the bound
+# is over 40 per cent above that cold maximum.
 #
 # Each bound is derived from its own phase: each job's two apt rates, as apt logged them, scaled
 # onto this script's fetch of 13.0 MB of indexes and the list's 114 MB of packages. The
@@ -254,7 +260,15 @@ shopt -u nullglob
 
 # `sudo timeout`, not `timeout sudo`: the signal has to reach apt-get itself, not a sudo holding
 # it.
-attempts 2 "apt-get update" sudo timeout 90 apt-get update || {
+#
+# Both index reads of this script carry `-o APT::Update::Error-Mode=any`: this loop is
+# dispatch://INFRA-1443's and R2 excepts it from the retry rule, but it has the same hole that
+# rule closes, and one option is the whole fix (.github/scripts/check-download-retry.sh's rule 5
+# is the reason). Without it `apt-get update` exits 0 having fetched no index, and the
+# `apt-get install` after it fails with `has no installation candidate`, which no further
+# attempt of this loop cures.
+attempts 2 "apt-get update" sudo timeout 90 \
+  apt-get update -o APT::Update::Error-Mode=any || {
   echo "::error::apt-get update failed twice, so no package list was read;" \
     "the apt mirror is the suspect"
   exit 1
@@ -285,7 +299,8 @@ if ! attempts 2 "the package download" sudo timeout 300 apt-get install -y --no-
   # The new origin's indexes are not the old one's, so they are read before the attempt that
   # uses them. Where that read fails the attempt still runs: the lists on disk may still name
   # files this origin serves, and an attempt is worth more here than a tidy exit.
-  attempts 1 "apt-get update for the fallback origin" sudo timeout 90 apt-get update ||
+  attempts 1 "apt-get update for the fallback origin" sudo timeout 90 \
+    apt-get update -o APT::Update::Error-Mode=any ||
     echo "::warning::the fallback origin's lists were not read; the attempt below uses what is on disk"
   # shellcheck disable=SC2086 # the pinned list splits into words, one package each
   attempts 1 "the package download from the fallback origin" sudo timeout 300 apt-get install -y --no-install-recommends -d $apt_list || {
@@ -324,7 +339,20 @@ echo "the decoders WebKit plays through are in the registry: ${probed[*]}"
 # The browsers alone, and only the ones this call named: they are this script's arguments, so
 # they are passed on as arguments and nothing re-splits them. The apt list above does not narrow
 # with them, for the reason this file's head gives.
-bunx playwright install "$@"
+#
+# The download retries like every other download of this repository's CI: five bounded attempts
+# through .github/scripts/ci-retry.sh, the last starting 150 s after the first. 900 s per
+# attempt: the three cold browser downloads took 634 s together across the 20 most recent
+# successful ci.yaml push runs on main, against 28 s on the runs where the cache served them, so
+# the bound is over 40 per cent above that cold maximum.
+#
+# The helper is read from this script's own directory, as the pinned list above is, because
+# neither calling step starts this script at the checkout root: both set
+# `working-directory: packages/dispatch`, so a relative `. .github/scripts/ci-retry.sh` would
+# look for the helper under packages/dispatch and find nothing.
+# shellcheck source=.github/scripts/ci-retry.sh
+. "$script_dir/ci-retry.sh"
+retry_fetch "Playwright's browsers" 900 -- bunx playwright install "$@"
 
 # Has the pinned list fallen behind Playwright? The check is the repository's
 # .github/scripts/playwright-deps-current.sh, beside this file, and it runs here against the

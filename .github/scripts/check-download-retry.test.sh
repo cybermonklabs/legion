@@ -76,7 +76,9 @@ runs:
         done
 YAML
 
-  # Exceptions (a) again, (b) and (c).
+  # Exceptions (a) again and (b), and the step that runs exception (c)'s script: its apt phase
+  # is .github/scripts/playwright-install.sh below, and the browser download beside it retries
+  # like any other site.
   cat > "$root/.github/workflows/ci.yaml" <<YAML
 name: CI
 on: [push]
@@ -98,22 +100,33 @@ jobs:
       - uses: actions/checkout@$PIN
       - name: Install Playwright Chromium, WebKit and Firefox
         run: |
-          attempts() {
-            local left=\$1 what=\$2 status
-            shift 2
-            while :; do
-              "\$@" && return 0
-              status=\$?
-              left=\$((left - 1))
-              [ "\$left" -gt 0 ] || return 1
-            done
-          }
-          attempts 2 "apt-get update" sudo timeout 90 apt-get update
-          attempts 2 "the package download" sudo timeout 300 apt-get install -y -d \$packages
-          sudo apt-get install -y \$packages
+          .github/scripts/playwright-install.sh
           . .github/scripts/ci-retry.sh
           retry_fetch "Playwright's Chromium" 300 -- bunx playwright install chromium
 YAML
+
+  # Exception (c): the apt phase of that step, which is a script of its own since
+  # cybermonklabs/legion#2891 — its attempts() loop and the apt-get calls the loop runs. The
+  # update here carries no `-o APT::Update::Error-Mode=any`, so a fixture that passes is a
+  # fixture whose exemption took rule 5 along with rules 1 and 2.
+  cat > "$root/.github/scripts/playwright-install.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+attempts() {
+  local left=$1 what=$2 status
+  shift 2
+  while :; do
+    "$@" && return 0
+    status=$?
+    left=$((left - 1))
+    [ "$left" -gt 0 ] || return 1
+  done
+}
+attempts 2 "apt-get update" sudo timeout 90 apt-get update
+attempts 2 "the package download" sudo timeout 300 apt-get install -y -d $packages
+sudo apt-get install -y $packages
+SH
+  chmod +x "$root/.github/scripts/playwright-install.sh"
 
   # Exception (d): a credentialed publish job, whose pinned command set no wrapper may change.
   cat > "$root/.github/workflows/release.yaml" <<'YAML'

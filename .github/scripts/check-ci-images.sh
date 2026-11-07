@@ -260,6 +260,14 @@ IMAGE_FROM = {
         "head gives as one of the five ways it differs from the shard job. The step was "
         "ci.yaml's dispatch job's before the browser suite moved"
     ),
+    (".github/workflows/ci.yaml", "image"): (
+        "the download-retry-images job's \"Pull every base image the three builds read\" step "
+        "reads one name a line from the file it wrote immediately above, which holds every FROM "
+        "of packages/daemon/docker/worker.Dockerfile, packages/envoy/docker/Dockerfile and "
+        "packages/envoy/infra/host/heldportwrapper/Dockerfile that names an image rather than a "
+        "build argument or an earlier stage; all three files are in the reach above, and this "
+        "check reads the references in them"
+    ),
     (".github/workflows/ci.yaml", "ENVOY_SMOKE_IMAGE"): (
         "the local tag the envoy-smoke job's own build loaded (ci.yaml sets it to "
         "legion-envoy-smoke:<sha>); no registry holds it, so the run fetches nothing"

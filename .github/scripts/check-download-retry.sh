@@ -187,15 +187,18 @@
 #      step's `run:` is read, and no third-party action's source is in this tree. A composite
 #      action cannot wrap a `uses:` step in a loop, which is why R4 answers the Bun runtime with a
 #      restored cache rather than with a retry.
-#   c. The apt phase of the Playwright step in ci.yaml's `dispatch` job, which
-#      dispatch://INFRA-1443 owns: its own `attempts()` loop, which switches origin after two
-#      attempts where the shared helper cannot, and the four calls that hand it `apt-get`, are
-#      exempt from rules 1 and 2 together, and from rule 5 with them, an exemption taking the
-#      whole verdict. Those calls carry `-o APT::Update::Error-Mode=any` all the same: rule 5's
-#      hole is a hole in that loop too, and one option is the whole fix. `playwright install-deps`
-#      is that same apt phase written as Playwright writes it, and is outside the verb list above
-#      for the same reason; the browser download beside it, `playwright install`, is a site like
-#      any other.
+#   c. The apt phase of .github/scripts/playwright-install.sh, which dispatch://INFRA-1443 owns:
+#      its own `attempts()` loop, which switches origin after two attempts where the shared
+#      helper cannot, and the four calls that hand it `apt-get`, are exempt from rules 1 and 2
+#      together, and from rule 5 with them, an exemption taking the whole verdict. That phase was
+#      the Playwright step of ci.yaml's `dispatch` job until cybermonklabs/legion#2891 moved the
+#      Dispatch browser suite into .github/workflows/dispatch-browser.yaml and wrote its install
+#      as that script, which both of that workflow's install steps call; the exception moved with
+#      it. Those calls carry `-o APT::Update::Error-Mode=any` all the same: rule 5's hole is a
+#      hole in that loop too, and one option is the whole fix. `playwright install-deps` is that
+#      same apt phase written as Playwright writes it, and is outside the verb list above for the
+#      same reason; the browser download beside it, `playwright install`, is a site like any
+#      other.
 #   d. The credentialed publish jobs of release.yaml, release-envoy-listener.yaml and
 #      release-envoy-infra.yaml, and every *.sh under .github/scripts/ such a job runs.
 #      .github/scripts/check-release-credentials.sh pins the command set such a job may run, and
@@ -1080,10 +1083,11 @@ EXEMPTIONS = [
               "Pre-pull the NATS image the credential tests run", ("docker pull",), GHCR_WHY),
     Exemption(".github/workflows/ci.yaml", "download-retry-images",
               "Pull every base image the three builds read", ("docker pull",), GHCR_WHY),
-    Exemption(".github/workflows/ci.yaml", "dispatch",
-              "Install Playwright Chromium, WebKit and Firefox",
+    # A script site is read with no job and no step, so this entry names neither: the call at the
+    # `for path in scripts:` loop below passes job=None and step=None.
+    Exemption(".github/scripts/playwright-install.sh", None, None,
               ("apt-get update", "apt-get install"),
-              "the apt phase of this step is dispatch://INFRA-1443's: its own attempts() loop "
+              "the apt phase of this script is dispatch://INFRA-1443's: its own attempts() loop "
               "switches origin after two attempts, which the shared helper cannot do"),
 ]
 
