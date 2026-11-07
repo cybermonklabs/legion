@@ -260,6 +260,12 @@ IMAGE_FROM = {
         "the local tag the envoy-smoke job's own build loaded (ci.yaml sets it to "
         "legion-envoy-smoke:<sha>); no registry holds it, so the run fetches nothing"
     ),
+    # PROBE ONLY (dispatch://INFRA-1526, k9): never on the pull request's branch.
+    (".github/workflows/ci-caches.yaml", "image"): (
+        "the local tag the arm64 probe job's own build loaded "
+        "(legion-envoy-arm-probe:<sha> and legion-envoy-arm-baseline:<sha>); no registry holds "
+        "either, so the run fetches nothing"
+    ),
 }
 
 NO_CI_JOB = "no CI job runs it"
