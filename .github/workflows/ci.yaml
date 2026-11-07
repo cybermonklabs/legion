@@ -3114,6 +3114,11 @@ jobs:
     #   step                                                          median   95th    max
     #   Browser-test dispatch dashboard against two server processes   191 s  197 s  200 s
     #
+    # That window closed before the worker's second renderer was finished, and the step has
+    # since run longer than the 200 s + 72 s above projects: 282 s at b3a3bab6ea36, in job
+    # 128429152301, from 2026-11-07T14:23:34Z to 2026-11-07T14:28:16Z. The budget stands by the
+    # rule's own arithmetic, 282 s x 1.15 = 324 s, which is still inside 6 min.
+    #
     # The rule, and the reason the budgets sit on the steps rather than on the job alone, are in
     # the dispatch job's comment above its `timeout-minutes`; this job states only what it
     # measured and what that rule gives here. (200 s + 72 s) x 1.15 = 313 s -> 6 min for the

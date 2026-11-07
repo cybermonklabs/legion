@@ -1,8 +1,9 @@
 // The init-script and worker helpers `e2e/mermaid.e2e.ts`'s rows share: the wrappers that record,
 // hold, refuse or fail the page's `Worker`, the two scroll helpers (one turns the browser's scroll
 // anchoring off, one reads the offset once it settles), the route that makes the real worker
-// chunk hold a diagram's source, the route that holds Mermaid's own chunks back, and the read
-// that names which of the two renderers drew a mounted diagram.
+// chunk hold a diagram's source, the routes that hold Mermaid's own chunks back (every one of
+// them, or the one a row names), and the read that names which of the two renderers drew a
+// mounted diagram.
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { type BrowserContext, expect, type Locator, type Page } from "@playwright/test";
@@ -361,6 +362,51 @@ export async function failMermaidChunks(context: BrowserContext): Promise<Failed
   return {
     failed: () => failed,
     serveThemAgain: () => {
+      failing = false;
+    },
+  };
+}
+
+/** One of Mermaid's chunks by the rollup name Vite writes into the middle of its file name
+ *  (`assets/mermaid-chunk-<rollup name>-<hash>.js`, `web/vite.config.ts`): a type's definition
+ *  chunk carries its own module's name and Mermaid's hash after it
+ *  (`mermaid-chunk-timeline-definition-SEUHKTQE-<vite hash>.js`), a layout engine carries the
+ *  engine's (`dagre`, `cose-bilkent`, `elk`, `swimlanes`), and Mermaid's own core is
+ *  `mermaid.core`. The pattern stops at the name, so neither hash is written into a row. */
+function mermaidChunkNamed(name: string): RegExp {
+  return new RegExp(`/assets/mermaid-chunk-${name.replaceAll(".", "\\.")}-[^/]+\\.js$`);
+}
+
+/** What a row drives the one-chunk route with: how many requests for that chunk were refused,
+ *  and the call that stops refusing it, so the same worker can be watched drawing the source it
+ *  could not draw before. */
+export interface FailedMermaidChunk {
+  failed(): number;
+  serveItAgain(): void;
+}
+
+/** Fails every request `context` makes for the one Mermaid chunk `name` names, and serves every
+ *  other one, until `serveItAgain` runs. Where `failMermaidChunks` fails them all and so stops
+ *  at the renderer module's own chunk, with Mermaid never loaded, this is the chunk a redeploy
+ *  moved: the worker loads Mermaid and reaches the fetch that this source's own type or layout
+ *  makes, inside the parse, the warm render or the draw. */
+export async function failOneMermaidChunk(
+  context: BrowserContext,
+  name: string
+): Promise<FailedMermaidChunk> {
+  let failed = 0;
+  let failing = true;
+  await context.route(mermaidChunkNamed(name), async (route) => {
+    if (!failing) {
+      await route.continue();
+      return;
+    }
+    failed += 1;
+    await route.abort("failed");
+  });
+  return {
+    failed: () => failed,
+    serveItAgain: () => {
       failing = false;
     },
   };

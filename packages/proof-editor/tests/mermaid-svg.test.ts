@@ -35,6 +35,17 @@ function parseRaw(markup: string): Element {
     .documentElement as unknown as Element;
 }
 
+/** What the filter leaves of `sheet`: the text of the `<style>` of a drawing holding nothing
+ *  else, which is the whole of its answer. */
+function filteredSheet(sheet: string): string {
+  const svg = sanitizeMermaidSvg(
+    `<svg xmlns="http://www.w3.org/2000/svg"><style>${sheet}</style></svg>`,
+    document,
+    "xml"
+  );
+  return svg.getElementsByTagName("style")[0]?.textContent ?? "";
+}
+
 describe("renderMermaidMarkup", () => {
   test("returns the editor's svg markup for a source", () => {
     const markup = renderMermaidMarkup("sequenceDiagram\n  Alice->>Bob: Hi");
@@ -216,6 +227,160 @@ describe("sanitizeMermaidSvg", () => {
     expect(local?.getAttribute("marker-end")).toBe('url( "#arrow" )');
     // A data-* attribute is no CSS, so beautiful-mermaid's copy of a label keeps its characters.
     expect(local?.getAttribute("data-label")).toBe("a\\b (x.example)");
+  });
+
+  // What the sheet reader makes of each shape the review of INFRA-925 tried it with, and of
+  // each behaviour the rule it replaced had. The reader cuts the text at every `;`, `{` and `}`
+  // that stands outside a quoted string and outside an unquoted `url(…)`; a piece that ends at
+  // a `{` is a prelude and stays, and a piece that fetches and holds a `:` of its own is a
+  // declaration and goes. Where it cannot take the text apart, nothing that fetches may be left
+  // anywhere in it, so the sheet goes whole.
+  const SHEET_READINGS: readonly { name: string; sheet: string; kept: string }[] = [
+    {
+      name: "a fetching paint goes and its siblings in the rule stay",
+      sheet:
+        "#d .evil rect{fill:#ff0000!important;mask-image:url(https://evil.example/m.png)!important;" +
+        "marker-end:url(#d_pointEnd)!important;}",
+      kept: "#d .evil rect{fill:#ff0000!important;marker-end:url(#d_pointEnd)!important;}",
+    },
+    {
+      name: "an upper-case URL(, and a value that wraps before its (",
+      sheet:
+        "#d .a rect{mask-image:URL(https://evil.example/a);fill:#f00;}" +
+        "#d .b rect{mask-image:url\n(https://evil.example/b);fill:#0f0;}",
+      kept: "#d .a rect{fill:#f00;}#d .b rect{fill:#0f0;}",
+    },
+    {
+      name: "the escaped spelling of url(, which CSS decodes",
+      sheet: "#d .a rect{mask-image:\\75rl(https://evil.example/a);fill:#f00;}",
+      kept: "#d .a rect{fill:#f00;}",
+    },
+    {
+      name: "image-set and its prefixed spelling",
+      sheet:
+        "#d .a rect{background:image-set('https://evil.example/a' 1x);fill:#f00;}" +
+        "#d .b rect{background:-webkit-image-set('https://evil.example/b' 1x);fill:#0f0;}",
+      kept: "#d .a rect{fill:#f00;}#d .b rect{fill:#0f0;}",
+    },
+    {
+      name: "a local url(#id) the drawing makes to its own marker, followed by a remote one",
+      sheet: "#d .a rect{marker-end:url(#d_pointEnd) url(https://evil.example/a);fill:#f00;}",
+      kept: "#d .a rect{fill:#f00;}",
+    },
+    {
+      // `u/**/rl(` is an identifier, a comment and another identifier to a browser's tokenizer,
+      // never the `url(` function token, so it fetches nothing and the declaration stays.
+      name: "a comment inside the word url, which is no function token",
+      sheet: "#d .a rect{mask-image:u/**/rl(https://evil.example/a);fill:#f00;}",
+      kept: "#d .a rect{mask-image:u/**/rl(https://evil.example/a);fill:#f00;}",
+    },
+    {
+      name: "a selector's own colon, a var() and a media query, which end no property",
+      sheet: "@media (min-width:100px){g:hover text{fill:var(--mermaid-text-color);}}",
+      kept: "@media (min-width:100px){g:hover text{fill:var(--mermaid-text-color);}}",
+    },
+    {
+      name: "a keyframe's own blocks",
+      sheet: "@keyframes dash{to{stroke-dashoffset:0;}}",
+      kept: "@keyframes dash{to{stroke-dashoffset:0;}}",
+    },
+    {
+      name: "an @font-face src, whose declaration goes and whose rule stays",
+      sheet: "@font-face{font-family:x;src:url(https://evil.example/f.woff);}",
+      kept: "@font-face{font-family:x;}",
+    },
+    {
+      name: "a declaration a } ends rather than a ;",
+      sheet: "#d .a rect{fill:#f00;mask-image:url(https://evil.example/a) }",
+      kept: "#d .a rect{fill:#f00;}",
+    },
+    {
+      name: "a } that closes nothing",
+      sheet: "#d .a rect{fill:#f00;}}#d .b rect{mask-image:url(https://evil.example/b);}",
+      kept: "#d .a rect{fill:#f00;}}#d .b rect{}",
+    },
+    {
+      name: "a declaration the sheet ends before its ; does, which no cut reaches",
+      sheet: "#d .a rect{fill:#f00;mask-image:url(https://evil.example/a)",
+      kept: "",
+    },
+    {
+      name: "a string the sheet ends before, which the reader cannot take apart",
+      sheet: '#d .a rect{content:"x;}#d .b rect{mask-image:url(https://evil.example/b);}',
+      kept: "",
+    },
+    {
+      name: "an @import a comment separates from its quoted target",
+      sheet: '@import/**/"https://evil.example/c.css";\ntext{fill:red;}',
+      kept: "\ntext{fill:red;}",
+    },
+    {
+      name: "the Google Fonts @import, whose quoted URL holds the ; that would end a rule",
+      sheet:
+        "@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500');\n" +
+        "text{fill:red;}",
+      kept: "\ntext{fill:red;}",
+    },
+    {
+      name: "an @import whose unquoted URL holds a ;, and the media query after it",
+      sheet: "@import url(https://evil.example/a;b.css) screen;\ntext{fill:red;}",
+      kept: "\ntext{fill:red;}",
+    },
+    {
+      name: "an at-rule other than @import that fetches, which takes the whole sheet with it",
+      sheet: "@namespace url(https://evil.example/ns);text{fill:red;}",
+      kept: "",
+    },
+  ];
+
+  test("reads a sheet as a browser's tokenizer does, and takes every @import with it", () => {
+    for (const reading of SHEET_READINGS) {
+      expect(filteredSheet(reading.sheet), reading.name).toBe(reading.kept);
+    }
+  });
+
+  // The two sheets upstream Mermaid writes for the sources the review of INFRA-925 measured the
+  // cost of reading a sheet with. Both are built here rather than drawn, since one render of
+  // either costs seconds; each shape was recorded by drawing its source through
+  // `packages/dispatch/web/src/features/refs/mermaid-upstream.ts`:
+  //  - a `block-beta` of 40,075 characters whose `classDef` and `class` name 20,000 `a`
+  //    characters is drawn as five rules, one per shape, each selector holding the whole class
+  //    name and no `:` (its sheet is 104,990 characters, Mermaid's own theme included);
+  //  - a `stateDiagram-v2` of 1,678 characters whose `classDef` value is 800 `a:` pairs and an
+  //    unterminated quote is drawn as three rules, Mermaid appending ` !important; }` of its
+  //    own, so the run of `:` stands in a value no quote closes.
+  const LONG_CLASS_NAME = "a".repeat(20_000);
+  const LONG_SELECTOR_SHEET = ["rect", "polygon", "ellipse", "circle", "path"]
+    .map((shape) => `#dispatch-mermaid-0 .${LONG_CLASS_NAME} ${shape}{fill:#ff0000!important;}`)
+    .join("");
+  const COLON_RUN_SHEET = ["rect", "polygon", "path"]
+    .map(
+      (shape) =>
+        `#dispatch-mermaid-0 .evil ${shape}{fill:${"a:".repeat(800)}"x !important !important; }`
+    )
+    .join("");
+
+  // The page's own thread reads the sheet, where the worker's five-second bound does not reach
+  // (`answerOf` calls `mermaidSvgElement`, `mermaid-diagrams.ts`), so a reader whose cost grows
+  // faster than the sheet freezes the tab of every reader of the comment that holds it. The
+  // bound is wall-clock because that is the harm: 1,000 ms for both sheets together. Measured
+  // on this pod (2 vCPU, bun 1.4.4), four runs of the pair: 14 to 18 ms with the one-pass
+  // reader. This row at the head it was written against took 4,770 ms (2,355 ms for the
+  // selector and 2,312 ms for the run of colons, measured apart), where the regular expression
+  // that read a declaration as `property:value` began a scan at each character of a selector
+  // holding no `:` and at each `:` of the run. So the bound stands at more than fifty times
+  // what the reader costs, which a machine fifty times slower than this one still meets, and
+  // the reading it refuses misses it by a factor of four and three quarters.
+  test("reads a long selector and a long run of colons in time with the sheet's length", () => {
+    const began = performance.now();
+    const selector = filteredSheet(LONG_SELECTOR_SHEET);
+    const colons = filteredSheet(COLON_RUN_SHEET);
+    const took = performance.now() - began;
+
+    // Neither sheet fetches, so the reader keeps both whole: the cost is all this row measures.
+    expect(selector).toBe(LONG_SELECTOR_SHEET);
+    expect(colons).toBe(COLON_RUN_SHEET);
+    expect(took).toBeLessThan(1_000);
   });
 
   test("compares element names exactly, since XML names are case-sensitive", () => {

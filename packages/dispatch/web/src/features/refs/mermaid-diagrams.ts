@@ -65,9 +65,11 @@
  * streams) asks again first, and its source keeps its place and the draw in flight. A worker that
  * fails to start or load leaves every block as code (each waiting draw and each later request
  * gets `unavailable`), logs once, and none is started again until the window's next `online`
- * event. A worker that runs but cannot load Mermaid itself answers the one source it was
- * holding the same way — `unavailable`, nothing cached, the same `online` recovery — and goes
- * on taking the sources behind it, so one failed download refuses no later source.
+ * event. A worker that runs but cannot fetch one of Mermaid's chunks answers the one source it
+ * was holding the same way — `unavailable`, nothing cached — and goes on taking the sources
+ * behind it, so one failed download refuses no later source. That path arranges no `online`
+ * recovery and needs none: the worker is still running, nothing is remembered for the source,
+ * and the next paint of a body that holds it asks for it again.
  *
  * Drawn results are cached by source (the sanitized SVG, cloned per use, or the refusal), the
  * newest 32. A cached source draws in the layout effect that painted its body, so a body re-painted
@@ -149,18 +151,6 @@ function noop(): void {}
 
 function recover(): void {
   mermaidQueue.recover();
-}
-
-/** Reports that a diagram has no renderer to draw it, and arranges the one recovery the page
- *  has: the window's next `online` event, where whatever is missing — the worker's own chunk,
- *  or Mermaid's — may be fetchable again. Both ways of having no renderer end here, so both
- *  leave the reader the same page: the block as its own code, nothing remembered for the
- *  source, and a body painted after that event asking again (`withoutAWorker`, `noWorkerFrom`,
- *  and the `rendererUnavailable` reply of `answerOf`). Adding the listener twice adds one:
- *  `recover` is the same function each time. */
-function noRendererFor(what: string, error: unknown): void {
-  window.addEventListener("online", recover, { once: true });
-  console.error(what, error);
 }
 
 /** Upstream's `isMermaidCodeBlockLanguage` rule, restated so the page imports none of the
@@ -246,11 +236,12 @@ function noteSettled(): void {
  * The sources waiting on the diagram renderers, through the queue both workers of this folder
  * share (`worker-queue.ts`). A source neither renderer draws is refused, and the refusal cached:
  * the only thing the page could do instead is the layout the worker could not finish, so the
- * block shows its source as code with the reason beside it. A worker that could not load a
- * renderer at all is the other thing, and is not the source's fault: it is answered as a
- * missing worker is (`rendererUnavailable`, `noRendererFor`), nothing is kept for the source,
- * and the next body that holds it asks again — of the same worker, which is still running and
- * may well draw the source after it.
+ * block shows its source as code with the reason beside it. A chunk the worker could not fetch
+ * is the other thing, and is not the source's fault: it is answered as a missing worker is
+ * (`rendererUnavailable`), nothing is kept for the source, and the next paint of a body that
+ * holds it asks again — of the same worker, which is still running and may well draw the
+ * source after it. That is the whole of the retry: the `online` listener belongs to the page
+ * that has no worker at all (`noWorkerFrom`), and `recover` would have nothing to clear here.
  *
  * A job is under one of two bounds, which the worker's phase replies arm:
  * `RENDERER_LOAD_LIMIT_MS` while the worker is downloading what that source needs, and
@@ -266,7 +257,11 @@ const mermaidQueue = new WorkerQueue<WorkerJob, DrawnSource, MermaidDrawing>({
   stopAnAbandonedJob: true,
   answerOf(job, reply) {
     if ("rendererUnavailable" in reply) {
-      noRendererFor("Showing Mermaid source as code, its renderer did not load", job.key);
+      // No `online` listener: `recover` only lets the queue start a worker again, and this
+      // page has one. Nothing is remembered for the source, so the next paint of a body that
+      // holds it asks for it again. The worker logs the error with its stack; this logs the
+      // cause it sent, so the page's own console says which chunk went missing.
+      console.error("Showing Mermaid source as code, its renderer did not load", reply.cause);
       return { unavailable: true };
     }
     let drawn: CachedDrawing;
@@ -291,9 +286,12 @@ const mermaidQueue = new WorkerQueue<WorkerJob, DrawnSource, MermaidDrawing>({
     return timeLimitMs;
   },
   noWorkerFrom(error) {
-    // Every later source shows as code until the window comes back online, when `recover` lets
-    // the queue start a worker again.
-    noRendererFor("Showing Mermaid source as code, the diagram renderer is unavailable", error);
+    // No worker will run at all now, so every later source shows as code until the window
+    // comes back online, when `recover` lets the queue start one again — the page's one
+    // recovery, and the only path that has anything for it to clear. Adding the listener twice
+    // adds one: `recover` is the same function each time.
+    window.addEventListener("online", recover, { once: true });
+    console.error("Showing Mermaid source as code, the diagram renderer is unavailable", error);
   },
   post(worker, id, job) {
     worker.postMessage({ id, source: job.key } satisfies MermaidRequest);

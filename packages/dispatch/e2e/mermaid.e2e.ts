@@ -31,6 +31,13 @@
 // never loads is refused in its own words. Before the change the worker had one renderer, so
 // every timeline row shows its source as code under `Invalid mermaid header`, both routing rows
 // fail, and the two bound rows have no second renderer to wait for.
+//
+// Two rows read what a chunk that will not load, and a source that chooses its own layout, do
+// to the page. A chunk the browser cannot fetch is no refusal of the source, wherever it is
+// fetched: the block stays as its own code, nothing is kept for it, and the same worker draws
+// it once that chunk is served. And the layout engine a source's own front matter or directive
+// names is downloaded under the load bound, like everything else that source needs, so a
+// mindmap that asks for dagre draws with every chunk held back past the render bound.
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { type BrowserContext, expect, type Locator, type Page, test } from "@playwright/test";
@@ -55,6 +62,7 @@ import {
   expectWorkerHeld,
   failMermaidChunks,
   failMermaidWorkersOnCall,
+  failOneMermaidChunk,
   holdMermaidWorkers,
   holdWorkerSource,
   recordMermaidAnswers,
@@ -1827,6 +1835,47 @@ test("a flowchart-elk and a mindmap draw when every Mermaid chunk loads slower t
   }
 });
 
+// SLOW(>=2s): a source that chooses its own layout, under the same every-chunk delay. A mindmap
+// lays out with cose-bilkent unless its config says otherwise, and `layout` is no `secure` key,
+// so this one's front matter sends it to dagre instead. The warm render has to carry that
+// choice: a stand-in drawn with the type's own default warms cose-bilkent and leaves dagre to
+// load inside the render, where six seconds is past the five the reader's draw is bounded by.
+// Before this change the block showed `Unable to render Mermaid diagram: it did not finish
+// within 5 seconds`.
+test("a mindmap whose front matter chooses dagre draws when every Mermaid chunk loads slower than the render limit", async ({
+  browser,
+}, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium", "the page's two bounds are engine-independent");
+  test.setTimeout(240_000);
+  await createProject({ key: "CORE", name: "Core" });
+  const chosenLayout = `---\nconfig:\n  layout: dagre\n---\n${sourceOf("mindmap")}`;
+  const issue = await createIssue({
+    project: "CORE",
+    spec: diagramBody("Chosen layout:", chosenLayout),
+    title: "Chosen layout",
+  });
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const chunks = await delayMermaidChunks(alice, CHUNK_DELAY_MS);
+    const page = await alice.newPage();
+    await openSpec(page, issue.key, "Chosen layout:");
+    const editor = documentEditor(page);
+    // Well past the render limit the dagre download alone would be refused under, and well
+    // inside the load bound every download of this job is really under.
+    await expect(diagramIn(editor)).toBeVisible({ timeout: DELAYED_DRAW_TIMEOUT_MS });
+    await expect(diagramIn(editor)).toContainText("Dispatch");
+    // The block carries a status element of its own, shown only for a reason; it has none.
+    await expect(editor.locator(".proof-mermaid-status:visible")).toHaveCount(0);
+    expect(
+      chunks(),
+      "the page asked for Mermaid's chunks, so the delay was on its path"
+    ).toBeGreaterThan(0);
+  } finally {
+    await alice.close();
+  }
+});
+
 // A renderer that will not load is not a refusal of the source. Every one of Mermaid's chunks
 // is failed, as a dropped connection or a deploy that moved them does, so the worker runs but
 // cannot load its second renderer: the timeline stays as its own code with no status line, and
@@ -1902,6 +1951,91 @@ test("a timeline whose renderer will not load shows its source, and draws once i
     expect(
       await page.evaluate(() => window.__mermaidWorkers),
       "the worker that could not load its renderer is the one that drew"
+    ).toBe(1);
+  } finally {
+    await alice.close();
+  }
+});
+
+// @webkit @firefox: what a dynamic import whose fetch fails throws. Every engine rejects with a
+// `TypeError`, and every engine words it differently - Chromium `Failed to fetch dynamically
+// imported module: <url>`, Firefox `error loading dynamically imported module: <url>`, WebKit
+// `Importing a module script failed.` - so this row is the only thing that says the worker
+// recognises each of the three (`web/src/features/refs/mermaid-chunk-fetch.ts`).
+//
+// Mermaid's own core is served here and one chunk alone is failed: the timeline's definition
+// chunk, which the worker fetches inside the warm render of that type's stand-in, under the
+// load bound. That is the chunk a redeploy moved, and it is no refusal of the source: the block
+// stays as its own code with no status line, nothing is kept for it, and once the chunk is
+// served the same worker - the page starts no second one - draws that same source the next time
+// the body is painted. Before this change the fetch threw into the worker's draw and was
+// answered `{ error }`, which the page stored and showed as `Unable to render Mermaid diagram:
+// Failed to fetch dynamically imported module: ...` until a reload.
+test("a timeline whose own type chunk will not load shows its source, and draws once that chunk is served @webkit @firefox", async ({
+  browser,
+}, testInfo) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Moved chunk" });
+  const comment = await createComment(issue.key, {
+    body: diagramBody("Moved chunk:", timelineSource),
+  });
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const chunk = await failOneMermaidChunk(alice, "timeline-definition");
+    const page = await alice.newPage();
+    await recordMermaidWorkers(page);
+    const consoleErrors: string[] = [];
+    page.on("console", (message) => {
+      if (message.type() === "error") consoleErrors.push(message.text());
+    });
+    await page.goto(`/issues/${issue.key}/conversation`);
+    const card = await openCommentThread(page, comment.id, "Moved chunk:", testInfo.project.name);
+
+    const status = card.locator(".dispatch-mermaid").getByRole("status");
+    // The source has been answered, whichever answer the worker gives it: the page has either
+    // reported that no renderer loaded, which is what it does now, or drawn a status line for
+    // it, which is what a refusal stored under the source would be.
+    await expect
+      .poll(
+        async () =>
+          consoleErrors.filter((text) =>
+            text.includes("Showing Mermaid source as code, its renderer did not load")
+          ).length + (await status.count())
+      )
+      .toBeGreaterThan(0);
+    // The answer was no refusal of the source: the block is its own code, with no status line
+    // beside it and nothing remembered under it.
+    await expect(status).toHaveCount(0);
+    await expect(card.locator("pre code").filter({ hasText: "2026 : Drawn" })).toBeVisible();
+    await expect(diagramIn(card)).toHaveCount(0);
+    expect(
+      chunk.failed(),
+      "the worker asked for the timeline's own chunk and was refused"
+    ).toBeGreaterThan(0);
+
+    // The same source, asked for again by the next paint of the same body: nothing was stored
+    // for it, so the page asks rather than reading back a refusal.
+    chunk.serveItAgain();
+    await page.getByRole("button", { exact: true, name: "Collapse thread" }).click();
+    const reopened = await openCommentThread(
+      page,
+      comment.id,
+      "Moved chunk:",
+      testInfo.project.name
+    );
+    await expect(diagramIn(reopened)).toContainText("Drawn");
+    await expect(reopened.locator(".dispatch-mermaid").getByRole("status")).toHaveCount(0);
+    expect(
+      await page.evaluate(
+        (asked) => window.__mermaidSent?.filter((sent) => sent === asked).length,
+        timelineSource
+      ),
+      "the page asked for the same source again rather than reading back a refusal"
+    ).toBeGreaterThan(1);
+    expect(
+      await page.evaluate(() => window.__mermaidWorkers),
+      "the worker whose chunk was refused is the one that drew"
     ).toBe(1);
   } finally {
     await alice.close();

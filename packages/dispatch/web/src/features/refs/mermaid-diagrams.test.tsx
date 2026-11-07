@@ -977,7 +977,8 @@ describe("Mermaid diagrams", () => {
     // browser row (`e2e/mermaid.e2e.ts`).
     test("a renderer that will not load is not cached, and the same source is asked again", async () => {
       const source = "sequenceDiagram\n  Alice->>Bob: Unloaded";
-      FakeWorker.answer = ({ id }) => ({ id, rendererUnavailable: true });
+      const cause = "TypeError: Failed to fetch dynamically imported module: /assets/chunk.js";
+      FakeWorker.answer = ({ id }) => ({ id, rendererUnavailable: true, cause });
       const logged = spyOn(console, "error").mockImplementation(() => {});
       try {
         const first: MermaidDrawing[] = [];
@@ -1005,7 +1006,7 @@ describe("Mermaid diagrams", () => {
       const later = "sequenceDiagram\n  Carol->>Dave: Later";
       FakeWorker.answer = (request) =>
         request.source === unloaded
-          ? { id: request.id, rendererUnavailable: true }
+          ? { id: request.id, rendererUnavailable: true, cause: "TypeError: no chunk" }
           : answerMermaidRequest(request);
       const logged = spyOn(console, "error").mockImplementation(() => {});
       try {

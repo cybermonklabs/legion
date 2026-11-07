@@ -17,16 +17,19 @@
  * each `{ id, source }` request, in order, with `{ id, markup, renderer }` (the SVG markup, still
  * unsanitized, and the renderer that wrote it, which is the parse the page reads it with),
  * `{ id, error }` (the one-line reason Mermaid refused that source) or
- * `{ id, rendererUnavailable }` (no renderer could be loaded, which says nothing about the
- * source, so the page stores nothing and asks again). Under the same id it posts the phase it is
- * entering before each step of a job — `loading` before each download Mermaid needs, `drawing`
- * before the layout itself — so the page bounds a download and a layout differently
+ * `{ id, rendererUnavailable, cause }` (a chunk that would not load, which says nothing about
+ * the source, so the page stores nothing and asks again). Under the same id it posts the phase
+ * it is entering before each step of a job — `loading` before each download Mermaid needs,
+ * `drawing` before the source's own parse where `prepare` has to make one and before the layout
+ * itself — so the page bounds a download and the work on the source differently
  * (`worker-queue.ts`, `mermaid-diagrams.ts`), and no job is unbounded. Everything a source needs
- * is downloaded under `loading`, the type's own definition chunk and its layout engine included
- * (`mermaid-upstream.ts`, `prepare`), so no part of a cold cache is spent on the render bound.
+ * is downloaded under `loading`, the type's own definition chunk and the layout engine that
+ * source chooses included (`mermaid-upstream.ts`, `prepare`), so no part of a cold cache is
+ * spent on the render bound.
  */
 import { renderMermaidMarkup } from "@legion/proof-editor/mermaid-render";
 
+import { failedChunkFetch } from "./mermaid-chunk-fetch";
 import { STATUS_LINE_MAX_CHARS, STATUS_PREFIX } from "./mermaid-status";
 // Type-only, so it is erased: the page's chunk graph gains no edge to the renderer module.
 import type { MermaidRenderer } from "./mermaid-upstream";
@@ -45,16 +48,18 @@ export type MermaidRendererName = "beautiful-mermaid" | "mermaid";
 /** What this worker has to say about one source: the SVG markup, still unsanitized, with the
  *  renderer that drew it; the reason of a refusal, which is one line of at most
  *  `REASON_MAX_CHARS` characters (an `error` of `null` is a refusal whose thrown value was no
- *  `Error`, or one whose message says nothing); or that no renderer could be loaded at all.
+ *  `Error`, or one whose message says nothing); or that a chunk it needed would not load, with
+ *  the thrown value as one line for the page's own log (`cause`; the worker logs the error
+ *  itself beside it, with its stack).
  *
  *  The last is not an answer about the source. A refusal is this source's and is remembered; a
- *  renderer that did not load is the worker's own trouble — a chunk a redeploy moved, a
+ *  chunk that would not load is the worker's own trouble — a chunk a redeploy moved, a
  *  connection that dropped — so the page keeps nothing for it and the next body asks again
  *  (`mermaid-diagrams.ts`). */
 export type DrawnSource =
   | { markup: string; renderer: MermaidRendererName }
   | { error: string | null }
-  | { rendererUnavailable: true };
+  | { rendererUnavailable: true; cause: string };
 
 /** What the worker posts: that it is ready, the phase of the job it holds, or the answer to one
  *  request, under the id the request carried (`WorkerReply`). */
@@ -180,6 +185,13 @@ function reasonFor(error: unknown, source: string): string | null {
   return reason === "" ? null : reason;
 }
 
+/** The thrown value as one line, for the page's own log beside the block it leaves as code: a
+ *  worker's reply crosses a structured clone, and the error object's stack belongs in this
+ *  worker's own `console.error`, which keeps it. */
+function causeOf(error: unknown): string {
+  return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+}
+
 /** The global's own prototype, where a browser worker's `self` is shadowed for a
  *  beautiful-mermaid call; `null` outside a worker, where the prototype is shared and `self` is
  *  an own property of the global that beautiful-mermaid deletes for itself. */
@@ -290,13 +302,21 @@ async function mermaidRenderer(report?: ReportPhase): Promise<MermaidRenderer> {
  * - `{ error }`, a refusal of this source that this source will get again -- a parse error, a
  *   type no renderer draws, a source past the size cap -- which the page shows as its status
  *   line and remembers;
- * - `{ rendererUnavailable }`, a renderer that could not be loaded at all, which says nothing
- *   about the source: the page stores nothing for it and asks again.
+ * - `{ rendererUnavailable, cause }`, a chunk that would not load, which says nothing about the
+ *   source: the page stores nothing for it and asks again.
+ *
+ * A chunk that would not load is read the same way wherever it happens: the renderer module's
+ * own import, Mermaid's, the type's definition chunk, the warm render's layout engine, or a
+ * layout inside the draw itself. `failedChunkFetch` is what tells it from everything Mermaid
+ * refuses a source for, and anything it does not recognise is read as a refusal, for the reason
+ * that module gives.
  *
  * Everything Mermaid downloads happens while the job is under the load bound: the renderer
  * module, Mermaid itself, then `prepare`, which fetches this source's type definition chunk and
- * its layout engine (`mermaid-upstream.ts`). `drawing` is posted when what is left is the
- * layout, which is what `RENDER_TIME_LIMIT_MS` is a bound on.
+ * the layout engine that source chooses (`mermaid-upstream.ts`). `drawing` is posted when what
+ * is left is work on the source itself -- the layout, and the parse `prepare` has to make for a
+ * source carrying front matter or a directive -- which is what `RENDER_TIME_LIMIT_MS` is a
+ * bound on.
  */
 export async function answerMermaidRequest(
   { id, source }: MermaidRequest,
@@ -314,13 +334,24 @@ export async function answerMermaidRequest(
     // Not a refusal of this source: nothing was read of it. The page leaves the block as its
     // own code and remembers nothing, so the next body asks again.
     console.error("The Mermaid renderer did not load in this worker", error);
-    return { id, rendererUnavailable: true };
+    return { id, rendererUnavailable: true, cause: causeOf(error) };
   }
   try {
-    await renderer.prepare(source, () => report?.("loading"));
+    await renderer.prepare(
+      source,
+      () => report?.("loading"),
+      () => report?.("drawing")
+    );
     report?.("drawing");
     return { id, markup: await renderer.draw(source), renderer: "mermaid" };
   } catch (error) {
+    if (failedChunkFetch(error)) {
+      // A chunk the browser could not fetch, inside the parse, the warm or the draw. Nothing
+      // was decided about the source, so it is answered as a renderer that never loaded is:
+      // the page stores nothing and the next paint of a body holding it asks again.
+      console.error("A Mermaid chunk did not load in this worker", error);
+      return { id, rendererUnavailable: true, cause: causeOf(error) };
+    }
     return { id, error: reasonFor(error, source) };
   }
 }
