@@ -152,7 +152,9 @@ Envoy's Go tests start NATS in Docker, and the tests that need a Postgres read i
 environment (`LEGION_TEST_PG_DSN` for the daemon's). On a host without Docker, the daemon's NATS
 tests use a running nats-server with JetStream instead when `LEGION_TEST_NATS_URL` (its client URL)
 and `LEGION_TEST_NATS_MONITOR_URL` (its monitoring endpoint) are both set, one package at a time
-(`go test -p 1`). The repository's conventions and each part's commands are in `AGENTS.md` at the
+(`go test -p 1`); that server, and any nats-server an Envoy of your own runs against, must be 2.12
+or later, since an older one answers a retry of a publish its full stream refused as a duplicate
+it does not hold. The repository's conventions and each part's commands are in `AGENTS.md` at the
 root and in the `AGENTS.md` beside most packages; `skills/AGENTS.md` covers the skills. The
 documentation site's [contributing page](https://cybermonklabs.github.io/legion/contributing/) covers
 writing its pages.
@@ -163,7 +165,7 @@ Apache License 2.0; see [LICENSE](LICENSE). Code copied from other projects keep
 a `LICENSE` file beside it.
 
 Every artifact this repository ships — each release, and the documentation site, which the
-`.github/workflows/docs-pages.yaml` builds and deploys on each push to `main` whose change selects
+`.github/workflows/docs-pages.yaml` builds and deploys on a push to `main` whose change selects
 the `docs` build rather than on a release — carries the licenses of the third-party
 code in it, written at build time from what the build included, and the build fails when a
 dependency's license cannot be determined:
