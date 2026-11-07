@@ -22,14 +22,14 @@
 # docs (docs/site, in the docs-site.yaml job ci.yaml's docs job calls), conflicts_script
 # (scripts/conflicts) and test (scripts/dispatch, scripts/github-apps and scripts/sessions).
 # The gates left out are the ones whose job runs TypeScript but no typecheck, so there is no
-# program to derive: `dispatch`, whose job builds the dashboard and runs the browser suite while
-# the dashboard's and the proof editor's typechecks are dispatch_ui's (ci.yaml's comment on
-# dispatch-ui says why they were split out), `dispatch_browser_multiprocess`, which is that
-# browser suite again in two-process mode, `envoy_session_stall`, whose job builds and runs the
-# stall entries, and `envoy_e2e_local`, whose live proof renders with @legion/envoy-client at
-# run time. What such a job loads is a runtime closure rather than a tsc program, and stays a
-# hand-kept read of ci_job_reads.py: envoy_client_dep for the dispatch and envoy_e2e_local
-# gates, a read of its own for the envoy_session_stall gate.
+# program to derive: `dispatch_browser`, whose jobs are the browser suite itself, sharded and in
+# two-process mode, in the workflow ci.yaml's dispatch-browser job calls (the dashboard's and the
+# proof editor's typechecks are dispatch_ui's, and ci.yaml's comment on dispatch-ui says why they
+# were split out), `envoy_session_stall`,
+# whose job builds and runs the stall entries, and `envoy_e2e_local`, whose live proof renders
+# with @legion/envoy-client at run time. What such a job loads is a runtime closure rather than a
+# tsc program, and stays a hand-kept read of ci_job_reads.py: envoy_client_dep for the
+# dispatch_browser and envoy_e2e_local gates, a read of its own for the envoy_session_stall gate.
 #
 # Files a test reads by relative path - the JSON fixtures and corpora a test of one package
 # reads out of another package's directory - are part of no tsc program, so they stay hand-kept
