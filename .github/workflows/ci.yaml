@@ -3697,12 +3697,20 @@ jobs:
           go-version-file: packages/envoy/go.mod
           cache: false
       # go-envoy-test: this job builds and runs the test binary of every package of the envoy
-      # module, a set no other job builds, so it keeps a family of its own.
+      # module, a set no other job builds, so it keeps a family of its own. The entry holds no
+      # module zip: .github/workflows/ci-caches.yaml leaves them out when it fills the family,
+      # since go reads an extracted module from its own tree and the zip only to extract it, and
+      # they are the largest part of this restore that the archive cannot compress
+      # (dispatch://INFRA-1075). The path repeats the fill's, exclusion and all, because
+      # .github/scripts/check-ci-filters.sh holds a family's restore to the paths its save
+      # names: an entry that held other directories than the job reads would have the job
+      # rebuild what the fill already built.
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
+            !~/go/pkg/mod/cache/download/**/*.zip
           key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-test-{0}-', runner.os) }}
       # The server's version and the pgvector version it offers, read from the service itself, so

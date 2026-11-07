@@ -68,7 +68,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -139,6 +141,18 @@ const (
 // so the corpus need not fit in memory.
 func eachText(maxLen int, withMarker bool, visit func(string)) int {
 	n := 0
+	for first := range alphabet {
+		n += eachTextFrom(first, maxLen, withMarker, visit)
+	}
+	return n
+}
+
+// eachTextFrom is eachText over the texts whose first piece is alphabet[first]. Every text of
+// the corpus holds at least one piece, so those walks are the corpus and nothing else, and no
+// two of them build a text in common: that is what lets the corpus leg run one goroutine per
+// first piece over the same search (TestRedactionPrintsNoHiddenByte).
+func eachTextFrom(first, maxLen int, withMarker bool, visit func(string)) int {
+	n := 0
 	var build func(prefix []string, depth int)
 	build = func(prefix []string, depth int) {
 		if len(prefix) > 0 {
@@ -163,7 +177,9 @@ func eachText(maxLen int, withMarker bool, visit func(string)) int {
 			build(append(prefix, piece), depth+1)
 		}
 	}
-	build(nil, 0)
+	prefix := make([]string, 1, maxLen)
+	prefix[0] = alphabet[first]
+	build(prefix, 1)
 	return n
 }
 
@@ -235,51 +251,102 @@ func (r reading) same(other reading) bool {
 // corpusDepth is how many pieces of the alphabet a text of the corpus holds.
 const corpusDepth = 4
 
+// corpusTally is what one shard of the corpus leg counts. Each goroutine fills one of its own
+// and shares nothing, so the leg's figures are the sum of the shards and the samples are the
+// shards' own, capped where they are printed.
+type corpusTally struct {
+	texts, refusedTexts, hiddenTexts, leaked, agreedTexts, overHidden int
+	leaks, swallowed                                                  map[string]bool
+}
+
+// add folds one shard's tally into the leg's.
+func (c *corpusTally) add(shard *corpusTally) {
+	c.texts += shard.texts
+	c.refusedTexts += shard.refusedTexts
+	c.hiddenTexts += shard.hiddenTexts
+	c.leaked += shard.leaked
+	c.agreedTexts += shard.agreedTexts
+	c.overHidden += shard.overHidden
+	for e := range shard.leaks {
+		c.leaks[e] = true
+	}
+	for e := range shard.swallowed {
+		c.swallowed[e] = true
+	}
+}
+
 // TestRedactionPrintsNoHiddenByte checks the invariant redactedQuery exists for: no byte a
 // reading holds inside a literal or a comment, and no byte past the one scan.l refused a reading
 // on, survives it. Where the two readings agree and neither is refused it checks the other
 // direction too: a marker neither hides is shape, and shape is what the report keeps.
+//
+// It walks the corpus one goroutine per first piece of the alphabet (eachTextFrom), since the
+// readings and redactedQuery are this process's own arithmetic over one string and the whole
+// walk was a single core's for as long as it took. Every text is still read, under both
+// settings, and the counts below are the shards' sum.
 func TestRedactionPrintsNoHiddenByte(t *testing.T) {
 	if testing.Short() {
 		t.Skip("reads a corpus of millions of texts twice over")
 	}
-	var hiddenTexts, leaked, refusedTexts, agreedTexts, overHidden int
-	leaks := map[string]bool{}
-	swallowed := map[string]bool{}
-	n := eachText(corpusDepth, true, func(text string) {
-		at := strings.Index(text, marker)
-		on, off := readingOf(text, true), readingOf(text, false)
-		if on.failure >= 0 || off.failure >= 0 {
-			refusedTexts++
+	t.Parallel()
+	shards := make([]corpusTally, len(alphabet))
+	next := make(chan int)
+	go func() {
+		defer close(next)
+		for first := range alphabet {
+			next <- first
 		}
-		printed := strings.Contains(redactedQuery(text), marker)
-		if on.hides(at, at+len(marker)) || off.hides(at, at+len(marker)) {
-			hiddenTexts++
-			if printed {
-				leaked++
-				if len(leaks) < 20 {
-					leaks[fmt.Sprintf("%q -> %q", text, redactedQuery(text))] = true
-				}
+	}()
+	var walkers sync.WaitGroup
+	for range min(runtime.GOMAXPROCS(0), len(alphabet)) {
+		walkers.Add(1)
+		go func() {
+			defer walkers.Done()
+			for first := range next {
+				shard := &shards[first]
+				shard.leaks, shard.swallowed = map[string]bool{}, map[string]bool{}
+				shard.texts = eachTextFrom(first, corpusDepth, true, func(text string) {
+					at := strings.Index(text, marker)
+					on, off := readingOf(text, true), readingOf(text, false)
+					if on.failure >= 0 || off.failure >= 0 {
+						shard.refusedTexts++
+					}
+					printed := strings.Contains(redactedQuery(text), marker)
+					if on.hides(at, at+len(marker)) || off.hides(at, at+len(marker)) {
+						shard.hiddenTexts++
+						if printed {
+							shard.leaked++
+							if len(shard.leaks) < 20 {
+								shard.leaks[fmt.Sprintf("%q -> %q", text, redactedQuery(text))] = true
+							}
+						}
+						return
+					}
+					if on.same(off) && on.failure < 0 {
+						shard.agreedTexts++
+						if !printed {
+							shard.overHidden++
+							if len(shard.swallowed) < 20 {
+								shard.swallowed[fmt.Sprintf("%q -> %q", text, redactedQuery(text))] = true
+							}
+						}
+					}
+				})
 			}
-			return
-		}
-		if on.same(off) && on.failure < 0 {
-			agreedTexts++
-			if !printed {
-				overHidden++
-				if len(swallowed) < 20 {
-					swallowed[fmt.Sprintf("%q -> %q", text, redactedQuery(text))] = true
-				}
-			}
-		}
-	})
-	t.Logf("corpus: %d texts of up to %d pieces, %d refused by scan.l under one reading or the other", n, corpusDepth, refusedTexts)
-	t.Logf("%d texts hold the marker inside a literal, inside a comment, or past a refusal; %d printed it", hiddenTexts, leaked)
-	for e := range leaks {
+		}()
+	}
+	walkers.Wait()
+	total := corpusTally{leaks: map[string]bool{}, swallowed: map[string]bool{}}
+	for i := range shards {
+		total.add(&shards[i])
+	}
+	t.Logf("corpus: %d texts of up to %d pieces, %d refused by scan.l under one reading or the other", total.texts, corpusDepth, total.refusedTexts)
+	t.Logf("%d texts hold the marker inside a literal, inside a comment, or past a refusal; %d printed it", total.hiddenTexts, total.leaked)
+	for e := range total.leaks {
 		t.Logf("  leak: %s", e)
 	}
-	t.Logf("%d texts both readings read alike and neither is refused and the marker is shape; %d lost it", agreedTexts, overHidden)
-	for e := range swallowed {
+	t.Logf("%d texts both readings read alike and neither is refused and the marker is shape; %d lost it", total.agreedTexts, total.overHidden)
+	for e := range total.swallowed {
 		t.Logf("  swallowed: %s", e)
 	}
 	// The floor the two checks below stand on: they can only fail over texts the corpus still
@@ -290,14 +357,14 @@ func TestRedactionPrintsNoHiddenByte(t *testing.T) {
 	// the corpus still forming those two classes rather than about its size, so a round that
 	// deliberately shrinks the corpus moves this number in the same commit and measures the
 	// two counts again.
-	if hiddenTexts+agreedTexts < 500_000 {
-		t.Fatalf("the corpus holds the marker hidden in %d texts and as shape in %d, %d together of %d: it has collapsed and these checks have nothing left to fail on", hiddenTexts, agreedTexts, hiddenTexts+agreedTexts, n)
+	if total.hiddenTexts+total.agreedTexts < 500_000 {
+		t.Fatalf("the corpus holds the marker hidden in %d texts and as shape in %d, %d together of %d: it has collapsed and these checks have nothing left to fail on", total.hiddenTexts, total.agreedTexts, total.hiddenTexts+total.agreedTexts, total.texts)
 	}
-	if leaked > 0 {
-		t.Errorf("%d texts printed a marker a reading holds inside a literal, inside a comment, or past a refusal", leaked)
+	if total.leaked > 0 {
+		t.Errorf("%d texts printed a marker a reading holds inside a literal, inside a comment, or past a refusal", total.leaked)
 	}
-	if overHidden > 0 {
-		t.Errorf("%d texts lost a marker both readings read as shape", overHidden)
+	if total.overHidden > 0 {
+		t.Errorf("%d texts lost a marker both readings read as shape", total.overHidden)
 	}
 }
 
@@ -621,10 +688,15 @@ func probe(ctx context.Context, conn *pgconn.PgConn, text string, ours reading) 
 // scan.l's "invalid Unicode surrogate pair" out of the lexical set and a reading that recovers
 // from a carriage return inside E'\ud83d…\udc00' rather than refusing prints the marker that
 // follows the literal, with both clauses silent on it.
+//
+// It runs beside the corpus leg: it connects twice itself, runs selects and nothing else, and
+// creates nothing a test of this package shares (docs/testing.md, "A test that calls
+// t.Parallel()"), so the package is as long as the slower of the two legs rather than their sum.
 func TestRedactionAgainstServerOutcomes(t *testing.T) {
 	if testing.Short() {
 		t.Skip("asks a server about thousands of statements")
 	}
+	t.Parallel()
 	url := os.Getenv("DISPATCH_TEST_DATABASE_URL")
 	if url == "" {
 		t.Skip("DISPATCH_TEST_DATABASE_URL must be set")

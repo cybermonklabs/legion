@@ -222,12 +222,23 @@ jobs:
           go test -c -o /dev/null -tags natslive ./internal/testnats/
         working-directory: packages/envoy
 
+      # Without the module zips. A module Go has already extracted is read from its extracted
+      # tree under ~/go/pkg/mod/<module>@<version>; the zip it came out of, under
+      # ~/go/pkg/mod/cache/download/<module>/@v/<version>.zip, is read only to extract it again,
+      # which no job restoring this entry does - the .info, .mod and .ziphash beside it, which go
+      # does read, are kept. Measured on 2026-11-07 by downloading this module's own cache fresh:
+      # 2,299 MB on disk of which the zips are 409 MB in 460 files, and they are deflate already,
+      # so they are the one part of this entry that the archive cannot compress and the largest
+      # single block of the 918 MB envoy-go restores in 23 s (dispatch://INFRA-1075). A zip left
+      # out that a later run does need is downloaded again, as one for a module the entry never
+      # held is.
       - if: steps.go-envoy-test.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
+            !~/go/pkg/mod/cache/download/**/*.zip
           key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
 
   # go-envoy-infra. The infra module is not in the root go.work - its own go.work binds it and

@@ -36,8 +36,10 @@ import (
 // holds across the restart, as a Service's is: BROKER_PUBLIC_URL and AGENT_SECRETS_URL both name
 // it, so a proof's htu is as good after the restart as before, and while no broker runs the
 // forwarder refuses every connection at once. The outage runs from the first broker's exit until
-// a lease, the three sweeps the broker tolerates between two records that it serves, and the
-// renewer's longest retry wait have all passed.
+// the longest a renewer holding this lease waits before its next renewal, the three sweeps the
+// broker tolerates between two records that it serves, and that renewer's longest retry wait
+// have all passed; the lease itself is taken away on the database's clock rather than waited out
+// (the stop below says how, and why the shortest lease config.Load accepts is 91 s).
 //
 // Four pods of one service, enrolled by its launcher and granted its agent-tier secret with no
 // approver, prove one thing each. The survivor is the outage itself: keyed by `agent-secrets
@@ -234,8 +236,31 @@ func TestABrokerOutageLongerThanALease(t *testing.T) {
 		t.Fatalf("the first broker's exit = %v, want a clean one:\n%s", err, first.Log())
 	}
 	stopped := time.Now()
-	outage := lease + notServing + renewerLongestWait
-	t.Logf("the first broker exited; no broker serves for %s", outage)
+	// An outage longer than a lease, without waiting a lease out. The pair this test runs at is
+	// production's own - a one-second sweep and the shortest lease config.Load accepts at it,
+	// 91 s - so an outage the survivor's lease runs out inside would be a 91-second sleep in a
+	// job that has none to spare (dispatch://INFRA-1075). Instead every lease and every record
+	// of a broker serving moves one whole lease into the past, in one place, on the database's
+	// own clock: the clock the broker reads both of them on. Nothing else moves, so every
+	// ordering the test built is the one the second broker finds - the survivor's lease and the
+	// mismatch pod's have run out since the last record a broker served, the lapsed pod's ran
+	// out before it, and the revoked pod is still revoked - and the gap the second broker gives
+	// back is a lease longer than the time nobody was serving, which restores each of them to
+	// exactly where a real lease-long outage would have.
+	//
+	// What is left to wait in real time is what the renewer needs and nothing else: the longest
+	// it waits before its next renewal, so the outage is one it really meets and fails; the
+	// three sweeps that still count as a broker serving; and its own longest retry wait.
+	for _, shift := range []string{
+		`update broker_serving set last_serving_at = last_serving_at - $1::interval`,
+		`update enrollments set lease_expires_at = lease_expires_at - $1::interval`,
+	} {
+		if _, err := db.Exec(ctx, shift, lease); err != nil {
+			t.Fatalf("move every lease and every record of a broker serving a lease into the past: %v", err)
+		}
+	}
+	outage := leasetime.RenewAfter(lease) + notServing + renewerLongestWait
+	t.Logf("the first broker exited; every lease and every record of a broker serving is %s further into the past, and no broker serves for %s", lease, outage)
 	time.Sleep(time.Until(stopped.Add(outage)))
 	renewerRunning("during the outage")
 
