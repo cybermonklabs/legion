@@ -995,7 +995,11 @@ func (d *daemon) claim(token claim.Token) api.OperatorClaim {
 			return c
 		}
 	}
-	d.t.Fatalf("the daemon lists no claim %s; it lists %d claims", token, len(listed))
+	tokens := make([]string, 0, len(listed))
+	for _, c := range listed {
+		tokens = append(tokens, string(c.Token))
+	}
+	d.t.Fatalf("the daemon lists no claim %s; it lists %d: %s", token, len(listed), strings.Join(tokens, " "))
 	return api.OperatorClaim{}
 }
 
