@@ -2980,10 +2980,14 @@ jobs:
           mkdir -p "$RUNNER_TEMP/weed"
           nohup weed server -s3 -dir="$RUNNER_TEMP/weed" -ip=127.0.0.1 -s3.port=18333 > "$RUNNER_TEMP/weed.log" 2>&1 &
       - name: Wait for the S3-compatible server
-        # The readiness wait of the step that started it. An anonymous PUT makes the bucket; each
-        # lane makes its own (dispatch-e2e-files-lane-N) with the same request (e2e/run.ts), so
-        # this one proves the store answers a PUT and serves the one-lane run its own bucket. A
-        # wait that runs out prints the log the step above redirected, which is what a job in a
+        # The readiness wait of the step that started it. An anonymous PUT makes the bucket, as
+        # each lane makes its own (dispatch-e2e-files-lane-N) with the same request
+        # (e2e/run.ts). Then an object is written, read back and deleted, because a bucket PUT
+        # is answered by the filer alone and says nothing about the volume server the objects
+        # land in: run 42404500479's job 128499619657 passed this wait with a bucket and then
+        # failed ten upload rows nineteen minutes later, every one of them a 502 from the
+        # Dispatch server's own PutObject. A store that cannot take an object now fails here, by
+        # this step's name, with the log the step above redirected -- which is what a job in a
         # container has in place of `docker logs`.
         run: |
           for attempt in $(seq 1 60); do
@@ -2991,7 +2995,17 @@ jobs:
             [ "$attempt" -lt 60 ] || { cat "$RUNNER_TEMP/weed.log"; exit 1; }
             sleep 1
           done
-          curl -sf -X PUT -o /dev/null http://127.0.0.1:18333/dispatch-e2e-files
+          store=http://127.0.0.1:18333/dispatch-e2e-files
+          curl -sf -X PUT -o /dev/null "$store" || { cat "$RUNNER_TEMP/weed.log"; exit 1; }
+          # The write is retried: the bucket exists as soon as the filer answers, while the
+          # volume server the object lands in can still be coming up behind it.
+          for attempt in $(seq 1 60); do
+            printf 'ready' | curl -sf -X PUT --data-binary @- -o /dev/null "$store/readiness" && break
+            [ "$attempt" -lt 60 ] || { echo "::error::the file store took no object"; cat "$RUNNER_TEMP/weed.log"; exit 1; }
+            sleep 1
+          done
+          [ "$(curl -sf "$store/readiness")" = ready ] || { echo "::error::the file store did not serve back what it stored"; cat "$RUNNER_TEMP/weed.log"; exit 1; }
+          curl -sf -X DELETE -o /dev/null "$store/readiness"
       - name: Browser-test dispatch dashboard
         # `bun run e2e` builds the SPA itself, which would build it a second time in this job.
         # Calling the wrapper directly reuses the "Build the dashboard the lanes serve" step's
@@ -3095,7 +3109,9 @@ jobs:
           DISPATCH_E2E_FILE_STORE_ENDPOINT: http://127.0.0.1:18333
           DISPATCH_E2E_FILE_STORE_BUCKET: dispatch-e2e-files
       # Always, not on failure alone: the memory and CPU readings are of the run that passed as
-      # much as of the one that did not, and the report says what a green run ran.
+      # much as of the one that did not, and the report says what a green run ran. The file
+      # store's log is here too, where CI reached for `docker logs` before this job ran in a
+      # container of its own: it is the one record of what the store did under the lanes.
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
@@ -3104,6 +3120,7 @@ jobs:
             ${{ runner.temp }}/report.json
             ${{ runner.temp }}/memory-samples.txt
             ${{ runner.temp }}/cpu-samples.txt
+            ${{ runner.temp }}/weed.log
       # A failed row's trace says what the browser saw; these say what its lane's own servers did,
       # which is where a lane-only failure (a port, a migration, a server that never came up) is
       # legible. The glob is the run directory e2e/run.ts made under $TMPDIR, which the step
@@ -4826,4 +4843,3 @@ jobs:
           CHECK_RUN_ID: ${{ job.check_run_id }}
           CONCLUSION: ${{ job.status }}
         run: .github/scripts/ci-ok-reconcile.sh
-
