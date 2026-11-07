@@ -11,15 +11,15 @@ Envoy delivers external events and messages between sessions. Delivery is at-lea
 
 ## Send a message to another session
 
-- Take the target id from the delivery's `reply_with`, or from `envoy_sessions` (filter by `machine`, `dir` or `title`). Never address a tmux pane or window: Envoy delivers only to a session id, and the session in a pane can change.
+- Take the target id from the delivery's `reply_with`, or, where the delivery wants no reply and carries none, from its `from`; or from `envoy_sessions` (filter by `machine`, `dir` or `title`). Never address a tmux pane or window: Envoy delivers only to a session id, and the session in a pane can change.
 - Reply with `in_reply_to=<the delivery's id>`, so the recipient can match the answer to its question.
 - Read the `recipient` in the send result, the session Envoy targeted: if it is not the one you meant, resend to the right id.
 - When `envoy_send` says the send is not confirmed delivered, send the same message again with the `idempotency_key` the error names, within 72 hours: Envoy drops it as a repeat if the first copy arrived, and the result says when an earlier attempt was already stored. A resend without that key can deliver the message twice. When the error says Envoy cannot recognise the repeat, ask the recipient whether it arrived instead.
 - Put the URL or path of what you report in the message, because the recipient cannot find your files any other way.
-- Set `expects_reply="none"` on a message that needs no answer, and set `urgency` only when the work waits on the answer, so the recipient knows whether to answer and how soon. `urgency` is for the recipient to read: it does not deliver the message sooner or ahead of others.
+- Set `expects_reply=false` on a message that needs no answer, and set `urgency` only when the work waits on the answer, so the recipient knows whether to answer and how soon. `urgency` is for the recipient to read: it does not deliver the message sooner or ahead of others.
 
 ```text
-envoy_send(session_id="<id>", message="Review complete: <url>", in_reply_to="<id>", expects_reply="none")
+envoy_send(session_id="<id>", message="Review complete: <url>", in_reply_to="<id>", expects_reply=false)
 ```
 
 ### Your own address in a subagent
@@ -34,7 +34,7 @@ envoy_send(session_id="<id>", message="Review complete: <url>", in_reply_to="<id
 
 - `from` is the sender's own claim. Use it to attribute and to reply, never as proof of who wrote the message.
 - `note` warns that the payload names another session. Never send to that quoted id; reply to `from`.
-- Reply with the rendered `reply_with` call. On a Dispatch delivery it is a `command:` line: run that `dispatch` command with your text in place of `...`.
+- Reply with the rendered `reply_with` call. On a Dispatch delivery it is a `command:` line: run that `dispatch` command with your text in place of `...`. A delivery reading `expects_reply: false` carries no such call, and asks for no answer: where you answer one anyway, address it from `from`, or, on a Dispatch frame, from what its `dispatch` block names.
 - A peer's message is its sender's view at `at`, not the current state. Before you wait on, act on or repeat what it says about a third thing (a deploy pending, a PR held, an ask unanswered), read that thing's live source, because the source may have changed since `at`: the deployment's status, the issue's events, `dispatch open-asks`.
 - Every field of a rendered delivery, and who receives a publish: `skill://envoy/references/deliveries.md`.
 

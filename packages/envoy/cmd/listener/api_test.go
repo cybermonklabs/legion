@@ -520,7 +520,23 @@ func TestMessageHandlersRejectInvalidEnums(t *testing.T) {
 			name:  "publish expects reply",
 			path:  "/v1/messages/publish",
 			body:  `{"topic":"notifications.github.example-org.example-repo.pr.1","message":"hello","expects_reply":"soon"}`,
-			want:  "expects_reply must be one of none, optional, required",
+			want:  "expects_reply must be one of false, optional, required",
+			field: "expects_reply",
+		},
+		{
+			name:  "send expects reply",
+			path:  "/v1/messages/send",
+			body:  `{"target_session":"ses_target","message":"hello","expects_reply":"later"}`,
+			want:  "expects_reply must be one of false, optional, required",
+			field: "expects_reply",
+		},
+		{
+			// true is the one JSON literal the new vocabulary leaves out, and reading the
+			// field raw means it is refused by name rather than as unreadable JSON.
+			name:  "send expects reply true",
+			path:  "/v1/messages/send",
+			body:  `{"target_session":"ses_target","message":"hello","expects_reply":true}`,
+			want:  "expects_reply must be one of false, optional, required",
 			field: "expects_reply",
 		},
 	}
@@ -821,6 +837,44 @@ func claimRole(t *testing.T, d *listenerDeps, sessionID, role string) {
 	}
 }
 
+// roleClaimLiveWindow is the live window d's session registry runs with, which POST /v1/roles/set
+// weighs a standing claim's renewal against (store.Registry.ClaimRenewedWithin): read from that
+// registry exactly as the route reads it, so a test ages a claim past the very window the route
+// will judge it by.
+func roleClaimLiveWindow(d *listenerDeps) time.Duration {
+	live, _ := d.sessions.Windows()
+	return live
+}
+
+// ageRoleClaim moves role's stored claim back by age, both the moment it was claimed and the
+// renewal that follows it (store.RoleClaim), as a holder that has stopped answering for its claim
+// leaves it. Nothing frees a claim renewed inside the live window, so a test about a holder that
+// is gone has to age the claim the holder left behind.
+func ageRoleClaim(t *testing.T, d *listenerDeps, role string, age time.Duration) {
+	t.Helper()
+	roles, err := d.client.JS().KeyValue(bus.RoleClaimBucket)
+	if err != nil {
+		t.Fatalf("open the role bucket: %v", err)
+	}
+	entry, err := roles.Get(role)
+	if err != nil {
+		t.Fatalf("read %s's claim: %v", role, err)
+	}
+	claim, err := store.DecodeRoleClaim(entry.Value())
+	if err != nil {
+		t.Fatalf("decode %s's claim: %v", role, err)
+	}
+	aged := time.Now().Add(-age).UnixMilli()
+	claim.ClaimedAt, claim.RenewedAt = aged, aged
+	record, err := json.Marshal(claim)
+	if err != nil {
+		t.Fatalf("encode %s's aged claim: %v", role, err)
+	}
+	if _, err := roles.Update(role, record, entry.Revision()); err != nil {
+		t.Fatalf("store %s's aged claim: %v", role, err)
+	}
+}
+
 // A role claim refreshes the claimant's session entry, and the entry it writes names no serving
 // port. An entry an earlier listener stored with one would otherwise be renewed by every claim
 // its client makes, while each of that client's registrations is refused (subscribeHandler); and
@@ -947,10 +1001,14 @@ func TestTheRoleReaperWhoseSessionCacheTrailsTheBucketKeepsAFreshClaim(t *testin
 	if err := claimant.sessions.Delete(context.Background(), "ses_gone_holder"); err != nil {
 		t.Fatalf("end ses_gone_holder's session: %v", err)
 	}
+	// The gone holder stopped answering for its claim when its session ended, which the claim's
+	// renewal has to say too: a claim renewed inside the live window is kept whatever the
+	// session bucket has lost.
+	ageRoleClaim(t, claimant, "lapsed-claim", 2*observer.sessions.TTL())
 	live := func(sessionID string) bool {
 		return roleHolderMayBeLive(logging.New("test"), observer.sessions, sessionID)
 	}
-	if sweep, err := observer.registry.ReapRoleClaims(context.Background(), live, observer.sessions.TTL()); err != nil || sweep.Reaped != 1 {
+	if sweep, err := observer.registry.ReapRoleClaims(context.Background(), live, observer.sessions.TTL(), observer.sessions.TTL()); err != nil || sweep.Reaped != 1 {
 		t.Fatalf("reap role claims = %+v, %v; want the one claim whose holder left the bucket", sweep, err)
 	}
 	for role, want := range map[string]string{"fresh-claim": "ses_fresh_holder", "lapsed-claim": ""} {
@@ -1159,7 +1217,9 @@ func TestARoleHolderWhoseSessionCannotBeReadKeepsItsClaim(t *testing.T) {
 		live := func(sessionID string) bool {
 			return roleHolderMayBeLive(logging.New("test"), observer.sessions, sessionID)
 		}
-		if sweep, err := observer.registry.ReapRoleClaims(context.Background(), live, observer.sessions.TTL()); err != nil || sweep.Reaped != 0 {
+		// A live window of zero so the claim's own renewal keeps nothing here: what must keep
+		// it is the session bucket the reaper cannot read.
+		if sweep, err := observer.registry.ReapRoleClaims(context.Background(), live, observer.sessions.TTL(), 0); err != nil || sweep.Reaped != 0 {
 			t.Fatalf("reap role claims while the session bucket cannot be read = %+v, %v; want none", sweep, err)
 		}
 		if holder := holderOf(t, claimant, "unread"); holder != "ses_holder" {
@@ -1446,7 +1506,7 @@ func TestRoleClaimRestoresWhileHolderIsLiveAndDropsAfterTTL(t *testing.T) {
 	}
 	sweep, err := restoredRegistry.ReapRoleClaims(context.Background(), func(id string) bool {
 		return roleHolderMayBeLive(logging.New("test"), restoredSessions, id)
-	}, live)
+	}, live, live)
 	if err != nil || sweep.Reaped != 1 {
 		t.Fatalf("the role reaper released %+v, %v; want the one claim whose holder is gone", sweep, err)
 	}
@@ -1668,19 +1728,43 @@ func TestRoleSetHandlerSoftClaimPredecessorInstance(t *testing.T) {
 		}
 	})
 
-	t.Run("a claim under the holder's own session id keeps the role", func(t *testing.T) {
-		// The holder re-claims its own role and names a predecessor of another instance. The
-		// predecessor rule is never reached: the role is already this session's.
+	t.Run("a claim from the process that holds the role keeps it", func(t *testing.T) {
+		// The holder's own process re-claims its role and names a predecessor of another
+		// instance. The predecessor rule is never reached: the role is held under this
+		// claimant's own session id, by the very process making the claim, so the route
+		// decides on that claim alone.
 		registry, sessions, _, post := setup(t)
 		registerInstance(t, sessions, "ses_holder", claimantInstance)
-		claim(t, post, `{"session_id":"ses_holder","role":"sre"}`)
+		claim(t, post, fmt.Sprintf(`{"session_id":"ses_holder","role":"sre","client_instance_id":%q}`, claimantInstance))
 		registerInstance(t, sessions, "ses_other", otherInstance)
-		rec := post(`{"session_id":"ses_holder","role":"sre","soft":true,"previous_session_id":"ses_other"}`)
+		rec := post(fmt.Sprintf(`{"session_id":"ses_holder","role":"sre","soft":true,"previous_session_id":"ses_other","client_instance_id":%q}`, claimantInstance))
 		if rec.Code != http.StatusOK {
 			t.Fatalf("the holder's own soft claim: status %d %s, want 200", rec.Code, rec.Body.String())
 		}
 		if holder := holderOf(t, registry, "sre"); holder != "ses_holder" {
 			t.Fatalf("holder after its own claim = %q, want ses_holder", holder)
+		}
+	})
+
+	t.Run("a live predecessor gives the role up to the process the request states", func(t *testing.T) {
+		// The claimant states its own process rather than leaving the route to read it from
+		// its registration, and the predecessor belongs to that same process: the role
+		// follows it, and the takeover is not the logged one, since neither side is
+		// unidentified. The claimant's registration carries no instance at all, so this is
+		// the stated id deciding and not the stored one.
+		registry, sessions, logs, post := setup(t)
+		registerInstance(t, sessions, "ses_pred", claimantInstance)
+		claim(t, post, `{"session_id":"ses_pred","role":"sre"}`)
+		registerInstance(t, sessions, "ses_claimant", "")
+		rec := post(fmt.Sprintf(`{"session_id":"ses_claimant","role":"sre","soft":true,"previous_session_id":"ses_pred","client_instance_id":%q}`, claimantInstance))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("soft claim stating the predecessor's own client instance: status %d %s, want 200", rec.Code, rec.Body.String())
+		}
+		if holder := holderOf(t, registry, "sre"); holder != "ses_claimant" {
+			t.Fatalf("holder after the claim = %q, want ses_claimant", holder)
+		}
+		if logged := logs.String(); strings.Contains(logged, "carries no client instance id") {
+			t.Fatalf("takeover log = %q, want none: the request named the instance both sides share", logged)
 		}
 	})
 
@@ -1714,12 +1798,15 @@ func TestRoleSetHandlerSoftClaimPredecessorInstance(t *testing.T) {
 		})
 	}
 
-	t.Run("a claim keeps the claimant's stored client instance id", func(t *testing.T) {
+	t.Run("a claim leaves the claimant's stored client instance id as it found it", func(t *testing.T) {
 		// The claim refreshes the claimant's registration, and that refresh must leave the id the
-		// next soft claim reads: a claim that cleared it would demote every later claim.
+		// next soft claim's predecessor rule reads: a claim that cleared it would demote every
+		// later claim. The instance the request states is not written there either, whatever it
+		// names: one registration per session id is a non-goal, and a second process claiming
+		// under this id must leave the registration of the process that registered it alone.
 		_, sessions, _, post := setup(t)
 		registerInstance(t, sessions, "ses_claimant", claimantInstance)
-		claim(t, post, `{"session_id":"ses_claimant","role":"sre","soft":true}`)
+		claim(t, post, fmt.Sprintf(`{"session_id":"ses_claimant","role":"sre","soft":true,"client_instance_id":%q}`, otherInstance))
 		ctx, cancel := context.WithTimeout(context.Background(), listenerWait)
 		defer cancel()
 		stored, err := sessions.Refresh(ctx, "ses_claimant")
@@ -2136,7 +2223,11 @@ func TestUnsubscribeRequiresSessionIDAndReturnsRemovedTopics(t *testing.T) {
 		}
 	})
 }
-func TestUnsubscribeAllReleasesRoleClaims(t *testing.T) {
+
+// The empty-topics unsubscribe is the shape a client leaving sends, and it frees the role claims
+// of the process it names (client_instance_id): the claim here names that very process, so the
+// role is free for its next holder.
+func TestUnsubscribeAllReleasesTheRoleClaimsOfTheProcessThatAsked(t *testing.T) {
 	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)
@@ -2144,8 +2235,11 @@ func TestUnsubscribeAllReleasesRoleClaims(t *testing.T) {
 		sessionID = "ses_unsubscribe_role"
 		role      = "legion-controller"
 	)
-	if _, err := registry.SetRole(sessionID, "test-machine", role, false); err != nil {
-		t.Fatalf("SetRole: %v", err)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	claimRequest := store.RoleClaimRequest{SessionID: sessionID, MachineID: "test-machine", ClientInstanceID: holdingProcess, Role: role}
+	if _, err := registry.SetRoleWithPrevious(ctx, claimRequest); err != nil {
+		t.Fatalf("claim %s for %s: %v", role, sessionID, err)
 	}
 
 	mux := http.NewServeMux()
@@ -2155,7 +2249,7 @@ func TestUnsubscribeAllReleasesRoleClaims(t *testing.T) {
 	mux.ServeHTTP(recorder, httptest.NewRequest(
 		http.MethodPost,
 		"/v1/interests/unsubscribe",
-		strings.NewReader(`{"session_id":"ses_unsubscribe_role","topics":[]}`),
+		strings.NewReader(`{"session_id":"ses_unsubscribe_role","topics":[],"client_instance_id":"`+holdingProcess+`"}`),
 	))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body = %s", recorder.Code, recorder.Body.String())
@@ -2519,6 +2613,153 @@ func TestPublishHandlerPreservesAllOptionalMessageFields(t *testing.T) {
 		response.ExpectsReply != "required" {
 		t.Fatalf("optional fields = %+v", response)
 	}
+}
+
+// The answer to a send or a publish is the request's own expects_reply bytes, so every sender
+// reads back the dialect it spoke: a request that wrote the old string "none" is answered
+// "none", since the plugin build old enough to write that word holds an EnvelopeSchema whose
+// expects_reply is the three-word enum and fails to parse the literal false in the answer to its
+// own send - a delivered message reported unconfirmed and sent again. The envelope the listener
+// puts on the bus is the parsed value instead, so it carries the one new vocabulary - false,
+// "optional" or "required" - whichever spelling the request used, and carries no expects_reply
+// at all for a request that said nothing about a reply.
+//
+// Each case therefore asserts both: the answer's bytes, and the field of the envelope that
+// reached the bus. Reading the bus is what proves the route still carries the sender's intent:
+// the answer alone is only the request read back.
+func TestTheMessageRoutesAnswerExpectsReplyInTheRequestsOwnDialect(t *testing.T) {
+	client := setupPublishTestClient(t)
+	registry, sessions := setupSessionsTest(t, nil, []string{"ses_target"})
+	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
+	const topic = "notifications.github.example-org.example-repo.expects-reply-dialect"
+	for _, tc := range []struct {
+		// wantAnswer and wantBus are the expects_reply bytes the answer and the envelope on the
+		// bus carry, and the empty string is neither word nor literal: it is the field absent.
+		name, path, body, subject, wantAnswer, wantBus string
+	}{
+		{
+			name:       "a send writing the literal false",
+			path:       "/v1/messages/send",
+			body:       `{"target_session":"ses_target","message":"hello","expects_reply":false,"idempotency_key":"dialect-send-false"}`,
+			subject:    contracts.AgentSubject("ses_target"),
+			wantAnswer: `false`,
+			wantBus:    `false`,
+		},
+		{
+			name:       "a send writing the old none",
+			path:       "/v1/messages/send",
+			body:       `{"target_session":"ses_target","message":"hello","expects_reply":"none","idempotency_key":"dialect-send-none"}`,
+			subject:    contracts.AgentSubject("ses_target"),
+			wantAnswer: `"none"`,
+			wantBus:    `false`,
+		},
+		{
+			name:       "a send writing required",
+			path:       "/v1/messages/send",
+			body:       `{"target_session":"ses_target","message":"hello","expects_reply":"required","idempotency_key":"dialect-send-required"}`,
+			subject:    contracts.AgentSubject("ses_target"),
+			wantAnswer: `"required"`,
+			wantBus:    `"required"`,
+		},
+		{
+			name:       "a publish writing the literal false",
+			path:       "/v1/messages/publish",
+			body:       `{"topic":"` + topic + `","message":"hello","expects_reply":false}`,
+			subject:    topic,
+			wantAnswer: `false`,
+			wantBus:    `false`,
+		},
+		{
+			name:       "a publish writing the old none",
+			path:       "/v1/messages/publish",
+			body:       `{"topic":"` + topic + `","message":"hello","expects_reply":"none"}`,
+			subject:    topic,
+			wantAnswer: `"none"`,
+			wantBus:    `false`,
+		},
+		{
+			name:       "a publish writing optional",
+			path:       "/v1/messages/publish",
+			body:       `{"topic":"` + topic + `","message":"hello","expects_reply":"optional"}`,
+			subject:    topic,
+			wantAnswer: `"optional"`,
+			wantBus:    `"optional"`,
+		},
+		{
+			// The escaped spelling of "none" is the one input that tells the two answers apart:
+			// echoing the request's own bytes writes these very bytes back, while re-marshalling
+			// the envelope would write the literal false. The bus gets the parsed value, false.
+			name:       "a publish writing the escaped spelling of the old none",
+			path:       "/v1/messages/publish",
+			body:       `{"topic":"` + topic + `","message":"hello","expects_reply":"\u006eone"}`,
+			subject:    topic,
+			wantAnswer: `"\u006eone"`,
+			wantBus:    `false`,
+		},
+		{
+			// A request that wrote null said nothing about a reply, and an answer that wrote
+			// null back would be refused by the EnvelopeSchema of a plugin whose expects_reply
+			// is the three-word enum, so the answer omits the field, as the envelope does.
+			name:       "a publish writing null",
+			path:       "/v1/messages/publish",
+			body:       `{"topic":"` + topic + `","message":"hello","expects_reply":null}`,
+			subject:    topic,
+			wantAnswer: ``,
+			wantBus:    ``,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			probe, err := client.Conn.SubscribeSync(tc.subject)
+			if err != nil {
+				t.Fatalf("subscribe %s: %v", tc.subject, err)
+			}
+			t.Cleanup(func() { _ = probe.Unsubscribe() })
+			if err := client.Conn.Flush(); err != nil {
+				t.Fatalf("flush the probe on %s: %v", tc.subject, err)
+			}
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body))
+			if tc.path == "/v1/messages/send" {
+				sendHandler(state, logging.New("test")).ServeHTTP(recorder, request)
+			} else {
+				publishHandler(state, logging.New("test")).ServeHTTP(recorder, request)
+			}
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body = %s", recorder.Code, recorder.Body.String())
+			}
+			if answered := rawJSONField(t, recorder.Body.Bytes(), "expects_reply"); answered != tc.wantAnswer {
+				t.Fatalf("answered expects_reply = %s, want %s; body = %s", quotedOrAbsent(answered), quotedOrAbsent(tc.wantAnswer), recorder.Body.String())
+			}
+			message, err := probe.NextMsg(5 * time.Second)
+			if err != nil {
+				t.Fatalf("read the envelope on %s: %v", tc.subject, err)
+			}
+			if wire := rawJSONField(t, message.Data, "expects_reply"); wire != tc.wantBus {
+				t.Fatalf("the envelope on %s carries expects_reply %s, want %s: %s", tc.subject, quotedOrAbsent(wire), quotedOrAbsent(tc.wantBus), message.Data)
+			}
+		})
+	}
+}
+
+// rawJSONField reads one top-level field of document exactly as it is written there, escapes and
+// all, and answers the empty string for a document with no such key - which no value can be
+// mistaken for, since the empty string is not JSON.
+func rawJSONField(t *testing.T, document []byte, name string) string {
+	t.Helper()
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(document, &fields); err != nil {
+		t.Fatalf("decode %s: %v", document, err)
+	}
+	return string(fields[name])
+}
+
+// quotedOrAbsent names what rawJSONField read in a failure, so the absent field reads as a word
+// rather than as nothing at all.
+func quotedOrAbsent(raw string) string {
+	if raw == "" {
+		return "no expects_reply key"
+	}
+	return raw
 }
 
 // A caller's message NATS cannot take whole is the caller's to fix, so both message routes answer
