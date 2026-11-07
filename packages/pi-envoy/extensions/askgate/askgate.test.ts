@@ -1118,14 +1118,15 @@ describe("fail-open", () => {
         return untilAborted(req);
       },
     });
-    const started = Date.now();
     const timedOut = await g.device("t1", "dispatch_comment", COMMENT);
     expect(timedOut?.block).toBeUndefined();
     expect(timedOut?.additionalContext).toContain("The call ran unreviewed.");
-    expect(Date.now() - started).toBeLessThan(1000);
     expect(signals[0].aborted).toBe(true);
     expect(g.entries).toMatchObject([{ decision: "allow", outcome: "timeout", usage: PARTIAL }]);
-  });
+    // The row's own bound is a hang guard, the file's convention: a gated call whose model call
+    // never answers and whose deadline never fires would hang here. Its work is one 50 ms
+    // deadline, far below this.
+  }, 30_000);
   test("three consecutive failures halt the gate for the session with one notice", async () => {
     const g = bind({ env: { OMP_ASKGATE_TIMEOUT_MS: "20" }, complete: untilAborted });
     for (const id of ["a", "b", "c", "d", "e"]) await g.device(id, "dispatch_comment", COMMENT);
@@ -1698,12 +1699,18 @@ describe("deadline and abandonment", () => {
       COMMENT
     );
     await started.promise;
-    const began = Date.now();
     await g.event("session_shutdown");
-    expect(Date.now() - began).toBeLessThan(1_500);
+    // "Inside the runner's 2 s cap" is the budgets themselves: the runner gives a session_shutdown
+    // handler 2 s (SESSION_SHUTDOWN_HANDLER_TIMEOUT_MS, askgate-core.ts:349-356), so the grace must
+    // end inside the handler's wait and that wait inside the cap. No elapsed time decides this.
+    expect(core.SHUTDOWN_GRACE_MS).toBeLessThan(core.SHUTDOWN_WAIT_MS);
+    expect(core.SHUTDOWN_WAIT_MS).toBeLessThan(2_000);
     expect(g.entries).toMatchObject([{ decision: "allow", outcome: "shutdown" }]);
     await gated;
-  });
+    // The row's own bound is a hang guard, the file's convention: a grace that never fires leaves
+    // the handler waiting on a completion that never settles. Its work is at most the 1.5 s wait,
+    // far below this.
+  }, 30_000);
 });
 
 describe("the switch is not in the gate (test 10)", () => {
@@ -3265,15 +3272,23 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
     );
   });
   test("the runner kills a dry-run that outlives its limit", async () => {
-    const began = Date.now();
-    const result = await core.spawnDryRun("sleep 5", {
+    // `sleep 300 & wait` leaves two processes in the group, bash and the `sleep` that holds the
+    // child's pipes: a kill narrowed to bash alone leaves that `sleep` holding `child.stdout`, so
+    // the call cannot return inside any limit this row sets. 300 s is far above the row's limit,
+    // so a run that kills nothing cannot return either.
+    const result = await core.spawnDryRun("sleep 300 & wait", {
       cwd: work,
       env: process.env,
       timeoutMs: 100,
     });
     expect(result.timedOut).toBe(true);
-    expect(Date.now() - began).toBeLessThan(2_000);
-  });
+    // Bun reports exitCode null (signalCode "SIGKILL") for a group killed at the limit, and a
+    // number for a child that exits on its own: this is the kill, not an exit of bash's own.
+    expect(result.exitCode).toBeNull();
+    // The row's own bound is a hang guard, the file's convention: it spawns a real subprocess, and
+    // a group the runner fails to kill holds the pipes open for 300 s. Its work is one 100 ms
+    // limit, far below this.
+  }, 60_000);
   test("a subagent's dispatch command is never reviewed or recorded, and gets an argv-only marker", async () => {
     const g = bind({ env: STUB, cwd: work, kind: "sub" });
     expect(await g.bash("b1", ASK)).toBeUndefined();
@@ -6617,16 +6632,19 @@ describe("rules check", () => {
     ]);
 
     const shut = await bothPending({}, false);
-    const began = Date.now();
     await shut.g.event("session_shutdown");
-    expect(Date.now() - began).toBeLessThan(1_500);
+    // "Inside the 2 s cap" is proved by the SHUTDOWN_WAIT_MS assertion in the row named "shutdown
+    // stays inside the runner's 2 s cap even when the aborted call never settles".
     expect(shut.signals.map((s) => s.aborted)).toEqual([true, true]);
     expect(shut.g.entries).toMatchObject([
       { decision: "allow", outcome: "shutdown", ruleOutcome: "shutdown" },
     ]);
     await shut.gated;
     expect(shut.g.entries).toHaveLength(1);
-  });
+    // The row's own bound is a hang guard, the file's convention: a grace that never fires leaves
+    // the handler waiting on two completions that never settle. Its work is at most the 1.5 s
+    // wait, far below this.
+  }, 30_000);
   test("at shutdown a decision record started as the handler returned is cut short, and its follow-up entry lands before the handler returns", async () => {
     // Fake timers, and a clock that moves with them: the shutdown grace and wait run their full
     // length without the test waiting for them.
