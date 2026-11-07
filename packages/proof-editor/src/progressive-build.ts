@@ -236,8 +236,10 @@ export interface ProgressiveBuild {
   /**
    * Hands the host each batch as it lands, so its own draw of the document gives way block by
    * block: called in the batch's own task with the ids of the blocks it is about to build, and
-   * what it answers is called in that same task once they are in the editor. Nothing is painted
-   * between the two, so no frame holds one of those blocks twice and none holds it nowhere.
+   * what it answers is called in that same task once they are in the editor and `live` has
+   * shown its root. Nothing is painted between the two, so no frame holds one of those blocks
+   * twice and none holds it nowhere - and a host whose answer tells the rest of its page that
+   * the editor has arrived says so after the batch rather than before it.
    */
   onBatch?: (building: readonly string[]) => (() => void) | undefined;
   schema: Schema;

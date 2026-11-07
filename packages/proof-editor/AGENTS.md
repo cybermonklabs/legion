@@ -151,7 +151,11 @@ arriving needs (INFRA-341, R11): `constructProofEditor`, which hides the root an
 `theConstruction` - the whole of the old factory down to `collabService.bindDoc`, with the
 popover hook, the typed-block commands and the handle built there too - and answers a
 `ProofEditorConstruction` whose `bind` holds what is left (the batched build, the yield after
-it and the peer cursors), with `createProofEditor` the two in one call;
+it and the peer cursors), with `createProofEditor` the two in one call. The hiding is `hide`
+and `show`, an inline `display: none` this module sets and removes again rather than a value
+read off the root and written back: a host's effect that re-runs while a construction still
+stands hands the same element to a second construction, which would otherwise remember `none`
+as the root's own display and reveal into it, leaving the reader an editor they cannot see;
 and annotations, casts and assertions
 that make a file type-check, each of which erases before runtime (below).
 

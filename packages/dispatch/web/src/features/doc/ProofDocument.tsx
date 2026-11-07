@@ -1030,28 +1030,38 @@ export function ProofDocument({
             // the draw's once either has painted, and the reader's words must not slide
             // under them a batch at a time.
             onBatch: (built) => {
-              // The reader has the editor from this task on, so the reads the page held
-              // behind the first batch go out now (`first-batch.ts`). Said on every batch
-              // because the first is the only one that changes the answer, and a batch
-              // costs nothing to say it again.
-              if (page) {
-                theFirstBatchIsAwaited(false);
-              }
               const preview = documentPreview(parent.parentElement);
-              if (preview === null) {
-                return undefined;
-              }
-              if (theDraw?.element !== preview) {
-                theDraw = { element: preview, take: takesTheBuiltBlocks(preview) };
-              }
-              const take = theDraw.take;
-              const before = preview.getBoundingClientRect();
-              return () => {
-                take(built);
-                if (before.top >= 0 || preview.childElementCount === 0) {
-                  return;
+              /** The draw's turn in this batch, where the reader still has a draw to give
+               *  blocks up from. */
+              let theDrawsTurn: (() => void) | undefined;
+              if (preview !== null) {
+                if (theDraw?.element !== preview) {
+                  theDraw = { element: preview, take: takesTheBuiltBlocks(preview) };
                 }
-                moveTheScroll(preview, preview.getBoundingClientRect().bottom - before.bottom);
+                const take = theDraw.take;
+                const before = preview.getBoundingClientRect();
+                theDrawsTurn = () => {
+                  take(built);
+                  if (before.top >= 0 || preview.childElementCount === 0) {
+                    return;
+                  }
+                  moveTheScroll(preview, preview.getBoundingClientRect().bottom - before.bottom);
+                };
+              }
+              return () => {
+                // The reader has the editor from here, so the reads the page held behind the
+                // first batch go out now (`first-batch.ts`). Here rather than at the top of
+                // this callback, because the build calls that before it has placed the
+                // batch's blocks or shown the editor's root and this after both
+                // (`@legion/proof-editor`'s `progressive-build.ts`): a gate cleared at the
+                // top let the panels' own render - and the reads it starts - go first at the
+                // task's microtask checkpoint, ahead of the batch it is supposed to follow.
+                // Said on every batch because the first is the only one that changes the
+                // answer, and a batch costs nothing to say it again.
+                if (page) {
+                  theFirstBatchIsAwaited(false);
+                }
+                theDrawsTurn?.();
               };
             },
             // A pane takes no edits: a reader who clicks into the text from a list never

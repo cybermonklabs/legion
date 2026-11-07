@@ -68,12 +68,13 @@ const editorModule = () =>
   );
 
 /**
- * Starts the editor chunk's download without building anything with it, for a host that knows an
- * editor is coming before it has what to build one from: `ProofDocument` asks as the socket is
- * admitted, so the chunk arrives while the whole Yjs document does, rather than after it
- * (dispatch://INFRA-341, R11). A second call costs nothing - the module cache answers it - and a
- * failure is the business of the `createEditor` that follows, which reports it where a reader
- * sees it.
+ * Starts the editor chunk's download without building anything with it, for a caller that knows
+ * an editor is coming before it has anywhere to build one: the page's reading ahead asks from
+ * the address alone, before React has rendered anything, so the chunk arrives while the issue,
+ * the document's text and the schema do rather than after them (dispatch://INFRA-341, R11,
+ * `open-document-early.ts`). A second call costs nothing - the module cache answers it - and a
+ * failure is the business of the `constructEditor` that follows, which reports it where a
+ * reader sees it.
  */
 export const loadEditor = (): void => {
   void editorModule().catch(() => undefined);

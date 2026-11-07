@@ -430,6 +430,39 @@ describe("an editor constructed before its document arrives", () => {
       while (!view.isDestroyed) await Promise.resolve();
     });
   });
+
+  // A host's effect that re-runs while a construction is still standing hands the same element
+  // to a second construction, which finds it hidden: the first hid it, and nothing but this
+  // module writes that root's `display`. An editor that remembered the value it found would
+  // remember `none`, and its `reveal` would put the root back to hidden - which is how a
+  // version deep link came to draw its quote into an editor the reader could not see, and no
+  // host can prevent it, since tearing a construction down is itself a promise away
+  // (dispatch://INFRA-341, R11).
+  test("is shown when it was built into a root a construction before it had hidden", async () => {
+    await withDomWindow(async (window) => {
+      const first = await construct(window, paragraphs(8));
+      // The second construction, in the same root, while the first still stands there hidden.
+      // Its document holds no blocks - a past version's editor, which is drawn with
+      // `setMarkdown` after the binding - so showing the root is `reveal`'s alone.
+      const second = await constructProofEditor(first.root, {
+        heatMapMode: "hidden",
+        onMarkClick: () => {},
+        onMarkHover: () => {},
+        user: { color: "#0369a1", name: "alice" },
+        ydoc: new Y.Doc(),
+      });
+      const handle = await second.bind();
+      try {
+        handle.reveal();
+        expect(first.root.style.display).toBe("");
+      } finally {
+        const { view } = handle;
+        handle.destroy();
+        first.construction.destroy();
+        while (!view.isDestroyed || !first.view.isDestroyed) await Promise.resolve();
+      }
+    });
+  });
 });
 
 describe("a reader's edit in a block the batches have built", () => {

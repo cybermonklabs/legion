@@ -427,25 +427,38 @@ export async function constructProofEditor(
   // Hidden from here rather than from the first batch, because the construction now runs while
   // the reader is reading the document's own draw: an editor standing empty in front of that
   // draw for the length of a sync is a second document, blank, above the one they are reading.
-  const shown = root.style.display;
-  root.style.display = 'none';
+  //
+  // The hiding is an inline `display` this module sets and removes again, never a value read
+  // off the root and written back: a host builds its next editor in the same element, and an
+  // effect that re-runs while a construction is still standing hands that element to a second
+  // construction hidden. One that remembered what it found would remember `none` and give the
+  // reader a hidden editor, however the two finish (dispatch://INFRA-341, R11). Removing the
+  // property gives the root back to the stylesheet instead, so every path out - revealed,
+  // built, destroyed, or thrown - leaves it visible.
+  hide(root);
   try {
-    return await theConstruction(root, opts, shown);
+    return await theConstruction(root, opts);
   } catch (error) {
-    // A root no editor ever stood in is the host's again, and the host builds its next editor
-    // in the same element: a root left hidden would never be shown by the editor that follows,
-    // which reads its own `shown` off this style.
-    root.style.display = shown;
+    // A root no editor ever stood in is the host's again.
+    show(root);
     throw error;
   }
 }
 
-/** The whole of a construction, under the root `constructProofEditor` has hidden; `shown` is
- *  the `display` that root is given back when the editor is revealed or destroyed. */
+/** Takes the editor's root off the screen, for as long as it holds no document to read. */
+function hide(root: HTMLElement): void {
+  root.style.setProperty('display', 'none');
+}
+
+/** Gives the root back to the stylesheet, which is where its `display` comes from. */
+function show(root: HTMLElement): void {
+  root.style.removeProperty('display');
+}
+
+/** The whole of a construction, under the root `constructProofEditor` has hidden. */
 async function theConstruction(
   root: HTMLElement,
   opts: CreateProofEditorOptions,
-  shown: string,
 ): Promise<ProofEditorConstruction> {
   setCurrentActor(`human:${opts.user.name}`);
   let alive = true;
@@ -676,13 +689,13 @@ async function theConstruction(
       return null;
     },
     reveal(): void {
-      root.style.display = shown;
+      show(root);
     },
     destroy(): void {
       alive = false;
       // A root this editor never revealed is still hidden, and the host builds its next editor
       // in the same element, which no longer takes this editor's edits.
-      root.style.display = shown;
+      show(root);
       delete root.dataset.writePath;
       unregisterPopoverHook();
       editor.action((ctx) => {
@@ -716,7 +729,7 @@ async function theConstruction(
         },
         fragment: opts.ydoc.getXmlFragment('prosemirror'),
         live: () => {
-          root.style.display = shown;
+          show(root);
           root.dataset.writePath = 'live';
         },
         onBatch: opts.onBatch,
@@ -725,7 +738,7 @@ async function theConstruction(
       });
     } catch (error) {
       // Nothing will reveal a root whose editor was never answered.
-      root.style.display = shown;
+      show(root);
       throw error;
     }
     // The third task of the three: the host's swap runs when this resolves, so this resolves a

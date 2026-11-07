@@ -115,9 +115,11 @@ export function fakeDocumentRuntime(seed: { text?: string } = {}): FakeDocumentR
     // The real editor's root is hidden from the moment it is constructed until the first batch
     // of its build, and the host swaps it in after the last (`@legion/proof-editor`'s
     // `constructProofEditor` and `reveal`), so the fake's is too: a host that never revealed
-    // its editor would otherwise be the only one with nothing to show for it.
-    const shown = root.style.display;
-    root.style.display = "none";
+    // its editor would otherwise be the only one with nothing to show for it. It is an inline
+    // `display` set and removed again, as the real one is, rather than a value read off the
+    // root and written back, which a second construction in the same element would read as
+    // `none`.
+    root.style.setProperty("display", "none");
     const editor: FakeEditor = {
       blockMarks: [],
       commented: 0,
@@ -148,7 +150,7 @@ export function fakeDocumentRuntime(seed: { text?: string } = {}): FakeDocumentR
       },
       destroy() {
         editor.destroyed = true;
-        root.style.display = shown;
+        root.style.removeProperty("display");
       },
       focusBlock(blockId: string) {
         editor.focusedBlocks.push(blockId);
@@ -169,7 +171,7 @@ export function fakeDocumentRuntime(seed: { text?: string } = {}): FakeDocumentR
       },
       reveal() {
         editor.revealed = true;
-        root.style.display = shown;
+        root.style.removeProperty("display");
       },
       setActiveBlocks() {},
       setBlockMarks(marks: readonly BlockMark[]) {

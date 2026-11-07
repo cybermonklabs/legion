@@ -16,7 +16,8 @@ import { createContext, useContext, useRef, useSyncExternalStore } from "react";
  * component: the margin lives above the router (`app.tsx`'s `MarginColumn`), the header lives
  * inside the issue page, and the answer has to be there before either renders. The address
  * opens it (`open-document-early.ts`, which runs before React has rendered anything), and the
- * document surface closes it in the task its first batch lands in (`ProofDocument`).
+ * document surface closes it once that first batch's blocks are in the editor, in the task
+ * they landed in (`ProofDocument`'s `onBatch`).
  *
  * Nothing is ever held for a page with no document on it: `awaited` is false until an address
  * that opens one says otherwise, so every other page reads exactly as it did.

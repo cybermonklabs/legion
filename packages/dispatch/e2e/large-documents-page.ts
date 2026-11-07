@@ -529,9 +529,13 @@ export async function watchTheDocument(page: Page): Promise<Announcements> {
  * entries by default and which a document page fills; `startTime` is when the request went
  * out, which is the number the order is read on. The first batch is the task the editor's root
  * is given `data-write-path="live"` in (`@legion/proof-editor`'s `progressive-build.ts`), read
- * through a `MutationObserver`, whose callback runs at that task's own microtask checkpoint -
- * before the commit that starts the reads the page held - so a read made at the batch is never
- * timed as one made before it.
+ * through a `MutationObserver`, whose callback runs at that task's own microtask checkpoint.
+ * It runs before the commit that draws the chrome and starts the reads the page held, because
+ * the batch's own blocks go into the editor before that attribute is set and queue this
+ * observer there, while the page lets those reads go only in the callback the batch answers
+ * with, which the build calls after both (`web/src/features/doc/ProofDocument.tsx`'s
+ * `onBatch`): React's own microtask is therefore queued behind this one, and a read made at
+ * the batch is never timed as one made before it.
  */
 export interface PageRead {
   /** `performance.now()` when the request went out, counted from the start of navigation. */

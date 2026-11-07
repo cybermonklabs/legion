@@ -19,6 +19,7 @@ import { installFakeParseWorker, restoreParseWorker } from "../refs/parse-worker
 import { appKeymap } from "../shell/keymap";
 import { colorForLogin } from "./connection";
 import type { ConstructEditor } from "./editor";
+import { afterTheFirstBatch, theFirstBatchIsAwaited } from "./first-batch";
 
 answerTextReadsWithTheSeededText();
 
@@ -76,6 +77,45 @@ test("the editor is built while the socket syncs, with no document in it until t
     expect(editors[0]?.root.textContent).toContain("The live document");
   } finally {
     view.unmount();
+  }
+});
+
+// The reads and the chrome a document address holds behind the editor's first batch are let
+// go in the callback that batch answers with, never when it begins: the build calls `onBatch`
+// before it has placed the batch's blocks or shown the editor's root, and what that answers
+// once it has done both (`@legion/proof-editor`'s `progressive-build.ts`). Let go at the top
+// instead, the panels' own render was queued ahead of the batch's own DOM work, so every read
+// the page had held went out in front of the batch it waits for (dispatch://INFRA-341, R11).
+test("the reads the page holds go out once the batch's blocks are in the editor, not as it begins", async () => {
+  const fake = fakeDocumentRuntime({ text: "The live document" });
+  /** Whether the page was past the first batch at each of the build's two words. */
+  const past: { asItBegan?: boolean; onceItLanded?: boolean } = {};
+  const constructEditor: ConstructEditor = async (root, options) => {
+    const construction = await fake.runtime.constructEditor(root, options);
+    return {
+      ...construction,
+      bind: async () => {
+        const landed = options.onBatch?.(["a-block-of-the-first-batch"]);
+        past.asItBegan = afterTheFirstBatch();
+        landed?.();
+        past.onceItLanded = afterTheFirstBatch();
+        return construction.bind();
+      },
+    };
+  };
+  theFirstBatchIsAwaited(true);
+  const { sync, view } = renderProofDocument({
+    fake: { ...fake, runtime: { ...fake.runtime, constructEditor } },
+    surface: "page",
+  });
+
+  try {
+    await sync();
+    await waitFor(() => expect(past.onceItLanded).toBe(true));
+    expect(past.asItBegan).toBe(false);
+  } finally {
+    view.unmount();
+    theFirstBatchIsAwaited(false);
   }
 });
 
