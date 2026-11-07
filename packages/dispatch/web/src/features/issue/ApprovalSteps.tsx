@@ -22,8 +22,8 @@ function StepState({
     return <span className={approvalPillClassName("draft")}>Not requested</span>;
   }
   return (
-    // The chip is reached only for a document with an approval that is not a draft - the
-    // header's own condition, kept whole - so the only thing left to decide here is whether
+    // The chip is reached only for a document with an approval that is not a draft - the only
+    // approval `ApprovalChip` draws anything for - so the only thing left to decide here is whether
     // this is the issue's primary document, where the actions have always sat. A gate that
     // names no step for that document reaches none of this: the header's own chip carries it.
     <ApprovalChip

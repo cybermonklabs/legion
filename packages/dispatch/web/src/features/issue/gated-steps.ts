@@ -13,8 +13,8 @@ export const STEP_LABELS: Record<GatedStep, string> = {
 };
 
 /** One design-gate step of a root issue: the step, the name the page draws for it, and the
- *  document it reviews - undefined while the details are unread and for an issue that holds no
- *  document for the step, which is the step nobody has written yet. */
+ *  document it reviews - undefined for an issue that holds no document for the step, which is
+ *  the step nobody has written yet. */
 export interface StepEntry {
   step: GatedStep;
   label: string;
