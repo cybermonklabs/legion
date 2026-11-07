@@ -65,6 +65,7 @@ type runConfig struct {
 	// boxBusyBefore is the box's busy fraction read before Dispatch started (run-step.sh reads it
 	// with `loadgen box-busy` before its reset); negative means collectMeta reads it itself.
 	boxBusyBefore float64
+	editors       editorConfig
 	// args are the run's flags as meta.json records them: the normalized flag list, the token
 	// values redacted and the URL passwords removed (recordedArgs).
 	args []string
@@ -106,6 +107,9 @@ func runLoad(args []string) error {
 	buildCommit := fs.String("build-commit", "", "commit Dispatch was built from, for meta.json")
 	buildDirty := fs.Bool("build-dirty", false, "the build's tree had uncommitted changes, for meta.json")
 	boxBusyBefore := fs.Float64("box-busy-before", -1, "the box's busy fraction read before Dispatch started (loadgen box-busy); default: read it now")
+	editors := fs.Int("editors", 0, "browser editors on document websockets (0: none)")
+	editorRate := fs.Float64("editor-rate", 2, "updates per second per editor")
+	editorDocs := fs.Int("editor-docs", 10, "documents the editors share: the first N seeded specs in key order")
 	copyMetaPath := fs.String("copy-meta", "", "JSON object file that describes the copy a foreign run measures, recorded verbatim in meta.json under copy")
 	source := fs.String("source", sourceRequests, "request source: "+sourceRequests+" (the route mix) or "+sourceReplay+" (a replay bundle's logged writes, replay_plan.go)")
 	rf := registerReplayFlags(fs)
@@ -161,6 +165,12 @@ func runLoad(args []string) error {
 		return fmt.Errorf("-live must be 0 or more")
 	case *boxBusyBefore > 1 || !finite(*boxBusyBefore):
 		return fmt.Errorf("-box-busy-before must be a fraction between 0 and 1")
+	case *editors < 0:
+		return fmt.Errorf("-editors must be 0 or more")
+	case *editorRate <= 0 || !finite(*editorRate):
+		return fmt.Errorf("-editor-rate must be more than 0")
+	case *editorDocs < 1:
+		return fmt.Errorf("-editor-docs must be at least 1")
 	}
 	if *out == "" {
 		return fmt.Errorf("-out is required")
@@ -198,6 +208,9 @@ func runLoad(args []string) error {
 			return err
 		}
 	}
+	if *editors > 0 && *editorDocs > len(sf.Issues) {
+		return fmt.Errorf("-editor-docs %d is more than the seed's %d specs", *editorDocs, len(sf.Issues))
+	}
 	if *live < 0 {
 		*live = max(1, int(math.Round(*requests/30)))
 	}
@@ -212,8 +225,12 @@ func runLoad(args []string) error {
 		sessions: *sessions, events: *events, requests: *requests,
 		warmup: *warmup, duration: *duration, grace: *grace, mix: mix, routes: routes,
 		human: *human, live: *live, rngSeed: *rngSeed, natsConns: *natsConns, heapSamples: *heapSamples,
-		buildCommit: *buildCommit, buildDirty: *buildDirty, boxBusyBefore: *boxBusyBefore, args: recordedArgs(fs),
-		copyMeta: copyMeta, replay: rs,
+		buildCommit: *buildCommit, buildDirty: *buildDirty, boxBusyBefore: *boxBusyBefore,
+		// Fewer editors than documents edit only as many documents as there are editors.
+		editors:  editorConfig{editors: *editors, rate: *editorRate, docs: min(*editorDocs, max(*editors, 1))},
+		args:     recordedArgs(fs),
+		copyMeta: copyMeta,
+		replay:   rs,
 	}, sf)
 }
 
@@ -303,6 +320,11 @@ type summaryConfig struct {
 	GraceS    float64  `json:"grace_s"`
 	RNGSeed   uint64   `json:"rng_seed"`
 	NATSConns int      `json:"nats_conns"`
+	// Editors, EditorRate and EditorDocs are the editors workload's flags; EditorDocs is the
+	// documents it edited, at most Editors.
+	Editors    int     `json:"editors"`
+	EditorRate float64 `json:"editor_rate"`
+	EditorDocs int     `json:"editor_docs"`
 	// MarkerNonce is the run's marker nonce (markerTag): every marker the run wrote starts with it,
 	// and the run counts only the commit rows that carry it.
 	MarkerNonce string `json:"marker_nonce"`
@@ -334,6 +356,10 @@ type summary struct {
 	Sessions        sessionsSummary   `json:"sessions"`
 	Live            liveSummary       `json:"live"`
 	LiveBytes       int64             `json:"live_bytes"`
+	// Editors is nil in a step without editors, and in a summary.json older than them; Rooms is
+	// nil in a summary.json older than it.
+	Editors *editorsSummary `json:"editors"`
+	Rooms   *roomsSummary   `json:"rooms"`
 	// StackExits are the stack processes that exited during the step; such a step fails and its
 	// row does not measure the load.
 	StackExits []stackExit `json:"stack_exits,omitempty"`
@@ -394,8 +420,9 @@ func execute(cfg runConfig, sf seedFile) error {
 	defer logf.Close()
 	lg := log.New(io.MultiWriter(os.Stderr, logf), "", log.LstdFlags|log.Lmicroseconds)
 	nonce := newMarkerNonce()
-	lg.Printf("config: step=%s source=%s sessions=%d events=%g/s requests=%g/s event-mix=%s route-mix=%s warmup=%s duration=%s grace=%s human=%.2f live=%d rng-seed=%d heap-samples=%t marker-nonce=%s",
-		cfg.name, cfg.sourceName(), cfg.sessions, cfg.events, cfg.requests, cfg.mix.Name, cfg.routes.Source, cfg.warmup, cfg.duration, cfg.grace, cfg.human, cfg.live, cfg.rngSeed, cfg.heapSamples, formatNonce(nonce))
+	lg.Printf("config: step=%s source=%s sessions=%d events=%g/s requests=%g/s event-mix=%s route-mix=%s warmup=%s duration=%s grace=%s human=%.2f live=%d rng-seed=%d editors=%d editor-rate=%g editor-docs=%d heap-samples=%t marker-nonce=%s",
+		cfg.name, cfg.sourceName(), cfg.sessions, cfg.events, cfg.requests, cfg.mix.Name, cfg.routes.Source, cfg.warmup, cfg.duration, cfg.grace, cfg.human, cfg.live, cfg.rngSeed,
+		cfg.editors.editors, cfg.editors.rate, cfg.editors.docs, cfg.heapSamples, formatNonce(nonce))
 
 	if err := checkStack(ctx, cfg.ep); err != nil {
 		return err
@@ -444,14 +471,21 @@ func execute(cfg runConfig, sf seedFile) error {
 	} else {
 		reqs, requestsDone = st.runRequests(ctx, a)
 	}
+	ed := st.startEditors(ctx)
 	pr := st.startProbes(ctx, ns.pulls)
 
 	<-eventsDone
 	<-requestsDone
+	if ed != nil {
+		ed.waitSchedules()
+	}
 	lg.Printf("generators done at %s; grace %s", time.Since(st.start).Round(time.Second), cfg.grace)
 	time.Sleep(cfg.grace)
 	pr.wait()
 	cancel()
+	if ed != nil {
+		ed.wait()
+	}
 	pr.waitSampler()
 	ns.close()
 	st.consumers.End, st.consumers.EndError = st.readStreamConsumers("end")
@@ -460,7 +494,7 @@ func execute(cfg runConfig, sf seedFile) error {
 		ns.relay.writeFrames(cfg.out, st.sessions, lg)
 	}
 
-	sum := st.buildSummary(ns, reg, writes, reqs, live, pr)
+	sum := st.buildSummary(ns, reg, writes, reqs, live, ed, pr)
 	writeJSONFile(filepath.Join(cfg.out, "summary.json"), sum, 0o644, lg)
 	end := readPGClock(context.Background(), cfg.ep.pg)
 	logPGClock(lg, "end", end)
@@ -474,8 +508,12 @@ func execute(cfg runConfig, sf seedFile) error {
 	if sum.Events.commitsUnread() {
 		committed = "committed and receipts not read"
 	}
-	lg.Printf("step %s done: events offered %d %s, requests sent %d (%.1f/s of %g)",
-		cfg.name, sum.Events.Offered, committed, sum.Requests.Sent, sum.Requests.SentPerS, cfg.requests)
+	editorsSent := 0
+	if sum.Editors != nil {
+		editorsSent = sum.Editors.Sent
+	}
+	lg.Printf("step %s done: events offered %d %s, requests sent %d (%.1f/s of %g), editor updates sent %d",
+		cfg.name, sum.Events.Offered, committed, sum.Requests.Sent, sum.Requests.SentPerS, cfg.requests, editorsSent)
 	if err := stepFailure(sum); err != nil {
 		lg.Print(err)
 		return err
@@ -686,20 +724,25 @@ func (st *step) runRequests(ctx context.Context, a *api) (load *requestLoad, don
 }
 
 // probes are the 5 s sampler, the lock probe (20 ms), the ungranted-lock sampler (1 s), the
-// transaction-id probe and the profiles.
+// transaction-id probe, the profiles, the rooms' window readings and, in a step with editors, the
+// room sampler (100 ms).
 type probes struct {
 	smp      *sampler
 	smpDone  chan struct{} // closed when the sampler, which runs until ctx ends, has returned
 	lp       *lockProbe
 	ls       *lockSampler
 	xidsPerS *float64
-	xidErr   error          // why xidsPerS is nil
-	wg       sync.WaitGroup // every probe but the sampler
+	xidErr   error // why xidsPerS is nil
+	// roomsStart and roomsEnd are the rooms' counters at the window's start and end (readWindow);
+	// rs is nil in a step without editors.
+	roomsStart, roomsEnd windowReading
+	rs                   *roomSampler
+	wg                   sync.WaitGroup // every probe but the sampler
 }
 
-// startProbes starts the probes. The two lock samplers run from 20 s into the window to its end.
-// The sampler reads pulls' counts at each sample, when pulls is not nil, and Dispatch's heap
-// every 15 s under -heap-samples.
+// startProbes starts the probes. The two lock samplers run from 20 s into the window to its end,
+// the room sampler from the window's start to its end. The sampler reads pulls' counts at each
+// sample, when pulls is not nil, and Dispatch's heap every 15 s under -heap-samples.
 func (st *step) startProbes(ctx context.Context, pulls *pullSpy) *probes {
 	p := &probes{smp: newSampler(st.cfg.ep), smpDone: make(chan struct{}), lp: &lockProbe{}, ls: &lockSampler{}}
 	p.smp.pulls = pulls
@@ -717,6 +760,20 @@ func (st *step) startProbes(ctx context.Context, pulls *pullSpy) *probes {
 	p.wg.Go(func() { p.ls.loop(ctx, pg, lockFrom, st.winEnd, st.lg) })
 	p.wg.Go(func() { p.xidsPerS, p.xidErr = xidRate(ctx, pg, st.winStart, st.winEnd, st.lg) })
 	p.wg.Go(func() { st.profile(ctx) })
+	p.wg.Go(func() {
+		if !sleepUntil(ctx, st.winStart) {
+			return
+		}
+		p.roomsStart = readWindow(ctx, st.cfg.ep)
+		if !sleepUntil(ctx, st.winEnd) {
+			return
+		}
+		p.roomsEnd = readWindow(ctx, st.cfg.ep)
+	})
+	if st.cfg.editors.editors > 0 {
+		p.rs = &roomSampler{}
+		p.wg.Go(func() { p.rs.loop(ctx, pg, st.winStart, st.winEnd, st.lg) })
+	}
 	return p
 }
 
@@ -758,7 +815,8 @@ func (st *step) profile(ctx context.Context) {
 
 // buildSummary joins what the phases recorded into summary.json, and writes samples.json. It
 // reads the run's commit rows and names the ungranted locks' relations, so it runs after the load.
-func (st *step) buildSummary(ns *natsSessions, reg *registrar, writes *collector[writeRec], reqs *requestLoad, live *liveSockets, pr *probes) summary {
+// ed is nil in a step without editors.
+func (st *step) buildSummary(ns *natsSessions, reg *registrar, writes *collector[writeRec], reqs *requestLoad, live *liveSockets, ed *editorWorkload, pr *probes) summary {
 	cfg := st.cfg
 	ws := writes.snapshot()
 	frames := live.frames.snapshot()
@@ -784,6 +842,7 @@ func (st *step) buildSummary(ns *natsSessions, reg *registrar, writes *collector
 			Dashboard: cfg.dashboard,
 			EventMix:  cfg.mix, RouteMix: cfg.routes.Source, Human: cfg.human, WarmupS: cfg.warmup.Seconds(),
 			DurationS: durS, GraceS: cfg.grace.Seconds(), RNGSeed: cfg.rngSeed, NATSConns: cfg.natsConns,
+			Editors: cfg.editors.editors, EditorRate: cfg.editors.rate, EditorDocs: cfg.editors.docs,
 			MarkerNonce: formatNonce(st.nonce), Source: cfg.sourceName(),
 		},
 		Events:   joinDelivery(ws, commits, ns.receipts.snapshot(), watcherCount, durS),
@@ -805,6 +864,12 @@ func (st *step) buildSummary(ns *natsSessions, reg *registrar, writes *collector
 		sum.Events.CommitsError = commitsErr.Error()
 		st.lg.Printf("commits: %v", commitsErr)
 	}
+	editorsSent := 0
+	if ed != nil {
+		sum.Editors = ed.summary(durS)
+		editorsSent = sum.Editors.Sent
+	}
+	sum.Rooms = summarizeRooms(pr.roomsStart, pr.roomsEnd, pr.rs, editorsSent)
 	ss := pr.smp.all()
 	writeJSONFile(filepath.Join(cfg.out, "samples.json"), ss, 0o644, st.lg)
 	sum.Resources = summarizeResources(ss, sum.Events.Committed+sum.Requests.Sent, durS)

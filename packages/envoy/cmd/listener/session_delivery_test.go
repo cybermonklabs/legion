@@ -1170,10 +1170,19 @@ func TestSessionConsumerWithoutTheGrantIsRefusedAndWritesNothing(t *testing.T) {
 }
 
 // cappedNotificationStream creates the notifications stream on the server uri names, carrying its
-// own subjects and holding at most limit consumers, before the listener's start finds it:
-// nats-server v2.10.29 refuses an update that changes MaxConsumers ("stream configuration update
-// can not change MaxConsumers", server/stream.go), so a capped stream has to be created capped.
-// The start reconciles the rest of the configuration and leaves the cap alone (bus.ownedStream).
+// own subjects, the stream's identity and at most limit consumers, for a case that needs a stream
+// the server refuses the next consumer create on.
+//
+// Nothing reconciles that stream afterwards: a start that owns it (bus.ConnectOwningStream) raises
+// MaxConsumers to the cap the binary compiles, 24000, on every server at or above the floor the
+// bus names (streamMaxConsumersFloor, nats-server v2.12.5, and this module's in-process server is
+// v2.15.1), so the cap holds only while no owning client runs against it. A case that needs a
+// capped stream therefore connects with bus.Connect, which owns and reconciles nothing, and the
+// create below carries every setting such a start would have written that the case reads: the
+// subjects, and the identity a consumer registration answers with and is refused without
+// (bus.StreamIDMetadataKey, bus.SessionConsumers.StreamID). The cap is carried by the create
+// rather than written after it because a create takes it on every nats-server, while an update
+// that changes it needs that floor.
 func cappedNotificationStream(t *testing.T, uri string, limit int) {
 	t.Helper()
 	conn := testnats.Connect(t, uri)
@@ -1189,6 +1198,7 @@ func cappedNotificationStream(t *testing.T, uri string, limit int) {
 		Discard:      natsgo.DiscardNew,
 		Storage:      natsgo.FileStorage,
 		MaxConsumers: limit,
+		Metadata:     map[string]string{bus.StreamIDMetadataKey: id.New()},
 	}); err != nil {
 		t.Fatalf("create %s holding at most %d consumers: %v", bus.Stream, limit, err)
 	}
@@ -1225,7 +1235,10 @@ func TestSessionConsumerAtTheStreamsConsumerLimitIsRefusedAndWritesNothing(t *te
 	const limit = 8
 	url := testnats.URL(t)
 	cappedNotificationStream(t, url, limit)
-	client, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1))
+	// bus.Connect, not bus.ConnectOwningStream: an owning client's start raises the cap to the
+	// 24000 the binary compiles, on a server at or above the floor as this one is, and the
+	// server then refuses no create at all (cappedNotificationStream).
+	client, err := bus.Connect([]string{url})
 	if err != nil {
 		t.Fatalf("connect the listener: %v", err)
 	}
