@@ -821,11 +821,13 @@ test("a retried upload survives a reload with its file @webkit @firefox", async 
     const indicator = pendingWrites(page);
     await expect(indicator.getByRole("status")).toHaveText("Saving 1 change…");
     await expect.poll(() => keys.length).toBe(1);
-    // The press's own window was held open: the hook caught the handler of the open the
-    // press's put made and called it a second late. With the hook delaying nothing - another
-    // database name, or a page that listens for `success` another way - this does not rise and
-    // the row stops here.
-    expect(await opensHeld()).toBeGreaterThan(beforePress);
+    // The press's own open was held back: the hook caught the handler of the open the press's
+    // put made and called it a second late. Polled rather than read at once, so that this says
+    // only that the hook is live - whether the attempt waited for the keep is what the artifact
+    // assertion below says, and a tree without the fix must reach that assertion rather than
+    // stop here. With the hook delaying nothing - another database name, or a page that listens
+    // for `success` another way - the count never rises and the row stops here instead.
+    await expect.poll(() => opensHeld()).toBeGreaterThan(beforePress);
 
     // The held attempt leaves the write out and kept, so the reloaded page makes it again on its
     // own - and this time Dispatch's verdict refuses it, in the indicator, with Retry.
@@ -843,9 +845,10 @@ test("a retried upload survives a reload with its file @webkit @firefox", async 
     await expect.poll(() => keys.length).toBe(3);
     expect(keys[2]).toEqual(expect.any(String));
     expect(keys[2]).not.toBe(refused);
-    // And the Retry's window with it: at least one open the Retry made - the put under the new
-    // key, and the delete of the old one behind it - was held back the same way.
-    expect(await opensHeld()).toBeGreaterThan(beforeRetry);
+    // And the Retry's own open with it: one of the opens the Retry made - the put under the new
+    // key, and the delete of the old one behind it - was held back the same way. Polled for the
+    // same reason as the press's.
+    await expect.poll(() => opensHeld()).toBeGreaterThan(beforeRetry);
 
     // The reload comes before that attempt lands: what goes out after it is the resumed write,
     // made from the file the Retry moved.
