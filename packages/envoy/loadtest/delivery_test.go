@@ -3,6 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"log"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -171,7 +175,7 @@ func TestJoinDeliveryExpectationRule(t *testing.T) {
 			if c.received {
 				receipts = []receipt{{EventID: 50, Recv: c.commitNs + 100*msNs, Session: unitWindow().ID}}
 			}
-			got := deliveryJoin{writes: writes, commits: commits, receipts: receipts,
+			got, _ := deliveryJoin{writes: writes, commits: commits, receipts: receipts,
 				windows: []sessionWindow{unitWindow()}, deadline: deadline, durationS: 10}.join()
 			if unit := got.ByClass[deliveryClassUnit]; unit != c.want {
 				t.Fatalf("unit class %+v, want %+v", unit, c.want)
@@ -196,7 +200,7 @@ func TestJoinDeliveryCountsASecondReceiptAsADuplicate(t *testing.T) {
 		{EventID: 50, Recv: 5900 * msNs, Session: w.ID},
 	}
 
-	got := deliveryJoin{writes: writes, commits: commits, receipts: receipts,
+	got, _ := deliveryJoin{writes: writes, commits: commits, receipts: receipts,
 		windows: []sessionWindow{w}, deadline: time.Second, durationS: 10}.join()
 
 	want := classDelivery{Sessions: 1, Expected: 1, Received: 1, Duplicate: 1}
@@ -224,7 +228,7 @@ func TestJoinDeliveryCountsTheClassesApart(t *testing.T) {
 		{EventID: 60, Recv: 6100 * msNs, Session: driver.ID},
 	}
 
-	got := deliveryJoin{writes: append(writes, other...), commits: append(commits, otherCommits...),
+	got, _ := deliveryJoin{writes: append(writes, other...), commits: append(commits, otherCommits...),
 		receipts: receipts, windows: []sessionWindow{unit, driver}, deadline: time.Second, durationS: 10}.join()
 
 	wantUnit := classDelivery{Sessions: 1, Expected: 1, Lost: 1}
@@ -258,5 +262,112 @@ func TestJoinDeliveryWithoutSessionsCarriesNoClass(t *testing.T) {
 	}
 	if strings.Contains(string(b), "by_class") {
 		t.Fatalf("a step with no loop session records a class:\n%s", b)
+	}
+}
+
+// lostPairsOfAStep runs the join over the accounting's own inputs, writes what it found into a
+// step directory of its own, and answers that directory and the lost-pairs.json read back from
+// it, nil for a step that wrote none.
+func lostPairsOfAStep(t *testing.T, j deliveryJoin) (string, *lostPairsFile) {
+	t.Helper()
+	_, lost := j.join()
+	dir := t.TempDir()
+	writeLostPairs(dir, lost, log.New(io.Discard, "", 0))
+	b, err := os.ReadFile(filepath.Join(dir, lostPairsName))
+	if os.IsNotExist(err) {
+		return dir, nil
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got lostPairsFile
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("%s: %v:\n%s", lostPairsName, err, b)
+	}
+	return dir, &got
+}
+
+// TestStepNamesEveryLostPair: a step whose unit session was owed a notification it never got
+// writes lost-pairs.json and names that one pair: the event, its kind and the write's marker,
+// the issue topic it was owed on, the session and its class, when the write committed, the four
+// times of the session's own subscribe and unsubscribe (so a reader sees it was no boundary
+// pair), the write's status, that the event did reach another session as a relay frame, and what
+// this session did take. The step that lost nothing writes no such file at all.
+func TestStepNamesEveryLostPair(t *testing.T) {
+	unit := unitWindow()
+	driver := sessionWindow{Class: deliveryClassDriver, ID: "ses-lg-driver", Issues: []string{"LOOP-1"},
+		SubSent: 10 * msNs, SubAck: 20 * msNs}
+	// Two writes on the topic both sessions followed. The driver took both; the unit took the
+	// second alone, so the first is its lost pair.
+	writes, commits := loopWrite(1, 50, "LOOP-1", 5000*msNs)
+	other, otherCommits := loopWrite(2, 60, "LOOP-1", 6000*msNs)
+	receipts := []receipt{
+		{EventID: 50, Recv: 5100 * msNs, Published: 5050 * msNs, Session: driver.ID},
+		{EventID: 60, Recv: 6100 * msNs, Published: 6050 * msNs, Session: driver.ID},
+		{EventID: 60, Recv: 6200 * msNs, Published: 6050 * msNs, Session: unit.ID},
+	}
+	j := deliveryJoin{writes: append(writes, other...), commits: append(commits, otherCommits...),
+		receipts: receipts, windows: []sessionWindow{unit, driver}, deadline: time.Second, durationS: 10}
+
+	_, got := lostPairsOfAStep(t, j)
+
+	if got == nil {
+		t.Fatalf("a step whose unit session lost a notification wrote no %s", lostPairsName)
+	}
+	if got.Lost != 1 || got.Written != 1 || got.Truncated || got.Limit != lostPairLimit || len(got.Pairs) != 1 {
+		t.Fatalf("%s counts %+v, want 1 lost pair written of 1, not truncated", lostPairsName, *got)
+	}
+	want := lostPair{EventID: 50, Kind: kindComment, Marker: 1, Issue: "LOOP-1", CommitNs: 5000 * msNs,
+		Session: unit.ID, Class: deliveryClassUnit,
+		SubSentNs: unit.SubSent, SubAckNs: unit.SubAck, UnsubSentNs: unit.UnsubSent, UnsubAckNs: unit.UnsubAck,
+		WriteStatus: 201, EventReceipts: 1, EventRelayFrames: 1,
+		SessionReceived: 1, SessionLastRecvNs: 6200 * msNs}
+	if got.Pairs[0] != want {
+		t.Fatalf("the lost pair is\n%+v\nwant\n%+v", got.Pairs[0], want)
+	}
+	// The negative control: the same step with that receipt taken by the unit too loses nothing,
+	// and the step directory holds no such file.
+	j.receipts = append(receipts, receipt{EventID: 50, Recv: 5200 * msNs, Published: 5050 * msNs, Session: unit.ID})
+	dir, none := lostPairsOfAStep(t, j)
+	if none != nil {
+		t.Fatalf("a step that lost no pair wrote %s in %s: %+v", lostPairsName, dir, *none)
+	}
+}
+
+// TestLostPairsStopAtTheBound: a step that lost more pairs than the bound writes lostPairLimit of
+// them, the earliest by commit time, and says how many there were and that it stopped.
+func TestLostPairsStopAtTheBound(t *testing.T) {
+	unit := unitWindow()
+	const over = lostPairLimit + 1
+	var writes []writeRec
+	var commits []commitRow
+	for i := range int64(over) {
+		// Each write commits a millisecond after the one before, well inside the session's life,
+		// and no receipt ever arrives: every one of them is a lost pair.
+		w, c := loopWrite(i+1, 1000+i, "LOOP-1", (2000+i)*msNs)
+		writes, commits = append(writes, w...), append(commits, c...)
+	}
+	j := deliveryJoin{writes: writes, commits: commits, windows: []sessionWindow{unit},
+		deadline: time.Second, durationS: 10}
+
+	_, got := lostPairsOfAStep(t, j)
+
+	if got == nil {
+		t.Fatalf("a step that lost %d pairs wrote no %s", over, lostPairsName)
+	}
+	if got.Lost != over || got.Written != lostPairLimit || !got.Truncated || len(got.Pairs) != lostPairLimit {
+		t.Fatalf("%s counts lost %d written %d truncated %v over %d pairs, want %d lost and %d written",
+			lostPairsName, got.Lost, got.Written, got.Truncated, len(got.Pairs), over, lostPairLimit)
+	}
+	first, last := got.Pairs[0], got.Pairs[lostPairLimit-1]
+	if first.EventID != 1000 || first.CommitNs != 2000*msNs {
+		t.Errorf("the first pair is event %d committed at %d, want the earliest, event 1000 at 2,000 ms", first.EventID, first.CommitNs)
+	}
+	if last.EventID != 1000+lostPairLimit-1 || last.CommitNs != (2000+lostPairLimit-1)*msNs {
+		t.Errorf("the last pair is event %d committed at %d, want event %d, the %dth by commit time",
+			last.EventID, last.CommitNs, 1000+lostPairLimit-1, lostPairLimit)
+	}
+	if slices.ContainsFunc(got.Pairs, func(p lostPair) bool { return p.EventID >= 1000+int64(lostPairLimit) }) {
+		t.Errorf("%s names a pair past the bound: the ones it left out are the latest, not the earliest", lostPairsName)
 	}
 }

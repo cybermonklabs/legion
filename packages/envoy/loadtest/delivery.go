@@ -1,8 +1,12 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"fmt"
+	"log"
+	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -198,9 +202,11 @@ type writeErrors struct {
 
 // joinDelivery joins the writes, commit rows and receipts of a step whose sessions are the flat
 // population alone: the join with no session window, which is what a step without the spec loop's
-// own sessions records (deliveryJoin.join holds the rule).
+// own sessions records (deliveryJoin.join holds the rule). Such a step names no session, so it
+// finds no lost pair to name either, and the join's second answer is nothing.
 func joinDelivery(writes []writeRec, commits []commitRow, receipts []receipt, watchers map[string]int, durationS float64) eventsSummary {
-	return deliveryJoin{writes: writes, commits: commits, receipts: receipts, watchers: watchers, durationS: durationS}.join()
+	out, _ := deliveryJoin{writes: writes, commits: commits, receipts: receipts, watchers: watchers, durationS: durationS}.join()
+	return out
 }
 
 // deliveryJoin is one step's delivery as the join reads it: the writes the event generator sent,
@@ -217,6 +223,13 @@ type deliveryJoin struct {
 	durationS float64
 }
 
+// primaryWrite is one committed write of the window as the join holds it: the write record, and
+// the commit time of its primary event.
+type primaryWrite struct {
+	w      *writeRec
+	commit int64
+}
+
 // join joins the step's writes, the database's commit rows and the sessions' receipts.
 // Offered counts writes scheduled in the window. A write is committed when a commit row of its
 // marker has its kind's primary type, whatever its HTTP status (a write that hit the client
@@ -226,14 +239,12 @@ type deliveryJoin struct {
 // events times the issue's subscriptions (watchers), plus what every loop session was owed under
 // the window rule (classCounts). A second receipt of one event id by one loop session is that
 // class's duplicate: it keeps the latency of the first alone and is no second receipt.
-func (j deliveryJoin) join() eventsSummary {
+// It answers the step's events block and, when a loop session was owed a receipt that never
+// arrived, the record of every such pair (lostPairs); nil when none was lost.
+func (j deliveryJoin) join() (eventsSummary, *lostPairsFile) {
 	out := eventsSummary{ByKind: map[string]kindSummary{}}
 	byMarker := commitsByMarker(j.commits)
-	type timed struct {
-		w      *writeRec
-		commit int64
-	}
-	primary := map[int64]timed{}
+	primary := map[int64]primaryWrite{}
 	other := map[int64]bool{}
 	writeMs := map[string][]float64{}
 	classes := newClassCounts(j.windows)
@@ -267,7 +278,7 @@ func (j deliveryJoin) join() eventsSummary {
 			out.Committed++
 			out.ExpectedIssueTopicReceipts += j.watchers[w.Issue]
 			classes.expect(w.Issue, first.EventID, first.CommitNs, j.deadline)
-			primary[first.EventID] = timed{w: w, commit: first.CommitNs}
+			primary[first.EventID] = primaryWrite{w: w, commit: first.CommitNs}
 			if first.CommitNs == 0 {
 				out.CommitTimesMissing++
 			}
@@ -332,7 +343,7 @@ func (j deliveryJoin) join() eventsSummary {
 		out.OfferedPerS = float64(out.Offered) / durationS
 		out.CommittedPerS = float64(out.Committed) / durationS
 	}
-	return out
+	return out, j.lostPairs(classes, primary)
 }
 
 // owedKey is one event one session was owed, or took.
@@ -417,16 +428,174 @@ func (c *classCounts) summary() map[string]classDelivery {
 	if len(c.byID) == 0 {
 		return nil
 	}
-	for k := range c.owed {
-		if !c.got[k] {
-			c.class(c.byID[k.session].Class).Lost++
-		}
+	for _, k := range c.lostKeys() {
+		c.class(c.byID[k.session].Class).Lost++
 	}
 	out := make(map[string]classDelivery, len(c.counts))
 	for name, cd := range c.counts {
 		out[name] = *cd
 	}
 	return out
+}
+
+// lostKeys is every (session, event) pair that was owed and that no receipt arrived for, in the
+// order the map gives them; each is one class's loss.
+func (c *classCounts) lostKeys() []owedKey {
+	var out []owedKey
+	for k := range c.owed {
+		if !c.got[k] {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+// lostPairsName is the step file that names the lost pairs.
+const lostPairsName = "lost-pairs.json"
+
+// lostPairLimit is how many lost pairs one step writes. A step whose delivery broke loses a pair
+// per committed write per session, so the file is bounded: a step past the bound writes the
+// earliest lostPairLimit by commit time, the ones that say where delivery stopped, and its lost
+// and truncated fields say how many it left out.
+const lostPairLimit = 1000
+
+// lostPair is one (write, session) pair a session was owed and that no receipt arrived for: what
+// the run knows of where the notification stopped. Times are wall-clock Unix nanoseconds.
+type lostPair struct {
+	EventID int64  `json:"event_id"`
+	Kind    string `json:"kind"`
+	// Marker is the write's counter in the run; with summary.json's config.marker_nonce it is
+	// the marker the write carried, lgm<nonce><counter>x (marker.go).
+	Marker int64 `json:"marker"`
+	// Issue is the issue key whose topic the session followed and the write went to.
+	Issue    string `json:"issue"`
+	CommitNs int64  `json:"commit_ns"`
+	Session  string `json:"session"`
+	Class    string `json:"class"`
+	// The four times the session's own subscribe and unsubscribe took, three of which the window
+	// rule reads (sessionWindow.classify): a reader sees for itself that the commit fell inside
+	// the session's life and on neither of its edges, so the pair is no boundary pair.
+	SubSentNs   int64 `json:"sub_sent_ns"`
+	SubAckNs    int64 `json:"sub_ack_ns"`
+	UnsubSentNs int64 `json:"unsub_sent_ns"`
+	UnsubAckNs  int64 `json:"unsub_ack_ns"`
+	// WriteStatus is the status the write answered, 0 for one that never answered, and
+	// WriteError the transport error it failed with, empty when it had none. A write that
+	// committed after a non-2xx or a timeout is still owed to the session, and says where to
+	// look.
+	WriteStatus int    `json:"write_status"`
+	WriteError  string `json:"write_error,omitempty"`
+	// EventReceipts counts the receipts of this event that any session took, its agent-topic
+	// copies included, and EventRelayFrames those of them that came as a relay frame (a receipt
+	// carrying the stream's store time). Both 0 says the event reached no session at all; above
+	// 0 says it was published and this session alone missed it.
+	EventReceipts    int `json:"event_receipts"`
+	EventRelayFrames int `json:"event_relay_frames"`
+	// SessionReceived counts the events this session did take (its share of the class's
+	// received), and SessionLastRecvNs is when it took the last of them, 0 for a session that
+	// took none: a session whose last receipt is long before this commit was behind, and one
+	// that took nothing never had a notification delivered at all.
+	SessionReceived   int   `json:"session_received"`
+	SessionLastRecvNs int64 `json:"session_last_recv_ns"`
+}
+
+// lostPairsFile is lost-pairs.json: the step's lost (write, session) pairs, the ones counted in
+// summary.json as events.by_class.<class>.lost, each named with what the run knows of where its
+// notification stopped.
+type lostPairsFile struct {
+	// Lost counts every lost pair of the step, over every class: the sum of the by_class losses.
+	Lost int `json:"lost"`
+	// Written counts the pairs below and Limit is the bound; Truncated says the bound was
+	// reached and the Lost - Written later pairs were left out.
+	Written   int  `json:"written"`
+	Limit     int  `json:"limit"`
+	Truncated bool `json:"truncated"`
+	// Pairs are the lost pairs by the time their write committed, earliest first.
+	Pairs []lostPair `json:"pairs"`
+}
+
+// lostPairs is every pair the class accounting found owed and never received, as a record of its
+// own, and nil for a step that lost none (a step with no loop session names no session and loses
+// none). The evidence of each record is read from the receipts again here, so a step that lost
+// nothing does no work for this file at all.
+func (j deliveryJoin) lostPairs(c *classCounts, primary map[int64]primaryWrite) *lostPairsFile {
+	keys := c.lostKeys()
+	if len(keys) == 0 {
+		return nil
+	}
+	slices.SortFunc(keys, func(a, b owedKey) int {
+		return cmp.Or(cmp.Compare(primary[a.event].commit, primary[b.event].commit),
+			cmp.Compare(a.event, b.event), cmp.Compare(a.session, b.session))
+	})
+	out := &lostPairsFile{Lost: len(keys), Limit: lostPairLimit, Truncated: len(keys) > lostPairLimit}
+	if out.Truncated {
+		keys = keys[:lostPairLimit]
+	}
+	out.Written = len(keys)
+
+	type eventEvidence struct{ receipts, frames int }
+	type sessionEvidence struct {
+		received int
+		last     int64
+	}
+	events := make(map[int64]*eventEvidence, len(keys))
+	sessions := make(map[string]*sessionEvidence, len(keys))
+	for _, k := range keys {
+		if events[k.event] == nil {
+			events[k.event] = &eventEvidence{}
+		}
+		if sessions[k.session] == nil {
+			sessions[k.session] = &sessionEvidence{}
+		}
+	}
+	for k := range c.got {
+		if s := sessions[k.session]; s != nil {
+			s.received++
+		}
+	}
+	for _, r := range j.receipts {
+		if _, ok := primary[r.EventID]; !ok {
+			continue
+		}
+		if e := events[r.EventID]; e != nil {
+			e.receipts++
+			if r.Published != 0 {
+				e.frames++
+			}
+		}
+		if r.Agent {
+			continue
+		}
+		if s := sessions[r.Session]; s != nil && r.Recv > s.last {
+			s.last = r.Recv
+		}
+	}
+
+	out.Pairs = make([]lostPair, 0, len(keys))
+	for _, k := range keys {
+		p, w := primary[k.event], c.byID[k.session]
+		e, s := events[k.event], sessions[k.session]
+		out.Pairs = append(out.Pairs, lostPair{
+			EventID: k.event, Kind: p.w.Kind, Marker: p.w.Marker, Issue: p.w.Issue, CommitNs: p.commit,
+			Session: k.session, Class: w.Class,
+			SubSentNs: w.SubSent, SubAckNs: w.SubAck, UnsubSentNs: w.UnsubSent, UnsubAckNs: w.UnsubAck,
+			WriteStatus: p.w.Status, WriteError: p.w.TransportErr,
+			EventReceipts: e.receipts, EventRelayFrames: e.frames,
+			SessionReceived: s.received, SessionLastRecvNs: s.last,
+		})
+	}
+	return out
+}
+
+// writeLostPairs writes lost-pairs.json in the step directory, and writes no file at all for a
+// step that lost no pair: the file's presence is the step's own answer to whether a session was
+// owed a notification it never got.
+func writeLostPairs(dir string, lost *lostPairsFile, lg *log.Logger) {
+	if lost == nil {
+		return
+	}
+	writeJSONFile(filepath.Join(dir, lostPairsName), lost, 0o644, lg)
+	lg.Printf("%s: %d lost (write, session) pairs, %d named", lostPairsName, lost.Lost, lost.Written)
 }
 
 // commitsByMarker groups commit rows by their marker.

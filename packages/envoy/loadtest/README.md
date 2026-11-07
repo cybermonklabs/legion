@@ -38,7 +38,7 @@ same step before and after its change, and compares the two rows.
 | `events.go` | The five write kinds, the event mix and each write's plan |
 | `marker.go` | The write marker `lgm<nonce><counter>x`: its format, the run's nonce and the parse that keeps one run's markers |
 | `routes.go` | The route-mix file parser and the request paths |
-| `delivery.go` | The join of writes, database commits and receipts into delivery latencies |
+| `delivery.go` | The join of writes, database commits and receipts into delivery latencies, and `lost-pairs.json` (Sessions, below) |
 | `sample.go` | The 5 s sampler: CPU, RSS, Postgres connections, goroutines, pool waiters, NATS `/varz`, and the heap every 15 s under `-heap-samples`. The transaction-id probe. |
 | `lockprobe.go` | The one-second sampler of the commit-order lock |
 | `locksampler.go` | The 1 s sampler of every ungranted lock in `pg_locks` |
@@ -920,6 +920,11 @@ unsubscribe acknowledgements give, which the run records for every session it st
 | `lost` | Those expected that no receipt arrived for. |
 | `duplicate` | The second and later receipts of one event id by one session. Each gives no delivery latency, since the first already gave one. |
 | `boundary` | Pairs whose write committed inside an edge of the session's life. |
+
+**A lost pair is named, not only counted.** A step whose accounting finds any `lost` pair writes
+`lost-pairs.json` beside its `summary.json`, one record per pair (The step directory, below): the
+count alone cannot say where a notification stopped, and the writes it is read from
+(`public.loadtest_event_commits`) are dropped by the next step's reset.
 
 **A boundary write fails nothing.** An edge is the subscribe still in flight, where the registry
 may have held the interest or not when the event fanned out, or the last `-receipt-deadline`
@@ -1821,6 +1826,7 @@ Every percentile in the harness is the lower nearest rank: the value at index
 | `envelope-<type>.json` | One envelope that a session got on an issue topic, per event type, with a marker when one arrived. |
 | `envelope-agent.<type>.json` | The same for an agent topic. |
 | `relay-frames.csv` | Under consumer delivery, one row per relay frame: the session, the stored subject, the stream sequence, `Envoy-Delivered`, the store time and the receipt time (Unix ns), the event id, whether it was a duplicate, the frame's dedupe identity (the envelope's `event_id`, else its `dedupe_key`) and whether the session answered it `done`. |
+| `lost-pairs.json` | Only in a step whose accounting found a `lost` (write, session) pair (`events.by_class.<class>.lost`, Sessions, above): one record per pair, by commit time, earliest first. `lost` counts every lost pair of the step, `written` those below, `limit` the bound of 1,000, and `truncated` says the bound was reached and the later `lost - written` pairs were left out. Each pair carries `event_id`, `kind` and `marker` (the write's counter in the run; with `config.marker_nonce` it is the marker the write carried), the `issue` whose topic it was owed on, `commit_ns`, the `session` and its `class`, the session's own `sub_sent_ns`, `sub_ack_ns`, `unsub_sent_ns` and `unsub_ack_ns` (so a reader sees for itself that the commit fell inside the session's life and on neither edge of it), the write's `write_status` and `write_error`, `event_receipts` and `event_relay_frames` (the receipts of that event any session took, and those of them that came as a relay frame: both 0 says the event reached no session at all, above 0 says this session alone missed it), and `session_received` with `session_last_recv_ns` (what this session did take, and when it last took anything). A step that lost no pair writes no such file. |
 | `pg-statements.json` | Postgres's slowest statements over the step's window and the lock waits beside them, which R6 of dispatch://INFRA-988 asks for; `loadgen pg-statements` writes it (The step's Postgres readings, below). `statements` is the slowest by total time first, each with `query` (normalized by `pg_stat_statements`), `queryid`, `calls`, `total_ms`, `mean_ms`, `rows`, `shared_blks_read` and `shared_blks_hit`, a column the installed extension does not offer being null. `lock_waits` is one entry per (lock, waiter, blocker) its samples of `pg_locks` saw, each with `lock_type`, `target`, `mode`, `waiter_query`, `blocker_query`, `observations`, `first_seen`, `last_seen`, `seen_for_s` and, where the server has `pg_locks.waitstart`, `wait_ms_max` and `wait_ms_mean`, longest wait first. `reset` records the reset at the window's start — its `call`, `result_type`, `ok`, `at`, `returned` and `error` — so a step whose reset failed is not read as a step with few statements, and `lock_samples`, `lock_sample_failures`, `lock_interval_s` and `lock_wait_source` say how the waits were sampled. `loadgen step-check` reads it: the file must be there with at least one statement, and `lock_waits` must be there and may be empty, which is a step where nothing waited. |
 | `pg-size.json` | The database's size in bytes at the step's start and at its end (`start_bytes`, `end_bytes`, with `start_at` and `end_at`), which R6 asks for; the two phases of `loadgen pg-size` write it. `end_bytes` is null until the end phase has run. `loadgen step-check` takes both above 0 and the end at or above the start: a step adds rows and drops no table. |
 | `dispatch.log` | Dispatch's log for the step. |

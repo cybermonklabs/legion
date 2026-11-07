@@ -1170,7 +1170,8 @@ func (st *step) profile(ctx context.Context) {
 	fetchTo(pprof+"/debug/pprof/heap?debug=1", filepath.Join(out, "heap.txt"), 10*time.Minute, st.lg)
 }
 
-// buildSummary joins what the phases recorded into summary.json, and writes samples.json. It
+// buildSummary joins what the phases recorded into summary.json, and writes samples.json and,
+// for a step a loop session lost a notification in, lost-pairs.json (delivery.go). It
 // reads the run's commit rows and names the ungranted locks' relations, so it runs after the
 // load, and it reads the loop sessions' windows, so it runs after they have all stopped
 // (loopSessions.stop). lp is nil for a step that ran the flat population alone, and ed is nil in
@@ -1208,6 +1209,7 @@ func (st *step) buildSummary(ns *natsSessions, lp *loopSessions, reg *registrar,
 	}
 	join := deliveryJoin{writes: ws, commits: commits, receipts: receipts,
 		watchers: watcherCount, windows: windows, deadline: cfg.receiptDeadline, durationS: durS}
+	events, lost := join.join()
 	sum := summary{
 		Config: summaryConfig{
 			Step: cfg.name, EventsPerS: cfg.events, Sessions: cfg.sessions, RequestsPerS: cfg.requests, Live: cfg.live,
@@ -1219,7 +1221,7 @@ func (st *step) buildSummary(ns *natsSessions, lp *loopSessions, reg *registrar,
 			Editors: cfg.editors.editors, EditorRate: cfg.editors.rate, EditorDocs: cfg.editors.docs,
 			SessionDelivery: cfg.sessionDelivery, MarkerNonce: formatNonce(st.nonce), Source: cfg.sourceName(),
 		},
-		Events:   join.join(),
+		Events:   events,
 		Requests: summarizeRequests(reqs, dropped, cfg.requests, durS),
 		Sessions: sessionsSummary{
 			Registered: int(reg.ok.Load()), RegisterErrors: int(reg.errs.Load()), HeartbeatErrors: reg.heartbeatErrs.Load(),
@@ -1230,6 +1232,7 @@ func (st *step) buildSummary(ns *natsSessions, lp *loopSessions, reg *registrar,
 		Live:            summarizeLive(frames, ws, commits),
 		LiveBytes:       live.bytes.Load(),
 	}
+	writeLostPairs(cfg.out, lost, st.lg)
 	if len(st.pops) > 1 {
 		sum.Populations = st.populationSummaries(commits, receipts, watcherCount, windows, durS)
 	}
@@ -1298,7 +1301,9 @@ func (st *step) sent() (writes []writeRec, reqs []reqRec, dropped int) {
 // sent (step.sent snapshots each one's records first). Each join reads that population's writes
 // against the step's commit rows and receipts, so the two add up to the step's own: a receipt of
 // another population's event belongs to no write of this one and is left out. The loop sessions'
-// windows are the loop population's, since those sessions follow its proposals alone.
+// windows are the loop population's, since those sessions follow its proposals alone. The lost
+// pairs each join finds are left here: the step's own join already named every one of them in
+// lost-pairs.json, and a population's would name the same pairs again.
 func (st *step) populationSummaries(commits []commitRow, receipts []receipt, watchers map[string]int,
 	windows []sessionWindow, durS float64) []populationSummary {
 	out := make([]populationSummary, 0, len(st.pops))
@@ -1308,10 +1313,11 @@ func (st *step) populationSummaries(commits []commitRow, receipts []receipt, wat
 		if p.loop != nil {
 			join.windows = windows
 		}
+		events, _ := join.join()
 		out = append(out, populationSummary{
 			Name: p.name, Seed: p.seedPath, EventMix: p.mix, RouteMix: p.routes.Source,
 			EventsPerS: p.events, RequestsPerS: p.requests,
-			Events:   join.join(),
+			Events:   events,
 			Requests: summarizeRequests(p.rs, int(p.reqs.dropped.Load()), p.requests, durS),
 		})
 	}
