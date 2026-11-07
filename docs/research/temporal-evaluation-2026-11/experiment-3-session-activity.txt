@@ -1,0 +1,49 @@
+Experiment 3, a session-bound activity.
+Recorded 2026-11-07T19:22:06Z by docs/research/temporal-evaluation-2026-11/run.sh,
+from the branch of dispatch://INFRA-1546 based on commit 09bf32cc0298db50261183a12e129ad324b03cee,
+against Temporal server 1.32.2 from the pinned command temporal 1.10.0,
+on the Temporal Go SDK v1.50.0, in one Legion pod.
+This is a transcript of one run, not a golden file: nothing re-records it.
+------------------------------------------------------------------------------
+session-task-queue: exp3-session-1794079251851042241
+workflow-task-queue: exp3-workflow-1794079251851042241
+[worker1] sessionworker: pid=9788
+worker1-started-pid: 9788
+worker1-reported-pid: 9788
+workflow-id: exp3-kill-1794079251851042241
+run-id: 01a1b774-deca-7700-8d20-f98bf0613e99
+session-activity-running-before-kill: true
+kill-sent: true
+killed-pid: 9788
+kill-signal: SIGKILL
+session-created: true
+session-id: e0ece89b-30e5-4018-a286-20fcead128ad
+session-host: legion-infra-infra-1546
+session-activity-result: none
+workflow-wait-error-type: *internal.CanceledError
+workflow-wait-error: canceled
+workflow-wait-is-ErrSessionFailed: false
+workflow-wait-is-cancellation: true
+session-state-after-wait: failed
+session-context-error: canceled
+session-probe-ran: false
+session-probe-error-type: *errors.errorString
+session-probe-error: session has failed
+session-probe-is-ErrSessionFailed: true
+history-event-count: 18
+session-activity-start-count: 0
+session-activity-starts-after-kill: 0
+session-activity-final-event: ActivityTaskCancelRequested
+workflow-observed-session-failure: true
+[worker2] sessionworker: pid=9796
+second-worker-started: true
+worker2-started-pid: 9796
+history-event-count-after-restart: 18
+session-activity-start-count-after-restart: 0
+session-activity-final-event-after-restart: ActivityTaskCancelRequested
+session-activity-resumed-after-restart: false
+killed-run-status-after-restart: Completed
+new-session-after-restart: succeeded
+new-session-activity-ran-on: pid=9796 host=legion-infra-infra-1546
+new-session-host: legion-infra-infra-1546
+experiment 3: PASS

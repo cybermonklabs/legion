@@ -1,0 +1,40 @@
+Experiment 4, delivery to an outside system.
+Recorded 2026-11-07T19:22:06Z by docs/research/temporal-evaluation-2026-11/run.sh,
+from the branch of dispatch://INFRA-1546 based on commit 09bf32cc0298db50261183a12e129ad324b03cee,
+against Temporal server 1.32.2 from the pinned command temporal 1.10.0,
+on the Temporal Go SDK v1.50.0, in one Legion pod.
+This is a transcript of one run, not a golden file: nothing re-records it.
+------------------------------------------------------------------------------
+idempotency-key: exp4-pr-comment-1794079266502771210
+poison-key: exp4-poison-1794079266502771210
+outside-system-ledger: /legion/scratch/tmp/temporal-evaluation-2026-11/run/work/e4/exp4-ledger-1794079266502771210
+activity-call-log: /legion/scratch/tmp/temporal-evaluation-2026-11/run/work/e4/exp4-calls-1794079266502771210
+workflow-id: exp4-delivery-1794079266502771210
+time=2026-11-07T19:21:06.892Z level=ERROR msg="Activity error." Namespace=e4 TaskQueue=exp4-1794079266502771210 WorkerID=9805@legion-infra-infra-1546@ WorkflowID=exp4-delivery-1794079266502771210 RunID=01a1b775-172b-7de5-8311-bfa7f3761b80 ActivityType=exp4Deliver Attempt=1 Error="exp4-pr-comment-1794079266502771210 was written on attempt 1, then the delivery crashed before it could report success (type: CrashAfterWrite, retryable: true)"
+time=2026-11-07T19:21:07.978Z level=ERROR msg="Activity error." Namespace=e4 TaskQueue=exp4-1794079266502771210 WorkerID=9805@legion-infra-infra-1546@ WorkflowID=exp4-delivery-1794079266502771210 RunID=01a1b775-172b-7de5-8311-bfa7f3761b80 ActivityType=exp4Deliver Attempt=1 Error="the outside system refused exp4-poison-1794079266502771210 on attempt 1 and will refuse every attempt (type: DeliveryRefused, retryable: true)"
+time=2026-11-07T19:21:08.945Z level=ERROR msg="Activity error." Namespace=e4 TaskQueue=exp4-1794079266502771210 WorkerID=9805@legion-infra-infra-1546@ WorkflowID=exp4-delivery-1794079266502771210 RunID=01a1b775-172b-7de5-8311-bfa7f3761b80 ActivityType=exp4Deliver Attempt=2 Error="the outside system refused exp4-poison-1794079266502771210 on attempt 2 and will refuse every attempt (type: DeliveryRefused, retryable: true)"
+time=2026-11-07T19:21:09.945Z level=ERROR msg="Activity error." Namespace=e4 TaskQueue=exp4-1794079266502771210 WorkerID=9805@legion-infra-infra-1546@ WorkflowID=exp4-delivery-1794079266502771210 RunID=01a1b775-172b-7de5-8311-bfa7f3761b80 ActivityType=exp4Deliver Attempt=3 Error="the outside system refused exp4-poison-1794079266502771210 on attempt 3 and will refuse every attempt (type: DeliveryRefused, retryable: true)"
+idempotent-delivery-activity-calls: 2
+idempotent-delivery-records-written: 1
+idempotent-delivery-outcome: already-delivered
+idempotent-delivery-succeeded-on-attempt: 2
+poison-delivery-max-attempts-allowed: 3
+poison-delivery-activity-calls: 3
+poison-delivery-records-written: 0
+poison-delivery-error-type: *internal.ActivityError
+poison-delivery-error-is-application-error: true
+poison-delivery-error-is-timeout: false
+poison-delivery-application-error-type: DeliveryRefused
+poison-delivery-application-error-message: the outside system refused exp4-poison-1794079266502771210 on attempt 3 and will refuse every attempt
+poison-delivery-retry-state: MaximumAttemptsReached
+poison-delivery-error: activity error (type: exp4Deliver, scheduledEventID: 11, startedEventID: 12, identity: 9805@legion-infra-infra-1546@): the outside system refused exp4-poison-1794079266502771210 on attempt 3 and will refuse every attempt (type: DeliveryRefused, retryable: true)
+workflow-continued-to-handler: true
+dead-letter-record: dead-lettered key=exp4-poison-1794079266502771210 attempt=1 reason=activity error (type: exp4Deliver, scheduledEventID: 11, startedEventID: 12, identity: 9805@legion-infra-infra-1546@): the outside system refused exp4-poison-1794079266502771210 on attempt 3 and will refuse every attempt (type: DeliveryRefused, retryable: true)
+history-event-count: 23
+history-activities-scheduled: 3
+history-activities-completed: 2
+history-activities-failed: 1
+history-attempt-of-each-activity-start-in-order: [2 3 1]
+workflow-status: Completed
+limit: one process, one file standing in for GitHub and Dispatch, three attempts: it shows that Temporal's retry plus an idempotency key writes once and that a bounded policy hands the workflow a routable error, not that Legion's real deliveries are idempotent or that its dead letters would be read
+experiment 4: PASS

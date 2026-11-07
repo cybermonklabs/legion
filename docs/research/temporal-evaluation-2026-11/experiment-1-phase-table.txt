@@ -1,0 +1,31 @@
+Experiment 1, the phase table as a workflow.
+Recorded 2026-11-07T19:22:06Z by docs/research/temporal-evaluation-2026-11/run.sh,
+from the branch of dispatch://INFRA-1546 based on commit 09bf32cc0298db50261183a12e129ad324b03cee,
+against Temporal server 1.32.2 from the pinned command temporal 1.10.0,
+on the Temporal Go SDK v1.50.0, in one Legion pod.
+This is a transcript of one run, not a golden file: nothing re-records it.
+------------------------------------------------------------------------------
+issue-id: EXP1-1794079242976177673
+workflow-id: exp1-issue-1794079242976177673
+run-id: 01a1b774-bbd8-7b40-9ba2-af714ac4d739
+signals-sent: 12
+final-phase: done
+phase-path: admitted -> planning -> implementing -> testing -> reviewing -> implementing -> testing -> reviewing -> accepting -> retro -> merging -> awaiting_merge -> done
+triggers-consumed: 12
+triggers-no-row-accepted: 0
+role-prompts: 10
+backward-move-reviewing-to-implementing: true
+testing-entries: 2
+history-event-count: 95
+history-signal-events: 12
+history-activity-scheduled-events: 10
+workflow-source-file: /legion/workspaces/cybermonklabs/legion/infra-1546/docs/research/temporal-evaluation-2026-11/prototype/internal/exp1/exp1.go
+workflow-lines-of-go: 27
+legion-repo-root: /legion/workspaces/cybermonklabs/legion/infra-1546
+legion-table-go-path: /legion/workspaces/cybermonklabs/legion/infra-1546/packages/daemon/internal/workflow/table.go
+legion-table-go-lines: 129
+legion-engine-go-path: /legion/workspaces/cybermonklabs/legion/infra-1546/packages/daemon/internal/workflow/engine.go
+legion-engine-go-lines: 1165
+legion-phase-machine-lines-total: 1294
+limit: one issue, one happy path with one rejection, on one dev server: it shows the lifecycle fits in a workflow, not that Legion's scale of issues, guards, effects and statuses does
+experiment 1: PASS

@@ -1,0 +1,80 @@
+Experiment 6, change and replay.
+Recorded 2026-11-07T19:22:06Z by docs/research/temporal-evaluation-2026-11/run.sh,
+from the branch of dispatch://INFRA-1546 based on commit 09bf32cc0298db50261183a12e129ad324b03cee,
+against Temporal server 1.32.2 from the pinned command temporal 1.10.0,
+on the Temporal Go SDK v1.50.0, in one Legion pod.
+This is a transcript of one run, not a golden file: nothing re-records it.
+------------------------------------------------------------------------------
+run-issues: 3
+run-phases-entered: 36
+run-role-prompts: 30
+run-signals-sent: 36
+recorded-workflow-id: exp6-issue-1794079284885933067-001
+recorded-history-file: /legion/scratch/tmp/temporal-evaluation-2026-11/run/work/e6/exp6-history-exp6-issue-1794079284885933067-001.json
+recorded-history-bytes: 62580
+recorded-history-events: 98
+history-events-read-back: 98
+time=2026-11-07T19:21:28.357Z level=ERROR msg="Workflow panic" WorkflowType=exp1PhaseWorkflow WorkflowID=ReplayId RunID=01a1b775-5f22-7cc8-a64a-b8c186d1d646 Attempt=1 Error="[TMPRL1100] nondeterministic workflow: history event is ActivityTaskScheduled: (ActivityId:9, ActivityType:(Name:exp1RolePrompt), TaskQueue:(Name:exp6-1794079284885933067, Kind:Normal), Header:(Fields:map[]), Input:(Payloads:[len=3]), ScheduleToCloseTimeout:(Seconds:120, Nanos:0), ScheduleToStartTimeout:(Seconds:120, Nanos:0), StartToCloseTimeout:(Seconds:60, Nanos:0), HeartbeatTimeout:(Seconds:0, Nanos:0), WorkflowTaskCompletedEventId:8, RetryPolicy:(InitialInterval:(Seconds:1, Nanos:0), BackoffCoefficient:2, MaximumInterval:(Seconds:100, Nanos:0), MaximumAttempts:0, NonRetryableErrorTypes:[len=0]), UseWorkflowBuildId:true), replay command is ScheduleActivityTask: (ActivityId:9, ActivityType:(Name:exp6LintPrompt), TaskQueue:(Name:exp6-1794079284885933067, Kind:Normal), Header:(Fields:map[]), Input:(Payloads:[len=2]), ScheduleToCloseTimeout:(Seconds:0, Nanos:0), ScheduleToStartTimeout:(Seconds:0, Nanos:0), StartToCloseTimeout:(Seconds:60, Nanos:0), HeartbeatTimeout:(Seconds:0, Nanos:0), RequestEagerExecution:true, UseWorkflowBuildId:true)"
+replay-of-the-changed-workflow-failed: true
+replay-of-the-changed-workflow-error: [TMPRL1100] nondeterministic workflow: history event is ActivityTaskScheduled: (ActivityId:9, ActivityType:(Name:exp1RolePrompt), TaskQueue:(Name:exp6-1794079284885933067, Kind:Normal), Header:(Fields:map[]), Input:(Payloads:[len=3]), ScheduleToCloseTimeout:(Seconds:120, Nanos:0), ScheduleToStartTimeout:(Seconds:120, Nanos:0), StartToCloseTimeout:(Seconds:60, Nanos:0), HeartbeatTimeout:(Seconds:0, Nanos:0), WorkflowTaskCompletedEventId:8, RetryPolicy:(InitialInterval:(Seconds:1, Nanos:0), BackoffCoefficient:2, MaximumInterval:(Seconds:100, Nanos:0), MaximumAttempts:0, NonRetryableErrorTypes:[len=0]), UseWorkflowBuildId:true), replay command is ScheduleActivityTask: (ActivityId:9, ActivityType:(Name:exp6LintPrompt), TaskQueue:(Name:exp6-1794079284885933067, Kind:Normal), Header:(Fields:map[]), Input:(Payloads:[len=2]), ScheduleToCloseTimeout:(Seconds:0, Nanos:0), ScheduleToStartTimeout:(Seconds:0, Nanos:0), StartToCloseTimeout:(Seconds:60, Nanos:0), HeartbeatTimeout:(Seconds:0, Nanos:0), RequestEagerExecution:true, UseWorkflowBuildId:true)
+replay-of-the-changed-workflow-is-non-determinism: true
+replay-of-the-versioned-workflow-failed: false
+replay-of-the-versioned-workflow-error: none
+change-made-safe-by: workflow.GetVersion(exp6-lint-prompt)
+namespace-executions-counted: 3
+namespace-history-events-counted: 291
+namespace-issues: 3
+namespace-phases-entered: 36
+namespace-role-prompts: 30
+namespace-holds-only-this-run: true
+action-mapping: EVENT_TYPE_ACTIVITY_TASK_COMPLETED events=30 actions=0
+action-mapping: EVENT_TYPE_ACTIVITY_TASK_SCHEDULED events=30 actions=30
+action-mapping: EVENT_TYPE_ACTIVITY_TASK_STARTED events=30 actions=0
+action-mapping: EVENT_TYPE_WORKFLOW_EXECUTION_COMPLETED events=3 actions=0
+action-mapping: EVENT_TYPE_WORKFLOW_EXECUTION_SIGNALED events=36 actions=36
+action-mapping: EVENT_TYPE_WORKFLOW_EXECUTION_STARTED events=3 actions=3
+action-mapping: EVENT_TYPE_WORKFLOW_TASK_COMPLETED events=53 actions=0
+action-mapping: EVENT_TYPE_WORKFLOW_TASK_SCHEDULED events=53 actions=0
+action-mapping: EVENT_TYPE_WORKFLOW_TASK_STARTED events=53 actions=0
+actions-by-mapping-the-history: 69
+action-metric-row: action{action_type="activity_retry",namespace="e4",operation="PollActivityTaskQueue",service_name="frontend"} 3
+action-metric-row: action{action_type="command_BatchMarkers",namespace="e3",operation="RespondWorkflowTaskCompleted",service_name="frontend"} 2
+action-metric-row: action{action_type="command_ContinueAsNewWorkflowExecution",namespace="e5",operation="RespondWorkflowTaskCompleted",service_name="frontend"} 2
+action-metric-row: action{action_type="command_ScheduleActivityTask",namespace="e1",operation="RespondWorkflowTaskCompleted",service_name="frontend"} 10
+action-metric-row: action{action_type="command_ScheduleActivityTask",namespace="e2",operation="RespondWorkflowTaskCompleted",service_name="frontend"} 3
+action-metric-row: action{action_type="command_ScheduleActivityTask",namespace="e3",operation="RespondWorkflowTaskCompleted",service_name="frontend"} 6
+action-metric-row: action{action_type="command_ScheduleActivityTask",namespace="e4",operation="RespondWorkflowTaskCompleted",service_name="frontend"} 3
+action-metric-row: action{action_type="command_ScheduleActivityTask",namespace="e5",operation="RespondWorkflowTaskCompleted",service_name="frontend"} 24
+action-metric-row: action{action_type="command_ScheduleActivityTask",namespace="e6",operation="RespondWorkflowTaskCompleted",service_name="frontend"} 30
+action-metric-row: action{action_type="command_SignalExternalWorkflowExecution",namespace="e5",operation="RespondWorkflowTaskCompleted",service_name="frontend"} 36
+action-metric-row: action{action_type="command_StartTimer",namespace="e5",operation="RespondWorkflowTaskCompleted",service_name="frontend"} 12
+action-metric-row: action{action_type="grpc_QueryWorkflow",namespace="e2",operation="QueryWorkflow",service_name="frontend"} 4
+action-metric-row: action{action_type="grpc_QueryWorkflow",namespace="e5",operation="QueryWorkflow",service_name="frontend"} 3
+action-metric-row: action{action_type="grpc_RecordActivityTaskHeartbeat",namespace="e3",operation="RecordActivityTaskHeartbeat",service_name="frontend"} 2
+action-metric-row: action{action_type="grpc_SignalWorkflowExecution",namespace="e1",operation="SignalWorkflowExecution",service_name="frontend"} 12
+action-metric-row: action{action_type="grpc_SignalWorkflowExecution",namespace="e2",operation="SignalWorkflowExecution",service_name="frontend"} 3
+action-metric-row: action{action_type="grpc_SignalWorkflowExecution",namespace="e3",operation="SignalWorkflowExecution",service_name="frontend"} 2
+action-metric-row: action{action_type="grpc_SignalWorkflowExecution",namespace="e6",operation="SignalWorkflowExecution",service_name="frontend"} 36
+action-metric-row: action{action_type="grpc_StartWorkflowExecution",namespace="e1",operation="StartWorkflowExecution",service_name="frontend"} 1
+action-metric-row: action{action_type="grpc_StartWorkflowExecution",namespace="e2",operation="StartWorkflowExecution",service_name="frontend"} 1
+action-metric-row: action{action_type="grpc_StartWorkflowExecution",namespace="e3",operation="StartWorkflowExecution",service_name="frontend"} 2
+action-metric-row: action{action_type="grpc_StartWorkflowExecution",namespace="e4",operation="StartWorkflowExecution",service_name="frontend"} 1
+action-metric-row: action{action_type="grpc_StartWorkflowExecution",namespace="e5",operation="StartWorkflowExecution",service_name="frontend"} 25
+action-metric-row: action{action_type="grpc_StartWorkflowExecution",namespace="e6",operation="StartWorkflowExecution",service_name="frontend"} 3
+action-metric-row: action{action_type="grpc_StartWorkflowExecution",namespace="temporal_system",operation="StartWorkflowExecution",service_name="frontend"} 2
+action-metric-rows: 25
+action-metric-reads-until-stable: 2
+action-metric-namespace-counted: e6
+action-metric-namespace-excluded: temporal_system
+actions-by-the-server-metric: 69
+action-count-difference-metric-minus-mapping: 0
+action-count-ratio-metric-over-mapping: 1.00
+action-count-gap-means: none: the published mapping rule, applied to this run's histories, gave exactly the count the server's own action metric gave, so a cost estimate made from a history of this shape is right about this shape of run
+actions-by-the-server-metric-per-issue: 23.00
+actions-by-mapping-per-issue: 23.00
+actions-by-the-server-metric-per-phase: 1.92
+actions-by-mapping-per-phase: 1.92
+actions-by-the-server-metric-per-role-prompt: 2.30
+actions-by-mapping-per-role-prompt: 2.30
+limit: three issues of one shape on one dev server: it shows that an unversioned change breaks replay and a versioned one does not, and what this namespace's Actions were counted as two ways, not that the mapping holds for workflows with children, timers, local activities or retries, nor that a dev server charges as Temporal Cloud bills
+experiment 6: PASS
