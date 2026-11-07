@@ -56,6 +56,58 @@ export interface ShotSet<Seeded> {
   readonly allowEmpty?: readonly string[];
 }
 
+/** Every `<time>` the page shows when a shot is taken, written beside nothing the site serves:
+ *  `.work/time-elements/<set>-<id>.json`, which `docs-site.yaml` uploads with the shots.
+ *
+ *  The pages' images are made rather than committed, so the only way to ask whether two builds
+ *  render them the same is to compare two runs' images; and the dashboard draws its times as
+ *  relative labels from the clock over rows seeded at run time, so two runs of one commit differ
+ *  wherever a label crossed a rounding boundary between them. That is what this file tells apart
+ *  from a difference in shape at identical text, which is what a changed font looks like: a
+ *  region that moved is the clock only where it lies inside one of these boxes AND that
+ *  element's text differs between the two runs. Reading the pixels cannot show the second half.
+ *
+ *  Each box is given twice: `viewport`, as Playwright reports it in CSS pixels, and `image`, the
+ *  same box in the pixels of the PNG this shot wrote — scaled by the device pixel ratio and, for
+ *  a shot of one element, with that element's own origin taken off, so a reader compares it with
+ *  a difference box without doing arithmetic. */
+async function recordTimeElements(
+  page: Page,
+  element: Locator | undefined,
+  set: string,
+  id: string
+): Promise<void> {
+  const ratio = await page.evaluate(() => window.devicePixelRatio);
+  const origin = (await element?.boundingBox()) ?? { x: 0, y: 0 };
+  const times = page.locator("time");
+  const elements = [];
+  for (let i = 0; i < (await times.count()); i++) {
+    const one = times.nth(i);
+    const box = await one.boundingBox();
+    elements.push({
+      dateTime: await one.getAttribute("datetime"),
+      title: await one.getAttribute("title"),
+      text: (await one.innerText()).trim(),
+      viewport: box,
+      image:
+        box === null
+          ? null
+          : {
+              x: Math.round((box.x - origin.x) * ratio),
+              y: Math.round((box.y - origin.y) * ratio),
+              width: Math.round(box.width * ratio),
+              height: Math.round(box.height * ratio),
+            },
+    });
+  }
+  const out = join(WORK, "time-elements", `${set}-${id}.json`);
+  mkdirSync(dirname(out), { recursive: true });
+  await Bun.write(
+    out,
+    `${JSON.stringify({ set, id, devicePixelRatio: ratio, origin, elements }, null, 2)}\n`
+  );
+}
+
 /** Resets and seeds the harness, takes every shot in `set` (or those `only` names) in `browser`,
  *  and returns one line per shot that failed. A failed shot leaves what the page showed in
  *  `.work/`. Every shot's `prepare` runs, in order, whether or not the shot is taken. The reset
@@ -98,7 +150,9 @@ export async function runShotSet<Seeded>(
           ...(shot.allowEmpty ?? []),
         ]);
         const options = { animations: "disabled", caret: "hide", path: out } as const;
-        await (shot.element?.(page, seeded) ?? page).screenshot(options);
+        const subject = shot.element?.(page, seeded) ?? page;
+        await subject.screenshot(options);
+        await recordTimeElements(page, shot.element?.(page, seeded), set.set, shot.id);
         console.log(`${set.set}/${shot.id}: ${relative(REPO, out)}`);
       } catch (error) {
         doing = "keeping what its page showed";
