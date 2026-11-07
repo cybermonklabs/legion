@@ -62,7 +62,7 @@ type KeyValue struct {
 // key's history. It is the JetStream MaxWait the listener and Dispatch open their legacy handles
 // with, so a read moved off the legacy handle waits no longer than it did there, and no less,
 // whatever MaxWait the legacy handle carries. A read a start sends again because the server left
-// it unanswered costs that bound once per send (sentAgain, wrapKeyValue's create path).
+// it unanswered costs that bound once per send (sentAgain, wrapKeyValue for a start's caller).
 const RequestTimeout = 10 * time.Second
 
 // A create a clustered server answers is committed to the JetStream metadata group, not applied
@@ -136,28 +136,23 @@ func bucketMissing(err error) bool {
 // before the handle is opened on it (awaitBucketApplied), since a clustered create is answered
 // before every member has applied it.
 //
-// Every request this function sends is sent again when the server leaves it unanswered
-// (sentAgain): the bucket's lookup, its create, and the handle open on both paths. Each of its
-// callers is a program's start -- store.Open, session.OpenSessionRegistry, cistore.Open,
-// brokerTokens.open and redeliver.OpenState -- and a start that loses one answer ends the
-// program, which is what the stream's own reconcile is sent again for too
-// (ensureStreamWithConfig). A bucket a start finds rather than creates is the ordinary case, a
-// restart of a deployment whose buckets are already there, so the sending again cannot be left to
-// the create path. WrapKeyValue and OpenKeyValue send once instead: they are reached from a
-// request and from a watcher's repair (roles.Buckets.bucket, kvwatch.Rewatch), where a caller
-// waits on a budget of its own and a request sent again would hold it three times as long.
+// The handle open this function ends with is sent again when the server leaves it unanswered
+// (wrapKeyValue, sentAgain), on both of its paths: a bucket this start created and one it found
+// already there, which is the ordinary start, a restart of a deployment whose buckets exist. Its
+// callers are all starts -- store.Open, session.OpenSessionRegistry, cistore.Open,
+// brokerTokens.open and redeliver.OpenState -- and a start that loses that answer ends the
+// program. WrapKeyValue and OpenKeyValue send it once instead: they are reached from a request
+// and from a watcher's repair (roles.Buckets.bucket, kvwatch.Rewatch), where a caller waits on a
+// budget of its own and a request sent again would hold it three times as long.
+//
+// The bucket's own lookup and create are sent once here. They are sent again by INFRA-1599's
+// cybermonklabs/legion#2940, which owns them, so neither tree changes them twice.
 func EnsureKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig) (KeyValue, error) {
-	lookUp := func() (nats.KeyValue, error) { return js.KeyValue(config.Bucket) }
-	kv, err := sentAgain("KV_"+config.Bucket+" lookup", lookUp)
+	kv, err := js.KeyValue(config.Bucket)
 	created := false
 	switch {
 	case errors.Is(err, nats.ErrBucketNotFound):
-		// A create whose answer was lost is sent again with the same configuration, and a server
-		// that applied the first answers the second "stream name already in use", which the
-		// branch below already reads as a create this start must wait for.
-		kv, err = sentAgain("KV_"+config.Bucket+" create", func() (nats.KeyValue, error) {
-			return js.CreateKeyValue(config)
-		})
+		kv, err = js.CreateKeyValue(config)
 		if errors.Is(err, nats.ErrStreamNameAlreadyInUse) {
 			// The bucket was created between this start's lookup and its create, by another start
 			// of this deployment, and the member answering may not have applied that create
@@ -165,7 +160,7 @@ func EnsureKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyV
 			// they are for a bucket this start found: the start that created it just now carries
 			// the deployment's count too.
 			kv, err = awaitBucketApplied(config.Bucket, bucketMissing, func() (nats.KeyValue, error) {
-				return sentAgain("KV_"+config.Bucket+" lookup", lookUp)
+				return js.KeyValue(config.Bucket)
 			})
 		} else {
 			err = refusedSettings(err, nil, &nats.StreamConfig{Replicas: config.Replicas})

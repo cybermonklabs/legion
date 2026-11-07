@@ -1,11 +1,11 @@
 kind: Fixed
 body: |-
-  A listener or dispatch server whose start opens a KV bucket now sends each of its requests
-  again when the NATS server leaves one unanswered, up to three sends, instead of failing with
-  `open the jetstream handle of KV bucket <name>: context deadline exceeded`. That covers the
-  bucket's lookup, its create and the handle open, whether the start creates the bucket or finds
-  one already there, which is every restart of a deployment. A bucket a member has not applied
-  yet was already waited out; a request that drew no answer at all was not.
+  A listener or dispatch server whose start opens the jetstream handle of a KV bucket now sends
+  that read again when the NATS server leaves it unanswered, up to three sends, instead of failing
+  with `open the jetstream handle of KV bucket <name>: context deadline exceeded`. It holds for
+  every start, the one that creates the bucket and the one that finds it already there, which is
+  every restart of a deployment. A bucket a member has not applied yet was already waited out; a
+  request that drew no answer at all was not.
 
-  A caller that is not a start sends each of these once, as before: a role or session read that
+  A caller that is not a start sends that read once, as before: a role or session read that
   reopens a bucket waits on a budget of its own.
