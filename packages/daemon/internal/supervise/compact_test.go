@@ -439,8 +439,8 @@ func TestACompactionWhoseClaimLosesItsProcessLeavesTheOwedTaskToTheRelaunch(t *t
 
 // A death the wake pacing parks the relaunch of leaves the claim exactly as the park found it:
 // working, over the dead process it still records, at the generation the compaction was taken
-// at. The park writes nothing of the claim at all, so the death is marked on the compaction
-// itself (compactionLostProcess) and that mark is what the end of the compaction reads
+// at. The park writes nothing of the claim at all, so the compaction is dropped where the death
+// is read (compactionLostProcess) and the end of the compaction finds none to give back
 // (ownsCompaction). Taken for a compaction that ran, the end would give the claim back idle and
 // prompt a process that is gone, and the answer would promise its caller both.
 func TestACompactionWhoseRelaunchWaitsItsTurnLeavesTheOwedTaskToThatTurn(t *testing.T) {
@@ -467,6 +467,51 @@ func TestACompactionWhoseRelaunchWaitsItsTurnLeavesTheOwedTaskToThatTurn(t *test
 	h.wantState(StateWorking)
 	if got := h.claim().Locator; got == nil || *got != dead {
 		t.Fatalf("the claim records %+v, want the dead process the park kept, %+v", got, dead)
+	}
+	h.wantWakeDueAt(waiting)
+	h.wantPrompts(ladderSends)
+	if got := h.pending(); got.ID != owed || !got.ConfirmedAt.IsZero() {
+		t.Fatalf("the claim holds %+v, want the task %s still owed and unconfirmed", got, owed)
+	}
+
+	h.advance(waiting.At.Sub(h.clock.Now()))
+	h.relaunched()
+
+	h.m.Wait()
+	prompts := h.wantPrompts(ladderSends + 1)
+	if prompts[ladderSends].DeliveryID != owed {
+		t.Fatalf("the claim the wake's turn relaunched was sent %q, want the task it owed, %q", prompts[ladderSends].DeliveryID, owed)
+	}
+}
+
+// A displacement the pacing parks the relaunch of is the same loss: the process the compaction
+// ran over is gone, however the daemon recovers the claim, so its end gives the claim back
+// nothing and the owed task waits for the wake's turn. The drop is made where the runtime's
+// verdict is read, before a death is told from a displacement (judge), so both judgements carry
+// it; made in the death alone, a displaced claim would report itself compacted until that turn,
+// and the compaction's end would prompt the process the replacement ended.
+func TestACompactionWhoseDisplacedRelaunchWaitsItsTurnLeavesTheOwedTaskToThatTurn(t *testing.T) {
+	notices := 0
+	h := ladderStuck(t, &notices, pacedDeps(wakeRate))
+	owed := h.pending().ID
+	release := h.conn.HoldCompact()
+	compacted := make(chan error, 1)
+	go func() { compacted <- h.m.Compact(h.ctx, testCompactInstructions) }()
+	waitForCompacting(t, h)
+
+	// A claim of the wave takes the turn the limiter had saved, so the relaunch this
+	// displacement raises waits for the next one rather than running where it is raised.
+	queueAhead(h, 1)
+	h.observeDisplaced(runtime.Gone)
+	waiting := h.wantWaitingWake(WakeLaunch)
+	release()
+
+	if err := <-compacted; !errors.Is(err, ErrCompactProcessGone) {
+		t.Fatalf("a compaction whose displaced claim's relaunch waits its turn answered %v, want ErrCompactProcessGone", err)
+	}
+	h.m.Wait()
+	if h.m.View().Claim.Compacting {
+		t.Fatal("the claim still reports itself being compacted, want the compaction dropped with the process it ran over")
 	}
 	h.wantWakeDueAt(waiting)
 	h.wantPrompts(ladderSends)

@@ -1364,11 +1364,12 @@ func (m *Machine) logTurn(line, delivery string) {
 }
 
 // startTurn records what this turn is the turn of and writes its start line, which is how the
-// turn's end comes to name what its start named (Machine.turnsDelivery, endTurn). Every path that
-// puts a claim in working goes through here — turnStarted, sendPending's askFirst branch and
-// answerAskFirstAfterDrop — the two that name no delivery included, so a turn that is no task's
-// overwrites the identity of the turn before it rather than leaving it standing for its end to
-// read.
+// turn's end comes to name what its start named (Machine.turnsDelivery, endTurn). Every path
+// that puts a claim in working goes through here — turnStarted, sendPending's askFirst branch
+// and answerAskFirstAfterDrop — the two that name no delivery included, so a turn that is no
+// task's overwrites the identity of the turn before it rather than leaving it standing for its
+// end to read. So does the one path that records a turn in a claim already working, a turn
+// Oh My Pi starts under a compaction (turnStartedWhileBusy), whose end writes its end line.
 //
 // The identity is carried from the start because no reading of the claim can answer it at the
 // end: a pending delivery that is confirmed is the running turn's in one case and a finished
@@ -1805,14 +1806,10 @@ func (m *Machine) stopPrevious(ctx context.Context) error {
 // This is the one judgement that the agent behind the claim's Envoy session has ended, so it is
 // where the session's clean stop is sent (sessionGone): a connection closing is not — a daemon
 // restart closes every stream while the agents run on — and the probe that reaches here is what
-// tells the two apart. A compaction running over the process loses it here too, and is marked
-// so before anything else is decided (compactionLostProcess): the relaunch below can be one the
-// wake pacing parks, which writes nothing of the claim and so leaves its end nothing else to
-// read.
+// tells the two apart.
 func (m *Machine) died(ctx context.Context, observation runtime.Observation) error {
 	m.log.Warn("supervise: process died", "incarnation", m.claim.Locator.Incarnation, "observed", string(observation.Kind),
 		"detail", observation.Detail)
-	m.compactionLostProcess()
 	m.sessionGone()
 	if err := m.interrupted(ctx, "the process died in the task's turn", observation.OutOfMemory); err != nil {
 		return err
@@ -2013,6 +2010,11 @@ func (m *Machine) judge(ctx context.Context, observation runtime.Observation, al
 		}
 		return alive(ctx)
 	case runtime.Gone, runtime.NotRecordedProcess:
+		// The process is gone either way the verdict splits, so a compaction running over it
+		// loses it here, before anything else is decided (compactionLostProcess): the relaunch
+		// below can be one the wake pacing parks, which writes nothing of the claim and so
+		// leaves its end nothing else to read.
+		m.compactionLostProcess()
 		if observation.Displaced {
 			return m.displaced(ctx, observation)
 		}

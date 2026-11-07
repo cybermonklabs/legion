@@ -1364,10 +1364,16 @@ func turnStarted(m *Machine, ctx context.Context, ev Event) error {
 // an Envoy delivery queued while the session was being compacted — and that turn is recorded on
 // the compaction: its end would otherwise reach an idle claim, where it means nothing, and the
 // compaction's end would send the owed task into a running agent (compactEnded).
+//
+// That turn's start line is written here (startTurn), because its end writes the end line
+// (turnEnded): an operator reads an end with no start as a turn the daemon never saw begin, and
+// the daemon saw this one. The daemon prompted nothing for it, so it is no task's turn and its
+// line names no delivery.
 func turnStartedWhileBusy(m *Machine, _ context.Context, _ Event) error {
 	if m.compacting == nil {
 		return nil
 	}
+	m.startTurn("")
 	m.log.Info("supervise: a turn started while this claim's session is being compacted; the claim is left working for it",
 		"generation", m.claim.Generation)
 	m.compacting.inTurn, m.compacting.back = true, StateIdle
@@ -1497,8 +1503,9 @@ func (m *Machine) takeBackSignal(ownTask bool) {
 // compaction (compactEnded). The end is recorded on the compaction all the same: the turn it
 // ends is over, so the compaction's end has none to leave the claim working for, and a claim
 // that has had a turn goes back idle rather than ready. Its end line is written before that
-// return (endTurn), because the turn ended: a reader counting starts against ends would
-// otherwise be left one end short for every turn that ended under a compaction.
+// return (endTurn), because the turn ended, and it closes a start line of its own: a turn that
+// starts under a compaction writes one too (turnStartedWhileBusy), so a reader counting starts
+// against ends finds the pair.
 func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 	m.endTurn()
 	if m.compacting != nil {

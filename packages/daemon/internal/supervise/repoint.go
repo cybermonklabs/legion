@@ -40,15 +40,14 @@ func (m *Machine) repoint(ctx context.Context, observation runtime.Observation) 
 // launch failure nor a death with work outstanding, and the claim's session is relaunched at once
 // (replaceProcess). A turn the process was in is lost, and its task goes back to waiting, sent
 // again once the session resumes; a held suspension ends in a suspension. The process is gone, so
-// a compaction running over it is marked as having lost it (compactionLostProcess) and its end
-// gives the claim back nothing. It is the one recovery that carries an out-of-memory end's note
-// (runtime.Observation.OutOfMemory), since a pod the daemon replaced can also have run out of
-// memory before the replacement landed, and the role whose turn that end cut off is told so
-// wherever the end is recovered.
+// a compaction running over it is dropped before this runs and its end gives the claim back
+// nothing (judge, compactionLostProcess). It is the one recovery that carries an out-of-memory
+// end's note (runtime.Observation.OutOfMemory), since a pod the daemon replaced can also have run
+// out of memory before the replacement landed, and the role whose turn that end cut off is told
+// so wherever the end is recovered.
 func (m *Machine) displaced(ctx context.Context, observation runtime.Observation) error {
 	m.log.Warn("supervise: the process was displaced through no fault of its own, its pod replaced by the daemon or it another runtime's process this daemon takes over; relaunching it uncharged",
 		"incarnation", m.claim.Locator.Incarnation, "process", m.claim.Locator.Label(), "observed", string(observation.Kind), "detail", observation.Detail)
-	m.compactionLostProcess()
 	return m.replaceProcess(ctx, "the process was displaced mid-turn, its pod replaced by the daemon or it another runtime's process this daemon takes over", observation.OutOfMemory)
 }
 

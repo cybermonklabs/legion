@@ -42,9 +42,9 @@ var ErrCompactNotEnded = errors.New("the compaction ended and the claim could no
 
 // ErrCompactProcessGone is a compaction whose end found it was no longer the claim's own
 // (ownsCompaction): the process it ran on was found gone while Oh My Pi wrote the summary
-// (died, displaced), it was let go for a suspension or a failure (letGo), or a relaunch has
-// moved the claim past the generation the compaction was taken at. So compactEnded never ran:
-// the claim was not given back and the task it owes was not sent.
+// (judge's gone verdict, compactionLostProcess), it was let go for a suspension or a failure
+// (letGo), or a relaunch has moved the claim past the generation the compaction was taken at.
+// So compactEnded never ran: the claim was not given back and the task it owes was not sent.
 //
 // What happens to the claim next is its own path's, and that path is not always a relaunch. A
 // claim whose death the daemon relaunches is sent the owed task when its agent is ready again
@@ -52,12 +52,11 @@ var ErrCompactNotEnded = errors.New("the compaction ended and the claim could no
 // only when an operator retries or resumes them, and the task waits for that.
 var ErrCompactProcessGone = errors.New("the claim lost its process while its session was being compacted, so it was not given back and the task it owes was not sent")
 
-// compacting is the compaction a claim is in: the connection it runs over, the generation it
-// was taken at, and whether the process it runs over has been found gone since. Those three
-// are what the end of a compaction is fenced on (ownsCompaction). It is memory only, as a held
-// suspension is: a daemon that restarts mid-compaction leaves a claim stored working, which its
-// agent's own answer to "are you streaming" then ends (askTurnOver), and the owed task goes on
-// that end.
+// compacting is the compaction a claim is in: the connection it runs over and the generation it
+// was taken at. Those two, and the claim recording a compaction at all, are what the end of a
+// compaction is fenced on (ownsCompaction). It is memory only, as a held suspension is: a
+// daemon that restarts mid-compaction leaves a claim stored working, which its agent's own
+// answer to "are you streaming" then ends (askTurnOver), and the owed task goes on that end.
 type compacting struct {
 	conn       runtime.Conn
 	generation uint64
@@ -70,13 +69,6 @@ type compacting struct {
 	// Envoy follow-up it queued, which starts as the compaction ends. The claim is left
 	// working for that turn and its end gives the claim back (compactEnded, turnEnded).
 	inTurn bool
-	// processGone is whether the process the compaction runs over has been found gone since it
-	// was taken (died, displaced, through compactionLostProcess). It is recorded where that
-	// judgement is made rather than read off the claim at the end, because a death whose
-	// relaunch the wake pacing parks leaves the claim exactly as the take found it — working,
-	// over that process, at that generation — until the wake's turn comes (reserveWake,
-	// launchNow).
-	processGone bool
 }
 
 // Compact compacts the claim's Oh My Pi session and sends the task it owes again. It is no event
@@ -167,39 +159,46 @@ func (m *Machine) compaction() (compacting, bool) {
 
 // ownsCompaction is whether the compaction taken at generation is still the claim's own, which
 // is the one thing the end of a compaction turns on and the only place it can be read: the
-// machine's lock is what makes the three facts one answer, and Machine.Compact holds no lock
+// machine's lock is what makes the two facts one answer, and Machine.Compact holds no lock
 // while Oh My Pi writes the summary. It is asked where the end is fenced (Machine.fence), so
 // every caller of it reads the claim as the end will find it.
 //
-// A compaction is the claim's own when the claim records one, since letGo drops the compaction
-// with the process it ran on; when it is the one this end names, since launchNow's bump leaves
-// an earlier generation's behind; and when the process it ran over has not been found gone
-// under it (compacting.processGone, recorded by died and displaced). That third fact is the
-// death the wake pacing parks the relaunch of, which letGo has not reached and no bump has
-// moved past: the claim is still working, still over the dead process and still at the
-// generation the compaction was taken at until the wake's turn comes (parkWake, launchNow).
+// A compaction is the claim's own when the claim still records one, since a process let go and
+// a process found gone each drop it (letGo, compactionLostProcess), and when it is the one this
+// end names, since launchNow's bump leaves an earlier generation's behind.
 //
-// A process still running that a parked launch is to replace is no such loss, and the two are
-// told apart here because the daemon marks the death rather than the park: the compaction ran
-// over a live session, so its end gives the claim back (compactEnded), and the task that end
-// owes waits for the launch's turn where every send of such a claim waits (sendPending's
-// launchWaits).
+// A process still running that a parked launch is to replace is no such loss: the compaction
+// ran over a live session, so the claim records it to the end, that end gives the claim back
+// (compactEnded), and the task it owes waits for the launch's turn where every send of such a
+// claim waits (sendPending's launchWaits).
 func (m *Machine) ownsCompaction(generation uint64) bool {
-	return m.compacting != nil && m.compacting.generation == generation && !m.compacting.processGone
+	return m.compacting != nil && m.compacting.generation == generation
 }
 
-// compactionLostProcess records on the compaction in flight, where one is, that the process it
-// runs over is gone: its end then gives the claim back nothing and sends nothing
-// (ownsCompaction, ErrCompactProcessGone). Its callers are the two judgements that end a
-// process — a death and a displacement (died, displaced) — and not the two that replace one
-// still running (repoint, refreshPlugin), whose compaction keeps the session it is compacting.
-// A death the machine acts on at once drops the compaction with the process anyway (letGo); the
-// mark is what a death whose relaunch the pacing parks leaves behind, since the park writes
-// nothing of the claim at all (reserveWake).
+// compactionLostProcess drops the compaction in flight, where one is, because the process it
+// runs over is gone: its end then finds no compaction recorded, gives the claim back nothing
+// and sends nothing (ownsCompaction, ErrCompactProcessGone). It is called once, where the
+// runtime's verdict that the process is gone is read (judge), so it covers both judgements that
+// verdict splits into — a death and a displacement (died, displaced) — and neither of the two
+// that replace a process still running (repoint, refreshPlugin), whose compaction keeps the
+// session it is compacting. A death the machine acts on at once drops the compaction with the
+// process anyway (letGo); this is the drop a death whose relaunch the pacing parks needs, since
+// the park writes nothing of the claim at all (reserveWake).
+//
+// The compaction is dropped rather than marked as having lost its process, so nothing of it is
+// left for the rest of the daemon to read: a claim the park leaves working over the dead process
+// would otherwise report itself being compacted until the wake's turn, and a second compaction
+// asked for in that window would be refused as one already running, after Machine.Compact had
+// already answered the first caller that its compaction was over (api's refuseState).
+//
+// What the drop gives up is the compaction's one reader that is not its end: a late agent_end
+// from the dead connection is no longer recorded on the compaction (turnStartedWhileBusy,
+// turnEnded) but read as the end of the claim's own turn, which writes the turn's end line and
+// idles the claim. Nothing is sent on it, since every send of a claim whose launch waits its
+// turn waits with it (sendPending's launchWaits), and the wake's turn relaunches an idle claim
+// exactly as it relaunches a working one.
 func (m *Machine) compactionLostProcess() {
-	if m.compacting != nil {
-		m.compacting.processGone = true
-	}
+	m.compacting = nil
 }
 
 // compactStart takes the claim for a compaction: it is working until the compaction ends
