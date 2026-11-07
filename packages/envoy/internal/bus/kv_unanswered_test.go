@@ -193,14 +193,14 @@ func unansweredKeyValue(t *testing.T, relay *unansweredRelay) (*nats.Conn, nats.
 // A start whose open of a bucket's jetstream handle draws no answer sends it again and goes on,
 // rather than ending the program with "open the jetstream handle of KV bucket <name>: context
 // deadline exceeded". The first open never reaches the server, so the handle the start is given
-// is the second one's, and it reads the bucket's stream. The start is the create path, which is
-// where wrapKeyValue sends again.
+// is the second one's, and it reads the bucket's stream. This is the start that created the
+// bucket.
 func TestAnUnansweredHandleOpenIsSentAgainAndTheStartGoesOn(t *testing.T) {
 	relay := startUnansweredRelay(t, testnats.URL(t), unansweredBucket)
 	conn, _, kv := unansweredKeyValue(t, relay)
 
 	relay.arm(1)
-	handle, err := wrapKeyValue(conn, kv, true)
+	handle, err := wrapKeyValue(conn, kv, true, startSendsAgain)
 	if err != nil {
 		t.Fatalf("a start whose first handle open drew no answer = %v, want it to go on", err)
 	}
@@ -216,14 +216,36 @@ func TestAnUnansweredHandleOpenIsSentAgainAndTheStartGoesOn(t *testing.T) {
 	}
 }
 
-// An answer the server gives ends the sending: the create path sends the open once and is done,
-// so nothing a server answers is ever asked twice.
+// A start that found its bucket rather than creating it sends the open again too. This is the
+// ordinary start, a restart of a deployment whose buckets are already there, and it was the one
+// the resend missed while the create and not the caller chose it: EnsureKeyValue leaves created
+// false on that path, so one lost answer still ended the program.
+func TestAnUnansweredHandleOpenOfAFoundBucketIsSentAgainAndTheStartGoesOn(t *testing.T) {
+	relay := startUnansweredRelay(t, testnats.URL(t), unansweredBucket)
+	conn, _, kv := unansweredKeyValue(t, relay)
+
+	relay.arm(1)
+	handle, err := wrapKeyValue(conn, kv, false, startSendsAgain)
+	if err != nil {
+		t.Fatalf("a start that found its bucket and lost its first handle open = %v, want it to go on", err)
+	}
+
+	if sends := relay.sent(); sends != 2 {
+		t.Fatalf("handle opens sent = %d, want 2: the lost one and the one that answered", sends)
+	}
+	if _, err := handle.ReadStreamState(); err != nil {
+		t.Fatalf("read the bucket's stream through the handle the start was given: %v", err)
+	}
+}
+
+// An answer the server gives ends the sending: a start sends the open once and is done, so
+// nothing a server answers is ever asked twice.
 func TestAnAnsweredHandleOpenIsSentOnce(t *testing.T) {
 	relay := startUnansweredRelay(t, testnats.URL(t), unansweredBucket)
 	conn, _, kv := unansweredKeyValue(t, relay)
 
 	relay.arm(0)
-	if _, err := wrapKeyValue(conn, kv, true); err != nil {
+	if _, err := wrapKeyValue(conn, kv, true, startSendsAgain); err != nil {
 		t.Fatalf("a start whose handle open the server answered = %v, want it to go on", err)
 	}
 
@@ -232,11 +254,11 @@ func TestAnAnsweredHandleOpenIsSentOnce(t *testing.T) {
 	}
 }
 
-// Off the create path the open is one send, whatever the server does with it. That path is no
-// start: roles.Buckets.bucket opens a bucket again under its own lock on a request whose budget
-// is two seconds, so an open that kept sending would stop every role and session read of the
-// process instead of saving a start.
-func TestAnUnansweredHandleOpenOffTheCreatePathIsSentOnce(t *testing.T) {
+// A caller that is no start sends the open once, whatever the server does with it.
+// roles.Buckets.bucket reaches WrapKeyValue through OpenKeyValue, under its own lock and on a
+// request whose budget is two seconds, so an open that kept sending would stop every role and
+// session read of the process instead of saving a start.
+func TestAnUnansweredHandleOpenOffAStartIsSentOnce(t *testing.T) {
 	relay := startUnansweredRelay(t, testnats.URL(t), unansweredBucket)
 	conn, _, kv := unansweredKeyValue(t, relay)
 
@@ -244,7 +266,7 @@ func TestAnUnansweredHandleOpenOffTheCreatePathIsSentOnce(t *testing.T) {
 	_, err := WrapKeyValue(conn, kv)
 
 	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("an open the server left unanswered off the create path = %v, want %v", err, context.DeadlineExceeded)
+		t.Fatalf("an open the server left unanswered off a start = %v, want %v", err, context.DeadlineExceeded)
 	}
 	if sends := relay.sent(); sends != 1 {
 		t.Fatalf("handle opens sent = %d, want 1: this path is a request's, not a start's", sends)

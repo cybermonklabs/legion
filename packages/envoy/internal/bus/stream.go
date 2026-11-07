@@ -630,7 +630,8 @@ func (r streamReconciliation) log() {
 // leaves one of two starts' stream reads or creates unanswered, which each request below is sent
 // again for (sentAgain), since a start that returns such an error ends the program.
 func ensureStreamWithConfig(js nats.JetStreamContext, cfg *nats.StreamConfig, defaultsAnUnsetCap bool) error {
-	info, err := sentAgain("STREAM.INFO", func() (*nats.StreamInfo, error) { return js.StreamInfo(Stream) })
+	readStream := func() (*nats.StreamInfo, error) { return js.StreamInfo(Stream) }
+	info, err := sentAgain("STREAM.INFO", readStream)
 	if errors.Is(err, nats.ErrStreamNotFound) {
 		created := *cfg
 		created.Metadata = maps.Clone(cfg.Metadata)
@@ -644,10 +645,11 @@ func ensureStreamWithConfig(js nats.JetStreamContext, cfg *nats.StreamConfig, de
 		// jsClusteredStreamRequest, "This is an equal assignment"), so the start goes on; only
 		// another start's create, which carries another id, draws ErrStreamNameAlreadyInUse, which
 		// this branch reads as such and follows with the read below.
-		if _, err = sentAgain("STREAM.CREATE", func() (*nats.StreamInfo, error) { return js.AddStream(&created) }); !errors.Is(err, nats.ErrStreamNameAlreadyInUse) {
+		_, err = sentAgain("STREAM.CREATE", func() (*nats.StreamInfo, error) { return js.AddStream(&created) })
+		if !errors.Is(err, nats.ErrStreamNameAlreadyInUse) {
 			return refusedSettings(err, nil, &created)
 		}
-		info, err = sentAgain("STREAM.INFO after a create another start had made", func() (*nats.StreamInfo, error) { return js.StreamInfo(Stream) })
+		info, err = sentAgain("STREAM.INFO", readStream)
 	}
 	if err != nil {
 		return err

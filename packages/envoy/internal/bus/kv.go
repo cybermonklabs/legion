@@ -135,12 +135,29 @@ func bucketMissing(err error) bool {
 // server answers that create "stream name already in use"), is waited for on the member answering
 // before the handle is opened on it (awaitBucketApplied), since a clustered create is answered
 // before every member has applied it.
+//
+// Every request this function sends is sent again when the server leaves it unanswered
+// (sentAgain): the bucket's lookup, its create, and the handle open on both paths. Each of its
+// callers is a program's start -- store.Open, session.OpenSessionRegistry, cistore.Open,
+// brokerTokens.open and redeliver.OpenState -- and a start that loses one answer ends the
+// program, which is what the stream's own reconcile is sent again for too
+// (ensureStreamWithConfig). A bucket a start finds rather than creates is the ordinary case, a
+// restart of a deployment whose buckets are already there, so the sending again cannot be left to
+// the create path. WrapKeyValue and OpenKeyValue send once instead: they are reached from a
+// request and from a watcher's repair (roles.Buckets.bucket, kvwatch.Rewatch), where a caller
+// waits on a budget of its own and a request sent again would hold it three times as long.
 func EnsureKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig) (KeyValue, error) {
-	kv, err := js.KeyValue(config.Bucket)
+	lookUp := func() (nats.KeyValue, error) { return js.KeyValue(config.Bucket) }
+	kv, err := sentAgain("KV_"+config.Bucket+" lookup", lookUp)
 	created := false
 	switch {
 	case errors.Is(err, nats.ErrBucketNotFound):
-		kv, err = js.CreateKeyValue(config)
+		// A create whose answer was lost is sent again with the same configuration, and a server
+		// that applied the first answers the second "stream name already in use", which the
+		// branch below already reads as a create this start must wait for.
+		kv, err = sentAgain("KV_"+config.Bucket+" create", func() (nats.KeyValue, error) {
+			return js.CreateKeyValue(config)
+		})
 		if errors.Is(err, nats.ErrStreamNameAlreadyInUse) {
 			// The bucket was created between this start's lookup and its create, by another start
 			// of this deployment, and the member answering may not have applied that create
@@ -148,7 +165,7 @@ func EnsureKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyV
 			// they are for a bucket this start found: the start that created it just now carries
 			// the deployment's count too.
 			kv, err = awaitBucketApplied(config.Bucket, bucketMissing, func() (nats.KeyValue, error) {
-				return js.KeyValue(config.Bucket)
+				return sentAgain("KV_"+config.Bucket+" lookup", lookUp)
 			})
 		} else {
 			err = refusedSettings(err, nil, &nats.StreamConfig{Replicas: config.Replicas})
@@ -172,7 +189,7 @@ func EnsureKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyV
 	if err != nil {
 		return KeyValue{}, err
 	}
-	return wrapKeyValue(conn, kv, created)
+	return wrapKeyValue(conn, kv, created, startSendsAgain)
 }
 
 // raiseReplicas raises the stream of the existing bucket to replicas copies when it has fewer, and
@@ -320,48 +337,64 @@ func OpenKeyValue(conn *nats.Conn, js nats.JetStreamContext, bucket string) (Key
 // WrapKeyValue pairs kv, a legacy handle opened on conn, with the jetstream handle of the same
 // bucket on conn that its watches go through. Opening that handle is one STREAM.INFO, bounded by
 // RequestTimeout, and one send of it. The bucket is read as it is: a caller that holds a handle
-// on it has had an answer for it already. EnsureKeyValue's create path waits the member out
-// instead, and sends that read again when it draws no answer (wrapKeyValue).
+// on it has had an answer for it already. A start opens its handles through EnsureKeyValue
+// instead, which sends every request of its own again (wrapKeyValue).
 func WrapKeyValue(conn *nats.Conn, kv nats.KeyValue) (KeyValue, error) {
-	return wrapKeyValue(conn, kv, false)
+	return wrapKeyValue(conn, kv, false, oneSend)
 }
 
-// wrapKeyValue is WrapKeyValue, with the STREAM.INFO that opens the jetstream handle taken again
-// until the member answering has applied the create of the bucket, when created says this start
-// has just created it
+// startSendsAgain and oneSend are wrapKeyValue's sendAgain, named at the call so the two readings
+// of an unanswered handle open are told apart where they are chosen: a program's start sends the
+// open again (sentAgain), and every other caller sends it once.
+const (
+	startSendsAgain = true
+	oneSend         = false
+)
+
+// wrapKeyValue is WrapKeyValue, with two things its callers choose.
+//
+// created says this start has just created the bucket, so the STREAM.INFO that opens the
+// jetstream handle is taken again until the member answering has applied that create
 // (awaitBucketApplied): the create's own answer came from the metadata group, and this read goes
 // to whichever member conn is on, which may not have applied it yet.
 //
-// On that create path alone, each send of the read is also sent again when the server leaves it
-// unanswered (sentAgain), which a member whose meta leader is changing does. A bucket missing and
-// a request unanswered are two different answers and are waited out differently: the first is a
-// member that has not applied the create and is read again until it has, the second is a request
-// that drew nothing and is sent again. Without this, a start that lost one such send ended the
-// program with "open the jetstream handle of KV bucket <name>: context deadline exceeded".
+// sendAgain says the caller is a program's start, so each send of that read is sent again when
+// the server leaves it unanswered (sentAgain), which a member whose meta leader is changing does.
+// It is the caller and not created that decides this: a start whose buckets are already there
+// creates nothing, which is every restart of a deployment, and it loses an answer exactly as the
+// start that creates them does. While created chose it, such a start still ended the program with
+// "open the jetstream handle of KV bucket <name>: context deadline exceeded", the line this
+// change exists to remove.
 //
-// So each send is bounded by RequestTimeout, as a lone read is; the create path's whole wait is
-// bounded by bucketAppliedDeadline plus one unanswered read's unansweredSends sends, since
-// awaitBucketApplied reads its deadline between reads and never cuts one already in flight; and
-// the path off the create is one send, as it was. It is one send there because that path is not a
-// start: roles.Buckets.bucket opens a bucket again under its own lock, on a request whose budget
-// is two seconds, and a read that kept a caller waiting three times as long would stop every role
-// and session read of the process rather than save a start.
-func wrapKeyValue(conn *nats.Conn, kv nats.KeyValue, created bool) (KeyValue, error) {
+// A bucket missing and a request unanswered are two different answers and are waited out
+// differently: the first is a member that has not applied the create and is read again until it
+// has, the second is a request that drew nothing and is sent again. So each send is bounded by
+// RequestTimeout, as a lone read is; a start's create path is bounded by bucketAppliedDeadline
+// plus one unanswered read's unansweredSends sends, since awaitBucketApplied reads its deadline
+// between reads and never cuts one already in flight; a start that found its bucket is bounded by
+// those sends alone; and a caller that is no start is one send, as it was. One send is right
+// there because such a caller waits on a budget of its own: roles.Buckets.bucket opens a bucket
+// again under its own lock, on a request whose budget is two seconds, and a read that kept it
+// waiting three times as long would stop every role and session read of the process rather than
+// save a start.
+func wrapKeyValue(conn *nats.Conn, kv nats.KeyValue, created, sendAgain bool) (KeyValue, error) {
 	js, err := jetstream.New(conn)
 	if err != nil {
 		return KeyValue{}, err
 	}
+	request := "KV_" + kv.Bucket() + " STREAM.INFO"
 	open := func() (jetstream.KeyValue, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), RequestTimeout)
 		defer cancel()
 		return js.KeyValue(ctx, kv.Bucket())
 	}
+	if sendAgain {
+		send := open
+		open = func() (jetstream.KeyValue, error) { return sentAgain(request, send) }
+	}
 	var watch jetstream.KeyValue
 	if created {
-		request := "KV_" + kv.Bucket() + " STREAM.INFO"
-		watch, err = awaitBucketApplied(kv.Bucket(), bucketMissing, func() (jetstream.KeyValue, error) {
-			return sentAgain(request, open)
-		})
+		watch, err = awaitBucketApplied(kv.Bucket(), bucketMissing, open)
 	} else {
 		watch, err = open()
 	}
