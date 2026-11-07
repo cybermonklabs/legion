@@ -145,7 +145,7 @@ export type {
 /** How `focusMark` and `focusBlock` bring their target into view. The scroll does not animate:
  *  a script scroll during a smooth one cuts it short, and the host corrects the landing as the
  *  page paints under it (a diagram drawing above the target, a block the browser had skipped
- *  painting at its own height instead of its estimate — `features/doc/refocus-after-diagrams.ts`
+ *  painting at its own height instead of its estimate — `features/doc/refocus-when-settled.ts`
  *  in Dispatch). Over a document of 400,000 characters an animated scroll was still being cut
  *  short and restarted when the reader gave up: the link never landed
  *  (dispatch://INFRA-341, requirement R11). */

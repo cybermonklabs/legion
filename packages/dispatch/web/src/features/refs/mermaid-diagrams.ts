@@ -30,7 +30,7 @@
  * highlighted mark) watches: it runs again once the page has held still with nothing waiting,
  * read once a frame rather than awaited, since the blocks near the viewport ask from an
  * observer's first delivery and the page's height goes on settling after the last of them
- * (`features/doc/refocus-after-diagrams.ts`). `mermaidDrawsSettled` resolves once no source is
+ * (`features/doc/refocus-when-settled.ts`). `mermaidDrawsSettled` resolves once no source is
  * waiting, which is how a test waits out the queue.
  *
  * Both mount the SVG with `showMermaidSvg` in an open shadow root of the preview element, so the

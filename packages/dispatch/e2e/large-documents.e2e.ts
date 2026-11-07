@@ -420,7 +420,7 @@ test(`a link to the decision block at the end of ${documentNames.large} lands on
     const linked = documentEditor(page).locator(`[data-block-id="${block}"]`);
     // The landing is in two parts: the focus the editor runs as it binds, and the one it runs
     // again once the diagrams around the target have drawn and moved it
-    // (`features/doc/refocus-after-diagrams.ts`). A block behind `contain-intrinsic-size` has a
+    // (`features/doc/refocus-when-settled.ts`). A block behind `contain-intrinsic-size` has a
     // box before it has painted, so the first focus lands on an estimate; the block has to be in
     // the viewport once the page has stopped moving, not only before it.
     await expect(linked).toBeInViewport({ timeout: 240_000 });
