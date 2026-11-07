@@ -1,0 +1,18 @@
+-- 20261107203000_outbox_claims.up.sql — how many times a row has been claimed
+-- (dispatch://INFRA-49/comment/561afcc3-419f-4ce2-9e02-e9c1a51ac8eb).
+--
+-- A row's effect runs between its claim and its finish, which are two transactions, so a daemon
+-- that dies after the effect and before the finish runs the effect again when the lease lapses or
+-- at the next boot. The claim is the one write that happens before every run of the effect, so the
+-- count of claims is what tells a first run from a repeat: a row claimed once is one whose effect
+-- has never run, and a row claimed again may have run it whole.
+--
+-- The column is the claim's own record, written in the claim's transaction (record's ClaimRow), so
+-- it is there whatever killed the daemon after it. It is a count rather than a flag because a
+-- flag cannot tell the run that is happening now from one that happened and was lost, and because
+-- the count is what an operator reads to see how often a row has been tried against the attempts
+-- its failures recorded.
+--
+-- Every row a daemon of an earlier release left behind starts at 0 and is counted from its next
+-- claim, which costs that row one repeat it would have made anyway.
+alter table outbox add column if not exists claims integer not null default 0;

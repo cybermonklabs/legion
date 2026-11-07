@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+  A durable notice reaches a person once, however often its outbox row is run. The row's effect
+  runs between its claim and the finish that deletes it, so a daemon that died between them posted
+  the message again when the lease lapsed or at the next boot, and Dispatch's message route takes
+  no idempotency key. The claim now counts itself in its own transaction, and a run that may be a
+  repeat reads the issue's messages for the row's own marker and finishes without posting when it
+  is there.

@@ -1093,18 +1093,34 @@ func (r *outbox) dropHandover(ctx context.Context, issue string, payload record.
 	})
 }
 
+// message posts the row's text to its issue, once, however often the row is claimed. Dispatch's
+// issue-message route takes no idempotency key (internal/dispatch/client.go's PostMessage), and
+// the effect runs between the claim and the finish, which are two transactions: a daemon that
+// dies between them posts again when the lease lapses or at the next boot, and a person reads the
+// same notice twice (dispatch://INFRA-49/comment/561afcc3-419f-4ce2-9e02-e9c1a51ac8eb). So the
+// daemon carries its own key: every post it makes names the row that made it
+// (record.MessageMarker), and a run that may be a repeat reads the issue's messages for that
+// marker and finishes without posting when it is there.
+//
+// That read is made for a run that may be a repeat and for no other: a row this daemon claimed for
+// the first time, with no attempt of its own recorded (record.OutboxRow.Claims and Attempts), has
+// posted nothing, and a Dispatch read for it would only cost the issue a round trip. A row left by
+// a release that counted no claims reads 0 and is read for, since such a row may have posted
+// before this daemon ever claimed it.
 func (r *outbox) message(ctx context.Context, row record.OutboxRow, payload record.MessagePost) error {
 	if r.dispatch == nil {
 		return errors.New("dispatch message executor has no Dispatch client")
 	}
-	marker := record.MessageMarker(row.ID)
-	bodies, err := r.dispatch.MessageBodiesSince(ctx, row.Issue, row.CreatedAt.Add(-messageReadSkew))
-	if err != nil {
-		return fmt.Errorf("read Dispatch messages for %s: %w", row.Issue, err)
-	}
-	for _, body := range bodies {
-		if strings.Contains(body, marker) {
-			return nil
+	if row.Claims != 1 || row.Attempts > 0 {
+		marker := record.MessageMarker(row.ID)
+		bodies, err := r.dispatch.MessageBodiesSince(ctx, row.Issue, row.CreatedAt.Add(-messageReadSkew))
+		if err != nil {
+			return fmt.Errorf("read Dispatch messages for %s: %w", row.Issue, err)
+		}
+		for _, body := range bodies {
+			if strings.Contains(body, marker) {
+				return nil
+			}
 		}
 	}
 	if err := r.dispatch.PostMessage(ctx, row.Issue, payload.Posted(row.ID)); err != nil {

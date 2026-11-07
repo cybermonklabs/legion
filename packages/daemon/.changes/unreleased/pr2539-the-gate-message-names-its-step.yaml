@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+  The message every phase holder of a tree gets when its design gate moves is of the standing of
+  every step the deployment gates, not of the one document the event named, and it names that step
+  and its own document rather than "spec version". Under more than one gated step an approval of
+  one document no longer tells a running merger that the gate is open while another document is
+  still under review.

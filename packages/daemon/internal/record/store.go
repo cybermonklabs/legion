@@ -1711,7 +1711,7 @@ func (s *Postgres) EnqueueGatedSteps(ctx context.Context, tx pgx.Tx, publish Gat
 	return nil
 }
 
-const outboxColumns = `id, kind, issue, payload, attempts, next_at, last_error, created_at, lease_token, lease_until`
+const outboxColumns = `id, kind, issue, payload, attempts, next_at, last_error, created_at, lease_token, lease_until, claims`
 
 func (s *Postgres) Enqueue(ctx context.Context, tx pgx.Tx, row OutboxRow) error {
 	if !json.Valid(row.Payload) {
@@ -1993,7 +1993,11 @@ func (s *Postgres) ClaimRow(ctx context.Context, tx pgx.Tx, id int64, now time.T
 		where id = $1 and kind = $2 and payload->>'kind' = 'catch-up'`, id, string(OutboxKindNotice)); err != nil {
 		return OutboxRow{}, false, fmt.Errorf("claim outbox row %d: %w", id, err)
 	}
-	row, err := scanOutbox(tx.QueryRow(ctx, `update outbox set lease_token = $7, lease_until = $8
+	// The claim counts itself, in the claim's own transaction: the effect runs after this commits
+	// and the finish that deletes the row is a transaction of its own, so this count is the only
+	// record a daemon that died between them leaves behind of the run it may have made
+	// (record.OutboxRow.Claims).
+	row, err := scanOutbox(tx.QueryRow(ctx, `update outbox set lease_token = $7, lease_until = $8, claims = claims + 1
 		where outbox.id = $6 and `+outboxClaimable+`
 		returning `+outboxColumns, outboxDueArgs(now, id, token, now.Add(leaseFor))...))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -2348,7 +2352,7 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 		var kind, role, generation string
 		var payload []byte
 		if err := rows.Scan(&row.ID, &kind, &row.Issue, &payload, &row.Attempts, &row.NextAt, &row.LastError,
-			&row.CreatedAt, &row.LeaseToken, &row.LeaseUntil, &role, &generation); err != nil {
+			&row.CreatedAt, &row.LeaseToken, &row.LeaseUntil, &row.Claims, &role, &generation); err != nil {
 			return nil, fmt.Errorf("read the queued role runs of %d issues: %w", len(issues), err)
 		}
 		token, wanted := candidates[roleRunIdentity{issue: row.Issue, role: role, generation: generation}]
@@ -2409,7 +2413,7 @@ func scanOutbox(row scanner, extra ...any) (OutboxRow, error) {
 	var kind string
 	var payload []byte
 	if err := row.Scan(append([]any{&out.ID, &kind, &out.Issue, &payload, &out.Attempts, &out.NextAt, &out.LastError,
-		&out.CreatedAt, &out.LeaseToken, &out.LeaseUntil}, extra...)...); err != nil {
+		&out.CreatedAt, &out.LeaseToken, &out.LeaseUntil, &out.Claims}, extra...)...); err != nil {
 		return OutboxRow{}, err
 	}
 	out.Kind = OutboxKind(kind)

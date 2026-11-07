@@ -1081,6 +1081,14 @@ type OutboxRow struct {
 	CreatedAt  time.Time
 	LeaseToken string
 	LeaseUntil *time.Time
+	// Claims is how many times this row has been claimed, the claim's own record of itself
+	// (ClaimRow writes it in the claim's transaction). The effect runs between a claim and the
+	// finish that deletes the row, two transactions, so a daemon that dies between them runs the
+	// effect again on the next claim: a row this lane claimed for the first time (1) has an effect
+	// that has never run, and a higher count is a row whose effect may have run whole. An executor
+	// whose effect the far side cannot refuse twice by itself reads it before repeating that
+	// effect (the outbox's message).
+	Claims int
 }
 
 // Handover is a root linger's pending move of one child to an independent tree. It persists from
