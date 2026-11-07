@@ -366,7 +366,7 @@ const parallelProjects = [
  * `chromium` alone and run in `chromium-alone` alone, as does
  * `agent-workspace-timing.e2e.ts`, whose rows time the live view and the Agents page in the one
  * engine the timed halves are claimed for (INFRA-812's D14; the untimed halves of those checks
- * stay in `chromium` and `iphone`, in `agent-view.e2e.ts` and `agents-window.e2e.ts`).
+ * stay in `chromium` and `iphone`, in `agent-view-cost.e2e.ts` and `agents-window.e2e.ts`).
  *
  * These three select by `testMatch` alone, where `webkit` and `firefox` select by an engine tag:
  * their axis is the file, not a behaviour. Every row of a clock-read file runs here whatever it

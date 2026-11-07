@@ -2,6 +2,9 @@ import { expect, test } from "@playwright/test";
 
 import { type FakeSession, setLiveSessions } from "./agents";
 import { publishAgentStreamFrame } from "./api";
+import { COST_RIG_IDS, expectConversationInFront, seedPinnedRigsAtLimit } from "./live-view-cost";
+import { watchViewRestore } from "./live-views";
+import { openAgentFromRail } from "./rail";
 import { resetDatabase } from "./seed";
 import { asUser } from "./users";
 
@@ -14,7 +17,7 @@ import { asUser } from "./users";
  * servers and four Postgres servers on one machine, and a second of wall clock there holds
  * what the other three lanes took as surely as the work the row measured. The untimed half of
  * each of those checks runs in `chromium` and `iphone` as any other row does: the live view's
- * in `agent-view.e2e.ts`, and the windowed list's in `agents-window.e2e.ts`.
+ * cost in `agent-view-cost.e2e.ts`, and the windowed list's in `agents-window.e2e.ts`.
  */
 
 declare global {
@@ -85,6 +88,64 @@ test("the live view opens on the session's transcript", async ({ browser }) => {
     await page.goto(`/agents/${planner.session_id}/live`);
     await expect(page.getByTestId("agent-conversation")).toBeVisible();
     await expect(page.getByTestId("agent-message-user")).toContainText("Read the release notes");
+  } finally {
+    await context.close();
+  }
+});
+
+// R2, k11's one timed claim: a sleeping view comes back inside half a second. It is the worst
+// case on purpose - eight agents pinned, each seeded with a conversation at the stream's limit
+// (`e2e/live-view-cost.ts`, the rig the untimed half of k11 reads in `chromium`) - so the view
+// this row brings back subscribes again, is answered with two hundred turns of the session's
+// own replay, and draws them.
+//
+// The clock is the page's own (`watchViewRestore`, installed before the press): the first
+// `pointerdown`, taken in the capture phase before any handler of the press runs, to the first
+// mutation in which that session's view is in front with a turn drawn in it. Nothing of the
+// driver is in the window - a Playwright click's trace snapshots either side of itself are the
+// harness's work, not the page's - and the figure is kept on the result whether or not the row
+// passes, with the three parts it divides into: the re-subscribe, the session's replay
+// arriving, and the view drawing it.
+// SLOW(>=2s): eight live views opened in turn, each rebuilding a two-hundred-turn transcript at
+// the stream's limit, before the sleeping one is brought back.
+test("a sleeping view comes back inside half a second", async ({ browser }) => {
+  test.setTimeout(180_000);
+  await seedPinnedRigsAtLimit();
+  const context = await asUser(browser, "alice");
+  const page = await context.newPage();
+  try {
+    await page.goto("/");
+    for (const sessionID of COST_RIG_IDS) {
+      await openAgentFromRail(page, sessionID);
+      await expectConversationInFront(page, sessionID);
+    }
+    // The first of the eight has been asleep since the third was opened: nothing of it is
+    // mounted, it holds no subscription, and coming back to it is the session's replay again.
+    await expect(page.locator(`[data-session-id="${COST_RIG_IDS[0]}"]`)).toHaveCount(0);
+
+    const restored = await watchViewRestore(page, COST_RIG_IDS[0]);
+    await openAgentFromRail(page, COST_RIG_IDS[0]);
+    await expectConversationInFront(page, COST_RIG_IDS[0]);
+    const restore = await restored();
+    const part = (ms: number | null) => (ms === null ? "not measured" : `${Math.round(ms)} ms`);
+    // Where the wait went, kept on the result whether or not the row passes: the three parts
+    // are what calibrating this bound is argued from, and reading them after the fact costs a
+    // run of eight heavy views.
+    test.info().annotations.push(
+      { description: `${Math.round(restore.totalMs)} ms`, type: "a sleeping view came back" },
+      {
+        description:
+          `${part(restore.resubscribeMs)} to re-subscribe, ` +
+          `${part(restore.replayMs)} to the session's replay, ` +
+          `${part(restore.renderMs)} to draw it`,
+        type: "where that time went",
+      }
+    );
+
+    expect(
+      restore.totalMs,
+      `the sleeping view came back in ${Math.round(restore.totalMs)} ms`
+    ).toBeLessThan(500);
   } finally {
     await context.close();
   }

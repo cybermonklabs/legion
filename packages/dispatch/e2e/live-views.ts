@@ -9,13 +9,16 @@ import type { Locator, Page } from "@playwright/test";
 
 import type { LiveViewSnapshot } from "../web/src/features/agent-view/live-views";
 
-/** The live view a mutation observer is waiting to see restored, and the two stamps it takes:
- *  the press, and the commit the view came back in. */
+/** The live view a mutation observer is waiting to see restored, and the four stamps it takes:
+ *  the press, the subscribe frame that watches the session again, the session's replay read off
+ *  the socket, and the commit the view came back in. */
 declare global {
   interface Window {
     __dispatchViewRestore?: {
       pressedAt: number | null;
+      replayAt: number | null;
       restoredAt: number | null;
+      subscribedAt: number | null;
     };
   }
 }
@@ -84,24 +87,48 @@ export function heapBytes(page: Page): Promise<number | null> {
   });
 }
 
+/** What a live view's coming back cost, in the page's own milliseconds, and where that time
+ *  went. The parts are `null` where the page's socket did not say: a row asserts on `totalMs`,
+ *  which is the whole of it, and reports the rest. */
+export interface ViewRestore {
+  /** The press to the conversation drawn: what k11 bounds. */
+  totalMs: number;
+  /** The press to the subscribe frame for this session leaving the socket: the re-subscribe. */
+  resubscribeMs: number | null;
+  /** That subscribe to the session's replay being read off the socket: the frames arriving. */
+  replayMs: number | null;
+  /** The replay in hand to the first turn of it in the DOM: the view's own render. */
+  renderMs: number | null;
+}
+
 /**
  * Times a live view coming back, in the page's own clock rather than the test driver's: install
  * it before the press that opens the view, then read it once the view is in front.
  *
  * The first stamp is the first `pointerdown` the page sees after this is installed, taken in the
- * capture phase so it is before any handler of the press runs. The second is the first mutation
+ * capture phase so it is before any handler of the press runs. The last is the first mutation
  * in which `sessionID`'s view is the one in front with a turn drawn in it, which is the
- * conversation restored. The reader throws while either stamp is missing, so a row never reads a
- * time for something that did not happen.
+ * conversation restored. The reader throws while either is missing, so a row never reads a time
+ * for something that did not happen.
+ *
+ * Between them it stamps the two moments that divide that wait into its three parts, by what
+ * the page's one live socket sends and reads: the subscribe frame naming this session going
+ * out (`WebSocket.prototype.send`), and the session's replay for that subscription being read
+ * off a message (`MessageEvent.prototype.data`, which is where the socket's own handler takes
+ * the frame). Each patch takes itself off again once it has stamped, so neither is on the page's
+ * path for the rest of the row, and a stamp the page never reached is reported as missing
+ * rather than guessed at.
  */
 export async function watchViewRestore(
   page: Page,
   sessionID: string
-): Promise<() => Promise<number>> {
+): Promise<() => Promise<ViewRestore>> {
   await page.evaluate((id) => {
     const stamps: NonNullable<Window["__dispatchViewRestore"]> = {
       pressedAt: null,
+      replayAt: null,
       restoredAt: null,
+      subscribedAt: null,
     };
     window.__dispatchViewRestore = stamps;
     window.addEventListener(
@@ -111,6 +138,55 @@ export async function watchViewRestore(
       },
       { capture: true, once: true }
     );
+
+    // The replay of the subscription the subscribe below names, read where the socket's handler
+    // reads it. Installed only once that subscribe has gone out, so nothing else is on this
+    // path, and taken off again by the frame it waited for.
+    let watchForReplay: (sub: string) => void = () => {};
+    const message = Object.getOwnPropertyDescriptor(MessageEvent.prototype, "data");
+    const readData = message?.get;
+    if (message !== undefined && readData !== undefined) {
+      watchForReplay = (sub) => {
+        Object.defineProperty(MessageEvent.prototype, "data", {
+          ...message,
+          get(this: MessageEvent) {
+            const payload: unknown = readData.call(this);
+            if (
+              typeof payload === "string" &&
+              payload.includes(`"sub":"${sub}"`) &&
+              payload.includes('"event":"replay"')
+            ) {
+              stamps.replayAt = performance.now();
+              Object.defineProperty(MessageEvent.prototype, "data", message);
+            }
+            return payload;
+          },
+        });
+      };
+    }
+
+    // The subscribe frame that watches this session again (`api/live-socket.ts`'s
+    // `subscribeFrame`), which is the whole of the re-subscribe the page does.
+    const send = WebSocket.prototype.send;
+    WebSocket.prototype.send = function (
+      this: WebSocket,
+      payload: Parameters<WebSocket["send"]>[0]
+    ) {
+      if (
+        typeof payload === "string" &&
+        payload.includes('"kind":"agent"') &&
+        payload.includes(`"session_id":"${id}"`)
+      ) {
+        stamps.subscribedAt = performance.now();
+        WebSocket.prototype.send = send;
+        const sent: unknown = JSON.parse(payload);
+        const sub =
+          typeof sent === "object" && sent !== null && "sub" in sent ? sent.sub : undefined;
+        if (typeof sub === "string") watchForReplay(sub);
+      }
+      send.call(this, payload);
+    };
+
     // The view in front, with a turn drawn in it (`AgentThread` gives each turn its
     // `data-message-id`): the conversation restored, rather than the box it goes in.
     const restored =
@@ -127,9 +203,15 @@ export async function watchViewRestore(
     page.evaluate(() => {
       const stamps = window.__dispatchViewRestore;
       if (stamps === undefined) throw new Error("no restore was watched");
-      if (stamps.pressedAt === null) throw new Error("nothing was pressed");
-      if (stamps.restoredAt === null) throw new Error("the view was not restored");
-      return stamps.restoredAt - stamps.pressedAt;
+      const { pressedAt, replayAt, restoredAt, subscribedAt } = stamps;
+      if (pressedAt === null) throw new Error("nothing was pressed");
+      if (restoredAt === null) throw new Error("the view was not restored");
+      return {
+        renderMs: replayAt === null ? null : restoredAt - replayAt,
+        replayMs: replayAt === null || subscribedAt === null ? null : replayAt - subscribedAt,
+        resubscribeMs: subscribedAt === null ? null : subscribedAt - pressedAt,
+        totalMs: restoredAt - pressedAt,
+      };
     });
 }
 

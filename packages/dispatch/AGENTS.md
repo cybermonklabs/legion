@@ -408,6 +408,18 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   question mark's panel names what `!` does, where a command runs and what the view keeps; and
   at a phone width that row scrolls sideways under a ring and a question mark that keep the
   box's right edge.
+  What those views cost a page (INFRA-812, R2) is held by `e2e/agent-view-cost.e2e.ts`, the
+  untimed browser cases of the Verification document's k11: eight pinned agents, each seeded
+  with a conversation at the stream's limit (`e2e/live-view-cost.ts`, the rig both halves of
+  k11 run on), opened one after another through the rail, with the page's own report read after
+  every open - at most two agent subscriptions and at most two conversations drawn, and the
+  heap either side of the walk kept on the result. Beside it are the check's negative control,
+  the same walk with the sleep rule off, where eight subscriptions stay open and eight
+  conversations are drawn, and the plan's gap row: a sleeping view leaves no session
+  publishing, so a frame published while no viewer is subscribed reaches nobody and the view
+  that comes back holds the session's replay and nothing else. k11's one timed claim, that a
+  sleeping view comes back inside half a second, is a row of `e2e/agent-workspace-timing.e2e.ts`
+  in `chromium-alone` (D14).
 - `web/src/api/live-socket.ts` owns the one `GET /ws/live` socket per `QueryClient`, the delivery
   view subscriptions, `useLiveSocketState`, and the shell's `useLiveSocketPill`. It reconnects
   subscriptions from their delivery revisions or event cursor: a 4001 rotation reopens at once
@@ -1866,10 +1878,15 @@ together with the live socket's open agent-subscription count, `openAgentSubscri
 count alone, `drawnLiveViews(page)` locates the mounted views, `heapBytes(page)` the page's heap
 where the browser gives it (Chromium needs `--enable-precise-memory-info` to report a number that
 moves), `watchViewRestore(page, sessionId)` times a sleeping view coming back in the page's own
-clock, and `keepEveryViewAwake(page)` sets `window.__dispatchNoViewSleep` before load, the
+clock - the press to the conversation drawn, and the three parts that wait divides into: the
+press to the subscribe frame naming that session leaving the socket, that subscribe to the
+session's replay being read off a message, and the replay to the first turn of it in the DOM -
+and `keepEveryViewAwake(page)` sets `window.__dispatchNoViewSleep` before load, the
 negative control. `e2e/api.ts`'s `seedAgentStreamConversations(ids)` puts a conversation at the
 stream's limit (`AGENT_STREAM_LIMITS.historyMessages` turns filling `historyBytes`) behind each
-session, through the publish test hook.
+session, through the publish test hook, and `e2e/live-view-cost.ts` is the rig k11's two halves
+share: eight such sessions, live and pinned in order, with the readers that hold a view to the
+session it names and to the whole transcript drawn.
 `e2e/touch.ts` drives real touch gestures through Chromium's `Input.dispatchTouchEvent`
 (`pressFinger` returns a finger to move and lift; `touchDrag`, `touchHold` and `centerOf` are the
 common shapes): `page.mouse` on a touch context still emits mouse events, which never reach
@@ -2266,8 +2283,8 @@ answers in under a second), `e2e/heavy-bodies.e2e.ts` and `e2e/nested-directive.
 draws without holding the main thread for a second, both through `e2e/main-thread-hold.ts`) and
 `e2e/agent-workspace-timing.e2e.ts` (a sleeping live view comes back inside half a second, and
 the Agents page paints six hundred sessions inside 100 milliseconds with no task longer than 50,
-INFRA-812's D14, whose untimed halves stay in `chromium` and `iphone` in `e2e/agent-view.e2e.ts`
-and `e2e/agents-window.e2e.ts`).
+INFRA-812's D14, whose untimed halves stay in `chromium` and `iphone` in
+`e2e/agent-view-cost.e2e.ts` and `e2e/agents-window.e2e.ts`).
 `firefox-alone` and `webkit-alone` run `e2e/heavy-bodies.e2e.ts`, which ran in those engines
 before, for the reasons given under `webkit` and `firefox` above.
 No project above them runs those four files, so each row runs once.
