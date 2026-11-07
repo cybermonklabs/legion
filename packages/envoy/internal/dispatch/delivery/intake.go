@@ -331,6 +331,13 @@ const standbyConsumerMissingMessage = "dispatch delivery: NATS consumer not crea
 // rather than one, at twice the INFO rate the throttle is for.
 const standbyLeaseHeldMessage = "dispatch delivery: NATS consumer lease held by another process; standing by"
 
+// intakeConnectionChangedMessage is what an intake says when a connection event takes its
+// delivery subscription away from it: it gave the durable up and is back in its bind poll, so a
+// process that took the durable over while this one was away keeps it. Declared here with the
+// three standby messages, and in one place, because bindThrottle.reportStandby throttles on
+// message equality.
+const intakeConnectionChangedMessage = "dispatch delivery: NATS connection changed; delivery durable given up; standing by"
+
 // consumerBindConfirmTimeout is how long a bind waits, still holding the durable's consumer
 // lease, for the server to report the durable push-bound after its own subscribe returned. That
 // wait is what makes PushBound truthful before the lease is given back, so the lease -- and not
