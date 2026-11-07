@@ -1986,6 +1986,18 @@ func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues 
 		if c := run.Claim; c != nil && c.State == supervise.StateSuspended && c.SuspendedBy == supervise.SuspendedByReleased {
 			continue
 		}
+		// A retired claim was stopped, and an operator's `legion claims stop` is the one stop this
+		// repair can meet: the workflow retires a claim at its tree's close and at its issue's
+		// close, and each of those takes the issue out of the live records or lingers its root,
+		// which the loop above passes over already. Starting the phase again here would hand the
+		// operator back, a second later, the worker they stopped. The ways back are the workflow's
+		// own starts — the held phase's retry, the tree's re-admission — and this skip touches
+		// none of them. What it costs: the issue keeps its admission slot with no worker in it
+		// until one of those starts, an operator's command or a person moves the issue, and a
+		// claim reading retired from an earlier run is passed over for as long as it reads so.
+		if c := run.Claim; c != nil && c.State == supervise.StateRetired {
+			continue
+		}
 		if err := a.engine.ResumeSlottedWorker(ctx, tx, held.issue, held.role); err != nil {
 			return fmt.Errorf("start the worker of slotted issue %s again: %w", held.issue.Key, err)
 		}
@@ -2012,16 +2024,41 @@ func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues 
 // and their generation, so the row passed every other fence, and at the tree's re-admission its
 // issue stood in the line's first part with the old row's place and took a slot ahead of its
 // own root.
+//
+// A row the fences keep is weighed once more, against the claim it would start: an operator's
+// stop of that worker ends the row too, since the row would otherwise start the stopped worker
+// again the moment a slot came. That second read is one batched RoleRuns call over the rows the
+// fences kept, and no read at all when they kept none.
 func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []record.Issue, facts record.LineFacts) error {
 	byKey := make(map[string]record.Issue, len(issues))
 	for _, issue := range issues {
 		byKey[issue.Key] = issue
 	}
+	project, err := claim.ProjectToken(a.project)
+	if err != nil {
+		return err
+	}
+	type owedRow struct {
+		owed  record.OwedStart
+		token claim.Token
+	}
+	var kept []owedRow
+	var keys []record.RoleRunKey
 	for _, owed := range facts.OwedRows {
 		issue, recorded := byKey[owed.Issue]
 		root, rooted := byKey[issue.Tree]
 		if recorded && rooted && !record.OutOfWorkflow(issue.Status) && !root.Lingers() &&
 			owed.Generation == issue.Generation && owed.Phase == issue.Phase {
+			// The fences keep this row, so it stands for the stop rule below. A row whose issue
+			// and role yield no claim token has no run to read, as the slot repair's holders have
+			// none (resumeSlottedWorkers): it stays owed and the rule passes over it rather than
+			// failing the whole fact.
+			token, err := claim.NewToken(project, owed.Issue, owed.Role)
+			if err != nil {
+				continue
+			}
+			kept = append(kept, owedRow{owed: owed, token: token})
+			keys = append(keys, record.RoleRunKey{Token: token, Issue: owed.Issue, Role: owed.Role, Generation: owed.Generation})
 			continue
 		}
 		// No live lease holds the row (record.Store.OwedStarts), so the token it carries is
@@ -2035,6 +2072,40 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 			a.log.Info("admission: finished a held start whose issue has moved past it", "issue", owed.Issue, "row", owed.ID,
 				"role", owed.Role, "phase", owed.Phase, "generation", owed.Generation)
 		})
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	runs, err := a.store.RoleRuns(ctx, tx, keys)
+	if err != nil {
+		return err
+	}
+	for _, held := range kept {
+		owed, run := held.owed, runs[held.token]
+		// The operator stopped this row's worker, and the row would start it again the moment its
+		// slot came, so finishing the row is what makes the stop hold. The three tests together
+		// say the stop is the whole of this row's story. The retired state says the worker was
+		// ended. A second queued start would say a later start of the workflow is already on its
+		// way — a re-admitted tree's promotion and the held phase's retry both write one — and
+		// the stop is over for a worker the workflow is starting again. A task the claim still
+		// works would say the claim kept the work of this very row, which the outbox's relaunch
+		// leaves for the row behind it, so the row is not simply a start the stop outlived. The
+		// rule therefore does not reach a relaunch row outstanding at the stop, which is that
+		// second queued start, nor an owed row a lane has already leased, which is not in this
+		// read at all (record.Store.OwedStarts).
+		if run.Claim != nil && run.Claim.State == supervise.StateRetired &&
+			!slices.ContainsFunc(run.Queued, func(queued record.QueuedSupervise) bool {
+				return queued.ID != owed.ID && queued.Request.Op == "start"
+			}) &&
+			(run.Claim.Pending == nil || !run.Claim.Pending.StillWorked(owed.Generation, owed.Phase, run.Claim.State)) {
+			if err := a.store.FinishOutbox(ctx, tx, owed.ID, owed.LeaseToken); err != nil {
+				return fmt.Errorf("finish the start %s owed a worker the operator stopped: %w", owed.Issue, err)
+			}
+			intake.OnCommit(ctx, func() {
+				a.log.Info("admission: finished a held start owed a worker the operator stopped", "issue", owed.Issue,
+					"row", owed.ID, "role", owed.Role, "phase", owed.Phase, "generation", owed.Generation)
+			})
+		}
 	}
 	return nil
 }
