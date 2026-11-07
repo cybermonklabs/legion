@@ -9,8 +9,11 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -28,14 +31,21 @@ import (
 const backstopBound = 4 * time.Hour
 
 // backstopRig is a bare supervisor over the fake runtime, the supervision that sweeps it, and
-// the outbox rows that supervision wrote.
+// the outbox rows that supervision wrote. The rows are written from the machine's own report of
+// the turn it ended, on a goroutine of its own (supervision.stallBackstopped), so everything a
+// case reads of them is read under mu and waited for rather than assumed.
 type backstopRig struct {
-	t      *testing.T
-	s      *supervision
-	sup    *supervisor
-	rt     *fake.Runtime
-	rows   map[string][]record.OutboxPayload
-	refuse error
+	t   *testing.T
+	s   *supervision
+	sup *supervisor
+	rt  *fake.Runtime
+	mu  sync.Mutex
+	// rows are the outbox payloads supervision wrote, by issue; attempts how many writes it
+	// tried, refused ones included, which is what a case waits on before it reads that none was
+	// taken; refuse the error the store answers while it is set.
+	rows     map[string][]record.OutboxPayload
+	attempts int
+	refuse   error
 }
 
 // newBackstopRig builds the rig with a bound for every role it drives but the merger, whose 0 is
@@ -57,6 +67,9 @@ func newBackstopRig(t *testing.T) *backstopRig {
 	rig.s = &supervision{
 		cfg: cfg, log: quietLogger(), supervisor: sup, plan: plan{clock: stillClock{}},
 		enqueue: func(_ context.Context, issue string, payloads ...record.OutboxPayload) error {
+			rig.mu.Lock()
+			defer rig.mu.Unlock()
+			rig.attempts++
 			if rig.refuse != nil {
 				return rig.refuse
 			}
@@ -64,7 +77,35 @@ func newBackstopRig(t *testing.T) *backstopRig {
 			return nil
 		},
 	}
+	// The machines tell supervision what each stall backstop ended, as the daemon's own boot
+	// wires them (openSupervision): nothing else writes the owner's notice.
+	sup.deps.StallBackstopped = rig.s.stallBackstopped
 	return rig
+}
+
+// refusing sets, or clears, the error the rig's store answers every write with.
+func (r *backstopRig) refusing(err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.refuse = err
+}
+
+// awaitAttempts waits for supervision to have tried want writes, taken or refused: what a case
+// that must see no row taken waits on, since the write is made off the sweep.
+func (r *backstopRig) awaitAttempts(want int) {
+	r.t.Helper()
+	testwait.Eventually(r.t, fmt.Sprintf("supervision to have tried %d notice writes", want), func() bool {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		return r.attempts >= want
+	})
+}
+
+// attemptsMade is how many notice writes supervision has tried, taken or refused.
+func (r *backstopRig) attemptsMade() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.attempts
 }
 
 // claim builds a claim of role, working a task, whose record says its agent last stepped silent
@@ -139,6 +180,8 @@ func (r *backstopRig) awaitResumed(token claim.Token, want int) {
 // notices are the notice rows supervision wrote on issue.
 func (r *backstopRig) notices(issue string) []record.Notice {
 	r.t.Helper()
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	var notices []record.Notice
 	for _, payload := range r.rows[issue] {
 		if notice, ok := payload.(record.Notice); ok {
@@ -146,6 +189,24 @@ func (r *backstopRig) notices(issue string) []record.Notice {
 		}
 	}
 	return notices
+}
+
+// written are the rows of every kind supervision wrote on issue.
+func (r *backstopRig) written(issue string) []record.OutboxPayload {
+	r.t.Helper()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.rows[issue])
+}
+
+// awaitNotices waits for want notice rows on issue, which the machine's report writes off the
+// sweep (supervision.stallBackstopped).
+func (r *backstopRig) awaitNotices(issue string, want int) []record.Notice {
+	r.t.Helper()
+	testwait.Eventually(r.t, fmt.Sprintf("%d notice rows on %s", want, issue), func() bool {
+		return len(r.notices(issue)) == want
+	})
+	return r.notices(issue)
 }
 
 // resumes are the relaunches the runtime was asked to make for token.
@@ -183,10 +244,7 @@ func TestTheStallBackstopEndsAStalledTurnAndTellsTheOwnerOnce(t *testing.T) {
 	if held := m.Claim(); held.Session != "ses_implementer" || held.Budgets != (supervise.Budgets{}) {
 		t.Fatalf("the claim after the backstop = %+v, want the same session and nothing charged", held)
 	}
-	notices := rig.notices("LEGION-209")
-	if len(notices) != 1 {
-		t.Fatalf("notices on the issue = %+v, want one", notices)
-	}
+	notices := rig.awaitNotices("LEGION-209", 1)
 	notice := notices[0]
 	if notice.Kind != "worker-stalled" || notice.Role != claim.RoleImplementer {
 		t.Fatalf("the notice = %+v, want a worker-stalled of the implementer", notice)
@@ -198,6 +256,7 @@ func TestTheStallBackstopEndsAStalledTurnAndTellsTheOwnerOnce(t *testing.T) {
 		"bash (toolu_impl_11)",
 		"has not ended",
 		"still owed",
+		"its session was brought back on a new process",
 	} {
 		if !strings.Contains(notice.Reason, want) {
 			t.Errorf("the notice says %q, which does not carry %q", notice.Reason, want)
@@ -208,8 +267,9 @@ func TestTheStallBackstopEndsAStalledTurnAndTellsTheOwnerOnce(t *testing.T) {
 	}
 
 	// The next sweep reads the same stall — this snapshot is what a stop that changed nothing
-	// would leave — and posts the backstop again, which the claim decides as it stands then. The
-	// owner is told once per stall, however many sweeps find it.
+	// would leave — and posts the backstop again. The claim is no longer in that turn, so
+	// nothing ends and nobody is told again: the owner hears of a stall once, because only the
+	// end a machine made is told at all.
 	rig.sweep(claims)
 	rig.settled(stalled)
 	if notices := rig.notices("LEGION-209"); len(notices) != 1 {
@@ -227,8 +287,8 @@ func TestTheStallBackstopJudgesAClaimWithNoCallFromItsTurnsStart(t *testing.T) {
 	rig.sweep(claims)
 
 	rig.awaitResumed(stalled.Token, 1)
-	notices := rig.notices("LEGION-210")
-	if len(notices) != 1 || !strings.Contains(notices[0].Reason, "the daemon saw no call of this turn") {
+	notices := rig.awaitNotices("LEGION-210", 1)
+	if !strings.Contains(notices[0].Reason, "the daemon saw no call of this turn") {
 		t.Fatalf("notices = %+v, want one naming a turn with no call the daemon saw", notices)
 	}
 }
@@ -301,26 +361,32 @@ func TestTheStallBackstopEndsAStalledControllerAndWritesOnNoIssue(t *testing.T) 
 	rig.sweep(claims)
 
 	rig.awaitResumed(controller.Token, 1)
-	for issue, rows := range rig.rows {
-		t.Fatalf("rows written on %q = %+v, want none: a controller's claim is on no issue", issue, rows)
+	rig.settled(controller)
+	if rows := rig.written(""); len(rows) != 0 {
+		t.Fatalf("rows written on no issue = %+v, want none: a controller's claim has no owner to tell", rows)
+	}
+	if rig.attemptsMade() != 0 {
+		t.Fatalf("supervision tried %d writes, want none: a controller's claim is on no issue", rig.attemptsMade())
 	}
 }
 
 // A notice the store refuses is told again at the next sweep, as a stalled update round's is:
-// the mark that says the owner was told is set only where the row was taken.
+// the row is kept until one is taken, and the machine's end is reported once however often it
+// is written.
 func TestTheStallBackstopTellsTheOwnerAgainWhenTheRowIsRefused(t *testing.T) {
 	rig := newBackstopRig(t)
-	rig.refuse = errors.New("the store is down")
+	rig.refusing(errors.New("the store is down"))
 	stalled := rig.claim(claim.RolePlanner, "LEGION-219", backstopBound+time.Hour, true)
 	claims := rig.supervising(stalled)
 
 	rig.sweep(claims)
 	rig.awaitResumed(stalled.Token, 1)
+	rig.awaitAttempts(1)
 	if notices := rig.notices("LEGION-219"); len(notices) != 0 {
 		t.Fatalf("notices = %+v, want none taken", notices)
 	}
 
-	rig.refuse = nil
+	rig.refusing(nil)
 	rig.sweep(claims)
 	rig.settled(stalled)
 
@@ -342,7 +408,8 @@ func TestTheStallBackstopTellsTheControllerOfATreeArchitectsStall(t *testing.T) 
 	rig.sweep(claims)
 
 	rig.awaitResumed(root.Token, 1)
-	rows := rig.rows["LEGION-220"]
+	rig.awaitNotices("LEGION-220", 1)
+	rows := rig.written("LEGION-220")
 	if len(rows) != 2 {
 		t.Fatalf("rows on the root issue = %+v, want the architect's notice and the controller's", rows)
 	}
@@ -359,7 +426,72 @@ func TestTheStallBackstopTellsTheControllerOfATreeArchitectsStall(t *testing.T) 
 	worker := rig.claim(claim.RoleTester, "LEGION-220", backstopBound+time.Hour, true)
 	rig.sweep(rig.supervising(worker))
 	rig.settled(worker)
-	if rows := rig.rows["LEGION-220"]; len(rows) != 3 {
+	rig.awaitNotices("LEGION-220", 2)
+	if rows := rig.written("LEGION-220"); len(rows) != 3 {
 		t.Fatalf("rows after the worker's stall = %+v, want one more, the architect's alone", rows)
+	}
+}
+
+// The owner is told what happened, never what the sweep asked for. The sweep reads the claims
+// before any machine decides, so a claim whose agent moved in between is one whose turn the
+// machine's own fence leaves alone (supervise's backstopStalledTurn): nothing was ended, and a
+// notice saying the turn was ended and the session brought back would send its architect
+// looking for a recovery that never happened.
+func TestTheStallBackstopTellsNobodyOfATurnItDidNotEnd(t *testing.T) {
+	rig := newBackstopRig(t)
+	moving := rig.claim(claim.RoleImplementer, "LEGION-221", time.Minute, true)
+	rig.supervising(moving)
+
+	// What the sweep read, one tick out of date: the record as it stood before the agent's
+	// steps of the last few hours reached the daemon.
+	swept := moving
+	swept.Step.At = swept.Step.At.Add(-backstopBound - time.Hour)
+	swept.Step.TurnStartedAt = swept.Step.TurnStartedAt.Add(-backstopBound - time.Hour)
+	rig.sweep([]supervise.Claim{swept})
+	rig.settled(moving)
+
+	if resumes := rig.resumes(moving.Token); len(resumes) != 0 {
+		t.Fatalf("resumes = %d, want the turn left alone: the claim's own record is inside its bound", len(resumes))
+	}
+	if got := rig.attemptsMade(); got != 0 {
+		t.Fatalf("supervision tried %d notice writes, want none: no turn was ended", got)
+	}
+	if notices := rig.notices("LEGION-221"); len(notices) != 0 {
+		t.Fatalf("notices = %+v, want nobody told of a turn that was not ended", notices)
+	}
+}
+
+// A turn a held suspension ended is told as that. The machine ends such a turn in a suspension
+// rather than a relaunch (replaceProcess, endHeld), so the notice names the suspension and says
+// nothing runs for the claim until it is resumed.
+func TestTheStallBackstopTellsASuspendedEndAsSuspended(t *testing.T) {
+	rig := newBackstopRig(t)
+	stalled := rig.claim(claim.RoleImplementer, "LEGION-222", backstopBound+time.Hour, true)
+	claims := rig.supervising(stalled)
+	m, ok := rig.sup.Machine(stalled.Token)
+	if !ok {
+		t.Fatal("the stalled claim is not supervised")
+	}
+	if err := m.Handle(context.Background(), supervise.RequestSuspend{Claim: stalled.Token,
+		By: supervise.SuspendedByOperator}); !errors.Is(err, supervise.ErrSuspendHeld) {
+		t.Fatalf("a suspension mid-turn = %v, want it held for the turn", err)
+	}
+
+	rig.sweep(claims)
+
+	testwait.Eventually(t, "the held suspension to end the stalled turn", func() bool {
+		return m.Claim().State == supervise.StateSuspended
+	})
+	notices := rig.awaitNotices("LEGION-222", 1)
+	if resumes := rig.resumes(stalled.Token); len(resumes) != 0 {
+		t.Fatalf("resumes = %d, want none: the held suspension ended the process rather than replacing it", len(resumes))
+	}
+	for _, want := range []string{"still owed", "a suspension that was already waiting for this turn ended the process"} {
+		if !strings.Contains(notices[0].Reason, want) {
+			t.Errorf("the notice says %q, which does not carry %q", notices[0].Reason, want)
+		}
+	}
+	if strings.Contains(notices[0].Reason, "brought back") {
+		t.Errorf("the notice says the session was brought back, and none was: %q", notices[0].Reason)
 	}
 }

@@ -14,23 +14,28 @@ import (
 var updateGolden = flag.Bool("update", false, "rewrite the golden fixture this package pins")
 
 // stallDefaults is the fixture's shape. Milliseconds, because that is the unit of the plugin's
-// own numbers and of every LEGION_STALL_* variable; one field per default, named as the
-// plugin's `StallLimits` names it, so the bun test reads the two side by side.
+// own numbers and of every LEGION_STALL_* variable; one field per number, each named as the
+// plugin's own source names it, so the bun test reads the two side by side.
 type stallDefaults struct {
 	CallGraceMs int64 `json:"callGraceMs"`
 	CallBoundMs int64 `json:"callBoundMs"`
 	StepMs      int64 `json:"stepMs"`
+	// DeclaredDeadlineMostMs is the hour the host clamps a call's own declared deadline to
+	// (StallDeclaredDeadlineCap), which no variable moves: it is here because the daemon's
+	// backstop floor is reckoned from it, so it is a copy of a plugin number like the three
+	// above and is held to the plugin's own DECLARED_DEADLINE_MOST_MS the same way.
+	DeclaredDeadlineMostMs int64 `json:"declaredDeadlineMostMs"`
 	// CallBoundMsByRole is the bound's default for every role a session can hold, the controller
 	// among them, since the bound's default is the role's and the daemon's floor is per role.
 	CallBoundMsByRole map[claim.Role]int64 `json:"callBoundMsByRole"`
 }
 
-// The numbers a worker's stall watch runs on live once, in
-// `packages/pi-shared/src/stall-limits.ts`; this package holds the copy the daemon's own backstop
-// floor is computed from (stalldefaults.go). This golden is where the two meet: Go writes it
+// The numbers a worker's stall watch runs on live once, in `packages/pi-shared/src/stall-limits.ts`
+// and `packages/pi-shared/src/stall-watchdog.ts`; this package holds the copies the daemon's own
+// backstop floor is computed from (stalldefaults.go). This golden is where they meet: Go writes it
 // (`-update`), and `packages/pi-shared/src/stall-limits.test.ts` reads it back and holds it equal
-// to DEFAULT_STALL_LIMITS and to the per-role bounds the plugin resolves, so a number moved on
-// one side alone fails a test on the other.
+// to DEFAULT_STALL_LIMITS, to the per-role bounds the plugin resolves and to the watchdog's
+// DECLARED_DEADLINE_MOST_MS, so a number moved on one side alone fails a test on the other.
 func TestStallDefaultsGolden(t *testing.T) {
 	// RoleConfigRoles is every issue role and then the controller: the same set a session's
 	// LEGION_ROLE can hold, and so the set the bound has a default for.
@@ -39,10 +44,11 @@ func TestStallDefaultsGolden(t *testing.T) {
 		byRole[role] = StallCallBoundFor(role).Milliseconds()
 	}
 	golden(t, "stall-defaults.json", stallDefaults{
-		CallGraceMs:       StallCallGrace.Milliseconds(),
-		CallBoundMs:       StallCallBound.Milliseconds(),
-		StepMs:            StallStep.Milliseconds(),
-		CallBoundMsByRole: byRole,
+		CallGraceMs:            StallCallGrace.Milliseconds(),
+		CallBoundMs:            StallCallBound.Milliseconds(),
+		StepMs:                 StallStep.Milliseconds(),
+		DeclaredDeadlineMostMs: StallDeclaredDeadlineCap.Milliseconds(),
+		CallBoundMsByRole:      byRole,
 	})
 }
 

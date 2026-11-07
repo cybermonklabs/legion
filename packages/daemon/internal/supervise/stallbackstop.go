@@ -21,6 +21,19 @@ func (s StepRecord) LastStep() time.Time {
 	return s.At
 }
 
+// StallBackstopStop is what the daemon's stall backstop did to one claim, told to the daemon
+// once the machine has done it (Deps.StallBackstopped, the daemon's stallBackstopped): the
+// record the request carried, the moment the machine judged from, the bound it passed, and
+// whether the turn ended in a suspension rather than a relaunch. The owner's notice is written
+// from this and not from what the sweep asked for, because the sweep asks over claims it read
+// before the decision and the machine can answer by leaving the turn exactly as it stands.
+type StallBackstopStop struct {
+	Step      StepRecord
+	LastStep  time.Time
+	Bound     time.Duration
+	Suspended bool
+}
+
 // backstopStalledTurn is the daemon's stall backstop reaching a claim whose recorded last step is
 // older than its role's bound (StallBackstop, the daemon's backstopStalledTurns).
 //
@@ -33,36 +46,68 @@ func (s StepRecord) LastStep() time.Time {
 // of this event. That re-reading is the fence refreshPlugin makes for the same reason, and the
 // one thing that decides it is the record, never a guess of the daemon's.
 //
-// What it does then is exactly what a daemon-made replacement does (replaceProcess): the turn in
-// flight is interrupted, so the task it was serving goes back to waiting and the relaunched agent
-// is sent it again; a held suspension ends in a suspension (endHeld); and otherwise the recorded
-// session is resumed on a new process. Nothing is charged — not a launch failure, and not a death
-// with work outstanding (chargeDeath) — which is the whole reason this path is replaceProcess and
-// not the death path: the worker's own ladder already ends its process twice before the daemon is
-// reached (the plugin's stall watch), so a stall that repeats would spend the claim's death
-// budget and fail the claim at launch_failure_limit, where the requirement is that the claim come
-// back with its task still owed.
+// A claim that already holds a wake is decided nothing at all, exactly as refreshPlugin decides
+// nothing over one: that wake is a launch or a task of this same claim waiting its turn in the
+// pacing, and a replacement raised over it would take a second token and replace the wake with
+// a launch that does what the parked one was already going to do. A relaunch parked on the
+// pacing leaves the claim working, so without this guard every sweep of a wave would raise
+// another. Nothing is lost by returning: the sweep posts again at the next tick, and the claim
+// is decided then as it stands once its wake has run.
+//
+// What it does when it does act is exactly what a daemon-made replacement does (replaceProcess):
+// the turn in flight is interrupted, so the task it was serving goes back to waiting and the
+// relaunched agent is sent it again; a held suspension ends in a suspension (endHeld); and
+// otherwise the recorded session is resumed on a new process. Nothing is charged — not a launch
+// failure, and not a death with work outstanding (chargeDeath) — which is the whole reason this
+// path is replaceProcess and not the death path: the worker's own ladder already ends its
+// process twice before the daemon is reached (the plugin's stall watch), so a stall that repeats
+// would spend the claim's death budget and fail the claim at launch_failure_limit, where the
+// requirement is that the claim come back with its task still owed.
+//
+// Only a stop that was made is told (Deps.StallBackstopped), and it is told which end it made:
+// the owner's notice says what happened to the worker, and the three answers above — the turn
+// left alone, the turn left to a parked wake, and the turn ended — are not the same news. A
+// replacement the runtime or the store refuses tells nobody and leaves the record as it found
+// it, so the next sweep posts over it again.
+//
+// The record in that report is the request's, which is the store's own as the sweep read it: the
+// claim this machine holds carries the record as it stood when the machine was built, since a
+// step is written through a narrow call of its own and never read back into a machine's claim
+// (putStep). The fence above is unaffected — every step written since this machine was built
+// went through it, so steppedAt covers exactly what the stored record holds beyond the claim's
+// own copy.
 //
 // It never waits for the turn to end. A suspension that arrives mid-turn is held for that turn
 // and bounded by a deadline (holdSuspension, whose deadline only moves earlier); this request
 // carries its deadline already passed — the recorded last step plus the role's bound — because
 // the turn it exists for is one that never ends, and a request held for it would wait for ever.
 func (m *Machine) backstopStalledTurn(ctx context.Context, ev StallBackstop) error {
-	step := m.claim.Step
-	last := step.LastStep()
+	last := m.claim.Step.LastStep()
 	if m.steppedAt.After(last) {
 		last = m.steppedAt
 	}
 	if last.IsZero() || !last.Add(ev.Bound).Before(m.deps.Clock.Now()) {
 		m.log.Info("supervise: the stall backstop found the claim's record inside its bound; the turn is left alone",
-			"bound", ev.Bound, "deadline", ev.Deadline, "lastStep", last, "tool", step.Tool, "callId", step.CallID)
+			"bound", ev.Bound, "deadline", ev.Deadline, "lastStep", last, "tool", ev.Step.Tool, "callId", ev.Step.CallID)
 		return nil
 	}
-	m.log.Warn("supervise: the daemon's stall backstop ends a turn whose agent stopped stepping; the task stays owed and the session comes back",
+	if m.wake != nil {
+		m.log.Info("supervise: the stall backstop found this claim already queued for a wake; its turn is left to that wake",
+			"kind", m.wake.kind, "due", m.wake.at, "bound", ev.Bound, "deadline", ev.Deadline, "lastStep", last)
+		return nil
+	}
+	suspended := m.held != nil
+	m.log.Warn("supervise: the daemon's stall backstop ends a turn whose agent stopped stepping; the task it was serving stays owed",
 		"incarnation", m.claim.Locator.Incarnation, "bound", ev.Bound, "deadline", ev.Deadline,
-		"lastStep", last, "turnStartedAt", step.TurnStartedAt, "tool", step.Tool, "callId", step.CallID,
-		"callStartedAt", step.StartedAt)
-	return m.replaceProcess(ctx, "the daemon's stall backstop ended a turn whose agent stopped stepping", ordinaryEnd)
+		"lastStep", last, "turnStartedAt", ev.Step.TurnStartedAt, "tool", ev.Step.Tool, "callId", ev.Step.CallID,
+		"callStartedAt", ev.Step.StartedAt, "heldSuspension", suspended)
+	if err := m.replaceProcess(ctx, "the daemon's stall backstop ended a turn whose agent stopped stepping", ordinaryEnd); err != nil {
+		return err
+	}
+	if m.deps.StallBackstopped != nil {
+		m.deps.StallBackstopped(m.current(), StallBackstopStop{Step: ev.Step, LastStep: last, Bound: ev.Bound, Suspended: suspended})
+	}
+	return nil
 }
 
 // backstopStall is the StallBackstop event's row, for the one state a claim is in a turn in.

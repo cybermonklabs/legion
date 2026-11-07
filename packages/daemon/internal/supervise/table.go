@@ -183,11 +183,15 @@ type StalePlugin struct {
 // moment the daemon decided it would wait no longer — that record's last step plus Bound — which
 // is already past when the sweep posts. The request carries it rather than waiting for the turn
 // to end, as a suspension held for a turn does (holdSuspension): the turn this exists for is one
-// that never ends.
+// that never ends. Step is the record the sweep read, the store's own: the machine judges the
+// moment from its own two sources (backstopStalledTurn) and reports this record to the daemon
+// when it acts, because the claim a machine holds carries the record as it stood when that
+// machine was built and the owner's notice must name the call the agent is actually in.
 type StallBackstop struct {
 	Claim    claim.Token
 	Bound    time.Duration
 	Deadline time.Time
+	Step     StepRecord
 }
 
 // PodUpdateOpen opens, or keeps open, an update round over this claim: the process holding it is

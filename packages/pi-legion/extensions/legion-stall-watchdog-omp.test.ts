@@ -606,15 +606,20 @@ test.skipIf(skip)(
       toolCallId: evidence.toolCallId,
     });
 
-    // The first step: the child, and only the child. The outcome's count is not pinned, because
-    // what this case is about is whose processes the step took — the cell's own child gone and
-    // this session's kernel, which the warming cell started a turn earlier, untouched. A step
-    // that took the kernel too would end the call instead of letting it come back, which is what
-    // a kernel the wedged call started itself leads to (measurement 2).
+    // The first step: the child, and only the child — the cell's own child gone, this session's
+    // kernel untouched, and exactly one process ended. The count is pinned again because the
+    // warming cell is what made it deterministic: the kernel was started by a turn that had
+    // already ended, so it is older than the judged call by the whole of that turn and rule 2
+    // can never take it along with the child, on this host or a slower one (measurement 2).
+    // Unwarmed, the kernel's start and the call's are a second of host plumbing apart in no
+    // fixed order, which is what made the count 2 on CI's lane and 3 with a delayed
+    // interpreter; warmed, the only process started inside the call is the cell's own child. A
+    // step that took the kernel too would end the call instead of letting it come back.
     const ended = await pane.until("the first step of the ladder", async () =>
       stepOf(await pane.records(), "end-processes")
     );
     expect(ended.toolCallId).toBe(evidence.toolCallId);
+    expect(ended.outcome).toBe("ended 1 process of the call");
     expect(await runs(child)).toBe(false);
     expect(await runs(kernelOf(evidence).pid)).toBe(true);
 
@@ -645,10 +650,12 @@ test.skipIf(skip)(
     });
     const child = await childOf(pane, pidFile);
 
-    // The same first step as the case above, and for the same reason the count is not pinned:
-    // the evidence, the owner's one notice, the cell's own child ended, and the kernel the
-    // warming cell started still running — a step that took the kernel would end the call, and
-    // there would be no turn left for the second step to abort (measurement 2).
+    // The same first step as the case above, with the same pinned count and for the same reason:
+    // the evidence, the owner's one notice, the cell's own child ended and nothing else, and the
+    // kernel the warming cell started a turn earlier still running. The warm-up is what makes
+    // the count deterministic — a kernel older than the judged call by a whole turn is one rule
+    // 2 can never take (measurement 2) — and here a step that took the kernel would end the
+    // call, leaving no turn for the second step to abort.
     const evidence = await pane.until("the evidence for the stuck call", async () =>
       ofKind(await pane.records(), "evidence").at(0)
     );
@@ -656,6 +663,7 @@ test.skipIf(skip)(
       stepOf(await pane.records(), "end-processes")
     );
     expect(ended.toolCallId).toBe(evidence.toolCallId);
+    expect(ended.outcome).toBe("ended 1 process of the call");
     expect(await runs(child)).toBe(false);
     expect(await runs(kernelOf(evidence).pid)).toBe(true);
     expect(pane.publishes().map((publish) => publish.topic)).toEqual([ARCHITECT_TOPIC]);

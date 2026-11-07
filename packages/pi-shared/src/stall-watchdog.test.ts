@@ -73,13 +73,20 @@ interface Rig {
   tellAnswer: { evidenceWritten: boolean; ownerTold: boolean };
   /** A message the aborter throws instead of ending the turn. */
   abortThrows: string | undefined;
+  /** Whether `abortTurn` answers with a Promise that never settles of itself: the host whose
+   * `abort()` waits on the very call that is stuck, which is what bounds the second step. */
+  abortHangs: boolean;
+  /** Settles the Promise a hung `abortTurn` answered with, late and from outside. */
+  readonly settleAbort: () => void;
   /** A message the session refuses the self-message with. */
   sendThrows: string | undefined;
 }
 
 function rig(options: { role?: string; limits?: Partial<StallLimits> } = {}): Rig {
   let clock = START;
-  const state: Omit<Rig, "watchdog" | "tick" | "now"> = {
+  /** The resolver of the Promise a hung `abortTurn` last answered with. */
+  let hung: (() => void) | undefined;
+  const state: Omit<Rig, "watchdog" | "tick" | "now" | "settleAbort"> = {
     told: [],
     steps: [],
     stopped: [],
@@ -95,6 +102,7 @@ function rig(options: { role?: string; limits?: Partial<StallLimits> } = {}): Ri
     exitsWritable: true,
     tellAnswer: { evidenceWritten: true, ownerTold: true },
     abortThrows: undefined,
+    abortHangs: false,
     sendThrows: undefined,
   };
   const deps: StallWatchdogDeps = {
@@ -128,6 +136,10 @@ function rig(options: { role?: string; limits?: Partial<StallLimits> } = {}): Ri
       abortTurn: () => {
         if (state.abortThrows !== undefined) throw new Error(state.abortThrows);
         state.aborts.push(clock);
+        if (!state.abortHangs) return;
+        const never = Promise.withResolvers<void>();
+        hung = never.resolve;
+        return never.promise;
       },
       sendMessage: (text) => {
         if (state.sendThrows !== undefined) throw new Error(state.sendThrows);
@@ -154,6 +166,7 @@ function rig(options: { role?: string; limits?: Partial<StallLimits> } = {}): Ri
       clock += ms;
     },
     now: () => clock,
+    settleAbort: () => hung?.(),
   });
 }
 
@@ -384,19 +397,44 @@ test("an implementer's subagent call open three hours is inside that role's boun
   ).toEqual({ kind: "bound", boundMs: 4 * HOUR });
 });
 
-test("a bound of 0 switches the watch off for this worker", async () => {
+/** k7's negative control, as it is written: "A worker whose bound is 0 records no call and ends
+ * nothing, however long a call runs." The deadline-judged call is in it because 0 is the watch
+ * off for the worker entirely and not its bound rule waived, which is the issue's own ruling. */
+test("a bound of 0 records no call and ends nothing, deadline-judged calls included", async () => {
   const r = rig({ limits: { callBoundMs: 0 } });
-  running(r.watchdog, "eval", { code: "while True: pass" });
+  // One call the bound would judge, and one the deadline rule would: a `pty: true` shell call
+  // with its own 30 seconds, this issue's measured shape.
+  running(r.watchdog, "eval", { code: "while True: pass" }, "toolu_1");
+  running(r.watchdog, "bash", { command: "sleep 100000", pty: true, timeout: 30 }, "toolu_2");
+  expect(r.watchdog.openCalls()).toEqual([]);
+
+  // Ten hours is past every bound and every deadline this watch knows, and nothing at all has
+  // happened: no record to judge, so nobody is told, no step runs and no process is ended.
   r.tick(10 * HOUR);
-  expect(
-    callOverdue(r.watchdog.openCalls()[0] as StallCall, r.now(), {
-      ...limitsFor("tester"),
-      callBoundMs: 0,
-    })
-  ).toBeUndefined();
   await r.watchdog.sweep();
   expect(r.told).toEqual([]);
   expect(r.steps).toEqual([]);
+  expect(r.endedCalls).toEqual([]);
+  expect(r.aborts).toEqual([]);
+  expect(r.exitCodes).toEqual([]);
+
+  // And the rule itself says so, for a reader who reaches it with a call of their own: the
+  // deadline branch is behind the off switch, not in front of it.
+  const deadlineCall: StallCall = {
+    toolCallId: "toolu_3",
+    toolName: "bash",
+    input: { command: "sleep 100000", pty: true, timeout: 30 },
+    startedAt: START,
+    deadlineMs: 30 * SECOND,
+    step: 0,
+    steppedAt: undefined,
+    told: undefined,
+  };
+  const off: StallLimits = { ...limitsFor("tester"), callBoundMs: 0 };
+  expect(callOverdue(deadlineCall, START + 10 * HOUR, off)).toBeUndefined();
+  expect(callOverdue({ ...deadlineCall, deadlineMs: undefined }, START + 10 * HOUR, off)).toBe(
+    undefined
+  );
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -455,6 +493,57 @@ test("the ladder runs its three steps, each one step gap after the last", async 
   expect(r.exitCodes).toEqual([STALL_EXIT_CODE]);
 
   // The ladder is over: a fourth sweep runs nothing.
+  r.tick(2 * MINUTE);
+  await r.watchdog.sweep();
+  expect(r.steps).toHaveLength(3);
+  expect(r.exitCodes).toHaveLength(1);
+});
+
+test("an abort whose Promise never settles hands back at the step gap, and the ladder goes on", async () => {
+  // The host's `abort()` resolves only once the call it aborts has ended, so on the hang this
+  // ladder exists for it may never resolve. The bound on that wait is a real host timer and the
+  // module takes no timer seam — it is a pure detector with one injected clock, and the clock it
+  // judges by is deliberately not the one it waits on — so this one number is wall-clock: a
+  // second, chosen short because the case pays it once. Every other number here is the fake
+  // clock's.
+  const gap = SECOND;
+  const r = rig({ limits: { stepMs: gap } });
+  r.abortHangs = true;
+  running(r.watchdog, "bash", { command: "sleep 100000", pty: true });
+  r.tick(10 * MINUTE + SECOND);
+  await r.watchdog.sweep();
+  expect(r.steps.map((step) => step.step)).toEqual(["end-processes"]);
+
+  // Step two: the abort is made and answers neither way. The step waits the ladder's own gap and
+  // hands the sweep back, rather than holding it for as long as the turn stays hung.
+  r.tick(2 * MINUTE);
+  const began = Date.now();
+  await r.watchdog.sweep();
+  const waited = Date.now() - began;
+  expect(r.aborts).toHaveLength(1);
+  // It waited, and it stopped waiting: the lower bound is half the gap rather than the gap
+  // itself, because a host timer may fire a millisecond early, and the upper bound is what
+  // fails on an unbounded wait — there the sweep never returns and this case times out.
+  expect(waited).toBeGreaterThan(gap / 2);
+  expect(waited).toBeLessThan(10 * gap);
+  expect(r.steps[1]?.outcome).toContain(
+    "the host's abort() had not returned within the 1-second step gap"
+  );
+  // The message that starts the work again still went out, so a turn the abort does end later
+  // has something waiting to restart it.
+  expect(r.messages).toHaveLength(1);
+
+  // Step three at the next gap, exactly as the ladder says, because the abort did not end the
+  // turn.
+  r.tick(2 * MINUTE);
+  await r.watchdog.sweep();
+  expect(r.steps.map((step) => step.step)).toEqual(["end-processes", "abort-turn", "exit-process"]);
+  expect(r.exitCodes).toEqual([STALL_EXIT_CODE]);
+
+  // A late settle is not a second step: the Promise answering now records nothing and ends
+  // nothing, because nothing is reading it any more.
+  r.settleAbort();
+  // The sweep below is itself an await, so the resolution above has run by the time it judges.
   r.tick(2 * MINUTE);
   await r.watchdog.sweep();
   expect(r.steps).toHaveLength(3);

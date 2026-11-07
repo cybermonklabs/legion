@@ -85,14 +85,18 @@ const schemas: Record<string, z.ZodType> = {
   // installed plugin (`internal/api/version.go`), and the plugin's own test pins its manifest's
   // `legion.daemonApiVersion` to it.
   "version.json": z.strictObject({ daemonApiVersion: z.number().int().positive() }),
-  // Nor this one: the defaults a worker's own stall watch runs on, written from the daemon's
-  // copy of them (`internal/config/stalldefaults.go`) so that
+  // Nor this one: the numbers a worker's own stall watch runs on, written from the daemon's
+  // copies of them (`internal/config/stalldefaults.go`) so that
   // `packages/pi-shared/src/stall-limits.test.ts` can hold the plugin's own numbers — the one
-  // source — to the numbers the daemon computes its backstop floor from.
+  // source — to the numbers the daemon computes its backstop floor from. The three defaults are
+  // `src/stall-limits.ts`'s; `declaredDeadlineMostMs` is the hour the host clamps a call's own
+  // declared deadline to (`src/stall-watchdog.ts`, DECLARED_DEADLINE_MOST_MS), the other half of
+  // that floor.
   "stall-defaults.json": z.strictObject({
     callGraceMs: z.number().int().positive(),
     callBoundMs: z.number().int().positive(),
     stepMs: z.number().int().positive(),
+    declaredDeadlineMostMs: z.number().int().positive(),
     callBoundMsByRole: z.record(
       z.enum([...LEGION_ROLES, "controller"]),
       z.number().int().nonnegative()

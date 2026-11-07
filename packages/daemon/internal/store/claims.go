@@ -111,8 +111,12 @@ func (s *Store) PutClaimActivity(ctx context.Context, token claim.Token, a claim
 // this package spells "not yet" to SQL (instant):
 //
 //   - A zero At records the call and leaves the claim's last-step time where it is. That is the
-//     fence on a frame replayed from a dead connection's backlog: it says what the agent was
-//     doing, and nothing at all about what it is doing now.
+//     fence on a frame of a connection that is no longer the claim's — it has none now, or the
+//     one it has was registered after that frame's (supervise's staleStep) — which is a frame of
+//     a process the daemon has already replaced: it says what that agent was doing, and nothing
+//     at all about what the claim is doing now. The shim's own backlog is not this case: it is
+//     held while no daemon is attached and replayed on the next, live connection (internal/shim's
+//     outbox), so those frames are stamped at receipt like any other.
 //   - A zero TurnStartedAt leaves the stored turn start alone, so an ordinary step does not
 //     erase the turn it belongs to. A turn's start writes it.
 //   - An empty CallID carries no call, and the six call columns are left exactly as they stand.

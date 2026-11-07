@@ -1127,12 +1127,14 @@ type supervision struct {
 	// tick (tellUpdateStalled). The workflow sets it where it attaches, before supervision
 	// restores or launches any claim, as it sets the supervisor's terminal callback there.
 	enqueue func(ctx context.Context, issue string, payloads ...record.OutboxPayload) error
-	// backstopTold is the stall the owner of each claim has already been told of: the recorded
-	// last step the stall backstop fired on, by claim (backstopStalledTurns). It is read and
-	// written by the orphan sweep alone, which is one goroutine, and it holds only the claims
-	// stalled at the last tick, so a worker whose turn came back and stalled again is told
-	// afresh.
-	backstopTold map[claim.Token]time.Time
+	// backstopMu guards backstopOwed: the owner notices of turns the stall backstop ended that
+	// the store has refused, by claim, waiting for the next sweep to write them
+	// (stallBackstopped, tellStallsOwed). A mutex, because the machine's own goroutine records
+	// one and the sweep writes it. Nothing of it goes in the store, as the pod-update sweep's
+	// own pace does not (podUpdateOpenings), and one claim owes at most one: a later stall of
+	// the same claim carries the record its owner wants.
+	backstopMu   sync.Mutex
+	backstopOwed map[claim.Token]stallNoticeOwed
 
 	cancel context.CancelFunc
 	// draining is the worker stream's life and what the API's routes run their decisions on
@@ -1334,12 +1336,17 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		PodUpdateRetask:    cfg.PodUpdateRetask,
 	}
 	stopping, beginStop := context.WithCancel(context.Background())
-	return &supervision{
+	supervisionOf := &supervision{
 		cfg: cfg, log: log, plan: p, stream: listener, runtime: rt, supervisor: sup, tokens: tokens, claims: claims,
 		reports: reportsOfClaims(reports, claims), reportStore: st,
 		cancel: cancel, draining: draining, endDrain: endDrain, decided: api.NewRouteDecisions(),
 		stopping: stopping, beginStop: beginStop,
-	}, nil
+	}
+	// The machines' report of a stalled turn they ended goes to supervision, which is built
+	// after their deps: the one callback whose receiver is supervision itself, set here before
+	// any machine exists, as the workflow sets enqueue where it attaches.
+	sup.deps.StallBackstopped = supervisionOf.stallBackstopped
+	return supervisionOf, nil
 }
 
 // cleanSessionStop is what a machine calls once a probe has judged a claim's agent process gone

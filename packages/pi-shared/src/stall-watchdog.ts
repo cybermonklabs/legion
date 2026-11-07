@@ -23,6 +23,11 @@ import type { StallLimits } from "./stall-limits";
  * deadline at all — has no promise to outlive, so the only thing bounded for it is a whole turn's
  * silence, and that is its role's `callBoundMs`.
  *
+ * **The off switch.** A `callBoundMs` of 0 is this worker's whole watch off, not its bound rule
+ * waived: it records no call at all, so none is judged — by the deadline rule as much as by the
+ * bound — nobody is told and no step of the ladder runs, however long a call runs
+ * (`src/stall-limits.ts`, and `running-legion.md`'s "off altogether").
+ *
  * **What a missed beat is not.** It is not a long turn: a turn that keeps calling tools is a
  * succession of short calls and none of them is overdue. It is not a slow model: the clock starts
  * at `tool_execution_start`, so neither the queue nor the approval gate nor a provider's thinking
@@ -80,7 +85,16 @@ import type { StallLimits } from "./stall-limits";
  * number is clamped to 1–3600 seconds, as the shell tool's and `eval`'s own argument descriptions
  * say (`omp://tools/bash.md`, `omp://tools/eval.md`, read 2026-11-07). */
 const DECLARED_DEADLINE_LEAST_MS = 1_000;
-const DECLARED_DEADLINE_MOST_MS = 3_600_000;
+/** The upper end of that clamp, and so the longest a call of its own declared deadline can
+ * legitimately run. The daemon holds a copy of it
+ * (`packages/daemon/internal/config/stalldefaults.go`, StallDeclaredDeadlineCap), because its
+ * backstop floor must stay above the whole ladder a working plugin runs and this hour is the
+ * longer half of that ladder's first number. The two are pinned to each other: the daemon's
+ * golden writes it to `packages/contracts/fixtures/daemon-api/stall-defaults.json` as
+ * `declaredDeadlineMostMs`, and `src/stall-limits.test.ts` holds that field equal to this
+ * constant, so neither copy can move alone. The fixture is read by that test and never by this
+ * module, which imports no `node:` module. */
+export const DECLARED_DEADLINE_MOST_MS = 3_600_000;
 
 /** What one tool promises about how long a call of it may run. */
 export interface StallToolDeadline {
@@ -272,13 +286,15 @@ export interface StallWatchdogDeps {
 }
 
 export interface StallWatchdog {
-  /** `tool_call`: records the call's arguments. It returns at once — the host holds the whole
-   * turn for this handler's budget and fails the call closed when it throws or outruns it, both
-   * measured — so it blocks nothing, revises nothing and awaits nothing. */
+  /** `tool_call`: records the call's arguments, or nothing at all where this worker's bound is 0
+   * and its watch is off. It returns at once — the host holds the whole turn for this handler's
+   * budget and fails the call closed when it throws or outruns it, both measured — so it blocks
+   * nothing, revises nothing and awaits nothing. */
   readonly callRequested: (event: ToolCallEvent) => void;
   /** `tool_execution_start`: the host has handed the call to its tool, so its clock starts here
    * and neither the queue nor the approval gate is counted against it. A call whose `tool_call`
-   * this watch never saw is recorded from this event, with the arguments it carries. */
+   * this watch never saw is recorded from this event, with the arguments it carries; a worker
+   * whose watch is off records neither. */
   readonly executionStarted: (event: ToolExecutionStartEvent) => void;
   /** `tool_execution_end`: closes the record, the error end of a call the host failed closed
    * before it ran among them. */
@@ -323,16 +339,20 @@ export function effectiveDeadlineMs(
 }
 
 /**
- * Whether this call has missed a beat at `now`, and by how much. It has not while its clock has
- * not started, while `callBoundMs` is 0, which is the watch switched off for this worker, and
- * whenever it is still inside the rule that judges it: its own deadline plus `callGraceMs` where
- * it promised one, and its role's bound where it promised none.
+ * Whether this call has missed a beat at `now`, and by how much. It has not while `callBoundMs`
+ * is 0, which is this worker's watch switched off altogether and not merely its bound rule
+ * waived — a call the deadline rule would judge is not judged either, since the only reading of
+ * 0 the deployment is offered is "off" (`src/stall-limits.ts`, `running-legion.md`). It has not
+ * while its clock has not started, and not while it is still inside the rule that judges it: its
+ * own deadline plus `callGraceMs` where it promised one, and its role's bound where it promised
+ * none.
  */
 export function callOverdue(
   call: StallCall,
   now: number,
   limits: StallLimits
 ): StallOverdue | undefined {
+  if (limits.callBoundMs === 0) return undefined;
   if (call.startedAt === undefined) return undefined;
   const openMs = now - call.startedAt;
   if (call.deadlineMs !== undefined) {
@@ -344,7 +364,6 @@ export function callOverdue(
     };
     return openMs > allowed ? { rule, openMs, pastMs: openMs - allowed } : undefined;
   }
-  if (limits.callBoundMs === 0) return undefined;
   return openMs > limits.callBoundMs
     ? {
         rule: { kind: "bound", boundMs: limits.callBoundMs },
@@ -400,6 +419,55 @@ function openedCall(
   };
 }
 
+/** What the second step's wait on the host's `abort()` came to. */
+type AbortEnd =
+  | { readonly kind: "ended" }
+  | { readonly kind: "failed"; readonly error: string }
+  | { readonly kind: "unsettled" };
+
+/**
+ * The host's `abort()`, waited for at most `boundMs`, which is the ladder's own step gap and no
+ * fifth number of its own.
+ *
+ * **Why it is bounded at all.** `ctx.abort()` resolves only once the call it aborts has ended
+ * (measured; `packages/pi-legion/src/stall-abort.test.ts` holds it), so on the hang this ladder
+ * exists for it may never resolve. A step that waited for it would hold the sweep for ever and
+ * leave the third step unreachable — which is the fault R5 names for the daemon's own backstop,
+ * that a request waiting for a turn to end waits for ever on a hung turn.
+ *
+ * **Why the step gap is the right bound.** It is the number the ladder already measures a step
+ * by: a step runs only because the step before it did not end the call within the gap, and an
+ * `abort()` still unsettled when the gap has passed has not ended the turn, which is the one
+ * condition the third step exists for. The gap the sweep then counts runs from the sweep that
+ * ran this step and not from here, so a step that waits the whole gap still leaves the ladder
+ * its two gaps and the daemon's backstop the same ladder to stay above.
+ *
+ * **A late settle does nothing.** The promise is left to settle on its own; nothing reads it
+ * after the bound, so the sweep never takes a late answer for a second step, and the rejection
+ * it may carry is already handled here.
+ */
+async function abortEnd(abort: () => Promise<void> | void, boundMs: number): Promise<AbortEnd> {
+  let end: AbortEnd | undefined;
+  // The async wrapper makes a synchronous throw a rejection, so a host that refuses the abort
+  // before it returns anything is recorded as the same failure as one whose Promise rejects.
+  const settled = (async () => abort())().then(
+    () => {
+      end = { kind: "ended" };
+    },
+    (error: unknown) => {
+      end = { kind: "failed", error: messageFor(error) };
+    }
+  );
+  const bound = Promise.withResolvers<void>();
+  const timer = setTimeout(bound.resolve, boundMs);
+  try {
+    await Promise.race([settled, bound.promise]);
+  } finally {
+    clearTimeout(timer);
+  }
+  return end ?? { kind: "unsettled" };
+}
+
 export function createStallWatchdog(deps: StallWatchdogDeps): StallWatchdog {
   /** The open calls, by the id that is the only thing pairing a call's events. Closing one deletes
    * it, which clears its ladder: a later stuck call starts again at the first step. */
@@ -408,6 +476,12 @@ export function createStallWatchdog(deps: StallWatchdogDeps): StallWatchdog {
   let turnOpen = false;
   /** One sweep at a time: a step can outlast the 5-second tick that armed it. */
   let sweeping = false;
+  /** Whether this worker is watched at all. A `callBoundMs` of 0 is the watch off for it
+   * entirely, deadline-judged calls included, so no call is written down here: the two handlers
+   * that open a record are the only way into this module, which makes them the one place the
+   * switch cannot be reached around, and a worker that records nothing ends nothing however long
+   * a call runs. */
+  const watching = deps.limits.callBoundMs !== 0;
 
   function close(toolCallId: string, why: string): void {
     if (!calls.delete(toolCallId)) return;
@@ -481,16 +555,23 @@ export function createStallWatchdog(deps: StallWatchdogDeps): StallWatchdog {
     await record(call, "end-processes", overdue.openMs, outcome);
   }
 
-  /** Step two: end the turn, and start the work again. Each failure path is defined, because a
-   * ladder whose error path leaves no next step is the failure three reviews of the abandoned
-   * branch found: the ladder goes on to step three at the next gap either way. */
+  /** Step two: end the turn, and start the work again. Each failure path is defined, and so is
+   * the host that answers neither way, because a ladder whose error path leaves no next step is
+   * the failure three reviews of the abandoned branch found: the ladder goes on to step three at
+   * the next gap however this step came out. The abort's own wait is bounded by the step gap
+   * (`abortEnd`); the message that follows it is the host's synchronous `pi.sendMessage` and
+   * waits for nothing (`packages/pi-legion/src/stall-abort.ts`). */
   async function abortTurn(call: StallCall, overdue: StallOverdue): Promise<void> {
     const outcomes: string[] = [];
-    try {
-      await deps.aborter.abortTurn();
-      outcomes.push("the turn was ended with the host's abort()");
-    } catch (error) {
-      outcomes.push(`the host's abort() failed: ${messageFor(error)}`);
+    const ended = await abortEnd(() => deps.aborter.abortTurn(), deps.limits.stepMs);
+    if (ended.kind === "ended") outcomes.push("the turn was ended with the host's abort()");
+    else if (ended.kind === "failed") outcomes.push(`the host's abort() failed: ${ended.error}`);
+    else {
+      outcomes.push(
+        `the host's abort() had not returned within the ` +
+          `${Math.round(deps.limits.stepMs / 1_000)}-second step gap, so this step ended without ` +
+          "it; a later return of it takes no step of its own"
+      );
     }
     try {
       await deps.aborter.sendMessage(restartMessage(call, overdue));
@@ -565,6 +646,7 @@ export function createStallWatchdog(deps: StallWatchdogDeps): StallWatchdog {
 
   return {
     callRequested: (event) => {
+      if (!watching) return;
       // A call is made inside a turn, so one seen here says a turn runs even where the entry
       // registered no turn_start of its own.
       turnOpen = true;
@@ -572,6 +654,7 @@ export function createStallWatchdog(deps: StallWatchdogDeps): StallWatchdog {
     },
 
     executionStarted: (event) => {
+      if (!watching) return;
       turnOpen = true;
       const now = deps.now();
       const open = calls.get(event.toolCallId);

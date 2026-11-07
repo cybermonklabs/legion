@@ -36,10 +36,19 @@ import (
 // The stop itself is the machine's (supervise's backstopStalledTurn), which re-reads the claim's
 // own record before it acts and charges nothing. The post is made at every tick that finds the
 // claim still stalled, as StalePlugin's is, so a stop the runtime refuses is tried again at the
-// next sweep with no timer of its own.
+// next sweep with no timer of its own, and the record it read goes with it: the claim a machine
+// holds carries the record as it stood when that machine was built, and the owner's notice must
+// name the call the agent is actually in (supervise.StallBackstop.Step).
+//
+// Nobody is told from here. What this pass asks for is not what happens — the machine's own
+// fence can leave the turn alone, a wake already parked over the claim takes it, and a
+// suspension held for that turn ends the process rather than replacing it — so the owner is told
+// by the machine's own report of the end it made (stallBackstopped), and a sweep that posts over
+// a claim already told nothing tells nothing. The one thing left here is the notice a store
+// refused, told again at this tick (tellStallsOwed).
 func (s *supervision) backstopStalledTurns(ctx context.Context, claims []supervise.Claim) {
+	s.tellStallsOwed(ctx)
 	now := s.plan.clock.Now()
-	told := map[claim.Token]time.Time{}
 	for _, c := range claims {
 		if ctx.Err() != nil {
 			return
@@ -52,31 +61,83 @@ func (s *supervision) backstopStalledTurns(ctx context.Context, claims []supervi
 		if last.IsZero() || !last.Add(bound).Before(now) {
 			continue
 		}
-		s.supervisor.post(c.Token, supervise.StallBackstop{Claim: c.Token, Bound: bound, Deadline: last.Add(bound)})
-		if s.backstopTold[c.Token].Equal(last) || s.tellStallBackstopped(ctx, c, last, now.Sub(last), bound) {
-			told[c.Token] = last
+		s.supervisor.post(c.Token, supervise.StallBackstop{Claim: c.Token, Bound: bound, Deadline: last.Add(bound), Step: c.Step})
+	}
+}
+
+// stallNoticeBudget bounds the write of one owner's notice, which is made outside the sweep on a
+// goroutine of its own (stallBackstopped): a store that never answers holds nothing open longer
+// than this, and what it refuses is written again at the next sweep.
+const stallNoticeBudget = 30 * time.Second
+
+// stallBackstopped is the machine's report that it has ended a stalled turn
+// (supervise.Deps.StallBackstopped), and the only thing that tells the owner: a request the
+// machine answered by leaving the turn alone is told to nobody, and a turn a held suspension
+// ended is told as that. It is called inside the machine's decision, so the row is written on a
+// goroutine of its own, bounded like a terminal fact; the sweep is not waited for, because a
+// notice whose whole purpose is that somebody hears it should not wait a tick for a tick it does
+// not need.
+//
+// Nothing of what it writes is in the store, as the pod-update sweep's own pace is not
+// (podUpdateOpenings). A row the store refuses is kept in memory and written again at the next
+// sweep (oweStallNotice, tellStallsOwed), which is the same retry a stalled update round's
+// notice gets (tellUpdateStalled).
+func (s *supervision) stallBackstopped(c supervise.Claim, stop supervise.StallBackstopStop) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), stallNoticeBudget)
+		defer cancel()
+		if !s.tellStallBackstopped(ctx, c, stop) {
+			s.oweStallNotice(c, stop)
+		}
+	}()
+}
+
+// oweStallNotice keeps one owner's notice for the next sweep, after the store refused it. One
+// claim owes at most one: a second stall of the same claim is a later end of the same worker,
+// and the newer record is the one its owner wants.
+func (s *supervision) oweStallNotice(c supervise.Claim, stop supervise.StallBackstopStop) {
+	s.backstopMu.Lock()
+	defer s.backstopMu.Unlock()
+	if s.backstopOwed == nil {
+		s.backstopOwed = map[claim.Token]stallNoticeOwed{}
+	}
+	s.backstopOwed[c.Token] = stallNoticeOwed{claim: c, stop: stop}
+}
+
+// tellStallsOwed writes the notices a store refused since the last sweep. Each is taken out of
+// the owed set before it is tried, and put back where it fails, so the sweep and the machine's
+// own goroutine never write one row twice: a notice is in the set or in a hand, never both.
+func (s *supervision) tellStallsOwed(ctx context.Context) {
+	s.backstopMu.Lock()
+	owed := s.backstopOwed
+	s.backstopOwed = nil
+	s.backstopMu.Unlock()
+	for _, notice := range owed {
+		if ctx.Err() != nil || !s.tellStallBackstopped(ctx, notice.claim, notice.stop) {
+			s.oweStallNotice(notice.claim, notice.stop)
 		}
 	}
-	// What this pass keeps of its own is the one mark above, and it keeps it for the claims that
-	// are stalled now: a claim whose turn came back is no longer here, so the next stall of it is
-	// told afresh. Nothing of it goes in the store, as the pod-update sweep's own pace does not
-	// (podUpdateOpenings): a daemon that restarts mid-stall tells the owner once more, which is
-	// the right way round for a notice whose whole purpose is that somebody hears it.
-	s.backstopTold = told
+}
+
+// stallNoticeOwed is one owner's notice the daemon has not managed to write: the claim as the
+// machine held it when it ended the turn, and what it did (supervise.StallBackstopStop).
+type stallNoticeOwed struct {
+	claim supervise.Claim
+	stop  supervise.StallBackstopStop
 }
 
 // tellStallBackstopped tells the owner of the stalled worker's issue — the architect the issue's
-// notices reach — that the daemon ended this turn, with the record it read in the notice: how
-// long the agent was silent, the bound it passed, when the turn began and the call the record
-// names, if any. The call's arguments are in no part of it: their text is in no column either, a
-// shell command routinely holding a credential (supervise.StepRecord).
+// notices reach — that the daemon ended this turn, with the record the machine acted on in the
+// notice: how long the agent was silent, the bound it passed, when the turn began and the call
+// the record names, if any. The call's arguments are in no part of it: their text is in no column
+// either, a shell command routinely holding a credential (supervise.StepRecord).
 //
-// It reports whether the owner was told, which is what the sweep's "told once per stall" mark
-// records (backstopStalledTurns): a row the store refuses is told again at the next sweep, as a
-// stalled update round's is (tellUpdateStalled). The project controller's own claim has no issue
-// and so no owner to tell; the line it logs is the whole of its telling, and the record is in it.
-func (s *supervision) tellStallBackstopped(ctx context.Context, c supervise.Claim, last time.Time, silent, bound time.Duration) bool {
-	found := stallBackstopRecord(c, last, silent, bound)
+// It reports whether the owner was told: a row the store refuses is owed and told again at the
+// next sweep, as a stalled update round's is (tellUpdateStalled). The project controller's own
+// claim has no issue and so no owner to tell; the line it logs is the whole of its telling, and
+// the record is in it.
+func (s *supervision) tellStallBackstopped(ctx context.Context, c supervise.Claim, stop supervise.StallBackstopStop) bool {
+	found := stallBackstopRecord(c, stop, s.plan.clock.Now().Sub(stop.LastStep))
 	if c.Issue == "" {
 		s.log.Warn("supervise: the daemon's stall backstop ended a turn of a claim on no issue; there is no owner to tell",
 			"claim", c.Token, "role", c.Role, "record", found)
@@ -122,18 +183,27 @@ const stallBackstopNotice = "worker-stalled"
 // daemon read, in one sentence, and what it did about it. It is the same text either way, so a
 // deployment with no workflow leaves the same account in its log as the notice would have
 // carried.
-func stallBackstopRecord(c supervise.Claim, last time.Time, silent, bound time.Duration) string {
+//
+// What it says happened is what the machine reported (supervise.StallBackstopStop), never what
+// the sweep asked for: a turn a suspension was already waiting for ends in that suspension, with
+// nothing launched in its place, and an owner told that the session had come back would go
+// looking for a process that is not there.
+func stallBackstopRecord(c supervise.Claim, stop supervise.StallBackstopStop, silent time.Duration) string {
 	call := "the daemon saw no call of this turn"
-	if c.Step.CallID != "" {
+	if stop.Step.CallID != "" {
 		call = fmt.Sprintf("the last call the daemon saw was %s (%s), which started at %s and has not ended",
-			c.Step.Tool, c.Step.CallID, stallInstant(c.Step.StartedAt))
-		if !c.Step.EndedAt.IsZero() && !c.Step.EndedAt.Before(c.Step.StartedAt) {
+			stop.Step.Tool, stop.Step.CallID, stallInstant(stop.Step.StartedAt))
+		if !stop.Step.EndedAt.IsZero() && !stop.Step.EndedAt.Before(stop.Step.StartedAt) {
 			call = fmt.Sprintf("the last call the daemon saw was %s (%s), which started at %s and ended at %s",
-				c.Step.Tool, c.Step.CallID, stallInstant(c.Step.StartedAt), stallInstant(c.Step.EndedAt))
+				stop.Step.Tool, stop.Step.CallID, stallInstant(stop.Step.StartedAt), stallInstant(stop.Step.EndedAt))
 		}
 	}
-	return fmt.Sprintf("the daemon ended the %s's turn: its agent last stepped at %s, %s ago, past the %s this deployment gives the role (worker_stall_backstop_hours). The turn began at %s, and %s. The task it was serving is still owed to it and its session was brought back on a new process; nothing was charged to the claim. The arguments of a call are never recorded, so they are in no part of this notice.",
-		c.Role, stallInstant(last), silent.Round(time.Minute), bound, stallInstant(c.Step.TurnStartedAt), call)
+	end := "its session was brought back on a new process"
+	if stop.Suspended {
+		end = "a suspension that was already waiting for this turn ended the process rather than replacing it, so nothing runs for the claim until it is resumed"
+	}
+	return fmt.Sprintf("the daemon ended the %s's turn: its agent last stepped at %s, %s ago, past the %s this deployment gives the role (worker_stall_backstop_hours). The turn began at %s, and %s. The task it was serving is still owed to it and %s; nothing was charged to the claim. The arguments of a call are never recorded, so they are in no part of this notice.",
+		c.Role, stallInstant(stop.LastStep), silent.Round(time.Minute), stop.Bound, stallInstant(stop.Step.TurnStartedAt), call, end)
 }
 
 // stallInstant is a moment of the record as the notice and the log line write it, and "no time

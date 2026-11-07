@@ -127,7 +127,10 @@ architect, because every other notice of the tree goes to that architect and nob
 tree is left to read this one; the architect is told on its issue as well. The `reason` is the
 record the daemon read: when the agent last stepped and how long ago that was, the bound it
 passed, when the turn began, and the last call the daemon saw, with its tool, its call id, when it
-started and whether it ended — never a call's arguments, whose text the daemon keeps in no column.
+started and whether it ended — never a call's arguments, whose text the daemon keeps in no
+column. It says what the daemon did as well, which is not always a relaunch: where a suspension
+was already waiting for that turn, the process was ended and nothing runs for the claim until it
+is resumed, and the notice says so.
 
 Nothing failed and nothing was charged to the claim: the task that architect was serving is still
 owed to it and is sent to it again, no issue was held, and no status moved. Do nothing to the

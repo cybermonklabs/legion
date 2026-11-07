@@ -626,6 +626,14 @@ func treeOthers(claims []supervise.Claim, tree string, root claim.Token) []claim
 // relaunch holds its machine for as long as the runtime waits out its pods, and with many claims
 // one is nearly always relaunching.
 //
+// The step record is the store's either way (supervise.Claim.Step). It is no part of a machine's
+// state: the daemon writes it through a narrow call of its own as the agent's frames arrive and
+// never reads it back into the machine's claim (supervise's putStep, store.PutClaimStep), so the
+// machine's copy is the record as it stood when that machine was built — at this daemon's boot,
+// for every claim it re-adopted — and taking the view whole would show an operator a call hours
+// out of date, or none at all, for every supervised claim. These routes are the one surface a
+// controller's record reaches, so what they show has to be the record the backstop reads.
+//
 // What the last pod-update sweep decided is answered beside them (Options.PodUpdateRounds), and a
 // daemon with no sweep behind it answers the zero record, which says so: an operator who is served
 // no record at all cannot tell a daemon that holds no issue back from one too old to say. Every
@@ -642,7 +650,9 @@ func (s *server) list(w http.ResponseWriter, r *http.Request) {
 	views := make([]OperatorClaim, len(claims))
 	for i, c := range claims {
 		if m, ok := s.supervisor.Machine(c.Token); ok {
+			step := c.Step
 			c = m.View().Claim
+			c.Step = step
 		}
 		views[i] = operatorView(c)
 	}

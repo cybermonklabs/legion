@@ -7,9 +7,11 @@ import type { LegionRole } from "@legion/contracts";
  * production's, apply to every one it does not hold: a variable is there only so a deployment, or
  * a test, can move one.
  *
- * `callBoundMs` of 0 switches the call watch off for that worker: no call is judged overdue by
- * the bound, so nothing is told and no step of the recovery ladder runs. A reader of these
- * numbers honours that rather than reading 0 as a call that is overdue the moment it starts.
+ * `callBoundMs` of 0 switches the call watch off for that worker altogether, and not its bound
+ * rule alone: `src/stall-watchdog.ts` records no call of that worker at all, so no call is
+ * judged — one a deadline would judge as much as one the bound would — nothing is told and no
+ * step of the recovery ladder runs. A reader of these numbers honours that rather than reading
+ * 0 as a call that is overdue the moment it starts.
  */
 
 export interface StallLimits {
@@ -27,12 +29,14 @@ export interface StallLimits {
   readonly callGraceMs: number;
   /** The bound for a call no deadline judges — an `eval` call, whose deadline the host may pause;
    * a call that declares 0, for which the host arms none; a tool that takes no deadline, a
-   * subagent among them. 0 switches the call watch off for this worker. Its default is the
-   * role's (`defaultCallBoundMs`); the variable, where the deployment sets one, is one value for
-   * every role, because the daemon copies one name from its own environment to every session. */
+   * subagent among them. 0 switches the call watch off for this worker altogether, every other
+   * call included. Its default is the role's (`defaultCallBoundMs`); the variable, where the
+   * deployment sets one, is one value for every role, because the daemon copies one name from
+   * its own environment to every session. */
   readonly callBoundMs: number;
   /** The gap between the recovery ladder's steps: each step runs only because the step before it
-   * did not end the call within this. */
+   * did not end the call within this, and it is the bound on the second step's own wait for the
+   * host's `abort()` (`src/stall-watchdog.ts`, `abortEnd`). */
   readonly stepMs: number;
 }
 
@@ -64,7 +68,10 @@ export const DEFAULT_STALL_LIMITS: StallLimits = {
   // 2 minutes between the ladder's steps. An ordinary foreground shell call takes 60.0 seconds to
   // close its own record on this binary (measured four times, dispatch://INFRA-1274's plan), so a
   // shorter gap would run the next step while the step before it was still landing; and two gaps
-  // add four minutes to the ladder the daemon's own backstop bound must stay above.
+  // add four minutes to the ladder the daemon's own backstop bound must stay above. The second
+  // step's own wait on the host's `abort()` is bounded by this same number and adds nothing to
+  // those four minutes: the gap is counted from the sweep that ran the step, not from the moment
+  // the step handed back.
   stepMs: 120_000,
 };
 

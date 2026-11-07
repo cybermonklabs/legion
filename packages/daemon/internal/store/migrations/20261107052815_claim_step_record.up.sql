@@ -8,8 +8,9 @@
 --
 -- step_at is when the daemon received the claim's last step, null for a claim that has stepped
 -- none. The daemon stamps it on receipt because no frame carries a time of its own, and a frame
--- replayed from a dead connection's backlog does not move it: that frame is evidence of what the
--- agent was doing and no evidence at all that it is doing it now.
+-- that arrives on a connection the claim has since replaced does not move it (supervise's
+-- staleStep): the process that sent it is gone, so that frame is evidence of what the agent was
+-- doing and no evidence at all that it is doing it now.
 --
 -- turn_started_at is when the agent's current turn began. It is what a claim that has sent no
 -- tool frame at all is judged from, so a turn that hangs before its first call reads as the turn

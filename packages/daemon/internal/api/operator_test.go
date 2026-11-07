@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -1139,6 +1140,38 @@ func TestListShowsAClaimsDeathsAndItsInterruptedTask(t *testing.T) {
 	decodeInto(t, recorder, &got)
 	if len(got.Claims) != 1 || got.Claims[0].Budgets.Deaths != 2 || got.Claims[0].Pending == nil || !got.Claims[0].Pending.Interrupted {
 		t.Fatalf("list answered %+v, want the claim with 2 deaths and its task interrupted", got.Claims)
+	}
+}
+
+// The step record the listing shows is the store's, for a claim a machine supervises as much as
+// for one it does not. A machine's own copy of that record is the one it was built with: the
+// daemon writes every step through a narrow call of its own and never reads one back into the
+// machine's claim (supervise's putStep), so a listing served from the published view alone
+// would show an operator the call a claim was in when this daemon booted, or none at all.
+func TestListShowsTheStoredStepOfASupervisedClaim(t *testing.T) {
+	h := newHarness(t)
+	h.operator(http.MethodPost, "/legion/v1/operator/claims", spawnBody())
+	if _, supervised := h.supervisor.Machine(architectToken); !supervised {
+		t.Fatal("the spawned claim has no machine: this case is about what a supervised claim shows")
+	}
+	began := time.Date(2026, 9, 22, 11, 0, 0, 0, time.UTC)
+	stepped := supervise.StepRecord{At: began.Add(time.Minute), TurnStartedAt: began, Tool: "bash",
+		CallID: "toolu_turn3_1", ArgsBytes: 128, ArgsHash: "9f2b7c0d1e3a4b5c", StartedAt: began.Add(time.Minute)}
+	if known, err := h.store.PutClaimStep(h.ctx, architectToken, stepped); err != nil || !known {
+		t.Fatalf("put the step of the supervised claim = %t, %v", known, err)
+	}
+
+	recorder := h.operator(http.MethodGet, "/legion/v1/operator/claims", nil)
+
+	var got OperatorClaims
+	decodeInto(t, recorder, &got)
+	if len(got.Claims) != 1 {
+		t.Fatalf("list answered %+v, want the one claim", got.Claims)
+	}
+	want := StepViewOf(stepped)
+	step := got.Claims[0].Step
+	if step == nil || !reflect.DeepEqual(step, want) {
+		t.Fatalf("the listed step = %+v, want the record the store holds, %+v", step, want)
 	}
 }
 

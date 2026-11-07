@@ -14,10 +14,33 @@ import (
 // request carries it — so the number is written out.
 const backstopBound = 4*time.Hour + 5*time.Minute + 2*2*time.Minute
 
-// backstop is the request the daemon's sweep makes for this claim: the role's bound, and the
-// deadline it computed from the record it read, which is already past when it posts.
+// backstop is the request the daemon's sweep makes for this claim: the role's bound, the
+// deadline it computed from the record it read, which is already past when it posts, and that
+// record itself, which is the store's own as the sweep read it there.
 func (h *harness) backstop(last time.Time) StallBackstop {
-	return StallBackstop{Claim: h.token, Bound: backstopBound, Deadline: last.Add(backstopBound)}
+	return h.backstopOf(last, h.store.step(h.token))
+}
+
+// backstopOf is backstop over a record of the caller's, for a case about the record the request
+// carries rather than the one the store happens to hold.
+func (h *harness) backstopOf(last time.Time, step StepRecord) StallBackstop {
+	return StallBackstop{Claim: h.token, Bound: backstopBound, Deadline: last.Add(backstopBound), Step: step}
+}
+
+// backstopReports is a harness whose machine's reports of the turns it ended are collected
+// rather than told (Deps.StallBackstopped), over the claim the walks drive: what the daemon
+// writes the owner's notice from.
+func backstopReports(t *testing.T) (*harness, *[]StallBackstopStop) {
+	t.Helper()
+	h := newBareHarness(t)
+	stops := &[]StallBackstopStop{}
+	h.deps.StallBackstopped = func(_ Claim, stop StallBackstopStop) { *stops = append(*stops, stop) }
+	c := queuedClaim()
+	if err := h.store.PutClaim(h.ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	h.start(c)
+	return h, stops
 }
 
 // workingOnATask walks the claim to a turn of a delivered task and reports the id of the prompt
@@ -217,4 +240,111 @@ func TestTheBackstopWithAHeldSuspensionSuspendsTheClaim(t *testing.T) {
 		t.Fatalf("suspended %+v, want the stalled process %+v", suspend.Locator, loc)
 	}
 	h.wantCalls("Resume", 0)
+}
+
+// A claim already queued for a wake is decided nothing at all, as refreshPlugin decides nothing
+// over one (plugin.go's guard): the wake is this same claim's launch or task waiting its turn in
+// the pacing, and a relaunch raised over it would take a second token and replace the wake with
+// a launch that does what the parked one was already going to do. A relaunch parked that way
+// leaves the claim working, so without the guard every sweep of a wave would raise another over
+// it.
+func TestTheBackstopLeavesAClaimAlreadyQueuedForAWake(t *testing.T) {
+	h := pacedHarness(t, wakeRate)
+	h.deps.PluginContract = PodUpdateContract + 1
+	stalled := stalePluginClaim(wakeClaim(secondToken, StateWorking), PodUpdateContract)
+	stalled.State = StateWorking
+	stepped := h.clock.Now().Add(-backstopBound - time.Minute)
+	stalled.Step = StepRecord{At: stepped, TurnStartedAt: stepped, Tool: "bash", CallID: "toolu_turn1_0", StartedAt: stepped}
+	stale := h.machineFor(stalled)
+
+	// The harness's own claim takes the limiter's one token, so the stale claim's update task
+	// parks rather than running where it is raised.
+	h.must(RequestSpawn{Claim: h.token})
+	h.mustPostTo(stale, StalePlugin{Claim: secondToken, Trigger: "sweep"})
+	parked := stale.View().WakeWaiting
+	if parked == nil || parked.Kind != WakePluginTask {
+		t.Fatalf("the stale claim holds wake %+v, want a plugin task waiting its turn", parked)
+	}
+
+	h.mustPostTo(stale, StallBackstop{Claim: secondToken, Bound: backstopBound,
+		Deadline: stepped.Add(backstopBound), Step: stalled.Step})
+
+	if held := stale.View().WakeWaiting; held == nil || *held != *parked {
+		t.Fatalf("the claim holds wake %+v, want the one it held, %+v: the backstop took no second token", held, parked)
+	}
+	if got := stale.Claim().State; got != StateWorking {
+		t.Fatalf("the claim is %s, want it left %s: its turn is the parked wake's to end", got, StateWorking)
+	}
+	h.wantStarts(secondToken, 0)
+	if lines := h.logs.lines("supervise: the stall backstop found this claim already queued for a wake"); len(lines) != 1 {
+		t.Fatalf("the backstop wrote %d lines about the wake it left the claim to, want 1", len(lines))
+	}
+}
+
+// The daemon is told what the machine did, never what the sweep asked for, because the owner's
+// notice is written from it: a turn ended carries the record the request brought and the end it
+// made, and a turn the fence left alone is told to nobody at all.
+func TestTheBackstopReportsOnlyTheEndItMade(t *testing.T) {
+	h, stops := backstopReports(t)
+	h.workingOnATask("implement the plan")
+	h.advance(time.Minute)
+	h.stepped("bash", "toolu_turn1_0", toolArgs, false)
+	last := h.clock.Now()
+	swept := h.store.step(h.token)
+	h.advance(backstopBound + time.Minute)
+
+	h.must(h.backstop(last))
+
+	h.wantState(StateLaunching)
+	want := StallBackstopStop{Step: swept, LastStep: last, Bound: backstopBound}
+	if len(*stops) != 1 || (*stops)[0] != want {
+		t.Fatalf("the backstop reported %+v, want one end of the turn, %+v", *stops, want)
+	}
+
+	// The same claim, stepping inside its bound: the fence leaves the turn alone and reports
+	// nothing, so nobody is told a turn was ended that was not.
+	moved, movedStops := backstopReports(t)
+	moved.workingOnATask("implement the plan")
+	began := moved.clock.Now()
+	moved.advance(backstopBound + time.Minute)
+	moved.stepped("bash", "toolu_turn1_0", toolArgs, false)
+
+	moved.must(moved.backstop(began))
+
+	moved.wantState(StateWorking)
+	if len(*movedStops) != 0 {
+		t.Fatalf("the backstop reported %+v over a claim whose record moved, want nothing told", *movedStops)
+	}
+}
+
+// A turn a held suspension ended is reported as that: the process was stopped and nothing
+// launched in its place (endHeld), so an owner told its session had come back would go looking
+// for a process that is not there.
+func TestTheBackstopReportsASuspendedEndAsSuspended(t *testing.T) {
+	h, stops := backstopReports(t)
+	h.workingOnATask("implement the plan")
+	if err := h.handle(RequestSuspend{Claim: h.token, By: SuspendedByOperator}); !errors.Is(err, ErrSuspendHeld) {
+		t.Fatalf("suspend mid-turn = %v, want ErrSuspendHeld", err)
+	}
+	loc := h.locator()
+
+	// The agent stopped stepping before that suspension arrived. The record is pushed back
+	// rather than the clock forward: a held suspension has a deadline of its own, far shorter
+	// than any backstop bound (holdSuspension, TimerSuspend), so a clock advanced past the bound
+	// would suspend this claim before the backstop was ever asked.
+	last := h.clock.Now().Add(-backstopBound - time.Minute)
+	stalled := StepRecord{At: last, TurnStartedAt: last, Tool: "bash", CallID: "toolu_turn1_0", StartedAt: last}
+	h.m.steppedAt, h.m.claim.Step = last, stalled
+
+	h.must(h.backstopOf(last, stalled))
+
+	h.wantState(StateSuspended)
+	h.wantCalls("Resume", 0)
+	if suspend := h.wantCalls("Suspend", 1)[0]; suspend.Locator != loc {
+		t.Fatalf("suspended %+v, want the stalled process %+v", suspend.Locator, loc)
+	}
+	want := StallBackstopStop{Step: stalled, LastStep: last, Bound: backstopBound, Suspended: true}
+	if len(*stops) != 1 || (*stops)[0] != want {
+		t.Fatalf("the backstop reported %+v, want one end the held suspension made, %+v", *stops, want)
+	}
 }

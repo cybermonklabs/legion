@@ -286,8 +286,9 @@ type Claim struct {
 type StepRecord struct {
 	// At is when the daemon received the agent's last step, and the zero time for a claim whose
 	// agent has stepped none. On a write the zero time records the call without moving the
-	// claim's last-step time: the fence on a frame replayed from a dead connection's backlog,
-	// which says what the agent was doing and nothing about what it is doing now.
+	// claim's last-step time: the fence on a frame of a connection that is no longer the claim's
+	// (staleStep), which is a frame of a process already replaced, and says what that agent was
+	// doing and nothing about what the claim is doing now.
 	At time.Time
 	// TurnStartedAt is when the agent's current turn began, which is what a claim whose agent has
 	// sent no tool frame at all is judged from. On a write the zero time leaves the stored turn
@@ -607,6 +608,14 @@ type Deps struct {
 	// claim that recorded no session tells nothing. It is called inside the machine's decision, so
 	// it returns at once and does the call elsewhere.
 	SessionGone func(session string)
+	// StallBackstopped is told of each turn the daemon's stall backstop actually ended
+	// (backstopStalledTurn), with the record it acted on and the end it made: the owner's notice
+	// says what happened to that worker, and only the machine knows it. The sweep that posted the
+	// request cannot: its claims were read before the decision, the machine's own fence can leave
+	// the turn alone, and a suspension held for that turn ends the process rather than replacing
+	// it. Nil tells no one — a daemon with no workflow has no owner to tell. It is called inside
+	// the machine's decision, so it returns at once and writes its row elsewhere.
+	StallBackstopped func(c Claim, stop StallBackstopStop)
 	// PodUpdateRetask is how long after an update task was sent an update round asks a claim that
 	// has not answered again (openPodUpdate), from the daemon's pod_update_retask_hours. The
 	// re-task clock runs from each send (Claim.UpdateTaskedAt), so asking again never postpones

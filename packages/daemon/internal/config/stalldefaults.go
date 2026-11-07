@@ -35,6 +35,22 @@ const (
 	StallStep = 2 * time.Minute
 )
 
+// StallDeclaredDeadlineCap is the longest deadline a call's own arguments can declare, as the
+// host clamps them (`packages/pi-shared/src/stall-watchdog.ts`, DECLARED_DEADLINE_MOST_MS: 0
+// disables the deadline and every other number is clamped to 1–3600 seconds, which is
+// INFRA-1274's R6). A call that declares one is judged by it and the grace over it, whatever the
+// role's bound is, so an hour is how long a working call can legitimately run before the
+// worker's own ladder takes its first step, and so the daemon's backstop floor is reckoned from
+// it where it is the longer of the two (StallLadderFor).
+//
+// It is no LEGION_STALL_* variable: the host clamps what it clamps, and a deployment moves
+// nothing here. It is in this file because it is the same kind of number as the three above — a
+// copy of the plugin's, held to the plugin's by the same golden. TestStallDefaultsGolden writes
+// it to `packages/contracts/fixtures/daemon-api/stall-defaults.json` as `declaredDeadlineMostMs`
+// and `packages/pi-shared/src/stall-limits.test.ts` holds that field equal to the plugin's own
+// DECLARED_DEADLINE_MOST_MS, so neither copy can move alone.
+const StallDeclaredDeadlineCap = time.Hour
+
 // StallCallBoundFor is the default bound of a call no deadline judges for role: four hours for an
 // implementer and a reviewer, one hour for every other role and for the controller.
 func StallCallBoundFor(role claim.Role) time.Duration {

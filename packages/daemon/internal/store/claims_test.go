@@ -926,10 +926,12 @@ func TestAStepOlderThanTheRecordedStepDoesNotMoveItBack(t *testing.T) {
 	sameStep(t, storedStep(t, store, c.Token), newer, "the step record after the newer step")
 }
 
-// The fence the shim's backlog needs. A frame replayed from a dead connection is stamped by the
-// daemon on receipt, so a burst of them would give a hung worker a fresh clock. Such a step
-// carries no time of its own: it records the call it names, which is evidence of what the agent
-// was doing, and leaves the claim's last-step time and its turn's start where they are.
+// The fence a frame of a replaced process needs. Such a frame — one that arrived on a connection
+// the claim no longer has, or on one older than the connection it has now (supervise's
+// staleStep) — is stamped by the daemon on receipt like any other, so a burst of them would give
+// a hung worker a fresh clock. Such a step carries no time of its own: it records the call it
+// names, which is evidence of what the agent was doing, and leaves the claim's last-step time
+// and its turn's start where they are.
 func TestAStepWithNoTimeOfItsOwnRecordsItsCallAndLeavesTheLastStep(t *testing.T) {
 	ctx := context.Background()
 	store := migratedStore(t)
@@ -943,15 +945,15 @@ func TestAStepWithNoTimeOfItsOwnRecordsItsCallAndLeavesTheLastStep(t *testing.T)
 		t.Fatalf("PutClaimStep of the live step = %t, %v", known, err)
 	}
 
-	replayed := supervise.StepRecord{Tool: "eval", CallID: "toolu_turn0_7",
+	stale := supervise.StepRecord{Tool: "eval", CallID: "toolu_turn0_7",
 		ArgsBytes: 2048, ArgsHash: "cafebabecafebabe", StartedAt: at(4)}
-	if known, err := store.PutClaimStep(ctx, c.Token, replayed); err != nil || !known {
-		t.Fatalf("PutClaimStep of the replayed step = %t, %v", known, err)
+	if known, err := store.PutClaimStep(ctx, c.Token, stale); err != nil || !known {
+		t.Fatalf("PutClaimStep of the stale step = %t, %v", known, err)
 	}
 
-	want := replayed
+	want := stale
 	want.At, want.TurnStartedAt = at(10), at(1)
-	sameStep(t, storedStep(t, store, c.Token), want, "the step record after the replayed frame")
+	sameStep(t, storedStep(t, store, c.Token), want, "the step record after the stale frame")
 }
 
 // A turn's start is written through the same narrow call and carries no call of its own. It

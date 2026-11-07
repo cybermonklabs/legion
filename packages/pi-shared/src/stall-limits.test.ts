@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { LEGION_ROLES } from "@legion/contracts";
 import { DEFAULT_STALL_LIMITS, defaultCallBoundMs, stallLimits } from "./stall-limits";
+import { DECLARED_DEADLINE_MOST_MS } from "./stall-watchdog";
 
 /** Every role word a session's `LEGION_ROLE` can hold: the six issue roles and the controller,
  * which is no `LegionRole` and whose bound is every other role's. */
@@ -110,23 +111,30 @@ test("a bound of 0 switches the watch off for that worker", () => {
   }
 });
 
+/** The daemon's copies of this plugin's stall numbers, as its golden writes them. It is read
+ * here and never by the modules themselves: `src/stall-watchdog.ts` imports no `node:` module. */
+function daemonFixture(): {
+  readonly callGraceMs: number;
+  readonly callBoundMs: number;
+  readonly stepMs: number;
+  readonly declaredDeadlineMostMs: number;
+  readonly callBoundMsByRole: Record<string, number>;
+} {
+  return JSON.parse(
+    readFileSync(
+      path.resolve(import.meta.dir, "../../contracts/fixtures/daemon-api/stall-defaults.json"),
+      "utf8"
+    )
+  );
+}
+
 // The daemon holds its own copy of these numbers, because a later refusal of a `legion.yaml`
 // whose per-role backstop bound sits below the worker's whole ladder has to compute that ladder
 // (`packages/daemon/internal/config/stalldefaults.go`). `go test -run StallDefaults
 // ./internal/config/ -update` writes this fixture from that copy; this is where the two are held
 // together, so neither can move alone.
 test("the daemon's fixture carries the same defaults and the same per-role bounds", () => {
-  const fixture = JSON.parse(
-    readFileSync(
-      path.resolve(import.meta.dir, "../../contracts/fixtures/daemon-api/stall-defaults.json"),
-      "utf8"
-    )
-  ) as {
-    readonly callGraceMs: number;
-    readonly callBoundMs: number;
-    readonly stepMs: number;
-    readonly callBoundMsByRole: Record<string, number>;
-  };
+  const fixture = daemonFixture();
 
   expect({
     callGraceMs: fixture.callGraceMs,
@@ -145,4 +153,16 @@ test("the daemon's fixture carries the same defaults and the same per-role bound
       [...LEGION_ROLES, "controller"].sort().map((role) => [role, defaultCallBoundMs(role)])
     )
   );
+});
+
+// The fourth number the daemon copies is no default of `StallLimits` and no variable moves it:
+// it is the hour the host clamps a call's own declared deadline to
+// (`src/stall-watchdog.ts`, DECLARED_DEADLINE_MOST_MS), and the daemon's backstop floor is
+// reckoned from it wherever it is longer than the role's bound
+// (`packages/daemon/internal/config/stallbackstop.go`, StallLadderFor). It travels by the same
+// route as the three above, and is held here to the plugin's own constant for the same reason:
+// a floor computed from an hour the host no longer clamps to would let the daemon end a working
+// call.
+test("the daemon's fixture carries the hour the host clamps a declared deadline to", () => {
+  expect(daemonFixture().declaredDeadlineMostMs).toBe(DECLARED_DEADLINE_MOST_MS);
 });

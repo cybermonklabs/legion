@@ -628,14 +628,17 @@ What each part is for:
   the turn began, and the call the record names, if any. A tree architect's own stall is told to
   the controller as well.
 
-  A role the file leaves out runs on the length of its own worker's stall ladder, which is also
-  the floor under any bound you set: that worker's plugin bounds a tool call no deadline judges,
-  allows a grace over the deadline a call declared for itself, and then runs three recovery steps
-  a gap apart, so the ladder is that bound plus the grace plus two gaps. The loader refuses a
-  bound below it, naming the role and that arithmetic
+  A role the file leaves out runs on twice its own worker's bound for a tool call no deadline
+  judges: 8 hours for an implementer and a reviewer, 2 for every other role and the controller,
+  so the worker acts first wherever it can act at all. The floor under any bound you set, that
+  default included, is a shorter number: the whole stall ladder that worker's plugin runs. The
+  ladder is the longest one of its calls can legitimately run — the larger of that bound and the
+  hour the host clamps a deadline a call declares for itself to — plus the grace over it and the
+  two gaps between the plugin's three recovery steps. The loader refuses a bound below it, naming
+  the role and that arithmetic
   ([Troubleshooting](/legion/legion/troubleshooting/#the-daemon-will-not-start)), because the
   daemon cannot see that ladder running and a shorter bound would end a turn the plugin it backs
-  up is still recovering.
+  up is still recovering, or a call still inside the deadline it declared for itself.
 
   Which calls that watch judges is the call's own business. One is overdue when it has been open
   past the deadline its arguments declared, or its tool's default where they declared none, plus
@@ -653,7 +656,10 @@ What each part is for:
   as one value for every role. `LEGION_STALL_CALL_BOUND_MS` is the bound for a call no deadline
   judges, whose default is the role's — 14400000 (4 hours) for an implementer and a reviewer,
   which wait inside one call on a subagent of their own, and 3600000 (1 hour) for every other role
-  and for the controller — and `0` there switches that worker's call watch off altogether.
+  and for the controller — and `0` there switches that worker's call watch off altogether: no
+  call of it is judged overdue and none of its recovery steps runs, and the daemon's own backstop
+  then reckons its default and its floor from the role's default bound above, since a worker that
+  runs no ladder leaves the daemon nothing to wait for.
   `LEGION_STALL_CALL_GRACE_MS` is the grace over a deadline a call declared for itself, 300000
   (5 minutes). `LEGION_STALL_STEP_MS` is the gap between the ladder's steps, 120000 (2 minutes).
   Four more variables of the same family set the worker's phase reminder rather than its call
