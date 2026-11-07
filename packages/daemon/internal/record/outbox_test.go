@@ -498,6 +498,101 @@ func TestGatedStepsPublishAtBoot(t *testing.T) {
 	}
 }
 
+// A publish queued onto the row a lane is already running takes that row from the lane, as a
+// reopened merge takes its own (readyMergeConflict). The lane read the list when it claimed the
+// row and is sending it; the row now carries another, so the lane's finish — matched on the
+// lease token, as its retry and its renewal are — must delete nothing, and the row must wait to
+// be claimed again with the list that replaced it. Without that the live `gates.design` change
+// made while the lane published was deleted unsent, and Dispatch was left showing the list the
+// publish in flight carried.
+//
+// An enqueue of the list the row already carries touches neither the payload nor the lease, so
+// a boot repeating the list the lane is sending does not make that publish run twice.
+func TestAGatedStepsPublishReplacedUnderALaneTakesTheRow(t *testing.T) {
+	now := time.Date(2026, 11, 6, 4, 0, 0, 0, time.UTC)
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	enqueue := func(steps []DesignStep) {
+		t.Helper()
+		inTx(t, st, func(tx pgx.Tx) {
+			must(t, records.EnqueueGatedSteps(ctx, tx, GatedStepsPublish{Project: "LEGION", Steps: steps}, now))
+		})
+	}
+	// held is the one publish the outbox holds for LEGION at at, with its lease.
+	held := func(at time.Time) OutboxRow {
+		t.Helper()
+		var rows []OutboxRow
+		inTx(t, st, func(tx pgx.Tx) {
+			var err error
+			rows, err = records.DueRows(ctx, tx, "LEGION", "", nil, at)
+			must(t, err)
+		})
+		if len(rows) != 1 {
+			t.Fatalf("the outbox holds %#v for LEGION, want its one publish", rows)
+		}
+		return rows[0]
+	}
+	leased := func(id int64, token string) bool {
+		t.Helper()
+		var leased bool
+		inTx(t, st, func(tx pgx.Tx) {
+			var err error
+			leased, err = records.OutboxLeased(ctx, tx, id, token)
+			must(t, err)
+		})
+		return leased
+	}
+
+	enqueue([]DesignStep{DesignStepCriteria, DesignStepSpec})
+	queued := held(now)
+	var claimed OutboxRow
+	inTx(t, st, func(tx pgx.Tx) {
+		var ok bool
+		var err error
+		claimed, ok, err = records.ClaimRow(ctx, tx, queued.ID, now, time.Minute)
+		must(t, err)
+		if !ok {
+			t.Fatal("ClaimRow of the publish claimed nothing")
+		}
+	})
+
+	// The boot's own repeat of the list the lane is sending: the row is left exactly as it is,
+	// lease and all.
+	enqueue([]DesignStep{DesignStepCriteria, DesignStepSpec})
+	if !leased(claimed.ID, claimed.LeaseToken) {
+		t.Fatal("an enqueue of the list the row already carries took the row from the lane running it")
+	}
+
+	// The live change, made while that publish is in flight.
+	enqueue([]DesignStep{DesignStepCriteria})
+	if leased(claimed.ID, claimed.LeaseToken) {
+		t.Fatal("the row still answers to the lease of the lane sending the list it no longer carries")
+	}
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.FinishOutbox(ctx, tx, claimed.ID, claimed.LeaseToken))
+	})
+
+	after := now.Add(2 * time.Minute)
+	waiting := held(after)
+	if waiting.ID != claimed.ID {
+		t.Fatalf("the outbox holds row %d, want %d: the lane's finish deleted the row carrying the new list", waiting.ID, claimed.ID)
+	}
+	payload, err := DecodeOutboxPayload(waiting)
+	must(t, err)
+	want := GatedStepsPublish{Project: "LEGION", Steps: []DesignStep{DesignStepCriteria}}
+	if !reflect.DeepEqual(payload, want) {
+		t.Fatalf("the row waiting for the lane carries %#v, want %#v, the list the change settled", payload, want)
+	}
+	inTx(t, st, func(tx pgx.Tx) {
+		_, ok, err := records.ClaimRow(ctx, tx, waiting.ID, after, time.Minute)
+		must(t, err)
+		if !ok {
+			t.Fatal("ClaimRow of the row the change took claimed nothing once the lease it took had lapsed")
+		}
+	})
+}
+
 // LongestPost is what a caller checks before a message is recorded, and Posted is what the runner
 // posts, so no row's post may pass a bound the text its caller checked clears: the post of the
 // smallest row id and of the largest are the same text but for the marker's digits, and the

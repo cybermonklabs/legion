@@ -1691,6 +1691,16 @@ func (s *Postgres) PersonHandoverPending(ctx context.Context, tx pgx.Tx, issue s
 // to be written. Replacing the payload keeps the row's attempts and its next_at, because the row
 // is the same publish waiting on the same lane and only the list it carries is newer, and a
 // payload that already says this list is left alone.
+//
+// A replacement that moves the list takes the row from the worker holding it, as a ready_merge
+// reopen does (readyMergeConflict), and for the same reason: that worker read the payload when
+// it claimed the row (outbox.runRow) and is sending the list that stood then, and its finish,
+// its retry and its lease renewal each match on the lease token, so rotating the token leaves
+// every one of them touching nothing and the row — now carrying the new list — waiting to be
+// claimed again once the lease lapses. Without that rotation a live `gates.design` change made
+// while the lane was publishing was deleted unsent by that lane's own finish, and Dispatch was
+// left showing the list the publish in flight carried. The boot's enqueue opened no such
+// window, since it ran before the outbox did; the live holder does (gatedStepsHolder).
 func (s *Postgres) EnqueueGatedSteps(ctx context.Context, tx pgx.Tx, publish GatedStepsPublish, nextAt time.Time) error {
 	row, err := NewOutboxRow(publish.Project, publish, nextAt)
 	if err != nil {
@@ -1699,7 +1709,9 @@ func (s *Postgres) EnqueueGatedSteps(ctx context.Context, tx pgx.Tx, publish Gat
 	if _, err := tx.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
 		values ($1, $2, $3::jsonb, 0, $4, '')
 		on conflict (issue) where kind = 'gated_steps_publish'
-		do update set payload = excluded.payload where outbox.payload is distinct from excluded.payload`,
+		do update set payload = excluded.payload,
+			lease_token = case when outbox.lease_token = '' then '' else gen_random_uuid()::text end
+		where outbox.payload is distinct from excluded.payload`,
 		string(row.Kind), row.Issue, string(row.Payload), row.NextAt); err != nil {
 		return fmt.Errorf("enqueue %s for %s: %w", row.Kind, row.Issue, err)
 	}

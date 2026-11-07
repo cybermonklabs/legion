@@ -2644,7 +2644,7 @@ Dispatch is the caller this exists for, and it holds no copy of the daemon's ope
 The Dispatch component projects a ServiceAccount token of its own into the app pod for the audience its `legionDaemonAudience` input names (`legion-daemon` when a stack sets none), in a projected volume of its own with `expirationSeconds: 3600`, written to `daemon-token` and mounted read-only at `/var/run/secrets/legion`;
 `DISPATCH_LEGION_DAEMON_TOKEN_FILE` names `/var/run/secrets/legion/daemon-token`, which Dispatch reads at call time, so the kubelet's rewrite of that file in place needs no restart and no token is stored (`packages/envoy/infra/README.md`).
 So `settings_route.audience` is that same string, and `settings_route.service_accounts` names the ServiceAccount the Dispatch app's pod runs as.
-The relay is Dispatch's `PUT /api/v1/legion/{project}/settings`, which sends that token as its bearer and answers the daemon's own per-key result — applied `at-once`, `rebuilt` or `next-launch`, or refused with the reason — unchanged (`packages/envoy/cmd/dispatch/AGENTS.md`).
+The relay is Dispatch's `PUT /api/v1/legion/{project}/settings`, which sends that token as its bearer and answers the daemon's own per-key result — applied `at-once`, `rebuilt` or `next-launch`, `failed` with the error of the holder the daemon took the value and could not carry it into, or refused with the reason — unchanged (`packages/envoy/cmd/dispatch/AGENTS.md`).
 
 ### The deployment's capability report
 

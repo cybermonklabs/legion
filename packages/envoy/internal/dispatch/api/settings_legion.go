@@ -112,8 +112,9 @@ func (s *server) deleteLegionSetting(w http.ResponseWriter, r *http.Request) {
 // the caller's own login to PUT {state_url}/legion/v1/operator/settings, presenting the projected
 // ServiceAccount token DISPATCH_LEGION_DAEMON_TOKEN_FILE names where the deployment names one,
 // and passes the daemon's status and body back unchanged: the daemon decides each key — applied
-// at-once, rebuilt or next-launch, or refused with a reason — and Dispatch re-reads no verdict of
-// it. With no token file the relay sends no bearer, and whatever the daemon answers is what the
+// at-once, rebuilt or next-launch, failed with the error of the holder it took the value and
+// could not carry it into, or refused with a reason — and Dispatch re-reads no verdict of it.
+// With no token file the relay sends no bearer, and whatever the daemon answers is what the
 // caller sees.
 func (s *server) putLegionProjectSettings(w http.ResponseWriter, r *http.Request) {
 	var input struct {

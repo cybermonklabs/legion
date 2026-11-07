@@ -38,27 +38,37 @@ export function describeSettingSource(source: LegionSettingSource | undefined): 
   return `From the daemon's configuration file, ${when}`;
 }
 
-/** What the daemon decided about one key of a change, and whether that is a refusal: `at-once`,
- *  `rebuilt` and `next-launch` are the three ways it applies one, and a refusal carries the
- *  daemon's own reason. A verdict word this build does not know is shown as the daemon wrote it,
- *  never dropped. */
+/** What the daemon decided about one key of a change, and whether that is a failure the reader
+ *  must not dress as a success: `at-once`, `rebuilt` and `next-launch` are the three ways it
+ *  applies one, a refusal carries the daemon's own reason and changed nothing, and `failed` is a
+ *  change it took into its own settings and could not carry into the thing that holds a copy of
+ *  the value — the daemon runs on the new value, that holder kept the old one, and the text is
+ *  the holder's own error (the daemon's `api.SettingResult`). A verdict word this build does not
+ *  know is shown as the daemon wrote it, never dropped. */
 export function describeVerdict(verdict: LegionSettingVerdict): {
-  readonly refused: boolean;
+  readonly failure: boolean;
   readonly text: string;
 } {
   if (verdict.refused !== undefined) {
-    return { refused: true, text: `Refused: ${verdict.refused}` };
+    return { failure: true, text: `Refused: ${verdict.refused}` };
+  }
+  if (verdict.failed !== undefined) {
+    const holder = verdict.holder ?? "what holds it";
+    return {
+      failure: true,
+      text: `The daemon took the new value, and ${holder} kept the old one: ${verdict.failed}`,
+    };
   }
   switch (verdict.applied) {
     case "at-once":
-      return { refused: false, text: "Applied at once" };
+      return { failure: false, text: "Applied at once" };
     case "rebuilt":
-      return { refused: false, text: "Applied by rebuilding what held it" };
+      return { failure: false, text: "Applied by rebuilding what held it" };
     case "next-launch":
-      return { refused: false, text: "Applied at the next worker launch" };
+      return { failure: false, text: "Applied at the next worker launch" };
     case undefined:
-      return { refused: false, text: "The daemon named no result for this setting" };
+      return { failure: false, text: "The daemon named no result for this setting" };
     default:
-      return { refused: false, text: `Applied: ${verdict.applied}` };
+      return { failure: false, text: `Applied: ${verdict.applied}` };
   }
 }

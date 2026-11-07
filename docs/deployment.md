@@ -566,6 +566,10 @@ What a change of one key needs is its class, which the table below gives for eve
 - **`fixed`** — nothing changes it under a running daemon: the route refuses the path by name, with the reason [the list below](#why-a-fixed-key-is-refused) gives, and the daemon keeps the value it booted on.
   Change such a key in the file and restart the daemon.
 
+A change whose holder the daemon could not build again is answered `failed` in place of the `at-once`, `rebuilt` or `next-launch` its class would have given it, with the holder's own error beside the holder's name and the two values.
+The change itself was made: the daemon's settings carry the new value and every decision that reads the path reads it, while the client, listener or connection that holds a copy of it kept the one it had — a NATS that refused the new seed, intake consumers that would not reopen.
+The caller is told, rather than reading `rebuilt` while the failure sits in the daemon's log alone, and the path is the route's from now on as an applied one is: the recorded value is laid over the file at the next boot, which is what carries it into the holder that refused it.
+
 A segment in angle brackets is a name the file chooses (`projects.<KEY>.merge`), and a `[]` suffix one entry of a sequence (`runtime.kubernetes.scheduling.tolerations[].key`).
 The table is the daemon's own (`Classes`, `packages/daemon/internal/config/classes.go`), and `TestDeploymentDocCoversEverySettingsKey` (`packages/daemon/internal/config/deployment_doc_test.go`) fails on a key the code has and this table does not, a key this table has and the code does not, a row whose class or holder is not the code's, and a refusal below whose reason is not the one the route answers with, so the two cannot drift.
 

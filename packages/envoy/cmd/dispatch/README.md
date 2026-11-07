@@ -2887,7 +2887,7 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/legion/{project}/settings` (PUT; cookie, trusted header, or bearer)
 
-  Relay an operator's `legion.yaml` change `{changes: {<dotted path>: <value>}}` to that project's Legion daemon, with the caller's login as the change's author, and answer the daemon's status and its per-key result unchanged: applied `at-once`, `rebuilt` or `next-launch`, or refused with the reason.
+  Relay an operator's `legion.yaml` change `{changes: {<dotted path>: <value>}}` to that project's Legion daemon, with the caller's login as the change's author, and answer the daemon's status and its per-key result unchanged: applied `at-once`, `rebuilt` or `next-launch`, `failed` with the error of the holder the daemon took the value and could not carry it into, or refused with the reason.
   The bearer is Dispatch's own projected Kubernetes service-account token, minted for the daemon's audience, which `DISPATCH_LEGION_DAEMON_TOKEN_FILE` names and the relay reads at call time, so a rotation needs no restart; unset, it sends no bearer and whatever the daemon answers is what the caller sees.
   `404 LEGION_NOT_CONFIGURED` when the project names no daemon, `503 LEGION_DAEMON_UNAVAILABLE` when it could not be reached.
 

@@ -6,8 +6,10 @@
 // A change goes to `PUT /api/v1/legion/{project}/settings`, which relays it to the daemon with the
 // pod's projected ServiceAccount token and the caller's login, and answers the daemon's own
 // verdict for each key: applied at once, by rebuilding the client or listener that held it, or at
-// the next worker launch — or refused, with the daemon's reason. Dispatch re-reads none of that,
-// so neither does this panel: it shows the verdict it was given.
+// the next worker launch — refused, with the daemon's reason, or failed, the daemon running on the
+// new value with the holder of it keeping the old one. Dispatch re-reads none of that, so neither
+// does this panel: it shows the verdict it was given, and shows a refusal and a failure as
+// failures (`describeVerdict`).
 //
 // Who may change one: `scopeDeployment` refuses a caller whose credential names one project, which
 // is the only role Dispatch has, so the control is offered to any signed-in person (`useIsHuman`)
@@ -176,7 +178,9 @@ export function LegionSettingsPanel({ board }: { readonly board: LegionBoardResp
         setDrafts((current) => withEntry(current, variables.key, undefined));
         return;
       }
-      // A key the daemon refused never changed, so the row goes back to the value it showed.
+      // A key the daemon refused never changed, so the row goes back to the value it showed. A
+      // key it failed on did change — the daemon runs on the new value and only the holder of it
+      // kept the old one — so that row stands as it was changed, with the failure beside it.
       if (verdict.refused !== undefined) {
         rollBack(variables.key, context?.previous);
       }
@@ -333,19 +337,25 @@ function RowAnswer({ result }: { readonly result: RowResult }): ReactNode {
       </span>
     );
   }
+  // A verdict the daemon could not record is still the daemon's verdict: a refusal or a failure
+  // in it is shown as one, with the note that a restart puts the value back.
   if (result.kind === "unstored") {
+    const { failure, text } = describeVerdict(result.verdict);
     return (
-      <span className={`text-xs ${textSecondaryOnSurface}`} role="status">
-        {describeVerdict(result.verdict).text} The daemon is running on the new value but could not
-        record it, so a restart puts back the value it had before.
+      <span
+        className={`text-xs ${failure ? dangerText : textSecondaryOnSurface}`}
+        role={failure ? "alert" : "status"}
+      >
+        {text} The daemon is running on the new value but could not record it, so a restart puts
+        back the value it had before.
       </span>
     );
   }
-  const { refused, text } = describeVerdict(result.verdict);
+  const { failure, text } = describeVerdict(result.verdict);
   return (
     <span
-      className={`text-xs ${refused ? dangerText : successText}`}
-      role={refused ? "alert" : "status"}
+      className={`text-xs ${failure ? dangerText : successText}`}
+      role={failure ? "alert" : "status"}
     >
       {text}
     </span>

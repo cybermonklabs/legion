@@ -12,11 +12,13 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/settings"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 )
 
@@ -480,20 +482,40 @@ func (h *refusingHolder) holder() string { return h.name }
 
 func (h *refusingHolder) rebuild(*config.Config) error { return h.why }
 
+// blockingHolder is a holder whose rebuild holds the apply open until the test releases it, as
+// a NATS rebuild holds it while the intake it replaced settles (drainBound) and a runtime
+// rebuild while the launch inside the runtime it replaced runs out its bound.
+type blockingHolder struct {
+	name    string
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (h *blockingHolder) holder() string { return h.name }
+
+func (h *blockingHolder) rebuild(*config.Config) error {
+	close(h.entered)
+	<-h.release
+	return nil
+}
+
 // The settings route is told of a rebuild the caller's own change asked for and the daemon
 // could not make. rebuilder.rebuild logs the failure and leaves the old connection, client or
 // listener serving, which is right; answering the caller `rebuilt` all the same was not, so
 // the route's way into the settings holder carries what the apply's own rebuilds could not do
 // (rebuilder.route, api.SettingsRebuildFailures).
 //
-// What it carries is this apply's alone: a failure standing from an earlier change, or from the
-// file watcher's own reread of the credential files, is dropped before the apply runs.
+// What it carries is this apply's alone, by the path the caller asked for: a failure recorded
+// for another path — another change's, or the file's own apply — is left where it is.
 func TestTheSettingsRouteIsToldOfARebuildThatFailed(t *testing.T) {
 	cfg := config.Config{}
 	rebuild := newRebuilder(quietLogger(), config.Settled(cfg))
-	rebuild.register(&refusingHolder{name: config.HolderNATS, why: errors.New("connect Envoy NATS: no servers available for connection")})
+	rebuild.register(
+		&refusingHolder{name: config.HolderNATS, why: errors.New("connect Envoy NATS: no servers available for connection")},
+		&refusingHolder{name: config.HolderDispatchClient, why: errors.New("read the Dispatch bearer")},
+	)
 	// A failure of an earlier change, which this caller is owed nothing about.
-	rebuild.rebuild(&cfg, &refusingHolder{name: config.HolderDispatchClient, why: errors.New("read the Dispatch bearer")})
+	rebuild.observe(&cfg, []config.Change{changeOfPath(t, "dispatch_token_file")})
 
 	route := rebuild.route(func(context.Context, config.Caller, string, map[string]any) ([]config.Change, []config.Refusal, error) {
 		rebuild.observe(&cfg, []config.Change{changeOfPath(t, "nats_urls")})
@@ -505,11 +527,89 @@ func TestTheSettingsRouteIsToldOfARebuildThatFailed(t *testing.T) {
 		t.Fatalf("apply the change: %v", err)
 	}
 	want := "nats: connect Envoy NATS: no servers available for connection"
-	if failed[config.HolderNATS] != want {
-		t.Fatalf("the route was told %v, want the NATS holder's own failure %q", failed, want)
+	if failed["nats_urls"] != want {
+		t.Fatalf("the route was told %v, want the NATS holder's own failure %q under the path it asked for", failed, want)
 	}
-	if _, told := failed[config.HolderDispatchClient]; told {
+	if _, told := failed["dispatch_token_file"]; told {
 		t.Fatalf("the route was told %v, which carries a failure of a rebuild this change did not cause", failed)
+	}
+}
+
+// Two settings requests at once, through the real rebuilder and the real route arm
+// (internal/settings' Keeper.Route over a file-backed holder): the first asks for a change
+// whose rebuild fails and whose next rebuild holds the apply open, the second is a plain
+// `admission_cap` change of the kind Dispatch relays on the projected arm.
+//
+// The first caller must be told what the daemon could not build for it. It was not: the take
+// of the recorded failures ran outside every lock the apply holds, so the second request's own
+// take ran the instant it arrived — before it had even reached the apply, which waits on
+// Keeper.mu — and emptied what the first request's rebuilds had recorded. The first was then
+// answered `rebuilt` with nothing to say (its answer came back `map[]`) while the daemon kept
+// the connection it could not replace, and the second's answer, keyed by holder, showed the
+// failure to nobody: its own change names no holder at all.
+func TestASecondSettingsRequestDoesNotTakeTheFirstsRebuildFailure(t *testing.T) {
+	live := liveSettings(t)
+	keeper := settings.New(live, nil, quietLogger())
+	rebuild := newRebuilder(quietLogger(), live)
+	live.OnChange(rebuild.observe)
+	// `worker_rpc_timeout_seconds` is held by the worker stream listener and, on its row's Also,
+	// by NATS: one change, two rebuilds, in registration order. The listener's fails and is
+	// recorded, and the NATS rebuild behind it holds the apply open while the second request
+	// arrives.
+	held := &blockingHolder{name: config.HolderNATS, entered: make(chan struct{}), release: make(chan struct{})}
+	rebuild.register(
+		&refusingHolder{name: config.HolderWorkerStream, why: errors.New("the listener kept the bound it has")},
+		held,
+	)
+
+	type answer struct {
+		failed api.SettingsRebuildFailures
+		err    error
+	}
+	first := make(chan answer, 1)
+	go func() {
+		_, _, failed, err := rebuild.route(keeper.Route)(t.Context(), config.CallerOperator, "the operator",
+			map[string]any{"worker_rpc_timeout_seconds": 7})
+		first <- answer{failed: failed, err: err}
+	}()
+	<-held.entered
+
+	// The second request's own way in: the same rebuilder and the same keeper, reporting the
+	// moment its apply begins — which is the moment after any take of its own.
+	applying := make(chan struct{})
+	second := rebuild.route(func(ctx context.Context, caller config.Caller, by string, changes map[string]any) ([]config.Change, []config.Refusal, error) {
+		close(applying)
+		return keeper.Route(ctx, caller, by, changes)
+	})
+	plain := make(chan answer, 1)
+	go func() {
+		_, _, failed, err := second(t.Context(), config.CallerProjected, "a person on Dispatch",
+			map[string]any{"admission_cap": 9})
+		plain <- answer{failed: failed, err: err}
+	}()
+	// The window the first request's later rebuilds leave open. A second request that can reach
+	// its apply takes whatever it takes before this returns; one that cannot reach it at all —
+	// which is what the fix makes of it — waits here until the first request is released.
+	select {
+	case <-applying:
+	case <-time.After(2 * time.Second):
+	}
+	close(held.release)
+
+	asked := <-first
+	if asked.err != nil {
+		t.Fatalf("the first request: %v", asked.err)
+	}
+	want := "worker-stream: the listener kept the bound it has"
+	if asked.failed["worker_rpc_timeout_seconds"] != want {
+		t.Fatalf("the first request was answered %v, want worker_rpc_timeout_seconds carrying %q: the second request took what its rebuilds recorded", asked.failed, want)
+	}
+	relayed := <-plain
+	if relayed.err != nil {
+		t.Fatalf("the plain change: %v", relayed.err)
+	}
+	if len(relayed.failed) != 0 {
+		t.Fatalf("the plain change was answered %v, want nothing: it asked for no rebuild of its own", relayed.failed)
 	}
 }
 

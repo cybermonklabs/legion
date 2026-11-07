@@ -16,6 +16,7 @@ import type {
   LegionBoardColumnID,
   LegionBoardResponse,
 } from "../../api/types";
+import { dangerText, successText } from "../../theme/classes";
 import { LegionView } from "./LegionView";
 
 let sockets: FakeLiveSockets;
@@ -367,6 +368,47 @@ test("a refused key shows the daemon's reason and leaves the value as it was", a
     const cap = document.querySelector('[data-legion-setting="admission_cap"]');
     await waitFor(() =>
       expect(cap?.querySelector("[data-legion-setting-value]")?.textContent).toBe("4")
+    );
+  } finally {
+    put.mockRestore();
+  }
+});
+
+// The daemon's third verdict: it took the value into its own settings and could not carry it
+// into the thing that holds a copy of it (`failed`, the daemon's internal/api/settings_route.go).
+// The change was made, so the row keeps the new value as an applied one does — and the answer is
+// a failure, never the success an applied verdict reads as: the holder the caller asked to reach
+// kept what it had.
+test("a key the daemon could not carry into what holds it reads as a failure, not a success", async () => {
+  const put = spyOn(api, "putLegionProjectSettings").mockResolvedValue({
+    recorded: true,
+    settings: {
+      instructions: {
+        failed: "launch-specs: read /etc/legion/instructions.md: no such file or directory",
+        holder: "launch-specs",
+        old: '"work/instructions.md"',
+        new: '"/etc/legion/instructions.md"',
+      },
+    },
+  });
+  try {
+    await renderView(board({}, SETTINGS));
+
+    fireEvent.change(screen.getByLabelText("New value for instructions"), {
+      target: { value: '"/etc/legion/instructions.md"' },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Change instructions" }));
+
+    const answer = await screen.findByRole("alert");
+    expect(answer.textContent).toContain("launch-specs kept the old one");
+    expect(answer.textContent).toContain("no such file or directory");
+    expect(answer.className).toContain(dangerText);
+    expect(answer.className).not.toContain(successText);
+    const instructions = document.querySelector('[data-legion-setting="instructions"]');
+    await waitFor(() =>
+      expect(instructions?.querySelector("[data-legion-setting-value]")?.textContent).toBe(
+        '"/etc/legion/instructions.md"'
+      )
     );
   } finally {
     put.mockRestore();

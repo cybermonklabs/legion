@@ -1884,12 +1884,19 @@ test("a settings change answer is the daemon's own, keyed by path under settings
       "runtime.kubernetes.image": { applied: "next-launch", holder: "the issue pods" },
       review_round_cap: { applied: "at-once", unchanged: true },
       postgres_dsn: { refused: "this setting is fixed for the process" },
+      nats_urls: { failed: "nats: no servers available for connection", holder: "nats" },
     },
   };
 
   expect(LegionSettingsChangeResponse.safeParse(answered).success).toBeTrue();
   const read = LegionSettingsChangeResponse.parse(answered);
   expect(read.settings.admission_cap).toEqual({ applied: "at-once", old: "4", new: "6" });
+  // The third verdict: the daemon took the value and the thing holding it kept what it had, so
+  // the path carries the holder's own error and no `applied` beside it.
+  expect(read.settings.nats_urls).toEqual({
+    failed: "nats: no servers available for connection",
+    holder: "nats",
+  });
   // A daemon that applied nothing still answers the block, empty.
   expect(LegionSettingsChangeResponse.safeParse({ settings: {} }).success).toBeTrue();
 });
@@ -1914,6 +1921,7 @@ test("a verdict carries the daemon's own fields, and a key it adds later is drop
 
   expect(verdicts({ applied: "rebuilt", holder: "the NATS client" }).success).toBeTrue();
   expect(verdicts({ refused: "no such setting" }).success).toBeTrue();
+  expect(verdicts({ failed: "nats: no servers available for connection" }).success).toBeTrue();
   expect(verdicts({}).success).toBeTrue();
   // An empty string is no verdict, and a boolean field is no string: those are this shape's own.
   expect(verdicts({ applied: "" }).success).toBeFalse();

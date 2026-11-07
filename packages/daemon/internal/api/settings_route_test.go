@@ -41,7 +41,8 @@ func settingsRouteServer(t *testing.T, auth SettingsRouteAuth) (http.Handler, *c
 
 // settingsRouteServerFailing is settingsRouteServer whose rebuilds of the holders a change
 // names could not be made: failed is what the daemon's rebuild observer records of them and
-// answers the route with (internal/daemon's rebuilder.route), by holder name.
+// answers the route with (internal/daemon's rebuilder.route), by the path of the change that
+// asked for them.
 func settingsRouteServerFailing(t *testing.T, auth SettingsRouteAuth, failed SettingsRebuildFailures) (http.Handler, *config.Live) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "legion.yaml")
@@ -148,10 +149,11 @@ func TestTheSettingsRouteSaysWhenAKeyWasAlreadyWhatWasAsked(t *testing.T) {
 // client or listener serving and said so in the log alone: the caller — an operator rotating a
 // seed, a Dispatch user widening `repository_renames` — was told the change was made.
 //
-// A path whose value more than one thing holds is answered for all of them: the row names the
-// one holder the caller is told was rebuilt, and the rest are its Also (config.Row), so a
-// `repository_renames` whose intake consumers would not reopen is as unfinished as a
-// `nats_urls` whose connection would not.
+// A path whose value more than one thing holds is answered for all of them: the daemon records
+// what each holder of the path's row kept, under the path and with the holder's name in the
+// text (internal/daemon's rebuilder.observe), so a `repository_renames` whose intake consumers
+// would not reopen is as unfinished as a `nats_urls` whose connection would not — and is
+// answered so while the holder its own row names is the one the result shows.
 func TestASettingsChangeWhoseHolderCouldNotBeBuiltIsAnsweredFailed(t *testing.T) {
 	const refused = "nats: connect Envoy NATS: nats: no servers available for connection"
 	for _, testCase := range []struct {
@@ -162,7 +164,7 @@ func TestASettingsChangeWhoseHolderCouldNotBeBuiltIsAnsweredFailed(t *testing.T)
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			handler, _ := settingsRouteServerFailing(t, SettingsRouteAuth{},
-				SettingsRebuildFailures{config.HolderNATS: refused})
+				SettingsRebuildFailures{testCase.path: refused})
 
 			recorder := settingsCall(t, handler, testOperatorToken, SettingsChangeRequest{
 				Changes: map[string]json.RawMessage{testCase.path: json.RawMessage(testCase.value)},
@@ -185,12 +187,13 @@ func TestASettingsChangeWhoseHolderCouldNotBeBuiltIsAnsweredFailed(t *testing.T)
 	}
 }
 
-// A change nothing failed to build is answered as it was: the failures of an earlier change are
-// the daemon's to keep out of this answer (internal/daemon's rebuilder.route), and a holder no
-// row of the changed path names is no business of the caller's.
+// A change nothing failed to build is answered as it was: the failures of another path's
+// change are the daemon's to keep out of this answer, which it does by taking the paths of its
+// own apply alone (internal/daemon's rebuilder.route), and a holder no row of the changed path
+// names is no business of the caller's.
 func TestASettingsChangeIsNotFailedByAnotherHoldersTrouble(t *testing.T) {
 	handler, _ := settingsRouteServerFailing(t, SettingsRouteAuth{},
-		SettingsRebuildFailures{config.HolderNATS: "nats: connect Envoy NATS: nats: no servers available for connection"})
+		SettingsRebuildFailures{"nats_urls": "nats: connect Envoy NATS: nats: no servers available for connection"})
 
 	recorder := settingsCall(t, handler, testOperatorToken, SettingsChangeRequest{
 		Changes: map[string]json.RawMessage{"admission_cap": json.RawMessage(`9`)},

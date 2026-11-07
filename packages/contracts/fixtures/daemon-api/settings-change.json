@@ -11,6 +11,12 @@
       "old": "http://envoy.internal:9020",
       "new": "http://envoy.internal:9021"
     },
+    "nats_nkey_seed_file": {
+      "failed": "nats: connect Envoy NATS: nats: no servers available for connection",
+      "holder": "nats",
+      "old": "(withheld)",
+      "new": "(withheld)"
+    },
     "postgres_dsn": {
       "refused": "the store's pool is connected at boot and holds every record the daemon is working from"
     },

@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -121,11 +122,24 @@ type rebuilder struct {
 	// keeps a wake of the file watcher from rebuilding a holder whose credentials have not moved
 	// since (rereadCredentials).
 	credentialDigests map[string]string
-	// failed is why each holder's last rebuild could not be made, by holder name, as the
-	// settings route answers the caller that asked for it (route, rebuild). A rebuild that
-	// succeeded drops its holder's entry. It has a lock of its own because the route reads it
-	// from the request's goroutine, outside the settings holder's lock every rebuild runs
-	// under.
+	// applyMu serialises a route change with the take of what that change's own rebuilds could
+	// not do (route). The applies themselves are serialised already — internal/settings'
+	// Keeper.mu holds one route change at a time and config.Live.mu one apply — but the take
+	// that answers the caller runs after the apply has let both of those go, and a second
+	// request arriving in that window used to take the first request's failures before the
+	// first could: the first was answered `rebuilt` while the daemon had kept the connection it
+	// could not replace. Held across the whole route call, this puts the take inside the window
+	// that serialises the applies, so one request can never take or overwrite another's.
+	applyMu sync.Mutex
+	// failed is what an applied change's rebuilds could not do, by the path of that change, as
+	// the settings route answers the caller that asked for it (observe, route). It is by path
+	// rather than by holder because that is what the caller is answered by: one holder's
+	// failure belongs to every path of the apply that reaches that holder, and the route takes
+	// the paths of its own apply alone. An apply whose rebuilds all succeeded drops the entry
+	// of every path it carried, so nothing stands for a path the daemon has since built its
+	// holders for; what the file's own apply records and no route call takes is dropped by the
+	// next apply of that path. It has a lock of its own because the route reads it from the
+	// request's goroutine, outside the settings holder's lock every rebuild runs under.
 	failedMu sync.Mutex
 	failed   map[string]string
 }
@@ -195,25 +209,37 @@ func (r *rebuilder) replace(holder rebuilt) {
 // the value the daemon booted on.
 func (r *rebuilder) observe(cfg *config.Config, applied []config.Change) {
 	named := map[string]struct{}{}
+	// Every path of this apply with the holders it reaches, its own first and its row's Also
+	// after it, which is the order a path with two failures reads in (noteRebuilds).
+	holdersOf := make(map[string][]string, len(applied))
 	for _, change := range applied {
 		if change.Holder == "" {
 			continue
 		}
 		named[change.Holder] = struct{}{}
-		row, known := config.ClassOf(change.Path)
-		if !known {
-			continue
+		holders := []string{change.Holder}
+		if row, known := config.ClassOf(change.Path); known {
+			for _, also := range row.Also {
+				named[also] = struct{}{}
+				if !slices.Contains(holders, also) {
+					holders = append(holders, also)
+				}
+			}
 		}
-		for _, also := range row.Also {
-			named[also] = struct{}{}
-		}
+		holdersOf[change.Path] = holders
 	}
 	if len(named) == 0 {
 		return
 	}
+	failures := map[string]string{}
 	for _, name := range r.order {
 		if _, asked := named[name]; asked {
-			r.rebuild(cfg, r.holders[name])
+			if err := r.rebuild(cfg, r.holders[name]); err != nil {
+				// The holder's own name is in the text, because a path whose value several
+				// things hold is answered for all of them and the caller is owed the one that
+				// kept what it had.
+				failures[name] = fmt.Sprintf("%s: %v", name, err)
+			}
 		}
 		delete(named, name)
 	}
@@ -221,12 +247,16 @@ func (r *rebuilder) observe(cfg *config.Config, applied []config.Change) {
 		r.log.Warn("legion settings: a changed setting names a holder this daemon did not build; nothing was rebuilt",
 			"holder", name)
 	}
+	r.noteRebuilds(holdersOf, failures)
 }
 
-// rebuild builds one holder again, records what its credentials said when it was built, and
-// logs what it did. A failure is logged with the holder's name and leaves the old one serving:
-// a daemon that cannot reach NATS with a new seed keeps reading events on the connection it
-// has, and the operator sees why in the log.
+// rebuild builds one holder again, records what its credentials said when it was built, logs
+// what it did, and answers what stopped it. A failure is logged with the holder's name and
+// leaves the old one serving: a daemon that cannot reach NATS with a new seed keeps reading
+// events on the connection it has, and the operator sees why in the log. What the caller that
+// asked for the change is told is the apply's business (observe, noteRebuilds); a reread of the
+// credential files is no caller's change, so the error it is answered here is logged and
+// recorded nowhere (rereadCredentials).
 //
 // The digest is recorded here and at registration, and nowhere else: a holder is recorded as
 // what it was built from, whichever route built it. It is read before the rebuild, so a
@@ -239,7 +269,7 @@ func (r *rebuilder) observe(cfg *config.Config, applied []config.Change) {
 // at the next unrelated wake, closing the manager that had served since — every lease dropped,
 // every `token_command` waiting on a person killed — and a reread rebuild that failed was never
 // retried.
-func (r *rebuilder) rebuild(cfg *config.Config, holder rebuilt) {
+func (r *rebuilder) rebuild(cfg *config.Config, holder rebuilt) error {
 	name := holder.holder()
 	credentials, reads := holder.(credentialHolder)
 	var built string
@@ -249,28 +279,43 @@ func (r *rebuilder) rebuild(cfg *config.Config, holder rebuilt) {
 	if err := holder.rebuild(cfg); err != nil {
 		r.log.Error("legion settings: rebuilding a holder failed; the daemon keeps the one it has",
 			"holder", name, "error", err)
-		r.noteRebuild(name, err)
-		return
+		return err
 	}
-	r.noteRebuild(name, nil)
 	if reads {
 		r.credentialDigests[name] = built
 	}
 	r.log.Info("legion settings: holder rebuilt", "holder", name)
+	return nil
 }
 
-// noteRebuild records why name's rebuild could not be made, or drops what an earlier one
-// recorded when it could: what the settings route answers the caller that asked for the change
-// (route). The holder's own name is in the text, because a path whose value several things
-// hold is answered for all of them and the caller is owed the one that kept what it had.
-func (r *rebuilder) noteRebuild(name string, err error) {
+// noteRebuilds records what this apply's rebuilds could not do, by the path of each change that
+// asked for them: holdersOf is every path of the apply with the holders it reaches, and
+// failures is why each holder that could not be built kept what it had, by holder name. A path
+// whose holders were all built again drops whatever stood for it, so nothing is answered for a
+// path the daemon has since carried the change into.
+//
+// Two failures of one path read in the row's own order, the named holder first (holdersOf),
+// since a `repository_renames` whose intake consumers would not reopen is as unfinished as one
+// whose NATS connection would not, and the row names only one of the holders a change reaches.
+//
+// It runs inside the apply, under the settings holder's lock (config.Live.Apply,
+// rebuilder.observe), which is what makes the route's take of these paths this caller's own.
+func (r *rebuilder) noteRebuilds(holdersOf map[string][]string, failures map[string]string) {
 	r.failedMu.Lock()
 	defer r.failedMu.Unlock()
-	if err == nil {
-		delete(r.failed, name)
-		return
+	for path, holders := range holdersOf {
+		var why []string
+		for _, holder := range holders {
+			if reason, could := failures[holder]; could {
+				why = append(why, reason)
+			}
+		}
+		if len(why) == 0 {
+			delete(r.failed, path)
+			continue
+		}
+		r.failed[path] = strings.Join(why, "; ")
 	}
-	r.failed[name] = fmt.Sprintf("%s: %v", name, err)
 }
 
 // route is how the settings route reaches the daemon's settings holder (api.ApplySettings):
@@ -280,29 +325,46 @@ func (r *rebuilder) noteRebuild(name string, err error) {
 // consumers would not reopen — was answered `rebuilt` and told nothing, while the failure sat
 // in the daemon's log alone.
 //
-// What is answered is what this apply recorded: whatever stood before it is dropped, so a
-// failure of an earlier change or of the file watcher's own reread is never read as this
-// caller's. Every rebuild runs under the settings holder's lock, which the apply holds across
-// its observers (config.Live.Apply, rebuilder.observe), so no other change's rebuild runs
-// inside the window this takes.
+// What is answered is this apply's own: the paths it applied, taken from what its own rebuilds
+// recorded under the settings holder's lock (observe, noteRebuilds), so a failure of an earlier
+// change, of another caller's change or of the file's own apply is never read as this caller's.
+//
+// The whole call runs under applyMu, which serialises these applies with their takes. The
+// applies alone were serialised before — Keeper.mu holds one route change at a time — but the
+// take ran after the apply had let that lock go, and a rebuild that waits (drainBound, a
+// runtime's launch bound) leaves a long window inside the apply for the next request to reach
+// its own take first: it took what this apply had recorded, and this apply was answered
+// `rebuilt` while the daemon kept the connection it could not replace.
 func (r *rebuilder) route(apply func(context.Context, config.Caller, string, map[string]any) ([]config.Change, []config.Refusal, error)) api.ApplySettings {
 	return func(ctx context.Context, caller config.Caller, by string, changes map[string]any) ([]config.Change, []config.Refusal, api.SettingsRebuildFailures, error) {
-		r.takeFailures()
+		r.applyMu.Lock()
+		defer r.applyMu.Unlock()
 		applied, refused, err := apply(ctx, caller, by, changes)
-		return applied, refused, r.takeFailures(), err
+		return applied, refused, r.takeFailures(applied), err
 	}
 }
 
-// takeFailures empties what the rebuilds since the last call recorded and answers it, nil for
-// none.
-func (r *rebuilder) takeFailures() api.SettingsRebuildFailures {
+// takeFailures empties what this apply's rebuilds recorded for the paths it applied and answers
+// it, nil for none. A path no change of applied carries belongs to another apply and is left
+// where it is.
+func (r *rebuilder) takeFailures(applied []config.Change) api.SettingsRebuildFailures {
 	r.failedMu.Lock()
 	defer r.failedMu.Unlock()
 	if len(r.failed) == 0 {
 		return nil
 	}
-	taken := api.SettingsRebuildFailures(r.failed)
-	r.failed = map[string]string{}
+	var taken api.SettingsRebuildFailures
+	for _, change := range applied {
+		why, failed := r.failed[change.Path]
+		if !failed {
+			continue
+		}
+		if taken == nil {
+			taken = api.SettingsRebuildFailures{}
+		}
+		taken[change.Path] = why
+		delete(r.failed, change.Path)
+	}
 	return taken
 }
 
@@ -425,7 +487,10 @@ func (r *rebuilder) rereadCredentials(cfg *config.Config) {
 		if !reads || r.credentialDigests[name] == holder.credentials(cfg) {
 			continue
 		}
-		r.rebuild(cfg, holder)
+		// A reread is no caller's change: a rebuild that failed is logged by rebuild itself and
+		// tried again at the next reread, and nothing of it is answered to a settings route
+		// call that asked for no such rebuild.
+		_ = r.rebuild(cfg, holder)
 	}
 }
 

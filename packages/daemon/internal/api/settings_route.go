@@ -84,12 +84,13 @@ func (a SettingsRouteAuth) configured() bool {
 	return a.Verifier != nil && len(a.ServiceAccounts) > 0
 }
 
-// SettingsRebuildFailures is why the daemon could not build a holder again for the change it
-// has just applied, by that holder's name (config.HolderNATS and its neighbours), with the
-// name in the text so a path several things hold says which of them kept what it had. A
-// rebuild runs inside the apply, under the settings holder's lock, so what it could not do is
-// known by the time this answer is written; the daemon's rebuild observer records it
-// (internal/daemon's rebuilder).
+// SettingsRebuildFailures is why the daemon could not build again something that holds the
+// value of a path it has just applied, by that path, with each holder's name in its text so a
+// path several things hold says which of them kept what it had, and two failures of one path
+// joined in the row's own order, the named holder first. A rebuild runs inside the apply,
+// under the settings holder's lock, so what it could not do is known by the time this answer
+// is written, and the apply that records it is the one whose paths are taken: the daemon's
+// rebuild observer decides both (internal/daemon's rebuilder.observe and rebuilder.route).
 type SettingsRebuildFailures map[string]string
 
 // ApplySettings is how the route reaches the daemon's one settings holder (internal/settings'
@@ -202,7 +203,7 @@ func settingResults(changes map[string]any, applied []config.Change, refused []c
 		result := SettingResult{
 			Applied: string(change.Outcome), Holder: change.Holder, Old: change.Old, New: change.New,
 		}
-		if why := rebuildFailure(change, failed); why != "" {
+		if why := failed[change.Path]; why != "" {
 			result.Applied, result.Failed = "", why
 		}
 		results[change.Path] = result
@@ -211,29 +212,6 @@ func settingResults(changes map[string]any, applied []config.Change, refused []c
 		results[refusal.Path] = SettingResult{Refused: refusal.Reason}
 	}
 	return results
-}
-
-// rebuildFailure is why the daemon could not build again something that holds change's value:
-// the holder the caller is told was rebuilt (Change.Holder) or any other holder of the same row
-// (config.Row.Also), since a `repository_renames` whose intake consumers would not reopen is as
-// unfinished as a `nats_urls` whose connection would not, and the row names only one of the
-// holders a change reaches. Two failures of one path read in the row's own order, the named
-// holder first.
-func rebuildFailure(change config.Change, failed SettingsRebuildFailures) string {
-	if len(failed) == 0 {
-		return ""
-	}
-	holders := []string{change.Holder}
-	if row, known := config.ClassOf(change.Path); known {
-		holders = append(holders, row.Also...)
-	}
-	var why []string
-	for _, holder := range holders {
-		if reason, could := failed[holder]; holder != "" && could && !slices.Contains(why, reason) {
-			why = append(why, reason)
-		}
-	}
-	return strings.Join(why, "; ")
 }
 
 // settingsCaller is who this request is, which arm it came in on, and whether the daemon admits

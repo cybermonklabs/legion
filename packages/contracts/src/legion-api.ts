@@ -654,7 +654,7 @@ export type LegionState = z.output<typeof LegionStateResponse>;
 export type LegionIssue = LegionState["issues"][string];
 
 /** `api.SettingResult` — one path's verdict from `PUT /legion/v1/operator/settings`. Exactly one
- * of `applied` and `refused` is set.
+ * of `applied`, `failed` and `refused` is set.
  *
  * `applied` is when the change takes effect: `at-once` for a value every decision reads,
  * `rebuilt` for one a client or listener holds, which the daemon has already built again, and
@@ -662,12 +662,23 @@ export type LegionIssue = LegionState["issues"][string];
  * absent where nothing holds the value. `old` and `new` are the values as the daemon's log line
  * shows them, `(withheld)` for a credential and `(unset)` for a path the configuration did not
  * carry. `unchanged` says the daemon was already running on that value: the path is the route's
- * from now on, and nothing moved. `refused` is why the daemon will not change the path — a path
- * fixed for the process, or one its class table does not hold. */
+ * from now on, and nothing moved.
+ *
+ * `failed` is a change the daemon took into its settings and could not carry into something that
+ * holds the value: the value is the daemon's from now on, and every reader that reads the path as
+ * it decides reads the new one, but a holder of it kept what it had. The text names that holder
+ * and what stopped it — a NATS that refused the new seed, intake consumers that would not reopen.
+ * `holder`, `old` and `new` read as they do for an applied change, since the change itself was
+ * applied. A reader shows it as a failure: the caller asked for something the daemon only half
+ * did, and `rebuilt` is what it would have said had the rebuild worked.
+ *
+ * `refused` is why the daemon will not change the path — a path fixed for the process, or one its
+ * class table does not hold. Nothing moved, there as here. */
 // It is not exported: the exported rosters are the request and answer bodies, and this is a node
 // of one of them (`LegionSettingsChangeResponse`), read through it. Only its type leaves here.
 const legionSettingResult = z.object({
   applied: nonEmptyString.optional(),
+  failed: nonEmptyString.optional(),
   refused: nonEmptyString.optional(),
   holder: nonEmptyString.optional(),
   old: nonEmptyString.optional(),
