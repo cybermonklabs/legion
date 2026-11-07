@@ -54,11 +54,11 @@ gives them).
 Under the Go daemon a check or workflow the base branch requires that settles red on the head,
 before the completion or after it, sends the work back to `implementing` with the failing checks
 named, until `max_fix_attempts` is spent, when the architect decides. The one CI result an implementer waits for is a re-run: when its task names a red that
-failed on its own, it re-runs the failed jobs once (`gh run rerun <run-id> --failed`) and completes once
+failed on its own in a `pull_request` run, it re-runs the failed jobs once (`gh run rerun <run-id> --failed`) and completes once
 the re-run settles green, woken by the pull request's checks event (`skill://envoy`, *Wait for
-CI or a merge*: subscribe, then end the turn), never by a sleep loop. A completion while that red
-still stands is sent back, at once for a required check and at the daemon's next read of the runs
-(within two minutes) for a required workflow.
+CI or a merge*: subscribe, then end the turn), never by a sleep loop.
+A merge-group run is never re-run: the implementer finishes its round instead, and the pull request is tested again when it is queued again.
+A completion while that red still stands is sent back, at once for a required check and at the daemon's next read of the runs (within two minutes) for a required workflow.
 
 A pull-request body edit re-runs a check that judges the body at once, on the head as it is. While
 the pull request conflicts with its base (GitHub shows it `CONFLICTING`), no workflow triggered
@@ -166,7 +166,9 @@ gap and decides there, which is the only gate on such an issue.
   `failures`). Otherwise record your own result for each `before_merge` check before you complete,
   and put each printed line in the body. A code path whose first execution is after merge — a
   deploy workflow's inline step, a post-merge helper, a production-only resource — is a check
-  marked `after_merge`, recorded after the merge, unless the implementer can execute it against a
+  marked `after_merge`, recorded after the merge on a look of the production check by the role
+  the project's `production_check` names — the tester, unless the setting is `off`, where the
+  close opens no check and nothing records it — unless the implementer can execute it against a
   devN stack before then; if no surface can reach it, the
   tester names that missing surface as the blocker instead of passing the phase. Environment or
   secret-scrub evidence (e.g. "`LEGION_*`/`DISPATCH_*`/`ENVOY_*` unset") is recorded once, in
@@ -219,6 +221,7 @@ the architect with `envoy_publish` to its role topic. The architect builds it in
 once it lands. A code path
 whose first execution would be after the merge — a deploy
 workflow's inline step, a post-merge helper, a production-only resource — is a check marked
-`after_merge`, recorded once the merge reaches production, and no reason to leave a
+`after_merge`, recorded once the merge reaches production by the role the project's
+`production_check` names, on the look its own `wake_at` brought back, and no reason to leave a
 `before_merge` check unrecorded; completing with a unit suite as the only evidence is the
 failure this rule exists to stop.

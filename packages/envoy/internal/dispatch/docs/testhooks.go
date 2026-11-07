@@ -588,3 +588,10 @@ func RescanForTest(state []byte) (int64, error) {
 	scans, err := rescan(state)
 	return int64(scans), err
 }
+
+// RoomCapsForTest is the service's room and connection caps (reserveRoom, reserveConnection).
+// cmd/dispatch's settings test reads it to see DISPATCH_MAX_LIVE_ROOMS and
+// DISPATCH_MAX_DOC_CONNECTIONS reach the service through Deps.
+func (s *Service) RoomCapsForTest() (rooms, connections int) {
+	return s.roomCap, s.connectionCap
+}

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/reearth/ygo/crdt"
+	"github.com/reearth/ygo/persistence"
 	"github.com/reearth/ygo/provider/websocket"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -224,14 +225,15 @@ func measureCopyPaths(t *testing.T, state []byte) {
 	paths := []copyPath{
 		{"the server's load and first transaction", fresh, stored, load},
 		{"a socket's admission, load and first transaction", fresh, stored, func() any {
-			tree, preload, err := service.loadTree(ctx, artifactID)
+			tree, loaded, err := service.loadTree(ctx, artifactID)
 			if err != nil {
 				t.Fatalf("the admission's schema check: %v", err)
 			}
-			if _, err := documentMarkdown(tree); err != nil {
+			rendering, err := replicaRenderingOf(tree)
+			if err != nil {
 				t.Fatalf("the admission's rendering: %v", err)
 			}
-			defer service.leavePreload(artifactID, preload)()
+			defer service.offerPreload(artifactID, loaded, admissionRendering{tree: tree, rendering: rendering})()
 			return load()
 		}},
 		{"a write's fork of the stored history", fresh, stored, fork},
@@ -514,13 +516,14 @@ func TestAnAdmissionWhoseRequestEndsWhileItWaitsForASlotAnswersItsErrorAndHoldsN
 	slots.waiting = func() { waitOnce.Do(func() { close(waiting) }) }
 	request, cancel := context.WithCancel(ctx)
 	type admission struct {
-		preload *preloadedDocument
-		err     error
+		tree   *pmdoc.Node
+		loaded *persistence.LoadResult
+		err    error
 	}
 	admitted := make(chan admission, 1)
 	go func() {
-		_, preload, err := service.loadTree(request, artifactID)
-		admitted <- admission{preload, err}
+		tree, loaded, err := service.loadTree(request, artifactID)
+		admitted <- admission{tree, loaded, err}
 	}()
 	select {
 	case <-waiting:
@@ -534,8 +537,8 @@ func TestAnAdmissionWhoseRequestEndsWhileItWaitsForASlotAnswersItsErrorAndHoldsN
 	case <-time.After(30 * time.Second):
 		t.Fatal("the admission did not answer in 30 s once its request ended")
 	}
-	if !errors.Is(ended.err, context.Canceled) || ended.preload != nil {
-		t.Fatalf("the admission answered %v with preload %v, want the request's context.Canceled and none", ended.err, ended.preload)
+	if !errors.Is(ended.err, context.Canceled) || ended.loaded != nil || ended.tree != nil {
+		t.Fatalf("the admission answered %v with state %v and tree %v, want the request's context.Canceled and neither", ended.err, ended.loaded, ended.tree)
 	}
 	if err := service.roomFailure(artifactID); err != nil {
 		t.Fatalf("the ended request failed the room: %v", err)
@@ -544,11 +547,11 @@ func TestAnAdmissionWhoseRequestEndsWhileItWaitsForASlotAnswersItsErrorAndHoldsN
 		t.Fatalf("%d slots are held, want the one the test holds and none of the ended admission's", held)
 	}
 	holder.release()
-	_, preload, err := service.loadTree(ctx, artifactID)
-	if err != nil || preload == nil || preload.decoded.doc == nil {
-		t.Fatalf("the next admission answered %v with preload %v, want the history decoded", err, preload)
+	tree, loaded, err := service.loadTree(ctx, artifactID)
+	if err != nil || loaded == nil || tree == nil {
+		t.Fatalf("the next admission answered %v with state %v and tree %v, want the history read and decoded", err, loaded, tree)
 	}
-	service.leavePreload(artifactID, preload)()
+	service.offerPreload(artifactID, loaded, admissionRendering{tree: tree})()
 	if held := slots.held.Load(); held != 0 {
 		t.Fatalf("%d slots are still held once both admissions have answered", held)
 	}

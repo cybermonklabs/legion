@@ -1,35 +1,34 @@
 package docs
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
-	"net/http"
-	"path"
 	"slices"
 	"time"
 
-	"github.com/google/uuid"
-	gws "github.com/gorilla/websocket"
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/persistence"
 	"github.com/reearth/ygo/provider/websocket"
 
-	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
-	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
+// connectionState is one document socket as its admission (ServeHTTP) found it and ygo's
+// authorization of the same request (authorize) registered it: the caller, resolved once
+// (requestActor), and the admission's one read of the document's issue, which authorize takes
+// rather than resolving or reading either again; then the room, the connection id the service gave
+// the browser, and whether authorize registered it, which tells the socket's end whether its place
+// under the connection cap is the connection's count to forget (removeConnection) or a reservation
+// to give back (releaseConnection). What else a socket's admission reads off its request goes here
+// too.
 type connectionState struct {
 	room  string
 	id    uint64
 	actor model.Actor
+	issue issueRead
 	added bool
 }
 
@@ -84,12 +83,17 @@ type servicePersistenceAdapter struct {
 // load's record (roomLoad.read), and the room's own load hook decodes it (bootstrapLoadedState,
 // whose comment states how), because ygo's own apply runs the format cleanup a remote apply runs
 // and the room's stored history already holds every cleanup the room made. A preload
-// (takePreload), which the socket's admission check decoded, goes on the record as a read would.
-// The record also takes the state's one decode of the load's own (loadedState), that admission's
-// or, without one, this one's (decodeStoredCopy): its scans are the room's scan total at its load
-// (roomScans), and its copy the room's replica (keepReplica). So the stored state is decoded
-// twice on a room's load, that copy and the load hook's own decode of the same bytes; those
-// decodes, and a fold before them, run under the load's one copy grant (loadedState.grant).
+// (takePreload), the state a socket's admission check read and the room's load takes in place of
+// reading the store again, goes on the record as a read would. The record also takes that state's
+// one decode of the load's own (loadedState, decodeStoredCopy), the preload's state and the read's
+// alike: its scans are the room's scan total at its load (roomScans), and its copy the room's
+// replica (keepReplica). So the stored state is decoded twice on a room's load, that copy and the
+// load hook's own decode of the same bytes; those decodes, and a fold before them, run under the
+// load's one slot of the pod's load concurrency (loadedState.slot).
+//
+// The record also carries the history's size and what a socket's admission made of that history
+// when the load takes that socket's preload: the tree it read from it and the rendering it made of
+// that tree (roomLoad.read, takeLoaded, admissionRendering).
 //
 // It records the load before it reads, and what it read after: the room's load (onLoadDocument)
 // takes the record next on the same goroutine (ygo's loadRoom) to start the instance's roomHold
@@ -129,16 +133,22 @@ func (a *servicePersistenceAdapter) LoadDoc(room string) (_ []byte, err error) {
 			a.service.failRoomLoad(room, load, err)
 		}
 	}()
-	if preload, ok := a.service.takePreload(room); ok {
+	if loaded, rendered, ok := a.service.takePreload(room); ok {
+		// The admission that read this state decoded it for its own schema check and kept no
+		// copy (loadTree), so the room's copy is decoded here, under the slot this load holds
+		// for it. A state ygo refuses the bytes of never reaches a preload - the admission's
+		// own decode refused it first - and is left to the room's decode either way, as the
+		// read's own path leaves it (loadDecoded).
 		_ = slot.take(context.Background())
-		load.read(preload.loaded.Version, preload.loaded.Update, preload.decoded, slot)
+		decoded, _ := decodeStoredCopy(loaded.Update, a.service.maxPendingItems)
+		load.read(loaded.Version, loaded.Update, decoded, slot, rendered)
 		return nil, nil
 	}
 	result, decoded, err := a.loadDecoded(room, slot)
 	if err != nil {
 		return nil, err
 	}
-	load.read(result.Version, result.Update, decoded, slot)
+	load.read(result.Version, result.Update, decoded, slot, admissionRendering{})
 	return nil, nil
 }
 
@@ -146,36 +156,44 @@ func (a *servicePersistenceAdapter) StoreUpdate(room string, update []byte) erro
 	return a.StoreUpdateContext(context.Background(), room, update)
 }
 
-// StoreUpdateContext stores a room's update: it appends, in one transaction under the document's
-// advisory lock, every update of the same room instance its update observer recorded before this
-// one and no writer has stored yet, then this one, in the room's commit order, each with the
-// in-flight credit and the class its observer recorded (AppendRoomFlush, flushThrough). So the
-// order ygo's persistence hands updates on in never decides the order they are stored in, and an
-// update another writer stored first is skipped.
+// StoreUpdateContext stores a room's update, which ygo's persistence worker hands on one call per
+// update, in order: it appends, in one transaction under the document's advisory lock, every
+// update of the same room instance its update observer recorded before this one and no writer has
+// stored yet, this one, and the run of updates the room recorded after it that its batch takes
+// (roomBatchThrough), in the room's commit order, each with the in-flight credit and the class its
+// observer recorded (AppendRoomFlush, flushRun). So the order ygo's persistence hands updates on
+// in never decides the order they are stored in, and an update another writer stored first is
+// skipped. It returns nil only once the update is durable, by its own transaction or by one that
+// stored it first, so ygo's flush still means every update it held is stored.
 //
-// Each append carries what the observer recorded with its update: the room instance it was made
-// in (documentUpdateClass.cursor) and when the room took it (documentUpdateClass.observed), which
-// the store passes to the gate as a browser's append (BrowserAppend, appendBrowser). So the gate
-// admits it from a room behind the head with its history intact - it lands at the head, and the
-// instance's cursor folds it in once catch-up fills the gap (appendUpdate) - and refuses it only
-// when the room's stored history was replaced under it, or when the document's issue is closed and
-// the room took the update later than closeMargin after the close. A history a compaction folded
-// past the room's cursor is no replacement for the update when it still holds every item the
-// update builds on (storedHistoryHolds): it is stored, and the room, which cannot catch up to that
-// history, is closed and reloaded at the head once it is (closeRoomOnReplacedHistory): this append
-// asks for that itself, so it needs no room-sync lane and waits on no later notification. An
-// update the room took before the close and whose append reaches the gate after it - queued behind
-// the room's earlier appends, waiting on the document's lock behind a settlement or a compaction,
-// or handed here by the close of the room itself (setRoomIssueOpen) - is stored, and settled once
-// the issue reopens, a compaction's fold of the history meanwhile included: a room closing for its
-// issue takes in no catch-up while its close waits for this append (holdOpen), and that close is
-// the reload a folded history needs.
+// Unless something waits on the room, the call lingers for the room's queue to fill before its
+// batch goes, at most roomAppendLinger from the update's recording (room_appends.go).
+//
+// Each append carries what the observer recorded with its updates: the room instance they were
+// made in (documentUpdateClass.cursor) and when the room took each (documentUpdateClass.observed),
+// which the store passes to the gate as a browser's append (BrowserUpdate, appendBrowser). So the
+// gate admits them from a room behind the head with its history intact - they land at the head,
+// and the instance's cursor folds them in once catch-up fills the gap - and refuses them only when
+// the room's stored history was replaced under it, or when the document's issue is closed and the
+// room took the update later than closeMargin after the close. A history a compaction folded past
+// the room's cursor is no replacement for the run when it still holds every item the run builds
+// on (storedHistoryHolds): it is stored, and the room, which cannot catch up to that history, is
+// closed and reloaded at the head once it is (closeRoomOnReplacedHistory): this append asks for
+// that itself, so it needs no room-sync lane and waits on no later notification. An update the
+// room took before the close and whose append reaches the gate after it - queued behind the
+// room's earlier appends, waiting on the document's lock behind a settlement or a compaction, or
+// handed here by the close of the room itself (setRoomIssueOpen) - is stored, and settled once
+// the issue reopens, a compaction's fold of the history meanwhile included: a room closing for
+// its issue takes in no catch-up while its close waits for this append (holdOpen), and that close
+// is the reload a folded history needs.
+//
 // A replaced history fails the room, as any failed append does: the room reloads from the store,
 // which is the close-and-reload a replaced history needs (plan D3.3), and the browser resends the
 // update to the reloaded room. A refused update on a closed issue is dropped and closes the room
 // for its issue (refuseClosedIssueAppend), so its browsers reconnect read-only. Either is decided
-// under the document's advisory lock, so it is never this process's own write in flight, and needs
-// no room-sync lane to run.
+// under the document's advisory lock, so it is never this process's own write in flight, and
+// needs no room-sync lane to run.
+//
 // An update that never reaches the store - its room failed, or a live write, a settlement or a
 // catch-up already made it durable - lands its credit here instead: the room drops it with the
 // update, which the browser resends. Whichever way the append ends, the update leaves its
@@ -184,17 +202,8 @@ func (a *servicePersistenceAdapter) StoreUpdateContext(ctx context.Context, room
 	if a.service.roomFailed(room) {
 		// The failed room's update is dropped and its browser resends it to the room that
 		// replaces this one, but its class is taken all the same, so the work the record counts
-		// for it ends here. Left counted, it would be an append no callback can ever finish:
-		// the record - or the one registered in its place, which carries the updates the room's
-		// persistence never took (handOverFailedRoomLocked) - would wait on it for ever, so its
-		// settlement would retry without end, and the record would never be released
-		// (unusedLocked).
-		class, counted, found := a.service.consumeUpdateClass(room, update)
-		if found {
-			a.service.finishUpdateClass(room, counted, class)
-		}
-		class.instance.unlistUnstored(class)
-		class.credit.landed()
+		// for it ends here (dropUpdate).
+		a.dropUpdate(room, update)
 		return nil
 	}
 	class, counted, found := a.service.consumeUpdateClass(room, update)
@@ -217,9 +226,14 @@ func (a *servicePersistenceAdapter) StoreUpdateContext(ctx context.Context, room
 	a.service.hooks.awaitPersistenceHold(ctx, room)
 	if !found {
 		// An update no class was recorded for is stored on its own: the room's queue holds
-		// nothing to flush it with, and the gate reads the cursor it carries.
-		browser := &BrowserAppend{cursor: class.cursor, observed: class.observed}
-		if _, err := a.store.AppendUpdateWithCredit(withRoomCursor(ctx, class.cursor), room, update, class.contentChanged, class.credit, browser); err != nil {
+		// nothing to flush it with, and the gate reads the cursor marked above.
+		updates := []BrowserUpdate{{
+			Update:         update,
+			ContentChanged: class.contentChanged,
+			Credit:         class.credit,
+			Observed:       class.observed,
+		}}
+		if _, err := a.store.AppendUpdatesWithCredit(withRoomCursor(ctx, class.cursor), room, updates); err != nil {
 			if errors.Is(err, ErrIssueClosed) {
 				a.service.refuseClosedIssueAppend(room)
 				return nil
@@ -229,15 +243,35 @@ func (a *servicePersistenceAdapter) StoreUpdateContext(ctx context.Context, room
 		}
 		return nil
 	}
-	// The update must read back into a fresh copy before anything of the room's is stored, as a
-	// single append checks (PgVersioned.appendUpdate): one the room took but a copy cannot decode
-	// fails the room, which reloads the document from the store.
+	// The call's own update must read back into a fresh copy before its batch is stored, as an
+	// append of updates the store is handed checks (AppendUpdatesWithCredit): one the room took
+	// but a copy cannot decode fails the room, which reloads the document from the store. Only
+	// this update is read back here. The batch's other updates are stored as the room applied
+	// them, decoded by the room when it took them and not again, as a joined transaction's flush
+	// of the room stores them (AppendRoomUpdatesTx); a later call of an update the batch stored
+	// finds its class stored and decodes nothing.
 	if err := crdt.ApplyUpdateV1(newDocumentCopy(), update, nil); err != nil {
 		a.service.failRoom(room, err)
 		return err
 	}
+	through, wake, wait := a.service.roomBatchThrough(room, class, true)
+	if wake != nil {
+		timer := time.NewTimer(wait)
+		select {
+		case <-wake:
+		case <-timer.C:
+		}
+		timer.Stop()
+		// Another writer may have stored the update while it lingered (a settlement, a live
+		// write, a peer's batch): there is nothing left for this call to store, and its batch
+		// must not meet the gate for it, which refuses a room behind the head.
+		if a.service.roomFailed(room) || class.stored.Load() {
+			return nil
+		}
+		through, _, _ = a.service.roomBatchThrough(room, class, false)
+	}
 	flush := &RoomFlush{service: a.service, room: room, cursor: class.cursor}
-	if _, err := a.store.AppendRoomFlush(ctx, room, flush, class.seq, class.credit); err != nil {
+	if _, err := a.store.AppendRoomFlush(ctx, room, flush, through, class.credit); err != nil {
 		if errors.Is(err, ErrIssueClosed) {
 			a.service.refuseClosedIssueAppend(room)
 			return nil
@@ -377,393 +411,6 @@ func loadableHistory(update []byte) error {
 	return nil
 }
 
-// preloadedDocument is the durable state a document socket's admission check read and its decode
-// of it (loadTree, decodeStoredCopy), kept for the load ygo makes of the room next
-// (servicePersistenceAdapter.LoadDoc), so a cold connection reads the history once and decodes it
-// once of its own, and that decode's copy becomes the room's replica. Whoever takes a preload off
-// Service.preloads takes its state with it (take): the socket's handler keeps the preload until
-// the socket ends only to delete it from there (ServeHTTP), and so holds neither a copy a room's
-// replica took nor one no load will take.
-type preloadedDocument struct {
-	loaded  persistence.LoadResult
-	decoded decodedState
-}
-
-// take is the preload's state, which the preload gives up. Only the caller that took the
-// preload off Service.preloads calls it, so nothing else reads the preload meanwhile: the
-// handler that stored it only compares it (ServeHTTP).
-func (p *preloadedDocument) take() preloadedDocument {
-	taken := *p
-	p.decoded = decodedState{}
-	return taken
-}
-
-// takePreload is the state a socket's admission check loaded for room, while the durable head is
-// still the one it loaded: every write that changes a document's stored state raises its head (an
-// append, a rebuild), and compaction keeps both the head and the state. A stale or absent preload
-// is no answer, and the caller loads the room itself; a stale one's copy and its slot go with it.
-func (s *Service) takePreload(room string) (preloadedDocument, bool) {
-	value, ok := s.preloads.LoadAndDelete(room)
-	if !ok {
-		return preloadedDocument{}, false
-	}
-	preload := value.(*preloadedDocument).take()
-	head, err := s.persistence.Head(context.Background(), room)
-	if err != nil || head != preload.loaded.Version {
-		return preloadedDocument{}, false
-	}
-	return preload, true
-}
-
-// dropPreload drops the preload a socket's admission left for room, which no load will take: a
-// load of room has run since that admission stored it (onLoadDocument), so the socket joins the
-// room that load made. A copy left there would be a whole decode of the document beside the
-// room's two, held for as long as the socket stays, and its slot would be one the pod's load
-// concurrency never gets back.
-func (s *Service) dropPreload(room string) {
-	if value, ok := s.preloads.LoadAndDelete(room); ok {
-		value.(*preloadedDocument).take()
-	}
-}
-
-// leavePreload leaves preload, a socket admission's (loadTree), for the load ygo makes of room next
-// (takePreload), and returns what the socket's handler runs as the socket ends: the preload's
-// deletion, if no load took it. A preload another admission left there first is replaced, and its
-// copy goes with it: a load takes one decode of the stored state, and while the head stands either
-// is the state it loads (takePreload). A room resident by now, loaded since this admission found
-// none (heldTree), takes nothing of it either, so it is dropped at once; one that loads while this
-// admission decodes drops it as its load ends (onLoadDocument, dropPreload). Only a preload left
-// in the moment between that load's end and ygo publishing its room stays, until the socket ends
-// or the room's next load takes or replaces it, as the preload's bytes stayed before it carried a
-// copy.
-func (s *Service) leavePreload(room string, preload *preloadedDocument) (forget func()) {
-	if previous, replaced := s.preloads.Swap(room, preload); replaced {
-		previous.(*preloadedDocument).take()
-	}
-	if s.srv.GetDoc(room) != nil && s.preloads.CompareAndDelete(room, preload) {
-		preload.take()
-	}
-	return func() { s.preloads.CompareAndDelete(room, preload) }
-}
-
-// documentSchemaCloseCode closes a document websocket whose room is outside the Proof schema
-// (DOCUMENT_SCHEMA_CLOSE_CODE in packages/contracts), which the dashboard reads as the document's
-// repair state rather than as a dropped connection to retry.
-const documentSchemaCloseCode = contracts.DocumentSchemaCloseCode
-
-// refuseOutsideSchema completes the upgrade only to close it with documentSchemaCloseCode before
-// anything of the document is sent: a browser reads a close code, never the status of a refused
-// upgrade.
-func refuseOutsideSchema(w http.ResponseWriter, r *http.Request, room string, cause error) {
-	slog.Warn("dispatch: refuse a document socket outside Proof schema; a replacement from markdown repairs it", "room", room, "error", cause)
-	closeAtUpgrade(w, r, documentSchemaCloseCode, contracts.DocumentSchemaCloseReason)
-}
-
-// refuseOverRoomBudget refuses a browser the room budget has no room for (ServeHTTP), as
-// refuseOutsideSchema refuses one, before any room is made for it and any document loaded: it
-// completes the upgrade only to close it with DocumentBusyCloseCode, the transient close, which the
-// editor shows and retries rather than dropping anything. The log names the bound and what the
-// open rooms are charged against it.
-func refuseOverRoomBudget(w http.ResponseWriter, r *http.Request, room string, cause error) {
-	slog.Warn("dispatch: refuse a document socket; the open documents fill their memory budget", "room", room, "error", cause)
-	closeAtUpgrade(w, r, contracts.DocumentBusyCloseCode, contracts.DocumentBusyCloseReason)
-}
-
-// closeAtUpgrade completes the upgrade only to close the socket with code and reason. The zero
-// upgrader keeps the same-origin rule ygo's own upgrade applies with no AllowedOrigins configured.
-func closeAtUpgrade(w http.ResponseWriter, r *http.Request, code int, reason string) {
-	var upgrader gws.Upgrader
-	connection, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		return // the upgrader has answered the request
-	}
-	defer connection.Close()
-	deadline := time.Now().Add(time.Second)
-	if err := connection.WriteControl(gws.CloseMessage, gws.FormatCloseMessage(code, reason), deadline); err != nil {
-		return
-	}
-	// The client's close in reply completes the handshake; whatever it sent before that is
-	// discarded unread.
-	_ = connection.SetReadDeadline(deadline)
-	for {
-		if _, _, err := connection.NextReader(); err != nil {
-			return
-		}
-	}
-}
-
-// ProcessHeader names, on every answer to a document socket's request and on its upgrade above
-// all, the host name of the process serving it - the pod's name in production - so a check that
-// opens sockets through a load balancer can record which process each one reached (plan D10).
-const ProcessHeader = "X-Dispatch-Process"
-
-// ServeHTTP serves the Hocuspocus-framed document websocket endpoint. A caller that does not
-// resolve is refused 401, except a person whose lapsed confirmation the sign-in issuer could not
-// renew (identity.ErrSignInUnavailable), who is still signed in and is refused 503
-// SIGNIN_UNAVAILABLE as every other route refuses them (identity.WriteError).
-func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if s.hostname != "" {
-		w.Header().Set(ProcessHeader, s.hostname)
-		w = &processHeaderWriter{ResponseWriter: w, line: []byte(ProcessHeader + ": " + s.hostname + "\r\n")}
-	}
-	room := r.PathValue("room")
-	if room == "" {
-		room = path.Base(r.URL.Path)
-	}
-	if _, err := s.requestActor(r); err != nil {
-		if errors.Is(err, identity.ErrSignInUnavailable) {
-			identity.WriteError(w, err)
-			return
-		}
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-	if _, err := uuid.Parse(room); err != nil {
-		http.Error(w, "document not found", http.StatusNotFound)
-		return
-	}
-	if _, err := s.issueOpen(r.Context(), s.queryFrom(r.Context()), room); err != nil {
-		http.Error(w, "document not found", http.StatusNotFound)
-		return
-	}
-	if err := s.awaitRoomRecovery(r.Context(), room); err != nil {
-		http.Error(w, ErrServiceUnavailable.Error(), http.StatusServiceUnavailable)
-		return
-	}
-	if !s.canOpenRoom(room) || !s.canAddConnection() {
-		http.Error(w, ErrServiceUnavailable.Error(), http.StatusServiceUnavailable)
-		return
-	}
-	// The room budget admits the browser after the read below, not before it: it joins a room
-	// the budget already charges, and is otherwise weighed carrying the weight of the room it is
-	// about to load, which the read has just measured exactly (roomBudget.refusal). It is
-	// refused while the open rooms and the other admissions' reservations leave no room for it
-	// and the sweeps it starts can close nothing. maxLiveRooms stays the count backstop above.
-	//
-	// The budget charges a room only when its load ends, so an admission weighed on the charges
-	// alone would read the same headroom as every other admission in flight and they would all
-	// pass: measured, twenty-four browsers arriving together were all admitted, their rooms
-	// charged 5,976,639,564 bytes against a 2,147,483,648-byte budget, and the pod's kernel
-	// charged 7,225 MiB of its 4,096 (INFRA-179). What closes that is the reservation each
-	// admission holds from its weighing until its room's load charges it, so each is weighed
-	// against every other's room as well as against the rooms already open.
-	if wait, held := s.admissionHolds.LoadAndDelete(room); held {
-		select {
-		case <-time.After(wait.(time.Duration)):
-		case <-r.Context().Done():
-			return
-		}
-	}
-	// A browser editor normalizes a tree it cannot represent and writes the result back, so no
-	// connection - a first one, or a provider's reconnect - joins a room outside the Proof schema
-	// until it is replaced from markdown. An ask holding blocks off its content rule is inside it:
-	// the editor keeps such an ask rather than normalizing it away, and settlement marks it
-	// `invalid`. The server decides it here, for every client at once, by the same stored document
-	// and rendering `/text` answers with (readDocument), so a socket is refused exactly when that
-	// read is ErrDocOutsideSchema.
-	//
-	// It runs before the budget weighs the admission, because what it reads is what the budget
-	// weighs: the stored state it decoded is the state the room is about to load, so its length
-	// is the weight of the room this admission adds. The read is a whole-document decode, so it
-	// takes a slot of the pod's load concurrency for the read alone and gives it back before
-	// the weighing: fifty admissions do not decode fifty documents at once, and no admission
-	// holds a slot while it waits on the budget, which would couple it to every other holder.
-	readSlot := newLoadSlot()
-	if s.srv.GetDoc(room) == nil {
-		if err := readSlot.take(r.Context()); err != nil {
-			slog.Warn("dispatch: a document socket's admission gave up waiting for a load slot; answered 503",
-				"room", room, "error", err)
-			http.Error(w, ErrServiceUnavailable.Error(), http.StatusServiceUnavailable)
-			return
-		}
-	}
-	tree, preload, err := s.loadTree(readSlot.carriedBy(r.Context()), room)
-	readSlot.release()
-	if err == nil && tree != nil {
-		if _, renderErr := documentMarkdown(tree); errors.Is(renderErr, ErrDocOutsideSchema) {
-			err = renderErr
-		}
-	}
-	if errors.Is(err, ErrDocOutsideSchema) {
-		refuseOutsideSchema(w, r, room, err)
-		return
-	}
-	if err != nil {
-		http.Error(w, ErrServiceUnavailable.Error(), http.StatusServiceUnavailable)
-		return
-	}
-	admitting := time.Now()
-	var reservation *roomReservation
-	if !s.budget.join(room) {
-		// The weight is the room this admission is about to load, which the budget does not
-		// charge until that load ends: the stored state the read above decoded, at roomWeight.
-		// A read that left no preload loaded nothing and adds no room (heldTree), and a room
-		// the budget already charges is joined above and weighed at nothing. The reservation is
-		// held until that room's load charges it or this handler returns, whichever comes
-		// first, so every other admission in flight is weighed against this room too.
-		weight := int64(0)
-		if preload != nil {
-			weight = roomWeight(int64(len(preload.loaded.Update)))
-		}
-		reservation, err = s.budget.refusal(r.Context(), time.Now().Add(s.admissionWait), room, weight)
-	}
-	defer s.budget.release(reservation)
-	if errors.Is(err, errRoomBudgetFull) {
-		refuseOverRoomBudget(w, r, room, err)
-		return
-	}
-	if err != nil {
-		// Anything but the budget's refusal is answered 503, which the editor's backoff retries;
-		// the line says why, and whether the browser had already gone.
-		slog.Warn("dispatch: a document socket's admission failed; answered 503", "room", room, "error", err,
-			"waited", time.Since(admitting), "request_ended", r.Context().Err() != nil)
-		http.Error(w, ErrServiceUnavailable.Error(), http.StatusServiceUnavailable)
-		return
-	}
-	if preload != nil {
-		defer s.leavePreload(room, preload)()
-	}
-	connection := &connectionState{}
-	ctx := context.WithValue(r.Context(), connectionContextKey{}, connection)
-	// The awareness clients the socket's peer may announce are bounded before ygo reads its
-	// frames (awareness_limit.go).
-	s.srv.ServeHTTP(&awarenessLimitWriter{ResponseWriter: w, room: room}, r.WithContext(ctx))
-	if connection.added {
-		s.removeConnection(connection.room, connection.id)
-	}
-}
-
-// processHeaderWriter puts its line, ProcessHeader's, on a websocket upgrade made through it. The
-// upgrader (gorilla/websocket, which ygo's ServeHTTP and refuseOutsideSchema both use) takes the
-// connection and writes its 101 answer on it in one write, reading no header of the writer's, and
-// ygo passes it none of its own; so the connection this Hijack hands out adds the line to that
-// first write, right after its status line. Every other answer carries the header the ordinary
-// way (ServeHTTP sets it).
-type processHeaderWriter struct {
-	http.ResponseWriter
-	line []byte
-}
-
-func (w *processHeaderWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	hijacker, ok := w.ResponseWriter.(http.Hijacker)
-	if !ok {
-		return nil, nil, http.ErrNotSupported
-	}
-	conn, buffered, err := hijacker.Hijack()
-	if err != nil {
-		return nil, nil, err
-	}
-	return &processHeaderConn{Conn: conn, line: w.line}, buffered, nil
-}
-
-// Unwrap gives http.ResponseController the writer underneath.
-func (w *processHeaderWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
-
-// processHeaderConn is a hijacked connection whose first write, the upgrade's answer, gains line
-// after its status line. line is cleared by that write, which the upgrade makes before it hands
-// the connection to any other goroutine, so every later write passes straight through.
-type processHeaderConn struct {
-	net.Conn
-	line []byte
-}
-
-func (c *processHeaderConn) Write(p []byte) (int, error) {
-	line := c.line
-	if line == nil {
-		return c.Conn.Write(p)
-	}
-	c.line = nil
-	status := bytes.Index(p, []byte("\r\n"))
-	if status < 0 || !bytes.HasPrefix(p, []byte("HTTP/1.1 101 ")) {
-		return c.Conn.Write(p)
-	}
-	status += len("\r\n")
-	answer := make([]byte, 0, len(p)+len(line))
-	answer = append(answer, p[:status]...)
-	answer = append(answer, line...)
-	answer = append(answer, p[status:]...)
-	written, err := c.Conn.Write(answer)
-	// What was written, counted in p's bytes.
-	switch {
-	case written <= status:
-	case written < status+len(line):
-		written = status
-	default:
-		written -= len(line)
-	}
-	return written, err
-}
-
-func (s *Service) authorize(r *http.Request) (websocket.ConnectionConfig, bool) {
-	actor, err := s.requestActor(r)
-	if err != nil {
-		return websocket.ConnectionConfig{}, false
-	}
-	room := r.PathValue("room")
-	if room == "" {
-		room = path.Base(r.URL.Path)
-	}
-	if !s.canAddConnection() {
-		return websocket.ConnectionConfig{}, false
-	}
-	if s.roomFailure(room) != nil {
-		return websocket.ConnectionConfig{}, false
-	}
-	open, err := s.issueOpen(r.Context(), s.queryFrom(r.Context()), room)
-	if err != nil {
-		return websocket.ConnectionConfig{}, false
-	}
-	connection, _ := r.Context().Value(connectionContextKey{}).(*connectionState)
-	if connection == nil {
-		return websocket.ConnectionConfig{}, false
-	}
-	connection.room = room
-	connection.id = s.nextConnection.Add(1)
-	connection.actor = actor
-	connection.added = true
-	s.addConnection(room, connection.id, actor)
-	// A reader joining a room already resident here asks the other processes for their readers'
-	// awareness, so their cursors reach it at once; a room this join has yet to load asks once its
-	// load finishes (awarenessRelay.RoomActivated), and the connection registered above is what
-	// lets the answers in (holdsRoomForReaders).
-	if s.srv.GetDoc(room) != nil {
-		s.awarenessRelay.query(room)
-	}
-	return websocket.ConnectionConfig{
-		ReadOnly: schemaReadOnly(open, r.URL.Query().Get("schema_version")),
-	}, true
-}
-
-func schemaReadOnly(open bool, clientSchemaVersion string) bool {
-	return !open || clientSchemaVersion != fmt.Sprintf("%d", pmdoc.SchemaVersion())
-}
-
-// authorizeSchemaVersion confirms the existing HTTP-authorized connection's schema admission
-// through Hocuspocus's authenticated scope, which is the provider's client-visible signal.
-func (s *Service) authorizeSchemaVersion(room, clientSchemaVersion string) (websocket.ConnectionConfig, error) {
-	open, err := s.issueOpen(context.Background(), s.queryFrom(context.Background()), room)
-	if err != nil {
-		return websocket.ConnectionConfig{}, err
-	}
-	return websocket.ConnectionConfig{ReadOnly: schemaReadOnly(open, clientSchemaVersion)}, nil
-}
-
-// requestActor is the person a document connection is: the identity service's answer, and nothing
-// else. The socket once took the shared agent token too, with the session named in a header the
-// caller wrote; that was a second, weaker door into Dispatch, and only the browser - a same-origin
-// cookie - ever connected through it (INFRA-264).
-func (s *Service) requestActor(r *http.Request) (model.Actor, error) {
-	if s.identity == nil {
-		return model.Actor{}, errors.New("document identity required")
-	}
-	login, err := s.identity.Login(r)
-	if err != nil {
-		return model.Actor{}, err
-	}
-	accesslog.Note(r.Context(), accesslog.KindUser, login)
-	return model.Actor{Kind: "user", ID: login}, nil
-}
-
 // refuseIfRebuilding refuses a room's load or injection while a rebuild's transaction holds it.
 func (s *Service) refuseIfRebuilding(room string) error {
 	if _, rebuilding := s.rebuilding.Load(room); rebuilding {
@@ -857,6 +504,18 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 		taken.slot.release()
 		return err
 	}
+	// The room counts among the resident rooms, and holds its place under the room cap
+	// (reserveRoom), from here until ygo's OnUnloadDocument (releaseUnloadedRoom), unless this
+	// load fails: ygo then drops the room with no OnUnloadDocument, so the load takes its own count
+	// back. The token the count answers with is this load's own: the bytes counted against it are
+	// taken back when an unload of the name ends it, or by this load's own failure (residentLoad).
+	counted := s.roomLoaded(room)
+	resident := false
+	defer func() {
+		if !resident {
+			s.roomUnloaded(room, counted)
+		}
+	}()
 	// The state is decoded into the room's own document here rather than through ygo (LoadDoc),
 	// before anything reads or observes the document (bootstrapLoadedState). It is the last thing
 	// the load's slot covers, so the slot is given back as soon as it returns: the reads below
@@ -883,9 +542,18 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 	if err != nil {
 		return err
 	}
-	open, err := s.issueOpen(ctx, rooms, room)
-	if err != nil {
-		return err
+	// The room's browser updates are stored on the room-appends pool, which opens a connection
+	// beside this load when it holds none, so the room's first batch dials none (warmRoomAppends).
+	s.warmRoomAppends()
+	// The issue is read once per room load. A cold socket's admission, which holds the room's state
+	// while its load runs, has read it and recorded it there, as has a close or reopen of the issue
+	// since (admittedIssueRead); a load no admission holds - a settlement's warm-up, a committed
+	// write's publish - reads it here.
+	issue, admitted := s.admittedIssueRead(room)
+	if !admitted {
+		if issue, err = s.readIssue(ctx, rooms, room); err != nil {
+			return err
+		}
 	}
 	// The load takes no advisory lock, which a durable writer can hold for as long as its
 	// transaction runs: the row it reads is written whole by each writer's transaction, so a
@@ -904,29 +572,52 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 	// since nothing from here to OpenUpdateLog hands the document to anything, and a replica the
 	// load hands no copy takes this rendering for the base its first run starts from
 	// (renderedReplica.start). It is also the room's first measurement, which the peer update
-	// hook weighs the room's first update against and the room budget charges the load by.
-	var rendering *replicaRendering
-	tree, err := treeOf(doc)
-	if err == nil {
-		rendered := &replicaRendering{}
-		rendered.markdown, _, rendered.layout, err = documentRenderingWithLayout(tree)
-		if err == nil {
-			rendering = rendered
+	// hook weighs the room's first update against and the room budget charges the load by. A load
+	// that took a cold socket's preload takes the tree and the rendering that socket's admission
+	// made of the same state, found inside the schema (roomLoad.takeLoaded), so the document is
+	// rendered once.
+	var size int
+	var rendered admissionRendering
+	if value, ok := s.roomLoads.Load(room); ok {
+		size, rendered = value.(*roomLoad).takeLoaded()
+	}
+	var renderErr error
+	if rendered.tree == nil || rendered.rendering == nil {
+		rendered.tree, renderErr = treeOf(doc)
+		if renderErr == nil {
+			if s.admissionRendered != nil {
+				s.admissionRendered(room)
+			}
+			rendered.rendering, renderErr = replicaRenderingOf(rendered.tree)
 		}
 	}
 	var askBlocks map[string]struct{}
 	switch {
-	case errors.Is(err, ErrDocOutsideSchema):
-		slog.Warn("dispatch: loaded document outside Proof schema; a replacement from markdown repairs it", "room", room, "error", err)
-	case err != nil:
-		return err
+	case errors.Is(renderErr, ErrDocOutsideSchema):
+		slog.Warn("dispatch: loaded document outside Proof schema; a replacement from markdown repairs it", "room", room, "error", renderErr)
+	case renderErr != nil:
+		return renderErr
 	default:
-		askBlocks = askBlockIDs(tree)
+		askBlocks = askBlockIDs(rendered.tree)
 	}
+	// The history this load decoded counts as resident against this load's own token, so the
+	// unload that ends the token takes those bytes back wherever the room's record has gone by then
+	// (countResidentBytes).
+	s.countResidentBytes(counted, int64(size))
 	// The room this load publishes holds the state it takes from here until ygo retires it
-	// (releaseIfUnusedLocked).
+	// (releaseIfUnusedLocked). The issue's state is the newest the record holds, this load's read
+	// or a close recorded after it began.
 	state := s.lockState(room)
-	state.closed = !open
+	state.recordIssueLocked(issue)
+	open := !state.closed
+	// The room has counted itself loaded here since roomLoaded, above, and stays counted until its
+	// unload (roomLoadedHere), so a socket's admission offers it no preload from then on
+	// (offerPreload). An offer that checked before that count and has stored its preload is under
+	// the room's name now, and it is not this load's - LoadDoc's takePreload ran before any of this
+	// - so it is one no load of this room will ever use, and it is taken out here, under the room's
+	// record that the offer stored it under, rather than left for the socket that offered it to
+	// withdraw hours later.
+	s.preloads.Delete(room)
 	// The ask blocks the room loaded with are the baseline its update observer tells new ones by.
 	// They were not introduced by any update the observer sees, so none gains an author here: a
 	// settlement finds the author of one no ask indexes yet where its writer recorded it, in
@@ -992,8 +683,10 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 	// The log is opened before the observer is registered and before ygo hands the room to anyone
 	// (above), so it holds every transaction the room commits from here on, in commit order, and
 	// the copy is the room as the log's first transaction finds it, which the rendering above is
-	// of.
-	replica := s.keepReplica(doc, doc.OpenUpdateLog(), rendering, loaded.doc)
+	// of. The replica's verdict starts as this load's rendering said, and the observer's renders
+	// move it on from the first update (renderedReplica.verdict).
+	replica := s.keepReplica(doc, doc.OpenUpdateLog(), rendered.rendering, loaded.doc)
+	replica.recordVerdict(renderErr)
 	replica.scans.rescanned(loaded.scans)
 	// The room's charge in the room budget is the bytes of the stored state this load decoded,
 	// at both copies (roomCopies, roomWeight): the room's own document and the replica's copy
@@ -1002,7 +695,7 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 	// (renderedReplica.chargeAdded), and a compaction that folds the room's whole stored history
 	// re-bases it (rebaseRoomState).
 	s.chargeLoadedRoom(room, replica, stateBytes)
-	instance := s.keepInstance(room, doc)
+	instance := s.keepInstance(room, doc, counted)
 	replica.classify = func(logged crdt.LoggedUpdate, seq uint64, contentChanged bool, asks func() map[string]struct{}) (bool, bool, bool) {
 		return s.classifyDrained(room, instance, logged, seq, contentChanged, asks)
 	}
@@ -1054,9 +747,7 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 			s.observeRoomUpdates(room, replica)
 		}
 	})
-	// A socket admitted while this load ran left its preload after this load's LoadDoc took
-	// whatever stood there, and joins the room this load makes, so no load takes it.
-	s.dropPreload(room)
+	resident = true
 	return nil
 }
 
@@ -1176,9 +867,11 @@ func (s *Service) storeParked(room string) {
 //
 // The cursor is the instance's, taken here rather than looked up when the update reaches the
 // store: a room evicted and reloaded in between is a different instance, which did not take this
-// update and must not be recorded as holding the version it is stored at. An update only the room
-// holds is listed on the instance as unstored (roomInstance.unstored) as it is classified, so a
-// room query of another process can answer with it (unstoredShare).
+// update and must not be recorded as holding the version it is stored at. The instance's resident
+// token is taken with it, so the update's bytes count against the load that committed it
+// (queueUpdateClass). An update only the room holds is listed on the instance as unstored
+// (roomInstance.unstored) as it is classified, so a room query of another process can answer with
+// it (unstoredShare).
 func (s *Service) classifyDrained(room string, instance *roomInstance, logged crdt.LoggedUpdate, seq uint64, contentChanged bool, asks func() map[string]struct{}) (settles, changed, local bool) {
 	origin, published := logged.Origin.(*liveWriteOrigin)
 	_, remote := logged.Origin.(*remoteUpdateOrigin)
@@ -1190,7 +883,13 @@ func (s *Service) classifyDrained(room string, instance *roomInstance, logged cr
 	if len(logged.Parked) > 0 && bytes.Equal(logged.Update, emptyUpdateV1) {
 		return false, false, false
 	}
-	class := documentUpdateClass{seq: seq, contentChanged: contentChanged, cursor: &instance.cursor, observed: time.Now()}
+	class := documentUpdateClass{
+		seq:            seq,
+		contentChanged: contentChanged,
+		cursor:         &instance.cursor,
+		resident:       instance.resident,
+		observed:       time.Now(),
+	}
 	if _, identityRepair := logged.Origin.(*identityClosureOrigin); identityRepair {
 		// A repair's writer appends its update in its own transaction, under the document's
 		// advisory lock it holds while the room takes the update, so the class is queued stored:
@@ -1331,7 +1030,7 @@ func (s *Service) originCreditsNoOne(origin any) bool {
 // on a single peer and no older actor may stand in for it.
 //
 // The credit goes to F, the room's in-flight credits, until the edit's append lands it
-// (AppendUpdateWithCredit): the returned UpdateCredit is how that append reaches it, and how
+// (AppendUpdatesWithCredit): the returned UpdateCredit is how that append reaches it, and how
 // askAuthors, the authors of the ask blocks the edit's render first showed (observeAskBlocks),
 // reach the durable record in the same append. This takes no advisory lock and touches no
 // database: nothing reads F without holding state.mu.
@@ -1382,29 +1081,33 @@ func connectedCreditLocked(state *roomState) *inflightCredit {
 	return record
 }
 
-// addConnection registers a browser connected to room. It is credited only with browser edits
-// observed while it is connected (creditContentChange), never for connecting or for an agent's
-// edit.
-func (s *Service) addConnection(room string, id uint64, actor model.Actor) {
-	state := s.lockState(room)
+// registerConnectionLocked registers a browser connected to the room whose state is state, which
+// the caller holds locked. It is credited only with browser edits observed while it is connected
+// (creditContentChange), never for connecting or for an agent's edit. It counts nothing: the
+// browser's count (connections) is the place under the connection cap reserveConnection took for
+// it before, which removeConnection gives back as it forgets the browser. authorize registers each
+// document socket's browser through it.
+func (s *Service) registerConnectionLocked(state *roomState, id uint64, actor model.Actor) {
 	state.connected[id] = actor
 	forgetMarkAuthorDeparture(state, actor)
-	s.unlockState(room, state)
 }
 
 // removeConnection forgets a browser that left room, and with the last one, once ygo has retired
 // the room, the room's state (releaseIfUnusedLocked). A document without state has none to forget.
-// The departure of the last browser of an actor is when the unrecorded marks that actor wrote
-// start to age (sweepUnrecordedMarks).
+// The service's count of connections drops only for an id the record held: a failed room's
+// browsers are found on the record that replaced it (handOverFailedRoomLocked), so each leaves
+// the count once. The departure of the last browser of an actor is when the unrecorded marks that
+// actor wrote start to age (sweepUnrecordedMarks).
 func (s *Service) removeConnection(room string, id uint64) {
 	state := s.lockExistingState(room)
 	if state == nil {
 		return
 	}
 	actor, registered := state.connected[id]
-	delete(state.connected, id)
 	delete(state.departedPeers, id)
 	if registered {
+		delete(state.connected, id)
+		s.connections.Add(-1)
 		recordMarkAuthorDeparture(state, actor, s.now())
 	}
 	s.unlockState(room, state)

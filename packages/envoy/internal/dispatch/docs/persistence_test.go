@@ -25,7 +25,7 @@ import (
 //
 // The package's tests run in one process, and many of them drive a room's load from inside a
 // write's fork read, through a hook of the service's (afterForkRead) or a store that loads the
-// room inside the read it answers (roomDuringColdReadStore): a nesting no pod makes, where a
+// room inside the read it answers (insideFirstLoadStore): a nesting no pod makes, where a
 // browser's load is a goroutine of its own that simply waits for the write's fork to be dropped.
 // A write holds a slot of the pod's load concurrency for its fork's whole life (loadSlots), and
 // at the calibration the pod has one (MemoryBounds.LoadSlots), which such a nesting would

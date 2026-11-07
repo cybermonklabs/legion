@@ -28,6 +28,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -35,6 +36,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -124,42 +126,50 @@ func Main(m *testing.M) int {
 	return code
 }
 
+// dropWindow and dropPause bound the plain drop's retry: how long a drop is tried again while
+// Postgres says the database is still in use, and the wait between tries.
+const (
+	dropWindow = 15 * time.Second
+	dropPause  = 200 * time.Millisecond
+)
+
 // dropDatabase drops name without waiting for it; Main waits for every drop. Drops in flight
 // together share one checkpoint.
 //
-// It retries, because the drop races the backends of the pools the test closed. `with (force)`
-// terminates whatever is still connected, and a role without pg_signal_backend is refused that
-// by the server ("permission denied to terminate process") rather than told the database is
-// busy: measured on this repository's own pod, where the test role holds no such grant and 13
-// of a package's databases would not drop while every test in it passed. A backend the pool
-// closed is reaped within milliseconds, so the plain drop a moment later succeeds; the force is
-// kept for the first attempt, where it is the fastest answer for a role that may terminate.
+// `with (force)` terminates whatever is still connected, which needs pg_signal_backend: a login
+// that is only the database's owner is refused `permission denied to terminate process`. The
+// test's own pool is closed before this runs (Open's cleanups are LIFO), but Postgres tears a
+// backend down after the client has closed its socket, so a drop that lands inside that window
+// finds a connection and, without that right, cannot clear it. So the drop is tried plainly
+// and tried again while Postgres answers SQLSTATE 55006 (object_in_use), the code it gives
+// whatever words it puts on the message, up to dropWindow; `force` is the last attempt, for a
+// connection that really is somebody else's.
 func dropDatabase(name string) {
 	shared.drops.Go(func() {
+		deadline := time.Now().Add(dropWindow)
 		var err error
-		for attempt := range dropAttempts {
-			statement := "drop database " + name
-			if attempt == 0 {
-				statement += " with (force)"
-			}
-			if _, err = shared.admin.Exec(context.Background(), statement); err == nil {
+		for {
+			if _, err = shared.admin.Exec(context.Background(), "drop database "+name); err == nil {
 				return
 			}
-			time.Sleep(dropRetryWait)
+			var pgError *pgconn.PgError
+			if !errors.As(err, &pgError) || pgError.Code != "55006" || time.Now().After(deadline) {
+				break
+			}
+			time.Sleep(dropPause)
 		}
+		_, forced := shared.admin.Exec(context.Background(), "drop database "+name+" with (force)")
+		if forced == nil {
+			return
+		}
+		// The forced drop is what ended the cleanup, so its error is the one reported; the
+		// plain drop's says what the force was for.
 		shared.dropMu.Lock()
-		shared.dropFails = append(shared.dropFails, fmt.Sprintf("drop isolated database %s: %v", name, err))
+		shared.dropFails = append(shared.dropFails,
+			fmt.Sprintf("drop isolated database %s: %v, after the plain drop answered: %v", name, forced, err))
 		shared.dropMu.Unlock()
 	})
 }
-
-// dropAttempts and dropRetryWait bound dropDatabase's wait for the backends of a closed pool to
-// be reaped: ten attempts a quarter of a second apart, so a drop waits at most about 2.5 s and
-// every isolated database of a package drops in parallel.
-const (
-	dropAttempts  = 10
-	dropRetryWait = 250 * time.Millisecond
-)
 
 // prepare opens the admin pool and migrates the template every Open clones.
 func prepare(raw string) error {

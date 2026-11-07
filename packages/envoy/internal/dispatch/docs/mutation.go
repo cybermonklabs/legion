@@ -17,6 +17,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/crdt"
+	"github.com/reearth/ygo/persistence"
 	"github.com/reearth/ygo/provider/websocket"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -322,7 +323,7 @@ func (s *Service) applyLive(ctx context.Context, artifactID string, actor model.
 	}
 	// A write whose transactions changed nothing made no update and writes nothing. Appended, an
 	// empty update would refresh the anchors and mark the document owing a settlement again
-	// (markUpdateOwed), which every repair pass over a closed issue would then sweep.
+	// (updateOwedStatement), which every repair pass over a closed issue would then sweep.
 	if len(op.updates) == 0 {
 		return websocket.ErrNoChanges
 	}
@@ -971,17 +972,18 @@ func (s *Service) heldTree(ctx context.Context, artifactID string) (tree *pmdoc.
 }
 
 // loadTree is the tree of the document a socket's admission check reads (heldTree, else the stored
-// document decoded), with the durable state it read and that decode (loadDecodedHistory): the copy
-// and what its conflict scans passed, which the room's load takes for its scan total and its
-// replica (preloadedDocument, LoadDoc), so the admission's decode is the load's own. The preload is
-// nil when this server holds the document. A durable history that does not decode is
-// ErrDocumentUnloadable and fails the room, as ygo's own load of it would.
+// document decoded), with the durable state it read (loadDecodedHistory), which the room's load
+// takes in place of reading the store again (offerPreload, takePreload). The state is nil when
+// this server holds the document. A durable history that does not decode is ErrDocumentUnloadable
+// and fails the room, as ygo's own load of it would.
 //
 // The read's fold, when the history holds several updates, and the decode run under one slot of
 // the pod's load concurrency (loadSlots), whose wait ends with ctx, the socket's request: one
-// that ends first answers ctx's error and holds no slot. The slot is given back once the copy
-// is the preload's, and before the room fails, whose eviction can wait.
-func (s *Service) loadTree(ctx context.Context, artifactID string) (*pmdoc.Node, *preloadedDocument, error) {
+// that ends first answers ctx's error and holds no slot. The copy this decode made is the
+// admission's own: it answers the schema check and is dropped here, and the room's load decodes
+// the same state once more for its replica and its scan total (LoadDoc, decodeStoredCopy). The
+// slot is given back before the room fails, whose eviction can wait.
+func (s *Service) loadTree(ctx context.Context, artifactID string) (*pmdoc.Node, *persistence.LoadResult, error) {
 	tree, held, err := s.heldTree(ctx, artifactID)
 	if err != nil || held {
 		return tree, nil, err
@@ -1001,10 +1003,10 @@ func (s *Service) loadTree(ctx context.Context, artifactID string) (*pmdoc.Node,
 		return nil, nil, fmt.Errorf("%w: decode live document: %w", ErrDocumentUnloadable, history.refused)
 	}
 	if len(history.loaded.Update) == 0 {
-		return nil, &preloadedDocument{loaded: history.loaded}, nil
+		return nil, &history.loaded, nil
 	}
 	tree, err = treeOf(history.decoded.doc)
-	return tree, &preloadedDocument{loaded: history.loaded, decoded: history.decoded}, err
+	return tree, &history.loaded, err
 }
 
 func renderTokenTree(tree *pmdoc.Node) (string, string, error) {
