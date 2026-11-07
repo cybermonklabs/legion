@@ -723,6 +723,54 @@ check "exits 1" "$(is "$status" 1)"
 check "names the file" "$(contains "$out" 'this file is not valid YAML')"
 check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
 
+# A step's own budget must be larger than the attempts it allows, not equal to them. Measured in
+# run 42386541065's download-retry job, where `Read the run's artifact list under the stalling
+# fault` carries `timeout-minutes: 5` against its own arithmetic of 5 x 30 + 150 = 300 s: the
+# fifth attempt ended at 300.03 s and the runner killed the step in the same tenth of a second
+# (`the run's artifact list: attempt 5 of 5 reached its 30s bound` at 17:22:16.7444966Z, then
+# `The action 'Read the run's artifact list under the stalling fault' has timed out after 5
+# minutes.` at 17:22:16.7483230Z). The helper's own `::error::` line won that race by four
+# milliseconds; a run whose attempts drift later loses it, and the job then reports a timeout
+# rather than the download that failed, which is the diagnosis this change exists to give.
+echo "case: a step whose own timeout-minutes is no larger than the attempts it allows"
+root=$(fixture budget-no-headroom)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Read the run's artifact list
+        timeout-minutes: 5
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the run's artifact list" 30 -- gh api "repos/$GITHUB_REPOSITORY/actions/runs/1/artifacts"
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the step" "$(contains "$out" "Read the run's artifact list")"
+check "names the budget" "$(contains "$out" 'timeout-minutes')"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+
+echo "case: the same step with a budget above its attempts passes"
+root=$(fixture budget-headroom)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Read the run's artifact list
+        timeout-minutes: 6
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the run's artifact list" 30 -- gh api "repos/$GITHUB_REPOSITORY/actions/runs/1/artifacts"
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
 echo "case: an argument this check does not take"
 root=$(fixture bad-argument)
 run_check "$root" --everything
