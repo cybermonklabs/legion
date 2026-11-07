@@ -245,10 +245,26 @@ func pendingID(p *Delivery) string {
 // next run, retrying on its backoff, is what releases it, and the refusal that start is answered
 // with is over once the architect's turn on the held task has ended and the delivery retired.
 //
+// A pending delivery whose task the worker has already taken refuses nothing: the turn took it
+// (confirm writes ConfirmedAt), so there is no task left to give and the delivery is only the
+// record of the turn in flight. Such a delivery is retired here and the newer task queued in its
+// place. Refusing it instead is what left three supervise rows of the live daemon answered "a
+// delivery is already pending" with nothing ever sent (dispatch://INFRA-1352, INFRA-1443,
+// INFRA-1519): the phase's own start was the newer task, and the worker that would have taken it
+// was holding a delivery it had finished with. The newer task is not sent into the running turn —
+// queue sends nothing, and sendPending hands a working claim nothing — so it goes at the next
+// point a turn may take it, once, and no turn is interrupted or started twice.
+//
+// An untaken pending delivery still refuses a second one, as it always has: that task has reached
+// nobody, so accepting over it would lose a task rather than save one. So does a taken one when
+// the newer task is an update round's own ask (updateRoundOf): that ask exists to catch the
+// worker between turns, with its work pushed, so it waits for the turn in flight to end rather
+// than taking its place, and its post is re-made at the next tick (askForUpdate, which swallows
+// this refusal). Only the work of the issue displaces work the worker has finished with.
+//
 // Of a task an operator gave the claim, which carries no id of its own and no outbox row
 // (operatorDelivery), neither thing accepted above can be true, so the refusal below is exactly
-// a claim that holds a pending delivery. That is the condition runParkedLaunchNow reads before
-// it runs a parked launch for such a task, so nothing runs for one this refuses.
+// a claim that holds a pending delivery its worker has not finished with.
 func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 	id, task := request.ID, request.Task
 	delivered := request.Row > 0 && slices.Contains(m.claim.DeliveredRows, request.Row)
@@ -256,10 +272,18 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 		if (id != "" && pending.ID == id && pending.Task == task) || delivered {
 			return nil
 		}
-		if err := m.sendPending(ctx); err != nil {
+		_, asksUpdate := updateRoundOf(id)
+		if pending.ConfirmedAt.IsZero() || asksUpdate {
+			if err := m.sendPending(ctx); err != nil {
+				return err
+			}
+			return &RefusedError{State: m.claim.State, Request: "deliver", Err: ErrDeliveryPending}
+		}
+		m.log.Info("supervise: the pending task was taken by a turn, so the newer task takes its place",
+			"taken", pending.ID, "delivery", id, "phase", string(request.Phase), "generation", request.Generation)
+		if err := m.retirePending(ctx); err != nil {
 			return err
 		}
-		return &RefusedError{State: m.claim.State, Request: "deliver", Err: ErrDeliveryPending}
 	}
 	if delivered {
 		m.log.Info("supervise: the row's task was already given; not queued again", "row", request.Row, "delivery", id)

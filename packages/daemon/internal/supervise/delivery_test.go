@@ -165,13 +165,23 @@ func TestATaskGivenBeforeReadyWaitsForReady(t *testing.T) {
 	}
 }
 
-// A second delivery is refused for the delivery the claim already holds, whatever its state: the
-// refusal is ErrDeliveryPending, and it says so rather than naming the state.
+// A second delivery is refused for an untaken delivery the claim already holds, whatever its
+// state: that task has reached nobody, so accepting over it would lose a task. The refusal is
+// ErrDeliveryPending, and it says so rather than naming the state.
+//
+// This test read StateWorking until dispatch://INFRA-714 — the state where the claim's own task
+// has been taken by a turn — and so pinned the refusal this change ends
+// (TestANewerTaskTakesThePlaceOfOneATurnHasTaken, below). It reaches ready with a task queued and
+// unsent instead, which is the untaken state itself.
 func TestASecondDeliveryWhileOneIsPendingIsRefused(t *testing.T) {
 	h := newHarness(t)
-	h.reach(StateWorking)
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: testToken, Task: "implement the plan", ID: "row-1"})
+	if !h.pending().ConfirmedAt.IsZero() {
+		t.Fatalf("the pending delivery at ready is confirmed %+v, want the untaken task this test is about", h.pending())
+	}
 
-	err := h.handle(RequestDeliver{Claim: testToken, Task: "another"})
+	err := h.handle(RequestDeliver{Claim: testToken, Task: "another", ID: "row-2"})
 
 	var refused *RefusedError
 	if !errors.As(err, &refused) || !errors.Is(err, ErrDeliveryPending) || err.Error() != "deliver refused: a delivery is already pending" {
@@ -179,6 +189,38 @@ func TestASecondDeliveryWhileOneIsPendingIsRefused(t *testing.T) {
 	}
 	if h.pending().Task != "implement the plan" {
 		t.Errorf("pending %+v, want the first task kept", h.pending())
+	}
+}
+
+// A delivery whose task a turn has taken holds nothing back: the worker read it, and what the
+// delivery records is the turn in flight. A newer task takes its place — the phase's own next
+// start, which the daemon queues while that turn runs — and it is sent at the next point a turn
+// may take it, not into the running one. Refusing it instead left three supervise rows of the
+// live daemon answered "a delivery is already pending" with nothing ever sent and the phase
+// waiting on a worker that had finished (dispatch://INFRA-1352, INFRA-1443, INFRA-1519).
+func TestANewerTaskTakesThePlaceOfOneATurnHasTaken(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateWorking)
+	if h.pending().ConfirmedAt.IsZero() {
+		t.Fatalf("the pending delivery at working is %+v, want the task this turn took", h.pending())
+	}
+	sentBefore := len(h.prompts())
+
+	h.must(RequestDeliver{Claim: testToken, Task: "the newer phase start", ID: "row-2", Generation: 8})
+
+	if got := h.pending(); got.Task != "the newer phase start" || got.Generation != 8 {
+		t.Fatalf("pending %+v, want the newer task in the taken one's place", got)
+	}
+	if sent := len(h.prompts()); sent != sentBefore {
+		t.Fatalf("%d prompts while the turn runs, want the %d sent before it: the newer task waits for a turn that can take it",
+			sent, sentBefore)
+	}
+
+	h.must(StreamTurnEnd{Claim: testToken})
+
+	sent := h.prompts()
+	if len(sent) != sentBefore+1 || sent[len(sent)-1].Message != "the newer phase start" {
+		t.Fatalf("prompts %+v, want the newer task sent once at the turn's end", sent)
 	}
 }
 
