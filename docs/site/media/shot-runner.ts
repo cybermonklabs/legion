@@ -85,8 +85,19 @@ async function recordTimeElements(
   // is written, so a scan spread over one round trip per attribute could record text the PNG
   // does not hold, which is the one thing the file exists to be right about. An `evaluate` runs
   // as a single JS task, so no text, box or node identity moves inside it.
-  const { ratio, elements: times } = await page.evaluate(() => ({
+  const {
+    ratio,
+    pageText,
+    elements: times,
+  } = await page.evaluate(() => ({
     ratio: window.devicePixelRatio,
+    // Every word the page showed, beside the time elements, because a `<time>` is not the only
+    // thing on these pages a run can render differently: a pair of runs of one commit was
+    // measured differing in five images whose every `<time>` carried the same text, three of
+    // them on pages holding no `<time>` at all (runs 42405578277 attempts 1 and 2). With this,
+    // a reader of two runs can say whether a difference is text that moved or the same text
+    // drawn differently, and only the second is what a changed font looks like.
+    pageText: document.body.innerText,
     // `getBoundingClientRect()` answers a zero box for an element with no box at all, where
     // Playwright's own `boundingBox()` answers null; `getClientRects()` is what tells the two
     // apart, and a reader of this file needs that difference kept. `querySelectorAll` sees the
@@ -124,6 +135,7 @@ async function recordTimeElements(
         devicePixelRatio: ratio,
         origin,
         elements,
+        pageText,
       },
       null,
       2
