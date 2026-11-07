@@ -629,9 +629,10 @@ What each part is for:
   the controller as well.
 
   A role the file leaves out runs on twice its own worker's bound for a tool call no deadline
-  judges: 8 hours for an implementer and a reviewer, 2 for every other role and the controller,
-  so the worker acts first wherever it can act at all. The floor under any bound you set, that
-  default included, is a shorter number: the whole stall ladder that worker's plugin runs. The
+  judges — 8 hours for an implementer and a reviewer, 2 for every other role and the controller —
+  so the worker acts first wherever it can act at all, and never on less than the floor under any
+  bound you set: the whole stall ladder that worker's plugin runs, which on the shipped numbers is
+  the shorter of the two, and which a bound below about 35 minutes makes the default itself. The
   ladder is the longest one of its calls can legitimately run — the larger of that bound and the
   hour the host clamps a deadline a call declares for itself to — plus the grace over it and the
   two gaps between the plugin's three recovery steps. The loader refuses a bound below it, naming

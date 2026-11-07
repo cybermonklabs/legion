@@ -1457,12 +1457,13 @@ func toolStepped(m *Machine, ctx context.Context, ev Event) error {
 }
 
 // staleStep is whether a tool frame arrived on a connection that is no longer the claim's: the
-// claim has none, or the one it has was registered after the frame's. Both are frames of a dead
-// incarnation — the shim holds the newest thousand frames while no daemon is attached and
-// replays them on the next connection (internal/shim's outbox), and the stream's own queue can
-// hand a machine a frame of a connection that was replaced while the frame waited. Connections
-// are compared by the order they were registered in, as a replayed refusal is
-// (takesBackConfirmed): the order the machine handles their events in says nothing.
+// claim has none, or the one it has was registered after the frame's. Both are frames of a
+// replaced incarnation: the stream's own queue can hand a machine a frame of a connection that
+// was replaced while the frame waited. The shim's replay of the frames it held while no daemon
+// was attached is not one of them — it arrives on the next connection, which is the claim's live
+// one, so those frames are stamped at receipt (store's PutClaimStep). Connections are compared
+// by the order they were registered in, as a replayed refusal is (takesBackConfirmed): the order
+// the machine handles their events in says nothing.
 func (m *Machine) staleStep(s StreamToolStep) bool {
 	conn, connected := m.deps.Conns.Conn(m.claim.Token)
 	return !connected || s.ConnSequence < conn.Sequence()

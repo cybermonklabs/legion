@@ -322,15 +322,15 @@ func TestStallBackstopRefusals(t *testing.T) {
 
 // The reader takes a LEGION_STALL_CALL_BOUND_MS of up to maxStallMilliseconds, which it
 // documents as the largest number of milliseconds a time.Duration holds, so every value it
-// takes must carry through the two sums this package computes from it. It does not: the ladder
-// adds the grace and two step gaps to a bound already at the Duration's own ceiling, and
-// StallBackstopFor doubles that bound, so both wrap.
+// takes must carry through the two sums this package computes from it. Before 68c0726e it did
+// not: the ladder adds the grace and two step gaps to a bound already at the Duration's own
+// ceiling, and StallBackstopFor doubles that bound, so both wrapped.
 //
 // The wrap inverts the two things this key exists for. A negative ladder is a floor every named
 // bound clears, so the refusal that stops a daemon ending a turn its worker's plugin is still
 // recovering accepts any bound at all; and a negative default is a bound every claim's recorded
 // last step is already past, so the sweep would end the turn of every claim in one, at once,
-// for ever. Measured at this head: with the bound at the reader's own maximum the ladder is
+// for ever. Measured at 9714c8241407: with the bound at the reader's own maximum the ladder is
 // -2562047h38m16.855551616s and the default backstop is -1.551616ms, and
 // `worker_stall_backstop_hours: {implementer: 0.5}` loads with `Config OK` (INFRA-1274, the
 // tester's round at 9714c8241407).

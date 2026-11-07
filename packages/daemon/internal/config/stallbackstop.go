@@ -271,10 +271,11 @@ func (c Config) StallLadderFor(role claim.Role) time.Duration {
 // every other role and the controller, on the shipped numbers.
 //
 // It is never below the floor every named bound must clear (StallLadderFor), which twice the
-// role's bound is only where a deployment has stretched the grace or the step gaps past the
-// bound itself: a default below that floor would have the daemon do the very thing the file is
-// refused for. 0 is the backstop off for that role, which only the file can ask for: no sweep
-// acts on a role whose bound is 0.
+// role's bound falls under wherever that bound is below about 35 minutes on the shipped grace
+// and gaps — the ladder starts from the hour a declared deadline may run — or where a deployment
+// has stretched the grace or the step gaps: a default below that floor would have the daemon do
+// the very thing the file is refused for. 0 is the backstop off for that role, which only the
+// file can ask for: no sweep acts on a role whose bound is 0.
 //
 // The doubling saturates (saturatingSum), as the ladder's own sum does: twice a bound at the
 // top of what the reader takes is past what a Duration holds, and a default wrapped negative is
