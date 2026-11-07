@@ -1,0 +1,131 @@
+name: probe apt fill
+# Throwaway probe for dispatch://INFRA-1066: does ci-caches.yaml's apt-debs job write the key
+# ci.yaml's dispatch job restores? The fill job below is that job's own text, and read-back is
+# ci.yaml's restore shape (same path, same key expression, no restore-keys).
+on:
+  push:
+    branches: [probe/infra1066-aptfill]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # The .deb files of the apt list ci.yaml's dispatch job installs before its browser suite,
+  # .github/playwright-apt-packages.txt: with their dependencies, 182 packages and 114 MB of
+  # archives, measured in job 128209099649 of cybermonklabs/legion#2888 at 5ff42456. That job
+  # seeds apt's archive directory from the entry and installs out of it, so a hit costs it no
+  # download at all; the family exists because that download is the one unbounded cost of its
+  # install step, the step whose whole retry budget is written for the case where the mirror is
+  # slow. The fill is here and not there because the save has to write the default branch's cache
+  # scope: a save on a pull request or in a merge group lands in that run's own scope, which the
+  # next pull request cannot read.
+  #
+  # ubuntu-24.04 because the key names ImageOS and ImageVersion: the entry holds the package
+  # versions that image's indexes resolve, so a fill from another image writes a key no dispatch
+  # run ever reads. No setup-bun and no setup-go either - the key script reads bun.lock as text,
+  # and apt needs neither - so the checkout is all this job sets up.
+  apt-debs:
+    runs-on: ubuntu-24.04
+    # The arithmetic, from the two readings ci.yaml's install step is bounded by: at 186 kB/s,
+    # the slowest package download a green dispatch job of its window met (job 127238648049),
+    # the list's 114 MB need 613 s, and at 233 kB/s, the slowest `apt-get update` of that window
+    # (job 127357441704), the 13.0 MB of indexes need 56 s. Copying the archives out of apt's
+    # directory took 1.1 s in job 128209099649. Uploading the 114 MB entry has no reading yet
+    # and is estimated at 120 s. 613 + 56 + 1.1 + 120 = 790 s, rounded up to 20 min. The apt
+    # calls below carry no bound and no second origin of their own, unlike the install step's:
+    # a fill that meets a slower mirror than those two ends on this budget, and the next push
+    # to main fills the family again.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The very script ci.yaml's dispatch job computes the key with, so the save below writes
+      # the key that job's restore reads: a key that drifted would make every restore there miss
+      # and nothing would fail, the job just fetching the whole 114 MB set again on every run.
+      - id: apt-debs-key
+        name: Compute the apt archive cache key
+        run: |
+          key=$(.github/scripts/apt-archive-cache-key.sh)
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+
+      - id: apt-debs
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/apt-archives
+          key: ${{ steps.apt-debs-key.outputs.key }}
+          lookup-only: true
+
+      # The same file the dispatch job's install reads, with the same expression: its `#` header
+      # and its blank lines dropped, and $packages left unquoted on purpose, to split into words.
+      # `-d` downloads and unpacks nothing, which is all this job wants: it fills the directory
+      # that job seeds apt from, and installs none of it. gstreamer1.0-tools is not asked for
+      # here, as it is no name of the list and the key does not name it either.
+      - name: Download the .deb files the dispatch job's install needs
+        if: steps.apt-debs.outputs.cache-hit != 'true'
+        run: |
+          # The runner image preconfigures Google's chrome-stable apt source, whose index
+          # intermittently fails `apt-get update` with a hash-sum mismatch; the dispatch job's
+          # install drops it for that reason, and an update that fails here leaves the family
+          # empty until the next push.
+          grep -rl dl.google.com /etc/apt/sources.list.d | xargs -r sudo rm -f
+          packages=$(grep -vE '^[[:space:]]*(#|$)' .github/playwright-apt-packages.txt)
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends -d $packages
+          # apt's archive directory is root's and the cache action runs as the runner user, so
+          # the copies change hands, as the dispatch job's own keeping of them does it.
+          shopt -s nullglob
+          fetched=(/var/cache/apt/archives/*.deb)
+          shopt -u nullglob
+          # An entry is written once and never replaced, so an empty one would hold this key for
+          # as long as the Playwright pin and the image stand, and every dispatch run under it
+          # would restore nothing and fetch the whole set. A download that left no .deb file is
+          # therefore this job's failure, not an entry to save.
+          [ "${#fetched[@]}" -gt 0 ] || {
+            echo "::error::apt fetched no .deb file for the pinned list, so there is nothing to" \
+              "keep under this key; the entry is not written"
+            exit 1
+          }
+          mkdir -p "$HOME/apt-archives"
+          sudo cp "${fetched[@]}" "$HOME/apt-archives/"
+          sudo chown "$(id -u):$(id -g)" "$HOME"/apt-archives/*.deb
+          echo "apt archives: keeping ${#fetched[@]} .deb files"
+
+      - if: steps.apt-debs.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/apt-archives
+          key: ${{ steps.apt-debs-key.outputs.key }}
+
+  read-back:
+    needs: apt-debs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - id: apt-debs-key
+        name: Compute the apt archive cache key
+        run: |
+          key=$(.github/scripts/apt-archive-cache-key.sh)
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+
+      - id: apt-debs
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/apt-archives
+          key: ${{ steps.apt-debs-key.outputs.key }}
+
+      - name: Report what the restore gave
+        run: |
+          echo "PROBE key=${{ steps.apt-debs-key.outputs.key }}"
+          echo "PROBE cache-hit=${{ steps.apt-debs.outputs.cache-hit }}"
+          shopt -s nullglob
+          debs=("$HOME"/apt-archives/*.deb)
+          shopt -u nullglob
+          echo "PROBE debs=${#debs[@]}"
+          du -sh "$HOME/apt-archives" || true
