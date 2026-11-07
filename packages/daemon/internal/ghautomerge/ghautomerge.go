@@ -171,7 +171,12 @@ func Disarm(ctx context.Context, github githubrest.Client, repo ghrepo.Repositor
 // same refusal, and Submit returns it as *Refused. When that read fails, its error is returned,
 // the refusal as its context, so a rate limit it meets reaches the caller (githubrest.RetryAfter).
 // Any other failure, an HTTP or network one included, is returned as it is, for the row to retry.
-func Submit(ctx context.Context, github githubrest.Client, repo ghrepo.Repository, number int, head string, armed bool, keep Keep) (Outcome, error) {
+//
+// github is GitHub's GraphQL route, which the pull request is read and changed on, and logs the
+// same installation's repository REST base (githubrest.RepositoryAPI), which the log of a run
+// that failed in the merge queue is read under (removal): the removal a failing log belongs to
+// says what failed, and a log the daemon cannot read holds up nothing.
+func Submit(ctx context.Context, github, logs githubrest.Client, repo ghrepo.Repository, number int, head string, armed bool, keep Keep) (Outcome, error) {
 	answer, err := readRepository(ctx, github, repo, number)
 	if err != nil {
 		return "", err
@@ -197,7 +202,7 @@ func Submit(ctx context.Context, github githubrest.Client, repo ghrepo.Repositor
 	case pull.armed():
 		return "", pull.armedWait(repo, number, head)
 	case armed:
-		if err := removal(ctx, github, repo, number, head, pull.MergeStateStatus); err != nil {
+		if err := removal(ctx, github, logs, repo, number, head, pull.MergeStateStatus); err != nil {
 			return "", err
 		}
 	}
@@ -382,12 +387,16 @@ func (f *MergeFailed) Error() string {
 // or by GitHub on its own (ByGitHub), which names the App that submitted the merge as Actor of its
 // own disables (a merge method the repository blocks, a base switch). Reason is GitHub's reason: a
 // queue removal's, or an auto-merge disable's reason code, with Detail its sentence for it (none for
-// a queue removal). At is when it was made. The submission is over: the removal stands, and the row
-// ends rather than undo it.
+// a queue removal). At is when it was made. Runs names each check that failed on the commit the
+// queue built for a queue removal, with its run's URL and what its job's log says failed, from
+// the page of that commit's checks GitHub's timeline answer carried (removal); it is empty where
+// nothing failed, which is what a removal GitHub explains by itself usually leaves. The
+// submission is over: the removal stands, and the row ends rather than undo it.
 type Removed struct {
 	Number                      int
 	Head, Actor, Reason, Detail string
 	Queue, ByGitHub             bool
+	Runs                        []string
 	At                          time.Time
 }
 
@@ -405,7 +414,17 @@ func (r *Removed) Error() string {
 	default:
 		text = r.Actor + " " + text
 	}
-	return text + " without merging it: the daemon submits it no further, and the issue stays in awaiting_merge"
+	return text + " without merging it: the daemon submits it no further, and the issue stays in awaiting_merge" + r.failures()
+}
+
+// failures is what a removal's failing runs add to the sentence told of it, and nothing at all
+// where the commit the queue built for it failed no run, which is what a removal GitHub explains
+// by itself usually leaves.
+func (r *Removed) failures() string {
+	if len(r.Runs) == 0 {
+		return ""
+	}
+	return fmt.Sprintf(". These checks failed on the commit the queue built for it: %s", strings.Join(r.Runs, "; "))
 }
 
 // ConflictRemoval is the merge queue taking a pull request out at READY's head because the merge
@@ -415,7 +434,7 @@ func (r *Removed) Error() string {
 // UNKNOWN while one is). The two conflicts GitHub gives the one reason are told apart by that
 // state alone: a head that conflicts with the base itself reads DIRTY, where the merge is over
 // and the removal stands, and a head GitHub still merges cleanly conflicted with an entry ahead
-// of it in the queue, which no check failed on and which nothing in Legion would ever submit
+// of it in the queue, which usually failed no check and which nothing in Legion would ever submit
 // again. Deciding between them is the daemon's (its conflictRemoval), so this is deliberately no
 // *Removed and answers errors.As no *Removed either: the row's own rule that a *Removed ends the
 // row (the daemon's permanentRefusal) must not reach it. Ended is the ending the daemon chooses,
@@ -427,7 +446,7 @@ type ConflictRemoval struct {
 
 func (c *ConflictRemoval) Error() string {
 	return fmt.Sprintf("the merge queue took pull request #%d out at READY's head %s at %s (%s) while GitHub reports its merge state %s: the daemon decides by that state whether the head conflicts with the base itself or with an entry ahead of it in the queue",
-		c.Removal.Number, c.Removal.Head, c.Removal.At.UTC().Format(time.RFC3339), c.Removal.Reason, c.MergeState)
+		c.Removal.Number, c.Removal.Head, c.Removal.At.UTC().Format(time.RFC3339), c.Removal.Reason, c.MergeState) + c.Removal.failures()
 }
 
 // Ended is the removal as the end of the submission, for the daemon that decides the merge is

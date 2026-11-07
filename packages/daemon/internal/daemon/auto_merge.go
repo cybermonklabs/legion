@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -69,7 +70,7 @@ const conflictUnknownBound = 5 * time.Minute
 func (r *outbox) autoMergeDisable(ctx context.Context, row record.OutboxRow, payload record.AutoMergeDisable) error {
 	ctx, cancel := context.WithTimeout(ctx, autoMergeTimeout)
 	defer cancel()
-	github, repo, err := r.graphQL(ctx, row.Issue)
+	github, _, repo, err := r.graphQL(ctx, row.Issue)
 	if err != nil {
 		return err
 	}
@@ -112,7 +113,7 @@ func (r *outbox) autoMergeDisable(ctx context.Context, row record.OutboxRow, pay
 func (r *outbox) readyMerge(ctx context.Context, row record.OutboxRow, payload record.ReadyMerge) error {
 	ctx, cancel := context.WithTimeout(ctx, autoMergeTimeout)
 	defer cancel()
-	github, repo, err := r.graphQL(ctx, row.Issue)
+	github, logs, repo, err := r.graphQL(ctx, row.Issue)
 	if err != nil {
 		return err
 	}
@@ -125,13 +126,13 @@ func (r *outbox) readyMerge(ctx context.Context, row record.OutboxRow, payload r
 		}
 		return head, err
 	}
-	outcome, err := ghautomerge.Submit(ctx, github, repo, payload.Number, payload.Head, payload.Armed, keep)
+	outcome, err := ghautomerge.Submit(ctx, github, logs, repo, payload.Number, payload.Head, payload.Armed, keep)
 	// The queue's conflict removal is decided before the arms below, since what the row does with
 	// it — a further submission, a wait for GitHub's merge state, or the end of the row — is read
 	// off that decision's own answer, which those arms then handle as any other.
 	var conflicted *ghautomerge.ConflictRemoval
 	if errors.As(err, &conflicted) {
-		outcome, err = r.conflictRemoval(ctx, row, &payload, conflicted, github, repo, keep)
+		outcome, err = r.conflictRemoval(ctx, row, &payload, conflicted, github, logs, repo, keep)
 	}
 	var armed *ghautomerge.Armed
 	var failed *ghautomerge.MergeFailed
@@ -265,7 +266,7 @@ func (r *outbox) queueConflict(ctx context.Context, row record.OutboxRow, payloa
 // row. The entry is left where it is on every path: taking one out is the disarm's alone
 // (ghautomerge.Disarm).
 func (r *outbox) conflictRemoval(ctx context.Context, row record.OutboxRow, payload *record.ReadyMerge, conflict *ghautomerge.ConflictRemoval,
-	github githubrest.Client, repo ghrepo.Repository, keep ghautomerge.Keep) (ghautomerge.Outcome, error) {
+	github, logs githubrest.Client, repo ghrepo.Repository, keep ghautomerge.Keep) (ghautomerge.Outcome, error) {
 	now := r.now().UTC()
 	switch {
 	case payload.Resubmitted, conflict.MergeState == "DIRTY":
@@ -311,7 +312,7 @@ func (r *outbox) conflictRemoval(ctx context.Context, row record.OutboxRow, payl
 	}
 	r.log.Warn("outbox READY merge was taken out of the merge queue for a conflict GitHub's merge state leaves with an entry ahead of it; it is submitted once more",
 		"row", row.ID, "issue", row.Issue, "number", payload.Number, "head", payload.Head, "mergeState", conflict.MergeState, "removal", conflict.Error())
-	return ghautomerge.Submit(ctx, github, repo, payload.Number, payload.Head, false, keep)
+	return ghautomerge.Submit(ctx, github, logs, repo, payload.Number, payload.Head, false, keep)
 }
 
 // rememberWait records on row what its wait learned that its next run must know, and tells the
@@ -446,18 +447,28 @@ func readyMergeWaiting(payload record.ReadyMerge, waited time.Duration, cause er
 // request out for a conflict GitHub's merge state leaves with an entry ahead of it, and the row
 // submitted the merge once more (conflictRemoval): the removal GitHub recorded, the head it was
 // made at, and the submission the row has now spent on that head. It is written on the issue and
-// nowhere else: nothing has gone wrong and nothing is anyone's to do — no check failed, the issue
-// stays in awaiting_merge at the same head and the daemon submits it — so the architect's topic
-// is left alone, and the issue's own record carries why a second submission of the same head
-// stands on it.
+// nowhere else: nothing has gone wrong and nothing is anyone's to do — the issue stays in
+// awaiting_merge at the same head and the daemon submits it — so the architect's topic is left
+// alone, and the issue's own record carries why a second submission of the same head stands on
+// it. The commit the queue built for such a removal usually carries no failing run at all, which
+// the message says; one that does names each, with what its job's log says failed
+// (ghautomerge.Removed.Runs), so the tree reads the cause here rather than fetching a
+// merge-group log.
 func readyMergeResubmitted(payload record.ReadyMerge, conflict *ghautomerge.ConflictRemoval) record.MessagePost {
-	return record.MessagePost{Body: fmt.Sprintf("Legion submitted the merge of pull request #%d at READY's head %s once more: GitHub's merge queue took the pull request out at %s without merging it (%s), while GitHub reports its merge state %s. That merge state leaves the conflict with an entry ahead of it in the queue rather than with the base, and no check failed, so nothing else would ever submit this merge again. This is the one further submission this head gets: a second removal of it for a conflict ends the merge and tells the architect.",
-		payload.Number, payload.Head, conflict.Removal.At.UTC().Format(time.RFC3339), conflict.Removal.Reason, conflict.MergeState)}
+	checks := "and no check failed"
+	if runs := conflict.Removal.Runs; len(runs) > 0 {
+		checks = "while these checks failed on the commit the queue built for it: " + strings.Join(runs, "; ")
+	}
+	return record.MessagePost{Body: fmt.Sprintf("Legion submitted the merge of pull request #%d at READY's head %s once more: GitHub's merge queue took the pull request out at %s without merging it (%s), while GitHub reports its merge state %s. That merge state leaves the conflict with an entry ahead of it in the queue rather than with the base, %s, so nothing else would ever submit this merge again. This is the one further submission this head gets: a second removal of it for a conflict ends the merge and tells the architect.",
+		payload.Number, payload.Head, conflict.Removal.At.UTC().Format(time.RFC3339), conflict.Removal.Reason, conflict.MergeState, checks)}
 }
 
-// graphQL is a GitHub GraphQL client carrying the implement App's token, the App that writes the
-// issue branch and submits or disarms its pull request's merge, and the repository GitHub holds
-// the one issue's record names under now (serving), which the token is minted for the owner of.
+// graphQL is the pair of GitHub clients a merge row calls with, both carrying the implement App's
+// token, the App that writes the issue branch and submits or disarms its pull request's merge,
+// and the repository GitHub holds the one issue's record names under now (serving), which the
+// token is minted for the owner of: GitHub's GraphQL route, which the merge itself is read and
+// made on, and the repository's REST base, which the log of a run that failed in the merge queue
+// is read under (ghautomerge.Submit).
 // What a record's old name cannot do is carry a token: after a transfer the App installation that
 // covers the repository is the new owner's. The address is the served name as well, though GitHub
 // answers the old one too (measured: `GET /repos/twitter/bootstrap` answers 301 to
@@ -465,21 +476,22 @@ func readyMergeResubmitted(payload record.ReadyMerge, conflict *ghautomerge.Conf
 // `twbs/bootstrap`), because a write such as createBranch's POST should not depend on a redirect,
 // and because the submission and the disarm its callers make name the repository in their log
 // lines.
-func (r *outbox) graphQL(ctx context.Context, issue string) (githubrest.Client, ghrepo.Repository, error) {
+func (r *outbox) graphQL(ctx context.Context, issue string) (githubrest.Client, githubrest.Client, ghrepo.Repository, error) {
 	recorded, err := r.issue(ctx, issue)
 	if err != nil {
-		return githubrest.Client{}, ghrepo.Repository{}, err
+		return githubrest.Client{}, githubrest.Client{}, ghrepo.Repository{}, err
 	}
 	named, err := recorded.Repository()
 	if err != nil {
-		return githubrest.Client{}, ghrepo.Repository{}, err
+		return githubrest.Client{}, githubrest.Client{}, ghrepo.Repository{}, err
 	}
 	repo := r.repositories.serving(named)
 	lease, err := r.tokens.Token(ctx, appauth.Implement, repo)
 	if err != nil {
-		return githubrest.Client{}, ghrepo.Repository{}, fmt.Errorf("mint the implement App token for %s: %w", repo, err)
+		return githubrest.Client{}, githubrest.Client{}, ghrepo.Repository{}, fmt.Errorf("mint the implement App token for %s: %w", repo, err)
 	}
-	return githubrest.Client{Token: lease.Token, API: githubrest.GraphQLAPI(r.githubAPI)}, repo, nil
+	return githubrest.Client{Token: lease.Token, API: githubrest.GraphQLAPI(r.githubAPI)},
+		githubrest.Client{Token: lease.Token, API: githubrest.RepositoryAPI(r.githubAPI, repo)}, repo, nil
 }
 
 // awaitedREADY is the READY head issue awaits the merge of, and whether the record holds its pull

@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
+	"github.com/sjawhar/legion/daemon/internal/ghautomerge"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -282,6 +283,65 @@ func TestAWithdrawalOfAMergeTheQueueFailedCarriesEveryFailingRun(t *testing.T) {
 	}
 	if task := startTask(t, pool, claim.RoleImplementer); !strings.Contains(task, runs[len(runs)-1]) {
 		t.Fatalf("the implementer's task %q, want every failing run in it", task)
+	}
+}
+
+// A removal that sends the issue back says what failed in each failing job, not the job's name
+// and run link alone (INFRA-1442): the merge row reads the end of each failing job's log and
+// names the tests it states failed with the first line stating one (ghautomerge.MergeFailed.Runs),
+// and both things the issue's people read — the implementer's task it goes back to work from and
+// the architect's checks-red notice — carry those names, so no ejected tree fetches and greps a
+// merge-group log. A job whose log the daemon could not read says so, with the run link the
+// notice carried before this, and sends the issue back just the same.
+func TestARemovalTellsTheImplementerAndTheArchitectWhichTestsFailed(t *testing.T) {
+	const run = "https://github.com/sjawhar/legion/actions/runs/7"
+	for _, tc := range []struct {
+		name string
+		// runs is what the merge row read of each failing job, and names what the task and the
+		// notice must both carry.
+		runs, names []string
+	}{
+		{name: "a Go job naming the tests that failed",
+			runs:  []string{`unit (failure, ` + run + `): its log names TestTheQueueTakesTheEntryOut, TestTheRowRetries as failing, its first failure line "--- FAIL: TestTheQueueTakesTheEntryOut (0.01s)"`},
+			names: []string{"TestTheQueueTakesTheEntryOut", "TestTheRowRetries", "--- FAIL: TestTheQueueTakesTheEntryOut (0.01s)"}},
+		{name: "a browser job naming the test that failed",
+			runs: []string{`dispatch (failure, ` + run + `): its log names e2e/gated-step-approvals.e2e.ts:386:1 › a gate with no step fits every width @phone as failing, ` +
+				`its first failure line "[chromium] › e2e/gated-step-approvals.e2e.ts:386:1 › a gate with no step fits every width @phone"`},
+			names: []string{"e2e/gated-step-approvals.e2e.ts:386:1", "[chromium] ›", "a gate with no step fits every width @phone"}},
+		{name: "a job whose log the daemon could not read",
+			runs:  []string{`dispatch (failure, ` + run + `): the daemon could not read its failing tests, since the end of its log states no test name`},
+			names: []string{"could not read its failing tests", "the end of its log states no test name", run}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root",
+				Phase: phase.AwaitingMerge, Generation: 1, Status: "retro", Rank: "U"})
+			seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head"})
+			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim"})
+			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleMerger, Claim: "merge-claim", HandoffCommit: "head", Summary: readyPacket})
+			// The reason is the removal's own error, as the merge row applies it, so what the
+			// task and the notice carry is what ghautomerge wrote and not a copy of it.
+			removal := &ghautomerge.MergeFailed{Number: 42, Head: "head", Reason: "failed_checks", Commit: "group-sha", Runs: tc.runs,
+				Event: "RFMQE_9", At: time.Date(2026, 10, 16, 5, 10, 0, 0, time.UTC)}
+			applyRefusingNothing(t, pool, readyEngine("merge-queue"), intake.MergeFailed{Issue: "LEGION-208", Number: 42, Head: "head", Reason: removal.Error()})
+			if got := issuePhase(t, pool); got != phase.Implementing {
+				t.Fatalf("phase %s after the merge queue failed READY's merge, want implementing", got)
+			}
+			task := implementerTask(t, pool)
+			var reason string
+			if err := pool.QueryRow(context.Background(), `select payload->>'reason' from outbox
+				where kind = 'notice' and payload->>'kind' = 'checks-red'`).Scan(&reason); err != nil {
+				t.Fatalf("read the architect's checks-red notice: %v", err)
+			}
+			for _, name := range tc.names {
+				if !strings.Contains(task, name) {
+					t.Fatalf("the implementer's task %q, want it to name %q", task, name)
+				}
+				if !strings.Contains(reason, name) {
+					t.Fatalf("the architect's checks-red notice %q, want it to name %q", reason, name)
+				}
+			}
+		})
 	}
 }
 
