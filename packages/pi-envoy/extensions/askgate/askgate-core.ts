@@ -352,8 +352,8 @@ const RECOMMENDED_CEILING_MS = 120_000;
 // entry's own handler cuts a record still pending RECORD_CUT_DELAY_MS after the shutdown began,
 // which falls inside that wait, so the `advisor-gate-record` entry of a record that could not land
 // is appended while the handler still holds the session.
-const SHUTDOWN_GRACE_MS = 1_000;
-const SHUTDOWN_WAIT_MS = 1_500;
+export const SHUTDOWN_GRACE_MS = 1_000;
+export const SHUTDOWN_WAIT_MS = 1_500;
 /**
  * The outcomes of a call the gate let through without a verdict and without deciding on its
  * arguments: the gate's own failure, a stop it took, its halt, or a session whose model is on
