@@ -189,6 +189,140 @@ func TestScopeOfAndScopeSourcesAgree(t *testing.T) {
 	}
 }
 
+// Every shape a route can write, as the row ScopeOf reads and as the fields that row will hold
+// (PendingSource): the two must answer the same document, and that document must be the one
+// named here. A route's own row is only queued while it indexes the text it writes (INFRA-636),
+// so a `#id` in that text is resolved through PendingScope; were the two to drift - a coalesce
+// order changed on one side, a field the pending shape stops carrying - the edges a new ask,
+// comment, reply or message stores would stop matching the ones its stored row says it should.
+func TestPendingScopeAgreesWithScopeOf(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	createReferenceProject(t, tx, "ACME")
+	createReferenceIssue(t, tx, "ACME-1", "ACME")
+	issue := "ACME-1"
+	spec := insertScopeDocument(t, tx, "ACME-1", "spec", true)
+	notes := insertScopeDocument(t, tx, "ACME-1", "notes", false)
+	project, _ := createReferenceArtifact(t, tx, "", "ACME", "handbook")
+
+	blockAsk := insertScopeBlockAsk(t, tx, "ACME-1", notes, "q1")
+	anchoredAsk := insertScopeAsk(t, tx, "ACME-1", "anchor", notes)
+	issueAsk := insertScopeAsk(t, tx, "ACME-1", "", nil)
+	projectAsk := insertScopeAsk(t, tx, nil, "artifact_id", project)
+	anchoredComment := insertScopeRow(t, tx, "anchored comment", `
+		insert into comments (issue_key, author, body, anchor)
+		values ('ACME-1', '{"kind":"user","id":"alice"}', 'anchored', jsonb_build_object('artifact_id', $1::text, 'mark_id', 'm2'))
+		returning id::text
+	`, notes)
+	threadReply := insertScopeRow(t, tx, "thread reply", `
+		insert into comments (issue_key, author, body, reply_to) values ('ACME-1', '{"kind":"user","id":"alice"}', 'reply', $1)
+		returning id::text
+	`, anchoredComment)
+	issueComment := createReferenceComment(t, tx, "ACME-1")
+	loopingReply := insertScopeRow(t, tx, "looping reply", `
+		insert into comments (id, issue_key, author, body, reply_to)
+		values ('6f1c1f39-3d43-4b8e-9d0a-2f0d6c5b7a10', 'ACME-1', '{"kind":"user","id":"alice"}', 'loop', '6f1c1f39-3d43-4b8e-9d0a-2f0d6c5b7a10')
+		returning id::text
+	`)
+
+	for _, shape := range []struct {
+		name    string
+		kind    string
+		pending PendingSource
+		// stored is the row whose fields pending names, written above, whose ScopeOf must be
+		// what PendingScope answers.
+		stored string
+		scope  string
+	}{
+		{"an ask whose block is on a document", "ask",
+			PendingSource{IssueKey: &issue, BlockArtifactID: &notes}, blockAsk, notes},
+		{"an ask anchored to a document", "ask",
+			PendingSource{IssueKey: &issue, AnchorArtifactID: &notes}, anchoredAsk, notes},
+		{"an ask on an issue alone", "ask",
+			PendingSource{IssueKey: &issue}, issueAsk, spec},
+		{"an ask a project document owns", "ask",
+			PendingSource{ArtifactID: &project}, projectAsk, project},
+		{"a comment anchored to a document", "comment",
+			PendingSource{IssueKey: &issue, AnchorArtifactID: &notes}, anchoredComment, notes},
+		{"a comment a project document owns", "comment",
+			PendingSource{ArtifactID: &project}, ownerCommentOf(t, tx, project), project},
+		{"a reply to an ask whose block is on a document", "comment",
+			PendingSource{IssueKey: &issue, AskID: &blockAsk}, askReplyOf(t, tx, blockAsk), notes},
+		{"a reply to an ask on an issue alone", "comment",
+			PendingSource{IssueKey: &issue, AskID: &issueAsk}, askReplyOf(t, tx, issueAsk), spec},
+		{"a reply to a comment anchored to a document", "comment",
+			PendingSource{IssueKey: &issue, ReplyTo: &anchoredComment}, threadReply, notes},
+		{"a reply to a reply", "comment",
+			PendingSource{IssueKey: &issue, ReplyTo: &threadReply}, replyToOf(t, tx, threadReply), notes},
+		{"a comment on an issue alone", "comment",
+			PendingSource{IssueKey: &issue}, issueComment, spec},
+		{"a reply to a comment whose thread loops", "comment",
+			PendingSource{IssueKey: &issue, ReplyTo: &loopingReply}, replyToOf(t, tx, loopingReply), ""},
+		{"a message on an issue", "message",
+			PendingSource{IssueKey: &issue}, insertScopeRow(t, tx, "issue message", `
+				insert into messages (issue_key, author, body) values ('ACME-1', '{"kind":"session","id":"s1"}', 'hello')
+				returning id::text
+			`), spec},
+		{"a message on no issue", "message",
+			PendingSource{}, insertScopeRow(t, tx, "direct message", `
+				insert into messages (author, body, target) values ('{"kind":"user","id":"alice"}', 'hello', 'session:s1')
+				returning id::text
+			`), ""},
+	} {
+		pending, err := PendingScope(ctx, tx, shape.kind, shape.pending)
+		if err != nil {
+			t.Fatalf("pending scope of %s: %v", shape.name, err)
+		}
+		stored, err := ScopeOf(ctx, tx, shape.kind, shape.stored)
+		if err != nil {
+			t.Fatalf("scope of the stored %s: %v", shape.name, err)
+		}
+		if stored != shape.scope {
+			t.Errorf("scope of the stored %s = %q; want %q", shape.name, stored, shape.scope)
+		}
+		if pending != stored {
+			t.Errorf("pending scope of %s = %q; the stored row's is %q", shape.name, pending, stored)
+		}
+	}
+	// A document version is no pending source: every writer of one holds its id already, and
+	// PendingScope takes the three kinds whose rows a route queues.
+	if got, err := PendingScope(ctx, tx, "artifact", PendingSource{IssueKey: &issue}); err != nil || got != "" {
+		t.Fatalf("pending scope of a kind it does not take = %q, %v; want none", got, err)
+	}
+}
+
+// ownerCommentOf is a comment the document artifactID owns, which is on no issue.
+func ownerCommentOf(t *testing.T, tx pgx.Tx, artifactID string) string {
+	t.Helper()
+	return insertScopeRow(t, tx, "owner-document comment", `
+		insert into comments (artifact_id, author, body) values ($1, '{"kind":"user","id":"alice"}', 'on the document')
+		returning id::text
+	`, artifactID)
+}
+
+// askReplyOf is a reply of ACME-1 to the ask askID.
+func askReplyOf(t *testing.T, tx pgx.Tx, askID string) string {
+	t.Helper()
+	return insertScopeRow(t, tx, "ask reply", `
+		insert into comments (issue_key, author, body, ask_id) values ('ACME-1', '{"kind":"user","id":"alice"}', 'reply', $1)
+		returning id::text
+	`, askID)
+}
+
+// replyToOf is a reply of ACME-1 to the comment parent.
+func replyToOf(t *testing.T, tx pgx.Tx, parent string) string {
+	t.Helper()
+	return insertScopeRow(t, tx, "thread reply", `
+		insert into comments (issue_key, author, body, reply_to) values ('ACME-1', '{"kind":"user","id":"alice"}', 'reply', $1)
+		returning id::text
+	`, parent)
+}
+
 // A document's question map is the question blocks its latest version declares: a block settlement
 // made a row for, a copied block under the ask it was copied from, a block in a quote, and a block
 // after a closed code fence; never a block not settled yet, one whose copied_from names no ask, an

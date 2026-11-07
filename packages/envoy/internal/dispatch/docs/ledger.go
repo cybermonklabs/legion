@@ -546,10 +546,15 @@ func (l *Ledger) RegisterPendingArtifact(artifactID string, address refs.Documen
 // have to follow that write in the batch. The plan runs on this ledger whatever context the
 // caller holds, as QueueVersion does, and it refuses a ledger no caller joined and a sealed one
 // (ErrQueueSealed).
+//
+// document is the one the parts' `#id`s resolve against for an ask whose insert the route has
+// queued, which no read of that row can answer yet (refs.PendingAskScope); nil for an ask
+// already stored, whose row the reader reads for itself (refs.ScopeOf).
 func (l *Ledger) QueueAskParts(
 	ctx context.Context,
 	ask model.Ask,
 	serverURL string,
+	document *string,
 	at time.Time,
 	beside model.ReferenceChanges,
 ) (model.ReferenceChanges, error) {
@@ -560,8 +565,9 @@ func (l *Ledger) QueueAskParts(
 		return model.ReferenceChanges{}, ErrQueueSealed
 	}
 	// The parts are the only text of the ask this call holds, so the reader is its own: a route
-	// that reconciles the question too builds one and reconciles through it (refs.NewReader).
-	reader := refs.NewReader(ctx, l.writer, "ask", ask.ID, serverURL)
+	// that reconciles the question too builds one and reconciles through it
+	// (refs.NewReaderInScope).
+	reader := refs.NewReaderInScope(ctx, l.writer, "ask", ask.ID, serverURL, document)
 	changes, parts, err := planAskPartsCounted(withLedger(ctx, l), l.writer, reader, ask, at, beside)
 	if err != nil {
 		return model.ReferenceChanges{}, err

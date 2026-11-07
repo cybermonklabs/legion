@@ -334,12 +334,14 @@ func (s *server) createStoredMessage(
 	message.ReplyBlock = block.replyBlock(issueKey, "", "")
 	// An issue message's blocks, the mentions each holds and its own references are indexed as
 	// one write (refs.ReplaceCountedItem); a direct message, which writes no mention, has its
-	// blocks indexed alone and moves nothing.
-	windowContext, err := refs.IssueWindowContext(ctx, tx, issueKey)
+	// blocks indexed alone and moves nothing. The message's insert is queued below, so the
+	// issue the row will name is handed over: it gives the context its blocks' windows embed
+	// them under and the document its `#id`s resolve against, its issue's spec.
+	pending, err := s.pendingItemOf(ctx, tx, string(refs.ItemMessage), refs.PendingSource{IssueKey: issueKey})
 	if err != nil {
 		return model.Message{}, nil, err
 	}
-	referenceChanges, indexMessage, err := s.planItemWrite(ctx, tx, refs.ItemMessage, messageID, input.Body, &windowContext, createdAt, issueKey != nil, nil, nil)
+	referenceChanges, indexMessage, err := s.planItemWrite(ctx, tx, refs.ItemMessage, messageID, input.Body, pending, createdAt, issueKey != nil, nil, nil)
 	if err != nil {
 		return model.Message{}, nil, err
 	}

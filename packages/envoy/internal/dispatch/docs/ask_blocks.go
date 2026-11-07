@@ -333,8 +333,15 @@ func (s *Service) reconcileAskBlocks(
 			}
 			reconciled.indexedAskBlocks = append(reconciled.indexedAskBlocks, block.id)
 			// The question and the parts through one reader: the ask's parts hold its question,
-			// so the database answers once per kind for the write (refs.NewReader).
-			reader := refs.NewReader(ctx, tx, "ask", ask.ID, s.serverURL)
+			// so the database answers once per kind for the write (refs.NewReaderInScope). The
+			// ask's row is queued (createAskBlock), so the document its `#id`s resolve against -
+			// this very document, which holds the question blocks they name - is read from the
+			// fields that row will hold rather than from the row.
+			document, err := refs.PendingAskScope(ctx, tx, ask)
+			if err != nil {
+				return settlementReconciliation{}, fmt.Errorf("read the document a new ask block belongs to: %w", err)
+			}
+			reader := refs.NewReaderInScope(ctx, tx, "ask", ask.ID, s.serverURL, &document)
 			changes, index, err := planAskReferences(ctx, tx, reader, ask.ID, ask.Question)
 			if err != nil {
 				return settlementReconciliation{}, fmt.Errorf("index new ask block: %w", err)

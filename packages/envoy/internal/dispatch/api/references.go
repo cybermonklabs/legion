@@ -29,15 +29,18 @@ import (
 // and queued in the transaction's write phase, written at `at`, with what they moved merged
 // into beside, the counted changes the same write already holds, so the event it appends names
 // them all. The parts are read with the whole grammar, through a reader of their own
-// (refs.NewReader), which the ledger builds.
+// (refs.NewReaderInScope), which the ledger builds. document is the one the parts' `#id`s
+// resolve against for an ask whose insert this transaction has queued (refs.PendingAskScope),
+// nil for an ask already stored, whose row ScopeOf reads.
 func (s *server) queueAskParts(
 	ctx context.Context,
 	ledger *docs.Ledger,
 	ask model.Ask,
+	document *string,
 	at time.Time,
 	beside model.ReferenceChanges,
 ) (model.ReferenceChanges, error) {
-	return ledger.QueueAskParts(ctx, ask, s.deps.ServerURL, at, beside)
+	return ledger.QueueAskParts(ctx, ask, s.deps.ServerURL, document, at, beside)
 }
 
 // referencesSinceWait bounds how long a since read waits for the safe horizon to pass every event
