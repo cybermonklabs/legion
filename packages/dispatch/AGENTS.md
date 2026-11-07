@@ -1335,13 +1335,7 @@ patches keep a pasted table's rows.
 type that row holds, since the default body cell doesn't fit Milkdown's header row and the fix
 would repeat forever. A hunk in `patches/@milkdown%2Fpreset-gfm@7.22.1.patch` makes preset-gfm's
 table paste rule count a pasted table's columns in its widest row, where upstream counts the last
-row and drops a table whose last row is empty. `e2e/read-back.ts` reads a stored document back through Go
-and through the headless engine (`e2e/engine-reading.ts`, run with bun). Its `engineParagraphs`
-answers what a reader sees of each paragraph, which is `readDocument`'s own field: whitespace
-collapsed to one space and trimmed, so two bodies differing only in whitespace read alike, and a
-hard break draws a `<br>` that adds no text, so the words either side of it run together. A row
-holding Go's spelling of a whitespace-sensitive body against the engine's reads the stored bytes
-or `engineTables` instead. Each patch applies to one
+row and drops a table whose last row is empty. Each patch applies to one
 installed version, and bun ignores a `patchedDependencies` entry for a version that isn't installed
 without a word. So raising `@milkdown/plugin-clipboard` or `@milkdown/preset-gfm` means carrying its
 patch to the new version, and so does a lockfile change that moves prosemirror-tables, a transitive
@@ -1349,6 +1343,16 @@ dependency that `@milkdown/prose` asks for as `^1.8.1`. The rows catch each one:
 `ask-blocks.e2e.ts` and `editor-paste.e2e.ts` fail without the clipboard patch, the four
 `editor-paste.e2e.ts` rows for a table whose first row is empty time out without the
 prosemirror-tables patch, and the four for an empty last row fail without the preset-gfm hunk.
+
+`e2e/read-back.ts` reads a stored document back through Go and through the headless engine
+(`e2e/engine-reading.ts`, run with bun). Its `engineParagraphs` answers what a reader sees of each
+paragraph, which is `readDocument`'s own field: whitespace collapsed to one space and trimmed. What
+a `<br>` and a `hardbreak` each contribute to that text is
+`packages/proof-editor/src/document-reading.ts:15-16`; what that does to a reading is the stored
+reading of `pmdoc/testdata/corpus/softbreak.md`, which reads `two spaces aloneare` where two spaces
+end the line and `a backslash keeps` where a tab stands before the backslash. So a row holding Go's
+spelling of a body against the engine's, where the whitespace between its words is the point, reads
+the stored bytes or `engineTables` instead.
 
 `ask` is the host-rendered decision type. A live document's open block decisions appear in one compact, cycling `#b-<blockId>` navigation link beneath the tab row. There is one ask component on every surface: a decision block *hosts* the Inbox's `AskCard` (compact variant, `frame="block"`) for its indexed ask row, so answering, **Ask back** (a clarification posted as a reply on the ask — `createComment` on an issue document's ask, `createArtifactComment` on a project document's — which leaves the decision open), the newest-first two-reply preview and **Show N more replies** control over the exchange, the question-shaped-answer prompt, the `ASK_EDITED` reload, the answered and resolved records (`AskCompletionCard`), and the retryable save error all behave exactly as they do in the Inbox, and a reply or answer made in either place shows in the other. An ask block marked `invalid`, or one with a missing question or option label, renders its raw content as a malformed decision without a card until the block text is repaired. The editor library supplies its schema-aware Insert and Turn into block-menu entries; Dispatch passes the server schema rather than duplicating those commands.
 
