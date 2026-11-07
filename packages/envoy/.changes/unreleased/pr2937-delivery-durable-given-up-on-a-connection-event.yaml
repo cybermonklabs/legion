@@ -1,0 +1,15 @@
+kind: Fixed
+body: |-
+  A Dispatch process whose NATS connection drops and comes back no longer delivers every GitHub
+  event a second time beside the process that took its delivery durable over while it was away.
+  Both delivery intakes now give their durable up at the disconnect, before nats.go can re-send
+  the subscription, and return to the lease-gated bind poll, which takes the durable again only
+  while it is free; a process with no connection stands by rather than asking the server for its
+  durable over a dead link. What the returned process had in flight is handed back to the process
+  that keeps the durable as soon as the link is live, instead of waiting out the durable's
+  five-minute ack wait in that process's four-slot window. A connection event now costs the
+  holder its binding and one poll, about two seconds of live delivery.
+  `bus.Client.DrainSubscription` drains the handle while the client's connection is live, as it
+  always did, and unsubscribes it when it is not: a drain begun while the link is down leaves the
+  server reporting the durable push-bound to a client that delivers nothing, for the life of that
+  connection, which no process can take over.
