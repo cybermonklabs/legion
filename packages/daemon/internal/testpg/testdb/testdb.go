@@ -29,9 +29,12 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // Image is the Postgres server image a developer starts for the daemon's own tests: PostgreSQL 18
@@ -96,12 +99,92 @@ func create(dsn, prefix string) (string, func() error, error) {
 	}
 	drop := func() error {
 		defer func() { _ = conn.Close(context.Background()) }()
-		if _, err := conn.Exec(context.Background(), "drop database "+name+" with (force)"); err != nil {
-			return fmt.Errorf("drop %s: %w", name, err)
-		}
-		return nil
+		return Drop(context.Background(), conn, name)
 	}
 	return DatabaseURL(*base, name), drop, nil
+}
+
+// dropWindow and dropPause bound the plain drop's retry: how long a drop is tried again while
+// Postgres says the database is still in use, and the wait between tries.
+const (
+	dropWindow = 15 * time.Second
+	dropPause  = 200 * time.Millisecond
+)
+
+// execer is what Drop needs of a connection or a pool, which pgx.Conn and pgxpool.Pool both are.
+type execer interface {
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+}
+
+// dropCounts is what every drop of this test process did, which a package's Main prints: a run
+// whose drops all went plainly needs no right to end a backend, and one that reached the force
+// fallback says how often and how long it waited first. The counters are the evidence that the
+// plain drop carries the fixture, rather than one green run.
+var dropCounts struct {
+	drops   atomic.Int64
+	retried atomic.Int64
+	forced  atomic.Int64
+	longest atomic.Int64
+}
+
+// Drop drops the database name through exec: plainly, then again while Postgres answers SQLSTATE
+// 55006 (object_in_use) up to dropWindow, and `with (force)` as the last attempt.
+//
+// `with (force)` ends every backend still attached, which needs pg_signal_backend or a superuser
+// login: CI's test login is a superuser and a Legion issue pod's is not, so a fixture that always
+// forced could not finish a package on a pod. A caller closes its own pool before this runs — both
+// fixtures of this module register the drop first, and t.Cleanup is LIFO — but Postgres tears a
+// backend down after the client has closed its socket, so a drop landing inside that window finds
+// a connection and answers 55006 rather than a permission error. Retrying the plain drop covers
+// that window; the force is left for a connection that really is somebody else's, and is the only
+// attempt that needs the right.
+//
+// Measured on this issue's pod, PostgreSQL 18.6 with fsync off, ten clones of the daemon's
+// migrated template: the forced drop means 18.8 ms against a plain drop's 17.1 ms, so the clause
+// never bought speed.
+func Drop(ctx context.Context, exec execer, name string) error {
+	started := time.Now()
+	defer func() {
+		dropCounts.drops.Add(1)
+		elapsed := int64(time.Since(started))
+		for {
+			longest := dropCounts.longest.Load()
+			if elapsed <= longest || dropCounts.longest.CompareAndSwap(longest, elapsed) {
+				return
+			}
+		}
+	}()
+	deadline := time.Now().Add(dropWindow)
+	var err error
+	tries := 0
+	for {
+		if _, err = exec.Exec(ctx, "drop database "+name); err == nil {
+			if tries > 0 {
+				dropCounts.retried.Add(1)
+			}
+			return nil
+		}
+		tries++
+		var pgError *pgconn.PgError
+		if !errors.As(err, &pgError) || pgError.Code != "55006" || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(dropPause)
+	}
+	dropCounts.forced.Add(1)
+	if _, forced := exec.Exec(ctx, "drop database "+name+" with (force)"); forced != nil {
+		// The forced drop ended the cleanup, so its error is the one reported; the plain drop's
+		// says what the force was for.
+		return fmt.Errorf("drop %s: %w, after the plain drop answered: %v", name, forced, err)
+	}
+	return nil
+}
+
+// DropLine is one line naming what this process's drops did, for the package Main that prints it.
+func DropLine() string {
+	return fmt.Sprintf("testdb: %d drops, %d needed a retry, %d reached the force fallback, longest %s",
+		dropCounts.drops.Load(), dropCounts.retried.Load(), dropCounts.forced.Load(),
+		time.Duration(dropCounts.longest.Load()).Round(time.Millisecond))
 }
 
 // RandomName is prefix with a random suffix, so two databases of one prefix never collide. It is

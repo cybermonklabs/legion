@@ -124,6 +124,7 @@ func Main(prefix string, run func() int) int {
 	}
 	defer shared.admin.Close()
 	shared.drops.Wait()
+	fmt.Fprintln(os.Stderr, testdb.DropLine())
 	for _, failure := range shared.dropFails {
 		fmt.Fprintf(os.Stderr, "testpg: %s\n", failure)
 		if code == 0 {
@@ -133,8 +134,9 @@ func Main(prefix string, run func() int) int {
 	if shared.template == "" {
 		return code
 	}
-	// No `with (force)`: the template takes no connection (prepare), so there is none to end.
-	if _, err := shared.admin.Exec(context.Background(), "drop database "+shared.template); err != nil {
+	// testdb.Drop's shape, for the window in which prepare's migration connection is closed but
+	// its backend is not yet gone; the template takes no other connection.
+	if err := testdb.Drop(context.Background(), shared.admin, shared.template); err != nil {
 		fmt.Fprintf(os.Stderr, "testpg: drop the template database %s: %v\n", shared.template, err)
 		if code == 0 {
 			code = 1
@@ -144,19 +146,25 @@ func Main(prefix string, run func() int) int {
 }
 
 // dropSlots holds the drops in flight to two of the admin pool's four connections. A clone takes
-// one of those connections too, and a `drop database … with (force)` forces a checkpoint and
-// waits for it: with every slot on drops — a package whose parallel subtests each clone one
-// database queues one drop per subtest that ends — the next clone waits for a checkpoint on its
-// own clock, which is the cost dropInBackground exists to move off it.
+// one of those connections too, and a drop forces a checkpoint and waits for it: with every slot
+// on drops — a package whose parallel subtests each clone one database queues one drop per
+// subtest that ends — the next clone waits for a checkpoint on its own clock, which is the cost
+// dropInBackground exists to move off it.
 var dropSlots = make(chan struct{}, 2)
 
 // dropInBackground drops name without waiting for it; Main waits for every drop. Drops in flight
 // together share one checkpoint.
+//
+// The drop is testdb.Drop's: plain, retried while Postgres says the database is still in use, and
+// `with (force)` only as the last attempt, so a test login that may not end another role's
+// backend — a Legion issue pod's — finishes the package. Clone registers this cleanup before the
+// pool's close, so every pool of the clone is already closed when it runs and the plain drop is
+// what a run should need; Main prints how many drops needed more than that.
 func dropInBackground(name string) {
 	shared.drops.Go(func() {
 		dropSlots <- struct{}{}
 		defer func() { <-dropSlots }()
-		if _, err := shared.admin.Exec(context.Background(), "drop database "+name+" with (force)"); err != nil {
+		if err := testdb.Drop(context.Background(), shared.admin, name); err != nil {
 			shared.dropMu.Lock()
 			shared.dropFails = append(shared.dropFails, fmt.Sprintf("drop the cloned database %s: %v", name, err))
 			shared.dropMu.Unlock()
