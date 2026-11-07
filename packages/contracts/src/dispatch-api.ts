@@ -387,6 +387,10 @@ export interface IssueEventChanges {
    *  issue was taken from and the one it was given to, for the two together the sorted union of
    *  both, and for any other status move `[]`. */
   readonly thread_logins?: string[];
+  /** On an `issue.created` whose create went past the near-copy refusal with `force`: `past`
+   *  names the issues that refusal named, and is the empty list when the check did not answer.
+   *  A forced create the refusal would not have stopped carries no `forced` at all. */
+  readonly forced?: { readonly past: readonly string[] };
 }
 
 /** Every `issue.*` event payload is the issue row, flat, plus what the write moved in the
@@ -1481,6 +1485,10 @@ export const IssueEventPayloadSchema = z.object({
   changed: z.array(z.string()).optional(),
   ancestors: z.array(z.string()).optional(),
   thread_logins: z.array(z.string()).optional(),
+  /** On an `issue.created` whose create went past the near-copy refusal with `force`: `past`
+   *  names the issues that refusal named, and is the empty list when the check did not answer.
+   *  A forced create the refusal would not have stopped carries no `forced` at all. */
+  forced: z.object({ past: z.array(z.string()) }).optional(),
 });
 
 export const ArtifactCreatedEventPayloadSchema = z.object({

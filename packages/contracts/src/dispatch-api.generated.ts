@@ -1195,7 +1195,7 @@ export interface paths {
     /** @description List issues; filters project, status, parent, label, priority (repeatable: 0-3, or none for unset), open, updated_since, route_status (live, no_holder or unknown; open issues only); ?pinned=true needs the person scope, since the pins are one person's. Each issue carries progress: {tasks, children}, its spec's task-list items and its direct children as {done, total}, each null when it has none. Pages with limit (1-250) and offset (0 or more; alone it pages 50): a paged answer is {issues, total, limit, offset}, total counting every issue the filters match; without either it is every matching issue as an array. cursor is 400 INVALID_QUERY. */
     get: operations["getApiV1Issues"];
     put?: never;
-    /** @description Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee, or the project's default assignee when that still names a person who has signed in. A title over 1000 characters is 400 CAP_EXCEEDED. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, any answered ask that settles it, words to search with by hand (search_query), and under force the title overlaps forced past (title_matches). */
+    /** @description Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee, or the project's default assignee when that still names a person who has signed in. A title over 1000 characters is 400 CAP_EXCEEDED. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, any answered ask that settles it, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate). */
     post: operations["postApiV1Issues"];
     delete?: never;
     options?: never;
@@ -2346,10 +2346,10 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Run the related-item check an issue create runs, over ?title= and ?text= (checked as the title, a newline and the text; either alone is enough), without writing anything: no issue, ask, suggestion or related_checks record. ?exclude_issue= leaves that issue of the project and everything it holds out of the results and out of the word statistics (400 EXCLUDE_ISSUE_INPUT when it is not an issue of the project); ?keywords_only=true skips meaning search. It waits at most 5 seconds and answers the create's advice.suggestions shape: outcome found, none or not_made (a blank text is 200 not_made, the reason in missing), search, search_note, search_query, related and decision. Title and text over 1000 characters together are 400 CAP_EXCEEDED; POST takes a longer text. An unknown project is 404 PROJECT_NOT_FOUND. */
+    /** @description Run the related-item check an issue create runs, over ?title= and ?text= (checked as the title, a newline and the text; either alone is enough), without writing anything: no issue, ask, suggestion or related_checks record. ?exclude_issue= leaves that issue of the project and everything it holds out of the results and out of the word statistics (400 EXCLUDE_ISSUE_INPUT when it is not an issue of the project); ?exclude_issues=, repeated, leaves each of up to 50 issues of the project out of the results alone, so a draft can leave out a whole subtree without changing how rare its words are (400 EXCLUDE_ISSUE_INPUT for a longer list or for a key the project does not hold); ?keywords_only=true skips meaning search. It waits at most 5 seconds and answers the create's advice.suggestions shape: outcome found, none or not_made (a blank text is 200 not_made, the reason in missing), search, search_note, search_query, related and decision, with up to 3 open issues before any item of another kind and everything a done issue owns last. Title and text over 1000 characters together are 400 CAP_EXCEEDED; POST takes a longer text. An unknown project is 404 PROJECT_NOT_FOUND. */
     get: operations["getApiV1ProjectsByKeyRelated"];
     put?: never;
-    /** @description The GET form of this route with its fields in a JSON body {title, text, exclude_issue, keywords_only}: the related-item check over a title and a text as long as an issue's spec (the body's 1 MiB bound; a title over 1000 characters is 400 CAP_EXCEEDED), writing nothing and waiting at most 5 seconds; answers the same suggestions shape. */
+    /** @description The GET form of this route with its fields in a JSON body {title, text, exclude_issue, exclude_issues, keywords_only}, exclude_issues a list of issue keys: the related-item check over a title and a text as long as an issue's spec (the body's 1 MiB bound; a title over 1000 characters is 400 CAP_EXCEEDED), writing nothing and waiting at most 5 seconds; answers the same suggestions shape. */
     post: operations["postApiV1ProjectsByKeyRelated"];
     delete?: never;
     options?: never;
@@ -4801,6 +4801,7 @@ export interface components {
     };
     RelatedCheckInput: {
       exclude_issue?: string;
+      exclude_issues?: string[] | null;
       keywords_only?: boolean;
       text?: string;
       title?: string;
@@ -5016,7 +5017,9 @@ export interface components {
     };
     Suggestions: {
       decision?: components["schemas"]["WriteSuggestion"];
+      likely_duplicate?: components["schemas"]["DuplicateCandidate"];
       missing?: string;
+      near_copy_check?: string;
       outcome: string;
       related: components["schemas"]["WriteSuggestion"][] | null;
       search?: string;
@@ -11163,6 +11166,7 @@ export interface operations {
         title?: string;
         text?: string;
         exclude_issue?: string;
+        exclude_issues?: string[];
         keywords_only?: boolean;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
