@@ -486,18 +486,11 @@ export class Writes {
     const key = newSendKey();
     const { file } = entry;
     const { login } = entry.write;
+    // CONTROL, never merged: `retry` moves the key, the record and the attempt at once and
+    // leaves the file's put unawaited, as the release before this fix did. `run` keeps the
+    // fix, so this tree restores the cause at the Retry alone.
     if (file !== undefined && login !== undefined) {
-      // The put stamps the new row with the time it was made, which is the age `keepOnly`
-      // measures, so the file's day and its key's run together. The old row goes once the new
-      // one is there, and goes too where the browser kept nothing: the write's key is the new
-      // one by then, so no reload would read the old row, and the upload is let go as one a
-      // page with no IndexedDB at all is.
-      this.#keepFile(entry, key, login, file, () => {
-        this.#kept.forget(old);
-        void this.#files.delete(old);
-        this.#retryUnder(entry, key, false);
-      });
-      return;
+      void this.#files.put(key, login, file).then(() => this.#files.delete(old));
     }
     this.#kept.forget(old);
     this.#retryUnder(entry, key, false);
