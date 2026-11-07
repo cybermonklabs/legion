@@ -525,11 +525,14 @@ export class Writes {
    *  `key`: `#keep` writes no record of a write already under it and `#start` sends no attempt,
    *  and letting the write go deletes `key` too (`#forget`). A keep whose write has gone
    *  meanwhile tells nothing. A `put` that rejects rather than answering is read as a browser
-   *  that kept nothing, so a rejection leaves no write stuck. A `put` that never settles does:
-   *  its write stays `sending` with no attempt, so no deadline starts and neither Stop trying
-   *  nor Discard takes it. Nothing in the page can do that - `indexedDbFiles` answers every
-   *  path, and its open is never blocked, the version being fixed at 1 - and an
-   *  implementation of `KeptFiles` that may hang is a page bug this does not cover. */
+   *  that kept nothing, so a rejection leaves no write stuck. A `put` that never settles does,
+   *  differently at each caller: at the press the write stays `sending` with no attempt, so no
+   *  deadline starts and neither Stop trying nor Discard takes it; at a Retry it stays
+   *  `refused` under its old key, where another Retry does nothing while the keep stands but
+   *  Discard still drops it and deletes both keys (`#forget`). Nothing in the page can do that
+   *  - `indexedDbFiles` answers every path, and its open is never blocked, the version being
+   *  fixed at 1 - and an implementation of `KeptFiles` that may hang is a page bug this does
+   *  not cover. */
   #keepFile(entry: Entry, key: string, login: string, file: File, landed: () => void): void {
     const answered = (kept: boolean) => {
       if (entry.keeping !== keeping) return;
