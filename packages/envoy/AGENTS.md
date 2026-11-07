@@ -86,7 +86,7 @@ Each item below names a task and where its code is, then notes on it.
 
 - **Stream definition**: `internal/bus/stream.go`
 
-  `ENVOY_NOTIFICATIONS` subjects, age and duplicate window, replicas, byte limit and discard policy, and their reconciliation at start (`ensureStreamWithConfig`);
+  `ENVOY_NOTIFICATIONS` subjects, age and duplicate window, replicas, byte limit, consumer cap (`streamMaxConsumers`, 24000) and discard policy, and their reconciliation at start (`ensureStreamWithConfig`);
   the names of the stores' KV buckets, listener and Dispatch durables, the Dispatch webhook-redelivery bucket, the listener role-lane queue, and the notification and exception topic prefixes, which envoy-infra's NATS grants are built from (`packages/envoy/infra/core/permissions.go`)
 
 - **Stream and bucket copies, stream byte limit**:
@@ -109,6 +109,28 @@ Each item below names a task and where its code is, then notes on it.
   a clustered deployment sets both alike in every envoy-listener and in the Dispatch server.
   A server's refusal of a create or raise stops the listener's start naming the setting and its value, while Dispatch's server, which reconciles in the background, keeps serving with the refusal logged;
   a bucket raise's refusal also names the bucket (`refusedSettings`, `raiseReplicas`)
+
+- **Stream consumer cap**:
+  `internal/bus/stream.go` (`streamMaxConsumers`, `serverDefaultsAnUnsetCap`, `ownedStream`, `refusedSettings`), `internal/bus/keeper.go`
+
+  The `ENVOY_NOTIFICATIONS` stream's consumer cap is compiled in rather than read from a setting:
+  `streamMaxConsumers`, 24000, which bounds how many sessions can hold a session consumer of their own.
+  A start and the keeper raise a smaller deployed cap to it and never lower one, as for the copies and the byte limit.
+  A deployed `-1` or `0`, a stream that sets no cap, is raised only where the connected server is nats-server 2.15.0 or later (`serverDefaultsAnUnsetCap`, read from `ConnectedServerVersion`):
+  only from 2.15 does the server cap such a stream itself, at its own default of 1000 (`JSDefaultMaxConsumersPerStream`), and every server before that leaves it unlimited, so there the raise would write a cap no deployment asked for.
+  A deployed cap that is positive and below 24000 is raised on every server, since such a cap bounds the stream's consumers wherever it runs.
+  The keeper reads the live connection's version each pass, so a stream left with no cap is raised at the first pass after its server is upgraded to 2.15.
+  That 1000 is the server-wide `JetStreamLimits.DefaultMaxConsumers`, which a server whose configuration leaves it unset starts at `JSDefaultMaxConsumersPerStream`, so the gate assumes the server's own default and nothing in the binary checks it.
+  A server started with `jetstream { limits { default_max_consumers: <n> } }` makes a stream with no cap mean `<n>` rather than 1000, and at `-1` or at a number above 24000 a start and the keeper would then lower that stream's limit to 24000 rather than raise it.
+  An account carrying its own positive JetStream `max_consumers` applies it to every stream of the account: above 24000 a start and the keeper lower an uncapped stream's limit the same way, and below 24000 the server refuses any stream whose cap is above the account's, so the create and the raise are both refused; an account limit of `-1` counts as not set and changes nothing.
+  No deployment of this repository sets either - the hub's rendered `jetstream` block carries `max_file_store`, `max_memory_store` and `store_dir` and nothing else, and it renders no `accounts` block - so this is written here rather than guarded in code.
+  Lowering the cap (`nats stream edit ENVOY_NOTIFICATIONS --max-consumers=<n>`) is an operator step that needs every program's binary lowered first.
+  A stream the server already holds takes a cap change only on nats-server v2.12.5 or later:
+  every server before it refuses such an update with `nats: stream configuration update can not change MaxConsumers`, measured on v2.10.29, v2.11.0 and v2.12.0.
+  That refusal names `max_consumers`, the value the binary asks for and the floor (`refusedSettings`).
+  It stops the listener's start, while Dispatch's server, which reconciles in the background, keeps serving but neither reconciles nor keeps the stream, and logs `envoy nats reconnect hook failed; it is retried` until that becomes `envoy nats reconnect hooks have not succeeded` at ERROR;
+  so a deployment on a server before v2.12.5 whose stream holds a positive cap below 24000 cannot start a listener of this release.
+  A create carries the cap on every nats-server, a stream already at the cap needs no change, and a stream with no cap is sent none on a server before 2.15, so only such a deployment upgrades the nats-server first, keeping its store, and the listener's next start sets the cap
 
 - **Session delivery**: `internal/session/session.go`
 
@@ -3799,17 +3821,23 @@ that is the rule and not a transitional measure, and it is what lets Dispatch de
 
 - Every stream update the reconcile sends starts from the deployed configuration and sets only what Envoy owns (`reconciledStream`, `internal/bus/stream.go`):
   the subjects (above), the age and the duplicate window (72 hours), the replicas (the deployed count or `ENVOY_NATS_REPLICAS`, whichever is more), the byte limit (the deployed one or `ENVOY_STREAM_MAX_BYTES`, whichever is more;
-  the setting on a stream with none, the deployed one when unset) and `DiscardNew`, which switches a stream an earlier build created with `DiscardOld`.
+  the setting on a stream with none, the deployed one when unset), the consumer cap (the deployed cap or `streamMaxConsumers`, 24000, whichever is more;
+  the compiled cap on a stream whose cap is a deployed `-1` or `0` only where the connected server is nats-server 2.15.0 or later, which caps such a stream at its own default of 1000, and the deployed `-1` or `0` left as it is on every older server, which leaves it unlimited: `serverDefaultsAnUnsetCap`) and `DiscardNew`, which switches a stream an earlier build created with `DiscardOld`.
   The metadata and every other deployed field - `MaxMsgsPerSubject`, `MaxMsgSize`, storage, placement, compression and the rest - stay as they are, and a start that finds all of that in place sends no update.
-  A start's own write never lowers the stream's copies or its byte limit, so an operator's raise of either stands, and the stream holds the most copies and the largest limit any program of a deployment carries;
+  A start's own write never lowers the stream's copies, its byte limit or its consumer cap, so an operator's raise of any of them stands, and the stream holds the most copies and the largest limit any program of a deployment carries;
   a clustered deployment sets both alike in every envoy-listener and in the Dispatch server.
+  A create carries the consumer cap on every nats-server, but a stream the server already holds takes a cap change only on v2.12.5 or later:
+  every server before it refuses such an update with `nats: stream configuration update can not change MaxConsumers`, measured on v2.10.29, v2.11.0 and v2.12.0.
+  That refusal names `max_consumers`, the value the binary asks for and the floor, and stops the listener's start (`refusedSettings`), and Dispatch's server, which reconciles in the background, retries the reconcile and starts no keeper until it passes;
+  so a deployment on a server before v2.12.5 whose stream holds a positive cap below 24000 upgrades the nats-server first, keeping its store, and the next start then sets the cap.
+  A stream with no cap is sent no cap change at all before 2.15, so such a deployment is refused nothing and the cap is written at the first start or keeper pass after the upgrade.
   JetStream's stream update has no compare-and-swap:
   a start with other (or no) settings, or another subject list, that reads the stream before another start's write and writes after it puts the old subjects, copies, byte limit and metadata back.
 
 - The keeper (`internal/bus/keeper.go`) ends that:
-  every program that owns the stream (the listener, Dispatch's server) reads it again every 30 seconds and puts back copies below its `ENVOY_NATS_REPLICAS`, a byte limit below its `ENVOY_STREAM_MAX_BYTES`, or none (when set), a missing `envoy_stream_id`, and the 72-hour age and duplicate window and `DiscardNew` (constants every release compiles alike;
-  `discard DiscardOld -> DiscardNew` in its line), and adds back each subject its binary compiles that the stream lacks, unless it overlaps a subject the stream carries or captures a role lane (`keptStream`, `keptSubjects`, `internal/bus/stream.go`), logging `envoy nats keeper restored the stream` at WARN with, for example, `restored="replicas 1 -> 3, max_bytes -1 -> 2000000, envoy_stream_id added as <id>, subjects added notifications.legion.>"`.
-  Like a start, it never lowers the copies or the byte limit (`ownedStream`), so an operator's emergency raise of a full stream's limit stands (`TestTheKeeperKeepsAnOperatorsRaiseOfTheByteLimitAndRaisesALowerOne`).
+  every program that owns the stream (the listener, Dispatch's server) reads it again every 30 seconds and puts back copies below its `ENVOY_NATS_REPLICAS`, a byte limit below its `ENVOY_STREAM_MAX_BYTES`, or none (when set), a consumer cap below its `streamMaxConsumers` (24000), a deployed `-1` or `0` included where the server caps such a stream itself (`serverDefaultsAnUnsetCap`, read from the live connection each pass), a missing `envoy_stream_id`, and the 72-hour age and duplicate window and `DiscardNew` (constants every release compiles alike;
+  `discard DiscardOld -> DiscardNew` in its line), and adds back each subject its binary compiles that the stream lacks, unless it overlaps a subject the stream carries or captures a role lane (`keptStream`, `keptSubjects`, `internal/bus/stream.go`), logging `envoy nats keeper restored the stream` at WARN with, for example, `restored="replicas 1 -> 3, max_bytes -1 -> 2000000, max_consumers 1000 -> 24000, envoy_stream_id added as <id>, subjects added notifications.legion.>"`.
+  Like a start, it never lowers the copies, the byte limit or the cap (`ownedStream`), so an operator's emergency raise of a full stream's limit stands (`TestTheKeeperKeepsAnOperatorsRaiseOfTheByteLimitAndRaisesALowerOne`), and an operator who lowers the cap by hand has it raised back within one period, with `max_consumers` in that WARN line.
   Its write is the stream as it read it with that put back, so it only adds subjects and removes or replaces none:
   two releases with different subject lists do not switch the stream back and forth, and a concurrent write the keeper's lands over loses its subject only until that release's own keeper adds it back a period later.
   A subject that a start had put in place of an overlapping one is the exception:
@@ -3823,6 +3851,8 @@ that is the rule and not a transitional measure, and it is what lets Dispatch de
   So with mixed settings during a rollout the stream can sit below the setting for up to one period after the last start;
   programs with different byte limits do not fight, since no keeper lowers a limit, and the largest stands.
   Lowering the copies (`nats stream edit ENVOY_NOTIFICATIONS --replicas=<n>`) and lowering or removing the limit (`nats stream edit ENVOY_NOTIFICATIONS --max-bytes=<n>`, `--max-bytes=-1` for none) are operator steps that need every program's setting changed first, or the keeper puts them back.
+  Lowering the cap (`nats stream edit ENVOY_NOTIFICATIONS --max-consumers=<n>`) is one too, and needs every program's binary lowered first, since the cap is compiled in;
+  that edit, like any change of `MaxConsumers` on a stream that already exists, needs nats-server v2.12.5 or later.
 
 - Every KV bucket Envoy opens through `bus.EnsureKeyValue` is created at `ENVOY_NATS_REPLICAS`, and one found with fewer copies is raised by an update of its stream `KV_<bucket>` that changes only its replicas, which needs `$JS.API.STREAM.UPDATE.KV_<bucket>` in the program's NATS grant (`bucketPermissions`, `packages/envoy/infra/core/permissions.go`);
   lowering a bucket (`nats stream edit KV_<bucket> --replicas=<n>`) likewise needs every program's setting lowered first.
@@ -4952,17 +4982,32 @@ A machine's own session is its fleet's service's and no person's: its credential
 `cmd/broker`'s `serviceNames` registers both settings' services with the policy loader, so a secret a machine service owns is served rather than refused `owner-tag-malformed`.
 The two ERROR lines, `policy.RefusedMessage` with a `Reason*` constant and `policy.LoadFailedMessage`, are what the deployment's alarms filter on, so neither changes without the alarm, and a failed reload keeps the last set;
 a reload cut short because `NewCurrent`'s context ended (the broker shutting down) is no failed load and logs nothing.
-`Set.Version`, the SHA-256 of every served secret's name, owner, tier, source, max grant, GitHub owners and requesters, is recorded on every request.
+`Set.Version`, the SHA-256 of every served secret's name, owner, tier, source, max grant, GitHub owners, requesters, scopes and admin mark, is recorded on every request.
 A kind source is `mint:<kind>:<store source>` (`policy.KindSource`, read back by `policy.ParseKindSource`).
 A grant ends for good when a release finds its secret's kind changed (a moved source) or its lifetime over the current max-grant (`Machine.endGrant`);
 a change reverted before any release finds it leaves the grant as it was, and to end a grant, revoke it.
 `policy.Kinds`, `ValidKind`, `ParseMaxGrant` and `ParseGitHubOwners` are the one statement of which kinds exist, what a max grant is and how a `github-owners` list reads (logins separated by white space, as `BROKER_SERVICES` separates its entries, a form an AWS tag value and a Secret Manager annotation both hold;
 a comma is refused `ErrGitHubOwnersComma`), and `policy.GitHubOwnersFor` (with `KindNeedsGitHubOwners`) the one statement of which kind needs owners, which the loader, `policytest.KindSecret` and `agent-secrets secret` create and retag all apply.
 `policy.TagRequesters` and `policy.ParseRequesters` are the one statement of who may ask for a secret at all (people by their lowercase sign-in email and services by the name the deployment registers, separated by white space as `github-owners` is, answered sorted and de-duplicated;
-a comma is refused `ErrRequestersComma`, a list naming nobody `ErrRequestersMissing`, and an entry that is neither `ErrRequestersEntry`), and `policy.RequesterRules` the one statement of what such a list demands of the secret's other tags (`requesters-max-grant`: a max grant, of an hour at most;
-`requesters-not-owner`: a `google-service-account` secret's list is exactly its own person owner), which the loader and `agent-secrets secret` create and retag all apply.
+a comma is refused `ErrRequestersComma`, a list naming nobody `ErrRequestersMissing`, and an entry that is neither `ErrRequestersEntry`).
+The list narrows who may ask and bounds no grant by itself.
+`policy.TagRules` is the one statement of what a secret's tags demand of each other, which the loader and `agent-secrets secret` create and retag all apply:
+`max-grant-required`, a max grant of an hour at most, is demanded of an admin secret (`policy.TagAdmin`) and of a `google-service-account` secret, and every other secret keeps its own cap, or none, so a person's mail and Drive logins stay at their tier and are capped by nothing;
+`requesters-not-owner` refuses a `google-service-account` secret whose list is not exactly its one person owner, and a service entry on an agent-tier one, a human-tier one being free to list registered services beside that owner so that a Legion pod can ask and the owner approves each request;
+`requesters-not-owner` again refuses a service entry on a secret the deployment binds to a `dev-<name>` account, at either tier, since such a token is one person's own;
+`scopes-kind` refuses a `scopes` tag on any kind but `google-service-account`, and `admin-tier` and `admin-requesters` refuse an admin secret that is not human tier or that names no requesters.
+`policy.TagScopes` and `policy.ParseScopes` are the one statement of which OAuth scopes a `google-service-account` secret's token carries: scope names separated by white space, each the part of a Google scope after `https://www.googleapis.com/auth/` and held to `^[a-z0-9][a-z0-9._-]*$`, answered sorted and each once (a comma is refused `ErrScopesComma`, a list naming no scope `ErrScopesMissing`, an entry that is no scope name `ErrScopesEntry`, a whole scope URL among them, and a name given twice `ErrScopesDuplicate`, each logged `scopes-malformed`), which the loader and `agent-secrets secret` create and retag all apply, and `Secret.ScopeURLs` puts the prefix back for the minter.
+The tag holds short names because the AWS store keeps its annotations as AWS tags and an AWS tag value holds at most 256 characters, which five whole scope URLs are longer than;
+a secret carrying none mints `cloud-platform` alone, as every token of this kind did before the tag existed, and a changed list reaches the token at the next release, since the minter reads the snapshot the release checked.
+`policy.TagAdmin` marks a secret whose grant is an administrator's, `"true"` its only value and anything else `admin-malformed`:
+the broker cannot tell such a secret from its kind, an admin console password and a personal API key both being stored strings, so the program that declares the secret says so, and the rules above then hold it to human tier, a requesters list and an hour's cap.
 `Set.Evaluate` reads the list before owner and tier and denies a requester it does not name `policy.ReasonRequesterNotListed`, which the request row keeps as its `decision_detail` (`<NAME>: requester-not-listed`, several joined with `"; "`) and the request routes answer as `detail`.
-The kinds are `github-app` (installation tokens from the stored App key), `google-login` (an access token from the stored authorized-user credential), `azure-login` (`secrets.AzureLogin`, in `internal/broker/secrets/azurelogin.go`) and `google-service-account` (`secrets.GoogleServiceAccount`, in `internal/broker/secrets/googleserviceaccount.go`: an access token for the one service account the stored value names, minted by impersonating it with the broker's own Google credential through the IAM Service Account Credentials API, and served to the one person the secret's requesters name).
+The kinds are `github-app` (installation tokens from the stored App key), `google-login` (an access token from the stored authorized-user credential), `azure-login` (`secrets.AzureLogin`, in `internal/broker/secrets/azurelogin.go`) and `google-service-account` (`secrets.GoogleServiceAccount`, in `internal/broker/secrets/googleserviceaccount.go`: an access token for one Google service account, minted by impersonating it with the broker's own Google credential through the IAM Service Account Credentials API, carrying the scopes the secret's `scopes` tag names, and served to the one person the secret's requesters name beside the registered services a human-tier one may list).
+The stored value does not choose that account: the deployment's `BROKER_SERVICE_ACCOUNT_SECRETS` binds each such secret to the one account the broker may mint for, and `GoogleServiceAccount.Mint` refuses a secret the setting does not bind, and a stored value naming any other account, with `secrets.ErrMintNotBound` (`MintErrorClass` `binding`), before the broker's own credential is resolved and before any call reaches Google.
+The setting is whitespace-separated `<SECRET NAME>=<account email>` entries, such as `GCP_ADMIN=gcp-admin@example-project.iam.gserviceaccount.com` (`config.parseServiceAccountSecrets`), the name an uppercase agent-secret name (`policy.NameToSlug`) and the account a user-managed service account address held to `secrets.ValidServiceAccountEmail`, the minter's own rule, so no binding can name an address the minter would refuse;
+a Google-managed service agent is refused as it is in `BROKER_VM_SERVICES`, a secret named twice is refused, and one account may back two secrets, since only the secret's name is the key.
+Unset, no secret is bound and every `google-service-account` mint is refused, which is the safe side of the window between this build and the apply that writes the bindings.
+`cmd/broker` fills both readers from it: `secrets.GoogleServiceAccount.Accounts`, and `policy.Loader.ServiceAccounts`, which reads it for the one rule above — a secret bound to a `dev-<name>` account may list no service among its requesters.
 An Azure login stores only `{"tenant_id":"<tenant>","client_id":"<client>"}` and releases JSON with those ids, `federated_token` and `expires_at` (RFC3339 UTC from the JWT `exp`).
 `BROKER_AZURE_LOGIN_SECRET` selects the only agent-secret name allowed to release that token; unset (the default), every Azure login release is refused.
 `AzureLogin.Mint` also requires that secret to be human tier in the policy snapshot checked for the release, so retagging another secret to `azure-login`, or the configured secret to agent tier, cannot bypass approval.
@@ -5002,7 +5047,7 @@ a retag to a kind reread during the reads ends the grant for good, and one the p
 A minter's error names an upstream status by its number and a failed call by its class (`transportFailure`), never Go's transport text, the reason phrase or the body, and a Google `error_subtype` only when it is `invalid_rapt` or `rapt_required` (`googleReauthSubtypes`), else `unknown`.
 `policy.TagRollbackGuard` and `RollbackGuardValue` (`mint-service-account: kind-secret`) are what `agent-secrets secret` writes beside every kind, so a broker of legion-envoy-v13.19.0 to the release before kinds refuses the secret (`mint-target-malformed`) rather than serve its stored key;
 this broker never reads the tag (`TestTheRollbackGuardIsRefusedByEarlierBrokersAndIgnoredHere`).
-A live grant is re-checked once the version moves, and always while any granted name is a service's, since the version does not cover `BROKER_SERVICES`' accounts (`stillAllowed`, `anyServiceOwned`);
+A live grant is re-checked once the version moves, always while any granted name is a service's, since the version does not cover `BROKER_SERVICES`' accounts (`stillAllowed`, `anyServiceOwned`), and always while any granted name carries a `requesters` tag, since an entry of that tag naming a service is matched through those same accounts (`anyListed`), so a pod whose account stops proving its service is re-checked even where the version stood still;
 the record line, the column and the API field that carry it keep the name `rules_version`, since records are content-addressed and stored bodies must still parse.
 `policy.NewSet` is the one place a `Version` is computed, ascending by slug (not by request name, which orders `A0` and `A_B` the other way), for a full load and a single-name merge alike, so an unchanged namespace keeps its version (`TestGoldenDigest` pins the bytes).
 `Loader.LoadOne` reads one name with `Store.Describe` (`DescribeSecret`, or `GetSecret` and `GetSecretVersion`) under the same rules and the same refusal line, and `Current.RefreshOne` merges it into the live set;
@@ -5132,7 +5177,7 @@ SIGQUIT uses the kernel default, not Go's goroutine dump.
 Core dumps are disabled once, before the first value byte is read, for the rest of the process (`PR_SET_DUMPABLE` 0 on Linux, `RLIMIT_CORE` 0 on Darwin), not just on SIGQUIT.
 `secret_job_linux_test.go` hosts prompts under interactive bash to test Ctrl-Z/bg/fg, a start with `&` (the restored settings are compared with those bash hands a foreground job, and the label with the terminal's owner and echo when it is printed), a stop before the label, an orphaned group, a shell that exits under a background prompt, SIGTERM and SIGHUP after `bg`, an external SIGSTOP, bytes after Ctrl-Z in one write, signal keys inside a paste, a paste that begins after the line, ignored SIGTSTP wrappers, quiet-window stops, refusal draining, shell history and terminal restoration.
 
-`secret.go` builds the one tag map a write sends (`optionalTags`), owner and tier plus `kind`, `github-owners` and `max-grant` when the command names them, and the rollback guard beside a kind, under the broker's own rules (`policy.ValidKind`, `policy.ParseGitHubOwners`, `policy.ParseMaxGrant`), and each backend writes a map it does not read into (`create(tags)`, `setTags`, `removeTags`).
+`secret.go` builds the one tag map a write sends (`optionalTags`), owner and tier plus `kind`, `github-owners`, `requesters`, `scopes`, `admin`, `max-grant` and `default-grant` when the command names them, and the rollback guard beside a kind, under the broker's own rules (`policy.ValidKind`, `policy.ParseGitHubOwners`, `policy.ParseRequesterShapes`, `policy.ParseScopes`, `policy.ParseMaxGrant`), and each backend writes a map it does not read into (`create(tags)`, `setTags`, `removeTags`).
 AWS `create` writes on the settings' key with those tags and no `ClientRequestToken` (the SDK sets one).
 A `retag` is one write: it either sets tags or removes them, never both, and refuses `none` beside another change before any read or write, so a refused call never leaves it half applied.
 Either reads the secret's tags once (`currentTags`, a `heldTags` with GCP's etag) and builds from them the tags the secret will hold once the write lands (`after`), and applies the github-owners rule to those once (`checkGitHubOwnersFor`), as create applies it to its flags, so neither writes a `github-app` secret without owners.
@@ -5140,12 +5185,12 @@ Each writes against that read: GCP sends the held annotations, changed, with the
 AWS's tag calls take no condition, so its `setTags` and `removeTags` read the tags back (`awsBackend.raceCheck`) and, when another writer left a kind/owners pair the broker refuses, restore the tags read and answer `errTagsChanged` too, and the retag exits 1 naming the race.
 A retag on AWS is safe only with one writer at a time.
 The retag form lives in `secret_retag.go`.
-One that sets tags sends owner and tier in one `TagResource`, plus `kind` (with the rollback guard), `github-owners` and `max-grant` when the command sets them, so an IAM condition on the request's tags sees them;
+One that sets tags sends owner and tier in one `TagResource`, plus `kind` (with the rollback guard), `github-owners`, `requesters`, `scopes`, `admin`, `max-grant` and `default-grant` when the command sets them, so an IAM condition on the request's tags sees them;
 one that removes tags (`--kind none`, which also removes the rollback guard, `--github-owners
-none`, `--max-grant none`) is one `UntagResource` of those keys.
+none`, `--requesters none`, `--scopes none`, `--admin none`, `--max-grant none`, `--default-grant none`) is one `UntagResource` of those keys.
 On `AccessDenied` for a retag that sets tags on a secret held shared, or a retag to `--owner shared`, it adds that a shared secret's owner and tier are an administrator's to change (a person's own secret may be made shared where their access allows the retag;
 only an existing shared secret's tags are reserved); `delete` schedules a 30-day recovery window, never forced, and prints `DeleteSecret`'s own `DeletionDate`.
-GCP `create` creates the secret with automatic replication under the broker's `kms_key_name` and owner, tier and any named kind, `github-owners`, max grant and the rollback guard beside a kind as annotations (never labels, so they carry no GCP label naming rules), then adds the value as its first version;
+GCP `create` creates the secret with automatic replication under the broker's `kms_key_name` and owner, tier and any named kind, `github-owners`, requesters, scopes, admin mark, max grant, default grant and the rollback guard beside a kind as annotations (never labels, so they carry no GCP label naming rules), then adds the value as its first version;
 `set` adds a version to a secret already held;
 `retag` writes the same change into the annotations it read in one `UpdateSecret` (field mask `annotations`, with that read's etag), preserving every annotation it does not change;
 `delete` sets `expire_time` to now plus 30 days in one `UpdateSecret` (field mask `expire_time`) and prints it - GCP has no separate recovery window the way AWS does:
@@ -5817,10 +5862,10 @@ A kind source is `mint:<kind>:<source>`:
 `Machine.release` parses it (`policy.ParseKindSource`;
 a malformed one is `policy.ErrKindSourceMalformed`), reads `<source>` through the store's own `Read`, and passes that value to `Machine.Minters[kind]`.
 It never returns the stored value.
-A minter's failure is `requests.ErrMintFailed`, `502 MINT_FAILED` carrying the minter's own message (never an upstream's text), and one ERROR line for the operator, `broker: mint failed` (`requests.MintFailedMessage`) with the name, the kind and `class=` `stored-value`, `refused` or `upstream` (`secrets.MintErrorClass`).
+A minter's failure is `requests.ErrMintFailed`, `502 MINT_FAILED` carrying the minter's own message (never an upstream's text), and one ERROR line for the operator, `broker: mint failed` (`requests.MintFailedMessage`) with the name, the kind and `class=` `stored-value`, `narrowing`, `refused`, `binding` or `upstream` (`secrets.MintErrorClass`).
 The usual re-check then verifies the enrollment, the grant, its whole approval chain (`VerifyChain`), and
-— when the policy version moved since the grant was decided, or any granted name is a service's (`anyServiceOwned`:
-the version does not cover `BROKER_SERVICES`' accounts)
+— when the policy version moved since the grant was decided, any granted name is a service's (`anyServiceOwned`), or any granted name carries a `requesters` tag (`anyListed`):
+the version covers neither which service `BROKER_SERVICES`' accounts prove, nor the service an entry of that tag names, which is matched through those same accounts, so a pod whose account stops proving its service is re-checked even where the version stood still
 — that the current policy still allows every granted name (`stillAllowed`:
 a name the policy no longer serves, denies, or now wants approved that was granted automatically, or that it now wants approved by someone the request's `decided_by` login is not, all refuse, so an approved grant outlives an owner change only while its approver may still approve the secret, or once the new tags give its session the secret without asking;
 a name withheld from the session that its request got automatically is judged as an approval by `decided_by`, since a live grant of it was approved after the withhold by someone the withheld name let approve it), and that no granted name's `max-grant` is now shorter than the request's lifetime (`overMaxGrant`, which ends the grant for good, `GRANT_NOT_LIVE`, as a moved source does, through `Machine.endGrant`;
