@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 
@@ -151,7 +152,7 @@ func Run(ctx context.Context, cfg harness.Config) error {
 	harness.Fact("retry-timers-started-by-issues", timers)
 	harness.Fact("queries-sent-to-the-gatekeeper", queries)
 
-	cappedHolds, cappedPeak, cappedOverlap, _ := Observed(cappedLabel)
+	cappedHolds, cappedPeak, cappedOverlap := Observed(cappedLabel)
 	harness.Fact("capped-holds-recorded", cappedHolds)
 	harness.Fact("capped-max-concurrency-counted-live", cappedPeak)
 	harness.Fact("capped-max-concurrency-by-timestamps", cappedOverlap)
@@ -179,7 +180,7 @@ func Run(ctx context.Context, cfg harness.Config) error {
 	if err := awaitAll(ctx, control); err != nil {
 		return err
 	}
-	uncappedHolds, uncappedPeak, uncappedOverlap, _ := Observed(uncappedLabel)
+	uncappedHolds, uncappedPeak, uncappedOverlap := Observed(uncappedLabel)
 	harness.Fact("control-issues", len(control))
 	harness.Fact("control-holds-recorded", uncappedHolds)
 	harness.Fact("control-max-concurrency-counted-live", uncappedPeak)
@@ -276,10 +277,10 @@ func walkGatekeeper(ctx context.Context, c client.Client, workflowID, firstRunID
 		runs++
 		runID = ""
 		for _, event := range events {
-			switch harness.EventName(event) {
-			case "EVENT_TYPE_WORKFLOW_EXECUTION_SIGNALED":
+			switch event.GetEventType() {
+			case enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_SIGNALED:
 				signals++
-			case "EVENT_TYPE_WORKFLOW_EXECUTION_CONTINUED_AS_NEW":
+			case enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_CONTINUED_AS_NEW:
 				continued = true
 				runID = event.GetWorkflowExecutionContinuedAsNewEventAttributes().GetNewExecutionRunId()
 			}
@@ -298,10 +299,10 @@ func walkIssues(ctx context.Context, c client.Client, stamp int64, count int) (i
 			return 0, 0, err
 		}
 		for _, event := range events {
-			switch harness.EventName(event) {
-			case "EVENT_TYPE_WORKFLOW_EXECUTION_SIGNALED":
+			switch event.GetEventType() {
+			case enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_SIGNALED:
 				grants++
-			case "EVENT_TYPE_TIMER_STARTED":
+			case enumspb.EVENT_TYPE_TIMER_STARTED:
 				timers++
 			}
 		}

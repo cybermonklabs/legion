@@ -44,12 +44,9 @@ func Run(ctx context.Context, cfg harness.Config) error {
 	if cfg.MetricsURL == "" {
 		return fmt.Errorf("-metrics-url is required by experiment 6: without the server's own action metric there is only one count, and the experiment is a comparison of two")
 	}
-	workDir := cfg.WorkDir
-	if workDir == "" {
-		workDir = os.TempDir()
-	}
-	if err := os.MkdirAll(workDir, 0o755); err != nil {
-		return fmt.Errorf("-work-dir: %w", err)
+	workDir, err := harness.WorkDir(cfg)
+	if err != nil {
+		return err
 	}
 
 	c, err := harness.Dial(ctx, cfg, dialTimeout)

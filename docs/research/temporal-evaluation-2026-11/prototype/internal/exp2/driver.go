@@ -39,12 +39,9 @@ const (
 // Run is experiment 2: a gate that waits for a person, is closed again by a new document
 // version, and opens only on the approval of the version that stands.
 func Run(ctx context.Context, cfg harness.Config) error {
-	workDir := cfg.WorkDir
-	if workDir == "" {
-		workDir = os.TempDir()
-	}
-	if err := os.MkdirAll(workDir, 0o755); err != nil {
-		return fmt.Errorf("-work-dir: %w", err)
+	workDir, err := harness.WorkDir(cfg)
+	if err != nil {
+		return err
 	}
 
 	c, err := harness.Dial(ctx, cfg, dialTimeout)
@@ -166,10 +163,10 @@ func Run(ctx context.Context, cfg harness.Config) error {
 	}
 	lastSignal, nextPhaseScheduled := int64(0), int64(0)
 	for _, event := range events {
-		switch harness.EventName(event) {
-		case "EVENT_TYPE_WORKFLOW_EXECUTION_SIGNALED":
+		switch event.GetEventType() {
+		case enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_SIGNALED:
 			lastSignal = event.GetEventId()
-		case "EVENT_TYPE_ACTIVITY_TASK_SCHEDULED":
+		case enumspb.EVENT_TYPE_ACTIVITY_TASK_SCHEDULED:
 			if event.GetActivityTaskScheduledEventAttributes().GetActivityType().GetName() == NextPhaseActivityName && nextPhaseScheduled == 0 {
 				nextPhaseScheduled = event.GetEventId()
 			}
@@ -280,15 +277,17 @@ func observeIdle(ctx context.Context, c client.Client, run client.WorkflowRun, s
 		if task := desc.GetPendingWorkflowTask(); task != nil {
 			seen.pendingWorkflowTask = task.GetState().String()
 		}
-		events, err := harness.History(ctx, c, run.GetID(), run.GetRunID())
-		if err != nil {
-			return gateIdle{}, err
-		}
-		seen.events = len(events)
-		if len(events) > 0 {
-			seen.lastEvent = harness.EventName(events[len(events)-1])
-		}
 		if !time.Now().Before(deadline) {
+			// Only the pass that ends the span is reported, so the history is read
+			// once, here, rather than on every poll.
+			events, err := harness.History(ctx, c, run.GetID(), run.GetRunID())
+			if err != nil {
+				return gateIdle{}, err
+			}
+			seen.events = len(events)
+			if len(events) > 0 {
+				seen.lastEvent = harness.EventName(events[len(events)-1])
+			}
 			return seen, nil
 		}
 		select {

@@ -3,7 +3,6 @@ package exp4
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"time"
 
@@ -27,12 +26,9 @@ const (
 // Run is experiment 4: an idempotent delivery that Temporal retries after it crashed
 // past its own write, and a delivery that can never succeed and must end somewhere.
 func Run(ctx context.Context, cfg harness.Config) error {
-	workDir := cfg.WorkDir
-	if workDir == "" {
-		workDir = os.TempDir()
-	}
-	if err := os.MkdirAll(workDir, 0o755); err != nil {
-		return fmt.Errorf("-work-dir: %w", err)
+	workDir, err := harness.WorkDir(cfg)
+	if err != nil {
+		return err
 	}
 
 	c, err := harness.Dial(ctx, cfg, dialTimeout)
@@ -122,14 +118,14 @@ func Run(ctx context.Context, cfg harness.Config) error {
 	var attempts []int32
 	scheduled, completed, failed := 0, 0, 0
 	for _, event := range events {
-		switch harness.EventName(event) {
-		case "EVENT_TYPE_ACTIVITY_TASK_SCHEDULED":
+		switch event.GetEventType() {
+		case enumspb.EVENT_TYPE_ACTIVITY_TASK_SCHEDULED:
 			scheduled++
-		case "EVENT_TYPE_ACTIVITY_TASK_STARTED":
+		case enumspb.EVENT_TYPE_ACTIVITY_TASK_STARTED:
 			attempts = append(attempts, event.GetActivityTaskStartedEventAttributes().GetAttempt())
-		case "EVENT_TYPE_ACTIVITY_TASK_COMPLETED":
+		case enumspb.EVENT_TYPE_ACTIVITY_TASK_COMPLETED:
 			completed++
-		case "EVENT_TYPE_ACTIVITY_TASK_FAILED":
+		case enumspb.EVENT_TYPE_ACTIVITY_TASK_FAILED:
 			failed++
 		}
 	}

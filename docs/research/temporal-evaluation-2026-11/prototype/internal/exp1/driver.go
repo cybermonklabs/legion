@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 
@@ -90,10 +91,10 @@ func Run(ctx context.Context, cfg harness.Config) error {
 	}
 	signalled, phaseEvents := 0, 0
 	for _, event := range events {
-		switch harness.EventName(event) {
-		case "EVENT_TYPE_WORKFLOW_EXECUTION_SIGNALED":
+		switch event.GetEventType() {
+		case enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_SIGNALED:
 			signalled++
-		case "EVENT_TYPE_ACTIVITY_TASK_SCHEDULED":
+		case enumspb.EVENT_TYPE_ACTIVITY_TASK_SCHEDULED:
 			phaseEvents++
 		}
 	}

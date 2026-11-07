@@ -16,6 +16,7 @@ package exp5
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -244,12 +245,11 @@ func (r *recorder) end(at int) {
 // most that were live at one moment as the activity counted them, and the most that
 // overlapped according to their recorded timestamps. The two maxima are measured in
 // different ways on purpose: a counter can be wrong, and the timestamps can be checked.
-func Observed(label string) (holds int, peakLive int, peakOverlap int, records []Hold) {
+func Observed(label string) (holds int, peakLive int, peakOverlap int) {
 	rec := recorderFor(label)
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
-	records = append(records, rec.holds...)
-	return len(rec.holds), rec.peak, overlap(records), records
+	return len(rec.holds), rec.peak, overlap(rec.holds)
 }
 
 // overlap is the largest number of holds that were live at the same moment, swept over
@@ -285,22 +285,12 @@ func overlap(holds []Hold) int {
 
 // holds reports whether an issue is among the slot holders.
 func holds(holders []string, issueID string) bool {
-	for _, holder := range holders {
-		if holder == issueID {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(holders, issueID)
 }
 
 // queued reports whether an issue is already waiting.
 func queued(queue []Acquire, issueID string) bool {
-	for _, waiting := range queue {
-		if waiting.IssueID == issueID {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(queue, func(a Acquire) bool { return a.IssueID == issueID })
 }
 
 // without drops one issue from the holders, reporting whether it was there.

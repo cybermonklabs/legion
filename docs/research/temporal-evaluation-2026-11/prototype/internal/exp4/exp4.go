@@ -214,29 +214,18 @@ func HasRecord(path, key string) (bool, error) {
 // experiment asserts after a retried delivery; two would be the duplicate an
 // idempotency key exists to prevent.
 func CountRecords(path, key string) (int, error) {
-	file, err := os.Open(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return 0, nil
-	}
-	if err != nil {
-		return 0, fmt.Errorf("read %s: %w", path, err)
-	}
-	defer file.Close()
-	count := 0
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		if strings.HasPrefix(scanner.Text(), key+" ") {
-			count++
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return 0, fmt.Errorf("read %s: %w", path, err)
-	}
-	return count, nil
+	return countPrefixed(path, key+" ")
 }
 
 // CountCalls is how many calls the activity recorded for a key.
 func CountCalls(path, key string) (int, error) {
+	return countPrefixed(path, "key="+key+" ")
+}
+
+// countPrefixed is how many lines of the file begin with prefix. A file that is not
+// there yet holds nothing, which is not an error: neither log exists before the first
+// delivery writes to it.
+func countPrefixed(path, prefix string) (int, error) {
 	file, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return 0, nil
@@ -248,7 +237,7 @@ func CountCalls(path, key string) (int, error) {
 	count := 0
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
-		if strings.HasPrefix(scanner.Text(), "key="+key+" ") {
+		if strings.HasPrefix(scanner.Text(), prefix) {
 			count++
 		}
 	}

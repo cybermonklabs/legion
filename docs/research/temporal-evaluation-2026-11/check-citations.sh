@@ -126,11 +126,12 @@ without_trailing_punctuation() {
 # that appears only inside a string or only in a call does not match.
 go_declares() {
 	local file=$1 name=$2
-	grep -qE "^func[[:space:]]+${name}[[:space:]]*[([]" -- "$file" && return 0
-	grep -qE "^func[[:space:]]*\([^)]*\)[[:space:]]*${name}[[:space:]]*[([]" -- "$file" && return 0
-	grep -qE "^(type|var|const)[[:space:]]+${name}([[:space:]]|\[|$)" -- "$file" && return 0
-	grep -qE "^[[:space:]]+${name}([[:space:]]+[^=]|[[:space:]]*=|,|[[:space:]]*$)" -- "$file" && return 0
-	return 1
+	grep -qE \
+		-e "^func[[:space:]]+${name}[[:space:]]*[([]" \
+		-e "^func[[:space:]]*\([^)]*\)[[:space:]]*${name}[[:space:]]*[([]" \
+		-e "^(type|var|const)[[:space:]]+${name}([[:space:]]|\[|$)" \
+		-e "^[[:space:]]+${name}([[:space:]]+[^=]|[[:space:]]*=|,|[[:space:]]*$)" \
+		-- "$file"
 }
 
 resolve_code() {

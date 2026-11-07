@@ -39,6 +39,20 @@ type Config struct {
 	RepoRoot string
 }
 
+// WorkDir is the scratch directory the experiment may write in: what -work-dir named,
+// or the system temporary directory when it named nothing. The directory exists when
+// WorkDir returns without an error.
+func WorkDir(cfg Config) (string, error) {
+	dir := cfg.WorkDir
+	if dir == "" {
+		dir = os.TempDir()
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("-work-dir: %w", err)
+	}
+	return dir, nil
+}
+
 // Logger is the SDK logger the experiments give their clients and workers: warnings and
 // errors on stderr, so the SDK's chatter never reaches the measured lines on stdout.
 func Logger() sdklog.Logger {

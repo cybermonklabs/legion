@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
@@ -60,12 +59,9 @@ func Run(ctx context.Context, cfg harness.Config, suppressKill bool) error {
 	} else if info.IsDir() || info.Mode()&0o111 == 0 {
 		return fmt.Errorf("-session-worker %q is not an executable file", cfg.SessionWorker)
 	}
-	workDir := cfg.WorkDir
-	if workDir == "" {
-		workDir = os.TempDir()
-	}
-	if err := os.MkdirAll(workDir, 0o755); err != nil {
-		return fmt.Errorf("-work-dir: %w", err)
+	workDir, err := harness.WorkDir(cfg)
+	if err != nil {
+		return err
 	}
 
 	c, err := harness.Dial(ctx, cfg, 30*time.Second)
@@ -352,12 +348,11 @@ type historyFacts struct {
 func inspectHistory(ctx context.Context, c client.Client, workflowID, runID string, killedAt time.Time) (historyFacts, error) {
 	facts := historyFacts{final: "none"}
 	scheduled := map[int64]bool{}
-	iter := c.GetWorkflowHistory(ctx, workflowID, runID, false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT)
-	for iter.HasNext() {
-		event, err := iter.Next()
-		if err != nil {
-			return historyFacts{}, fmt.Errorf("read history of %s: %w", workflowID, err)
-		}
+	events, err := harness.History(ctx, c, workflowID, runID)
+	if err != nil {
+		return historyFacts{}, err
+	}
+	for _, event := range events {
 		facts.events++
 		if attrs := event.GetActivityTaskScheduledEventAttributes(); attrs != nil {
 			if attrs.GetActivityType().GetName() == SessionActivityName {
@@ -402,9 +397,10 @@ func activityEventScheduledID(event *historypb.HistoryEvent) (int64, bool) {
 	}
 }
 
-// eventName is a history event's type without the protobuf enum's prefix.
+// eventName is a history event's type under the shorthand name the protobuf enum's own
+// String method gives it, which is the form this experiment's facts are written in.
 func eventName(event *historypb.HistoryEvent) string {
-	return strings.TrimPrefix(event.GetEventType().String(), "EVENT_TYPE_")
+	return event.GetEventType().String()
 }
 
 // sessionStateName names the SessionState the workflow reported.
