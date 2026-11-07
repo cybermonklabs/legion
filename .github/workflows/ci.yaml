@@ -1035,6 +1035,10 @@ jobs:
               # when this entry was written.
               - 'packages/dispatch/e2e/**'
               - 'packages/dispatch/web/src/api/types.ts'
+              # And paths.ts beside it: e2e/api.ts is keyed on the generated document's path
+              # patterns now, and reads PathsOf, Op, Query, Body and Answer from that module,
+              # so this program compiles it too.
+              - 'packages/dispatch/web/src/api/paths.ts'
               - 'skills/**'
               - 'scripts/pi-plugin-prepack.sh'
               - 'scripts/third-party-notices.ts'

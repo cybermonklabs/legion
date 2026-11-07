@@ -925,6 +925,7 @@ GATES = [
         (f"{FIX}/capability-redaction-plugin-report.json", "packages/pi-legion/src/capability-report.test.ts:776,874"),
         ("packages/dispatch/e2e/**", "packages/pi-legion/scripts/skill-scenarios/seed.ts:96 imports packages/dispatch/e2e/api.ts (typecheck includes scripts/skill-scenarios/*.ts), and that program holds six of that directory's modules: api.ts, harness-ports.ts, harness-broker.ts, harness-processes.ts, harness-real-broker.ts and harness-signin.ts"),
         ("packages/dispatch/web/src/api/types.ts", "packages/dispatch/e2e/api.ts:51"),
+        ("packages/dispatch/web/src/api/paths.ts", "packages/dispatch/e2e/api.ts:14 imports PathsOf, Op, PathParams, QueryParams, RequestBody, Query, Body and Answer from it, since that client is keyed on the generated document's path patterns"),
         ("skills/**", "packages/pi-legion/src/skills-guard.test.ts:23,57,142; scripts/skill-scenarios/rig.test.ts:791,1004; prepack stages skills"),
         ("scripts/pi-plugin-prepack.sh", f"packages/pi-legion/package.json prepack ({at('pi-legion', 'Pack pi-legion')}); packages/pi-shared/test/skills-guard.ts:17"),
         ("scripts/third-party-notices.ts", "scripts/pi-plugin-prepack.sh:96"),
