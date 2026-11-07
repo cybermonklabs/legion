@@ -168,9 +168,8 @@ func askPartPairs(parts []itemblocks.Block, ids []string, r *Reader) []blockPair
 // rows reference. It bumps the revision only when the parts changed.
 //
 // The parts are read through r, the Reader of the write that holds the ask's text, which the
-// write that reconciled the ask's own question through it passes on (ReplaceCounted,
-// ReindexOwed), so one write asks the database once per kind for the question and its parts
-// together.
+// write that reconciled the ask's own question through it passes on (PlanReplace, ReindexOwed),
+// so one write asks the database once per kind for the question and its parts together.
 //
 // An ask whose row carries an edited_at is planned as edited (ItemIndex.Edited), which is read
 // from the row rather than from the index: an edit's own update of edited_at is queued and has

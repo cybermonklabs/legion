@@ -598,8 +598,11 @@ func rewordAsAnEarlierRelease(t *testing.T, service *Service, document string, a
 		t.Fatalf("reword the decided ask's row: %v", err)
 	}
 	ask.EditedAt = askTimestamp(&editedAt)
-	changes, err := refs.ReplaceCounted(ctx, tx, refs.NewReader(ctx, tx, "ask", ask.ID, service.serverURL), ask.Question)
+	changes, writeRefs, err := planAskReferences(ctx, tx, refs.NewReader(ctx, tx, "ask", ask.ID, service.serverURL), ask.ID, ask.Question)
 	if err != nil {
+		t.Fatalf("plan the reworded question's references: %v", err)
+	}
+	if err := store.RunWrite(ctx, tx, writeRefs); err != nil {
 		t.Fatalf("index the reworded question: %v", err)
 	}
 	if _, err := service.events.Append(ctx, tx, documentAskEvent(owner, document, "ask.edited", SettlementActor,

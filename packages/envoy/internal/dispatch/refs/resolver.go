@@ -16,10 +16,10 @@ import (
 // with. It is one write's object, not a cache: a caller builds it, reads every text of that
 // source through it - a comment's body, an ask's question and each of its parts - and drops it,
 // so the database answers once per kind for a write however many texts it holds, and what it
-// answered is the one transaction's view. It is the text.Resolver every write of a text passes
-// to the function that indexes it (ReplaceCounted, ReplaceCountedEdit, IndexAskParts,
-// IndexAskPartsCounted), so a write that holds two texts of one source - an ask's question and
-// its parts - reads both through one.
+// answered is the one transaction's view. It is the text.Resolver every write of a text reads
+// that text through (Mentions) before it plans what to index (PlanReplace, PlanItemIndex,
+// PlanAskParts), so a write that holds two texts of one source - an ask's question and its
+// parts - reads both through one.
 //
 // Every failure it meets reaching the database is logged here and answered as nothing resolved
 // for that kind, and no call site handles one: the swallow lives in this one place because the

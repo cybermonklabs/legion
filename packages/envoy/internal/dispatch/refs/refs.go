@@ -37,35 +37,6 @@ type Target struct {
 	ID   string
 }
 
-// ReplaceCounted reconciles one source's references, read with the whole grammar through r, the
-// Reader of the write that holds that source's text (NewReader), and resolves the counted
-// targets the event that source appends has to name. A write that indexes a body at once goes
-// through it, or, for a comment's or an issue message's write, ReplaceCountedItem, which indexes
-// its blocks as well; one that decides before it writes plans the same reconciliation
-// (PlanReplace, PlanReplaceFrom) and the same index (PlanItemIndex), resolves what they move
-// (CountedChanges) and applies both in its write phase. replaceRefs, which reconciles without
-// saying what moved, is unexported. It names the targets whose edges it inserted or deleted,
-// which is all a first write of a body moves; an edit whose event names what it moved also names
-// the targets EditedTargets adds, and a document's version the excerpts it moved (ExcerptsMoved),
-// since a kept edge's excerpt can move too.
-//
-// The source is r's own: a write that holds another text of the same source - an ask's parts
-// beside its question (PlanAskParts) - passes the one reader to both, so the database answers
-// once per kind for the write rather than once per text.
-func ReplaceCounted(
-	ctx context.Context,
-	tx pgx.Tx,
-	r *Reader,
-	body string,
-) (model.ReferenceChanges, error) {
-	found := text.Refs(r.Mentions(body))
-	changed, err := replaceRefs(ctx, tx, r.kind, r.id, found, nil)
-	if err != nil {
-		return model.ReferenceChanges{}, err
-	}
-	return CountedChanges(ctx, tx, changed)
-}
-
 // EditedTargets is what an edit of an ask's question or a comment's body from previous to body
 // moves beside the edges it inserts or deletes, found being body's references. Every edge such a
 // source writes shows the head of its text as its excerpt (Edges, excerptRunes), so when the edit
@@ -86,7 +57,7 @@ func EditedTargets(previous, body string, found []text.Ref) []Target {
 // replaceRefs reconciles the Dispatch references written by one source with found: targets no
 // longer mentioned are deleted, new ones inserted with insertedAt as created_at (nil: now()), and
 // an edge that persists keeps its created_at and source_seq. It returns the targets whose inbound
-// edges moved — deleted or inserted, oldest state first — so ReplaceCounted can resolve the ones
+// edges moved — deleted or inserted, oldest state first — so its caller can resolve the ones
 // a reader refreshes by name (CountedChanges). It is PlanReplace and Queue back to back, the
 // queued statements run at once as a batch of their own.
 //
@@ -119,7 +90,8 @@ type Replacement struct {
 	changed          []Target
 	held             []Target
 	// owed is the source's id as the re-index queue keys it, "" for a from_id that is no uuid
-	// (a test's synthetic source), which owes nothing: what queueSettleOwed deletes the row of.
+	// (a test's synthetic source), which owes nothing: what queueSettleRefsGrammarOwed deletes
+	// the row of.
 	owed string
 }
 
@@ -186,7 +158,8 @@ func (r Replacement) Held() []Target {
 
 // Queue queues the replacement's writes on a write phase's batch: the delete of the edges found no
 // longer names, the insert of the new ones, and the settlement of what the source owes the
-// re-index queue (queueSettleOwed). A surviving edge keeps its created_at and source_seq.
+// re-index queue (queueSettleRefsGrammarOwed). A surviving edge keeps its created_at and
+// source_seq.
 func (r Replacement) Queue(b *store.WriteBatch) {
 	b.Queue("clear references", `
 		delete from refs
@@ -204,10 +177,10 @@ func (r Replacement) Queue(b *store.WriteBatch) {
 			on conflict (from_kind, from_id, to_kind, to_id) do nothing
 		`, r.fromKind, r.fromID, r.kinds, r.ids, r.insertedAt)
 	}
-	r.queueSettleOwed(b)
+	r.queueSettleRefsGrammarOwed(b)
 }
 
-// queueSettleOwed queues the delete of the row one source owes the re-index queue
+// queueSettleRefsGrammarOwed queues the delete of the row one source owes the re-index queue
 // (refs_grammar_owed), in the write's own transaction, which holds that source's owner: every
 // write of the text was committed before this transaction read it, so whatever enqueued_at the
 // row holds, the text this write indexed is the text the row is owed for. It is the queue's four
@@ -215,7 +188,7 @@ func (r Replacement) Queue(b *store.WriteBatch) {
 // from_kind of every refs row too, so one delete serves them all. The fifth kind, `scope`, names
 // a document whose sources are owed a re-index, not a source whose refs this writes, and only
 // the scope drain settles it. A from_id that is no uuid owes nothing (owed).
-func (r Replacement) queueSettleOwed(b *store.WriteBatch) {
+func (r Replacement) queueSettleRefsGrammarOwed(b *store.WriteBatch) {
 	if r.owed == "" {
 		return
 	}

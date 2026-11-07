@@ -979,7 +979,7 @@ const TRUNCATED_KIND_READS: Readonly<Partial<Record<string, readonly RefreshTarg
 };
 
 /**
- * The reads that carry a changed target's backlinks, which `refs.ReplaceCounted` names in the
+ * The reads that carry a changed target's backlinks, which `refs.CountedChanges` names in the
  * transaction that appends the event: an issue's detail (its count), its references tab and its
  * panel; an ask's read, its thread, the list its row lives in (its issue's asks, or its
  * document's), the Inbox row showing its count, and its panel; a document's panel; a block's

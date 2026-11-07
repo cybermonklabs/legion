@@ -73,8 +73,8 @@ func (s *server) queueLoggedEvent(ledger *docs.Ledger, event model.Event, logins
 	})
 }
 
-// queueReferences is replaceReferences split in two: it plans the reconciliation of
-// fromKind/fromID's references with body (planReferences), here, and queues the delete and insert
+// queueReferences reconciles fromKind/fromID's references in the route's two phases: it plans
+// the reconciliation with body (planReferences), here, and queues the delete and insert
 // that write it. document is the one the source's `#id`s resolve against for a source whose row
 // this transaction has queued, nil for one already stored (refs.NewReaderInScope).
 func (s *server) queueReferences(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, fromKind, fromID, body string, document *string) (model.ReferenceChanges, error) {

@@ -102,7 +102,7 @@ type seededItems struct {
 // than embed's maxInputChars (32,000 runes, stored whole and cut only when sent), an unanswered
 // and an answered ask both with options, and a project document whose latest version is the one
 // that counts. It writes no window: an item's windows are its indexer's to write
-// (refs.IndexBlocks, refs.IndexItem, refs.IndexAskParts), and seedEveryKind writes them as that
+// (refs.PlanBlocks, refs.IndexItem, refs.PlanAskParts), and seedEveryKind writes them as that
 // indexer would.
 func seedItems(t *testing.T, q querier, project string) seededItems {
 	t.Helper()

@@ -24,9 +24,9 @@ import (
 // owed arms (ReconcileBlockIndex) keep D6 at base on this fixture - their largest gap is about
 // 3 ms and their gaps a fraction of their statements, even with hundreds of references - so a
 // test of them could not be red now; the tick's window arm, which writes in transactions of its
-// own, is judged below. RestoreDecidedWordings does no document work under its xid (only
-// refs.ReplaceCounted on short questions), and reaching it needs the reworded state an earlier
-// release leaves.
+// own, is judged below. RestoreDecidedWordings does no document work under its xid (only the
+// reconciliation of its asks' own references on short questions, planAskReferences), and
+// reaching it needs the reworded state an earlier release leaves.
 
 // xidService is a document service on a traced pool of a fresh database, settling after an hour so
 // only the settlement a test runs itself settles.

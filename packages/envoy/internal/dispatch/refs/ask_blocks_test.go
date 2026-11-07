@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 const askPartServer = "https://dispatch.example"
@@ -560,8 +561,12 @@ func TestAnAskWriteReadsItsQuestionsOnce(t *testing.T) {
 
 	tx.queries = nil
 	reader := NewReader(ctx, tx, "ask", ask.ID, askPartServer)
-	if _, err := ReplaceCounted(ctx, tx, reader, ask.Question); err != nil {
-		t.Fatalf("index the ask's question: %v", err)
+	replacement, err := PlanReplace(ctx, tx, "ask", ask.ID, text.Refs(reader.Mentions(ask.Question)), nil)
+	if err != nil {
+		t.Fatalf("plan the ask's question: %v", err)
+	}
+	if _, err := CountedChanges(ctx, tx, replacement.Changed()); err != nil {
+		t.Fatalf("count what the ask's question moved: %v", err)
 	}
 	at := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
 	stored, err := ReadItemIndex(ctx, tx, ItemAsk, ask.ID)
@@ -576,10 +581,11 @@ func TestAnAskWriteReadsItsQuestionsOnce(t *testing.T) {
 		t.Fatalf("count what the ask's parts moved: %v", err)
 	}
 	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		replacement.Queue(b)
 		indexing.Queue(b)
 		return nil
 	}); err != nil {
-		t.Fatalf("index the ask's parts: %v", err)
+		t.Fatalf("index the ask's question and its parts: %v", err)
 	}
 
 	if got := tx.reads(askScope + "::text from asks k"); got != 1 {

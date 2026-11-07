@@ -289,9 +289,9 @@ func planReplacement(ctx context.Context, tx pgx.Tx, fromKind, fromID string, fo
 	return replacement, nil
 }
 
-// planReplaceCounted is refs.ReplaceCounted split in two: it plans the reconciliation of
-// fromKind/fromID's references with found (planReplacement), resolves the counted targets it and
-// moved move, and returns those with the step that writes it.
+// planReplaceCounted is the read half of a reconciliation this package writes: it plans the
+// reconciliation of fromKind/fromID's references with found (planReplacement), resolves the
+// counted targets it and moved move, and returns those with the step that writes it.
 func planReplaceCounted(
 	ctx context.Context,
 	tx pgx.Tx,

@@ -179,7 +179,7 @@ func replaceInTx(ctx context.Context, pool Pool, fromKind, fromID, serverURL str
 // created_at, an ask's question, a comment's body, or an issue message's body, with the row's
 // edited_at where its table has one (asks, comments) and its created_at otherwise. It locks
 // nothing: a caller that orders itself against the edits of that text holds the source's owner
-// lock and runs this statement after it (ReindexOwedItem).
+// lock and runs this statement after it (ReindexOwed).
 func sourceRead(kind, id string) (string, error) {
 	switch kind {
 	case "artifact":
@@ -216,7 +216,7 @@ func sourceText(ctx context.Context, q Queryer, kind, id string) (string, time.T
 
 // readSourceUnderOwner takes the owner lock of reference source kind id (sourceOwner) and runs
 // read, the statement that lock guards, in the statement after it, scanning its one row into dest.
-// It is how a background pass reads a source it is about to re-index (ReindexOwedItem,
+// It is how a background pass reads a source it is about to re-index (ReindexOwed,
 // IndexOwedItemBlocks): the lock excludes every writer of that source, and the read sees what the
 // lock's previous holder committed. A source whose owner is nil - a direct message, whose
 // conversation is no owner - is read with no lock, since nothing rewrites a message's body.
@@ -337,6 +337,13 @@ func (queue OwedQueue) listQuery() string {
 	`
 }
 
+// settleOwedStatement is the delete that settles one row of this queue, guarded by the
+// enqueued_at the row was listed with: both writers of a settlement run it, the drain's own at
+// once (SettleOwed) and the one a write phase queues (queueSettleOwed).
+func (queue OwedQueue) settleOwedStatement() string {
+	return `delete from ` + queue.table + ` where kind = $1 and id = $2::uuid and enqueued_at = $3`
+}
+
 // ListOwed lists at most limit sources queue owes an index, oldest first, and locks nothing.
 func ListOwed(ctx context.Context, q Queryer, queue OwedQueue, limit int) ([]Owed, error) {
 	rows, err := q.Query(ctx, queue.listQuery(), limit)
@@ -362,9 +369,7 @@ func ListOwed(ctx context.Context, q Queryer, queue OwedQueue, limit int) ([]Owe
 // was listed with, and reports whether it did: a write that lands meanwhile moves that time,
 // and the source stays owed for the next pass, which reads its newer text.
 func SettleOwed(ctx context.Context, q Execer, source Owed) (bool, error) {
-	settled, err := q.Exec(ctx, `
-		delete from `+source.Queue.table+` where kind = $1 and id = $2::uuid and enqueued_at = $3
-	`, source.Kind, source.ID, source.EnqueuedAt)
+	settled, err := q.Exec(ctx, source.Queue.settleOwedStatement(), source.Kind, source.ID, source.EnqueuedAt)
 	if err != nil {
 		return false, fmt.Errorf("settle the index %s owes for %s %s: %w", source.Queue.table, source.Kind, source.ID, err)
 	}
@@ -395,8 +400,7 @@ func stillOwed(ctx context.Context, q Queryer, source Owed) (bool, error) {
 // by the enqueued_at the row was listed with, which stillOwed read under the source's owner lock.
 func queueSettleOwed(b *store.WriteBatch, source Owed) {
 	b.Queue(fmt.Sprintf("settle the index %s owes for %s %s", source.Queue.table, source.Kind, source.ID),
-		`delete from `+source.Queue.table+` where kind = $1 and id = $2::uuid and enqueued_at = $3`,
-		source.Kind, source.ID, source.EnqueuedAt)
+		source.Queue.settleOwedStatement(), source.Kind, source.ID, source.EnqueuedAt)
 }
 
 // ReindexOwed reconciles one owed comment's, ask's or issue message's refs with its text, read

@@ -84,7 +84,7 @@ func TestAnApprovalRequestLeavesItsAskWindowedAndCurrent(t *testing.T) {
 }
 
 // askPartBlockIDs is the block id of each part the index holds for ask askID, in part order: the
-// question and each option, as indexAskParts wrote them.
+// question and each option, as the write's plan of the ask's parts wrote them (refs.PlanAskParts).
 func askPartBlockIDs(t *testing.T, database *store.Store, askID string) []string {
 	t.Helper()
 	rows, err := database.Pool.Query(context.Background(), `
