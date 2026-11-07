@@ -298,7 +298,7 @@ test(
 // code's, not a blank line, so it spreads neither the list nor the item around the block.
 
 /** What the browser row reads of a drawn body
- *  (`expectEngineReading`, `indented-code-whitespace-lines.e2e.ts:36-53`). */
+ *  (`expectEngineReading`, `indented-code-whitespace-lines.e2e.ts:37-54`). */
 function codeReading(root: Element): {
   code: string[];
   items: (string | null)[];
@@ -313,7 +313,7 @@ function codeReading(root: Element): {
 
 test("an indented code block's whitespace lines stay in the block and spread no list or item", () => {
   // This document is the one the surviving browser row reads in a past version
-  // (`indented-code-whitespace-lines.e2e.ts:31`), against this same reading: the quoted item's
+  // (`indented-code-whitespace-lines.e2e.ts:32`), against this same reading: the quoted item's
   // code keeps its inner blank line and drops its trailing ones, every other block keeps the
   // whitespace-only lines that hold four columns or more past its own indent, and of its
   // thirteen items the four whose paragraph and code are parted by a blank line are the only

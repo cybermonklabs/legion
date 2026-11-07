@@ -1336,7 +1336,11 @@ type that row holds, since the default body cell doesn't fit Milkdown's header r
 would repeat forever. A hunk in `patches/@milkdown%2Fpreset-gfm@7.22.1.patch` makes preset-gfm's
 table paste rule count a pasted table's columns in its widest row, where upstream counts the last
 row and drops a table whose last row is empty. `e2e/read-back.ts` reads a stored document back through Go
-and through the headless engine (`e2e/engine-reading.ts`, run with bun). Each patch applies to one
+and through the headless engine (`e2e/engine-reading.ts`, run with bun). Its `engineParagraphs`
+answers what a reader sees of each paragraph, which is `readDocument`'s own field: whitespace
+collapsed to one space and trimmed, so a hard break reads as a space and two bodies differing only
+in whitespace read alike. A row holding Go's spelling of a whitespace-sensitive body against the
+engine's reads the stored bytes or `engineTables` instead.
 installed version, and bun ignores a `patchedDependencies` entry for a version that isn't installed
 without a word. So raising `@milkdown/plugin-clipboard` or `@milkdown/preset-gfm` means carrying its
 patch to the new version, and so does a lockfile change that moves prosemirror-tables, a transitive
