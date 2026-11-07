@@ -4940,9 +4940,12 @@ each issue's pod (every role of it alike) and the image probe's.
   To hand a later change to a running agent, start its next generation with `legion claims suspend` and then `legion claims resume`, which resumes its session.
   `legion claims stop` is not a second way to do that:
   it ends the agent's process and retires its claim, and for a phase worker no pass the daemon makes on its own starts that claim again, not even the one that refills a slot whose worker holds no task.
+  The stop leaves the issue where it stood, in its phase and holding its admission slot, with no worker in it:
+  a retired claim is no claim failure, so the stop writes no workflow fact and the issue's architect is not told.
   What starts a stopped phase worker again is the workflow's own next start of its role:
-  a backward move into its phase, the retry of a held issue, the promotion of a re-admitted root, or a production check's look after the issue's merge;
-  each of these brings the worker back in the session the claim kept.
+  a backward move into its phase, the promotion of a re-admitted root, or a production check's look after the issue's merge;
+  the retry of a held issue is a fourth, and it starts the worker only after something else has held the issue, since the stop holds nothing.
+  Each of these brings the worker back in the session the claim kept.
 
 - **The Legion machine-user sign-in.**
   `legion model-token` is a model `apiKey` command that signs a pod in to Cognito with its projected service-account token and prints the access token;
