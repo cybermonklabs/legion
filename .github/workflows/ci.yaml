@@ -683,9 +683,8 @@ jobs:
             # bundles contracts and envoy-client, stages skills/ and writes their notices, the
             # GitHub App helper internal/api/real_github_test.go:88 sources, and the examples and
             # docs its tests hold to the code (cmd/legion/config_example_test.go:24,
-            # internal/config/controller_test.go:179, internal/config/kubernetes_test.go:1322,
-            # internal/runtime/sandbox/reclaim_doc_test.go:144). The root manifest, lockfile and
-            # patches the packs resolve through are bun_install's.
+            # internal/config/controller_test.go:179, internal/config/kubernetes_test.go:1322).
+            # The root manifest, lockfile and patches the packs resolve through are bun_install's.
             daemon_go_tests: &daemon_go_tests
               - *go_workspace
               - 'packages/daemon/**'
@@ -705,6 +704,12 @@ jobs:
               - 'deploy/kubernetes/daemon/controller.yaml.example'
               - 'deploy/kubernetes/daemon/legion.yaml.example'
               - 'deploy/kubernetes/operator-route/pod.yml'
+              # docs/kubernetes.md is here only while this job's `go test ./...` still compiles
+              # packages/daemon/internal/textcheck: internal/runtime/sandbox stopped reading the
+              # guide and reads reclaim_doc_extract.txt, the copy committed beside it, and the one
+              # reader left is internal/textcheck/reclaim_doc_test.go. This entry goes with that
+              # package, in the change that gives it a job of its own and takes it out of this
+              # job's ./...; until then a documentation-only edit still starts the daemon's tests.
               - 'docs/kubernetes.md'
 
             # `go vet -tags e2e ./...` in packages/daemon.
@@ -1207,7 +1212,7 @@ jobs:
               - *bun_install
               - *go_workspace
               # Its unit step tests every package of the envoy module, and
-              # internal/dispatch/api/lock_level_test.go:120-133 walks every .go file under it.
+              # internal/dispatch/api/lock_level_test.go:133-146 walks every .go file under it.
               - 'packages/envoy/**'
               # pmdoc's tests run pmdoc/gen, which imports the editor
               # (internal/dispatch/pmdoc/update_test.go:236-239), whose src/block-pointers.ts
@@ -1225,7 +1230,12 @@ jobs:
               - 'packages/contracts/fixtures/live/**'
               - 'packages/contracts/fixtures/decision-blocks/**'
               - 'packages/contracts/fixtures/checks-settlement/**'
-              # The claim list its fence reads: internal/broker/oauth/claims_doc_test.go:161.
+              # docs/kubernetes.md is here only while this job's unit step still compiles
+              # packages/envoy/internal/textcheck: internal/broker/oauth stopped reading the guide
+              # and reads claims_doc_extract.txt, the copy committed beside it, and the one reader
+              # left is internal/textcheck/claims_doc_test.go. This entry goes with that package,
+              # in the change that gives it a job of its own and takes it out of this job's ./...;
+              # until then a documentation-only edit still starts the envoy Go lane.
               - 'docs/kubernetes.md'
               - '.github/actions/pull-test-images/**'
               # Its natslive step takes that tag's test list from this script at run time.

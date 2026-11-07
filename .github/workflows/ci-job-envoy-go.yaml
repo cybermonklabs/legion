@@ -98,25 +98,26 @@ jobs:
             packages/envoy/internal/tests3/seaweedfs.go Image
       # The tests the race detector makes impossible, which the race job of each of these packages
       # therefore cannot make, so envoy-go keeps a plain run of exactly them: internal/bus counts
-      # HoldsSeed's allocations, which the race runtime's own allocations would be counted into;
-      # the API's two guards read the module's source, to which the detector adds nothing; and the
-      # documents package measures the heap a room keeps, which the detector's shadow memory and
-      # instrumentation move. Those are out of the race build altogether (//go:build !race), and
-      # the two render-reuse storms run fewer seeds and fewer edits under it (raceEnabled), so this
-      # is their full-size run. It comes before the unit step for the reason the API package's own
-      # run did: run beside the other package binaries, its Postgres-backed tests and the
-      # room-memory measurements queue their per-test database cleanup on the service's one
-      # checkpointer, and the API's live-feed and delivery-hub tests wait for the event log's safe
-      # horizon, which any open transaction on this job's Postgres delays. The three -run lists are
-      # derived in .github/scripts/ci_job_reads.py from the race lane's own packages and those
-      # files' //go:build !race and raceEnabled, so a test added to either and missing here fails
-      # the ci-filters job naming this step. Measured over three runs on a two-vCPU pod: the bus
-      # under a tenth of a second, the API 8 to 10 s, the documents package 92 to 127 s, so 10
-      # minutes each is ample.
+      # HoldsSeed's allocations, which the race runtime's own allocations would be counted into,
+      # and the documents package measures the heap a room keeps, which the detector's shadow
+      # memory and instrumentation move. Those are out of the race build altogether
+      # (//go:build !race), and the two render-reuse storms run fewer seeds and fewer edits under
+      # it (raceEnabled), so this is their full-size run. The API's six source guards carry that
+      # tag too and are deliberately not here: they read the module's source, the text-check job
+      # runs their eleven tests by name, and ci_job_reads.py's TEXT_CHECK_TESTS leaves exactly
+      # those out of this step rather than have each of them run twice. It comes before the unit
+      # step for the reason the API package's own run did: run beside the other package binaries,
+      # its Postgres-backed tests and the room-memory measurements queue their per-test database
+      # cleanup on the service's one checkpointer, and the API's live-feed and delivery-hub tests
+      # wait for the event log's safe horizon, which any open transaction on this job's Postgres
+      # delays. The two -run lists are derived in .github/scripts/ci_job_reads.py from the race
+      # lane's own packages and those files' //go:build !race and raceEnabled, so a test added to
+      # either and missing here fails the ci-filters job naming this step. Measured over three
+      # runs on a two-vCPU pod: the bus under a tenth of a second and the documents package 92 to
+      # 127 s, so 10 minutes each is ample.
       - name: Test what the race build cannot run at all or at full size
         run: |
           go test -count=1 -timeout 10m -run '^(TestHoldsSeedAllocatesAtMostOneCopyPerDecoding)$' ./internal/bus
-          go test -count=1 -timeout 10m -run '^(TestCopyLockComesBeforeEveryPendingRowAndEvent|TestCopyLockOrderGuardFollowsTheLockTakers|TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks|TestTheKeyedWriteGuardSeesWhatItGuards)$' ./internal/dispatch/api
           go test -count=1 -timeout 10m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$' ./internal/dispatch/docs
         working-directory: packages/envoy
       # Everything the three race jobs run is left out here, since they run it under the detector,

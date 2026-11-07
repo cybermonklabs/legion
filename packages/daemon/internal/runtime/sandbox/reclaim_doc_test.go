@@ -3,7 +3,6 @@ package sandbox
 import (
 	"os"
 	"path"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -18,44 +17,53 @@ import (
 // full, and the bytes are in a directory nobody wrote down. Six fixes to this paragraph in one
 // review were each a rendered path missing from it, found by a reader rather than by a check.
 //
-// The two lists are read as lists: a delete-list path is a bullet's whole content, an exempt path
-// is the one a bullet opens with, and a path named later inside a bullet's prose is on neither
-// list. That is not fastidiousness. An earlier version of this test asked only whether the
-// paragraph mentioned a path anywhere between its markers, and it passed with /legion/uv/cache
-// struck from the delete list, because an exemption's reason happens to mention it — the check
-// could not fail where it mattered, which is the defect it was written against.
+// This half of that guarantee does not read the guide. It reads reclaim_doc_extract.txt, this
+// package's own copy of the paragraph's two lists, which internal/textcheck's
+// TestTheReclaimExtractIsTheGuidesReclaimParagraph holds equal to the paragraph itself. The split
+// is what takes docs/kubernetes.md out of this job's filter: a declared read applies to every
+// compiled source file of a run, so a test that reads the guide starts the whole daemon Go lane on
+// a documentation-only edit however the run selects it, and only a test that does not read it at
+// all stops doing that.
+//
+// Reading the paragraph's shape — which bullet is a path the operator removes, which word inside
+// an exemption's reason is not a path on any list, where the paragraph ends — is that other test's
+// job, on the guide itself. That reading is not fastidiousness: an earlier version of this test
+// asked only whether the paragraph mentioned a path anywhere between its markers, and it passed
+// with /legion/uv/cache struck from the delete list, because an exemption's reason happens to
+// mention it. None of it is parsed here. This file reads a list of paths under two headings, which
+// is all the extract is.
 //
 // A delete-list path covers what sits under it, which is how `/legion/go` accounts for GOCACHE and
 // GOMODCACHE, and that coverage is the hole a coarsened bullet used to slip through: `/legion/uv`
 // in place of `/legion/uv/cache` accounted for every rendered path while telling the operator to
-// delete `/legion/uv/python/<issue>`, the interpreters an exemption exists to keep.
-// TestTheReclaimParagraphNeverDeletesWhatItExempts closes that one.
+// delete `/legion/uv/python/<issue>`, the interpreters an exemption exists to keep. The check that
+// closes that one, TestTheReclaimParagraphNeverDeletesWhatItExempts, is a property of the two
+// lists rather than of a rendered directory, so it went to internal/textcheck with them.
 //
-// What the checks cannot do: they read the lists' structure, not their grounds. They can say that
-// /legion/scratch/data is accounted for; they cannot say the sentence giving the reason is true,
-// and an earlier head passed a check like this one carrying an exemption whose stated reason the
-// code refuted. They also do not care which of the two lists carries a path, so a path moved from
-// the delete list to the exemptions, or the reverse, still passes. Both are a reader's job.
-//
-// The markers bound the search to that paragraph. A rendered path mentioned anywhere else in a
-// 4000-line document would otherwise satisfy the check while the remedy itself stays silent about
-// it, which is the same miss wearing a pass.
+// What this cannot do: it reads the lists, not their grounds. It can say that /legion/scratch/data
+// is accounted for; it cannot say the sentence giving the reason is true, and an earlier head
+// passed a check like this one carrying an exemption whose stated reason the code refuted. It also
+// does not care which of the two lists carries a path, so a path moved from the delete list to the
+// exemptions, or the reverse, still passes. Both are a reader's job.
 const (
-	reclaimParagraphStart = "The remedy for a volume near full is manual"
-	reclaimParagraphEnd   = "As for the rest:"
-	reclaimDeleteHeading  = "Delete list"
-	reclaimExemptHeading  = "Exempt, each for a reason"
+	// reclaimExtract is read from this package's own directory, where the file sits beside the
+	// code it is about and needs no declared read of its own.
+	reclaimExtract = "reclaim_doc_extract.txt"
+	// The two lines of it that open a list. The same two open the extract's lists for the test
+	// that holds the file to the guide, in the other module's own copy of this parse.
+	reclaimDeleteList = "delete:"
+	reclaimExemptList = "exempt:"
 )
 
 // Every directory roleEnvironment and the pod's uv variables put on the issue's volume is on the
-// delete list or in an exemption of docs/kubernetes.md's reclaim paragraph. The rendered set comes
-// from the renderer, never from a list written beside it: a list would have to be edited by whoever
-// adds a cache, which is exactly the edit that gets forgotten.
+// delete list or in an exemption of the reclaim paragraph, as reclaim_doc_extract.txt copies the
+// two. The rendered set comes from the renderer, never from a list written beside it: a list would
+// have to be edited by whoever adds a cache, which is exactly the edit that gets forgotten.
 func TestTheReclaimParagraphNamesEveryDirectoryTheRendererPutsOnTheIssueVolume(t *testing.T) {
 	const issue = "LEGION-1234"
 	const role = claim.RoleImplementer
 
-	deleted, exempt := reclaimParagraphLists(t)
+	deleted, exempt := reclaimExtractLists(t)
 	for _, dir := range issueVolumeDirectories(issue, role) {
 		// A per-role or per-issue directory reaches the prose as a placeholder, since no document can
 		// name every role and every issue. Rewrite the rendered value's last segment to the form the
@@ -72,37 +80,12 @@ func TestTheReclaimParagraphNamesEveryDirectoryTheRendererPutsOnTheIssueVolume(t
 		isExempt := namesPathOrAncestor(exempt, documented)
 		switch {
 		case onDeleteList && isExempt:
-			t.Errorf("docs/kubernetes.md's reclaim paragraph both deletes and exempts %s: the operator is "+
+			t.Errorf("the reclaim paragraph both deletes and exempts %s: the operator is "+
 				"told to remove it and to leave it, so one of the two bullets is wrong", documented)
 		case !onDeleteList && !isExempt:
-			t.Errorf("docs/kubernetes.md's reclaim paragraph accounts for %s in neither list, though the "+
+			t.Errorf("the reclaim paragraph accounts for %s in neither list, though the "+
 				"renderer puts it on the issue's volume: it belongs on the delete list or in an exemption, "+
 				"and a mention inside an exemption's reason is neither", documented)
-		}
-	}
-}
-
-// No path the delete list names is an ancestor of, or equal to, a path the exemptions hold back.
-// This is a property of the two lists rather than of a rendered directory, so it is its own test:
-// the check above walks what the renderer puts on the volume and would never visit the pair that
-// collides. An operator follows the remedy literally — `rm -rf` on each delete-list bullet — so a
-// bullet written one segment too coarse removes the exemption underneath it while the same
-// paragraph is still telling the reader to keep it, and the accounting check sees only that every
-// rendered path is covered.
-//
-// The walk goes all the way up to TreeRoot, unlike namesPathOrAncestor, which stops short of it:
-// TreeRoot is no coverage for a rendered path, but a delete list that names it would still have the
-// operator remove every exemption in the paragraph, and that is the harm this test is about.
-func TestTheReclaimParagraphNeverDeletesWhatItExempts(t *testing.T) {
-	deleted, exempt := reclaimParagraphLists(t)
-	for keep := range exempt {
-		for p := keep; strings.HasPrefix(p, TreeRoot); p = path.Dir(p) {
-			if !deleted[p] {
-				continue
-			}
-			t.Errorf("docs/kubernetes.md's reclaim paragraph deletes %s, which holds %s that the same "+
-				"paragraph exempts: an operator removing the delete-list bullet takes the exemption with "+
-				"it, so the bullet is a segment too coarse", p, keep)
 		}
 	}
 }
@@ -131,123 +114,60 @@ func issueVolumeDirectories(issue string, role claim.Role) []string {
 	return dirs
 }
 
-// reclaimParagraphLists reads the paragraph's two markdown lists: the paths the delete list tells
-// the operator to remove, and the paths the exemptions hold back. A delete-list path is a bullet's
-// entire content and an exempt path is the one its bullet opens with, so the paths an exemption's
-// reason goes on to mention — other halves, neighbouring caches — land in neither set and cannot
-// stand in for a bullet that is missing.
-func reclaimParagraphLists(t *testing.T) (deleted, exempt map[string]bool) {
+// reclaimExtractLists reads the extract's two lists: the paths the delete list tells the operator
+// to remove, and the paths the exemptions hold back. A line ending in a colon opens a list, every
+// other line is one path, and the blank lines and the `#` header saying what the file is are passed
+// over. The extract is written to be read that way, so this parse is a split and a switch and
+// shares no code with the markdown reading that holds the file to the guide: two parsers that agree
+// with each other while both drift are what a copy of a document is most at risk of.
+func reclaimExtractLists(t *testing.T) (deleted, exempt map[string]bool) {
 	t.Helper()
-	// The document is at the repository root, five directories above this package. Read it, and fail
-	// when it cannot be read: a skip here would be an absence that reads exactly like a pass, and
-	// this check exists because a silent absence is what the paragraph kept shipping.
-	doc, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "..", "docs", "kubernetes.md"))
+	// Read it and fail when it cannot be read: a skip here would be an absence that reads exactly
+	// like a pass, and this check exists because a silent absence is what the paragraph kept
+	// shipping.
+	text, err := os.ReadFile(reclaimExtract)
 	if err != nil {
-		t.Fatalf("read docs/kubernetes.md: %v", err)
+		t.Fatalf("read %s: %v", reclaimExtract, err)
 	}
-	lines := strings.Split(string(doc), "\n")
-	// The markers are prose and the document is hard-wrapped, so they straddle line ends: find them
-	// in a flattened copy and carry the match back to the line it starts on. The lists themselves are
-	// read from the lines, because a bullet is a shape of a line and flattening would erase it.
-	flat, lineOf := flattenKeepingLines(lines)
-	startOffset := strings.Index(flat, reclaimParagraphStart)
-	if startOffset < 0 {
-		t.Fatalf("docs/kubernetes.md has no %q: the reclaim paragraph was reworded, and this check "+
-			"stops checking the moment it cannot find it", reclaimParagraphStart)
-	}
-	endOffset := strings.Index(flat[startOffset:], reclaimParagraphEnd)
-	if endOffset < 0 {
-		t.Fatalf("docs/kubernetes.md has no %q after %q: the reclaim paragraph's end moved, and an "+
-			"unbounded search would pass on a mention anywhere in the document",
-			reclaimParagraphEnd, reclaimParagraphStart)
-	}
-	region := lines[lineOf[startOffset] : lineOf[startOffset+endOffset]+1]
-
 	deleted, exempt = map[string]bool{}, map[string]bool{}
 	var into map[string]bool
-	var wholeBullet bool
-	// The loop advances i itself over a wrapped bullet's continuation lines, so it stays explicit.
-	for i := 0; i < len(region); i++ {
-		line := strings.TrimRight(region[i], " ")
-		switch {
-		case strings.HasPrefix(line, reclaimDeleteHeading):
-			into, wholeBullet = deleted, true
-			continue
-		case strings.HasPrefix(line, reclaimExemptHeading):
-			into, wholeBullet = exempt, false
+	for i, line := range strings.Split(string(text), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		if into == nil || !strings.HasPrefix(line, "- ") {
+		switch line {
+		case reclaimDeleteList:
+			into = deleted
+			continue
+		case reclaimExemptList:
+			into = exempt
 			continue
 		}
-		// A wrapped bullet continues on the indented lines under it, and they are part of its content:
-		// a delete-list bullet that carries prose is not a bare path, whatever its first line looks
-		// like.
-		bullet := strings.TrimSpace(strings.TrimPrefix(line, "- "))
-		for i+1 < len(region) && strings.HasPrefix(region[i+1], " ") && strings.TrimSpace(region[i+1]) != "" {
-			i++
-			bullet += " " + strings.TrimSpace(region[i])
+		if into == nil {
+			t.Fatalf("%s:%d: %q stands under neither %q nor %q, so which of the two lists it is on "+
+				"cannot be read", reclaimExtract, i+1, line, reclaimDeleteList, reclaimExemptList)
 		}
-		if named, ok := bulletPath(bullet, wholeBullet); ok {
-			into[named] = true
+		// TreeRoot itself is a path a list may name: it covers no rendered directory
+		// (namesPathOrAncestor stops short of it), but a delete list naming it swallows every
+		// exemption, which is a reading the lists must be held to.
+		if !strings.HasPrefix(line, TreeRoot+"/") && line != TreeRoot {
+			t.Fatalf("%s:%d: %q is no path under %s, where this layout mounts the issue's volume: the "+
+				"lists are the paths the remedy names and nothing else", reclaimExtract, i+1, line, TreeRoot)
 		}
+		into[line] = true
 	}
-
-	if len(deleted)+len(exempt) == 0 {
-		t.Fatalf("the reclaim paragraph between %q and %q names no path at all, so the markers are no "+
-			"longer bounding the paragraph they were written for", reclaimParagraphStart, reclaimParagraphEnd)
-	}
-	// An empty list is this check failing open: the heading is still there, the parse matched nothing,
+	// An empty list is this check failing open: the file is still there, the parse matched nothing,
 	// and every rendered path would then be reported against a list that is not being read.
 	if len(deleted) == 0 {
-		t.Fatalf("the reclaim paragraph's %q list yields no path: its bullets are no longer one "+
-			"backticked absolute path each, and nothing is being held to it", reclaimDeleteHeading)
+		t.Fatalf("%s names no path under %q: its copy of the delete list is gone, and nothing is "+
+			"being held to it", reclaimExtract, reclaimDeleteList)
 	}
 	if len(exempt) == 0 {
-		t.Fatalf("the reclaim paragraph's %q list yields no path: its bullets no longer open with a "+
-			"backticked absolute path, and nothing is being held to it", reclaimExemptHeading)
+		t.Fatalf("%s names no path under %q: its copy of the exemptions is gone, and nothing is "+
+			"being held to it", reclaimExtract, reclaimExemptList)
 	}
 	return deleted, exempt
-}
-
-// bulletPath is the path a bullet puts on its list. A delete-list bullet is the path and nothing
-// else, since the operator removes what the bullet says; an exemption opens with the path it holds
-// back and then argues for it, so only the opening code span counts. TreeRoot itself is a path a
-// bullet can name: it covers no rendered directory (namesPathOrAncestor stops short of it), but a
-// delete list naming it swallows every exemption, and that is a reading the lists must be held to.
-func bulletPath(bullet string, whole bool) (string, bool) {
-	if !strings.HasPrefix(bullet, "`") {
-		return "", false
-	}
-	named, rest, closed := strings.Cut(bullet[1:], "`")
-	if !closed || !strings.HasPrefix(named, TreeRoot+"/") && named != TreeRoot {
-		return "", false
-	}
-	if whole && rest != "" {
-		return "", false
-	}
-	return named, true
-}
-
-// flattenKeepingLines collapses the document's whitespace so prose that was hard-wrapped reads as
-// one line, and records for every byte of the result the line it came from, which is what turns a
-// marker found in the flat text back into a bound on the lines the lists live in.
-func flattenKeepingLines(lines []string) (string, []int) {
-	var flat strings.Builder
-	lineOf := make([]int, 0, len(lines)*8)
-	for i, line := range lines {
-		for _, field := range strings.Fields(line) {
-			if flat.Len() > 0 {
-				flat.WriteByte(' ')
-				lineOf = append(lineOf, i)
-			}
-			flat.WriteString(field)
-			for range len(field) {
-				lineOf = append(lineOf, i)
-			}
-		}
-	}
-	return flat.String(), lineOf
 }
 
 // namesPathOrAncestor accepts a directory a list covers by naming a parent of it, which is how the

@@ -1,3 +1,16 @@
+//go:build !race
+
+// The guard is static: it reads the module's source, so the race detector adds nothing to it,
+// and leaving it out of the -race run spares that job compiling the guard and parsing every .go
+// file of packages/envoy a second time.
+//
+// The tag is here for that saving rather than for the compiler. This file declares the toolkit
+// the other five guards share — moduleSource, moduleSources, stringConstants, sqlStatements,
+// literalText, sqlWhitespace — and an untagged file whose declarations only tagged files use
+// still compiles, so the race build would drop those five and keep this one. What it would keep
+// with it is the work the tag exists to avoid, and TestNoForUpdateOnOwnerTables would run twice:
+// once under the detector, and once in the text-check run that names these eleven guards.
+
 package api
 
 import (

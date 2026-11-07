@@ -2,11 +2,9 @@ package oauth
 
 import (
 	"context"
-	"fmt"
 	"maps"
 	"net/url"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -26,22 +24,24 @@ import (
 // the author did not mean. Neither shows up in a test of the exchange itself, because the exchange
 // is right in both cases — only the document is wrong.
 //
-// What is compared: the names the document's bullets open with, against the keys decide writes into
-// an exchange session's extra claims, which is where this provider's opaque tokens carry them. The
-// code's side is collected by calling decide for each kind of subject token — a pod's, whose entry
-// gives the named project scope, a machine access token's, whose scope is the person's, and a
-// machine's Google identity token, whose entry names a service — and taking the union, since
-// `project` is written under one scope and deleted under the other. So a claim a new scope or a
-// new decision adds is a claim this fails until the list names it. The one claim no decision
-// writes, the launcher credential a machine's exchange mints (machineCredential, which runs after
-// decide because the credential does not exist until the request's key is bound), is added to that
-// union by name; what proves it is written is the live exchange in cmd/broker.
+// This half of that guarantee does not read the guide. It reads claims_doc_extract.txt, this
+// package's own copy of that list, which internal/textcheck's TestTheClaimExtractIsTheGuidesClaimList
+// holds equal to the guide's bullets; the two together say what the one test used to say. The
+// split is what takes docs/kubernetes.md out of this job's filter: a declared read applies to
+// every compiled source file of a run, so a test that reads the guide starts the whole envoy Go
+// lane on a documentation-only edit however the run selects it, and only a test that does not
+// read it at all stops doing that.
 //
-// A claim is the backticked name a bullet opens with, followed by the em dash the list's shape puts
-// after it, and a backticked word later in a bullet's prose is not a claim. The `project_scope`
-// bullet is why: it reads "`named` or `person`, which says what `project` means", so a check that
-// asked whether the section mentions a name anywhere between its bounds would find `project` there
-// and pass with the `project` bullet deleted — the miss wearing a pass.
+// What is compared: the names the extract lists, against the keys decide writes into an exchange
+// session's extra claims, which is where this provider's opaque tokens carry them. The code's side
+// is collected by calling decide for each kind of subject token — a pod's, whose entry gives the
+// named project scope, a machine access token's, whose scope is the person's, and a machine's
+// Google identity token, whose entry names a service — and taking the union, since `project` is
+// written under one scope and deleted under the other. So a claim a new scope or a new decision
+// adds is a claim this fails until the list names it. The one claim no decision writes, the
+// launcher credential a machine's exchange mints (machineCredential, which runs after decide
+// because the credential does not exist until the request's key is bound), is added to that union
+// by name; what proves it is written is the live exchange in cmd/broker.
 //
 // What this cannot do: it compares two sets of names, and nothing more. It does not read a bullet's
 // meaning, so a claim whose description is stale, wrong, or swapped with its neighbour's passes
@@ -50,14 +50,10 @@ import (
 // subject kinds it calls decide with, so a claim only a workflow run's token could carry would be
 // missed. A reader still owns all of that. What it does own is the two sets drifting apart while
 // each side looks right on its own.
-const (
-	// claimsDocHeading is the section's heading, matched as a whole line: a heading is a line of
-	// its own, so the list is reached without parsing the hard-wrapped prose above it.
-	claimsDocHeading = "#### The Dispatch identity the broker can issue"
-	// claimsDocSeparator follows the name a bullet opens with. See the comment above: it is the
-	// shape that distinguishes the claim a bullet documents from the code spans its prose uses.
-	claimsDocSeparator = " — "
-)
+//
+// claimsExtractFile is read from this package's own directory, where the file sits beside the code
+// it is about and needs no declared read of its own.
+const claimsExtractFile = "claims_doc_extract.txt"
 
 // The listed identity and the two subject tokens decide is asked to decide on here. The account
 // entry fixes no session, so the request names one, and the pod token carries the audience the
@@ -83,19 +79,20 @@ const (
 	claimsSignInDomain   = "example.com"
 )
 
-// The claims docs/kubernetes.md lists are exactly the claims an exchanged token carries. Both sides
-// are read: the document's bullets, and the keys decide writes for the two project scopes a token
-// can be issued under.
+// The claims claims_doc_extract.txt lists are exactly the claims an exchanged token carries. Both
+// sides are read: the extract's names, and the keys decide writes for the two project scopes a
+// token can be issued under.
 func TestTheDocumentedClaimsAreTheClaimsAnExchangedTokenCarries(t *testing.T) {
-	documented := documentedClaims(t)
+	documented := extractedClaims(t)
 	issued := issuedClaims(t)
 	slices.Sort(documented)
 	if !slices.Equal(documented, issued) {
-		t.Fatalf("docs/kubernetes.md's claim list and the claims the exchange decides on disagree:\n"+
+		t.Fatalf("%s's claim list and the claims the exchange decides on disagree:\n"+
 			"  documented: %s\n"+
 			"  issued:     %s\n"+
-			"the list under %q is what a resource server writes its authorization against",
-			strings.Join(documented, ", "), strings.Join(issued, ", "), claimsDocHeading)
+			"that list is docs/kubernetes.md's, which is what a resource server writes its "+
+			"authorization against",
+			claimsExtractFile, strings.Join(documented, ", "), strings.Join(issued, ", "))
 	}
 }
 
@@ -200,105 +197,35 @@ func issuedClaims(t *testing.T) []string {
 	return slices.Sorted(maps.Keys(issued))
 }
 
-// documentedClaims reads the claim names from the bullet list under claimsDocHeading, in the list's
-// order: the backticked name each bullet opens with, and only that one. A name the list carries
-// twice is returned twice, so the caller's slices.Equal fails on it rather than a set hiding it.
-func documentedClaims(t *testing.T) []string {
+// extractedClaims reads the claim names from claims_doc_extract.txt, in the file's order: one name
+// per line, with the blank lines and the `#` header passed over. A name the file carries twice is
+// returned twice, so the caller's slices.Equal fails on it rather than a set hiding it.
+//
+// The parse is a split and a filter because the extract is written to be parsed that way. It knows
+// nothing of the guide's bullets, its backticks or its em dash — reading that shape is
+// internal/textcheck's job, on the guide itself — so the two halves of this check share no parser
+// that could agree with itself while both drift.
+func extractedClaims(t *testing.T) []string {
 	t.Helper()
-	// The document is at the repository root, five directories above this package. Read it, and
-	// fail when it cannot be read: a skip here would be an absence that reads exactly like a pass,
-	// and a silent absence is what this check exists to stop.
-	doc, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "..", "docs", "kubernetes.md"))
+	// Read it and fail when it cannot be read: a skip here would be an absence that reads exactly
+	// like a pass, and a silent absence is what this check exists to stop.
+	text, err := os.ReadFile(claimsExtractFile)
 	if err != nil {
-		t.Fatalf("read docs/kubernetes.md: %v", err)
+		t.Fatalf("read %s: %v", claimsExtractFile, err)
 	}
-	claims, err := claimListNames(string(doc))
-	if err != nil {
-		t.Fatalf("docs/kubernetes.md %v", err)
-	}
-	return claims
-}
-
-// claimListNames reads the claim names from the first bullet list under claimsDocHeading in doc, in
-// the list's order. The list runs through the blank lines between its items and the indented lines
-// of a wrapped item, and ends at the prose under it.
-func claimListNames(doc string) ([]string, error) {
-	lines := strings.Split(doc, "\n")
-	heading := slices.Index(lines, claimsDocHeading)
-	if heading < 0 {
-		return nil, fmt.Errorf("has no line %q: the section holding the claim list was renamed, "+
-			"and this check stops checking the moment it cannot find it", claimsDocHeading)
-	}
-
 	var claims []string
-	// The list is the section's first one: the prose lines between the heading and it are skipped.
-	for i := heading + 1; i < len(lines); i++ {
-		line := strings.TrimRight(lines[i], " ")
-		if len(claims) > 0 && (line == "" || strings.HasPrefix(line, " ")) {
+	for _, line := range strings.Split(string(text), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		if !strings.HasPrefix(line, "- ") {
-			if len(claims) > 0 {
-				break
-			}
-			if strings.HasPrefix(line, "#") {
-				return nil, fmt.Errorf("reaches %q under %q with no bullet list between them: "+
-					"the claims are no longer a list, and nothing is being held to them", line, claimsDocHeading)
-			}
-			continue
-		}
-		bullet := strings.TrimSpace(strings.TrimPrefix(line, "- "))
-		inner, opened := strings.CutPrefix(bullet, "`")
-		name, rest, closed := strings.Cut(inner, "`")
-		if !opened || !closed || !strings.HasPrefix(rest, claimsDocSeparator) {
-			return nil, fmt.Errorf("line %d of the claim list is %q, which does not open with a "+
-				"backticked claim name followed by %q: the list's shape is what tells this check "+
-				"which of a bullet's code spans is the claim it documents",
-				i+1, line, strings.TrimSpace(claimsDocSeparator))
-		}
-		claims = append(claims, name)
+		claims = append(claims, line)
 	}
-
-	// An empty list is this check failing open: the heading is still there, the parse matched
+	// An empty extract is this check failing open: the file is still there, the parse matched
 	// nothing, and every issued claim would then be reported against a list nobody is reading.
 	if len(claims) == 0 {
-		return nil, fmt.Errorf("names no claim under %q: the bullet list the section promises "+
-			"is gone or no longer a list, and nothing is being held to it", claimsDocHeading)
+		t.Fatalf("%s names no claim at all: the copy of docs/kubernetes.md's list is gone from it, "+
+			"and nothing is being held to that list", claimsExtractFile)
 	}
-	return claims, nil
-}
-
-// The claim list is read whether its items follow one another directly or stand apart with a blank
-// line between them, as the guide's one-sentence-per-line layout writes every list; an item wrapped
-// onto an indented line is still one item; and the list ends at the prose under it, so a later
-// list in the same section is never read as the claims.
-func TestClaimListNamesReadsTightAndBlankSeparatedLists(t *testing.T) {
-	const intro = claimsDocHeading + "\n\nAn issued token carries these claims and no others:\n\n"
-	const after = "\nThe subject token's own kind decides those claims.\n\n- `other` — a later list, not a claim.\n"
-	want := []string{"session", "person", "project_scope", "project"}
-	for _, shape := range []struct{ name, list string }{{
-		name: "tight",
-		list: "- `session` — the session.\n" +
-			"- `person` — the person.\n" +
-			"- `project_scope` — `named` or `person`, which says what `project` means.\n" +
-			"- `project` — the one project key.\n" +
-			"  A `person` token carries none.\n",
-	}, {
-		name: "blank-separated",
-		list: "- `session` — the session.\n\n" +
-			"- `person` — the person.\n\n" +
-			"- `project_scope` — `named` or `person`, which says what `project` means.\n\n" +
-			"- `project` — the one project key.\n" +
-			"  A `person` token carries none.\n",
-	}} {
-		t.Run(shape.name, func(t *testing.T) {
-			got, err := claimListNames(intro + shape.list + after)
-			if err != nil {
-				t.Fatalf("claimListNames: %v", err)
-			}
-			if !slices.Equal(got, want) {
-				t.Fatalf("claimListNames read %v, want %v", got, want)
-			}
-		})
-	}
+	return claims
 }

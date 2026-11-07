@@ -268,8 +268,8 @@ PACK_READS = [  # bun pm pack of pi-envoy / pi-legion runs their prepack (script
 PMDOC_GEN = [f"{ENVOY}/internal/dispatch/pmdoc/gen/**", "packages/proof-editor/**", CONTRACTS_SRC, "package.json", "bun.lock", "patches/**"]
 BROKER_REFGEN_DIRS = ("internal/broker/api", "internal/broker/helper", "internal/broker/config", "internal/broker/approval", "cmd/broker", "cmd/agent-secrets")
 MODULE_SOURCES = [Read(f"{ENVOY}/**", "internal/dispatch/api/lock_level_test.go's moduleSources walks every non-test .go file "
-                                      "under packages/envoy (infra included); used by :75, event_insert_guard_test.go:32, "
-                                      "review_write_guard_test.go:44")]
+                                      "under packages/envoy (infra included); used by :88, event_insert_guard_test.go:37, "
+                                      "review_write_guard_test.go:49")]
 
 
 def legion_build(why):
@@ -315,7 +315,6 @@ RULES = {
         ("deploy/kubernetes/operator-route/pod.yml", "internal/runtime/sandbox/operatorpod_test.go:25"),
         (f"{FIX}/dispatch-public-url.json", "internal/runtime/sandbox/operatorpod_test.go:225"),
         (f"{DAEMON}/docker/worker.Dockerfile", "internal/runtime/sandbox/operatorpod_test.go:287")),
-    f"{DAEMON}/internal/runtime/sandbox/reclaim_doc_test.go": reads(("docs/kubernetes.md", "internal/runtime/sandbox/reclaim_doc_test.go:144")),
     f"{DAEMON}/internal/runtime/sandbox/boundary_test.go": [legion_build("internal/runtime/sandbox/boundary_test.go:643 go build .../daemon/cmd/legion")],
     f"{DAEMON}/internal/runtime/tmux/tmux_real_test.go": [
         legion_build("internal/runtime/tmux/tmux_real_test.go:74 go build .../daemon/cmd/legion"),
@@ -331,6 +330,10 @@ RULES = {
         (f"{DAEMON}/**", "internal/textcheck/file_copy_test.go:22 walks every .go file under packages/daemon (../..)")),
     f"{DAEMON}/internal/textcheck/production_imports_test.go": reads(
         (f"{DAEMON}/internal/classify/*", "internal/textcheck/production_imports_test.go:14-15 globs ../classify/*.go")),
+    f"{DAEMON}/internal/textcheck/reclaim_doc_test.go": reads(
+        ("docs/kubernetes.md", "internal/textcheck/reclaim_doc_test.go:44,156 reads it under ../../../.."),
+        (f"{DAEMON}/internal/runtime/sandbox/reclaim_doc_extract.txt",
+         "internal/textcheck/reclaim_doc_test.go:43 reads the committed copy it holds the guide's paragraph to")),
     # --- envoy
     f"{ENVOY}/cmd/broker-refgen/auth_test.go": [
         Read(f"{ENVOY}/{d}/*", "cmd/broker-refgen/auth_test.go:14 readAPI(repo root) parses it") for d in BROKER_REFGEN_DIRS],
@@ -344,7 +347,6 @@ RULES = {
     f"{ENVOY}/cmd/dispatch/pod_grace_period_test.go": reads((f"{INFRA}/gcp/testdata/dispatch-pod.golden", "cmd/dispatch/pod_grace_period_test.go:17")),
     f"{ENVOY}/cmd/listener/api_test.go": reads((f"{FIX}/dispatch-targeted-delivery.json", "cmd/listener/api_test.go:191,436,480")),
     f"{ENVOY}/internal/broker/config/config_test.go": reads((f"{ENVOY}/docker/rds-global-bundle.pem", "internal/broker/config/config_test.go:573")),
-    f"{ENVOY}/internal/broker/oauth/claims_doc_test.go": reads(("docs/kubernetes.md", "internal/broker/oauth/claims_doc_test.go:161")),
     f"{ENVOY}/internal/cistore/settlement_fixture_test.go": reads((f"{FIX}/checks-settlement/*", "internal/cistore/settlement_fixture_test.go:56")),
     f"{ENVOY}/internal/contracts/dedupe_test.go": reads((f"{FIX}/dedupe-keys.json", "internal/contracts/dedupe_test.go:14")),
     f"{ENVOY}/internal/contracts/golden_test.go": reads(
@@ -380,6 +382,10 @@ RULES = {
         run(ENVOY, ["./..."], "internal/testnats/nats_test.go:708-709 go list -f ... ./... in packages/envoy", mode="build"),
         *[Read(g, "internal/testnats/nats_test.go:741-747 walks every .go file under packages/envoy but infra, node_modules, testdata")
           for g in envoy_top_level_but_infra()]],
+    f"{ENVOY}/internal/textcheck/claims_doc_test.go": reads(
+        ("docs/kubernetes.md", "internal/textcheck/claims_doc_test.go:36,43 reads it under ../../../.."),
+        (f"{ENVOY}/internal/broker/oauth/claims_doc_extract.txt",
+         "internal/textcheck/claims_doc_test.go:35 reads the committed copy it holds the guide's list to")),
     f"{ENVOY}/internal/textcheck/environment_reads_test.go": reads(
         (f"{ENVOY}/cmd/dispatch/**", "internal/textcheck/environment_reads_test.go's environmentReads walks .go files"),
         (f"{ENVOY}/internal/dispatch/**", "internal/textcheck/environment_reads_test.go's environmentReads walks .go files")),
@@ -651,6 +657,36 @@ def go_top_level_spans(code: str, path) -> list:
     return spans
 
 
+# The six source guards of internal/dispatch/api, keyed by their path in this repository. Each
+# reads the module's own source and carries `//go:build !race` for it, so the walk below would put
+# all eleven of their tests in the plain step; they are left out of it instead, because the
+# text-check job runs them by name and a test run twice is a test whose second run tells nobody
+# anything. The exemption is held to the files it is about in three ways, so a twelfth guard test
+# cannot quietly rejoin the plain step: a file named here that does not carry the tag is refused,
+# a file whose tests are not exactly the names here is refused (race_impossible_tests_of), and a
+# name here the lane's walk never reads is refused (race_impossible_tests). internal/bus's and
+# internal/dispatch/docs' race-skipped tests are in none of this: they stay in the plain step.
+TEXT_CHECK_TESTS = {
+    f"{ENVOY}/internal/dispatch/api/copy_lock_order_test.go": {
+        "TestCopyLockComesBeforeEveryPendingRowAndEvent",
+        "TestCopyLockOrderGuardFollowsTheLockTakers"},
+    f"{ENVOY}/internal/dispatch/api/event_insert_guard_test.go": {
+        "TestOnlyTheBrokerInsertsEvents"},
+    f"{ENVOY}/internal/dispatch/api/keyed_write_guard_test.go": {
+        "TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks",
+        "TestTheKeyedWriteGuardSeesWhatItGuards"},
+    f"{ENVOY}/internal/dispatch/api/lock_level_test.go": {
+        "TestNoForUpdateOnOwnerTables"},
+    f"{ENVOY}/internal/dispatch/api/review_order_guard_test.go": {
+        "TestEveryReviewReadOrdersByReviewOrder",
+        "TestTheReviewOrderGuardReadsBothOrders"},
+    f"{ENVOY}/internal/dispatch/api/review_write_guard_test.go": {
+        "TestOnlyWriteReviewWritesReviews",
+        "TestTheReviewWriterPatternsReadEveryNameOfTheTable",
+        "TestTheReviewWriterScanFindsAnIdentifierNamingTheTable"},
+}
+
+
 def race_impossible_tests_of(path: Path) -> set:
     """The tests of one _test.go file that only a plain run covers: every test of a file the race
     build does not compile (`//go:build !race`), and every test whose body reads raceEnabled, the
@@ -662,13 +698,20 @@ def race_impossible_tests_of(path: Path) -> set:
     closes it - holds it, and only when that function is itself a test, so a read in a helper,
     at package level or in a function literal outside any declaration - which a later test may be
     the one caller of - makes ci-filters red rather than giving a test that does not run smaller
-    the plain run and dropping the one that does."""
+    the plain run and dropping the one that does. A file TEXT_CHECK_TESTS names is the exception:
+    it names no test here, since the text-check job runs its tests by name, and it is refused
+    unless it carries the tag and its tests are exactly the names that list holds for it."""
     text = path.read_text()
     found = GO_BUILD_LINE.search(text)
     constraint = found.group(1) if found else ""
     if constraint not in ("", "race", "!race") and re.search(r"\brace\b", constraint):
         raise ValueError(f"{path}: `//go:build {constraint}` names race in a form ci_job_reads.py does not read; "
                          "teach race_impossible_tests_of() the form, or the plain step loses the file's tests")
+    exempt = TEXT_CHECK_TESTS.get(path.as_posix())
+    if exempt is not None and constraint != "!race":
+        raise ValueError(f"{path}: TEXT_CHECK_TESTS leaves this file's tests out of the plain step because the "
+                         "text-check job runs them by name, but the file does not carry `//go:build !race`, so "
+                         "the race build still compiles and runs them; restore the tag, or drop the row")
     # A file the race build compiles and that nowhere writes raceEnabled, in code or in a comment,
     # names no test here and refuses nothing, so it never reaches the blanking pass below. That is
     # almost every file of the lane: 610 of them, 10.9 MB, which this guard takes from 3.0 s to
@@ -698,6 +741,15 @@ def race_impossible_tests_of(path: Path) -> set:
                              "under the detector; move the read into the test that runs smaller for it, or teach "
                              "race_impossible_tests_of() the idiom")
         names.add(enclosing[holder])
+    if exempt is not None:
+        unnamed = ", ".join(sorted(names - exempt))
+        stale = ", ".join(sorted(exempt - names))
+        if unnamed or stale:
+            raise ValueError(f"{path}: TEXT_CHECK_TESTS does not name this file's tests exactly - "
+                             f"in the file and not in the list: {unnamed or 'none'}; in the list and not in the "
+                             f"file: {stale or 'none'}. A guard test the text-check job does not run by name "
+                             "belongs in the plain step, so name it in both places or in neither")
+        return set()
     return names
 
 
@@ -729,14 +781,22 @@ def race_lane_packages(root) -> list:
 
 def race_impossible_tests(root) -> dict:
     """Per package of the lane under `root`, in the lane's own order, the tests only a plain run
-    covers (race_impossible_tests_of). A package that has none is left out."""
-    found = {}
+    covers (race_impossible_tests_of). A package that has none is left out. A file TEXT_CHECK_TESTS
+    names under `root` that this walk never reads is refused: the row would otherwise go on
+    exempting a file that has moved out of the lane, or been deleted, and say nothing."""
+    found, read = {}, set()
     for under, directory in race_lane_packages(root):
         names = set()
         for path in sorted(directory.glob("*_test.go")):
+            read.add(path.as_posix())
             names |= race_impossible_tests_of(path)
         if names:
             found[under] = names
+    gone = sorted(f for f in TEXT_CHECK_TESTS if f.startswith(f"{root}/") and f not in read)
+    if gone:
+        raise ValueError(f"TEXT_CHECK_TESTS names {', '.join(gone)}, which the lane's walk of {root} does not "
+                         "read: the file moved out of the lane or is gone, and its row now exempts nothing; "
+                         "follow the file, or drop the row")
     return found
 
 
