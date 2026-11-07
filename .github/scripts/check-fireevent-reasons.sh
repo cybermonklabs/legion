@@ -33,10 +33,11 @@
 # file, which is the case this exists for.
 #
 # A comment is a line whose trimmed text begins with `//`, `/*`, `*` or JSX's `{/*`, and nothing
-# else is. A line holding `//` or `*` anywhere else is code: `const n = 3 * 2;` above a call, and a
-# URL in a string on the call's own line, both used to satisfy this check and now do not. A call
-# written inside such a comment is prose and is not counted, which is what lets a reason name
-# `fireEvent.mouseDown` while explaining why a site keeps it.
+# else is. A line holding `//` or `*` anywhere else is code, in both places this reads one: on the
+# call's own line, where `const src = "https://x/a.png"; fireEvent.error(…)` used to be skipped as
+# prose, and on a line of the window above it, where that same URL, or `const n = 3 * 2;`, used to
+# count as a reason. A call written inside a real comment is prose and is not counted, which is what
+# lets a reason name `fireEvent.mouseDown` while explaining why a site keeps it.
 #
 # Both forms of the API count: `fireEvent.click(node)` and the direct `fireEvent(node, event)`.
 #

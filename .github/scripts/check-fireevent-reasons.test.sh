@@ -101,16 +101,30 @@ run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the call" "$(contains "$out" 'rows.test.tsx:3')"
 
-echo "case: a URL inside a string does not make the call line a comment"
+echo "case: a URL before the call on its own line does not make the line a comment"
 root=$(fixture url)
 rows "$root" <<'EOF'
 test("a row", () => {
-  fireEvent.error(img, { target: { src: "https://example.test/a.png" } });
+  const src = "https://example.test/a.png"; fireEvent.error(img, { target: { src } });
 });
 EOF
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "counts the call" "$(contains "$out" '1 of 1 fireEvent calls')"
+
+# The window's own version of the same bypass: the `//` of a URL on the line above satisfied a
+# substring test for a comment, which is how `const n = 3 * 2;` and this shape both passed.
+echo "case: a URL string on the line above is not a reason"
+root=$(fixture url_above)
+rows "$root" <<'EOF'
+test("a row", () => {
+  const src = "https://example.test/a.png";
+  fireEvent.error(img, { target: { src } });
+});
+EOF
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the call" "$(contains "$out" 'rows.test.tsx:3')"
 
 echo "case: the direct fireEvent(node, event) form counts too"
 root=$(fixture direct)
@@ -147,12 +161,15 @@ EOF
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
 
-echo "case: the real repository passes"
+# The count matters as much as the exit status here: a script that resolved the wrong root would
+# scan nothing, find nothing bare, and print the same cheerful line.
+echo "case: the real repository passes, over calls it actually found"
 set +e
 out=$("$check_script" 2>&1)
 status=$?
 set -e
 check "exits 0" "$(is "$status" 0)"
 check "reports the clean scan" "$(contains "$out" 'carries a reason$')"
+check "scanned a three-figure count of calls" "$(contains "$out" 'every one of the [1-9][0-9][0-9] fireEvent calls')"
 
 summary "check-fireevent-reasons.sh"
