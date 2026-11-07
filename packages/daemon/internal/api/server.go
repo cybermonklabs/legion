@@ -695,9 +695,9 @@ func carriesMemory(state State) bool {
 // block writes that key on every body, empty rather than null (Admission.MarshalJSON), and the
 // strict reader before the contract refuses the empty key as surely as one naming a tree. So this
 // is true of every state the route writes; it is asked beside carriesUpdateRounds, carriesMemory,
-// carriesWakesWaiting and carriesGatedSteps all the same, because stateFor puts the same question
-// to the five and because a later contract that stops writing `trees` on every body answers it
-// here.
+// carriesWakesWaiting, carriesGatedSteps and carriesRetiredStranded all the same, because
+// stateFor puts the same question to the six and because a later contract that stops writing
+// `trees` on every body answers it here.
 func carriesTrees(State) bool { return true }
 
 // carriesWakesWaiting is whether state carries the key wakesWaitingContract added: `wakesWaiting`,
@@ -705,9 +705,9 @@ func carriesTrees(State) bool { return true }
 // writes it on every body, empty rather than null (State.MarshalJSON), and the strict reader
 // before the contract refuses the empty key as surely as one naming a wake. So this is true of
 // every state the route writes; it is asked beside carriesUpdateRounds, carriesMemory,
-// carriesTrees and carriesGatedSteps all the same, because stateFor puts the same question to
-// the five and because a later contract that stops writing `wakesWaiting` on every body answers
-// it here.
+// carriesTrees, carriesGatedSteps and carriesRetiredStranded all the same, because stateFor puts
+// the same question to the six and because a later contract that stops writing `wakesWaiting` on
+// every body answers it here.
 func carriesWakesWaiting(State) bool { return true }
 
 // carriesGatedSteps is whether any issue of state carries the deployment's gated steps.

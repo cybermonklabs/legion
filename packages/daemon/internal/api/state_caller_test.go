@@ -275,8 +275,8 @@ func strandedServed(t *testing.T, body []byte) (stranded []map[string]string, ca
 // nothing will wake without its retired entries, since that pod's plugin parses
 // `strandedClaims[].state` with a strict enum of `suspended` and `failed` and refuses the whole
 // state body for a third value; every entry whose state it knows stays, in the order the report
-// named it. A pod at this contract,
-// a pod whose claims record no contract at all, and a caller the daemon cannot place in a pod —
+// named it. A pod at this contract, a pod whose claims record no contract at all, and a caller
+// the daemon cannot place in a pod —
 // the operator's `legion state`, which names a retired claim under the workflow start it needs —
 // are served every entry.
 func TestTheStateRouteServesAPodItsPluginContractsStrandedClaims(t *testing.T) {
