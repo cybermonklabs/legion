@@ -319,3 +319,49 @@ func TestStallBackstopRefusals(t *testing.T) {
 		})
 	}
 }
+
+// The reader takes a LEGION_STALL_CALL_BOUND_MS of up to maxStallMilliseconds, which it
+// documents as the largest number of milliseconds a time.Duration holds, so every value it
+// takes must carry through the two sums this package computes from it. It does not: the ladder
+// adds the grace and two step gaps to a bound already at the Duration's own ceiling, and
+// StallBackstopFor doubles that bound, so both wrap.
+//
+// The wrap inverts the two things this key exists for. A negative ladder is a floor every named
+// bound clears, so the refusal that stops a daemon ending a turn its worker's plugin is still
+// recovering accepts any bound at all; and a negative default is a bound every claim's recorded
+// last step is already past, so the sweep would end the turn of every claim in one, at once,
+// for ever. Measured at this head: with the bound at the reader's own maximum the ladder is
+// -2562047h38m16.855551616s and the default backstop is -1.551616ms, and
+// `worker_stall_backstop_hours: {implementer: 0.5}` loads with `Config OK` (INFRA-1274, the
+// tester's round at 9714c8241407).
+//
+// Whatever the remedy — a saturating sum, or a reader bound that leaves the ladder room — the
+// property is the same: a bound the reader takes never yields a ladder or a default below the
+// ones the shipped numbers give.
+func TestEveryBoundTheReaderTakesLeavesAPositiveLadderAndDefault(t *testing.T) {
+	for _, raw := range []string{"9223372036854", "0x8637bd05af6", "4611686018428"} {
+		t.Run(raw, func(t *testing.T) {
+			env := envMap(map[string]string{"LEGION_STALL_CALL_BOUND_MS": raw})
+			cfg, err := Load(backstopFile(t, ""), env)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester} {
+				ladder := cfg.StallLadderFor(role)
+				if ladder < StallCallBound+StallCallGrace+2*StallStep {
+					t.Errorf("StallLadderFor(%s) = %s, want at least the ladder the shipped numbers give, %s",
+						role, ladder, StallCallBound+StallCallGrace+2*StallStep)
+				}
+				backstop := cfg.StallBackstopFor(role)
+				if backstop < ladder {
+					t.Errorf("StallBackstopFor(%s) = %s, want at least that role's own ladder, %s",
+						role, backstop, ladder)
+				}
+			}
+			// And the floor still refuses what it exists to refuse.
+			if _, err := Load(backstopFile(t, "worker_stall_backstop_hours: {implementer: 0.5}\n"), env); err == nil {
+				t.Error("a half-hour backstop bound loaded, want the floor's refusal")
+			}
+		})
+	}
+}
