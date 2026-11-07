@@ -1176,6 +1176,9 @@ jobs:
               - *biome
               - 'packages/dispatch/**'
               - 'packages/proof-editor/**'
+              # This job's tsc program of packages/dispatch compiles the shared test fixtures its
+              # web, e2e and server-side tests import.
+              - 'packages/test-fixtures/src/**'
               # packages/dispatch/web/vite.config.ts:94-103 aliases @legion/contracts, and tsc and
               # bun read it through the workspace's "bun" export condition.
               - 'packages/contracts/src/**'

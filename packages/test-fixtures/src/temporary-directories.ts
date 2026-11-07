@@ -129,14 +129,23 @@ export function temporaryDirectory(
   return directory;
 }
 
+/** `-`, the one character the name template trims from a caller's prefix. */
+const DASH = 45;
+
 /**
  * The name both forms build on: the prefix, the suffix when the caller named one, and one dash,
  * whether or not the prefix already ends with dashes. `temporaryDirectories` hands it to
  * `mkdtemp`, which adds six random characters to it; `temporaryDirectory` adds eight of its own.
+ *
+ * The trailing dashes are counted rather than matched: a `/-+$/` on a caller's own string is a
+ * polynomial regular expression on library input, which CodeQL refuses as a high-severity alert
+ * (a prefix of many dashes would make it slow), and this costs one pass of the string's tail.
  */
 function nameTemplate(prefix: string, suffix: string | undefined): string {
   const stem = suffix === undefined || suffix === "" ? prefix : `${prefix}-${suffix}`;
-  return `${stem.replace(/-+$/, "")}-`;
+  let end = stem.length;
+  while (end > 0 && stem.charCodeAt(end - 1) === DASH) end -= 1;
+  return `${stem.slice(0, end)}-`;
 }
 
 /**

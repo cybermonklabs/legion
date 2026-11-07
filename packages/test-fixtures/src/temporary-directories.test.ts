@@ -145,6 +145,37 @@ test("made and removed the directory of a describe whose rows were all skipped",
 });
 
 /**
+ * The name a caller's prefix builds cannot be made expensive by the prefix: a `/-+$/` on a
+ * caller-supplied string is a polynomial regular expression on library input, which CodeQL
+ * refuses as a high-severity alert, and the maker now counts the trailing dashes instead.
+ *
+ * The row asserts the name, not a duration: a row that reads a clock reads the machine it runs
+ * on, which is the class this whole change removes. It is **not** a control for the alert, and
+ * measurement says no row can be: the replaced pattern passes this row unchanged at a hundred
+ * thousand dashes, and the input that would make it quadratic - many dashes followed by one
+ * other character - cannot reach the maker at all, since such a prefix makes a name longer than
+ * NAME_MAX and `mkdtemp` refuses it with ENAMETOOLONG. So the finding is static rather than
+ * reachable, the fix removes the pattern instead of suppressing the rule, and what this row
+ * keeps is the behaviour the rewrite had to preserve: the trim, at a length no caller writes.
+ */
+describe("a pathological prefix", () => {
+  const makeDirectory = temporaryDirectories("test-fixtures-dashes");
+
+  test("costs one pass of the prefix's tail and names the directory the same way", () => {
+    const dashes = "-".repeat(100_000);
+    const directory = makeDirectory();
+    expect(basename(directory)).toStartWith("test-fixtures-dashes-");
+
+    // A prefix ending in a hundred thousand dashes: the input the replaced pattern backtracks
+    // over, and the one the template trims to a single dash.
+    const trimmed = temporaryDirectories(`prefix${dashes}`);
+    const made = trimmed();
+    expect(basename(made)).toStartWith("prefix-");
+    expect(basename(made)).not.toContain("--");
+  }, 5_000);
+});
+
+/**
  * The two behaviours this fixture took from `packages/envoy-client/test/temp-dir.ts` when that
  * package's tests moved onto it (cybermonklabs/legion#2911). Each is read by the row after the
  * one that makes it, because what removes the directory is the maker's own `afterEach`: this is
