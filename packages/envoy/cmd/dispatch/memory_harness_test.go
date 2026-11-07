@@ -365,12 +365,24 @@ func (h *memoryHarness) pendingSettlements(t *testing.T) []string {
 	return pending
 }
 
+// blockIndexDrainWithin is how long writeOwedBlockIndex gives the reconcile to write the whole
+// block index the harness's documents owe, and blockIndexReported how often it says where the
+// drain has got to. The drain indexes one document at a time and a drive of this file holds
+// hundreds of documents of a mebibyte, so the line it logs is what tells a reader whether a drain
+// that ran out of time had stalled or was still getting through them (INFRA-179).
+const (
+	blockIndexDrainWithin = 120 * time.Second
+	blockIndexReported    = 10 * time.Second
+)
+
 // writeOwedBlockIndex writes, through service, the block index the server would have written, and
 // reports what it indexed.
 func (h *memoryHarness) writeOwedBlockIndex(t *testing.T, service *docs.Service) (documents, items, itemBlocks, texts int) {
 	t.Helper()
 	ctx := context.Background()
-	deadline := time.Now().Add(120 * time.Second)
+	started := time.Now()
+	deadline := started.Add(blockIndexDrainWithin)
+	reported := started
 	var cursors docs.BlockIndexCursors
 	// liveAheadTicks counts the ticks in a row that indexed nothing and found a document live
 	// ahead: a document whose stored text is ahead of its latest version is moved on by a
@@ -401,8 +413,9 @@ func (h *memoryHarness) writeOwedBlockIndex(t *testing.T, service *docs.Service)
 			liveAheadTicks = 0
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the block index was still owed %d documents, %d items, %d item blocks and %d texts two minutes into the drain: %s",
-				tick.OwedDocuments, tick.OwedItems, tick.OwedItemBlocks, tick.OwedTexts, strings.Join(h.owedDocumentNames(t), "; "))
+			t.Fatalf("the block index was still owed %d documents, %d items, %d item blocks and %d texts %s into the drain, having written %d documents, %d items, %d item blocks and %d texts: %s",
+				tick.OwedDocuments, tick.OwedItems, tick.OwedItemBlocks, tick.OwedTexts, blockIndexDrainWithin,
+				documents, items, itemBlocks, texts, strings.Join(h.owedDocumentNames(t), "; "))
 		}
 		if indexed == 0 {
 			// A document the tick could not index is logged and left owed, so a loop that indexes
@@ -410,6 +423,14 @@ func (h *memoryHarness) writeOwedBlockIndex(t *testing.T, service *docs.Service)
 			// until the deadline. Wait as the settlement poll does, so the drain costs the
 			// database no more than ten reads a second while it gets nowhere.
 			time.Sleep(100 * time.Millisecond)
+		}
+		// How fast the drain is getting through what it is owed, so a drive that outgrows the
+		// deadline says whether the reconcile stalled or merely crawled (INFRA-179).
+		if time.Since(reported) >= blockIndexReported {
+			reported = time.Now()
+			t.Logf("the block index drain has written %d documents, %d items, %d item blocks and %d texts in %s, with %d documents, %d items, %d item blocks and %d texts owed",
+				documents, items, itemBlocks, texts, time.Since(started).Round(time.Second),
+				tick.OwedDocuments, tick.OwedItems, tick.OwedItemBlocks, tick.OwedTexts)
 		}
 	}
 }

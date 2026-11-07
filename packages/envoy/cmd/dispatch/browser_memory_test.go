@@ -2313,6 +2313,7 @@ func TestAFrameClaimingHugeClockSpansCostsOnlyItsBytes(t *testing.T) {
 	var applied bool
 	var closed *gws.CloseError
 	var state []byte
+	windowOpened := time.Now()
 	peak := server.peakResident(t, func() {
 		// A browser that only reads the room, which the frame must leave alone.
 		reader := server.openBrowser(t, room)
@@ -2331,11 +2332,23 @@ func TestAFrameClaimingHugeClockSpansCostsOnlyItsBytes(t *testing.T) {
 		}
 		typed = typedThrough(t, server, room, " typed-after-the-frame")
 		resynced, state = resyncedThrough(t, server, room)
-		// The room's settlement falls inside the step too. It is the heaviest thing the frame
-		// leaves the server to do, and it is what makes the step long enough for the trace's
-		// 50 ms samples to fall inside it: the socket work above is over in a few milliseconds,
-		// and a step the trace holds no sample of is read neither way (requireUnderThePod).
+		// The room's settlement falls inside the step too: it is the heaviest thing the frame
+		// leaves the server to do. All of it together is still a few tens of milliseconds, and
+		// a step the trace holds no sample of is read neither way (requireUnderThePod), so the
+		// window is then held open until the server's own trace has sampled it - as heldNow
+		// waits for one - which reads the memory the step left standing rather than lengthening
+		// the step. Measured 2026-11-07: the frame, the keystroke and the reconnect took 11 ms
+		// together, well inside the trace's 50 ms interval.
 		memory.waitForSettled(t, room)
+		for deadline := time.Now().Add(heldNowWait); ; time.Sleep(memoryTraceInterval) {
+			if server.tracePeaks(t, windowOpened, time.Now()).samples > 0 {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("the server's memory trace holds no sample of the frame's step, want one taken in the %s the window stayed open",
+					time.Since(windowOpened).Round(time.Millisecond))
+			}
+		}
 	})
 	t.Logf("a %d-byte frame claiming 2^40 clocks of a client the room has never seen: applied %v, closed %v, answered in %s; the keystroke after it applied in %s and a reconnect read the room's %d-byte state in %s",
 		len(frame), applied, closed, answered.Round(time.Microsecond), typed.Round(time.Microsecond), len(state), resynced.Round(time.Microsecond))
