@@ -3008,7 +3008,7 @@ Each item below names a path with its method and identity, then its purpose.
   `refilling` (the listener refused its list as refilling, so the holder may well be running) or `unreachable` (the listener is not configured, did not answer in time, or failed otherwise); it is null with every other status.
   A refilling list never makes a route `no_holder`.
 
-- `/api/v1/search?q=&project=&number_project=&limit=&offset=` (GET; cookie, trusted header, or bearer)
+- `/api/v1/search?q=&project=&number_project=&keywords_only=&limit=&offset=` (GET; cookie, trusted header, or bearer)
 
   Full-text search over issue titles, latest document text, comments, asks, and messages;
   every match ranked on one list across the kinds by one score (above), with `<mark>` snippets and SPA `href`s.
@@ -3022,9 +3022,11 @@ Each item below names a path with its method and identity, then its purpose.
   An under-two-character query returns `400 INVALID_QUERY`;
   a stop-word-only query returns `200` with no results;
   `400 CAP_EXCEEDED` over 1,000 characters (`contracts.SearchQueryMax`, UTF-16 units after trimming), since the query rides in the URL;
-  `400 INVALID_PROJECT` for a project that is not a project key (none searches every project), and `400 INVALID_NUMBER_PROJECT` for a `number_project` that is not one; `400 INVALID_LIMIT`; `400 INVALID_OFFSET`.
+  `400 INVALID_PROJECT` for a project that is not a project key (none searches every project), and `400 INVALID_NUMBER_PROJECT` for a `number_project` that is not one; `400 INVALID_LIMIT`; `400 INVALID_OFFSET`; `400 INVALID_KEYWORDS_ONLY` for a `keywords_only` that is neither `true` nor `false`.
   `number_project` is the project of the page the search was made from, which a query that is a bare issue number is read in ([Search](#search));
   it narrows nothing, so a search from a project or issue page answers every project's rows.
+  `keywords_only=true` runs the keyword leg alone and makes no embedding call, whatever embedder the deployment configured, and its answer is not stamped `degraded`, because nothing is unavailable: the caller asked for the words alone.
+  The command bar sends it on every keystroke, so a person typing waits on no model call; a request that leaves it out searches as it always did, by meaning too wherever an embedder is configured.
   Keyword search finds a text whose search vector would pass Postgres's limit on one vector by the words in its opening part only ([Search](#search)).
 
 - `/api/v1/search/coverage` (GET; cookie, trusted header, or bearer)

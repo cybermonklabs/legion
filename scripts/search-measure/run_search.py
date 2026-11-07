@@ -144,8 +144,16 @@ def literal(values):
 
 
 def measure(dispatch, case, query, limit):
-    """One search, as a person's own browser makes it."""
-    path = "/api/v1/search?" + urllib.parse.urlencode({"q": query, "limit": limit})
+    """One search, as the command bar's keystroke makes it.
+
+    keywords_only=true is what the bar sends behind a keystroke, and it is what this measures:
+    the keyword leg alone, no embedding call, whatever embedder the server being measured was
+    configured with. A server with none runs the same statement either way, so the ranks of a run
+    against one are what they always were; what the parameter adds is that the measurement is the
+    keyword path by request rather than by the absence of a model service.
+    """
+    path = "/api/v1/search?" + urllib.parse.urlencode(
+        {"q": query, "limit": limit, "keywords_only": "true"})
     started = time.monotonic()
     answer = dispatch.get(path, tries=2)
     wall = (time.monotonic() - started) * 1000

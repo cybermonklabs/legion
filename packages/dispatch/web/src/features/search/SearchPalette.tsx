@@ -69,7 +69,7 @@ import {
   SEND_TO_AGENT_OPTION_ID,
   useSendToAgentOffer,
 } from "./SendToAgentOffer";
-import { type SearchBarFilters, searchRequest } from "./search-filters";
+import { type SearchBarFilters, type SearchRequest, searchRequest } from "./search-filters";
 import { groupResults, kindLabel, optionId, stepActive } from "./search-model";
 
 const emptyResults: SearchResult[] = [];
@@ -410,6 +410,13 @@ function PaletteDialog({
 }): ReactNode {
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
+  // The query the reader submitted with Enter, and the only search the bar makes by meaning as
+  // well as by words. Every other search is a keystroke's, and asks the route for the keyword
+  // leg alone (`keywords_only`), which embeds nothing: an embedding behind each keystroke is a
+  // second of waiting on a deployment whose embedder is live, and the words answer in tens of
+  // milliseconds. The next keystroke clears it, so the list the reader types into is always the
+  // keyword one.
+  const [submitted, setSubmitted] = useState("");
   const [activeId, setActiveId] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -478,8 +485,13 @@ function PaletteDialog({
 
   // The chips narrow every leg of the search, so they belong to the request and to the key the
   // answer is kept under: a chip added or dropped is another search, not another reading of
-  // this one. The page's project rides with them, under the parameter that narrows nothing.
-  const request = searchRequest(filters, pageProject);
+  // this one. The page's project rides with them, under the parameter that narrows nothing. The
+  // one conditional of the bar is beside them: a search of anything but the submitted query is
+  // a keystroke's, and asks for the keyword leg alone.
+  const request: SearchRequest = {
+    ...searchRequest(filters, pageProject),
+    ...(debouncedQuery === submitted ? {} : { keywords_only: true }),
+  };
   const search = useQuery({
     enabled: debouncedQuery.length >= 2 && debouncedQuery.length <= SEARCH_QUERY_MAX,
     queryFn: () => api.search(debouncedQuery, request),
@@ -756,6 +768,16 @@ function PaletteDialog({
     } else if (event.key === "Enter" && activeRow !== undefined) {
       event.preventDefault();
       selectRow(activeRow);
+    } else if (event.key === "Enter" && queryEnabled) {
+      // Every Enter that opens a hit or runs an action is above, and does what it always did.
+      // This one is the Enter that opened nothing, which submits the words instead: the route
+      // then runs unchanged, by meaning as well as by words wherever the deployment's embedder
+      // is live, and its fused order replaces the list. The debounce is flushed with it, so an
+      // Enter pressed inside that window submits the words as they stand rather than the ones
+      // the timer had.
+      event.preventDefault();
+      setSubmitted(searchText);
+      setDebouncedQuery(searchText);
     }
   };
 
@@ -810,8 +832,11 @@ function PaletteDialog({
               className={`block w-full rounded-lg border px-3 py-2 text-sm outline-none ${inputClasses(true)}`}
               onChange={(event) => {
                 setQuery(event.target.value);
-                // A new query re-ranks the list, so the highlight returns to its head.
+                // A new query re-ranks the list, so the highlight returns to its head, and the
+                // submission it was made for is spent: what the next keystroke searches is the
+                // keyword leg again, which embeds nothing.
                 setActiveId(null);
+                setSubmitted("");
               }}
               onKeyDown={handleKeyDown}
               placeholder="Search Dispatch"

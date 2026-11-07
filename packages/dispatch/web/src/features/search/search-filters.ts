@@ -23,14 +23,16 @@ export interface SearchFilterChip {
 }
 
 /** What one search sends: the parameters the chips narrow by, each absent when no chip set it,
- *  and `number_project`, the project of the page the bar was opened on, which narrows nothing
- *  (`packages/envoy/cmd/dispatch/README.md`, "Search"). */
+ *  `number_project`, the project of the page the bar was opened on, which narrows nothing
+ *  (`packages/envoy/cmd/dispatch/README.md`, "Search"), and `keywords_only`, which the bar sets
+ *  behind a keystroke so the server runs the keyword leg alone and embeds nothing. */
 export interface SearchRequest {
   readonly project?: string;
   readonly number_project?: string;
   readonly status?: string;
   readonly author?: string;
   readonly updated_since?: string;
+  readonly keywords_only?: boolean;
 }
 
 /** The `Date` a `YYYY-MM-DD` names where the reader is, or `undefined` for anything the date

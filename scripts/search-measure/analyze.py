@@ -9,9 +9,10 @@ how often the issue's own document comes back while the issue does not; and the 
 run, the server's own `took_ms` and the client's wall clock.
 
 Then the check: every floor (FLOORS, ABSENT_CEILING, DEFECT_DEPTHS) with the n it was computed
-over, and an exit status. A run that misses a floor exits non-zero naming each floor it missed
-and by how much; a run that measured too few cases of a kind to say anything (MINIMUM_N) is void
-and exits non-zero saying so, so a handful of cases can never read as a pass.
+over, the keyword path's own latency budget (LATENCY_BUDGET, read off the --serial run), and an
+exit status. A run that misses a floor or goes over the budget exits non-zero naming each one it
+missed and by how much; a run that measured too few cases of a kind to say anything (MINIMUM_N)
+is void and exits non-zero saying so, so a handful of cases can never read as a pass.
 """
 
 import argparse
@@ -48,6 +49,15 @@ FLOORS = {
 # ABSENT_CEILING is the share of a kind's cases whose answer is nowhere in the top 50: a ceiling,
 # not a floor, since fewer is better.
 ABSENT_CEILING = {1: 0.05}
+# LATENCY_BUDGET is what one keyword-path search may cost, in milliseconds of the server's own
+# took_ms, read off the serial run - one request at a time, which is how a person's search is
+# served. These two numbers are this tree's earlier measurement of that path on a fixture of
+# production's size, not a target anybody set: 28 ms at the median and 237 ms at the 95th
+# percentile, against the 1,034 ms a hybrid round costs (BASELINE_SERIAL). The run they were read
+# off passes them by construction, as every floor above does; what makes them a check is the run
+# after a change, where an embedding call crept back into the keystroke path or a leg stopped
+# using its index and the median went from tens of milliseconds to hundreds.
+LATENCY_BUDGET = {"p50": 28.0, "p95": 237.0}
 # DEFECT_DEPTHS are the depths the kind-1 defect is held to: the issue's own document on the page
 # while the issue itself is not, which is the defect this measurement was made for. Its ceiling is
 # exactly zero at every one of them, because the fix is that an issue carries its spec's words in
@@ -106,17 +116,18 @@ def main():
               f" (the issue is not in the page; {len(reachable)} have some other item of the issue in it)")
 
     latency(rows, "this run")
+    serial = None
     if arguments.serial:
         serial = [row for row in read(arguments.serial) if "rank" in row]
         latency(serial, "serial, one request at a time")
         print(f"  baseline serial (hybrid, took_ms): p50 {BASELINE_SERIAL['p50']} ms,"
               f" p95 {BASELINE_SERIAL['p95']} ms, n={BASELINE_SERIAL['n']}")
 
-    return check(rows)
+    return check(rows, serial)
 
 
-def check(rows):
-    """The floors, each with the n it was computed over, and what the run owes.
+def check(rows, serial=None):
+    """The floors, the keyword path's latency budget, and what the run owes.
 
     The numbers are this tree's own measurement (FLOORS), so this passes by construction on the
     run they were read off: a later run failing here is the regression they exist to catch.
@@ -145,13 +156,46 @@ def check(rows):
                 missed += bound_line(f"kind {kind}  document but not the issue @{depth}",
                                      defect(kind_rows, depth) / len(kind_rows),
                                      "ceiling", 0.0, len(kind_rows))
+    missed += budget_lines(serial)
     if missed:
         print("\n== this run does not pass ==")
         for line in missed:
             print(f"  {line}")
         return 1
-    print("\n  every floor held.")
+    held = "every floor held"
+    if any(row.get("took_ms") is not None for row in serial or []):
+        held += ", and the keyword path is inside its budget"
+    print(f"\n  {held}.")
     return 0
+
+
+def budget_lines(serial):
+    """The keyword path's own latency against LATENCY_BUDGET, printed with the n it was read over.
+
+    The serial run is the measurement: one request at a time, which is how a person's search is
+    served, and the server's own took_ms rather than the client's wall clock, so a loaded pod's
+    scheduling is not read as the route being slow. A run that made no serial pass measured no
+    latency at all; it says so and asserts nothing, since a budget nobody measured can be neither
+    held nor missed.
+    """
+    print("\n== the keyword path's latency budget, asserted ==")
+    values = sorted(row["took_ms"] for row in serial or [] if row.get("took_ms") is not None)
+    if not values:
+        print("  no serial run: pass --serial <out-serial.jsonl> to measure the latency budget")
+        return []
+    missed = []
+    for name in ("p50", "p95"):
+        measured = percentile(values, float(name[1:]) / 100)
+        bound = LATENCY_BUDGET[name]
+        over = measured - bound
+        print(f"  keyword path  took_ms {name:<4} {measured:>8.1f} ms (n={len(values)})"
+              f"  ceiling {bound:>7.1f} ms"
+              f"  {'ok' if over <= 0 else f'MISSED by {over:.1f} ms'}")
+        if over > 0:
+            missed.append(f"keyword path took_ms {name} is {measured:.1f} ms (n={len(values)}),"
+                          f" above its ceiling of {bound:.1f} ms by {over:.1f} ms")
+    return missed
+
 
 
 def bound_line(label, measured, sense, bound, n):

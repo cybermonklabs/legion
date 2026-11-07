@@ -2,7 +2,8 @@
 
 This directory builds a fixture the size of a deployment's own Dispatch and measures what search finds in it.
 
-It measures the keyword path alone: no embedder is configured, so the route answers from `issues.search`, `document_search`, `comments.search`, `asks.search` and `messages.search` and nothing else, and every answer it gives is stamped `degraded`.
+It measures the keyword path alone: every search it sends carries `keywords_only=true`, the request the command bar sends behind a keystroke, so the route answers from `issues.search`, `document_search`, `comments.search`, `asks.search` and `messages.search` and makes no embedding call whatever embedder the server was configured with.
+A server configured with none runs the same statement either way and stamps its answers `degraded`; one with an embedder answers the same rows without that stamp, because nothing is unavailable.
 Nothing here writes an embedding, and nothing here needs a model service.
 
 Every script reads the server it harvests from through its read API, with `GET` and no other method.
@@ -59,6 +60,11 @@ The 121 kind-2 cases were committed as descriptors once and refused on every run
 
 - Then it asserts the floors, printing every rate with the n it was computed over, and exits non-zero naming each floor the run missed and by how much.
 The floors are: kind 1 — R@1 at least 84%, R@3 at least 90%, R@20 at least 94%, absent from the top 50 at most 5%, and the document-without-the-issue defect exactly 0% at every depth; kind 3 — R@3 at least 84% and R@1 at least 80%.
+
+- It then asserts the keyword path's latency budget on the `--serial` run: the server's own `took_ms`, p50 at most 28 ms and p95 at most 237 ms, printed with the n it was read over, and a miss exits non-zero naming it and by how much.
+That budget gates the command bar: the bar type-aheads off this request, so a median that leaves tens of milliseconds for hundreds is the bar stopping being instant, against the 1,034 ms a hybrid round costs.
+The two numbers are this tree's own earlier measurement of that path on a fixture of production's size and nobody's target, so the run they were read off passes them by construction and what they catch is the run after a change — an embedding call back in the keystroke path, or a leg that stopped using its index.
+A run given no `--serial` pass measured no latency and says so, asserting nothing.
 
 - The one thing to know about those floors: they are the numbers this tree measured, rounded to the whole point towards the bound, and nobody's target.
 The run they were read off passes them by construction.

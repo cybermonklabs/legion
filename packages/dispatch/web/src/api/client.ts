@@ -1048,9 +1048,13 @@ export class DispatchApiClient {
    *  session id) and `updated_since` (RFC 3339) each narrow every leg of the search rather than
    *  striking rows out of the page it answers. `number_project` narrows nothing: it is the
    *  project of the page the search was made from, which a query that is a bare issue number is
-   *  read in, and a request naming `project` too reads the number in that project instead. The
-   *  route refuses a value it cannot read under its own code (`INVALID_PROJECT`,
-   *  `INVALID_NUMBER_PROJECT`, `INVALID_STATUS`, `INVALID_AUTHOR`, `INVALID_UPDATED_SINCE`). */
+   *  read in, and a request naming `project` too reads the number in that project instead.
+   *  `keywords_only` runs the keyword leg alone and makes no embedding call, whatever embedder
+   *  the deployment configured, which is what the bar sends behind a keystroke; a request
+   *  leaving it out searches by meaning too wherever an embedder is configured. The route
+   *  refuses a value it cannot read under its own code (`INVALID_PROJECT`,
+   *  `INVALID_NUMBER_PROJECT`, `INVALID_STATUS`, `INVALID_AUTHOR`, `INVALID_UPDATED_SINCE`,
+   *  `INVALID_KEYWORDS_ONLY`). */
   search(
     query: string,
     options: {
@@ -1059,6 +1063,7 @@ export class DispatchApiClient {
       status?: string;
       author?: string;
       updated_since?: string;
+      keywords_only?: boolean;
       limit?: number;
     } = {}
   ): Promise<SearchResponse> {

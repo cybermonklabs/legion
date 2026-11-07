@@ -370,7 +370,9 @@ test("names the limit instead of querying over it, and queries at it", async () 
     expect(search).not.toHaveBeenCalled();
 
     fireEvent.change(input, { target: { value: "x".repeat(SEARCH_QUERY_MAX) } });
-    await waitFor(() => expect(search).toHaveBeenCalledWith("x".repeat(SEARCH_QUERY_MAX), {}));
+    await waitFor(() =>
+      expect(search).toHaveBeenCalledWith("x".repeat(SEARCH_QUERY_MAX), { keywords_only: true })
+    );
   } finally {
     search.mockRestore();
     view.unmount();
@@ -480,7 +482,9 @@ test("a background refresh that fails keeps the hits the query has, and the high
     search.mockRejectedValue(new Error("503"));
     await view.queryClient.refetchQueries();
     await waitFor(() =>
-      expect(view.queryClient.getQueryState(["search", "astrolabe", {}])?.status).toBe("error")
+      expect(
+        view.queryClient.getQueryState(["search", "astrolabe", { keywords_only: true }])?.status
+      ).toBe("error")
     );
     expect(screen.getAllByRole("option")).toHaveLength(2);
     expect(screen.queryByText("Search failed.")).toBeNull();
@@ -971,12 +975,15 @@ test("a chip narrows the search, reads back in the person's words, and comes off
 
   try {
     await searchFor("astrolabe");
-    expect(search).toHaveBeenLastCalledWith("astrolabe", {});
+    expect(search).toHaveBeenLastCalledWith("astrolabe", { keywords_only: true });
 
     fireEvent.click(screen.getByRole("button", { name: "Status" }));
     fireEvent.click(screen.getByRole("button", { name: "In progress" }));
     await waitFor(() =>
-      expect(search).toHaveBeenLastCalledWith("astrolabe", { status: "in_progress" })
+      expect(search).toHaveBeenLastCalledWith("astrolabe", {
+        keywords_only: true,
+        status: "in_progress",
+      })
     );
 
     const chip = screen.getByRole("button", { name: "Remove Status In progress" });
@@ -1003,7 +1010,10 @@ test("the page's project is the search's context, not a chip narrowing it", asyn
   try {
     await searchFor("astrolabe");
 
-    expect(search).toHaveBeenLastCalledWith("astrolabe", { number_project: "LEGION" });
+    expect(search).toHaveBeenLastCalledWith("astrolabe", {
+      keywords_only: true,
+      number_project: "LEGION",
+    });
     expect(screen.queryByRole("button", { name: /^Remove Project/ })).toBeNull();
     expect(screen.getByRole("button", { name: "Project" })).not.toBeNull();
   } finally {

@@ -715,7 +715,9 @@ totals as (
 // searches for those words alone (searchQOpener). excluded is the -word terms the statement ANDs
 // onto that OR (readSearchQuery, excludedWords), set with broaden and empty whenever broaden is:
 // the query as typed needs none of it, because websearch_to_tsquery is already reading each
-// -word in $1 itself.
+// -word in $1 itself. keywordsOnly is the request's own ?keywords_only=true: the search runs the
+// keyword statement and makes no embedding call, whatever embedder the deployment configured
+// (runSearch).
 type searchParameters struct {
 	text          string
 	project       string
@@ -725,6 +727,7 @@ type searchParameters struct {
 	since         *time.Time
 	limit         int
 	offset        int
+	keywordsOnly  bool
 	ownKeys       []string
 	broaden       []string
 	excluded      string
@@ -1040,6 +1043,21 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 			projectKeyProblem("number_project", numberProject))
 		return
 	}
+	// keywords_only is the bar's keystroke request: the search runs the keyword statement alone
+	// and makes no embedding call, so a deployment whose embedder is live pays nothing for a
+	// query a person is still typing. The route spells it as GET /api/v1/projects/{key}/related
+	// does, true or false and nothing else, and refuses anything else under a code of its own, as
+	// every other parameter here is refused. A request that leaves it out searches exactly as it
+	// always did.
+	keywordsOnly := false
+	switch values := query["keywords_only"]; {
+	case len(values) == 0, len(values) == 1 && strings.TrimSpace(values[0]) == "false":
+	case len(values) == 1 && strings.TrimSpace(values[0]) == "true":
+		keywordsOnly = true
+	default:
+		writeError(w, "INVALID_KEYWORDS_ONLY", http.StatusBadRequest, "keywords_only must be true or false")
+		return
+	}
 	status, author, since, ok := parseSearchFilters(w, query)
 	if !ok {
 		return
@@ -1063,7 +1081,8 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	}
 
 	parameters := searchParameters{text: searchText, project: project, numberProject: numberProject,
-		status: status, author: author, since: since, limit: limit, offset: offset}
+		status: status, author: author, since: since, limit: limit, offset: offset,
+		keywordsOnly: keywordsOnly}
 	response, err := s.runSearch(r.Context(), parameters)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -1098,6 +1117,12 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 // fails, which is a real error the caller should see as a 500, not something to paper over as a
 // degraded answer.
 //
+// A request that asked for keywords only (?keywords_only=true) never reaches the embedder at
+// all: it runs the keyword statement whatever the deployment configured, and its answer is not
+// stamped degraded, because nothing about this deployment's meaning search is unavailable - the
+// caller asked for the words alone. That is the bar's keystroke request, and an embedding per
+// keystroke is the cost it exists to avoid.
+//
 // The query as typed is what it runs, however many words that query holds: one statement, and
 // for every query matching anything the only statement a search runs, so the common path costs
 // what it cost before there was a fallback at all. A query that matches nothing - no row of any
@@ -1122,7 +1147,9 @@ func (s *server) runSearch(ctx context.Context, parameters searchParameters) (mo
 		}
 	}
 	run := s.runKeywordOnlyDegraded
-	if s.deps.Embedder != nil {
+	if parameters.keywordsOnly {
+		run = s.runFusedSearchQuery
+	} else if s.deps.Embedder != nil {
 		vector, err := s.embedQuery(ctx, parameters.text)
 		if err != nil {
 			slog.Warn("dispatch search: query embedding unavailable, answering keyword-only", "error", err)
@@ -1170,9 +1197,10 @@ func (s *server) runKeywordOnlyDegraded(ctx context.Context, parameters searchPa
 }
 
 // runFusedSearchQuery runs searchQuery, assuming nodes > 0 or an issue named by key already,
-// which its caller (runKeywordOnlyDegraded, after runSearch's checks) must have established
-// first. The text is assumed already validated (length, non-empty after trimming); an empty
-// project searches every project, and an empty filter narrows nothing.
+// which its callers (runKeywordOnlyDegraded, and runSearch itself for a request that asked for
+// keywords only, both after runSearch's checks) must have established first. The text is assumed
+// already validated (length, non-empty after trimming); an empty project searches every project,
+// and an empty filter narrows nothing.
 func (s *server) runFusedSearchQuery(ctx context.Context, parameters searchParameters) (model.SearchResponse, error) {
 	started := time.Now()
 	rows, err := s.deps.Store.Pool.Query(ctx, searchQuery, searchQueryArguments(parameters)...)
