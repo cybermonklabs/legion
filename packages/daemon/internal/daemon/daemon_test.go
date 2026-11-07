@@ -95,9 +95,18 @@ func shortTempDir(t *testing.T) string {
 }
 
 // testConfig is a daemon of its own: its project name is unique, so the boots and claims it
-// records are its own, its port is one nothing else holds, and its state directory is its alone.
-// Every limit and timeout is the shipped default.
+// records are its own, its port is one nothing else holds, its state directory is its alone, and
+// its database is a clone of the template nothing else writes. Every limit and timeout is the
+// shipped default.
 func testConfig(t *testing.T) config.Config {
+	t.Helper()
+	return testConfigOn(t, testDSN(t))
+}
+
+// testConfigOn is testConfig on a database the caller already holds, for a table-driven test
+// whose rows share one clone and empty it between them (tableDatabase). Everything else is still
+// the row's own: its project name, its port and its state directory.
+func testConfigOn(t *testing.T, dsn string) config.Config {
 	t.Helper()
 	stateDir := shortTempDir(t)
 	tokenFile := filepath.Join(t.TempDir(), "operator-token")
@@ -115,7 +124,7 @@ func testConfig(t *testing.T) config.Config {
 		Project:                                 "TEST" + randomSuffix(t),
 		Port:                                    port,
 		Bind:                                    "127.0.0.1",
-		PostgresDSN:                             testDSN(t),
+		PostgresDSN:                             dsn,
 		StateDir:                                stateDir,
 		Runtime:                                 config.Runtime{Name: "tmux"},
 		AdmissionCap:                            4,
@@ -1579,7 +1588,14 @@ func TestRunWaitsForTheRepositoryMappingThroughADispatchOutage(t *testing.T) {
 // workflowEnviron as its environment (overrides.environ).
 func workflowConfig(t *testing.T, natsURL string) config.Config {
 	t.Helper()
-	cfg := testConfig(t)
+	return workflowConfigOn(t, natsURL, testDSN(t))
+}
+
+// workflowConfigOn is workflowConfig on a database the caller already holds, for a table-driven
+// test whose rows share one clone and empty it between them (tableDatabase).
+func workflowConfigOn(t *testing.T, natsURL, dsn string) config.Config {
+	t.Helper()
+	cfg := testConfigOn(t, dsn)
 	dispatchServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case servedBootCall(t, w, r, cfg.Project):

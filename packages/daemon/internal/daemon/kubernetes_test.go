@@ -40,7 +40,14 @@ import (
 // configuration holds them.
 func kubernetesConfig(t *testing.T, server string) config.Config {
 	t.Helper()
-	cfg := testConfig(t)
+	return kubernetesConfigOn(t, server, testDSN(t))
+}
+
+// kubernetesConfigOn is kubernetesConfig on a database the caller already holds, for a
+// table-driven test whose rows share one clone and empty it between them (tableDatabase).
+func kubernetesConfigOn(t *testing.T, server, dsn string) config.Config {
+	t.Helper()
+	cfg := testConfigOn(t, dsn)
 	cfg.Runtime = config.Runtime{Name: "kubernetes", Kubernetes: &config.Kubernetes{
 		Namespace: "legion", Image: "ghcr.io/cybermonklabs/legion-worker@sha256:" + strings.Repeat("a", 64),
 		StorageClass: "gp2", IssueVolume: "20Gi", Kubeconfig: writeKubeconfig(t, server, "test"),

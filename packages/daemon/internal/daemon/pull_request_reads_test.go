@@ -86,6 +86,7 @@ func headReads(t *testing.T, pool *pgxpool.Pool, kind string) int {
 // did not move applies nothing, and a read older than the record's clock moves nothing.
 func TestThePassFollowsAHeadWhoseSynchronizeHasNotArrived(t *testing.T) {
 	read := time.Date(2026, 10, 26, 20, 0, 0, 0, time.UTC)
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name     string
 		github   string
@@ -99,7 +100,7 @@ func TestThePassFollowsAHeadWhoseSynchronizeHasNotArrived(t *testing.T) {
 		{"the record's clock is after the read", "pushed", read.Add(time.Minute), "code", read.Add(time.Minute), 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			seedCapture(t, pool, phase.Testing, "testing", record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleTester, Claim: "test-claim"})
 			if !tc.recorded.IsZero() {
 				if _, err := pool.Exec(context.Background(), "update pull_requests set head_updated_at = $1 where issue = 'CAPTURE-1'", tc.recorded); err != nil {
@@ -225,6 +226,7 @@ func seedDeclinedOpened(t *testing.T, pool *pgxpool.Pool, opened time.Time) {
 // pass skipping the same opened.
 func TestAPassThatDoesNotListTheRepositoryKeepsTheDeclinedOpened(t *testing.T) {
 	opened := time.Date(2026, 10, 26, 19, 30, 0, 0, time.UTC)
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name   string
 		status int
@@ -233,7 +235,7 @@ func TestAPassThatDoesNotListTheRepositoryKeepsTheDeclinedOpened(t *testing.T) {
 		{"a pass the rate limit cuts short", http.StatusTooManyRequests},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			seedDeclinedOpened(t, pool, opened)
 			var listed, lists atomic.Int32
 			github := pullRequestStandIn(t, "handoff", opened, &listed)
@@ -288,6 +290,7 @@ func TestThePassTakesOnlyAPullRequestOnTheIssuesBranch(t *testing.T) {
 // than the record's clock is followed.
 func TestFollowHeadKeepsARecordMovedSinceTheListByWhatItReadNoLater(t *testing.T) {
 	at := time.Date(2026, 10, 26, 20, 0, 0, 0, time.UTC)
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name string
 		read time.Time
@@ -297,7 +300,7 @@ func TestFollowHeadKeepsARecordMovedSinceTheListByWhatItReadNoLater(t *testing.T
 		{"a read after the record's clock", at.Add(time.Second), "older"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			seedCapture(t, pool, phase.Testing, "testing", record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleTester, Claim: "test-claim"})
 			_, listed := capturePhase(t, pool)
 			if _, err := pool.Exec(context.Background(), "update pull_requests set head_sha = 'pushed', head_updated_at = $1 where issue = 'CAPTURE-1'", at); err != nil {
@@ -347,6 +350,7 @@ func seedUnrecorded(t *testing.T, pool *pgxpool.Pool, handoff string) {
 // pass lists the repository once, whatever the issues.
 func TestThePassRecordsAnOpenPullRequestWhoseOpenedHasNotArrived(t *testing.T) {
 	opened := time.Date(2026, 10, 26, 19, 30, 0, 0, time.UTC)
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name     string
 		handoff  string
@@ -365,7 +369,7 @@ func TestThePassRecordsAnOpenPullRequestWhoseOpenedHasNotArrived(t *testing.T) {
 		{"the pull request is recorded merged", "handoff", record.PullRequestMerged, "", phase.Implementing, record.PullRequestMerged, "acme/widgets", 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			seedUnrecorded(t, pool, tc.handoff)
 			if tc.recorded != "" {
 				if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
@@ -537,6 +541,7 @@ func lateWebhookPushDecidesNothing(t *testing.T, pool *pgxpool.Pool, w *workflow
 // webhook arriving afterwards is a redelivery and changes nothing.
 func TestThePassRecordsAnOpenedLostInAnyPhase(t *testing.T) {
 	at := time.Date(2026, 10, 26, 20, 0, 0, 0, time.UTC)
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		phase  phase.Phase
 		status string
@@ -546,7 +551,7 @@ func TestThePassRecordsAnOpenedLostInAnyPhase(t *testing.T) {
 		{phase.Done, "done"},
 	} {
 		t.Run(string(tc.phase), func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
 				return record.NewStore().PutIssue(context.Background(), tx, record.Issue{Key: "CAPTURE-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 					Tree: "CAPTURE-1", Project: "CAPTURE", Title: "root", Phase: tc.phase, Generation: 1, Status: tc.status, Rank: "U"})
@@ -695,8 +700,9 @@ func TestThePassAppliesAMergeLostInImplementing(t *testing.T) {
 // closed without merging is missing too; one it holds merged is not: its merge told the architect
 // (pr-merged), and the implementer's completion moves the issue on it.
 func TestThePassTellsTheArchitectOfAPullRequestMissingOncePerHandoff(t *testing.T) {
+	pool, reset := tableDatabase(t)
 	t.Run("the listing shows none", func(t *testing.T) {
-		pool := isolatedOutboxPool(t)
+		reset(t)
 		seedUnrecorded(t, pool, "first")
 		w := requiredRuntime(pool, lostStandIn(t, nil, "[]", &pathReads{}).URL, quietLogger())
 		for range 3 {
@@ -732,7 +738,7 @@ func TestThePassTellsTheArchitectOfAPullRequestMissingOncePerHandoff(t *testing.
 		{record.PullRequestMerged, 0},
 	} {
 		t.Run("the record holds the pull request "+string(tc.state), func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			seedUnrecorded(t, pool, "first")
 			if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
 				return record.NewStore().PutPullRequest(context.Background(), tx, record.PullRequest{State: tc.state, Issue: "CAPTURE-1", Repo: "acme/widgets",
@@ -748,7 +754,7 @@ func TestThePassTellsTheArchitectOfAPullRequestMissingOncePerHandoff(t *testing.
 		})
 	}
 	t.Run("the listing fails", func(t *testing.T) {
-		pool := isolatedOutboxPool(t)
+		reset(t)
 		seedUnrecorded(t, pool, "first")
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			http.Error(w, `{"message":"Server Error"}`, http.StatusBadGateway)
@@ -802,6 +808,7 @@ func seedPassIssue(t *testing.T, pool *pgxpool.Pool, issue record.Issue, pr *rec
 // and nobody is told a pull request is missing.
 func TestThePassKeepsItsRequestBudget(t *testing.T) {
 	at := time.Date(2026, 10, 26, 20, 0, 0, 0, time.UTC)
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name    string
 		limited bool
@@ -823,7 +830,7 @@ func TestThePassKeepsItsRequestBudget(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			seedCapture(t, pool, phase.Testing, "testing", record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleTester, Claim: "test-claim"})
 			// #86's push webhook arrived and its synchronize did not.
 			setCapturePullRequest(t, pool, func(pr *record.PullRequest) { pr.Pushes = []record.ClassifiedPush{{SHA: "code-2", Before: "code"}} })
@@ -1119,9 +1126,10 @@ func TestThePassRebuildsTheImplementersFixPushLost(t *testing.T) {
 // is judged with its push, and the push webhook arriving afterwards decides nothing.
 func TestThePassRebuildsAPushLostWhateverTheActivityCallsIt(t *testing.T) {
 	at := time.Date(2026, 10, 26, 20, 0, 0, 0, time.UTC)
+	pool, reset := tableDatabase(t)
 	for _, kind := range []string{"push", "force_push"} {
 		t.Run(kind, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			seedCapture(t, pool, phase.Implementing, "in_progress")
 			setCapturePullRequest(t, pool, func(pr *record.PullRequest) { pr.Failing = []string{"pr-checks-result"} })
 			github := &activityGitHub{}
@@ -1144,6 +1152,7 @@ func TestThePassRebuildsAPushLostWhateverTheActivityCallsIt(t *testing.T) {
 func TestThePassAppliesNoPushWhenTheActivityCannotBeFollowed(t *testing.T) {
 	at := time.Date(2026, 10, 26, 20, 0, 0, 0, time.UTC)
 	zero := strings.Repeat("0", 40)
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name     string
 		activity []string
@@ -1155,7 +1164,7 @@ func TestThePassAppliesNoPushWhenTheActivityCannotBeFollowed(t *testing.T) {
 		{"GitHub fails the read", nil, http.StatusBadGateway},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			seedCapture(t, pool, phase.Testing, "testing", record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleTester, Claim: "test-claim"})
 			github := &activityGitHub{activityStatus: tc.status}
 			github.moved("pushed", at, tc.activity...)

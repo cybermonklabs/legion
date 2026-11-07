@@ -221,6 +221,7 @@ func TestAHandOverWritesTheStatusAndTheLabelTogether(t *testing.T) {
 	orphaned := member
 	orphaned.Tree = child
 	row := mustOutboxRow(t, child, record.StatusWrite{ObservedStatus: "in_progress", Status: "todo", HandOver: true, HandOverTree: root, HandOverLinger: 3}, time.Now())
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name                string
 		root, child         record.Issue
@@ -239,7 +240,7 @@ func TestAHandOverWritesTheStatusAndTheLabelTogether(t *testing.T) {
 		{name: "child no longer the tree's", root: lingering, child: orphaned, shown: dispatch.Issue{Key: child, Status: "in_progress"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			records := record.NewStore()
 			if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
 				if err := records.PutIssue(context.Background(), tx, tc.root); err != nil {
@@ -384,6 +385,7 @@ func TestAnAlreadyTodoAndLabelledChildConsumesItsHandover(t *testing.T) {
 // already labelled, each on the issue's sequence. The fact is idempotent, so the event, when it does
 // come, changes nothing more.
 func TestAHandOverWriteIsConsumedWithoutWaitingForItsEvent(t *testing.T) {
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name                string
 		shown               dispatch.Issue
@@ -393,8 +395,8 @@ func TestAHandOverWriteIsConsumedWithoutWaitingForItsEvent(t *testing.T) {
 		{name: "already labelled: the hand-over's status write", shown: dispatch.Issue{Key: "LEGION-208", Status: "in_progress", Labels: []string{"legion"}, HandedOver: true, LastSeq: 4}, handOvers: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			reset(t)
 			const root, child = "LEGION-207", "LEGION-208"
-			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
 			until := time.Now().Add(time.Hour)
 			parent := root
@@ -455,6 +457,7 @@ func TestAHandOverWriteIsConsumedWithoutWaitingForItsEvent(t *testing.T) {
 // status write for a child a person already labelled. The outbox keeps the row for that transient
 // conflict, then observes the person's status and drops the hand-over fence without overwriting it.
 func TestAPersonMoveBetweenTheHandOverReadAndPatchStands(t *testing.T) {
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name   string
 		labels []string
@@ -463,8 +466,8 @@ func TestAPersonMoveBetweenTheHandOverReadAndPatchStands(t *testing.T) {
 		{name: "already labelled: the hand-over's status write", labels: []string{"legion"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			reset(t)
 			const root, child = "LEGION-207", "LEGION-208"
-			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
 			now := time.Now()
 			until := now.Add(time.Hour)
@@ -529,6 +532,7 @@ func TestAPersonMoveBetweenTheHandOverReadAndPatchStands(t *testing.T) {
 // (its own row's to clear), the stale row finishes without deleting the newer fence.
 func TestAStaleHandOverRowLeavesANewerLingersFence(t *testing.T) {
 	const root, child = "LEGION-207", "LEGION-208"
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name      string
 		shown     dispatch.Issue
@@ -538,7 +542,7 @@ func TestAStaleHandOverRowLeavesANewerLingersFence(t *testing.T) {
 		{name: "the newer fence is cancelled", shown: dispatch.Issue{Key: child, Status: "in_progress"}, cancelled: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			records := record.NewStore()
 			until := time.Now().Add(time.Hour)
 			parent := root
@@ -1115,6 +1119,7 @@ func TestOutboxGateSeedAppliesApprovedFactAndReturnsApprovalFailure(t *testing.T
 func TestOutboxGateSeedRaisesTheGateToTheVersionDispatchHolds(t *testing.T) {
 	two, one, reason := 2, 1, "name the rollback path"
 	bob := dispatch.Actor{Kind: "user", ID: "bob"}
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name     string
 		approval dispatch.Approval
@@ -1128,7 +1133,7 @@ func TestOutboxGateSeedRaisesTheGateToTheVersionDispatchHolds(t *testing.T) {
 			want: intake.DispatchArtifact{Key: "LEGION-208", ArtifactID: "artifact-208", Kind: intake.DispatchArtifactChangesRequested, Version: 2, Reason: reason, Actor: bob}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			handler := &outboxFactHandler{}
 			row := mustOutboxRow(t, "LEGION-208", record.GateSeed{ArtifactID: "artifact-208", Version: 1}, time.Now())
 			runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: record.NewStore(), dispatch: &outboxDispatch{approval: tc.approval}, handlers: []intake.Handler{handler}}
@@ -1182,6 +1187,7 @@ func TestOutboxGateSeedAppliesAChangesRequestWithItsMark(t *testing.T) {
 // latest version would be dropped as a review of an older one.
 func TestTheGateSeedResetsAGateAboveTheVersionDispatchHolds(t *testing.T) {
 	reason := "name the rollback path"
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name     string
 		approval dispatch.Approval
@@ -1192,7 +1198,7 @@ func TestTheGateSeedResetsAGateAboveTheVersionDispatchHolds(t *testing.T) {
 		{name: "changes requested at Dispatch's version", approval: dispatch.Approval{State: "changes_requested", LatestVersion: 4, Version: new(4), Reason: &reason, Seq: 9}, told: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			records := record.NewStore()
 			ctx := context.Background()
 			putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-208", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Planning, Generation: 1,
@@ -1444,6 +1450,7 @@ func TestOutboxStartRelaunchesAFailedClaim(t *testing.T) {
 // ready. The promotion's start carries the phase's resume task, which is not delivered as well,
 // whichever of the start and the close's queued suspend runs first: one prompt, not two.
 func TestAResumeStartGivesAClaimHoldingThePhasesTaskThatTaskOnce(t *testing.T) {
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name string
 		hold func(t *testing.T, machine *supervise.Machine, token claim.Token, rt *fake.Runtime)
@@ -1458,7 +1465,7 @@ func TestAResumeStartGivesAClaimHoldingThePhasesTaskThatTaskOnce(t *testing.T) {
 		{name: "booting", hold: func(*testing.T, *supervise.Machine, claim.Token, *fake.Runtime) {}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			records := record.NewStore()
 			ctx := context.Background()
 			issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Testing, Generation: 1, Status: "testing"}
@@ -1523,6 +1530,7 @@ func failTheClaim(t *testing.T, machine *supervise.Machine, token claim.Token, r
 // tries to deliver its own task, and its row is retried until the claim can take it.
 func TestAResumeStartDeliversItsTaskUnlessTheClaimHoldsTheOneItResumes(t *testing.T) {
 	confirmed := time.Now().Add(-time.Minute)
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name  string
 		claim supervise.Claim
@@ -1535,7 +1543,7 @@ func TestAResumeStartDeliversItsTaskUnlessTheClaimHoldsTheOneItResumes(t *testin
 			Pending: &supervise.Delivery{ID: "outbox:30", Task: "Run the retro.", Generation: 1, Phase: phase.Retro, ConfirmedAt: confirmed}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			records := record.NewStore()
 			ctx := context.Background()
 			issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Retro, Generation: 1, Status: "retro"}
@@ -1567,6 +1575,7 @@ func TestAResumeStartDeliversItsTaskUnlessTheClaimHoldsTheOneItResumes(t *testin
 // re-admitted tree's promotion then starts the claim, its resume task is the same work, so the
 // start delivers nothing more: the claim, relaunched, holds the interrupted task alone.
 func TestAResumeStartMeetingATaskADeathTookBackDeliversNothingMore(t *testing.T) {
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name  string
 		state supervise.ClaimState
@@ -1575,7 +1584,7 @@ func TestAResumeStartMeetingATaskADeathTookBackDeliversNothingMore(t *testing.T)
 		{name: "held after deaths kept coming", state: supervise.StateFailed},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			records := record.NewStore()
 			ctx := context.Background()
 			issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Implementing, Generation: 2, Status: "in_progress"}
@@ -1969,6 +1978,7 @@ func TestOutboxRetryStartForAPhaseTheIssueLeftRelaunchesNothing(t *testing.T) {
 // rather than the finished phase's — for the next round, or for retro once the architect accepts
 // the approved head, never "Phase: implementing" again — without relaunching it.
 func TestAResidentWorkerIsHandedItsNewPhaseNotATaskLeftPendingFromTheLast(t *testing.T) {
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name   string
 		review intake.PullRequestReview
@@ -1979,7 +1989,7 @@ func TestAResidentWorkerIsHandedItsNewPhaseNotATaskLeftPendingFromTheLast(t *tes
 		{name: "changes requested into the next round", review: intake.PullRequestReview{State: "CHANGES_REQUESTED", Body: "scripted changes requested, round 3"}, want: "round 3"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			records := record.NewStore()
 			ctx := context.Background()
 			issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Reviewing, Generation: 1, Status: "needs_review"}

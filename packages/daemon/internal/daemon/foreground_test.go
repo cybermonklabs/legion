@@ -30,11 +30,22 @@ func bit(sig syscall.Signal) uint64 { return 1 << (uint(sig) - 1) }
 
 func bare(command string) string { return command }
 
+// requireProcStatus skips t where this kernel's /proc/self/status cannot answer what these tests
+// read: a process's ignored-signal mask. The file existing is not enough — gVisor, which a Legion
+// issue pod runs under, serves it without a SigIgn line at all, and a test that only stat'd it
+// then failed parsing "" rather than saying what the machine could not give it.
 func requireProcStatus(t *testing.T) {
 	t.Helper()
-	if _, err := os.Stat("/proc/self/status"); err != nil {
+	status, err := os.ReadFile("/proc/self/status")
+	if err != nil {
 		t.Skip("no /proc/self/status to read a child's signal dispositions from")
 	}
+	for line := range strings.SplitSeq(string(status), "\n") {
+		if strings.HasPrefix(line, "SigIgn:") {
+			return
+		}
+	}
+	t.Skip("this kernel's /proc/self/status carries no SigIgn line, so a child's ignored-signal mask cannot be read here (gVisor, which a Legion issue pod runs under, is one)")
 }
 
 // The attempt's SIGTTOU immunity ends with it: a child started after release - the controller's

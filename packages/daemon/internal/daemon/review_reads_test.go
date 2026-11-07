@@ -124,6 +124,7 @@ func TestAReviewWhoseWebhookNeverArrivedDecidesItsRoundOnThePass(t *testing.T) {
 		early = "2026-10-08T22:15:40Z"
 		late  = "2026-10-08T22:15:52Z"
 	)
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name     string
 		held     bool
@@ -152,7 +153,7 @@ func TestAReviewWhoseWebhookNeverArrivedDecidesItsRoundOnThePass(t *testing.T) {
 			want: phase.Held, decision: "approved"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			seedCapture(t, pool, phase.Reviewing, "needs_review", completedReviewer("review-1"))
 			if tc.held {
 				holdFromReviewing(t, pool)
@@ -240,9 +241,10 @@ func TestAReviewDecisionDeliveredTwiceActsOnce(t *testing.T) {
 	round1 := listedReview(11, reviewReadApp, "CHANGES_REQUESTED", "code", "2026-10-08T22:15:40Z")
 	webhook := intake.PullRequestReview{Repo: "acme/widgets", Number: 86, ID: 11, SubmittedAt: time.Date(2026, 10, 8, 22, 15, 40, 0, time.UTC),
 		State: "changes_requested", CommitID: "code", HeadSHA: "code", Author: reviewReadApp, Body: "review 11"}
+	pool, reset := tableDatabase(t)
 	for _, passFirst := range []bool{false, true} {
 		t.Run(fmt.Sprintf("the pass first: %t", passFirst), func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			ctx := context.Background()
 			seedCapture(t, pool, phase.Reviewing, "needs_review", completedReviewer("review-1"))
 			listed := []string{round1}
@@ -305,6 +307,7 @@ func TestAReviewDecisionDeliveredTwiceActsOnce(t *testing.T) {
 // head. A later pass finds nothing newer to apply.
 func TestADecidingReviewOutsideARoundDecidesNoLaterRound(t *testing.T) {
 	const stale = "2026-10-08T22:15:40Z"
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		from   phase.Phase
 		status string
@@ -316,7 +319,7 @@ func TestADecidingReviewOutsideARoundDecidesNoLaterRound(t *testing.T) {
 		{phase.Implementing, "in_progress", "APPROVED"},
 	} {
 		t.Run(string(tc.from)+" "+tc.state, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			ctx := context.Background()
 			seedCapture(t, pool, tc.from, tc.status, record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleReviewer, Claim: "review-claim"})
 			var reads atomic.Int64
@@ -366,9 +369,10 @@ func TestADecidingReviewOutsideARoundDecidesNoLaterRound(t *testing.T) {
 // to implementing a second time or on to retro on that review.
 func TestADecidingReviewBetweenRoundsDecidesNoLaterRound(t *testing.T) {
 	round1 := listedReview(11, reviewReadApp, "CHANGES_REQUESTED", "code", "2026-10-08T22:15:40Z")
+	pool, reset := tableDatabase(t)
 	for _, state := range []string{"CHANGES_REQUESTED", "APPROVED"} {
 		t.Run(state, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			ctx := context.Background()
 			seedCapture(t, pool, phase.Reviewing, "needs_review", completedReviewer("review-1"))
 			listed := []string{round1}

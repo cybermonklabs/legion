@@ -91,6 +91,7 @@ func queuedNotices(t *testing.T, pool *pgxpool.Pool) []string {
 // session the forward went to, since that ready will not come again to release it; otherwise it
 // waits the first re-send delay.
 func TestANoticeTheListenerCouldNotForwardIsQueuedAgain(t *testing.T) {
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name, reason       string
 		architect          supervise.ClaimState
@@ -108,7 +109,7 @@ func TestANoticeTheListenerCouldNotForwardIsQueuedAgain(t *testing.T) {
 		{"a late receipt from a resumed session that took its role inside the receipt window", "receipt_timeout", supervise.StateReady, "ses_arch", "ses_arch", 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			records := record.NewStore()
 			noticeTree(t, pool, records, false)
 			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
@@ -160,6 +161,7 @@ func TestANoticeTheListenerCouldNotForwardIsQueuedAgain(t *testing.T) {
 // the re-send delay is held, its lane's wait armed for the delay, and goes once the delay has
 // passed on the clock.
 func TestAReheldNoticeIsPublishedByItsLaneWithoutASweep(t *testing.T) {
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name, reason       string
 		architect          supervise.ClaimState
@@ -170,7 +172,7 @@ func TestAReheldNoticeIsPublishedByItsLaneWithoutASweep(t *testing.T) {
 		{"a copy due after the re-send delay", "no_holder", supervise.StateLaunching, "", "", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			noticeTree(t, pool, record.NewStore(), false)
 			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 			architectClaimOn(t, sup, "LEGION-1", tc.architect, tc.session)
@@ -252,6 +254,7 @@ func TestAReportOfTheExecutorsOwnPublishIsQueuedAgain(t *testing.T) {
 func TestAReportThatIsNotAFailedNoticeForwardChangesNothing(t *testing.T) {
 	notice := record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "max_fix_attempts"}
 	root := "notifications.role.legion-legion-legion-1-architect"
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name   string
 		report laneReport
@@ -266,7 +269,7 @@ func TestAReportThatIsNotAFailedNoticeForwardChangesNothing(t *testing.T) {
 		{"a payload that is not a notice", laneReport{"evt-exception", "delivery_failed", root, "pr-blocked on LEGION-2", map[string]string{"kind": "pr-blocked", "packet": "READY"}, "legion-outbox:7", "ses_live"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 			architectClaimOn(t, sup, "LEGION-1", supervise.StateWorking, "ses_live")
 			runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: record.NewStore(), supervisor: sup, project: "legion", now: time.Now}
@@ -290,6 +293,7 @@ func TestAReportThatIsNotAFailedNoticeForwardChangesNothing(t *testing.T) {
 func TestAReportOfAPublishTheListenerRefusedQueuesNothingAndIsNoError(t *testing.T) {
 	notice := record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "max_fix_attempts"}
 	topic := "notifications.role.legion-legion-legion-1-architect"
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name, reason, recipient string
 		refused                 bool
@@ -299,7 +303,7 @@ func TestAReportOfAPublishTheListenerRefusedQueuesNothingAndIsNoError(t *testing
 		{"a reason this daemon does not know", "some_new_reason", "ses_live", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			records := record.NewStore()
 			noticeTree(t, pool, records, false)
 			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
@@ -467,9 +471,10 @@ func TestANoticeItsArchitectsSessionDidNotConfirmIsQueuedAgainOnTheReholdSchedul
 // publish while a deployment rolls its listeners), in either order, or the same answer twice (a
 // row run again after its lease expired). Each marks the publish's key and copy count processed.
 func TestOneNoticePublishIsQueuedAgainOnceFromAnswersAndExceptions(t *testing.T) {
+	pool, reset := tableDatabase(t)
 	for _, steps := range [][]string{{"answer", "exception"}, {"exception", "answer"}, {"answer", "answer"}} {
 		t.Run(strings.Join(steps, " then "), func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			records := record.NewStore()
 			noticeTree(t, pool, records, false)
 			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
@@ -617,6 +622,7 @@ func TestANoticeTheListenerIsDeniedToForwardFinishesUndelivered(t *testing.T) {
 // queued before the close finishes without publishing when it runs. Each says so in one line
 // naming the notice, and neither reports a forwarding failure.
 func TestANoticeToAnArchitectStoppedWithItsFinishedTreeIsNotSentAgain(t *testing.T) {
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name  string
 		state supervise.ClaimState
@@ -625,7 +631,7 @@ func TestANoticeToAnArchitectStoppedWithItsFinishedTreeIsNotSentAgain(t *testing
 		{"the architect's claim retired", supervise.StateRetired},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			records := record.NewStore()
 			noticeTree(t, pool, records, true)
 			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
@@ -764,9 +770,10 @@ func TestARoleLaneExceptionOnNATSQueuesTheNoticeAgain(t *testing.T) {
 // registration has lapsed, so an architect that takes the role back after four minutes, or after
 // seven, still receives the notice once, and nothing is dropped at the cap.
 func TestANoticeReachesAnArchitectThatTakesMinutesToRelaunch(t *testing.T) {
+	pool, reset := tableDatabase(t)
 	for _, relaunch := range []time.Duration{4 * time.Minute, 7 * time.Minute} {
 		t.Run(relaunch.String(), func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			records := record.NewStore()
 			noticeTree(t, pool, records, false)
 			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
@@ -819,12 +826,13 @@ func TestANoticeReachesAnArchitectThatTakesMinutesToRelaunch(t *testing.T) {
 // relaunch resumes the claim's session file, so the relaunched agent registers the same session id
 // the stopped one had; a relaunch onto a new session is released the same way.
 func TestANoticeWrittenAfterTheRelaunchIsNotHeldBehindAWaitingCopy(t *testing.T) {
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct{ name, stopped, relaunched string }{
 		{"the session resumed", "ses_arch", "ses_arch"},
 		{"a new session", "ses_stopped", "ses_new"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			records := record.NewStore()
 			noticeTree(t, pool, records, false)
 			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
@@ -1041,6 +1049,7 @@ func TestANoticeToALiveClaimThatHearsNothingKeepsItsSchedule(t *testing.T) {
 // does one whose report names no session: the listener names none when the role had no holder or
 // it could not read the holder, which says nothing about where the role went.
 func TestALaterCopyToAnArchitectBackOnAnotherSessionIsDueAtOnce(t *testing.T) {
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name, reason, recipient string
 		due                     time.Duration
@@ -1051,7 +1060,7 @@ func TestALaterCopyToAnArchitectBackOnAnotherSessionIsDueAtOnce(t *testing.T) {
 		{"a failed holder read, naming no session", "delivery_failed", "", noticeReholdDelays[1]},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 			architectClaimOn(t, sup, "LEGION-1", supervise.StateReady, "ses_new")
 			clock := time.Now()
@@ -1113,6 +1122,7 @@ func TestWhenACopyIsDueAtOnce(t *testing.T) {
 // writes one. A copy would reach the architect after that fresh catch-up, so none is queued. A
 // catch-up nothing superseded may be the architect's only one, and is re-held as any notice is.
 func TestAReheldCatchUpNeverFollowsANewerOne(t *testing.T) {
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name       string
 		state      supervise.ClaimState
@@ -1127,7 +1137,7 @@ func TestAReheldCatchUpNeverFollowsANewerOne(t *testing.T) {
 		{"the root re-admitted at a later generation", supervise.StateReady, 2, 2, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			records := record.NewStore()
 			noticeTree(t, pool, records, false)
 			root := record.Issue{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-1", Title: "Root", Phase: phase.Implementing, Generation: tc.generation, Status: "in_progress"}

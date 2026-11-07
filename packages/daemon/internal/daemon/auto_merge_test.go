@@ -35,6 +35,7 @@ import (
 // disarms.
 func TestAnAutoMergeDisableRowKeepsOnlyTheAwaitedREADYHeadsArm(t *testing.T) {
 	const byHand = "MANUAL_MERGE_REQUIRED: pull request #42 matches a by_hand merge rule; do not auto-arm it"
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name string
 		seed readyMergeSeed
@@ -47,6 +48,7 @@ func TestAnAutoMergeDisableRowKeepsOnlyTheAwaitedREADYHeadsArm(t *testing.T) {
 		{"awaiting its merge at the READY head in a lingering tree", awaitingREADY.with(func(s *readyMergeSeed) { s.lingers = true }), 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			reset(t)
 			var mu sync.Mutex
 			var bearers []string
 			disables := 0
@@ -68,7 +70,6 @@ func TestAnAutoMergeDisableRowKeepsOnlyTheAwaitedREADYHeadsArm(t *testing.T) {
 				_, _ = w.Write([]byte(armedPullJSON("ready-head", disables == 0)))
 			}))
 			t.Cleanup(server.Close)
-			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
 			seedReadyMerge(t, pool, records, "LEGION-208", tc.seed)
 			runner := mergeRunner(pool, records, server.URL, quietLogger(), time.Now)
@@ -140,6 +141,7 @@ func TestAnAutoMergeDisableRowReadsGitHubBeforeTheRecord(t *testing.T) {
 // check guards the head between the row's read and its mutation.
 func TestAREADYMergeRowSubmitsOnlyTheAwaitedREADYHead(t *testing.T) {
 	const byHand = "MANUAL_MERGE_REQUIRED: pull request #42 matches a by_hand merge rule; do not auto-arm it"
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name   string
 		seed   readyMergeSeed
@@ -153,8 +155,8 @@ func TestAREADYMergeRowSubmitsOnlyTheAwaitedREADYHead(t *testing.T) {
 		{"awaiting its merge on a pull request the record holds closed", awaitingREADY.with(func(s *readyMergeSeed) { s.pr = record.PullRequestClosed }), 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			reset(t)
 			github := newMergeGitHub(t, func(int) string { return pullJSON("OPEN", "ready-head", "CLEAN") }, mergedAnswer)
-			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
 			seedReadyMerge(t, pool, records, "LEGION-208", tc.seed)
 			runner := mergeRunner(pool, records, github.url, quietLogger(), time.Now)
@@ -182,6 +184,7 @@ func TestAREADYMergeRowSubmitsOnlyTheAwaitedREADYHead(t *testing.T) {
 // a re-push between the read and the mutation is refused by GitHub ("Head branch was modified").
 // Either way the issue stays in awaiting_merge and no merge is recorded.
 func TestAREADYMergeNeverLandsAHeadReplacedAfterTheREADY(t *testing.T) {
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name   string
 		read   func(int) string
@@ -196,8 +199,8 @@ func TestAREADYMergeNeverLandsAHeadReplacedAfterTheREADY(t *testing.T) {
 		}, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			reset(t)
 			github := newMergeGitHub(t, tc.read, refusedAnswer("Head branch was modified. Review and try the merge again."))
-			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
 			seedReadyMerge(t, pool, records, "LEGION-208", awaitingREADY)
 			runner := mergeRunner(pool, records, github.url, quietLogger(), time.Now)
@@ -223,6 +226,7 @@ func TestAREADYMergeNeverLandsAHeadReplacedAfterTheREADY(t *testing.T) {
 // (GitHub's server error) tells nobody and keeps the row on its backoff.
 func TestAPermanentREADYMergeRefusalTellsTheArchitectOnce(t *testing.T) {
 	const squash = "Squash merges are not allowed on this repository."
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name           string
 		answer         func(http.ResponseWriter)
@@ -233,8 +237,8 @@ func TestAPermanentREADYMergeRefusalTellsTheArchitectOnce(t *testing.T) {
 		{"a server error", func(w http.ResponseWriter) { http.Error(w, `{"message":"Server Error"}`, http.StatusBadGateway) }, 1, 0, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			reset(t)
 			github := newMergeGitHub(t, func(int) string { return pullJSON("OPEN", "ready-head", "CLEAN") }, tc.answer)
-			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
 			seedReadyMerge(t, pool, records, "LEGION-208", awaitingREADY)
 			enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208", record.ReadyMerge{Number: 42, Head: "ready-head"}, time.Now()))
@@ -310,13 +314,14 @@ func TestOnlyTheOwningREADYMergeLeasePostsAPermanentRefusal(t *testing.T) {
 // requires sees no warning flood. One waiting on a branch update (BEHIND) or a draft (DRAFT) waits
 // on someone, so it warns once it has waited long.
 func TestAWaitingREADYMergeWarnsOnlyWhenItWaitsOnSomeone(t *testing.T) {
+	pool, reset := tableDatabase(t)
 	for state, level := range map[string]string{"BLOCKED": "DEBUG", "UNKNOWN": "DEBUG", "BEHIND": "WARN", "DRAFT": "WARN", "armed": "DEBUG"} {
 		t.Run(state, func(t *testing.T) {
+			reset(t)
 			url := newMergeGitHub(t, func(int) string { return pullJSON("OPEN", "ready-head", state) }, mergedAnswer).url
 			if state == "armed" {
 				url = newArmableGitHub(t).url
 			}
-			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
 			seedReadyMerge(t, pool, records, "LEGION-208", awaitingREADY)
 			row := mustOutboxRow(t, "LEGION-208", record.ReadyMerge{Number: 42, Head: "ready-head"}, time.Now())
@@ -357,9 +362,10 @@ func TestAWaitingREADYMergeWarnsOnlyWhenItWaitsOnSomeone(t *testing.T) {
 // longer than a webhook takes, and then tells the architect once (merge-stalled). So one
 // disagreement after a long routine wait never ends it.
 func TestAREADYMergeRowWaitsForGitHubAndTheRecordToAgree(t *testing.T) {
+	pool, reset := tableDatabase(t)
 	for _, waited := range []int{0, waitWarnAttempts} {
 		t.Run(fmt.Sprintf("a reopen lands while a row that waited %d times reads the close", waited), func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			records := record.NewStore()
 			seedReadyMerge(t, pool, records, "LEGION-208", awaitingREADY.with(func(s *readyMergeSeed) { s.pr = record.PullRequestClosed }))
 			github := newMergeGitHub(t, func(read int) string {
@@ -391,7 +397,7 @@ func TestAREADYMergeRowWaitsForGitHubAndTheRecordToAgree(t *testing.T) {
 		})
 	}
 	t.Run("a reopen lands between the row's record read and its finish", func(t *testing.T) {
-		pool := isolatedOutboxPool(t)
+		reset(t)
 		records := record.NewStore()
 		seedReadyMerge(t, pool, records, "LEGION-208", awaitingREADY.with(func(s *readyMergeSeed) { s.pr = record.PullRequestClosed }))
 		github := newMergeGitHub(t, func(int) string { return pullJSON("OPEN", "ready-head", "CLEAN") }, mergedAnswer)
@@ -416,7 +422,7 @@ func TestAREADYMergeRowWaitsForGitHubAndTheRecordToAgree(t *testing.T) {
 		}
 	})
 	t.Run("one disagreement after a long routine wait", func(t *testing.T) {
-		pool := isolatedOutboxPool(t)
+		reset(t)
 		records := record.NewStore()
 		seedReadyMerge(t, pool, records, "LEGION-208", awaitingREADY)
 		now := time.Now().UTC()
@@ -439,8 +445,8 @@ func TestAREADYMergeRowWaitsForGitHubAndTheRecordToAgree(t *testing.T) {
 		assertMergeRows(t, pool, 1, "merge-stalled", 0)
 	})
 	t.Run("GitHub and the record both hold the pull request closed", func(t *testing.T) {
+		reset(t)
 		github := newMergeGitHub(t, func(int) string { return pullJSON("CLOSED", "ready-head", "UNKNOWN") }, mergedAnswer)
-		pool := isolatedOutboxPool(t)
 		records := record.NewStore()
 		seedReadyMerge(t, pool, records, "LEGION-208", awaitingREADY.with(func(s *readyMergeSeed) { s.pr = record.PullRequestClosed }))
 		enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208", record.ReadyMerge{Number: 42, Head: "ready-head"}, time.Now()))
@@ -450,10 +456,10 @@ func TestAREADYMergeRowWaitsForGitHubAndTheRecordToAgree(t *testing.T) {
 		assertMergeRows(t, pool, 0, "merge-stalled", 0)
 	})
 	t.Run("a disagreement that has stood on GitHub past the bound", func(t *testing.T) {
+		reset(t)
 		now := time.Now().UTC()
 		closed := now.Add(-9 * time.Minute)
 		github := newMergeGitHub(t, func(int) string { return pullJSONAt("CLOSED", "ready-head", "UNKNOWN", closed) }, mergedAnswer)
-		pool := isolatedOutboxPool(t)
 		records := record.NewStore()
 		seedReadyMerge(t, pool, records, "LEGION-208", awaitingREADY)
 		// However many times the row tried before, only GitHub's clock bounds the disagreement.
@@ -956,6 +962,7 @@ func TestAMergeFailureAlreadyAppliedIsNotLoggedAsSendingTheIssueBack(t *testing.
 // ends, submitting nothing more, and tells the architect once (merge-removed), naming what was
 // removed, GitHub's reason and who removed it. The issue stays in awaiting_merge.
 func TestARemovalByAPersonEndsTheREADYMergeAndTellsTheArchitect(t *testing.T) {
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name    string
 		github  func(*testing.T) *armableGitHub
@@ -971,8 +978,8 @@ func TestARemovalByAPersonEndsTheREADYMergeAndTellsTheArchitect(t *testing.T) {
 		}, manuallyDisabledEvent("a-maintainer"), []string{"#42", "auto-merge", "manually_disabled", "a-maintainer", "ready-head"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			reset(t)
 			github := tc.github(t)
-			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
 			seedReadyMerge(t, pool, records, "LEGION-208", awaitingREADY)
 			clock := time.Now().UTC()
@@ -1308,6 +1315,7 @@ func (s *reopensBeforeFinish) reopenOnce() {
 // A rate-limited ready_merge waits as long as GitHub asks, longer than the outbox's own backoff,
 // whether GitHub answers the GraphQL mutation with RATE_LIMITED and 200 or with a 429.
 func TestARateLimitedREADYMergeWaitsGitHubsRetryAfter(t *testing.T) {
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name   string
 		answer func(http.ResponseWriter)
@@ -1323,8 +1331,8 @@ func TestARateLimitedREADYMergeWaitsGitHubsRetryAfter(t *testing.T) {
 		}, 120 * time.Second},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			reset(t)
 			github := newMergeGitHub(t, func(int) string { return pullJSON("OPEN", "ready-head", "CLEAN") }, tc.answer)
-			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
 			seedReadyMerge(t, pool, records, "LEGION-208", awaitingREADY)
 			now := time.Date(2026, 10, 16, 5, 0, 0, 0, time.UTC)
@@ -1346,10 +1354,11 @@ func TestARateLimitedREADYMergeWaitsGitHubsRetryAfter(t *testing.T) {
 // (a Retry-After) covers every call the token makes. A deferred row is not run in the batch at all,
 // and its last error names the row whose limit deferred it.
 func TestARateLimitDefersOnlyTheRowsThatSpendItsBudget(t *testing.T) {
-	reset := strconv.FormatInt(time.Now().Add(10*time.Minute).Unix(), 10)
+	limitReset := strconv.FormatInt(time.Now().Add(10*time.Minute).Unix(), 10)
 	primary := func(resource string) map[string]string {
-		return map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": reset, "X-RateLimit-Resource": resource}
+		return map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": limitReset, "X-RateLimit-Resource": resource}
 	}
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name          string
 		first, second record.OutboxPayload
@@ -1368,8 +1377,8 @@ func TestARateLimitDefersOnlyTheRowsThatSpendItsBudget(t *testing.T) {
 			mergeLimit: map[string]string{"Retry-After": "180"}, deferred: true, wait: 180 * time.Second},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			reset(t)
 			github := newBudgetGitHub(t, tc.restLimit, tc.mergeLimit)
-			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
 			seedReadyMerge(t, pool, records, "LEGION-208", awaitingREADY)
 			putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-209", Title: "Disarmed", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "V"})
@@ -1446,9 +1455,10 @@ func TestARateLimitedBatchRemembersEveryBudgetItExhausted(t *testing.T) {
 // 180 seconds.
 func TestARateLimitStandsUntilTheLatestDeadlineOfTheBudgetsARowSpends(t *testing.T) {
 	secondary := map[string]string{"Retry-After": "180"}
+	pool, reset := tableDatabase(t)
 	t.Run("across batches", func(t *testing.T) {
+		reset(t)
 		github := newBudgetGitHub(t, nil, secondary)
-		pool := isolatedOutboxPool(t)
 		records := record.NewStore()
 		seedReadyMerge(t, pool, records, "LEGION-208", awaitingREADY)
 		putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-209", Title: "Disarmed", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "V"})
@@ -1483,9 +1493,9 @@ func TestARateLimitStandsUntilTheLatestDeadlineOfTheBudgetsARowSpends(t *testing
 		}
 	})
 	t.Run("overlapping REST core and secondary limits", func(t *testing.T) {
+		reset(t)
 		core := map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": strconv.FormatInt(time.Now().Add(30*time.Second).Unix(), 10), "X-RateLimit-Resource": "core"}
 		github := newBudgetGitHub(t, core, secondary)
-		pool := isolatedOutboxPool(t)
 		records := record.NewStore()
 		seedReadyMerge(t, pool, records, "LEGION-208", awaitingREADY)
 		for _, key := range []string{"LEGION-210", "LEGION-211"} {

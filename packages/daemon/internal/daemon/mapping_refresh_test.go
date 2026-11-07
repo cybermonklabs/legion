@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
@@ -66,6 +67,14 @@ func mappingRig(t *testing.T, missing map[string]bool) (*workflowRuntime, *mappi
 	return mappingRigWith(t, &installations{missing: missing})
 }
 
+// mappingRigOn is mappingRig on a database the caller already holds, for a table-driven test
+// whose rows share one clone and empty it between them (tableDatabase).
+func mappingRigOn(t *testing.T, pool *pgxpool.Pool, missing map[string]bool) (*workflowRuntime, *mappingDispatch, *installations, jetstream.Stream) {
+	t.Helper()
+	w, client, installs, stream, _ := mappingRigJSOn(t, pool, &installations{missing: missing})
+	return w, client, installs, stream
+}
+
 // mappingRigWith is mappingRig answering each installation read from installs, with each of opts
 // applied to the runtime before its boot reads the mapping.
 func mappingRigWith(t *testing.T, installs *installations, opts ...func(*workflowRuntime)) (*workflowRuntime, *mappingDispatch, *installations, jetstream.Stream) {
@@ -76,6 +85,12 @@ func mappingRigWith(t *testing.T, installs *installations, opts ...func(*workflo
 
 // mappingRigJS is mappingRigWith with the JetStream it opened, for a test that publishes on it.
 func mappingRigJS(t *testing.T, installs *installations, opts ...func(*workflowRuntime)) (*workflowRuntime, *mappingDispatch, *installations, jetstream.Stream, jetstream.JetStream) {
+	t.Helper()
+	return mappingRigJSOn(t, isolatedOutboxPool(t), installs, opts...)
+}
+
+// mappingRigJSOn is mappingRigJS on a database the caller already holds.
+func mappingRigJSOn(t *testing.T, pool *pgxpool.Pool, installs *installations, opts ...func(*workflowRuntime)) (*workflowRuntime, *mappingDispatch, *installations, jetstream.Stream, jetstream.JetStream) {
 	t.Helper()
 	ctx := context.Background()
 	conn, err := nats.Connect(workflowNATS(t))
@@ -96,7 +111,7 @@ func mappingRigJS(t *testing.T, installs *installations, opts ...func(*workflowR
 	if installs.missing == nil {
 		installs.missing = map[string]bool{}
 	}
-	w := &workflowRuntime{pool: isolatedOutboxPool(t), records: record.NewStore(), dispatch: client, dispatchProject: "LEGION", installs: installs,
+	w := &workflowRuntime{pool: pool, records: record.NewStore(), dispatch: client, dispatchProject: "LEGION", installs: installs,
 		repositories: newRepositories("LEGION", ghrepo.Renames{}), defaultBranches: newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now), log: quietLogger(),
 		mappingChanged: make(chan struct{}, 1)}
 	engine := workflow.New(w.records, workflow.Config{Project: "LEGION", Repositories: w, NoteUnread: w.noteUnread, Steps: config.DesignGateOff.Steps()}, quietLogger())
@@ -179,6 +194,7 @@ func recordedIssue(t *testing.T, w *workflowRuntime, key string) *record.Issue {
 // recorded on it, and the next read covers the issue that came up for admission. An issue is never
 // recorded on a repository GitHub intake does not hear.
 func TestAFailedRefreshServesNothingUntilARetrySubscribesIt(t *testing.T) {
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name string
 		fail bool
@@ -187,8 +203,9 @@ func TestAFailedRefreshServesNothingUntilARetrySubscribesIt(t *testing.T) {
 		{"a refresh whose live-record snapshot fails once", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			reset(t)
 			ctx := context.Background()
-			w, client, installs, stream := mappingRig(t, map[string]bool{"review zeta/tools": true})
+			w, client, installs, stream := mappingRigOn(t, pool, map[string]bool{"review zeta/tools": true})
 			client.issue = dispatch.Issue{Key: "LEGION-301", Status: "todo", HandedOver: true, ResolvedRepo: "zeta/tools", LastSeq: 1}
 			installs.missing["review zeta/tools"] = false
 			w.records = &faultyStore{Store: w.records, failIssues: tc.fail}
@@ -426,6 +443,7 @@ func TestAProjectServingNoRepositoryStartsServingOnceItsAppIsInstalled(t *testin
 // another repository with no event of its own (an ancestor's or the project's default changed),
 // it is recorded on the one it resolves to now.
 func TestAnIssueOnARepositoryMappedJustBeforeIsAdmittedOnIt(t *testing.T) {
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name   string
 		now    dispatch.Issue
@@ -436,8 +454,9 @@ func TestAnIssueOnARepositoryMappedJustBeforeIsAdmittedOnIt(t *testing.T) {
 		{"on another repository with no event of its own", dispatch.Issue{Key: "LEGION-302", Status: "todo", HandedOver: true, ResolvedRepo: "acme/widgets", LastSeq: 1}, "acme/widgets"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			reset(t)
 			ctx := context.Background()
-			w, client, _, stream := mappingRig(t, map[string]bool{})
+			w, client, _, stream := mappingRigOn(t, pool, map[string]bool{})
 			client.set(dispatch.RepoProject{Repo: "acme/widgets", Project: "LEGION", Default: true})
 			if err := w.refreshMapping(ctx); err != nil {
 				t.Fatal(err)
@@ -479,6 +498,7 @@ func TestAnIssueOnARepositoryMappedJustBeforeIsAdmittedOnIt(t *testing.T) {
 // issue's newer events, so it is prepared as Dispatch now shows the issue: a person who withdrew
 // it meanwhile is not overruled, and one still handed over is recorded.
 func TestAnAdmissionWhosePreparationFailedIsPreparedAsDispatchNowShowsIt(t *testing.T) {
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name      string
 		heldFirst bool
@@ -490,8 +510,9 @@ func TestAnAdmissionWhosePreparationFailedIsPreparedAsDispatchNowShowsIt(t *test
 		{"still handed over after a failed branch read", false, dispatch.Issue{Key: "LEGION-305", Status: "todo", HandedOver: true, ResolvedRepo: "acme/widgets", LastSeq: 2}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			reset(t)
 			ctx := context.Background()
-			w, client, _, _ := mappingRig(t, map[string]bool{})
+			w, client, _, _ := mappingRigOn(t, pool, map[string]bool{})
 			repo := "acme/widgets"
 			if tc.heldFirst {
 				repo = "zeta/tools"
@@ -576,6 +597,7 @@ func TestALateFirstDeliveryOfAnAdmissionEventIsPreparedAsDispatchNowShowsIt(t *t
 // record), and release_children's, prepared in place of no event, applies nothing. Either way the
 // record stays as it was, and the issue's later events, each with its own actor, carry it on.
 func TestAViewPreparedBeforeTheIssueWasRecordedNeverAppliesToItsRecord(t *testing.T) {
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name          string
 		releasedFirst bool
@@ -584,8 +606,9 @@ func TestAViewPreparedBeforeTheIssueWasRecordedNeverAppliesToItsRecord(t *testin
 		{"release_children's view, an event recording the issue first", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			reset(t)
 			ctx := context.Background()
-			w, client, _, _ := mappingRig(t, map[string]bool{})
+			w, client, _, _ := mappingRigOn(t, pool, map[string]bool{})
 			engine := workflow.New(w.records, workflow.Config{Project: "LEGION", Repositories: w, Steps: config.DesignGateOff.Steps()}, quietLogger())
 			admission := admit.New(w.records, engine, 1, "LEGION", quietLogger())
 			apply := func(id string, fact intake.DispatchIssue) {
