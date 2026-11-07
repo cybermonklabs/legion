@@ -1,0 +1,54 @@
+# A throwaway proof of one browser row, run by hand on a branch that is never merged: the
+# retried-upload row of packages/dispatch/e2e/keyed-writes.e2e.ts, repeated in chromium, webkit
+# and firefox on the runners ci.yaml's `dispatch` job uses. It exists to read that row's verdict
+# many times over in WebKit, which does not launch in the author's pod, and to read the two
+# controls at trees where the fix is reverted. Delete the branch once its runs are quoted.
+name: kept-upload-row-proof
+
+on:
+  # A `workflow_dispatch` workflow is dispatchable only once it stands on the default branch,
+  # and this one never reaches main, so the push to the proof branch is what runs it.
+  push:
+    branches:
+      - "proof/**"
+
+permissions:
+  contents: read
+
+jobs:
+  row:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          cache: false
+      - uses: ./.github/actions/setup-bun
+      - run: bun install --frozen-lockfile
+      - run: bun run build
+        working-directory: packages/contracts
+      - run: bun run build:web
+        working-directory: packages/dispatch
+      - run: bunx playwright install --with-deps chromium webkit firefox
+        working-directory: packages/dispatch
+      - name: Run the retried-upload row
+        run: |
+          export TMPDIR="$RUNNER_TEMP"
+          # pgvector, the copy in ghcr.io/cybermonklabs/legion/ci this suite's lanes run on
+          # (ci.yaml's dispatch job).
+          export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+          export DISPATCH_E2E_WORKERS=4
+          bun e2e/run.ts -- bunx playwright test --config e2e/playwright.config.ts \
+            --reporter=list --repeat-each=20 \
+            --project=chromium --project=webkit --project=firefox \
+            -g "a retried upload survives a reload with its file"
+        working-directory: packages/dispatch
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure()
+        with:
+          name: kept-upload-row-results
+          path: packages/dispatch/e2e/test-results
