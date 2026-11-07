@@ -392,10 +392,23 @@ func bundleDirs(repos func() []ghrepo.Repository, renames ghrepo.Renames, repo g
 		slices.Sort(names)
 		served[owner] = slices.Compact(names)
 	}
-	// mintOwner is the owner a directory's lease is minted for: its own, or, for an alias, the
-	// owner its repository moved to.
+	// mintOwner is the owner a directory's lease is minted for: its own, or, where the name is
+	// one a resolving pair moved a repository away from and the project serves no repository
+	// under it, the owner that repository moved to.
+	//
+	// An owner the project serves repositories of under its own name is never redirected: that
+	// owner has an installation of its own, so the lease the daemon can mint for that name is
+	// that owner's, and a pair moved one of its repositories and not the owner. It is the
+	// answer the switch below already gives such an owner's directory (case owners[name]), and
+	// the serving clause's own owner needs it too: where the project serves the role's own
+	// repository, the owner whose installation serves it is served under its own name, so
+	// write is that owner and the repository directories are cut over the repositories it
+	// serves. Redirected, write would name the owner a second pair moved one of that owner's
+	// repositories to — a chain of owners NewRenames accepts, its chain check comparing whole
+	// repositories — and the clause would cut that third owner's repositories instead, leaving
+	// every other repository the serving owner serves named by no lease of the bundle.
 	mintOwner := func(name string) string {
-		if to, alias := aliases[name]; alias {
+		if to, alias := aliases[name]; alias && !owners[name] {
 			return to
 		}
 		return name
@@ -437,7 +450,12 @@ func bundleDirs(repos func() []ghrepo.Repository, renames ghrepo.Renames, repo g
 	// which is then reachable from no directory of the bundle at all.
 	//
 	// write is the owner whose installation serves the role's own repository, which is the owner
-	// the bundle's repository directories are cut for below.
+	// the bundle's repository directories are cut for below. It is servingOwner itself wherever
+	// the project serves that repository, since mintOwner redirects no owner the project serves
+	// repositories of under its own name: serving is already resolved, so a further redirect of
+	// it would cut the repositories of the owner a second pair moved one of the serving owner's
+	// repositories away to, and leave every other repository the serving owner serves named by
+	// no lease of the bundle.
 	write := ""
 	writeAt := map[string]bool{}
 	if !serving.IsZero() {

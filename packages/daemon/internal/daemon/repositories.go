@@ -632,12 +632,21 @@ func checkWebhookApp(ctx context.Context, client dispatch.Client, repo ghrepo.Re
 	return ""
 }
 
-// servedGaps is each of gaps whose repository refused does not leave out, once per repository:
-// the served repositories, the only ones legion state names without the webhook App.
+// servedGaps is each of gaps whose repository the mapping serves, once per repository: the served
+// repositories, the only ones legion state names without the webhook App.
 //
-// It is a method of the mapping rather than the package function it was because the match a
-// refusal needs is the mapping's own rename equivalence (same), not a comparison of spellings: a
-// gap is recorded against the name its entry is served under (checkMapping) while a refusal is
+// A gap whose repository the mapping serves is never dropped. servedGaps runs after set, so the
+// accepted set is what the daemon serves from here on and is authoritative over any refusal: a
+// configured pair's two names may both be mapped, one entry served while the other is left out,
+// and the entry left out is no reason to say nothing about the webhook App on the repository the
+// daemon does serve. That shape is not rare — an entry whose read failed is refused for now, and
+// one whose mapped name holds one App and not the other is refused for good, since it asks for no
+// partner read — and matching every gap against the refusals alone dropped the served
+// repository's own gap with it.
+//
+// The rest are dropped by the mapping's own rename equivalence (same) rather than by a comparison
+// of spellings, which is why this is a method of the mapping and not the package function it was:
+// a gap is recorded against the name its entry is served under (checkMapping) while a refusal is
 // keyed on Dispatch's spelling of the mapped name, so after a transfer the two name one
 // repository under two names and strings.EqualFold alone would keep a gap for a repository the
 // daemon leaves out.
@@ -648,9 +657,14 @@ func checkWebhookApp(ctx context.Context, client dispatch.Client, repo ghrepo.Re
 // served entries are keyed by, which is the collision set merges on: a gap left under a mapped
 // name of its own is a repository of its own.
 func (r *repositories) servedGaps(gaps []webhookAppGap, refused []refusedRepository) []webhookAppGap {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	var served []webhookAppGap
 	for _, gap := range gaps {
-		if slices.ContainsFunc(refused, func(refusal refusedRepository) bool { return r.same(refusal.Repo, gap.Repo) }) {
+		// The served repositories are held by their lowercased <owner>/<name> (set), which is the
+		// name a served entry's gap is recorded against, so this is one map lookup per gap.
+		_, serves := r.accepted[strings.ToLower(gap.Repo)]
+		if !serves && slices.ContainsFunc(refused, func(refusal refusedRepository) bool { return r.same(refusal.Repo, gap.Repo) }) {
 			continue
 		}
 		if slices.ContainsFunc(served, func(held webhookAppGap) bool { return strings.EqualFold(held.Repo, gap.Repo) }) {

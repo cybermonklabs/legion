@@ -341,6 +341,11 @@ func servedDefaults(repos *repositories) []string {
 // instead. The pair's other name is read for neither App there, and the entry is left out naming
 // the App that is missing, rather than a project being moved onto the repository a pair names
 // on the strength of one missing installation.
+//
+// The seventh is that sixth case beside M4's second entry: the pair's two names are both mapped,
+// the entry naming the old one is left out for good, and the entry naming the one GitHub has is
+// served with Dispatch's webhook App not installed on it. The served repository's gap is
+// reported, since what the daemon serves decides it and not what the pair's other name did.
 func TestTheMappingLoadServesEachMappedRepositoryUnderTheNameGitHubHasIt(t *testing.T) {
 	const old, moved = "sjawhar/legion", "cybermonklabs/legion"
 	// transferred is GitHub after the transfer, which answers the old address with the redirect
@@ -360,6 +365,7 @@ func TestTheMappingLoadServesEachMappedRepositoryUnderTheNameGitHubHasIt(t *test
 		return asked
 	}
 	const gapReason = "Dispatch's GitHub App is not installed on " + old + ": GitHub sends Legion none of its events and nothing redelivers them; the pass heals its pull requests every 2 minutes"
+	const movedGapReason = "Dispatch's GitHub App is not installed on " + moved + ": GitHub sends Legion none of its events and nothing redelivers them; the pass heals its pull requests every 2 minutes"
 	for _, tc := range []struct {
 		name string
 		// mappings is Dispatch's repository mapping, and missing each installation read GitHub
@@ -475,6 +481,28 @@ func TestTheMappingLoadServesEachMappedRepositoryUnderTheNameGitHubHasIt(t *test
 			asks:      reads(old),
 			unread:    moved,
 			refuses:   []refusedRepository{{Repo: old, Reason: "the review App is not installed on " + old, mappedDefault: true}},
+		},
+		{
+			// The entry naming the old name holds the implement App and not the review App, so
+			// it is left out for good and asks for no partner read, while the entry naming the
+			// name GitHub has is served and Dispatch answers that its webhook App is not
+			// installed. The refusal names the served repository's pair, so matching a gap
+			// against the refusals by the rename equivalence alone dropped the served
+			// repository's own gap and legion state said nothing about the webhook App on a
+			// repository the daemon serves.
+			name:           "M4 with the entry naming the old name left out while the served entry carries a webhook App gap",
+			mappings:       []dispatch.RepoProject{{Repo: old, Project: "LEGION"}, {Repo: moved, Project: "LEGION", Default: true}},
+			missing:        map[string]bool{"review " + old: true},
+			github:         transferred,
+			installed:      []string{"cybermonklabs"},
+			webhookMissing: map[string]bool{moved: true},
+			asks:           reads(old, moved),
+			served:         []string{moved},
+			serves:         moved,
+			owners:         []string{"cybermonklabs"},
+			refuses:        []refusedRepository{{Repo: old, Reason: "the review App is not installed on " + old}},
+			minted:         []string{"cybermonklabs"},
+			gaps:           []webhookAppGap{{Repo: moved, Reason: movedGapReason}},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

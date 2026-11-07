@@ -18,11 +18,14 @@ import (
 // sjawhar/legion -> cybermonklabs/legion resolves, and the issue is recorded on sjawhar/oh-my-pi.
 // The sjawhar directory then holds the write lease for sjawhar/oh-my-pi, which names that
 // repository alone, so sjawhar/tools needs a repository directory of its own, as it has one in
-// every state where no pair resolves. The bundle's repository directories are cut for the owner
-// mintOwner answers for the owner serving the role's repository, and for an alias owner that is
-// the owner the pair moved to, so they are cut over cybermonklabs' repositories and sjawhar/tools
-// gets none: `legion gh` on sjawhar/tools picks the sjawhar directory, whose token names
-// sjawhar/oh-my-pi alone, and GitHub refuses it.
+// every state where no pair resolves. The fault this test caught: the bundle's repository
+// directories were cut for the owner mintOwner answered for the owner serving the role's
+// repository, which for an owner a pair moved a repository away from was the owner it moved to
+// even where the project served that owner's own repositories, so they were cut over
+// cybermonklabs' repositories and sjawhar/tools got none: `legion gh` on sjawhar/tools picked
+// the sjawhar directory, whose token names sjawhar/oh-my-pi alone, and GitHub refused it.
+// mintOwner redirects no owner the project serves under its own name now, so the clause cuts
+// sjawhar's repositories and this test's assertion is the rule rather than the bug.
 func TestTheBundleReachesEveryRepositoryTheProjectServesUnderTheRecordedOwner(t *testing.T) {
 	repos := projectRepos("cybermonklabs/legion", "sjawhar/oh-my-pi", "sjawhar/tools")
 	credential := GitHubCredential(ownerTokens{}, repos, ghrepo.MustRenames(legionRename), nil, quietBundleLog())

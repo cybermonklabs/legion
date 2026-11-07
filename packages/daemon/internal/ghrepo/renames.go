@@ -74,7 +74,7 @@ func NewRenames(pairs []Rename) (Renames, error) {
 			case strings.EqualFold(pair.To.String(), earlier.From.String()):
 				return Renames{}, fmt.Errorf("rename %d (%s) chains onto rename %d (%s) through %s: a rename pairs two names, never a chain of three", index, pair.describe(), seen, earlier.describe(), pair.To)
 			case strings.EqualFold(pair.From.Owner(), earlier.From.Owner()) && !strings.EqualFold(pair.To.Owner(), earlier.To.Owner()):
-				return Renames{}, fmt.Errorf("rename %d (%s) and rename %d (%s) move repositories of %s to two owners, %s and %s: an owner's repositories moved to one owner, since OwnerAliases keys an alias by %s, the owner a pair moved a repository away from, and the second pair would overwrite the first silently", index, pair.describe(), seen, earlier.describe(), pair.From.Owner(), pair.To.Owner(), earlier.To.Owner(), pair.From.Owner())
+				return Renames{}, fmt.Errorf("rename %d (%s) and rename %d (%s) move repositories of %s to two owners, %s and %s: an owner's repositories moved to one owner, since the daemon keys the owner a pair moved a repository away from to the owner it moved to, one key per owner, so the second pair would overwrite the first with nothing said", index, pair.describe(), seen, earlier.describe(), pair.From.Owner(), pair.To.Owner(), earlier.To.Owner())
 			}
 		}
 	}

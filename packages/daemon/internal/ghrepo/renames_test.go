@@ -121,9 +121,9 @@ func TestNewRenamesRefusals(t *testing.T) {
 		{"no to", []Rename{MustRename("a/b", "c/d"), {From: MustParse("acme/widgets")}},
 			"rename 1 names no repository in to: a rename is the repository as it was and the one it moved to"},
 		{"one owner to two owners", []Rename{MustRename("a/x", "b/x"), MustRename("A/y", "c/y")},
-			"rename 1 (A/y -> c/y) and rename 0 (a/x -> b/x) move repositories of A to two owners, c and b: an owner's repositories moved to one owner, since OwnerAliases keys an alias by A, the owner a pair moved a repository away from, and the second pair would overwrite the first silently"},
+			"rename 1 (A/y -> c/y) and rename 0 (a/x -> b/x) move repositories of A to two owners, c and b: an owner's repositories moved to one owner, since the daemon keys the owner a pair moved a repository away from to the owner it moved to, one key per owner, so the second pair would overwrite the first with nothing said"},
 		{"one owner to two owners, one of them its own", []Rename{MustRename("a/x", "a/y"), MustRename("a/z", "c/z")},
-			"rename 1 (a/z -> c/z) and rename 0 (a/x -> a/y) move repositories of a to two owners, c and a: an owner's repositories moved to one owner, since OwnerAliases keys an alias by a, the owner a pair moved a repository away from, and the second pair would overwrite the first silently"},
+			"rename 1 (a/z -> c/z) and rename 0 (a/x -> a/y) move repositories of a to two owners, c and a: an owner's repositories moved to one owner, since the daemon keys the owner a pair moved a repository away from to the owner it moved to, one key per owner, so the second pair would overwrite the first with nothing said"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			renames, err := NewRenames(tc.pairs)
