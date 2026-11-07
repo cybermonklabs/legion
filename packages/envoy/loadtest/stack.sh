@@ -78,10 +78,11 @@
 # checkout holding this script); the ports, which follow LOADTEST_ROOT (common.sh: the root's block
 # k of the path's sha256 modulo 200 gives postgres 10000+10k, proxy 10001+10k, nats 10002+10k,
 # nats_monitor 10003+10k, listener 10004+10k, dispatch 10005+10k, pprof 10006+10k, metrics
-# 10007+10k), so two roots on one machine hold the same 8 ports about 1 pair in 200 and otherwise
-# none, and a collision is refused by start, not shared; setup also refuses a port that lies
-# inside the machine's ephemeral range (common.sh: check_ephemeral_ports), which an outbound
-# connection would take from the stack; LOADTEST_PG_PORT, LOADTEST_PROXY_PORT,
+# 10007+10k, proxy_stats 10008+10k), so two roots on one machine hold the same 9 ports about 1
+# pair in 200 and otherwise none, and a collision is refused by start, not shared; setup also
+# refuses a port that lies inside the machine's ephemeral range (common.sh:
+# check_ephemeral_ports), which an outbound connection would take from the stack;
+# LOADTEST_PG_PORT, LOADTEST_PROXY_PORT, LOADTEST_PROXY_STATS_PORT (the proxy's wire counts),
 # LOADTEST_NATS_PORT, LOADTEST_NATS_MONITOR_PORT, LOADTEST_LISTENER_PORT, LOADTEST_DISPATCH_PORT,
 # LOADTEST_PPROF_PORT and LOADTEST_METRICS_PORT each override their own
 # port, read by setup into stack.json (`stack.sh status` prints them); LOADTEST_PROXY_RTT (1ms);
@@ -403,6 +404,7 @@ check_port() {
 
 ports_of() {
   case $1 in
+    proxy) printf '%s\n' proxy proxy_stats ;;
     nats) printf '%s\n' nats nats_monitor ;;
     dispatch) printf '%s\n' dispatch pprof metrics ;;
     *) printf '%s\n' "$1" ;;
@@ -423,12 +425,13 @@ start_postgres() {
 start_proxy() {
   running proxy && return 0
   check_port proxy proxy
+  check_port proxy proxy_stats
   local log=$LOGS/proxy.out
   spawn proxy "$log" base_env "$BIN/loadgen" proxy -listen "127.0.0.1:$(port proxy)" \
-    -target "127.0.0.1:$(port postgres)" -rtt "${LOADTEST_PROXY_RTT:-1ms}"
+    -target "127.0.0.1:$(port postgres)" -rtt "${LOADTEST_PROXY_RTT:-1ms}" -stats "127.0.0.1:$(port proxy_stats)"
   wait_for "the latency proxy" 30 proxy "$log" port_open "$(port proxy)"
   set_pid proxy "$(pid_of proxy)"
-  note "proxy pid $(pid_of proxy) on 127.0.0.1:$(port proxy) (rtt ${LOADTEST_PROXY_RTT:-1ms})"
+  note "proxy pid $(pid_of proxy) on 127.0.0.1:$(port proxy) (rtt ${LOADTEST_PROXY_RTT:-1ms}, wire counts on 127.0.0.1:$(port proxy_stats))"
 }
 
 nats_named() {

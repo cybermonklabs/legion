@@ -21,6 +21,8 @@ const (
 	RequestsPool = "requests"
 	// RoomsPool is where a document load takes its connection (Pool.Rooms).
 	RoomsPool = "rooms"
+	// RoomAppendsPool is where a document room's browser updates are stored (Pool.RoomAppends).
+	RoomAppendsPool = "room-appends"
 	// HealthPool is the health probe's one connection (Pool.Healthy).
 	HealthPool = "health"
 	// ListenPool is what the LISTEN connections are dialled through (Pool.Listener).
@@ -46,8 +48,8 @@ const (
 // poolNames is every pool name, in the order Stats reports them. The registry's pool is in Stats
 // once processes.Register has opened it (Pool.OpenRegistry).
 var poolNames = [...]string{
-	RequestsPool, RoomsPool, HealthPool, ListenPool, LeasesPool, OutboxPool, CompactionPool,
-	BackgroundPool, LivePool, SettlementsPool, HorizonPool, RegistryPool,
+	RequestsPool, RoomsPool, RoomAppendsPool, HealthPool, ListenPool, LeasesPool, OutboxPool,
+	CompactionPool, BackgroundPool, LivePool, SettlementsPool, HorizonPool, RegistryPool,
 }
 
 // applicationNamePrefix begins every pool's application_name: dispatch-<pool>, the one convention
@@ -70,13 +72,13 @@ const (
 	// connection - a page's whoami waits on the horizon's - is better answered busy, so the
 	// client retries, than held for a connection that may never come free.
 	requestAcquireBound = 3 * time.Second
-	// backgroundAcquireBound is the background loops', the settlements' and the compactions':
-	// nobody is waiting on them, so they may wait far longer than a request, and a refused pass
-	// only runs at its next tick - but not without end, so a pool that never frees a connection
-	// shows as an error.
+	// backgroundAcquireBound is the background loops', the settlements', the compactions' and
+	// the rooms' appends': no client's answer is waiting on them, so they may wait far longer
+	// than a request, and a refused pass only runs at its next tick - but not without end, so a
+	// pool that never frees a connection shows as an error.
 	backgroundAcquireBound = 30 * time.Second
 	// leaseAcquireBound is the lease pool's. The pool has a connection for every lease name and
-	// spare (leasePoolSize), so a wait at all means a connection is held by something that is not
+	// spare (LeasePoolSize), so a wait at all means a connection is held by something that is not
 	// a listed lease; a pass refused here skips (duty.Exclusive), and the next tick tries again.
 	leaseAcquireBound = 2 * time.Second
 	// listenAcquireBound is the listener pool's. Its one connection is hijacked as soon as it is
@@ -97,7 +99,7 @@ func defaultAcquireBound(name string) time.Duration {
 	switch name {
 	case RequestsPool, RoomsPool, LivePool, HorizonPool:
 		return requestAcquireBound
-	case BackgroundPool, SettlementsPool, CompactionPool:
+	case BackgroundPool, SettlementsPool, CompactionPool, RoomAppendsPool:
 		return backgroundAcquireBound
 	case LeasesPool:
 		return leaseAcquireBound

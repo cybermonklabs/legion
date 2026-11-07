@@ -38,14 +38,16 @@ const BackfillWindow = 28 * 24 * time.Hour
 // duplicate.
 const reconcileOverlap = time.Hour
 
-// Reconcile wires the five-minute ticker to the database, the GitHub App client and the event
-// broker the issue.deployed events go through (RecordDeployedEvents). A nil GitHub client (no App
-// credentials) leaves it idle, exactly like architecture.Importer and Intake.
+// Reconcile wires the reconcile ticker (five minutes unless TickEvery shortens it) to the
+// database, the GitHub App client and the event broker the issue.deployed events go through
+// (RecordDeployedEvents). A nil GitHub client (no App credentials) leaves it idle, exactly like
+// architecture.Importer and Intake.
 type Reconcile struct {
-	pool    *store.Pool
-	github  *githubapp.Client
-	events  *events.Broker
-	atStart bool
+	pool     *store.Pool
+	github   *githubapp.Client
+	events   *events.Broker
+	atStart  bool
+	interval time.Duration
 }
 
 // NewReconcile builds a Reconcile reading and writing through pool: cmd/dispatch hands it the
@@ -57,12 +59,32 @@ func NewReconcile(pool *store.Pool, github *githubapp.Client, broker *events.Bro
 
 // FirstPassAtStart makes Run run one pass as it starts, before its jittered ticks, for an
 // end-to-end test that must see a pass inside its window (DISPATCH_TEST_RECONCILE_AT_START, under
-// the test hooks). The pass takes the lease for the current ReconcileInterval as any tick's does,
-// so a jittered tick inside that interval finds it served. A deployment never sets it: the
-// jitter is what keeps a restart from stampeding GitHub.
+// the test hooks). The pass takes the lease for the current interval as any tick's does, so a
+// jittered tick inside that interval finds it served. A deployment never sets it: the jitter is
+// what keeps a restart from stampeding GitHub.
 func (r *Reconcile) FirstPassAtStart() *Reconcile {
 	r.atStart = true
 	return r
+}
+
+// TickEvery makes Run tick on interval rather than ReconcileInterval, for an end-to-end test
+// whose window is seconds rather than minutes (DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL, under
+// the test hooks). A non-positive interval leaves the default in place. A deployment never sets
+// it: five minutes is what the Delivery page's freshness row promises.
+func (r *Reconcile) TickEvery(interval time.Duration) *Reconcile {
+	r.interval = interval
+	return r
+}
+
+// tickInterval is how often the loop ticks, ReconcileInterval unless TickEvery shortened it. It
+// is also the lease period one pass takes, and the two must be the same value: duty.Exclusive
+// refuses a pass whose period another pass already served, so a loop ticking every second under
+// five-minute lease periods would run one pass and then be refused for five minutes.
+func (r *Reconcile) tickInterval() time.Duration {
+	if r.interval > 0 {
+		return r.interval
+	}
+	return ReconcileInterval
 }
 
 // HasApp reports whether the GitHub App credentials needed to do any work are configured.
@@ -70,11 +92,11 @@ func (r *Reconcile) HasApp() bool {
 	return r != nil && r.github != nil
 }
 
-// Run re-imports delivery facts on ReconcileInterval until ctx is cancelled. The first tick is
-// jittered so a restart does not stampede GitHub, and a server without App credentials logs once
-// and stops: no import can be signed.
+// Run re-imports delivery facts on the interval it ticks on (ReconcileInterval unless TickEvery
+// shortened it) until ctx is cancelled. The first tick is jittered so a restart does not stampede
+// GitHub, and a server without App credentials logs once and stops: no import can be signed.
 //
-// Each pass runs under duty.DeliveryReconcileLease for one ReconcileInterval, so one process
+// Each pass runs under duty.DeliveryReconcileLease for one such interval, so one process
 // reconciles per interval however many serve the database: every pass searches and lists GitHub
 // against one installation's rate limit - a backfill is tens of thousands of requests - so N
 // processes reconciling is N times those calls for one result. The two tickers are jittered to
@@ -85,7 +107,7 @@ func (r *Reconcile) Run(ctx context.Context, leases duty.Leases) {
 	if r.atStart && r.HasApp() {
 		r.leasedPass(ctx, leases, time.Now())
 	}
-	duty.RunJittered(ctx, ReconcileInterval, func() bool {
+	duty.RunJittered(ctx, r.tickInterval(), func() bool {
 		if r.HasApp() {
 			return false
 		}
@@ -94,10 +116,10 @@ func (r *Reconcile) Run(ctx context.Context, leases duty.Leases) {
 	}, func(ctx context.Context, due time.Time) { r.leasedPass(ctx, leases, due) })
 }
 
-// leasedPass runs one reconcile pass under the lease, for the ReconcileInterval this loop ticks
-// on and the tick due at due.
+// leasedPass runs one reconcile pass under the lease, for the interval this loop ticks on and
+// the tick due at due.
 func (r *Reconcile) leasedPass(ctx context.Context, leases duty.Leases, due time.Time) {
-	duty.Exclusive(ctx, leases, duty.DeliveryReconcileLease, due, ReconcileInterval, r.runOnce)
+	duty.Exclusive(ctx, leases, duty.DeliveryReconcileLease, due, r.tickInterval(), r.runOnce)
 }
 
 // runOnce performs one reconcile pass: the pull-request head refresh, then — where delivery is

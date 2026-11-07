@@ -32,7 +32,8 @@ import (
 //	  "dispatch_token": "<random>",  Dispatch's DISPATCH_AGENT_TOKEN
 //	  "listener_token": "<random>",  the listener's ENVOY_API_TOKEN
 //	  "ports": {"postgres": 10000, "proxy": 10001, "nats": 10002, "nats_monitor": 10003,
-//	            "listener": 10004, "dispatch": 10005, "pprof": 10006, "metrics": 10007},
+//	            "listener": 10004, "dispatch": 10005, "pprof": 10006, "metrics": 10007,
+//	            "proxy_stats": 10008},
 //	  "pids": {"postgres": <postmaster>, "proxy": 0, "nats": 0, "listener": 0, "dispatch": 0},
 //	  "pg_direct": false             true when Dispatch reaches Postgres without the latency proxy
 //	}
@@ -40,7 +41,9 @@ import (
 // The ports above are a root whose port block is 0: each default is 10000 + 10k + the key's
 // offset, for the root's block k, and a LOADTEST_*_PORT variable replaces one (common.sh).
 // Every process listens on 127.0.0.1. The loadgen samplers and the lock probe always reach
-// Postgres directly (ports.postgres, database dispatch), never through the proxy.
+// Postgres directly (ports.postgres, database dispatch), never through the proxy. ports.proxy_stats
+// is the proxy's wire counts (proxy.go); a stack.json from before it has none, and a step on it
+// reports its round trips as not measured.
 type stackFile struct {
 	Name          string     `json:"name"`
 	Root          string     `json:"root"`
@@ -54,6 +57,7 @@ type stackFile struct {
 type stackPorts struct {
 	Postgres    int `json:"postgres"`
 	Proxy       int `json:"proxy"`
+	ProxyStats  int `json:"proxy_stats"`
 	NATS        int `json:"nats"`
 	NATSMonitor int `json:"nats_monitor"`
 	Listener    int `json:"listener"`
@@ -113,6 +117,12 @@ type endpoints struct {
 	pids     map[string]int
 	stack    string
 	pgDirect bool
+	// proxyStats is the latency proxy's wire-count URL (http://127.0.0.1:<proxy_stats>), from
+	// stack.json only; empty when stack.json names no such port, and under -allow-foreign. It is
+	// no endpoint flag: a foreign run takes nothing from stack.json, so it reads no proxy's counts
+	// (a foreign stack has no latency proxy of loadgen's) and reports its round trips as not
+	// measured; the rule that a foreign run gives every endpoint flag does not cover it.
+	proxyStats string
 }
 
 // endpointFlags are the endpoint flags seed and run share. Each defaults empty, so the stack's
@@ -374,6 +384,9 @@ func resolveEndpoints(f endpointFlags, st *stackFile) (endpoints, error) {
 		return e, nil
 	}
 	e.natsServerName = st.Name
+	if st.Ports.ProxyStats > 0 {
+		e.proxyStats = fmt.Sprintf("http://127.0.0.1:%d", st.Ports.ProxyStats)
+	}
 	for name, pid := range map[string]int{
 		"postgres": st.PIDs.Postgres, "proxy": st.PIDs.Proxy, "nats": st.PIDs.NATS,
 		"listener": st.PIDs.Listener, "dispatch": st.PIDs.Dispatch,

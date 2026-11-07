@@ -202,6 +202,14 @@ type liveAheadDocuments map[string]owedDocument
 // date. Its statements run on the background pool (store.Pool.Background), which no request
 // waits on.
 func (s *Service) ReconcileBlockIndex(ctx context.Context, cursors BlockIndexCursors, liveAhead liveAheadDocuments) (BlockIndexTick, error) {
+	// A caller outside this package can only pass nil, since liveAheadDocuments is unexported:
+	// the api package's tests and cmd/dispatch's memory harness, which
+	// drains what is owed before it measures a server, both do. The map is a cache the calling
+	// loop keeps across its own ticks, so a throwaway one costs no more than reading again the
+	// documents this one tick finds live ahead.
+	if liveAhead == nil {
+		liveAhead = liveAheadDocuments{}
+	}
 	after := cursors.Documents
 	tick := BlockIndexTick{Cursor: BlockIndexCursors{Documents: after}}
 	background, err := s.backgroundPool()

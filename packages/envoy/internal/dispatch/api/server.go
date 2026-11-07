@@ -375,6 +375,11 @@ type server struct {
 	// builds leaves it, calls nothing. Only a test sets it, to hold a stage where production has
 	// only a slow query.
 	relatedSearchEntered func()
+	// duplicateBound overrides the bound the near-copy gate's read runs under; zero, which every
+	// server the deployment builds leaves it, means duplicateGateTimeout. Only a test sets it
+	// (the forced create whose check does not answer), so a case's outcome is its own choice
+	// rather than its machine's speed.
+	duplicateBound time.Duration
 	// broadcastResolveBudget overrides the budget a broadcast's recipient resolution runs under;
 	// zero, which every server the deployment builds leaves it, means broadcastResolveTimeout.
 	// Only a test sets it, so a budget that ends before every selected session is read is the

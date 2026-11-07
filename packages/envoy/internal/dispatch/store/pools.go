@@ -127,18 +127,20 @@ func (r *RawPool) Ping(ctx context.Context) error {
 // median. The ceiling is picked here rather than derived from the task's CPU allotment or read
 // out of the DSN another repository's URL builder writes.
 //
-// It is 48 of one connection budget of 96 (ConnectionsPerProcess) that every pool of a process
+// It is 48 of one connection budget of 104 (ConnectionsPerProcess) that every pool of a process
 // shares, partitioned rather than grown: requests 48, background 6 (Background), live 4 (Live),
-// settlements 4 (Settlements), rooms 4, health 1, the five permanent listeners (the listener
-// pool's one dial is one of them redialling), leases leasePoolSize (17), outbox 2, compaction 2
-// (Compaction), the event horizon 2 (Horizon) and the server process registry's own 1
-// (registryPoolSize). The partition
+// settlements 4 (Settlements), rooms 4, the rooms' appends 8 (RoomAppends), health 1, the five
+// permanent listeners (the listener pool's one dial is one of them redialling), leases
+// LeasePoolSize (17), outbox 2, compaction 2 (Compaction), the event horizon 2 (Horizon) and the
+// server process registry's own 1 (registryPoolSize). The partition
 // itself added nothing: it is the 87 the process opened before, the request pool having given up
 // 16, which background, live, settlements and the leases' two spare connections took; the event
 // horizon's 2, the background loops' shared wake listener, the outbox's second connection, the
 // outbox's own listener, the compaction's 2 and the two lease names added since (the CI reconcile
 // pass's and the settlement resumption's) are the only connections added since, and the
-// horizon's came with the pool itself. A write
+// horizon's came with the pool itself. The rooms' appends are the one pool added over the budget
+// rather than out of it: the 8 they take are the connections a room's browser updates no longer
+// take one request connection at a time, which is why the budget is 104 and not 96. A write
 // takes a connection per statement one after another, and a read pins one for its whole length
 // (PinConnection); an issue read, which once took six statements, two more when the issue had
 // documents, two more when it had open asks, and one per artifact, now takes two batches. So
@@ -165,6 +167,21 @@ const SharedPoolSize = 48
 // concurrently. Measured on the real server, eight cold rooms loading at once are no faster at
 // eight connections than at one, so this is small on purpose.
 const RoomsPoolSize = 4
+
+// roomAppendsPoolSize bounds the connections the document rooms' browser updates are stored on
+// (RoomAppends). Only the browser batch path takes one: a room's queued browser updates are
+// stored together, in one transaction, so a room holds a connection for its batch's few round
+// trips and starts at most one batch per linger window, and a handful of connections serve many
+// rooms writing at once. Eight is twice the rooms pool and a sixth of the request pool: every
+// connection here is one more in the process's budget against the database's limit, so it is
+// small on purpose, and a room that finds all eight held waits for another batch to commit.
+//
+// It cannot deadlock. A batch holds its connection and the document's advisory lock and takes no
+// other connection (HoldsConnection stays on its context, so a read of the request pool under it
+// is refused), and no holder of a document lock ever waits for a connection of this pool:
+// settlements, live writes and the other withRoomLock callers take theirs where they always have,
+// so every holder of a lock a batch can wait on finishes without one of these connections.
+const roomAppendsPoolSize = 8
 
 // healthPoolSize bounds the connections the health probe uses. The probe answers one question -
 // is Postgres reachable, and at which schema - and asks it on a connection nothing else can take,
@@ -205,6 +222,18 @@ func (p *Pool) Rooms() (*RawPool, error) {
 	return p.separate(RoomsPool, RoomsPoolSize)
 }
 
+// RoomAppends is where a document room stores its browser updates: a batch of one room's queued
+// updates takes a connection here, holds it and the document's advisory lock for one transaction,
+// and gives it back (roomAppendsPoolSize says why that cannot deadlock). On a pool of their own
+// the appends wait for no request and hold no connection a request could use, and a request
+// waits for none of them. Its acquires are bounded at backgroundAcquireBound: no client's answer
+// waits on a batch, and what does wait on one - a settlement, a shutdown's drain, another
+// process's room query - waits for an update's durability, which is better waited for than lost
+// to a refusal that fails the room.
+func (p *Pool) RoomAppends() (*RawPool, error) {
+	return p.separate(RoomAppendsPool, roomAppendsPoolSize)
+}
+
 // Healthy reports the highest schema migration Postgres has applied, read within
 // healthProbeTimeout on a connection of a pool nothing else uses; the read is the reachability
 // probe too, so an error means the database did not answer. /healthz asks it, and it must never
@@ -215,8 +244,13 @@ func (p *Pool) Rooms() (*RawPool, error) {
 // The version is read from schema_migrations on every call rather than remembered from this
 // process's own Migrate, so it reports what the database holds: a deploy check compares it with
 // the highest migration in the commit the image was built from.
+//
+// It answers while Close waits for the connections still in use, so a caller waiting on Close
+// (cmd/dispatch's shutdown) can tell a database still finishing work from one that has stopped
+// answering; once Close has closed every other pool it closes this one and Healthy refuses
+// (ErrPoolClosed).
 func (p *Pool) Healthy(ctx context.Context) (int, error) {
-	health, err := p.separate(HealthPool, healthPoolSize)
+	health, err := p.healthPool()
 	if err != nil {
 		return 0, err
 	}
@@ -292,11 +326,14 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 	return conn, nil
 }
 
-// leaseNameCount is how many lease names duty.Exclusive accepts: the names of duty's lease list,
-// counted here because store cannot import duty, and held to that list by a test.
-const leaseNameCount = 15
+// LeaseNameCount is how many lease names duty.Exclusive accepts: the names of duty's lease list,
+// counted here because store cannot import duty, and held to that list by a test. It is how many
+// callers can be inside Exclusive at once, which cmd/dispatch counts its wiring against
+// (TestTheLeasePoolHoldsAConnectionForEveryLeasedCaller), so a leased loop added without a name
+// and a connection fails a test instead of waiting for a connection.
+const LeaseNameCount = 15
 
-// leasePoolSize bounds the pool a periodic maintenance loop takes its once-overall lease on
+// LeasePoolSize bounds the pool a periodic maintenance loop takes its once-overall lease on
 // (duty.Exclusive): a connection for every lease name on duty's list, and two spare. A caller and
 // not a lease needs the connection - Exclusive takes it before it learns whether the lease is
 // held, so a pass that skips because another process holds the lease holds one for that round
@@ -315,7 +352,7 @@ const leaseNameCount = 15
 // for the whole pass, which is minutes for the compaction sweep, and the request pool's
 // connections are what every request reads through. The compaction sweep holds only its lease
 // here: each document it compacts reads and writes on the compaction pool (Pool.Compaction).
-const leasePoolSize = leaseNameCount + 2
+const LeasePoolSize = LeaseNameCount + 2
 
 // Leases is where a periodic maintenance loop takes the connection it holds its lease on, so that
 // only one process runs each pass (duty.Exclusive). The lease is a session-level advisory lock, so
@@ -325,7 +362,7 @@ const leasePoolSize = leaseNameCount + 2
 // connections (ErrNestedAcquire). Its acquires are bounded at leaseAcquireBound, and a pass that
 // waits that bound out is refused with ErrPoolBusy (RawPool), which makes it skip its tick.
 func (p *Pool) Leases() (*RawPool, error) {
-	return p.separate(LeasesPool, leasePoolSize)
+	return p.separate(LeasesPool, LeasePoolSize)
 }
 
 // outboxPoolSize bounds the pool the events outbox reads and records events through, and takes
@@ -352,13 +389,13 @@ const registryPoolSize = 1
 const permanentListeners = 5
 
 // ConnectionsPerProcess is the most connections one Dispatch server process opens to Postgres, the
-// budget of 96 SharedPoolSize describes: every pool's size, the registry's own pool
+// budget of 104 SharedPoolSize describes: every pool's size, the registry's own pool
 // (processes.Register) and the event horizon's (Horizon) among them, and one connection per
 // permanent listener, which the listener pool dials and hands off rather than holds (its one dial
 // in flight is a permanent listener redialling, so it is not counted twice).
 const ConnectionsPerProcess = SharedPoolSize + backgroundPoolSize + livePoolSize + settlementsPoolSize +
-	RoomsPoolSize + healthPoolSize + leasePoolSize + outboxPoolSize + compactionPoolSize + horizonPoolSize +
-	registryPoolSize + permanentListeners
+	RoomsPoolSize + roomAppendsPoolSize + healthPoolSize + LeasePoolSize + outboxPoolSize +
+	compactionPoolSize + horizonPoolSize + registryPoolSize + permanentListeners
 
 // Outbox is the pool the events outbox reads and records events through, reads the followers and
 // authors a publish routes to, and holds its publisher hold on. Under load the API's requests
@@ -501,14 +538,38 @@ func (p *Pool) separate(name string, size int32) (*RawPool, error) {
 }
 
 // open opens the pool named name on demand, sized at size (newSeparate), and closes it with this
-// pool. Each caller holds mu for the whole check-and-open so two of them cannot open two pools,
-// and one opened after Close would be a pool nobody closes.
+// pool. It refuses from the moment Close begins (ErrPoolClosed); the health probe's pool, whose
+// close rule is its own, is opened through healthPool instead. Each caller holds mu for the whole
+// check-and-open so two of them cannot open two pools, and one opened after Close would be a pool
+// nobody closes.
 func (p *Pool) open(name string, size int32) (openedPool, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.closed {
 		return openedPool{}, ErrPoolClosed
 	}
+	return p.openLocked(name, size)
+}
+
+// healthPool is open for the health probe's pool, whose close rule is its own: it opens and is
+// handed out while Close waits for the other pools' connections, and refuses once Close has
+// closed every other pool (healthClosed), so Healthy answers for as long as Close waits.
+func (p *Pool) healthPool() (*RawPool, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.healthClosed {
+		return nil, ErrPoolClosed
+	}
+	opened, err := p.openLocked(HealthPool, healthPoolSize)
+	if err != nil {
+		return nil, err
+	}
+	return opened.raw, nil
+}
+
+// openLocked is the pool named name, opened when this pool has none under that name. Its caller
+// holds mu and has checked the close rule that applies to the pool it asks for.
+func (p *Pool) openLocked(name string, size int32) (openedPool, error) {
 	if err, failing := p.openFailures[name]; failing {
 		return openedPool{}, err
 	}
@@ -557,7 +618,11 @@ func (p *Pool) recordLocked(opened openedPool) {
 	p.separates[opened.name] = opened
 }
 
-// Close releases every connection the pool holds, every separate pool's included.
+// Close releases every connection the pool holds, every separate pool's included, and returns
+// once every connection in use has come back. It closes the health probe's pool last, after every
+// other pool has closed: Healthy answers for as long as Close waits, and Stats and Use keep
+// counting the closing pools' connections. No other separate pool opens or is handed out once
+// Close has begun.
 func (p *Pool) Close() {
 	p.mu.Lock()
 	if p.closed {
@@ -565,13 +630,25 @@ func (p *Pool) Close() {
 		return
 	}
 	p.closed = true
-	separates := p.separates
-	p.separates = nil
+	separates := make([]openedPool, 0, len(p.separates))
+	for name, separate := range p.separates {
+		if name != HealthPool {
+			separates = append(separates, separate)
+		}
+	}
 	p.mu.Unlock()
 	for _, separate := range separates {
 		separate.pool.Close()
 	}
 	p.pool.Close()
+	p.mu.Lock()
+	p.healthClosed = true
+	health, open := p.separates[HealthPool]
+	p.separates = nil
+	p.mu.Unlock()
+	if open {
+		health.pool.Close()
+	}
 }
 
 // OpenRegistry opens the server process registry's own pool, which processes.Register uses and its
@@ -621,6 +698,23 @@ func (p *Pool) Stats() []PoolStats {
 		}
 	}
 	return stats
+}
+
+// RoomPoolStats is the document-rooms and the room-appends pools' Stat, each nil while its pool
+// has not been opened: reading them opens neither, so a reader of the room figures costs no
+// connection.
+func (p *Pool) RoomPoolStats() (rooms, roomAppends *pgxpool.Stat) {
+	p.mu.Lock()
+	roomsPool, roomsOpen := p.separates[RoomsPool]
+	appendsPool, appendsOpen := p.separates[RoomAppendsPool]
+	p.mu.Unlock()
+	if roomsOpen {
+		rooms = roomsPool.pool.Stat()
+	}
+	if appendsOpen {
+		roomAppends = appendsPool.pool.Stat()
+	}
+	return rooms, roomAppends
 }
 
 // ConnectionUse is how many connections of a set of pools are in use, how many those pools have

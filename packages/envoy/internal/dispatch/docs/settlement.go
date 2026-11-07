@@ -577,7 +577,7 @@ func (p *settlementPass) readLocked(ctx context.Context, parent context.Context)
 	// Whom a version of this pass would list, as the document's pending authors stand before it
 	// stores anything. It stores nothing until the ask blocks are reconciled: the copy lock that
 	// reconciliation can take (copiedAskSources, owedCopiesOf) comes before any pending-settlement
-	// row, which each append writes (markUpdateOwed), in every transaction (lockProjectCopies).
+	// row, which each append writes (updateOwedStatement), in every transaction (lockProjectCopies).
 	// A pass that goes on to write the version takes them again once the room's updates it holds
 	// are stored (commitVersion).
 	if err := p.takeCredit(ctx); err != nil {

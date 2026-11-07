@@ -64,16 +64,18 @@ const silentProbes = 3
 const silentProbeReserve = silentProbes*2*time.Second + (silentProbes+1)*drainPollInterval
 
 // writePools are the pools whose connections carry work a client or a document is owed: the
-// request pool, the document rooms' and the settlements'. The drain waits for every one of their
-// connections to come back before it closes the pools, so a write in flight commits and is
-// answered. The other pools carry no write anyone is waiting on - the background loops and the
-// leased passes end with the process context and run again at their next tick, the live readers
-// only read, the listener's connections are hijacked, and the outbox's work stays in the outbox
-// for the next process - so none of them holds the drain up.
-var writePools = []string{store.RequestsPool, store.RoomsPool, store.SettlementsPool}
+// request pool, the document rooms' and their appends', and the settlements'. The drain waits for
+// every one of their connections to come back before it closes the pools, so a write in flight
+// commits and is answered, and a room's queued browser updates are stored. The other pools carry
+// no write anyone is waiting on - the background loops and the leased passes end with the process
+// context and run again at their next tick, the live readers only read, the listener's connections
+// are hijacked, and the outbox's work stays in the outbox for the next process - so none of them
+// holds the drain up.
+var writePools = []string{store.RequestsPool, store.RoomsPool, store.RoomAppendsPool, store.SettlementsPool}
 
 // drainPollInterval is how often waitUntilIdle's loop pauses between the health probes it runs
-// every pass, asking each time whether the requests in flight and the connections in use are done.
+// every pass, asking each time whether the requests in flight and the connections in use are
+// done, and how long closePool pauses between the probes it runs.
 const drainPollInterval = 250 * time.Millisecond
 
 // shutdownContext carries the shutdown's one deadline, stopGrace less shutdownMargin from now: main
@@ -144,7 +146,9 @@ func serveUntilStopped(ctx context.Context, cancel context.CancelFunc, server *h
 //  7. deregister takes this process out of the registry of live server processes, within what is
 //     left of ctx: only once HTTP has drained and the outbox has stopped, so a draining process
 //     counts as live until its last request is answered, and before the pools close.
-//  8. It closes the database pools; main then writes the buffered log lines last.
+//  8. It closes the database pools, which waits by the same rule (closePool): a connection taken
+//     after they were seen idle holds the close until it comes back, or until the database has
+//     stopped answering. main then writes the buffered log lines last.
 //
 // While the database answers, only the deadline bounds the wait of stage 5, so a write in flight
 // commits and is answered if it finishes before it. A database that has stopped answering
@@ -200,7 +204,7 @@ func shutdown(ctx context.Context, server *http.Server, documentService *docs.Se
 	if waitUntilIdle(ctx, drained, pool) {
 		waitForOutbox(ctx, outboxStopped)
 		deregister(ctx)
-		pool.Close()
+		closePool(ctx, pool)
 	}
 }
 
@@ -225,7 +229,7 @@ func waitForOutbox(ctx context.Context, outboxStopped <-chan struct{}) {
 // connections in use never come back: closing the pools would wait on them. It gives up at ctx's
 // deadline too, with requests or connections still in use: the process exits without them.
 func waitUntilIdle(ctx context.Context, drained <-chan struct{}, pool *store.Pool) bool {
-	failed := 0
+	var silent silence
 	for {
 		before := pool.Use(writePools...)
 		answered := false
@@ -242,17 +246,7 @@ func waitUntilIdle(ctx context.Context, drained <-chan struct{}, pool *store.Poo
 				"in_use", before.InUse, "requests_answered", answered)
 			return false
 		}
-		_, err := pool.Healthy(ctx)
-		if ctx.Err() != nil {
-			// A probe the deadline cut short says nothing about the database.
-			continue
-		}
-		after := pool.Use(writePools...)
-		if err == nil || after.Finished > before.Finished {
-			failed = 0
-		} else if failed++; failed >= silentProbes {
-			slog.Warn("dispatch: exit with database connections still in use once the database stopped answering",
-				"in_use", after.InUse, "failed_probes", failed, "error", err)
+		if silent.probe(ctx, pool, before) {
 			return false
 		}
 		select {
@@ -260,4 +254,65 @@ func waitUntilIdle(ctx context.Context, drained <-chan struct{}, pool *store.Poo
 		case <-ctx.Done():
 		}
 	}
+}
+
+// closePool closes the pools (store.Pool.Close) and returns once they have closed, once the
+// database has stopped answering, or at ctx's deadline. waitUntilIdle saw no connection of
+// writePools in use, but work shutdown does not stop can take one after that - ygo's persistence
+// worker compacting a room as it exits, which takes its connection with no deadline - and Close
+// waits for every connection in use to come back. So the close waits by waitUntilIdle's rule: for
+// as long as the database answers and the deadline holds, and no longer once silentProbes probes
+// in a row have failed with no connection handed back finished meanwhile, when Dispatch exits
+// with Close still waiting. store.Pool.Close closes the health probe's pool last, so the probe
+// answers while the other pools close.
+func closePool(ctx context.Context, pool *store.Pool) {
+	closed := make(chan struct{})
+	go func() {
+		defer close(closed)
+		pool.Close()
+	}()
+	var silent silence
+	for {
+		before := pool.Use(writePools...)
+		select {
+		case <-closed:
+			return
+		case <-ctx.Done():
+			slog.Warn("dispatch: exit at the shutdown deadline with the pools still closing",
+				"in_use", before.InUse)
+			return
+		case <-time.After(drainPollInterval):
+		}
+		if silent.probe(ctx, pool, before) {
+			return
+		}
+	}
+}
+
+// silence counts the health probes in a row that have failed with no connection of the pools that
+// carry writes (writePools) handed back finished meanwhile; silentProbes of them mean the database
+// has stopped answering.
+type silence struct{ failed int }
+
+// probe runs one health probe within ctx and reports whether the database has stopped answering,
+// logging that Dispatch exits without the connections still in use when it has. before is the
+// pools' ConnectionUse read before the wait this probe ends, so a connection handed back finished
+// during that wait or the probe starts the count again, as an answered probe does. A probe ctx's
+// deadline cut short says nothing about the database, and counts as neither.
+func (s *silence) probe(ctx context.Context, pool *store.Pool, before store.ConnectionUse) bool {
+	_, err := pool.Healthy(ctx)
+	if ctx.Err() != nil {
+		return false
+	}
+	after := pool.Use(writePools...)
+	if err == nil || after.Finished > before.Finished {
+		s.failed = 0
+		return false
+	}
+	if s.failed++; s.failed < silentProbes {
+		return false
+	}
+	slog.Warn("dispatch: exit with database connections still in use once the database stopped answering",
+		"in_use", after.InUse, "failed_probes", s.failed, "error", err)
+	return true
 }

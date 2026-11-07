@@ -28,6 +28,7 @@ import (
 
 	gws "github.com/gorilla/websocket"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/reearth/ygo/crdt"
 
@@ -949,7 +950,7 @@ func TestSIGTERMWithAnEditorConnectedSettlesItsDocumentBeforeExit(t *testing.T) 
 }
 
 // A database that stops answering - a failover, a partition - holds every connection waiting on it,
-// and closing the pool waits for every connection in use. Here it stops answering with a write in
+// and closing the pools waits for every connection in use. Here it stops answering with a write in
 // flight, a title change already waiting at the database behind another writer's lock, which
 // holds the HTTP drain for its whole share, and with a resident room whose edit owes a
 // settlement, which spends the document service's whole share. Writes have no server deadline,
@@ -990,10 +991,14 @@ func TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget(t *testin
 	if bound := stopGrace - shutdownMargin + time.Second; exited > bound {
 		t.Errorf("Dispatch exited %v after SIGTERM with the database unanswering, want within %v", exited, bound)
 	}
-	if !strings.Contains(process.Output.String(), "once the database stopped answering") {
+	output := process.Output.String()
+	if !strings.Contains(output, `msg="dispatch: settle documents with requests still in flight"`) {
+		t.Errorf("the issue create was not in flight when the document service started")
+	}
+	if !strings.Contains(output, "once the database stopped answering") {
 		t.Errorf("Dispatch did not say it exited because the database stopped answering")
 	}
-	for _, line := range strings.Split(process.Output.String(), "\n") {
+	for _, line := range strings.Split(output, "\n") {
 		if strings.Contains(line, "level=WARN") {
 			t.Logf("Dispatch logged: %s", line)
 		}
@@ -1016,6 +1021,68 @@ func waitForRoom(t *testing.T, editor *docstest.Peer) {
 		t.Fatal("the editor's connection closed before the room answered")
 	case <-time.After(10 * time.Second):
 		t.Fatal("the room never answered the editor")
+	}
+}
+
+// A connection taken after shutdown saw the pools idle - ygo's persistence worker compacting a room
+// as it exits takes one with no deadline - is in use when the pool closes, and closing the pool
+// waits for it. On a database that has stopped answering it never comes back, so closePool gives up
+// on it by waitUntilIdle's rule, silentProbes failed health probes in a row with no connection taken
+// back, and says so, instead of waiting on it until the runtime kills Dispatch. The test's pool pings
+// every connection it hands out, as pgxpool pings one idle for over a second, so the late taker is
+// held by a ping the frozen database never answers without the test waiting out that second.
+func TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	relay := startDatabaseRelay(t, database.Pool.Config().ConnString())
+	config, err := pgxpool.ParseConfig(relay.url)
+	if err != nil {
+		t.Fatalf("parse the relay's URL: %v", err)
+	}
+	config.ShouldPing = func(context.Context, pgxpool.ShouldPingParams) bool { return true }
+	opened, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		t.Fatalf("open a pool through the relay: %v", err)
+	}
+	pool := store.NewPool(opened)
+	// The probe answers through the relay before it freezes, so its failures after are the freeze's.
+	if _, err := pool.Healthy(ctx); err != nil {
+		t.Fatalf("health probe through the relay: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "select 1"); err != nil {
+		t.Fatalf("open a shared connection through the relay: %v", err)
+	}
+
+	relay.freeze()
+	taken := make(chan error, 1)
+	go func() {
+		conn, err := pool.Acquire(context.Background())
+		if err == nil {
+			conn.Release()
+		}
+		taken <- err
+	}()
+	for deadline := time.Now().Add(10 * time.Second); pool.Use().InUse == 0; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the late taker never took the idle shared connection")
+		}
+	}
+
+	logged := capturedLog(t)
+	started := time.Now()
+	closePool(ctx, pool)
+	took := time.Since(started)
+	t.Logf("closePool returned %v after it began", took)
+	if bound := silentProbes*(drainPollInterval+2*time.Second) + 3*time.Second; took > bound {
+		t.Errorf("closePool returned %v after it began with the database unanswering, want within %v", took, bound)
+	}
+	select {
+	case err := <-taken:
+		t.Errorf("the late taker's connection came back (%v), want it held by the frozen database", err)
+	default:
+	}
+	if !strings.Contains(logged.String(), "once the database stopped answering") {
+		t.Errorf("closePool did not say it gave up because the database stopped answering:\n%s", logged.String())
 	}
 }
 

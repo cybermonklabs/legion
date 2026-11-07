@@ -449,7 +449,7 @@ case_prepare_stack_migration_set() {
 ports_for() {
   local root=$1
   shift
-  env -u LOADTEST_PG_PORT -u LOADTEST_PROXY_PORT -u LOADTEST_NATS_PORT \
+  env -u LOADTEST_PG_PORT -u LOADTEST_PROXY_PORT -u LOADTEST_PROXY_STATS_PORT -u LOADTEST_NATS_PORT \
     -u LOADTEST_NATS_MONITOR_PORT -u LOADTEST_LISTENER_PORT -u LOADTEST_DISPATCH_PORT \
     -u LOADTEST_PPROF_PORT -u LOADTEST_METRICS_PORT "$@" \
     bash -c 'source "$1"; stack_ports "$2"' ports "$helper" "$root"

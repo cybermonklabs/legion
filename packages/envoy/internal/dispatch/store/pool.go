@@ -167,7 +167,11 @@ type Pool struct {
 	// will ever close.
 	mu        sync.Mutex
 	separates map[string]openedPool
-	closed    bool
+	// closed refuses every separate pool but the health probe's from the moment Close begins
+	// (open); healthClosed refuses that one too, once Close has closed every other pool
+	// (healthPool).
+	closed       bool
+	healthClosed bool
 	// acquireBounds replaces defaultAcquireBound for the separate pools it names, read as each
 	// one opens: a test shortens a bound with it, so a full pool refuses in milliseconds.
 	acquireBounds map[string]time.Duration
@@ -454,6 +458,19 @@ func (p *Pool) SendBatch(ctx context.Context, batch *pgx.Batch) pgx.BatchResults
 		return errBatchResults{err: err}
 	}
 	return busyBatchResults{BatchResults: on.SendBatch(ctx, batch), ctx: ctx, pool: p.name, done: done}
+}
+
+// QueueExec queues sql with args into b; its error, wrapped in what as a statement sent alone
+// would wrap it, is what b's Close returns when the statement is the first of b's to fail. One
+// helper for every caller that pipelines statements, so a batch's statements report their errors
+// alike.
+func QueueExec(b *pgx.Batch, what, sql string, args ...any) {
+	b.Queue(sql, args...).Fn = func(results pgx.BatchResults) error {
+		if _, err := results.Exec(); err != nil {
+			return fmt.Errorf("%s: %w", what, err)
+		}
+		return nil
+	}
 }
 
 // Begin opens a transaction and marks the request as holding one.

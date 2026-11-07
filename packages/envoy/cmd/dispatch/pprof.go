@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"expvar"
 	"net"
 	"net/http"
 	"net/http/pprof"
 	"runtime"
 	"strconv"
 	"strings"
+
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 )
 
 // The contention profiles' sampling rates, set only while the profiler listens (startPprof), since
@@ -38,8 +41,10 @@ func pprofAddress(env settingValues) (string, error) {
 	return net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), nil
 }
 
-// pprofHandler serves net/http/pprof on a mux of its own. Importing net/http/pprof also
-// registers its handlers on http.DefaultServeMux, which nothing in Dispatch serves.
+// pprofHandler serves net/http/pprof, and the process's expvar variables at /debug/vars
+// (dispatch_rooms among them, publishRoomFigures), on a mux of its own. Importing net/http/pprof
+// and expvar also registers their handlers on http.DefaultServeMux, which nothing in Dispatch
+// serves.
 func pprofHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/debug/pprof/", pprof.Index)
@@ -47,7 +52,17 @@ func pprofHandler() http.Handler {
 	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
 	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
 	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	mux.Handle("/debug/vars", expvar.Handler())
 	return mux
+}
+
+// publishRoomFigures publishes service's document room figures (docs.Service.RoomFigures) as the
+// expvar variable dispatch_rooms, computed afresh for each read of /debug/vars. expvar's names are
+// the process's, and a second publish of one panics, so main publishes it once, for the one
+// document service it serves; the docs package publishes nothing, since tests build many services
+// in one process.
+func publishRoomFigures(service *docs.Service) {
+	expvar.Publish("dispatch_rooms", expvar.Func(func() any { return service.RoomFigures() }))
 }
 
 // startPprof binds addr and serves pprofHandler on it until ctx ends, when the listener and every

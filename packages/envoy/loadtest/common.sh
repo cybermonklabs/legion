@@ -101,14 +101,16 @@ resolve_paths() {
 # the second stack; the remedy is the LOADTEST_*_PORT variables). PORT_KEYS names stack.json's
 # ports, PORT_VAR each one's environment variable and PORT_OFFSET its place in a root's block of
 # ports.
-PORT_KEYS=(postgres proxy nats nats_monitor listener dispatch pprof metrics)
+PORT_KEYS=(postgres proxy proxy_stats nats nats_monitor listener dispatch pprof metrics)
 declare -A PORT_VAR=(
-  [postgres]=LOADTEST_PG_PORT [proxy]=LOADTEST_PROXY_PORT [nats]=LOADTEST_NATS_PORT
-  [nats_monitor]=LOADTEST_NATS_MONITOR_PORT [listener]=LOADTEST_LISTENER_PORT
-  [dispatch]=LOADTEST_DISPATCH_PORT [pprof]=LOADTEST_PPROF_PORT [metrics]=LOADTEST_METRICS_PORT
+  [postgres]=LOADTEST_PG_PORT [proxy]=LOADTEST_PROXY_PORT [proxy_stats]=LOADTEST_PROXY_STATS_PORT
+  [nats]=LOADTEST_NATS_PORT [nats_monitor]=LOADTEST_NATS_MONITOR_PORT
+  [listener]=LOADTEST_LISTENER_PORT [dispatch]=LOADTEST_DISPATCH_PORT
+  [pprof]=LOADTEST_PPROF_PORT [metrics]=LOADTEST_METRICS_PORT
 )
 declare -A PORT_OFFSET=(
   [postgres]=0 [proxy]=1 [nats]=2 [nats_monitor]=3 [listener]=4 [dispatch]=5 [pprof]=6 [metrics]=7
+  [proxy_stats]=8
 )
 PORT_BASE=10000
 PORT_STRIDE=10
@@ -124,16 +126,18 @@ port_block() {
 
 # default_port KEY BLOCK: the default port of KEY in block BLOCK:
 #
-#   PORT_BASE + BLOCK * PORT_STRIDE + PORT_OFFSET[KEY] = 10000 + 10k + 0..7
+#   PORT_BASE + BLOCK * PORT_STRIDE + PORT_OFFSET[KEY] = 10000 + 10k + 0..8
 #
-# The 8 offsets differ and all are below the stride, so no two ports of a block and no two ports of
-# two different blocks ever meet (two roots in one block hold the same 8 ports);
-# every port is between 10000 and 11997, inside 1024-65535 and below every ephemeral range a
+# The 9 offsets differ and all are below the stride, so no two ports of a block and no two ports of
+# two different blocks ever meet (two roots in one block hold the same 9 ports);
+# every port is between 10000 and 11998, inside 1024-65535 and below every ephemeral range a
 # machine is likely to have. The base was 15000, whose blocks reached 16997: on a pod whose
 # ephemeral range starts at 16000 an outbound connection of the load test took a stack port
 # between steps and the next bind failed with "address already in use", which is what
 # check_ephemeral_ports now refuses up front. 10000 also clears the thousand ports the NATS test
-# rig's gates take just under that range (internal/testnats, gatePorts).
+# rig's gates take just under that range (internal/testnats, gatePorts). A key added to the table
+# takes the next free offset rather than a place in the list's order, so the ports every other key
+# already has stay where they were.
 default_port() { printf '%s\n' "$((PORT_BASE + $2 * PORT_STRIDE + PORT_OFFSET[$1]))"; }
 
 # EPHEMERAL_RANGE_FILE is where the machine's ephemeral port range is read from: two numbers on
