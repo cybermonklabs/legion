@@ -478,6 +478,74 @@ def where_if(job_id: str, step) -> str:
     return f"job {job_id}" + (f' step "{step_label(step)}"' if step else "")
 
 
+# A job or a step of a called workflow cannot test `needs.changes.outputs.<name>`: inside a
+# reusable workflow the only context carrying a caller's value is `inputs`, so the gate is
+# written `inputs.<name>` there and what it gates on is whatever the calling job passes for that
+# input. The reference is resolved back to the caller's expression before GATE_REF reads it,
+# which is what lets the rules below read a gate that lives in a called file exactly as they
+# read one written out in ci.yaml: a step with `if: inputs.go_notices == 'true'` under a caller
+# passing `go_notices: ${{ needs.changes.outputs.go_notices }}` is a gate on the filter
+# go_notices.
+INPUT_REF = re.compile(r"\binputs\.([A-Za-z0-9_-]+)")
+# The `with:` values a condition may be resolved through, and the expression each stands for.
+# An output of the changes job carries the one filter it names; `needs.changes.result` carries
+# none, so `inputs.changes-result != 'success' || inputs.go_notices == 'true'` reads as exactly
+# what ci.yaml's `needs.changes.result != 'success' || needs.changes.outputs.go_notices ==
+# 'true'` reads as today - one gate, on go_notices. The third is ci.yaml's ci-ok payload, the
+# whole changes job as JSON: docs-site.yaml's report step reads it (`if: always() &&
+# inputs.ci-ok-changes != ''`, which asks whether ci.yaml is the caller rather than what
+# changed), and since it names no output it can carry no filter into a condition and hide none.
+WITH_CHANGES = re.compile(r"^\$\{\{\s*(needs\.changes\.outputs\.[A-Za-z0-9_-]+|needs\.changes\.result"
+                          r"|toJSON\(needs\.changes\))\s*\}\}$")
+
+
+def input_expressions(documents: dict, problems: list) -> dict:
+    """Per workflow ci.yaml calls, {an input a condition of that workflow reads: the expression
+    ci.yaml's calling job passes for it}. The resolution may never be guessed: an input a
+    condition reads whose `with:` value is anything else - a literal, a value built from another
+    context - is refused here, naming the input, the calling job and both files, since reading
+    such a condition would silently drop the filter gating that job or step, or invent one.
+
+    That boundary is the conditions', and no wider. A `with:` value no condition of the called
+    file reads gates nothing, whatever it holds, and is none of this rule's business; nor is an
+    input the caller passes no value for, which the called workflow's own default decides and
+    the caller states no gate on (ci.yaml passes neither docs-site.yaml's upload-pages-artifact
+    nor its save-cache, and a step's `if:` there reads both)."""
+    expressions = {}
+    for path, caller in called_workflows(documents[WORKFLOW]).items():
+        document = documents.get(path)
+        if document is None:
+            continue  # workflow_documents has already refused a `uses:` naming no file of the repository
+        calling = (documents[WORKFLOW].get("jobs") or {}).get(caller) or {}
+        # Keyed by the text of each name, since that is what a condition's `inputs.<name>` is:
+        # a `with:` key YAML read as something else (a bare `on`, a bare `true`) is still a name
+        # here rather than a lookup that raises.
+        passed = {str(key): value for key, value in (calling.get("with") or {}).items()}
+        read = {name for job in (document.get("jobs") or {}).values()
+                for _, condition in conditions(job or {}) for name in INPUT_REF.findall(condition)}
+        resolved = {}
+        for name in sorted(read & set(passed)):
+            value = WITH_CHANGES.match(str(passed[name]))
+            if value is None:
+                problems.append(f"::error file={WORKFLOW}::job {caller} passes {name}: {passed[name]} to {path}, "
+                                f"whose condition reads inputs.{name}: such a condition is read through the "
+                                f"caller's with:, so that value must be ${{{{ needs.changes.outputs.<filter> }}}} "
+                                f"or ${{{{ needs.changes.result }}}}, which this check can resolve")
+                continue
+            resolved[name] = value.group(1)
+        expressions[path] = resolved
+    return expressions
+
+
+def resolve_condition(condition: str, expressions: dict) -> str:
+    """A condition as its caller's values make it: every `inputs.<name>` the caller passes a
+    value for becomes the expression that value holds, and every other reference stands. The
+    reference is matched whole, so a name holding a `-` (changes-result) resolves, and a longer
+    identifier that merely starts with an input's name (inputs.go_notices_extra beside an input
+    go_notices) is left alone rather than rewritten."""
+    return INPUT_REF.sub(lambda m: expressions.get(m.group(1), m.group(0)), condition)
+
+
 def step_matches(step: dict, ref: str) -> bool:
     return ref in (step.get("name"), step.get("id"), str(step.get("uses", "")).split("@")[0],
                    str(step.get("run", "")).strip())
@@ -662,14 +730,18 @@ def check_table(documents: dict, data, filters: dict, files: set, problems: list
     excluded = dict(data.EXCLUDED)
     for name in sorted(set(gates) & set(excluded)):
         problems.append(f"::error file=.github/scripts/ci_job_reads.py::{name} is both a gate and EXCLUDED")
-    # Rule 3 over every document of the set: a called file's job or step is gated on an input of
-    # its own rather than on a changes output, but one that does name an output is held here too,
-    # and the refusal names the file the condition is in.
+    # What each called file's conditions gate on, which is the caller's to say: a condition of
+    # ci.yaml names its filter outright, one of a called file names an input the caller passes
+    # that filter's output in.
+    inputs_of = input_expressions(documents, problems)
+    # Rule 3 over every document of the set: a called file's job or step is gated through an
+    # input of its own, resolved to the caller's expression here, and the refusal names the file
+    # the condition is in.
     gated = defaultdict(set)  # (workflow, job) -> filters its job-level if: names
     for path, document in documents.items():
         for job_id, job in (document.get("jobs") or {}).items():
             for step, condition in conditions(job or {}):
-                for name in GATE_REF.findall(condition):
+                for name in GATE_REF.findall(resolve_condition(condition, inputs_of.get(path, {}))):
                     if step is None:
                         gated[(path, job_id)].add(name)
                     if name not in gates and name not in excluded:
@@ -697,7 +769,8 @@ def check_table(documents: dict, data, filters: dict, files: set, problems: list
             continue
         if g.step:
             steps = [s for s in job.get("steps") or [] if step_matches(s, g.step)]
-            if len(steps) != 1 or g.filter not in GATE_REF.findall(str(steps[0].get("if", ""))):
+            if len(steps) != 1 or g.filter not in GATE_REF.findall(
+                    resolve_condition(str(steps[0].get("if", "")), inputs_of.get(g.workflow, {}))):
                 problems.append(f"::error file={g.workflow}::gate {g.filter} names step \"{g.step}\" of {g.job}, but "
                                 f"no single step of that name has an if: on needs.changes.outputs.{g.filter}")
         elif g.filter not in gated[(WORKFLOW, g.job)]:

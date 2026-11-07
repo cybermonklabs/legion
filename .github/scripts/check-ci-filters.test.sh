@@ -356,6 +356,118 @@ run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the job and the filter" "$(contains "$out" 'job image is gated on filter image, which ci_job_reads.py neither lists in GATES nor EXCLUDES')"
 
+# A job or a step of a workflow ci.yaml calls cannot test needs.changes.outputs.<name>: inside a
+# reusable workflow the only context carrying a caller's value is inputs. So a gate there is
+# written `inputs.<name>` and read through the calling job's with:, and the three cases below
+# are that resolution - the caller's expression standing in for the reference before the check
+# reads a filter in it, and a with: value the check would have to guess refused instead.
+
+# called_input_gate <root>: a `called` job of ci.yaml that holds its one gated step in
+# called.yaml, the way a job calling a reusable workflow holds its steps there. The step's gate
+# is written on an input, the calling job passes the app output for it, and the table holds that
+# step as a gate of filter app beside the gate on ci.yaml's own app job.
+called_input_gate() {
+  cat > "$1/.github/workflows/called.yaml" <<'YAML'
+name: Called
+on:
+  workflow_call:
+    inputs:
+      app:
+        type: string
+        required: true
+      changes-result:
+        type: string
+        required: false
+        default: ""
+      ci-ok-changes:
+        type: string
+        required: false
+        default: ""
+jobs:
+  called:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Test the library
+        if: inputs.app == 'true'
+        run: go test ./lib
+        working-directory: mod
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: called
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+YAML
+  cat >> "$1/.github/workflows/ci.yaml" <<'YAML'
+  called:
+    needs: changes
+    if: needs.changes.outputs.app == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    uses: ./.github/workflows/called.yaml
+    with:
+      app: ${{ needs.changes.outputs.app }}
+      ci-ok-changes: ${{ toJSON(needs.changes) }}
+YAML
+  cat > "$1/.github/scripts/ci_job_reads.py" <<'PY'
+from ci_filter_coverage import Read, at, gate, run
+
+CALLED = ".github/workflows/called.yaml"
+RULES = {"mod/lib/lib_test.go": [Read("fixtures/data.json", "lib_test.go reads ../../fixtures/data.json")]}
+GATES = [
+    gate("app", "app", runs=[
+        run("mod", ["./cmd/app", "./lib"], at("app", "Test the app") + ": go test ./cmd/app ./lib", step="Test the app",
+            text="go test ./cmd/app ./lib"),
+    ], reads=[Read(".github/workflows/ci.yaml", "a job reads its own definition")]),
+    gate("app", "called", runs=[
+        run("mod", ["./lib"], at("called", "Test the library", CALLED) + ": go test ./lib", step="Test the library",
+            text="go test ./lib"),
+    ], step="Test the library", workflow=CALLED),
+]
+EXCLUDED = {"image": "an image build another check proves"}
+PUSH_WORKFLOWS = {"site": ".github/workflows/site.yaml"}
+WORKSPACES = ["packages/widget"]
+DAEMON_RACE_PACKAGES = ["lib"]
+TAG_RUNS = []
+PY
+  replace "$1/.github/workflows/ci.yaml" "CI_OK_SELECTED_BY: '{\"app\": \"app\", \"image\": \"image\"}'" \
+    "CI_OK_SELECTED_BY: '{\"app\": \"app\", \"image\": \"image\", \"called\": \"app\"}'"
+  replace "$1/.github/workflows/ci.yaml" "needs: [changes, app, image, lint]" "needs: [changes, app, image, lint, called]"
+}
+
+echo "case: a step of a called workflow gated on an input the caller passes a changes output in"
+root=$(fixture called-input-gate)
+called_input_gate "$root"
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+check "reads the step's if: as the gate on app it resolves to" \
+  "$(contains "$out" '^called step "Test the library": 5 files, 0 uncovered (filter app)$')"
+
+echo "case: a called step's input the caller passes a literal for"
+root=$(fixture called-input-literal)
+called_input_gate "$root"
+replace "$root/.github/workflows/ci.yaml" "      app: \${{ needs.changes.outputs.app }}" "      app: 'true'"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the input, the calling job and both files" \
+  "$(contains "$out" "::error file=.github/workflows/ci.yaml::job called passes app: true to .github/workflows/called.yaml, whose condition reads inputs.app")"
+check "and says what the value must be" \
+  "$(contains "$out" 'that value must be \${{ needs.changes.outputs.<filter> }} or \${{ needs.changes.result }}')"
+
+# The shape ci.yaml's lint job's notices step takes once it moves into a called file: its
+# condition is `needs.changes.result != 'success' || needs.changes.outputs.go_notices == 'true'`
+# today, and the result term carries no filter, so the two together are the one gate.
+echo "case: a called step gated on the changes result and an output is the one gate the output names"
+root=$(fixture called-input-result)
+called_input_gate "$root"
+replace "$root/.github/workflows/called.yaml" "        if: inputs.app == 'true'" \
+  "        if: inputs.changes-result != 'success' || inputs.app == 'true'"
+replace "$root/.github/workflows/ci.yaml" "      app: \${{ needs.changes.outputs.app }}" \
+  $'      changes-result: ${{ needs.changes.result }}\n      app: ${{ needs.changes.outputs.app }}'
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+check "reads the one gate on app" \
+  "$(contains "$out" '^called step "Test the library": 5 files, 0 uncovered (filter app)$')"
+
 # The two cases below read a `!` pattern, whose own semantics workflow_paths.test.sh now owns.
 # What they assert here is this checker's verdict on it: the file it names as read but excluded,
 # and the sentence it refuses a `!` pattern under `some` with.

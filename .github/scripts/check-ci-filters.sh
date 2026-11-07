@@ -34,8 +34,19 @@
 #      `bunx tsc --listFilesOnly` and holds every file of it to that gate's filter, in ci.yaml's
 #      lint job, since this one's has no Bun. A file a test reads by relative path is part of no
 #      tsc program, so it stays hand-kept here,
-#   2. a gate whose filter the changes job lacks, or whose job's (or step's) if: does not test it,
-#   3. a job or step gated on a filter the table neither lists in GATES nor EXCLUDES,
+#   2. a gate whose filter the changes job lacks, or whose job's (or step's) if: does not test it.
+#      A job or a step of a workflow ci.yaml calls cannot test `needs.changes.outputs.<name>`:
+#      inside a reusable workflow the only context carrying a caller's value is `inputs`. Such a
+#      gate is written `inputs.<name>` and read through the calling job's `with:`, the reference
+#      resolved to the expression the caller passes for that input before the filter is read off
+#      it. A `with:` value a condition of the called file reads must therefore be
+#      `${{ needs.changes.outputs.<filter> }}` or `${{ needs.changes.result }}` (the ci-ok
+#      payload `${{ toJSON(needs.changes) }}`, which names no output, is the one other value
+#      read here), and anything else - a literal, a value built from another context - is
+#      refused naming the input, the calling job and both files, since the resolution may never
+#      be guessed. A `with:` value no condition reads gates nothing and is left alone,
+#   3. a job or step gated on a filter the table neither lists in GATES nor EXCLUDES, in ci.yaml
+#      or in a workflow it calls, where the filter is the one the resolved condition names,
 #   4. a run: line of a job of ci.yaml, or of a job of a workflow ci.yaml calls, that starts a go
 #      command (test, vet, build, run, list, install, generate) no Run of a gate on that job
 #      claims and no exact entry's step holds, or a claimed line in the simple form (below) whose
