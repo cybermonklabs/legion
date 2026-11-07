@@ -31,7 +31,7 @@
 #                under packages/daemon/internal/store/migrations; a column resolves
 #                when a migration creates that table with the column or alters the
 #                table to add it.
-#   Experiment   experiment 1 .. experiment 6. It resolves when that experiment's
+#   Experiment   experiment 1 .. experiment 18. It resolves when that experiment's
 #                recorded output is committed beside this script, and it counts as a
 #                citation, so a section whose only evidence is a measurement is not a
 #                section with no citation.
@@ -81,7 +81,7 @@ readonly \
 	literal_pattern='\(`[^`]+`, `"[^"]*"`\)' \
 	column_pattern='the `[A-Za-z0-9_]+` column of `[A-Za-z0-9_]+`' \
 	table_pattern='the `[A-Za-z0-9_]+` table' \
-	experiment_pattern='[Ee]xperiment [1-6]' \
+	experiment_pattern='[Ee]xperiment (1[0-8]|[1-9])([^0-9]|$)' \
 	dispatch_pattern='dispatch://[A-Za-z0-9._/@#-]+' \
 	web_pattern='https://[^][:space:]`")<>]+( \(read [0-9]{4}-[0-9]{2}-[0-9]{2}\))?'
 
@@ -307,7 +307,7 @@ resolve_document() {
 		resolve_table "$match" "$table"
 	done
 
-	mapfile -t matches < <(grep -oE "$experiment_pattern" <<<"$document" | tr 'E' 'e' | sort -u)
+	mapfile -t matches < <(grep -oE "$experiment_pattern" <<<"$document" | tr 'E' 'e' | sed -E 's/[^0-9]+$//' | sort -u)
 	for match in "${matches[@]}"; do
 		digit=${match##* }
 		resolve_experiment "$match" "$digit"

@@ -1,13 +1,12 @@
-Experiment 1, the phase table as a workflow.
-Recorded 2026-11-07T19:22:06Z by docs/research/temporal-evaluation-2026-11/run.sh,
+Experiment 1, Temporal: the phase table as a workflow.
+Recorded 2026-11-07T22:39:42Z by docs/research/temporal-evaluation-2026-11/run.sh,
 from the branch of dispatch://INFRA-1546 based on commit 09bf32cc0298db50261183a12e129ad324b03cee,
-against Temporal server 1.32.2 from the pinned command temporal 1.10.0,
-on the Temporal Go SDK v1.50.0, in one Legion pod.
+in one Legion worker pod, against a real server or a real PostgreSQL.
 This is a transcript of one run, not a golden file: nothing re-records it.
 ------------------------------------------------------------------------------
-issue-id: EXP1-1794079242976177673
-workflow-id: exp1-issue-1794079242976177673
-run-id: 01a1b774-bbd8-7b40-9ba2-af714ac4d739
+issue-id: EXP1-1794090957020425820
+workflow-id: exp1-issue-1794090957020425820
+run-id: 01a1b827-7bad-773f-bb94-70ad255cbc85
 signals-sent: 12
 final-phase: done
 phase-path: admitted -> planning -> implementing -> testing -> reviewing -> implementing -> testing -> reviewing -> accepting -> retro -> merging -> awaiting_merge -> done
@@ -16,7 +15,7 @@ triggers-no-row-accepted: 0
 role-prompts: 10
 backward-move-reviewing-to-implementing: true
 testing-entries: 2
-history-event-count: 95
+history-event-count: 92
 history-signal-events: 12
 history-activity-scheduled-events: 10
 workflow-source-file: /legion/workspaces/cybermonklabs/legion/infra-1546/docs/research/temporal-evaluation-2026-11/prototype/internal/exp1/exp1.go

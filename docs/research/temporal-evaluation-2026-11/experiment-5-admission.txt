@@ -1,8 +1,7 @@
-Experiment 5, admission.
-Recorded 2026-11-07T19:22:06Z by docs/research/temporal-evaluation-2026-11/run.sh,
+Experiment 5, Temporal: admission across workflows.
+Recorded 2026-11-07T22:39:42Z by docs/research/temporal-evaluation-2026-11/run.sh,
 from the branch of dispatch://INFRA-1546 based on commit 09bf32cc0298db50261183a12e129ad324b03cee,
-against Temporal server 1.32.2 from the pinned command temporal 1.10.0,
-on the Temporal Go SDK v1.50.0, in one Legion pod.
+in one Legion worker pod, against a real server or a real PostgreSQL.
 This is a transcript of one run, not a golden file: nothing re-records it.
 ------------------------------------------------------------------------------
 admission-cap: 4
@@ -13,8 +12,8 @@ hold-per-issue: 1.5s
 worker-max-concurrent-activities: 64
 worker-max-concurrent-workflow-tasks: 64
 why-not-worker-concurrency: worker-side concurrency is explicitly not the mechanism: it caps one worker process rather than the deployment, so it would measure nothing about a limit across workflows
-gatekeeper-workflow-id: exp5-gatekeeper-1794079270194831909
-gatekeeper-first-run-id: 01a1b775-2594-728e-bd88-e18388bd656a
+gatekeeper-workflow-id: exp5-gatekeeper-1794090984290124060
+gatekeeper-first-run-id: 01a1b827-e402-7a79-9f83-18478e739d57
 wave-1-gatekeeper-holders-when-the-wave-started: 0
 wave-1-issues-finished: 6
 wave-2-gatekeeper-holders-when-the-wave-started: 0
