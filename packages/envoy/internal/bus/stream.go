@@ -844,13 +844,15 @@ const unansweredSends = 3
 // A request is lost rather than slow because neither side sends it again: nats.go publishes each
 // JetStream request exactly once and waits (nats.go@v1.53.1 js.go:3559-3578), and nats-server
 // v2.15.1 returns from several paths these requests take without answering at all -- a
-// STREAM.INFO or a STREAM.CREATE at a member that is not the metadata leader while the metadata
-// group is less than ten seconds old (server/jetstream_api.go:2087-2093 and :1550-1563, with
-// jetstream_cluster.go:1481-1497), a STREAM.CREATE whose metadata proposal is refused because the
-// term moved (jetstream_cluster.go:11110-11112, with raft.go:1046-1060), and anything that
-// arrives while the API queue holds its 10,000 limit (jetstream_api.go:1020-1046). So a start
-// that opens a bucket through a cluster whose meta leader is changing waits its whole bound out
-// and ends the program over one send that was never going to be answered.
+// STREAM.INFO, a STREAM.CREATE or the account $JS.API.INFO nats.go sends before a KV create
+// (nats.go@v1.53.1 kv.go:432-434) at a member that is not the metadata leader while the metadata
+// group is less than ten seconds old (server/jetstream_api.go:2087-2093, :1550-1563 and
+// :1461-1474, which are the same isLeaderless gate and the same bare return in each handler,
+// with jetstream_cluster.go:1481-1497), a STREAM.CREATE whose metadata proposal is refused
+// because the term moved (jetstream_cluster.go:11110-11112, with raft.go:1046-1060), and
+// anything that arrives while the API queue holds its 10,000 limit (jetstream_api.go:1020-1046).
+// So a start that opens a bucket through a cluster whose meta leader is changing waits its whole
+// bound out and ends the program over one send that was never going to be answered.
 func sentAgain[T any](request string, send func() (T, error)) (T, error) {
 	var answer T
 	var err error

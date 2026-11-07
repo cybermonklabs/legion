@@ -158,26 +158,40 @@ func namedRequest(request string, err error) error {
 // electing a leader answers neither. Every production caller opens its JetStream context with
 // nats.MaxWait(10 * time.Second) (cmd/listener/brokerauth.go:149, internal/cistore/cistore.go:357,
 // internal/session/registry.go:369, internal/store/kv.go:94, internal/bus/nats.go:508), which
-// bounds one send of a request, so a lookup that never draws an answer costs this call 30 s and a
-// create that never draws one costs it the same, where each cost 10 s before.
+// bounds one request and not one step of this call, so what a step that draws no answer costs is
+// counted a step at a time. The lookup is the one STREAM.INFO js.KeyValue sends, so it costs
+// unansweredSends sends of ten seconds each, 30 s. The create is more than one request a send,
+// because nats.go asks the account for its JetStream info before it adds the stream
+// (nats.go@v1.53.1 kv.go:432-434): 20 s a send, and 60 s over the three. Where the server answers
+// that create "stream name already in use", nats.go reads the stream as well and, when the
+// stream's configuration equals the one asked for, updates it (kv.go:534-545), so a send there is
+// 40 s and the step 120 s. The wait on a member that has not applied the create costs
+// bucketAppliedDeadline and 30 s beyond it, since awaitBucketApplied reads that deadline between
+// reads and cuts no read in flight: a lookup begun just under the deadline still spends its own
+// three sends after it.
 //
-// The error names the request that drew it, the bucket's stream and the JetStream request made of
-// it: `KV_envoy_webhook_redelivery STREAM.INFO: ...` for the lookup of the bucket, which this
-// call makes first and makes again while it waits a member out, and
-// `KV_envoy_webhook_redelivery STREAM.CREATE: ...` for the create (namedRequest). A raise names
-// itself (raiseReplicas), and a refused create names the setting behind it after the request:
-// `KV_envoy_interests STREAM.CREATE: ENVOY_NATS_REPLICAS=3: ...`.
+// The error names the bucket's stream and the step that drew it:
+// `KV_envoy_webhook_redelivery STREAM.INFO: ...` for the lookup of the bucket, which this call
+// makes first and makes again while it waits a member out, and
+// `KV_envoy_webhook_redelivery create ($JS.API.INFO, STREAM.CREATE): ...` for the create, named
+// for every request nats.go sends inside it so that the error of a create that drew no answer
+// never names a request this call did not send (namedRequest). A raise names itself
+// (raiseReplicas), and a refused create names the setting behind it after the step:
+// `KV_envoy_interests create ($JS.API.INFO, STREAM.CREATE): ENVOY_NATS_REPLICAS=3: ...`.
 func EnsureKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig) (KeyValue, error) {
 	stream := "KV_" + config.Bucket
 	lookup := stream + " STREAM.INFO"
-	create := stream + " STREAM.CREATE"
+	create := stream + " create ($JS.API.INFO, STREAM.CREATE)"
 	// lookUpBucket is the one lookup this call makes, here and again while it waits a member out,
-	// so the two are the same request and are named the same way.
+	// so the two are the same request, and it names its own error rather than leave each caller
+	// to name it. The name wraps the server's answer with %w (namedRequest), so awaitBucketApplied
+	// still reads the member's "bucket not found" through it (bucketMissing) and the switch below
+	// still reads nats.ErrBucketNotFound.
 	lookUpBucket := func() (nats.KeyValue, error) {
-		return sentAgain(lookup, func() (nats.KeyValue, error) { return js.KeyValue(config.Bucket) })
+		kv, err := sentAgain(lookup, func() (nats.KeyValue, error) { return js.KeyValue(config.Bucket) })
+		return kv, namedRequest(lookup, err)
 	}
 	kv, err := lookUpBucket()
-	err = namedRequest(lookup, err)
 	created := false
 	switch {
 	case errors.Is(err, nats.ErrBucketNotFound):
@@ -188,6 +202,14 @@ func EnsureKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyV
 		// answer the first send never drew goes out (server/jetstream_cluster.go:11053-11063,
 		// :11109-11116). A create the server does answer "stream name already in use" is settled
 		// by the branch below, which reads the bucket until the member answering has applied it.
+		//
+		// Sending the step again sends more than the create: nats.go asks the account for its
+		// JetStream info first (nats.go@v1.53.1 kv.go:432-434), and on "stream name already in
+		// use" it reads the stream and, when the stream's configuration equals the one asked for,
+		// sends a STREAM.UPDATE of it (kv.go:534-545). That update goes again with the rest of
+		// the step where updateStream leaves an unanswered update alone, because it carries the
+		// configuration the stream already holds: it changes nothing when it lands twice, while
+		// the replica or age change updateStream guards is a write another one can race.
 		kv, err = sentAgain(create, func() (nats.KeyValue, error) { return js.CreateKeyValue(config) })
 		if errors.Is(err, nats.ErrStreamNameAlreadyInUse) {
 			// The bucket was created between this start's lookup and its create, by another start
@@ -202,7 +224,6 @@ func EnsureKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyV
 			// again until the member holds it, the second is sent again. A lost send here would
 			// end the start the create above has just carried through.
 			kv, err = awaitBucketApplied(config.Bucket, bucketMissing, lookUpBucket)
-			err = namedRequest(lookup, err)
 		} else {
 			err = namedRequest(create, refusedSettings(err, nil, &nats.StreamConfig{Replicas: config.Replicas}))
 		}

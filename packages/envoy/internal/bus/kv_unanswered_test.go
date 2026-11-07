@@ -25,6 +25,12 @@ func openSubject(bucket string) string { return "$JS.API.STREAM.INFO.KV_" + buck
 // kv.go:524-534, js.go:189-192).
 func createSubject(bucket string) string { return "$JS.API.STREAM.CREATE.KV_" + bucket }
 
+// accountInfoSubject is the request js.CreateKeyValue sends before its STREAM.CREATE: the
+// account's JetStream info, which nats.go asks for first (nats.go@v1.53.1 kv.go:432-434,
+// jsm.go:409). It names no bucket, so a row that drops it drops the account info of whatever
+// this connection asks the server for next, and only a row that makes one call may use it.
+func accountInfoSubject() string { return "$JS.API.INFO" }
+
 // unansweredRelay is a TCP relay between a client and a real NATS server that counts the requests
 // the client sends on one subject and drops the first drops of them: the request never reaches the
 // server, as a server whose meta leader is changing leaves one unanswered, so no answer is ever
@@ -175,10 +181,10 @@ func (r *unansweredRelay) filter(server, client net.Conn) {
 	}
 }
 
-// unansweredJetStream is a connection through relay and the JetStream context a start is given,
+// relayedJetStream is a connection through relay and the JetStream context a start is given,
 // opened with the MaxWait the listener and Dispatch open theirs with, so a request the relay drops
 // runs the caller's wait out exactly as it does in a program.
-func unansweredJetStream(t *testing.T, relay *unansweredRelay) (*nats.Conn, nats.JetStreamContext) {
+func relayedJetStream(t *testing.T, relay *unansweredRelay) (*nats.Conn, nats.JetStreamContext) {
 	t.Helper()
 	conn := testnats.Connect(t, relay.url)
 	t.Cleanup(conn.Close)
@@ -197,7 +203,7 @@ func unansweredJetStream(t *testing.T, relay *unansweredRelay) (*nats.Conn, nats
 func TestAnUnansweredBucketLookupIsSentAgainAndTheStartGoesOn(t *testing.T) {
 	const bucket = "envoy_unanswered_lookup"
 	relay := startUnansweredRelayOn(t, testnats.URL(t), openSubject(bucket))
-	conn, js := unansweredJetStream(t, relay)
+	conn, js := relayedJetStream(t, relay)
 	// The bucket is there before the call, so the call under test takes the lookup path and not
 	// the create path.
 	if _, err := js.CreateKeyValue(&nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage}); err != nil {
@@ -224,21 +230,22 @@ func TestAnUnansweredBucketLookupIsSentAgainAndTheStartGoesOn(t *testing.T) {
 		t.Fatalf("the key read back = %q, want %q", got, "value")
 	}
 	// Three lookups ride this subject: the one whose send was lost, the one that answered, and the
-	// STREAM.INFO wrapKeyValue sends to open the bucket's jetstream handle, which is the same
-	// request on the same subject (kv.go:366-376).
+	// STREAM.INFO wrapKeyValue sends through its open to build the bucket's jetstream handle,
+	// which is the same request on the same subject.
 	if sends := relay.sent(); sends != 3 {
 		t.Fatalf("lookups sent = %d, want 3: the lost one, the one that answered, and the handle open", sends)
 	}
 }
 
 // A start whose create of a bucket draws no answer sends it again and goes on, rather than ending
-// the program with "open envoy_unanswered_create KV bucket: KV_envoy_unanswered_create
-// STREAM.CREATE: context deadline exceeded", which is what it does today. The first create never
-// reaches the server, so the bucket is the second create's, and the handle on it is usable.
+// the program with "open envoy_unanswered_create KV bucket: KV_envoy_unanswered_create create
+// ($JS.API.INFO, STREAM.CREATE): context deadline exceeded", which is what it does today. The
+// first create never reaches the server, so the bucket is the second create's, and the handle on
+// it is usable.
 func TestAnUnansweredBucketCreateIsSentAgainAndTheStartGoesOn(t *testing.T) {
 	const bucket = "envoy_unanswered_create"
 	relay := startUnansweredRelayOn(t, testnats.URL(t), createSubject(bucket))
-	conn, js := unansweredJetStream(t, relay)
+	conn, js := relayedJetStream(t, relay)
 	// The bucket is not there, so the call under test takes the create path. It is deleted however
 	// the row ends, since a create whose send was lost leaves nothing behind but one that answered
 	// does.
@@ -260,5 +267,43 @@ func TestAnUnansweredBucketCreateIsSentAgainAndTheStartGoesOn(t *testing.T) {
 	// The handle open rides the lookup's subject, which this relay passes on.
 	if sends := relay.sent(); sends != 2 {
 		t.Fatalf("creates sent = %d, want 2: the lost one and the one that made the bucket", sends)
+	}
+}
+
+// A start whose account info draws no answer sends the create step again and goes on, rather than
+// ending the program with "open envoy_unanswered_info KV bucket: KV_envoy_unanswered_info create
+// ($JS.API.INFO, STREAM.CREATE): context deadline exceeded" with no bucket made. That request is
+// nats.go's own, sent inside js.CreateKeyValue before the STREAM.CREATE (nats.go@v1.53.1
+// kv.go:432-434), and a member that is not the metadata leader leaves it unanswered behind the
+// same gate it leaves the create behind (sentAgain). The first account info never reaches the
+// server, so the bucket is the second send's, and the handle on it is usable.
+func TestAnUnansweredAccountInfoIsSentAgainAndTheStartGoesOn(t *testing.T) {
+	const bucket = "envoy_unanswered_info"
+	relay := startUnansweredRelayOn(t, testnats.URL(t), accountInfoSubject())
+	conn, js := relayedJetStream(t, relay)
+	// The bucket is not there, so the call under test takes the create path, the only path that
+	// asks for the account's info. It is deleted however the row ends, since a create whose
+	// account info was lost leaves nothing behind but one that answered does.
+	t.Cleanup(func() { _ = js.DeleteKeyValue(bucket) })
+
+	relay.arm(1)
+	handle, err := EnsureKeyValue(conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
+	if err != nil {
+		t.Fatalf("a start whose first account info drew no answer = %v, want it to go on", err)
+	}
+
+	if _, err := js.KeyValue(bucket); err != nil {
+		t.Fatalf("the bucket the start created is not on the server: %v", err)
+	}
+	if _, err := handle.ReadStreamState(); err != nil {
+		t.Fatalf("read the bucket's stream through the handle the start was given: %v", err)
+	}
+	// Two account infos ride this subject: the one whose send was lost and the one of the send
+	// that made the bucket. One rides each send of the create step and nothing else does: the
+	// lookup is a STREAM.INFO, the handle open is another, and the STREAM.CREATE of the first
+	// send was never reached, since js.CreateKeyValue returns the moment the account info draws
+	// no answer. Each of those rides a subject of its own, which this relay passes on.
+	if sends := relay.sent(); sends != 2 {
+		t.Fatalf("account infos sent = %d, want 2: the lost one and the one of the send that made the bucket", sends)
 	}
 }

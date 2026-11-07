@@ -282,9 +282,16 @@ func TestRedeliverWebhooksRaisesAnR1RedeliveryBucketToTheReplicaSetting(t *testi
 	// cmd/listener/brokerauth.go:149). That bound is a per-send hang guard and not a budget for
 	// one request: a create or a lookup the server leaves unanswered is sent again rather than
 	// waited out (bus.EnsureKeyValue), so a clustered create that is merely slow is answered on
-	// the send it is answered on, and the whole call's worst case is bus.RequestTimeout once per
-	// send. The command below connects for itself and looks the bucket up on whichever member
-	// answers it, so every member answers for the bucket first.
+	// the send it is answered on. What a step that draws no answer at all costs is the ten
+	// seconds once for each request nats.go sends in a send of it, times the three sends: the
+	// lookup is one STREAM.INFO, so 30 s; the create is an account $JS.API.INFO and then the
+	// STREAM.CREATE, so 20 s a send and 60 s over the three, and where the server answers
+	// "stream name already in use" nats.go reads the stream as well and may update it, so 40 s a
+	// send and 120 s over the three; and the wait on a member that has not applied the create
+	// costs bus.RequestTimeout, the deadline that wait reads between its reads, and the 30 s of
+	// a lookup begun just under it, since no read in flight is cut. The command below connects
+	// for itself and looks the bucket up on whichever member answers it, so every member answers
+	// for the bucket first.
 	//
 	// The create is the step a slow or unsettled cluster fails this row at, and its error alone
 	// says nothing of why: `open envoy_webhook_redelivery KV bucket: context deadline exceeded`
