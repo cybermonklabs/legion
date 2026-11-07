@@ -89,7 +89,11 @@ func resolveStallLimits(env func(string) string) StallLimits {
 
 // maxStallMilliseconds is the largest number of milliseconds a time.Duration holds, about 292
 // years of them: the one place this reader and the plugin's part company (stallMilliseconds).
-const maxStallMilliseconds = float64(math.MaxInt64 / int64(time.Millisecond))
+// Both readings of a written number measure against it — the float64 a decimal yields and the
+// uint64 a based literal is parsed into (jsNumber) — so it is kept as the int64 it is reckoned
+// in and converted at each. About 2^43, it is small enough that a float64 holds it exactly, and
+// the two readings therefore divide the strings at the same place.
+const maxStallMilliseconds = math.MaxInt64 / int64(time.Millisecond)
 
 // stallMilliseconds reads one LEGION_STALL_*_MS value from the same set of strings the plugin's
 // own reader takes it from (`packages/pi-shared/src/stall-limits.ts`, integerSetting): the value
@@ -108,7 +112,7 @@ const maxStallMilliseconds = float64(math.MaxInt64 / int64(time.Millisecond))
 // thousand years.
 func stallMilliseconds(value string) (time.Duration, bool) {
 	ms, ok := jsNumber(value)
-	if !ok || ms != math.Trunc(ms) || ms < 0 || ms > maxStallMilliseconds {
+	if !ok || ms != math.Trunc(ms) || ms < 0 || ms > float64(maxStallMilliseconds) {
 		return 0, false
 	}
 	return time.Duration(ms) * time.Millisecond, true
@@ -123,6 +127,14 @@ func stallMilliseconds(value string) (time.Duration, bool) {
 // A blank string is NaN rather than Number's own 0, because the plugin's reader answers NaN for
 // one before it reads a number at all (integerSetting's `raw.trim() === ""`), and a variable set
 // to spaces must be the default rather than the watch switched off.
+//
+// The one place this is not Number is a based literal above the milliseconds a time.Duration
+// holds (maxStallMilliseconds): Number reads `0xFFFFFFFFFFFFFFFF` as 1.8446744073709552e19, and
+// so would widening the uint64 ParseUint reads it into — handing stallMilliseconds a number of
+// milliseconds that no int64, which is what a Duration is, can hold. The bound is taken on the
+// integer itself, before the widening, so the number that cannot be held never reaches the
+// conversion. It costs no answer: stallMilliseconds leaves the default standing for every
+// number above that bound, however the deployment wrote it.
 func jsNumber(raw string) (float64, bool) {
 	s := strings.TrimFunc(raw, jsSpace)
 	if s == "" {
@@ -133,7 +145,7 @@ func jsNumber(raw string) (float64, bool) {
 			// A sign and an underscore are both refused here as JavaScript refuses them in a
 			// based literal: ParseUint permits neither when it is given its base.
 			digits, err := strconv.ParseUint(s[2:], base, 64)
-			if err != nil {
+			if err != nil || digits > uint64(maxStallMilliseconds) {
 				return 0, false
 			}
 			return float64(digits), true

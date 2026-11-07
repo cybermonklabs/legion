@@ -272,6 +272,13 @@ func TestStallMillisecondsReadsThePluginsOwnSetOfStrings(t *testing.T) {
 		// The one string the two read differently, and the reason: the daemon cannot hold a
 		// number of milliseconds a time.Duration has no room for.
 		{"1e21", none},
+		// The same line drawn through a based literal, which is read as a 64-bit integer
+		// before it is a number at all: the largest a Duration holds (maxStallMilliseconds,
+		// 0x8637bd05af6) is taken, the next one up and the largest literal ParseUint reads
+		// at all leave the plugin's default standing.
+		{"0x8637bd05af6", time.Duration(maxStallMilliseconds) * time.Millisecond},
+		{"0x8637bd05af7", none},
+		{"0xFFFFFFFFFFFFFFFF", none},
 	} {
 		t.Run(tc.raw, func(t *testing.T) {
 			got, ok := stallMilliseconds(tc.raw)
