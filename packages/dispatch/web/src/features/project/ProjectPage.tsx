@@ -26,6 +26,7 @@ import { NotFoundPage } from "../shell/NotFoundPage";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { useUserPreference } from "../shell/userPreference";
 import { DocumentList } from "./DocumentList";
+import { EpicsView } from "./EpicsView";
 import { IssueBoard } from "./IssueBoard";
 import { IssueFilters } from "./IssueFilters";
 import { IssueList } from "./IssueList";
@@ -38,14 +39,14 @@ const tabs: readonly TabDefinition<ProjectTab>[] = [
   { id: "documents", label: "Documents" },
 ];
 
-type IssueView = "list" | "board";
+type IssueView = "list" | "board" | "epics";
 
 export function ProjectPage(): ReactNode {
   const location = useLocation();
   const navigate = useNavigate();
   const [issueView, setIssueView] = useUserPreference<IssueView>(
     "project.issue-view",
-    (stored) => (stored === "board" ? "board" : "list"),
+    (stored) => (stored === "board" || stored === "epics" ? stored : "list"),
     (view) => view
   );
   const [showEdges, setShowEdges] = useUserPreference(
@@ -204,7 +205,7 @@ export function ProjectPage(): ReactNode {
             className={`order-6 inline-flex shrink-0 rounded-xl border p-1 md:order-4 md:ml-auto ${borderDefault}`}
           >
             <legend className="sr-only">Issue view</legend>
-            {(["list", "board"] as const).map((view) => (
+            {(["list", "board", "epics"] as const).map((view) => (
               <button
                 aria-pressed={issueView === view}
                 className={`min-h-11 rounded-lg px-3 text-sm font-medium md:min-h-9 md:px-2 ${
@@ -214,7 +215,7 @@ export function ProjectPage(): ReactNode {
                 onClick={() => setIssueView(view)}
                 type="button"
               >
-                {view === "list" ? "List" : "Board"}
+                {view === "list" ? "List" : view === "board" ? "Board" : "Epics"}
               </button>
             ))}
           </fieldset>
@@ -266,15 +267,19 @@ export function ProjectPage(): ReactNode {
       >
         {activeTab === "issues" ? (
           <>
-            <IssueFilters
-              key={route.project}
-              project={route.project}
-              showStatus={issueView === "list"}
-            />
+            {issueView === "epics" ? null : (
+              <IssueFilters
+                key={route.project}
+                project={route.project}
+                showStatus={issueView === "list"}
+              />
+            )}
             {issueView === "list" ? (
               <IssueList project={route.project} />
-            ) : (
+            ) : issueView === "board" ? (
               <IssueBoard lanes={lanes} project={route.project} showEdges={showEdges} />
+            ) : (
+              <EpicsView project={route.project} />
             )}
           </>
         ) : null}
