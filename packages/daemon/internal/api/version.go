@@ -746,6 +746,9 @@ package api
 // that answer rather than a failure, since the claim is back and whatever task it owed has gone
 // again all the same. It reaches a claim whose agent is ready or idle, a root architect included,
 // and refuses a suspended, stopped or failed claim naming fresh_session (`CLAIM_NOT_RUNNING`), a
+// claim left working over a process the daemon is starting again, whose relaunch waits its turn
+// in the wake pacing (`CLAIM_NOT_RUNNING` as well, naming that turn rather than fresh_session,
+// which refuses such a claim too), a
 // claim in a turn (`CLAIM_IN_A_TURN`), a claim between states (`CLAIM_UNSETTLED`), a Claude Code
 // claim, which runs no Oh My Pi session (`CLAIM_NOT_ON_OMP`), and the role `controller`
 // (`INVALID_ROLE`). The controller's `legion` tool gains `compact (issue, role)` beside

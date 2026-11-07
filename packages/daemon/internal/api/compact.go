@@ -137,7 +137,9 @@ func (s *server) compactClaim(w http.ResponseWriter, r *http.Request) {
 //     running and that turn may be the one that ends the run of provider errors; the refusal
 //     names the compaction, so a controller told to compact first is not told to ask for a
 //     fresh session instead (refuseInATurn). A claim already being compacted is in no turn, so
-//     it is told so in its own words: the compaction in flight is what it waits for;
+//     it is told so in its own words: the compaction in flight is what it waits for, and so is
+//     a claim left working over a process the daemon is starting again, whose refusal names
+//     that relaunch's own turn (relaunchWaits);
 //   - a claim between states, queued or with a launch in flight, has no agent to ask yet
 //     (claimUnsettled);
 //   - a claim whose role runs on the Claude Code backend has no Oh My Pi session to compact at
@@ -215,9 +217,10 @@ func (s *server) compact(w http.ResponseWriter, r *http.Request, m *supervise.Ma
 		var refused *supervise.RefusedError
 		if errors.As(err, &refused) {
 			// The machine takes no compaction in the state it names: a claim in a turn, one
-			// already being compacted, one whose agent is not running, one between states. The
-			// answer is written from that state (refuseState).
-			return CompactResponse{}, refuseState(w, token, refused.State, m.View().Claim.Compacting)
+			// already being compacted, one whose relaunch waits its paced turn, one whose agent
+			// is not running, one between states. The answer is written from that state and the
+			// published view (refuseState).
+			return CompactResponse{}, refuseState(w, token, refused.State, m.View())
 		}
 		// Oh My Pi refused or skipped the compaction, the wait for it ran out, or the transport
 		// failed. The claim is back and whatever task it owes has gone again, so the caller is
@@ -247,15 +250,20 @@ func boundReason(text string) string {
 }
 
 // refuseState is the refusal the machine answered a compaction with, in the words of the state
-// that refusal names (supervise.RefusedError.State). compacting is whether the claim is working
-// because its session is being compacted rather than because a turn is, which is the one thing
-// the state alone does not say (supervise.Claim.Compacting). It always reports false, so a
-// caller returns it as its own answer.
-func refuseState(w http.ResponseWriter, token claim.Token, state supervise.ClaimState, compacting bool) bool {
+// that refusal names (supervise.RefusedError.State). view is the claim as its machine last
+// published it, for the two things the state alone does not say: whether a working claim is
+// working because its session is being compacted rather than because a turn is
+// (supervise.Claim.Compacting), and whether a launch waits its paced turn over it
+// (relaunchWaits). It always reports false, so a caller returns it as its own answer.
+func refuseState(w http.ResponseWriter, token claim.Token, state supervise.ClaimState, view supervise.ClaimView) bool {
 	switch {
-	case state == supervise.StateWorking && compacting:
+	case state == supervise.StateWorking && view.Compacting:
 		writeFailure(w, http.StatusConflict, claimInATurn, fmt.Sprintf(
 			"%s is being compacted already: wait for that compaction to end", token))
+	case state == supervise.StateWorking && relaunchWaits(view):
+		writeFailure(w, http.StatusConflict, claimNotRunning, fmt.Sprintf(
+			"%s runs no Oh My Pi session to compact: the daemon is starting its process again, and that relaunch waits its turn in the wake pacing. The turn comes by itself; ask again once %s is running.",
+			token, token))
 	case state == supervise.StateWorking:
 		return refuseInATurn(w, token, compactOp)
 	case startsAgain(state):
@@ -268,6 +276,23 @@ func refuseState(w http.ResponseWriter, token claim.Token, state supervise.Claim
 			token, state, token))
 	}
 	return false
+}
+
+// relaunchWaits is whether a launch the daemon's wake pacing holds waits over this claim
+// (supervise.ClaimView.WakeWaiting, supervise.WakeLaunch). Read of a claim that is working and
+// is not being compacted, it is the window a death under a compaction leaves when the pacing
+// parks the relaunch: the claim is stored working over the process it lost, with nothing in a
+// turn and nothing that will end one, and what it waits for is that launch's turn, which comes
+// by itself (supervise's TestACompactionWhoseRelaunchWaitsItsTurnLeavesTheOwedTaskToThatTurn).
+// Both recoveries read it, because both answer such a claim "in a turn" without it.
+//
+// A turn that started under a launch parked over a process that is still alive reads the same
+// here, and the refusal is as true of it: that launch lets the process go at its turn, so what
+// the caller waits for is that turn either way. Nothing the claim records tells the two apart —
+// a park writes nothing of the claim, and the dead process is kept until the turn — so neither
+// door says which of the two it found.
+func relaunchWaits(view supervise.ClaimView) bool {
+	return view.WakeWaiting != nil && view.WakeWaiting.Kind == supervise.WakeLaunch
 }
 
 // freshSessionName is the operation a refusal of a compaction names as the one that reaches the

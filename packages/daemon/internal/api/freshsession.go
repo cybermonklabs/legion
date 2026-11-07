@@ -215,9 +215,12 @@ func roleList() string {
 // cut that turn off, and the turn may be the one that ends the run; the caller is told to ask
 // again after it, and so is a claim that entered a turn between the read below and the machine's
 // lock, whose suspension the machine refuses rather than holds (suspendForFreshSession). A claim
-// between states — queued, or with a launch in flight — is refused because it has no agent to
-// stop and its suspension would be held for the one it is still waiting for, and the request
-// would answer long after the claim moved on. The project's controller is refused whatever
+// left working over a process the daemon is starting again is in no turn at all, and no turn
+// will end to let this route in: it is told to ask again once that relaunch has had its paced
+// turn, which comes by itself (relaunchWaits). A claim between states — queued, or with a
+// launch in flight — is refused because it has no agent to stop and its suspension would be
+// held for the one it is still waiting for, and the request would answer long after the claim
+// moved on. The project's controller is refused whatever
 // state it is in: its keeper starts it, as that keeper alone is told when it must
 // (supervise's operatorRetry refuses the controller's retry for the same reason), and the
 // controller's own door cannot name it at all, since `controller` is no role a claim token is
@@ -230,6 +233,11 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 		return 0, "", false
 	}
 	switch {
+	case c.State == supervise.StateWorking && relaunchWaits(m.View()):
+		writeFailure(w, http.StatusConflict, claimNotRunning, fmt.Sprintf(
+			"%s runs no agent to start a fresh session from: the daemon is starting its process again, and that relaunch waits its turn in the wake pacing. The turn comes by itself; ask again once %s is running.",
+			token, token))
+		return 0, "", false
 	case c.State == supervise.StateWorking:
 		return 0, "", refuseInATurn(w, token, freshSessionOp)
 	case startsAgain(c.State):

@@ -34,7 +34,10 @@ const nonEmptyString = z.string().min(1);
  * The daemon refuses each with the code and the sentence the controller reads. Both give
  * `CLAIM_IN_A_TURN`, since cutting a running turn off would lose the turn that may be the one
  * ending the run of provider errors, and `CLAIM_UNSETTLED` for a claim between states, queued or
- * with a launch in flight. The compaction adds three of its own: `CLAIM_NOT_RUNNING` for a
+ * with a launch in flight. Both give `CLAIM_NOT_RUNNING` as well for a claim left working over a
+ * process the daemon is starting again, whose relaunch waits its turn in the wake pacing: that
+ * claim is in no turn, and the turn it waits for comes by itself. The compaction adds two more of
+ * its own: `CLAIM_NOT_RUNNING` for a
  * suspended, stopped or failed claim, which runs no session at all and which `fresh_session`
  * reaches; `CLAIM_NOT_ON_OMP` for a role running on Claude Code, which has no Oh My Pi session;
  * and `COMPACTION_FAILED` for an ask that did not happen, an end the daemon could not write, and
