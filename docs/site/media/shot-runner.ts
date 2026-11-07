@@ -75,8 +75,10 @@ async function recordTimeElements(
   page: Page,
   element: Locator | undefined,
   set: string,
-  id: string
+  id: string,
+  seededAt: string
 ): Promise<void> {
+  const capturedAt = new Date().toISOString();
   const ratio = await page.evaluate(() => window.devicePixelRatio);
   const origin = (await element?.boundingBox()) ?? { x: 0, y: 0 };
   const times = page.locator("time");
@@ -104,7 +106,20 @@ async function recordTimeElements(
   mkdirSync(dirname(out), { recursive: true });
   await Bun.write(
     out,
-    `${JSON.stringify({ set, id, devicePixelRatio: ratio, origin, elements }, null, 2)}\n`
+    `${JSON.stringify(
+      {
+        set,
+        id,
+        seededAt,
+        capturedAt,
+        elapsedSeconds: (Date.parse(capturedAt) - Date.parse(seededAt)) / 1000,
+        devicePixelRatio: ratio,
+        origin,
+        elements,
+      },
+      null,
+      2
+    )}\n`
   );
 }
 
@@ -124,6 +139,10 @@ export async function runShotSet<Seeded>(
     () => `${set.set}: the reset and seed`,
     harness.reset().then(() => set.seed())
   );
+  // When this set's rows were written, which with each shot's own capture instant is the
+  // elapsed time every relative label on the page is a function of. Both go into the
+  // time-element file below, so the arithmetic reads one file and no log.
+  const seededAt = new Date().toISOString();
   const failures: string[] = [];
   for (const shot of set.shots) {
     let doing = "its prepare";
@@ -152,7 +171,7 @@ export async function runShotSet<Seeded>(
         const options = { animations: "disabled", caret: "hide", path: out } as const;
         const subject = shot.element?.(page, seeded) ?? page;
         await subject.screenshot(options);
-        await recordTimeElements(page, shot.element?.(page, seeded), set.set, shot.id);
+        await recordTimeElements(page, shot.element?.(page, seeded), set.set, shot.id, seededAt);
         console.log(`${set.set}/${shot.id}: ${relative(REPO, out)}`);
       } catch (error) {
         doing = "keeping what its page showed";

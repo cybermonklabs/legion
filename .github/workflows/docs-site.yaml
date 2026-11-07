@@ -138,25 +138,24 @@ jobs:
         timeout-minutes: 15
         env:
           DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
-      # Every shot this run took, on every run and not on a failure alone, with two readings
-      # beside it. The pages' images are made rather than committed, so nothing else in this
-      # repository can say whether two builds render them the same; and the dashboard draws its
-      # times as relative labels from the clock over rows seeded at run time, so two runs of one
-      # commit differ wherever a label crossed a rounding boundary between them. A difference
-      # that is the clock and one that is a changed glyph are told apart by the time-element
-      # file each shot writes (docs/site/media/shot-runner.ts): a region that moved is the clock
-      # only where it lies inside one of those boxes and that element's text differs between the
-      # two runs. The harness log carries each run's own seed-to-shot elapsed time, which is what
-      # says whether a label could have crossed a boundary at all. Download this artifact from
-      # two runs and compare (dispatch://INFRA-1443, which took Playwright's `tools` fonts off
-      # this runner).
+      # Every shot this run took, on every run and not on a failure alone, with the time
+      # elements of each beside it. The pages' images are made rather than committed, so nothing
+      # else in this repository can say whether two builds render them the same; and the
+      # dashboard draws its times as relative labels from the clock over rows seeded at run
+      # time, so two runs of one commit differ wherever a label crossed a rounding boundary
+      # between them. A difference that is the clock and one that is a changed glyph are told
+      # apart by the file each shot writes beside its PNG (docs/site/media/shot-runner.ts): a
+      # region that moved is the clock only where it lies inside one of that file's boxes and
+      # that element's text differs between the two runs. Each file carries its set's seed
+      # instant and its own capture instant too, which is the elapsed time every relative label
+      # is a function of. Download this artifact from two runs and compare
+      # (dispatch://INFRA-1443, which took Playwright's `tools` fonts off this runner).
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: docs-screenshots-${{ github.run_attempt }}
           path: |
             docs/site/public/media
             docs/site/media/.work/time-elements
-            docs/site/media/.work/harness
           if-no-files-found: error
       # What each failed shot's page showed, and the harness's process logs: a hang leaves the
       # Dispatch server's goroutines at the end of dispatch.log.
@@ -166,7 +165,7 @@ jobs:
           name: docs-failed-shots-${{ github.run_attempt }}
           path: |
             docs/site/media/.work/failed-shots
-            docs/site/media/.work/harness
+
           if-no-files-found: ignore
       # Generates the reference pages, then builds the site; starlight-links-validator fails it on a
       # broken internal link. The build writes dist/THIRD_PARTY_NOTICES.txt (docs/site/astro.config.mjs),
