@@ -360,7 +360,6 @@ jobs:
               # The approval page's own files, its embedded templates and stylesheet included.
               - 'packages/envoy/internal/broker/approval/**'
               - 'packages/envoy/internal/broker/brokertest/*'
-              - 'packages/envoy/internal/broker/config/*'
               - 'packages/envoy/internal/broker/enroll/*'
               - 'packages/envoy/internal/broker/exchange/*'
               - 'packages/envoy/internal/broker/machine/*'
@@ -390,7 +389,6 @@ jobs:
               - 'packages/envoy/internal/oidc/**'
               - 'packages/envoy/internal/pgmigrate/*'
               - 'packages/envoy/internal/ratelimit/*'
-              - 'packages/envoy/internal/redact/*'
               - 'packages/envoy/internal/testnats/*'
               # storetest's DatabaseURL makes a test's own database with internal/testpg.
               - 'packages/envoy/internal/testpg/*'
@@ -419,7 +417,6 @@ jobs:
             dispatch_server: &dispatch_server
               - 'packages/envoy/cmd/dispatch/*'
               - 'packages/envoy/going/*'
-              - 'packages/envoy/going/goingtest/*'
               - 'packages/envoy/internal/broker/oauthwire/*'
               - 'packages/envoy/internal/brokertoken/*'
               - 'packages/envoy/internal/bus/*'
@@ -578,10 +575,6 @@ jobs:
             # The listener's packages, `go list -deps ./cmd/listener` in packages/envoy.
             listener_command: &listener_command
               - 'packages/envoy/cmd/listener/*'
-              - 'packages/envoy/going/*'
-              - 'packages/envoy/going/goingtest/*'
-              # going's own golden, which a test run of that package reads.
-              - 'packages/envoy/going/testdata/**'
               - 'packages/envoy/internal/broker/oauthwire/*'
               - 'packages/envoy/internal/brokertoken/*'
               - 'packages/envoy/internal/bus/*'
@@ -598,9 +591,7 @@ jobs:
               - 'packages/envoy/internal/metrics/*'
               - 'packages/envoy/internal/oidc/*'
               - 'packages/envoy/internal/ratelimit/*'
-              - 'packages/envoy/internal/redirects/*'
               - 'packages/envoy/internal/roles/*'
-              - 'packages/envoy/internal/routing/*'
               - 'packages/envoy/internal/session/*'
               - 'packages/envoy/internal/store/*'
               - 'packages/envoy/internal/verify/*'
@@ -701,43 +692,34 @@ jobs:
               - *go_workspace
               - 'packages/daemon/**'
               - *daemon_envoy_deps
-            # The claude-envoy job, and two steps of the test job: its verify-build step, which
-            # runs the same command (packages/claude-envoy/scripts/verify-build.sh), as
-            # release.yaml's claude_envoy_build does, and its build-input-list step, which runs
-            # packages/claude-envoy/tests/build-inputs.test.ts.
-            claude_envoy: &claude_envoy
-              - '.github/workflows/ci.yaml'
-              # .bun-version is also read by scripts/build.ts:23: the build depends on the Bun it
-              # pins.
-              - *bun_install
-              - *biome
+            # What packages/claude-envoy/scripts/build.ts and scripts/verify-build.sh read, which
+            # is every file the published plugin is built from: the claude-envoy job runs them,
+            # and so do two steps of the test job - its verify-build step, which runs the same
+            # command (packages/claude-envoy/scripts/verify-build.sh), as release.yaml's
+            # claude_envoy_build does, and its build-input-list step, which runs
+            # packages/claude-envoy/tests/build-inputs.test.ts. What only the whole claude-envoy
+            # job reads is in the claude_envoy filter below rather than here: the test job runs
+            # that job's lint and typecheck in no step, and no other test of the package.
+            claude_envoy_build: &claude_envoy_build
               - 'packages/claude-envoy/**'
               # verify-build.sh checks the build with check-private-names.sh and release-push.sh
-              # check-built, and the job puts it in place with release-push.sh extract-built.
+              # check-built, and the claude-envoy job puts it in place with release-push.sh
+              # extract-built.
               - '.github/scripts/check-private-names.sh'
               - '.github/scripts/release-push.sh'
               # packages/claude-envoy/tests/build-inputs.test.ts:146-153 holds release.yaml's
               # $CLAUDE_ENVOY_VERSION_ARGS equal to scripts/build-inputs.txt, so a change to either
-              # must run this job.
+              # must run both jobs.
               - '.github/workflows/release.yaml'
-              # tests/answers-claude.test.ts runs the Claude Code release .claude-code-pin pins,
-              # which install-claude-code installs.
-              - '.claude-code-pin'
-              - '.github/actions/install-claude-code/**'
               - 'packages/contracts/src/**'
-              # tests/daemon-api-version.test.ts:15 and its neighbours.
-              - 'packages/contracts/fixtures/daemon-api/**'
               - 'packages/envoy-client/src/**'
               # Its src/broker-credential.ts:21-22 imports @legion/broker-client, whose exports
-              # map every entry to ./src/<module>.ts, so this job compiles that package's seven
+              # map every entry to ./src/<module>.ts, so a build compiles that package's seven
               # sources with envoy-client's. check-ci-filters.test.sh holds a hand-written list of
               # such pairs to this pattern, and ci_job_reads.py's envoy_client_dep is the one
               # place that declares the pair, which check-ci-filters.sh then holds to the filter.
               - 'packages/broker-client/**'
               - 'packages/envoy-client/bin/dispatch.ts'
-              # tests/envoy-channel-stall.test.ts:9-11 imports three modules of envoy-client's
-              # test directory, and tsc puts four of its files in this job's program.
-              - 'packages/envoy-client/test/**'
               - 'packages/pi-shared/src/**'
               # scripts/build.ts:115-128 generates legion/ from pi-legion's agents and the skills
               # the prepack script stages for it, and :16 writes dist/THIRD_PARTY_NOTICES.
@@ -745,9 +727,28 @@ jobs:
               - 'scripts/pi-plugin-prepack.sh'
               - 'skills/**'
               - 'scripts/third-party-notices.ts'
+            # The claude-envoy job: the build above, and what its lint, typecheck, pack and whole
+            # test suite read beyond it.
+            claude_envoy:
+              - '.github/workflows/ci.yaml'
+              # .bun-version is also read by scripts/build.ts:23: the build depends on the Bun it
+              # pins.
+              - *bun_install
+              - *biome
+              - *claude_envoy_build
+              # tests/answers-claude.test.ts runs the Claude Code release .claude-code-pin pins,
+              # which install-claude-code installs.
+              - '.claude-code-pin'
+              - '.github/actions/install-claude-code/**'
+              # tests/daemon-api-version.test.ts:15 and its neighbours.
+              - 'packages/contracts/fixtures/daemon-api/**'
+              # tests/envoy-channel-stall.test.ts:9-11 imports three modules of envoy-client's
+              # test directory, and tsc puts four of its files in this job's program.
+              - 'packages/envoy-client/test/**'
               # tests/envoy-channel-server.test.ts holds the marketplace entry to this package's
               # own name, to no `version` of its own, and to a source range that leaves out the
-              # 0.0.0 placeholder and admits the first release.
+              # 0.0.0 placeholder and admits the first release. No step of the test job runs that
+              # test, so the entry is this job's alone.
               - '.claude-plugin/marketplace.json'
             # The daemon's tests (every package once: the three concurrent packages under the race
             # detector, the rest in the plain step, and the daemon
@@ -760,7 +761,7 @@ jobs:
               # Two of its steps read this list: verify-build builds and checks the Claude Code
               # plugin as the release does, and the build-input-list step runs
               # packages/claude-envoy/tests/build-inputs.test.ts.
-              - *claude_envoy
+              - *claude_envoy_build
               # scripts/e2e/lib/held-port.test.ts:45 builds the real envoy-listener.
               - *listener_command
               # Each .github/scripts/*.test.sh runs its checker, through test-lib.sh (and
@@ -884,8 +885,9 @@ jobs:
               # src/dispatch-block-ref.test.ts reads pmdoc's block pointer and typed block id
               # tables, and scripts/gen-go.test.ts checks every file scripts/gen-go.ts writes - the
               # Go contract, pmdoc's generated block schema and contracts' own generated TypeScript
-              # - is current. pmdoc/schema is the block schema those generated types are the shape
-              # of, so a change to it is a change to what this job generates for.
+              # - is current. Not pmdoc/schema, the block schema those generated types are the
+              # shape of: this job generates that Go from packages/contracts/schemas, and reads no
+              # file of pmdoc/schema itself.
               - 'packages/envoy/internal/dispatch/text/testdata/dispatch-href-references.json'
               - 'packages/envoy/internal/dispatch/text/testdata/dispatch-text-references.json'
               # src/dispatch-block-ref.test.ts:98-102 reads this table of the same directory and
@@ -895,7 +897,6 @@ jobs:
               - 'packages/daemon/internal/intake/testdata/dispatch/server-started.json'
               - 'packages/envoy/internal/dispatch/pmdoc/testdata/block-pointer-values.json'
               - 'packages/envoy/internal/dispatch/pmdoc/testdata/typed-block-id-spellings.json'
-              - 'packages/envoy/internal/dispatch/pmdoc/schema/**'
               - 'packages/envoy/internal/contracts/generated.go'
               - 'packages/envoy/internal/dispatch/pmdoc/schema_generated.go'
             # The conflict measurement script's lint, typecheck and tests: its own directory (tests
@@ -1052,61 +1053,29 @@ jobs:
               # scripts/skill-scenarios/rig.test.ts:13,129,1009 and rig.sh:215.
               - 'scripts/e2e/lib/**'
               - *omp_install
-            dispatch: &dispatch
+            # The browser suite's two-process mode (dispatch-browser-multiprocess), and with it
+            # the half of the one-process job's inputs that job shares, which the dispatch filter
+            # below names through this anchor. The Dispatch server both lanes serve
+            # (e2e/run-server.sh:135) and the dev OIDC issuer the sign-in lane signs the browser
+            # in at (e2e/run-signin-issuer.sh:34 builds it), on the socket
+            # scripts/e2e/lib/held-port.py holds (run-server.sh:37).
+            dispatch_browser_multiprocess: &dispatch_browser_multiprocess
               - '.github/workflows/ci.yaml'
-              # The install step runs it, so a change to it must re-run this job.
-              - '.github/scripts/playwright-deps-current.sh'
-              # The apt list the install step installs, so a change to it must re-run this job.
-              - '.github/playwright-apt-packages.txt'
-              # The key step runs it for the apt archive cache's key, so a change to it must
-              # re-run this job.
-              - '.github/scripts/apt-archive-cache-key.sh'
               - *bun_install
               - 'packages/dispatch/**'
               - 'packages/proof-editor/**'
               - 'packages/contracts/src/**'
-              # web/src/features/delivery/lib/applyDelta.test.ts:2-4 and
-              # web/src/features/doc/decision-blocks.test.ts:10.
-              - 'packages/contracts/fixtures/live/**'
-              - 'packages/contracts/fixtures/decision-blocks/**'
-              # The answers packages/envoy/going's filter emitted for every probe of its own
-              # suite, which packages/proof-editor/tests/going-answer-no-link.test.ts:111-112
-              # reads and parses with the app's own remark pipeline: a filter change that moves
-              # them must run this job.
-              - 'packages/envoy/going/testdata/**'
-              # e2e/cli-body-cap.e2e.ts:27 runs envoy-client's dispatch CLI.
-              - 'packages/envoy-client/src/**'
-              # And @legion/broker-client with it, which that CLI's own closure holds
-              # (ci_job_reads.py's envoy_client_dep).
-              - 'packages/broker-client/**'
-              - 'packages/envoy-client/bin/dispatch.ts'
-              # The Dispatch server the browser tests start (e2e/run-server.sh:135), on the socket
-              # scripts/e2e/lib/held-port.py holds (run-server.sh:37).
               - *go_workspace
               - *dispatch_server
               - 'scripts/e2e/lib/held-port.py'
-              # The file store image: the pull step names its declaration to the pull-test-images
-              # action, and the S3 step reads the same declaration for its docker run.
-              - 'packages/envoy/internal/tests3/seaweedfs.go'
-              - '.github/actions/pull-test-images/**'
               # The SPA build writes dist/THIRD_PARTY_NOTICES.txt (web/vite.config.ts:11).
               - 'scripts/third-party-notices.ts'
-              # The real secrets broker e2e/broker-approval.e2e.ts approves a request on, the dev
-              # OIDC issuer it trusts, and the seeding step that logs its service in and enrols its
-              # pods: the packages `go list -deps ./cmd/broker ./cmd/dev-oidc-issuer
-              # ./internal/broker/brokertest/requestseed` lists in packages/envoy beyond the
-              # Dispatch server's, which e2e/run-broker.sh:95 builds in one go build.
-              - 'packages/envoy/cmd/broker/*'
+              # The dev OIDC issuer, and the packages `go list -deps ./cmd/dev-oidc-issuer` lists
+              # beyond the Dispatch server's. The rest of internal/broker belongs to the real
+              # secrets broker, which only the one-process job builds, so it is in that filter.
               - 'packages/envoy/cmd/dev-oidc-issuer/*'
-              - 'packages/envoy/internal/broker/api/*'
-              # The approval page's own files, its embedded templates and stylesheet included.
-              - 'packages/envoy/internal/broker/approval/**'
-              - 'packages/envoy/internal/broker/brokertest/*'
-              - 'packages/envoy/internal/broker/brokertest/requestseed/*'
-              - 'packages/envoy/internal/broker/config/*'
               - 'packages/envoy/internal/broker/enroll/*'
               - 'packages/envoy/internal/broker/exchange/*'
-              - 'packages/envoy/internal/broker/leasetime/*'
               - 'packages/envoy/internal/broker/machine/*'
               - 'packages/envoy/internal/broker/oauth/*'
               - 'packages/envoy/internal/broker/oauthstore/*'
@@ -1114,13 +1083,51 @@ jobs:
               - 'packages/envoy/internal/broker/policy/**'
               - 'packages/envoy/internal/broker/proof/*'
               - 'packages/envoy/internal/broker/record/*'
-              - 'packages/envoy/internal/broker/requests/*'
-              - 'packages/envoy/internal/broker/reread/*'
               - 'packages/envoy/internal/broker/secrets/*'
               - 'packages/envoy/internal/broker/store/**'
-              - 'packages/envoy/internal/broker/wake/*'
               - 'packages/envoy/internal/oidc/oidctest/*'
               - 'packages/envoy/internal/ratelimit/*'
+            # The browser suite's one-process mode (dispatch): everything the two-process job
+            # reads, and what only this one does - Playwright's own install, the file store its
+            # upload specs need, the dispatch CLI one spec runs, and the real secrets broker
+            # another approves a request on. The live and decision-block fixtures and going's
+            # golden are in neither: the unit tests that read them are dispatch_ui's, and no
+            # browser lane runs one.
+            dispatch:
+              - *dispatch_browser_multiprocess
+              # The install step runs it, so a change to it must re-run this job.
+              - '.github/scripts/playwright-deps-current.sh'
+              # The apt list the install step installs, so a change to it must re-run this job.
+              - '.github/playwright-apt-packages.txt'
+              # The key step runs it for the apt archive cache's key, so a change to it must
+              # re-run this job.
+              - '.github/scripts/apt-archive-cache-key.sh'
+              # e2e/cli-body-cap.e2e.ts:27 runs envoy-client's dispatch CLI.
+              - 'packages/envoy-client/src/**'
+              # And @legion/broker-client with it, which that CLI's own closure holds
+              # (ci_job_reads.py's envoy_client_dep).
+              - 'packages/broker-client/**'
+              - 'packages/envoy-client/bin/dispatch.ts'
+              # The file store image: the pull step names its declaration to the pull-test-images
+              # action, and the S3 step reads the same declaration for its docker run.
+              - 'packages/envoy/internal/tests3/seaweedfs.go'
+              - '.github/actions/pull-test-images/**'
+              # The real secrets broker e2e/broker-approval.e2e.ts approves a request on, and the
+              # seeding step that logs its service in and enrols its pods: the packages
+              # `go list -deps ./cmd/broker ./internal/broker/brokertest/requestseed` lists in
+              # packages/envoy beyond the two commands above, which e2e/run-broker.sh:95 builds in
+              # one go build with them.
+              - 'packages/envoy/cmd/broker/*'
+              - 'packages/envoy/internal/broker/api/*'
+              # The approval page's own files, its embedded templates and stylesheet included.
+              - 'packages/envoy/internal/broker/approval/**'
+              - 'packages/envoy/internal/broker/brokertest/*'
+              - 'packages/envoy/internal/broker/brokertest/requestseed/*'
+              - 'packages/envoy/internal/broker/config/*'
+              - 'packages/envoy/internal/broker/leasetime/*'
+              - 'packages/envoy/internal/broker/requests/*'
+              - 'packages/envoy/internal/broker/reread/*'
+              - 'packages/envoy/internal/broker/wake/*'
               # storetest's DatabaseURL makes a test's own database with internal/testpg.
               - 'packages/envoy/internal/testpg/*'
             # The dashboard's and the proof editor's fast checks (dispatch-ui), split out of the
@@ -1162,12 +1169,6 @@ jobs:
               # so that read is this gate's (ci_job_reads.py's dispatch_ui).
               - 'packages/envoy-client/src/**'
               - 'packages/envoy-client/test/**'
-            # The browser suite's two-process mode (dispatch-browser-multiprocess): what the
-            # dispatch filter names. The dev OIDC issuer its sign-in step signs the browser in at
-            # (e2e/run-signin-issuer.sh:34 builds it) compiles no package beyond the closure of the
-            # three commands e2e/run-broker.sh builds, which the dispatch filter above names.
-            dispatch_browser_multiprocess:
-              - *dispatch
             envoy_go:
               - '.github/workflows/ci.yaml'
               - *bun_install
@@ -1347,10 +1348,17 @@ jobs:
               - '.github/workflows/ci.yaml'
               - *go_workspace
               - *listener_command
-              - 'packages/envoy/internal/broker/helper/*'
+              # What cmd/listener's test binary compiles that `go list -deps ./cmd/listener` does
+              # not, so listener_command, which is that build closure, leaves them to the jobs
+              # that run the tests: the chat client and its golden, the redirect table and the
+              # router.
+              - 'packages/envoy/going/*'
+              - 'packages/envoy/going/testdata/**'
+              - 'packages/envoy/internal/redirects/*'
+              - 'packages/envoy/internal/routing/*'
               - 'packages/envoy/internal/broker/proof/*'
-              - 'packages/envoy/internal/broker/record/*'
-              # The token client the helper trades through, with the wire corpus its tests replay.
+              # The token client cmd/listener trades its broker tokens through, with the wire
+              # corpus its tests replay.
               - 'packages/envoy/internal/brokerclient/**'
               - 'packages/envoy/internal/brokertoken/brokertokentest/*'
               - 'packages/envoy/internal/bus/bustest/*'
@@ -1397,7 +1405,6 @@ jobs:
               - 'packages/envoy/internal/pglisten/*'
               - 'packages/envoy/internal/pgmigrate/*'
               - 'packages/envoy/internal/ratelimit/*'
-              - 'packages/envoy/internal/redact/*'
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testpg/*'
               - 'packages/envoy/internal/webhook/testdata/**'

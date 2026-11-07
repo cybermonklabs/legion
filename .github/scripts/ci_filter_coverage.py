@@ -1312,15 +1312,22 @@ def declared_reads(data) -> list:
 
 
 def check_dead_patterns(data, filters: dict, expander: Expander, problems: list) -> None:
-    """A pattern that matches no file of the repository names nothing the run can select or
-    cover. The other rules here pass over such a pair: a filter and a declared read that both
-    name a path that does not exist agree with each other, and the gate's read expands to no file
-    to hold the filter to, so a change to the files they mean starts no job, on the pull request
-    and again on main. Judged over repo_files() with the Expander the rest of the check uses, so
-    a pattern is held to exactly the files a dorny/paths-filter run sees. A `!` pattern is exempt:
-    it names what to leave out, and leaving nothing out is no fault. It reads the filter block of
-    ci.yaml alone, and no workflow ci.yaml calls: the filters are the changes job's, and a
-    declared read is the table's rather than any workflow's."""
+    """Rule 9's first direction: a pattern that matches no file of the repository names nothing
+    the run can select or cover. The other rules here pass over such a pair: a filter and a
+    declared read that both name a path that does not exist agree with each other, and the gate's
+    read expands to no file to hold the filter to, so a change to the files they mean starts no
+    job, on the pull request and again on main. Judged over repo_files() with the Expander the
+    rest of the check uses, so a pattern is held to exactly the files a dorny/paths-filter run
+    sees. A `!` pattern is exempt: it names what to leave out, and leaving nothing out is no
+    fault. It reads the filter block of ci.yaml alone, and no workflow ci.yaml calls: the filters
+    are the changes job's, and a declared read is the table's rather than any workflow's.
+
+    The rule's second direction - a filter pattern that matches files none of its job reads - is
+    check_dead_gate_patterns below. The two halves are judged in different places because they
+    are judged over different sets: this one needs only the repository's files, which main() has
+    before it starts the go work, while the other needs the files each gate reads, which exist
+    only once every go command's closure has been computed. Judging this half first means a
+    mistyped path is named even when the go work that follows cannot run."""
     for name in sorted(filters):
         for pattern in dict.fromkeys(filters[name]):
             if pattern.startswith("!") or expander.expand(pattern):
@@ -1332,6 +1339,70 @@ def check_dead_patterns(data, filters: dict, expander: Expander, problems: list)
             continue
         problems.append(f"::error file=.github/scripts/ci_job_reads.py::{where} {pattern}, which matches no file in "
                         f"the repository, so it holds its filter to nothing; correct the path or drop the read")
+
+
+def rule_required_files(data, filters: dict, quantifiers: dict, files: list) -> dict:
+    """Per filter, the files another rule of this check holds that filter to whatever its job
+    reads, which rule 9's second direction has to pass over: refusing one of those patterns
+    would be refusing the rule that put it there.
+
+    Two rules do it. Rule 8 keeps a PUSH_WORKFLOWS workflow's on.push.paths equal to its filter,
+    and a workflow that does not name itself never runs on a change to itself: the docs filter
+    holds .github/workflows/docs-pages.yaml so that main's docs build runs when its own workflow
+    changes, which is a run of that file rather than a read by ci.yaml's docs job. Rule 15 holds
+    the filter of the job that runs a package's untagged tests to every file the tag step's
+    filter covers, so a change that starts the tagged run starts the untagged one with it:
+    envoy_go_race holds .github/scripts/go-tagged-tests.sh, which listener-server-change's soak
+    takes its -run from and no step of envoy-go-race reads.
+
+    This widens to nothing else. A pattern is passed over only when every file it matches is in
+    this set, so one that reaches a single file outside it is judged like any other."""
+    required: dict = defaultdict(set)
+    for name, path in data.PUSH_WORKFLOWS.items():
+        if name in filters:
+            required[name].add(path)
+    for entry in data.TAG_RUNS:
+        if entry.filter in filters and entry.untagged_filter in filters:
+            tagged = PathsFilter(filters[entry.filter], quantifiers[entry.filter])
+            required[entry.untagged_filter].update(f for f in files if tagged.covers(f))
+    return required
+
+
+def check_dead_gate_patterns(data, filters: dict, quantifiers: dict, files: list, gate_reads: dict,
+                             gate_wheres: dict, expander: Expander, problems: list) -> None:
+    """Rule 9's second direction: a pattern of a gate's filter that matches files of the
+    repository but none its job reads. Such a pattern selects the job for a change no step of it
+    can see, which costs a full run of that job every time one of those files changes - the fault
+    rule 1 cannot see, since it reads the other way round, from the files a job reads to the
+    patterns that must match them.
+
+    `gate_reads` is, per filter, the union of the files the gates on it read: the keys of the
+    `reason` dict main() builds per gate, which is exactly the set rule 1 holds the filter to.
+    The union is what a shared filter must be judged over - two gates name envoy_go_race_docs
+    today - since a pattern matching only what the second job reads does start a job that reads
+    the change. `gate_wheres` names those gates the way the rest of the check does, the job and,
+    for a gate that is a step's, the step.
+
+    Four kinds of pattern are passed over. A `!` pattern, as in the first direction: it names what
+    to leave out, so it reads no file by design and matching none of a job's reads is what it is
+    for. A pattern that matches no file of the repository at all, which is the first direction's
+    refusal: naming it here as well would refuse one pattern twice for one fault. Every
+    pattern of an EXCLUDED filter, which reaches here in no gate: the check computes no read set
+    for one (worker_image today), so it has nothing to judge the patterns against, and
+    .github/scripts/check-image-trigger-paths.sh proves that filter's coverage instead. And a
+    pattern whose every file another rule of this check holds the filter to (rule_required_files
+    above), which is the one case where a pattern matching no read is right rather than idle."""
+    required = rule_required_files(data, filters, quantifiers, files)
+    for name in sorted(gate_reads):
+        reads, wheres = gate_reads[name], gate_wheres[name]
+        where = " and ".join(wheres) + (" read" if len(wheres) > 1 else " reads")
+        for pattern in dict.fromkeys(filters[name]):
+            matched = expander.expand(pattern) if not pattern.startswith("!") else []
+            if not matched or not reads.isdisjoint(matched) or set(matched) <= required.get(name, frozenset()):
+                continue
+            problems.append(f"::error file={WORKFLOW}::filter {name} has {pattern}, which matches no file {where}, "
+                            f"though it matches {len(matched)} of the repository's, so a change to one of them runs "
+                            f"that job over a change no step of it sees; drop the pattern")
 
 
 def main() -> int:
@@ -1357,9 +1428,17 @@ def main() -> int:
     rules.check_workspace_table(data.WORKSPACES, problems)
     rules.check_one_merge_group_workflow(problems)
     expander = Expander(files)
+    # Rule 9's first direction, over the repository's files alone: it needs no closure, so a
+    # mistyped path is named even when the go work below cannot run. Its second direction is
+    # after that work, where the files each gate reads exist.
     check_dead_patterns(data, filters, expander, problems)
     session = Session()
     report = []
+    # Per filter, the union of the files the gates on it read, and how the check names those
+    # gates: what rule 9's second direction is judged over, collected as each gate's set is
+    # built rather than computed a second time.
+    gate_reads: dict = defaultdict(set)
+    gate_wheres: dict = defaultdict(list)
     fallback = None  # module_trees_and_go_files(files), once a gate needs it
     for g in data.GATES:
         if g.filter not in filters:
@@ -1397,6 +1476,8 @@ def main() -> int:
         matcher = PathsFilter(patterns, quantifiers[g.filter])
         uncovered = sorted(f for f in reason if not matcher.covers(f))
         where = g.job + (f' step "{g.step}"' if g.step else "")
+        gate_reads[g.filter].update(reason)
+        gate_wheres[g.filter].append(where)
         report.append(f"{where}: {len(reason)} files, {len(uncovered)} uncovered (filter {g.filter})")
         for f in uncovered[:SHOWN]:
             problems.append(f"::error file={f}::{where} reads {f}, which its filter {g.filter} does not match, so a "
@@ -1406,6 +1487,7 @@ def main() -> int:
                             f"{g.filter} does not match")
         if held and not set(fallback).isdisjoint(uncovered):
             problems += held
+    check_dead_gate_patterns(data, filters, quantifiers, files, gate_reads, gate_wheres, expander, problems)
     problems += session.problems
     report += check_push_workflows(data, filters, problems)
     report += check_tag_runs(documents, data, filters, quantifiers, files, problems)

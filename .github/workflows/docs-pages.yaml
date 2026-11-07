@@ -135,7 +135,6 @@ on:
       # ci.yaml's *dispatch_server:
       - 'packages/envoy/cmd/dispatch/*'
       - 'packages/envoy/going/*'
-      - 'packages/envoy/going/goingtest/*'
       - 'packages/envoy/internal/bus/*'
       - 'packages/envoy/internal/cistore/*'
       - 'packages/envoy/internal/contracts/*'

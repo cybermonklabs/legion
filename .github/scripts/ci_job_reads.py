@@ -185,26 +185,42 @@ def envoy_client_dep(why):
     )
 
 
-# What packages/claude-envoy/scripts/verify-build.sh and the claude-envoy job's other steps read:
-# the claude-envoy gate, and the test job, for two of its steps: verify-build and the
-# build-input-list step (packages/claude-envoy/tests/build-inputs.test.ts).
+# What packages/claude-envoy/scripts/verify-build.sh and the scripts/build.ts it runs read, which
+# is every file the published plugin is built from: the claude-envoy gate, and the test gate, for
+# two of that job's steps - verify-build, which runs the same command release.yaml's
+# claude_envoy_build does, and the build-input-list step
+# (packages/claude-envoy/tests/build-inputs.test.ts, which runs the build's two halves itself).
+# Those two steps are the whole of what the test job does in this package, so a file only the
+# claude-envoy job's lint, typecheck or other tests read is in CLAUDE_ENVOY_JOB below, not here.
+VERIFY_BUILD_STEP = "Build, check and pack the Claude Code plugin as the release does"
+BUILD_INPUTS_STEP = "Check the Claude Code plugin's build input list covers what the build reads"
 CLAUDE_ENVOY_BUILD = reads(
-        ("packages/claude-envoy/**", f"{at('claude-envoy', 'Lint Claude Envoy plugin')}, typecheck, verify-build, test and pack in packages/claude-envoy"),
+        ("packages/claude-envoy/**", f"{at('claude-envoy', 'Lint Claude Envoy plugin')}, typecheck, verify-build, test and pack in "
+                                     f"packages/claude-envoy; {at('test', VERIFY_BUILD_STEP)} and {at('test', BUILD_INPUTS_STEP)} "
+                                     "run scripts/verify-build.sh and tests/build-inputs.test.ts of it"),
         (CONTRACTS_SRC, "packages/claude-envoy/tsconfig.json paths @legion/contracts; bundles import it"),
         ("packages/envoy-client/bin/dispatch.ts", "packages/claude-envoy/scripts/build.ts's BUNDLE_ENTRYPOINTS dispatch (verify-build, tests/dist-fresh.test.ts:303)"),
-        ("packages/envoy-client/test/**", "packages/claude-envoy/tests/envoy-channel-stall.test.ts:9-11 imports three of its modules, and tsc puts four files of that directory in the claude-envoy program"),
         ("packages/pi-shared/src/**", "packages/claude-envoy/src/envoy-channel-server.ts:63-64, legion-claim.ts:7-9, legion-tool.ts:3-11 import @legion/pi-shared/*"),
-        (f"{FIX}/daemon-api/**", "packages/claude-envoy/tests/daemon-api-version.test.ts:15, legion-claim.test.ts:30, legion-pane-mcp.test.ts:17, legion-tool.test.ts:12"),
         ("scripts/third-party-notices.ts", "packages/claude-envoy/scripts/build.ts:20"),
         ("scripts/pi-plugin-prepack.sh", "packages/claude-envoy/scripts/build.ts:173-179 --stage-skills @sjawhar/pi-legion"),
         ("packages/pi-legion/agents/**", "packages/claude-envoy/scripts/build.ts:183-187"),
         ("skills/**", "packages/claude-envoy/scripts/build.ts:173-179 (staged pi-legion partition); packages/claude-envoy/skills/* symlinks into ../../../skills"),
         (".bun-version", "packages/claude-envoy/scripts/build.ts:28 reads the Bun pin"),
-        (".claude-plugin/marketplace.json", "packages/claude-envoy/tests/envoy-channel-server.test.ts:7"),
         (".github/scripts/check-private-names.sh", "packages/claude-envoy/scripts/verify-build.sh checks the build with it"),
-        (".github/scripts/release-push.sh", "packages/claude-envoy/scripts/verify-build.sh runs its check-built; the job runs its extract-built"),
+        (".github/scripts/release-push.sh", "packages/claude-envoy/scripts/verify-build.sh runs its check-built; the claude-envoy job runs its extract-built"),
         (".github/workflows/release.yaml", "packages/claude-envoy/tests/build-inputs.test.ts:146-153 holds its $CLAUDE_ENVOY_VERSION_ARGS equal to scripts/build-inputs.txt"),
 ) + envoy_client_dep("packages/claude-envoy/src/envoy-channel-server.ts:9-62, hooks/session-hook.ts:41-48 import @legion/envoy-client/*")
+
+# The build above, and what only the claude-envoy job reads: the Claude Code its live answer test
+# runs, and the fixtures and modules of its other tests. The test job runs none of them.
+CLAUDE_ENVOY_JOB = CLAUDE_ENVOY_BUILD + reads(
+        (".github/actions/install-claude-code/**", at("claude-envoy", "./.github/actions/install-claude-code")),
+        (".claude-code-pin", ".github/actions/install-claude-code/action.yml:16 pin=$(<.claude-code-pin), the release "
+                             "packages/claude-envoy/tests/answers-claude.test.ts:15-16 runs"),
+        ("packages/envoy-client/test/**", "packages/claude-envoy/tests/envoy-channel-stall.test.ts:9-11 imports three of its modules, and tsc puts four files of that directory in the claude-envoy program"),
+        (f"{FIX}/daemon-api/**", "packages/claude-envoy/tests/daemon-api-version.test.ts:15, legion-claim.test.ts:30, legion-pane-mcp.test.ts:17, legion-tool.test.ts:12"),
+        (".claude-plugin/marketplace.json", "packages/claude-envoy/tests/envoy-channel-server.test.ts:7"),
+)
 
 
 # ---------------------------------------------------------------- RULES
@@ -214,7 +230,7 @@ PACK_READS = [  # bun pm pack of pi-envoy / pi-legion runs their prepack (script
     "packages/contracts/**", "scripts/pi-plugin-prepack.sh", "scripts/third-party-notices.ts", "skills/**",
     "package.json", "bun.lock", "patches/**",
 ]
-PMDOC_GEN = [f"{ENVOY}/internal/dispatch/pmdoc/gen/**", "packages/proof-editor/**", "package.json", "bun.lock", "patches/**"]
+PMDOC_GEN = [f"{ENVOY}/internal/dispatch/pmdoc/gen/**", "packages/proof-editor/**", CONTRACTS_SRC, "package.json", "bun.lock", "patches/**"]
 BROKER_REFGEN_DIRS = ("internal/broker/api", "internal/broker/helper", "internal/broker/config", "internal/broker/approval", "cmd/broker", "cmd/agent-secrets")
 MODULE_SOURCES = [Read(f"{ENVOY}/**", "internal/dispatch/api/lock_level_test.go's moduleSources walks every non-test .go file "
                                       "under packages/envoy (infra included); used by :75, event_insert_guard_test.go:32, "
@@ -710,6 +726,8 @@ STALL = "envoy-session-stall"
 STALL_CLIENT = "Stall test of envoy-client's NATS connection options"
 LOADTEST_RUN_STEP = "One-run-at-a-time test for loadtest/run-step.sh and run-series.sh (fakes go and uv; no stack)"
 LOADTEST_LOCK = "Lock test for loadtest/common.sh (inherited lock, refusals, holders in another PID namespace; no stack)"
+SMOKE_IMAGE_STEP = "Build the listener image the smoke test runs against"
+BASE_IMAGES_STEP = "Read the smoke image's base images"
 FOLD_CHECK_STEP = "Check every changelog fragment renders"
 CHECK_STEP = "Check every CI filter matches every file its job reads"
 COPY_STEP = "Copy every image the package does not hold"
@@ -773,6 +791,7 @@ GATES = [
         ("packages/envoy-client/test/fake-dispatch.ts", "scripts/e2e/lib/agent-replay.test.ts:4-7 imports it by path"),
         ("scripts/dispatch/**", f"{at('test', 'Lint the Dispatch census script')}, typecheck and test"),
         ("scripts/github-apps/**", f"{at('test', 'Lint the GitHub App registration script')} and typecheck"),
+        ("scripts/sessions/**", f"{at('test', 'Lint the session message-wait script')}, typecheck and test"),
         (f"{FIX}/daemon-api/**", "scripts/e2e/lib/stage4b-boot-capabilities.test.ts:16"),
         (f"{DAEMON}/internal/daemon/controller.go", "scripts/e2e/lib/controller-liveness-verdict.test.ts:344-345 reads it as text"),
         (f"{DAEMON}/internal/controller/liveness.go", "scripts/e2e/lib/controller-liveness-verdict.test.ts:348"),
@@ -827,6 +846,8 @@ GATES = [
         ("deploy/kubernetes/**", "docs/site/generators/legion-config.sh:28-32 renders every tracked deploy/kubernetes *.example/*.yml/*.yaml"),
         ("scripts/third-party-notices.ts", "docs/site/astro.config.mjs:15; packages/dispatch/web/vite.config.ts:11"),
         (".github/scripts/check-private-names.sh", at_docs("Check the built site has no private name, internal host, or tailnet host")),
+        (".github/scripts/repo-paths.sh", "docs/site/repo-paths.ts:21,25 runs it for the site's own URL, base and edit links "
+                                          f"(astro.config.mjs), read by {at_docs('Build the docs site')}"),
         (f"{ENVOY}/internal/dispatch/api/routes_table.go", "docs/site/generators/dispatch-api.ts:112 sources, checked by generators/lib/markdown.ts:46-49"),
         (f"{ENVOY}/cmd/dispatch/settings.go", "docs/site/generators/dispatch-config.ts:65 sources, checked by generators/lib/markdown.ts:46-49"),
         (BUILD_BINARIES, f"docs/site/scripts/generate.ts:116 runs it ({at_docs('Build the docs site')})"),
@@ -850,6 +871,8 @@ GATES = [
         (f"{ENVOY}/internal/dispatch/text/testdata/dispatch-text-references.json", "packages/contracts/src/dispatch-text-references.test.ts:10-14"),
         (f"{ENVOY}/internal/dispatch/text/testdata/dispatch-block-id-encodings.json", "packages/contracts/src/dispatch-block-ref.test.ts:98-102 reads the Go side's own table by relative path and asserts set equality against it, so the two halves are one corpus"),
         (f"{DAEMON}/internal/intake/testdata/dispatch/server-started.json", "packages/contracts/src/dispatch-api.test.ts:293-300"),
+        (f"{ENVOY}/internal/dispatch/pmdoc/testdata/block-pointer-values.json", "packages/contracts/src/dispatch-block-ref.test.ts:130 reads pmdoc's own JSON copy of the block pointer table by relative path"),
+        (f"{ENVOY}/internal/dispatch/pmdoc/testdata/typed-block-id-spellings.json", "packages/contracts/src/dispatch-block-ref.test.ts:147 reads pmdoc's own JSON copy of the typed block id spellings by relative path"),
         (f"{ENVOY}/internal/contracts/generated.go", "packages/contracts/scripts/gen-go.test.ts:6,54-58 and gen-go.ts's outputs list (--check compares the committed file)"),
         (f"{ENVOY}/internal/dispatch/pmdoc/schema_generated.go", "packages/contracts/scripts/gen-go.test.ts:7-10,54-58 and gen-go.ts's outputs list (the block schema's shape, generated from schemas/block-schema.schema.json)"),
     ) + biome(at("contracts", "Lint contracts")) + bun_job("contracts") + CI_SELF),
@@ -981,6 +1004,10 @@ GATES = [
         (f"{ENVOY}/going/testdata/**", "packages/proof-editor/tests/going-answer-no-link.test.ts:111-112"),
         ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:11 (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),
         ("packages/envoy-client/test/fake-dispatch.ts", f"packages/dispatch/e2e/__tests__/delivery-live-probe.test.ts:6-9 and local-instance-support.test.ts:2-5 import @legion/envoy-client/test/fake-dispatch, and {at('dispatch-ui', 'Test dispatch dashboard')} runs both"),
+        (ENVOY_CLIENT_SRC, "packages/envoy-client/test/fake-dispatch.ts:30 imports ../src/dispatch-http, so the two suites "
+                           "above put envoy-client's sources in this job's program too (check-ts-filters.sh measures it); "
+                           "@legion/broker-client does not come with them, since no source of this program reaches "
+                           "packages/envoy-client/src/broker-credential.ts"),
     ) + biome(at("dispatch-ui", "Lint dispatch dashboard")) + bun_job("dispatch-ui") + CI_SELF),
 
     # Its "Build the Dispatch server" step names an output (-o), which the simple form does not
@@ -1004,7 +1031,7 @@ GATES = [
         ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:11 (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),
     ) + setup_go(BROWSER_MP, f"{ENVOY}/go.mod") + bun_job(BROWSER_MP) + CI_SELF),
 
-    gate("claude_envoy", "claude-envoy", reads=CLAUDE_ENVOY_BUILD + biome(at("claude-envoy", "Lint Claude Envoy plugin")) + bun_job("claude-envoy") + CI_SELF),
+    gate("claude_envoy", "claude-envoy", reads=CLAUDE_ENVOY_JOB + biome(at("claude-envoy", "Lint Claude Envoy plugin")) + bun_job("claude-envoy") + CI_SELF),
 
     gate("envoy_go", "envoy-go", runs=[
         step_run("envoy-go", "Integration test envoy (a real NATS server, in the test process)",
@@ -1147,10 +1174,13 @@ GATES = [
     ) + setup_go("broker-multiprocess", f"{ENVOY}/go.mod") + CI_SELF),
 
 
-    # The listener image this job builds and smokes is left to check-image-trigger-paths.sh,
-    # which proves envoy_smoke covers every file packages/envoy/docker/Dockerfile builds from
-    # (the Dockerfile the base-images step reads among them). This gate holds the filter to the
-    # rest: the job's go commands, run on the host, and the step reads that are not image inputs.
+    # The listener image this job builds and smokes is built from the repository root, so every
+    # file packages/envoy/docker/Dockerfile copies into that context is a file this job reads:
+    # each one below names the COPY line that reads it. Only those the job's go commands do not
+    # already reach are named, which is what keeps this list short - the module files, the whole
+    # of packages/envoy/internal and the RDS bundle are reads of the smoke and live tests
+    # themselves. check-image-trigger-paths.sh holds the filter to the image's inputs from the
+    # other side, proving the list complete; this gate proves no pattern of the filter is idle.
     gate("envoy_smoke", "envoy-smoke", runs=[
         step_run("envoy-smoke", "Container smoke test (testcontainers)", "go test -tags smoke -v -timeout 5m ./internal/smoke/",
                  ENVOY, ["./internal/smoke/"], tags="smoke"),
@@ -1171,6 +1201,32 @@ GATES = [
         (".github/scripts/disk_watch.py",
          f"{at('envoy-smoke', 'Start the disk watch over the live tests')} and "
          f"{at('envoy-smoke', 'Report the disk the live tests used')} run it"),
+        (f"{ENVOY}/docker/Dockerfile", f"{at('envoy-smoke', SMOKE_IMAGE_STEP)} builds it (its `file:`), and "
+                                       f"{at('envoy-smoke', BASE_IMAGES_STEP)} reads its FROM lines"),
+        (".dockerignore", f"{at('envoy-smoke', SMOKE_IMAGE_STEP)} builds with `context: .`, so the root .dockerignore "
+                          "decides which of the files below reach any COPY of that Dockerfile"),
+        (".bun-version", "packages/envoy/docker/Dockerfile:20 COPY .bun-version, which :21-27 holds the web stage's own Bun to"),
+        ("package.json", "packages/envoy/docker/Dockerfile:32 COPY package.json bun.lock ./"),
+        ("bun.lock", "packages/envoy/docker/Dockerfile:32 COPY package.json bun.lock ./"),
+        ("patches/**", "packages/envoy/docker/Dockerfile:33 COPY patches patches"),
+        ("packages/broker-client/package.json", "packages/envoy/docker/Dockerfile:35"),
+        ("packages/envoy-client/package.json", "packages/envoy/docker/Dockerfile:36"),
+        ("packages/pi-envoy/package.json", "packages/envoy/docker/Dockerfile:37"),
+        ("packages/pi-legion/package.json", "packages/envoy/docker/Dockerfile:38"),
+        ("packages/pi-shared/package.json", "packages/envoy/docker/Dockerfile:39"),
+        ("packages/claude-envoy/package.json", "packages/envoy/docker/Dockerfile:40"),
+        ("docs/site/package.json", "packages/envoy/docker/Dockerfile:44; :45 RUN bun install --frozen-lockfile reads every manifest above"),
+        ("packages/contracts/**", "packages/envoy/docker/Dockerfile:34 and :47 COPY packages/contracts packages/contracts, which :52 runs gen:go in"),
+        ("packages/dispatch/**", "packages/envoy/docker/Dockerfile:41 and :48 COPY packages/dispatch packages/dispatch, which :53 runs build:web in"),
+        ("packages/proof-editor/**", "packages/envoy/docker/Dockerfile:42 and :49 COPY packages/proof-editor packages/proof-editor, which the SPA build aliases"),
+        ("scripts/third-party-notices.ts", "packages/envoy/docker/Dockerfile:51 COPY scripts/third-party-notices.ts, which the SPA build writes its notices with"),
+        ("scripts/go-third-party-notices.sh", "packages/envoy/docker/Dockerfile:70 COPY, run by :71 and :99"),
+        ("scripts/assemble-third-party-notices.sh", "packages/envoy/docker/Dockerfile:70 COPY, run by :101"),
+        (f"{ENVOY}/cmd/**", "packages/envoy/docker/Dockerfile:75 COPY packages/envoy/cmd ./cmd, which :99-122 builds the four binaries from"),
+        (f"{ENVOY}/going/**", "packages/envoy/docker/Dockerfile:83 COPY packages/envoy/going ./going"),
+        (f"{ENVOY}/listenfd/**", "packages/envoy/docker/Dockerfile:79 COPY packages/envoy/listenfd ./listenfd"),
+        (f"{ENVOY}/migrationid/**", "packages/envoy/docker/Dockerfile:86 COPY packages/envoy/migrationid ./migrationid"),
+        (f"{ENVOY}/roleholder/**", "packages/envoy/docker/Dockerfile:88 COPY packages/envoy/roleholder ./roleholder"),
     ) + setup_go("envoy-smoke", f"{ENVOY}/go.mod") + CI_SELF),
 
     gate("envoy_e2e_local", "envoy-e2e-local", runs=[

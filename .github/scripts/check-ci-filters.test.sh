@@ -263,7 +263,9 @@ check "names the file and the rule's why" \
 
 echo "case: a rule applies only when go list compiles its file under the job's tags"
 root=$(fixture rule-untagged)
-replace "$root/.github/workflows/ci.yaml" "              - 'fixtures/**'" "              - 'docs/**'"
+# The pattern is dropped rather than pointed at docs/, since rule 9's second direction refuses a
+# pattern of a gate's filter that matches no file its job reads and this case is about rule 1.
+replace "$root/.github/workflows/ci.yaml" "              - 'fixtures/**'"$'\n' ""
 replace "$root/mod/lib/lib_test.go" "package lib" $'//go:build special\n\npackage lib'
 run_check "$root"
 check "passes while the test is built out" "$(is "$status" 0)"
@@ -519,6 +521,64 @@ replace "$root/.github/workflows/ci.yaml" "              - 'fixtures/**'" \
   $'              - \'fixtures/**\'\n              - \'!fixtures/gone/**\''
 run_check "$root"
 check "a ! pattern matching nothing is no dead pattern" "$(is "$status" 0)"
+
+# Rule 9's second direction, the other way round: a pattern that matches files of the repository
+# none of which its job reads selects the job for a change no step of it can see. The app job's
+# reads are its closure, the fixture its test opens and ci.yaml, and docs/readme.md is none of
+# them, so 'docs/**' in the app filter starts a full run of app on every change to it.
+echo "case: a filter pattern that matches files of the repository but none its job reads"
+root=$(fixture unread-pattern)
+replace "$root/.github/workflows/ci.yaml" "              - 'fixtures/**'" \
+  $'              - \'fixtures/**\'\n              - \'docs/**\''
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the pattern, the filter and the job" \
+  "$(contains "$out" "::error file=.github/workflows/ci.yaml::filter app has docs/\*\*, which matches no file app reads, though it matches 1 of the repository's")"
+check "and still counts the files the job does read" "$(contains "$out" '^app: 7 files, 0 uncovered (filter app)$')"
+
+echo "case: a ! pattern matching no file its job reads is no dead pattern"
+root=$(fixture unread-pattern-negated)
+replace "$root/.github/workflows/ci.yaml" "              - 'fixtures/**'" \
+  $'              - \'fixtures/**\'\n              - \'!docs/**\''
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+
+# An EXCLUDED filter is another check's to prove, so this one computes no read set for its job
+# and has nothing to hold its patterns to: the image filter here gates the job no gate names.
+echo "case: an EXCLUDED filter's pattern matching no file its job reads is no dead pattern"
+root=$(fixture unread-pattern-excluded)
+replace "$root/.github/workflows/ci.yaml" $'            image:\n              - \'docs/**\'' \
+  $'            image:\n              - \'docs/**\'\n              - \'fixtures/**\''
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+
+# Two gates can name one filter - a job of ci.yaml and a step of the workflow another job calls
+# - and a change the filter selects on starts both, so the second direction judges each pattern
+# against the union of what they read. 'mod/cmd/app/*' is in that union through the app job
+# alone, and the called step, which runs ./lib, reads none of it; a pattern neither of them
+# reads is the refusal, and it names both gates.
+echo "case: a filter two gates name is judged over the union of what they read"
+root=$(fixture unread-pattern-shared)
+called_input_gate "$root"
+run_check "$root"
+check "passes while each pattern is some gate's read" "$(is "$status" 0)"
+replace "$root/.github/workflows/ci.yaml" "              - 'fixtures/**'" \
+  $'              - \'fixtures/**\'\n              - \'docs/**\''
+run_check "$root"
+check "fails on the pattern neither gate reads" "$(is "$status" 1)"
+check "names both gates" \
+  "$(contains "$out" "filter app has docs/\*\*, which matches no file app and called step \"Test the library\" read")"
+
+echo "case: a pattern matching no file of the repository is refused once, by the first direction"
+root=$(fixture dead-pattern-once)
+replace "$root/.github/workflows/ci.yaml" "              - 'fixtures/**'" \
+  $'              - \'fixtures/**\'\n              - \'packages/contracts/fixtures/delivery-live/**\''
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names it as matching no file of the repository" \
+  "$(contains "$out" "::error file=.github/workflows/ci.yaml::filter app has packages/contracts/fixtures/delivery-live/\*\*, which matches no file in the repository")"
+check "and refuses it once, not once per direction" \
+  "$(is "$(printf '%s' "$out" | grep -c 'delivery-live')" 1)"
 
 echo "case: a go command that cannot run fails rather than reading an empty closure"
 root=$(fixture broken-workspace)
@@ -813,7 +873,13 @@ entry='"image", "image", "Build", "app", "app", "the app job runs the package un
 
 echo "case: a tag step's -run while the untagged job's filter covers every file its own does"
 root=$(fixture tag-run-covered)
+# The app filter takes in docs/** so that it covers every file the tag step's filter does, and
+# the app gate declares the file it reads there: a pattern of a gate's filter that matches no
+# file its job reads is rule 9's second refusal, and the job that runs the untagged tests of a
+# package really does read what its filter takes in for them.
 replace "$root/.github/workflows/ci.yaml" "              - 'fixtures/**'" $'              - \'fixtures/**\'\n              - \'docs/**\''
+replace "$root/.github/scripts/ci_job_reads.py" 'reads=[Read(".github/workflows/ci.yaml", "a job reads its own definition")]' \
+  'reads=[Read(".github/workflows/ci.yaml", "a job reads its own definition"), Read("docs/readme.md", "the app job reads the note under docs")]'
 tagged_step "$root"
 tag_run "$root" "$entry"
 run_check "$root"

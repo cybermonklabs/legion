@@ -92,11 +92,34 @@
 #      or that is missing or has no on.push.paths: it runs on main the work the filter's job runs
 #      on pull requests and merge groups (docs-pages.yaml, the docs filter), so the two lists
 #      cannot drift,
-#   9. a pattern of a changes filter, or a read ci_job_reads.py declares (a gate's or a RULES
-#      row's), that matches no file of the repository, naming the pattern and the filter, gate or
-#      row it is in: a filter and a declared read that name the same path which does not exist are
-#      consistent with each other and select nothing, so every rule above passes while a change to
-#      the files they mean starts no job. A `!` pattern is exempt, since it names what to leave out.
+#   9. a pattern that selects nothing, or selects a job that reads nothing it matches, which are
+#      the rule's two directions. The first: a pattern of a changes filter, or a read
+#      ci_job_reads.py declares (a gate's or a RULES row's), that matches no file of the
+#      repository, naming the pattern and the filter, gate or row it is in - a filter and a
+#      declared read that name the same path which does not exist are consistent with each other
+#      and select nothing, so every rule above passes while a change to the files they mean
+#      starts no job. The second: a pattern of a gate's filter that matches files of the
+#      repository but none its job reads, naming the pattern, the filter, how many files of the
+#      repository it matches, and the job (and the step, where the gate is a step's) - the filter
+#      then selects its job for a change no step of it sees, which costs a full run of that job
+#      every time one of those files changes. The second direction is judged over the files the
+#      gate reads, the set rule 1 holds its filter to, so a filter two gates name (envoy_go_race_docs
+#      today) is judged over the union of their reads, since a pattern matching only what the
+#      second job reads does start a job that reads the change. Three exemptions, and one pattern
+#      judged once: a `!` pattern is exempt from both directions, since it names what to leave
+#      out and so reads no file by design; an EXCLUDED filter is exempt from the second, since
+#      this check computes no read set for one (worker_image, whose coverage
+#      .github/scripts/check-image-trigger-paths.sh proves instead); a pattern whose every file
+#      another rule of this check holds that filter to is exempt from the second, since refusing
+#      it would refuse the rule that put it there - rule 8 keeps a PUSH_WORKFLOWS workflow's
+#      on.push.paths equal to its filter and a workflow that does not name itself never runs on a
+#      change to itself, so the docs filter holds .github/workflows/docs-pages.yaml to keep
+#      main's docs build running when its own workflow changes, and rule 15 holds the filter of
+#      the job that runs a package's untagged tests to every file the tag step's filter covers,
+#      so envoy_go_race holds .github/scripts/go-tagged-tests.sh, which
+#      listener-server-change's soak takes its -run from and no step of envoy-go-race reads; and
+#      a pattern that matches
+#      no file of the repository at all draws the first direction's refusal alone, never both.
 #  10. an `if:` of ci.yaml, a job's or a step's, that tests `github.event_name == 'push'` or
 #      `github.event_name != 'push'`, or that compares `github.ref` with a single-quoted
 #      `'refs/heads/...'` literal with `==` or `!=` (either operand first), naming the file, the
