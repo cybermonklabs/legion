@@ -2,7 +2,7 @@ import { expect, spyOn, test } from "bun:test";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { type Node as ProseMirrorNode, Schema } from "prosemirror-model";
 
-import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
+import { changingEachHandle, fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import {
   answerTextReadsWithTheSeededText,
   artifact,
@@ -18,7 +18,7 @@ import { markdownWorkerThreshold } from "../refs/markdown-worker-threshold";
 import { installFakeParseWorker, restoreParseWorker } from "../refs/parse-worker-fixture";
 import { appKeymap } from "../shell/keymap";
 import { colorForLogin } from "./connection";
-import type { CreateEditor } from "./editor";
+import type { ConstructEditor } from "./editor";
 
 answerTextReadsWithTheSeededText();
 
@@ -41,6 +41,39 @@ test("ProofDocument creates the editor on the synced document as the signed-in u
     expect(editors[0]?.root.getAttribute("aria-label")).toBe("Document editor");
     expect(editors[0]?.root.getAttribute("aria-multiline")).toBe("true");
     expect(editors[0]?.root.getAttribute("role")).toBe("textbox");
+  } finally {
+    view.unmount();
+  }
+});
+
+// The editor is built while the socket syncs and bound when the document arrives: nothing the
+// construction is made of depends on a block of the document, and the whole of it - Milkdown,
+// the schema's typed blocks, every plugin's view, Dispatch's own node views - used to be paid
+// for after the state frame had been applied, 415 ms and 493 ms of the main thread for the two
+// documents of `e2e/large-documents.ts` on a phone at 4x CPU throttling (dispatch://INFRA-341,
+// R11). It is the admission's `/text` read that the construction waits for, never the sync: a
+// stored tree outside the Proof schema reaches no browser editor.
+test("the editor is built while the socket syncs, with no document in it until the sync", async () => {
+  const { connections, constructions, editors, sync, view } = renderProofDocument();
+
+  try {
+    await waitFor(() => expect(connections).toHaveLength(1));
+    // The socket is open and nothing has synced, and the editor is already standing.
+    await waitFor(() => expect(constructions).toHaveLength(1));
+    expect(editors).toHaveLength(0);
+    // Hidden, with no document in it and no name of its own, so the reader still reads their
+    // own draw of the document and the page holds one document textbox, not two.
+    expect(constructions[0]?.root.style.display).toBe("none");
+    expect(constructions[0]?.root.textContent).toBe("");
+    expect(screen.queryByRole("textbox", { name: "Document editor" })).toBeNull();
+
+    await sync();
+    // The same editor, now holding the document: the sync binds what was built, never builds
+    // a second one.
+    await waitFor(() => expect(editors).toHaveLength(1));
+    expect(constructions).toHaveLength(1);
+    expect(editors[0]).toBe(constructions[0]);
+    expect(editors[0]?.root.textContent).toContain("The live document");
   } finally {
     view.unmount();
   }
@@ -152,13 +185,21 @@ test("the document's own draw stops painting in the task the editor's build begi
   const between = `A paragraph longer than the first draw takes. ${"Every window closes. ".repeat(markdownWorkerThreshold / 20)}`;
   const markdown = `${opening}\n\n${between}\n\n${buried}\n`;
   const fake = fakeDocumentRuntime({ text: markdown });
+  // The build, held: the editor is constructed while the socket syncs, and what the sync
+  // starts is its binding, which is the build this row is about (`features/doc/editor.ts`).
   const building = Promise.withResolvers<void>();
-  const createEditor: CreateEditor = async (root, options) => {
-    await building.promise;
-    return fake.runtime.createEditor(root, options);
+  const constructEditor: ConstructEditor = async (root, options) => {
+    const construction = await fake.runtime.constructEditor(root, options);
+    return {
+      ...construction,
+      bind: async () => {
+        await building.promise;
+        return construction.bind();
+      },
+    };
   };
   const { view } = renderProofDocument({
-    fake: { ...fake, runtime: { ...fake.runtime, createEditor } },
+    fake: { ...fake, runtime: { ...fake.runtime, constructEditor } },
   });
 
   try {
@@ -872,16 +913,13 @@ test("a highlight click focuses its margin item and hover identifies its matchin
 test("the marks projection reaches the editor on sync and on every change", async () => {
   const fake = fakeDocumentRuntime({ text: "The live document" });
   const projected: { metadata: object; options: { hydrateAnchors?: boolean } | undefined }[] = [];
-  const createEditor = fake.runtime.createEditor;
-  fake.runtime.createEditor = async (root, options) => {
-    const handle = await createEditor(root, options);
+  fake.runtime.constructEditor = changingEachHandle(fake.runtime.constructEditor, (handle) => {
     const applyRemoteMarks = handle.applyRemoteMarks.bind(handle);
     handle.applyRemoteMarks = (metadata, applyOptions) => {
       projected.push({ metadata, options: applyOptions });
       applyRemoteMarks(metadata, applyOptions);
     };
-    return handle;
-  };
+  });
   const { connections, editors, sync, view } = renderProofDocument({ fake });
   const storedMark = {
     by: "user:alice",
@@ -928,9 +966,7 @@ test("mark placements are published to the margin after document changes", async
   ]);
   const fake = fakeDocumentRuntime({ text: "The live document" });
   let editorState: { doc: ProseMirrorNode } | undefined;
-  const createEditor = fake.runtime.createEditor;
-  fake.runtime.createEditor = async (root, options) => {
-    const handle = await createEditor(root, options);
+  fake.runtime.constructEditor = changingEachHandle(fake.runtime.constructEditor, (handle) => {
     editorState = handle.view.state as unknown as { doc: ProseMirrorNode };
     editorState.doc = initialDocument;
     handle.markOffsets = () =>
@@ -938,8 +974,7 @@ test("mark placements are published to the margin after document changes", async
         ["c-1", 40],
         ["a-1", 72],
       ]);
-    return handle;
-  };
+  });
   const { connections, editors, margin, sync, view } = renderProofDocument({ fake });
 
   try {

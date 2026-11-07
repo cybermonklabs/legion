@@ -14,10 +14,11 @@ import { describe, expect, test } from "bun:test";
 import type { Node as ProseMirrorNode } from "@milkdown/kit/prose/model";
 import { TextSelection } from "@milkdown/kit/prose/state";
 import type { EditorView } from "@milkdown/kit/prose/view";
+import type { Window as HappyWindow } from "happy-dom";
 import { prosemirrorToYXmlFragment } from "y-prosemirror";
 import * as Y from "yjs";
 
-import { createProofEditor } from "../src/lib";
+import { constructProofEditor, createProofEditor, type ProofEditorConstruction } from "../src/lib";
 import { createHeadlessProof } from "../src/lib-headless.js";
 import { endOfTask } from "../src/progressive-build";
 import { withDomWindow } from "./dom-window";
@@ -336,6 +337,98 @@ describe("a document built in batches", () => {
     expect(built.documentAfter).toEqual(built.documentBefore);
     expect(built.blocks).toBe(BLOCKS);
     expect(partway(built).length).toBeGreaterThan(0);
+  });
+});
+
+// The two phases a host whose document is still arriving needs: the editor is constructed with
+// nothing of the document in it, and the binding builds the document into it
+// (dispatch://INFRA-341, R11, `src/lib.ts`). Dispatch constructs as its socket is admitted and
+// binds when the state frame has been applied, so what the construction must never do is put
+// an empty document on the screen in front of the reader's own draw of the one they are
+// reading.
+describe("an editor constructed before its document arrives", () => {
+  /** The editor built over a Y.Doc holding `markdown`, with nothing bound to it yet; its view
+   *  comes from `beforeBuild`, which the construction calls over the empty document. */
+  async function construct(
+    window: HappyWindow,
+    markdown: string
+  ): Promise<{ construction: ProofEditorConstruction; root: HTMLElement; view: EditorView }> {
+    const { parseMarkdown } = await createHeadlessProof({});
+    const ydoc = new Y.Doc();
+    prosemirrorToYXmlFragment(parseMarkdown(markdown), ydoc.getXmlFragment("prosemirror"));
+    const root = window.document.body.appendChild(
+      window.document.createElement("div")
+    ) as unknown as HTMLElement;
+    let view: EditorView | undefined;
+    const construction = await constructProofEditor(root, {
+      beforeBuild: (built) => {
+        view = built;
+      },
+      heatMapMode: "hidden",
+      onMarkClick: () => {},
+      onMarkHover: () => {},
+      user: { color: "#0369a1", name: "alice" },
+      ydoc,
+    });
+    if (view === undefined) throw new Error("the construction never handed its view over");
+    return { construction, root, view };
+  }
+
+  test("stands hidden and empty until it is bound, and holds the document after", async () => {
+    await withDomWindow(async (window) => {
+      const { construction, root } = await construct(window, paragraphs(BLOCKS));
+
+      // Built and standing: the root is the editor's own, and nothing of the document is in
+      // it, on the screen, or writable through it.
+      expect(root.classList.contains("proof-editor")).toBe(true);
+      expect(root.style.display).toBe("none");
+      expect(blocksBuilt(root)).toBe(0);
+      expect(root.dataset.writePath).toBeUndefined();
+
+      const handle = await construction.bind();
+      try {
+        expect(blocksBuilt(root)).toBe(BLOCKS);
+        expect(root.style.display).toBe("");
+        expect(root.dataset.writePath).toBe("live");
+      } finally {
+        const { view } = handle;
+        handle.destroy();
+        while (!view.isDestroyed) await Promise.resolve();
+      }
+    });
+  });
+
+  // A read-only admission lands before the sync that binds, so the editor it decides for is
+  // one that has already been built (`ProofDocument`'s `onAdmission`).
+  test("takes a read-only decision made before it was bound", async () => {
+    await withDomWindow(async (window) => {
+      const { construction, root } = await construct(window, paragraphs(8));
+
+      construction.setReadOnly(true);
+      const handle = await construction.bind();
+      try {
+        expect(handle.view.editable).toBe(false);
+        expect(blocksBuilt(root)).toBe(8);
+      } finally {
+        const { view } = handle;
+        handle.destroy();
+        while (!view.isDestroyed) await Promise.resolve();
+      }
+    });
+  });
+
+  // A construction the host never binds - a page left, a socket the server refused - is torn
+  // down as it stands, and the root it was built in is the host's again, for the editor it
+  // builds there next.
+  test("gives the root back when it is destroyed unbound", async () => {
+    await withDomWindow(async (window) => {
+      const { construction, root, view } = await construct(window, paragraphs(8));
+
+      construction.destroy();
+      expect(root.style.display).toBe("");
+      expect(blocksBuilt(root)).toBe(0);
+      while (!view.isDestroyed) await Promise.resolve();
+    });
   });
 });
 

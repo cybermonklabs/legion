@@ -197,7 +197,7 @@ export const scrollStepsMax = 120;
  *  in, which is the task that root is shown in - it is `display: none` before it - and the
  *  task from which an edit in those blocks is written through to the document
  *  (`packages/proof-editor/src/progressive-build.ts`). Nothing else on the page can wear it:
- *  `.proof-editor` is the class `createProofEditor` puts on the root it builds into, and that
+ *  `.proof-editor` is the class `constructProofEditor` puts on the root it builds into, and that
  *  build is the only writer of the attribute, which it removes again when the editor is
  *  destroyed (`packages/proof-editor/src/lib.ts`). So neither the blocks the server drew into
  *  the page (`#first-screen`) nor the page's own draw of the document's text (`Document text`,
@@ -212,11 +212,12 @@ export const scrollStepsMax = 120;
 const liveEditorSelector = '.proof-editor[data-write-path="live"]';
 const firstBlockSelector = `${liveEditorSelector} [data-block-id]`;
 
-/** The editor's root, whether or not its first batch has landed in it: `createProofEditor`
+/** The editor's root, whether or not its first batch has landed in it: `constructProofEditor`
  *  puts this class on the element it builds into, so the root is in the page from the moment
- *  the editor is created and before anything of the document is drawn in it
- *  (`packages/proof-editor/src/lib.ts`). The opening timeline reads it as "the editor was
- *  created"; `liveEditorSelector` above is the later moment its first batch lands. */
+ *  the editor is constructed - while the socket is still syncing - and before anything of the
+ *  document is drawn in it (`packages/proof-editor/src/lib.ts`). The opening timeline reads it
+ *  as "the editor was created"; `liveEditorSelector` above is the later moment its first batch
+ *  lands, which is the binding's. */
 const editorRootSelector = ".proof-editor";
 
 /** Where a block a reader has before the editor exists stands: the element the server put the
@@ -251,7 +252,7 @@ const firstPaintedSelector =
   '#first-screen [data-block-id], [aria-label="Document text"] [data-block-id]';
 
 /** The editor, open: its last batch is in and its Yjs binding is live. The host names the
- *  textbox once `createProofEditor` has answered its handle, which is a task after the binding
+ *  textbox once the binding has answered its handle, which is a task after the binding
  *  connected (`web/src/features/doc/editor.ts`'s `editorAttributes`), so an editor wearing this
  *  name is an editor whose build is over. Never the `Document editor` section around it: that
  *  section is the whole document surface, the draw the reader reads first included, and it has
@@ -285,8 +286,9 @@ export interface DocumentOpening {
   readonly syncStep1Ms: number | undefined;
   /** When the server's first binary frame arrived on it, which carries the document's state. */
   readonly stateFrameMs: number | undefined;
-  /** When the editor's root was first in the page, which is `createEditor` answering the
-   *  sync. */
+  /** When the editor's root was first in the page, which is `constructEditor` building it
+   *  while the socket syncs: a number before or inside the state frame's apply, where it used
+   *  to be the sync's answer (dispatch://INFRA-341, R11). */
   readonly editorRootMs: number | undefined;
 }
 
@@ -361,7 +363,7 @@ export async function throttleTheCpu(page: Page): Promise<void> {
  * number the targets are read against.
  *
  * The named editor's box is what says the build is over and the binding is live: the host names
- * the textbox only once `createProofEditor` has answered, a task after the binding connected
+ * the textbox only once the binding has answered, a task after the binding connected
  * (`web/src/features/doc/editor.ts`), so an editor with that name and a box is an editor whose
  * whole document is in it.
  *
@@ -457,9 +459,9 @@ export async function watchTheDocument(page: Page): Promise<Announcements> {
       };
       const look = () => {
         if (opening.editorRootMs === undefined && document.querySelector(rootSelector) !== null) {
-          // The editor's root is in the page from `createEditor`, before its first batch has
-          // built anything into it, so this is when the editor was created rather than when
-          // the reader could read it.
+          // The editor's root is in the page from `constructEditor`, which builds it while the
+          // socket syncs and before its binding has drawn a block, so this is when the editor
+          // was constructed rather than when the reader could read it.
           opening.editorRootMs = performance.now();
         }
         if (

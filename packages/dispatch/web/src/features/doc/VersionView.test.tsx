@@ -4,10 +4,10 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, waitFor, within } from "@testing-library/react";
 import type { Node as ProseMirrorNode } from "prosemirror-model";
 
-import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
+import { changingEachHandle, fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import { loadedEngine, warmMarkdownRenderer } from "../refs/markdown-engine";
 import { changeMarksAgainst } from "./change-marks";
-import type { CreateEditor, EditorHandle } from "./editor";
+import type { EditorHandle } from "./editor";
 import { DocumentRuntime } from "./runtime";
 import { VersionView } from "./VersionView";
 
@@ -19,20 +19,22 @@ function createQueryClient(): QueryClient {
 
 function renderVersionView({
   changeBaseline,
-  createEditor,
   highlight,
   markdown,
+  whenBound,
 }: {
   changeBaseline?: string;
-  createEditor?: (inner: CreateEditor) => CreateEditor;
   highlight: { by: string; id: string; quote: string } | undefined;
   markdown: string;
+  /** Given each handle as the version's editor binds it, for a row that reads or replaces
+   *  what that editor answers. */
+  whenBound?: (handle: EditorHandle) => void;
 }) {
   const runtime = fakeDocumentRuntime();
-  if (createEditor !== undefined) {
+  if (whenBound !== undefined) {
     runtime.runtime = {
       ...runtime.runtime,
-      createEditor: createEditor(runtime.runtime.createEditor),
+      constructEditor: changingEachHandle(runtime.runtime.constructEditor, whenBound),
     };
   }
   const queryClient = createQueryClient();
@@ -159,15 +161,13 @@ test("VersionView reports an ambiguous or missing quote as changed text", async 
 
 test("VersionView shows the parser's error instead of an empty document when a version cannot be rendered", async () => {
   const { editors, view } = renderVersionView({
-    createEditor: (inner) => async (root, options) => {
-      const handle = await inner(root, options);
+    highlight: undefined,
+    markdown: "Some version text.",
+    whenBound: (handle) => {
       handle.setMarkdown = () => {
         throw new Error("this version cannot be parsed");
       };
-      return handle;
     },
-    highlight: undefined,
-    markdown: "Some version text.",
   });
 
   try {
@@ -193,18 +193,13 @@ function renderedDocument(markdown: string): ProseMirrorNode {
 
 /** Records what the host draws over the rendered document, and gives the handle the document the
  *  editor would hold for `markdown`. */
-function recordMarks(
-  markdown: string,
-  drawn: ChangeDecorations[]
-): (inner: CreateEditor) => CreateEditor {
-  return (inner) => async (root, options) => {
-    const handle: EditorHandle = await inner(root, options);
+function recordMarks(markdown: string, drawn: ChangeDecorations[]): (handle: EditorHandle) => void {
+  return (handle) => {
     // The fake runtime's view holds a plain state object with no document of its own, and the
     // component reads `view.state.doc` to compute the marks.
     const state = handle.view.state as unknown as { doc: ProseMirrorNode };
     state.doc = renderedDocument(markdown);
     handle.setChangeDecorations = (decorations) => drawn.push(decorations);
-    return handle;
   };
 }
 
@@ -215,9 +210,9 @@ test("VersionView draws the marks its baseline computes over the version it rend
   const drawn: ChangeDecorations[] = [];
   const { view } = renderVersionView({
     changeBaseline: baseline,
-    createEditor: recordMarks(markdown, drawn),
     highlight: undefined,
     markdown,
+    whenBound: recordMarks(markdown, drawn),
   });
 
   try {
@@ -237,9 +232,9 @@ test("VersionView draws nothing when it is given no baseline", async () => {
   const markdown = "# Plan\n\nThe plan ships behind a canary today.\n";
   const drawn: ChangeDecorations[] = [];
   const { editors, view } = renderVersionView({
-    createEditor: recordMarks(markdown, drawn),
     highlight: undefined,
     markdown,
+    whenBound: recordMarks(markdown, drawn),
   });
 
   try {

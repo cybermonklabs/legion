@@ -48,7 +48,7 @@ export function VersionView({
   const [askBlockHosts, setAskBlockHosts] = useState<readonly AskBlockHost[]>([]);
   const [highlightMissing, setHighlightMissing] = useState(false);
   const [renderError, setRenderError] = useState<string | undefined>(undefined);
-  const { createEditor } = useContext(DocumentRuntime);
+  const { constructEditor } = useContext(DocumentRuntime);
   const versionQuery = useQuery({
     queryKey: ["artifact", artifactId, "version", version],
     queryFn: () => api.getArtifactVersion(artifactId, version),
@@ -101,7 +101,10 @@ export function VersionView({
         return;
       }
       ydoc = doc;
-      const editor = await createEditor(parent, {
+      // A version's document is in hand before the editor exists - it is drawn with
+      // `setMarkdown` below, over a standalone Yjs document - so there is nothing to wait for
+      // between the two phases (`features/doc/editor.ts`).
+      const construction = await constructEditor(parent, {
         awareness: null,
         blockSchema,
         heatMapMode: "hidden",
@@ -111,6 +114,7 @@ export function VersionView({
         watchPicture: (route, onPicture) => watchPicturePath(queryClient, route, onPicture),
         ydoc: doc,
       });
+      const editor = await construction.bind();
       handle = editor;
       if (!mounted) {
         editor.destroy();
@@ -157,7 +161,7 @@ export function VersionView({
   }, [
     blockSchema,
     changeBaseline,
-    createEditor,
+    constructEditor,
     highlighted,
     markdown,
     queryClient,

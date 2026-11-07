@@ -464,15 +464,17 @@ test("a transport that fails to load is reported instead of connecting forever",
   }
 });
 
-test("an editor that fails to load after sync is reported the same way, and later provider status stays out of the way", async () => {
+// The editor is built while the socket syncs, so a chunk that never arrives is reported then,
+// with no sync to wait for: a reader whose editor is not coming is told while their document's
+// state frame is still on its way (dispatch://INFRA-341, R11).
+test("an editor that fails to load is reported instead of connecting forever, before any sync, and later provider status stays out of the way", async () => {
   const fake = fakeDocumentRuntime({ text: "The live document" });
   const rejection = Promise.reject(new Error("editor chunk missing"));
   rejection.catch(() => undefined); // avoid an unhandled-rejection warning before the fake below is read
-  fake.runtime.createEditor = () => rejection;
-  const { status, sync, toolbar, view } = renderProofDocument({ fake });
+  fake.runtime.constructEditor = () => rejection;
+  const { status, toolbar, view } = renderProofDocument({ fake });
 
   try {
-    await sync();
     await flushLoadFailure(rejection);
     const alert = within(view.container).getByRole("alert");
     expect(alert.textContent).toBe("This document could not load: editor chunk missing");

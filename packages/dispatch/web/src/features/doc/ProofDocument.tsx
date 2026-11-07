@@ -60,7 +60,7 @@ import { ChangeView } from "./ChangeView";
 import type { ConnectionState, DocumentConnection } from "./connection";
 import { colorForLogin } from "./connection";
 import { DocumentPreview, documentPreview, takesTheBuiltBlocks } from "./DocumentPreview";
-import type { EditorHandle } from "./editor";
+import type { EditorConstruction, EditorHandle } from "./editor";
 import { bindRemoteMarks } from "./editor";
 import { theFirstBatchIsAwaited, useAfterTheFirstBatch } from "./first-batch";
 import { currentAddress, firstScreenAwaits } from "./first-screen";
@@ -264,8 +264,7 @@ export function ProofDocument({
   const [editorBuilding, setEditorBuilding] = useState(false);
   const {
     blockSchema: runtimeBlockSchema,
-    createEditor,
-    loadEditor,
+    constructEditor,
     loadTransport,
   } = useContext(DocumentRuntime);
   const navigate = useNavigate();
@@ -624,6 +623,13 @@ export function ProofDocument({
     let mounted = true;
     let document: DocumentConnection | undefined;
     let editor: EditorHandle | undefined;
+    /** The editor built while the socket syncs, from the admission that opened the socket
+     *  until the sync binds it (`features/doc/editor.ts`); `undefined` where its chunk or its
+     *  construction failed, which `reportLoadFailure` has already told the reader about. */
+    let constructing: Promise<EditorConstruction | undefined> | undefined;
+    /** Whether the sync has started binding that construction: from then on the editor it
+     *  answers is torn down by the chain that asked for it, as it always was. */
+    let binding = false;
     let disposeEditorBindings: (() => void) | undefined;
     // Sockets the server refused in a row, since this editor last synced or a repair re-admitted it.
     let refusals = 0;
@@ -663,6 +669,15 @@ export function ProofDocument({
     const teardown = () => {
       disposeEditorBindings?.();
       editor?.destroy();
+      // A construction the sync never bound is torn down when it arrives: its root is the
+      // host's again and the editor it built takes nothing. One the sync did bind is the
+      // handle above, destroyed by whichever of the two got it.
+      if (!binding) {
+        const unbound = constructing;
+        void unbound?.then((construction) => construction?.destroy());
+      }
+      constructing = undefined;
+      binding = false;
       document?.destroy();
       if (editorRef.current === editor) {
         editorRef.current = undefined;
@@ -678,7 +693,7 @@ export function ProofDocument({
     };
     // The editor's place in the page - the margin, search highlights, a block link - for as
     // long as it is this effect's editor. It returns what undoes it. Its typed blocks are not
-    // here: `createEditor` installs them, with the editor library they are written against,
+    // here: `constructEditor` installs them, with the editor library they are written against,
     // and before the build, so no task of the build's end re-creates every node view of the
     // document (`features/doc/editor.ts`).
     const bindEditor = (handle: EditorHandle, connection: DocumentConnection) => {
@@ -894,100 +909,30 @@ export function ProofDocument({
               // same index (`readersBlock`), and the editor holds every one of them by the
               // time the build ends.
               const place = readersBlock(documentPreview(parent.parentElement));
-              /** The draw's own blocks, indexed by their ids once rather than scanned for in
-               *  every batch (`takesTheBuiltBlocks`), against the element they were indexed
-               *  from, so a draw React has replaced is indexed again. */
-              let theDraw:
-                | { element: HTMLElement; take: (built: readonly string[]) => void }
-                | undefined;
-              void createEditor(parent, {
-                // Cursor labels are outside the compact acceptance bar. Even with inline labels,
-                // yCursor's edge widget disrupts the mobile browser's post-update text selection.
-                // A pane publishes no presence at all: the reader is skimming a document from a
-                // list, not working in it, and the width rule would read the window rather than
-                // the column and send it.
-                awareness:
-                  !page ||
-                  (globalThis.document.documentElement.clientWidth > 0 &&
-                    globalThis.document.documentElement.clientWidth < 1280)
-                    ? null
-                    : connection.awareness,
-                heatMapMode: "hidden",
-                onAskBlockHosts: setAskBlockHosts,
-                onMarkAction: (action) => {
-                  switch (action.kind) {
-                    case "comment":
-                    case "suggest":
-                    case "ask":
-                      // The margin owns the mark from here: it removes it when the composer ends
-                      // unsaved and retypes it when the composer's kind changes.
-                      return marginRef.current.composeForMark({
-                        anchor: {
-                          artifact: artifact.id,
-                          mark_id: action.markId,
-                          placement: action.placement ?? undefined,
-                          quote: action.quote,
-                        },
-                        kind: composerKindFor(action.kind),
-                      });
-                    default:
-                      throw new Error(
-                        `Dispatch renders mark threads in the margin; popover action ${action.kind} cannot fire`
-                      );
-                  }
-                },
-                onMarkClick: (markId) => marginRef.current.focusItemForMark(markId),
-                onMarkHover: (markId) => marginRef.current.hoverItemForMark(markId),
-                // Each batch of the build, in the batch's own task: the draw the reader is
-                // reading gives up the blocks the editor has just built, so the frame the
-                // browser draws next holds each of them once (dispatch://INFRA-341, R11). The
-                // blocks go above the rest of the draw, which is why the editor's root stands
-                // before it in the page. Where the splice is above the top of the screen, the
-                // scroll moves with it: the editor's copy of a block is not the same height as
-                // the draw's once either has painted, and the reader's words must not slide
-                // under them a batch at a time.
-                onBatch: (built) => {
-                  // The reader has the editor from this task on, so the reads the page held
-                  // behind the first batch go out now (`first-batch.ts`). Said on every batch
-                  // because the first is the only one that changes the answer, and a batch
-                  // costs nothing to say it again.
-                  if (page) {
-                    theFirstBatchIsAwaited(false);
-                  }
-                  const preview = documentPreview(parent.parentElement);
-                  if (preview === null) {
+              binding = true;
+              // The editor itself has been standing since the socket was opened: what the
+              // document's arrival starts is its binding, which builds the document into it a
+              // batch at a time (dispatch://INFRA-341, R11, `features/doc/editor.ts`).
+              void constructing
+                ?.then((construction) => {
+                  // A construction whose chunk failed has been reported already, and one whose
+                  // connection a refusal has since torn down, or whose page is unmounted,
+                  // belongs to nothing: `teardown` destroys it.
+                  if (construction === undefined || !mounted || document !== connection) {
                     return undefined;
                   }
-                  if (theDraw?.element !== preview) {
-                    theDraw = { element: preview, take: takesTheBuiltBlocks(preview) };
-                  }
-                  const take = theDraw.take;
-                  const before = preview.getBoundingClientRect();
-                  return () => {
-                    take(built);
-                    if (before.top >= 0 || preview.childElementCount === 0) {
-                      return;
-                    }
-                    moveTheScroll(preview, preview.getBoundingClientRect().bottom - before.bottom);
-                  };
-                },
-                // A pane takes no edits: a reader who clicks into the text from a list never
-                // changes the document they are reading.
-                readOnly: !page || isClosedRef.current || schemaReadOnlyRef.current,
-                user: {
-                  color: colorForLogin(userRef.current.login),
-                  name: userRef.current.login,
-                },
-                blockSchema,
-                watchPicture: (route, onPicture) => watchPicturePath(queryClient, route, onPicture),
-                // The open document's own reference, never a version's: a pointer names a block
-                // of the document by it, so the editor refuses one to a block of a type the
-                // pointer's attribute does not allow.
-                documentRef,
-                ydoc: connection.doc,
-              })
+                  // The admission is what decides editability and it lands before this sync
+                  // does, where the construction was asked for before either.
+                  construction.setReadOnly(
+                    !page || isClosedRef.current || schemaReadOnlyRef.current
+                  );
+                  return construction.bind();
+                })
                 .then((handle) => {
-                  // An editor created for a connection a refusal has since torn down, or for an
+                  if (handle === undefined) {
+                    return;
+                  }
+                  // An editor bound for a connection a refusal has since torn down, or for an
                   // unmounted page, belongs to nothing.
                   if (!mounted || document !== connection) {
                     handle.destroy();
@@ -1018,11 +963,118 @@ export function ProofDocument({
             },
           });
           document = connection;
-          // The editor's chunk is the largest the document loads and nothing about it depends on
-          // the document's state, so it downloads while the socket is admitted and the whole Yjs
-          // document arrives, rather than after (dispatch://INFRA-341, R11). `createEditor`
-          // below finds it loaded.
-          loadEditor();
+          /** The draw's own blocks, indexed by their ids once rather than scanned for in
+           *  every batch (`takesTheBuiltBlocks`), against the element they were indexed
+           *  from, so a draw React has replaced is indexed again. */
+          let theDraw:
+            | { element: HTMLElement; take: (built: readonly string[]) => void }
+            | undefined;
+          // The editor is built here, while the socket is admitted and the whole Yjs document
+          // arrives, and bound when it has (`onSynced` above). Nothing it is made of depends on
+          // the document - Milkdown, the schema's typed blocks, every plugin's view, Dispatch's
+          // own node views - and the whole of it, chunk and all, used to be paid for after the
+          // state frame had been applied: 415 ms of the main thread for the 28-section document
+          // and 493 ms for the 140-section one, on a phone at 4x CPU throttling
+          // (dispatch://INFRA-341, R11). The editor's root stays hidden until its first batch,
+          // so the reader keeps the document's own draw in front of them meanwhile
+          // (`@legion/proof-editor`'s `constructProofEditor`).
+          //
+          // It is constructed only once the admission's `/text` read has answered, which is
+          // what this `.then` is: a stored tree outside the Proof schema reaches no browser
+          // editor, because a browser editor normalizes what it cannot represent and writes it
+          // back.
+          constructing = constructEditor(parent, {
+            // Cursor labels are outside the compact acceptance bar. Even with inline labels,
+            // yCursor's edge widget disrupts the mobile browser's post-update text selection.
+            // A pane publishes no presence at all: the reader is skimming a document from a
+            // list, not working in it, and the width rule would read the window rather than
+            // the column and send it.
+            awareness:
+              !page ||
+              (globalThis.document.documentElement.clientWidth > 0 &&
+                globalThis.document.documentElement.clientWidth < 1280)
+                ? null
+                : connection.awareness,
+            heatMapMode: "hidden",
+            onAskBlockHosts: setAskBlockHosts,
+            onMarkAction: (action) => {
+              switch (action.kind) {
+                case "comment":
+                case "suggest":
+                case "ask":
+                  // The margin owns the mark from here: it removes it when the composer ends
+                  // unsaved and retypes it when the composer's kind changes.
+                  return marginRef.current.composeForMark({
+                    anchor: {
+                      artifact: artifact.id,
+                      mark_id: action.markId,
+                      placement: action.placement ?? undefined,
+                      quote: action.quote,
+                    },
+                    kind: composerKindFor(action.kind),
+                  });
+                default:
+                  throw new Error(
+                    `Dispatch renders mark threads in the margin; popover action ${action.kind} cannot fire`
+                  );
+              }
+            },
+            onMarkClick: (markId) => marginRef.current.focusItemForMark(markId),
+            onMarkHover: (markId) => marginRef.current.hoverItemForMark(markId),
+            // Each batch of the build, in the batch's own task: the draw the reader is
+            // reading gives up the blocks the editor has just built, so the frame the
+            // browser draws next holds each of them once (dispatch://INFRA-341, R11). The
+            // blocks go above the rest of the draw, which is why the editor's root stands
+            // before it in the page. Where the splice is above the top of the screen, the
+            // scroll moves with it: the editor's copy of a block is not the same height as
+            // the draw's once either has painted, and the reader's words must not slide
+            // under them a batch at a time.
+            onBatch: (built) => {
+              // The reader has the editor from this task on, so the reads the page held
+              // behind the first batch go out now (`first-batch.ts`). Said on every batch
+              // because the first is the only one that changes the answer, and a batch
+              // costs nothing to say it again.
+              if (page) {
+                theFirstBatchIsAwaited(false);
+              }
+              const preview = documentPreview(parent.parentElement);
+              if (preview === null) {
+                return undefined;
+              }
+              if (theDraw?.element !== preview) {
+                theDraw = { element: preview, take: takesTheBuiltBlocks(preview) };
+              }
+              const take = theDraw.take;
+              const before = preview.getBoundingClientRect();
+              return () => {
+                take(built);
+                if (before.top >= 0 || preview.childElementCount === 0) {
+                  return;
+                }
+                moveTheScroll(preview, preview.getBoundingClientRect().bottom - before.bottom);
+              };
+            },
+            // A pane takes no edits: a reader who clicks into the text from a list never
+            // changes the document they are reading. The admission may say read-only too, and
+            // the binding reads both again before it builds anything.
+            readOnly: !page || isClosedRef.current || schemaReadOnlyRef.current,
+            user: {
+              color: colorForLogin(userRef.current.login),
+              name: userRef.current.login,
+            },
+            blockSchema,
+            watchPicture: (route, onPicture) => watchPicturePath(queryClient, route, onPicture),
+            // The open document's own reference, never a version's: a pointer names a block
+            // of the document by it, so the editor refuses one to a block of a type the
+            // pointer's attribute does not allow.
+            documentRef,
+            ydoc: connection.doc,
+          }).catch((error: unknown) => {
+            // A chunk that never arrived, or an editor that threw as it was built: the reader
+            // is told now rather than at a sync that would bind nothing.
+            reportLoadFailure(error);
+            return undefined;
+          });
         })
         .catch(reportLoadFailure);
     };
@@ -1037,10 +1089,9 @@ export function ProofDocument({
   }, [
     artifact.id,
     blockSchema,
-    createEditor,
+    constructEditor,
     documentRef,
     focusInEditor,
-    loadEditor,
     loadTransport,
     page,
     pendingWaiter,

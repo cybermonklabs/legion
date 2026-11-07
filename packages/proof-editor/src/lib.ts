@@ -384,11 +384,69 @@ function installSelfHealingParser(ctx: Ctx): void {
   });
 }
 
-export async function createProofEditor(
+/**
+ * An editor that has been constructed and has no document in it yet: everything the editor is
+ * made of that owes nothing to the document - Milkdown and its presets, the schema's typed
+ * blocks, every plugin's view, the host's own node views - is built and standing, and the
+ * document's blocks are not.
+ *
+ * It exists for a host whose document is still arriving: Dispatch's socket carries the whole
+ * state frame of a large document, and the construction cost 415 ms of the main thread for an
+ * 81,294-character document and 493 ms for a 406,319-character one, on a phone at 4x CPU
+ * throttling, after the sync rather than beside it (dispatch://INFRA-341, R11). A host that
+ * has its document already - a past version, a reading pane - calls `createProofEditor`, which
+ * is the two phases in one call.
+ *
+ * The root is hidden for the whole of the construction, so the editor a host builds while its
+ * reader is reading the document's own draw puts no empty document on the screen in front of
+ * them; the first batch of `bind` shows it (`./progressive-build.ts`).
+ */
+export interface ProofEditorConstruction {
+  /** Binds the constructed editor to `opts.ydoc`'s fragment, builds the document into it a
+   *  batch of blocks at a time, and answers the handle. Call it once, when the document has
+   *  arrived. */
+  bind(): Promise<ProofEditorHandle>;
+  /** Toggles editability before the binding, for an admission that lands while the socket is
+   *  still syncing. The handle's `setReadOnly` is this same call. */
+  setReadOnly(readOnly: boolean): void;
+  /** Tears down a construction that will never be bound, and shows the root again. The handle's
+   *  `destroy` is this same call. */
+  destroy(): void;
+}
+
+/**
+ * The editor without its document: the first of the two phases, for the reason
+ * `ProofEditorConstruction` gives. What it answers binds the Yjs fragment and builds the
+ * document into it.
+ */
+export async function constructProofEditor(
   root: HTMLElement,
   opts: CreateProofEditorOptions,
-): Promise<ProofEditorHandle> {
+): Promise<ProofEditorConstruction> {
   root.classList.add('proof-editor');
+  // Hidden from here rather than from the first batch, because the construction now runs while
+  // the reader is reading the document's own draw: an editor standing empty in front of that
+  // draw for the length of a sync is a second document, blank, above the one they are reading.
+  const shown = root.style.display;
+  root.style.display = 'none';
+  try {
+    return await theConstruction(root, opts, shown);
+  } catch (error) {
+    // A root no editor ever stood in is the host's again, and the host builds its next editor
+    // in the same element: a root left hidden would never be shown by the editor that follows,
+    // which reads its own `shown` off this style.
+    root.style.display = shown;
+    throw error;
+  }
+}
+
+/** The whole of a construction, under the root `constructProofEditor` has hidden; `shown` is
+ *  the `display` that root is given back when the editor is revealed or destroyed. */
+async function theConstruction(
+  root: HTMLElement,
+  opts: CreateProofEditorOptions,
+  shown: string,
+): Promise<ProofEditorConstruction> {
   setCurrentActor(`human:${opts.user.name}`);
   let alive = true;
   const heatMapMode: HeatMapMode = opts.heatMapMode ?? 'background';
@@ -514,53 +572,6 @@ export async function createProofEditor(
   collabService.mergeOptions({
     yCursorOpts: { cursorBuilder: collabCursorBuilder, selectionBuilder: collabSelectionBuilder },
   });
-  // The document is built a batch of blocks at a time, each batch a task of its own, and the
-  // binding adopts the document and the mapping those batches made instead of drawing the whole
-  // document itself in one task (./progressive-build.ts, dispatch://INFRA-341 R11). The root is
-  // hidden until the first of those batches, and shown in the task that batch lands in: from
-  // there the reader has the editor's own first block and every block after it as it is built,
-  // and the host takes its own draw of each batch's blocks off the page in that same task
-  // (`onBatch`), so no frame holds a block twice. `data-write-path="live"` says the blocks on
-  // the screen take edits that reach the Yjs document - through the window onto the blocks
-  // already built until the last batch, through the binding after it - which is what a reader,
-  // and the measurement that times them (`e2e/large-documents-page.ts` in Dispatch), reads the
-  // editor's first usable block by.
-  const shown = root.style.display;
-  root.style.display = 'none';
-  try {
-    await buildTheDocumentInBatches({
-      // `mapping` is `ySyncPlugin`'s own option - the one `initProseMirrorDoc` exists to fill -
-      // and Milkdown's `YSyncOpts`, written before y-prosemirror had it, does not name it;
-      // CollabService passes the whole object through to the plugin (`#createPlugins`).
-      adopt: (mapping) => {
-        collabService.mergeOptions({ ySyncOpts: { mapping } as unknown as YSyncOpts });
-        collabService.connect();
-      },
-      fragment: opts.ydoc.getXmlFragment('prosemirror'),
-      live: () => {
-        root.style.display = shown;
-        root.dataset.writePath = 'live';
-      },
-      onBatch: opts.onBatch,
-      schema: editor.ctx.get(schemaCtx),
-      view,
-    });
-  } catch (error) {
-    // Nothing will reveal a root whose editor was never answered.
-    root.style.display = shown;
-    throw error;
-  }
-  // The third task of the three: the host's swap runs when this resolves, so this resolves a
-  // task after the binding connected rather than in its microtask.
-  await endOfTask();
-
-  if (opts.awareness) {
-    // Mirrors CollabClient#setLocalUser: yCursorPlugin's cursor builder reads
-    // `awareness.getStates().get(clientId).user`.
-    opts.awareness.setLocalStateField('user', opts.user);
-    installCollabCursorsWhenReady(view, editor.ctx, collabService, opts.awareness, () => alive);
-  }
-
   const unregisterPopoverHook = marginMode
     ? () => {}
     : registerPopoverHookInstance(view, opts.onMarkAction);
@@ -574,7 +585,7 @@ export async function createProofEditor(
     },
   });
 
-  return {
+  const handle: ProofEditorHandle = {
     view,
     ...typedBlockCommands,
     getMarkdown(): string {
@@ -681,6 +692,75 @@ export async function createProofEditor(
       void editor.destroy();
     },
   };
+
+  const bind = async (): Promise<ProofEditorHandle> => {
+    // The document is built a batch of blocks at a time, each batch a task of its own, and the
+    // binding adopts the document and the mapping those batches made instead of drawing the
+    // whole document itself in one task (./progressive-build.ts, dispatch://INFRA-341 R11). The
+    // root has been hidden since the construction, and is shown in the task the first batch
+    // lands in: from there the reader has the editor's own first block and every block after it
+    // as it is built, and the host takes its own draw of each batch's blocks off the page in
+    // that same task (`onBatch`), so no frame holds a block twice. `data-write-path="live"` says
+    // the blocks on the screen take edits that reach the Yjs document - through the window onto
+    // the blocks already built until the last batch, through the binding after it - which is
+    // what a reader, and the measurement that times them (`e2e/large-documents-page.ts` in
+    // Dispatch), reads the editor's first usable block by.
+    try {
+      await buildTheDocumentInBatches({
+        // `mapping` is `ySyncPlugin`'s own option - the one `initProseMirrorDoc` exists to fill -
+        // and Milkdown's `YSyncOpts`, written before y-prosemirror had it, does not name it;
+        // CollabService passes the whole object through to the plugin (`#createPlugins`).
+        adopt: (mapping) => {
+          collabService.mergeOptions({ ySyncOpts: { mapping } as unknown as YSyncOpts });
+          collabService.connect();
+        },
+        fragment: opts.ydoc.getXmlFragment('prosemirror'),
+        live: () => {
+          root.style.display = shown;
+          root.dataset.writePath = 'live';
+        },
+        onBatch: opts.onBatch,
+        schema: editor.ctx.get(schemaCtx),
+        view,
+      });
+    } catch (error) {
+      // Nothing will reveal a root whose editor was never answered.
+      root.style.display = shown;
+      throw error;
+    }
+    // The third task of the three: the host's swap runs when this resolves, so this resolves a
+    // task after the binding connected rather than in its microtask.
+    await endOfTask();
+
+    if (opts.awareness) {
+      // Mirrors CollabClient#setLocalUser: yCursorPlugin's cursor builder reads
+      // `awareness.getStates().get(clientId).user`.
+      opts.awareness.setLocalStateField('user', opts.user);
+      installCollabCursorsWhenReady(view, editor.ctx, collabService, opts.awareness, () => alive);
+    }
+
+    return handle;
+  };
+
+  return {
+    bind,
+    destroy: () => handle.destroy(),
+    setReadOnly,
+  };
+}
+
+/**
+ * The two phases in one call, for a host whose document is already in hand: a past version, a
+ * reading pane, a test. A host whose document is still arriving over a socket constructs the
+ * editor as the socket opens and binds it when the state frame has been applied, so the
+ * construction runs beside the sync rather than after it (`constructProofEditor`).
+ */
+export async function createProofEditor(
+  root: HTMLElement,
+  opts: CreateProofEditorOptions,
+): Promise<ProofEditorHandle> {
+  const construction = await constructProofEditor(root, opts);
+  return construction.bind();
 }
 
 export default createProofEditor;

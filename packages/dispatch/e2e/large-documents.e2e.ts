@@ -829,6 +829,59 @@ test("every block of a document is on the screen exactly once as its editor is b
   }
 });
 
+/** The editor's root, whether or not anything of the document is in it: `constructProofEditor`
+ *  puts this class on the element it builds into, before the binding draws a block
+ *  (`packages/proof-editor/src/lib.ts`). `liveEditorRoot` below is the later moment its first
+ *  batch lands. */
+const editorRoot = ".proof-editor";
+
+// The editor is built while its socket is still syncing, and only bound when the state frame
+// has been applied: nothing the construction is made of - Milkdown, the schema's typed blocks,
+// every plugin's view, Dispatch's own node views - depends on a block of the document, and the
+// whole of it used to be paid for after the sync (dispatch://INFRA-341, R11,
+// `@legion/proof-editor`'s `constructProofEditor`). This row holds the socket open-ended, so
+// nothing ever syncs: an editor root in the page is then an editor built with no document
+// anywhere near it, which is the order rather than the clock. Before the split there was
+// nothing to find - the page called the editor's one factory inside its `onSynced` - and the
+// measured opening timeline says the same thing in milliseconds.
+//
+// The reader keeps their own draw throughout: the root is hidden until the first batch, which
+// is the binding's, so the editor standing behind it puts no empty document in front of them.
+test("the editor is built while the document's socket is still syncing @phone", async ({
+  browser,
+}) => {
+  test.setTimeout(300_000);
+  const { path } = await seedDocument("while-syncing.md", shortDocument);
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    const transport = await documentTransport(page, { holding: true });
+    await page.goto(path);
+
+    // The reader's own draw of the document, and behind it an editor with nothing in it.
+    const drawn = page.locator('[aria-label="Document text"]');
+    await expect(drawn).toContainText("The paragraph a reader meets first.");
+    const root = page.locator(editorRoot);
+    await expect(root).toHaveCount(1, { timeout: 60_000 });
+    // Hidden, so the draw is the only document on the screen; no first batch has landed, so
+    // the root takes no edits; and the editor wears no name, so its build is not over.
+    await expect(root).toBeHidden();
+    await expect(editorBeingBuilt(page)).toHaveCount(0);
+    await expect(documentEditor(page)).toHaveCount(0);
+    // And nothing of the document is in it: every block on the screen is the draw's.
+    expect(await page.locator(`${editorRoot} [data-block-id]`).count()).toBe(0);
+
+    // The state frame, at last: the editor that was already standing takes the document.
+    await transport.release();
+    await expect(documentEditor(page)).toBeVisible({ timeout: 120_000 });
+    await expect(documentEditor(page)).toContainText("The paragraph a reader meets first.");
+    await expect(connectedDot(page)).toBeVisible();
+  } finally {
+    await alice.close();
+  }
+});
+
 // The three rows below are about the editor a reader has before its last batch: its blocks are
 // on the screen and they take edits, which reach the Yjs document through a window onto the
 // blocks already built (`packages/proof-editor/src/progressive-build.ts`, acceptance A7). The
@@ -1246,7 +1299,7 @@ const aTimerEveryMs = 2_000;
  *  init script can carry (`editorBeingBuilt` is the same root as a locator). */
 const liveEditorRoot = '.proof-editor[data-write-path="live"]';
 
-/** The finished editor's own name, which the host writes once `createProofEditor` has answered
+/** The finished editor's own name, which the host writes once the binding has answered
  *  its handle - a task after the binding connected - so an editor wearing it is one whose
  *  build is over (`web/src/features/doc/editor.ts`). */
 const namedEditor = '[role="textbox"][aria-label="Document editor"]';

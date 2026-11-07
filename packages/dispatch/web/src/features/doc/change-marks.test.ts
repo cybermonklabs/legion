@@ -10,7 +10,7 @@ import {
   REMOVED_BLOCK_CLASS,
   REMOVED_WORDS_CLASS,
 } from "./change-marks";
-import { createEditor } from "./editor";
+import { constructEditor } from "./editor";
 import { blockSchemaCache } from "./schema";
 
 /** The document the editor would render for `markdown`: `changeMarksAgainst` reads the editor's
@@ -96,16 +96,19 @@ test("a paragraph replaced by a rule draws the words it lost in the editor", asy
   const lost = "The plan ships behind a flag today.";
   const root = document.body.appendChild(document.createElement("div"));
   const blockSchema = await blockSchemaCache.load(() => Promise.reject(new Error("no schema")));
-  const handle = await createEditor(root, {
-    awareness: null,
-    blockSchema,
-    // This row reads the editor's decorations, never its decision blocks.
-    onAskBlockHosts: () => {},
-    // No picture in this row's document, so nothing ever asks for a latest version.
-    watchPicture: () => () => {},
-    user: { color: "#f59e0b", name: "alice" },
-    ydoc: new Y.Doc(),
-  });
+  // The document is in hand, so the two phases run back to back (`constructEditor`).
+  const handle = await (
+    await constructEditor(root, {
+      awareness: null,
+      blockSchema,
+      // This row reads the editor's decorations, never its decision blocks.
+      onAskBlockHosts: () => {},
+      // No picture in this row's document, so nothing ever asks for a latest version.
+      watchPicture: () => () => {},
+      user: { color: "#f59e0b", name: "alice" },
+      ydoc: new Y.Doc(),
+    })
+  ).bind();
 
   try {
     handle.setMarkdown("# Plan\n\n---\n");

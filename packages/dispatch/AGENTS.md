@@ -1154,8 +1154,8 @@ every importer sees the load failure itself: a route's error box names the faile
 the first editor a page mounts after its stylesheet failed shows the document's failed state. A
 load that still rejects (the tab's reloads already spent) sets the document's connection state
 to `failed` — a rose dot — and renders the error under the toolbar rather than staying
-"connecting". `DocumentRuntime` supplies the transport and editor creation seams
-(`loadTransport`, `createEditor`); happy-dom tests use its doubles from
+"connecting". `DocumentRuntime` supplies the transport and editor construction seams
+(`loadTransport`, `constructEditor`); happy-dom tests use its doubles from
 `web/src/__tests__/document-runtime.ts`, while `e2e/editor.ts` drives the real editor in
 Playwright. The editor entry, typed blocks and block ids are legion's own, in
 `packages/proof-editor` (its AGENTS.md has the boundary); a gap there is fixed there. Only the
