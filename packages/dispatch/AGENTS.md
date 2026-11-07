@@ -1507,8 +1507,9 @@ exceptions on record rather than the shape to copy.
 The markdown shapes the parity rows read live in
 `packages/envoy/internal/dispatch/pmdoc/testdata/corpus/`, and all three suites
 read them from there rather than copying one: the Go reader's tests through
-`testdata/fixtures.json`, the web unit tests and the surviving browser rows
-through `web/src/__tests__/pmdoc-fixtures.ts`. A new shape is a corpus file and
+`testdata/fixtures.json`, the web unit tests and the surviving browser rows of
+the seven families whose shapes it holds through
+`web/src/__tests__/pmdoc-fixtures.ts`. A new shape is a corpus file and
 `bun run gen` in `pmdoc/gen`, never a markdown string in a spec. Each family
 keeps one browser row. Where the family's markdown is stored as a document it
 is the row that reads that document back in a browser, because the spec editor
@@ -1519,11 +1520,12 @@ five of them from a past version. `e2e/unknown-directive.e2e.ts` is the eighth:
 no document holds its bodies, so its one row reads the Conversation instead.
 
 Two files keep markdown of their own, each for a reason the table cannot meet.
-`packages/envoy/internal/dispatch/pmdoc/writer_spelling_test.go` copies corpus
-markdown into its rows because what it asserts is the bytes Go stores for a
-shape, which the table does not carry: `fixtures.json`'s `rendered_by_milkdown`
-is the browser engine's re-serialization of its own parse (a backslash escape)
-where Go stores a character reference, and `pmdoc/render_test.go`'s
+`packages/envoy/internal/dispatch/pmdoc/writer_spelling_test.go` spells its rows
+itself - corpus blocks among them, and the bodies two deleted browser rows wrote -
+because what it asserts is the bytes Go stores for a shape, which the table does
+not carry: `fixtures.json`'s `rendered_by_milkdown` is the browser engine's
+re-serialization of its own parse (a backslash escape) where Go stores a
+character reference, and `pmdoc/render_test.go`'s
 `TestRenderMatchesMilkdownForFixtures` compares the two only through `plain()`,
 which strips both. `e2e/unknown-directive.e2e.ts` keeps bodies of its own
 because each carries a container the block schema does not know, and the

@@ -43,10 +43,10 @@ import (
 // These pass as they are written: every shape here already parses in under a second of CPU time.
 // A second is the browser's own bound too - the longest a card's draw may hold the page's main
 // thread (longestHoldMs, packages/dispatch/e2e/main-thread-hold.ts) - and six of the nine bodies
-// here are the very bytes those rows draw; the other three reach no browser, so this bound is
-// all they have. It is the guard over the parse's own costs as well - the block ids a document's
-// blocks are minted from, and the tab-indentation check each open block runs on each line -
-// which a regression would make superlinear again.
+// here are the very bytes those rows draw; the other three reach no browser, so this is the only
+// time bound they have. It is the guard over the parse's own costs as well - the block ids a
+// document's blocks are minted from, and the tab-indentation check each open block runs on each
+// line - which a regression would make superlinear again.
 
 // Every shape at the block bound is stored or refused as it is, and the parse of it spends less
 // CPU time than heavyBodyCPUBudget allows.

@@ -33,9 +33,9 @@ import (
 
 // BlockCap is the longest one block of a body may be, in characters: the bound the comment,
 // message and broadcast routes refuse a longer block against (contracts.DispatchBlockUnits).
-// The shapes below are grown against it - to it, but for the two runs of brackets at 30,000 -
-// so what is measured is the worst a reader can be sent in one block, however many blocks the
-// shape spells those characters as.
+// The shapes below are grown against it - to it, but for the marker chain at one under it and
+// the two runs of brackets at 30,000 - so what is measured is the worst a reader can be sent in
+// one block, however many blocks the shape spells those characters as.
 const BlockCap = contracts.DispatchBlockUnits
 
 // MaxNesting is how many blocks a markdown document may open inside one another, the bound the

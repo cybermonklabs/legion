@@ -5,7 +5,7 @@
  * browser's own headless engine over each corpus file and records what it answers - the parsed
  * document, its Yjs update, the markdown it serializes back to, and the reading
  * (`@legion/proof-editor/reading`) a reader sees of it - so the Go reader's tests, these web unit
- * tests and the browser row of each parity family all compare against one artifact.
+ * tests and the browser rows of the seven parity families it holds compare against one artifact.
  *
  * `bun run check` in `packages/envoy/internal/dispatch/pmdoc/gen` is what keeps the table current:
  * it regenerates from the corpus and fails where the checked-in files differ, and CI runs it

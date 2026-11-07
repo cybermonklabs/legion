@@ -123,8 +123,8 @@ function wholeTable(): TableReading[] {
 /** The bound every row that reads `wholeTable()` carries, since the one that runs first pays
  *  the whole fill above and bun's 5 s default stands too near it. Thirty seconds leaves room
  *  over a loaded run and still fails a hung row, where sixty would mostly cost run time. A row
- *  left on the default times out wherever it is the first reader: the leaf-mark row below did,
- *  under `--timeout 1900`. */
+ *  left on bun's default can time out as the first reader on a loaded machine, the default
+ *  being about twice the idle cost; alone under `--timeout 1900`, the leaf-mark row did. */
 const WHOLE_TABLE_TIMEOUT_MS = 30_000;
 
 // (a) The reading the table stores for a document - its paragraphs and its tables - is the

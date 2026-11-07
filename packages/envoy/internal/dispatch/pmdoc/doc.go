@@ -45,7 +45,8 @@
 //
 // testdata/corpus/ is the one markdown table of this repository: this package's
 // tests read it through testdata/fixtures.json, Dispatch's web unit tests and
-// one browser row per markdown parity family read the same file through
+// the browser row of each markdown parity family whose shapes the corpus holds
+// (seven of the eight) read the same file through
 // packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts, and none of the three
 // keeps a copy of a shape but for two, each of which the table cannot hold:
 //

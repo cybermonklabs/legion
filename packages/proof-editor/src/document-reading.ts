@@ -2,8 +2,8 @@
  * What a reader sees of a parsed document: each paragraph's text with the text of the emphasis,
  * strong and strikethrough elements in it, and each table's cells. One definition, read by the Go
  * reader's fixture table (`packages/envoy/internal/dispatch/pmdoc/testdata/fixtures.json`, whose
- * generator stores a `reading` per corpus file), by Dispatch's web unit tests and by one browser
- * row per parity family, so the three cannot drift apart on what a document reads as.
+ * generator stores a `reading` per corpus file), by Dispatch's web unit tests and by the browser
+ * rows of five of its eight parity families, so the three cannot drift on what a document reads.
  *
  * The reading is taken from the DOM the schema draws, through ProseMirror's own `DOMSerializer`,
  * and never from a walk over the document's nodes. Two things a walk cannot know decide it: the
