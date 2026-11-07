@@ -1,9 +1,26 @@
-import { expect, test } from "bun:test"
+import { afterEach, expect, test } from "bun:test"
 import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 
 const hookEntry = resolve(import.meta.dir, "..", "hooks", "session-hook.ts")
+
+/** Every hook process `runHook` has spawned, kept so a row that its per-test limit abandons
+ * mid-wait leaves no `bun hooks/session-hook.ts` behind, waiting on a jj that never answers. */
+const spawnedHooks: Bun.Subprocess[] = []
+
+// First `afterEach` of this scope on purpose: bun runs same-scope hooks in registration order and
+// skips the rest once one throws, so the kill must not sit behind an assertion that can fail.
+afterEach(() => {
+  for (const child of spawnedHooks) {
+    try {
+      child.kill()
+    } catch {
+      // The child exited on its own: there is nothing left to kill.
+    }
+  }
+  spawnedHooks.length = 0
+})
 
 /** Runs the hook as Claude Code does, with `env` as its whole environment. The session's cwd is
  * the test's scratch HOME unless the input names one: the hook reads `<cwd>/.envoy/envoy.json`, so a
@@ -18,6 +35,7 @@ async function runHook(
     stdout: "pipe",
     stderr: "pipe",
   })
+  spawnedHooks.push(run)
   const [exitCode, stdout, stderr] = await Promise.all([
     run.exited,
     new Response(run.stdout).text(),
@@ -768,10 +786,12 @@ test("gives up on a jj that never answers, keeping the other exports and the sum
   const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-jj-hangs-"))
   const stateDir = join(scratch, "state")
   await mkdir(stateDir)
-  const bin = await jjDirectory(scratch, "exec sleep 30")
+  // 300 s, not 30: a hook that stopped bounding its wait for jj would have returned behind a 30 s
+  // sleep well inside this row's 180 s limit and left the row green while broken. Nothing returns
+  // inside 300 s, so the limit below is what tells a bounded wait from an unbounded one.
+  const bin = await jjDirectory(scratch, "exec sleep 300")
   const envFile = join(scratch, "session-env.sh")
   const server = openAsksServer()
-  const started = Date.now()
   try {
     const result = await runHook(hookInput, {
       HOME: scratch,
@@ -785,7 +805,6 @@ test("gives up on a jj that never answers, keeping the other exports and the sum
     })
 
     expect(result.exitCode).toBe(0)
-    expect(Date.now() - started).toBeLessThan(15_000)
     expect(result.stdout).toStartWith("Dispatch authored-ask summary:\n")
     expect(await readFile(envFile, "utf8")).toBe(
       [
@@ -799,7 +818,13 @@ test("gives up on a jj that never answers, keeping the other exports and the sum
     server.stop(true)
     await rm(scratch, { recursive: true, force: true })
   }
-})
+  // A hang guard, not a budget: the only thing that reaches this limit is a hook that waits for a
+  // jj that never answers, which costs the full 300 s above. The row itself costs under 4 s idle
+  // and 86 s at its worst over 40 runs on a 2-CPU host carrying 240 busy loops, so 180 s is far
+  // above what load can cost it and far below what the defect costs. Written here rather than
+  // left to the package's `bun test --timeout=60000`, so a run of this file without that flag
+  // gets the same guard.
+}, 180_000)
 
 // `CLAUDE_ENV_FILE` is one file per session id
 // (`<config>/session-env/<session id>/sessionstart-hook-<n>.sh` on the pinned Claude Code
