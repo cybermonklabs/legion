@@ -259,3 +259,10 @@ func countDocumentRender() {
 		count.Add(1)
 	}
 }
+
+// RoomCapsForTest is the service's room and connection caps (reserveRoom, reserveConnection).
+// cmd/dispatch's settings test reads it to see DISPATCH_MAX_LIVE_ROOMS and
+// DISPATCH_MAX_DOC_CONNECTIONS reach the service through Deps.
+func (s *Service) RoomCapsForTest() (rooms, connections int) {
+	return s.roomCap, s.connectionCap
+}

@@ -122,10 +122,13 @@ export type UserAgentStateUpdatedEventPayload = z.output<
   typeof UserAgentStateUpdatedEventPayloadSchema
 >;
 
-/** `user_thread_state.updated`: one viewer's read mark on one thread of the Replies page moved.
- *  It carries no state; the viewer's other tabs and devices refetch their replies. */
+/** `user_thread_state.updated`: one viewer's read of the Inbox's threads moved. It carries no
+ *  state; the viewer's other tabs and devices refetch theirs. `thread_id` names the thread when
+ *  one thread was marked (`PUT /api/v1/me/threads/{id}/read`); a mark-all
+ *  (`POST /api/v1/me/inbox/read`) names no thread, since one event stands for every thread it
+ *  marked in that project. */
 export const UserThreadStateUpdatedEventPayloadSchema = z
-  .strictObject({ login: z.string(), thread_id: z.string() })
+  .strictObject({ login: z.string(), thread_id: z.string().optional() })
   .readonly();
 
 export type UserThreadStateUpdatedEventPayload = z.output<

@@ -327,7 +327,7 @@ func (s *Service) applyLiveWritten(ctx context.Context, artifactID string, actor
 	}
 	// A write whose transactions changed nothing made no update and writes nothing. Appended, an
 	// empty update would refresh the anchors and mark the document owing a settlement again
-	// (markUpdateOwed), which every repair pass over a closed issue would then sweep.
+	// (updateOwedStatement), which every repair pass over a closed issue would then sweep.
 	if len(op.updates) == 0 {
 		return websocket.ErrNoChanges
 	}
@@ -667,7 +667,7 @@ func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, 
 			if err := s.refuseDroppedAskBlocks(ctx, artifactID, target); err != nil {
 				return &ErrInvalidAskBlock{Reason: err}
 			}
-		} else if err := refuseChangedAsks(current, target, readAskBlockStrictly, newAskMarkdown()); err != nil {
+		} else if err := refuseChangedAsks(current, target, readWrittenAskBlockStrictly, newAskMarkdown()); err != nil {
 			return &ErrInvalidAskBlock{Reason: err}
 		}
 		var offsets []pmdoc.BlockOffset

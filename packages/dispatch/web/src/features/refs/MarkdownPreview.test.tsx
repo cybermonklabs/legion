@@ -302,11 +302,13 @@ test("a long body is parsed whole in the worker, so formatting past any visible 
 });
 
 test("a body the engine cannot parse shows its literal text, led, and never as HTML", async () => {
-  // Proof's schema has no node for raw HTML, so the parse throws. This is a text Dispatch does
-  // not store - the only kind the browser still parses - so it carries no tree and no mark:
-  // the marks a search hit shows now ride in the snippet's own tree, and a body with no tree
-  // has none. That is the deliberate change; what this row holds still is the fallback itself.
-  const source = "<script>alert(1)</script> astrolabe <mark>x</mark>";
+  // A span of a mark kind this schema has no parser for is a body the parse still throws on
+  // (`markdown-engine.test.ts`); raw HTML is no longer one, since the engine draws a block of
+  // HTML as a paragraph holding its text. This is a text Dispatch does not store - the only kind
+  // the browser still parses - so it carries no tree and no mark: the marks a search hit shows
+  // now ride in the snippet's own tree, and a body with no tree has none. That is the deliberate
+  // change; what this row holds still is the fallback itself.
+  const source = '<span data-dispatch="bogus">alert(1)</span> astrolabe <mark>x</mark>';
   const { preview, rerender, view } = renderPreview({
     lead: "Replying to Planner — ",
     lines: 2,
@@ -315,7 +317,7 @@ test("a body the engine cannot parse shows its literal text, led, and never as H
   try {
     await waitFor(() => expect(preview().getAttribute("data-markdown-fallback")).toBe("true"));
     expect(preview().textContent).toBe(`Replying to Planner — ${source}`);
-    expect(preview().querySelector("script")).toBeNull();
+    expect(preview().querySelector("span[data-dispatch]")).toBeNull();
     // The author's own `<mark>` is text, never an element.
     expect(marks(preview())).toEqual([]);
 

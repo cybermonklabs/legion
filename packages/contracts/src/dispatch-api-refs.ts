@@ -58,11 +58,13 @@ export const ReferenceChangesPayloadSchema = z.strictObject(referenceChangesFiel
 
 export type ReferenceChangesPayload = z.output<typeof ReferenceChangesPayloadSchema>;
 
-/** Whose Replies count a write can have moved, mirroring the server's `ThreadLogins` payload
- *  field: every login with a Replies row (the server's `user_threads`) on the write's thread once
- *  the write is in, sorted, `[]` when nobody has one. Each payload family names the event types
- *  that carry it; it is absent from every other type and from every event written before the
- *  field existed, which a reader takes as "anyone's count may have moved". */
+/** Whose Inbox a write can have moved, mirroring the server's `ThreadLogins` payload field:
+ *  sorted, `[]` when the write moves nobody's. On a comment, an ask or an issue message it is
+ *  every login with a Replies row (the server's `user_threads`) on the write's thread once the
+ *  write is in; on a direct (issue-less) message, which keeps no Replies row, it is the thread
+ *  root author's login, the one Inbox that conversation's Agent row sits in. Each payload family
+ *  names the event types that carry it; it is absent from every other type and from every event
+ *  written before the field existed, which a reader takes as "anyone's Inbox may have moved". */
 export const threadLoginsFields = {
   thread_logins: z.array(z.string()).optional(),
 };

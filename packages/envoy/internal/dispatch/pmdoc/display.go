@@ -586,6 +586,7 @@ func displayContentFit(name string, children []string) (fill, fits bool) {
 // line that opens like a directive, which is the text the browser reads it as; a block shown as
 // its own text; and a typed block the drawing kept, whose own blocks it still holds.
 func displayRefusals(root ast.Node, source []byte) error {
+	htmlFlow := htmlFlowLines(root)
 	return ast.Walk(root, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
 		if !entering {
 			return ast.WalkContinue, nil
@@ -598,7 +599,7 @@ func displayRefusals(root ast.Node, source []byte) error {
 		case *typedDirective:
 			return ast.WalkContinue, nil
 		}
-		if err := blockRefusal(node, source, 1); err != nil {
+		if err := blockRefusal(node, source, 1, htmlFlow); err != nil {
 			return ast.WalkStop, err
 		}
 		switch node.(type) {

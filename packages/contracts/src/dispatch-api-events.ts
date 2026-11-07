@@ -95,9 +95,9 @@ export type HandoffRecordedPayload = z.output<typeof HandoffRecordedPayloadSchem
  * The payload of a `server.started` envelope: the build commit every live Dispatch server process
  * serves (a fleet any of whose processes carries no stamped commit is never announced) and when
  * the fleet was found serving it, by the database's clock, in UTC. The field is named `started_at`
- * because the Go writer and the Legion daemon carry that name. The Legion daemon compares the
- * commit with the merges of its open production checks. Strict: the Go writer emits exactly these
- * two fields.
+ * because the Go writer carries that name. The Legion daemon reads none of
+ * it: nothing a Dispatch build announces wakes a production check. Strict: the Go writer emits
+ * exactly these two fields.
  */
 export const DispatchServerStartedPayloadSchema = z.strictObject({
   commit: z.string().min(1),

@@ -363,7 +363,7 @@ func (st *settlement) readLocked(ctx context.Context, parent context.Context) (s
 	// Whom the ask blocks' reconciliation names, as the document's pending authors stand before
 	// this settlement stores anything. It stores nothing until it has reconciled them: the copy
 	// lock that reconciliation can take (copiedAskSources, owedCopiesOf) comes before any
-	// pending-settlement row, which each append writes (markUpdateOwed), in every transaction
+	// pending-settlement row, which each append writes (updateOwedStatement), in every transaction
 	// (lockProjectCopies). Its version's authors are taken again once it has stored the room's
 	// updates it holds (settlementCredit).
 	credit, err := settlementCredit(ctx, tx, state, room, first)

@@ -177,9 +177,10 @@ export interface CreateBroadcastInput {
   readonly session_ids: readonly string[];
 }
 
-/** `thread_logins` (the message's thread root, up `in_reply_to`) is carried by an issue message's
- *  `message.created` and `message.answered`; a direct (issue-less) conversation has no Replies
- *  thread, so its messages carry none. */
+/** `thread_logins` is carried by `message.created` and `message.answered`: on an issue message
+ *  the logins with a Replies row on its thread root (up `in_reply_to`), and on a direct
+ *  (issue-less) conversation's message, which keeps no Replies row, the thread root author's
+ *  login, the one Inbox that conversation's Agent row sits in (`[]` when no person opened it). */
 export const messageEventPayloadFields = {
   ...messageFields,
   /** First 160 characters of the reply target's body, or of the block it names (`reply_block`);

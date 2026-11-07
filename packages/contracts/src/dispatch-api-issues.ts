@@ -560,8 +560,10 @@ export const issueEventChangesFields = {
   changed: z.array(z.string()).optional(),
   /** The issue's parent chain after the write, parent first up to the root; `[]` for a root. */
   ancestors: z.array(z.string()).optional(),
-  /** Present only when the status moved: for a close or a reopen every login with a Replies row
-   *  on one of the issue's open asks, for any other status move `[]`. */
+  /** Present only when the status or the assignee moved: for a close or a reopen every login
+   *  with a Replies row on one of the issue's open asks, for an assignee move the assignee the
+   *  issue was taken from and the one it was given to, for the two together the sorted union of
+   *  both, and for any other status move `[]`. */
   thread_logins: z.array(z.string()).optional(),
 };
 
@@ -633,8 +635,8 @@ export type IssueReleasedEventPayload = z.output<typeof IssueReleasedEventPayloa
  * shipped it (by intake or by the reconcile), with the system actor `delivery-timeline`, and
  * published on the issue's subject (`notifications.dispatch.issue.<KEY>.issue.deployed`) as every
  * issue event is. `repo` and `number` name the pull request, `run_id` the production run, and
- * `completed_at` when that run's production job completed, in UTC. The Legion daemon wakes the
- * issue's production check on it. Strict: the Go writer
+ * `completed_at` when that run's production job completed, in UTC. The Legion daemon no longer
+ * reads it: nothing a deployment publishes wakes a production check. Strict: the Go writer
  * (`packages/envoy/internal/dispatch/delivery/deployed.go`) emits exactly these four fields.
  */
 export const IssueDeployedEventPayloadSchema = z.strictObject({

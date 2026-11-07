@@ -350,8 +350,8 @@ export const LIVE_SOCKET_MAX_SUBSCRIPTIONS = 64;
  * last process of the build before has gone, a restart on the announced build is not announced, and
  * a rollback to an earlier build is announced again. Its event id, source event id and dedupe key
  * are `dispatch-server-started-<commit>-<seq>`, `seq` being the announcement's own number. Mirrored
- * by `startup.Subject` in `packages/envoy/internal/dispatch/startup`, and matched whole by the
- * Legion daemon's intake.
+ * by `startup.Subject` in `packages/envoy/internal/dispatch/startup`. The Legion daemon's intake
+ * matches no subject to it: an envelope on it is no fact.
  */
 export const DISPATCH_SERVER_STARTED_SUBJECT = "notifications.dispatch.server.started";
 
