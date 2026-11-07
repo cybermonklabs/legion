@@ -3108,6 +3108,25 @@ jobs:
         env:
           DISPATCH_E2E_FILE_STORE_ENDPOINT: http://127.0.0.1:18333
           DISPATCH_E2E_FILE_STORE_BUCKET: dispatch-e2e-files
+      # What the run left behind, in the job's own log, where a reader of a failed row looks
+      # first. CI read `docker logs dispatch-e2e-files` for this before the job ran in a
+      # container of its own; the store's log is a file now, and the lanes' own servers write
+      # beside it. In the log and not only in the artifact below, because a path that resolves
+      # differently inside the container than the expression that names it uploads nothing and
+      # says so quietly, which is how run 42407623876 left its store's log unread.
+      - name: What the run left behind
+        if: always()
+        run: |
+          echo "=== $RUNNER_TEMP ==="
+          ls -l "$RUNNER_TEMP"
+          echo "=== the file store's log (tail) ==="
+          tail -80 "$RUNNER_TEMP/weed.log" 2>/dev/null || echo "no weed log"
+          echo "=== the lanes' own logs (tail) ==="
+          for log in "$RUNNER_TEMP"/dispatch-e2e-run-*/lane-*/log/*.log; do
+            [ -f "$log" ] || continue
+            echo "--- $log"
+            tail -30 "$log"
+          done
       # Always, not on failure alone: the memory and CPU readings are of the run that passed as
       # much as of the one that did not, and the report says what a green run ran. The file
       # store's log is here too, where CI reached for `docker logs` before this job ran in a
