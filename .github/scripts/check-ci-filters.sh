@@ -228,17 +228,19 @@
 #      package, the job and both lists, and a ci-caches.yaml with no race build at all fails
 #      too, since the lane would then be filled by nobody.
 #
-# A claimed go command is reduced only in its simple form, never parsed further: one line of
-# `go test|vet|build`, then relative package paths and only -v, -race, -count=N, -timeout D,
-# -buildvcs=false and one -tags T, that is its step's whole run: script (split at \n alone,
-# stripped of spaces and tabs, comments and blank lines aside; a script holding any character
-# outside printable ASCII, tab and \n is not simple), with no shell: on the step and no
-# defaults.run.shell on the job or the workflow, no container: on the job, no name outside
-# ENV_ALLOWED (test configuration go never reads; GO*, CGO_*, BASH_ENV, ENV, HOME,
-# XDG_CONFIG_HOME and PATH are outside it) in the workflow's, job's or step's env, no step of the
-# job writing $GITHUB_ENV or $GITHUB_PATH or running `go env -w`
-# (each reaches every later go command unseen), and the step's working directory (its own, else
-# the job's or workflow's defaults.run, else the root) the Run's. A -race line's closure is the
+# A claimed go command is reduced only in its simple forms, never parsed further: one line of
+# `go test|vet|build`, or of `go -C <directory>` and one of those three, under a leading run of
+# NAME=value assignments whose every name is in ENV_ALLOWED, then relative package paths and only
+# -v, -race, -count=N, -timeout D, -buildvcs=false and one -tags T, that is its step's whole run:
+# script (split at \n alone, stripped of spaces and tabs, comments and blank lines aside; a
+# script holding any character outside printable ASCII, tab and \n is not simple), with no shell:
+# on the step and no defaults.run.shell on the job or the workflow, no container: on the job, no
+# name outside ENV_ALLOWED (test configuration go never reads; GO*, CGO_*, BASH_ENV, ENV, HOME,
+# XDG_CONFIG_HOME and PATH are outside it) in the workflow's, job's or step's env or in front of
+# the command itself, no step of the job writing $GITHUB_ENV or $GITHUB_PATH or running
+# `go env -w` (each reaches every later go command unseen), and the step's working directory (its
+# own, else the job's or workflow's defaults.run, else the root) joined with the command's own
+# `go -C` the Run's. A -race line's closure is the
 # one `go list -race` lists, so its Run says race too. A script_run is held exact instead: the
 # script's line holding its text must be that text alone and uncontinued, under such an env,
 # shell and container (the job's and every one of its steps') and such a job; the script's
@@ -248,13 +250,14 @@
 # and lists Runs that stand for what the script compiles. While the step holds exactly that, under
 # such an env, shell, container and job, its go lines are claimed and the Runs' closures checked;
 # any difference makes every one of its Runs fall to everything. Any other claimed command - an
-# assignment such as GOFLAGS, another flag, a pipe, a quote, a substitution, a cd, another line in
+# assignment of a name outside ENV_ALLOWED such as GOFLAGS or GOOS, another flag, a pipe, a
+# quote, a substitution, a cd, another line in
 # its step - counts as reading every Go file of the repository, every file under a Go module's
 # directory (each directory holding a go.mod: testdata, embedded files and all) and every go.mod,
 # go.sum, go.work and go.work.sum, and fails naming the command unless its filter selects all of
-# them. So a cd, `go -C` or a step in another directory than the Run's can only widen what it
-# reads. It fails wide, never narrow: a new evasion is answered by falling to everything, not by
-# more parsing.
+# them. So a cd, a `go -C` naming another directory than the Run's or a step in one can only
+# widen what it reads. It fails wide, never narrow: a new evasion is answered by falling to
+# everything, not by more parsing.
 #
 # What it reads, and what it does not: ci.yaml's own steps (their run: text, shell, working
 # directory and env: blocks), the job's and workflow's env and defaults, and the scripts and steps

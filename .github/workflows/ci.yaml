@@ -1654,14 +1654,12 @@ jobs:
             # lint's notices step: the Go packages it loads for every release target (`legion`,
             # the listener, the agent-secrets binaries and client, every envoy-infra command), the
             # workspaces they build in, the target lists, the script holding the loops and the
-            # notices script it runs per target. Those go build lines sit in backslash-continued
-            # subshells that cd out of the repository root, which check-ci-filters.sh does not
-            # reduce, so the step counts as reading every Go file of the repository and every file
-            # under a Go module's directory (packages/daemon, packages/envoy and, inside it,
-            # packages/envoy/infra): any Go change selects it.
+            # notices script it runs per target. Every Go and module file of the repository is in
+            # it because scripts/go-third-party-notices.sh reads each target's `go list -deps`: a
+            # new import changes the notices with no module file changed.
             go_notices:
               - '.github/workflows/ci.yaml'
-              - &any_go_change ['**/*.go', '**/go.mod', '**/go.sum', '**/go.work', '**/go.work.sum', 'packages/daemon/**', 'packages/envoy/**']
+              - &any_go_change ['**/*.go', '**/go.mod', '**/go.sum', '**/go.work', '**/go.work.sum']
               - '.github/go-release-targets.json'
               - '.github/agent-secrets-client-targets.json'
               - '.github/envoy-infra-targets.json'

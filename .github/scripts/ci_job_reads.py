@@ -372,17 +372,17 @@ def go_notices_runs():
     for arch in targets(GO_TARGETS, "envoy"):
         out.append(script_run(NOTICES_LOOPS, '../../scripts/go-third-party-notices.sh "$notices/legion-envoy-$arch" ./cmd/listener',
                               started_by, ENVOY, ["./cmd/listener"], mode="build", env={"GOOS": "linux", "GOARCH": arch}))
-        out.append(script_run(NOTICES_LOOPS, '../../scripts/go-third-party-notices.sh "$notices/agent-secrets-$arch"',
+        out.append(script_run(NOTICES_LOOPS, '../../scripts/go-third-party-notices.sh "$notices/agent-secrets-$arch" ./cmd/agent-secrets ./cmd/agent-secrets-helper',
                               started_by, ENVOY, ["./cmd/agent-secrets", "./cmd/agent-secrets-helper"], mode="build",
                               env={"CGO_ENABLED": "0", "GOOS": "linux", "GOARCH": arch}))
     for target in targets(CLIENT_TARGETS, "agent-secrets-client"):
         goos, goarch = target.split("/")
-        out.append(script_run(NOTICES_LOOPS, "go build -buildvcs=false -o /dev/null ./cmd/agent-secrets",
+        out.append(script_run(NOTICES_LOOPS, f"go -C {ENVOY} build -buildvcs=false -o /dev/null ./cmd/agent-secrets",
                               started_by, ENVOY, ["./cmd/agent-secrets"], mode="build",
                               env={"CGO_ENABLED": "0", "GOOS": goos, "GOARCH": goarch}))
     for target in targets(INFRA_TARGETS, "envoy-infra"):
         goos, goarch = target.split("/")
-        out.append(script_run(NOTICES_LOOPS, "go build -buildvcs=false -o /dev/null ./cmd/...",
+        out.append(script_run(NOTICES_LOOPS, f"go -C {INFRA} build -buildvcs=false -o /dev/null ./cmd/...",
                               started_by, INFRA, ["./cmd/..."], mode="build",
                               env={"CGO_ENABLED": "0", "GOOS": goos, "GOARCH": goarch}))
     return out

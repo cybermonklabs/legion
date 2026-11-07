@@ -35,33 +35,49 @@ mkdir -p "$notices"
 notices=$(cd "$notices" && pwd)
 cd "$(dirname "$0")/../.."
 
+# One subshell per release target, rather than one around each command: the GOOS, GOARCH and
+# CGO_ENABLED it exports, and the cd below, end with it, so no target's build reaches the next.
+# Those three are exported rather than written in front of the command, and each go command names
+# its module with `go -C` rather than being run from inside it, so that every one of these lines
+# is a bare go command .github/scripts/check-ci-filters.sh can read: it reduces neither a line
+# that sets a name choosing the files go compiles nor one wrapped in a cd-ing subshell, and an
+# unreduced line would count as reading every Go file of the repository. The Run pinning each line
+# in .github/scripts/ci_job_reads.py declares that target's three names instead. The notices
+# script is the one command still run from inside its module: it reads the module of the directory
+# it runs in (`go list -m`, and go-licenses over the packages it is given), and takes no -C.
 for target in $(jq -r '.legion[]' .github/go-release-targets.json); do
-  (cd packages/daemon && CGO_ENABLED=0 GOOS="${target%/*}" GOARCH="${target#*/}" \
-    ../../scripts/go-third-party-notices.sh "$notices/legion-${target%/*}-${target#*/}" ./cmd/legion)
+  (
+    export CGO_ENABLED=0 GOOS="${target%/*}" GOARCH="${target#*/}"
+    cd packages/daemon
+    ../../scripts/go-third-party-notices.sh "$notices/legion-${target%/*}-${target#*/}" ./cmd/legion
+  )
 done
 for arch in $(jq -r '.envoy[]' .github/go-release-targets.json); do
-  (cd packages/envoy && GOOS=linux GOARCH="$arch" \
-    ../../scripts/go-third-party-notices.sh "$notices/legion-envoy-$arch" ./cmd/listener)
-  (cd packages/envoy && CGO_ENABLED=0 GOOS=linux GOARCH="$arch" \
-    ../../scripts/go-third-party-notices.sh "$notices/agent-secrets-$arch" \
-    ./cmd/agent-secrets ./cmd/agent-secrets-helper)
+  (
+    export GOOS=linux GOARCH="$arch"
+    cd packages/envoy
+    # The listener's release build sets no CGO_ENABLED, so its notices are written with the
+    # default; the agent-secrets pair's sets 0, which is exported after it rather than before.
+    ../../scripts/go-third-party-notices.sh "$notices/legion-envoy-$arch" ./cmd/listener
+    export CGO_ENABLED=0
+    ../../scripts/go-third-party-notices.sh "$notices/agent-secrets-$arch" ./cmd/agent-secrets ./cmd/agent-secrets-helper
+  )
 done
 for target in $(jq -r '.["agent-secrets-client"][]' .github/agent-secrets-client-targets.json); do
-  (cd packages/envoy && CGO_ENABLED=0 GOOS="${target%/*}" GOARCH="${target#*/}" \
-    go build -buildvcs=false -o /dev/null ./cmd/agent-secrets)
-  (cd packages/envoy && CGO_ENABLED=0 GOOS="${target%/*}" GOARCH="${target#*/}" \
-    ../../scripts/go-third-party-notices.sh "$notices/agent-secrets-${target%/*}-${target#*/}" \
-    ./cmd/agent-secrets)
+  (
+    export CGO_ENABLED=0 GOOS="${target%/*}" GOARCH="${target#*/}"
+    go -C packages/envoy build -buildvcs=false -o /dev/null ./cmd/agent-secrets
+    cd packages/envoy
+    ../../scripts/go-third-party-notices.sh "$notices/agent-secrets-${target%/*}-${target#*/}" ./cmd/agent-secrets
+  )
 done
 for target in $(jq -r '.["envoy-infra"][]' .github/envoy-infra-targets.json); do
-  (cd packages/envoy/infra && CGO_ENABLED=0 GOOS="${target%/*}" GOARCH="${target#*/}" \
-    go build -buildvcs=false -o /dev/null ./cmd/...)
-  (cd packages/envoy/infra && CGO_ENABLED=0 GOOS="${target%/*}" GOARCH="${target#*/}" \
-    ../../../scripts/go-third-party-notices.sh \
-    "$notices/pulumi-resource-envoy-infra-${target%/*}-${target#*/}" \
-    ./cmd/pulumi-resource-envoy-infra)
-  (cd packages/envoy/infra && CGO_ENABLED=0 GOOS="${target%/*}" GOARCH="${target#*/}" \
-    ../../../scripts/go-third-party-notices.sh \
-    "$notices/envoy-infra-${target%/*}-${target#*/}" ./cmd/envoy-infra)
+  (
+    export CGO_ENABLED=0 GOOS="${target%/*}" GOARCH="${target#*/}"
+    go -C packages/envoy/infra build -buildvcs=false -o /dev/null ./cmd/...
+    cd packages/envoy/infra
+    ../../../scripts/go-third-party-notices.sh "$notices/pulumi-resource-envoy-infra-${target%/*}-${target#*/}" ./cmd/pulumi-resource-envoy-infra
+    ../../../scripts/go-third-party-notices.sh "$notices/envoy-infra-${target%/*}-${target#*/}" ./cmd/envoy-infra
+  )
 done
 wc -l "$notices"/*

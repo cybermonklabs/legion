@@ -578,10 +578,12 @@ def continued(lines: list, i: int) -> bool:
     return lines[i].rstrip().endswith("\\") or (i > 0 and lines[i - 1].rstrip().endswith("\\"))
 
 
-# The one form of a go command this check reduces: `go test|vet|build`, then relative package paths
+# The forms of a go command this check reduces: a leading run of ENV_ALLOWED assignments, then
+# `go test|vet|build` or `go -C <directory>` and one of those three, then relative package paths
 # and only these flags. Any other claimed command counts as reading every Go file of the
 # repository and every file under a Go module's directory.
 NOT_SIMPLE = "$'\"`|&;()<>*?\\"
+ASSIGNMENT = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=(\S*)")
 PACKAGE = re.compile(r"\.\.?(/[A-Za-z0-9_./-]*)?")
 FLAG = re.compile(r"-v|-race|-count=[0-9]+|-timeout=[0-9]+[smh]|-buildvcs=false")
 DURATION = re.compile(r"[0-9]+[smh]")
@@ -589,15 +591,34 @@ TAGS = re.compile(r"[A-Za-z0-9_,]+")
 
 
 def reduce_line(line: str) -> tuple:
-    """A go line in the one form this check reduces as (packages, tags, mode, whether it runs with
-    -race, ""), any other as (None, None, None, None, the first reason it is not that form)."""
-    unreduced = (None, None, None, None)
+    """A go line in one of the forms this check reduces as (packages, tags, mode, whether it runs
+    with -race, the directory its `go -C` names or "", ""), any other as (None, None, None, None,
+    None, the first reason it is not one of them)."""
+    unreduced = (None, None, None, None, None)
     special = next((c for c in line if c in NOT_SIMPLE), None)
     if special:
         return *unreduced, f"it has `{special}`"
     words = line.split()
-    if words[0] != "go":
-        return *unreduced, f"it starts with `{words[0]}`, not go"
+    # A leading NAME=value run is dropped: an ENV_ALLOWED name cannot change what go compiles (the
+    # list says why of each), so the command compiles what the bare line does and the closure is
+    # the one go list gives under the Run's own env. Any other name - GOFLAGS, GOOS, GOARCH,
+    # CGO_ENABLED - chooses the files go compiles, and refuses the line here exactly as it refuses
+    # a step's env: in env_reason, naming the name rather than the whole assignment.
+    while words and (assignment := ASSIGNMENT.fullmatch(words[0])):
+        if assignment.group(1) not in ENV_ALLOWED:
+            return *unreduced, f"it sets {assignment.group(1)}, which can change what go compiles"
+        words = words[1:]
+    if not words or words[0] != "go":
+        return *unreduced, f"it starts with `{words[0] if words else line}`, not go"
+    # `go -C <directory>` is reduced where a `cd` is not because it names the directory outright,
+    # on the line the check already reads: the caller joins it to the step's working directory and
+    # holds the result to the Run's, so a command that moves to another module is refused rather
+    # than read in the wrong one. Go takes -C only as the first flag, so only the first word here.
+    chdir = ""
+    if len(words) > 1 and words[1] == "-C":
+        if len(words) < 3 or words[2].startswith("-"):
+            return *unreduced, "`go -C` names no directory"
+        chdir, words = words[2], ["go", *words[3:]]
     if len(words) < 2 or words[1] not in ("test", "vet", "build"):
         return *unreduced, f"`{' '.join(words[:2])}` is not go test, vet or build"
     pkgs, tags, index = set(), None, 2
@@ -615,7 +636,7 @@ def reduce_line(line: str) -> tuple:
         elif not FLAG.fullmatch(word):
             return *unreduced, f"`{word}` is neither a relative package path nor a flag this check reduces"
         index += 1
-    return pkgs, tag_set(tags or ""), words[1], "-race" in words, ""
+    return pkgs, tag_set(tags or ""), words[1], "-race" in words, chdir, ""
 
 
 # The only env: names a step, its job or the workflow may set while a go command of the step stays
@@ -842,10 +863,13 @@ def check_table(documents: dict, data, filters: dict, files: set, problems: list
                         continue
                     reason = around or ("" if script_lines(script) == [line] else
                                         "it is not its step's whole run: script, comments and blank lines aside")
-                    named, tags, mode, race, reason = reduce_line(line) if not reason else (None, None, None, None, reason)
+                    named, tags, mode, race, chdir, reason = (reduce_line(line) if not reason else
+                                                              (None, None, None, None, None, reason))
+                    # The directory the command itself runs in: the step's, moved by its `go -C`.
+                    here = clean_dir(os.path.normpath(os.path.join(workdir, chdir))) if chdir else workdir
                     for r in pinned:
-                        if workdir != clean_dir(r.workdir):
-                            unreduced[owner[id(r)]].append((r, where, reason or f"its step runs in {workdir}, the Run in {r.workdir}"))
+                        if here != clean_dir(r.workdir):
+                            unreduced[owner[id(r)]].append((r, where, reason or f"its step runs in {here}, the Run in {r.workdir}"))
                             continue
                         if reason:
                             unreduced[owner[id(r)]].append((r, where, reason))

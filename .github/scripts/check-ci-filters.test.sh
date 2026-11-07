@@ -1055,7 +1055,7 @@ replace "$root/.github/workflows/ci.yaml" "              - 'mod/**'" "          
 run_check "$root"
 check "fails once its filter misses one of them" "$(is "$status" 1)"
 check "names the command, why it is not reduced and the filter" \
-  "$(contains "$out" 'job app step "Test the app" runs `GOFLAGS=-tags=probe go test ./cmd/app ./lib`, which this check does not reduce (it starts with `GOFLAGS=-tags=probe`, not go), so it counts as reading every Go file of the repository and every file under a Go module.s directory; filter app must select them all on any Go change')"
+  "$(contains "$out" 'job app step "Test the app" runs `GOFLAGS=-tags=probe go test ./cmd/app ./lib`, which this check does not reduce (it sets GOFLAGS, which can change what go compiles), so it counts as reading every Go file of the repository and every file under a Go module.s directory; filter app must select them all on any Go change')"
 
 echo "case: a script's go command is held to its pinned text, the whole line"
 root=$(fixture script-line)
@@ -1080,6 +1080,41 @@ replace "$root/.github/workflows/ci.yaml" "        working-directory: mod" "    
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the directory the step runs in" "$(contains "$out" 'alt')"
+
+# `go -C <directory>` names the directory the command runs in on the line the check already
+# reads, so it is held exactly as a step's working-directory is: joined with the step's own
+# directory, the result must be the Run's.
+echo "case: a claimed go -C command whose directory is the Run's"
+root=$(fixture go-dash-c)
+replace "$root/.github/workflows/ci.yaml" $'        run: go test ./cmd/app ./lib\n        working-directory: mod' \
+  "        run: go -C mod test ./cmd/app ./lib"
+replace "$root/.github/scripts/ci_job_reads.py" 'text="go test ./cmd/app ./lib"' 'text="go -C mod test ./cmd/app ./lib"'
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+check "counts the job's files" "$(contains "$out" '^app: 7 files, 0 uncovered (filter app)$')"
+replace "$root/.github/workflows/ci.yaml" "run: go -C mod test ./cmd/app ./lib" "run: go -C alt test ./cmd/app ./lib"
+replace "$root/.github/scripts/ci_job_reads.py" 'text="go -C mod test ./cmd/app ./lib"' 'text="go -C alt test ./cmd/app ./lib"'
+run_check "$root"
+check "fails once its -C names another directory" "$(is "$status" 1)"
+check "names that directory and the Run's" "$(contains "$out" 'its step runs in alt, the Run in mod')"
+
+# An assignment in front of the command is read the way a step's env: is: an ENV_ALLOWED name
+# cannot change what go compiles, so the line stays reduced, and any other name falls to
+# everything naming the name.
+echo "case: a GOPROXY assignment in front of a claimed simple go command"
+root=$(fixture goproxy-assignment)
+replace "$root/.github/workflows/ci.yaml" "run: go test ./cmd/app ./lib" "run: GOPROXY=off go test ./cmd/app ./lib"
+run_check "$root"
+check "passes, the command reduced to the Run's closure" "$(is "$status" 0)"
+check "counts the job's files" "$(contains "$out" '^app: 7 files, 0 uncovered (filter app)$')"
+
+echo "case: an assignment outside ENV_ALLOWED in front of a claimed simple go command"
+root=$(fixture goos-assignment)
+replace "$root/.github/workflows/ci.yaml" "run: go test ./cmd/app ./lib" "run: GOOS=linux go test ./cmd/app ./lib"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the command, the name it sets and the filter" \
+  "$(contains "$out" 'job app step "Test the app" runs `GOOS=linux go test ./cmd/app ./lib`, which this check does not reduce (it sets GOOS, which can change what go compiles), so it counts as reading every Go file of the repository and every file under a Go module.s directory; filter app must select them all on any Go change')"
 
 echo "case: an earlier step writes GOFLAGS to GITHUB_ENV before a claimed simple go command"
 root=$(fixture github-env-goflags)
@@ -1141,7 +1176,7 @@ check "fails though its filter selects every Go and module file" "$(is "$status"
 check "names the other module's testdata file" \
   "$(contains "$out" '::error file=mod2/x/testdata/data.txt::app reads mod2/x/testdata/data.txt, which its filter app does not match')"
 check "and the command that reads it" \
-  "$(contains "$out" 'runs `GOFLAGS=-tags=probe go test ./cmd/app ./lib`, which this check does not reduce (it starts with `GOFLAGS=-tags=probe`, not go), so it counts as reading every Go file of the repository and every file under a Go module.s directory')"
+  "$(contains "$out" 'runs `GOFLAGS=-tags=probe go test ./cmd/app ./lib`, which this check does not reduce (it sets GOFLAGS, which can change what go compiles), so it counts as reading every Go file of the repository and every file under a Go module.s directory')"
 
 echo "case: a cd on its own line before a simple go command in the same run"
 root=$(fixture cd-own-line)
