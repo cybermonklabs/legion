@@ -630,13 +630,24 @@ stays on the account that paid for it.
 **The account.** The gate's rule is the billing account, not the vendor and not the provider id.
 One provider id is its own account. Two different provider ids are one account only where the
 machine says so, in omp's `askgate.sharedAccountProviders`: a list of provider ids that reach one
-account, which belongs in that machine's own config layer (`config.local.yml`, and a named
-profile's `config.<profile>.local.yml`, since a profile that bills another account must declare
-its own). A session whose provider and the gate model's provider are both in that list is
+account. A session whose provider and the gate model's provider are both in that list is
 reviewed, and so is a fallback model of the chain. Unset — what a machine that declares nothing
 leaves it — the list is empty and every comparison is the plain provider-id comparison this gate
 made before the setting existed. A list that names only one of two providers declares nothing
-about them, and so does a value that is not a list of strings.
+about them, and so does a value that is not a list of strings, a list with one entry that is not
+a string included.
+
+**Where that list goes.** In an **operator** layer of omp's settings, and nowhere else: the
+global `config.yml` of the agent directory, a file named in `PI_CONFIG_FILES`, a `--config`
+overlay, or a runtime override. The gate reads it through `Settings.grantAuthority()`, the
+host's own operator view, which drops every project layer — so a repository's `.omp/config.yml`
+declares nothing, because the agent under review can write that file, and a declaration from
+there would be that agent choosing who may read its transcript. A host build whose settings
+offer no such view offers nothing safe to read, so there the list is empty whatever any layer
+holds. Which file of a machine ends up in those layers is that machine's launcher's business:
+omp reads the agent directory's own `config.yml` and whatever `PI_CONFIG_FILES` names, so a
+launcher that gives each profile its own overlay is how a profile billing another account
+declares — or declines to declare — for itself.
 
 **When a write posts unreviewed.** Each of these lets the write out, records an `advisor-gate`
 entry with its outcome, and hands the agent a note that says the write went out unreviewed and

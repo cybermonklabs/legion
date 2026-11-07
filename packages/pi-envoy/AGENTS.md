@@ -623,14 +623,21 @@ file) and calls `registerAskGate` unless that switch is off.
 AskGate's one setting of its own is NOT in that file: `askgate.sharedAccountProviders`, the
 provider ids of a machine that bill one account, is declared on Oh My Pi's own settings registry
 by `askgate.ts` (`register`, with `lookup` first so a second evaluation reuses the handle) and
-read from omp's config. envoy.json would be the wrong home: a named profile's envoy.json is one
-file with the default profile's on a machine where the shim links them, while omp keeps a
-profile's config layer separate (`config.local.yml` against `config.<profile>.local.yml`), and
-this is exactly the fact a profile that bills another account must be able to state for itself.
+read from omp's settings with `Settings.grantAuthority()`, the host's operator view — the global
+`config.yml` of the agent directory, a file named in `PI_CONFIG_FILES`, a `--config` overlay and
+runtime overrides, with every project layer dropped. So a repository's `.omp/config.yml`
+declares nothing: the agent under review can write it. A host build whose settings offer no such
+view offers nothing safe to read, so there the entry declares nothing rather than falling back
+to the merged settings, and `askgate.test.ts` drives that branch. envoy.json would be the wrong
+home: one machine's profiles can share a single envoy.json, while omp's settings are per agent
+directory and a launcher may give each profile an overlay of its own — exactly the fact a
+profile that bills another account must be able to state for itself. Which file of a machine
+reaches those layers is that machine's launcher's business, not this package's.
 The comparison is `sameAccount` in `askgate-core.ts`, read through the `sharedAccountProviders`
-dep at each call: it decides the `skipped` outcome and which fallback models of the chain may be
-asked. An empty list, which a machine that declares nothing gives, makes both the plain
-provider-id comparison the gate made before the setting existed.
+dep at each call, so a machine's edit reaches a running session: it decides the `skipped`
+outcome and which fallback models of the chain may be asked. An empty list, which a machine that
+declares nothing gives, makes both the plain provider-id comparison the gate made before the
+setting existed.
 `registerAskGate` (`askgate.ts`) registers the gate's one
 `tool_call` handler at once, in the factory, after `envoy.ts`'s own, and starts the load of Oh My
 Pi's own modules through string-literal `import()`, declared in `../pi-shared/src/omp-host.d.ts`.

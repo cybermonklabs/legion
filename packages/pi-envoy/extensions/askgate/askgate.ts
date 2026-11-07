@@ -52,11 +52,18 @@ import {
 import type { Usage } from "./rules-check";
 
 /**
- * The one omp setting AskGate carries: the provider ids of this machine that reach one billing
- * account. It is a machine's own fact, so it belongs in that machine's own config layer
- * (`config.local.yml` here, and a named profile's `config.<profile>.local.yml`, which is why it
- * is an omp setting rather than a key of envoy.json, the one file every profile of a machine
- * shares). Unset, it is the empty list and the gate behaves as it did before it existed.
+ * The one omp setting AskGate carries: the provider ids of one machine that reach one billing
+ * account. It is read from an OPERATOR layer of omp's settings and from nowhere else — the
+ * global `config.yml` of the agent directory, a file named in `PI_CONFIG_FILES`, a `--config`
+ * overlay, or a runtime override — since `Settings.grantAuthority()` is what reads it and that
+ * view drops every project layer. A repository's own `.omp/config.yml` therefore declares
+ * nothing, which is the point: the agent under review can write that file.
+ *
+ * An omp setting rather than a key of the plugin's envoy.json because omp's settings are per
+ * agent directory and a launcher may give each profile its own overlay, while one machine's
+ * profiles can share a single envoy.json — and a profile that bills another account has to be
+ * able to state that for itself. Unset, it is the empty list and the gate behaves as it did
+ * before the setting existed.
  */
 const SHARED_ACCOUNT_PROVIDERS_ID = "askgate.sharedAccountProviders";
 
