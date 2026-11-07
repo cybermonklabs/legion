@@ -21,7 +21,7 @@ name: Dispatch browser suite
 # That reason is a composite action's, and not a script's: a step that calls a script keeps its
 # own timeout-minutes. So the three bodies the jobs really shared are scripts, written once and
 # called from both - .github/scripts/playwright-install.sh for the install,
-# .github/scripts/playwright-apt-key.sh for the apt archive cache key both jobs restore under,
+# .github/scripts/apt-archive-cache-key.sh for the apt archive cache key both jobs restore under,
 # and .github/scripts/dispatch-browser-samples.sh for the memory and CPU sampler and its two
 # readings - and each of those files' head is where what it does and why is written down.
 #
@@ -235,7 +235,7 @@ jobs:
         run: |
           # Two lines, not `echo "key=$(...)"`: that command's status is echo's, so a refusal by
           # the script would write an empty key and this job would carry on.
-          key=$(.github/scripts/playwright-apt-key.sh)
+          key=$(.github/scripts/apt-archive-cache-key.sh)
           echo "key=$key" >> "$GITHUB_OUTPUT"
       - id: apt-debs
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -597,7 +597,7 @@ jobs:
         run: |
           # Two lines, not `echo "key=$(...)"`: that command's status is echo's, so a refusal by
           # the script would write an empty key and this job would carry on.
-          key=$(.github/scripts/playwright-apt-key.sh)
+          key=$(.github/scripts/apt-archive-cache-key.sh)
           echo "key=$key" >> "$GITHUB_OUTPUT"
       - id: apt-debs
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -1265,7 +1265,7 @@ jobs:
       # ci.yaml's call only: this workflow's result, and ci-ok itself when this job is that run's
       # last. It is the last step of the last job of the workflow, which is what ci-ok's report
       # needs (.github/scripts/ci_filter_coverage.py's check_ci_ok accepts no other shape).
-      - name: Report ci-ok when this is the run's last job
+      - name: Report ci-ok when this job decides a merge-group run
         if: always() && inputs.ci-ok-changes != ''
         uses: ./.github/actions/ci-ok-report
         with:

@@ -27,8 +27,8 @@ from collections import defaultdict
 
 import yaml
 
-from ci_filter_coverage import (CACHE_WORKFLOW, REPO, REQUIRED_CHECKS, WORKFLOW, conditions, script_lines, squash,
-                                where_if)
+from ci_filter_coverage import (CACHE_WORKFLOW, REPO, REQUIRED_CHECKS, WORKFLOW, called_workflow, conditions,
+                                script_lines, squash, where_if)
 from workflow_paths import events
 
 
@@ -147,11 +147,29 @@ def cache_steps(document: dict, action: str) -> list:
             if str((step or {}).get("uses", "")).split("@")[0] == f"actions/cache/{action}"]
 
 
+def restoring_workflows(document: dict) -> list:
+    """Where a restore of ci.yaml's run can be, as (the file, its document): ci.yaml, and every
+    local workflow one of its jobs calls. Such a job's steps are in the called file, cache steps
+    among them - dispatch-browser.yaml's shard and alone jobs restore the browser and apt
+    archive families for ci.yaml's dispatch-browser job - so a save paired against ci.yaml alone
+    would read as a fill nobody wants."""
+    workflows = [(WORKFLOW, document)]
+    seen = {WORKFLOW}
+    for job in (document.get("jobs") or {}).values():
+        path = called_workflow(job or {})
+        if not path or path in seen or not (REPO / path).is_file():
+            continue
+        seen.add(path)
+        workflows.append((path, yaml.safe_load((REPO / path).read_text()) or {}))
+    return workflows
+
+
 def check_cache_round_trip(document: dict, problems: list) -> None:
-    """ci-caches.yaml fills on a push to main the entries ci.yaml's jobs restore, so each family's
-    save must carry exactly the key and the paths its restores name: a key or a path that drifts
-    apart makes every restore miss, and nothing fails - each job just rebuilds from nothing what
-    the fill already built. A family is the key's text up to its first expression, and it is what
+    """ci-caches.yaml fills on a push to main the entries ci.yaml's run restores - its own jobs'
+    restores, and those of the local workflows they call - so each family's save must carry
+    exactly the key and the paths its restores name: a key or a path that drifts apart makes
+    every restore miss, and nothing fails - each job just rebuilds from nothing what the fill
+    already built. A family is the key's text up to its first expression, and it is what
     pairs a save with the restores to hold it to; the keys are compared as text and the paths as
     the ordered lists of lines they name. A family ci.yaml restores that this workflow does not
     save is no fault: docs-pages.yaml saves go-docs. The other way round is one, a family nothing
@@ -164,27 +182,28 @@ def check_cache_round_trip(document: dict, problems: list) -> None:
         return
     caches = yaml.safe_load((REPO / CACHE_WORKFLOW).read_text()) or {}
     restores = defaultdict(list)
-    for job_id, family, given in cache_steps(document, "restore"):
-        restores[family].append((job_id, given))
+    for path, restoring in restoring_workflows(document):
+        for job_id, family, given in cache_steps(restoring, "restore"):
+            restores[family].append((f"job {job_id} of {path}", given))
     for job_id, family, given in cache_steps(caches, "save"):
         key, paths = str(given.get("key", "")).rstrip(), path_lines(given.get("path", ""))
         if family not in restores:
             problems.append(f"::error file={CACHE_WORKFLOW}::job {job_id} saves cache family {family}, which no "
-                            f"actions/cache/restore of {WORKFLOW} reads; this workflow exists to fill what "
-                            f"{WORKFLOW} restores, so a family nothing restores is a fill nobody reads: restore it "
-                            f"there, or drop the save")
+                            f"actions/cache/restore of {WORKFLOW} reads, nor one of a local workflow its jobs "
+                            f"call; this workflow exists to fill what {WORKFLOW} restores, so a family nothing "
+                            f"restores is a fill nobody reads: restore it there, or drop the save")
             continue
-        for restore_job, restored in restores[family]:
+        for restore_where, restored in restores[family]:
             restored_key = str(restored.get("key", "")).rstrip()
             restored_paths = path_lines(restored.get("path", ""))
             if key != restored_key:
                 problems.append(f"::error file={CACHE_WORKFLOW}::job {job_id} saves family {family} under key "
-                                f"`{key}`, but job {restore_job} of {WORKFLOW} restores it under "
+                                f"`{key}`, but {restore_where} restores it under "
                                 f"`{restored_key}`: a restore whose key is not the save's "
                                 f"misses every time, and nothing fails - the job rebuilds from nothing instead")
             if paths != restored_paths:
                 problems.append(f"::error file={CACHE_WORKFLOW}::job {job_id} saves family {family} from "
-                                f"{', '.join(paths) or '(no path)'}, but job {restore_job} of {WORKFLOW} restores "
+                                f"{', '.join(paths) or '(no path)'}, but {restore_where} restores "
                                 f"it into {', '.join(restored_paths) or '(no path)'}: the "
                                 f"entry then holds other directories than the job reads, and the job rebuilds what "
                                 f"the fill already built")

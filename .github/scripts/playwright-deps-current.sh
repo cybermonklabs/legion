@@ -9,7 +9,7 @@
 # not deliver the names it was given; this fails on any of them.
 #
 # The pinned list is the arguments, and the file it comes from is
-# .github/scripts/playwright-packages.txt, one package per line, which
+# .github/playwright-apt-packages.txt, one package per line, which
 # .github/scripts/playwright-install.sh reads and hands to this check. Playwright's own list is
 # printed nowhere, so it is read from the `apt-get install -s --no-install-recommends` call its
 # dry run makes, which the recording `apt-get` below captures.

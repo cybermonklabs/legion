@@ -96,9 +96,11 @@
 #      (refs/heads/gh-readonly-queue/...) and a startsWith on it is live. As everywhere here, the
 #      same test written as a function call is the review's to catch, not this check's.
 #  11. a cache family .github/workflows/ci-caches.yaml saves whose `key:` or `path:` is not
-#      exactly that of the matching actions/cache/restore of ci.yaml (the keys compared as text,
-#      trailing whitespace aside, the paths as ordered lists of stripped lines), or that ci.yaml
-#      restores nowhere, and an actions/cache/restore of ci-caches.yaml that is not
+#      exactly that of the matching actions/cache/restore of ci.yaml, or of a local workflow one
+#      of its jobs calls - dispatch-browser.yaml holds the browser and apt archive restores of
+#      the dispatch-browser job - (the keys compared as text, trailing whitespace aside, the
+#      paths as ordered lists of stripped lines), or that nothing there restores, and an
+#      actions/cache/restore of ci-caches.yaml that is not
 #      `lookup-only: true` or that carries restore-keys. ci-caches.yaml fills the entries ci.yaml
 #      restores, and a key or a path that drifts apart makes every restore miss silently: nothing
 #      fails, every job just rebuilds from nothing what the fill already built. A save is matched

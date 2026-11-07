@@ -30,7 +30,7 @@
 #
 # This script installs the system packages itself instead of through `playwright install
 # --with-deps`, which runs its apt calls with no bound, no retry and no second origin. The
-# pinned list it reads from .github/scripts/playwright-packages.txt is Playwright's
+# pinned list it reads from .github/playwright-apt-packages.txt is Playwright's
 # ubuntu24.04-x64 list exactly: the union of the `tools`, `chromium`, `firefox` and `webkit`
 # entries of that table in playwright-core's lib/coreBundle.js. Measured in job 128209099649, of
 # cybermonklabs/legion#2888 at 5ff42456: Playwright's 79 names and gstreamer1.0-tools resolve,
@@ -61,11 +61,13 @@
 #
 # `step_tools` below is the one package this script installs that Playwright's list does not
 # name: gstreamer1.0-tools, for the `gst-inspect-1.0` the decoder guard runs. It is a variable of
-# its own, and is not in .github/scripts/playwright-packages.txt, because that file is what the
+# its own, and is not in .github/playwright-apt-packages.txt, because that file is what the
 # check at the end holds against Playwright's own list, name for name.
 #
-# The list lives in .github/scripts/playwright-packages.txt, one package per line, and this
-# script is the one reader of it, so the two machines cannot drift apart. How to re-derive it on
+# The list lives in .github/playwright-apt-packages.txt, one package per line. It sits in the
+# repository's .github/ rather than beside this script because it has a second reader there:
+# .github/workflows/ci-caches.yaml's apt-debs job, which downloads the same names on a push to
+# main to fill the apt archive cache the calling steps restore. How to re-derive it on
 # a Playwright upgrade is in that file's own head comment: that union again, with nothing taken
 # out of it. Deriving it at run time by subtracting one apt closure from another does not work
 # and must not be written: the closure of the four that carry playback and the closure of the
@@ -208,17 +210,17 @@ fi
 { grep -rl dl.google.com /etc/apt/sources.list.d || true; } | xargs -r sudo rm -f
 
 # The pinned list, read from the repository rather than written here, so both jobs install the
-# same set. It sits beside this script and is read from there, so it is found however the
-# calling step's working-directory is set.
+# same set. It sits in the repository's .github/, one directory above this script, and is read
+# from there, so it is found however the calling step's working-directory is set.
 #
 # The `#` head comment and the blank lines are stripped here rather than left to apt: the shell
 # reads this file and $packages is unquoted below, so every word of a comment line would
 # otherwise reach apt as a package name (`E: Unable to locate package subtracting`, which failed
 # every leg of run 42314019622).
-packages=$(grep -vE '^[[:space:]]*(#|$)' "$script_dir/playwright-packages.txt")
+packages=$(grep -vE '^[[:space:]]*(#|$)' "$script_dir/../playwright-apt-packages.txt")
 
 # gstreamer1.0-tools holds the gst-inspect-1.0 the decoder guard below runs, and is no name of
-# Playwright's list. It is out of $packages, and out of playwright-packages.txt, because
+# Playwright's list. It is out of $packages, and out of playwright-apt-packages.txt, because
 # $packages is the list the check at the end of this script holds against Playwright's own.
 step_tools="gstreamer1.0-tools"
 # What apt is given in every phase: the pinned list and this script's own tool.
@@ -324,7 +326,7 @@ for probe in matroskademux:gstreamer1.0-plugins-good vp8dec:gstreamer1.0-plugins
   element=${probe%%:*}
   gst-inspect-1.0 --exists "$element" || {
     echo "::error::GStreamer has no $element, which WebKit plays media through;" \
-      "${probe#*:} carries it: .github/scripts/playwright-packages.txt must hold it, and if it" \
+      "${probe#*:} carries it: .github/playwright-apt-packages.txt must hold it, and if it" \
       "does, the plugin did not load: gst-inspect-1.0 -b lists the files GStreamer could not load"
     exit 1
   }

@@ -841,8 +841,8 @@ GATES = [
     ], reads=reads(
         ("docs/site/**", f"{at_docs('Lint the docs site')}, typecheck, screenshots (docs/site/media/shots.ts) and build (generate.ts + astro build) in docs/site"),
         ("packages/dispatch/**", f"{at_docs('Build the Dispatch dashboard the screenshots show')}; docs/site/media/harness.ts:21,98 boots packages/dispatch/e2e/harness-start.ts"),
-        ("packages/proof-editor/src/**", "packages/dispatch/web/vite.config.ts:104-123 aliases (build:web)"),
-        (CONTRACTS_SRC, "packages/dispatch/web/vite.config.ts:94-103; docs/site/generators/dispatch-tools.ts:7"),
+        ("packages/proof-editor/src/**", "packages/dispatch/web/vite.config.ts:127-147 aliases (build:web)"),
+        (CONTRACTS_SRC, "packages/dispatch/web/vite.config.ts:117-126; docs/site/generators/dispatch-tools.ts:7"),
         # This gate is the one reader of envoy-client's sources that does not compile
         # broker-client with them: every generator entry resolves to src/dispatch-command.ts,
         # whose program holds no broker-client source (`bunx tsc --listFilesOnly`, 0 of 7), so
@@ -973,17 +973,15 @@ GATES = [
         # ENV_ALLOWED (ci.yaml's comment above the job's timeout-minutes). The browser rows that
         # do reach the build are the dispatch_browser gate's.
         script_run(RUN_SERVER, DISPATCH_SERVER_BUILD, "started by packages/dispatch/e2e/__tests__/harness-signin.test.ts:81,85 and "
-                   f"round-robin-proxy.test.ts:378,381, which run `bash e2e/run-server.sh` in {at('dispatch', 'Test dispatch dashboard')}",
+                   f"round-robin-proxy.test.ts:378,381, which run `bash e2e/run-server.sh` in {at('dispatch-ui', 'Test dispatch dashboard')}",
                    ENVOY, ["./cmd/dispatch"], mode="build"),
     ], reads=reads(
         ("packages/dispatch/**", f"{at('dispatch', 'Build the dashboard the lanes serve')} (build:web) in packages/dispatch"),
-        ("packages/proof-editor/**", f"packages/dispatch/web/vite.config.ts:104-123, read by the build:web of {at('dispatch', 'Build the dashboard the lanes serve')}"),
-        (CONTRACTS_SRC, f"{at('dispatch', 'Build contracts for dispatch e2e')}; packages/dispatch/web/vite.config.ts:94-103 aliases"),
+        ("packages/proof-editor/**", f"packages/dispatch/web/vite.config.ts:127-147, read by the build:web of {at('dispatch', 'Build the dashboard the lanes serve')}"),
+        (CONTRACTS_SRC, f"{at('dispatch', 'Build contracts for dispatch e2e')}; packages/dispatch/web/vite.config.ts:117-126 aliases"),
         # envoy-client's sources, and broker-client's with them, are the shared read below.
         (f"{ENVOY}/internal/dispatch/pmdoc/schema/blocks.json", "packages/dispatch/web/src/__tests__/setup.ts:7, features/refs/markdown-engine.test.ts:3"),
         ("scripts/e2e/lib/held-port.py", "packages/dispatch/e2e/run-server.sh:80 holds the server's port through it"),
-        (".github/playwright-apt-packages.txt", at("dispatch", "Install Playwright Chromium, WebKit and Firefox")),
-        (".github/scripts/apt-archive-cache-key.sh", at("dispatch", "Compute the apt archive cache key")),
         ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:11 (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),
     ) + envoy_client_dep("imported by packages/envoy-client/bin/dispatch.ts, which cli-body-cap.e2e.ts:17 runs")
       + setup_go("dispatch", f"{ENVOY}/go.mod") + bun_job("dispatch") + CI_SELF),
@@ -992,8 +990,8 @@ GATES = [
     # (ci.yaml's comment on dispatch-ui says why). No go command runs here.
     gate("dispatch_ui", "dispatch-ui", reads=reads(
         ("packages/dispatch/**", f"{at('dispatch-ui', 'Lint dispatch dashboard')}, typecheck, test, build, check:classes and check:asset-sizes in packages/dispatch"),
-        ("packages/proof-editor/**", f"{at('dispatch-ui', 'Lint proof editor')}, typecheck and test; packages/dispatch/web/vite.config.ts:104-123"),
-        (CONTRACTS_SRC, 'packages/dispatch/web/vite.config.ts:94-103 aliases; tsc and bun read @legion/contracts through its "bun" export condition (src/)'),
+        ("packages/proof-editor/**", f"{at('dispatch-ui', 'Lint proof editor')}, typecheck and test; packages/dispatch/web/vite.config.ts:127-147"),
+        (CONTRACTS_SRC, 'packages/dispatch/web/vite.config.ts:117-126 aliases; tsc and bun read @legion/contracts through its "bun" export condition (src/)'),
         (f"{FIX}/live/**", "packages/dispatch/web/src/features/delivery/lib/applyDelta.test.ts:2-4, e2e/__tests__/delivery-live-probe.test.ts:8-12"),
         (f"{FIX}/decision-blocks/**", "packages/dispatch/web/src/features/doc/decision-blocks.test.ts:10, features/inbox/AskCard.test.tsx:411"),
         (f"{ENVOY}/internal/dispatch/pmdoc/schema/**", "packages/dispatch/web/src/__tests__/setup.ts:7 and features/refs/markdown-engine.test.ts:3 read blocks.json; packages/proof-editor/tests/ask-concurrent-edit.test.ts:269-275 reads block-node-types.json of the same directory"),
@@ -1052,10 +1050,10 @@ GATES = [
         ("bun.lock", f"{at_browser('playwright-cache')} keys the browser cache on hashFiles('bun.lock'), "
          f"which pins the Playwright version whose browsers {at_browser(BROWSER_INSTALL)} downloads; "
          f"{at_browser(BROWSER_APT_KEY)} and {at_browser(BROWSER_APT_KEY, BROWSER_ALONE)} both run "
-         ".github/scripts/playwright-apt-key.sh, which reads the same version out of it for the apt "
+         ".github/scripts/apt-archive-cache-key.sh, which reads the same version out of it for the apt "
          "archive cache's key"),
         (".github/scripts/playwright-install.sh", at_browser(BROWSER_INSTALL)),
-        (".github/scripts/playwright-apt-key.sh",
+        (".github/scripts/apt-archive-cache-key.sh",
          f"{at_browser(BROWSER_APT_KEY)} and {at_browser(BROWSER_APT_KEY, BROWSER_ALONE)} run it for the key "
          "their apt archive cache restore steps read"),
         (".github/scripts/dispatch-browser-samples.sh",
@@ -1063,7 +1061,7 @@ GATES = [
          "start it and read its two summaries"),
         (".github/scripts/playwright-deps-current.sh", at_browser(BROWSER_INSTALL)),
         (".github/scripts/dispatch-browser-latest-blobs.sh", at_browser(BROWSER_SELECT_STEP, BROWSER_MERGE)),
-        (".github/scripts/playwright-packages.txt", f"{at_browser(BROWSER_INSTALL)} and the alone job's step of "
+        (".github/playwright-apt-packages.txt", f"{at_browser(BROWSER_INSTALL)} and the alone job's step of "
          "that name both run .github/scripts/playwright-install.sh, which reads it as the apt list it installs"),
         ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:11 (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),
     ) + setup_go(BROWSER_SHARD, f"{ENVOY}/go.mod", BROWSER_SITE) + bun_job(BROWSER_SHARD, BROWSER_SITE)

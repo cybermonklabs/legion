@@ -763,10 +763,15 @@ calls_workflow() {
     $'            suite:\n              - \'.github/workflows/ci.yaml\'\n              - \'.github/workflows/suite.yaml\'\n              - *workspace\n              - \'mod/cmd/app/*\'\n              - \'mod/lib/*\'\n            image:'
   replace "$root/.github/workflows/ci.yaml" '{"app": "app", "image": "image"}' \
     '{"app": "app", "image": "image", "suite": "suite"}'
+  # The verdict job waits for every job of the file, and a job of ci.yaml carries the term that
+  # holds it back on a re-run attempt of a merge-group run: rules 7 and 12 hold this job to both,
+  # as they hold the real dispatch-browser job that calls dispatch-browser.yaml.
+  replace "$root/.github/workflows/ci.yaml" "    needs: [changes, app, image, lint]" \
+    "    needs: [changes, app, image, lint, suite]"
   cat >> "$root/.github/workflows/ci.yaml" <<'YAML'
   suite:
     needs: changes
-    if: needs.changes.outputs.suite == 'true'
+    if: needs.changes.outputs.suite == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     uses: ./.github/workflows/suite.yaml
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
@@ -786,7 +791,7 @@ jobs:
       - name: Build the app
         run: go build ./cmd/app
         working-directory: mod
-      - name: Report ci-ok when this is the run's last job
+      - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report
         with:

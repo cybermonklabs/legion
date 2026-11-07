@@ -1062,11 +1062,6 @@ jobs:
             # what each job reads, and check-ci-filters.sh holds each filter to its gate.
             dispatch: &dispatch
               - '.github/workflows/ci.yaml'
-              # The apt list the install step installs, so a change to it must re-run this job.
-              - '.github/playwright-apt-packages.txt'
-              # The key step runs it for the apt archive cache's key, so a change to it must
-              # re-run this job.
-              - '.github/scripts/apt-archive-cache-key.sh'
               - *bun_install
               - 'packages/dispatch/**'
               - 'packages/proof-editor/**'
@@ -1116,9 +1111,9 @@ jobs:
               # cache key" steps call; the memory and CPU sampler their browser steps start and
               # read back; and the script the merge job runs to take each leg's newest attempt.
               - '.github/scripts/playwright-install.sh'
-              - '.github/scripts/playwright-packages.txt'
+              - '.github/playwright-apt-packages.txt'
               - '.github/scripts/playwright-deps-current.sh'
-              - '.github/scripts/playwright-apt-key.sh'
+              - '.github/scripts/apt-archive-cache-key.sh'
               - '.github/scripts/dispatch-browser-samples.sh'
               - '.github/scripts/dispatch-browser-latest-blobs.sh'
               # e2e/cli-body-cap.e2e.ts:52,57,65 run envoy-client's dispatch CLI, spawned as its
@@ -2192,11 +2187,12 @@ jobs:
       - name: Test the browser lane's memory and CPU sampler
         run: .github/scripts/dispatch-browser-samples.test.sh
 
-      # The apt archive cache key dispatch-browser.yaml's two browser jobs compute, over fixture
-      # lockfiles: a key that changes misses every entry saved under the old one, so the whole
-      # string and the refusals that keep it from naming nothing are held here.
-      - name: Test the browser lane's apt archive cache key
-        run: .github/scripts/playwright-apt-key.test.sh
+      # The apt archive cache key dispatch-browser.yaml's two browser jobs restore under and
+      # ci-caches.yaml's apt-debs job fills under, over fixture checkouts: a key that changes
+      # misses every entry saved under the old one, so the whole string and the refusals that
+      # keep it from naming nothing are held here.
+      - name: Test the apt archive cache key
+        run: .github/scripts/apt-archive-cache-key.test.sh
 
       - name: Test the race memory sampler
         run: .github/scripts/race_memory.test.sh
@@ -2715,8 +2711,9 @@ jobs:
       # that spawn fails the moment contracts' source gains an export its dist lacks, measured on
       # run 42303677853 at 5636a301, where both of its cases failed with "The requested module
       # '@legion/contracts/dispatch-tools' does not provide an export named
-      # 'DISPATCH_BLOCK_UNITS'" and passed again once contracts was built (the dispatch and
-      # dispatch-browser-multiprocess jobs carry the same step for the same reason).
+      # 'DISPATCH_BLOCK_UNITS'" and passed again once contracts was built (the dispatch job and
+      # dispatch-browser.yaml's shard, alone and multiprocess jobs carry the same step for the
+      # same reason).
       - name: Build contracts for the suites that spawn Playwright
         run: bun run build
         working-directory: packages/contracts
