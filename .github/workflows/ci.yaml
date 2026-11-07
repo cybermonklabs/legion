@@ -2278,7 +2278,8 @@ jobs:
       # up to 570 s on the green runs of 2026-11-02 and 2026-11-03 and ran the ten minutes out on
       # main at job 125691048644 (run 41562777668). No single test dominates it: a local run timed
       # 648 tests one after another, the slowest at 44 s. The 30 minutes leave it three times its
-      # slowest run.
+      # slowest run. Those counts are read again whenever the package's shape changes, and
+      # dispatch://INFRA-1524 is reading them now.
       - name: Test the concurrent packages under the race detector
         run: go test -count=1 -race -timeout 30m ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/
         working-directory: packages/daemon
