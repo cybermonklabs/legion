@@ -80,8 +80,15 @@ func TestARetiredWorkersSlotIsNotRepaired(t *testing.T) {
 	applyFact(t, resumable, quiet(t, 1), "dispatch-1", elsewhere)
 	rows := startsOf(t, resumable, member)
 	owed := owedStarts(t, resumable, member)
-	if len(rows) != 2 || len(owed) != 1 || owed[0].role != claim.RoleTester || owed[0].task == "" {
-		t.Fatalf("the suspended tester of %s has the start rows %+v, want exactly one carrying a task, the tester's, marked for the issue's slot, beside its one relaunch: the repair acts on this fixture, so what the retired run above reads is the claim's state",
+	var relaunch []midPhaseStart
+	for _, start := range rows {
+		if !start.needsSlot {
+			relaunch = append(relaunch, start)
+		}
+	}
+	if len(rows) != 2 || len(owed) != 1 || owed[0].role != claim.RoleTester || owed[0].task == "" ||
+		len(relaunch) != 1 || relaunch[0].task != "" {
+		t.Fatalf("the suspended tester of %s has the start rows %+v, want exactly one carrying a task, the tester's, marked for the issue's slot, beside its one relaunch, which carries none: the repair acts on this fixture, so what the retired run above reads is the claim's state",
 			member, rows)
 	}
 }

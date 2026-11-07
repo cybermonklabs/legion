@@ -159,16 +159,16 @@ func theOperatorStops(t *testing.T, d *daemon, token claim.Token) {
 // stopTheWorker is what a test whose issue owes its worker nothing does before its start: the
 // daemon's own passes over the fixture write the worker nothing, the operator stops it over
 // their route, and the passes after the stop start nothing of it. It answers how many launches
-// of that claim the runtime had been asked for by the stop, which is the number the start after
-// it is read against.
+// of that claim the runtime had been asked for before any of those passes, which is the number
+// every read of the launches after it is made against.
 //
 // A test whose issue owes its worker a start row before the stop calls theOperatorStops itself:
 // the read here that the issue owes no start reads that row and fails on it.
 func stopTheWorker(t *testing.T, pool *pgxpool.Pool, rt *fake.Runtime, d *daemon, issue string, token claim.Token) int {
 	t.Helper()
-	passed(t, pool, "before the stop")
-	nothingStartedTheWorker(t, pool, rt, issue, token, len(launchesOf(rt, token)), "before the stop")
 	launches := len(launchesOf(rt, token))
+	passed(t, pool, "before the stop")
+	nothingStartedTheWorker(t, pool, rt, issue, token, launches, "before the stop")
 	theOperatorStops(t, d, token)
 	passed(t, pool, "after the stop")
 	nothingStartedTheWorker(t, pool, rt, issue, token, launches, "three passes after the stop")
@@ -305,6 +305,39 @@ func seedWaitingMember(t *testing.T, dsn string, member record.Issue, worker sup
 	}
 }
 
+// seedCappedRoots records a running tree for each of roots, its root at work in implementing.
+// The tests of a waiting member seed exactly two, the members' own tree and a tree of another
+// root, which is the cap: with both slots held, nothing is granted a member until one of the two
+// gives its slot back.
+func seedCappedRoots(t *testing.T, cfg config.Config, project string, roots ...string) {
+	t.Helper()
+	for _, at := range roots {
+		seedWorkflowTree(t, cfg.PostgresDSN, project, record.Issue{Key: at, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+			Project: cfg.Project, Tree: at, Title: "root " + at, Phase: phase.Implementing, Generation: 1, Status: "in_progress",
+			DispatchStatus: "in_progress", HandedOver: true, Rank: "A"})
+	}
+}
+
+// seedWaitingTester records key as a member of root's tree waiting for an admission slot, which
+// is the fixture every test of a stop that meets a waiting issue is built from: the member stands
+// in testing holding no slot, the relaunch half of its start has already run — its tester is
+// ready, with no task — and the half that carries the task waits for that slot. rank is the
+// member's rank; the order two of these are written in is what orders them in the line, which
+// goes by the age of the row each issue is owed (record.Waiting).
+func seedWaitingTester(t *testing.T, cfg config.Config, project, root, key, rank string, tester claim.Token) {
+	t.Helper()
+	parent := root
+	seedWaitingMember(t, cfg.PostgresDSN, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Project: cfg.Project, Tree: root, Parent: &parent, Title: "member " + key, Phase: phase.Testing, Generation: 1,
+		Status: "testing", DispatchStatus: "testing", Rank: rank},
+		supervise.Claim{Token: tester, Project: project, Tree: root, Issue: key, Role: claim.RoleTester, Generation: 1,
+			State: supervise.StateReady, Session: "ses_" + key, SessionFile: filepath.Join(cfg.StateDir, key+".jsonl"),
+			PluginContract: api.DaemonAPIVersion, Locator: workingPane(tester)},
+		record.SuperviseRequest{Op: "start", Tree: root, Role: claim.RoleTester, Generation: 1, Phase: phase.Testing,
+			Task: "Test the change.", NeedsSlot: true})
+	writePrompt(t, cfg, tester)
+}
+
 // A stop ends the start its issue was still owed. An issue waiting for an admission slot holds the
 // other half of its transition in the outbox — the row that carries the worker's task — and that
 // row would start the worker the operator stopped the moment a slot came. The repair of a start
@@ -344,21 +377,8 @@ func TestAStopEndsTheOwedStartOfAWaitingIssue(t *testing.T) {
 	// The member's own tree, whose root is at work and holds one of the two slots, and a tree of
 	// another root holding the other: with the cap full, nothing is granted the member until the
 	// test frees a slot.
-	for _, at := range []string{root, other} {
-		seedWorkflowTree(t, cfg.PostgresDSN, project, record.Issue{Key: at, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-			Project: cfg.Project, Tree: at, Title: "root " + at, Phase: phase.Implementing, Generation: 1, Status: "in_progress",
-			DispatchStatus: "in_progress", HandedOver: true, Rank: "A"})
-	}
-	parent := root
-	seedWaitingMember(t, cfg.PostgresDSN, record.Issue{Key: member, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-		Project: cfg.Project, Tree: root, Parent: &parent, Title: "member", Phase: phase.Testing, Generation: 1, Status: "testing",
-		DispatchStatus: "testing", Rank: "B"},
-		supervise.Claim{Token: tester, Project: project, Tree: root, Issue: member, Role: claim.RoleTester, Generation: 1,
-			State: supervise.StateReady, Session: "ses_tester", SessionFile: filepath.Join(cfg.StateDir, "tester.jsonl"),
-			PluginContract: api.DaemonAPIVersion, Locator: workingPane(tester)},
-		record.SuperviseRequest{Op: "start", Tree: root, Role: claim.RoleTester, Generation: 1, Phase: phase.Testing,
-			Task: "Test the change.", NeedsSlot: true})
-	writePrompt(t, cfg, tester)
+	seedCappedRoots(t, cfg, project, root, other)
+	seedWaitingTester(t, cfg, project, root, member, "B", tester)
 	d := startDaemon(t, cfg, o)
 
 	passed(t, pool, "before the stop")
@@ -443,30 +463,12 @@ func TestAFreedSlotGoesPastTheStoppedIssueToTheNextInLine(t *testing.T) {
 	// The members' own tree, whose root is at work and holds one of the two slots, and a tree of
 	// another root holding the other: the cap is full until this test frees the second, which is
 	// the one slot the two members compete for.
-	for _, at := range []string{root, other} {
-		seedWorkflowTree(t, cfg.PostgresDSN, project, record.Issue{Key: at, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-			Project: cfg.Project, Tree: at, Title: "root " + at, Phase: phase.Implementing, Generation: 1, Status: "in_progress",
-			DispatchStatus: "in_progress", HandedOver: true, Rank: "A"})
-	}
-	// Both members wait as TestAStopEndsTheOwedStartOfAWaitingIssue's does: in a worker phase
-	// with no slot, the relaunch half of the start already run and its tester ready, the task
-	// half owed. The stopped one is written first, which is what puts it ahead of the other in
-	// the line (record.Waiting orders that part by the age of the row the issue is owed).
-	waiting := func(key, rank string, tester claim.Token) {
-		t.Helper()
-		parent := root
-		seedWaitingMember(t, cfg.PostgresDSN, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-			Project: cfg.Project, Tree: root, Parent: &parent, Title: "member " + key, Phase: phase.Testing, Generation: 1,
-			Status: "testing", DispatchStatus: "testing", Rank: rank},
-			supervise.Claim{Token: tester, Project: project, Tree: root, Issue: key, Role: claim.RoleTester, Generation: 1,
-				State: supervise.StateReady, Session: "ses_" + key, SessionFile: filepath.Join(cfg.StateDir, key+".jsonl"),
-				PluginContract: api.DaemonAPIVersion, Locator: workingPane(tester)},
-			record.SuperviseRequest{Op: "start", Tree: root, Role: claim.RoleTester, Generation: 1, Phase: phase.Testing,
-				Task: "Test the change.", NeedsSlot: true})
-		writePrompt(t, cfg, tester)
-	}
-	waiting(stopped, "B", stoppedTester)
-	waiting(next, "C", nextTester)
+	seedCappedRoots(t, cfg, project, root, other)
+	// Both members wait as TestAStopEndsTheOwedStartOfAWaitingIssue's member does. The stopped one
+	// is written first, which is what puts it ahead of the other in the line (record.Waiting
+	// orders that part by the age of the row the issue is owed).
+	seedWaitingTester(t, cfg, project, root, stopped, "B", stoppedTester)
+	seedWaitingTester(t, cfg, project, root, next, "C", nextTester)
 	d := startDaemon(t, cfg, o)
 
 	passed(t, pool, "before the stop")
@@ -524,12 +526,11 @@ func applyFact(t *testing.T, pool *pgxpool.Pool, source, eventID string, fact in
 	}
 }
 
-// heldAndRetried is the way back from a stop, which is the one start of the workflow's own that
-// a stopped worker's own issue reaches: the stop fails no claim, so the hold is applied here as
-// the daemon applies it when the worker of a live phase is gone (workflow's claimFailed), the
-// issue is read standing at held, and the architect's retry of that held phase is applied. What
-// the retry then writes is each caller's own read: the phase it put the issue back in, the start
-// rows it wrote, or the launch they reach.
+// heldAndRetried is the held phase's retry, one of the workflow's ways back from a stop: the stop
+// fails no claim, so the hold is applied here as the daemon applies it when the worker of a live
+// phase is gone (workflow's claimFailed), the issue is read standing at held, and the architect's
+// retry of that held phase is applied. What the retry then writes is each caller's own read: the
+// phase it put the issue back in, the start rows it wrote, or the launch they reach.
 func heldAndRetried(t *testing.T, pool *pgxpool.Pool, d *daemon, engine *workflow.Engine, issue string, role claim.Role) {
 	t.Helper()
 	applyFact(t, pool, "api", "worker-died:"+issue, intake.ClaimFailed{Issue: issue, Role: role,

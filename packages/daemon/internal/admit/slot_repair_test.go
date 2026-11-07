@@ -284,9 +284,10 @@ func capFiller(t *testing.T, pool *pgxpool.Pool, root, key string) {
 //
 // The repair of a start that can no longer act (finishFencedStarts) ends an owed start row whose
 // worker the operator stopped, because the row would otherwise start that worker again the moment
-// a slot came. It is held to exactly that: the second group reads the rows the fences keep and the
-// stop rule must not touch, and the third the three terms of the rule itself — the claim is
-// retired, no other start of it is queued, and it works no task of the row.
+// a slot came. It is held to exactly that: the second group varies the stop rule's first term,
+// the claim's state, over a worker at work and the two suspends, and reads that every row the
+// fences keep is still owed after the pass; and the third reads the three terms of the rule
+// itself — the claim is retired, no other start of it is queued, and it works no task of the row.
 //
 // Each group is one pool, one table of rows of one fixture shape, and one pass, the controller
 // tick. A row that is passed over is the same fixture as a row that is repaired but for the one
@@ -393,7 +394,7 @@ func TestASlotWhoseWorkerHasNoTaskIsStartedAgain(t *testing.T) {
 		}
 	})
 
-	t.Run("the fences that keep a start owed a worker still at work", func(t *testing.T) {
+	t.Run("a claim that is not retired keeps its owed start", func(t *testing.T) {
 		rows := []owedRepairRow{
 			{name: "a live claim", root: "LEGION-610", key: "LEGION-611", stands: phase.Implementing,
 				state: supervise.StateWorking, kept: true,

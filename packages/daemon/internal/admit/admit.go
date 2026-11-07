@@ -2113,11 +2113,11 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 			continue
 		}
 		if err := a.store.FinishOutbox(ctx, tx, owed.ID, owed.LeaseToken); err != nil {
-			return finished, fmt.Errorf("finish the start %s owed a worker the operator stopped: %w", owed.Issue, err)
+			return finished, fmt.Errorf("finish the start %s owed a stopped worker: %w", owed.Issue, err)
 		}
 		finished = true
 		intake.OnCommit(ctx, func() {
-			a.log.Info("admission: finished a held start owed a worker the operator stopped", "issue", owed.Issue,
+			a.log.Info("admission: finished a held start owed a stopped worker", "issue", owed.Issue,
 				"row", owed.ID, "role", owed.Role, "phase", owed.Phase, "generation", owed.Generation)
 		})
 	}
@@ -2125,10 +2125,10 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 }
 
 // stopOutlivedStart says whether owed is a start the stop of its worker outlived, and so a row
-// that would only ever start a worker an operator stopped. Its three terms together say the stop
-// is the whole of this row's story, and run carries all three: it is one record.Store.RoleRuns
-// read, which reads the queued rows before the claim exactly so that none of the three is read
-// across a relaunch of that claim (record's RoleRuns).
+// that would only ever start a stopped worker. Its three terms together say the stop is the whole
+// of this row's story, and run carries all three: it is one record.Store.RoleRuns read, which
+// reads the queued rows before the claim exactly so that none of the three is read across a
+// relaunch of that claim (record's RoleRuns).
 func stopOutlivedStart(run record.RoleRun, owed record.OwedStart) bool {
 	// The retired state says the worker was ended.
 	if run.Claim == nil || run.Claim.State != supervise.StateRetired {
