@@ -1,0 +1,16 @@
+kind: Added
+body: |-
+  The session publishes how full its context window is, as the agent stream's `context` frame:
+  the host's own `getContextUsage()`, read after each message of a turn, at each turn start and
+  after a compaction, at most once in each `ENVOY_CONTEXT_FRAME_INTERVAL_MS` (2000 by default),
+  and kept in every replay between the settings and the command list. A host too old to answer
+  it, or one that reports no context window, publishes no frame, so a viewer with nothing to draw
+  draws nothing.
+  A person's Send or Aside whose first character is `!` is no prompt: the session runs the rest
+  of the line itself, under `/bin/sh -c` in its own working directory, in a process group of its
+  own, stopped after `ENVOY_SHELL_COMMAND_LIMIT_MS` (120000 by default) with what it printed
+  kept. One such command runs for a session at a time, and a second is answered naming the one
+  still running. What the command printed goes three ways, each cut at 8,000 characters: to the
+  live view as the person's own message, to their message on Dispatch as its reply, and to the
+  agent's transcript, which it reads at its next turn with no turn started for it. A line typed
+  at the session's own terminal reaches none of this and keeps the host's shell mode.

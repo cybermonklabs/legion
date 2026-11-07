@@ -32,8 +32,9 @@ import { asUser } from "./users";
  * turned off by its test hook, where eight subscriptions stay open and eight conversations are
  * drawn - the two readings that make the row above fail.
  *
- * k11's one timed claim, that a sleeping view comes back inside half a second, is not here: it
- * runs in `chromium-alone`, with the machine to itself (D14, `e2e/agent-workspace-timing.e2e.ts`).
+ * k11's one timed claim, that a sleeping view at the stream's worst case comes back inside 1.2
+ * seconds, is not here: it runs in `chromium-alone`, with the machine to itself
+ * (D14, `e2e/agent-workspace-timing.e2e.ts`).
  *
  * The rig both halves seed from is `e2e/live-view-cost.ts`, and every reading is the page's own
  * report (`e2e/live-views.ts`) rather than anything this suite counts for itself.

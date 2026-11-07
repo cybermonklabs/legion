@@ -4,7 +4,7 @@
 // view can ever be handed. The untimed half of the check - how many agent subscriptions the
 // socket holds, how many conversations are drawn, the page's heap, and the negative control
 // with the sleep rule off - is `agent-view-cost.e2e.ts`, in `chromium`. The one timed claim -
-// a sleeping view comes back inside half a second - is a row of
+// a sleeping view at the stream's worst case comes back inside 1.2 seconds - is a row of
 // `agent-workspace-timing.e2e.ts`, in `chromium-alone` (D14), and both halves seed from here so
 // the figures each reads are of the same rig.
 import { AGENT_STREAM_LIMITS } from "@legion/contracts";

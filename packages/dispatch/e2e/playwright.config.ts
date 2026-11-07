@@ -182,9 +182,9 @@ const multiprocessProjects = [
 // The specs whose rows are read from the wall clock: that a document write answers in under a
 // second (`heavy-document-writes.e2e.ts`), that a card's draw holds the main thread for less
 // than one (`heavy-bodies.e2e.ts` and `nested-directive.e2e.ts`, both through
-// `main-thread-hold.ts`), and what the agent surfaces cost in time - a sleeping live view comes
-// back inside half a second, and the Agents page paints six hundred sessions inside 100 ms with
-// no task longer than 50
+// `main-thread-hold.ts`), and what the agent surfaces cost in time - a sleeping live view at
+// the stream's worst case comes back inside 1.2 seconds, and the Agents page paints six hundred
+// sessions inside 100 ms with no task longer than 50
 // (`agent-workspace-timing.e2e.ts`, INFRA-812's D14). Four lanes on one machine leave such a
 // claim unmeasurable - the wall time of a write holds what the other three lanes took as surely
 // as the work the server did - so these files run in the `-alone` projects at the end of this

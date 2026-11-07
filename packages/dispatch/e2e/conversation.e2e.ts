@@ -370,12 +370,11 @@ test("a reply in a session-authored comment thread pre-fills a deletable agent m
 test("an agent's answer on a failed attempt is accepted and shown as the answer", async ({
   browser,
 }) => {
-  // None of the three reads another; only the issue waits on its project.
-  await Promise.all([
-    setLiveSessions([planner]),
-    setSessionSendStatus("s1", 404),
-    createProject({ key: "CORE", name: "Core" }),
-  ]);
+  // The project waits on nothing, but the send status is a PATCH of a seeded session: it reads
+  // the list `setLiveSessions` writes, and that write stamps every session it lists back to 200,
+  // so it runs after rather than beside it (`e2e/fake-envoy.ts`).
+  await Promise.all([setLiveSessions([planner]), createProject({ key: "CORE", name: "Core" })]);
+  await setSessionSendStatus("s1", 404);
   const issue = await createIssue({ project: "CORE", title: "Failed receipt" });
   const question = "Did you get this?";
   const message = await createMessage(issue.key, {

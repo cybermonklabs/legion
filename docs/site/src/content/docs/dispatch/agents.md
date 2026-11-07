@@ -8,7 +8,7 @@ sidebar:
 The **Agents** page lists the agent sessions connected right now, and is where you talk to them.
 Open it from the sidebar, or press `g` then `a`.
 
-![The Agents page, with filters, selection checkboxes, and a list of agent sessions](/legion/media/dispatch/agents.png)
+![The Agents page: live sessions in the four groups it reads them by, one opened to show the conversation with it.](/legion/media/dispatch/agents.png)
 
 ## The list
 
@@ -18,6 +18,9 @@ Each row is one agent session. It shows:
   running; point at the dot to see when the session was last seen,
 - the session's title and when it was last active in Dispatch, with a link beside the title,
   **↗**, that opens its [live view](#the-live-view),
+- the machine it runs on, which links to that machine's page, and its directory; from a laptop
+  width the directory is shortened to its last segment, with the whole path shown when you point
+  at it, and on a phone it takes a line of its own and is shown whole,
 - **Needs you N** when it has asks waiting on your answer — the ones on issues assigned to you —
   which opens your Inbox filtered to them,
 - **Waiting on agent N** when it has asks whose next move is its own, on anybody's issue; it
@@ -26,25 +29,61 @@ Each row is one agent session. It shows:
 - a count of its replies you have not read,
 - a pin, and a checkbox for [broadcasts](#broadcasts).
 
-Pinned agents come first. After them come the agents with asks waiting on you, then those with the
-most open asks, then the most recently active.
+The page draws the rows the screen holds and twelve either side, so hundreds of sessions open as
+quickly as three. A row you have opened stays drawn however far you scroll away from it, and
+keeps what you were writing in it.
 
-Two folded groups sit below the list:
+### Groups
 
-- **No Dispatch activity** holds sessions that are connected but have not written anything to
-  Dispatch.
-- **Inactive** holds sessions not seen for ten minutes or longer.
+Every listed session is in one of four groups, and the first of these rules that fits decides
+which:
 
-A pinned agent stays in the main list whatever its state.
+- **Needs you** — it has an ask waiting on your answer, or a reply you have not read.
+- **Active** — it wrote something in Dispatch within the last two minutes.
+- **Idle** — it was last heard from within the last ten minutes. A session Dispatch has never
+  heard from is here.
+- **Quiet** — nothing has been heard from it for ten minutes or longer.
+
+Because the first rule wins, a session silent for an hour that has a question waiting on you is
+in **Needs you**, not **Quiet**.
+
+Each group is a heading carrying its count, `Active (3)`, and `Active (3, 1 selected)` once a
+[broadcast](#broadcasts) has one of its rows ticked. Choosing the heading folds the group away,
+and choosing it again opens it; a group that holds nothing is still shown, so the four states are
+always on the page. Every group is open when the page loads, and a fold you make lasts while you
+stay on the page.
+
+A pin does not take a row out of its group. It orders that group's own rows: pinned first.
+
+Below the four groups, **Replied, no longer connected** holds the sessions that answered you and
+have since disconnected.
 
 ### Filters
 
-Above the list, three filters narrow it: **Machine**, **Role**, and a search box. Typing in the
-search box keeps the sessions whose title, directory, machine, session id, or the key of an issue
-one of its open asks names, together hold every word typed, in any order and case; pressing `/`
-anywhere on the page focuses the box. A non-empty search also opens the two folded groups below,
-so a match hidden in one of them still shows; clearing the search returns each fold to the state
-you left it in. The search survives a reload through the page's address.
+Above the list, three filters narrow it — **Group**, **Machine** and **Role** — with a search box
+beside them. Each filter opens a list you tick as many entries in as you like, and each list has
+a box that narrows its own entries, so one machine among forty is found by typing rather than by
+reading. A session is kept when its group is among the ticked groups, its machine is among the
+ticked machines, and it holds at least one of the ticked roles; a filter with nothing ticked
+narrows nothing.
+
+Typing in the search box keeps the sessions whose title, directory, machine, session id, or the
+key of an issue one of its open asks names, together hold every word typed, in any order and
+case; pressing `/` anywhere on the page focuses the box. A non-empty search opens every group, so
+a match folded away in one of them still shows; clearing the search returns each group to the
+state you left it in. The search box and the machine filter survive a reload through the page's
+address.
+
+## Pinned agents in the sidebar
+
+The sidebar's **Agents** heading folds, and under it are the agents you have pinned, oldest pin
+first. Each row shows the session's running mark and name, how many of its replies you have not
+read, what its [live view](#the-live-view) is doing — `live`, `live 30s` or `asleep` — and a
+control that unpins it. With nothing pinned, the list says where to make a pin.
+
+A pin is yours, not this browser's. Pin an agent on its row on this page, or in its live view,
+and it is in the sidebar of every browser you are signed in on, with no reload. Pins a browser
+kept for you before are moved over once, the first time you load Dispatch in it.
 
 ## Sending to one agent
 
@@ -129,7 +168,9 @@ On an Oh My Pi session, your Send or Aside arrives as your own message in its co
 agent answers there. A Send or Aside that starts with `/` runs as the session's terminal would run
 it. A command that prints output, such as `/session` or `/compact`, posts that output as the
 session's **Reply via Dispatch**; one that runs only in the session's own terminal says it did not
-run. Watch either result in the [live view](#the-live-view).
+run. A Send or Aside that starts with `!` is not a prompt at all: the session runs the rest of the
+line as a [shell command](#the-live-view). Watch any of these results in the
+[live view](#the-live-view).
 
 ## Broadcasts
 
@@ -190,8 +231,9 @@ link at the top of the Agents page lists earlier broadcasts.
 ## Unread replies
 
 When an agent replies to a message you sent it, the reply counts as unread. The count shows on the
-**Agents** entry in the sidebar and on the agent's row. Opening the row, or the agent's live view,
-marks those replies read, on every device you are signed in on.
+**Agents** entry in the sidebar, on that agent's row in the sidebar's pinned list, and on its row
+on this page. Opening the row, or the live view you are looking at, marks those replies read, on
+every device you are signed in on.
 
 When an agent with unread replies disconnects, it moves to a **Replied, no longer connected** group
 at the end of the page, so you can still read what it said: its name opens its live view.
@@ -201,8 +243,23 @@ at the end of the page, so you can still read what it said: its name opens its l
 An agent's name, on its Agents row (**↗** beside the title) and everywhere else Dispatch names it,
 links to its conversation as it happens, at `/agents/<session>/live`.
 
-- The header shows whether the session is connected, and its machine and directory.
-- The header shows the model and thinking level the session runs now, as Oh My Pi's own `/model`
+- The header holds a link back to **Agents**, the session's name with its
+  [running mark](#how-dispatch-shows-an-agent), whether this Dispatch is connected to the
+  session's conversation, and a pin.
+- Everything else sits in one row under the message box: **Send as**, the machine the session runs
+  on, its directory, the model and thinking level, a ring showing how full the session's context
+  window is, and a **?**. On a phone that row scrolls sideways, with the ring and the **?** keeping
+  the right edge of the box.
+- The **?** says what the message box does: `!` at the start of a message runs the rest as a shell
+  command in the session; `/` at the start runs one of the session's own commands, at the session
+  itself; and the session's turns are relayed while the page is open and are not stored, while the
+  messages you send through Dispatch and its Dispatch replies are kept.
+- The ring shows the share of its context window the session's conversation now fills; choosing it
+  gives the tokens and the window in figures and says what a nearly full window means. From 80 per
+  cent the ring and the share turn amber. The figures move while the session works: after each
+  message of a turn, at the start of a turn, and after a compaction. A session that reports no
+  context window shows no ring.
+- The row shows the model and thinking level the session runs now, as Oh My Pi's own `/model`
   and `/effort` report them, before any turn runs on them. A change made anywhere else (at the
   session's terminal, by a `/model` or `/effort` message, or a fallback to another model) shows
   within about 20 seconds. A model name too long for its space truncates, showing the full name on
@@ -212,15 +269,15 @@ links to its conversation as it happens, at `/agents/<session>/live`.
   levels `/effort` offers for the current model. A pick sends `/model <provider/id>` or
   `/effort <level>` to the session as your own message, always as **Send** whatever **Send as**
   says, and it appears in the conversation under your name, which is the record of who switched
-  and to what. The header changes only when the session reports the new value. With the keyboard,
+  and to what. The row changes only when the session reports the new value. With the keyboard,
   the arrow keys move a picker's choice without switching anything, and **Enter** switches to the
   choice reached; leaving the picker without pressing **Enter** puts it back on the current value.
-- Under the header, a line says what happened to your switch: `The session answered: …` with the
+- Under that row, a line says what happened to your switch: `The session answered: …` with the
   session's reply as written, such as `Model set to anthropic/claude-opus-5.` or the reason it
   refused (`Failed to set model: No API key for …`). When no answer comes within 30 seconds, or the
-  message could not reach the session, it says no answer came, and the header keeps the values the
+  message could not reach the session, it says no answer came, and the row keeps the values the
   session last reported; an answer that arrives later replaces that line. No answer does not mean
-  the switch was not applied: if it runs late, the header shows the result.
+  the switch was not applied: if it runs late, the row shows the result.
 - While a switch waits for its answer, **Send** is disabled, so your next message from this page
   reaches the session after the switch. The pickers are held and look disabled: they keep focus,
   and the arrow keys still move their choice, but nothing switches until the answer comes; then
@@ -228,21 +285,32 @@ links to its conversation as it happens, at `/agents/<session>/live`.
   turn already running when the switch lands finishes on the model it started with, and a prompt
   that another person, or the session's terminal, starts between your pick and the answer is
   outside the page's control.
-- When the header shows less, it says why: "This session does not report its model and thinking
+- When the row shows less, it says why: "This session does not report its model and thinking
   level. Restart it on a newer pi-envoy to show and switch them here." (it shows the last turn's
   model instead), "This session's Oh My Pi does not tell Dispatch its model and thinking level.",
   or "This session switches its model and thinking level only at its own terminal." A model with
   no adjustable thinking shows `no adjustable thinking`, and a level the model decides shows
   `model default`. Claude Code sessions don't publish their model or thinking level, so their
-  header is unchanged.
+  row is unchanged.
 - The agent's turns stream in while the page is open. They are relayed, not stored.
 - Your messages to the agent, and its replies through Dispatch, are stored and shown in the same
   thread. A reply through Dispatch is labelled **Reply via Dispatch**.
 - The message box at the bottom sends to the agent. **Send as** picks the mode, from the modes the
   session takes. When this is **Send** or **Aside** and the session publishes a command list, type
-  `/` to choose from its commands. The list marks commands that only the session's terminal runs;
-  their reply says they did not run. Use the arrow keys to choose, **Tab** or **Enter** to pick, and
-  **Escape** to close the list. BTW offers no commands.
+  `/` to choose from its commands. The list opens for the `/` your text cursor sits in, where that
+  `/` starts the message or follows a space or a line break; a `/` inside a word, as in a path or a
+  date, opens nothing. Each entry shows the command's description in full, and the ones only the
+  session's terminal runs are marked; their reply says they did not run. Picking at the start of
+  the message writes the command, `/skill:asd-ste100`; picking inside a sentence writes the bare
+  name, `asd-ste100`, since naming a skill to the agent runs nothing. Use the arrow keys to
+  choose, **Tab** or **Enter** to pick, and **Escape** to close the list. BTW offers no commands.
+- A **Send** or an **Aside** whose first character is `!` runs the rest of the line as a shell
+  command, under `/bin/sh -c` in the session's own working directory. What it printed appears in
+  the conversation as your own message, is posted as the reply to your message, and is given to
+  the agent to read at its next turn; it starts no turn. One command runs for a session at a time,
+  and a second while one is running is answered naming the command it is waiting on. A command is
+  stopped after two minutes with what it printed kept, and output longer than 8,000 characters is
+  cut, with a line saying so. A **BTW** runs nothing: the session answers it.
 - **Send** works while the agent is in the middle of a turn, and while earlier messages of yours
   are still on their way or were refused. Each press sends at once, as its own message, and the
   session takes it as its mode says ([Send, Aside, and BTW](#send-aside-and-btw)). **Enter** sends
@@ -252,11 +320,13 @@ links to its conversation as it happens, at `/agents/<session>/live`.
   thread: **Sending…**, then, past 30 seconds, **Still sending** with **Stop trying**. A refused or
   stopped one shows the reason with **Retry** and **Discard**. Once Dispatch makes it, the stored
   message takes its place. The agent's row on the Agents page shows the same turns.
-- What you type for one agent stays with that agent: moving to another agent's live view shows that
-  agent's own box, and coming back finds your text. Leaving the live view drops it.
-
-Some sessions cannot stream their conversation, such as Claude Code sessions. The live view says
-so, and still shows your messages and their replies.
+- The live views you open stay open behind you. The one you are looking at is live; the one you
+  left stays live for 30 seconds, in case you come straight back; the rest sleep, holding nothing
+  — no connection to the session, and no conversation drawn. Each keeps the text you have not sent
+  and your place in the conversation, so moving to another agent and back finds both where you
+  left them. Only the view you are looking at names the browser tab and marks the session's
+  replies read. A sleeping view is dropped altogether unless you pinned its session or left text
+  unsent in it, and opening it again builds it from what the session replays.
 
 ## How Dispatch shows an agent
 

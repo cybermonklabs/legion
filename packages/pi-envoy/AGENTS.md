@@ -289,7 +289,7 @@ since the host runs a built-in by either before `prompt()`; among the rest a rep
 first source, which is the one the host runs. A name is listed only if a person can type it
 (`isTypableCommandName` in `@legion/contracts`, which a viewer applies too): not empty, no
 whitespace, no control character. The list keeps the host-order prefix whose frame fits what the
-settings frame leaves of the replay's byte budget (`historyBytes`, UTF-8 bytes of JSON), so a replay
+settings and context frames leave of the replay's byte budget (`historyBytes`, UTF-8 bytes of JSON), so a replay
 always carries it. A host without `sendUserInput` publishes no list, and its viewer offers no
 completion.
 
@@ -309,19 +309,46 @@ the session re-reads the getters, unthrottled since they are in-memory, on every
 `retry_fallback_applied`, and in `runTypedInput` after `sendUserInput` settles and before the reply
 is posted, so the header shows a switch's result before its answer arrives. The publisher
 (`setSettings`) keeps the frame and publishes it only when it changed and a viewer is attached, and
-a control message that arms a publisher nobody was watching also sends the settings and commands
-frames as they stand (`publishState`): a page held open while the session is relaunched with
+a control message that arms a publisher nobody was watching also sends the settings, context and
+commands frames as they stand (`publishState`): a page held open while the session is relaunched with
 `--resume` gets no replay from the new process, only the relay's re-arming watches. The refresh has
 its own `try`/`catch`, so a getter that throws never blocks a replay answer. A replay
-ends with the history, then `settings`, then `commands` last; the settings frame is paid for first
-and whole, the commands keep the prefix that fits in what is left, and the history takes what
+ends with the history, then `settings`, then `context`, then `commands` last; the settings and
+context frames are paid for first and whole, the commands keep the prefix that fits in what is
+left, and the history takes what
 remains. A model id is a few tens of bytes, so 5,000 models fit the 512 KiB budget with room for the
 commands; a list larger than the whole budget leaves no room for anything else, and a replay over
 the NATS server's `max_payload` fails to publish, which the control pump logs. A change of session
-id (`watchAgentStream`) resets the publisher, settings included, but never its `seq` counter, which
-starts at the clock's milliseconds × 1,000: the page keeps a `settings` or `commands` frame only when
+id (`watchAgentStream`) resets the publisher, settings and context included, but never its `seq`
+counter, which
+starts at the clock's milliseconds × 1,000: the page keeps a `settings`, `context` or `commands` frame only when
 its `seq` beats the one it applied, and a page held open while the session is relaunched with
 `--resume` holds the earlier process's numbers, so every later process must count above them.
+
+The stream also says how much of its context window the session fills now (`kind: "context"`,
+INFRA-812), the two figures `tokens` and `contextWindow` and nothing else:
+the share they make is the viewer's to draw, and a ring drawn from a figure the session never
+gave is the one thing that change forbids.
+They travel in a frame of their own rather than beside the model on `settings`,
+because a viewer drops a whole frame whose fields do not validate and one bad figure would take
+the model picker and the thinking level down with it.
+The figures are the host's own `getContextUsage()` on the live `SessionContext`, read behind the
+same guard the host's own callers use, so a host too old to have the method publishes nothing.
+A reading is kept and published only when the host answers a window above zero and a figure to go
+with it — a `percent` the host computed, or tokens of its own — because the pinned binary has more
+than one wiring behind that method:
+the canonical one answers from the session's context breakdown, while the status line's startup
+session answers `{tokens: 0, contextWindow, percent: null}`, which would draw a viewer a ring at
+zero per cent for a conversation that is nothing of the sort.
+The host fires no event for the figures either, so `refreshAgentStreamContext` re-reads them after
+each message of a turn (`message_end`), at each `turn_start`, and after a compaction
+(`session_compact`, `auto_compaction_end`, the one moment they fall rather than climb), at most
+once in each `ENVOY_CONTEXT_FRAME_INTERVAL_MS` (default 2,000), since a frame per message of a
+storm would be noise while a second or two of lag costs nothing.
+A getter that throws is logged and leaves the reading already kept standing.
+The publisher (`setContext`) keeps the frame and publishes it only when it differs from the
+reading last kept and a viewer is attached, and a change of session id resets it with the
+settings.
 
 The record's limit: it keys on the attempt a frame names, so a forger who reads `message.created`
 (every authenticated caller's event feed carries it, and Dispatch publishes it before its own

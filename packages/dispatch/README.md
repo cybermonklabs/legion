@@ -427,7 +427,7 @@ docker rmi "ghcr.io/cybermonklabs/legion/envoy:${acceptance_image_tag}"
 `e2e/seed.ts` empties its database before each scenario. Always set
 `PLAYWRIGHT_DATABASE_URL` to an isolated test database when using a deployed URL.
 The suite has eleven projects. `chromium` runs every spec except the two plain-HTTP specs and the
-three the `-alone` projects below take. `iphone`
+four the `-alone` projects below take. `iphone`
 runs, from those same specs, only the tests tagged `@phone` (written at the end of the test's or
 its `test.describe`'s title); a test takes the tag when the phone viewport can change what it
 asserts, and not when it only reaches the same control by another route, which is in
@@ -460,7 +460,10 @@ tab's lock.
 The last three projects run the rows whose claim is a wall-clock time, with the machine to
 themselves: `chromium-alone` runs `e2e/heavy-document-writes.e2e.ts` (a document write answers in
 under a second), `e2e/heavy-bodies.e2e.ts` and `e2e/nested-directive.e2e.ts` (a card draws without
-holding the main thread for a second), and `firefox-alone` and `webkit-alone` run
+holding the main thread for a second) and `e2e/agent-workspace-timing.e2e.ts` (a sleeping live
+view at the stream's worst case comes back inside 1.2 seconds, and the Agents page paints six hundred
+sessions inside 100 milliseconds with no task longer than 50), and `firefox-alone` and
+`webkit-alone` run
 `e2e/heavy-bodies.e2e.ts` in the other two engines. Each names every project before it in
 `dependencies` and caps its own workers at one, so Playwright starts them only after the rest of
 the run and takes one row at a time: four lanes on one machine make a second of wall clock
