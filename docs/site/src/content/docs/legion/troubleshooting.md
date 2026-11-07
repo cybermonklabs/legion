@@ -523,7 +523,8 @@ starting it. A suspended worker of its issue's current phase that the daemon sus
 by the daemon at boot. One an operator suspended (`legion claims suspend`, one claim at a time or a
 whole fleet before a restart), or whose suspension predates the release that records who suspended
 it (`suspendedBy: unknown`), is not; neither is an operator-suspended or failed tree architect, nor
-a claim whose launches ran out. Each of those is woken by nothing: the daemon looks healthy and the
+a claim whose launches ran out, nor a claim a close or a stop retired while its tree runs, whatever
+its role. Each of those is woken by nothing: the daemon looks healthy and the
 state shows the tree active, but the tree stops for good at the worker's phase, or at the first
 decision that needs its architect. Once a boot has re-adopted its claims, the daemon names every
 such claim in one error line, under the move that brings it back:
@@ -599,10 +600,15 @@ is `legion-<project>-<issue, lowercased>-<role>`, as `legion claims list` shows.
   When a tree's architect and its workers failed together, retry the architect first: the held
   workers are its to retry once it runs.
 
-- **`needsWorkflowStart`** (a failed phase worker): its issue is held
+- **`needsWorkflowStart`** (a failed phase worker, or a claim a close or a stop retired while its
+  tree runs, whatever its role): a failed worker's issue is held
   ([An issue is held](#an-issue-is-held)), and its tree's architect retries the phase or escalates
   it to the controller; `legion claims retry` applies the same retry when the architect cannot. A
   failed claim ignores `legion claims resume` and `legion claims deliver`.
+  A retired claim ignores those two as well, and `legion claims retry` refuses it because it has
+  not failed, so what relaunches it on the session it kept is a start of the phase it owns — its
+  architect's `retry_or_escalate` of a held phase, a transition into that phase, or a tree close
+  and re-admission — and, for a retired tree architect, its tree's admission.
 
 The list names only claims of trees that run — the trees `admission.trees` names, whether or not
 an issue of them holds a slot — and leaves out claims that
@@ -967,9 +973,10 @@ legion state --config legion.yaml --json | jq '.consumers[] | {name, waiting, ol
   `retryable intake processing failure` and the other warnings naming a `subject` of that
   consumer, whose `error` says what fails. A handler that does not finish writes none of those
   while it holds: intake reports its message in progress, and the stall is all that shows until
-  the handler passes its ten-minute limit and the daemon writes `an intake handler outran its
-  limit and was cut`, so search for that line too
-  ([GitHub, NATS and the Secrets Broker](#github-nats-and-the-secrets-broker)). A consumer that
+  the handler passes the intake handler limit and the daemon writes `an intake handler outran
+  its limit and was cut`, so search for that line too
+  ([GitHub, NATS and the Secrets Broker](#github-nats-and-the-secrets-broker)), whose entry
+  says the limit this deployment runs with and where the daemon prints it. A consumer that
   stops is not a stall: it stops the daemon (`workflow intake stopped: …`).
 - **`unavailable`** names what NATS did not answer in time, or refused; the rest of the state is
   served all the same. Every consumer is read at the same time, each within two seconds,
@@ -1030,15 +1037,24 @@ notice comes once per handoff commit, from whichever pass finds it first.
   head's CI from its check runs and tells an architect `pull-request-missing`, so none of those
   waits for the backlog to drain.
 - **`an intake handler outran its limit and was cut`** (a warning with `consumer`, `event_id`,
-  `fact` and `limit`). One message's handling ran past `limit`, ten minutes, which no setting
-  changes, so the daemon cut it and naked the message: nothing of that event was applied, and
-  JetStream delivers it again. While a handler runs, intake reports its message in progress, so a
-  handler that hangs shows neither as the preparation work of a redelivery nor as a rising
-  `delivered` count, and this warning is the one line that names the cut. The warning written
-  right after it with the same `event_id` names the step that was running, with the error
-  `context deadline exceeded`. Each Dispatch or GitHub read is cut on its own at the
-  acknowledgement window, so a handling that reaches ten minutes is most often waiting on the
-  database. One Postgres advisory lock is what it most often waits on,
+  `fact` and `limit`). One message's handling ran past `limit`, the handler limit
+  `worker_rpc_timeout_seconds` derives for this deployment, so the daemon cancelled the
+  handling's context and naked the message: nothing of that event was applied. Intake reports
+  the message in progress only until the limit, and the handler returns once the step that is
+  running honours the cancelled context, which every step does at once today; only then is
+  this warning written and the message naked. This consumer asks for one message at a time and
+  has none outstanding while the handler runs, so the event is sent again, and its `delivered`
+  count goes up by one, no sooner than that return: one nak delay (a second) after the nak, or
+  at the consumer's next pull where the step held the handler past about one acknowledgement
+  window after the limit, whichever the server takes first. A step that ignored the cancelled
+  context would hold the message, and this warning, for the whole of its own run. Between this
+  warning and the nak the daemon writes one more line under the same `event_id`, naming the
+  step that was running, with the error `context deadline exceeded`; this warning is the one
+  that names the cut. Every step is a `pgx` call or a Dispatch or GitHub read that gives up on
+  a cancelled context, so the wait for the return is short, and each read is cut on its own at
+  the acknowledgement window, so a handling that reaches the limit is most often waiting on the
+  database. One Postgres advisory lock is what
+  it most often waits on,
   `pg_advisory_xact_lock(hashtext('legion.apply_fact'))`, which every fact takes for the length of
   its transaction and the daemon's other lifecycle writes take too, so the holder is as often one
   of those as another fact. Ask the daemon's database who holds it rather than guessing:
@@ -1056,13 +1072,22 @@ notice comes once per handoff commit, from whichever pass finds it first.
 
   The first row is the holder, the rest are waiting on it, and `xact_start` says how long it has
   held. The next delivery of the same event takes the same path and is cut the same way.
+
+  The limit this deployment runs with is in the daemon's log at every boot, in a line beginning
+  `intake: one fact's handling is cut after <n>s`, at warn when the limit is above an hour,
+  where the cut comes too late to return a wedged handler's message while an operator is still
+  looking. At the ten-minute floor that line names the floor as what decided the limit; above
+  it, `legion start --check-config` prints the same sentence, which an operator can read before
+  a rollout. The limit is one acknowledgement window for each of a review's three bounded reads
+  and one more for the fact's transaction and its wait on the apply lock, never below ten
+  minutes, so `worker_rpc_timeout_seconds` is the key that changes it.
 - **`an intake fact outlived its acknowledgement window and was held in progress while it ran`**
   (an info line with `consumer`, `event_id`, `delivered` and `took`). The handling took longer
   than the consumer's acknowledgement window (`worker_rpc_timeout_seconds`), and intake held the
   delivery for `took` rather than let JetStream deliver the event a second time. The fact was
   applied: this is a fact that is slow, not one that failed, and this is the only line that says
   how long a fact took. One of them asks nothing of an operator; a `took` creeping towards the
-  ten-minute limit, or many at once, names where to look for the slow read behind them.
+  handler limit, or many at once, names where to look for the slow read behind them.
 - **`webhook App missing on <repo>: <reason>`** in `legion state` (`repositories.withoutWebhookApp`
   in `--json`). Dispatch's GitHub App, the Envoy App whose webhook carries GitHub's events, is not
   known to be installed on a repository the daemon serves. With `Dispatch's GitHub App is not
