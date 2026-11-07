@@ -826,6 +826,46 @@ func unanswered(err error) bool {
 	return errors.Is(err, nats.ErrTimeout) || errors.Is(err, context.DeadlineExceeded)
 }
 
+// unansweredSends bounds how many times a caller sends one JetStream request the server left
+// unanswered (sentAgain): EnsureKeyValue's lookup of a KV bucket and its create
+// (internal/bus/kv.go). A server answers a bucket's lookup or its create in milliseconds when it
+// answers at all, so a wait that runs out is a request that drew no answer rather than a slow
+// one, and sending it again is the only remedy there is: a longer wait buys nothing for an answer
+// that is never coming. Three sends, because a start that lost two in a row has a bus that is not
+// serving JetStream at all, which is a start that must end. Each send carries its own wait, so a
+// caller's worst case is this count times that wait.
+const unansweredSends = 3
+
+// sentAgain is what send answers, sent again while the server leaves it unanswered (unanswered)
+// and at most unansweredSends times, with request naming it in the line each further send logs.
+// Any answer, the server's refusal included, is returned at once, so a refused create is sent
+// once.
+//
+// A request is lost rather than slow because neither side sends it again: nats.go publishes each
+// JetStream request exactly once and waits (nats.go@v1.53.1 js.go:3559-3578), and nats-server
+// v2.15.1 returns from several paths these requests take without answering at all -- a
+// STREAM.INFO or a STREAM.CREATE at a member that is not the metadata leader while the metadata
+// group is less than ten seconds old (server/jetstream_api.go:2087-2093 and :1550-1563, with
+// jetstream_cluster.go:1481-1497), a STREAM.CREATE whose metadata proposal is refused because the
+// term moved (jetstream_cluster.go:11110-11112, with raft.go:1046-1060), and anything that
+// arrives while the API queue holds its 10,000 limit (jetstream_api.go:1020-1046). So a start
+// that opens a bucket through a cluster whose meta leader is changing waits its whole bound out
+// and ends the program over one send that was never going to be answered.
+func sentAgain[T any](request string, send func() (T, error)) (T, error) {
+	var answer T
+	var err error
+	for sends := 1; sends <= unansweredSends; sends++ {
+		if answer, err = send(); !unanswered(err) {
+			return answer, err
+		}
+		if sends < unansweredSends {
+			slog.Warn("envoy nats stream request unanswered; sending it again",
+				slog.String("request", request), slog.Int("sent", sends), slog.String("error", err.Error()))
+		}
+	}
+	return answer, err
+}
+
 // refusedSettings is err, the server's answer to request, a create (deployed nil) or an update of
 // the stream deployed, named with each deployment setting whose value request changes:
 // ReplicasEnvVar when it sets more than one copy the stream does not have (a create, or a raise),

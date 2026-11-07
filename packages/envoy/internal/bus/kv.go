@@ -57,11 +57,13 @@ type KeyValue struct {
 	streams jetstream.JetStream
 }
 
-// RequestTimeout bounds a read through the jetstream handle whose caller holds no deadline of its
-// own: the STREAM.INFO that opens the handle, a read of the bucket's stream, a key's history. It is
-// the JetStream MaxWait the listener and Dispatch open their legacy handles with, so a read moved
-// off the legacy handle waits no longer than it did there, and no less, whatever MaxWait the legacy
-// handle carries.
+// RequestTimeout bounds one send of a read through the jetstream handle whose caller holds no
+// deadline of its own: the STREAM.INFO that opens the handle, a read of the bucket's stream, a
+// key's history. It is the JetStream MaxWait the listener and Dispatch open their legacy handles
+// with, so a read moved off the legacy handle waits no longer than it did there, and no less,
+// whatever MaxWait the legacy handle carries. A request a start sends again because the server
+// left it unanswered costs that bound once per send (sentAgain, EnsureKeyValue's lookup and its
+// create).
 const RequestTimeout = 10 * time.Second
 
 // A create a clustered server answers is committed to the JetStream metadata group, not applied
@@ -151,6 +153,14 @@ func namedRequest(request string, err error) error {
 // before the handle is opened on it (awaitBucketApplied), since a clustered create is answered
 // before every member has applied it.
 //
+// A lookup or a create the server leaves unanswered is sent again rather than waited out for
+// longer (sentAgain): nats.go sends each request once, and a member whose metadata group is
+// electing a leader answers neither. Every production caller opens its JetStream context with
+// nats.MaxWait(10 * time.Second) (cmd/listener/brokerauth.go:149, internal/cistore/cistore.go:357,
+// internal/session/registry.go:369, internal/store/kv.go:94, internal/bus/nats.go:508), which
+// bounds one send of a request, so a lookup that never draws an answer costs this call 30 s and a
+// create that never draws one costs it the same, where each cost 10 s before.
+//
 // The error names the request that drew it, the bucket's stream and the JetStream request made of
 // it: `KV_envoy_webhook_redelivery STREAM.INFO: ...` for the lookup of the bucket, which this
 // call makes first and makes again while it waits a member out, and
@@ -159,20 +169,35 @@ func namedRequest(request string, err error) error {
 // `KV_envoy_interests STREAM.CREATE: ENVOY_NATS_REPLICAS=3: ...`.
 func EnsureKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig) (KeyValue, error) {
 	lookup := "KV_" + config.Bucket + " STREAM.INFO"
-	kv, err := js.KeyValue(config.Bucket)
+	kv, err := sentAgain(lookup, func() (nats.KeyValue, error) { return js.KeyValue(config.Bucket) })
 	err = namedRequest(lookup, err)
 	created := false
 	switch {
 	case errors.Is(err, nats.ErrBucketNotFound):
-		kv, err = js.CreateKeyValue(config)
+		// A create the server leaves unanswered is sent again, where an unanswered update is not
+		// (updateStream, internal/bus/stream.go:748-754). A second identical create finds the
+		// stream assignment the first one proposed, or left inflight, compares the two
+		// configurations and, when they are equal, proposes that same assignment again, so the
+		// answer the first send never drew goes out (server/jetstream_cluster.go:11053-11063,
+		// :11109-11116). A create the server does answer "stream name already in use" is settled
+		// by the branch below, which reads the bucket until the member answering has applied it.
+		kv, err = sentAgain("KV_"+config.Bucket+" STREAM.CREATE", func() (nats.KeyValue, error) {
+			return js.CreateKeyValue(config)
+		})
 		if errors.Is(err, nats.ErrStreamNameAlreadyInUse) {
 			// The bucket was created between this start's lookup and its create, by another start
 			// of this deployment, and the member answering may not have applied that create
 			// either: the lookup is taken again until it has. The copies are not raised here, as
 			// they are for a bucket this start found: the start that created it just now carries
 			// the deployment's count too.
+			//
+			// Each of those lookups is sent again when the server leaves it unanswered
+			// (sentAgain). A bucket the member has not applied and a request that drew no answer
+			// are two different answers, and each is waited out in its own way: the first is read
+			// again until the member holds it, the second is sent again. A lost send here would
+			// end the start the create above has just carried through.
 			kv, err = awaitBucketApplied(config.Bucket, bucketMissing, func() (nats.KeyValue, error) {
-				return js.KeyValue(config.Bucket)
+				return sentAgain(lookup, func() (nats.KeyValue, error) { return js.KeyValue(config.Bucket) })
 			})
 			err = namedRequest(lookup, err)
 		} else {
