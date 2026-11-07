@@ -94,8 +94,9 @@ type SessionPull struct {
 
 // Pull starts pulling sessionID's consumer on the connection, without reading it first: the first
 // Next returns ErrSessionConsumerNotFound when the stream holds no such consumer. Pulled messages
-// wait in the pull for Next; Stop ends it, and the server delivers any message it delivered and
-// was not acked for again once its ack wait has passed, or at a restart (RestartAtFloor).
+// wait in the pull for Next. Release ends it and hands every one of them back to the server at
+// once; Stop ends it and leaves them, so the server delivers each message it delivered and was
+// not acked for again only once its ack wait has passed, or at a restart (RestartAtFloor).
 func (s *SessionConsumers) Pull(ctx context.Context, sessionID string) (*SessionPull, error) {
 	name, err := sessionConsumerNameOf(sessionID)
 	if err != nil {
@@ -256,7 +257,9 @@ func (a sessionAck) Ack() error                             { return a.msg.Ack()
 func (a sessionAck) InProgress() error                      { return a.msg.InProgress() }
 func (a sessionAck) NakWithDelay(delay time.Duration) error { return a.msg.NakWithDelay(delay) }
 
-// Stop ends the pull; the messages it held and Next had not returned are delivered again later.
+// Stop ends the pull and leaves the messages it held and Next had not returned where they are:
+// the server delivers each of them again once its ack wait (SessionConsumerAckWait) has passed.
+// A caller that wants them back at once ends the pull with Release instead.
 func (p *SessionPull) Stop() { _ = p.sub.Unsubscribe() }
 
 // Release ends the pull and returns to the server, at once, every message it holds that Next did

@@ -146,7 +146,10 @@ const (
 // (setOwned), so a rolling deploy's second task relays nothing until the first lets go. The relay
 // set follows the watched session cache (session.SessionRegistry.OnChange), so a session that
 // moves to another machine id stops being relayed here at once, and a listener that starts relays
-// every session the cache holds for it with no registration.
+// every session the cache holds for it with no registration. A relay cancelled that way returns
+// every message it still holds to the server before its run ends (sessionRelays.release), so the
+// listener the session moved to is delivered them at once and in stream order rather than after
+// the consumer's ack wait, and writes one line saying it has.
 //
 // One loop goroutine owns the set of relays (relays) and applies the events it is sent in order;
 // each relay runs on a goroutine of its own.
@@ -947,7 +950,10 @@ func (m *sessionRelays) receiptDeadline(run *relayRun) (time.Time, bool) {
 }
 
 // forget drops every frame of run still awaiting an answer and returns them: a reply to one is
-// ignored, and its message waits out its ack wait or the next restart at the ack floor.
+// ignored from here on. It answers nothing to the server, so each dropped frame's message is
+// delivered again only once its ack wait has passed, or at the next restart at the ack floor.
+// That is right for a run that ended for a reason of its own, and wrong for one that was
+// cancelled, which calls release instead.
 func (m *sessionRelays) forget(run *relayRun) []*relayFrame {
 	m.framesMu.Lock()
 	defer m.framesMu.Unlock()
