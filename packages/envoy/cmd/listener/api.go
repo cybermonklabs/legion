@@ -1989,8 +1989,9 @@ func (e *sessionEntryWriteError) Unwrap() error { return e.cause }
 // was answered 200 for topics the filter leaves out. So every exit that answers no registration
 // holds the filter to the row the bucket holds first (sessionDelivery.settleUnanswered), on a
 // context the client's own cannot cancel but this registration's store budget bounds, since the
-// answer waits on it. A registration refused before any consumer call was sent has set no filter
-// and settles nothing (deliveryRefusal.filtered).
+// answer waits on it. One deferred settle behind an answered flag is what makes that true of
+// every exit, an exit added later included. A registration refused before any consumer call was
+// sent has set no filter and settles nothing (deliveryRefusal.filtered).
 //
 // ctx bounds the store work (sendRequestBudget) and registerCtx the consumer calls, which take
 // the request's own context as they always have.
@@ -2024,8 +2025,18 @@ func (d *listenerDeps) registerSession(
 			settleCtx, cancel = context.WithDeadline(settleCtx, deadline)
 			defer cancel()
 		}
-		d.consumers.settleUnanswered(settleCtx, d, body.SessionID)
+		d.consumers.settleUnanswered(settleCtx, d.registry, body.SessionID)
 	}
+	// answered is set on the one return that answers this registration, and the settle runs on
+	// every other exit. It is deferred rather than written at each of them because an exit added
+	// later would otherwise leave the filter of a plan nothing stored on the session's consumer,
+	// which is the bug the settle was added for.
+	answered := false
+	defer func() {
+		if !answered {
+			settle()
+		}
+	}()
 	for attempt := 1; attempt <= registrationPlanAttempts; attempt++ {
 		plan := store.InterestPlan{}
 		var err error
@@ -2035,13 +2046,11 @@ func (d *listenerDeps) registerSession(
 			plan, err = d.registry.PlanInterestAfterConflict(ctx, body.SessionID, planned)
 		}
 		if err != nil {
-			settle()
 			return registeredSession{}, nil, err
 		}
-		registered, answered, refusal, err := d.registerPass(ctx, registerCtx, machineID, body, plan)
+		registered, answeredPass, refusal, err := d.registerPass(ctx, registerCtx, machineID, body, plan)
 		if refusal != nil {
 			filtered = filtered || refusal.filtered
-			settle()
 			return registeredSession{}, refusal, nil
 		}
 		// The pass was given its consumer, so its call was sent and the filter it carried is the
@@ -2055,10 +2064,11 @@ func (d *listenerDeps) registerSession(
 		}
 		// A pass that answers carries no error (listenerDeps.registerPass), so the switch
 		// below is left every error there is, the entry write's among them.
-		if answered {
+		if answeredPass {
 			if registered.delivery.answer != nil {
 				registered.delivery.answer.Gap = &gap
 			}
+			answered = true
 			return registered, nil, nil
 		}
 		switch {
@@ -2069,11 +2079,9 @@ func (d *listenerDeps) registerSession(
 			logger.Warn("listener plans the session's interest again: another writer stored the row",
 				slog.String("session_id", body.SessionID), slog.Int("plans", attempt))
 		default:
-			settle()
 			return registeredSession{}, nil, err
 		}
 	}
-	settle()
 	return registeredSession{}, nil, fmt.Errorf("write %s's interest record: %w after %d plans",
 		body.SessionID, store.ErrInterestPlanConflict, registrationPlanAttempts)
 }

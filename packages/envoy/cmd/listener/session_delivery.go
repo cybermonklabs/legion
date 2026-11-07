@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -402,7 +401,7 @@ const (
 // The line names the session, which is what an operator reading a pause in its delivery has to go
 // on.
 func (m *sessionDelivery) repairRegistered(ctx context.Context, d *listenerDeps, sessionID string, ackFloor uint64, after string) {
-	fenceFilterWrite(ctx, m.logger, d.registry, sessionID, func(int) (uint64, bool) {
+	fenceFilterWrite(ctx, m.logger, d.registry, sessionID, func() (uint64, bool) {
 		if m.beforeRepairPlan != nil {
 			m.beforeRepairPlan()
 		}
@@ -438,134 +437,6 @@ func (m *sessionDelivery) repairRegistered(ctx context.Context, d *listenerDeps,
 		}
 		return want.revision, true
 	})
-}
-
-// filterFenceAttempts bounds the writes one fenced filter write makes: the first, and four more
-// over rows that landed under it (fenceFilterWrite).
-//
-// The passes are what makes the filter converge, since nothing outside the loop repairs what it
-// leaves. The registration that stores each of those rows sets the filter of the row it stores
-// before it stores it (consumerFor) and judges that filter against the bucket once its entry is
-// written (confirmRegistered); both of those are behind it by the time this listener's write
-// lands over them, so that registration is answered and gone, and the topic it added stays
-// filtered out of the consumer until the session's next heartbeat, 90 s away
-// (contracts.SessionHeartbeat), every message published on it in between skipped for good, since
-// a filter update keeps the consumer's position.
-//
-// Against that a pass is cheap: one bucket read and one consumer call, under that session's own
-// lock and no other session's. The count is what the caller's budget can really spend, since the
-// whole loop runs inside the caller's five-second call timeout (sessionConsumerCallTimeout), a
-// relay restart's own calls included: five passes are ten round trips to the server, and that
-// budget covers them at a quarter of a second each with the restart's beside them. One
-// writer racing a repair settles in two passes, and five leaves room for the two listeners of a
-// rolling deploy with an unsubscribe or a role claim of the same session between them; a row
-// still moving under five writes in a row is written to continuously rather than raced once,
-// which is what the line the loop ends on names.
-const filterFenceAttempts = 5
-
-// fenceFilterWrite makes a write of a session consumer's filter and lets no write built from an
-// interest row another writer has replaced stand.
-//
-// Every such write is built from a bucket read and lands at the server after it
-// (repairRegistered, refollow, sessionRelays.settleFilter). A row stored between the two makes
-// what lands an older row's filter, over the filter a newer registration set, and the session is
-// then answered 200 for a topic its consumer does not filter on; because a filter update keeps the
-// consumer's position, the messages that pass in that window are skipped for good. The server
-// holds no conditional consumer update to write that filter under, so the fence is the interest
-// row's KV revision read again after the write (store.Registry.RefreshAt): write answers the
-// revision of the row it built its write from, and while the bucket answers a higher one
-// (rowMovedUnder) the loop plans and writes again, ending when the row the write was built from
-// is still the newest.
-//
-// A loop that ends on an older row's filter converges no further here: it logs that at WARN,
-// naming the session, the revision it wrote from and the one the bucket answered, and leaves the
-// filter to the session's next heartbeat, which registers again and writes both the row and the
-// filter of it. Passing again inside this loop is the whole of the retry: handing the session
-// back to the repair path instead would buy nothing, since every pass already plans from the
-// bucket's newest record and row and a hand-back would only take the session's lock again to do
-// the same thing. What the passes cost is a longer hold of that one session's lock; what stopping
-// costs is the messages on the topics the two rows differ by until that heartbeat, and
-// filterFenceAttempts is where the two are weighed.
-//
-// What the fence leaves open, each window costing those messages until that heartbeat: a row
-// stored after the loop's last read stands unfenced, since nothing reads the bucket again to
-// find it; a corrective pass that plans nothing, or whose write the server refused, leaves the
-// filter of the pass before it standing, which the bucket has already answered a newer row
-// than; a loop out of passes leaves the filter of its last pass, under which the row moved once
-// more; and a read that failed ends the loop unjudged, since a fence that cannot read the
-// bucket cannot say whether the write it made is an older row's. The second and third log the
-// line below; the first is not known here, and the fourth has no revision to name.
-//
-// Both reads are direct gets, so with ENVOY_NATS_REPLICAS above 1 a copy one write behind the
-// leader can answer an older row, and an older revision, at either end of the loop
-// (bus.KeyValue.Get states that limit and why this build leaves it standing); rowMovedUnder is
-// what keeps such an answer from starting a pass planned from the lagging row it carries.
-//
-// write plans its write from a bucket read, makes it, and answers the KV revision of the interest
-// row it was built from with whether the loop goes on: false where nothing landed - it planned no
-// write, the server answered its call with a refusal, or the call found the consumer already as
-// the row asks - since a write that did not land puts no older row's filter over anything. A
-// call whose answer did not come back is not such an answer: the server may have applied it, so
-// write answers true for one and the loop judges the filter it may have left
-// (consumerCallAnswered). It takes the pass it is in, counted from 0, for a caller whose first
-// write is already made. Every failure is logged by write itself, which names what it was doing.
-func fenceFilterWrite(ctx context.Context, logger *logging.Logger, registry *store.Registry, sessionID string, write func(attempt int) (uint64, bool)) {
-	// stands is the revision of the row whose filter is on the consumer, 0 until a pass writes
-	// one; newest is what the bucket answered after that write.
-	var stands, newest uint64
-	for attempt := range filterFenceAttempts {
-		wrote, ok := write(attempt)
-		if !ok {
-			if attempt == 0 {
-				return // nothing of this loop's landed, so no older row's filter stands
-			}
-			// A corrective pass that wrote nothing leaves the pass before it standing, and the
-			// bucket answered a newer row than that one: that is the line below's case too.
-			break
-		}
-		stands = wrote
-		var read bool
-		if newest, read = interestRevision(registry.RefreshAt(ctx, sessionID)); !read {
-			return
-		}
-		if !rowMovedUnder(newest, stands) {
-			return
-		}
-	}
-	logger.Warn("session consumer filter left on an older interest row than the bucket holds; the session's next heartbeat sets it",
-		slog.String("session_id", sessionID), slog.Uint64("wrote_revision", stands), slog.Uint64("newest_revision", newest))
-}
-
-// rowMovedUnder reports whether the interest row the bucket answered at revision newest was
-// stored after the row a filter write was built from, at revision wrote, so that a pass planned
-// from the newest row is a correction and not a step back: a bucket's revisions only rise, so a
-// strictly higher one is a write of that key the bucket took after the one wrote names.
-//
-// Equal is the answer the loop is looking for and ends it. Lower ends it too, and that is what
-// makes this a comparison rather than newest != wrote: both of the loop's reads are direct gets,
-// so with ENVOY_NATS_REPLICAS above 1 the one after the write can be answered by a copy up to one
-// write behind the leader (bus.KeyValue.Get), and a pass started from such an answer plans from a
-// row older than the one just written and writes that older row's filter, which is the loss this
-// fence exists to prevent, with the next pass's lagging read free to do it again.
-//
-// A newest of 0 ends it as well, where the bucket holds no row for the session: a delete of the
-// row, or that same lagging copy answering for a key it has not got yet. The two costs of
-// reading it wrong are not comparable. A filter left naming the topics of a row since deleted
-// delivers frames the session follows none of, which its plugin drops (refollow), and the delete
-// of a session's record takes its consumer with it anyway (deleteConsumer); a filter emptied to
-// the agent subject under a live session whose row a lagging copy has not got drops every topic
-// it follows until its next heartbeat.
-func rowMovedUnder(newest, wrote uint64) bool { return newest > wrote }
-
-// interestRevision is the KV revision an interest row read answered at, and whether the read
-// answered at all. The two answers interestTopics takes for topics of none are answers here too:
-// a session the bucket holds no row for is revision 0, and a row this build cannot decode carries
-// the revision a write of it is fenced on just as a row this build reads does.
-func interestRevision(_ store.Interest, revision uint64, err error) (uint64, bool) {
-	if errors.Is(err, nats.ErrKeyNotFound) || errors.Is(err, store.ErrMalformedInterest) {
-		return revision, true
-	}
-	return revision, err == nil
 }
 
 // registeredConsumer is what the bucket's newest record and interest row of a session ask of its
@@ -629,8 +500,7 @@ func (m *sessionDelivery) registeredTarget(ctx context.Context, d *listenerDeps,
 	case entry.Delivery != session.DeliveryConsumer:
 		return registeredConsumer{}, false
 	}
-	row, revision, err := d.registry.RefreshAt(ctx, sessionID)
-	topics, err := interestTopics(row, err)
+	topics, revision, err := storedTopics(ctx, d.registry, sessionID)
 	if err != nil {
 		m.logger.Warn("listener could not read the topics of a session whose consumer it is repairing",
 			slog.String("session_id", sessionID), slog.String("error", err.Error()))
@@ -946,15 +816,6 @@ func (m *sessionDelivery) granted() {
 	m.noGrantLogged = false
 }
 
-// filterAfterUnsubscribe and filterAfterUnansweredRegistration name what a write of a session
-// consumer's filter built from the bucket's newest row follows, which its log line carries
-// (storedFilterWrite): the unsubscribe that removed topics from the row (refollow), or the
-// registration this listener could not answer (settleUnanswered).
-const (
-	filterAfterUnsubscribe            = "unsubscribe"
-	filterAfterUnansweredRegistration = "unanswered registration"
-)
-
 // refollow sets the filter of sessionID's consumer to its stored interest topics after a change
 // that removed some (an unsubscribe), when the session's entry records consumer delivery; a
 // session whose entry records none, an entry the previous build wrote, or whose consumer is gone,
@@ -962,26 +823,20 @@ const (
 // the consumer then still delivers a topic the session no longer follows, and the plugin drops a
 // frame no followed topic matches.
 //
-// The topics are read from the bucket and not from the cache (store.Registry.RefreshAt) and
-// under the session's lock, as register's consumer call is made under it: the lock orders this
-// listener's own calls, so a registration here that stored more topics and wrote its filter first
-// is not overwritten with the set read before it, and the bucket read is what carries a
-// registration on another listener, whose row this listener's watch need not have delivered yet.
-// The write is fenced on the row it was built from (storedFilterWrite), since the bucket orders
-// the writers the lock does not.
+// The topics are read from the bucket, not from the cache, and under the session's lock, as
+// register's consumer call is made under it: the lock orders this listener's own calls, so a
+// registration here that stored more topics and wrote its filter first is not overwritten with
+// the set read before it, and the bucket read is what carries a registration on another
+// listener, whose row this listener's watch need not have delivered yet. The write is fenced on
+// the row it was built from; that fence, the session's lock, the call budget and the listener
+// that holds no session consumers at all are storedFilterWrite's, since each of its callers
+// needs the same four.
 func (m *sessionDelivery) refollow(ctx context.Context, d *listenerDeps, sessionID string) {
-	if m == nil || m.consumers == nil {
-		return
-	}
 	entry, err := d.sessions.Get(sessionID)
 	if err != nil || entry.Delivery != session.DeliveryConsumer {
 		return
 	}
-	ctx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
-	defer cancel()
-	unlock := m.locks.lock(sessionID)
-	defer unlock()
-	m.storedFilterWrite(ctx, d, sessionID, filterAfterUnsubscribe)
+	m.storedFilterWrite(ctx, d.registry, sessionID, filterAfterUnsubscribe)
 }
 
 // settleUnanswered holds the filter of a registration this listener did not answer to the row
@@ -1002,81 +857,9 @@ func (m *sessionDelivery) refollow(ctx context.Context, d *listenerDeps, session
 //
 // It takes the session's lock, as every consumer call this listener makes for a session does, so
 // its caller holds none: the pass that set the filter has released it by then (registerPass).
-func (m *sessionDelivery) settleUnanswered(ctx context.Context, d *listenerDeps, sessionID string) {
-	if m == nil || m.consumers == nil {
-		return
-	}
-	ctx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
-	defer cancel()
-	unlock := m.locks.lock(sessionID)
-	defer unlock()
-	m.storedFilterWrite(ctx, d, sessionID, filterAfterUnansweredRegistration)
-}
-
-// storedFilterWrite sets the filter of sessionID's consumer to the topics the bucket's newest row
-// holds, fenced on the revision that row was read at (fenceFilterWrite), and creates no consumer:
-// a consumer the stream does not hold is left to the session's next registration. after names
-// what the write follows, for the log. The caller holds the session's lock and bounds ctx.
-func (m *sessionDelivery) storedFilterWrite(ctx context.Context, d *listenerDeps, sessionID, after string) {
-	fenceFilterWrite(ctx, m.logger, d.registry, sessionID, func(int) (uint64, bool) {
-		row, revision, err := d.registry.RefreshAt(ctx, sessionID)
-		topics, err := interestTopics(row, err)
-		if err != nil {
-			m.logger.Warn("session consumer filter left unchanged: the session's interests could not be read",
-				slog.String("session_id", sessionID), slog.String("after", after), slog.String("error", err.Error()))
-			return 0, false
-		}
-		if err := m.consumers.UpdateFilter(ctx, sessionID, sessionConsumerFilter(sessionID, topics)); err != nil {
-			if !errors.Is(err, bus.ErrSessionConsumerNotFound) {
-				m.logger.Warn("session consumer filter update failed",
-					slog.String("session_id", sessionID), slog.String("after", after), slog.String("error", err.Error()))
-			}
-			// A call the server answered set no filter; one whose answer did not come back may
-			// have set this row's, and the loop judges it (consumerCallAnswered).
-			return revision, !consumerCallAnswered(err)
-		}
-		return revision, true
-	})
-}
-
-// consumerCallAnswered reports whether err is the server's own answer to a consumer call, which
-// says that call changed nothing: a JetStream API error (a create or an update the server
-// refused, bus.ErrConsumerLimitReached among them), a call the connection's grant may not make
-// (bus.ErrConsumerNotGranted, which wraps bus.ErrPublishDenied), a consumer the stream does not
-// hold (bus.ErrSessionConsumerNotFound), and a session id no consumer can be named after
-// (bus.ErrNoSessionConsumerName), which is refused before anything is sent.
-//
-// Every other failure leaves the call ambiguous: a request that timed out, a context that ended
-// under it, a connection that went are answers that did not come back, and the server may have
-// applied the call all the same. A fenced filter write treats one as a write that may stand
-// (fenceFilterWrite), because an older row's filter left on a consumer with nothing to read it
-// again is exactly what that fence is there to catch; the cost of being wrong is one bucket read
-// and one consumer call that changes nothing.
-func consumerCallAnswered(err error) bool {
-	var api *jetstream.APIError
-	return errors.As(err, &api) ||
-		errors.Is(err, bus.ErrConsumerNotGranted) ||
-		errors.Is(err, bus.ErrSessionConsumerNotFound) ||
-		errors.Is(err, bus.ErrNoSessionConsumerName)
-}
-
-// interestTopics is the topics of the interest row a read of the interest registry answered
-// with: none where the session has no row (nats.ErrKeyNotFound), and none where the row is one
-// this build cannot decode (store.ErrMalformedInterest), whose topics nothing routes. Every
-// other failure is the caller's to answer for.
-//
-// Every caller reads the row from the bucket (store.Registry.RefreshAt), since every one of
-// them writes the session consumer's filter from what it reads and must hold a registration
-// this listener's watch need not have delivered yet; the revision that read answers is what
-// each write is fenced on (fenceFilterWrite).
-func interestTopics(interest store.Interest, err error) ([]string, error) {
-	if errors.Is(err, nats.ErrKeyNotFound) || errors.Is(err, store.ErrMalformedInterest) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	return interest.Topics, nil
+// The lock is storedFilterWrite's, with the call budget and the nil check beside it (refollow).
+func (m *sessionDelivery) settleUnanswered(ctx context.Context, registry *store.Registry, sessionID string) {
+	m.storedFilterWrite(ctx, registry, sessionID, filterAfterUnansweredRegistration)
 }
 
 // sessionLocks holds one lock per session id, kept only while somebody holds or waits for it.

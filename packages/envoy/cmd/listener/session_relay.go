@@ -733,15 +733,14 @@ func (m *sessionRelays) restart(ctx context.Context, run *relayRun) (bus.Session
 // revision of the interest row it was built from, read within ctx under the session's lock, which
 // the caller holds; false, logged, when they cannot be read.
 //
-// The row is read from the bucket and not from the watched cache (store.Registry.RefreshAt): a
-// registration on another listener may have added a topic this listener's watch has not delivered
+// The row is read from the bucket and not from the watched cache (storedTopics): a registration
+// on another listener may have added a topic this listener's watch has not delivered
 // yet, and a restart filtering on the cached row would drop a topic that registration was
 // answered 200 for while keeping the consumer's position, so every message published on it in
 // that window would be skipped for good. The revision is what the write of this filter is fenced
 // on (settleFilter).
 func (m *sessionRelays) storedFilter(ctx context.Context, sessionID string) ([]string, uint64, bool) {
-	row, revision, err := m.registry.RefreshAt(ctx, sessionID)
-	topics, err := interestTopics(row, err)
+	topics, revision, err := storedTopics(ctx, m.registry, sessionID)
 	if err != nil {
 		m.logger.Warn("session relay could not read the session's interests; retrying", slog.String("session_id", sessionID), slog.String("error", err.Error()))
 		return nil, 0, false
@@ -757,29 +756,22 @@ func (m *sessionRelays) storedFilter(ctx context.Context, sessionID string) ([]s
 // the restart put it.
 //
 // The caller holds the session's lock, as it does for the restart's own call, so the corrections
-// are ordered with every other consumer call this listener makes for the session. A consumer gone
+// are ordered with every other consumer call this listener makes for the session, and each one
+// is the step every writer of the stored row's filter takes (storedFilterStep): a consumer gone
 // by the time a correction is sent is left to the session's next registration, as the restart
 // itself leaves it. A restart whose answer did not come back is settled here too, since it may
 // have created the consumer on the filter it carried (restart, consumerCallAnswered).
 func (m *sessionRelays) settleFilter(ctx context.Context, sessionID string, wrote uint64) {
-	fenceFilterWrite(ctx, m.logger, m.registry, sessionID, func(attempt int) (uint64, bool) {
-		if attempt == 0 {
-			return wrote, true // the restart's own write, made or possibly made
+	// The restart's own write is this fence's first pass: it is made, or may have been made,
+	// before the fence runs, so that pass answers it and sends nothing, and the passes after it
+	// correct it from the bucket's newest row.
+	restart := true
+	fenceFilterWrite(ctx, m.logger, m.registry, sessionID, func() (uint64, bool) {
+		if restart {
+			restart = false
+			return wrote, true
 		}
-		filter, revision, ok := m.storedFilter(ctx, sessionID)
-		if !ok {
-			return 0, false
-		}
-		if err := m.delivery.consumers.UpdateFilter(ctx, sessionID, filter); err != nil {
-			if !errors.Is(err, bus.ErrSessionConsumerNotFound) {
-				m.logger.Warn("session relay could not set the filter of the consumer it restarted to the topics the bucket holds for it",
-					slog.String("session_id", sessionID), slog.String("error", err.Error()))
-			}
-			// A call the server answered set no filter; one whose answer did not come back may
-			// have set this row's, and the loop judges it (consumerCallAnswered).
-			return revision, !consumerCallAnswered(err)
-		}
-		return revision, true
+		return m.delivery.storedFilterStep(ctx, m.registry, sessionID, filterAfterRestart)
 	})
 }
 

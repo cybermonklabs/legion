@@ -149,22 +149,17 @@ func (r *Registry) UpsertWithin(ctx context.Context, item Interest, topics []str
 		if err != nil {
 			return Interest{}, err
 		}
-		merged, buf, unchanged, err := r.interestRow(cur, getErr, item, InterestPlan{Roles: roles, Topics: topics})
-		if err != nil {
-			return Interest{}, err
-		}
-		if unchanged {
-			return cur, nil
-		}
-		written, epoch, stored, err := r.putInterestAt(ctx, merged.SessionID, buf, revision)
+		row, stored, err := r.writeRowAt(ctx, cur, revision, getErr, item, InterestPlan{Roles: roles, Topics: topics})
 		if err != nil {
 			return Interest{}, err
 		}
 		if !stored {
+			// Another writer stored the row under this read: the row is read and merged again
+			// over theirs, where a planned write hands the conflict to its caller instead
+			// (UpsertPlanned).
 			continue
 		}
-		r.recordInterest(merged, written, epoch, getErr)
-		return merged, nil
+		return row, nil
 	}
 	return Interest{}, fmt.Errorf("merge topics into %s's interest record: %w after %d attempts",
 		item.SessionID, ErrInterestTopicsNotMerged, interestWriteAttempts)
@@ -253,22 +248,47 @@ func (r *Registry) UpsertPlanned(ctx context.Context, item Interest, plan Intere
 	if revision != plan.Revision {
 		return Interest{}, fmt.Errorf("write %s's interest record: %w", item.SessionID, ErrInterestPlanConflict)
 	}
-	merged, buf, unchanged, err := r.interestRow(cur, getErr, item, plan)
-	if err != nil {
-		return Interest{}, err
-	}
-	if unchanged {
-		return cur, nil
-	}
-	written, epoch, stored, err := r.putInterestAt(ctx, merged.SessionID, buf, plan.Revision)
+	row, stored, err := r.writeRowAt(ctx, cur, revision, getErr, item, plan)
 	if err != nil {
 		return Interest{}, err
 	}
 	if !stored {
+		// Another writer stored the row between the read above and the write, which is the
+		// caller's to plan again over (PlanInterestAfterConflict), since the filter of the
+		// session's consumer was set for this plan.
 		return Interest{}, fmt.Errorf("write %s's interest record: %w", item.SessionID, ErrInterestPlanConflict)
 	}
+	return row, nil
+}
+
+// writeRowAt stores the row a write of item under plan over cur makes (interestRow), under the
+// revision cur was read at, and reports the row the session's record now holds with whether the
+// bucket took the write. getErr is what that read answered with.
+//
+// It is the whole of what a merging write and a planned write do once their row is read
+// (UpsertWithin, UpsertPlanned): the heartbeat skip, which answers cur and writes nothing, the
+// compare-and-swap at the read's revision (putInterestAt), and the cache of what it stored
+// (recordInterest). The two differ in their answer to a write the bucket refused, and that is
+// what the bool leaves them: a merging write builds the row again over the row that won, and a
+// planned write is refused (ErrInterestPlanConflict), because the session's consumer is already
+// filtered on the plan this row came from.
+func (r *Registry) writeRowAt(ctx context.Context, cur Interest, revision uint64, getErr error, item Interest, plan InterestPlan) (Interest, bool, error) {
+	merged, buf, unchanged, err := r.interestRow(cur, getErr, item, plan)
+	if err != nil {
+		return Interest{}, false, err
+	}
+	if unchanged {
+		return cur, true, nil
+	}
+	written, epoch, stored, err := r.putInterestAt(ctx, merged.SessionID, buf, revision)
+	if err != nil {
+		return Interest{}, false, err
+	}
+	if !stored {
+		return Interest{}, false, nil
+	}
 	r.recordInterest(merged, written, epoch, getErr)
-	return merged, nil
+	return merged, true, nil
 }
 
 // interestRow is the row a write of item under plan over the row cur that getErr reports the read
