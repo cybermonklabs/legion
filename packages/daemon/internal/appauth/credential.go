@@ -330,12 +330,13 @@ type bundleLayout struct {
 // directory whose lease is minted for the owner that serves the role's own repository, that
 // owner's other repositories; the recorded clause cuts, under the directory named for the
 // issue's recorded owner, that owner's own repositories beside the one the role writes to.
-// Where a pair resolves those are two owners, and the recorded clause is what keeps the
-// recorded owner's other repositories reachable: the write lease in that owner's directory
-// names one repository, which over a resolving pair is the other owner's, so without the clause
-// a repository the project serves is named by no lease of the bundle at all. The name costs no
-// pod, repository directories being no address the drift check compares (sandbox's
-// movedGhDirs, ghOwnerDirs).
+// Where the issue's own repository resolves through a pair those are two owners, and the
+// recorded clause is what keeps the recorded owner's other repositories reachable: the write
+// lease in that owner's directory names the repository the pair moved, which is the other
+// owner's, so without the clause a repository the project serves is named by no lease of the
+// bundle at all. Everywhere else the recorded owner is the serving owner, and the recorded
+// clause names nothing the serving clause has not. The name costs no pod, repository
+// directories being no address the drift check compares (sandbox's movedGhDirs, ghOwnerDirs).
 //
 // What each of those names holds is one rule, asked of the directory's own name and of nothing
 // else, whichever cut named it (repositoryLease): a repository directory holds the lease of the
@@ -544,14 +545,14 @@ func bundleDirs(repos func() []ghrepo.Repository, renames ghrepo.Renames, repo g
 		}
 		// The recorded clause: under the directory named for the issue's recorded owner a
 		// repository directory is named for each repository that owner serves beside the one the
-		// role writes to. A write lease names one repository, so where a pair resolves — the
-		// recorded owner's directory holding the write lease for a repository another owner's
-		// installation serves, or its own write lease for the one repository of its own the
-		// issue names — that directory reaches none of the recorded owner's other repositories,
-		// which the project serves and the role may read, and the serving clause names them
-		// none: it names them for the owner that serves the role's repository, which over a
-		// resolving pair is the owner the pair moved it to. Without this, a repository the
-		// project serves is named by no lease of the bundle at all.
+		// role writes to. Where the issue's own repository resolves through a pair, the recorded
+		// owner's directory holds the write lease for a repository another owner's installation
+		// serves, so it reaches none of the recorded owner's other repositories, which the
+		// project serves and the role may read, and the serving clause names them none: it names
+		// them for the owner that serves the role's repository, which is the owner the pair moved
+		// it to. Without this, a repository the project serves is named by no lease of the bundle
+		// at all. Where the issue's repository resolves through no pair, the recorded owner is
+		// the serving owner and this clause names what the serving clause already named.
 		for _, held := range served[recorded] {
 			if cutBeside(recorded, held) {
 				beside[name+"/"+held] = true
