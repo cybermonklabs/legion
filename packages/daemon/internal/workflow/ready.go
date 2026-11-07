@@ -74,6 +74,12 @@ func (e *Engine) mergeFailed(ctx context.Context, tx pgx.Tx, fact intake.MergeFa
 // withdrawal is told with its disarm (withdrawReady). Only an issue still awaiting that READY, on
 // the open pull request the fact names, moves: one that has left it, a by-hand READY, or another
 // READY head changes nothing, and a tree that lingers holds the issue where it is (transition).
+//
+// The queue's answer is a judgement of the head against its base, so the record holds that head
+// conflicting before the move (record.PullRequest.ConflictingHead), as the two-minute pass's own
+// CONFLICTING read does (mergeability): the round this move counts is then a conflict round,
+// which review_round_cap does not count, and so is every further move back until the
+// implementer's forward merge moves the recorded head off it (recordRound).
 func (e *Engine) mergeQueueConflict(ctx context.Context, tx pgx.Tx, fact intake.MergeQueueConflict) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil || issue.Phase != phase.AwaitingMerge {
@@ -86,6 +92,12 @@ func (e *Engine) mergeQueueConflict(ctx context.Context, tx pgx.Tx, fact intake.
 	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
 	if err != nil || pr == nil || pr.Number != fact.Number || pr.State != record.PullRequestOpen {
 		return intake.Result{}, err
+	}
+	if pr.ConflictingHead != fact.Head {
+		pr.ConflictingHead = fact.Head
+		if err := e.store.PutPullRequest(ctx, tx, *pr); err != nil {
+			return intake.Result{}, err
+		}
 	}
 	return intake.Result{}, e.transition(ctx, tx, *issue, TriggerChecksRed, "", record.PhaseRow{}, pr, fact.Reason)
 }

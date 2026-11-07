@@ -78,13 +78,31 @@ func (e *Engine) requiredChecks(ctx context.Context, tx pgx.Tx, fact intake.Requ
 // act on (GitHub runs no checks on it for a verdict to stand), and the tester or implementer
 // already at work will see it on its own pass or push. Leaving awaiting_merge is what stops a
 // repeated CONFLICTING read from withdrawing twice.
+//
+// Whatever the read decides, it is also the judgement the conflict-round exemption is read from
+// (record.PullRequest.ConflictingHead, recordRound): a CONFLICTING read holds the pull request's
+// own head conflicting, a MERGEABLE read of that same head releases it, and an UNKNOWN read,
+// which is what GitHub answers for a head sitting in the merge queue, leaves the mark as it is -
+// GitHub has not computed an answer, so there is nothing to record and nothing to take back. The
+// mark is a second column rather than a reading of Mergeability because every pass rewrites that
+// one from GitHub's answer: an UNKNOWN two minutes after the conflict was found would lose it,
+// and the next round at the conflicting head would count.
 func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRequestMergeability) (intake.Result, error) {
 	pr, err := e.pullRequest(ctx, tx, fact.Repo, fact.Number)
 	if err != nil || pr == nil {
 		return intake.Result{}, err
 	}
-	if pr.Mergeability != fact.Mergeable {
-		pr.Mergeability = fact.Mergeable
+	conflicting := pr.ConflictingHead
+	switch fact.Mergeable {
+	case record.MergeabilityConflicting:
+		conflicting = pr.HeadSHA
+	case record.MergeabilityMergeable:
+		if conflicting == pr.HeadSHA {
+			conflicting = ""
+		}
+	}
+	if pr.Mergeability != fact.Mergeable || pr.ConflictingHead != conflicting {
+		pr.Mergeability, pr.ConflictingHead = fact.Mergeable, conflicting
 		if err := e.store.PutPullRequest(ctx, tx, *pr); err != nil {
 			return intake.Result{}, err
 		}
@@ -677,21 +695,52 @@ func (e *Engine) settleRound(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	return false, nil
 }
 
-func (e *Engine) recordRound(ctx context.Context, tx pgx.Tx, issue string) error {
+// recordRound counts the implementer one round for a move back to an earlier phase, and posts the
+// cap's message and its pr-blocked notice once the counted rounds reach review_round_cap.
+//
+// Rounds rises for every backward move, whatever its cause: a completion's key is built from it
+// (api/handoff.go's handoffPosition), so two passes through one phase that counted the same
+// number would collide, and the second's completion would be answered as already received. What
+// the cap reads is Rounds less the rounds a conflict with the base caused (conflictRound,
+// record.PhaseRow.ConflictRounds). A head that stopped merging into its base is the daemon's own
+// news, answered by a forward merge: nobody rejected the work for it, and an issue whose base
+// branch moves under it often enough would otherwise reach the cap without a single review
+// round, which is what dispatch://INFRA-1442 found on a tree that reached it on three rounds of
+// which two were conflicts. The message names both numbers, so an architect woken by it reads
+// how many rounds were counted against the cap and how many were excused.
+func (e *Engine) recordRound(ctx context.Context, tx pgx.Tx, issue string, pr *record.PullRequest) error {
 	row, err := e.phaseRow(ctx, tx, issue, claim.RoleImplementer)
 	if err != nil {
 		return err
 	}
 	row.Rounds++
+	if conflictRound(pr) {
+		row.ConflictRounds++
+	}
 	if err := e.store.PutPhase(ctx, tx, row); err != nil {
 		return err
 	}
-	if row.Rounds < e.cfg.ReviewRoundCap {
+	counted := row.Rounds - row.ConflictRounds
+	if counted < e.cfg.ReviewRoundCap {
 		return nil
 	}
-	message := fmt.Sprintf("Issue reached review_round_cap=%d.", e.cfg.ReviewRoundCap)
+	message := fmt.Sprintf("Issue reached review_round_cap=%d: %d rounds counted, %d conflict rounds not counted.",
+		e.cfg.ReviewRoundCap, counted, row.ConflictRounds)
 	if err := e.enqueue(ctx, tx, issue, record.MessagePost{Body: message}); err != nil {
 		return err
 	}
 	return e.notice(ctx, tx, issue, record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: message})
+}
+
+// conflictRound says whether a backward move made now is a round a conflict with the base caused:
+// the record holds the pull request's own recorded head as conflicting
+// (record.PullRequest.ConflictingHead), whichever read judged it so and whatever fact is making
+// the move. The exemption keys on that mark rather than on the cause, because every way back out
+// of a conflicting head is the same round of work - the return the merge queue's own state makes,
+// the conflict the two-minute pass finds, a reviewer's request for changes, a worker's backward
+// move, a tester's fail - and the implementer answers each of them with one forward merge. That
+// merge moves the recorded head, the mark no longer equals it, and the next rejection counts,
+// which is how the exemption ends without a write of its own.
+func conflictRound(pr *record.PullRequest) bool {
+	return pr != nil && pr.ConflictingHead != "" && pr.ConflictingHead == pr.HeadSHA
 }
