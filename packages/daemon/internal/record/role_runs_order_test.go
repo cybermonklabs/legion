@@ -56,12 +56,13 @@ func (r *relaunchMidRead) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, _ pgx.
 	}
 }
 
-// RoleRuns reads a role's claim and its queued supervise rows as two statements of the caller's
-// READ COMMITTED transaction, so a writer commits between them, and admission's stop rule reads
-// three terms of that one answer: the claim is retired, no other start of it is queued, and it
-// works no task of the row it is weighing (admit's stopOutlivedStart). The pair "retired beside
-// no queued start" is what that rule reads as a worker an operator stopped and nothing is
-// starting again, and it ends the row that carries the worker's task.
+// RoleRuns reads a role's claim and its queued supervise rows as two statements, and under a
+// READ COMMITTED transaction — which every fact handler's is, and this test's with it — a
+// writer commits between them. Admission's stop rule reads three terms of that one answer: the
+// claim is retired, no other start of it is queued, and it works no task of the row it is
+// weighing (admit's stopOutlivedStart). The pair "retired beside no queued start" is what that
+// rule reads as a stopped worker nothing is starting again, and it ends the row that carries
+// the worker's task.
 //
 // A relaunch of that very claim commits the two halves of that pair one after the other: the
 // claim's new state first, the delete of its start row second. A read that took the claim before
@@ -142,7 +143,7 @@ func TestRoleRunsNeverReportsARetiredClaimBesideAStartItsRelaunchHasTakenAway(t 
 		}
 	}
 	if run.Claim.State == supervise.StateRetired && !queuedStart {
-		t.Fatalf("the run of %s reads retired with no queued start, while its relaunch was committing: admission's stop rule reads that pair as a worker an operator stopped and nothing is starting again, and ends the row that carries its task. The claim and the rows must be read in an order that cannot report it (record's RoleRuns)",
+		t.Fatalf("the run of %s reads retired with no queued start, while its relaunch was committing: admission's stop rule reads that pair as a stopped worker nothing is starting again, and ends the row that carries its task. The claim and the rows must be read in an order that cannot report it (record's RoleRuns)",
 			token)
 	}
 }
