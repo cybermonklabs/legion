@@ -191,6 +191,20 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # This step runs on every run of this job, and pushes on none where the decision above
+      # said there is nothing to push. It is not skipped outright, and the `if:` that would skip
+      # it was written and taken out again: .github/scripts/check-image-trigger-paths.sh refuses
+      # a build step narrowed by anything it cannot evaluate against a path filter, by name —
+      # "its if: is narrowed by `steps.decide.outputs.publish == 'true'`, which this check cannot
+      # evaluate against a path filter" — because a build a trigger does not cover is a commit no
+      # pin can name. So a run that has nothing to publish still builds, and what that costs is
+      # read against the layer cache: a build on main writes the `browser-image` scope and a
+      # branch's build reads it, so the steady state is a cache hit and no apt at all. The cold
+      # case is a build with no entry to read, which fetches from Playwright's base and from
+      # Ubuntu's mirror: measured on run 42403409126, before main had ever written that scope,
+      # that fetch failed and reddened a run that had nothing to do. A stalled mirror here fails
+      # one image build and no test job, which is what the issue's own scope says of it, and the
+      # remedy is to re-run the failed job.
       - name: Build and push
         id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0

@@ -153,10 +153,19 @@ env -u PGHOSTADDR psql "$DATABASE_URL" -X -q -v ON_ERROR_STOP=1 \
 
 # The fake Secrets Manager: a human-tier secret each of the suite's people owns, which a pod's
 # request waits on that person to approve, and a shared one anyone signed in may approve.
+#
+# Every lane writes this one path, because each lane's database carries the same name on a port
+# of its own, and the content every lane writes is the same three constants. Written to a name
+# of this process's own and renamed into place, so a lane that is writing it never leaves
+# another lane's broker a file half written: rename is atomic, so a reader sees one whole file
+# or the other. Measured on run 42403409126, job 128496236572, where four brokers reached this
+# write within milliseconds of each other for the first time -- the build that had serialised
+# them by minutes is now done once, outside this script -- and one of them read the truncated
+# file and died with `not a fake secrets file`.
 fake_secrets_file="$PWD/$work/fake-secrets-$broker_database.json"
 (
   umask 077
-  cat >"$fake_secrets_file" <<EOF
+  cat >"$fake_secrets_file.$$" <<EOF
 {"secrets": [
   {"name": "${secrets_prefix}alice-deploy-key", "kms_key_id": "${secrets_kms_key_arn}",
    "tags": {"owner": "alice@${signin_domain}", "tier": "human"}, "value": "alice-deploy-value"},
@@ -166,6 +175,7 @@ fake_secrets_file="$PWD/$work/fake-secrets-$broker_database.json"
    "tags": {"owner": "shared", "tier": "human"}, "value": "shared-deploy-value"}
 ]}
 EOF
+  mv -f "$fake_secrets_file.$$" "$fake_secrets_file"
 )
 
 # The broker discovers its token issuer before it listens and refuses to boot without it. The

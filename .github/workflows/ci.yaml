@@ -2861,7 +2861,14 @@ jobs:
     # This job runs no `go` command, directly or through a script of its own: the
     # dispatch-binaries job above builds every binary the suite's scripts would have built, for
     # the reason that job's head gives, and for the same reason this job pins no
-    # `defaults.run.shell` and no step-level `shell:`.
+    # `defaults.run.shell` and no step-level `shell:`. So every `run:` of this job is executed
+    # by `sh -e {0}`, not bash — measured in job 128496236572, whose every step logs that shell
+    # — and each one must stay POSIX. A script the steps call carries its own `#!/usr/bin/env
+    # bash` and is unaffected.
+    #
+    # /dev/shm is the host's, 7.9 GB, read by the first step in that same job: `--ipc=host` is
+    # what gives it, and `--shm-size=2g` is not needed beside it. Docker's own default would be
+    # 64 MB, which is where Chromium runs out of shared memory mid-page.
     #
     # The job budget below and the browser step's are measured: GitHub's jobs API over the
     # 397 of the newest 400 ci.yaml runs that could be read, created between 2026-11-05T04:52:45Z
