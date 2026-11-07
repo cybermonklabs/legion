@@ -350,45 +350,69 @@ func (o *Outbox) tryHold(ctx context.Context) (*duty.Hold, time.Duration) {
 // is what stops that hold's renewal before the next take starts another. Its delete and notify are
 // guarded on this holder, so a hold another process has taken is left alone.
 //
-// The line that ends the turn is written before the release, and carries stopped, the moment this
-// process stopped publishing. Both matter to a reader of the log.
+// The line that ends the turn is written before the release, and carries two bounds on the moment
+// this process stopped publishing, stopped and stopped_by. The order matters to a reader of the
+// log, and so does there being two of them.
 //
 // The order does, because the release is a database round trip: a line written after it dates the
 // loss by however long the database took, and a database that is slow is exactly the case this
 // line is read in. One job (run 42346322118, attempt 1, 2026-11-07) logged the lost line 1.09 s
 // after the process had stopped publishing, with a write of 3.1 s beside it.
 //
-// And stopped is the earlier of the hold's deadline and the moment serve returned, because
-// neither alone is right on every path. Hold.Lost closes from four places - the deadline's own
-// timer (expire), a renewal confirmed at or after the deadline (confirm), a renewal that affected
-// no row (renew), and SetToken finding the row another's - and each runs loseLocked, which pulls a
-// deadline still ahead back to the moment it closed Lost, so there Deadline() is the moment
-// Publishing() turned false; scan's check before it starts a batch, and a send fenced mid-batch,
-// are that deadline itself. The one path that touches the hold not at all is a recordBatch that
-// found the hold another's (scanBatch): the deadline is then up to TTL - Margin ahead while
-// Publishing() stayed true until the store of nil below, so there it is returned, the clock read
-// taken just after that store. Nothing carries the value back inside the stretch it names,
-// because a deadline that has passed is final (confirm loses rather than extends), so
-// Publishing() is one unbroken stretch per turn as holder.
+// The pair does, because the reader - cmd/dispatch's two-process row, and anyone reading a
+// production log the way it does - decides from these attributes whether this process was
+// publishing at the moment a /healthz read of it was answered, and one bound cannot answer that
+// honestly for every moment. stopped is at or before the real stop and stopped_by is at or after
+// it, so a read answered before stopped fell while this process still published, one answered
+// after stopped_by fell after it had stopped, and one in between is left undecided rather than
+// decided wrongly. The start of the turn already has its two bounds: started, read before the
+// store of the hold, is at or before the real start, and the took line's own time plus the
+// millisecond slog's text handler truncates it to is after it.
 //
-// The two clock reads sit deliberately on the outside of the two stores of o.hold, because each
-// is read against a /healthz read of the same process, and each has to err on the side that
-// leaves the reader's disagreement a real one. o.hold.Store(nil) runs before returned is read,
-// so returned - and so stopped, which is no later than it - is at or after the moment
-// Publishing() turned false. Taken the other way round, as this was until INFRA-1568, the stretch
-// between the clock read and the store is one in which Publishing() can still answer true, and
-// answer it honestly, while stopped already names a moment in the past: a health read issued in
-// there is then read as a process that answered "publishing" after it had stopped. That stretch
-// is microseconds unless this goroutine is pre-empted between the two statements, which is
-// exactly what a loaded runner does.
+// Each bound is the earlier of the hold's deadline and one of the two clock reads taken around
+// the store of nil below, because neither the deadline nor a clock read alone is right on every
+// path. Hold.Lost closes from four places - the deadline's own timer (expire), a renewal
+// confirmed at or after the deadline (confirm), a renewal that affected no row (renew), and
+// SetToken finding the row another's - and each runs loseLocked, which pulls a deadline still
+// ahead back to the moment it closed Lost, so there Deadline() is the moment Publishing() turned
+// false; scan's check before it starts a batch, and a send fenced mid-batch, are that deadline
+// itself. On all of those the deadline is behind both clock reads, so both bounds are the
+// deadline and the stop is named exactly. That exactness is what the ordinary paths live on: a
+// reader has to keep deciding the reads that fall in the stretch between a deadline and the line
+// that reports it, which the job above measured at 1.09 s.
+//
+// The paths that leave the deadline still ahead are a stop (ctx's end), a NATS loss, and the one
+// path that touches the hold not at all, a recordBatch that found the hold another's (scanBatch),
+// where the deadline can be up to TTL - Margin ahead. There Publishing() stays true until the
+// store of nil below, so that store is the real stop and the two clock reads taken around it are
+// what bracket it. Nothing carries a deadline back inside the stretch it names, because a
+// deadline that has passed is final (confirm loses rather than extends), so Publishing() is one
+// unbroken stretch per turn as holder.
+//
+// The clock reads sit deliberately on the outside of the stores of o.hold, each on the side that
+// leaves a reader's disagreement a real one. returned is read before o.hold.Store(nil), so
+// stopped, which is no later than it, is at or before the moment Publishing() turned false;
+// cleared is read after that store, so stopped_by, which is no earlier than it unless the
+// deadline caps it at the stop itself, is at or after that moment. Reading the clock once only,
+// after the store, as this did until INFRA-1568, reports the stretch between the store and the
+// read as time this process had already stopped, while a /healthz read issued in there still
+// answers true, and answers it honestly: the reader calls a correct answer a disagreement.
+// Reading it once only, before the store, hides the opposite stretch the same way. The stretch is
+// nanoseconds unless this goroutine is pre-empted between the two statements, which is exactly
+// what a loaded runner does.
+//
+// The line's own time would be a correct upper bound as well, since the line is written after the
+// store, and it is not used as one because it is far too loose on the deadline paths, the
+// ordinary ones: there the two bounds are the deadline itself, and the line can trail it by the
+// 1.09 s that job measured, so every health read in that stretch would go undecided for nothing.
 //
 // started is read before o.hold.Store(hold) for the same reason from the other end: the
 // attribute is then at or before the moment Publishing() turned true, so a health read that
 // answered "not publishing" and fell before started agrees with the log, and one after it is a
-// real disagreement. It is logged as an RFC3339Nano string, as stopped is, because slog's text
-// handler writes a time.Time to the millisecond; the line's own time is truncated the same way,
-// and the log call comes after the store, so without the attribute a reader cannot date the
-// start to better than a millisecond plus whatever ran in between.
+// real disagreement. It is logged as an RFC3339Nano string, as stopped and stopped_by are,
+// because slog's text handler writes a time.Time to the millisecond; the line's own time is
+// truncated the same way, and the log call comes after the store, so without the attribute a
+// reader cannot date the start to better than a millisecond plus whatever ran in between.
 //
 // Rows wait on these messages' words (tookHold, releasedHold and lostHold in
 // cmd/dispatch/multiprocess_test.go), so a change to them is a change to those rows too.
@@ -398,18 +422,29 @@ func (o *Outbox) publish(ctx context.Context, hold *duty.Hold) holdEnd {
 	slog.Info("dispatch outbox: took the publisher hold", "instance", o.instance,
 		"started", started.Format(time.RFC3339Nano))
 	end := o.serve(ctx, hold)
-	o.hold.Store(nil)
 	returned := time.Now()
-	stopped := hold.Deadline()
+	o.hold.Store(nil)
+	cleared := time.Now()
+	// The deadline caps both bounds: on every path that ran through Hold.Lost it is already behind
+	// both reads, which makes the two bounds one value and the stop exact, and on the paths that
+	// leave it ahead the store of nil above is the stop, with returned taken before it and cleared
+	// after it.
+	deadline := hold.Deadline()
+	stopped, stoppedBy := deadline, deadline
 	if returned.Before(stopped) {
 		stopped = returned
 	}
+	if cleared.Before(stoppedBy) {
+		stoppedBy = cleared
+	}
 	if end == holdLost {
 		slog.Info("dispatch outbox: lost the publisher hold", "instance", o.instance,
-			"stopped", stopped.Format(time.RFC3339Nano))
+			"stopped", stopped.Format(time.RFC3339Nano),
+			"stopped_by", stoppedBy.Format(time.RFC3339Nano))
 	} else {
 		slog.Info("dispatch outbox: released the publisher hold", "instance", o.instance,
-			"reason", string(end), "stopped", stopped.Format(time.RFC3339Nano))
+			"reason", string(end), "stopped", stopped.Format(time.RFC3339Nano),
+			"stopped_by", stoppedBy.Format(time.RFC3339Nano))
 	}
 	release, cancel := context.WithTimeout(context.WithoutCancel(ctx), recordTimeout)
 	defer cancel()

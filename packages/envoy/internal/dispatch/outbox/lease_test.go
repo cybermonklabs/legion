@@ -560,13 +560,16 @@ func TestAHolderWhoseRecordFindsTheHoldAnothersStopsItsRenewal(t *testing.T) {
 	// before the guard below reports a correct product as a defect - on a runner that, by this
 	// change's own evidence, stalled for 3.1 s.
 	//
-	// These numbers leave minutes instead, inside what duty.TryHold accepts (0 <= Margin < TTL
-	// and 0 < Renew < TTL - Margin): the first renewal tick falls a minute after the take, so no
-	// renewal can reach the row's window at all, and the deadline - the take plus TTL - Margin -
-	// stays five minutes ahead for the whole row. The hold is the outbox's own, under its token
-	// and instance, so the batch that records under it finds the row another's exactly as it
-	// would in production.
-	recordPath := duty.HoldOptions{TTL: 6 * time.Minute, Renew: time.Minute, Margin: time.Minute, Token: outbox.token}
+	// These numbers leave seconds instead, inside what duty.TryHold accepts (0 <= Margin < TTL
+	// and 0 < Renew < TTL - Margin): the first renewal tick falls five seconds after the take, so
+	// the take, the seed, the append and a whole scan have those five seconds to run in before
+	// any renewal of this hold can reach the record path, and the deadline - the take plus
+	// TTL - Margin - stays five minutes ahead for the whole row. Five seconds, and not the minute
+	// this row gave itself at first, because the count below has to wait that tick out to see
+	// whether the lost hold's renewal stopped, and a row cannot sleep a minute for it. The hold
+	// is the outbox's own, under its token and instance, so the batch that records under it finds
+	// the row another's exactly as it would in production.
+	recordPath := duty.HoldOptions{TTL: 6 * time.Minute, Renew: 5 * time.Second, Margin: time.Minute, Token: outbox.token}
 	taken := time.Now()
 	hold, err := duty.TryHold(ctx, outbox.deps.Store.Pool, publisherHold, outbox.instance, recordPath)
 	if err != nil {
@@ -583,6 +586,7 @@ func TestAHolderWhoseRecordFindsTheHoldAnothersStopsItsRenewal(t *testing.T) {
 		Payload: model.Message{ID: uuid.NewString(), IssueKey: new("T-1"), Body: "recorded under another's hold"},
 	})
 
+	began := time.Now()
 	if end := outbox.publish(ctx, hold); end != holdLost {
 		t.Fatalf("publish ended %s, want %s", end, holdLost)
 	}
@@ -612,13 +616,38 @@ func TestAHolderWhoseRecordFindsTheHoldAnothersStopsItsRenewal(t *testing.T) {
 		t.Errorf("the line dates the stop at %s, and the turn ended at %s with the loss deadline at %s still ahead",
 			stopped.Format(time.RFC3339Nano), returned.Format(time.RFC3339Nano), deadline.Format(time.RFC3339Nano))
 	}
-	if left := deadline.Sub(stopped); left < recordPath.TTL-recordPath.Margin-recordPath.Renew {
-		t.Errorf("the line dates the stop %v before the loss deadline; the record found the hold another's with the whole window all but spent", left)
+	// The other side of the window. A stopped that is too early - a zero value, or one dated
+	// before this turn began - passes every assertion above, since those bound it only from the
+	// future. began is read just ahead of publish, so this holds stopped inside [began, returned],
+	// the turn itself, which is what separates serve's return from a deadline tens of seconds
+	// further on. The bound that stood here, deadline - stopped against TTL - Margin - Renew,
+	// could not fail once the assertions above had passed: deadline is the take's send time plus
+	// TTL - Margin, that send is after taken, the guard above holds returned - taken under Renew,
+	// and stopped is before returned, so the gap was always wider than that bound.
+	if stopped.Before(began) {
+		t.Errorf("the line dates the stop at %s, before publish was called at %s",
+			stopped.Format(time.RFC3339Nano), began.Format(time.RFC3339Nano))
 	}
 
-	// The second half is about the publisher hold itself - that the renewal of the hold just lost
-	// has stopped, so a take of the free row leaves one renewal running and not two - so it takes
-	// the hold through outbox.tryHold, under publisherHoldOptions, and counts in those terms.
+	// This count is what proves the renewal of the hold just lost stopped when publish released
+	// it. Its window starts here, with publish returned and the stop asserted, and runs past that
+	// hold's first renewal tick at taken + Renew, which no earlier part of the row reaches: a
+	// renewal still running sends its one statement there - that is what a duty.Hold whose
+	// Release does not stop the renewal, and whose renew does not return when Lost closes, does -
+	// and nothing else in this process renews a hold yet, since the second half has not taken the
+	// hold again. Half a Renew of slack past the tick, so a statement a loaded runner was slow to
+	// start still lands inside the window rather than after it.
+	renewalsBefore := len(tracer.matching("update duty_holds set expires_at"))
+	window := recordPath.Renew + recordPath.Renew/2
+	time.Sleep(time.Until(taken.Add(window)))
+	if got := len(tracer.matching("update duty_holds set expires_at")) - renewalsBefore; got != 0 {
+		t.Fatalf("%s after the hold was taken - past the first tick of its renewal at %s - %d renewals of the lost hold were sent, want none: publish left its renewal running", window, recordPath.Renew, got)
+	}
+
+	// The second half is about the publisher hold itself - that a take of the free row leaves one
+	// renewal running and not two, now that the count above has shown the lost hold's own renewal
+	// gone - so it takes the hold through outbox.tryHold, under publisherHoldOptions, and counts
+	// in those terms.
 	if _, err := database.Pool.Exec(ctx, `delete from duty_holds where name = $1`, publisherHold); err != nil {
 		t.Fatalf("free the hold: %v", err)
 	}
