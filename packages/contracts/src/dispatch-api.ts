@@ -607,9 +607,14 @@ export interface IssueSummaryPage {
 /**
  * One artifact of an `IssueReferenceSummary`: what a reference to an issue's document shows.
  * `latest_version` is its greatest version number, null only for an artifact with no version,
- * which no committed write leaves. `size` is that version's size in bytes, null when the artifact
- * has no version and on a document, which records none. `primary` marks the issue's spec, the
- * document a reference to a block of the spec (`dispatch://<issue>/spec#b-…`) names.
+ * which no committed write leaves. `size` is that version's size in bytes and `mime` the type it
+ * is stored under, both null when the artifact has no version and on a document, which records
+ * neither. `mime` is the file's own type: the download of a version's bytes answers a type a
+ * browser draws as a document (`text/html`, `application/xhtml+xml`, `image/svg+xml`,
+ * `text/xml`, `application/xml`) as `application/octet-stream`, so a reader that must say what a
+ * file is reads it here rather than off that answer's `Content-Type`. `primary` marks the
+ * issue's spec, the document a reference to a block of the spec (`dispatch://<issue>/spec#b-…`)
+ * names.
  */
 export interface IssueReferenceSummaryDocument {
   readonly id: string;
@@ -618,6 +623,7 @@ export interface IssueReferenceSummaryDocument {
   readonly kind: Artifact["kind"];
   readonly latest_version: number | null;
   readonly size: number | null;
+  readonly mime: string | null;
   readonly primary: boolean;
 }
 

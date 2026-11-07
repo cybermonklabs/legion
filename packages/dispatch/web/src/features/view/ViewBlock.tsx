@@ -1,7 +1,7 @@
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 
-import { ApiError, artifactVersionUrl } from "../../api/client";
+import { ApiError, api, artifactVersionUrl } from "../../api/client";
 import { borderDefault, dangerText, linkText, textMutedOnSurface } from "../../theme/classes";
 import {
   artifactGrantsQuery,
@@ -13,11 +13,13 @@ import { PAGE_DEADLINE_MS, registerViewFrame, setViewFrameLoading } from "./fram
 import { readViewAttributes } from "./view-attributes";
 import {
   answerCause,
-  coveringGrant,
+  contentLengthBytes,
   type DataEntry,
+  type PinnedVersion,
   planViewData,
   resolveFile,
   type ViewLine,
+  versionsToWeigh,
 } from "./view-data-plan";
 import type { ViewBlockSlot } from "./view-slots";
 
@@ -52,11 +54,30 @@ async function versionSize(id: string, version: number): Promise<number> {
     credentials: "same-origin",
     method: "HEAD",
   });
-  const length = Number(response.headers.get("Content-Length"));
-  if (!response.ok || !Number.isFinite(length)) {
+  const length = contentLengthBytes(response.headers.get("Content-Length"));
+  if (!response.ok || length === undefined) {
     throw new ApiError(response.status, { error: "this version's size cannot be read" });
   }
   return length;
+}
+
+/** What the block must know about a version a pin holds back from the latest, which the summary
+ *  answers for the latest version alone: how many bytes it weighs, and the type it is stored
+ *  under, which is what the page is told the file is.
+ *
+ *  The type is the version row's, from the artifact's versions list, because the read of the
+ *  bytes no longer carries it: a version stored as `text/html`, `application/xhtml+xml`,
+ *  `image/svg+xml`, `text/xml` or `application/xml` is downloaded as `application/octet-stream`,
+ *  so that no uploaded file is drawn as a page on Dispatch's own origin. The versions list is
+ *  read only where a pin holds the version back, and a read of it that fails leaves the page
+ *  with no type rather than no file: the size, which the cap rests on, is the `HEAD`'s. */
+async function pinnedVersion(id: string, version: number): Promise<PinnedVersion> {
+  const [size, artifact] = await Promise.all([
+    versionSize(id, version),
+    api.getArtifact(id).catch(() => undefined),
+  ]);
+  const stored = artifact?.versions.find((row) => row.number === version);
+  return { mime: stored?.mime ?? null, size };
 }
 
 /** No read has failed: the lines a block starts with, and the map it keeps while every read
@@ -137,23 +158,23 @@ export function ViewBlock({ slot }: { slot: ViewBlockSlot }): ReactNode {
   const rows = grants.data;
   /** The grant that covers each data file and the version it gives the page: the version the
    *  block weighs and sends, which is the version whose size is read below. Index 0 is the page
-   *  file, which no grant covers. `planViewData` reads the same rule for what it sends. */
-  const covers = states.map((state, index) =>
-    index === 0 || rows === undefined ? undefined : coveringGrant(rows, state)
-  );
+   *  file, which no grant covers. `planViewData` reads this same call for what it sends, so the
+   *  size read below and the entry that goes out can never name two versions. */
+  const covers = versionsToWeigh(states, rows);
 
-  /** Each data file's size where the summary does not carry it, which is a version a pin — the
-   *  reference's or the grant's — holds back from the latest: one `HEAD` of that version's
-   *  address. The key is the version's own, so one `HEAD` serves every block that names it, and
-   *  a file the block sends the latest version of asks nothing. The page file's own size is
-   *  weighed against nothing, so index 0 asks nothing either. */
-  const sizes = useQueries({
+  /** Each data file's size and stored type where the summary does not carry them, which is a
+   *  version a pin — the reference's or the grant's — holds back from the latest. The key is
+   *  the version's own, so one read serves every block that names it, and a file the block
+   *  sends the latest version of asks nothing; a version's size and type never change, so the
+   *  answer stands for the life of the tab. The page file is weighed against nothing and is
+   *  shown rather than sent, so index 0 asks nothing either. */
+  const pinned = useQueries({
     queries: states.map((state, index) => {
       const version = covers[index]?.version;
       return {
         enabled: running && version !== undefined && version !== state.latest,
-        queryFn: () => versionSize(state.id ?? "", version ?? 0),
-        queryKey: ["artifact-version-size", state.id, version],
+        queryFn: () => pinnedVersion(state.id ?? "", version ?? 0),
+        queryKey: ["artifact-pinned-version", state.id, version],
         staleTime: Number.POSITIVE_INFINITY,
       };
     }),
@@ -179,7 +200,7 @@ export function ViewBlock({ slot }: { slot: ViewBlockSlot }): ReactNode {
     holdData,
     lines: dataLines,
     sendSignature,
-  } = planViewData(states, rows, sizes, readCauses);
+  } = planViewData(states, rows, pinned, readCauses);
   lines.push(...dataLines);
   const entriesRef = useRef(entries);
   entriesRef.current = entries;
@@ -292,13 +313,16 @@ export function ViewBlock({ slot }: { slot: ViewBlockSlot }): ReactNode {
 
     /** One data file's bytes as the page gets them, or why they did not arrive. The three
      *  causes are different: an answer that is not `ok` carries its status, a `fetch` that
-     *  rejects carries no status, and bytes that are not UTF-8 text are `not-text`. */
+     *  rejects carries no status, and bytes that are not UTF-8 text are `not-text`. The type
+     *  the page is told goes with the entry from the plan, which took it from the version's
+     *  stored row: this answer's `Content-Type` is `application/octet-stream` for every type a
+     *  browser draws as a document, so no file of those types could say what it is. */
     const readVersion = async (
       entry: DataEntry,
       id: string,
       version: number
     ): Promise<DataEntry> => {
-      const { name, ref } = entry;
+      const { contentType, name, ref } = entry;
       const response = await fetch(artifactVersionUrl(id, version), {
         credentials: "same-origin",
       }).catch(() => undefined);
@@ -311,7 +335,7 @@ export function ViewBlock({ slot }: { slot: ViewBlockSlot }): ReactNode {
       }
       try {
         return {
-          contentType: response.headers.get("Content-Type") ?? "application/octet-stream",
+          contentType,
           name,
           ref,
           text: new TextDecoder("utf-8", { fatal: true }).decode(bytes),
@@ -469,6 +493,9 @@ export function ViewBlock({ slot }: { slot: ViewBlockSlot }): ReactNode {
         }
         ready = true;
         window.clearTimeout(readyTimer);
+        // A `ready` past the deadline is answered like any other, so the line that said this
+        // page was silent would otherwise stand beside the chart its data draws.
+        setSilent(false);
         // The one channel this frame gets, with the answer to its first `ready`. Only the first
         // is answered, so a document that replaces the one that took the port and posts a
         // `ready` of its own is given none (dispatch://INFRA-682, R5); see `port` above for the

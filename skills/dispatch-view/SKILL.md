@@ -88,8 +88,9 @@ with a `MessagePort`, and every data message comes over that port and over nothi
 | height | page | `window.parent` | `{type: "dispatch-view:height", height: <CSS pixels>}` |
 
 - The page posts `dispatch-view:ready` when it listens. Dispatch answers only the first `ready` of
-  a frame. A page that posts no `ready` within 10 seconds of its load gets no data, and the reader
-  sees the line "this page sent no ready message in 10 seconds".
+  a frame. Ten seconds after the page loads with no `ready`, the reader sees the line "this page
+  sent no ready message in 10 seconds"; a `ready` that arrives after that still gets the port and
+  still gets its data, and the line goes.
 - That one answer is `dispatch-view:port`, and it carries the page's `MessagePort` in
   `event.ports[0]`. Keep it: it is the only way data reaches the page. A transferred port belongs
   to the document that took it, so a page that moves its frame after it took the port leaves the
@@ -145,7 +146,10 @@ Dispatch read is:
 ```
 
 `text` is the version's bytes as UTF-8 text. Dispatch parses nothing, so the page reads JSON, CSV
-or any other text itself.
+or any other text itself. `contentType` is the type that version is stored under, as the person
+who uploaded it declared it, and it is absent for a version stored under no type: it is not read
+from the download of the bytes, which answers `application/octet-stream` for every type a browser
+draws as a document.
 
 Every other entry carries an `error` code and no `text`. Handle all four:
 

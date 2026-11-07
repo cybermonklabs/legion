@@ -7284,6 +7284,14 @@ describe("executeDispatchTool", () => {
         primary: false,
         versions: [{ number: 1, mime: "image/png", size: 6 }],
       },
+      {
+        id: "page-9",
+        slug: "chart-html",
+        name: "chart.html",
+        kind: "file",
+        primary: false,
+        versions: [{ number: 1, mime: "text/html; charset=utf-8", size: 8 }],
+      },
     ],
     open_asks: [],
   };
@@ -7292,7 +7300,7 @@ describe("executeDispatchTool", () => {
       const target = new URL(String(url));
       requests.push(target.pathname + target.search);
       if (target.pathname === "/api/v1/issues/DSP-42") return response(fileIssue);
-      if (/^\/api\/v1\/artifacts\/(file-7|image-8)\/text$/.test(target.pathname)) {
+      if (/^\/api\/v1\/artifacts\/(file-7|image-8|page-9)\/text$/.test(target.pathname)) {
         return response({ code: "NOT_DOCUMENT", error: "artifact is not a document" }, 400);
       }
       const served: Record<string, [string, Uint8Array<ArrayBuffer>]> = {
@@ -7307,6 +7315,12 @@ describe("executeDispatchTool", () => {
         "/api/v1/artifacts/image-8/versions/1": [
           "image/png",
           new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a]),
+        ],
+        // As Dispatch answers it: a version stored as HTML is downloaded as an octet stream,
+        // so that no uploaded file is drawn as a page on Dispatch's own origin.
+        "/api/v1/artifacts/page-9/versions/1": [
+          "application/octet-stream",
+          new TextEncoder().encode("<p>7</p>"),
         ],
       };
       const file = served[target.pathname];
@@ -7367,6 +7381,30 @@ describe("executeDispatchTool", () => {
       details: { issue: "DSP-42" },
     });
     expect(requests).toEqual(["/api/v1/issues/DSP-42", "/api/v1/artifacts/image-8/versions/1"]);
+  });
+
+  // The download of a version stored as HTML, XHTML, SVG or either XML type is answered
+  // application/octet-stream, so that no uploaded file is drawn as a page on Dispatch's own
+  // origin. What a reader is told the file is comes from the version's row instead, or every
+  // such file would be reported as an octet stream.
+  test("dispatch_doc_read names an uploaded file's stored type, not its download's", async () => {
+    const requests: string[] = [];
+    const result = await executeDispatchTool({
+      tool: "dispatch_doc_read",
+      args: { issue: "DSP-42", artifact: "chart.html" },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fileServer(requests),
+    });
+
+    expect(result).toEqual({
+      text: "File chart.html: text/html; charset=utf-8, version 1, 8 bytes.\n\n<p>7</p>",
+      details: { issue: "DSP-42" },
+    });
+    expect(requests).toEqual(["/api/v1/issues/DSP-42", "/api/v1/artifacts/page-9/versions/1"]);
   });
 
   test("dispatch_doc_read starts project document and mark reads before any response resolves", async () => {

@@ -10,7 +10,8 @@
  * - A3 (R4): a new version of the page file.
  * - A6 (R7): every case of "When the block cannot show", save the two the other files hold: a
  *   file no grant covers is `view-grants.e2e.ts`, and a page that moved away from its address is
- *   `view-sandbox.e2e.ts`.
+ *   `view-sandbox.e2e.ts`; and the one case that comes back, a `ready` past the ten seconds,
+ *   which draws its data and takes its line away.
  * - A7 (R8): every row here that shows the page and its value loads
  *   `skills/dispatch-view/minimal-page.html`, the skill's own page, so a green row is the skill's
  *   page working rather than a fixture written to pass.
@@ -70,7 +71,7 @@ function skillPage(): Promise<string> {
 
 /** One `dispatch-view:data` message, as a row reads it back out of a frame. */
 interface ViewDataMessage {
-  files: { error?: string; ref: string; text?: string; version?: number }[];
+  files: { contentType?: string; error?: string; ref: string; text?: string; version?: number }[];
 }
 
 /** The marker a row sets inside a running frame, and the messages it counts there. The frame's
@@ -1226,6 +1227,69 @@ test("a view block counts the version it sends against 16 MiB, not the newest @p
   }
 });
 
+// What the page is told each file is. The read of a version's bytes answers
+// `application/octet-stream` for every type a browser draws as a document, so that no uploaded
+// file is drawn as a page on Dispatch's own origin; a page given the type off that answer would
+// be told every drawing and every XML file is an octet stream. The type comes from the stored
+// version instead: the summary's for the version a block sends the latest of, and the read of
+// the pinned version for any other, which is why this row sends one of each.
+test("a view block tells its page each file's stored type, not its download's @phone @webkit @firefox", async ({
+  browser,
+}) => {
+  const fixture = await seedView();
+  const drawing = '<svg xmlns="http://www.w3.org/2000/svg"></svg>';
+  const shape = await uploadIssueFile(fixture.issue, {
+    content: drawing,
+    name: "shape.svg",
+    type: "image/svg+xml",
+  });
+  // Two versions under two types, so the entry pinned to `@v1` can only carry version 1's.
+  await uploadIssueFile(fixture.issue, { content: "<rows/>", name: "rows.xml", type: "text/xml" });
+  await uploadIssueFile(fixture.issue, {
+    content: "<rows><row/></rows>",
+    name: "rows.xml",
+    type: "application/xml",
+  });
+  const svgRef = `dispatch://${fixture.issue}/artifact/shape-svg`;
+  const xmlRef = `dispatch://${fixture.issue}/artifact/rows-xml`;
+  await createArtifactGrant(fixture.pageId, svgRef);
+  await createArtifactGrant(fixture.pageId, xmlRef);
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await watchFrameData(page);
+    await openDocument(
+      page,
+      viewDirective({
+        caption: "Attempts, a drawing and one old table.",
+        data: `${fixture.dataRef} ${svgRef} ${xmlRef}@v1`,
+        page: fixture.pageRef,
+      })
+    );
+    const block = viewBlock(page, "Attempts, a drawing and one old table.");
+    await expect(drawnValue(block), "the data reached the page").toHaveText("7");
+
+    const download = await page.request.get(`/api/v1/artifacts/${shape.artifact.id}/versions/1`);
+    expect(
+      download.headers()["content-type"],
+      "the read of the drawing's bytes answers an octet stream, whatever it is stored as"
+    ).toBe("application/octet-stream");
+
+    const messages = await frameMessages(page, fixture.pageId);
+    expect(
+      messages.at(-1)?.files.map((file) => [file.ref, file.contentType]),
+      "each entry carries the type its version is stored under"
+    ).toEqual([
+      [fixture.dataRef, "application/json"],
+      [svgRef, "image/svg+xml"],
+      [`${xmlRef}@v1`, "text/xml"],
+    ]);
+  } finally {
+    await alice.close();
+  }
+});
+
 test("a view block whose read of a data file fails names its status @phone @webkit @firefox", async ({
   browser,
 }) => {
@@ -1282,6 +1346,59 @@ test("a view block whose page sends no ready message in 10 seconds says so @phon
       ),
       "A6: a page that never answers ready"
     ).toBeVisible({ timeout: 20_000 });
+  } finally {
+    await alice.close();
+  }
+});
+
+/** How long the page below holds its `ready` back: past the block's own ten seconds, so the
+ *  line is on screen before the page answers. */
+const LATE_READY_MS = 11_000;
+
+/** The skill's own page with that one statement held back (A7), so what this row reads is a
+ *  late `ready` and nothing else about the page. */
+async function lateReadyPage(): Promise<string> {
+  const ready = 'window.parent.postMessage({ type: "dispatch-view:ready" }, "*");';
+  const bytes = await skillPage();
+  if (!bytes.includes(ready)) {
+    throw new Error("the skill's page no longer posts its ready in the statement this row delays");
+  }
+  return bytes.replace(ready, `window.setTimeout(() => { ${ready} }, ${LATE_READY_MS});`);
+}
+
+// A `ready` after the deadline still takes the port and its data, so the line that said the page
+// was silent is wrong from the moment it arrives, and the block clears it. Left standing, the
+// reader saw "this page sent no ready message in 10 seconds" beside a chart that was drawing.
+test("a view block whose page sends ready after 10 seconds draws and drops the line @phone @webkit @firefox", async ({
+  browser,
+}) => {
+  // This row waits out the block's ten seconds and the page's eleventh second, which is the
+  // deadline it is about.
+  test.setTimeout(60_000);
+  const fixture = await seedView();
+  const latePage = await uploadIssueFile(fixture.issue, {
+    content: await lateReadyPage(),
+    name: "late.html",
+    type: "text/html; charset=utf-8",
+  });
+  const late = `dispatch://${fixture.issue}/artifact/late-html`;
+  await createArtifactGrant(latePage.artifact.id, fixture.dataRef);
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await openDocument(
+      page,
+      viewDirective({ caption: "A late page.", data: fixture.dataRef, page: late })
+    );
+    const block = viewBlock(page, "A late page.");
+    const line = block.getByText(`${late} — this page sent no ready message in 10 seconds`);
+    await expect(line, "A6: the line is on screen at ten seconds").toBeVisible({ timeout: 20_000 });
+    await expect(
+      drawnValue(block),
+      "A6: and the late ready still gets the page its data"
+    ).toHaveText("7", { timeout: 20_000 });
+    await expect(line, "A6: and the line goes with it").toBeHidden();
   } finally {
     await alice.close();
   }

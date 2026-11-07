@@ -88,9 +88,10 @@ export type {
   DispatchServiceErrorShape,
 } from "@legion/contracts";
 
-/** The stored bytes of one version of an uploaded file, and the MIME type Dispatch serves them as. */
+/** The stored bytes of one version of an uploaded file. The answer's `Content-Type` is not the
+ *  file's type and is not kept: the version's own type is the `mime` of its row in the
+ *  artifact's `versions`. */
 export interface ArtifactFileVersion {
-  readonly mime: string;
   readonly bytes: Uint8Array;
 }
 
@@ -1424,15 +1425,17 @@ export class DispatchClient {
   }
 
   /** One version of an uploaded file as Dispatch stores it: `GET /artifacts/{id}/versions/{n}`
-   * answers a file with its bytes under its own MIME type, never a JSON envelope. */
+   * answers its bytes, never a JSON envelope. The answer is an attachment, and a version stored
+   * under a type a browser draws as a document - `text/html`, `application/xhtml+xml`,
+   * `image/svg+xml`, `text/xml`, `application/xml` - is answered `application/octet-stream`, so
+   * that no uploaded file is ever drawn as a page on Dispatch's own origin. Its `Content-Type`
+   * is therefore not the file's type, and nothing here reads one: a caller that must say what a
+   * file is takes the `mime` of the version's row from the artifact's `versions`. */
   async fileVersion(id: string, version: number): Promise<ArtifactFileVersion> {
     const url = this.#url(["api", "v1", "artifacts", id, "versions", String(version)]);
     const response = await this.#send("GET", url, undefined, "*/*");
     if (!response.ok) return this.#response<never>("GET", url, response);
-    return {
-      mime: response.headers.get("Content-Type") ?? "application/octet-stream",
-      bytes: new Uint8Array(await response.arrayBuffer()),
-    };
+    return { bytes: new Uint8Array(await response.arrayBuffer()) };
   }
 
   async artifactBlocks(id: string): Promise<ArtifactBlock[]> {

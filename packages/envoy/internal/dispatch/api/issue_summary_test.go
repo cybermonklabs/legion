@@ -127,6 +127,83 @@ func TestIssueSummaryCarriesTheIssueAndEveryDocumentsLatestVersion(t *testing.T)
 	}
 }
 
+// uploadFile is an upload of one version of a file under the type the caller declares, which is
+// the type Dispatch stores it under (artifactKind) and the type the summaries answer.
+func uploadFile(t *testing.T, handler http.Handler, owner, name, contentType, content string) uploadedArtifact {
+	t.Helper()
+	response := multipartRequest(t, handler, owner+"/artifacts", map[string]string{"name": name}, name, contentType, []byte(content), "alice")
+	if response.Code != http.StatusCreated {
+		t.Fatalf("upload %s to %s: status=%d body=%s", name, owner, response.Code, response.Body.String())
+	}
+	return decodeBody[uploadedArtifact](t, response)
+}
+
+// The summary answers the type a file's latest version is stored under, which is the only place a
+// reader can take it from: the download of that version's bytes answers a type a browser draws as
+// a document - an SVG here - as application/octet-stream (downloadContentType), so a reader that
+// took the type off the wire would call every such file an octet stream. A document records no
+// type and is answered null.
+func TestIssueSummaryCarriesEachFilesStoredType(t *testing.T) {
+	handler, _, _ := newTestServer(t, testServerOptions{files: filestest.NewMemory()})
+	issue := createInteractionIssue(t, handler, "TEST", "Typed", "A spec")
+	owner := "/api/v1/issues/" + issue.Key
+	drawing := `<svg xmlns="http://www.w3.org/2000/svg"></svg>`
+	uploadFile(t, handler, owner, "chart.svg", "image/svg+xml", "<svg></svg>")
+	chart := uploadFile(t, handler, owner, "chart.svg", "image/svg+xml", drawing)
+	if chart.Version.Number != 2 {
+		t.Fatalf("second upload of the drawing = version %d, want 2", chart.Version.Number)
+	}
+
+	download := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+chart.Artifact.ID+"/versions/2", nil, "alice")
+	if got := download.Header().Get("Content-Type"); got != "application/octet-stream" {
+		t.Fatalf("download of the drawing answers Content-Type %q, want application/octet-stream", got)
+	}
+
+	for caller, response := range summaryRead(t, handler, owner+"/summary") {
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s summary: status=%d body=%s", caller, response.Code, response.Body.String())
+		}
+		summary := decodeBody[issueSummary](t, response)
+		for _, document := range summary.Documents {
+			switch document.ID {
+			case chart.Artifact.ID:
+				if document.Mime == nil || *document.Mime != "image/svg+xml" ||
+					document.Size == nil || *document.Size != int64(len(drawing)) {
+					t.Fatalf("%s summary = %s, want the drawing at mime image/svg+xml and size %d",
+						caller, response.Body.String(), len(drawing))
+				}
+			default:
+				if document.Mime != nil {
+					t.Fatalf("%s summary of the document %s carries mime %q, want null", caller, document.Slug, *document.Mime)
+				}
+			}
+		}
+	}
+}
+
+// A project document's summary answers the stored type the same way, and a project file's
+// latest version is the one it answers for.
+func TestProjectDocumentSummaryCarriesTheStoredTypeOfTheLatestVersion(t *testing.T) {
+	handler, _, _ := newTestServer(t, testServerOptions{files: filestest.NewMemory()})
+	createReferenceAPIProject(t, handler, "CORE")
+	owner := "/api/v1/projects/CORE"
+	uploadFile(t, handler, owner, "rows.xml", "text/xml", "<rows/>")
+	rows := uploadFile(t, handler, owner, "rows.xml", "application/xml", "<rows><row/></rows>")
+	if rows.Version.Number != 2 {
+		t.Fatalf("second upload of the rows = version %d, want 2", rows.Version.Number)
+	}
+
+	for caller, response := range summaryRead(t, handler, owner+"/artifacts/"+rows.Artifact.Slug+"/summary") {
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s summary: status=%d body=%s", caller, response.Code, response.Body.String())
+		}
+		summary := decodeBody[documentSummary](t, response)
+		if summary.Mime == nil || *summary.Mime != "application/xml" {
+			t.Fatalf("%s summary = %s, want the latest version's mime application/xml", caller, response.Body.String())
+		}
+	}
+}
+
 // A project document's summary resolves its reference as the project document read does - by
 // slug, else by unambiguous filename - and answers its project, name, kind and latest version.
 func TestProjectDocumentSummaryResolvesAsTheDocumentReadDoes(t *testing.T) {
