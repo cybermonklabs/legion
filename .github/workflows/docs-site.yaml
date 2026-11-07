@@ -116,11 +116,20 @@ jobs:
         run: bun run build:web
         working-directory: packages/dispatch
       - name: Install Playwright Chromium
-        # The runner image's chrome-stable apt source intermittently fails `apt-get update`, which
-        # takes `--with-deps` down with it; Chrome itself is preinstalled, so the source goes.
-        run: |
-          grep -rl dl.google.com /etc/apt/sources.list.d | xargs -r sudo rm -f
-          bunx playwright install --with-deps chromium
+        # No apt in this step at all. Playwright's `chromium` entry in its ubuntu24.04-x64 table
+        # adds no package this GitHub ubuntu-24.04 image lacks, so `--with-deps` installed only
+        # Playwright's `tools` list: the CJK, Thai and Cyrillic font packages and xvfb. Measured
+        # for that same install in job 127214381394, which ci.yaml's
+        # dispatch-browser-multiprocess job records against its own step of this name, that was
+        # `0 upgraded, 9 newly installed`, `Need to get 21.1 MB of archives`, plus 12.8 MB of
+        # package indexes in `apt-get update`. The shots want none of it: they are taken in a
+        # headless Chromium (docs/site/media/shots.ts:51 and walkthrough.ts:266 call
+        # `chromium.launch()` with no options) and compared against no committed baseline
+        # (docs/site/media/README.md), and fonts-liberation and fonts-noto-color-emoji are on
+        # the image already. With the apt call goes this step's removal of the runner image's
+        # chrome-stable apt source, which it carried only because that source's index
+        # intermittently failed `apt-get update` and took `--with-deps` down with it.
+        run: bunx playwright install chromium
         working-directory: docs/site
       - name: Take the screenshots
         run: bun run docs:media
