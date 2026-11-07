@@ -119,10 +119,11 @@ its lane's database before every row. A worker finds its lane by
 A lane's Postgres comes from one of two variables, and a run of more than one
 lane that sets neither is refused. On a machine with Docker and no Postgres
 binaries, `DISPATCH_E2E_PG_IMAGE` is a `docker run` of the image digest you
-name, which is what CI does. On a machine with a Postgres installation and no
-Docker, such as an issue pod, `DISPATCH_E2E_PG_BIN` is a directory holding
-`initdb` and `pg_ctl`. Each lane's data lives under the run's own temporary
-directory and goes with the run.
+name. On a machine with a Postgres installation and no Docker, such as an issue
+pod or CI's browser job, which runs in a container carrying PostgreSQL 18 with
+`vector`, `DISPATCH_E2E_PG_BIN` is a directory holding `initdb` and `pg_ctl`.
+Each lane's data lives under the run's own temporary directory and goes with
+the run.
 
 ```bash
 cd packages/dispatch

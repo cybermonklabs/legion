@@ -1471,13 +1471,14 @@ own lane's values under the plain names.
 A lane's Postgres comes from one of two providers (`e2e/harness-postgres.ts`),
 and a run of more than one lane that names neither is refused naming both.
 `DISPATCH_E2E_PG_IMAGE` is a `docker run` of the image digest the caller names,
-which is CI's path: a runner has Docker and no Postgres binaries, and the
-`dispatch` job passes the pgvector digest its `postgres` service ran before the
-lanes. `DISPATCH_E2E_PG_BIN` is a directory holding `initdb` and `pg_ctl`,
-which is a developer's and an issue pod's path, where there is a Postgres
-installation and no Docker; that provider runs `initdb` once per run and copies
-the data directory it made per lane, since `initdb` is the cost that grows with
-the lanes. Both keep the lane's data under the run's own temporary directory,
+which is a developer's path on a machine with Docker and no Postgres binaries.
+`DISPATCH_E2E_PG_BIN` is a directory holding `initdb` and `pg_ctl`, which is
+CI's path and an issue pod's: the `dispatch` job runs in a container that
+carries PostgreSQL 18 with `vector`, where there are Postgres binaries and no
+Docker socket, and it names that installation's directory. That provider runs
+`initdb` once per run and copies the data directory it made per lane, since
+`initdb` is the cost that grows with the lanes. Both keep the lane's data under
+the run's own temporary directory,
 which `e2e/run.ts` removes when it ends, and both answer on 127.0.0.1, which
 the server's dev sign-in requires of its database. With one worker and
 `DATABASE_URL` set, the run uses that database as lane 0 and starts no

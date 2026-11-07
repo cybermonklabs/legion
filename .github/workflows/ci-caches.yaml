@@ -14,7 +14,7 @@ name: CI caches
 #
 # Five Go families, each one a restore step of ci.yaml names, keyed on the Go version the
 # family's own module installs: go-notices (lint's notices step), go-daemon (typecheck, test and
-# pi-legion), go-envoy (dispatch, dispatch-browser-multiprocess, envoy-go-checks,
+# pi-legion), go-envoy (dispatch-binaries, dispatch-browser-multiprocess, envoy-go-checks,
 # envoy-go-race-docs, envoy-go-docs-finalizers, listener-server-change, envoy-e2e-local and
 # envoy-session-stall), go-envoy-test (envoy-go) and go-envoy-infra (envoy-infra-go). One job per
 # Go setup, since the key carries the version that module's go.mod names: the daemon's go.mod for
