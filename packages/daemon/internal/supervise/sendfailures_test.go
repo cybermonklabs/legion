@@ -186,12 +186,13 @@ func TestDeliveryBudgets(t *testing.T) {
 		// again at the next decision. Reading the stored row after another sweep would prove
 		// none of it — that sweep's own send fails too, and its putPending writes the row — so
 		// the decision after the store recovers must be one that touches no delivery. An
-		// operator's suspension is that decision, and it retires nothing here because this task
-		// carries no phase (settle's `suspended` branch reads p.Phase), which is the one line
-		// this case depends on: give the task a phase and settle retires it instead.
+		// operator's suspension is that decision, and it retires nothing because an operator's
+		// suspension keeps the pending task whatever its phase (SuspendSource.RetiresPhaseTask,
+		// which settle's `suspended` branch reads), which is the one line this case depends on: a
+		// suspension by a source that retires the task leaves no delivery to read.
 		//
-		// The assertion is that the stored row equals the row memory holds, not that it holds
-		// some count, so it reads the same against whichever write settle makes
+		// The assertion is that the stored record equals the record memory holds, not that it
+		// holds some count, so it reads the same against whichever write settle makes
 		// (putClaimAndPending today) and fails if settle stops making one at all.
 		h.store.fail("PutDelivery", nil)
 		h.must(RequestSuspend{Claim: testToken, By: SuspendedByOperator})
