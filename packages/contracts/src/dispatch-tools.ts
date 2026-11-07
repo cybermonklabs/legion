@@ -1051,9 +1051,9 @@ export const dispatchToolSpecs = [
       "in_reply_to and no issue; the reply lands in that conversation. Another call with the same in_reply_to and new text posts a follow-up, " +
       "threaded under this session's first reply; the same text again posts nothing. dispatch read --message <id> reads " +
       "that conversation back. " +
-      "Every other message names its issue; keep --issue whenever the frame you answer gave one. A frame that wants a reply carries a " +
-      "reply_with command: answer with it, on that issue. A mention of a comment that joins no ask thread and answers no comment wants " +
-      "nothing back and carries none; where you answer one anyway, its card names the comment. On Oh My Pi an Agents-page Send or Aside " +
+      "Every other message names its issue; keep --issue whenever the frame you answer gave one. A frame reading expects_reply: optional or " +
+      "required carries a reply_with command: answer with it, on that issue. One reading false carries none and asks for no answer; where " +
+      "you answer one anyway, its card names what to answer. On Oh My Pi an Agents-page Send or Aside " +
       "arrives as a user message: answer in the conversation, with no dispatch message. " +
       `${BODY_BLOCK_RULE} The lines images appends count toward it. ${ISSUE_REFERENCE}`,
     arguments: (z) => ({
