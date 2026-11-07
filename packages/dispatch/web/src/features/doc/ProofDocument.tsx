@@ -9,6 +9,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import { Link, useLocation } from "react-router-dom";
 import {
   api,
@@ -53,6 +54,7 @@ import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { AskBlockCard } from "./AskBlockCard";
+import type { AnchoredBlockHost } from "./ask-block";
 import { ChangeView } from "./ChangeView";
 import type { ConnectionState, DocumentConnection } from "./connection";
 import { colorForLogin } from "./connection";
@@ -137,6 +139,18 @@ export interface DocumentToolbar {
 }
 
 export interface ProofDocumentProps {
+  /** A thread drawn inside the document column, directly below the block it is anchored to, and
+   *  the document mark whose quote is highlighted while it is shown: what the Inbox's reading
+   *  pane does with the comment thread it selected (`surface="pane"`). The thread reaches the
+   *  block through a node view's slot, never injected DOM (`installTypedBlocks`), so it is drawn
+   *  only once the editor has drawn that block; a `blockId` the document does not hold draws
+   *  nothing, which is what the pane falls back from. Changing the block reopens the editor, so a
+   *  host that follows a selection settles it first, as the pane does. */
+  anchoredThread?: {
+    readonly blockId: string;
+    readonly children: ReactNode;
+    readonly markId: string | null;
+  };
   artifact: Artifact;
   highlight: Highlight | undefined;
   highlightTerm?: string;
@@ -198,6 +212,7 @@ function setSearchHighlights(root: HTMLElement, query: string): void {
 }
 
 export function ProofDocument({
+  anchoredThread,
   artifact,
   highlight,
   highlightTerm = "",
@@ -224,6 +239,13 @@ export function ProofDocument({
   const schemaReadOnlyRef = useRef(false);
   const userRef = useRef(user);
   const highlightTermRef = useRef(highlightTerm);
+  // The thread the host draws below one block, and the mark it highlights: both are read through
+  // refs by the editor's own effects, so a host that re-renders rebuilds nothing.
+  const [anchoredHost, setAnchoredHost] = useState<AnchoredBlockHost | undefined>(undefined);
+  const anchoredBlockId = anchoredThread?.blockId;
+  const activeMarkId = anchoredThread?.markId ?? undefined;
+  const activeMarkIdRef = useRef(activeMarkId);
+  activeMarkIdRef.current = activeMarkId;
   const [connection, setConnection] = useState<ConnectionState>("connecting");
   const [pending, setPending] = useState<PendingState | undefined>(undefined);
   // Whoever waits for this browser's edits of this document to reach the server
@@ -234,14 +256,6 @@ export function ProofDocument({
   const pendingWaiter = useMemo(() => createPendingWaiter(), []);
   const [loadError, setLoadError] = useState<string | undefined>(undefined);
   const [schemaReadOnly, setSchemaReadOnly] = useState(false);
-  // Whether the issue was closed when the current admission came. The server admits a socket
-  // read-only for a closed issue as it does for a schema it does not serve, and a reload cannot
-  // make a closed issue's document editable, so the page names a reload only for a read-only
-  // admission that came while the issue was open, while the issue is open and the socket is
-  // connected. The admission and the connection decide the line, not the close or the reopen: each
-  // drops the socket only on the server process that served it, and where it does, the
-  // reconnect's admission decides again.
-  const [closedAdmission, setClosedAdmission] = useState(false);
   const [openDecisionIndex, setOpenDecisionIndex] = useState(0);
   const {
     blockSchema: runtimeBlockSchema,
@@ -602,7 +616,6 @@ export function ProofDocument({
     setAdmission(undefined);
     schemaReadOnlyRef.current = false;
     setSchemaReadOnly(false);
-    setClosedAdmission(isClosedRef.current);
     // A transport or editor chunk that fails while online (after `DeploymentResilience` has
     // spent its reload) would otherwise leave the document "connecting" forever. Once failed,
     // the live provider's later status events must not repaint the dot over the alert.
@@ -631,6 +644,9 @@ export function ProofDocument({
     // as it is this effect's editor. It returns what undoes it. The typed-block node views are
     // installed by `createEditor`, with the editor library they are written against.
     const bindEditor = (handle: EditorHandle, connection: DocumentConnection) => {
+      // The quote the host highlights is drawn as soon as the editor is there, whether the host
+      // named its mark before this editor or while it was being built.
+      handle.setActiveMarks(activeMarkIdRef.current === undefined ? [] : [activeMarkIdRef.current]);
       handle.setBlockMarks(blockMarksRef.current);
       // False once this editor unbinds, so a focus a frame late never reaches a destroyed editor
       // or leaves a re-run behind for it.
@@ -768,7 +784,6 @@ export function ProofDocument({
             onAdmission: (readOnly) => {
               schemaReadOnlyRef.current = readOnly;
               setSchemaReadOnly(readOnly);
-              setClosedAdmission(isClosedRef.current);
               editor?.setReadOnly(!page || isClosedRef.current || readOnly);
             },
             onOutsideSchema: () => {
@@ -849,6 +864,13 @@ export function ProofDocument({
                 },
                 blockSchema,
                 watchPicture: (route, onPicture) => watchPicturePath(queryClient, route, onPicture),
+                // The block the pane's thread hangs under: the node view it names publishes the
+                // host slot this page portals the thread into. A document's own page anchors no
+                // thread and passes none.
+                anchoredBlock:
+                  anchoredBlockId === undefined
+                    ? undefined
+                    : { blockId: anchoredBlockId, onHostChange: setAnchoredHost },
                 // The open document's own reference, never a version's: a pointer names a block
                 // of the document by it, so the editor refuses one to a block of a type the
                 // pointer's attribute does not allow.
@@ -883,6 +905,7 @@ export function ProofDocument({
       teardown();
     };
   }, [
+    anchoredBlockId,
     artifact.id,
     blockSchema,
     createEditor,
@@ -909,6 +932,12 @@ export function ProofDocument({
   useEffect(() => {
     editorRef.current?.setReadOnly(!page || isClosed || schemaReadOnlyRef.current);
   }, [isClosed, page]);
+
+  // The quote the host asked for, highlighted without changing the document; naming no mark
+  // clears whatever the last one highlighted.
+  useEffect(() => {
+    editorRef.current?.setActiveMarks(activeMarkId === undefined ? [] : [activeMarkId]);
+  }, [activeMarkId]);
 
   useEffect(() => {
     const editor = editorRef.current;
@@ -974,8 +1003,15 @@ export function ProofDocument({
           ) : null}
         </div>
       )}
-      {blockSchemaQuery.isError ||
-      (schemaReadOnly && !isClosed && !closedAdmission && connection === "connected") ? (
+      {/* The server admits a socket read-only for a closed issue as it does for a schema version
+          it does not serve, so the admission alone cannot say whether a reload would help. The
+          close state the page holds now decides: while the issue is open, a reload opens a new
+          socket the server admits on the issue as it stands, so a reload makes the document
+          editable again. A closed issue shows its own line above instead, and a socket that is
+          not connected shows nothing: its reconnect's admission decides. A block schema that
+          could not load leaves the page no editor to bind at all, and only a reload fixes that
+          too. */}
+      {blockSchemaQuery.isError || (schemaReadOnly && !isClosed && connection === "connected") ? (
         <p>Reload to edit.</p>
       ) : null}
       {/* The Open-decisions navigator walks the page's own document; a pane leaves it to the
@@ -1046,6 +1082,9 @@ export function ProofDocument({
         onClick={followReference}
       >
         <div ref={root} />
+        {anchoredThread === undefined || anchoredHost === undefined
+          ? null
+          : createPortal(anchoredThread.children, anchoredHost.slot, String(anchoredHost.key))}
         <DocumentReferences editor={editorHandle} source={textSource} />
         {askBlockHosts.map((host) => {
           const blockId = String(host.node.attrs.blockId);

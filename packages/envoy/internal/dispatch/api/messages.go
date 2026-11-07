@@ -312,8 +312,9 @@ func (s *server) createStoredMessage(
 		eventType = "message.answered"
 	}
 	// An issue message's thread_logins are read by its event's insert, after the message's insert
-	// and the user_threads trigger it fires, on the thread root found here; a direct conversation
-	// has no Replies thread and names none.
+	// and the user_threads trigger it fires, on the thread root found here. A direct conversation
+	// keeps no Replies row: its Inbox row is the thread root author's Agent row, read here, since
+	// nothing the insert fires decides it (directThreadLogins).
 	var logins *events.Logins
 	var advice *writeAdvice
 	if issueKey != nil {
@@ -332,6 +333,12 @@ func (s *server) createStoredMessage(
 	}
 	message.RepliesToBlock = block.nodeID()
 	message.ReplyBlock = block.replyBlock(issueKey, "", "")
+	var directLogins []string
+	if issueKey == nil {
+		if directLogins, err = directThreadLogins(ctx, tx, message); err != nil {
+			return model.Message{}, nil, err
+		}
+	}
 	// An issue message's blocks, the mentions each holds and its own references are indexed as
 	// one write (refs.ReplaceCountedItem); a direct message, which writes no mention, has its
 	// blocks indexed alone and moves nothing.
@@ -365,7 +372,9 @@ func (s *server) createStoredMessage(
 		if err := indexMessage(b); err != nil {
 			return err
 		}
-		if err := s.deps.Events.QueueAppendWithLogins(b, messageEvent(message, eventType, actor, thread.payload(message, referenceChanges)), logins, func(appended model.Event) {
+		payload := thread.payload(message, referenceChanges)
+		payload.ThreadLogins = directLogins
+		if err := s.deps.Events.QueueAppendWithLogins(b, messageEvent(message, eventType, actor, payload), logins, func(appended model.Event) {
 			event = appended
 		}); err != nil {
 			return err

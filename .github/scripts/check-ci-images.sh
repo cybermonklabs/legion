@@ -7,8 +7,8 @@
 # .github/scripts/mirror-ci-images.sh copies the rows the package does not hold yet with
 # `crane copy`, which keeps the manifest digest. ci.yaml's ci-images job runs that script and
 # then the package mode of this check, in that order. That job is the one copy path, and it runs
-# on a pull request, on a merge group and on a push to main. This check holds the two sides to
-# each other.
+# on every event ci.yaml runs on: a pull request, a merge group and a dispatch. This check holds
+# the two sides to each other.
 #
 # THE TWO MODES. This check takes one mode argument, and runs that half alone. A call that names
 # no mode, or that names more than one, fails naming both.
@@ -301,7 +301,7 @@ EXCEPTIONS = {
     "scripts/e2e/stage4a-sandbox-runtime.sh": NO_CI_JOB,
     "scripts/e2e/stage4b-sandbox-tree.sh": NO_CI_JOB,
     "scripts/e2e/verifiers-staging-token.sh": NO_CI_JOB,
-    "packages/daemon/internal/testpg/testpg.go": FETCHES_NOTHING,
+    "packages/daemon/internal/testpg/testdb/testdb.go": FETCHES_NOTHING,
     "packages/envoy/scripts/dev-postgres.sh": FETCHES_NOTHING,
     "packages/envoy/scripts/dev-postgres.test.sh": FETCHES_NOTHING,
     "packages/envoy/loadtest/cluster/cluster.sh": FETCHES_NOTHING,

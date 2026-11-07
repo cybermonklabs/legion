@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -13,6 +14,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/files/filestest"
@@ -251,9 +254,88 @@ func (h heldPut) Put(ctx context.Context, sha, mime string, body []byte) error {
 	return h.Memory.Put(ctx, sha, mime, body)
 }
 
+// uploadLockProbeWindow bounds how long the probe below retries the issue's owner lock. It is far
+// longer than any write this test's own setup makes - the issue create and the settlement of the
+// spec document it wrote - and shorter than the package's test timeout, so a holder the probe
+// cannot name is reported as a failure rather than a hang.
+const uploadLockProbeWindow = 20 * time.Second
+
+// uploadIssueLock is the statement an upload's transaction takes the issue's owner lock with
+// (storeArtifact's issue branch, through requireOpenOwnerStatus and store.LockOwnerAndRead), as
+// pg_stat_activity shows it, and it is the only statement of this test's two writers that an
+// upload runs while the store holds its bytes: pg_stat_activity shows a holder at whatever
+// statement it is on, and the settlement's is one of the document's own reads or its write
+// phase's, never this one. It is also the first statement the upload's transaction makes, so an
+// upload that opened its transaction before writing its object would sit on it for the whole of
+// Put. One that ran further statements between the lock and Put would show one of those instead
+// and be retried to the window's end, whose failure names what it read rather than timing out
+// mutely.
+const uploadIssueLock = "pg_advisory_xact_lock($1, hashtext($2::text))"
+
+// issueOwnerLockKey is the two-key advisory lock an issue's owner lock takes (store.LockOwner):
+// the owner namespace "OWNR" as its first key and hashtext of `issue:<key>` as its second, read
+// from pg_locks as the unsigned 32-bit values that view carries.
+const issueOwnerLockKey = `l.locktype = 'advisory' and l.objsubid = 2
+			and l.classid = (x'4F574E52'::bigint)::oid
+			and l.objid = (hashtext('issue:' || $1)::bigint & 4294967295)::oid`
+
+// issueOwnerLockHolder is what the probe reads of the backend whose transaction holds the issue's
+// owner lock, so a red run names the writer it lost the lock to.
+type issueOwnerLockHolder struct {
+	pid       int32
+	state     string
+	xactStart *time.Time
+	query     string
+}
+
+func (h issueOwnerLockHolder) String() string {
+	start := "null"
+	if h.xactStart != nil {
+		start = h.xactStart.Format(time.RFC3339Nano)
+	}
+	return fmt.Sprintf("backend %d, state %q, xact_start %s, query %q", h.pid, h.state, start, h.query)
+}
+
+// readIssueOwnerLockHolder names the transaction holding issue's owner lock: pg_locks holds the
+// granted advisory lock on that owner's two keys (issueOwnerLockKey), and pg_stat_activity names
+// the backend running it. It answers nil when the holder ended between the refusal and this read.
+func readIssueOwnerLockHolder(t *testing.T, database *store.Store, issue string) *issueOwnerLockHolder {
+	t.Helper()
+	var holder issueOwnerLockHolder
+	var state, query *string
+	err := database.Pool.QueryRow(context.Background(), `
+		select a.pid, a.state, a.xact_start, a.query
+		from pg_locks l join pg_stat_activity a on a.pid = l.pid
+		where l.granted and a.pid <> pg_backend_pid() and `+issueOwnerLockKey+`
+		limit 1
+	`, issue).Scan(&holder.pid, &state, &holder.xactStart, &query)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		t.Fatalf("read the holder of issue %s's owner lock: %v", issue, err)
+	}
+	holder.state, holder.query = deref(state), deref(query)
+	return &holder
+}
+
 // An upload writes its object before its transaction opens, so while the store takes the bytes
-// the issue's owner lock is free: the transaction takes it, and every other writer of the issue
-// (a comment, an ask, a status change) would queue behind a store write nothing bounds.
+// the issue's owner lock is free: the transaction takes that lock (store.LockOwner), and every
+// other writer of the issue (a comment, an ask, a status change) would queue behind a store
+// write nothing bounds.
+//
+// The upload stays in Put until this test releases it, so a lock the upload holds is held for
+// every attempt of the probe below, while the issue's own setup holds that lock only for a
+// moment: the spec document fileIssue wrote settles a settle delay later, and that settlement's
+// transaction takes the issue's owner lock for the event it appends (lockArtifactOwner). The
+// probe therefore retries, and takes the lock once that writer commits.
+//
+// Which of the two it met is measured rather than reasoned: the first refused attempt reads the
+// holder of the lock (readIssueOwnerLockHolder) and logs it, so a run that waited names the
+// writer it waited for, and a holder running the upload's own statement (uploadIssueLock) fails
+// the test there, where retrying could only spend the window. Most runs are refused nothing and
+// log nothing: the settlement usually commits while fileIssue's own request is still answering,
+// before there is an upload to hold anything.
 func TestAnUploadHoldsNoIssueLockWhileTheStoreWrites(t *testing.T) {
 	held := heldPut{Memory: filestest.NewMemory(), entered: make(chan struct{}), release: make(chan struct{})}
 	var releaseOnce sync.Once
@@ -302,27 +384,43 @@ func TestAnUploadHoldsNoIssueLockWhileTheStoreWrites(t *testing.T) {
 	case response := <-uploaded:
 		t.Fatalf("the upload answered without writing to the store: status=%d body=%s", response.Code, response.Body.String())
 	}
+	deadline := time.Now().Add(uploadLockProbeWindow)
+	// Read once, at the first refusal: a reading per attempt would bury the one that matters,
+	// and a holder parked in Put is still there to be named at any later attempt.
+	var holder *issueOwnerLockHolder
+	var looked bool
+	heldBy := func() string {
+		switch {
+		case !looked:
+			return "nothing: no attempt was refused"
+		case holder == nil:
+			return "nothing: the holding transaction had ended before the refusal could be followed up"
+		}
+		return holder.String()
+	}
 	// The probe tries the issue's owner lock without waiting, in a statement of its own, until it
-	// takes it: the store write stays parked until release() below, so what this asserts is that
-	// the lock is free at some moment of a window the upload does not end, and a pass of the
-	// server's own holding it for an instant - the settlement of the issue's seeded spec, its
-	// write advice - is not the upload holding it throughout. A lock this probe takes is released
-	// with the statement, since it runs on the pool outside a transaction (store.TryLockOwners).
-	var taken []store.Owner
-	deadline := time.Now().Add(10 * time.Second)
+	// takes it. A lock it takes is released with the statement, since it runs on the pool outside
+	// a transaction (store.TryLockOwners).
 	for {
-		got, err := store.TryLockOwners(context.Background(), database.Pool, store.IssueOwner(issue))
+		taken, err := store.TryLockOwners(context.Background(), database.Pool, store.IssueOwner(issue))
 		if err != nil {
 			t.Fatalf("try the issue's owner lock while its upload's bytes are in flight: %v", err)
 		}
-		taken = got
-		if len(taken) == 1 || !time.Now().Before(deadline) {
+		if len(taken) == 1 {
 			break
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if len(taken) != 1 {
-		t.Fatalf("the issue's owner lock stayed held for the whole 10s its upload's bytes were in flight: taken %v", taken)
+		if !looked {
+			looked = true
+			holder = readIssueOwnerLockHolder(t, database, issue)
+			t.Logf("the issue's owner lock refused the probe while the store holds the upload's bytes; it is held by %s", heldBy())
+			if holder != nil && strings.Contains(holder.query, uploadIssueLock) {
+				t.Fatalf("the upload holds the issue's owner lock while its bytes are in the store: %s", holder)
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("take the issue's owner lock while its upload's bytes are in flight, over %s of attempts; the first refusal read %s", uploadLockProbeWindow, heldBy())
+		}
+		time.Sleep(2 * time.Millisecond)
 	}
 	release()
 	if response := <-uploaded; response.Code != http.StatusCreated {

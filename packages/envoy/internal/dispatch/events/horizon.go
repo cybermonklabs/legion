@@ -210,6 +210,11 @@ type Horizon struct {
 	// pause is Await's backoff wait, which returns once d has passed or ctx has ended; NewHorizon
 	// sets pauseFor and a test replaces it to see the waits Await takes.
 	pause func(ctx context.Context, d time.Duration)
+	// afterObservationParked runs, outside the lock, each time a caller finds an observation
+	// already in flight and parks on it rather than running one of its own. Nothing in
+	// production sets it; the package's own test of concurrent callers waits on it instead of
+	// sleeping for a share of them to arrive.
+	afterObservationParked func()
 
 	mu sync.Mutex
 	// generation counts Resets. An observation records only into the generation it started in,
@@ -618,6 +623,9 @@ func (h *Horizon) observe(ctx context.Context, after uint64) error {
 		if run {
 			h.run(ctx, flight)
 		} else {
+			if h.afterObservationParked != nil {
+				h.afterObservationParked()
+			}
 			select {
 			case <-flight.done:
 			case <-ctx.Done():

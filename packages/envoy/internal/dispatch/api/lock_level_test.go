@@ -27,9 +27,11 @@ var ownerRowTables = []string{"issues", "artifacts", "projects"}
 
 // writePhaseOwnerRowLocks are the functions allowed to lock an owner row, keyed by the file that
 // declares them: the events' lockEventOwner, which takes the row `for no key update` when the
-// transaction appends, under the owner's advisory lock it takes first.
+// transaction appends, under the owner's advisory lock it takes first, and lockEventOwnerRow,
+// which AppendAll takes for a caller whose only work left is that append, so the row lock is the
+// first statement of its write and the transaction id it assigns is held no longer.
 var writePhaseOwnerRowLocks = map[string][]string{
-	"internal/dispatch/events/broker.go": {"lockEventOwner"},
+	"internal/dispatch/events/broker.go": {"lockEventOwner", "lockEventOwnerRow"},
 }
 
 var (

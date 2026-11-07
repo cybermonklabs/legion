@@ -5,6 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"slices"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -55,6 +58,48 @@ func (b *Broker) LockOwners(ctx context.Context, tx pgx.Tx, owners ...model.Even
 		}
 	}
 	return store.LockOwners(ctx, tx, locks...)
+}
+
+// lockedOwner is what lockEventOwnerRow read for one owner: its last sequence and its project.
+type lockedOwner struct {
+	lastSeq int
+	project string
+}
+
+// lockOwnerRows validates every event's owner, then locks each distinct owner's row once, in the
+// order of their owner keys, so two transactions that share owners always take them in one order.
+// It returns each event's owner key, by index, and what each owner's lock read, by owner key.
+// AppendAll alone uses it: LockOwners takes the owners' advisory locks instead, which the read
+// phase of every writer takes and which assign no transaction id.
+func lockOwnerRows(ctx context.Context, tx pgx.Tx, events []model.Event) ([]string, map[string]*lockedOwner, error) {
+	keys := make([]string, len(events))
+	order := make([]int, len(events))
+	for index, event := range events {
+		key, err := eventOwnerKey(event)
+		if err != nil {
+			return nil, nil, err
+		}
+		keys[index] = key
+		order[index] = index
+	}
+	slices.SortStableFunc(order, func(left, right int) int {
+		return strings.Compare(keys[left], keys[right])
+	})
+	locked := make(map[string]*lockedOwner, len(events))
+	for _, index := range order {
+		// An ownerless (session-addressed) event has no row to lock; AppendAll takes the
+		// transaction id itself.
+		if _, done := locked[keys[index]]; done || ownerless(events[index]) {
+			continue
+		}
+		owner := events[index]
+		lastSeq, err := lockEventOwnerRow(ctx, tx, &owner)
+		if err != nil {
+			return nil, nil, err
+		}
+		locked[keys[index]] = &lockedOwner{lastSeq: lastSeq, project: owner.Project}
+	}
+	return keys, locked, nil
 }
 
 // Append assigns the next sequence of the event's owner, writes e in tx, and returns the appended
@@ -138,6 +183,10 @@ type ownerLastSeqPayload interface {
 // payload as stored - once the batch has read those statements' results, before any statement
 // queued after them is read. A statement queued right after these may name the event's id as
 // store.LatestEventID.
+//
+// A caller with several events to write queues each of them here: the batch sends them all in one
+// round trip, so the transaction's statements grow with the events but its round trips do not.
+// AppendAll is the same write for a caller that holds no write phase.
 func (b *Broker) QueueAppend(batch *store.WriteBatch, e model.Event, appended func(model.Event)) error {
 	return b.QueueAppendWithLogins(batch, e, nil, appended)
 }
@@ -189,9 +238,10 @@ func (b *Broker) QueueAppendWithLogins(batch *store.WriteBatch, e model.Event, l
 	storedPayload, storedLogins := `$6`, `null::jsonb`
 	args := []any{e.IssueKey, e.ArtifactID, e.ProjectKey, e.Type, actor, payload, e.Notify}
 	if logins != nil {
-		storedPayload = `$6::jsonb || jsonb_build_object('thread_logins', (` + logins.query("$8") + `))`
+		loginsSQL, loginsArgs := logins.SQL(8)
+		storedPayload = `$6::jsonb || jsonb_build_object('thread_logins', (` + loginsSQL + `))`
 		storedLogins = `payload->'thread_logins'`
-		args = append(args, logins.key)
+		args = append(args, loginsArgs...)
 	}
 	if _, carriesOwnerSeq := e.Payload.(ownerLastSeqPayload); carriesOwnerSeq {
 		storedPayload = `jsonb_set(` + storedPayload + `, '{last_seq}', to_jsonb(` + nextOwnerSeq + `))`
@@ -246,6 +296,220 @@ func (b *Broker) QueueAppendWithLogins(batch *store.WriteBatch, e model.Event, l
 		})
 	}
 	return nil
+}
+
+// AppendAll writes events in tx as if each were appended in turn, and returns them, in the order
+// given, with their database-assigned IDs. Each owner's events take that owner's next sequences
+// in slice order; an ownerless (session-addressed) event's sequence is 0. The caller must call
+// Publish only after tx commits.
+//
+// It is the append of a caller with several events to write that holds no write phase of its own
+// to queue them on (QueueAppend). What they cost does not grow with how many there are, only with
+// how many owners they have: every owner is validated before any is locked, each distinct owner
+// is locked once, in LockOwners' order, every row is inserted by one statement, and what follows
+// the insert - each ask.opened event's payload naming its own id, and each owner's last_seq
+// advancing once, to its last event's sequence - goes in one pipeline. Every round trip after an
+// owner's row is locked makes every other writer of that owner wait, so a caller with several
+// events to write hands them over together.
+//
+// It locks its owners' rows rather than taking their advisory locks (lockOwnerRows), so from its
+// first statement the transaction holds a transaction id: a caller that still has document work
+// to do queues its events instead, where the write phase takes that id and holds it no longer
+// than its own batch (INFRA-636).
+//
+// The transaction holds its transaction id before the insert draws the events' ids from
+// events_id_seq: lockEventOwnerRow takes it with pg_current_xact_id in the same statement that
+// locks an owner row, and AppendAll takes it on its own for a batch that locked no owner row.
+// That is the writer invariant the safe horizon's proof rests on (horizon.go), and the order
+// those row locks give event ids is the one Append documents.
+func (b *Broker) AppendAll(ctx context.Context, tx pgx.Tx, events []model.Event) ([]model.Event, error) {
+	if b == nil {
+		return nil, fmt.Errorf("event broker required")
+	}
+	if len(events) == 0 {
+		return nil, nil
+	}
+	keys, owners, err := lockOwnerRows(ctx, tx, events)
+	if err != nil {
+		return nil, err
+	}
+	// The transaction must hold its transaction id before the insert below draws ids from
+	// events_id_seq, the writer invariant above. Each owner's lock took it in the statement
+	// that locked the row (lockEventOwnerRow); a batch of none but ownerless events locked no
+	// row, so it takes the id on its own here.
+	if len(owners) == 0 {
+		if _, err := tx.Exec(ctx, `select pg_current_xact_id()`); err != nil {
+			return nil, fmt.Errorf("take transaction id for event: %w", err)
+		}
+	}
+
+	appended := make([]model.Event, len(events))
+	issueKeys := make([]*string, len(events))
+	artifactIDs := make([]*string, len(events))
+	projectKeys := make([]*string, len(events))
+	seqs := make([]int, len(events))
+	types := make([]string, len(events))
+	actors := make([][]byte, len(events))
+	payloads := make([][]byte, len(events))
+	notifies := make([]bool, len(events))
+	for index, e := range events {
+		if ownerless(e) {
+			e.Seq = 0
+		} else {
+			owner := owners[keys[index]]
+			owner.lastSeq++
+			e.Seq = owner.lastSeq
+			e.Project = owner.project
+		}
+		e.Notify = b.Notify(e)
+		actor, err := json.Marshal(e.Actor)
+		if err != nil {
+			return nil, fmt.Errorf("encode event actor: %w", err)
+		}
+		payload, err := json.Marshal(e.Payload)
+		if err != nil {
+			return nil, fmt.Errorf("encode event payload: %w", err)
+		}
+		appended[index] = e
+		issueKeys[index], artifactIDs[index], projectKeys[index] = e.IssueKey, e.ArtifactID, e.ProjectKey
+		seqs[index], types[index], actors[index], payloads[index], notifies[index] = e.Seq, e.Type, actor, payload, e.Notify
+	}
+	// The insert takes its rows in input order (with ordinality, order by position), and the
+	// bigserial default draws each row's id as the row is inserted, so ids rise in input order:
+	// reading them back ordered by id pairs each with the event it was drawn for.
+	rows, err := tx.Query(ctx, `
+		with inserted as (
+			insert into events (issue_key, artifact_id, project_key, seq, type, actor, payload, notify)
+			select issue_key, artifact_id, project_key, seq, type, actor, payload, notify
+			from unnest($1::text[], $2::uuid[], $3::text[], $4::integer[], $5::text[], $6::jsonb[], $7::jsonb[], $8::boolean[])
+				with ordinality as input(issue_key, artifact_id, project_key, seq, type, actor, payload, notify, position)
+			order by position
+			returning id, created_at
+		)
+		select id, created_at from inserted order by id
+	`, issueKeys, artifactIDs, projectKeys, seqs, types, actors, payloads, notifies)
+	if err != nil {
+		return nil, fmt.Errorf("insert event: %w", err)
+	}
+	inserted := 0
+	for rows.Next() {
+		if inserted == len(appended) {
+			rows.Close()
+			return nil, fmt.Errorf("insert event: more rows returned than events given")
+		}
+		if err := rows.Scan(&appended[inserted].ID, &appended[inserted].CreatedAt); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("insert event: %w", err)
+		}
+		inserted++
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("insert event: %w", err)
+	}
+	if inserted != len(appended) {
+		return nil, fmt.Errorf("insert event: %d rows returned for %d events", inserted, len(appended))
+	}
+	// The ask.opened payloads that name their own event's id, then each owner's row advancing once
+	// to its last event, in the order the owners were locked, go in one pipeline: each statement's
+	// error is wrapped as it would be sent alone, and the batch reports the first to fail.
+	var batch pgx.Batch
+	for index := range appended {
+		e := &appended[index]
+		if e.Type != "ask.opened" {
+			continue
+		}
+		opened, ok := e.Payload.(model.AskEventPayload)
+		if !ok {
+			return nil, fmt.Errorf("ask.opened payload must be model.AskEventPayload")
+		}
+		opened.OpenedEventID = &e.ID
+		payload, err := json.Marshal(opened)
+		if err != nil {
+			return nil, fmt.Errorf("encode ask.opened payload: %w", err)
+		}
+		store.QueueExec(&batch, "record ask.opened event identity", `update events set payload = $2 where id = $1`, e.ID, payload)
+		e.Payload = opened
+	}
+	last := make(map[string]int, len(owners))
+	for index, e := range appended {
+		if !ownerless(e) {
+			last[keys[index]] = index
+		}
+	}
+	for _, key := range slices.Sorted(maps.Keys(last)) {
+		queueOwnerSeq(&batch, appended[last[key]])
+	}
+	if batch.Len() > 0 {
+		if err := tx.SendBatch(ctx, &batch).Close(); err != nil {
+			return nil, err
+		}
+	}
+	return appended, nil
+}
+
+// queueOwnerSeq queues into b the write recording e, its owner's last appended event, as that
+// owner's last sequence.
+func queueOwnerSeq(b *pgx.Batch, e model.Event) {
+	switch {
+	case e.IssueKey != nil:
+		store.QueueExec(b, "advance issue event sequence", `
+			update issues set last_seq = $2, updated_at = greatest(updated_at, $3) where key = $1
+		`, *e.IssueKey, e.Seq, e.CreatedAt)
+	case e.ArtifactID != nil:
+		store.QueueExec(b, "advance artifact event sequence", `
+			update artifacts set last_seq = $2 where id = $1
+		`, *e.ArtifactID, e.Seq)
+	case e.ProjectKey != nil:
+		store.QueueExec(b, "advance project event sequence", `
+			update projects set last_seq = $2 where key = $1
+		`, *e.ProjectKey, e.Seq)
+	}
+}
+
+// lockEventOwnerRow locks e's owner row for no key update and returns its last sequence, filling
+// e.Project from the owner. It is AppendAll's lock, taken where the append is all its transaction
+// has left to do. Every branch also takes the transaction's id (pg_current_xact_id, scanned and
+// discarded) before AppendAll draws an event id: the writer invariant AppendAll documents. Inside
+// a savepoint pg_current_xact_id assigns and returns the top-level transaction's id, which is the
+// one snapshots list. An ownerless event has no row to lock and never reaches here.
+func lockEventOwnerRow(ctx context.Context, tx pgx.Tx, e *model.Event) (int, error) {
+	var lastSeq int
+	var err error
+	switch {
+	case e.IssueKey != nil:
+		err = tx.QueryRow(ctx, `
+			select last_seq, project_key, pg_current_xact_id() from issues where key = $1 for no key update
+		`, *e.IssueKey).Scan(&lastSeq, &e.Project, nil)
+		if err != nil {
+			return 0, fmt.Errorf("lock issue for event: %w", err)
+		}
+	case e.ArtifactID != nil:
+		err = tx.QueryRow(ctx, `
+			select last_seq, project_key, pg_current_xact_id()
+			from artifacts
+			where id = $1 and issue_key is null
+			for no key update
+		`, *e.ArtifactID).Scan(&lastSeq, &e.Project, nil)
+		if err != nil {
+			return 0, fmt.Errorf("lock unlinked artifact for event: %w", err)
+		}
+	case e.ProjectKey != nil:
+		err = tx.QueryRow(ctx, `
+			select last_seq, pg_current_xact_id() from projects where key = $1 for no key update
+		`, *e.ProjectKey).Scan(&lastSeq, nil)
+		if err != nil {
+			return 0, fmt.Errorf("lock project for event: %w", err)
+		}
+		e.Project = *e.ProjectKey
+	}
+	return lastSeq, nil
+}
+
+// ownerless reports whether e names no owner row: a session-addressed event, which has no
+// sequence and no row to lock.
+func ownerless(e model.Event) bool {
+	return e.IssueKey == nil && e.ArtifactID == nil && e.ProjectKey == nil
 }
 
 // eventOwnerKey requires exactly one of IssueKey/ArtifactID/ProjectKey (or a session-addressed

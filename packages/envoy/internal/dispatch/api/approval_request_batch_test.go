@@ -168,7 +168,7 @@ func countedApprovalRequest(t *testing.T, handler http.Handler, artifactID strin
 //
 // The transaction takes its transaction id at the first statement of 20 and gives it up at 21;
 // the per-route window test measures that window, and this test bounds what the route sends
-// around it. The one-phase route sent thirty-five, its write statements each a round trip of
+// around it. The one-phase route sent thirty-four, its write statements each a round trip of
 // its own between the reads.
 func TestApprovalRequestsCostTwentyOneRoundTrips(t *testing.T) {
 	database := storetest.Open(t)

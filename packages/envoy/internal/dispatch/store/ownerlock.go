@@ -86,6 +86,11 @@ const (
 	ownersLock = `
 		select pg_advisory_xact_lock($1, keyed.hash) as owner_lock
 		from (select distinct hashtext(owner) as hash from unnest($2::text[]) as owner order by hash) as keyed`
+	// ownersLockShared is ownersLock in shared mode, for a transaction that takes several owners
+	// as LockOwnerShared takes one (LockOwnersShared).
+	ownersLockShared = `
+		select pg_advisory_xact_lock_shared($1, keyed.hash) as owner_lock
+		from (select distinct hashtext(owner) as hash from unnest($2::text[]) as owner order by hash) as keyed`
 	// ownersTryLock tries the lock of each owner without waiting and answers the owners it took. A
 	// try never waits, so the order it tries them in cannot close a cycle.
 	ownersTryLock = `
@@ -204,6 +209,25 @@ func lockKeys(owners []Owner) []string {
 func LockOwnerShared(ctx context.Context, q OwnerLocker, owner Owner) error {
 	if _, err := q.Exec(ctx, ownerLockShared, ownerLockNamespace, owner.lockKey()); err != nil {
 		return fmt.Errorf("lock %s %s for share: %w", owner.Kind, owner.Key, err)
+	}
+	return nil
+}
+
+// OwnersLockShared is the statement LockOwnersShared runs, exported so a test can watch for a
+// session waiting on it in pg_stat_activity (api/inbox_dismiss_race_test.go).
+const OwnersLockShared = ownersLockShared
+
+// LockOwnersShared takes the locks of every owner in owners in shared mode (LockOwnerShared), in
+// one statement, sorted and deduplicated by the lock's key as LockOwners sorts them, so a
+// transaction taking several waits for them in the one order every other transaction does. It
+// runs the same statement however many owners it takes, so a session waiting on it is told apart
+// by the owners it named rather than by its text. Owners of none takes nothing.
+func LockOwnersShared(ctx context.Context, q OwnerLocker, owners ...Owner) error {
+	if len(owners) == 0 {
+		return nil
+	}
+	if _, err := q.Exec(ctx, ownersLockShared, ownerLockNamespace, lockKeys(owners)); err != nil {
+		return fmt.Errorf("lock owners %v for share: %w", lockKeys(owners), err)
 	}
 	return nil
 }

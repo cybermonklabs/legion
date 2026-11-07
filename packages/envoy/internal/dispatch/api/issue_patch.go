@@ -494,12 +494,10 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	if statusChanged && after.Status == "done" {
 		eventType = "issue.closed"
 	}
-	// What the write changed, the issue's ancestors, and, for a status move, whose Replies count
-	// it can move. A retitle keeps the issue's child_of and blocked_by edges but moves the excerpt
-	// they show, so it names their targets; a blocked_by change moves the count of each blocker it
-	// added or removed, so it names those. A close or a reopen names the logins with a row on the
-	// issue's open asks once the asks' rows are written, which the event's insert reads
-	// (events.IssueLoginsOf); any other status move names nobody.
+	// What the write changed, the issue's ancestors, and, for a status or an assignee move, whose
+	// Inbox rows it can move. A retitle keeps the issue's child_of and blocked_by edges but moves
+	// the excerpt they show, so it names their targets; a blocked_by change moves the count of
+	// each blocker it added or removed, so it names those.
 	changedFields := issueChangedFields(before, after)
 	edgeChanges, err := issueEdgeChanges(r.Context(), tx, before, after, slices.Contains(changedFields, "title"))
 	if err != nil {
@@ -511,12 +509,22 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// nil on a write that left the assignee alone, which is what names the status move's logins
+	// and nobody else.
+	var movedAssignees []*string
+	if slices.Contains(changedFields, "assignee") {
+		movedAssignees = []*string{before.Assignee, after.Assignee}
+	}
+	// A close or a reopen names the logins with a row on the issue's open asks once the asks'
+	// rows are written, and those are still queued here, so the event's own insert reads them and
+	// unions in the assignees the write moved (events.IssueLoginsOf). Any other move names only
+	// those assignees, which this transaction already knows.
 	var logins *events.Logins
-	if statusChanged {
-		if slices.Contains(changedFields, "closed_at") {
-			logins = events.IssueLoginsOf(key)
+	if statusChanged || movedAssignees != nil {
+		if statusChanged && slices.Contains(changedFields, "closed_at") {
+			logins = events.IssueLoginsOf(key, movedAssigneeLogins(movedAssignees)...)
 		} else {
-			payload.ThreadLogins = []string{}
+			payload.ThreadLogins = movedAssigneeLogins(movedAssignees)
 		}
 	}
 	event, err := s.queueLoggedEvent(ledger, issueOwner(key).event(eventType, actor, payload), logins, "", "")
