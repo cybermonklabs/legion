@@ -207,10 +207,11 @@ func (r PodUpdateRounds) MarshalJSON() ([]byte, error) {
 }
 
 // operatorView is one claim as every operator route answers it: the claim as the machine or the
-// store holds it, and the step record the store holds, which is no part of either
-// (supervise.Claim.Step, supervise's putStep). The record is a parameter rather than read off c
-// so that no answer of these routes can carry a machine's boot-time copy of it by forgetting to
-// replace it: the caller has to say which record it is serving (operatorAnswer, list).
+// store holds it, and the step record the store holds. The record is passed on its own because a
+// machine's Claim.Step is the copy it was built with and nothing writes it again (supervise's
+// putStep, store.PutClaimStep): taking it off c would let an answer carry that boot-time copy by
+// forgetting to replace it, so the caller has to say which record it serves (operatorAnswer,
+// list).
 func operatorView(c supervise.Claim, step supervise.StepRecord) OperatorClaim {
 	view := OperatorClaim{
 		Token:       c.Token,
