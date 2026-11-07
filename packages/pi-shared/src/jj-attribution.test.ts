@@ -361,36 +361,41 @@ describe("userConfigChain", () => {
     await chmod(path.join(dir, "jj"), 0o755);
     return { ...process.env, PATH: `${dir}:${process.env.PATH ?? ""}` };
   }
+  // The same hang guard the rows below carry, for the same reason: removing a handful of
+  // temporary directories is not work this suite measures, but it runs at bun's implicit 5 s
+  // hook limit, which a loaded machine exceeds — at 240 busy loops on 2 CPUs this hook timed out
+  // once in 20 runs and failed a row that had already passed its assertion.
   afterEach(async () => {
     await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
-  });
+  }, 60_000);
+  // Real-time polling is required here: the wrapper's pidfile and the kernel reaping its child
+  // are external OS state, which Bun's fake timers cannot advance. Neither helper carries a
+  // deadline of its own any more: each one's 3 s deadline sat below this file's 5 s per-test
+  // limit, and the two run in series inside one row, so on a loaded machine the row hit the
+  // runner's limit before either helper could report what it saw. The per-test limit on each row
+  // below is the single bound, and the fake jj sleeps long past it, so a wait that is never
+  // bounded and a kill that misses the child both end the row at that limit.
   /** The wrapper's child pid, once it has written it. */
   async function pidFrom(pidFile: string): Promise<number> {
-    const deadline = Date.now() + 3_000;
-    while (Date.now() < deadline) {
+    for (;;) {
       const pid = await readFile(pidFile, "utf8")
         .then((value) => Number(value.trim()))
         .catch(() => 0);
       if (Number.isInteger(pid) && pid > 0) return pid;
       await Bun.sleep(10);
     }
-    throw new Error(`jj wrapper did not write ${pidFile}`);
   }
 
-  // Real-time polling is required here: the wrapper's pidfile and the kernel reaping its child
-  // are external OS state, which Bun's fake timers cannot advance.
-  /** The kernel has reaped the child once signal 0 says it no longer exists. */
-  async function stops(pid: number): Promise<boolean> {
-    const deadline = Date.now() + 3_000;
-    while (Date.now() < deadline) {
+  /** Returns once signal 0 says the kernel has reaped the child. */
+  async function reaped(pid: number): Promise<void> {
+    for (;;) {
       try {
         process.kill(pid, 0);
       } catch {
-        return true;
+        return;
       }
       await Bun.sleep(10);
     }
-    return false;
   }
 
   it("chains the user config files jj prints, in order", async () => {
@@ -398,30 +403,44 @@ describe("userConfigChain", () => {
     expect(await userConfigChain(5_000, env)).toBe("/u/a.toml:/u/b.toml");
   });
 
+  // Each of the three rows below runs a fake jj that sleeps 300 s, far above every per-test limit
+  // in this file. So a `userConfigChain` that stopped bounding its wait, or a kill that leaves the
+  // forked child behind, cannot return inside the row's limit, and that limit — not a reading of
+  // the clock — is what tells a correct run from the defect. The bound each row passes
+  // `userConfigChain` is named at its own call below.
   it("gives up on a jj that never answers, so attribution never holds bootstrap", async () => {
-    const env = await withJj("exec sleep 30");
+    const env = await withJj("exec sleep 300");
     const dir = await mkdtemp(path.join(tmpdir(), "jj-attribution-"));
     dirs.push(dir);
     const exported: NodeJS.ProcessEnv = {};
-    const started = Date.now();
     await exportJjSessionAttribution(ROOT_ID, dir, {
       env: exported,
       resolveBase: () => userConfigChain(200, env),
     });
-    expect(Date.now() - started).toBeLessThan(5_000);
     expect(exported.JJ_CONFIG).toBeUndefined();
-  });
+    // A hang guard, not a measurement: a resolve that waits the whole 300 s sleep out hangs the
+    // row, and a real jj subprocess leaves a loaded machine far more room than bun's 5 s default.
+  }, 60_000);
 
   it("kills a wrapper's forked child when jj times out", async () => {
     const pidFile = path.join(await mkdtemp(path.join(tmpdir(), "jj-attribution-child-")), "pid");
     dirs.push(path.dirname(pidFile));
-    const env = await withJj(`sleep 30 & echo $! > ${JSON.stringify(pidFile)}; wait`);
-    const started = Date.now();
-    await userConfigChain(200, env);
+    const env = await withJj(`sleep 300 & echo $! > ${JSON.stringify(pidFile)}; wait`);
+    // The bound has to outlast the host's own process start: a group killed before the wrapper
+    // has forked writes no pid, and the row then waits for something that cannot arrive. Measured
+    // in this pod at 240 busy loops on 2 CPUs, the wrapper takes up to 3.1 s (p50 995 ms) to
+    // write its pid, against 14 ms unloaded; 10 s is the production default, about three times
+    // that worst case and six times below this row's 60 s limit, so it cannot decide a healthy
+    // run. `sleep 300` means jj still times out, so the row's subject — the bound fires, the
+    // group is killed, the forked child dies — is unchanged. The row above keeps 200 ms because
+    // it needs no fork: its subject is only that the resolve gives up and exports nothing.
+    // Undefined is the bound firing rather than jj answering, which is this row's premise.
+    expect(await userConfigChain(JJ_CONFIG_PATH_TIMEOUT_MS, env)).toBeUndefined();
     const pid = await pidFrom(pidFile);
     try {
-      expect(Date.now() - started).toBeLessThan(5_000);
-      expect(await stops(pid)).toBe(true);
+      // The check: this returns only once the child is gone, and the child's own sleep outlives
+      // the row, so a kill that never reached it ends the row at the limit below.
+      await reaped(pid);
     } finally {
       try {
         process.kill(pid, "SIGKILL");
@@ -429,19 +448,28 @@ describe("userConfigChain", () => {
         // The expected path: the process group killed it first.
       }
     }
-  });
+    // A hang guard, not a measurement: an unbounded wait on the wrapper, a pidfile that is never
+    // written, or a forked child the kill misses each hangs the row rather than passing it.
+  }, 60_000);
 
   it("kills a wrapper's detached child after jj returns a config path", async () => {
     const pidFile = path.join(await mkdtemp(path.join(tmpdir(), "jj-attribution-child-")), "pid");
     dirs.push(path.dirname(pidFile));
     const env = await withJj(
-      `sleep 30 </dev/null >/dev/null 2>&1 & echo $! > ${JSON.stringify(pidFile)}; printf '/u/a.toml\\n'`
+      `sleep 300 </dev/null >/dev/null 2>&1 & echo $! > ${JSON.stringify(pidFile)}; printf '/u/a.toml\\n'`
     );
-    const paths = await userConfigChain(200, env);
+    // The production default, as in the row above: this row's subject is that the detached child
+    // is killed after jj answers, and `killGroup` runs off the child's own exit, so the bound
+    // decides nothing the row is about. It is a hang guard on jj itself — what can hang is a
+    // `jj` that never prints — far above the work a loaded machine has to do here and far below
+    // this row's 60 s limit, so the runner's limit stays the discriminator. Only the row that
+    // gives up on jj keeps 200 ms, because its subject is that bound firing and it needs no fork.
+    const paths = await userConfigChain(JJ_CONFIG_PATH_TIMEOUT_MS, env);
     const pid = await pidFrom(pidFile);
     try {
       expect(paths).toBe("/u/a.toml");
-      expect(await stops(pid)).toBe(true);
+      // The check, as above: the detached child's 300 s sleep outlives the row unless it is killed.
+      await reaped(pid);
     } finally {
       try {
         process.kill(pid, "SIGKILL");
@@ -449,7 +477,9 @@ describe("userConfigChain", () => {
         // The expected path: the process group killed it first.
       }
     }
-  });
+    // A hang guard, not a measurement: a pidfile that is never written, or a detached child the
+    // kill misses, hangs the row rather than passing it.
+  }, 60_000);
 
   it("bounds jj at 10 s, inside the 30 s Oh My Pi gives the session_start handler", () => {
     expect(JJ_CONFIG_PATH_TIMEOUT_MS).toBe(10_000);
