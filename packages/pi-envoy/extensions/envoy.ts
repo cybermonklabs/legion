@@ -65,6 +65,7 @@ import {
   activeDispatchSettings,
   dispatchSettings,
 } from "@legion/envoy-client/dispatch-config";
+import { defaultExec } from "@legion/envoy-client/dispatch-cwd";
 import {
   dispatchFirstSkillFile,
   readDispatchFirstContext,
@@ -83,6 +84,7 @@ import {
 } from "@legion/envoy-client/dispatch-session-state";
 import { askgateSetting, readEnvoyConfig } from "@legion/envoy-client/envoy-config";
 import {
+  DEFAULT_TMUX_PLACE_CACHE_MS,
   heartbeatRetryDelayMs,
   MIN_PASS_DEADLINE_MS,
   REGISTRATION_SETTLE_MS,
@@ -103,6 +105,8 @@ import {
 } from "@legion/envoy-client/session-settings";
 import { postSlackReply } from "@legion/envoy-client/slack-post";
 import { refuseUncapturedTopics, replayFollowedSubjects } from "@legion/envoy-client/stream-topics";
+import { readTmuxPlace } from "@legion/envoy-client/tmux-place";
+import { createTmuxPlaceCache } from "@legion/envoy-client/tmux-place-cache";
 import {
   EnvoyToolOperation,
   envoyToolSpecs,
@@ -2473,6 +2477,22 @@ export default function envoyExtension(pi: PiApi): void {
     unwritten.sendNotice(inboundUnavailableNoticeText(why));
   });
 
+  // Where this session's pane sits in tmux, so Dispatch can draw the machine's layout from what
+  // the sessions themselves report. The reading runs between registrations, never inside one: a
+  // registration takes what the cache holds in the turn it is built (`sendRegistration`), so a
+  // tmux server driving a wall of panes delays no registration and leaves none in flight behind
+  // a slow call. The cache reads once a `tmuxPlaceCacheMs` — on a timer of its own between the
+  // heartbeats, which are three lifetimes apart — rather than once a registration, so a shared
+  // server is asked once a lifetime by each of its sessions and the place a registration carries
+  // is a lifetime old rather than a heartbeat old. A session shutting down stops that timer and
+  // stops the reading already away from writing anything (`createTmuxPlaceCache`).
+  const tmuxPlaces = createTmuxPlaceCache({
+    read: () => readTmuxPlace(process.env, defaultExec),
+    lifetimeMs: () => active?.settings.tmuxPlaceCacheMs ?? DEFAULT_TMUX_PLACE_CACHE_MS,
+    onFailure: (error) =>
+      logger.debug("envoy: the tmux place reading failed", { error: messageFor(error) }),
+  });
+
   // One registration, whichever path sends it: `registrationState.refreshRegistration` outside a
   // queue, a queued task's own fenced `handle.register` inside one. The sequence every host
   // shares is `registerWithRelay`: the topics the listener will store for this session, the
@@ -2487,6 +2507,12 @@ export default function envoyExtension(pi: PiApi): void {
   const sendRegistration = (
     send: (input: RegistrationInput) => Promise<SubscribeResult>
   ): Promise<SubscribeResult> => {
+    // Taken in the turn this call starts, with no await ahead of it, so the whole body is built
+    // and posted without a tmux call in between: the session the deregistration at shutdown
+    // waits out is the one that reaches the wire, and no registration can resume behind the
+    // DELETE (dispatch://INFRA-392). The cache answers the last reading, none while it has had
+    // none, and starts the reading the registration after this one carries.
+    const place = tmuxPlaces.place();
     const registeringFor = sessionID;
     const asking =
       relay?.sessionID === registeringFor && relay.subscription !== undefined ? relay : undefined;
@@ -2514,6 +2540,7 @@ export default function envoyExtension(pi: PiApi): void {
           selfSubscribed: true,
           plugin: { name: packageName, version: packageVersion },
           delivery,
+          ...(place === undefined ? {} : { place }),
         }),
       // A registration the listener refused, for any of the reasons `ErrorWireSchema.reason`
       // lists, leaves the session with no consumer at all: the outage tells the session once
@@ -3338,6 +3365,10 @@ export default function envoyExtension(pi: PiApi): void {
 
   pi.on("session_shutdown", async (_event, context) => {
     shuttingDown = true;
+    // A reading still away answers nobody from here on: the DELETE below is what the session
+    // leaves behind, and a place written after it would be a registration the heartbeat has
+    // stopped refreshing (dispatch://INFRA-392).
+    tmuxPlaces.shutDown();
     cardWake.cancel();
     if (publishedInterface !== undefined) {
       const bound = publishedInterface.roleClaim.instances.indexOf(claimInstance);

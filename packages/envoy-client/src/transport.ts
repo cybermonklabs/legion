@@ -14,6 +14,7 @@ import { normalizeEnvoyUrl } from "./envoy-settings";
 import { messageFor } from "./errors";
 import { machineID } from "./machine";
 import { streamDeliversNothing } from "./stream-topics";
+import type { TmuxPlace } from "./tmux-place";
 
 /**
  * A session's state, which the listener computes from that session's last registration and from
@@ -332,6 +333,13 @@ export type SubscribeInput = {
    * sent on every registration so the listener's session list shows which build each session
    * runs. */
   readonly plugin: { readonly name: string; readonly version: string };
+  /** Where this session's pane sits in tmux (`readTmuxPlace`), carried on every registration so
+   * the layout follows a pane the human moved. Absent for a session outside tmux, which is a
+   * session in no pane. The listener builds its entry fresh from each registration, so an absent
+   * place clears the place it holds: a caller whose tmux call did not answer, and that means to
+   * keep the place it last reported, must send that place again rather than leave this off
+   * (`createTmuxPlaceCache` keeps the last reading for exactly that). */
+  readonly place?: TmuxPlace;
 };
 
 /**
@@ -833,6 +841,11 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
     // subscription names, else the one it registered through; only the owner relays the
     // session's consumer, and any other listener leaves inbox messages to it silently.
     host: machineID(),
+    // The pane this session sits in (`readTmuxPlace`), beside the machine holding it. Omitted
+    // when the caller reports none, which clears the place the listener holds for this session
+    // rather than keeping it: the listener's entry is built fresh from this body, so a session
+    // that has left tmux stops being in a pane.
+    ...(input.place === undefined ? {} : { tmux_place: input.place }),
     plugin: input.plugin.name,
     plugin_version: input.plugin.version,
   });
