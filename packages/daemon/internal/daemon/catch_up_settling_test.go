@@ -364,6 +364,7 @@ func TestACatchUpWhoseReholdsAreSpentHandsOverWhatItNamed(t *testing.T) {
 // architect to hear it, and waits KEPT, with nothing written, while it has none — a lingering
 // root's next start or ready names it.
 func TestALateReportOfASpentCatchUpNamesWhatItsRowReleased(t *testing.T) {
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name    string
 		lingers bool
@@ -373,8 +374,8 @@ func TestALateReportOfASpentCatchUpNamesWhatItsRowReleased(t *testing.T) {
 		{name: "the root lingers", lingers: true, want: 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			reset(t)
 			ctx := context.Background()
-			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
 			noticeTree(t, pool, records, tc.lingers)
 			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())

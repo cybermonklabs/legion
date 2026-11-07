@@ -111,8 +111,14 @@ type mainPathRig struct {
 
 func newMainPathRig(t *testing.T, wired bool) *mainPathRig {
 	t.Helper()
+	return newMainPathRigOn(t, isolatedOutboxPool(t), wired)
+}
+
+// newMainPathRigOn is newMainPathRig on a database the caller already holds, for a table-driven
+// test whose rows share one clone and empty it between them (tableDatabase).
+func newMainPathRigOn(t *testing.T, pool *pgxpool.Pool, wired bool) *mainPathRig {
+	t.Helper()
 	ctx := context.Background()
-	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	engine := workflow.New(records, workflow.Config{Project: mainPathProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 	admission := admit.New(records, engine, 1, mainPathProject, quietLogger())
@@ -478,11 +484,16 @@ func toldInPlacePath(r *mainPathRig) string {
 // there the answer says no, the task is held rather than prompted to an architect no run of the
 // root owns, and the start of the root's next run is what releases it.
 func TestARootThatMainsCodeResumesGetsItsTaskWithRootHearsWired(t *testing.T) {
+	pool, reset := tableDatabase(t)
 	for _, path := range mainPaths {
 		t.Run(path.name, func(t *testing.T) {
+			reset(t)
 			sent := map[bool]int{}
 			for _, wired := range []bool{true, false} {
-				rig := newMainPathRig(t, wired)
+				// The two runs of the path seed the same root, so the second starts on a
+				// database the first's rows are gone from, as a clone of its own gave it.
+				reset(t)
+				rig := newMainPathRigOn(t, pool, wired)
 				want := path.run(rig)
 				prompts := rig.prompts()
 				if len(prompts) != 1 || !strings.Contains(prompts[0].Message, want) {
@@ -518,7 +529,8 @@ func TestARootThatMainsCodeResumesGetsItsTaskWithRootHearsWired(t *testing.T) {
 	// the start's task waits on a ready claim while the root has nobody to hear it. The answer holds
 	// it there — unsent, still pending — and the start of the root's next run is what sends it.
 	t.Run("a task of a parked root is held until the root runs again", func(t *testing.T) {
-		rig := newMainPathRig(t, true)
+		reset(t)
+		rig := newMainPathRigOn(t, pool, true)
 		rig.put(rig.waitingRoot())
 		ref := rig.decide(mainPathAsk)
 		rig.admitPass()

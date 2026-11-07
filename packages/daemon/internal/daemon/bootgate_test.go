@@ -847,6 +847,7 @@ func TestRunGatesThePluginUnderThePaneEnvironmentBeforeItBoots(t *testing.T) {
 	// The daemon holds the plugin to its own DaemonAPIVersion.
 	thisDaemons := `{"daemonApiVersion":` + strconv.Itoa(api.DaemonAPIVersion) + `}`
 	previous := strconv.Itoa(api.DaemonAPIVersion - 1)
+	pool, reset := tableDatabase(t)
 	for _, testCase := range []struct {
 		name, legion, step, want string
 	}{
@@ -856,7 +857,8 @@ func TestRunGatesThePluginUnderThePaneEnvironmentBeforeItBoots(t *testing.T) {
 		{"stopped while the probe runs", thisDaemons, "hang", ""},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			cfg := testConfig(t)
+			reset(t)
+			cfg := testConfigOn(t, pool.Config().ConnString())
 			home := t.TempDir()
 			writeManifest(t, manifestAt(filepath.Join(home, ".omp", "profiles", "gate")), testCase.legion)
 			f := newFakeOmp(t, testCase.step)

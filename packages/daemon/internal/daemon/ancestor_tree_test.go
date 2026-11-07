@@ -355,7 +355,13 @@ type ancestryLine struct {
 
 func newAncestryLine(t *testing.T, tree string, recorded ...record.Issue) *ancestryLine {
 	t.Helper()
-	pool := isolatedOutboxPool(t)
+	return newAncestryLineOn(t, isolatedOutboxPool(t), tree, recorded...)
+}
+
+// newAncestryLineOn is newAncestryLine on a database the caller already holds, for a table-driven
+// test whose rows share one clone and empty it between them (tableDatabase).
+func newAncestryLineOn(t *testing.T, pool *pgxpool.Pool, tree string, recorded ...record.Issue) *ancestryLine {
+	t.Helper()
 	records := record.NewStore()
 	putOutboxIssue(t, pool, records, recordedOn(tree, tree, "in_progress"))
 	for _, issue := range recorded {
@@ -497,6 +503,7 @@ func TestARereadSkipsARootWhoseChainItCannotRead(t *testing.T) {
 // live, is passed over rather than ending the chain, whether it is the issue's parent or further up.
 func TestARootHeldPastAParkedRootOnItsChainTakesNoSlot(t *testing.T) {
 	const tree, parked, parent, child = "LEGION-168", "LEGION-180", "LEGION-169", "LEGION-214"
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name, under string
 		want        []string
@@ -505,9 +512,10 @@ func TestARootHeldPastAParkedRootOnItsChainTakesNoSlot(t *testing.T) {
 		{name: "the parked root as its parent", under: parked, want: []string{parked, tree}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			reset(t)
 			root := recordedOn(parked, parked, "backlog")
 			root.Phase, root.Parent = phase.Done, record.ParentOf(tree)
-			line := newAncestryLine(t, tree, root)
+			line := newAncestryLineOn(t, pool, tree, root)
 			line.client.issues[parked] = shownUnder(parked, "backlog", tree, false)
 			line.client.issues[parent] = shownUnder(parent, "backlog", parked, false)
 

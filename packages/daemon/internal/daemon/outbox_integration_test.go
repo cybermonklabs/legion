@@ -367,6 +367,7 @@ func TestAPermanentlyRefusedStatusWriteDoesNotHoldBackTheIssuesLaterWrites(t *te
 // status of that issue for good, which is the one outcome this outbox exists to prevent. Each
 // case names the arm that saves it, so deleting one fails here.
 func TestACredentialOrUncodedRefusalIsRiddenOutRatherThanDroppingTheWrite(t *testing.T) {
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name    string
 		refusal *dispatch.Error
@@ -377,7 +378,7 @@ func TestACredentialOrUncodedRefusalIsRiddenOutRatherThanDroppingTheWrite(t *tes
 		{"a parent a concurrent reparent moved at every attempt", &dispatch.Error{Status: 409, Code: dispatch.ParentContended, Message: "LEGION-208's parent changed at each of 2 attempts while this request waited to lock it, so nothing was applied: read the issue and retry"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			records := record.NewStore()
 			now := time.Now().UTC()
 			enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208", record.StatusWrite{ObservedStatus: "in_progress", Status: "testing"}, now))

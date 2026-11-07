@@ -36,6 +36,7 @@ import (
 // why the task row delivers none of its own to a retired claim.
 func TestTheRelaunchRowLeavesAClaimThatHoldsItsTaskForTheRowThatCarriesIt(t *testing.T) {
 	const kept, owedTask = "Continue. Reason: the start the stop interrupted.", "Continue. Reason: the tree came back."
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name  string
 		state supervise.ClaimState
@@ -46,8 +47,8 @@ func TestTheRelaunchRowLeavesAClaimThatHoldsItsTaskForTheRowThatCarriesIt(t *tes
 		{"retired by the tree's close", supervise.StateRetired, kept},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			reset(t)
 			ctx := context.Background()
-			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
 			issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 				Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Implementing, Generation: 1, Status: "in_progress"}

@@ -441,6 +441,7 @@ func TestNoNoticeWaitsOnASuspendedSubArchitect(t *testing.T) {
 // starts it with the tree's record rather than the notices of its close. Such a row finishes
 // without delivery, with one log line naming the notice kind and the issue.
 func TestANoticeForAnEndedArchitectFinishesWithoutDelivery(t *testing.T) {
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name    string
 		state   supervise.ClaimState
@@ -452,7 +453,7 @@ func TestANoticeForAnEndedArchitectFinishesWithoutDelivery(t *testing.T) {
 		{name: "the tree lingers before its architect's suspend ran", state: supervise.StateWorking, lingers: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			records := record.NewStore()
 			noticeTree(t, pool, records, tc.lingers)
 			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())

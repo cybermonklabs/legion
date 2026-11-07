@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	tcnats "github.com/testcontainers/testcontainers-go/modules/nats"
@@ -48,15 +49,17 @@ const (
 // container runtime answers.
 func TestDaemonPermissionsOnRealServers(t *testing.T) {
 	testnats.RequireContainerRuntime(t)
+	pool, reset := tableDatabase(t)
 	for _, image := range testnatsimages.Images {
 		t.Run(image.Name, func(t *testing.T) {
 			t.Run("the daemon restarts, reads its consumers' lag, acknowledges Dispatch, GitHub and the listener's wake, and receives exceptions", func(t *testing.T) {
+				reset(t)
 				grant := daemonpermissions.Grant()
 				daemonSeed, admin, js, server, uri := startDaemonGrantServer(t, image.Ref, grant)
 				defer admin.Close()
 				stream := createDaemonNotificationStream(t, js)
 
-				first := connectDaemonGrant(t, uri, daemonSeed, &syncBuffer{})
+				first := connectDaemonGrant(t, pool, uri, daemonSeed, &syncBuffer{})
 				for _, name := range []string{dispatchGrantConsumer, githubGrantConsumer, wakeGrantConsumer} {
 					if _, err := stream.Consumer(t.Context(), name); err != nil {
 						t.Fatalf("the first daemon creates %s: %v", name, err)
@@ -65,7 +68,7 @@ func TestDaemonPermissionsOnRealServers(t *testing.T) {
 				first.conn.Close()
 
 				logs := &syncBuffer{}
-				restarted := connectDaemonGrant(t, uri, daemonSeed, logs)
+				restarted := connectDaemonGrant(t, pool, uri, daemonSeed, logs)
 				defer restarted.conn.Close()
 
 				exception := make(chan []byte, 1)
@@ -128,6 +131,7 @@ func TestDaemonPermissionsOnRealServers(t *testing.T) {
 			})
 
 			t.Run("without the dispatch consumer-create permission, the daemon and server report it", func(t *testing.T) {
+				reset(t)
 				const removed = "$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.>"
 				grant := daemonpermissions.Grant()
 				held := len(grant.Publish)
@@ -144,7 +148,7 @@ func TestDaemonPermissionsOnRealServers(t *testing.T) {
 				cfg := daemonGrantConfig(uri)
 				attempt, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 				defer cancel()
-				w := grantWorkflow(t, logs)
+				w := grantWorkflow(t, pool, logs)
 				if err := w.connect(attempt, cfg, natsConnection{seed: daemonSeed}); err == nil {
 					t.Fatal("the daemon connected without the dispatch consumer-create permission")
 				}
@@ -187,19 +191,19 @@ func daemonGrantConfig(uri string) config.Config {
 // grantWorkflow is the workflow the grant tests connect: its project's mapping serves
 // sjawhar/legion, the repository the fixtures' events name, so GitHub intake hears it, and a
 // stand-in GitHub names it, as preparing the Dispatch fixture's todo issue reads it.
-func grantWorkflow(t *testing.T, logs *syncBuffer) *workflowRuntime {
+func grantWorkflow(t *testing.T, pool *pgxpool.Pool, logs *syncBuffer) *workflowRuntime {
 	t.Helper()
 	repos := newRepositories("CAPTURE", ghrepo.Renames{})
 	repos.set([]mappedRepository{{Repo: ghrepo.MustParse("sjawhar/legion"), Default: true}}, nil)
 	github := newNamedGitHub(t, map[string]string{"sjawhar/legion": "sjawhar/legion@main"})
-	return &workflowRuntime{pool: isolatedOutboxPool(t), records: projectRecords{Store: record.NewStore(), project: "CAPTURE"},
+	return &workflowRuntime{pool: pool, records: projectRecords{Store: record.NewStore(), project: "CAPTURE"},
 		repositories: repos, defaultBranches: newDefaultBranches(roleTokens{}, repos, github.url, defaultBranchTTL, time.Now), log: grantLogger(logs)}
 }
 
-func connectDaemonGrant(t *testing.T, uri, seed string, logs *syncBuffer) *workflowRuntime {
+func connectDaemonGrant(t *testing.T, pool *pgxpool.Pool, uri, seed string, logs *syncBuffer) *workflowRuntime {
 	t.Helper()
 	cfg := daemonGrantConfig(uri)
-	w := grantWorkflow(t, logs)
+	w := grantWorkflow(t, pool, logs)
 	if err := w.connect(t.Context(), cfg, natsConnection{seed: seed}); err != nil {
 		t.Fatalf("connect the daemon: %v", err)
 	}

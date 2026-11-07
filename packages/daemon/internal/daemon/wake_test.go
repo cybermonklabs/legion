@@ -25,7 +25,13 @@ import (
 // project, the store and a log a test can read back.
 func wakeRuntime(t *testing.T) (*workflowRuntime, *pgxpool.Pool, *bytes.Buffer) {
 	t.Helper()
-	pool := isolatedOutboxPool(t)
+	return wakeRuntimeOn(t, isolatedOutboxPool(t))
+}
+
+// wakeRuntimeOn is wakeRuntime on a database the caller already holds, for a table-driven test
+// whose rows share one clone and empty it between them (tableDatabase).
+func wakeRuntimeOn(t *testing.T, pool *pgxpool.Pool) (*workflowRuntime, *pgxpool.Pool, *bytes.Buffer) {
+	t.Helper()
 	st := outboxTreeStore(t, pool, "LEGION-208")
 	logged := &bytes.Buffer{}
 	w := &workflowRuntime{pool: pool, projectID: "legion", idleStore: st, idlePeriod: 10 * time.Minute,
@@ -63,15 +69,18 @@ func recordListenerReady(t *testing.T, pool *pgxpool.Pool, at time.Time) {
 // fifteen minutes. The gate runs before the pass reads a single pod, so a daemon that has heard
 // nothing releases nothing at all rather than deciding each pod and then declining.
 func TestTheDaemonReleasesNothingWithoutAFreshListenerReport(t *testing.T) {
+	tablePool, reset := tableDatabase(t)
 	t.Run("no report at all", func(t *testing.T) {
-		w, _, logged := wakeRuntime(t)
+		reset(t)
+		w, _, logged := wakeRuntimeOn(t, tablePool)
 		w.releaseIdlePods(context.Background())
 		if !strings.Contains(logged.String(), "has not once reported itself ready") {
 			t.Fatalf("the daemon's log = %q, want it to say the listener has never reported", logged)
 		}
 	})
 	t.Run("a report older than the window", func(t *testing.T) {
-		w, pool, logged := wakeRuntime(t)
+		reset(t)
+		w, pool, logged := wakeRuntimeOn(t, tablePool)
 		recordListenerReady(t, pool, time.Now().UTC().Add(-listenerReadyWindow-time.Minute))
 		if w.listenerLive(context.Background()) {
 			t.Fatalf("the listener reads live on a report older than %s", listenerReadyWindow)
@@ -82,7 +91,8 @@ func TestTheDaemonReleasesNothingWithoutAFreshListenerReport(t *testing.T) {
 		}
 	})
 	t.Run("a report inside the window", func(t *testing.T) {
-		w, pool, _ := wakeRuntime(t)
+		reset(t)
+		w, pool, _ := wakeRuntimeOn(t, tablePool)
 		recordListenerReady(t, pool, time.Now().UTC().Add(-listenerReadyWindow+time.Minute))
 		if !w.listenerLive(context.Background()) {
 			t.Fatalf("the listener does not read live on a report inside %s", listenerReadyWindow)

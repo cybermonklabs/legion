@@ -1117,12 +1117,13 @@ func TestARetryOfAClaimWhoseKeptTasksTurnWasOverDeliversItsTask(t *testing.T) {
 // the claim its own task: the delivery waits behind the kept task (the claim refuses a second
 // pending one), and the row is retried until it goes.
 func TestARetryOfAClaimThatKeptOtherWorkStillDeliversItsTask(t *testing.T) {
+	pool, reset := tableDatabase(t)
 	for name, edit := range map[string]func(*supervise.Delivery){
 		"another phase": func(d *supervise.Delivery) { d.Phase = phase.Planning },
 		"another run":   func(d *supervise.Delivery) { d.Generation = 1 },
 	} {
 		t.Run(name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			records := record.NewStore()
 			issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Implementing, Generation: 2, Status: "in_progress"}
 			putOutboxIssue(t, pool, records, issue)

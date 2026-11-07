@@ -135,8 +135,9 @@ func TestThePeriodicTurnWakesTheControllerWhenTheDispatchReadFails(t *testing.T)
 // one at a time, and above it the project is listed once instead — one request rather than the
 // twenty-six single reads the waiting set would otherwise ask for.
 func TestThePeriodicTurnListsTheProjectOnceAboveTheSingleReadBound(t *testing.T) {
+	pool, reset := tableDatabase(t)
 	t.Run("at the bound, one read per key", func(t *testing.T) {
-		pool := isolatedOutboxPool(t)
+		reset(t)
 		client := &tickDispatch{}
 		w := tickRuntime(t, pool, client)
 		seedBlockedRoots(t, pool, blockerReadFanout)
@@ -148,7 +149,7 @@ func TestThePeriodicTurnListsTheProjectOnceAboveTheSingleReadBound(t *testing.T)
 		}
 	})
 	t.Run("above the bound, one listing", func(t *testing.T) {
-		pool := isolatedOutboxPool(t)
+		reset(t)
 		client := &tickDispatch{}
 		for i := 1; i <= blockerReadFanout+1; i++ {
 			client.summaries = append(client.summaries, dispatch.IssueSummary{Key: fmt.Sprintf("EXT-%d", i), Status: "done", LastSeq: 7})
@@ -174,8 +175,9 @@ func TestThePeriodicTurnListsTheProjectOnceAboveTheSingleReadBound(t *testing.T)
 // The turn's re-read carries the claim Dispatch shows on each issue it reads, by a single read
 // and by the listing alike, and the mirror writes it.
 func TestThePeriodicTurnsReReadMirrorsTheClaim(t *testing.T) {
+	pool, reset := tableDatabase(t)
 	t.Run("a single read", func(t *testing.T) {
-		pool := isolatedOutboxPool(t)
+		reset(t)
 		client := &tickDispatch{issues: map[string]dispatch.Issue{
 			"EXT-1": {Key: "EXT-1", Status: "in_progress", LastSeq: 7, Claim: &dispatch.Claim{Kind: "user", ID: "alice"}},
 		}}
@@ -191,7 +193,7 @@ func TestThePeriodicTurnsReReadMirrorsTheClaim(t *testing.T) {
 		}
 	})
 	t.Run("the listing", func(t *testing.T) {
-		pool := isolatedOutboxPool(t)
+		reset(t)
 		client := &tickDispatch{}
 		for i := 1; i <= blockerReadFanout+1; i++ {
 			client.summaries = append(client.summaries, dispatch.IssueSummary{Key: fmt.Sprintf("EXT-%d", i), Status: "in_progress", LastSeq: 7, ClaimedBy: "user:alice"})

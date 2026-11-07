@@ -63,6 +63,7 @@ func TestAProjectThatNamesOverlaysHandsThemToTheTmuxRuntimeAtEveryMode(t *testin
 // The Sandbox runtime is handed the same list on the same rule, since a pod's memory-group role
 // names those overlays whatever the project's mode is now.
 func TestAProjectThatNamesOverlaysHandsThemToTheSandboxRuntimeAtEveryMode(t *testing.T) {
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name   string
 		memory config.Memory
@@ -75,7 +76,8 @@ func TestAProjectThatNamesOverlaysHandsThemToTheSandboxRuntimeAtEveryMode(t *tes
 		{"no block", config.Memory{}, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := kubernetesConfig(t, "https://127.0.0.1:1")
+			reset(t)
+			cfg := kubernetesConfigOn(t, "https://127.0.0.1:1", pool.Config().ConnString())
 			cfg.Projects = map[string]config.Project{cfg.Project: {Memory: tc.memory}}
 			opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, cfg.Project, "", lookup(nil), quietLogger())
 			if err != nil {

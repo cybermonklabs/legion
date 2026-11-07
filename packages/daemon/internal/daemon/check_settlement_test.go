@@ -238,6 +238,7 @@ func lateSettlementChangesOnlyTheFence(t *testing.T, pool *pgxpool.Pool, w *work
 // fence.
 func TestThePassSettlesAHeadWhoseSettlementWasLost(t *testing.T) {
 	long := time.Now().Add(-time.Hour)
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name       string
 		conclusion string
@@ -249,7 +250,7 @@ func TestThePassSettlesAHeadWhoseSettlementWasLost(t *testing.T) {
 		{"a green check lets the tester's verdict move it", "success", phase.Testing, "green", []string{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			seedLostSettlement(t, pool, "pr-checks-result")
 			runs := []string{
 				checkRunJSON(5, "pr-checks-result", "success", long.Add(-time.Hour), "15368"),
@@ -299,6 +300,7 @@ func TestThePassSettlesAHeadWhoseSettlementWasLost(t *testing.T) {
 // ago, applies nothing, and the issue keeps no verdict until a later pass or the listener settles it.
 func TestThePassAppliesNoSettlementWhileAChecksRunIsGoingOrJustCompleted(t *testing.T) {
 	long := time.Now().Add(-time.Hour)
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name string
 		runs []string
@@ -309,7 +311,7 @@ func TestThePassAppliesNoSettlementWhileAChecksRunIsGoingOrJustCompleted(t *test
 		{"no run at all", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			seedLostSettlement(t, pool, "pr-checks-result")
 			var reads pathReads
 			w := requiredRuntime(pool, settlementStandIn(t, []string{"pr-checks-result"}, tc.runs, &reads).URL, quietLogger())

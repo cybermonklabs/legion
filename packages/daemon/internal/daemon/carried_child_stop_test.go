@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -63,10 +64,12 @@ func TestACarriedChildsRoleStillInATurnStopsBeforeItsNewTreeLaunches(t *testing.
 		{"with nothing held and a turn that never ends", false, lingerExpires},
 		{"with the close's suspension held and the operator stopping a hung turn", true, operatorStops},
 	}
+	pool, reset := tableDatabase(t)
 	for _, cc := range carries {
 		for _, sc := range stops {
 			t.Run(cc.name+"/"+sc.name, func(t *testing.T) {
-				carriedChildStops(t, rootKey, childKey, cc.carry, sc.closeHeld, sc.end)
+				reset(t)
+				carriedChildStops(t, pool, rootKey, childKey, cc.carry, sc.closeHeld, sc.end)
 			})
 		}
 	}
@@ -84,15 +87,14 @@ const (
 	operatorStops turnEnd = "operator"
 )
 
-// carriedChildStops runs one case of TestACarriedChildsRoleStillInATurnStopsBeforeItsNewTreeLaunches:
-// carry moves the child, closeHeld holds the close's suspension in memory first, and end says how
-// the role's turn in the old tree ends.
-func carriedChildStops(t *testing.T, rootKey, childKey string, carry func(apply func(id string, fact intake.Fact)), closeHeld bool, end turnEnd) {
+// carriedChildStops runs one case of TestACarriedChildsRoleStillInATurnStopsBeforeItsNewTreeLaunches
+// on a database the caller already holds: carry moves the child, closeHeld holds the close's
+// suspension in memory first, and end says how the role's turn in the old tree ends.
+func carriedChildStops(t *testing.T, pool *pgxpool.Pool, rootKey, childKey string, carry func(apply func(id string, fact intake.Fact)), closeHeld bool, end turnEnd) {
 	// stopTimeout is the machines' stop timeout, and linger the old root's time left to linger, each a
 	// wait no other timer of the test is armed for, so firing one fires only the held suspension's.
 	const stopTimeout, linger = 7 * time.Second, time.Hour
 	ctx := context.Background()
-	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	// Whole seconds, so the linger expiry Postgres stores (to the microsecond) reads back as set, and
 	// the deadline the daemon names from it is armed as exactly linger from the machines' start.

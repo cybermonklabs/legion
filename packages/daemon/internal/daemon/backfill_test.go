@@ -30,9 +30,9 @@ func (d *listingDispatch) ListIssues(context.Context, string, []string) ([]dispa
 // per repository. A record Dispatch resolves to none refuses the boot, naming every such record,
 // and fills nothing.
 func TestTheBootFillsRecordsWithNoRepository(t *testing.T) {
+	pool, reset := tableDatabase(t)
 	seed := func(t *testing.T) *workflowRuntime {
 		t.Helper()
-		pool := isolatedOutboxPool(t)
 		if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
 			for _, key := range []string{"LEGION-7", "LEGION-9", "LEGION-12"} {
 				if _, err := tx.Exec(context.Background(), `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
@@ -51,6 +51,7 @@ func TestTheBootFillsRecordsWithNoRepository(t *testing.T) {
 	}
 
 	t.Run("Dispatch resolves none for some", func(t *testing.T) {
+		reset(t)
 		w := seed(t)
 		client := &listingDispatch{summaries: []dispatch.IssueSummary{{Key: "LEGION-7"}, {Key: "LEGION-9", ResolvedRepo: "acme/widgets"}}}
 		err := backfillRepositories(context.Background(), w.pool, w.records, client, "LEGION", t.TempDir(), w.defaultBranches, ghrepo.Renames{}, quietLogger())
@@ -64,6 +65,7 @@ func TestTheBootFillsRecordsWithNoRepository(t *testing.T) {
 	})
 
 	t.Run("Dispatch resolves every one", func(t *testing.T) {
+		reset(t)
 		w := seed(t)
 		github := newRepositoryGitHub(t, "release/v7.1")
 		github.fullName = "Acme/Widgets"

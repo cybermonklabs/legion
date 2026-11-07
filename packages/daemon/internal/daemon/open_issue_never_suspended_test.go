@@ -257,17 +257,19 @@ func TestAnOpenIssueThatIsWorkingHasNoClaimStopped(t *testing.T) {
 // TestAnOpenIssueThatIsWorkingHasNoClaimStopped that an open issue whose pod is working takes
 // none of these.
 func TestOpenIssueSuspensionInvariantKeepsTheExceptions(t *testing.T) {
+	pool, reset := tableDatabase(t)
 
 	t.Run("tree move", func(t *testing.T) {
-		carriedChildStops(t, "LEGION-811", "LEGION-812", func(apply func(string, intake.Fact)) {
+		reset(t)
+		carriedChildStops(t, pool, "LEGION-811", "LEGION-812", func(apply func(string, intake.Fact)) {
 			apply("carry", intake.DispatchIssue{Key: "LEGION-812", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "todo", Title: "child", Parent: "LEGION-811", Rank: "B", HandedOver: true})
 		}, false, turnEnds)
 	})
 
 	for _, status := range []string{"done", "backlog", "icebox"} {
 		t.Run("leave "+status, func(t *testing.T) {
+			reset(t)
 			ctx := context.Background()
-			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
 			root := record.Issue{Key: "LEGION-820", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-820", Title: "root", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "A", HandedOver: true}
 			parent := root.Key
@@ -300,8 +302,9 @@ func TestOpenIssueSuspensionInvariantKeepsTheExceptions(t *testing.T) {
 	// op of a stop that ends a phase nor the `issue_close` of an issue that left the workflow,
 	// but its own: one `release` supervise row per live role, then the `issue_release` teardown.
 	t.Run("idle release", func(t *testing.T) {
+		reset(t)
 		ctx := context.Background()
-		rig := newIdleRig(t)
+		rig := newIdleRigOn(t, pool)
 		if record.OutOfWorkflow(rig.issue.Status) {
 			t.Fatalf("the rig's issue is %q, want one still in the workflow", rig.issue.Status)
 		}

@@ -150,6 +150,7 @@ func TestTheReviewersRepositoryPermissionDecidesWhoMayEndARound(t *testing.T) {
 // which either reads the permission or, for a removed App, is refused as not installed; a younger
 // one is kept and tried again once it is that old.
 func TestA401ForTheReviewAppsTokenIsRetriedWithAFreshOne(t *testing.T) {
+	tablePool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name     string
 		minted   time.Duration
@@ -160,7 +161,8 @@ func TestA401ForTheReviewAppsTokenIsRetriedWithAFreshOne(t *testing.T) {
 		{"a token moments old is tried again as it is", -time.Second, tokenAcceptWindow - time.Second, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := reviewPermissionPool(t)
+			reset(t)
+			pool := reviewPermissionPoolOn(t, tablePool)
 			calls := 0
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				calls++
@@ -406,7 +408,13 @@ func (t *transientOnceTokens) ReadToken(ctx context.Context, role appauth.AppRol
 // request.
 func reviewPermissionPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-	pool := isolatedOutboxPool(t)
+	return reviewPermissionPoolOn(t, isolatedOutboxPool(t))
+}
+
+// reviewPermissionPoolOn is reviewPermissionPool on a database the caller already holds, for a
+// table-driven test whose rows share one clone and empty it between them (tableDatabase).
+func reviewPermissionPoolOn(t *testing.T, pool *pgxpool.Pool) *pgxpool.Pool {
+	t.Helper()
 	records := record.NewStore()
 	putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Reviewing, Generation: 1, Status: "needs_review"})
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {

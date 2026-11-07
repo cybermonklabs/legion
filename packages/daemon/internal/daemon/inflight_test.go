@@ -393,6 +393,7 @@ func TestTheOperatorListingAnswersWhileRelaunchesWaitOnTheCluster(t *testing.T) 
 // runtime. One that answers to its context ends with the stop; one that answers to none is not
 // waited on past the stop's budget, and the stop names it (LEGION-650, LEGION-653).
 func TestRunStopsInsideAPodGraceWhileItRelaunchesAnUnfinishedLaunch(t *testing.T) {
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name           string
 		ignoresContext bool
@@ -401,7 +402,8 @@ func TestRunStopsInsideAPodGraceWhileItRelaunchesAnUnfinishedLaunch(t *testing.T
 		{name: "a relaunch that ignores the stop", ignoresContext: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := testConfig(t)
+			reset(t)
+			cfg := testConfigOn(t, pool.Config().ConnString())
 			project, _ := claim.ProjectToken(cfg.Project)
 			token, _ := claim.NewToken(project, "LEGION-4", claim.RoleReviewer)
 			putClaim(t, cfg, supervise.Claim{

@@ -67,6 +67,7 @@ func (r *podUpdateRig) awaitRescues(n int, what string) {
 // The check is asked through the implementer, the role that acts as the implement App, though the
 // architect's claim comes first in the group.
 func TestPodUpdatePushesWhatTheDiskHoldsBeforeItReplacesThePod(t *testing.T) {
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name string
 		// before, when set, pushes to the remote before the pod's clone is made, so the clone holds
@@ -158,13 +159,14 @@ func TestPodUpdatePushesWhatTheDiskHoldsBeforeItReplacesThePod(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			reset(t)
 			var before []func(*rescuetest.Disk)
 			if tc.before != nil {
 				before = append(before, tc.before)
 			}
 			d := rescuetest.New(t, podUpdateIssue, before...)
 			want, shape := tc.leave(t, d)
-			rig := newPodUpdateRig(t, readyWorker(claim.RoleArchitect), readyWorker(claim.RoleImplementer))
+			rig := newPodUpdateRigOn(t, pool, readyWorker(claim.RoleArchitect), readyWorker(claim.RoleImplementer))
 			rig.rescueOn(d)
 			rig.answeredRound(claim.RoleArchitect, claim.RoleImplementer)
 

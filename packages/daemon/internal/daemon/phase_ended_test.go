@@ -38,6 +38,7 @@ func TestACIRedTellsTheRoleWhosePhaseEndedOnItsOwnTopic(t *testing.T) {
 	tail := " Nothing of yours is stopped: your turn, your jobs, your process and your session run on." +
 		" The workspace is the implementing phase's now, so stop writing it at once and leave whatever you have uncommitted." +
 		" Reason: " + red + "."
+	tablePool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name   string
 		from   phase.Phase
@@ -60,9 +61,10 @@ func TestACIRedTellsTheRoleWhosePhaseEndedOnItsOwnTopic(t *testing.T) {
 				" Your implementing task follows." + tail},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			reset(t)
 			ctx := context.Background()
 			publisher := &outboxPublisher{}
-			runner, sup, pool := redRunner(t, tc.from, tc.status, tc.uncompleted, publisher)
+			runner, sup, pool := redRunnerOn(t, tablePool, tc.from, tc.status, tc.uncompleted, publisher)
 			implementer := startedClaim(t, sup, claim.RoleImplementer)
 
 			applyTheRed(t, ctx, pool, runner)
@@ -189,8 +191,14 @@ func TestAPhaseEndedMessageRetriesEveryFailureButNoHolder(t *testing.T) {
 // moment the drain reaches it rather than waiting for a slot (holdSlot).
 func redRunner(t *testing.T, from phase.Phase, status string, uncompleted bool, publisher notify.Publisher) (*outbox, *supervisor, *pgxpool.Pool) {
 	t.Helper()
+	return redRunnerOn(t, isolatedOutboxPool(t), from, status, uncompleted, publisher)
+}
+
+// redRunnerOn is redRunner on a database the caller already holds, for a table-driven test whose
+// rows share one clone and empty it between them (tableDatabase).
+func redRunnerOn(t *testing.T, pool *pgxpool.Pool, from phase.Phase, status string, uncompleted bool, publisher notify.Publisher) (*outbox, *supervisor, *pgxpool.Pool) {
+	t.Helper()
 	ctx := context.Background()
-	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION",
 		Tree: "LEGION-208", Title: "Workflow", Phase: from, Generation: 1, Status: status, Rank: "U", LastDispatchSeq: 5}

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
@@ -31,18 +32,24 @@ import (
 // pane's bundle, and the issue's own panes keep that owner as their default (appauth's
 // GitHubCredential mints for a role's own owner whether or not the set holds it).
 func TestAMappingChangeAtRuntimeChangesWhatTheDaemonServes(t *testing.T) {
-	t.Run("GitHub answering at once", func(t *testing.T) { mappingChangeAtRuntime(t, 5*time.Second, 0) })
+	pool, reset := tableDatabase(t)
+	t.Run("GitHub answering at once", func(t *testing.T) {
+		reset(t)
+		mappingChangeAtRuntime(t, pool, 5*time.Second, 0)
+	})
 	// A refresh reads Dispatch and GitHub, which can take longer than the event's acknowledgement
 	// window (AckWait), the bound intake puts on a mapping read a handler makes inline: a GitHub
 	// answering every read later than that window still has the change applied, by the refresh
 	// that runs on its own, rather than cut off part way and never finishing.
 	t.Run("every GitHub read outlasting the acknowledgement window", func(t *testing.T) {
-		mappingChangeAtRuntime(t, 300*time.Millisecond, 400*time.Millisecond)
+		reset(t)
+		mappingChangeAtRuntime(t, pool, 300*time.Millisecond, 400*time.Millisecond)
 	})
 }
 
-func mappingChangeAtRuntime(t *testing.T, ackWait, delay time.Duration) {
-	pool := isolatedOutboxPool(t)
+// mappingChangeAtRuntime runs one case of TestAMappingChangeAtRuntimeChangesWhatTheDaemonServes on
+// a database the caller already holds.
+func mappingChangeAtRuntime(t *testing.T, pool *pgxpool.Pool, ackWait, delay time.Duration) {
 	url := workflowNATS(t)
 	conn, err := nats.Connect(url, nats.Timeout(time.Second))
 	if err != nil {

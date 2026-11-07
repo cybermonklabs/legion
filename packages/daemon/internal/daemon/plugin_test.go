@@ -606,8 +606,10 @@ func TestARelaunchedProcessStillStaleIsChargedUntilWorkerDied(t *testing.T) {
 // tmux is always relaunchable and resolves no pair at all, since the tmux runtime never installs
 // one.
 func TestPrepareResolvesThePluginPairFromTheConfiguration(t *testing.T) {
+	pool, reset := tableDatabase(t)
 	t.Run("kubernetes, the file names a pair", func(t *testing.T) {
-		cfg := kubernetesConfig(t, "https://127.0.0.1:1")
+		reset(t)
+		cfg := kubernetesConfigOn(t, "https://127.0.0.1:1", pool.Config().ConnString())
 		cfg.EnvoyTokenFile = filepath.Join(t.TempDir(), "envoy-token")
 		if err := os.WriteFile(cfg.EnvoyTokenFile, []byte("envoy-bearer\n"), 0o600); err != nil {
 			t.Fatal(err)
@@ -625,7 +627,8 @@ func TestPrepareResolvesThePluginPairFromTheConfiguration(t *testing.T) {
 		}
 	})
 	t.Run("kubernetes, the file names none", func(t *testing.T) {
-		cfg := kubernetesConfig(t, "https://127.0.0.1:1")
+		reset(t)
+		cfg := kubernetesConfigOn(t, "https://127.0.0.1:1", pool.Config().ConnString())
 		cfg.EnvoyTokenFile = filepath.Join(t.TempDir(), "envoy-token")
 		if err := os.WriteFile(cfg.EnvoyTokenFile, []byte("envoy-bearer\n"), 0o600); err != nil {
 			t.Fatal(err)

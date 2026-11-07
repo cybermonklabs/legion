@@ -84,9 +84,11 @@ func TestAReleaseRecordsNoRoleAnEarlierReleaseSuspended(t *testing.T) {
 // would drown the ones that mean something.
 func TestAHeldPodRecordsTheRulesOwnReason(t *testing.T) {
 	ctx := context.Background()
+	pool, reset := tableDatabase(t)
 
 	t.Run("quiet and held", func(t *testing.T) {
-		rig := newIdleRig(t)
+		reset(t)
+		rig := newIdleRigOn(t, pool)
 		// The session reported background work of its own: the pod is quiet, and the rule keeps it.
 		if _, err := rig.pool.Exec(ctx, `update claims set activity_background = true, activity_kinds = 'async-job'
 			where issue = $1`, rig.issue.Key); err != nil {
@@ -127,7 +129,8 @@ func TestAHeldPodRecordsTheRulesOwnReason(t *testing.T) {
 	})
 
 	t.Run("not idle yet", func(t *testing.T) {
-		rig := newIdleRig(t)
+		reset(t)
+		rig := newIdleRigOn(t, pool)
 		if _, err := rig.pool.Exec(ctx, `update claims set updated_at = now(), activity_at = now()
 			where issue = $1`, rig.issue.Key); err != nil {
 			t.Fatalf("bring the pod back to now: %v", err)
