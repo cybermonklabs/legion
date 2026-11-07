@@ -36,6 +36,39 @@ func (r *Registry) deleteInterest(ctx context.Context, sessionID string) error {
 	return nil
 }
 
+// deleteInterestAt deletes sessionID's interest record only while its latest revision is
+// revision, and reports whether the bucket took the delete: a bucket that refused it holds a row
+// stored since, which is no error here (JetStream's wrong last sequence, 10071, which nats.go
+// names nats.ErrKeyExists), and that row stands. Each bucket call waits no longer than ctx
+// (bus.Bounded). A delete ctx abandoned may still land after this answer, and that is safe: it
+// deletes the one revision it names, so a write that landed since is kept.
+//
+// A revision of 0 fences nothing - nats.go sends no expected-last-sequence header for it, so the
+// bucket would take the delete over whatever it holds - and names no row a caller read, since a
+// bucket's revisions start at 1. It is the answer of a cache hit whose fence belongs to another
+// epoch (kvwatch.Copy.FenceFor). No delete is made for it: the row is reported kept, and the
+// caller reads the row's own revision from the bucket and asks again.
+func (r *Registry) deleteInterestAt(ctx context.Context, sessionID string, revision uint64) (bool, error) {
+	if revision == 0 {
+		return false, nil
+	}
+	kv, epoch := r.watcher.Handle()
+	_, answered, err := bus.Bounded(ctx, func() (struct{}, error) {
+		return struct{}{}, kv.Delete(sessionID, nats.LastRevision(revision))
+	})
+	if !answered {
+		return false, fmt.Errorf("delete %s's interest record at revision %d: %w", sessionID, revision, err)
+	}
+	if errors.Is(err, nats.ErrKeyExists) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	r.reconcileDeleted(ctx, kv, epoch, sessionID, revision)
+	return true, nil
+}
+
 // reconcileDeleted brings sessionID's cache entry in line with the bucket after a delete through
 // kv, a handle of epoch, that succeeded past revision: it applies the key's latest history entry,
 // which is the delete marker unless a write has landed since, or, when the history cannot be read
@@ -373,10 +406,13 @@ func (r *Registry) controllerLaneRoles(sessionID string, topics ...[]string) ([]
 // HTTP route passes its request's own context. A write or delete ctx abandoned may still land
 // after this answer; releaseReadRoleClaim, deleteInterest and removeInterestTopics each say why
 // that is safe. A record this build cannot decode (ErrMalformedInterest) is deleted all the same;
-// removing some topics leaves it as it is (removeInterestTopics). The claims a deregistration
-// releases come from two sources: the role topics of the session's own interest record
-// (releaseRoleClaims), which runs first, and then the roles the role claim view names it the
-// holder of (releaseAllRoleClaims).
+// removing some topics leaves it as it is (removeInterestTopics). Removing some topics writes
+// the row the bucket holds, under that row's revision, so it drops no topic another writer
+// stored; a caller whose every attempt at that write the bucket refused sees
+// ErrInterestTopicsNotRemoved with nothing stored, and the role claims this call released stay
+// released. The claims a deregistration releases come from two sources: the role topics of the
+// session's own interest record (releaseRoleClaims), which runs first, and then the roles the
+// role claim view names it the holder of (releaseAllRoleClaims).
 func (r *Registry) Remove(ctx context.Context, sessionID string, topics []string) error {
 	if len(topics) == 0 {
 		item, err := r.Get(ctx, sessionID)
@@ -396,50 +432,94 @@ func (r *Registry) Remove(ctx context.Context, sessionID string, topics []string
 	return r.removeInterestTopics(ctx, sessionID, topics)
 }
 
+// removeInterestAttempts bounds the times removeInterestTopics builds the row again after the
+// bucket refused the write or delete it built. Each refusal is another writer storing the
+// session's row between this call's read and its write, which only a registration, a role claim
+// or another unsubscribe of the same session does; three attempts cover a burst of those and
+// still end, rather than letting one unsubscribe spin against a writer that keeps winning. The
+// registration's loop is bounded the same way and for the same reason (registrationPlanAttempts
+// in cmd/listener).
+const removeInterestAttempts = 3
+
+// ErrInterestTopicsNotRemoved is an unsubscribe every attempt of which the bucket refused
+// (removeInterestAttempts): each attempt built the row from the newest row the bucket held and
+// wrote it under that row's revision, and another writer stored the row in between every time.
+// Nothing is stored for a refused write, so the record holds what the writer that won it stored,
+// the topics this unsubscribe asked to remove among them, and its session keeps receiving them.
+// The listener's unsubscribe route answers the bus-unavailable 503 for it, as it does for a
+// registration whose plans run out (ErrInterestPlanConflict, cmd/listener's writeStoreError),
+// and the plugin's retry removes the topics from the row that won.
+var ErrInterestTopicsNotRemoved = errors.New("the interest record changed under every attempt to remove topics from it")
+
 // removeInterestTopics removes topics from sessionID's interest record, deleting it when none is
-// left or topics is empty, each bucket call waiting no longer than ctx. A write ctx abandoned may
-// still land after this answer, and is safe for the reasons UpsertWithin's is. A record this build
-// cannot decode routes none of its topics here, so there is nothing to remove from it: it is left
-// for the session's next subscribe to replace or a delete to remove, and the registry logs that at
-// WARN naming the session.
+// left or topics is empty, each bucket call waiting no longer than ctx.
+//
+// The row it stores is built from the newest row the bucket holds and written under that row's
+// revision (putInterestAt), as a registration's is (UpsertPlanned). An unsubscribe that built
+// its row from a cache a write on another listener has not reached would otherwise store that
+// stale row's topics, dropping from the record a topic the other listener's registration was
+// answered 200 for, and no later write puts it back. The first attempt reads the cache, the row
+// the bucket holds in every pass but the raced one; a refused write reads the bucket itself and
+// builds the row again (getWithRevision), up to removeInterestAttempts times, past which the
+// caller sees ErrInterestTopicsNotRemoved and nothing is stored. The delete of a record the
+// removal empties is fenced on that same revision (deleteInterestAt) for the same reason, and a
+// delete the bucket did not take - a row written since, or a cache hit that named no revision -
+// is another attempt too.
+//
+// A write ctx abandoned may still land after this answer, and that is safe for the reason a
+// registration's conditional write is: it stores over the one revision it read, so it cannot
+// undo a write that landed after it. A record this build cannot decode routes none of its topics
+// here, so there is nothing to remove from it: it is left for the session's next subscribe to
+// replace or a delete to remove, and the registry logs that at WARN naming the session.
 func (r *Registry) removeInterestTopics(ctx context.Context, sessionID string, topics []string) error {
 	// Empty topics = unsubscribe from everything (delete the entry).
 	if len(topics) == 0 {
 		return r.deleteInterest(ctx, sessionID)
 	}
-	item, err := r.Get(ctx, sessionID)
-	if errors.Is(err, ErrMalformedInterest) {
-		r.logger().Warn("registry left an interest record it cannot decode unchanged",
-			slog.String("session_id", sessionID),
-			slog.Any("topics", topics),
-		)
+	for attempt := range removeInterestAttempts {
+		item, revision, err := r.getWithRevision(ctx, sessionID, attempt > 0)
+		if errors.Is(err, ErrMalformedInterest) {
+			r.logger().Warn("registry left an interest record it cannot decode unchanged",
+				slog.String("session_id", sessionID),
+				slog.Any("topics", topics),
+			)
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		item = Remove(item, topics)
+		roles, err := r.controllerLaneRoles(sessionID, item.Topics)
+		if err != nil {
+			return err
+		}
+		item.Topics = dropPrivateStreamTopics(sessionID, roles, item.Topics)
+		if len(item.Topics) == 0 {
+			deleted, err := r.deleteInterestAt(ctx, sessionID, revision)
+			if err != nil || deleted {
+				return err
+			}
+			continue
+		}
+		item.UpdatedAt = r.now().UnixMilli()
+		buf, err := json.Marshal(item)
+		if err != nil {
+			return err
+		}
+		written, epoch, stored, err := r.putInterestAt(ctx, sessionID, buf, revision)
+		if err != nil {
+			return err
+		}
+		if !stored {
+			continue
+		}
+		r.mu.Lock()
+		r.cache.Put(r.watcher, epoch, sessionID, item, written)
+		r.mu.Unlock()
 		return nil
 	}
-	if err != nil {
-		return err
-	}
-	item = Remove(item, topics)
-	roles, err := r.controllerLaneRoles(sessionID, item.Topics)
-	if err != nil {
-		return err
-	}
-	item.Topics = dropPrivateStreamTopics(sessionID, roles, item.Topics)
-	if len(item.Topics) == 0 {
-		return r.deleteInterest(ctx, sessionID)
-	}
-	item.UpdatedAt = r.now().UnixMilli()
-	buf, err := json.Marshal(item)
-	if err != nil {
-		return err
-	}
-	revision, epoch, err := r.putInterest(ctx, sessionID, buf)
-	if err != nil {
-		return err
-	}
-	r.mu.Lock()
-	r.cache.Put(r.watcher, epoch, sessionID, item, revision)
-	r.mu.Unlock()
-	return nil
+	return fmt.Errorf("remove topics from %s's interest record: %w after %d attempts",
+		sessionID, ErrInterestTopicsNotRemoved, removeInterestAttempts)
 }
 
 func first(value string, fallback string) string {

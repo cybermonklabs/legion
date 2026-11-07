@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"time"
 
@@ -46,8 +45,10 @@ func InterestReapAllowance(grace time.Duration) time.Duration {
 // becomes live again.
 //
 // A candidate is deleted at exactly the revision the copy holds for it when the delete is sent
-// (deleteInterestAt), so a write that lands after the re-read is kept: the delete fails with
-// JetStream's wrong last sequence (10071, nats.ErrKeyExists), and the candidate counts as skipped.
+// (reapInterest), so a write that lands after the re-read is kept: the delete fails with
+// JetStream's wrong last sequence (10071, nats.ErrKeyExists), and the candidate counts as
+// skipped. Where the copy holds no revision for it, the row and the revision come from the
+// bucket instead, and the delete is made only for the very row this pass judged.
 func (r *Registry) Reap(live func(sessionID string) (bool, error), graceWindow time.Duration) (int, error) {
 	now := r.now().UnixMilli()
 	allowanceMs := InterestReapAllowance(graceWindow).Milliseconds()
@@ -78,7 +79,7 @@ func (r *Registry) Reap(live func(sessionID string) (bool, error), graceWindow t
 		if item, ok := r.Cached(c.sessionID); !ok || item.UpdatedAt != c.updatedAt {
 			continue // removed, or written again, since it was collected
 		}
-		deleted, err := r.deleteInterestAt(context.Background(), c.sessionID)
+		deleted, err := r.reapInterest(context.Background(), c.sessionID, c.updatedAt)
 		if errors.Is(err, bus.ErrRefused) {
 			r.logger().Warn("reaper skipped an interest it cannot delete", slog.Int("key_bytes", len(c.sessionID)), slog.String("error", err.Error()))
 			continue
@@ -93,37 +94,45 @@ func (r *Registry) Reap(live func(sessionID string) (bool, error), graceWindow t
 	return reaped, nil
 }
 
-// deleteInterestAt deletes sessionID's interest only while its latest revision is the one the copy
-// holds for it, and reports whether it did, each bucket call waiting no longer than ctx
-// (bus.Bounded). A write since then makes JetStream refuse the delete with wrong last sequence
-// (10071, which nats.go names nats.ErrKeyExists), and the interest is kept: false and no error. A
-// copy that holds no revision for the key, because a watch moved the epoch since its read began
-// (kvwatch.Copy.FenceFor), names no revision, which a conditional delete cannot express, so that
-// interest is deleted at the revision it reads (deleteInterest). The cache follows the bucket
-// afterwards as it does after deleteInterest. A delete ctx abandoned may still land after this
-// answer, and that is safe: it deletes only the revision it checked.
-func (r *Registry) deleteInterestAt(ctx context.Context, sessionID string) (bool, error) {
+// reapInterest deletes sessionID's interest, which this pass judged past its allowance at
+// judged, its UpdatedAt when the pass collected it, and reports whether the bucket took the
+// delete; each bucket call waits no longer than ctx (bus.Bounded). A delete the bucket took is
+// one row off the pass's count (Reap's reaped); a delete it refused, and a row this call keeps,
+// are counted nowhere, and the next pass judges whatever the bucket holds then. An error is the
+// pass's: Reap returns it with no count at all, since a bucket that failed this call fails the
+// candidates behind it too.
+//
+// The delete is fenced on the revision the copy holds for the key (deleteInterestAt), and a
+// write since then makes JetStream refuse it with wrong last sequence (10071, which nats.go
+// names nats.ErrKeyExists): the interest is kept, false and no error.
+//
+// A copy that holds no revision for the key, because a watch moved the epoch since its read
+// began (kvwatch.Copy.FenceFor), names no revision for the delete to be fenced on, and that
+// window is a recreated bucket, whose rows a registration on another listener is writing. So the
+// row and its revision are read from the bucket (getWithRevision) and the delete is fenced on
+// that revision, and only the row this pass judged is deleted: a row the bucket answers with
+// another UpdatedAt is a row no pass has judged past its allowance, and deleting it would take a
+// session's live registration away and count it reaped. A key the bucket holds no row for is
+// already gone, and a row this build cannot decode is not the row the pass judged either, since
+// the copy holds no record it cannot decode; both are kept, and neither is counted.
+func (r *Registry) reapInterest(ctx context.Context, sessionID string, judged int64) (bool, error) {
 	r.mu.RLock()
-	kv, epoch := r.watcher.Handle()
+	_, epoch := r.watcher.Handle()
 	revision := r.cache.FenceFor(epoch, sessionID)
 	r.mu.RUnlock()
 	if revision == 0 {
-		return true, r.deleteInterest(ctx, sessionID)
+		item, read, err := r.getWithRevision(ctx, sessionID, true)
+		switch {
+		case errors.Is(err, nats.ErrKeyNotFound), errors.Is(err, ErrMalformedInterest):
+			return false, nil
+		case err != nil:
+			return false, err
+		case item.UpdatedAt != judged:
+			return false, nil
+		}
+		revision = read
 	}
-	_, answered, err := bus.Bounded(ctx, func() (struct{}, error) {
-		return struct{}{}, kv.Delete(sessionID, nats.LastRevision(revision))
-	})
-	if !answered {
-		return false, fmt.Errorf("delete %s's interest record at revision %d: %w", sessionID, revision, err)
-	}
-	if errors.Is(err, nats.ErrKeyExists) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	r.reconcileDeleted(ctx, kv, epoch, sessionID, revision)
-	return true, nil
+	return r.deleteInterestAt(ctx, sessionID, revision)
 }
 
 // RoleClaimSweep is what one pass of ReapRoleClaims did: Reaped, the claims it released or

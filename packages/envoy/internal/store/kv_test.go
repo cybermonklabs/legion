@@ -2500,10 +2500,13 @@ func TestSetRoleSucceedsWhenOldHolderCleanupFails(t *testing.T) {
 		t.Fatalf("seed role claim: %v", err)
 	}
 
+	// The cleanup of the old holder's role topic is a compare-and-swap on the row the bucket
+	// holds (removeInterestTopics), and the only one this handle sees: the claimant's own row is
+	// written unconditionally before it.
 	useKV(t, reg, &failingKeyValue{
-		KeyValue:  kv,
-		failPutAt: 2,
-		err:       errors.New("injected old-holder cleanup failure"),
+		KeyValue:     kv,
+		failUpdateAt: 1,
+		err:          errors.New("injected old-holder cleanup failure"),
 	})
 	if _, err := reg.SetRole(newSession, "example-host", role, false); err != nil {
 		t.Fatalf("SetRole returned %v after its claim landed, want success", err)
@@ -2990,6 +2993,20 @@ func (kv *interleavingPutKeyValue) Put(key string, value []byte) (uint64, error)
 		kv.afterFirstPut()
 	}
 	return revision, nil
+}
+
+// The write removeInterestTopics makes is conditional on the revision of the row it read, so the
+// interleaved write is driven from here too: the hook fires after the first write of either kind.
+func (kv *interleavingPutKeyValue) Update(key string, value []byte, revision uint64) (uint64, error) {
+	kv.puts++
+	written, err := kv.KeyValue.Update(key, value, revision)
+	if err != nil {
+		return 0, err
+	}
+	if kv.puts == 1 {
+		kv.afterFirstPut()
+	}
+	return written, nil
 }
 
 func TestDeleteHistoryFailureSuppressesStaleWatcherUpdate(t *testing.T) {
