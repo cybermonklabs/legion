@@ -2042,8 +2042,8 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 		owed  record.OwedStart
 		token claim.Token
 	}
-	var kept []owedRow
-	var keys []record.RoleRunKey
+	kept := make([]owedRow, 0, len(facts.OwedRows))
+	keys := make([]record.RoleRunKey, 0, len(facts.OwedRows))
 	for _, owed := range facts.OwedRows {
 		issue, recorded := byKey[owed.Issue]
 		root, rooted := byKey[issue.Tree]
@@ -2080,32 +2080,37 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 	if err != nil {
 		return err
 	}
-	for _, held := range kept {
-		owed, run := held.owed, runs[held.token]
-		// The operator stopped this row's worker, and the row would start it again the moment its
-		// slot came, so finishing the row is what makes the stop hold. The three tests together
-		// say the stop is the whole of this row's story. The retired state says the worker was
-		// ended. A second queued start would say a later start of the workflow is already on its
-		// way — a re-admitted tree's promotion and the held phase's retry both write one — and
-		// the stop is over for a worker the workflow is starting again. A task the claim still
-		// works would say the claim kept the work of this very row, which the outbox's relaunch
-		// leaves for the row behind it, so the row is not simply a start the stop outlived. The
-		// rule therefore does not reach a relaunch row outstanding at the stop, which is that
-		// second queued start, nor an owed row a lane has already leased, which is not in this
-		// read at all (record.Store.OwedStarts).
-		if run.Claim != nil && run.Claim.State == supervise.StateRetired &&
-			!slices.ContainsFunc(run.Queued, func(queued record.QueuedSupervise) bool {
-				return queued.ID != owed.ID && queued.Request.Op == "start"
-			}) &&
-			(run.Claim.Pending == nil || !run.Claim.Pending.StillWorked(owed.Generation, owed.Phase, run.Claim.State)) {
-			if err := a.store.FinishOutbox(ctx, tx, owed.ID, owed.LeaseToken); err != nil {
-				return fmt.Errorf("finish the start %s owed a worker the operator stopped: %w", owed.Issue, err)
-			}
-			intake.OnCommit(ctx, func() {
-				a.log.Info("admission: finished a held start owed a worker the operator stopped", "issue", owed.Issue,
-					"row", owed.ID, "role", owed.Role, "phase", owed.Phase, "generation", owed.Generation)
-			})
+	for _, keptRow := range kept {
+		owed, run := keptRow.owed, runs[keptRow.token]
+		// The three terms together say the stop is the whole of this row's story. The retired
+		// state says the worker was ended.
+		if run.Claim == nil || run.Claim.State != supervise.StateRetired {
+			continue
 		}
+		// A second queued start would say a later start of the workflow is already on its way —
+		// a re-admitted tree's promotion and the held phase's retry both write one — and the stop
+		// is over for a worker the workflow is starting again. The rule therefore does not reach
+		// a relaunch row outstanding at the stop, which is that second queued start, nor an owed
+		// row a lane has already leased, which is not in this read at all
+		// (record.Store.OwedStarts).
+		if slices.ContainsFunc(run.Queued, func(queued record.QueuedSupervise) bool {
+			return queued.ID != owed.ID && queued.Request.Op == "start"
+		}) {
+			continue
+		}
+		// A task the claim still works would say the claim kept the work of this very row, which
+		// the outbox's relaunch leaves for the row behind it, so the row is not simply a start
+		// the stop outlived.
+		if p := run.Claim.Pending; p != nil && p.StillWorked(owed.Generation, owed.Phase, run.Claim.State) {
+			continue
+		}
+		if err := a.store.FinishOutbox(ctx, tx, owed.ID, owed.LeaseToken); err != nil {
+			return fmt.Errorf("finish the start %s owed a worker the operator stopped: %w", owed.Issue, err)
+		}
+		intake.OnCommit(ctx, func() {
+			a.log.Info("admission: finished a held start owed a worker the operator stopped", "issue", owed.Issue,
+				"row", owed.ID, "role", owed.Role, "phase", owed.Phase, "generation", owed.Generation)
+		})
 	}
 	return nil
 }

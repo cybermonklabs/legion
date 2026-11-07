@@ -1,7 +1,6 @@
 package admit
 
 import (
-	"context"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -49,26 +48,8 @@ func TestARetiredWorkersSlotIsNotRepaired(t *testing.T) {
 			Project: testProject, Title: "member", Tree: root, Parent: &parent, Phase: phase.Testing, Generation: 1,
 			Status: "testing", DispatchStatus: "testing", Rank: "B", LastDispatchSeq: 2})
 		takeSlot(t, pool, member)
-		project, err := claim.ProjectToken(testProject)
-		if err != nil {
-			t.Fatalf("project token: %v", err)
-		}
-		token, err := claim.NewToken(project, member, claim.RoleTester)
-		if err != nil {
-			t.Fatalf("claim token of the tester of %s: %v", member, err)
-		}
-		ctx := context.Background()
-		if _, err := pool.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file, state,
-			serving_generation, last_start_row, launch_failures, prompt_failures, prompt_retires, uncertain_streak, suspended_by)
-			values ($1, $2, $3, $4, $5, 1, 'ses_tester', '/sessions/ses_tester.jsonl', $6, 1, 0, 0, 0, 0, 0, $7)`,
-			string(token), project, root, member, string(claim.RoleTester), string(state), string(suspendedBy)); err != nil {
-			t.Fatalf("record the %s tester claim of %s: %v", state, member, err)
-		}
-		if _, err := pool.Exec(ctx, `insert into pending_task_deliveries (claim_token, delivery_id, task, queued_at, generation, phase, confirmed_at)
-			values ($1, 'outbox:11', 'Carry on testing.', $2, 1, $3, $2)`,
-			string(token), fixedNow, string(phase.Testing)); err != nil {
-			t.Fatalf("record the confirmed task of the %s tester claim of %s: %v", state, member, err)
-		}
+		token := putWorkerClaim(t, pool, root, member, claim.RoleTester, 1, state, suspendedBy)
+		putWorkerTask(t, pool, token, 1, phase.Testing, true)
 		return pool
 	}
 	// The fact that drives the Dispatch pass: a todo issue of the project nobody handed to Legion,

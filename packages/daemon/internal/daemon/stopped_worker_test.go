@@ -204,19 +204,7 @@ func TestAnOperatorsStopOfASlottedWorkerHolds(t *testing.T) {
 
 	// The passes before the stop write the working implementer nothing, so what the passes after
 	// it do is the claim's state and nothing else about the fixture.
-	passed(t, pool, "before the stop")
-	nothingStartedTheWorker(t, pool, rt, root, implementer, len(launchesOf(rt, implementer)), "before the stop")
-
-	launches := len(launchesOf(rt, implementer))
-	if status, body := d.request(http.MethodPost, "/legion/v1/operator/claims/"+string(implementer)+"/stop", nil, true); status != http.StatusOK {
-		t.Fatalf("the operator's stop of %s = %d; body %s; want 200, the stop made", implementer, status, body)
-	}
-	if state := d.claim(implementer).State; state != string(supervise.StateRetired) {
-		t.Fatalf("%s reads %s straight after the stop, want %s: the stop route ends the claim", implementer, state, supervise.StateRetired)
-	}
-
-	passed(t, pool, "after the stop")
-	nothingStartedTheWorker(t, pool, rt, root, implementer, launches, "three passes after the stop")
+	launches := stopTheWorker(t, pool, rt, d, root, implementer)
 
 	// The restart is the other pass the stop has to hold against: a boot makes an admission pass
 	// of its own, over records it reads fresh, and resumes by rule every claim that owns its
@@ -249,7 +237,7 @@ func TestAnOperatorsStopOfASlottedWorkerHolds(t *testing.T) {
 // it was stored in (supervisor.restore), and a worker the operator is about to stop is one whose
 // process is up.
 func workingPane(token claim.Token) *runtime.Locator {
-	return &runtime.Locator{Runtime: "tmux", Claim: token, Incarnation: "pane-" + string(token),
+	return &runtime.Locator{Runtime: runtime.RuntimeTmux, Claim: token, Incarnation: "pane-" + string(token),
 		Tmux: &runtime.TmuxLocator{Window: "legion", Pane: "%1"}}
 }
 

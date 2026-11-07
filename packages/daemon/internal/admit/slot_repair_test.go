@@ -101,6 +101,35 @@ func owedStarts(t *testing.T, pool *pgxpool.Pool, issue string) []midPhaseStart 
 	return owed
 }
 
+// seedTreeAndMember records the tree every fixture of this file stands in: root, and the one
+// member of it, key, standing in stands at generation. The root waits in accepting while its
+// member works, so the member's is the one slot of the tree and nothing of the root competes for
+// another. A root that lingers stands in done instead, with its deadline still ahead of it, which
+// is how a parked tree reads.
+//
+// What each caller adds after it is its own: seedSlotRepairRow takes the member's slot and writes
+// the role's phases row, the task its claim holds and the start it already has; seedOwedRepairRow
+// writes the task the claim holds and the start the member is owed; capFiller takes the slot and
+// keeps the cap full with a claim at work. Each of the three writes the member's claim itself,
+// because the state it is in is the one thing its own rows are about.
+func seedTreeAndMember(t *testing.T, pool *pgxpool.Pool, root, key string, stands phase.Phase, generation uint64, lingers bool) {
+	t.Helper()
+	tree := record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Project: testProject, Title: "the root of " + key, Tree: root, Phase: phase.Accepting,
+		Generation: generation, Status: "needs_review", DispatchStatus: "needs_review", Rank: root,
+		HandedOver: true, LastDispatchSeq: 1}
+	if lingers {
+		until := fixedNow.Add(time.Hour)
+		tree.Phase, tree.Status, tree.DispatchStatus, tree.LingerUntil = phase.Done, "in_progress", "in_progress", &until
+	}
+	putIssue(t, pool, tree)
+	seedLifecycle(t, pool, root)
+	parent := root
+	putIssue(t, pool, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Project: testProject, Title: "the member " + key, Tree: root, Parent: &parent, Phase: stands,
+		Generation: generation, Status: "in_progress", DispatchStatus: "in_progress", Rank: key, LastDispatchSeq: 2})
+}
+
 // slotRepairRow is one row of the repair of a slot whose worker has no task. Every row is the
 // same fixture — a running tree, a member of it holding a slot mid-phase, the phases row that
 // names the role's assignment, and a claim with no task it still works — and each row changes the
@@ -140,22 +169,7 @@ type slotRepairRow struct {
 // row and claim, the task the claim holds and the start it already has.
 func seedSlotRepairRow(t *testing.T, pool *pgxpool.Pool, row slotRepairRow) {
 	t.Helper()
-	// The root waits in accepting while its member works, so the member's is the one slot of the
-	// tree and nothing of the root competes for another.
-	root := record.Issue{Key: row.root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-		Project: testProject, Title: "the root of " + row.key, Tree: row.root, Phase: phase.Accepting,
-		Generation: row.generation, Status: "needs_review", DispatchStatus: "needs_review", Rank: row.root,
-		HandedOver: true, LastDispatchSeq: 1}
-	if row.lingers {
-		until := fixedNow.Add(time.Hour)
-		root.Phase, root.Status, root.DispatchStatus, root.LingerUntil = phase.Done, "in_progress", "in_progress", &until
-	}
-	putIssue(t, pool, root)
-	seedLifecycle(t, pool, row.root)
-	parent := row.root
-	putIssue(t, pool, record.Issue{Key: row.key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-		Project: testProject, Title: "the member " + row.key, Tree: row.root, Parent: &parent, Phase: row.stands,
-		Generation: row.generation, Status: "in_progress", DispatchStatus: "in_progress", Rank: row.key, LastDispatchSeq: 2})
+	seedTreeAndMember(t, pool, row.root, row.key, row.stands, row.generation, row.lingers)
 	takeSlot(t, pool, row.key)
 	role := workflow.RoleFor(row.stands)
 	token := putWorkerClaim(t, pool, row.root, row.key, role, row.generation, row.state, row.suspendedBy)
@@ -207,14 +221,7 @@ type owedRepairRow struct {
 // the owed row itself.
 func seedOwedRepairRow(t *testing.T, pool *pgxpool.Pool, row owedRepairRow) {
 	t.Helper()
-	putIssue(t, pool, record.Issue{Key: row.root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-		Project: testProject, Title: "the root of " + row.key, Tree: row.root, Phase: phase.Accepting, Generation: 1,
-		Status: "needs_review", DispatchStatus: "needs_review", Rank: row.root, HandedOver: true, LastDispatchSeq: 1})
-	seedLifecycle(t, pool, row.root)
-	parent := row.root
-	putIssue(t, pool, record.Issue{Key: row.key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-		Project: testProject, Title: "the member " + row.key, Tree: row.root, Parent: &parent, Phase: row.stands,
-		Generation: 1, Status: "in_progress", DispatchStatus: "in_progress", Rank: row.key, LastDispatchSeq: 2})
+	seedTreeAndMember(t, pool, row.root, row.key, row.stands, 1, false)
 	role := workflow.RoleFor(row.stands)
 	token := putWorkerClaim(t, pool, row.root, row.key, role, 1, row.state, row.suspendedBy)
 	if row.holdsTask {
@@ -250,14 +257,7 @@ func seedOwedRepairRow(t *testing.T, pool *pgxpool.Pool, row owedRepairRow) {
 // started (workflow.StartFor), so it writes no start of its own either.
 func capFiller(t *testing.T, pool *pgxpool.Pool, root, key string) {
 	t.Helper()
-	putIssue(t, pool, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-		Project: testProject, Title: "the root of " + key, Tree: root, Phase: phase.Accepting, Generation: 1,
-		Status: "needs_review", DispatchStatus: "needs_review", Rank: root, HandedOver: true, LastDispatchSeq: 1})
-	seedLifecycle(t, pool, root)
-	parent := root
-	putIssue(t, pool, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-		Project: testProject, Title: "the member " + key, Tree: root, Parent: &parent, Phase: phase.Testing,
-		Generation: 1, Status: "in_progress", DispatchStatus: "in_progress", Rank: key, LastDispatchSeq: 2})
+	seedTreeAndMember(t, pool, root, key, phase.Testing, 1, false)
 	takeSlot(t, pool, key)
 	putWorkerClaim(t, pool, root, key, claim.RoleTester, 1, supervise.StateWorking, "")
 }
