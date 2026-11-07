@@ -1562,8 +1562,9 @@ describe("EnvoyClient", () => {
   // case holds the request until its signal aborts and the row reads no clock to see that a short
   // deadline gave up first. The request it must not wait for never answers at all and the client's
   // own replay deadline is 10 s, so a client that ignored the caller's 50 ms deadline fails the row
-  // by bun's 5,000 ms per-test default, which is this row's discriminator and has 70 times the
-  // 0.07 s the row costs at most under 16 busy loops (8 x nproc) in a 2-CPU pod.
+  // by bun's 5,000 ms per-test default, which is this row's discriminator and has 11 times the
+  // 0.45 s the row costs at most under 16 busy loops (8 x nproc) in a 2-CPU pod with this file
+  // alone; in a whole-suite run it costs 0.07 s.
   test("gives up a replay at the deadline its caller names", async () => {
     const client = createEnvoyClient({
       baseUrl: "http://listener",

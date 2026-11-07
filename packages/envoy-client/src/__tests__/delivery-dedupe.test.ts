@@ -62,8 +62,8 @@ test("a key that names its event is remembered for the duplicate window and not 
 //
 // The 30 s limit is a hang guard, not a budget: the 100,029 claims are pure CPU work, and bun's
 // unwritten 5,000 ms per-test default is a limit on that work rather than on a hang. Measured in a
-// 2-CPU pod: 0.33 s idle, 2.53 s at most under 16 busy loops (8 x nproc). It fires only if a claim
-// stops returning.
+// 2-CPU pod: 0.33 s idle; under 16 busy loops (8 x nproc), 3.02 s at most in a whole-suite run and
+// 6.93 s with this file alone. It fires only if a claim stops returning.
 test("a repeat is still recognised after as many other keys as the whole stream stored in one window", () => {
   const dedupe = createDeliveryDedupe(() => 0);
   const frame = (n: number) => ({
@@ -81,10 +81,11 @@ test("a repeat is still recognised after as many other keys as the whole stream 
 // goes first, and every later one is still recognised. Each frame carries an event id as well, and
 // those are held apart, so they do not spend the key limit.
 //
-// Measured in a 2-CPU pod: 0.95 s idle, 8.46 s at most under 16 busy loops (8 x nproc), so bun's
-// unwritten 5,000 ms per-test default timed this row out on a busy machine, 16 runs of 20. The
-// count is DELIVERY_DEDUPE_KEY_LIMIT itself, the boundary the row exists to prove, so it stays and
-// the limit becomes an explicit 60 s hang guard: it fires only if a claim stops returning.
+// Measured in a 2-CPU pod: 0.95 s idle; under 16 busy loops (8 x nproc), 7.40 s at most in a
+// whole-suite run and 15.76 s with this file alone, so bun's unwritten 5,000 ms per-test default
+// timed this row out on a busy machine, 16 runs of 20. The count is DELIVERY_DEDUPE_KEY_LIMIT
+// itself, the boundary the row exists to prove, so it stays and the limit becomes an explicit 60 s
+// hang guard: it fires only if a claim stops returning.
 test("past the key limit the oldest key is forgotten first, and only it", () => {
   const dedupe = createDeliveryDedupe(() => 0);
   let sends = 0;

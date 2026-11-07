@@ -720,7 +720,8 @@ describe("DispatchClient's writes", () => {
   // out, and it reads no clock to do it: the pause it must not wait out is 30 s, well above the
   // row's own 20 s limit, so a pause that ran would fail the row by that limit. The limit is that
   // discriminator rather than a bound on work: measured in a 2-CPU pod the row costs 0.10 s idle
-  // and 0.17 s at most under 16 busy loops (8 x nproc).
+  // and, under 16 busy loops (8 x nproc), 0.17 s at most in a whole-suite run and 0.15 s with this
+  // file alone.
   test("the production pause waits out its time and stops when the signal aborts", async () => {
     const { fetchImpl, sent } = scripted([page(502, "Bad Gateway"), json(posted, 201)]);
     const started = performance.now();
@@ -1198,7 +1199,8 @@ describe("DispatchClient's uploads on a real connection", () => {
   // swallow whole leaves the client silent for every pause that follows, and measured in this pod a
   // 4 MiB body was swallowed whole and cut off 3 runs of 3 under that load. The 30 s limit is a
   // hang guard, not a budget: it fires only if the server's resume or the client's stream never
-  // comes. Measured in that pod: 1.99 s idle, 3.09 s at most under those 16 loops.
+  // comes. Measured in that pod: 1.99 s idle; under those 16 loops, 3.60 s at most in a whole-suite
+  // run and 3.09 s with this file alone.
   test("an upload going out for longer than silenceMs lands in one attempt", async () => {
     const silenceMs = 1_500;
     const dispatch = await dispatchOn([{ pauses: 4, pauseMs: 450 }]);
@@ -1218,7 +1220,8 @@ describe("DispatchClient's uploads on a real connection", () => {
   // body is 2 MiB, just over `STREAMED_BODY_MIN`, so the attempt that lands is short, and the
   // silence bound is 1,000 ms so a stall of the machine's own does not cut a healthy attempt. The
   // 30 s limit is a hang guard, not a budget: it fires only if the resend never lands. Measured in
-  // a 2-CPU pod: 2.03 s idle, 2.40 s at most under 16 busy loops (8 x nproc).
+  // a 2-CPU pod: 2.03 s idle; under 16 busy loops (8 x nproc), 2.29 s at most in a whole-suite run
+  // and 2.40 s with this file alone.
   test("an upload its connection stops taking is cut off and sent again under its key", async () => {
     const silenceMs = 1_000;
     const dispatch = await dispatchOn(["stall", "full"]);

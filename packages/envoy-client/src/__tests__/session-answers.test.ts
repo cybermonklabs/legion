@@ -886,8 +886,8 @@ describe("readSessionAnswers", () => {
   // reads no clock: the answer its two reads must not wait for never comes, and the second read's
   // own deadline is 120 s, four times the row's 30 s limit, so a read that waited on either fails
   // the row by that limit instead of by what the machine cost. The limit is that discriminator
-  // rather than a bound on work: measured in a 2-CPU pod the row costs 0.06 s idle and 0.08 s at
-  // most under 16 busy loops (8 x nproc).
+  // rather than a bound on work: measured in a 2-CPU pod the row costs 0.06 s idle and, under 16
+  // busy loops (8 x nproc), 0.08 s at most in a whole-suite run and 0.10 s with this file alone.
   test("waits at most the deadline, does not wait again on a read past it, and the late answer fills the cache", async () => {
     const session = newSession();
     const dispatch = dispatchAt();
