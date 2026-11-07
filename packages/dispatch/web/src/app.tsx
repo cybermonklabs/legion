@@ -9,7 +9,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { Link, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 
 import { api, isNoIdentity, isUnauthorized } from "./api/client";
 import { useEventFeed } from "./api/event-feed";
@@ -31,10 +31,10 @@ import {
   AGENT_ARTIFACT_PATH,
   AGENT_LIVE_PATH,
   ANSWERS_PATH,
+  buildInboxPath,
   buildProjectPath,
   parseIssuePath,
   parseProjectPath,
-  REPLIES_PATH,
   routeFillsViewport,
   routeHasMargin,
   routeIsInbox,
@@ -80,6 +80,7 @@ import { KeptWrites } from "./features/writes/KeptWrites";
 import { PendingWritesIndicator } from "./features/writes/PendingWritesIndicator";
 import { useKeyedWrite } from "./features/writes/useKeyedWrite";
 import { type Write, writesOf } from "./features/writes/write-store";
+import { FOOT_STATUS_INSET_PROPERTY, useFootInset } from "./hooks/useFootInset";
 import {
   backdrop50,
   canvasText,
@@ -146,6 +147,14 @@ const AgentsPage = lazy(() =>
   import("./features/agents/AgentsPage").then((module) => ({ default: module.AgentsPage }))
 );
 
+const MachinesPage = lazy(() =>
+  import("./features/machines/MachinesPage").then((module) => ({ default: module.MachinesPage }))
+);
+
+const MachinePage = lazy(() =>
+  import("./features/machines/MachinePage").then((module) => ({ default: module.MachinePage }))
+);
+
 const AgentConversationPage = lazy(() =>
   import("./features/agent-view/AgentConversationPage").then((module) => ({
     default: module.AgentConversationPage,
@@ -175,9 +184,6 @@ const PipelinePage = lazy(() =>
 
 const AnswersPage = lazy(() =>
   import("./features/answers/AnswersPage").then((module) => ({ default: module.AnswersPage }))
-);
-const RepliesPage = lazy(() =>
-  import("./features/replies/RepliesPage").then((module) => ({ default: module.RepliesPage }))
 );
 const SettingsPage = lazy(() =>
   import("./features/settings/SettingsPage").then((module) => ({ default: module.SettingsPage }))
@@ -465,6 +471,13 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const mainRef = useRef<HTMLElement | null>(null);
   useKeyboardFit(mainRef, fillsViewport);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+  // The status corner floats over the foot of the screen as the composers it sits above do, so
+  // it publishes its own reach the same way: a control floating at that foot - the
+  // Conversation's `Jump to latest` - rides above the whole corner rather than under the
+  // pending-writes indicator or the connection pill. An empty corner has no box, so it publishes
+  // nothing and the property is unset.
+  const statusCornerRef = useRef<HTMLDivElement>(null);
+  useFootInset(statusCornerRef, true, FOOT_STATUS_INSET_PROPERTY);
   const isFirstRender = useRef(true);
   const isCompactViewport = useMediaQuery(COMPACT_VIEWPORT_QUERY);
   const drawer = useDialog<HTMLElement>({
@@ -667,7 +680,10 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
             Above the highest composer fixed at the foot of the screen (`--foot-composer-inset`,
             `useFootInset`), so neither sits over its controls; otherwise just above the phone's
             bottom bar. Only what it shows takes the pointer. */}
-        <div className="pointer-events-none fixed right-4 bottom-[max(5rem,calc(var(--foot-composer-inset,0px)_+_1rem))] z-50 flex w-[min(28rem,calc(100vw-2rem))] flex-col items-end gap-2 xl:bottom-[calc(var(--foot-composer-inset,0px)_+_1rem)] *:pointer-events-auto">
+        <div
+          className="pointer-events-none fixed right-4 bottom-[max(5rem,calc(var(--foot-composer-inset,0px)_+_1rem))] z-50 flex w-[min(28rem,calc(100vw-2rem))] flex-col items-end gap-2 xl:bottom-[calc(var(--foot-composer-inset,0px)_+_1rem)] *:pointer-events-auto"
+          ref={statusCornerRef}
+        >
           <PendingWritesIndicator />
           <ConnectionPill />
         </div>
@@ -769,12 +785,20 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
               <Routes>
                 <Route element={<InboxPage />} path="/" />
                 <Route element={<AnswersPage />} path={ANSWERS_PATH} />
-                <Route element={<RepliesPage />} path={REPLIES_PATH} />
+                {/* The Replies page is the Inbox's Reply rows now; an old link lands on them. */}
+                <Route
+                  element={
+                    <Navigate replace to={buildInboxPath({ filters: { type: ["reply"] } })} />
+                  }
+                  path="/replies"
+                />
                 <Route element={<AgentsPage />} path="/agents" />
                 <Route element={<BroadcastsPage />} path="/agents/broadcasts" />
                 <Route element={<BroadcastPage />} path="/agents/broadcasts/:id" />
                 <Route element={<AgentConversationPage />} path={AGENT_LIVE_PATH} />
                 <Route element={<AgentArtifactPage />} path={AGENT_ARTIFACT_PATH} />
+                <Route element={<MachinesPage />} path="/machines" />
+                <Route element={<MachinePage />} path="/machines/:machine" />
                 <Route element={<IssuePageInATransition />} path="/issues/:key/*" />
                 <Route element={<ProjectPage />} path="/projects/:key" />
                 <Route element={<ProjectPage />} path="/projects/:key/architecture" />

@@ -3,13 +3,19 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 )
 
@@ -83,13 +89,24 @@ func TestARoleLookupAnswersAnUnreadableClaimRecordAsAServerError(t *testing.T) {
 }
 
 // A role send through the publish route answers the same record as the lookup does, and records it under its own
-// outcome rather than bus_unavailable, at WARN as every refusal is.
+// outcome rather than bus_unavailable, at WARN as every refusal is. It also raises no role-lane
+// exception: only a refusal that establishes the role has no live holder (unclaimed,
+// holder_lapsed) reports one, and an unreadable claim establishes nothing about the holder, so a
+// consumer of the lane is told nothing it would act on.
 func TestARolePublishAnswersAnUnreadableClaimRecordAsAServerError(t *testing.T) {
 	const role = "reviewer"
 	topic := contracts.RoleTopicPrefix + role
 	for _, tc := range unreadableRoleClaims {
 		t.Run(tc.name, func(t *testing.T) {
 			state, registry := openUnreadableRoleClaim(t, role, tc.record)
+			exceptionProbe, err := state.client.Conn.SubscribeSync(bus.ExceptionTopicPrefix + topic)
+			if err != nil {
+				t.Fatalf("subscribe to the role's exception lane: %v", err)
+			}
+			t.Cleanup(func() { _ = exceptionProbe.Unsubscribe() })
+			if err := state.client.Conn.Flush(); err != nil {
+				t.Fatalf("flush the exception subscription: %v", err)
+			}
 			recorder, record := serveRecorded(t,
 				func(logger *logging.Logger) http.HandlerFunc { return publishHandler(state, logger) },
 				postJSON("/v1/messages/publish", sendBody(map[string]any{
@@ -106,6 +123,48 @@ func TestARolePublishAnswersAnUnreadableClaimRecordAsAServerError(t *testing.T) 
 				"status":  float64(http.StatusInternalServerError),
 				"topic":   topic,
 			})
+			if message, err := exceptionProbe.NextMsg(250 * time.Millisecond); err == nil {
+				t.Fatalf("an unreadable claim raised an exception: %s", message.Data)
+			} else if !errors.Is(err, nats.ErrTimeout) {
+				t.Fatalf("wait for an exception: %v", err)
+			}
+		})
+	}
+}
+
+// A record that carries no client instance id and no renewal is one an earlier build wrote, not
+// one this build cannot read: the lookup answers the holder it names, with none of the server
+// error above, and so does the bare session id that build also stored. A missing field is never
+// store.ErrMalformedRoleClaim.
+func TestARoleLookupReadsAClaimRecordThatNamesNoProcessAndNoRenewal(t *testing.T) {
+	client := setupPublishTestClient(t)
+	registry, sessions := setupSessionsTest(t, nil, nil)
+	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
+	claimed := time.Now().UnixMilli()
+	for name, older := range map[string]struct{ role, holder, record string }{
+		"a structured claim an earlier build wrote": {
+			role:   "older-structured",
+			holder: "ses_older_structured",
+			record: fmt.Sprintf(`{"holder_session_id":"ses_older_structured","claimed_at":%d,"previous_session_id":""}`, claimed),
+		},
+		"the bare session id an earlier build stored": {
+			role:   "older-legacy",
+			holder: "ses_older_legacy",
+			record: "ses_older_legacy",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := sessions.Put(older.holder, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
+				t.Fatalf("register %s: %v", older.holder, err)
+			}
+			if _, err := registryRoleKV(t, registry).Put(older.role, []byte(older.record)); err != nil {
+				t.Fatalf("store the claim record %q: %v", older.record, err)
+			}
+			recorder := httptest.NewRecorder()
+			roleGetHandler(state).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/"+older.role, nil))
+			if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"holder":"`+older.holder+`"`) {
+				t.Fatalf("GET /v1/roles/%s on the record %q: status %d %s, want 200 naming %s", older.role, older.record, recorder.Code, recorder.Body.String(), older.holder)
+			}
 		})
 	}
 }

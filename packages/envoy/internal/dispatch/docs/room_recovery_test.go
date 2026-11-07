@@ -3,6 +3,7 @@ package docs
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -18,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/goroutinetest"
 )
 
 // A failed room's eviction flushes the document and compacts its rows older than the tail under
@@ -75,14 +77,16 @@ func requireText(t *testing.T, service *Service, artifactID, want string) {
 // failure that lands in that window - a committed write's publish, a browser update's append,
 // a commit whose outcome is unknown - which a test cannot time by hand. It fails the first load
 // that runs after it is armed, a room's (Load) or a cold read's (LoadDocument), so a test can
-// choose which load meets the failure.
+// choose which load meets the failure. When loading and hold are set, that load closes loading
+// and waits for hold to close before it fails the room.
 type failRoomDuringLoadStore struct {
 	VersionedStore
-	service atomic.Pointer[Service]
-	room    string
-	armed   atomic.Bool
-	failed  chan struct{}
-	once    sync.Once
+	service       atomic.Pointer[Service]
+	room          string
+	armed         atomic.Bool
+	failed        chan struct{}
+	once          sync.Once
+	loading, hold chan struct{}
 }
 
 func (s *failRoomDuringLoadStore) Load(ctx context.Context, room string) (persistence.LoadResult, error) {
@@ -106,6 +110,10 @@ func (s *failRoomDuringLoadStore) failDuringLoad(room string) {
 		return
 	}
 	s.once.Do(func() {
+		if s.loading != nil {
+			close(s.loading)
+			<-s.hold
+		}
 		s.service.Load().failRoom(room, errors.New("injected room failure"))
 		close(s.failed)
 	})
@@ -170,6 +178,9 @@ func TestARoomThatFailsWhileItIsLoadingRecovers(t *testing.T) {
 // refusal says the room had already failed, and by the time it is handled that failure's
 // recovery can have finished and registered a replacement - which holds this write, whose append
 // committed. Failing the replacement refused every write to the document until it too recovered.
+// A publish loads no room of its own (publishLiveWrite); here a browser opens the document
+// between the write's commit and its publish, so the publish finds the room loading and waits for
+// that load (Server.Apply), which meets the failure.
 func TestAPublishRefusedByAFailedRoomLeavesTheReplacementAlone(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "")
@@ -199,21 +210,59 @@ func TestAPublishRefusedByAFailedRoomLeavesTheReplacementAlone(t *testing.T) {
 	if _, err := service.ReplaceText(joined, artifactID, "after", alice); err != nil {
 		t.Fatalf("joined write: %v", err)
 	}
-	// Commit without publishing, the window a room can be replaced in, and leave the publish a
-	// room to load: the write's own update is durable from its append.
+	// Commit without publishing, the window a room can be replaced in: the write's own update is
+	// durable from its append.
 	if err := ledger.commit(ctx); err != nil {
 		t.Fatalf("commit the write: %v", err)
 	}
 	if err := service.Evict(ctx, artifactID); err != nil {
 		t.Fatalf("evict the room: %v", err)
 	}
+	// The browser's load is held inside its read until the publish is parked on that load's
+	// ready barrier, and the failure lands only then: that is the window a publish meets a
+	// failing room in. A load that fails before the publish has reached it takes the room out
+	// of ygo's rooms with it, and the publish, finding no room of that name, loads a
+	// replacement of its own and is never refused - the race this row used to lose about once
+	// in eighty runs.
+	persist.loading, persist.hold = make(chan struct{}), make(chan struct{})
+	var released sync.Once
+	release := func() { released.Do(func() { close(persist.hold) }) }
+	t.Cleanup(release)
 	persist.armed.Store(true)
-	// The publish's own load meets a failure, and the refusal is handled only once that
-	// failure's recovery has finished - the window in which the publish would fail the
-	// replacement room instead of the failed one.
-	service.afterPublishRefused = func(room string) { awaitRecovered(t, service, room) }
-	ledger.publish()
-	<-persist.failed
+	go func() { _ = service.warmLiveDocument(context.Background(), artifactID) }()
+	<-persist.loading
+	// The refusal is handled only once the failure's recovery has finished - the window in
+	// which the publish would fail the replacement room instead of the failed one - so the hook
+	// closes refused there, and this row waits for the refusal itself rather than for the
+	// failure that causes it: the failure is this store's, set before the publish has even met
+	// it, while the refusal is what the row goes on to assert about.
+	refused := make(chan struct{})
+	service.afterPublishRefused = func(room string) {
+		awaitRecovered(t, service, room)
+		close(refused)
+	}
+	// The publish runs on a goroutine of its own so that this one can hold the load until the
+	// publish has reached it.
+	published := make(chan struct{})
+	go func() {
+		defer close(published)
+		ledger.publish()
+	}()
+	waitFor(t, recoveryBound, "the publish to reach the loading room", publishWaitsForALoadingRoom)
+	release()
+	// Nothing waits on persist.failed any more: the refusal is the event this row turns on, and
+	// the load that closes failed is the one that causes it, so the wait below orders everything
+	// failed could. The guard is twice the recovery bound - a publish and a recovery take
+	// milliseconds - so a recovery that hangs is reported by awaitRecovered above, which says
+	// more, and reaching this one means the publish was never refused at all.
+	select {
+	case <-refused:
+	case <-time.After(2 * recoveryBound):
+		t.Fatal("the publish was not refused by the room whose load failed, so nothing here is tested")
+	}
+	// The publish has let go of its write's room, as it had by this point when it ran on this
+	// goroutine, so the retry below opens its own write on that room.
+	<-published
 
 	if service.roomFailed(artifactID) {
 		t.Fatal("the refused publish failed the room that replaced the one it was refused by")
@@ -232,6 +281,26 @@ func TestAPublishRefusedByAFailedRoomLeavesTheReplacementAlone(t *testing.T) {
 		t.Fatalf("commit the retry: %v", err)
 	}
 	requireText(t, service, artifactID, "later\n")
+}
+
+// publishWaitsForALoadingRoom reports whether a committed write's publish is parked on the ready
+// barrier of a room that is still loading: past the room's inject check, which ygo runs before it
+// looks the room up, and inside that lookup's wait, where the publish meets whatever the load
+// answers (sjawhar/ygo v1.55.1-sami.2, provider/websocket/inject.go:319-331 and
+// provider/websocket/server.go:1770-1783). Neither the service nor ygo reports that a caller has
+// reached that wait, which is what the goroutine dump is read for (goroutinetest).
+func publishWaitsForALoadingRoom() bool {
+	for _, goroutine := range goroutinetest.Traces() {
+		header, _, _ := strings.Cut(goroutine, "\n")
+		if !strings.Contains(header, "[select") {
+			continue
+		}
+		if strings.Contains(goroutine, "(*Service).publishLiveUpdate(") &&
+			strings.Contains(goroutine, "(*Server).getOrCreateRoom(") {
+			return true
+		}
+	}
+	return false
 }
 
 // A failure drops the room's settlement: the queued one is stopped, a running one refuses, and
@@ -673,11 +742,11 @@ func (s *failingBrowserAppendStore) AppendUpdate(ctx context.Context, room strin
 	return s.VersionedStore.AppendUpdate(ctx, room, update)
 }
 
-func (s *failingBrowserAppendStore) AppendUpdateWithCredit(ctx context.Context, room string, update []byte, contentChanged bool, credit *UpdateCredit) (persistence.Version, error) {
+func (s *failingBrowserAppendStore) AppendUpdatesWithCredit(ctx context.Context, room string, updates []BrowserUpdate) (persistence.Version, error) {
 	if err := s.fail(); err != nil {
 		return 0, err
 	}
-	return s.VersionedStore.AppendUpdateWithCredit(ctx, room, update, contentChanged, credit)
+	return s.VersionedStore.AppendUpdatesWithCredit(ctx, room, updates)
 }
 
 func (s *failingBrowserAppendStore) AppendRoomFlush(ctx context.Context, room string, flush *RoomFlush, through uint64, credit *UpdateCredit) (persistence.Version, error) {

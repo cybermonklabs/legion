@@ -14,10 +14,16 @@
 // landed, which is why the page looks the same to the reader either way.
 //
 // The page is mounted twice for the whole file, once per address, and every row reads those two
-// mounts. `lazy` keeps a chunk it has loaded for the life of the page, so only the first mount
-// of each part suspends at all - which is the mount a reader makes, and the one the targets are
-// about.
-import { expect, spyOn, test } from "bun:test";
+// mounts. `lazy` keeps a chunk it has loaded for the life of the module that made it, so only
+// the first mount of each part suspends at all - which is the mount a reader makes, and the one
+// the targets are about. `bun test` runs every file of a directory in one process, and another
+// file of it mounts the page too, so this file reads module instances of the page and of the
+// artifact panel all its own (`?suspense-test`): their `lazy` objects are cold here whatever
+// ran first. The panel holds the artifact page's own chunk and the page imports it statically,
+// so the page's fresh instance is given the panel's through `mock.module`. Every other module
+// those two import is the one the rest of the process holds, the document runtime's context
+// among them, so the providers below are the page's own.
+import { expect, mock, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { Profiler, type ProfilerOnRenderCallback } from "react";
@@ -28,7 +34,10 @@ import type { Artifact, IssueCoverage, IssueDetails } from "../../api/types";
 import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
 import { KeymapProvider } from "../shell/KeymapProvider";
-import { IssuePage } from "./IssuePage";
+mock.module("../artifacts/ArtifactRoutePanel", async () => {
+  return await import("../artifacts/ArtifactRoutePanel.tsx?suspense-test");
+});
+const { IssuePage } = await import("./IssuePage.tsx?suspense-test");
 
 const specArtifact: Artifact = {
   created_at: "2026-09-09T00:00:00Z",

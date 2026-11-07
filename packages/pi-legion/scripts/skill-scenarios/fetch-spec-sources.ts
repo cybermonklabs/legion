@@ -91,7 +91,7 @@ export interface SourceAsk {
   readonly state: Ask["state"];
   readonly created_at: string;
   readonly answer: {
-    readonly selected: string[];
+    readonly selected: readonly string[];
     readonly text: string | null;
     readonly user: string;
     readonly at: string;

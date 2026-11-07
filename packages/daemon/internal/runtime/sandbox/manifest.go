@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/claudelaunch"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/launcher"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/repocache"
@@ -26,12 +27,15 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
-// The pod's init containers: workspace-fetch, the one that holds the provisioning token and
-// mounts nothing an agent of the issue can write; and workspace-init, which works on the issue's
-// volume without it. The pod's one container is its kind's (podKind.container).
+// The pod's init containers: workspace-fetch, one of the two that hold the provisioning token and
+// mount nothing an agent of the issue can write; skills-fetch, the other such container, which a
+// deployment naming runtime.kubernetes.skills_repository adds and which clones the skills
+// marketplace into the pod's skills volume; and workspace-init, which works on the issue's volume
+// without the token. The pod's one container is its kind's (podKind.container).
 const (
-	fetchContainer = "workspace-fetch"
-	initContainer  = "workspace-init"
+	fetchContainer  = "workspace-fetch"
+	skillsContainer = "skills-fetch"
+	initContainer   = "workspace-init"
 )
 
 // The pod's volumes. ghVolume is the prefix of each launcher role's gh volume (roleVolume), the
@@ -51,6 +55,14 @@ const (
 	// testPGVolume is the disk emptyDir an issue pod keeps its own test PostgreSQL's cluster on
 	// (TestPGDir), when the deployment sets runtime.kubernetes.test_postgres.
 	testPGVolume = "testpg"
+	// skillsVolume is the disk emptyDir skills-fetch clones the deployment's skills marketplace
+	// into (SkillsDir), read-write there and read-only in the pod's launcher container, so a role
+	// installs from a directory no role wrote; skillsTempVolume is that container's own in-memory
+	// TMPDIR, where its one-shot credential goes, off every volume another container mounts, as
+	// workspace-fetch's tempVolume is. Neither exists when the deployment names no skills
+	// repository.
+	skillsVolume     = "skills"
+	skillsTempVolume = "skills-tmp"
 )
 
 // The agent-secrets volumes: agentSecretsTokenVolume alone carries the projected token for the
@@ -98,7 +110,7 @@ const podUser = 1000
 // the rest of Claude Code's own variables are not here, and stay the operator's to set.
 var runtimeOwned = func() map[string]bool {
 	owned := map[string]bool{
-		"LEGION_TREE": true, "LEGION_ISSUE": true, "LEGION_ROLE": true, "LEGION_CONTROLLER": true,
+		"LEGION_TREE": true, "LEGION_ISSUE": true, "LEGION_ISSUE_TRAILER": true, "LEGION_ROLE": true, "LEGION_CONTROLLER": true,
 		"LEGION_GENERATION": true, "LEGION_PROJECT": true, "LEGION_DAEMON_URL": true,
 		"LEGION_STATE_DIR": true, "LEGION_WORKSPACE": true, "ENVOY_NATS_URL": true, "ENVOY_URL": true,
 		"DISPATCH_URL": true, "GH_CONFIG_DIR": true, "GH_TOKEN": true, "GITHUB_TOKEN": true, "GH_HOST": true,
@@ -128,6 +140,16 @@ var runtimeOwned = func() map[string]bool {
 // stands in for the project's. The controller's plugin subscribes to each channel's app mentions.
 const slackChannelsVariable = "LEGION_SLACK_CHANNELS"
 
+// testPGStartDSN is the pod's test database as the daemon's start command names it
+// (launcher.TestPGVariable in mainEnvironment). It is deliberately not the DSN constant of the
+// launcher package, which this daemon's own build carries: the deployment pins the daemon and the
+// worker image apart, and the launcher that serves the pod's server comes from the image,
+// so the daemon cannot know which database that server holds. This is the one database every
+// image's server serves, `postgres`, which a launcher of any age leaves standing; a launcher that
+// creates a database of its own replaces this value in every generation it starts with the DSN it
+// serves (the launcher package's testPGEnv).
+const testPGStartDSN = "postgres://legion_test@127.0.0.1:5433/postgres?sslmode=disable"
+
 // sessionStoreVariables are Oh My Pi's two variables that place a session: the runtime sets both
 // under either database store (Options.SessionStore) and the pod baseline the first to file
 // otherwise (internal/podsafety), so neither is ever the operator's or a provider key's to set.
@@ -147,13 +169,16 @@ var sessionProxyFlagNames = [3]string{"--session-instance", "--session-database"
 
 // legionVolumeNames are the volumes Legion puts in a pod, an issue pod's, the controller's or the
 // probe's, whose names the operator's volumes may not take: the shared ones, the role homes, the
-// test database's, and each launcher role's private ones. The agent-secrets volumes are reserved
-// whether or not this deployment enrolls, and the test database's whether or not it sets
-// `runtime.kubernetes.test_postgres`: an operator's pod may never claim them. Every launcher role,
-// the controller's included, has a key volume when the pod enrolls and a gh volume always.
+// test database's, the skills clone's and its fetch's TMPDIR, and each launcher role's private
+// ones. The agent-secrets volumes are reserved
+// whether or not this deployment enrolls, the test database's whether or not it sets
+// `runtime.kubernetes.test_postgres`, and the skills volumes whether or not it names a
+// `runtime.kubernetes.skills_repository`: an operator's pod may never claim them. Every launcher
+// role, the controller's included, has a key volume when the pod enrolls and a gh volume always.
 func legionVolumeNames() []string {
 	names := []string{
 		issueVolume, provisionVolume, tempVolume, configVolume, providersVolume, agentSecretsTokenVolume, roleHomesVolume, roleProbeVolume, testPGVolume,
+		skillsVolume, skillsTempVolume,
 	}
 	for _, role := range launcherRoles {
 		names = append(names, roleVolume("launcher", role), roleVolume("private", role), roleVolume(stateVolume, role), roleVolume(ghVolume, role),
@@ -167,7 +192,9 @@ func legionVolumeNames() []string {
 // the launcher container of either pod and the image probe's, or where a role's namespace binds
 // one: an operator's mount may be neither at, under, nor above one. AgentSecretsKeyDir and
 // AgentSecretsTokenDir are reserved whether or not this deployment enrolls, GHConfigDir whether or
-// not the pod is an issue's, FeedDir, which TreeRoot already covers, is named for the read-only
+// not the pod is an issue's, SkillsDir whether or not the deployment names a skills repository —
+// an operator's mount there would overlay the read-only clone a role installs from with storage
+// the operator writes — FeedDir, which TreeRoot already covers, is named for the read-only
 // mount every issue pod's container carries there, RolesDir is where an issue pod mounts every
 // role's own volumes, which each role's namespace covers whole, HomeMountsDir is where an issue
 // pod's roles container mounts what belongs under the home (homeMountsView), which each role's
@@ -176,7 +203,7 @@ func legionVolumeNames() []string {
 func legionMountPaths() []string {
 	paths := []string{
 		TreeRoot, FeedDir, LauncherDir, LauncherPrivateDir, StateDir, xdgConfigHome, ProvidersDir,
-		AgentSecretsKeyDir, AgentSecretsTokenDir, GHConfigDir, RolesDir, HomeMountsDir, RoleProbeDir,
+		AgentSecretsKeyDir, AgentSecretsTokenDir, GHConfigDir, RolesDir, HomeMountsDir, RoleProbeDir, SkillsDir,
 	}
 	slices.Sort(paths)
 	return paths
@@ -227,11 +254,12 @@ type launch struct {
 	// cacheURL is the address of the issue's repository's cache (cacheURL, set by
 	// issuePod.provision), which its fetch container is told (fetchEnvironment).
 	cacheURL string
-	// gitHubOwners are the owners of the pod's gh bundle, sorted, whose files each role's gh volume
-	// projects, and gitHubDefault the one whose directory is every agent's GH_CONFIG_DIR: the
+	// gitHubDirs are the directories of the pod's gh bundle, sorted, whose files each role's gh
+	// volume projects — a GitHub owner, or one of its repositories as `<owner>/<repo>` — and
+	// gitHubDefault the owner whose directory is every agent's GH_CONFIG_DIR: the
 	// bundle writeLauncherSecrets mints for a new pod, or, for a pod a launch keeps, the default its
 	// role Secret records (GitHubDefaultKey, launcherBound), the projection being the pod's own.
-	gitHubOwners  []string
+	gitHubDirs    []string
 	gitHubDefault string
 	// gh is the image's real gh (Tools.GH), every agent's LEGION_GH_PATH.
 	gh string
@@ -276,6 +304,15 @@ type keptPod struct {
 	// none, and its role is told neither of Oh My Pi's two session variables rather than a URL
 	// file it cannot read.
 	store ompsessions.StoreKind
+	// skills is the skills marketplace this pod was built with, read from its stored shape
+	// (podShapeRecord.SkillsRepository): the repository whose clone its skills volume holds, and
+	// so the one a role started in it may install from. It is the zero repository for a pod built
+	// before the deployment named one, or built with none, whose volume holds no clone at all —
+	// such a role starts without its skills until an ordinary update round replaces the pod, as a
+	// role of a pod built before an overlay was added runs without that overlay. A launch that
+	// builds the pod itself carries no keptPod and uses the configuration as it now reads
+	// (podKind.skillsRepository).
+	skills ghrepo.Repository
 }
 
 // enrollsIn is the one decision whether a generation of role started now in a pod holds the
@@ -526,7 +563,8 @@ func SessionFromVolume(file, root string) (string, error) {
 
 // agentArgv is the command the shim runs, the launch's own harness: the Claude Code command for a
 // Claude role (claudeArgv), and otherwise the image's Oh My Pi with its two explicit extensions,
-// the Envoy plugin first, `--resume` on the recorded session when resuming, then RPC mode and the
+// the Envoy plugin first, `--model @default` so the session runs the model the pod's overlay puts
+// on the `default` role, `--resume` on the recorded session when resuming, then RPC mode and the
 // system prompt. For a plain launch the two roots are the image's own (envoyPlugin, legionPlugin); for
 // an installing launch (l.spec.Plugins set, LEGION-164) they are the pair launcherCommand's
 // install wrapper lands under this generation's own directory (pluginRoots), installed before Oh
@@ -539,6 +577,14 @@ func SessionFromVolume(file, root string) (string, error) {
 // route's `enabledModels` still bounds the session's model. The two plugins are roots the worker
 // image leaves unlinked from its profile: Oh My Pi loads a plugin that is both installed and named
 // by --extension twice, which the boot gate's pod lane refuses an image for.
+//
+// `--model @default` rides every launch, not the resuming one alone: @default is Oh My Pi's name
+// for the `default` model role, which every pod's operator overlay sets, and a resumed session
+// otherwise runs the model its first launch saved for ever. A launch under the flag writes no
+// `model_change` entry of its own, so the saved pin stays in the session file and a later launch
+// without the flag would read it again. A profile with no `default` role is not refused here: Oh
+// My Pi launches silently on a built-in model instead, which is the deployment's to notice
+// (deploy/kubernetes/operator-route/README.md, "Changing a role's model").
 func (l launch) agentArgv(agent []string) []string {
 	if l.runsClaude() {
 		return l.claudeArgv()
@@ -547,7 +593,7 @@ func (l launch) agentArgv(agent []string) []string {
 	if l.spec.Plugins != nil {
 		envoy, legion = pluginRoots(pluginGenDir(roleStateHome(l.spec.Role), l.spec.Generation))
 	}
-	argv := append(slices.Clone(agent), "--extension", envoy, "--extension", legion)
+	argv := append(slices.Clone(agent), "--extension", envoy, "--extension", legion, "--model", "@default")
 	if l.spec.ResumeSessionFile != "" {
 		argv = append(argv, "--resume="+l.spec.ResumeSessionFile)
 	}
@@ -701,12 +747,14 @@ func kubeletEscape(text string) string {
 // claim, which the kubelet creates with the pod and deletes with it, or the claim the controller's
 // Sandbox owns) and jj config home with, between them, the volumes only its kind's init
 // containers mount (podKind.initVolumes), then each launcher role's token projection, private
-// credential directory, state and gh volume: each owner's two gh files of its role Secret
-// (GitHubHostsKey(owner) as <owner>/hosts.yml, GitHubConfigKey(owner) as <owner>/config.yml) for
-// the launch's owners (gitHubOwners), read-only to the pod's user, from the same Secret as the
-// launcher token, so the refresher's one Update reaches the role's gh directory. A projection's
-// items are fixed for the pod's life, so a pod holds the owners of its creation. A launch with no
-// owners — a controller whose project has no GitHub owner to mint for, and the Sandbox's first
+// credential directory, state and gh volume: each bundle directory's two gh files of its role
+// Secret (GitHubHostsKey(dir) as <dir>/hosts.yml, GitHubConfigKey(dir) as <dir>/config.yml) for
+// the launch's directories (gitHubDirs), read-only to the pod's user, from the same Secret as the
+// launcher token, so the refresher's one Update reaches the role's gh directory. A directory
+// names a GitHub owner or one of its repositories, `<owner>/<repo>`, which projects as a
+// directory under the owner's own. A projection's items are fixed for the pod's life, so a pod
+// holds the directories of its creation. A launch with no
+// directory — a controller whose project has no GitHub owner to mint for, and the Sandbox's first
 // template (sandboxManifest), which never runs — gets an empty directory instead: a Secret
 // projection with no items would project every key of the Secret, the launcher token among them.
 // Then the volumes its kind's one container alone mounts (podKind.mainVolumes), the agent-secrets
@@ -715,11 +763,11 @@ func (r *Runtime) volumes(l launch) []corev1.Volume {
 	providers, _ := r.providers()
 	memory := corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory}}
 	roleVolumes := make([]corev1.Volume, 0, len(l.roles)*4)
-	ghItems := make([]corev1.KeyToPath, 0, 2*len(l.gitHubOwners))
-	for _, owner := range l.gitHubOwners {
+	ghItems := make([]corev1.KeyToPath, 0, 2*len(l.gitHubDirs))
+	for _, dir := range l.gitHubDirs {
 		ghItems = append(ghItems,
-			corev1.KeyToPath{Key: GitHubHostsKey(owner), Path: owner + "/" + ghconfig.HostsFile},
-			corev1.KeyToPath{Key: GitHubConfigKey(owner), Path: owner + "/" + ghconfig.ConfigFile},
+			corev1.KeyToPath{Key: GitHubHostsKey(dir), Path: dir + "/" + ghconfig.HostsFile},
+			corev1.KeyToPath{Key: GitHubConfigKey(dir), Path: dir + "/" + ghconfig.ConfigFile},
 		)
 	}
 	for _, role := range l.roles {
@@ -744,7 +792,7 @@ func (r *Runtime) volumes(l launch) []corev1.Volume {
 	_, disk := l.kind.disk(r, l)
 	volume := corev1.Volume{Name: issueVolume, VolumeSource: disk}
 	config := corev1.Volume{Name: configVolume, VolumeSource: memory}
-	return slices.Concat([]corev1.Volume{volume}, l.kind.initVolumes(l), []corev1.Volume{config}, roleVolumes,
+	return slices.Concat([]corev1.Volume{volume}, l.kind.initVolumes(r, l), []corev1.Volume{config}, roleVolumes,
 		l.kind.mainVolumes(r), r.agentSecretsVolumes(l.roles), providers, r.pod.Volumes)
 }
 
@@ -1129,17 +1177,38 @@ func (r *Runtime) initEnvironment(launch) []corev1.EnvVar {
 	return append([]corev1.EnvVar{{Name: "PATH", Value: imagePath}}, xdgEnvironment()...)
 }
 
-// ProvisionBound satisfies runtime.Runtime: workspace.FetchBudget plus workspace.CloneTimeout, the
-// real bounds of the pod's two provisioning phases, one after the other: workspace-fetch's whole
-// budget (its wait for the repository cache, then one FetchTimeout for the cache's stream and its
-// verification, then one of its own for the delta from GitHub) and workspace-init's shared clone
-// of the feed, whose size-following steps
-// share one CloneTimeout. It is how much longer than the boot timeout a launch may wait for
-// its pod's launcher, counted from when it first sees one of the pod's init containers running
-// (awaitRoleLauncher). The fetch started no later than that and the shared clone after the fetch
-// ended, so both end inside the bound, each failing on its own, naming why, when it runs out;
-// workspace-init's other commands, local work that waits on no other pod, then have at least the
-// boot timeout. A test shortens it (provisionBound).
+// skillsEnvironment is `workspace-init skills`'s: the image's PATH alone, its own TMPDIR, where
+// the one-shot credential goes, and the mounted provisioning token. It names no repository cache
+// — a skills marketplace has none, and the clone is one shallow transfer — and no config home: its
+// git reads no configuration but its own.
+func skillsEnvironment() []corev1.EnvVar {
+	return []corev1.EnvVar{
+		{Name: "PATH", Value: imagePath},
+		{Name: "TMPDIR", Value: initTempDir},
+		{Name: "LEGION_PROVISION_TOKEN_FILE", Value: ProvisionDir + "/" + provisionTokenKey},
+	}
+}
+
+// ProvisionBound satisfies runtime.Runtime: workspace.FetchBudget plus workspace.CloneTimeout plus
+// workspace.CheckoutTimeout. Each term is the real bound of one step whose duration follows the
+// repository's size, and the three run one after the other: workspace-fetch's whole budget (its
+// wait for the repository cache, then one FetchTimeout for the cache's stream and its
+// verification, then one of its own for the delta from GitHub), workspace-init's shared clone of
+// the feed, whose size-following steps share one CloneTimeout, and the issue's own checkout, the
+// one command that writes the whole working copy (`jj sparse reset`, workspace.Provision), under
+// CheckoutTimeout. It is how much longer than the boot timeout a launch may wait for its pod's
+// launcher, counted from when it first sees one of the pod's init containers running
+// (awaitRoleLauncher). The fetch started no later than that, the shared clone after the fetch
+// ended and the checkout after the clone, so the three end inside the bound, each failing on its
+// own, naming why, when it runs out, while the commands between them take the moments they do.
+//
+// The sum counts no term for the commands that keep CommandTimeout, and never has: workspace-
+// init's dozen other commands, local work that waits on no other pod, and the skills clone of
+// skills-fetch, which runs between the fetch and workspace-init and is one shallow transfer under
+// that same five minutes (cmd/legion's workspace-init skills, workspace.CloneSkills). What covers
+// them is the boot timeout past the sum, so the sum is no worst case: when the fetch and the clone
+// each run their whole bound, whatever those commands take comes out of the checkout's hour and
+// that boot timeout. A test shortens the sum (provisionBound).
 func (r *Runtime) ProvisionBound() time.Duration {
 	return r.provisionBound
 }
@@ -1225,9 +1294,11 @@ func (r *Runtime) mainEnvironment(l launch) []corev1.EnvVar {
 	// The pod's own test database, when the deployment serves one (runtime.kubernetes.test_postgres):
 	// an issue pod's roles alone, whose launcher serves it before it accepts a role start
 	// (launcher's testpg.go). The controller's pod runs no tests and serves none. The name is the
-	// runtime's (podVariables), so no operator's pod env can point it elsewhere.
+	// runtime's (podVariables), so no operator's pod env can point it elsewhere. The value is the
+	// database every image's server serves (testPGStartDSN), which the pod's own launcher replaces
+	// with the DSN it serves when it serves another.
 	if _, issue := l.kind.(issuePod); issue && r.testPostgres {
-		add(launcher.TestPGVariable, launcher.TestPGDSN)
+		add(launcher.TestPGVariable, testPGStartDSN)
 	}
 	if spec.Role == claim.RoleController {
 		add(slackChannelsVariable, r.slackChannelsValue())

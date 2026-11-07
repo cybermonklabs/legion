@@ -1,3 +1,4 @@
+import { SESSION_HEARTBEAT_MS } from "@legion/contracts";
 import { bearerCredential, bearerSource, fileBearer, type RequestCredential } from "./bearer";
 import {
   type BrokerSessionName,
@@ -25,17 +26,28 @@ export const DEFAULT_ENVOY_URL = "http://127.0.0.1:9020";
 // (`envoy.natsUrls` or `ENVOY_NATS_URL`), and any baked-in value silently misroutes every
 // deployment it doesn't match. An empty natsUrls means "inbound messaging not configured" -
 // consumers must degrade loudly instead of dialing an invented address.
-// The Envoy listener expires a session record 300 s after its last write
-// (`OpenSessionRegistry`'s default `ttl`, `packages/envoy/internal/session/registry.go`). The
-// interval is set so three refresh attempts plus one whole listener call's budget (10 250 ms: two
-// 5 000 ms attempts and the 250 ms retry delay between them, `transport.ts`) fit inside that
-// lifetime — 3 × 90 000 + 10 250 = 280 250 ms — so two whole refreshes may fail and the third
-// still completes before the record is dropped. The previous 100 000 bought nothing: three
-// attempts landed on 300 000 ms exactly, the third had not yet paid for its round trip, and
-// `setInterval` only ever fires late, so what it really allowed was one failed refresh.
-export const DEFAULT_HEARTBEAT_MS = 90_000;
+/**
+ * The interval at which a pane's heartbeat refreshes its session registration:
+ * `SESSION_HEARTBEAT_MS`, declared with the arrangement it belongs to in
+ * `packages/contracts/src/envoy-session.ts`. Three refreshes plus one whole listener call must
+ * fall strictly short of the listener's live window (`SESSION_LIVE_WINDOW_MS`), so two whole
+ * refreshes may fail and the third still completes before the session reads unresponsive. The
+ * sum, the window and the call's budget are stated there; change the interval there, not here.
+ */
+export const DEFAULT_HEARTBEAT_MS = SESSION_HEARTBEAT_MS;
 /** The floor under a pass deadline when nothing names one and the heartbeat is shorter than it. */
 export const MIN_PASS_DEADLINE_MS = 30_000;
+/**
+ * How long a reading of the session's tmux place stands before another `tmux display-message` is
+ * run for it, which is also how often the cache reads on its own between registrations
+ * (`createTmuxPlaceCache`). A heartbeat and a session event landing together would otherwise
+ * each ask the server, and every pane on a machine asks its one tmux server, so this is what
+ * holds a session to one call a lifetime however near together or far apart its registrations
+ * fall, and what keeps a shared server from being polled by every session at once. A test that
+ * shortens `ENVOY_HEARTBEAT_MS` must shorten `ENVOY_TMUX_PLACE_CACHE_MS` with it, or its
+ * registrations all report the first reading.
+ */
+export const DEFAULT_TMUX_PLACE_CACHE_MS = 30_000;
 const MIN_INTERVAL_MS = 25;
 // The ceiling over every resolved interval: the largest delay a host timer takes without
 // overflowing its 32-bit signed field. A larger one wraps and the timer fires *at once*, which
@@ -67,7 +79,7 @@ export const SHUTDOWN_SETTLE_MS = 250;
 /**
  * The window the one extra registration a failed heartbeat makes waits out, before the heartbeat
  * returns to its plain interval. A registration that times out under listener load costs the
- * session a third of its live window (`.github/scripts/check-heartbeat-margin.sh`), and three
+ * session a third of its live window (`SESSION_LIVE_WINDOW_MS` in `@legion/contracts`), and three
  * missed refreshes drop a running session out of every live listing (dispatch://INFRA-392), so
  * one failure buys one extra call rather than a whole interval's wait.
  */
@@ -99,6 +111,16 @@ function namedInterval(raw: string | undefined): number | undefined {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
+/** The interval `raw` names, held to the bounds every resolved interval keeps, or `fallback`
+ * when it names none. The pass deadline is not one of these: it has a floor of its own, the
+ * heartbeat. */
+function resolvedInterval(raw: string | undefined, fallback: number): number {
+  const named = namedInterval(raw);
+  return named === undefined
+    ? fallback
+    : Math.min(Math.max(named, MIN_INTERVAL_MS), MAX_INTERVAL_MS);
+}
+
 /** The variables `envoySettings` consults, by name, over whatever else the environment holds. */
 export type EnvoyEnvironment = EnvoyConfigEnvironment & {
   readonly ENVOY_URL?: string | undefined;
@@ -109,6 +131,7 @@ export type EnvoyEnvironment = EnvoyConfigEnvironment & {
   readonly NATS_NKEY_SEED_FILE?: string | undefined;
   readonly ENVOY_HEARTBEAT_MS?: string | undefined;
   readonly ENVOY_PASS_DEADLINE_MS?: string | undefined;
+  readonly ENVOY_TMUX_PLACE_CACHE_MS?: string | undefined;
 };
 
 /** A NATS user's nkey seed, and where it came from, which an error about it names. */
@@ -167,6 +190,8 @@ export interface EnabledEnvoySettings {
    * listener and its bearer stand), and with `NO_NATS_CONNECTION` for a caller that opens none. */
   readonly inbound: EnvoyInbound;
   readonly heartbeatMs: number;
+  /** How long one tmux place reading is reused: see `DEFAULT_TMUX_PLACE_CACHE_MS`. */
+  readonly tmuxPlaceCacheMs: number;
   /** The bound on one task of the pi-envoy plugin's serial queues, so a task that never settles
    * cannot hold the next heartbeat tick, session event or Legion claim behind it. The default
    * never cuts a healthy pass short: the worst legitimate pass is about one 20 s NATS dial plus a
@@ -337,11 +362,11 @@ export function envoySettings(
       inbound = { off: messageFor(error) };
     }
   }
-  const namedHeartbeatMs = namedInterval(env.ENVOY_HEARTBEAT_MS);
-  const heartbeatMs =
-    namedHeartbeatMs === undefined
-      ? DEFAULT_HEARTBEAT_MS
-      : Math.min(Math.max(namedHeartbeatMs, MIN_INTERVAL_MS), MAX_INTERVAL_MS);
+  const heartbeatMs = resolvedInterval(env.ENVOY_HEARTBEAT_MS, DEFAULT_HEARTBEAT_MS);
+  const tmuxPlaceCacheMs = resolvedInterval(
+    env.ENVOY_TMUX_PLACE_CACHE_MS,
+    DEFAULT_TMUX_PLACE_CACHE_MS
+  );
   const namedPassDeadlineMs = namedInterval(env.ENVOY_PASS_DEADLINE_MS);
   // The pass deadline is never shorter than the heartbeat: a shorter one abandons every pass
   // before the next tick, so the heartbeat's `healing` latch — and the registration backstop that
@@ -358,6 +383,7 @@ export function envoySettings(
     credential,
     inbound,
     heartbeatMs,
+    tmuxPlaceCacheMs,
     passDeadlineMs: Math.min(
       Math.max(namedPassDeadlineMs ?? MIN_PASS_DEADLINE_MS, heartbeatMs),
       MAX_INTERVAL_MS

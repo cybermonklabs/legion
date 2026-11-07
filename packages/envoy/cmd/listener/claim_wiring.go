@@ -20,8 +20,9 @@ type subscribeBody struct {
 	Title          string   `json:"title"`
 	Capabilities   []string `json:"capabilities"`
 	SelfSubscribed bool     `json:"self_subscribed"`
-	// Host is envoy-client's machineID() (ENVOY_MACHINE_ID, falling back to the kernel
-	// hostname): where the session process actually runs, as opposed to machineID below,
+	// Host is envoy-client's machineID() (ENVOY_MACHINE_ID, then an agent box's AGENTBOX_HOST,
+	// falling back to the kernel hostname): where the session process actually runs, as opposed
+	// to machineID below,
 	// which is always the registering listener's own machine (unrelated to the caller). No
 	// delivery reads it: an inbox message is the owner's to deliver - the listener the session's
 	// stored subscription names (the one store.Registry.Match delivers on), which this
@@ -30,6 +31,13 @@ type subscribeBody struct {
 	// consumer, relayed by that listener, or on the session's own NATS subscription, wherever
 	// its process runs. Empty for a session whose plugin predates this field.
 	Host string `json:"host"`
+	// TmuxPlace is where the session's process sits in tmux, as its own client read it from the
+	// tmux server it is under (packages/envoy-client's readTmuxPlace). No delivery reads it: it
+	// is what lets Dispatch draw a machine's tmux layout and say which pane runs which session.
+	// Absent for a session in no pane, and for one whose plugin predates the field; absent here
+	// it is written nil, clearing any place a previous registration stored, since the entry is
+	// built fresh from this body.
+	TmuxPlace *session.TmuxPlace `json:"tmux_place"`
 	// Plugin and PluginVersion name the plugin the session registers through (its npm package
 	// name) and that plugin's build, so the session list shows which build each session runs.
 	// Empty for a session whose plugin predates the fields.
@@ -82,6 +90,7 @@ func sessionEntryFromSubscribe(body subscribeBody, machineID string, delivery se
 		Capabilities:     append([]string{}, body.Capabilities...),
 		SelfSubscribed:   body.SelfSubscribed,
 		Host:             body.Host,
+		TmuxPlace:        body.TmuxPlace,
 		Plugin:           strings.TrimSpace(body.Plugin),
 		PluginVersion:    strings.TrimSpace(body.PluginVersion),
 		ClientInstanceID: strings.TrimSpace(body.ClientInstanceID),

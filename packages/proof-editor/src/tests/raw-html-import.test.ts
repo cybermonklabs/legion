@@ -92,31 +92,37 @@ await test("with rawHtml 'text', a body that is one raw-HTML line draws that lin
   );
 });
 
-await test('a parse with no policy still refuses raw HTML, so a document keeps it as its author wrote it', async () => {
-  const { parseMarkdown } = await createHeadlessProof();
-  let refused = false;
-  try {
-    parseMarkdown('**Bold** text\n\n<!-- legion: {"session":"s1"} -->');
-  } catch {
-    refused = true;
-  }
-  assert(refused, 'Expected the default policy to throw for a block HTML comment');
+await test('a parse with no policy draws raw HTML as its own text and writes it back unchanged', async () => {
+  const { parseMarkdown, serializeMarkdown } = await createHeadlessProof();
+  // A document passes no policy. Its block of raw HTML is drawn as a paragraph holding the same
+  // characters (`remarkHtmlBlockParagraphs`), so a past version draws instead of failing, and
+  // the paragraph writes back as the bytes its author wrote.
+  const source = '**Bold** text\n\n<!-- legion: {"session":"s1"} -->';
+  const doc = parseMarkdown(source);
+  assert(
+    rawHtmlOf(doc).join('') === '<!-- legion: {"session":"s1"} -->',
+    'Expected the comment to be drawn as raw HTML of its own characters',
+  );
+  assert(
+    serializeMarkdown(doc).trim() === source,
+    `Expected the document to write back unchanged, got ${JSON.stringify(serializeMarkdown(doc))}`,
+  );
 });
 
 await test('each policy keeps its own parser: one policy\'s parse never serves the other', async () => {
   const { parseMarkdown } = await createHeadlessProof();
   const source = 'Text\n\n<!-- legion: {"session":"s1"} -->';
   assert(parseMarkdown(source, 'space', 'text').textContent === 'Text', 'Expected the policy to drop the comment');
-  let refused = false;
-  try {
-    parseMarkdown(source);
-  } catch {
-    refused = true;
-  }
-  assert(refused, "Expected the default policy to refuse the source the 'text' policy had just read");
+  // The same source under the default policy keeps the comment as the text it is, which is the
+  // one thing the two policies read differently: a parser built for one must never serve the
+  // other.
+  assert(
+    rawHtmlOf(parseMarkdown(source)).join('') === '<!-- legion: {"session":"s1"} -->',
+    "Expected the default policy to keep the comment the 'text' policy had just dropped",
+  );
   assert(
     parseMarkdown(source, 'space', 'text').textContent === 'Text',
-    "Expected the 'text' policy to read it again after the refusal",
+    "Expected the 'text' policy to read it again after the default policy's parse",
   );
 });
 

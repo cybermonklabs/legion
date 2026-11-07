@@ -162,10 +162,11 @@ const defaultSessionReapInterval = time.Minute
 // its holder gone. Judged every minute, a stalled holder would lose its role up to five times
 // sooner than the fixed pass this change replaces, which is the opposite of what this change is
 // for; the raise of that maximum age past the gone horizon is dispatch://INFRA-887's, and it
-// cannot land first. The grace a restored claim gets is measured from the listener's own start
-// against the live window (store.Registry.ReleaseExpiredRoleClaim), not counted in passes, so
-// the period does not move it; what the period decides is how long after a holder is gone its
-// role is free.
+// cannot land first. The grace a restored claim gets - and a claim the hand-back marked gets
+// none, since no registration renews a marked claim - is measured from the listener's own start
+// against the live window (store.Registry.releaseReadExpiredRoleClaim, which the reaper's pass
+// hands the claim it read), not counted in passes, so the period does not move it; what the
+// period decides is how long after a holder is gone its role is free.
 const defaultRoleClaimReapInterval = 5 * time.Minute
 
 // warnIgnoredEnv writes one WARN naming an environment variable this listener no longer reads,
@@ -1060,12 +1061,15 @@ func main() {
 	// store.InterestRefreshAge) of every row that reaper still lists.
 	//
 	// The windows every reader of the registry judges a record's age against. Each defaults to
-	// the compiled constant, which .github/scripts/check-heartbeat-margin.sh reads to prove that
-	// three registration refreshes fit inside the live window; a deployment that moves one moves
-	// what this listener runs with and nothing else. A value that is not a positive duration is
-	// refused by name here rather than taken. Dispatch reads the same two windows through the
-	// same helper and judges a role route's holder by them, so a deployment gives both processes
-	// the same values (envconf.SessionWindows, cmd/dispatch's roleHolderWindows).
+	// the compiled constant (session.LiveWindow, session.GoneHorizon). The live window's is the
+	// declaration contracts.SessionLiveWindow, which the Go test
+	// TestDAEMONTESTTheSessionTimingRuleHoldsAtTheValuesTheBuildUses (packages/daemon/internal/daemon)
+	// weighs to prove that three registration refreshes fit inside it; a deployment
+	// that moves one moves what this listener runs with and nothing else. A value that is not a
+	// positive duration is refused by name here rather than taken. Dispatch reads the same two
+	// windows through the same helper and judges a role route's holder by them, so a deployment
+	// gives both processes the same values (envconf.SessionWindows, cmd/dispatch's
+	// roleHolderWindows).
 	sessionLiveWindow, sessionGoneHorizon, err := envconf.SessionWindows(logger.Slog(), os.LookupEnv)
 	if err != nil {
 		log.Fatal(err)
@@ -1249,6 +1253,11 @@ func main() {
 	stopping, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
+	// The live window the session registry runs with: what the role claim reaper weighs a
+	// standing claim's renewal against, read from the registry itself so the two can never be
+	// configured apart. The role routes read it from that same registry when they weigh a claim
+	// (roleSetHandler, through session.SessionRegistry.Windows).
+	sessionLive, _ := sessions.Windows()
 	ready := &listenerDeps{
 		client:     client,
 		roleLane:   roleLaneClient,
@@ -1311,10 +1320,19 @@ func main() {
 	// watchers whose consumers nats.go creates and deletes, so the shutdown stops them and waits for
 	// a pass in flight before it drains NATS (kvLoopsDone).
 	//
-	// A restored role claim's holder gets one live window to register again, not one bucket
-	// maximum age: the window is what makes a session live to every other reader, and with a
-	// maximum age raised past the gone horizon the age would hold a dead holder's claim for an
-	// hour after the reaper had already found it gone.
+	// The live window is what the role claim reaper weighs a claim against twice, because the
+	// two grants it makes are both that long. A restored claim's holder gets one live window
+	// from this listener's start to register again, not one bucket maximum age: the window is
+	// what makes a session live to every other reader, and with a maximum age raised past the
+	// gone horizon the age would hold a dead holder's claim for an hour after the reaper had
+	// already found it gone. A claim the hand-back marked takes none of that grace: the grace
+	// is for a holder to register again, no registration renews a marked claim, and so over
+	// such a claim it could only hold the role past the window its own renewal is weighed
+	// against. And every claim, restored or not, is kept while its own holder answered for it
+	// inside one live window, so a holder that goes on renewing its claim keeps its role even
+	// where the session id it registered under has left the bucket - which is what a second
+	// process that resumes that id and then deregisters it leaves behind
+	// (store.Registry.ReapRoleClaims).
 	//
 	// The role claim reaper runs at ENVOY_ROLE_CLAIM_REAP_INTERVAL, its own period and not the
 	// session reaper's: what it waits for is what that reaper decides, but a pass of it is what
@@ -1322,11 +1340,10 @@ func main() {
 	// to settle the bucket's maximum age sooner is not asking for that (the two defaults say
 	// why). Each pass is judged against this listener's own live window, not counted, so the
 	// period moves when a gone holder's role is freed and nothing else.
-	sessionLive, _ := sessions.Windows()
 	kvLoopsCtx, kvLoopsCancel := context.WithCancel(context.Background())
 	kvLoopsDone := []<-chan struct{}{
 		registry.StartReaper(kvLoopsCtx, func(sessionID string) (bool, error) { return sessionMayBeLive(sessions, sessionID) }, 5*time.Minute, store.InterestReapGrace),
-		registry.StartRoleClaimReaper(kvLoopsCtx, func(sessionID string) bool { return roleHolderMayBeLive(logger, sessions, sessionID) }, roleClaimReapInterval, sessionLive),
+		registry.StartRoleClaimReaper(kvLoopsCtx, func(sessionID string) bool { return roleHolderMayBeLive(logger, sessions, sessionID) }, roleClaimReapInterval, sessionLive, sessionLive),
 		// The session reaper is the one loop that deletes a session's record, and the one place
 		// the bucket's maximum age is settled while the listener runs (session.ReapSessions).
 		sessions.StartSessionReaper(kvLoopsCtx, sessionReapInterval, session.SessionReaper{

@@ -1,3 +1,4 @@
+import { refPreviewCardContains } from "./ref-preview-card";
 import { REF_PREVIEW_CLOSE_DELAY_MS, REF_PREVIEW_OPEN_DELAY_MS } from "./ref-preview-timing";
 import { buildDispatchReference, type DispatchReferenceRoute } from "./routes";
 
@@ -12,8 +13,6 @@ import { buildDispatchReference, type DispatchReferenceRoute } from "./routes";
  * opening a document would download and evaluate the card before their first block
  * (dispatch://INFRA-341, R11).
  */
-
-export const CARD_ID = "ref-preview";
 
 /** Every hover-card trigger: a Markdown anchor `collectReferenceAnchors` tagged, a Proof link
  * mark (`data-dispatch-href`, the sanitized mark's real target), or a React link that set
@@ -137,14 +136,12 @@ export function triggerOf(node: EventTarget | null): HTMLElement | null {
   return node instanceof Element ? node.closest<HTMLElement>(TRIGGER_SELECTOR) : null;
 }
 
-export function cardContains(node: EventTarget | null): boolean {
-  return node instanceof Element && node.closest(`#${CARD_ID}`) !== null;
-}
-
 /** The one region the pointer may roam without closing the card: the current target's anchor -
  * the open card's, or the one a pending hover is waiting on - and the card itself. Every pointer
  * transition is judged against this predicate, in the document listeners alone, so no close
  * depends on the order in which two event systems see one `pointerout`. */
 export function inHoverZone(node: EventTarget | null): boolean {
-  return state !== undefined && (triggerOf(node) === state.target.anchor || cardContains(node));
+  return (
+    state !== undefined && (triggerOf(node) === state.target.anchor || refPreviewCardContains(node))
+  );
 }

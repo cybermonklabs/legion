@@ -265,8 +265,8 @@
         if (needed === undefined) {
           return;
         }
-        for (var index = 0; index < needed.length; index += 1) {
-          var link = document.createElement("link");
+        for (let index = 0; index < needed.length; index += 1) {
+          const link = document.createElement("link");
           link.rel = "modulepreload";
           // The entry's own script tag carries `crossorigin`, and a preload that does not match
           // it is a second fetch rather than the same one.

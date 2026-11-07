@@ -2,7 +2,7 @@ import { mkdirSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 
 import { AGENT_STREAM_SUBJECT_PREFIX } from "../src/agent-stream";
-import { SEARCH_DEGRADED_EMBEDDER_UNAVAILABLE } from "../src/dispatch-api";
+import { ID_AMBIGUOUS, SEARCH_DEGRADED_EMBEDDER_UNAVAILABLE } from "../src/dispatch-api";
 import {
   DEFAULT_ISSUE_PAGE_LIMIT,
   DELIVERY_DUPLICATE_WINDOW_MS,
@@ -48,17 +48,51 @@ import {
   SEARCH_QUERY_MAX,
 } from "../src/dispatch-tools";
 import { MINTED_DEDUPE_KEY_PATTERN } from "../src/envelope";
+import {
+  LISTENER_CALL_ATTEMPTS,
+  LISTENER_CALL_RETRY_DELAY_MS,
+  LISTENER_CALL_TIMEOUT_MS,
+  SESSION_CLAIM_STALE_MS,
+  SESSION_HEARTBEAT_MS,
+  SESSION_LIVE_WINDOW_MS,
+} from "../src/envoy-session";
+import {
+  GOING_ANSWER_WORD_MAX,
+  GOING_ERROR_ANSWER_DID_NOT_ARRIVE,
+  GOING_ERROR_ANSWER_FAILED,
+  GOING_ERROR_NO_MODEL_CONFIGURED,
+  GOING_EVENT_CHANGED,
+  GOING_EVENT_CUT,
+  GOING_EVENT_END,
+  GOING_EVENT_ERROR,
+  GOING_EVENT_ITEM,
+  GOING_EVENT_NONE,
+  GOING_EVENT_TEXT,
+  GOING_HIT_RUNE_MAX,
+  GOING_MODEL_CALL_MAX,
+  GOING_REQUEST_RUNE_MAX,
+  GOING_REQUEST_TTL_MS,
+  GOING_RUN_MS,
+  GOING_SEARCH_MAX,
+  GOING_SEARCH_TOOL,
+  GOING_WORDS_MAX,
+} from "../src/going";
 import { SUBJECT_MAX_BYTES, SUBJECT_SEGMENT_REPLACED } from "../src/subject";
 
 type ScalarKind = "string" | "integer" | "boolean";
 
+// The slice of JSON Schema that schemas/envelope.schema.json uses. A property with no `type` is
+// one whose values are not of a single JSON type, such as a mixed literal set; it names the Go
+// type holding it through `x-go-type`, which is hand-written beside the generated file and
+// validates itself.
 type Prop = {
-  type: ScalarKind | "array" | "object";
-  enum?: string[];
+  type?: ScalarKind | "array" | "object";
+  enum?: (string | boolean)[];
   minLength?: number;
   properties?: Record<string, Prop>;
   required?: string[];
   items?: Prop;
+  "x-go-type"?: string;
 };
 
 type Schema = {
@@ -180,6 +214,74 @@ const SearchKindDepth = ${SEARCH_KIND_DEPTH}
 // Dispatch writes and the string search-answer.ts compares against cannot drift apart.
 const SearchDegradedEmbedderUnavailable = ${JSON.stringify(SEARCH_DEGRADED_EMBEDDER_UNAVAILABLE)}
 
+// The names of the frames one answer's stream carries: text as the answer arrives, item for each
+// thing the answer cites, cut when the answer reached its word cap, changed when the server did
+// not pass the answer on as the model wrote it, none when the model produced no answer text at
+// all, and end and error, the two that end a stream. A text frame carries plain text, every
+// ASCII punctuation byte of it backslash-escaped, which closes markdown's own constructs, so a
+// renderer makes no link, image, tag or code span of any of it; an escape closes none of GFM's
+// literal autolinks, so a word a renderer would link on its own is dropped from the answer
+// rather than sent; and an item frame is where the links of an answer live, each carrying a
+// cited item's own href.
+// Generated from GOING_EVENT_TEXT, GOING_EVENT_ITEM, GOING_EVENT_CUT,
+// GOING_EVENT_CHANGED, GOING_EVENT_NONE, GOING_EVENT_END and GOING_EVENT_ERROR in
+// packages/contracts so the frames the server writes and the frames the page reads cannot drift
+// apart.
+const GoingEventText = ${JSON.stringify(GOING_EVENT_TEXT)}
+const GoingEventItem = ${JSON.stringify(GOING_EVENT_ITEM)}
+const GoingEventCut = ${JSON.stringify(GOING_EVENT_CUT)}
+const GoingEventChanged = ${JSON.stringify(GOING_EVENT_CHANGED)}
+const GoingEventNone = ${JSON.stringify(GOING_EVENT_NONE)}
+const GoingEventEnd = ${JSON.stringify(GOING_EVENT_END)}
+const GoingEventError = ${JSON.stringify(GOING_EVENT_ERROR)}
+
+// The codes an error frame carries: the run reached its window without an answer, the deployment
+// has no text model configured, and the model service refused or failed. Generated from
+// GOING_ERROR_ANSWER_DID_NOT_ARRIVE, GOING_ERROR_NO_MODEL_CONFIGURED and
+// GOING_ERROR_ANSWER_FAILED in packages/contracts so the code the server writes and the wording
+// the page keys on it cannot drift apart.
+const GoingErrorAnswerDidNotArrive = ${JSON.stringify(GOING_ERROR_ANSWER_DID_NOT_ARRIVE)}
+const GoingErrorNoModelConfigured = ${JSON.stringify(GOING_ERROR_NO_MODEL_CONFIGURED)}
+const GoingErrorAnswerFailed = ${JSON.stringify(GOING_ERROR_ANSWER_FAILED)}
+
+// GoingSearchTool is the name of the one tool the model is given, another search of Dispatch.
+// Generated from GOING_SEARCH_TOOL in packages/contracts so the name the server declares and the
+// name the page explains cannot drift apart.
+const GoingSearchTool = ${JSON.stringify(GOING_SEARCH_TOOL)}
+
+// GoingAnswerWordMax is the most words an answer carries, past which the stream cuts it and says
+// so. Generated from GOING_ANSWER_WORD_MAX in packages/contracts so the server's cut and the
+// page's account of it cannot drift apart.
+const GoingAnswerWordMax = ${GOING_ANSWER_WORD_MAX}
+
+// GoingHitRuneMax is the most of one hit's own text the model is shown, and GoingRequestRuneMax
+// the most hit text one run shows it in total; a hit past the total is still named to the model
+// with no body, and stays something the answer may cite.
+// Generated from GOING_HIT_RUNE_MAX and GOING_REQUEST_RUNE_MAX in packages/contracts so the
+// server's bounds and the page's account of them cannot drift apart.
+const GoingHitRuneMax = ${GOING_HIT_RUNE_MAX}
+const GoingRequestRuneMax = ${GOING_REQUEST_RUNE_MAX}
+
+// GoingSearchMax is the most searches one run makes, the server's own seeding search counting as
+// the first, and GoingModelCallMax the most calls it makes to the model, which bounds a model
+// that keeps searching instead of answering. Generated from GOING_SEARCH_MAX and
+// GOING_MODEL_CALL_MAX in packages/contracts so the server's bounds and the page's account of
+// them cannot drift apart.
+const GoingSearchMax = ${GOING_SEARCH_MAX}
+const GoingModelCallMax = ${GOING_MODEL_CALL_MAX}
+
+// GoingWordsMax is the longest question the route accepts, in UTF-16 units. Generated from
+// GOING_WORDS_MAX in packages/contracts so the server's refusal and the page's own cannot drift
+// apart.
+const GoingWordsMax = ${GOING_WORDS_MAX}
+
+// GoingRunWindow is how long one run may take, measured from the POST that started it, and
+// GoingRequestTTL how long a run's rows are kept, so a reader that reconnects still finds its
+// answer. Generated from GOING_RUN_MS and GOING_REQUEST_TTL_MS in packages/contracts so the
+// server's windows and the page's account of them cannot drift apart.
+const GoingRunWindow = ${GOING_RUN_MS} * time.Millisecond
+const GoingRequestTTL = ${GOING_REQUEST_TTL_MS} * time.Millisecond
+
 // MaxIssueBlockers bounds blocked_by input before deduplication. Generated from
 // MAX_ISSUE_BLOCKERS in packages/contracts so the server and tool schemas share the limit.
 const MaxIssueBlockers = ${MAX_ISSUE_BLOCKERS}
@@ -285,12 +387,44 @@ const IdempotencyAnswerNotKept = ${JSON.stringify(IDEMPOTENCY_ANSWER_NOT_KEPT)}
 const IdempotencyKeyTTL = ${IDEMPOTENCY_KEY_TTL_MS} * time.Millisecond
 const IdempotencyLease = ${IDEMPOTENCY_LEASE_MS} * time.Millisecond
 
+// SessionHeartbeat is how often a pane's pi-envoy plugin refreshes its listener registration, and
+// SessionLiveWindow how long a session's last registration keeps it live to the listener. Three
+// heartbeats plus one whole listener call fit inside the live window, so two refreshes may fail
+// and the third still completes before the session stops reading live. Generated from
+// SESSION_HEARTBEAT_MS and SESSION_LIVE_WINDOW_MS in packages/contracts, whose doc comments state
+// that arrangement, so the pane's refresh and the listener's window cannot drift apart.
+const SessionHeartbeat = ${SESSION_HEARTBEAT_MS} * time.Millisecond
+const SessionLiveWindow = ${SESSION_LIVE_WINDOW_MS} * time.Millisecond
+
+// SessionClaimStale is how long a session's role claim may go unrefreshed before a reader treats
+// the process that wrote it as gone, which allows three missed heartbeats at SessionHeartbeat.
+// Generated from SESSION_CLAIM_STALE_MS in packages/contracts so session.ClaimStaleAfter and the
+// Legion daemon's copy of it, which times its last re-hold of a notice, are one number.
+const SessionClaimStale = ${SESSION_CLAIM_STALE_MS} * time.Millisecond
+
+// ListenerCallTimeout is how long one attempt of an envoy-client call waits for the listener,
+// ListenerCallRetryDelay the pause before the next attempt, and ListenerCallAttempts how many
+// attempts one call makes. Together they are a whole call's budget, which the heartbeat interval
+// is set to leave room for. Generated from LISTENER_CALL_TIMEOUT_MS, LISTENER_CALL_RETRY_DELAY_MS
+// and LISTENER_CALL_ATTEMPTS in packages/contracts so the client's cost and every check of that
+// budget are computed from one set of numbers.
+const ListenerCallTimeout = ${LISTENER_CALL_TIMEOUT_MS} * time.Millisecond
+const ListenerCallRetryDelay = ${LISTENER_CALL_RETRY_DELAY_MS} * time.Millisecond
+const ListenerCallAttempts = ${LISTENER_CALL_ATTEMPTS}
+
 // DispatchLoginHeader is the request header a page puts on every write it makes, naming the login
 // of the person who pressed it, and DispatchLoginChanged the code of the 409 for one whose caller
 // is anyone else: nothing ran. Generated from DISPATCH_LOGIN_HEADER and DISPATCH_LOGIN_CHANGED in
 // packages/contracts so the server's check and the page's header cannot drift apart.
 const DispatchLoginHeader = ${JSON.stringify(DISPATCH_LOGIN_HEADER)}
 const DispatchLoginChanged = ${JSON.stringify(DISPATCH_LOGIN_CHANGED)}
+
+// IDAmbiguous is the code of the 409 an id written as a prefix two items or more carry is
+// refused with, on a page address, a dispatch:// reference and a dashboard address in text, and
+// on a route that takes an id in its path; the refusal's candidates list the items it names.
+// Generated from ID_AMBIGUOUS in packages/contracts so the server's refusal and the page that
+// lists its candidates cannot drift apart.
+const IDAmbiguous = ${JSON.stringify(ID_AMBIGUOUS)}
 
 // DispatchSignInRequired is the code of the 403 for a write by a broker-issued access token that
 // names a session and a service but no person: the machine holding it has signed nobody in.
@@ -413,6 +547,10 @@ function name(key: string) {
 }
 
 function envelopeKind(prop: Prop, req: Set<string>, key: string) {
+  // A property whose Go type is hand-written beside the generated file holds it whole: the type
+  // decides what the field reads off the wire and writes back, and validates itself.
+  const goType = prop["x-go-type"];
+  if (goType) return goType;
   if (prop.type === "object") {
     if (!prop.properties) throw new Error(`missing object properties for ${key}`);
     return `*Envelope${name(key)}`;
@@ -423,6 +561,7 @@ function envelopeKind(prop: Prop, req: Set<string>, key: string) {
     }
     return "[]string";
   }
+  if (!prop.type) throw new Error(`${key} has no type and no x-go-type`);
   const base = map[prop.type];
   if (req.has(key) || prop.type === "string") return base;
   return `*${base}`;
@@ -446,11 +585,26 @@ function check(access: string, path: string, prop: Prop, depth = 1) {
   throw new Error(`unsupported required envelope type for ${path}`);
 }
 
-function enums(key: string, prop: Prop, optional: boolean) {
+// What Validate() says about one property's value: the type's own Validate() when the property
+// names a hand-written Go type, else a switch over the words its enum holds.
+function valueChecks(key: string, prop: Prop, optional: boolean) {
+  if (prop["x-go-type"]) {
+    return `\tif err := e.${name(key)}.Validate(); err != nil {\n\t\treturn err\n\t}`;
+  }
   if (!prop.enum?.length) return "";
   const n = name(key);
   const indent = optional ? "\t\t" : "\t";
-  const list = prop.enum.map((item) => `"${item}"`).join(", ");
+  // The switch below reads a Go string, and the optional case leans on `""` being its zero
+  // value, so a set holding anything else needs a Go type of its own to read and validate it
+  // (`x-go-type`, answered above). Refuse such a set rather than emit Go that does not compile.
+  const list = prop.enum
+    .map((item) => {
+      if (typeof item !== "string") {
+        throw new Error(`${key}'s enum holds ${JSON.stringify(item)} and names no x-go-type`);
+      }
+      return `"${item}"`;
+    })
+    .join(", ");
   const body = [
     `${indent}switch e.${n} {`,
     `${indent}case ${list}:`,
@@ -523,8 +677,8 @@ function renderEnvelope(schema: Schema) {
       ];
     })
     .join("\n");
-  const enumChecks = keys
-    .map((key) => enums(key, schema.properties[key], !req.has(key)))
+  const propertyChecks = keys
+    .map((key) => valueChecks(key, schema.properties[key], !req.has(key)))
     .filter(Boolean)
     .join("\n");
   const nestedChecks = keys
@@ -532,7 +686,7 @@ function renderEnvelope(schema: Schema) {
     .map((key) => objectChecks(key, schema.properties[key]))
     .filter(Boolean)
     .join("\n");
-  const validate = [checks, optionalStringChecks, enumChecks, nestedChecks, "\treturn nil"]
+  const validate = [checks, optionalStringChecks, propertyChecks, nestedChecks, "\treturn nil"]
     .filter(Boolean)
     .join("\n");
   const nested = keys

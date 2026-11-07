@@ -26,13 +26,20 @@ import {
 import { AgentName } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { Timestamp } from "../refs/Timestamp";
+import { textSourceOf } from "../refs/text-references";
 import { useDialog } from "../shell/useDialog";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
+
+/** The version an approval speaks for: `version` when the review named one, else the document's
+ *  latest. */
+export function approvalVersion(approval: ArtifactApproval): number {
+  return approval.version ?? approval.latest_version;
+}
 
 function approvalLabel(approval: ArtifactApproval): string {
   // A plan is approved by its plan review, never by a person, and its chip says so.
   const approved = approval.kind === "plan_review" ? "Approved by plan review" : "Approved";
-  const version = approval.version ?? approval.latest_version;
+  const version = approvalVersion(approval);
   switch (approval.state) {
     case "draft":
       return "Draft";
@@ -108,7 +115,10 @@ function ReviewsDialog({
                   </p>
                   {review.reason === null ? null : (
                     <div className={`mt-1 text-sm ${textSecondaryOnSurface}`}>
-                      <MarkdownBody markdown={review.reason} />
+                      <MarkdownBody
+                        markdown={review.reason}
+                        source={textSourceOf("artifact", artifactId)}
+                      />
                     </div>
                   )}
                 </li>

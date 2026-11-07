@@ -1,4 +1,4 @@
-import { RECEIPT_TIMEOUT_CAUSE } from "../../../packages/contracts/src/dispatch-api";
+import { RECEIPT_TIMEOUT_CAUSE } from "../../../packages/contracts/src/dispatch-constants";
 import {
   COUNT_KEYS,
   type Comment,

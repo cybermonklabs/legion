@@ -117,10 +117,11 @@ describe("the parse worker's threshold", () => {
 });
 
 // The cache names a body's answer by the schema version, both parse policies and the source. Were
-// the raw-HTML policy left out of that name, the refusal a parse under `refuse` answers for a body
-// holding the `<!-- legion: … -->` footer would be served to the comment that asked for `text`,
-// and that comment would read as its own source for as long as the answer is kept. The worker's
-// test double reads the request's own fields, so only the cache can show this.
+// the raw-HTML policy left out of that name, the document's reading of a body holding the
+// `<!-- legion: … -->` footer - the footer drawn as the characters its author wrote - would be
+// served to the comment that asked for `text`, which draws it as nothing, and that comment would
+// show the footer for as long as the answer is kept. The worker's test double reads the
+// request's own fields, so only the cache can show this.
 describe("the answer cache and the raw-HTML policy", () => {
   afterEach(restoreParseWorker);
 
@@ -139,9 +140,10 @@ describe("the answer cache and the raw-HTML policy", () => {
       await worker.answer(0);
       await flushTasks();
       expect(worker.requests[0].rawHtml).toBe("refuse");
-      // A document's policy refuses the footer, and that refusal is what the cache holds.
+      // A document's policy draws the footer as the text it is, which is what the cache holds.
       expect(asDocument.at(-1)?.pending).toBe(false);
-      expect(asDocument.at(-1)?.parsed).toBeUndefined();
+      expect(asDocument.at(-1)?.parsed?.textContent).toBe(words);
+      expect(asDocument.at(-1)?.parsed?.toString()).toContain("html");
     } finally {
       cancelAsDocument();
     }

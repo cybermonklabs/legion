@@ -188,8 +188,10 @@ func TestALapsedEnrollmentStopsSigningWhileItsRevokeRetries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The lapsed id has its own field, separate from the live one: a restart must be able to
+	// tell an enrollment the recorded key holds from one it only has to end.
 	i := slices.IndexFunc(recs, func(rec Record) bool { return rec.PID == os.Getpid() })
-	if i < 0 || recs[i].EnrollmentID != lapsed {
+	if i < 0 || recs[i].LapsedEnrollmentID != lapsed {
 		t.Fatalf("the record must keep the lapsed id until its revoke succeeds: %+v, want %q", recs, lapsed)
 	}
 	r.fake.mu.Lock()
@@ -197,7 +199,7 @@ func TestALapsedEnrollmentStopsSigningWhileItsRevokeRetries(t *testing.T) {
 	r.fake.mu.Unlock()
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		if id := r.srv.Registry.Get(os.Getpid()).EnrollmentID(); id != "" && id != lapsed {
+		if id := r.srv.Registry.Get(os.Getpid()).identity().EnrollmentID; id != "" && id != lapsed {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -244,7 +246,7 @@ func TestRegisterWaitWaitsForTheReEnrollmentAfterALapse(t *testing.T) {
 	r.fake.enrollGate = gate
 	r.fake.revokeFailFirst = 0 // the lapsed id's next revoke lands; the re-enrollment then waits at the gate
 	r.fake.mu.Unlock()
-	replies := registerWaitBlocked(t, r)
+	replies := registerWaitBlocked(t, r, nil)
 	open()
 	freshEnrollment(t, replies, lapsed)
 }
@@ -266,7 +268,7 @@ func TestASecondLapseWaitsAgainAndRevokesBothLapsedIDs(t *testing.T) {
 	r.fake.refuseRenewNext = 1                // and that renew is refused whenever the gate lets it through
 	r.fake.renewGate = renewGate
 	r.fake.mu.Unlock()
-	replies := registerWaitBlocked(t, r)
+	replies := registerWaitBlocked(t, r, nil)
 	r.fake.mu.Lock()
 	r.fake.revokeFailFirst = 0 // the first lapsed id's revoke lands, and the session enrolls again
 	r.fake.mu.Unlock()
@@ -284,7 +286,7 @@ func TestASecondLapseWaitsAgainAndRevokesBothLapsedIDs(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	replies = registerWaitBlocked(t, r)
+	replies = registerWaitBlocked(t, r, nil)
 	releaseEnroll()
 	third := freshEnrollment(t, replies, first, second)
 
@@ -297,8 +299,8 @@ func TestASecondLapseWaitsAgainAndRevokesBothLapsedIDs(t *testing.T) {
 	if !slices.Equal(live, []string{third}) {
 		t.Fatalf("live enrollments at the fake: %q; want only the third, %q", live, third)
 	}
-	if sess := r.srv.Registry.Get(os.Getpid()); sess.EnrollmentID() != third || sess.lapsed() != "" {
-		t.Fatalf("session enrollment %q, lapsed id %q; want %q and none", sess.EnrollmentID(), sess.lapsed(), third)
+	if sess := r.srv.Registry.Get(os.Getpid()); sess.identity().EnrollmentID != third || sess.lapsed() != "" {
+		t.Fatalf("session enrollment %q, lapsed id %q; want %q and none", sess.identity().EnrollmentID, sess.lapsed(), third)
 	}
 	waitFor(t, func() bool { return recordedID(t, state, os.Getpid()) == third })
 }
@@ -373,22 +375,22 @@ func TestARenewThatFailsTransientlyKeepsTheLease(t *testing.T) {
 	}
 }
 
-// registerWaitBlocked starts a `register --wait` from this process, the rig's one session, and
-// returns its answer's channel once the call is blocked in registerReply's select. The call
-// answering first fails the test: a session that is not enrolled must not answer a register that
-// waits.
-func registerWaitBlocked(t *testing.T, r *rig) <-chan registerAnswer {
+// registerWaitBlocked starts a `register --wait 10` from this process for sessionID — nil for a
+// register that names none — against the rig's one session, and returns its answer's channel
+// once the call is blocked in registerReply's select. The call answering first fails the test: a
+// register that waits must not answer before the enrollment it waits for has reached the session.
+func registerWaitBlocked(t *testing.T, r *rig, sessionID *string) <-chan registerAnswer {
 	t.Helper()
 	replies := make(chan registerAnswer, 1)
 	go func() {
-		resp, err := Call(r.sock, Request{Op: "register", WaitSeconds: 10}, 20*time.Second)
+		resp, err := Call(r.sock, Request{Op: "register", WaitSeconds: 10, SessionID: sessionID}, 20*time.Second)
 		replies <- registerAnswer{resp, err}
 	}()
 	deadline := time.Now().Add(10 * time.Second)
 	for !blockedInRegisterReply() {
 		select {
 		case got := <-replies:
-			t.Fatalf("register --wait answered while the re-enrollment was still held: %+v (%v); it must wait for the lapsed session to enroll again", got.resp, got.err)
+			t.Fatalf("register --wait answered before the enrollment it must wait for had reached the session: %+v (%v)", got.resp, got.err)
 		default:
 		}
 		if time.Now().After(deadline) {
@@ -442,7 +444,7 @@ func blockedInRegisterReply() bool {
 // failed is told why.
 func TestNotEnrolledNamesTheLastAttemptOnlyWhenThereIsOne(t *testing.T) {
 	r := startRig(t, "")
-	sess, _ := newSession(1, 1, "h:1:1", nil)
+	sess, _ := newSession(1, 1, "h:1:1", "", nil, nil)
 	if got := r.srv.notEnrolled(sess.snapshot()); got.Code != CodeNotEnrolled || got.Error != "this session is not enrolled with the broker yet" {
 		t.Fatalf("no attempt yet: %+v", got)
 	}
@@ -468,7 +470,7 @@ func TestAPriorEnrollmentOfAnotherOperatorDoesNotStrandTheSession(t *testing.T) 
 	r.login(t)
 	waitFor(t, func() bool {
 		sess := r.srv.Registry.Get(pid)
-		return sess != nil && sess.EnrollmentID() != ""
+		return sess != nil && sess.identity().EnrollmentID != ""
 	})
 	r.fake.mu.Lock()
 	attempts := r.fake.revokeAttempts
@@ -496,7 +498,7 @@ func TestAPriorEnrollmentOfAReplacedCredentialDoesNotStrandTheSession(t *testing
 	r.login(t)
 	waitFor(t, func() bool {
 		sess := r.srv.Registry.Get(pid)
-		return sess != nil && sess.EnrollmentID() != ""
+		return sess != nil && sess.identity().EnrollmentID != ""
 	})
 	r.fake.mu.Lock()
 	attempts := r.fake.revokeAttempts
@@ -517,8 +519,8 @@ func recordPrior(t *testing.T, state, id string) int {
 		t.Fatal(err)
 	}
 	prior := NewRegistry(state)
-	old, _ := newSession(pid, ticks, fmt.Sprintf("testhost:%d:%d", pid, ticks), nil)
-	old.setEnrolled(id)
+	old, _ := newSession(pid, ticks, fmt.Sprintf("testhost:%d:%d", pid, ticks), "", nil, nil)
+	old.setEnrolledAt(id, old.identity().Generation)
 	prior.Add(old)
 	if err := prior.Save(); err != nil {
 		t.Fatal(err)
@@ -526,7 +528,10 @@ func recordPrior(t *testing.T, state, id string) int {
 	return pid
 }
 
-// recordedID is the enrollment id state's record for pid names ("" with no record).
+// recordedID is the enrollment state's record for pid names, live or lapsed ("" with no
+// record, and "" once both are revoked). The two live in their own fields, so a restart can
+// tell an enrollment the recorded key holds from one it only has to end; either way the
+// helper still owes the broker a revoke for it.
 func recordedID(t *testing.T, state string, pid int) string {
 	t.Helper()
 	recs, err := LoadRecords(state)
@@ -534,7 +539,9 @@ func recordedID(t *testing.T, state string, pid int) string {
 		t.Fatal(err)
 	}
 	if i := slices.IndexFunc(recs, func(rec Record) bool { return rec.PID == pid }); i >= 0 {
-		return recs[i].EnrollmentID
+		if ids := recs[i].enrollments(); len(ids) > 0 {
+			return ids[0]
+		}
 	}
 	return ""
 }
@@ -580,7 +587,7 @@ func TestASecondRestartBeforeTheLoginStillRevokesThePriorEnrollment(t *testing.T
 	r.login(t)
 	waitFor(t, func() bool {
 		sess := r.srv.Registry.Get(pid)
-		return sess != nil && sess.EnrollmentID() != ""
+		return sess != nil && sess.identity().EnrollmentID != ""
 	})
 	if !revoked(r, "enr-prior") {
 		t.Fatal("the prior enrollment must be revoked before the session enrolls again")

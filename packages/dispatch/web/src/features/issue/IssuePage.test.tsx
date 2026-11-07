@@ -1,7 +1,9 @@
 import { expect, spyOn, test } from "bun:test";
+import { ID_AMBIGUOUS } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { Link, MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
+import type { ReactNode } from "react";
+import { Link, MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
@@ -13,6 +15,7 @@ import type {
   Ask,
   InboxRow,
   IssueDetails,
+  Project,
   Subscriber,
   UserIssueState,
 } from "../../api/types";
@@ -164,6 +167,7 @@ function stubIssuePage(
   const originalGetMyState = api.getMyState;
   const originalListAgents = api.listAgents;
   const originalGetIssueSubscribers = api.getIssueSubscribers;
+  const originalListProjects = api.listProjects;
   api.getIssue = async () => nextIssue;
   api.getInbox = async () => inbox;
   api.getMyState = async () => ({ "CORE-1": state });
@@ -177,6 +181,10 @@ function stubIssuePage(
   api.listHandoffs = async () => [];
   api.listAgents = async () => agents;
   api.getIssueSubscribers = async () => subscribers;
+  // The header reads the shared project list to learn which design-gate steps the project
+  // gates; a list without this issue's project gates nothing, which is the one chip these
+  // tests assert.
+  api.listProjects = async () => [];
   return () => {
     api.getIssue = originalGetIssue;
     api.getInbox = originalGetInbox;
@@ -189,6 +197,7 @@ function stubIssuePage(
     api.listHandoffs = originalListHandoffs;
     api.listAgents = originalListAgents;
     api.getIssueSubscribers = originalGetIssueSubscribers;
+    api.listProjects = originalListProjects;
   };
 }
 
@@ -1841,6 +1850,97 @@ test("IssuePage keeps state actions available while approval awaits", async () =
   }
 });
 
+test("IssuePage draws a gated root issue's steps where the header's one chip sat", async () => {
+  const restore = stubIssuePage({
+    ...issue,
+    artifacts: [
+      {
+        ...issue.artifacts[0],
+        approval: { latest_version: 1, state: "awaiting" },
+      },
+    ],
+  });
+  const gated: Project = {
+    created_at: "2026-09-09T00:00:00Z",
+    gated_steps: ["decisions", "criteria", "spec"],
+    key: "CORE",
+    name: "Core",
+  };
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue([gated]);
+  const view = renderIssuePage("/issues/CORE-1/conversation");
+
+  try {
+    await screen.findByRole("heading", { level: 1, name: issue.title });
+    const stateActions = screen.getByTestId("issue-state-actions");
+    const steps = await within(stateActions).findByTestId("issue-approval-steps");
+    // One line per gated step, in the order the deployment published them.
+    expect(
+      Array.from(steps.querySelectorAll("[data-approval-step]")).map((step) =>
+        step.getAttribute("data-approval-step")
+      )
+    ).toEqual(["decisions", "criteria", "spec"]);
+    // The primary document keeps today's chip and its review actions, inside its own step.
+    expect(within(steps).getByRole("button", { name: "Awaiting approval" })).not.toBeNull();
+    expect(within(steps).getByRole("button", { name: "Approve" })).not.toBeNull();
+    // The two steps nobody has written say so, rather than borrowing the spec's state.
+    expect(within(steps).getAllByText("Not requested").length).toBe(2);
+    // The steps take the chip's place when one of them holds the primary document: the row
+    // draws one approval area, not both, so it carries one pair of controls.
+    expect(
+      within(stateActions).queryAllByRole("button", { name: "Awaiting approval" }).length
+    ).toBe(1);
+    expect(within(stateActions).queryAllByRole("button", { name: "Approve" }).length).toBe(1);
+  } finally {
+    view.unmount();
+    listProjects.mockRestore();
+    restore();
+  }
+});
+
+test("IssuePage keeps the primary document's chip when no gated step reviews it", async () => {
+  const restore = stubIssuePage({
+    ...issue,
+    artifacts: [
+      {
+        ...issue.artifacts[0],
+        approval: { latest_version: 1, state: "awaiting" },
+      },
+    ],
+  });
+  // A deployment may gate the decisions and the Verification document and not the spec; the
+  // spec still has an approval to answer, and only the header's own chip can answer it.
+  const gated: Project = {
+    created_at: "2026-09-09T00:00:00Z",
+    gated_steps: ["decisions", "criteria"],
+    key: "CORE",
+    name: "Core",
+  };
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue([gated]);
+  const view = renderIssuePage("/issues/CORE-1/conversation");
+
+  try {
+    await screen.findByRole("heading", { level: 1, name: issue.title });
+    const stateActions = screen.getByTestId("issue-state-actions");
+    const steps = await within(stateActions).findByTestId("issue-approval-steps");
+    expect(
+      Array.from(steps.querySelectorAll("[data-approval-step]")).map((step) =>
+        step.getAttribute("data-approval-step")
+      )
+    ).toEqual(["decisions", "criteria"]);
+    // Neither step holds the primary document, so neither carries its state or its actions.
+    expect(within(steps).getAllByText("Not requested").length).toBe(2);
+    expect(within(steps).queryByRole("button", { name: "Awaiting approval" })).toBeNull();
+    // The primary document's own chip stays in the state row, with both of its controls.
+    expect(within(stateActions).getByRole("button", { name: "Awaiting approval" })).not.toBeNull();
+    expect(within(stateActions).getByRole("button", { name: "Approve" })).not.toBeNull();
+    expect(within(stateActions).getByRole("button", { name: "Request changes" })).not.toBeNull();
+  } finally {
+    view.unmount();
+    listProjects.mockRestore();
+    restore();
+  }
+});
+
 test("IssuePage fills and marks the issue pin when it is pinned", async () => {
   const restore = stubIssuePage(issue, [], [], {
     dismissed: [],
@@ -2061,6 +2161,215 @@ test("IssuePage reports a failed issue read on an item deep link instead of load
   } finally {
     view.unmount();
     getComment.mockRestore();
+    restore();
+  }
+});
+
+// INFRA-869. An address may write an item's id short; the page resolves it, opens the item
+// under the whole id, and rewrites the address to it.
+const WHOLE_ID = "4c9f3e12-1111-4222-8333-444444444444";
+const OTHER_ID = "4c9f3e12-5555-4666-8777-888888888888";
+const SHORT_ID = "4c9f3e12";
+
+/** The comment the ids above name: unanchored, so the landing opens its Conversation turn
+ *  rather than a document. */
+const shortIdComment = { ...itemComment, anchor: null, id: WHOLE_ID };
+
+function GoBack(): ReactNode {
+  const navigate = useNavigate();
+  return (
+    <button onClick={() => navigate(-1)} type="button">
+      Go back
+    </button>
+  );
+}
+
+/** The issue page over a history of its own, so a test can go back from the address it opened
+ *  and see what the page left behind it. */
+function renderLandingHistory(entries: string[]) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  const runtime = fakeDocumentRuntime({});
+  queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
+  const view = render(
+    <MemoryRouter initialEntries={entries} initialIndex={entries.length - 1}>
+      <QueryClientProvider client={queryClient}>
+        <KeymapProvider>
+          <DocumentRuntime.Provider value={runtime.runtime}>
+            <MarginProvider>
+              <CurrentRoute />
+              <GoBack />
+              <Routes>
+                <Route path="/issues/:key/*" element={<IssuePage />} />
+              </Routes>
+            </MarginProvider>
+          </DocumentRuntime.Provider>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  window.setTimeout(runtime.sync);
+  return view;
+}
+
+test("IssuePage reads an item whose address writes its id whole without resolving anything", async () => {
+  const restore = stubIssuePage(issue);
+  const getReferences = spyOn(api, "getReferences");
+  const getComment = spyOn(api, "getComment").mockResolvedValue({
+    comment: shortIdComment,
+    replies: [],
+  });
+  const view = renderIssuePage(`/issues/CORE-1/comments/${WHOLE_ID}`);
+
+  try {
+    await waitFor(() => expect(getComment).toHaveBeenCalledWith(WHOLE_ID));
+    await screen.findByRole("tab", { name: /Conversation/ });
+    // The whole id is read once, under itself, and nothing is resolved for it.
+    expect(getComment.mock.calls).toEqual([[WHOLE_ID]]);
+    expect(getReferences).not.toHaveBeenCalled();
+    expect(screen.getByTestId("current-route").textContent).toBe(
+      `/issues/CORE-1/comments/${WHOLE_ID}`
+    );
+  } finally {
+    view.unmount();
+    getComment.mockRestore();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
+test("IssuePage resolves an address that writes an id short and replaces it with the whole id", async () => {
+  const restore = stubIssuePage(issue);
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue({
+    edges: [],
+    node: { id: WHOLE_ID, kind: "comment", ref: `dispatch://CORE-1/comment/${WHOLE_ID}` },
+  });
+  const getComment = spyOn(api, "getComment").mockResolvedValue({
+    comment: shortIdComment,
+    replies: [],
+  });
+  const view = renderLandingHistory(["/issues/CORE-1", `/issues/CORE-1/comments/${SHORT_ID}`]);
+
+  try {
+    await waitFor(() =>
+      expect(screen.getByTestId("current-route").textContent).toBe(
+        `/issues/CORE-1/comments/${WHOLE_ID}`
+      )
+    );
+    expect(getReferences).toHaveBeenCalledWith(`dispatch://CORE-1/comment/${SHORT_ID}`);
+    // The item is read under the whole id alone: the prefix is no key anything is cached under.
+    await waitFor(() => expect(getComment.mock.calls).toEqual([[WHOLE_ID]]));
+    // The rewrite replaced the address, so Back leaves the page the reader came from rather
+    // than returning to the short address.
+    fireEvent.click(screen.getByRole("button", { name: "Go back" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1")
+    );
+  } finally {
+    view.unmount();
+    getComment.mockRestore();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
+test("IssuePage lists every item an ambiguous id names, each linking to its whole id", async () => {
+  const restore = stubIssuePage(issue);
+  const getReferences = spyOn(api, "getReferences").mockRejectedValue(
+    new ApiError(409, {
+      candidates: [
+        {
+          first_line: "The first note",
+          id: WHOLE_ID,
+          issue_key: "CORE-1",
+          kind: "comment",
+          ref: `dispatch://CORE-1/comment/${WHOLE_ID}`,
+        },
+        {
+          first_line: "The other note",
+          id: OTHER_ID,
+          issue_key: "CORE-1",
+          kind: "comment",
+          ref: `dispatch://CORE-1/comment/${OTHER_ID}`,
+        },
+      ],
+      code: ID_AMBIGUOUS,
+      error: `the id prefix "${SHORT_ID}" names 2 items; write more of the id`,
+    })
+  );
+  const getComment = spyOn(api, "getComment");
+  const view = renderIssuePage(`/issues/CORE-1/comments/${SHORT_ID}`);
+
+  try {
+    await screen.findByText("Several items match that link");
+    const first = await screen.findByRole("link", { name: "The first note" });
+    const other = screen.getByRole("link", { name: "The other note" });
+    expect(first.getAttribute("href")).toBe(`/issues/CORE-1/comments/${WHOLE_ID}`);
+    expect(other.getAttribute("href")).toBe(`/issues/CORE-1/comments/${OTHER_ID}`);
+    // The list is a view of the page at the address the reader followed, not a route of its own.
+    expect(screen.getByTestId("current-route").textContent).toBe(
+      `/issues/CORE-1/comments/${SHORT_ID}`
+    );
+    expect(getComment).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    getComment.mockRestore();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
+test("IssuePage lists a match the reader cannot open by its kind alone, with no empty line", async () => {
+  const restore = stubIssuePage(issue);
+  const getReferences = spyOn(api, "getReferences").mockRejectedValue(
+    new ApiError(409, {
+      candidates: [
+        {
+          first_line: "The first note",
+          id: WHOLE_ID,
+          issue_key: "CORE-1",
+          kind: "comment",
+          ref: `dispatch://CORE-1/comment/${WHOLE_ID}`,
+        },
+        // A direct message: no address to open and no line the reader may read.
+        { id: OTHER_ID, kind: "message", ref: "" },
+      ],
+      code: ID_AMBIGUOUS,
+      error: `the id prefix "${SHORT_ID}" names 2 items; write more of the id`,
+    })
+  );
+  const view = renderIssuePage(`/issues/CORE-1/messages/${SHORT_ID}`);
+
+  try {
+    await screen.findByText("Several items match that link");
+    const rows = screen.getAllByRole("listitem");
+    const unreadable = rows.find((row) => row.textContent?.includes("Message"));
+    if (unreadable === undefined) throw new Error("the unreadable match is not listed");
+    expect(unreadable.textContent?.trim()).toBe("Message");
+    expect(unreadable.querySelector("a")).toBeNull();
+  } finally {
+    view.unmount();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
+test("IssuePage shows its not-found view for an id prefix that names nothing", async () => {
+  const restore = stubIssuePage(issue);
+  const getReferences = spyOn(api, "getReferences").mockRejectedValue(
+    new ApiError(404, { code: "NOT_FOUND", error: `no comment at ${SHORT_ID}` })
+  );
+  const getComment = spyOn(api, "getComment");
+  const view = renderIssuePage(`/issues/CORE-1/comments/${SHORT_ID}`);
+
+  try {
+    expect(await screen.findByText("Comment not found")).not.toBeNull();
+    expect(getComment).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    getComment.mockRestore();
+    getReferences.mockRestore();
     restore();
   }
 });

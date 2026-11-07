@@ -43,6 +43,7 @@ import remarkInlineLinks from 'remark-inline-links';
 import { remarkSoftBreakAsLine, remarkSoftBreakAsSpace } from './dispatch-soft-breaks.js';
 import { remarkHoistNestedLinks } from './nested-links.js';
 import { remarkContainerDirectives } from './lib-remark-directive-plugin.js';
+import { remarkHtmlBlockParagraphs, remarkStrictHtmlFlow } from './html-blocks.js';
 import { remarkReadOnlyDirectives } from './read-only-directives.js';
 import { remarkUnfitTypedBlocks } from './typed-block-drawing.js';
 import { relaxAskContentCheck } from './ask-content.js';
@@ -182,8 +183,21 @@ export async function createHeadlessProof(options: HeadlessProofOptions = {}): P
       .use(remarkFrontmatter, ['yaml'])
       .use(remarkGfm)
       .use(remarkContainerDirectives)
+      .use(remarkStrictHtmlFlow)
       .use(remarkProofMarks)
-      .use(remarkDispatchMarks)
+      .use(remarkDispatchMarks);
+    // Before `remarkHtmlBlockParagraphs`, and after the mark plugins for the same reason it is:
+    // under this policy an HTML comment draws as nothing, so its node goes before the wrap that
+    // would otherwise leave an empty paragraph standing where the comment was. It is also before
+    // the directive steps below, so raw HTML inside a typed block or a refused directive's
+    // content is read the same way as raw HTML beside it.
+    if (rawHtml === 'text') parseProcessor.use(remarkRawHtmlAsText);
+    parseProcessor
+      // After the mark plugins, whose own block-level span is a pair of HTML blocks until they
+      // have read it, and before the typed-block transforms, which check a block's content
+      // against its rule: a block of HTML becomes a paragraph holding the same text, which the
+      // schema has a node for.
+      .use(remarkHtmlBlockParagraphs)
       // Reference-style links and images (`[text][id]` with `[id]: url` elsewhere in the body)
       // become the inline link or image their definition describes, and the definitions render
       // as nothing, as CommonMark reads them; the schema has no node for an unresolved reference,
@@ -198,9 +212,6 @@ export async function createHeadlessProof(options: HeadlessProofOptions = {}): P
     // lines with a space or splits them around a `break` node, which the commonmark preset's
     // hardbreak parser takes.
     parseProcessor.use(softBreaks === 'line' ? remarkSoftBreakAsLine : remarkSoftBreakAsSpace);
-    // Before the directive steps below, so raw HTML inside a typed block or a refused
-    // directive's content is read the same way as raw HTML beside it.
-    if (rawHtml === 'text') parseProcessor.use(remarkRawHtmlAsText);
     if (options.readOnly) parseProcessor.use(remarkReadOnlyDirectives, options.blockSchema, schema);
     else if (options.blockSchema) {
       parseProcessor.use(remarkTypedBlocks, options.blockSchema).use(remarkUnfitTypedBlocks, schema);

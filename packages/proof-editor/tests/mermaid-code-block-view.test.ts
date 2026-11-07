@@ -434,7 +434,10 @@ function watchedViewport(): {
     near: (element) => {
       for (const observer of [...live]) {
         if (!observer.targets.has(element)) continue;
-        const entry = { isIntersecting: true, target: element } as unknown as IntersectionObserverEntry;
+        const entry = {
+          isIntersecting: true,
+          target: element,
+        } as unknown as IntersectionObserverEntry;
         observer.callback([entry], observer as unknown as IntersectionObserver);
       }
     },

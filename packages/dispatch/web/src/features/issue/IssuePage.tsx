@@ -37,6 +37,7 @@ import {
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { NotFoundPage } from "../shell/NotFoundPage";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
+import { ItemMatchList } from "./ItemMatchList";
 import { IssueHeaderSkeleton, IssueTabsSkeleton } from "./issue-page-skeleton";
 import { stateForIssue } from "./pins";
 import { SpecToolbar } from "./SpecToolbar";
@@ -474,8 +475,13 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   if (issue.data === undefined) {
     return <p className={dangerText}>Could not load this issue.</p>;
   }
-  if (landing?.kind === "redirect") {
+  // The rewrite replaces the address with the whole id rather than adding to the reader's
+  // history, so Back still leaves the page they came from.
+  if (landing?.kind === "redirect" || landing?.kind === "rewrite") {
     return <Navigate replace to={landing.to} />;
+  }
+  if (isItemRoute(route) && landing?.kind === "ambiguous") {
+    return <ItemMatchList candidates={landing.candidates} route={route} />;
   }
   if (isItemRoute(route) && (landing?.kind === "missing" || landing?.kind === "unavailable")) {
     return <ItemLandingFailure landing={landing} route={route} />;

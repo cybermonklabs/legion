@@ -6,8 +6,10 @@
  * `mermaidSvgElement` from `@legion/proof-editor/mermaid` (a stricter sanitizer and the editor's
  * accessible name). A body's block becomes a `figure` holding the diagram, then (only for a source
  * the renderer refuses) a status line naming the reason, then the original code block inside a
- * `Mermaid source` disclosure, closed once the diagram drew and open on a refusal so the source is
- * readable at once.
+ * `Mermaid source` disclosure, closed the first time a diagram draws and open again on a later
+ * paint of a source the reader opened, remembered under the same entry limit as the drawings and
+ * closed again once its source changes (a different source is a different key); a refusal
+ * draws open so the source is readable at once.
  *
  * A document's blocks draw here too, through the editor's drawer: `features/doc/editor.ts` gives
  * `createProofEditor` `requestMermaidDrawing` as its `drawMermaid`, so the live editor, a
@@ -84,8 +86,9 @@ import { dangerText } from "../../theme/classes";
 import type { DrawnSource, MermaidRequest } from "./mermaid-render.worker";
 import { rememberUpTo, type WorkerJob, WorkerQueue } from "./worker-queue";
 
-/** Draws one body block, or one editor block, once its source's answer arrives. */
-type LateDraw = (drawn: MermaidDrawing) => void;
+/** Draws one body block, or one editor block, once its source's answer arrives, under the key
+ *  the source is drawn, cached and remembered by; the editor's drawer reads the drawing alone. */
+type LateDraw = (drawn: MermaidDrawing, key: string) => void;
 /** Parses a source with the engine and soft-break policy that parsed the body; `undefined` for a
  *  source the engine refuses. */
 type Reparse = (source: string) => ProseMirrorNode | undefined;
@@ -112,19 +115,16 @@ const PREVIEW_STYLE = "svg{max-width:100%;height:auto;display:block}";
 type CachedDrawing = Exclude<MermaidDrawing, { unavailable: true }>;
 
 const drawings = new Map<string, CachedDrawing>();
+/** The sources whose `Mermaid source` disclosure a reader opened. A body is painted whole, so
+ *  every paint builds the disclosure anew (`useRenderedMarkdown`) and reads this to draw it open
+ *  again. Bounded by `CACHE_LIMIT`, the drawings' limit: the oldest opening goes first. */
+const opened = new Map<string, true>();
 /** Resolves each pending `mermaidDrawsSettled` promise; run once nothing waits for the worker. */
 const settledWaiters: (() => void)[] = [];
 /** `RENDER_TIME_LIMIT_MS`, unless a test shortened it through `resetMermaidDiagrams`. */
 let timeLimitMs = RENDER_TIME_LIMIT_MS;
 
 function noop(): void {}
-
-/** What a source is cached and queued under. A code block keeps its source's line ends, and the
- *  renderer splits lines at LF alone, so a source written with lone CRs reaches it as LF; CRLF
- *  too, so one diagram is one cache entry whoever asks for it. */
-function sourceKey(source: string): string {
-  return source.replace(/\r\n?/g, "\n");
-}
 
 function recover(): void {
   mermaidQueue.recover();
@@ -265,8 +265,9 @@ const mermaidQueue = new WorkerQueue<WorkerJob, DrawnSource, MermaidDrawing>({
 });
 
 /** Replaces `pre` with its drawn figure, moving `pre` itself into the source disclosure; with no
- *  renderer (`unavailable`) it leaves `pre` as code. */
-function drawBlock(pre: HTMLPreElement, drawn: MermaidDrawing): void {
+ *  renderer (`unavailable`) it leaves `pre` as code. `key` is the source's key, under which an
+ *  opened disclosure is remembered and read back on a later paint of the same source. */
+function drawBlock(pre: HTMLPreElement, drawn: MermaidDrawing, key: string): void {
   if ("unavailable" in drawn) return;
   const document = pre.ownerDocument;
   const figure = document.createElement("figure");
@@ -280,6 +281,26 @@ function drawBlock(pre: HTMLPreElement, drawn: MermaidDrawing): void {
     preview.className = "dispatch-mermaid-preview";
     showMermaidSvg(preview, drawn.svg, PREVIEW_STYLE);
     figure.append(preview);
+    details.open = opened.has(key);
+    // Both paths record through one step: on open the key is written only when it is absent,
+    // because `rememberUpTo` drops the oldest entry whenever the map is full and `Map.set` on a
+    // key already there does not move it, so a write on every open would cost another reader's
+    // source its place once per paint; on close the key goes.
+    const remember = (open: boolean): void => {
+      if (!open) opened.delete(key);
+      else if (!opened.has(key)) rememberUpTo(opened, CACHE_LIMIT, key, true);
+    };
+    // The reader's click is recorded too, with the state the summary's activation is about to
+    // produce, because the HTML specification queues `toggle` as a task: a repaint that lands
+    // between the click and that task - the live view painting a streaming turn anew, a decision
+    // card arriving - reads the memory before the listener wrote it and draws the disclosure
+    // closed. Measured, not feared: the label row of `e2e/mermaid.e2e.ts` failed that way once
+    // in 100 repeats on Firefox at the head that recorded from `toggle` alone, the source hidden
+    // for the whole 15 s expect timeout after the reader clicked `Mermaid source`. `toggle`
+    // stays beside it for the keyboard and for an opening the code makes, which no click
+    // reports.
+    summary.addEventListener("click", () => remember(!details.open));
+    details.addEventListener("toggle", () => remember(details.open));
   } else {
     const status = document.createElement("p");
     status.setAttribute("role", "status");
@@ -293,6 +314,13 @@ function drawBlock(pre: HTMLPreElement, drawn: MermaidDrawing): void {
   figure.append(details);
 }
 
+/** The key a source is drawn, cached and remembered under. A code block keeps its source's line
+ *  ends, and the renderer splits lines at LF alone, so a source written with lone CRs reaches it
+ *  as LF; CRLF too, so one diagram is one cache entry whoever asks for it. */
+function sourceKey(source: string): string {
+  return source.replace(/\r\n?/g, "\n");
+}
+
 /**
  * The editor's `MermaidDrawer` (`@legion/proof-editor/mermaid`), and the one way any block here
  * asks for a drawing. A cached source calls `draw` now, inside the call; so does an uncached one
@@ -304,13 +332,17 @@ function drawBlock(pre: HTMLPreElement, drawn: MermaidDrawing): void {
  * cancel that does nothing.
  */
 export function requestMermaidDrawing(source: string, draw: LateDraw): () => void {
-  const key = sourceKey(source);
-  const drawn = drawings.get(key);
+  const normalised = sourceKey(source);
+  const drawn = drawings.get(normalised);
   if (drawn !== undefined) {
-    draw(drawn);
+    draw(drawn, normalised);
     return noop;
   }
-  return mermaidQueue.wait(key, () => ({ key }), draw);
+  return mermaidQueue.wait(
+    normalised,
+    () => ({ key: normalised }),
+    (drawn) => draw(drawn, normalised)
+  );
 }
 
 /**
@@ -328,7 +360,9 @@ export function requestMermaidDrawing(source: string, draw: LateDraw): () => voi
 function drawBlockWhenNear(pre: HTMLPreElement): () => void {
   let cancelRequest: (() => void) | undefined;
   const ask = () => {
-    cancelRequest = requestMermaidDrawing(pre.textContent ?? "", (drawn) => drawBlock(pre, drawn));
+    cancelRequest = requestMermaidDrawing(pre.textContent ?? "", (drawn, key) =>
+      drawBlock(pre, drawn, key)
+    );
   };
   const key = sourceKey(pre.textContent ?? "");
   if (drawings.has(key) || mermaidQueue.holds(key)) {
@@ -376,9 +410,9 @@ export function drawMermaidDiagrams(
  * Resolves on the microtask after no source is waiting for the worker: every block that asked
  * has drawn, been refused or been cancelled, or a failure or a reset cleared the queue. With
  * none waiting it resolves at once. It is the queue's own settle point, which is what a test
- * waits on rather than polling the page; the document's focus correction watches
- * `mermaidDrawsWaiting` a frame at a time instead, because the height it is waiting for goes
- * on settling after the last diagram has drawn.
+ * waits on rather than polling the page, and what a document's focus correction waits on for
+ * the diagrams above its target, beside the height of the drawn document itself
+ * (`features/doc/refocus-when-settled.ts`).
  */
 export function mermaidDrawsSettled(): Promise<void> {
   if (!mermaidQueue.waiting) return Promise.resolve();
@@ -394,14 +428,16 @@ export function mermaidDrawsWaiting(): boolean {
 }
 
 /**
- * Terminates the worker and forgets it, every cached drawing, every waiting draw and a failure,
- * so a test starts from a page that has drawn nothing. `timeLimitMs` replaces
- * `RENDER_TIME_LIMIT_MS` until the next reset, so a test of the time limit need not wait 5 s.
+ * Terminates the worker and forgets it, every cached drawing, every remembered opening, every
+ * waiting draw and a failure, so a test starts from a page that has drawn nothing. `timeLimitMs`
+ * replaces `RENDER_TIME_LIMIT_MS` until the next reset, so a test of the time limit need not
+ * wait 5 s.
  */
 export function resetMermaidDiagrams(limitMs = RENDER_TIME_LIMIT_MS): void {
   mermaidQueue.clear();
   mermaidQueue.recover();
   window.removeEventListener("online", recover);
   drawings.clear();
+  opened.clear();
   timeLimitMs = limitMs;
 }

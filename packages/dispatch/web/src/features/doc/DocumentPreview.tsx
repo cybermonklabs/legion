@@ -3,6 +3,7 @@ import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState }
 import { markdownClassName } from "../refs/markdown-engine";
 import { markdownWorkerThreshold } from "../refs/markdown-worker-threshold";
 import { paintBlock, paintBlockInSlices } from "../refs/paint-block";
+import { NOTHING_TO_LINK } from "../refs/RefLink";
 import { useRenderedMarkdown } from "../refs/useRenderedMarkdown";
 import { leadingBlocks } from "./document-blocks";
 import { firstScreenAwaits, takeFirstScreen } from "./first-screen";
@@ -240,6 +241,10 @@ export function DocumentPreview({
       setDrawnOnce(true);
     },
     paintInSlices: paintBlockInSlices,
+    // The draw the editor replaces links nothing: what this document's text cites is drawn by
+    // the editor itself, over the blocks it builds (`features/doc/document-references.tsx`),
+    // and reading 400,000 characters of it for a link pass twice is the reader's own thread.
+    references: NOTHING_TO_LINK,
     theWorkerOrNothing: true,
     whilePending: "hold",
   });

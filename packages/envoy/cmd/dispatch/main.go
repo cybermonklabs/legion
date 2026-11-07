@@ -127,6 +127,22 @@ type bootConfig struct {
 	// five minutes; only DISPATCH_TEST_CI_RECONCILE_INTERVAL, under the test hooks, sets it, since
 	// no process-level test can wait five minutes for a pass.
 	CIReconcileInterval time.Duration
+	// DeliveryReconcileInterval is how often the delivery reconcile pass runs, zero for
+	// delivery.ReconcileInterval's five minutes; only DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL,
+	// under the test hooks, sets it, since no end-to-end test can wait five minutes for a pass.
+	DeliveryReconcileInterval time.Duration
+	// MaintenanceSweepInterval is how often the maintenance sweep runs - the Idempotency-Keys and
+	// spent DPoP proofs past their windows, and the deliveries a process that died left owed -
+	// zero for api.MaintenanceSweepInterval's minute; only
+	// DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL, under the test hooks, sets it, since no
+	// process-level test can wait a minute for a pass.
+	MaintenanceSweepInterval time.Duration
+	// ProcessHeartbeat is how often this process stamps its row in the registry of live server
+	// processes, zero for processes.HeartbeatInterval's five seconds; only
+	// DISPATCH_TEST_PROCESS_HEARTBEAT, under the test hooks, sets it, and processes.LiveWindow
+	// keeps its ratio of three beats to it, since no process-level test can wait a live window
+	// and a heartbeat for a refusal to stand.
+	ProcessHeartbeat time.Duration
 	// ListenerRosterUncached makes every read of the listener's session list ask the listener
 	// rather than share the process's five-second copy; only DISPATCH_TEST_ROSTER_UNCACHED=1, under
 	// the test hooks, sets it.
@@ -164,6 +180,11 @@ type bootConfig struct {
 	// PprofAddr is where the profiling listener binds, 127.0.0.1 and DISPATCH_PPROF_PORT
 	// (pprofAddress); empty, nothing listens.
 	PprofAddr string
+	// MaxLiveRooms and MaxDocConnections are DISPATCH_MAX_LIVE_ROOMS and
+	// DISPATCH_MAX_DOC_CONNECTIONS, the document service's room and connection caps; zero, unset,
+	// is the service's own default.
+	MaxLiveRooms      int
+	MaxDocConnections int
 	// DevSignIn (DISPATCH_DEV_SIGNIN=1) mounts GET /auth/_dev/signin behind the dev sign-in
 	// fence; the signing key is then per process, or derived from DevSignInSharedKey.
 	DevSignIn bool
@@ -188,6 +209,10 @@ type bootConfig struct {
 	// Embedder is where meaning search embeds text (DISPATCH_EMBEDDER and DISPATCH_AZURE_*),
 	// checked whole; newEmbedder builds its client.
 	Embedder embedderConfig
+	// Answerer is where the server generates text (DISPATCH_ANSWERER, and the DISPATCH_AZURE_CHAT_*
+	// or DISPATCH_CHAT_* settings of the place it names), checked whole; an empty Place is no
+	// model configured, which the server says at boot rather than refusing to start.
+	Answerer answererConfig
 }
 
 func main() {
@@ -200,6 +225,14 @@ func main() {
 	if err != nil {
 		slog.Error("dispatch: resolve boot config", "error", err)
 		os.Exit(1)
+	}
+	// The registry's pace, before anything registers or reads what is live. The live window stays
+	// three beats, as processes.LiveWindow is of processes.HeartbeatInterval, so a run cannot give
+	// itself a window shorter than its own heartbeat, and the wait a refused process makes
+	// (Register: one live window and one heartbeat) shortens with it.
+	if boot.ProcessHeartbeat > 0 {
+		processes.HeartbeatInterval = boot.ProcessHeartbeat
+		processes.LiveWindow = 3 * boot.ProcessHeartbeat
 	}
 
 	envoyConfig, err := loadEnvoyConfig(env, config.LoadOptions{})
@@ -385,16 +418,13 @@ func main() {
 	requestIdentity := requestIdentityFor(boot, signingKey, people, sessions, signIn)
 
 	broker := events.NewBroker()
-	documentService := docs.New(docs.Deps{
-		Store:             database,
-		Events:            broker,
-		Identity:          requestIdentity,
-		ServerURL:         serverURL,
-		Settle:            boot.SettleDelay,
-		MarkWait:          boot.MarkWait,
-		UnrecordedMarkTTL: boot.UnrecordedMarkTTL,
-		EditNoticeQuiet:   boot.EditNoticeQuiet,
+	documentService := newDocumentService(boot, docs.Deps{
+		Store:     database,
+		Events:    broker,
+		Identity:  requestIdentity,
+		ServerURL: serverURL,
 	})
+	publishRoomFigures(documentService)
 	restoreDecidedWordings(ctx, documentService, decidedWordingRestoreTimeout)
 	// The asks a close or a reopen by a release older than the withdrawal left: at boot, then on an
 	// interval below. It appends events and takes no copy lock, so it runs after
@@ -432,6 +462,15 @@ func main() {
 		embedder = client
 	}
 
+	// answerer is nil where the deployment configured no model, which newAnswerer logs: the
+	// server boots and says it cannot answer. A shape it could not build from is a refusal to
+	// boot, as the embedder's is, since the deployment asked for a model and got none.
+	answerer, err := newAnswerer(boot.Answerer)
+	if err != nil {
+		slog.Error("dispatch: build the answerer", "error", err)
+		os.Exit(1)
+	}
+
 	built := routes.AppContextOptions{
 		SigningKey:     signingKey,
 		WebDistDir:     webDistDir,
@@ -455,6 +494,11 @@ func main() {
 	// configured verifier, and every JWT-shaped bearer would be sent to it.
 	if serviceTokens != nil {
 		built.OIDC = serviceTokens
+	}
+	// Set only when configured, for the reason above: a nil *going.Answerer in the interface
+	// field would read as a model configured, and the capability route would say so.
+	if answerer != nil {
+		built.Answerer = answerer
 	}
 	brokerTokens, err := brokerTokenVerifier(boot, database, serverURL)
 	if err != nil {
@@ -518,11 +562,12 @@ func main() {
 	//     above; each tick sends its statements whether or not anything is owed.
 	//
 	// The shared listener is one pglisten.Hub per process, on one held connection of the store's
-	// listener pool, carrying every woken loop's channel. Every wake is registered before it runs
-	// (a channel added later would never be LISTENed on), and no loop waits for it: each runs its
-	// boot pass whether or not the hub has connected. Postgres does not replay a notification sent
-	// while nothing listened, so the hub signals every wake after each successful LISTEN, and a
-	// change made while it was redialing (backing off up to 30 s) is caught up then.
+	// listener pool, carrying every woken loop's channel and the document rooms' room-sync
+	// channels alike. Every wake and handler is registered before it runs (a channel added later
+	// would never be LISTENed on), and no loop waits for it: each runs its boot pass whether or
+	// not the hub has connected. Postgres does not replay a notification sent while nothing
+	// listened, so the hub signals every wake after each successful LISTEN, and a change made
+	// while it was redialing (backing off up to 30 s) is caught up then.
 	//
 	// The events outbox publishes under a hold of its own rather than such a lease
 	// (outbox.Outbox): it renews duty.Hold "dispatch-outbox" on its own pool every two seconds, so
@@ -535,16 +580,15 @@ func main() {
 	//     reconciliation (`for no key update ... skip locked`) and the delivery intakes (NATS's
 	//     push-durable exclusivity, which delivery.StartIntakes takes).
 	//   - per-process by design, because each serves this process's own connections or memory:
-	//     the settlement resumption (it arms this process's rooms, and docs/resume.go says it
-	//     runs on an interval precisely because a rolling deploy overlaps two processes), the
-	//     shared wake listener (each process's loops wait on their own), the delivery live hub
-	//     and its listener (migration 0107_events_notify.up.sql states that purpose), the event
-	//     stream relay, the document rooms' timers, the document compaction queue (docs.New starts
-	//     it; it compacts the documents this process's own appends and loads noted, and the hourly
-	//     compaction sweep below is the leased pass over the documents doc_compaction_owed names,
-	//     those with rows to fold), and the stale-room evictor (it closes the rooms resident in
-	//     this process that the other process's writes left behind the durable head, so it has to
-	//     run wherever a room is resident).
+	//     the delivery live hub and its listener (migration 0107_events_notify.up.sql states that
+	//     purpose), the event stream relay, the document rooms' timers, the document compaction
+	//     queue (docs.New starts it; it compacts the documents this process's own appends and
+	//     loads noted, and the hourly compaction sweep below is the leased pass over the
+	//     documents doc_compaction_owed names, those with rows to fold), the process's shared
+	//     listener hub (its connection is this process's membership and every loop above waits on
+	//     a wake of this process's own, so it has to run in every process) and the room sync
+	//     registered on it (it serves the rooms resident in this process: it catches them up with
+	//     the other processes' writes and answers their room queries).
 	//   - a boot one-shot already serialised by an advisory lock or idempotent: the migrations,
 	//     retirePlainRefreshTokens, restoreDecidedWordings, repairIssueAsks and SeedRepoProjects
 	//     above, and the embedding coverage pass (two processes' passes at once leave what one
@@ -619,30 +663,46 @@ func main() {
 		backgroundEmbedder = embed.NewRateLimitedEmbedder(embedder)
 	}
 
-	// The shared listener (see the loop comment above). A wake is registered only for a loop that
-	// will read it: with no embedder embedqueue.Run returns at once, and without NATS or the
-	// GitHub App no intake starts to route by the settings, so neither channel is LISTENed on.
-	wakes := &pglisten.Hub{Owner: "dispatch background wakes", Dial: database.Pool.Listener}
+	// This process's one shared LISTEN connection. Its name is what makes this process a member:
+	// the other envoy-dispatch processes read it in pg_stat_activity (docs/room_sync.go), and only
+	// one connection per process can answer for that, so the woken loops' wakes and the document
+	// rooms' room sync are registered on the one hub. The delivery hub and the event stream relay
+	// still hold listener connections of their own (store.Pool.Listener).
+	//
+	// A wake is registered only for a loop that will read it: with no embedder embedqueue.Run
+	// returns at once, and without NATS or the GitHub App no intake starts to route by the
+	// settings, so neither channel is LISTENed on.
+	listenerHub := &pglisten.Hub{
+		Owner: "dispatch",
+		Dial: func(ctx context.Context) (*pgx.Conn, error) {
+			return database.Pool.Dedicated(ctx, docs.ListenerApplicationPrefix+documentService.ProcessID())
+		},
+	}
 	var embeddingsWake, settingsWake <-chan struct{}
 	if backgroundEmbedder != nil {
-		embeddingsWake = wakes.Wake(embedqueue.WakeChannel)
+		embeddingsWake = listenerHub.Wake(embedqueue.WakeChannel)
 	}
-	excerptsWake := wakes.Wake(docs.ExcerptsOwedChannel)
-	editNoticesWake := wakes.Wake(docs.EditNoticesChannel)
-	eventsWake := wakes.Wake(api.EventsChannel)
+	excerptsWake := listenerHub.Wake(docs.ExcerptsOwedChannel)
+	editNoticesWake := listenerHub.Wake(docs.EditNoticesChannel)
+	eventsWake := listenerHub.Wake(api.EventsChannel)
 	if natsClient != nil && appCtx.GitHub() != nil {
-		settingsWake = wakes.Wake(delivery.SettingsChannel)
+		settingsWake = listenerHub.Wake(delivery.SettingsChannel)
 	}
-	go wakes.Run(ctx)
 
 	go embedqueue.Run(ctx, embedqueue.Deps{Store: database, Embedder: backgroundEmbedder, Wake: embeddingsWake})
 	// A settlement a shutdown cut short, here or in the task this one replaces, runs without
-	// anyone opening its document.
-	go documentService.RunSettlementResumption(ctx)
-	// INFRA-66: a document written by the other envoy-dispatch process is announced over
-	// Postgres, and the room this process holds for it closes within that round trip, so its
-	// browsers reconnect and re-sync instead of reading text the store no longer holds.
-	go documentService.RunStaleRoomEviction(ctx)
+	// anyone opening its document. One process per period arms them (docs.RunSettlementResumption).
+	go documentService.RunSettlementResumption(ctx, leases)
+	// The document rooms' room sync, registered on the hub above and run beside it: a document
+	// written by another process is announced over Postgres, and the room this process holds for
+	// it catches up from the stored updates within that round trip, so its browsers see the write
+	// without a reconnect. The hub takes no registration once it runs, so every wake above and
+	// every room-sync handler is registered before the line that starts it. Both stop with ctx,
+	// like the loops beside them; the service's NOTIFY sender stays open until
+	// documentService.Shutdown has drained the rooms.
+	runRoomSync := documentService.RegisterRoomSync(listenerHub)
+	go runRoomSync(ctx)
+	go listenerHub.Run(ctx)
 	// The related-item check's keyword statistics (each project's df and N), rebuilt at
 	// boot and every ten minutes.
 	go api.RunSearchTermStatsRefresh(ctx, database.Pool, api.SearchTermStatsInterval, leases)
@@ -724,6 +784,9 @@ func main() {
 	if boot.ReconcileAtStart {
 		reconcile.FirstPassAtStart()
 	}
+	if boot.DeliveryReconcileInterval > 0 {
+		reconcile.TickEvery(boot.DeliveryReconcileInterval)
+	}
 	go reconcile.Run(ctx, leases)
 	// waitIntakes waits for the intakes' stop, which shutdown runs before it closes the database
 	// pool; with no NATS client there is nothing to wait for.
@@ -775,7 +838,11 @@ func main() {
 	// left owed, once a minute across the processes under the suggestion-outcomes lease. It is a
 	// timer and not a woken loop because no commit announces either, and it starts here because
 	// it resumes those deliveries through the API server built just above.
-	go api.RunMaintenanceSweep(ctx, database.Pool, api.MaintenanceSweepInterval, leases, background.ResumeDeliveries)
+	maintenanceInterval := api.MaintenanceSweepInterval
+	if boot.MaintenanceSweepInterval > 0 {
+		maintenanceInterval = boot.MaintenanceSweepInterval
+	}
+	go api.RunMaintenanceSweep(ctx, database.Pool, maintenanceInterval, leases, background.ResumeDeliveries)
 	handler := dispatchHandler(routesHandler, met, database, natsClient, outboxPublisher, fileStore, buildCommit, announcer, issuers{signIn: signIn, serviceTokens: serviceTokens})
 	server := newHTTPServer(handler, time.Now)
 	// The server serves on the socket it inherited (DISPATCH_LISTEN_FD) or binds its address, and
@@ -989,6 +1056,12 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		return bootConfig{}, err
 	}
 	boot.PprofAddr = pprofAddr
+	if boot.MaxLiveRooms, err = positiveSetting(env, "DISPATCH_MAX_LIVE_ROOMS"); err != nil {
+		return bootConfig{}, err
+	}
+	if boot.MaxDocConnections, err = positiveSetting(env, "DISPATCH_MAX_DOC_CONNECTIONS"); err != nil {
+		return bootConfig{}, err
+	}
 	if boot.NATSReplicas, err = bus.ParseNATSReplicas(env.get(bus.ReplicasEnvVar)); err != nil {
 		return bootConfig{}, err
 	}
@@ -1009,6 +1082,9 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		{"DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW", &boot.ListenerTakeoverWindow},
 		{"DISPATCH_TEST_EDIT_NOTICE_QUIET", &boot.EditNoticeQuiet},
 		{"DISPATCH_TEST_CI_RECONCILE_INTERVAL", &boot.CIReconcileInterval},
+		{"DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL", &boot.DeliveryReconcileInterval},
+		{"DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL", &boot.MaintenanceSweepInterval},
+		{"DISPATCH_TEST_PROCESS_HEARTBEAT", &boot.ProcessHeartbeat},
 	} {
 		if err := testHookDuration(env, setting.name, boot.TestHooksEnabled, setting.target); err != nil {
 			return bootConfig{}, err
@@ -1096,6 +1172,10 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		}
 	}
 	boot.Embedder, err = resolveEmbedder(env)
+	if err != nil {
+		return bootConfig{}, err
+	}
+	boot.Answerer, err = resolveAnswerer(env, boot.Embedder.Place)
 	if err != nil {
 		return bootConfig{}, err
 	}
@@ -1282,6 +1362,27 @@ func devSignInSharedSigningKey(shared string) string {
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
+// newDocumentService is the document service main serves the document websocket and the API's
+// documents from: built, what main made from the rest of the configuration, with every setting the
+// service takes from boot filled in (documentDeps).
+func newDocumentService(boot bootConfig, built docs.Deps) *docs.Service {
+	return docs.New(documentDeps(boot, built))
+}
+
+// documentDeps is built with every setting the document service takes from boot filled in. The
+// settings tests read its answer, as they build the router through appContextOptions, so dropping
+// a hand-off here fails a case (TestDocumentDepsCarryEveryBootSetting).
+func documentDeps(boot bootConfig, built docs.Deps) docs.Deps {
+	built.Settle = boot.SettleDelay
+	built.MarkWait = boot.MarkWait
+	built.UnrecordedMarkTTL = boot.UnrecordedMarkTTL
+	built.EditNoticeQuiet = boot.EditNoticeQuiet
+	built.MaxLiveRooms = boot.MaxLiveRooms
+	built.MaxDocConnections = boot.MaxDocConnections
+	built.TestHooks = boot.TestHooksEnabled
+	return built
+}
+
 // dashboardPublishTimeout bounds the boot's publish of its dashboard build and the prune after it.
 // A first publish writes the whole build, 45 files and 5.4 MB for the dashboard of 2026-10-27; a
 // restart on a stored build writes nothing.
@@ -1459,6 +1560,21 @@ func parsePort(name, raw string) (int, error) {
 	return port, nil
 }
 
+// positiveSetting reads the positive whole number the setting name holds: decimal digits alone,
+// at least 1, with whitespace at either end ignored; unset or empty, it is 0. The error names the
+// setting and the value, so a refusal says which variable to fix.
+func positiveSetting(env settingValues, name string) (int, error) {
+	raw := strings.TrimSpace(env.get(name))
+	if raw == "" {
+		return 0, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || strings.TrimLeft(raw, "0123456789") != "" || value < 1 {
+		return 0, fmt.Errorf("%s=%q (expected a positive integer)", name, raw)
+	}
+	return value, nil
+}
+
 // openFileStore is the uploaded-file store boot names (files.Open: gs://<bucket> is a Cloud
 // Storage bucket, a bare name an S3 bucket), or nil when DISPATCH_FILE_STORE_BUCKET is unset,
 // which keeps every file in Postgres. A nil interface, never a typed nil, so every caller's nil
@@ -1589,8 +1705,7 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 // adds no statement to the database), and `schema_version`, the highest migration the database
 // has applied, read by the same probe (null when the database did not answer). A deploy check
 // compares commit and schema_version with the commit its image pin names and that commit's
-// migrations, so neither is ever filled with a guess; the Legion daemon reads fleet_commit, since
-// mid-roll whichever process answers it may serve a build the rest do not.
+// migrations, so neither is ever filled with a guess.
 //
 // `outbox_publisher` says whether this process publishes the events outbox now: true while it
 // holds the outbox's publisher hold and the hold's deadline has not passed, false when it stands

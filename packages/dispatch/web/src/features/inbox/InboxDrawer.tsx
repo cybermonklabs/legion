@@ -21,27 +21,27 @@ import { InboxList } from "./InboxList";
  * mounts it while it is open and takes it down when it closes, so its chunk is asked for the
  * first time a reader opens it (`features/shell/deferred-shell.ts`).
  *
- * Its assignee filter and its search box are its own `useState`, never the URL: `Inbox`'s
- * `filter`/`onAssigneesChange`/`onQueryChange` exist exactly so a peek embedded on, say, the
- * Agents page does not navigate it to `/` the moment someone picks a person or types a word.
+ * Its filters, sort, grouping, Inbox-or-Dismissed switch and search text are its own `useState`,
+ * never the URL: `Inbox`'s `filter`/`onFilterChange` exist exactly so a peek embedded on, say,
+ * the Agents page does not navigate it to `/` the moment someone picks a person or types a word.
  * `keymapScope={DIALOG_SCOPE}` puts its j/k/Enter/Escape bindings on the scope a dialog anywhere
  * on the stack exclusively consults, instead of the standalone page's `inbox` scope, which a
- * dialog's keydown handling never reaches. `pane={false}` is the last: a peek is a strip beside
+ * dialog's keydown handling never reaches. `pane={false}` is the third: a peek is a strip beside
  * the page it covers, not a two-column reader, so it keeps the card in the row at every width -
- * the Inbox the page itself shows below 1280 px.
+ * the Inbox the page itself shows below 1280 px. The rows scroll in this `aside` rather than in
+ * the window, so it is also the box the Inbox's viewport anchor is given (`scroller`): without
+ * it the anchor compensates a removed row with `window.scrollBy`, which moves nothing here, and
+ * the row the reader's hand is on jumps by a card's height. What the reader's browser keeps -
+ * the thread order, and which bands they folded - is theirs rather than the address's, so the
+ * drawer and the page agree.
  */
 export function InboxDrawer({ onClose }: { onClose: () => void }): ReactNode {
   const closeButtonRef = useRef<HTMLButtonElement>(null);
-  // `undefined` is the reader alone, the same default the page reads from an address without
-  // `?assignee=`.
-  const [assignees, setAssignees] = useState<readonly string[] | undefined>(undefined);
-  // The text the box narrows by, local for the same reason: a peek must not rewrite the address
-  // of the page it covers.
-  const [query, setQuery] = useState("");
+  // An empty route is the Inbox as it opens: the reader's own work, newest first, banded by
+  // priority, every thread they have not dismissed, and nothing typed in the search box.
+  const [filter, setFilter] = useState<InboxRoute>({});
   const dialog = useDialog<HTMLElement>({ initialFocusRef: closeButtonRef, onClose, open: true });
   useCloseOnNavigation(true, onClose);
-
-  const filter: InboxRoute = { assignees, q: query };
 
   return (
     <>
@@ -69,9 +69,9 @@ export function InboxDrawer({ onClose }: { onClose: () => void }): ReactNode {
           <InboxList
             filter={filter}
             keymapScope={DIALOG_SCOPE}
-            onAssigneesChange={setAssignees}
-            onQueryChange={setQuery}
+            onFilterChange={setFilter}
             pane={false}
+            scroller={dialog.containerRef}
           />
         </Suspense>
       </aside>

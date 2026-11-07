@@ -32,15 +32,41 @@ soft: it names the session it continues, which is a fork's or branch's parent, o
 this process last held the role under. The listener moves the role off that predecessor only
 when the predecessor has no live registration, when its live registration carries this extension
 instance's own client instance id, or when either side carries no instance id. A predecessor
-another process still runs keeps the role, and the claim is refused naming that holder. A refused
-session keeps running and stays registered, without the role: it does not claim again at each
-heartbeat, and it takes the role on its next session event once the holder is gone. Each
-extension instance mints its client instance id when it starts and sends it on every registration
-and on the deregistration at shutdown, where the listener removes the registration only while it
-carries the same id or none. The queues, deadlines and shared role state behind all of this are
-`src/registration-state.ts`, beside the extension's other `src/` modules: a queued task acts
-through a handle that refuses every step past the task's deadline, or once its session is no
-longer the open session.
+another process still runs keeps the role, and the claim is refused naming that holder. A claim
+of a role already held under this session's own id is decided on the standing claim rather than
+on the registration: the listener grants it to the process that claim names, grants it once
+nobody renewed the claim inside its live window, and otherwise refuses it naming this very
+session. A session refused a role another live session holds keeps running and stays registered,
+without the role: it does not claim again at each heartbeat, and it takes the role on its next
+session event once the holder is gone. A refusal naming this session's own id is never recorded
+as one of those, since it is that other process's standing claim, which the listener grants the
+moment that process stops renewing it: nothing is said, and the next heartbeat claims again.
+Each healthy heartbeat also re-asserts a role this session already holds, and confirms it only
+when the lookup names this session and this process and reports no hand-back; a re-assertion the listener refuses naming
+this session's own id is that same standing claim, so the role stays held here, nothing is
+recorded, nothing is said, and the next heartbeat asks again, while a refusal naming a different
+session ends the role here. A lookup that answers `handed_back` is a role this process does not
+hold, however exactly it names this session and this process: a client built before a release
+stated its process hands a role's lane topic back under this session id without being able to
+free the claim, and the listener marks the claim rather than freeing it, after which no
+registration renews it. The pass that reads the mark claims the role again at once, and that
+grant writes a fresh record with no mark, so a hold marked this way is back before the role
+claim reaper could free it. Each extension instance mints its client instance id when it starts
+and sends it on every registration, on every claim and release, and on the deregistration at
+shutdown, where the listener removes the registration only while it carries the same id or none.
+A registration also renews every role claim this session holds that names this same instance,
+whatever topics it carries and unless the listener has marked that claim handed back;
+a release frees only the claims naming it, so a second process that resumed
+this session's id neither ends this one's role nor outlasts it. A hand-back the listener could
+not make — a release its own holder's renewal beat under each of its three conditional deletes,
+which fails the route rather than reporting a release it did not make — is sent again by the
+next heartbeat, so the role is not left standing while this process's registrations renew its
+claim. The transcript's `envoy-role-claim` entry names the session claimed for and this process
+too: a release another process wrote on the same transcript ends no role here, and a claim
+another process wrote is pressed only while this process holds none. The queues, deadlines and
+shared role state behind all of this are `src/registration-state.ts`, beside the extension's
+other `src/` modules: a queued task acts through a handle that refuses every step past the
+task's deadline, or once its session is no longer the open session.
 
 `envoy_list()` shows the union of the local subscriptions and the listener's persisted interest
 registry. Each reported interest identifies whether it is `live`, `registry`, or `both`, so
@@ -162,16 +188,18 @@ omp plugin install @sjawhar/pi-envoy
 ```
 
 A session that had the pre-split package installed (the one package that carried both entries
-until 7.x) uninstalls it and installs this one once; the `CHANGELOG.md` entry that renames the
-package `@sjawhar/pi-envoy` gives the two commands. A Legion deployment installs
+until 7.x) uninstalls it and installs this one once; `CHANGELOG.md`, this package's history, gives
+the two commands in the entry that renamed the package. A Legion deployment installs
 `@sjawhar/pi-legion` as well (`packages/pi-legion/README.md`); the daemon's boot gate refuses a
 pane that still loads the pre-split package beside the new ones.
 
 The tarball is self-contained: it ships `dist/envoy.js` — bundling every dependency except the OMP
 host packages (`@legion/pi-shared`, `@legion/contracts` and `@legion/envoy-client` are inlined) —
-`dist/THIRD_PARTY_NOTICES`, and the eight skills every session with Dispatch reads,
-`agent-secrets`, `asd-ste100`, `dispatch`, `dispatch-first`, `dispatch-writing-specs`, `envoy`,
-`outside-message` and `plain-words`, staged from the repository's `skills/` at
+`dist/THIRD_PARTY_NOTICES`, and the ten skills it ships: the eight every session with Dispatch
+reads, `agent-secrets`, `asd-ste100`, `dispatch`, `dispatch-first`, `dispatch-writing-specs`,
+`envoy`, `outside-message` and `plain-words`, and the reviewer's pair,
+`thermonuclear-code-quality` and `thermonuclear-deep-review`, which ships here so one copy of each
+rubric reaches both harnesses. All ten are staged from the repository's `skills/` at
 `dist/skills`. The manifest declares `omp.skills: ["dist/skills"]` alongside `omp.extensions`:
 OMP's own plugin discovery only reads `skill://`-resolvable skills from `<plugin root>/skills` or
 from directories a manifest's `omp.skills` array names, and this package ships skills at
@@ -189,8 +217,9 @@ for `omp.extensions` (only `omp.skills` ships as committed, since `dist/skills` 
 a repo checkout after the prepack and the published tarball), while the committed manifest keeps
 the TypeScript entry for repo checkouts. In `.github/workflows/release.yaml`, the `pi_envoy_build`
 job rewrites the manifest before `bun pm pack` and uploads the tarball (its tree is discarded,
-nothing is restored); the `publish` job publishes that tarball and commits the version bump to the
-committed manifest, touching `.version` alone.
+nothing is restored); the `publish` job publishes that tarball, and nothing commits a version: the
+committed manifest's `.version` stays where it last was, and the `pi-envoy-v` tag the release makes
+is what records the release, with this release's changelog entries in its GitHub release notes.
 Packing with the committed source manifest is refused by the prepack, because such a tarball would
 point OMP at an extension file it does not contain.
 

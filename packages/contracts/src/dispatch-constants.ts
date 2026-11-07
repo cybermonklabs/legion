@@ -111,6 +111,11 @@ export function answerSelected(answer: Pick<AskAnswer, "selected">): readonly st
   return answer.selected ?? [];
 }
 
+/** Ask urgency levels the Dispatch server accepts, in ascending order. It is a plain list
+ *  rather than a schema, so the dashboard's Inbox filters read it without loading zod
+ *  (`features/refs/routes.ts`), as `dispatch-tools.ts` reads it for `z.enum`. */
+export const ASK_URGENCIES = ["low", "med", "high", "blocking"] as const;
+
 /**
  * The closed list of targeted-delivery modes a session can advertise as
  * capabilities on the Envoy listener (`/v1/interests/subscribe`) and that

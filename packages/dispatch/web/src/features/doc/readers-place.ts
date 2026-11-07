@@ -129,10 +129,11 @@ function theirPlace(drawn: HTMLElement): TheirPlace | undefined {
  * The correction is made where the growth is seen - a `MutationObserver`'s microtask, a
  * `ResizeObserver`'s callback - and never a frame later, so nothing between the growth and the
  * paint that shows it holds a page the reader did not ask to move. It is not the watch
- * `refocusAfterDiagrams` runs, which re-runs a focus once the page has settled for 300 ms:
- * that is what a landing needs to end on its target, and 300 ms too late for a reader who is
- * simply reading. The two live side by side on a block link - the focus lands the reader, this
- * keeps them there - and the triggers below say which growths this answers and why.
+ * `refocusWhenSettled` runs, which puts a focus back on its target in the frame after the
+ * drawing around it moved: that is what a landing needs to end on its target, and a correction
+ * a reader who is simply reading never asked for. The two live side by side on a block link -
+ * the focus lands the reader, this keeps them there - and the triggers below say which growths
+ * this answers and why.
  *
  * Nothing is read while the page is quiet: the page itself says when it has changed.
  *

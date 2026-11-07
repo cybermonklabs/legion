@@ -22,6 +22,7 @@ import { AskOwnerLink } from "../inbox/AskOwnerLink";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { Timestamp } from "../refs/Timestamp";
+import { textSourceOf } from "../refs/text-references";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 
 const PAGE_SIZE = 50;
@@ -53,6 +54,10 @@ function AnswerRow({
   onChange: () => void;
   row: MyAnswerRow;
 }): ReactNode {
+  // Every text of the row is the ask's: its question, the answer written on it, and a reply in
+  // its thread, which takes the ask's scope (`refs.ScopeOf`). So a `#id` in any of them resolves
+  // against the document the server scopes the ask to, read once for the row.
+  const source = textSourceOf("ask", row.ask_id);
   const changeable =
     row.kind === "answer" &&
     row.current &&
@@ -71,6 +76,7 @@ function AnswerRow({
         fullTitle
         lines={2}
         markdown={row.question}
+        source={source}
       />
       {row.kind === "answer" && row.answer !== undefined ? (
         <div className={`mt-2 text-sm ${textPrimaryOnCanvas}`}>
@@ -85,7 +91,7 @@ function AnswerRow({
           )}
           {row.answer.text === null || row.answer.text === "" ? null : (
             <div className="mt-1">
-              <MarkdownBody markdown={row.answer.text} />
+              <MarkdownBody markdown={row.answer.text} source={source} />
             </div>
           )}
         </div>
@@ -96,7 +102,12 @@ function AnswerRow({
       {row.kind === "reply" && row.reply !== undefined ? (
         <div className={`mt-2 flex items-baseline gap-1 text-sm ${textPrimaryOnCanvas}`}>
           <span className={`shrink-0 font-medium ${textMutedOnCanvas}`}>Replied:</span>
-          <MarkdownPreview className="min-w-0 flex-1" lines={3} markdown={row.reply.body} />
+          <MarkdownPreview
+            className="min-w-0 flex-1"
+            lines={3}
+            markdown={row.reply.body}
+            source={source}
+          />
         </div>
       ) : null}
       <div className="mt-2 flex flex-wrap items-center gap-4 text-sm">
