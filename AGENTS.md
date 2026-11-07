@@ -639,6 +639,12 @@ Each item below names a task and where its code is, then notes on it.
   A job holding a credential runs no script of this repository, so it reads the value from the output of an upstream job that does (`release-envoy-listener.yaml`'s `targets`, `worker-image.yaml`'s `build`), or from a `workflow_call` input when that job was skipped (`worker-image.yaml`'s `image`, which `release.yaml` passes).
   `docs/site/repo-paths.ts` is the docs build's adapter over the same script
 
+- **A change that touches the daemon API contract declares a number above its base's**
+  — `const DaemonAPIVersion` in `packages/daemon/internal/api/version.go` is the number a daemon and the Legion plugin in its pods must agree on, so two changes cannot both declare one, and the one that lands second is renumbered after its review has already run.
+  `.github/scripts/check-daemon-api-contract.sh` refuses a change that touches that file and declares a number no higher than its base carries — the tip of the base branch on a pull request, the commit the queue built the group on in the merge queue — and the refusal names a free number, the lowest above the base's that no open pull request declares, and the four files that hold the number (that file, `packages/contracts/fixtures/daemon-api/version.json`, `packages/pi-legion/package.json` and `packages/claude-envoy/package.json`).
+  A change that leaves that file alone passes whatever its base carries, and two entries of one merge group that both picked the same next number pass together, since the group's tree carries both changes at that number.
+  `ci.yaml`'s `lint` job runs the check on a pull request and on a merge group, and its `test` job runs `.github/scripts/check-daemon-api-contract.test.sh`
+
 - **Changelog entries are fragment files**
   — a change that earns a changelog line adds a fragment to each package it changes that has a `.changie.yaml`:
   the six packages `.github/changelog-packages` lists (`pi-legion`, `pi-envoy`, `envoy`, `claude-envoy`, `contracts`, `envoy-client`), the one list the check below reads.
