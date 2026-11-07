@@ -168,8 +168,15 @@ func namedRequest(request string, err error) error {
 // itself (raiseReplicas), and a refused create names the setting behind it after the request:
 // `KV_envoy_interests STREAM.CREATE: ENVOY_NATS_REPLICAS=3: ...`.
 func EnsureKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig) (KeyValue, error) {
-	lookup := "KV_" + config.Bucket + " STREAM.INFO"
-	kv, err := sentAgain(lookup, func() (nats.KeyValue, error) { return js.KeyValue(config.Bucket) })
+	stream := "KV_" + config.Bucket
+	lookup := stream + " STREAM.INFO"
+	create := stream + " STREAM.CREATE"
+	// lookUpBucket is the one lookup this call makes, here and again while it waits a member out,
+	// so the two are the same request and are named the same way.
+	lookUpBucket := func() (nats.KeyValue, error) {
+		return sentAgain(lookup, func() (nats.KeyValue, error) { return js.KeyValue(config.Bucket) })
+	}
+	kv, err := lookUpBucket()
 	err = namedRequest(lookup, err)
 	created := false
 	switch {
@@ -181,9 +188,7 @@ func EnsureKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyV
 		// answer the first send never drew goes out (server/jetstream_cluster.go:11053-11063,
 		// :11109-11116). A create the server does answer "stream name already in use" is settled
 		// by the branch below, which reads the bucket until the member answering has applied it.
-		kv, err = sentAgain("KV_"+config.Bucket+" STREAM.CREATE", func() (nats.KeyValue, error) {
-			return js.CreateKeyValue(config)
-		})
+		kv, err = sentAgain(create, func() (nats.KeyValue, error) { return js.CreateKeyValue(config) })
 		if errors.Is(err, nats.ErrStreamNameAlreadyInUse) {
 			// The bucket was created between this start's lookup and its create, by another start
 			// of this deployment, and the member answering may not have applied that create
@@ -196,13 +201,10 @@ func EnsureKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyV
 			// are two different answers, and each is waited out in its own way: the first is read
 			// again until the member holds it, the second is sent again. A lost send here would
 			// end the start the create above has just carried through.
-			kv, err = awaitBucketApplied(config.Bucket, bucketMissing, func() (nats.KeyValue, error) {
-				return sentAgain(lookup, func() (nats.KeyValue, error) { return js.KeyValue(config.Bucket) })
-			})
+			kv, err = awaitBucketApplied(config.Bucket, bucketMissing, lookUpBucket)
 			err = namedRequest(lookup, err)
 		} else {
-			err = namedRequest("KV_"+config.Bucket+" STREAM.CREATE",
-				refusedSettings(err, nil, &nats.StreamConfig{Replicas: config.Replicas}))
+			err = namedRequest(create, refusedSettings(err, nil, &nats.StreamConfig{Replicas: config.Replicas}))
 		}
 		created = err == nil
 	case err == nil:

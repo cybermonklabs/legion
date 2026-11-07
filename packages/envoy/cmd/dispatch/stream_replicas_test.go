@@ -291,12 +291,10 @@ func TestRedeliverWebhooksRaisesAnR1RedeliveryBucketToTheReplicaSetting(t *testi
 	// in a CI log names neither how long the call waited nor what the members were doing while
 	// it did. So the failure prints the wall time of this one call, which tells a refusal the
 	// server answered at once from a wait that ran out, and every member's captured server log,
-	// where a meta leader election or a member that never came up is written down. Each member's
-	// log goes out as a t.Logf of its own, under the member's name, and the error and the
-	// elapsed time are the t.Fatalf after them: a CI log is read from its last line backwards,
-	// so the short line that says what failed belongs at the end, and three logs of hundreds of
-	// lines each belong in blocks a reader can tell apart rather than inside that one line. A
-	// passing run prints none of it.
+	// where a meta leader election or a member that never came up is written down. A CI log is
+	// read from its last line backwards, so the short line that says what failed belongs at the
+	// end, and three logs of hundreds of lines each belong in blocks a reader can tell apart
+	// rather than inside that one line. A passing run prints none of it.
 	buckets, err := conn.JetStream(natsgo.MaxWait(bus.RequestTimeout))
 	if err != nil {
 		t.Fatalf("open the JetStream context the earlier sweep's start uses: %v", err)
