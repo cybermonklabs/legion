@@ -21,10 +21,62 @@ import (
 const notificationStream = "ENVOY_NOTIFICATIONS"
 
 const (
-	defaultAckWait      = 30 * time.Second
-	defaultNakDelay     = 30 * time.Second
+	defaultAckWait  = 30 * time.Second
+	defaultNakDelay = 30 * time.Second
+	// defaultHandlerLimit is the floor the derived limit never goes below (HandlerLimitFor). The
+	// derivation gives one window to each bounded read and one more to the rest, four in all, so
+	// every window at or below 2m30s yields these ten minutes. No caller outside this package
+	// needs the number: HandlerLimitFor's second answer says whether the window lifted the limit
+	// above it.
 	defaultHandlerLimit = 10 * time.Minute
 )
+
+// boundedReadsPerFact is the most bounded reads one fact's handling makes, each of them bounded
+// at AckWait. A review makes three — whether its pull request is recorded (recordedPullRequest),
+// its truncated body (resolveReviewBody) and its author's repository permission
+// (resolveReviewPermission) — and handleMessage makes them one after another, so they add up
+// rather than overlap. Every other fact makes one read or none. The operator's sentence for the
+// limit names those three reads in its own words (daemon.IntakeHandlerLimitLine), written by
+// hand there, so a read added here has to be named there by hand too.
+const boundedReadsPerFact = 3
+
+// HandlerLimitCeiling is the derived limit above which a wedged handler's message no longer
+// returns to the stream within one operator's look, which is what the limit is for. Nothing
+// refuses a configuration whose window derives a limit above it; the daemon's boot line and
+// `legion start --check-config` say so instead (daemon.IntakeHandlerLimitLine), which is why it
+// is exported.
+const HandlerLimitCeiling = time.Hour
+
+// WindowsPerLimit is how many acknowledgement windows HandlerLimitFor gives one fact's handling:
+// one for each bounded read a fact may make (boundedReadsPerFact) and one more for the part
+// nothing bounds. It is exported because the floor's sentence for the limit says what this window
+// alone would derive, which is this many of it (daemon.IntakeHandlerLimitLine). A copy of the
+// number written there by hand would go on printing the old one at every boot after a read was
+// added here, once the limit rows that the change fails had been brought up to date.
+const WindowsPerLimit = boundedReadsPerFact + 1
+
+// HandlerLimitFor is the limit a caller that sets no HandlerLimit gets for a given AckWait:
+// WindowsPerLimit * ackWait, floored at defaultHandlerLimit — derived true only when the window
+// lifted the limit above that floor. boundedReadsPerFact of those windows are the bounded reads
+// one fact may make, each of which handleMessage bounds at ackWait; the one window more is for
+// what nothing bounds, ApplyFact's wait on the one advisory lock plus the transaction itself.
+// So the bounded reads never take more than three quarters of the limit.
+//
+// That one window of headroom is a judgement, and what it is a judgement about is the lock wait:
+// ApplyFact's wait on pg_advisory_xact_lock(hashtext('legion.apply_fact')) cannot be derived from
+// the window at all, because Run works three durable consumers at once and the daemon's own
+// lifecycle writes take the same lock, so what a fact waits for is what else is applying, not how
+// long a read is given. The limit therefore states a share — a quarter of it left for the
+// unbounded part — instead of a duration.
+//
+// The floor is there so that every window at or below 2m30s keeps the ten minutes this daemon has
+// always had, which leaves every existing caller and the default configuration unchanged. An
+// ackWait of zero or less, which normalizedSpec has defaulted away before it asks, derives a
+// bound at or below zero and so yields the floor too.
+func HandlerLimitFor(ackWait time.Duration) (limit time.Duration, derived bool) {
+	bound := WindowsPerLimit * ackWait
+	return max(bound, defaultHandlerLimit), bound > defaultHandlerLimit
+}
 
 // ConsumerSpec is the caller-supplied durable-consumer configuration. The daemon owns its project
 // and the repositories GitHub intake hears at boot (SetRepositories changes them at runtime);
@@ -40,20 +92,23 @@ type ConsumerSpec struct {
 	Renames  ghrepo.Renames
 	AckWait  time.Duration
 	NakDelay time.Duration
-	// HandlerLimit is how long one message's handling may run before it is cut. The bounded part
-	// of a handler is at most three reads, each of AckWait, and a review is the one fact that
-	// makes all three: whether its pull request is recorded (recordedPullRequest), its truncated
-	// body (resolveReviewBody) and its author's permission (resolveReviewPermission). Every other
-	// fact makes one read or none — prepareRepository reads for a DispatchIssue, prepareArtifact
-	// for a DispatchArtifact, recordedPullRequest for a PullRequestChecks, and readMapping on the
-	// mapping path, which answers before the rest of them run. So the bounded part is 15 s at the
-	// daemon's 5 s window. On top of it comes ApplyFact's wait on the one advisory lock every fact
-	// of every consumer queues on. Ten minutes is about forty times that bounded part, and
-	// short enough that a wedged handler's message returns to the stream within one operator's
-	// look. Those figures hold at the default worker_rpc_timeout_seconds (5 s), which the daemon
-	// passes as AckWait: an operator who raises that key widens each read, so ten minutes becomes
-	// a smaller multiple of the bounded part. Production sets no HandlerLimit, so
-	// defaultHandlerLimit applies; tests set a short one. There is no legion.yaml key for it.
+	// HandlerLimit is how long one message's handling may run before it is cut. A caller that
+	// sets none gets HandlerLimitFor(AckWait), which gives one AckWait to each bounded read a
+	// fact may make (boundedReadsPerFact names them) and one window more for the part nothing
+	// bounds, ApplyFact's advisory-lock wait and its transaction, and never answers below
+	// defaultHandlerLimit. Production sets none, so the daemon's worker_rpc_timeout_seconds,
+	// which it passes as AckWait, decides it; tests set a short one. There is no legion.yaml key
+	// for it. The cut cancels the handling's context, and keepInProgress runs on that context,
+	// so intake stops reporting the message in progress at the limit. The handler returns once
+	// its running step honours the cancelled context, which every step today, a pgx call or a
+	// bounded HTTP read, does at once. Only then does consumeMessage write the cut warning and
+	// nak the message with NakDelay. This consumer asks for one message at a time and has none
+	// outstanding while the handler runs, so JetStream sends the message again, and its
+	// delivered count rises, no sooner than that return: one NakDelay after the nak, or at the
+	// consumer's next pull where the step held the handler past about one AckWait after the
+	// limit, whichever the server takes first. A step that ignored its context would hold the
+	// message, and the warning, for the whole of its own run. This comment is where that
+	// mechanism is written, and the rows that exercise it point here for it.
 	HandlerLimit time.Duration
 	Logger       *slog.Logger
 	// Now is the clock Consumers reads when it records a consumer opened or a message handled,
@@ -934,7 +989,7 @@ func normalizedSpec(spec ConsumerSpec) (ConsumerSpec, error) {
 		spec.NakDelay = defaultNakDelay
 	}
 	if spec.HandlerLimit <= 0 {
-		spec.HandlerLimit = defaultHandlerLimit
+		spec.HandlerLimit, _ = HandlerLimitFor(spec.AckWait)
 	}
 	if spec.Logger == nil {
 		spec.Logger = slog.Default()
