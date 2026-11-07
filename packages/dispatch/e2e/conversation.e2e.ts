@@ -122,7 +122,7 @@ test("Conversation owns the route, lists one card per message newest first, and 
       "Plan",
       "Conversation",
       "Children",
-      "Artifacts1",
+      "Artifacts 1",
       "Activity",
       "Decisions",
     ]);

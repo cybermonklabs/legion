@@ -65,7 +65,7 @@ test("IssueTabs counts the issue's uploaded artifacts on the Artifacts tab", () 
   );
 
   try {
-    expect(screen.getByRole("tab", { name: "Artifacts (2)" })).not.toBeNull();
+    expect(screen.getByRole("tab", { name: "Artifacts 2" })).not.toBeNull();
   } finally {
     view.unmount();
   }

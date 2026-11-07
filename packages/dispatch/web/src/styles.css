@@ -403,6 +403,23 @@ a {
   }
 }
 
+/* The library paints a document's links in a blue of its own (`.milkdown a`,
+   `@legion/proof-editor`'s `lib.css`), which is 3.9:1 on the light document surface - under
+   WCAG AA's 4.5:1 for body text, and a serious finding of `e2e/accessibility.e2e.ts`. A
+   document's links take the app's own link blue instead, the pair `theme/classes.ts` registers
+   as AA on every surface and the one a comment's Markdown already uses below. The selector
+   outranks `.milkdown a` (0,1,1) and stays under the ask slots' rollback further down, so a
+   card the app draws inside a block keeps the colours its own utilities give it. */
+.dispatch-doc .milkdown a {
+  color: #0069a8; /* sky-700 */
+}
+
+@media (prefers-color-scheme: dark) {
+  .dispatch-doc .milkdown a {
+    color: #00bcff; /* sky-400 */
+  }
+}
+
 /* A decision block is a card inside prose. Its first/last child would otherwise carry the
    prose paragraph margins into the card (a 20px gap under a 12px header). The repeated attribute
    selector lifts these rules to (0,5,0): a decision inside a reply drawn in another decision's

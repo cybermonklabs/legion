@@ -1423,7 +1423,7 @@ test("IssuePage renders an image artifact in the Artifacts tab", async () => {
   const view = renderIssuePage("/issues/CORE-1/artifacts/diagram-png");
 
   try {
-    await screen.findByRole("tab", { name: "Artifacts (2)", selected: true });
+    await screen.findByRole("tab", { name: "Artifacts 2", selected: true });
     expect(screen.getByRole("img", { name: "diagram.png version 1" })).not.toBeNull();
     expect(screen.getByTestId("artifact-header").className).toContain("ring-2");
   } finally {
@@ -1514,7 +1514,7 @@ test("IssuePage opens a non-spec document at its version route", async () => {
   const view = renderIssuePage("/issues/CORE-1/artifacts/design");
 
   try {
-    await screen.findByRole("tab", { name: "Artifacts (2)", selected: true });
+    await screen.findByRole("tab", { name: "Artifacts 2", selected: true });
     expect(screen.getByRole("heading", { name: "design.md" })).not.toBeNull();
     expect(screen.getAllByRole("combobox", { name: "Version" })).toHaveLength(1);
     fireEvent.change(screen.getByRole("combobox", { name: "Version" }), {
@@ -1561,7 +1561,7 @@ test("IssuePage shows an unavailable image version instead of the latest image",
   const view = renderIssuePage("/issues/CORE-1/artifacts/diagram-png?v=999");
 
   try {
-    await screen.findByRole("tab", { name: "Artifacts (2)", selected: true });
+    await screen.findByRole("tab", { name: "Artifacts 2", selected: true });
     expect(screen.getByText("Version 999 is not available for this artifact.")).not.toBeNull();
     expect(screen.queryByRole("img", { name: "diagram.png version 1" })).toBeNull();
   } finally {
@@ -1591,7 +1591,7 @@ test("IssuePage hides the Artifacts panel after switching to Spec", async () => 
   const view = renderIssuePage("/issues/CORE-1/artifacts");
 
   try {
-    await screen.findByRole("tab", { name: "Artifacts (1)", selected: true });
+    await screen.findByRole("tab", { name: "Artifacts 1", selected: true });
     fireEvent.click(screen.getByRole("tab", { name: "Spec" }));
     await screen.findByRole("tab", { name: "Spec", selected: true });
     const artifactsPanel = view.container.querySelector<HTMLDivElement>("#issue-artifacts-panel");
@@ -1700,7 +1700,7 @@ test("IssuePage keeps version controls in the active Spec tab row", async () => 
     expect(within(tabs).getByRole("button", { name: "Name version" })).not.toBeNull();
     expect(screen.queryByTestId("spec-document-toolbar")).toBeNull();
 
-    for (const tab of ["Conversation", "Children", "Artifacts (1)", "Activity"] as const) {
+    for (const tab of ["Conversation", "Children", "Artifacts 1", "Activity"] as const) {
       fireEvent.click(screen.getByRole("tab", { name: tab }));
       await screen.findByRole("tab", { name: tab, selected: true });
       expect(screen.queryByRole("combobox", { name: "Version" })).toBeNull();

@@ -286,7 +286,7 @@ test("an uploaded document is linked from the Activity tab and counted on its ow
   const issue = await createIssue({ project: "OPS", title: "Customer update" });
   await page.goto(`/issues/${issue.key}/conversation`);
   // Every issue has its own document, so the tab opens counting one.
-  await expect(page.getByRole("tab", { exact: true, name: "Artifacts (1)" })).toBeVisible();
+  await expect(page.getByRole("tab", { exact: true, name: "Artifacts 1" })).toBeVisible();
 
   const name = "cu-update-2026-09-15.md";
   const upload = await createIssueArtifact(issue.key, {
@@ -295,7 +295,7 @@ test("an uploaded document is linked from the Activity tab and counted on its ow
   });
 
   // The live event feed refreshes the issue and its tabs: no reload.
-  await expect(page.getByRole("tab", { exact: true, name: "Artifacts (2)" })).toBeVisible();
+  await expect(page.getByRole("tab", { exact: true, name: "Artifacts 2" })).toBeVisible();
   const tablist = page.getByRole("tablist", { name: "Issue detail" });
   const tabs = tablist.getByRole("tab");
   await expect(tabs).toHaveCount(8);
@@ -321,7 +321,7 @@ test("an uploaded document is linked from the Activity tab and counted on its ow
     "Plan",
     "Conversation",
     "Children",
-    "Artifacts2",
+    "Artifacts 2",
     "Activity",
     "Decisions",
   ]);
@@ -332,7 +332,7 @@ test("an uploaded document is linked from the Activity tab and counted on its ow
     "Plan",
     "Conversation",
     "Children",
-    "Artifacts (2)",
+    "Artifacts 2",
     "Activity",
     "Decisions",
   ] as const) {
@@ -359,7 +359,7 @@ test("an uploaded document is linked from the Activity tab and counted on its ow
   await createIssueArtifact(issue.key, { content: "# Draft\n\nRevised.\n", name });
   const saved = rows.filter({ hasText: `saved ${name} v2` });
   await expect(saved).toHaveCount(1);
-  await expect(page.getByRole("tab", { exact: true, name: "Artifacts (2)" })).toBeVisible();
+  await expect(page.getByRole("tab", { exact: true, name: "Artifacts 2" })).toBeVisible();
   await expect(saved.getByRole("link", { name })).toHaveAttribute(
     "href",
     `/issues/${issue.key}/artifacts/${upload.artifact.slug}?v=2`
@@ -391,7 +391,7 @@ test("the Artifacts badge counts the rows the tab lists, and a row's details are
   await page.goto(`/issues/${issue.key}/artifacts`);
   const rows = page.locator("[data-testid^='artifact-']");
   await expect(rows).toHaveCount(2);
-  await expect(page.getByRole("tab", { exact: true, name: "Artifacts (2)" })).toBeVisible();
+  await expect(page.getByRole("tab", { exact: true, name: "Artifacts 2" })).toBeVisible();
 
   // Every row shows its whole detail line: it wraps where it must rather than truncating on a
   // row with room beside it.

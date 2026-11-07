@@ -319,7 +319,7 @@ test("an issue's Artifacts tab lists its reference closure and a document page l
       "Plan",
       "Conversation",
       "Children",
-      "Artifacts (2)",
+      "Artifacts 2",
       "Activity",
       "Decisions",
     ].entries()) {
