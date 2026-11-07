@@ -695,7 +695,11 @@ func TestSessionConsumerRelayLosingItsSessionReturnsTheMessageItHolds(t *testing
 
 // A session that re-registers through another listener moves to it: the first stops relaying it at
 // once and the second relays it, so each frame comes from exactly one listener, the one the session
-// last registered through.
+// last registered through. What orders the row is the first listener's own hand-over line, which
+// the cancelled run writes only once it has given the server back the messages it held: the row
+// publishes its second batch after that line, so the first listener has demonstrably stopped
+// relaying this session, rather than after its session-list cache alone has caught up, which says
+// only where the session now lives and nothing about the run that was relaying it.
 func TestSessionConsumerOwnershipMovesWithTheSessionToOneRelayer(t *testing.T) {
 	binary := cmdtest.Build(t, "envoy-listener")
 	uri := testnats.URL(t)
@@ -733,6 +737,17 @@ func TestSessionConsumerOwnershipMovesWithTheSessionToOneRelayer(t *testing.T) {
 
 	postListener(t, second.port, "/v1/interests/subscribe", consumerRegistration(sessionID, "epoch-1"))
 	first.awaitSessionMachine(t, sessionID, "relay-second")
+	// This is the ordering the row rests on: the first listener has stopped relaying this session
+	// and has given the messages it held back to the server. WaitForOutput looks for each string
+	// anywhere in the captured output rather than on one line, and these three pin the hand-over
+	// because the row registers exactly one session: relay_machine_id is written by the hand-over
+	// line alone, so the first listener can have written it only for this session, and the
+	// wording is there so a reworded line fails here rather than leaving the row ordered on
+	// nothing. The 30 s WaitForOutput allows is a hang guard, not an assertion window.
+	first.WaitForOutput(t,
+		`"msg":"session relay stopped; it gave the server back the messages it held, so the listener taking the session over is delivered them at once"`,
+		`"relay_machine_id":"relay-first"`,
+		`"session_id":"`+sessionID+`"`)
 	after := publishEach("through the second")
 	afterFrames := standIn.collect(t, 3, 10*time.Second)
 	requireFrames(t, afterFrames, after...)
