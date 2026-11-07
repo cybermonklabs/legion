@@ -2,6 +2,7 @@ import { type ReactNode, useCallback, useEffect, useRef, useState } from "react"
 
 import type { Artifact } from "../../api/types";
 import { textMutedOnCanvas } from "../../theme/classes";
+import { focusOnDocument } from "../shell/roving";
 import { useMediaQuery } from "../shell/useDialog";
 import { useSetFocusedNode } from "./focused-node";
 import { firstLineOf, type TreeNode } from "./issue-tree";
@@ -16,7 +17,7 @@ import {
   zoomBreadcrumb,
   zoomedRows,
 } from "./tree-fold";
-import { everythingOpened, rowKeyOf } from "./tree-keys";
+import { everythingOpened, nodeRowSelector, rowKeyOf } from "./tree-keys";
 import { useNodeEditing } from "./useNodeEditing";
 import { useTreeKeymap } from "./useTreeKeymap";
 
@@ -209,9 +210,7 @@ export function IssueTree({
   useEffect(() => {
     if (wanted === undefined) return;
     setWanted(undefined);
-    body.current
-      ?.querySelector<HTMLElement>(`[data-node-row][data-node-id="${CSS.escape(wanted)}"]`)
-      ?.focus();
+    body.current?.querySelector<HTMLElement>(nodeRowSelector(wanted))?.focus();
   }, [wanted]);
 
   useTreeKeymap({
@@ -241,12 +240,10 @@ export function IssueTree({
   const targetId = target?.id;
   useEffect(() => {
     if (targetId === undefined || !focusReveal) return;
-    const loose = document.activeElement === null || document.activeElement === document.body;
+    const loose = focusOnDocument();
     if (taken.current === targetId && !loose) return;
     if (!rows.some((row) => row.kind === "node" && row.node.id === targetId)) return;
-    const row = body.current?.querySelector<HTMLElement>(
-      `[data-node-row][data-node-id="${CSS.escape(targetId)}"]`
-    );
+    const row = body.current?.querySelector<HTMLElement>(nodeRowSelector(targetId));
     if (row === null || row === undefined) return;
     taken.current = targetId;
     row.focus();

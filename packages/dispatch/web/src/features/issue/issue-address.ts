@@ -3,6 +3,7 @@ import { itemFromSearch } from "@legion/contracts";
 import { buildIssuePath, type IssueRoute } from "../refs/routes";
 import type { TreeNode } from "./issue-tree";
 import type { ConversationState, Preset } from "./page-words";
+import { pathTo, pathToMatch } from "./tree-fold";
 
 /**
  * What one address of the issue page says (dispatch://INFRA-1196 R19,
@@ -125,20 +126,6 @@ export function issueAddress(
   };
 }
 
-/** The chain from `root` down to the first node `wanted` answers for, the root first, or
- *  undefined when the tree holds no such node. */
-function pathToNode(
-  root: TreeNode,
-  wanted: (node: TreeNode) => boolean
-): readonly TreeNode[] | undefined {
-  if (wanted(root)) return [root];
-  for (const child of root.children) {
-    const below = pathToNode(child, wanted);
-    if (below !== undefined) return [root, ...below];
-  }
-  return undefined;
-}
-
 /**
  * The chain from the issue down to the node `target` names, the issue first. An ask is the
  * block the server indexed it from where it has one, so an item is looked up by its node id
@@ -151,10 +138,10 @@ export function pathToTarget(
   if (target === undefined) return undefined;
   if (target.kind === "block") {
     const suffix = `#b-${target.id}`;
-    return pathToNode(root, (node) => node.id.endsWith(suffix));
+    return pathToMatch(root, (node) => node.id.endsWith(suffix));
   }
-  const byId = pathToNode(root, (node) => node.id === target.id);
+  const byId = pathTo(root, target.id);
   if (byId !== undefined || target.kind === "node") return byId;
   const address = `/${target.id}`;
-  return pathToNode(root, (node) => node.reference?.endsWith(address) === true);
+  return pathToMatch(root, (node) => node.reference?.endsWith(address) === true);
 }

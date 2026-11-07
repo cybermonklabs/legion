@@ -82,7 +82,7 @@ export function IssueWorkRow({
         {PROPERTY_LABELS.route}
       </span>
       {routeSession === undefined ? (
-        routeControl(drafts.route === "" ? "No route" : drafts.route)
+        routeControl(drafts.route === "" ? CONTROL_LABELS.no_route : drafts.route)
       ) : (
         <AgentName
           className="inline-flex shrink-0 items-center"
@@ -133,7 +133,7 @@ export function IssueWorkRow({
             type="button"
             {...pageChrome}
           >
-            {releaseClaim.isPending ? "Releasing…" : CONTROL_LABELS.release_claim}
+            {releaseClaim.isPending ? CONTROL_LABELS.saving_release : CONTROL_LABELS.release_claim}
           </button>
           {/* No help line under the row: the paragraph explaining Release cost the identity
               block a whole line before the tree (dispatch://INFRA-1196 R6). */}

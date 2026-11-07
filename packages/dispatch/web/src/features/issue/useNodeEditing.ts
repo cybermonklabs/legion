@@ -6,6 +6,7 @@ import { documentOfNode } from "./issue-artifacts";
 import type { TreeNode } from "./issue-tree";
 import { caretInBlock } from "./node-caret";
 import { KEY_REPORTS } from "./page-structure";
+import { nodeRowSelector } from "./tree-keys";
 
 /** One row the reader is editing in: the document its node's text lives in, the block of that
  *  document the node is, and which row of which node is holding the editor. */
@@ -100,7 +101,7 @@ export function useNodeEditing({
     if (editingNode === undefined) return;
     const frame = requestAnimationFrame(() => {
       const host = container.current?.querySelector<HTMLElement>(
-        `[data-node-row][data-node-id="${CSS.escape(editingNode)}"] [data-node-body]`
+        `${nodeRowSelector(editingNode)} [data-node-body]`
       );
       if (host === null || host === undefined) return;
       caretInBlock(host, editingBlock);
@@ -125,9 +126,7 @@ export function useNodeEditing({
       if (event.key !== "Escape" || event.defaultPrevented) return;
       event.preventDefault();
       (document.activeElement as HTMLElement | null)?.blur();
-      box
-        .querySelector<HTMLElement>(`[data-node-row][data-node-id="${CSS.escape(editingNode)}"]`)
-        ?.focus();
+      box.querySelector<HTMLElement>(nodeRowSelector(editingNode))?.focus();
       stopEditing();
     };
     box.addEventListener("keydown", leave, true);
@@ -139,9 +138,7 @@ export function useNodeEditing({
     if (editingNode !== undefined || left === undefined) return;
     leaving.current = undefined;
     const frame = requestAnimationFrame(() => {
-      container.current
-        ?.querySelector<HTMLElement>(`[data-node-row][data-node-id="${CSS.escape(left)}"]`)
-        ?.focus();
+      container.current?.querySelector<HTMLElement>(nodeRowSelector(left))?.focus();
     });
     return () => cancelAnimationFrame(frame);
   }, [container, editingNode]);

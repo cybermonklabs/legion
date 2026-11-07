@@ -12,6 +12,7 @@ import {
 } from "../../theme/classes";
 import { issueDecisionsQuery } from "../doc/spec-marks";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { NODE_CONTROL_CLASS } from "./node-chrome";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 
@@ -95,7 +96,7 @@ function DecisionControls({
       <p className="flex min-w-0 flex-wrap items-baseline gap-2">
         {decision.waiting_review ? (
           <button
-            className={`rounded border px-1 text-xs ${borderDefault} ${textMutedOnCanvas}`}
+            className={NODE_CONTROL_CLASS}
             disabled={keep.isPending}
             onClick={() => keep.mutate(documentId)}
             tabIndex={-1}
@@ -108,7 +109,7 @@ function DecisionControls({
         {quote === undefined ? null : (
           <button
             aria-expanded={changing}
-            className={`rounded border px-1 text-xs ${borderDefault} ${textMutedOnCanvas}`}
+            className={NODE_CONTROL_CLASS}
             onClick={() => setChanging(!changing)}
             tabIndex={-1}
             type="button"
@@ -202,7 +203,7 @@ function ChangeComposer({
       )}
       <p className="flex min-w-0 flex-wrap items-baseline gap-2">
         <button
-          className={`rounded border px-1 text-xs ${borderDefault} ${textMutedOnCanvas}`}
+          className={NODE_CONTROL_CLASS}
           disabled={send.isPending || body.trim() === ""}
           type="submit"
           {...pageChrome}
@@ -210,7 +211,7 @@ function ChangeComposer({
           {CONTROL_LABELS.send_change}
         </button>
         <button
-          className={`rounded border px-1 text-xs ${borderDefault} ${textMutedOnCanvas}`}
+          className={NODE_CONTROL_CLASS}
           onClick={onDone}
           tabIndex={-1}
           type="button"

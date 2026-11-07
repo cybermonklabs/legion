@@ -1,10 +1,11 @@
 import { type RefObject, useRef } from "react";
 
 import { useKeymap } from "../shell/keymap";
+import { closestMatching, focusOnDocument, roveFocus } from "../shell/roving";
 import type { TreeNode } from "./issue-tree";
 import { KEY_REPORTS } from "./page-structure";
 import { type DrawnRow, pathTo } from "./tree-fold";
-import { decisionBehind, nextQuestion, rowKeyOf } from "./tree-keys";
+import { decisionBehind, NODE_ROW_SELECTOR, nextQuestion, rowKeyOf } from "./tree-keys";
 
 /**
  * The tree's keyboard: every row of the key table in the Design section of
@@ -62,8 +63,6 @@ export interface TreeKeyboard {
  *  no node and takes no focus, so the keys step from the row above it to the row below. */
 type NodeRow = Extract<DrawnRow, { kind: "node" }>;
 
-const NODE_ROW = "[data-node-row]";
-
 /** How far a tree reaches when a key steps to its end. */
 const END = Number.MAX_SAFE_INTEGER;
 
@@ -75,15 +74,13 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
   /** The rows as the browser holds them, beside the rows as the fold drew them: the nth element
    *  is the nth node row, so one index answers for both. */
   const drawn = (): { elements: HTMLElement[]; rows: NodeRow[] } => ({
-    elements: [...(tree.container.current?.querySelectorAll<HTMLElement>(NODE_ROW) ?? [])],
+    elements: [...(tree.container.current?.querySelectorAll<HTMLElement>(NODE_ROW_SELECTOR) ?? [])],
     rows: tree.rows.filter((row): row is NodeRow => row.kind === "node"),
   });
-  /** Which row the reader is on, or -1 when the focus is not on one. */
+  /** Which row the reader is on, or -1 when the focus is neither on a row nor inside one. */
   const at = (elements: readonly HTMLElement[]): number => {
-    const active = document.activeElement;
-    return active === null
-      ? -1
-      : elements.findIndex((row) => row === active || row.contains(active));
+    const row = closestMatching(document.activeElement, NODE_ROW_SELECTOR);
+    return row === null ? -1 : elements.indexOf(row);
   };
   const inTheTree = (): boolean => {
     const active = document.activeElement;
@@ -91,8 +88,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
   };
   /** Whether the reader is reading: on the page itself, or on a row of the tree. A key that
    *  moves the tree is not taken from a control somewhere else on the page. */
-  const reading = (): boolean =>
-    document.activeElement === null || document.activeElement === document.body || inTheTree();
+  const reading = (): boolean => focusOnDocument() || inTheTree();
   /** The node the reader is on, which is what the keys that act on one node ask for. */
   const focusedRow = (): NodeRow | undefined => {
     const { elements, rows } = drawn();
@@ -125,19 +121,23 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
         const stop = elements.findIndex((row) => row.tabIndex === 0);
         moveTo(stop === -1 ? 0 : stop);
       },
-      when: () =>
-        (document.activeElement === null || document.activeElement === document.body) &&
-        drawn().elements.length > 0,
+      when: () => focusOnDocument() && drawn().elements.length > 0,
     },
     {
       id: "tree-next",
       keys: ["j", "ArrowDown"],
       label: "Move to the next row",
       palette: false,
+      // `roveFocus` is the one rule every roving list in the page steps by
+      // (`features/shell/roving.ts`): from the row holding the focus to its neighbour, clamped
+      // at the end, and to the first row when the focus is on none. Only the forward step is
+      // its own - going back with no focus it would land on the last row, where `tree-previous`
+      // lands on the first.
       run: () => {
         const { elements } = drawn();
-        const on = at(elements);
-        moveTo(on === -1 ? 0 : on + 1);
+        if (elements.length === 0) return;
+        tree.onReport("");
+        roveFocus(elements, closestMatching(document.activeElement, NODE_ROW_SELECTOR), 1);
       },
       when: () => reading() && drawn().elements.length > 0,
     },

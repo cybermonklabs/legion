@@ -217,15 +217,28 @@ export function zoomBreadcrumb(root: TreeNode, zoom: string | undefined): TreeNo
   return (pathTo(root, zoom ?? root.id) ?? [root]).slice(0, -1);
 }
 
-/** The chain from the root down to `id`, the root first; undefined when the tree holds no such
- *  node. */
-export function pathTo(root: TreeNode, id: string): TreeNode[] | undefined {
-  if (root.id === id) return [root];
+/**
+ * The chain from the root down to the first node `wanted` answers for, the root first, in
+ * reading order; undefined when the tree holds no such node. An address resolves its target
+ * through this (`issue-address.ts`), which is why the walk takes a predicate rather than an
+ * id: a `#b-` fragment names a block by the end of a node's id and an item by its reference.
+ */
+export function pathToMatch(
+  root: TreeNode,
+  wanted: (node: TreeNode) => boolean
+): TreeNode[] | undefined {
+  if (wanted(root)) return [root];
   for (const child of root.children) {
-    const below = pathTo(child, id);
+    const below = pathToMatch(child, wanted);
     if (below !== undefined) return [root, ...below];
   }
   return undefined;
+}
+
+/** The chain from the root down to `id`, the root first; undefined when the tree holds no such
+ *  node. */
+export function pathTo(root: TreeNode, id: string): TreeNode[] | undefined {
+  return pathToMatch(root, (node) => node.id === id);
 }
 
 /** The chain down to the first open question in reading order, the root first and the question

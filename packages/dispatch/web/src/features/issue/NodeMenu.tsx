@@ -3,13 +3,10 @@ import { useNavigate } from "react-router-dom";
 
 import type { Artifact } from "../../api/types";
 import {
-  borderDefault,
-  card,
   focusVisibleRing,
   secondaryButtonBorder,
   secondaryButtonHoverBorder,
   secondaryButtonText,
-  textSecondaryOnSurface,
 } from "../../theme/classes";
 import {
   ArtifactUploadStatus,
@@ -18,6 +15,7 @@ import {
 } from "../artifacts/ArtifactUpload";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { buildReferencePath, documentRoute } from "../refs/routes";
+import { MENU_CLASS, MENU_ITEM_CLASS } from "./menu-shape";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 
@@ -119,11 +117,6 @@ export function NodeMenu({
   );
 }
 
-/** The one shape both menus of the preset row wear: the presets' own below 1025 px, and the
- *  node menu's at every width. */
-export const MENU_CLASS = `absolute left-0 top-full z-30 mt-1 flex w-56 flex-col gap-1 rounded-lg border p-2 shadow-lg ${borderDefault} ${card}`;
-
-export const MENU_ITEM_CLASS = `min-h-11 rounded-lg px-2 py-2 text-left text-sm font-medium ${textSecondaryOnSurface}`;
-
-/** The node menu's own control, which sits beside the preset row and outside it. */
+/** The node menu's own control, which sits beside the preset row and outside it: wider than
+ *  the identity block's two triggers (`MENU_TRIGGER_CLASS`) because it carries a word. */
 const NODE_MENU_BUTTON_CLASS = `inline-flex min-h-11 items-center rounded-lg px-2 text-sm font-medium md:min-h-9 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${focusVisibleRing}`;

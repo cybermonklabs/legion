@@ -170,6 +170,13 @@ export interface IssueTreeReads {
   readonly targets?: readonly ReferenceTarget[];
 }
 
+/** What `TreeNode.held` holds: how many nodes `children` carry between them, each child and
+ *  everything under it. Written here, beside the field's own doc, so the tree and the preset's
+ *  pruned copy of it count the same way. */
+export function heldCount(children: readonly TreeNode[]): number {
+  return children.reduce((total, child) => total + child.held + 1, 0);
+}
+
 /** How many characters a row's first line may hold (R1). */
 export const FIRST_LINE_LIMIT = 100;
 
@@ -264,7 +271,7 @@ function assemble(
       ...(draft.counts === undefined ? {} : { counts: draft.counts }),
       facts: draft.facts,
       gaps: draft.gaps,
-      held: children.reduce((total, child) => total + child.held + 1, 0),
+      held: heldCount(children),
       id: draft.id,
       question: draft.question,
       ...(draft.reference === undefined ? {} : { reference: draft.reference }),
@@ -283,7 +290,7 @@ function assemble(
     chips: [],
     facts: [],
     gaps: [],
-    held: children.reduce((total, child) => total + child.held + 1, 0),
+    held: heldCount(children),
     id: key,
     question: false,
     replaced: false,

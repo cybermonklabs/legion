@@ -43,7 +43,7 @@ import { type FocusedNode, FocusedNodeProvider, useFocusedNode } from "./focused
 import { IssueBody } from "./IssueBody";
 import { IssueHeader } from "./IssueHeader";
 import { IssueMarginPanel } from "./IssueMargin";
-import { IssuePresetPanels } from "./IssuePresetPanels";
+import { IssuePresetPanels, isPanelTab, type PanelTab } from "./IssuePresetPanels";
 import { ItemMatchList } from "./ItemMatchList";
 import { issueAddress } from "./issue-address";
 import { artifactsBySlug, documentOfNode } from "./issue-artifacts";
@@ -166,9 +166,9 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   const isCompactViewport = useMediaQuery(COMPACT_VIEWPORT_QUERY);
   const details = issue.data;
   const focusedNode = useFocusedNode();
-  // Nothing has the focus until the tree lands, and a reader on no node is reading the issue,
-  // so the issue itself is what the panel draws the facts of. Held across renders, because the
-  // panel the margin draws is registered under this value.
+  // A reader on no node is reading the issue, so while the tree holds no focus the issue
+  // itself is what the panel draws the facts of (`focused-node.tsx`). Held across renders,
+  // because the panel the margin draws is registered under this value.
   const focused = useMemo<FocusedNode>(
     () =>
       focusedNode ?? {
@@ -179,10 +179,9 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       },
     [details, focusedNode, route.key]
   );
-  // Where the reader was when they left this address, taken before the move: the tablist used
-  // to say so before it changed tab (`onBeforeTabChange`), and the presets are navigation, so
-  // every control that leaves an address says so first. Taken afterwards it would be the
-  // position the page had already clamped to as the panel it is leaving went.
+  // Where the reader was when they left this address, taken before the move: the presets are
+  // navigation, so every control that leaves an address says so first. Taken afterwards it
+  // would be the position the page had already clamped to as the panel it is leaving went.
   // The Conversation is drawn in the page's one right-hand panel, which is a scrollport of its
   // own wherever the margin keeps a column, so where the reader was in it is that box's scroll
   // and not the window's (`conversation/use-follow-latest.ts`).
@@ -218,17 +217,15 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   // while hidden — that is what keeps the Spec document connected and the Conversation's read
   // observer alive across tab switches (see the `hidden` panels below). A panel the user has
   // never opened stays unmounted, so a fresh page load doesn't pay for panels it never shows.
-  const [activatedTabs, setActivatedTabs] = useState<Record<IssueTab, boolean>>(() => ({
+  const [activatedTabs, setActivatedTabs] = useState<Record<PanelTab, boolean>>(() => ({
     activity: activeTab === "activity",
     artifacts: activeTab === "artifacts",
-    children: activeTab === "children",
     conversation: activeTab === "conversation",
-    decisions: activeTab === "decisions",
     plan: activeTab === "plan",
     spec: activeTab === "spec",
     verification: activeTab === "verification",
   }));
-  if (!activatedTabs[activeTab]) {
+  if (isPanelTab(activeTab) && !activatedTabs[activeTab]) {
     setActivatedTabs({ ...activatedTabs, [activeTab]: true });
   }
   // The conversation's one list, which the panel draws under the four state controls that

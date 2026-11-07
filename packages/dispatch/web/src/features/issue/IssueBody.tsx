@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 
 import { primarySpec } from "../../api/issue-cache";
 import type { Artifact, IssueDetails } from "../../api/types";
+import { capSearchQuery } from "../../lib/query-param";
 import { textMutedOnCanvas } from "../../theme/classes";
 import { PHONE_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
 import { IssueChildren } from "./IssueChildren";
@@ -95,6 +96,12 @@ export function IssueBody({
   const artifacts = useMemo(() => artifactsBySlug(issue), [issue]);
   const uncited = useMemo(() => uncitedArtifacts(root, issue.artifacts), [issue.artifacts, root]);
   const specSlug = primarySpec(issue)?.slug ?? "";
+  // The head reads three queries over the whole tree, and it is drawn on every address: behind
+  // a memo, as every other derivation here is, so a keystroke in the filter and a move of the
+  // focus in the tree walk nothing, and `checks` keeps its identity for the head's own memo.
+  const checks = useMemo(() => nodesOfType(root, "check"), [root]);
+  const planTasks = useMemo(() => nodesOfType(root, "plan_task").length, [root]);
+  const summary = useMemo(() => specSummary(root, specSlug), [root, specSlug]);
   // What a key reported when it had nowhere to go, raised by the tree (`IssueTree`'s
   // `onReport`) and drawn here as the page's own status.
   const [report, setReport] = useState("");
@@ -119,12 +126,12 @@ export function IssueBody({
         {report}
       </p>
       <IssueThreeThings
-        checks={nodesOfType(root, "check")}
+        checks={checks}
         issueKey={issue.key}
         plan={plan}
-        planTasks={nodesOfType(root, "plan_task").length}
+        planTasks={planTasks}
         spec={primarySpec(issue)}
-        summary={specSummary(root, specSlug)}
+        summary={summary}
       />
       <IssuePresets
         active={address.preset}
@@ -136,8 +143,13 @@ export function IssueBody({
         onLeave={onLeave}
         onFilterChange={(next) => {
           const query = new URLSearchParams(search);
-          if (next === "") query.delete("q");
-          else query.set("q", next);
+          // The same cut the Agents page and the project filters make (`lib/query-param.ts`):
+          // the filter lives in the address, and the load balancer refuses a URL past 16 K on
+          // a reload or a shared link. The hash is kept, which `useCappedSearchParam` would
+          // drop, because a keystroke here must not lose the `#b-` a deep link carries.
+          const capped = capSearchQuery(next);
+          if (capped === "") query.delete("q");
+          else query.set("q", capped);
           const rest = query.toString();
           navigate(`${pathname}${rest === "" ? "" : `?${rest}`}${hash}`, { replace: true });
         }}

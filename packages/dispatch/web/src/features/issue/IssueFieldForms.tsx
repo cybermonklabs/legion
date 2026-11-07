@@ -13,6 +13,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { HELP_LINES, PROPERTY_LABELS, pageChrome } from "./page-structure";
+import { CONTROL_LABELS } from "./page-words";
 import type { IssueDrafts } from "./useIssueDrafts";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
 
@@ -100,7 +101,7 @@ function FormActions({
         type="button"
         {...pageChrome}
       >
-        Cancel
+        {CONTROL_LABELS.cancel}
       </button>
     </>
   );
@@ -162,7 +163,7 @@ function RouteForm({
           drafts.discardRoute();
           onClose();
         }}
-        saveLabel="Save route"
+        saveLabel={CONTROL_LABELS.save_route}
         saving={isClosed || !drafts.routeIsValid || saving}
       />
       <span
@@ -236,7 +237,7 @@ function ParentForm({
           drafts.discardParent();
           onClose();
         }}
-        saveLabel="Save parent"
+        saveLabel={CONTROL_LABELS.save_parent}
         saving={isClosed || saving}
       />
       <span className="sr-only" id="issue-parent-help">
@@ -293,7 +294,7 @@ function BlockedByForm({
       />
       <FormActions
         cancel={onClose}
-        saveLabel="Save blocked by"
+        saveLabel={CONTROL_LABELS.save_blocked_by}
         saving={isClosed || writes.updateIssue.isPending}
       />
       <span className="sr-only" id="issue-blocked-by-help">

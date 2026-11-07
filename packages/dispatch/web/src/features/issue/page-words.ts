@@ -450,8 +450,6 @@ export const CONTROL_LABELS = freeze({
   name: "Name",
   /** Gives the open document's current text a version of its own (R16). */
   name_version: "Name version",
-  /** Moves to the next open question that waits on the reader (R6). */
-  next_question: "Next open question",
   /** What the repository control says while neither the issue nor its project names one. */
   no_repository: "No repository",
   /** What the route control says while the issue has none to show. */

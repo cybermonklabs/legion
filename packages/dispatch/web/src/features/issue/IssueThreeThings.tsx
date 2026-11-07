@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import type { ReactNode } from "react";
+import { type ReactNode, useMemo } from "react";
 import { Link } from "react-router-dom";
 
 import { artifactBlocksQuery } from "../../api/queries";
@@ -15,17 +15,18 @@ import { liveTextQueryOptions } from "../doc/ProofDocument";
 import { presetPath } from "./issue-address";
 import type { TreeNode } from "./issue-tree";
 import { NodeGlyph } from "./NodeGlyph";
+import { GapChip } from "./node-chrome";
 import { authorText, pageChrome } from "./page-structure";
 import {
   APPROVAL_STATE_WORDS,
   type CheckState,
   CONTROL_LABELS,
   EMPTY_STATE_LINES,
-  GAP_WORDS,
   GLYPH_TOKENS,
   NODE_STATE_WORDS,
   PRESET_NAMES,
 } from "./page-words";
+import { nodesInOrder } from "./tree-keys";
 
 /**
  * The head of the page: the issue's three sentences, and the two rows under them
@@ -74,8 +75,14 @@ export function IssueThreeThings({
   const specId = spec?.id ?? "";
   const blocks = useQuery({ ...artifactBlocksQuery(specId), enabled: specId !== "" });
   const text = useQuery({ ...liveTextQueryOptions(specId), enabled: specId !== "" });
-  const sentences = sentencesOf(
-    storedText(text.data?.markdown, blocks.data, summary?.id) ?? summary?.text ?? ""
+  // The spec's whole markdown is re-encoded to cut the summary's byte span out of it, so the
+  // cut and the split are made again only when one of the two reads, or the summary node,
+  // changes - not on every keystroke in the filter or every move of the focus in the tree.
+  const markdown = text.data?.markdown;
+  const summaryBlocks = blocks.data;
+  const sentences = useMemo(
+    () => sentencesOf(storedText(markdown, summaryBlocks, summary?.id) ?? summary?.text ?? ""),
+    [markdown, summary, summaryBlocks]
   );
   const states = Object.keys(NODE_STATE_WORDS.check).filter((state) =>
     checks.some((check) => check.state === state)
@@ -154,15 +161,7 @@ export function IssueThreeThings({
         </p>
         <span className="flex min-w-0 flex-wrap items-baseline gap-2 text-xs">
           {(["no_summary_author", "no_read_back"] as const).map((gap) => (
-            <span
-              className={`rounded border px-1 ${borderDefault} ${textMutedOnCanvas}`}
-              data-gap=""
-              data-gap-kind={gap}
-              key={gap}
-              {...pageChrome}
-            >
-              {GAP_WORDS[gap]}
-            </span>
+            <GapChip gap={gap} key={gap} />
           ))}
         </span>
       </div>
@@ -213,25 +212,12 @@ function sentencesOf(text: string): readonly string[] {
 /** The issue's summary: the first `callout` block of its spec, which is the nearest thing
  *  today's block schema holds to a summary node (dispatch://INFRA-1278 adds one). */
 export function specSummary(root: TreeNode, specSlug: string): TreeNode | undefined {
+  if (specSlug === "") return undefined;
   const prefix = `${specSlug}#b-`;
-  const walk = (node: TreeNode): TreeNode | undefined => {
-    if (node.type === "callout" && node.id.startsWith(prefix)) return node;
-    for (const child of node.children) {
-      const found = walk(child);
-      if (found !== undefined) return found;
-    }
-    return undefined;
-  };
-  return specSlug === "" ? undefined : walk(root);
+  return nodesInOrder(root).find((node) => node.type === "callout" && node.id.startsWith(prefix));
 }
 
 /** Every node of `type` the tree holds, in reading order. */
 export function nodesOfType(root: TreeNode, type: TreeNode["type"]): TreeNode[] {
-  const found: TreeNode[] = [];
-  const walk = (node: TreeNode): void => {
-    if (node.type === type) found.push(node);
-    for (const child of node.children) walk(child);
-  };
-  walk(root);
-  return found;
+  return nodesInOrder(root).filter((node) => node.type === type);
 }

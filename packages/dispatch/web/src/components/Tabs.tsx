@@ -44,7 +44,6 @@ export function Tabs<Id extends string>({
   ariaLabel,
   compact = false,
   idPrefix,
-  onBeforeTabChange,
   onSelect,
   tabs,
   trailing,
@@ -53,21 +52,12 @@ export function Tabs<Id extends string>({
   ariaLabel: string;
   compact?: boolean;
   idPrefix: string;
-  onBeforeTabChange?: (current: Id) => void;
   onSelect: (tab: Id) => void;
   trailing?: ReactNode;
   tabs: readonly TabDefinition<Id>[];
 }): ReactNode {
   const tabRefs = useRef<Partial<Record<Id, HTMLButtonElement | null>>>({});
-  const pointerCapturedScroll = useRef(false);
 
-  const selectTab = (tab: Id) => {
-    if (!pointerCapturedScroll.current) {
-      onBeforeTabChange?.(activeTab);
-    }
-    pointerCapturedScroll.current = false;
-    onSelect(tab);
-  };
   const onTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>, current: Id) => {
     const index = tabs.findIndex((tab) => tab.id === current);
     let nextIndex: number | undefined;
@@ -88,7 +78,7 @@ export function Tabs<Id extends string>({
     if (next === undefined) {
       return;
     }
-    selectTab(next.id);
+    onSelect(next.id);
     const node = tabRefs.current[next.id];
     node?.focus();
     revealTab(node);
@@ -127,12 +117,8 @@ export function Tabs<Id extends string>({
             }
             id={tabButtonId(idPrefix, tab.id)}
             key={tab.id}
-            onClick={() => selectTab(tab.id)}
+            onClick={() => onSelect(tab.id)}
             onKeyDown={(event) => onTabKeyDown(event, tab.id)}
-            onPointerDown={() => {
-              onBeforeTabChange?.(activeTab);
-              pointerCapturedScroll.current = true;
-            }}
             ref={(node) => {
               tabRefs.current[tab.id] = node;
             }}

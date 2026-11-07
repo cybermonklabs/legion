@@ -1,17 +1,10 @@
-import { type ReactNode, useEffect, useId, useRef, useState } from "react";
+import { type ReactNode, useCallback, useId, useRef, useState } from "react";
 
-import {
-  borderDefault,
-  card,
-  focusVisibleRing,
-  secondaryButtonBorder,
-  secondaryButtonDisabledText,
-  secondaryButtonHoverBorder,
-  secondaryButtonText,
-  textSecondaryOnSurface,
-} from "../../theme/classes";
+import { borderDefault, card, secondaryButtonDisabledText } from "../../theme/classes";
+import { MENU_ITEM_CLASS, MENU_TRIGGER_CLASS } from "./menu-shape";
 import { pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
+import { useDismissOnOutside } from "./useDismissOnOutside";
 
 /**
  * The one control row one keeps the issue's actions behind: close, reopen, and the control that
@@ -30,23 +23,8 @@ export function IssueActionsMenu({ actions }: { actions: readonly IssueAction[] 
   const wrapper = useRef<HTMLDivElement>(null);
   // A press outside the group, or Escape, closes it: an open group would otherwise cover the
   // page's own first row until the reader pressed the control again.
-  useEffect(() => {
-    if (!open) return;
-    const closeOutside = (event: PointerEvent) => {
-      if (!(event.target instanceof Node) || wrapper.current?.contains(event.target) !== true) {
-        setOpen(false);
-      }
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("pointerdown", closeOutside);
-    document.addEventListener("keydown", closeOnEscape);
-    return () => {
-      document.removeEventListener("pointerdown", closeOutside);
-      document.removeEventListener("keydown", closeOnEscape);
-    };
-  }, [open]);
+  const close = useCallback(() => setOpen(false), []);
+  useDismissOnOutside(wrapper, open, close);
 
   if (actions.length === 0) return null;
   return (
@@ -55,7 +33,7 @@ export function IssueActionsMenu({ actions }: { actions: readonly IssueAction[] 
         aria-controls={panelId}
         aria-expanded={open}
         aria-label={CONTROL_LABELS.issue_actions}
-        className={`min-h-11 rounded-lg px-2 text-sm font-medium md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${focusVisibleRing}`}
+        className={MENU_TRIGGER_CLASS}
         onClick={() => setOpen((shown) => !shown)}
         type="button"
       >
@@ -71,7 +49,7 @@ export function IssueActionsMenu({ actions }: { actions: readonly IssueAction[] 
           {actions.map((action) => (
             <button
               aria-label={action.name}
-              className={`min-h-11 rounded-lg px-2 py-2 text-left text-sm font-medium ${textSecondaryOnSurface} ${secondaryButtonDisabledText}`}
+              className={`${MENU_ITEM_CLASS} ${secondaryButtonDisabledText}`}
               disabled={action.disabled}
               key={action.name}
               onClick={() => {

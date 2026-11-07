@@ -1,4 +1,11 @@
-import { type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from "react";
+import {
+  type KeyboardEvent,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { useNavigate } from "react-router-dom";
 import type { Artifact } from "../../api/types";
 import {
@@ -14,9 +21,11 @@ import {
 } from "../../theme/classes";
 import { useMediaQuery } from "../shell/useDialog";
 import { presetPath } from "./issue-address";
-import { MENU_CLASS, MENU_ITEM_CLASS, NodeMenu } from "./NodeMenu";
+import { MENU_CLASS, MENU_ITEM_CLASS } from "./menu-shape";
+import { NodeMenu } from "./NodeMenu";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, PRESET_NAMES, PRESET_ORDER, type Preset } from "./page-words";
+import { useDismissOnOutside } from "./useDismissOnOutside";
 
 /**
  * The five presets, the node menu beside them and the filter (dispatch://INFRA-1196 R3, R16,
@@ -77,23 +86,8 @@ export function IssuePresets({
   // An address that opens the node menu opens it on arrival, and leaving that address closes it
   // again, so the menu says what the address says.
   useEffect(() => setOpen(nodeMenu ? "nodes" : undefined), [nodeMenu]);
-  useEffect(() => {
-    if (open === undefined) return;
-    const closeOutside = (event: PointerEvent) => {
-      if (!(event.target instanceof Node) || wrapper.current?.contains(event.target) !== true) {
-        setOpen(undefined);
-      }
-    };
-    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(undefined);
-    };
-    document.addEventListener("pointerdown", closeOutside);
-    document.addEventListener("keydown", closeOnEscape);
-    return () => {
-      document.removeEventListener("pointerdown", closeOutside);
-      document.removeEventListener("keydown", closeOnEscape);
-    };
-  }, [open]);
+  const close = useCallback(() => setOpen(undefined), []);
+  useDismissOnOutside(wrapper, open !== undefined, close);
 
   const walk = (event: KeyboardEvent<HTMLElement>, from: Preset) => {
     const at = PRESET_ORDER.indexOf(from);

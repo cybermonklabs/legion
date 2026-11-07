@@ -15,6 +15,15 @@ export function rowKeyOf(row: DrawnRow): string {
   return `${row.parent ?? ""}>${row.node.id}`;
 }
 
+/** The mark a drawn row carries, which is how the page finds one again. */
+export const NODE_ROW_SELECTOR = "[data-node-row]";
+
+/** The row drawn for the node `id`: the mark above with the node's own id, escaped once here
+ *  rather than at each of the five places that look a row up. */
+export function nodeRowSelector(id: string): string {
+  return `${NODE_ROW_SELECTOR}[data-node-id="${CSS.escape(id)}"]`;
+}
+
 /** Every node of `root` in reading order, the root first: the order the rows are drawn in, and
  *  the order a key looking for the next node of a kind walks, whatever is folded. */
 export function nodesInOrder(root: TreeNode): TreeNode[] {

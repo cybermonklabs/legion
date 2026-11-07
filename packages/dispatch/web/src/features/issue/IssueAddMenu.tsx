@@ -1,18 +1,12 @@
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useRef, useState } from "react";
 
 import type { IssueDetails } from "../../api/types";
-import {
-  borderDefault,
-  card,
-  focusVisibleRing,
-  secondaryButtonBorder,
-  secondaryButtonHoverBorder,
-  secondaryButtonText,
-  textSecondaryOnSurface,
-} from "../../theme/classes";
+import { borderDefault, card, textSecondaryOnSurface } from "../../theme/classes";
 import type { IssueField } from "./IssueFieldForms";
+import { MENU_TRIGGER_CLASS } from "./menu-shape";
 import { PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
+import { useDismissOnOutside } from "./useDismissOnOutside";
 
 /**
  * The one control that reaches a property this issue has no value for (dispatch://INFRA-1196
@@ -36,23 +30,9 @@ export function IssueAddMenu({
 }): ReactNode {
   const [open, setOpen] = useState(false);
   const wrapper = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const closeOutside = (event: PointerEvent) => {
-      if (!(event.target instanceof Node) || wrapper.current?.contains(event.target) !== true) {
-        setOpen(false);
-      }
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("pointerdown", closeOutside);
-    document.addEventListener("keydown", closeOnEscape);
-    return () => {
-      document.removeEventListener("pointerdown", closeOutside);
-      document.removeEventListener("keydown", closeOnEscape);
-    };
-  }, [open]);
+  // A press outside the menu, or Escape, closes it.
+  const close = useCallback(() => setOpen(false), []);
+  useDismissOnOutside(wrapper, open, close);
 
   const empty = emptyFields(issue).filter((field) => field.reachable());
   if (isClosed || empty.length === 0) return null;
@@ -62,7 +42,7 @@ export function IssueAddMenu({
         aria-expanded={open}
         aria-haspopup="menu"
         aria-label={CONTROL_LABELS.add}
-        className={`min-h-11 rounded-lg px-2 text-sm font-medium md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${focusVisibleRing}`}
+        className={MENU_TRIGGER_CLASS}
         onClick={() => setOpen((shown) => !shown)}
         type="button"
         {...pageChrome}

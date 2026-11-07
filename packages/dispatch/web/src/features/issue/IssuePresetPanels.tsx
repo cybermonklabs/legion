@@ -16,6 +16,18 @@ import { SpecRequirements } from "./SpecRequirements";
 type DocumentStageRef = (node: HTMLElement | null) => void;
 
 /**
+ * A tab that still has a panel of its own. `/children` and `/decisions` parse as addresses
+ * (`refs/routes.ts`), but the children section is drawn on every address and the Decisions
+ * preset draws no document, so neither of those two mounts anything there is to keep.
+ */
+export type PanelTab = Exclude<IssueTab, "children" | "decisions">;
+
+/** Whether `tab` is one of the tabs a panel is kept mounted for. */
+export function isPanelTab(tab: IssueTab): tab is PanelTab {
+  return tab !== "children" && tab !== "decisions";
+}
+
+/**
  * What each preset draws beside the tree (dispatch://INFRA-1196 R16): the spec, the
  * Verification and Plan documents, whatever an `/artifacts/<slug>` address opens, the one
  * editor a row of the tree is being edited in, and the Activity list.
@@ -58,7 +70,7 @@ export function IssuePresetPanels({
   verificationArtifact,
   verificationStage,
 }: {
-  activatedTabs: Record<IssueTab, boolean>;
+  activatedTabs: Record<PanelTab, boolean>;
   activeTab: IssueTab;
   artifactRoute: Extract<IssueRoute, { kind: "artifact" }> | undefined;
   askId: string | undefined;

@@ -1,5 +1,6 @@
 import type { IssuePriority } from "../../api/types";
 import { useKeymap } from "../shell/keymap";
+import { CONTROL_LABELS } from "./page-words";
 import type { IssueDrafts } from "./useIssueDrafts";
 import type { IssuePriorityWrite } from "./useIssuePriority";
 
@@ -27,7 +28,7 @@ export function useIssuePalette({
     {
       id: "close",
       keys: [],
-      label: "Close issue",
+      label: CONTROL_LABELS.close_issue,
       run: () => drafts.requestStatusSubmit("done"),
       // `disabled={saving}` on the control, and `isClosed` decides whether it is rendered at
       // all; a row offered while the write is in flight would submit a second one.
@@ -36,7 +37,7 @@ export function useIssuePalette({
     {
       id: "reopen",
       keys: [],
-      label: "Reopen issue",
+      label: CONTROL_LABELS.reopen_issue,
       run: () => drafts.requestStatusSubmit("backlog"),
       when: () => isClosed && !saving,
     },

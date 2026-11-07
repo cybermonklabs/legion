@@ -100,8 +100,6 @@ export const MARGIN_SECTION_NAMES = freeze({
 export const HELP_LINES = freeze({
   /** What the identity block says of a closed issue. */
   closed: "This issue is closed.",
-  /** Why releasing is safe, beside the release control. */
-  release_claim: "Releasing hands the issue back, so another agent can take it.",
   /** What a message route is, and is not, beside the route editor. */
   route:
     "New asks, comments and messages on this issue wake this agent or role; replies inside a thread reach their participants directly. It is where messages go, not who is working the issue — that is the claim.",

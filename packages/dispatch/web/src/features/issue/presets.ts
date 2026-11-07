@@ -1,4 +1,4 @@
-import type { TreeNode } from "./issue-tree";
+import { heldCount, type TreeNode } from "./issue-tree";
 import type { NodeType, Preset } from "./page-words";
 
 /**
@@ -55,6 +55,24 @@ export interface PresetView {
 }
 
 /**
+ * Whether `preset` and `query` keep one node, with the address's own node kept whatever the
+ * query asks for. The rows and the counts read the same predicate, so the number a preset's
+ * tab draws and the tree it opens cannot disagree.
+ */
+function keepsNode(
+  preset: Preset,
+  query: string,
+  named: ReadonlySet<string>
+): (node: TreeNode) => boolean {
+  const types = PRESET_TYPES[preset];
+  const wanted = query.trim().toLowerCase();
+  return (node) =>
+    named.has(node.id) ||
+    ((types === undefined || types.includes(node.type)) &&
+      (wanted === "" || node.text.toLowerCase().includes(wanted)));
+}
+
+/**
  * The tree as `preset`, `query` and the address's own node leave it. The root is always drawn,
  * because an issue whose preset matches nothing still has to say so somewhere, and it is
  * context whenever nothing matched it.
@@ -65,12 +83,7 @@ export function presetView(
   query: string,
   named: ReadonlySet<string> = EMPTY
 ): PresetView {
-  const types = PRESET_TYPES[preset];
-  const wanted = query.trim().toLowerCase();
-  const keeps = (node: TreeNode): boolean =>
-    named.has(node.id) ||
-    ((types === undefined || types.includes(node.type)) &&
-      (wanted === "" || node.text.toLowerCase().includes(wanted)));
+  const keeps = keepsNode(preset, query, named);
   const context = new Set<string>();
   const matched = new Set<string>();
   const prune = (node: TreeNode): TreeNode | undefined => {
@@ -81,7 +94,7 @@ export function presetView(
     if (!own && children.length === 0) return undefined;
     if (own) matched.add(node.id);
     else context.add(node.id);
-    return { ...node, children, held: children.reduce((held, child) => held + child.held + 1, 0) };
+    return { ...node, children, held: heldCount(children) };
   };
   const pruned = prune(root);
   if (pruned !== undefined) {
@@ -92,6 +105,25 @@ export function presetView(
   return { context, matches: 0, root: { ...root, children: [], held: 0 } };
 }
 
+/**
+ * How many distinct nodes `preset` matches under `query`, which is the count its own tab
+ * draws. A node the tree holds under two parents is one node, so the ids go into a set.
+ *
+ * It walks the tree rather than pruning it: the count is the whole of what the row asks for,
+ * and `presetView` would allocate a node object, a children array and a `held` sum for every
+ * node that survives, five times over, on each character typed into the filter.
+ */
+function presetMatches(root: TreeNode, preset: Preset, query: string): number {
+  const keeps = keepsNode(preset, query, EMPTY);
+  const matched = new Set<string>();
+  const walk = (node: TreeNode): void => {
+    if (keeps(node)) matched.add(node.id);
+    for (const child of node.children) walk(child);
+  };
+  walk(root);
+  return matched.size;
+}
+
 /** How many nodes each preset holds under `query`, which is the count its own tab draws. */
 export function presetCounts(
   root: TreeNode,
@@ -100,7 +132,7 @@ export function presetCounts(
 ): Readonly<Record<string, number>> {
   const counts: Record<string, number> = {};
   for (const preset of presets) {
-    counts[preset] = presetView(root, preset, query).matches;
+    counts[preset] = presetMatches(root, preset, query);
   }
   return counts;
 }

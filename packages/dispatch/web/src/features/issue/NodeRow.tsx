@@ -3,7 +3,6 @@ import { Link } from "react-router-dom";
 
 import type { Artifact } from "../../api/types";
 import {
-  borderDefault,
   borderTransparent,
   linkHoverText,
   linkText,
@@ -20,11 +19,11 @@ import { firstLineOf, type NodeChip, type TreeNode } from "./issue-tree";
 import { NodeArtifact } from "./NodeArtifact";
 import { NodeFacts } from "./NodeFacts";
 import { NodeGlyph } from "./NodeGlyph";
+import { GapChip, NODE_CONTROL_CLASS } from "./node-chrome";
 import { authorText, pageChrome } from "./page-structure";
 import {
   CONTROL_LABELS,
   GAP_LINES,
-  GAP_WORDS,
   GLYPH_TOKENS,
   NODE_TYPE_NAMES,
   nodeStateWord,
@@ -256,15 +255,7 @@ function NodeEdges({ node }: { node: TreeNode }): ReactNode {
         <Chip chip={chip} key={chip.ref} />
       ))}
       {node.gaps.map((gap) => (
-        <span
-          className={`rounded border px-1 text-xs ${borderDefault} ${textMutedOnCanvas}`}
-          data-gap=""
-          data-gap-kind={gap}
-          key={gap}
-          {...pageChrome}
-        >
-          {GAP_WORDS[gap]}
-        </span>
+        <GapChip gap={gap} key={gap} />
       ))}
     </>
   );
@@ -300,10 +291,7 @@ function Chip({ chip, label }: { chip: NodeChip; label?: string }): ReactNode {
       </>
     );
   return (
-    <span
-      className={`rounded border px-1 text-xs ${borderDefault} ${textMutedOnCanvas}`}
-      data-node-chip=""
-    >
+    <span className={NODE_CONTROL_CLASS} data-node-chip="">
       {label === undefined ? null : <span {...pageChrome}>{label} </span>}
       {chip.stale === true ? <span {...pageChrome}>{CONTROL_LABELS.target_stale} </span> : null}
       {chip.gone ? <span {...pageChrome}>{CONTROL_LABELS.target_gone} </span> : named}

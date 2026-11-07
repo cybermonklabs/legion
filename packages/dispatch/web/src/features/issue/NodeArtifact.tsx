@@ -4,7 +4,6 @@ import { type ReactNode, useState } from "react";
 import { api } from "../../api/client";
 import type { Artifact } from "../../api/types";
 import {
-  borderDefault,
   linkHoverText,
   linkText,
   textMutedOnCanvas,
@@ -14,6 +13,7 @@ import { artifactVersionUrl, versionsNewestFirst } from "../artifacts/ArtifactHe
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { pictureClassName } from "../refs/DispatchPicture";
 import { documentRoute } from "../refs/routes";
+import { NODE_CONTROL_CLASS } from "./node-chrome";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, EMPTY_STATE_LINES } from "./page-words";
 
@@ -62,7 +62,7 @@ export function NodeArtifact({ artifact }: { artifact: Artifact }): ReactNode {
         )}
         <button
           aria-expanded={showVersions}
-          className={`rounded border px-1 text-xs ${borderDefault} ${textMutedOnCanvas}`}
+          className={NODE_CONTROL_CLASS}
           onClick={() => setShowVersions((shown) => !shown)}
           tabIndex={-1}
           type="button"
