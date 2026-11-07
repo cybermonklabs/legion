@@ -21,7 +21,7 @@ import { AskOwnerLink } from "../inbox/AskOwnerLink";
 import { AgentName } from "../refs/AgentName";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { Timestamp } from "../refs/Timestamp";
-import { textSourceOf } from "../refs/text-references";
+import { textSourceKind, textSourceOf } from "../refs/text-references";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 
@@ -46,7 +46,7 @@ function ReplyRow({ row }: { row: MyReplyRow }): ReactNode {
         : undefined;
   // Both lines are the thread's: its root's text, and a reply that names no document of its own,
   // which takes the root's scope (`refs.ScopeOf`). So one source answers for the row.
-  const source = textSourceOf(row.kind, row.thread_id);
+  const source = textSourceOf(textSourceKind(row.kind), row.thread_id);
   return (
     <li
       className={`rounded-xl border p-3 ${card} ${borderDefault}`}
@@ -107,7 +107,9 @@ export function RepliesPage(): ReactNode {
   useDocumentTitle("Replies · Dispatch");
   const replies = useInfiniteQuery({
     getNextPageParam: (last: MyRepliesResponse) =>
-      last.offset + last.rows.length < last.total ? last.offset + last.rows.length : undefined,
+      last.offset + (last.rows ?? []).length < last.total
+        ? last.offset + (last.rows ?? []).length
+        : undefined,
     initialPageParam: 0,
     queryFn: ({ pageParam }) => api.listMyReplies({ limit: PAGE_SIZE, offset: pageParam }),
     queryKey: PAGE_KEY,
@@ -122,7 +124,7 @@ export function RepliesPage(): ReactNode {
   // loaded page from the top, and until then the thread shows once, where it was first listed.
   const seen = new Set<string>();
   const rows = replies.data.pages
-    .flatMap((page) => page.rows)
+    .flatMap((page) => page.rows ?? [])
     .filter((row) => !seen.has(row.thread_id) && seen.add(row.thread_id));
 
   return (

@@ -430,11 +430,12 @@ test("the one-line preview shows each reference the shared table links as its ta
   const firstLines = new Map<string, string>();
   for (let offset = 0; ; ) {
     const listed = await listMyReplies({ limit: 50, offset });
-    for (const row of listed.rows) {
+    const rows = listed.rows ?? [];
+    for (const row of rows) {
       firstLines.set(row.thread_id, row.reply.first_line);
     }
-    offset += listed.rows.length;
-    if (listed.rows.length === 0 || offset >= listed.total) {
+    offset += rows.length;
+    if (rows.length === 0 || offset >= listed.total) {
       break;
     }
   }

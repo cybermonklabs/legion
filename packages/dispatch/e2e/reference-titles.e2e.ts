@@ -108,7 +108,7 @@ async function seedTitles(): Promise<Seeded> {
     referenceAgent
   );
   await expect
-    .poll(async () => (await getArtifact(world.host.primary_artifact_id)).versions.length)
+    .poll(async () => ((await getArtifact(world.host.primary_artifact_id)).versions ?? []).length)
     .toBeGreaterThan(2);
 
   const body = [
@@ -140,7 +140,7 @@ async function seedTitles(): Promise<Seeded> {
   }
   // Each reply is its thread's whole first line, the thread on alice's Replies page.
   const listed = await listMyReplies({ limit: 50 });
-  expect(new Map(listed.rows.map((row) => [row.thread_id, row.reply.first_line]))).toEqual(
+  expect(new Map((listed.rows ?? []).map((row) => [row.thread_id, row.reply.first_line]))).toEqual(
     new Map([...replies].map(([text, root]) => [root, text]))
   );
   return { comment: anchored.id, missing, replies, world };

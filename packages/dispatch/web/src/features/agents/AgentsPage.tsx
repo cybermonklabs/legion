@@ -61,6 +61,7 @@ import type { ReplyTarget } from "../conversation/composer-model";
 import {
   broadcastDelivery,
   capabilityLabel,
+  deliveryMode,
   MODE_LABELS,
   plainDelivery,
 } from "../conversation/delivery";
@@ -210,20 +211,23 @@ export function partitionAgents(
  *  session, which takes neither. */
 function exchangeDelivery(agent: Agent, read: MessageRead): NonNullable<ReplyTarget["thread"]> {
   let last: MessageDelivery | undefined;
-  for (const attempt of [read.message, ...read.replies].flatMap((item) => item.deliveries)) {
+  for (const attempt of [read.message, ...(read.replies ?? [])].flatMap(
+    (item) => item.deliveries ?? []
+  )) {
     if (last === undefined || compareTimestamps(attempt.created_at, last.created_at) >= 0) {
       last = attempt;
     }
   }
-  const canSteer = agent.capabilities.includes("steer");
+  const capabilities = agent.capabilities ?? [];
+  const canSteer = capabilities.includes("steer");
   const fallback = canSteer
     ? "steer"
-    : agent.capabilities.includes("btw")
+    : capabilities.includes("btw")
       ? "btw"
-      : plainDelivery([agent.capabilities]);
+      : plainDelivery([capabilities]);
+  const lastMode = last === undefined ? undefined : deliveryMode(last.delivery);
   return {
-    delivery:
-      last === undefined || (last.delivery === "steer" && !canSteer) ? fallback : last.delivery,
+    delivery: lastMode === undefined || (lastMode === "steer" && !canSteer) ? fallback : lastMode,
     target: `session:${agent.session_id}`,
   };
 }
@@ -277,8 +281,9 @@ function AgentExchangeReply({
       }),
     write: (delivery, bounds) => api.createMessageDelivery(reply.id, delivery, bounds),
   });
-  const parent = [read.message, ...read.replies].find((item) => item.id === reply.in_reply_to);
-  const answer = read.replies.find(
+  const replies = read.replies ?? [];
+  const parent = [read.message, ...replies].find((item) => item.id === reply.in_reply_to);
+  const answer = replies.find(
     (candidate) => candidate.in_reply_to === reply.id && candidate.author.kind === "session"
   );
   const capabilities = capabilitiesForTarget(read.message.target, liveAgents);
@@ -292,11 +297,11 @@ function AgentExchangeReply({
         </div>
       }
       delivery={
-        reply.deliveries.length === 0
+        (reply.deliveries ?? []).length === 0
           ? undefined
           : {
               answeredBy: answer?.author,
-              attempts: deliveryAttempts(reply.deliveries, rowTarget(agent)),
+              attempts: deliveryAttempts(reply.deliveries ?? [], rowTarget(agent)),
               retry: {
                 canAside: capabilities?.includes("aside") !== false,
                 canBtw: capabilities?.includes("btw") !== false,
@@ -353,7 +358,8 @@ function AgentTargetedMessage({
       }),
     write: (delivery, bounds) => api.createMessageDelivery(read.message.id, delivery, bounds),
   });
-  const answer = read.replies.find((reply) => reply.author.kind === "session");
+  const replies = read.replies ?? [];
+  const answer = replies.find((reply) => reply.author.kind === "session");
   return (
     <TargetedMessageCard
       answeredBy={answer?.author}
@@ -371,7 +377,7 @@ function AgentTargetedMessage({
       canAside={capabilitiesForTarget(read.message.target, liveAgents)?.includes("aside") !== false}
       canBtw={capabilitiesForTarget(read.message.target, liveAgents)?.includes("btw") !== false}
       canSteer={capabilitiesForTarget(read.message.target, liveAgents)?.includes("steer") !== false}
-      deliveries={deliveryAttempts(read.message.deliveries, rowTarget(agent))}
+      deliveries={deliveryAttempts(read.message.deliveries ?? [], rowTarget(agent))}
       header={null}
       isClosed={false}
       onReply={() => onReply(agentReplyTo(agent, read, read.message))}
@@ -380,9 +386,9 @@ function AgentTargetedMessage({
       retrying={retry.isPending}
       targetName={rowTarget(agent)}
       thread={
-        read.replies.length === 0 ? null : (
+        replies.length === 0 ? null : (
           <ThreadReplies>
-            {read.replies.map((reply) => (
+            {replies.map((reply) => (
               <AgentExchangeReply
                 agent={agent}
                 key={reply.id}
@@ -403,7 +409,7 @@ function AgentTargetedMessage({
 
 /** When an exchange last moved: its newest reply, else the root message. */
 function exchangeActivityAt(read: MessageRead): string {
-  return (read.replies.at(-1) ?? read.message).created_at;
+  return ((read.replies ?? []).at(-1) ?? read.message).created_at;
 }
 
 /**
@@ -739,7 +745,7 @@ function AgentRow({
           >
             {shownDir}
           </span>
-          {agent.roles.map((role) => (
+          {(agent.roles ?? []).map((role) => (
             <LabelPill key={role}>{role}</LabelPill>
           ))}
           {/* A session that has missed its heartbeats is still listed and still worth
@@ -843,17 +849,18 @@ function AgentRowDetails({
 }): ReactNode {
   const sendKey = useMemo(() => agentSendKey(agent.session_id), [agent.session_id]);
   const hold = useSending(sendKey);
+  const capabilities = agent.capabilities ?? [];
   return (
     <div className={`border-t px-4 pb-4 ${borderDefault}`} hidden={!expanded} id={id}>
       <div
         className={`mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs ${textMutedOnCanvas}`}
       >
-        {agent.capabilities.length === 0 ? (
+        {capabilities.length === 0 ? (
           // A session that advertises no mode refuses every message, the Claude Code session
           // whose Envoy channel Claude Code did not load among them.
           <span>Takes no messages</span>
         ) : (
-          agent.capabilities.map((capability) => (
+          capabilities.map((capability) => (
             <span key={capability}>{capabilityLabel(capability)}</span>
           ))
         )}
@@ -1078,12 +1085,14 @@ function BroadcastComposer({
   // what their words become: an Aside, because a selected session takes Aside and not BTW.
   const asideOnly =
     defaulted && delivery === "aside"
-      ? agents.filter(
-          (agent) =>
+      ? agents.filter((agent) => {
+          const capabilities = agent.capabilities ?? [];
+          return (
             selected.has(agent.session_id) &&
-            agent.capabilities.includes("aside") &&
-            !agent.capabilities.includes("btw")
-        )
+            capabilities.includes("aside") &&
+            !capabilities.includes("btw")
+          );
+        })
       : [];
   const asideLine: AgentPart[] = [
     "Sending as Aside: ",
@@ -1272,7 +1281,7 @@ export function AgentsPage(): ReactNode {
   // Until the sender picks a mode, the broadcast goes in the one its selection takes: BTW, or
   // Aside when a selected session takes Aside and not BTW (a Claude Code session).
   const defaultDelivery = broadcastDelivery(
-    agents.flatMap((agent) => (selected.has(agent.session_id) ? [agent.capabilities] : []))
+    agents.flatMap((agent) => (selected.has(agent.session_id) ? [agent.capabilities ?? []] : []))
   );
   // A restored request is re-sent word for word until an edit drops it, so its own mode is the one
   // the page shows and sends while it is held.
