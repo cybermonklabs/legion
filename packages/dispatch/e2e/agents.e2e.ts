@@ -89,7 +89,7 @@ test.beforeEach(async () => {
 // SLOW(>=2s): one page tour over four sessions - order, groups, pills, pin, clipboard and an
 // issue-less BTW conversation. Every second is a step the row asserts, and the seed's order is
 // what "who needs you first" is read against, so its writes keep theirs.
-test("Agents puts who needs you first, groups the rest by what each is doing, shows one whose-turn pill per side, pins a card, copies identifiers, and holds an issue-less BTW conversation @phone", async ({
+test("Agents puts who needs you first, groups the rest by what each is doing, shows one whose-turn pill per side, pins a card, copies identifiers, and holds an issue-less BTW conversation", async ({
   browser,
 }, testInfo) => {
   await setLiveSessions([planner, reviewer, silent, archivist]);
@@ -130,12 +130,10 @@ test("Agents puts who needs you first, groups the rest by what each is doing, sh
     const page = await alice.newPage();
     const copied = await recordClipboard(page);
     await page.goto("/agents");
-    const width = testInfo.project.name === "iphone" ? "390" : "1280";
+    const width = "1280";
 
     const agents = page.getByRole("region", { name: "Agents" });
-    if (testInfo.project.name === "chromium") {
-      await expect(page.getByRole("link", { name: "Agents", exact: true })).toBeVisible();
-    }
+    await expect(page.getByRole("link", { name: "Agents", exact: true })).toBeVisible();
     // Each card is its row by session, drawn or not, so every assertion below says which.
     const plannerCard = agentRow(page, planner.session_id);
     const reviewerCard = agentRow(page, reviewer.session_id);
@@ -157,8 +155,7 @@ test("Agents puts who needs you first, groups the rest by what each is doing, sh
     // Every group is open when the page loads (R7): all four rows are drawn, in group order.
     const shownTitles = shownAgentRows(page).locator("h2");
     await expect(shownTitles).toHaveText(["Planner", "Reviewer", "Silent", "Archivist"]);
-    // Each heading owns its own row: a group's heading starts below the row above it, even on
-    // the phone where the global inline-flex button rule would otherwise line them up.
+    // Each heading owns its own row: a group's heading starts below the row above it.
     const idleBox = await idleToggle.boundingBox();
     const quietBox = await quietToggle.boundingBox();
     if (idleBox === null || quietBox === null) throw new Error("group headings not laid out");
@@ -354,7 +351,7 @@ test("Agents puts who needs you first, groups the rest by what each is doing, sh
   }
 });
 
-test("Agents shows the newest exchange, folds the older ones, and lets the viewer clear the conversation @phone", async ({
+test("Agents shows the newest exchange, folds the older ones, and lets the viewer clear the conversation", async ({
   browser,
 }, testInfo) => {
   await setLiveSessions([planner]);
@@ -377,7 +374,7 @@ test("Agents shows the newest exchange, folds the older ones, and lets the viewe
   try {
     const page = await alice.newPage();
     await page.goto("/agents");
-    const width = testInfo.project.name === "iphone" ? "390" : "1280";
+    const width = "1280";
     const plannerCard = agentRow(page, planner.session_id);
     const conversation = plannerCard.getByRole("list", { name: "Conversation with Planner" });
     const expand = async () => {
@@ -403,10 +400,6 @@ test("Agents shows the newest exchange, folds the older ones, and lets the viewe
 
     // Clear hides everything so far for this viewer and keeps the cutoff on the server.
     const clearButton = plannerCard.getByRole("button", { name: "Clear conversation" });
-    if (testInfo.project.name === "iphone") {
-      const box = await clearButton.boundingBox();
-      expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
-    }
     const saved = page.waitForResponse(
       (response) =>
         response.request().method() === "PUT" &&

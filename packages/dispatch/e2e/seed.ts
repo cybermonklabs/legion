@@ -34,6 +34,7 @@ const tables = [
   "user_agent_pin",
   "user_agent_read",
   "user_agent_reply_read",
+  "user_agent_thread_dismissed",
   "user_threads",
   "events",
   "refs",

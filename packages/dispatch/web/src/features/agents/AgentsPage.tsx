@@ -23,9 +23,7 @@ import {
 } from "../../api/queries";
 import type {
   Agent,
-  InboxRow,
   Message,
-  MessageDelivery,
   MessageDeliveryMode,
   MessageRead,
   UserAgentStates,
@@ -37,6 +35,7 @@ import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { MultiSelect } from "../../components/MultiSelect";
 import { LabelPill } from "../../components/Pill";
 import { PinButton } from "../../components/PinButton";
+import { AgentListRefilling } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
 import { useSending } from "../../hooks/useSending";
 import { compareTimestamps } from "../../lib/timestamps";
@@ -59,22 +58,22 @@ import {
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
-import type { ReplyTarget } from "../conversation/composer-model";
-import {
-  broadcastDelivery,
-  capabilityLabel,
-  MODE_LABELS,
-  plainDelivery,
-} from "../conversation/delivery";
+import { broadcastDelivery, capabilityLabel, MODE_LABELS } from "../conversation/delivery";
 import { useHeldSends } from "../conversation/held-sends";
 import { ReplyTurn, ThreadReplies } from "../conversation/ReplyTurn";
 import { capabilitiesForTarget, TargetedMessageCard } from "../conversation/TargetedMessageCard";
 import { useAgents } from "../conversation/useAgents";
 import { type MeasuredHeights, rowWindow, withMeasuredHeights } from "../delivery/lib/rowWindow";
 import { waitingOnYou } from "../inbox/BlockedOnYou";
-import { AgentName, type AgentPart, AgentParts, useAgentText } from "../refs/AgentName";
+import {
+  AgentName,
+  type AgentPart,
+  AgentParts,
+  AgentUnresponsiveNote,
+  useAgentText,
+} from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
-import { buildInboxPath, buildIssuePath } from "../refs/routes";
+import { buildInboxPath, buildIssuePath, buildMachinePath } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { closestMatching, focusOnDocument } from "../shell/roving";
 import { MD_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
@@ -88,15 +87,17 @@ import {
   matchesFilters,
   searchWords,
   sessionIssueKeys,
+  useAgentMachines,
   useAgentSearch,
-  useMachineFromAddress,
 } from "./agent-search";
+import { type NeedsYouBySession, tallyBySession } from "./ask-tally";
 import { deliveryAttempts } from "./attempts";
 import { BroadcastSends, useBroadcastQueue } from "./BroadcastSends";
 import { useBroadcastComposition } from "./broadcast-composition";
 import { broadcastSendState, type ComposedBroadcast, composedBroadcast } from "./broadcast-plan";
 import type { BroadcastSend } from "./broadcast-queue";
 import { EndedAgentsWithReplies } from "./EndedAgentsWithReplies";
+import { agentReplyTo } from "./exchange-delivery";
 import { AGENT_ROW_SELECTOR, foldToggleOf, leaveAgentComposer, useAgentsKeymap } from "./keyboard";
 import { useAgentPinWrite, usePinnedAgents } from "./pins";
 import { groupCountLabel, matchingSelection, selectionSummary, toggleMatching } from "./selection";
@@ -109,23 +110,6 @@ import { storeAgentState, unreadRepliesLabel, useMarkRepliesRead, useUnreadAtOpe
 const composerLineLayout =
   "mt-2 text-sm narrow-or-short:order-2 narrow-or-short:col-start-2 narrow-or-short:mt-0 narrow-or-short:min-w-0 narrow-or-short:overflow-x-auto narrow-or-short:text-xs narrow-or-short:whitespace-nowrap short:order-3 short:col-span-4 short:col-start-1";
 const composerLine = `${composerLineLayout} ${dangerText}`;
-
-/** Open asks from each session whose turn is the viewer's, keyed by session ID. */
-export type NeedsYouBySession = ReadonlyMap<string, number>;
-
-/** Open asks a session authored, tallied by that session's id: the walk both card numbers make
- *  over the one inbox query, each over the rows it counts (`keep`, every row by default). */
-function tallyBySession(
-  asks: readonly InboxRow[],
-  keep: (ask: InboxRow) => boolean = () => true
-): Map<string, number> {
-  const counts = new Map<string, number>();
-  for (const ask of asks) {
-    if (ask.author.kind !== "session" || !keep(ask)) continue;
-    counts.set(ask.author.id, (counts.get(ask.author.id) ?? 0) + 1);
-  }
-  return counts;
-}
 
 /**
  * Pinned sessions first, in pin order; then whoever needs the viewer, then the most open asks,
@@ -194,47 +178,6 @@ function everyGroupOpen(): Record<AgentGroup, boolean> {
   return { active: true, idle: true, "needs-you": true, quiet: true };
 }
 
-/** The delivery a reply into this exchange inherits: the agent, in the mode of the exchange's
- *  most recent attempt across the root and every delivered reply. Where that is a Send the agent
- *  does not take, or there is none (a reply to the agent's own message), it is a Send where the
- *  agent takes it, else a BTW where it takes that, else its plain mode - an Aside to a Claude Code
- *  session, which takes neither. */
-function exchangeDelivery(agent: Agent, read: MessageRead): NonNullable<ReplyTarget["thread"]> {
-  let last: MessageDelivery | undefined;
-  for (const attempt of [read.message, ...read.replies].flatMap((item) => item.deliveries)) {
-    if (last === undefined || compareTimestamps(attempt.created_at, last.created_at) >= 0) {
-      last = attempt;
-    }
-  }
-  const canSteer = agent.capabilities.includes("steer");
-  const fallback = canSteer
-    ? "steer"
-    : agent.capabilities.includes("btw")
-      ? "btw"
-      : plainDelivery([agent.capabilities]);
-  return {
-    delivery:
-      last === undefined || (last.delivery === "steer" && !canSteer) ? fallback : last.delivery,
-    target: `session:${agent.session_id}`,
-  };
-}
-
-function agentReplyTo(agent: Agent, read: MessageRead, node: Message): AgentReply {
-  return {
-    issueKey: read.message.issue_key,
-    target: {
-      actor: node.author,
-      excerpt: node.body,
-      id: node.id,
-      parentKind: "message",
-      thread: exchangeDelivery(agent, read),
-      ...(node.issue_key === null
-        ? {}
-        : { to: buildIssuePath({ id: node.id, key: node.issue_key, kind: "message" }) }),
-    },
-  };
-}
-
 /** Who a row's messages go to, as the delivery lines draw it: the row's own session, through
  *  `AgentName`, which names it by its current registry title. */
 function rowTarget(agent: Agent): AgentPart {
@@ -250,7 +193,7 @@ function AgentExchangeReply({
   replyDisabled,
 }: {
   agent: Agent;
-  liveAgents: readonly Agent[];
+  liveAgents: readonly Agent[] | undefined;
   onReply: (reply: AgentReply) => void;
   read: MessageRead;
   reply: Message;
@@ -327,7 +270,7 @@ function AgentTargetedMessage({
   replyDisabled,
 }: {
   agent: Agent;
-  liveAgents: readonly Agent[];
+  liveAgents: readonly Agent[] | undefined;
   onReply: (reply: AgentReply) => void;
   read: MessageRead;
   replyDisabled: boolean;
@@ -418,7 +361,7 @@ function AgentMessageList({
   replyDisabled,
 }: {
   agent: Agent;
-  liveAgents: readonly Agent[];
+  liveAgents: readonly Agent[] | undefined;
   onReply: (reply: AgentReply) => void;
   /** Whether the row is open. Its list stays mounted while it is collapsed, and marks nothing read
    *  there: a reply is read once it is on screen. */
@@ -579,6 +522,12 @@ function lastPathSegment(dir: string): string {
   return segments.at(-1) ?? dir;
 }
 
+/** A row's machine name, the one link in its directory line. It sits inside that line's
+ *  sentence, so it keeps its line box (`dispatch-inline-link`, `styles.css`) rather than taking
+ *  the 44 px touch floor every other link below 1280 px takes, which would make every row on a
+ *  phone a line taller; its padding reaches the hit size instead. */
+const machineLink = `dispatch-inline-link rounded underline outline-none focus-visible:ring-2 ${focusVisibleRing} ${linkText} ${linkHoverText}`;
+
 function AgentRow({
   agent,
   expanded,
@@ -604,7 +553,9 @@ function AgentRow({
    *  open: hidden, so what that row holds survives the fold and the filter, as it survives a
    *  scroll. */
   hidden: boolean;
-  liveAgents: readonly Agent[];
+  /** The roster a reply's delivery capabilities are judged against; `undefined` while the agent
+   *  list's read is not current, when every capability is unknown (`capabilitiesForTarget`). */
+  liveAgents: readonly Agent[] | undefined;
   /** Which side of `md` the page is on, read once for the whole list (`MD_VIEWPORT_QUERY` in
    *  `AgentsPage`): the directory below it shows the whole path, and from it the last segment
    *  with the path one hover away. One listener for two hundred rows, not two hundred. */
@@ -637,8 +588,8 @@ function AgentRow({
   // From `md` the row is one line, so the directory keeps the segment that names the session's
   // work and the whole path is the hover its `title` is. Below `md` it has a line of its own
   // under the name and a phone has no hover to ask that `title` with, so it shows the path
-  // whole.
-  const shownDir = `${agent.host} · ${mdViewport ? lastPathSegment(agent.dir) : agent.dir}`;
+  // whole. The machine is drawn before it as a link of its own, so it is no part of this.
+  const shownDir = mdViewport ? lastPathSegment(agent.dir) : agent.dir;
   const unreadReplies =
     useQuery(userAgentStateQuery()).data?.[agent.session_id]?.unread_replies ?? 0;
   // What the row holds itself is the reply the composer is answering; the page holds the rest.
@@ -732,13 +683,29 @@ function AgentRow({
           data-agent-dir=""
           title={machineAndDir}
         >
-          {shownDir}
+          {/* Only the machine is a link: the span still reads `<machine> · <directory>` whole,
+              and the machine's own page is one click from a row that names it. */}
+          <Link
+            className={machineLink}
+            data-agent-machine={agent.host}
+            to={buildMachinePath(agent.host)}
+          >
+            {agent.host}
+          </Link>
+          {` · ${shownDir}`}
         </span>
         {agent.roles.map((role) => (
           <span className="shrink-0" key={role}>
             <LabelPill>{role}</LabelPill>
           </span>
         ))}
+        {/* A session that has missed its heartbeats is still listed and still worth
+            messaging, so the row says which it is rather than looking like any other: its
+            name's mark alone is a ring a reader would have to hover. */}
+        <AgentUnresponsiveNote
+          lastSeen={agent.last_seen}
+          state={agent.state === "unresponsive" ? "unresponsive" : "running"}
+        />
         <div className="flex shrink-0 items-center gap-2">
           <span className={`whitespace-nowrap text-xs ${textMutedOnCanvas}`}>
             {agent.last_activity === null ? (
@@ -826,7 +793,7 @@ function AgentRowDetails({
   expanded: boolean;
   hidden: boolean;
   id: string;
-  liveAgents: readonly Agent[];
+  liveAgents: readonly Agent[] | undefined;
   replyTo: AgentReply | null;
   setReplyTo: (reply: AgentReply | null) => void;
 }): ReactNode {
@@ -940,7 +907,9 @@ function AgentFilterBar({
   onFilters: (filters: AgentFilters) => void;
   searchInputRef: RefObject<HTMLInputElement | null>;
 }): ReactNode {
-  const { machines, roles } = filterOptions(agents);
+  // The options carry every machine the filter names even when no live session reports it, so
+  // the control shows the filter in force and its row can be unticked (`filterOptions`).
+  const { machines, roles } = filterOptions(agents, filters.machines);
   // One panel open at a time: each is a portalled popover, and two of them over one row would
   // cover each other.
   const [open, setOpen] = useState<OpenFilter>(null);
@@ -1077,7 +1046,9 @@ function SelectionHeader({
  * Send hands the request to the page's queue (`onSend`) at the press: `composed`, which
  * `composedBroadcast` decides - the restored request word for word while one is kept, else the
  * live plan under the composition's key - with the plan the composer shows for it, so a session
- * that has come back since a refused send is shown as not in the request being re-sent.
+ * that has come back since a refused send is shown as not in the request being re-sent. A
+ * selected session the agent list could not vouch for (`unchecked`: missing from a list that is
+ * not current) keeps its place in the send, and its chip says its state is unknown, not gone.
  */
 function BroadcastComposer({
   agents,
@@ -1104,7 +1075,7 @@ function BroadcastComposer({
   selected: ReadonlySet<string>;
 }): ReactNode {
   const { plan } = composed;
-  const { excluded, recipients } = plan;
+  const { excluded, recipients, unchecked } = plan;
   // The selection's own mode, named when it is not the broadcast's usual BTW, so the reader knows
   // what their words become: an Aside, because a selected session takes Aside and not BTW.
   const asideOnly =
@@ -1160,6 +1131,7 @@ function BroadcastComposer({
         {[...selected].map((sessionID) => {
           const agent = agents.find((candidate) => candidate.session_id === sessionID);
           const left = excluded.find((item) => item.sessionID === sessionID);
+          const note = left ?? unchecked.find((item) => item.sessionID === sessionID);
           return (
             <li className="narrow-or-short:shrink-0" key={sessionID}>
               {/* The deselect button keeps the name; the agent's live link sits beside it. */}
@@ -1173,7 +1145,7 @@ function BroadcastComposer({
                     type="button"
                   >
                     {name}
-                    {left === undefined ? "" : ` · ${left.reason}`} ✕
+                    {note === undefined ? "" : ` · ${note.reason}`} ✕
                   </button>
                 )}
                 kind="control"
@@ -1335,7 +1307,7 @@ function useListWindow(keys: readonly string[], kept: ReadonlySet<string>): List
 
 export function AgentsPage(): ReactNode {
   useDocumentTitle("Agents · Dispatch");
-  const { agents, error, isError, isPending } = useAgents(true, true);
+  const { agents, current, error, isError, isPending, refilling } = useAgents(true, true);
   // Which side of Tailwind's `md` the page is on, read once for the list rather than once per
   // row: it decides what each row's directory shows, and a list of two hundred rows is two
   // hundred listeners otherwise.
@@ -1372,20 +1344,21 @@ export function AgentsPage(): ReactNode {
   // Every issue key an OPEN ask by each session names (`sessionIssueKeys`), for the search box's
   // "issue key" field.
   const issueKeysBySession = useMemo(() => sessionIssueKeys(inbox.data ?? []), [inbox.data]);
-  // The free-text query is the page's own `?q=`; the group, machine and role selections stay
-  // plain state, as the machine and role did before this box. A link in from the machines page
-  // of dispatch://INFRA-883 names one machine, which the filter starts ticked with and the
-  // address then loses, so the control is the only owner of it.
+  // The free-text query and the machines are the page's own `?q=` and `?machine=`, both owned
+  // by `agent-search.ts`; the group and role selections stay plain component state, as the
+  // machine and role did before this box. A link in from the machines page of
+  // dispatch://INFRA-883 names one machine in `?machine=`, which is this filter with that one
+  // host ticked.
   const [search, setSearch] = useAgentSearch();
-  const linkedMachines = useMachineFromAddress();
-  const [fieldFilters, setFieldFilters] = useState<Omit<AgentFilters, "search">>({
+  const [machines, setMachines] = useAgentMachines();
+  const [fieldFilters, setFieldFilters] = useState<Omit<AgentFilters, "machines" | "search">>({
     groups: [],
-    machines: linkedMachines,
     roles: [],
   });
-  const filters: AgentFilters = { ...fieldFilters, search };
+  const filters: AgentFilters = { ...fieldFilters, machines, search };
   const setFilters = (next: AgentFilters) => {
-    setFieldFilters({ groups: next.groups, machines: next.machines, roles: next.roles });
+    setFieldFilters({ groups: next.groups, roles: next.roles });
+    if (next.machines !== machines) setMachines(next.machines);
     if (next.search !== search) setSearch(next.search);
   };
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -1567,7 +1540,7 @@ export function AgentsPage(): ReactNode {
       expanded={expandedRows.has(agent.session_id)}
       hidden={hidden}
       key={agent.session_id}
-      liveAgents={agents}
+      liveAgents={current ? agents : undefined}
       mdViewport={mdViewport}
       needsYou={needsYouBySession.get(agent.session_id) ?? 0}
       onExpand={(open) => expandRow(agent.session_id, open)}
@@ -1624,8 +1597,9 @@ export function AgentsPage(): ReactNode {
 
   if (isPending) return <LoadingSkeleton label="Loading agents" />;
   // A refresh that fails keeps the list it has: unmounting every row would throw away what each
-  // holds - a draft, a send's refusal, an upload. With no rows there is nothing to keep.
-  if (isError && agents.length === 0) {
+  // holds - a draft, a send's refusal, an upload. With no rows there is nothing to keep. A list
+  // that is refilling is no failure to report, and the page says so in its place.
+  if (isError && agents.length === 0 && !refilling) {
     return <p className={dangerText}>Could not load agents: {error}</p>;
   }
 
@@ -1648,15 +1622,24 @@ export function AgentsPage(): ReactNode {
           <Link className={`${linkText} ${linkHoverText}`} to="/agents/broadcasts">
             Broadcasts
           </Link>
+          <Link className={`${linkText} ${linkHoverText}`} to="/machines">
+            Machines
+          </Link>
         </p>
       </header>
-      {isError ? (
+      {refilling ? (
+        <AgentListRefilling className={`mb-3 text-sm ${textSecondaryOnCanvas}`} />
+      ) : isError ? (
         <p className={`mb-3 text-sm ${dangerText}`} role="alert">
           Could not refresh agents: {error}
         </p>
       ) : null}
+      {/* Only a current list says nobody is connected: one that failed or is refilling keeps
+          the rows it had, and an empty one it had says nothing about now. */}
       {agents.length === 0 ? (
-        <EmptyState label="Agents empty state" message="No agents are connected." />
+        current ? (
+          <EmptyState label="Agents empty state" message="No agents are connected." />
+        ) : null
       ) : (
         <>
           <AgentFilterBar
@@ -1672,7 +1655,7 @@ export function AgentsPage(): ReactNode {
             onToggle={() => setSelected((current) => toggleMatching(matching, current))}
             selected={selected}
           />
-          {matching.length === 0 ? (
+          {matching.length === 0 && current ? (
             <EmptyState
               label="Agents filtered empty state"
               message="No agent matches these filters."
@@ -1715,7 +1698,10 @@ export function AgentsPage(): ReactNode {
             <BroadcastComposer
               agents={agents}
               body={draft}
-              composed={composedBroadcast({ ...composition, delivery }, agents)}
+              composed={composedBroadcast(
+                { ...composition, delivery },
+                { agents, current, refilling }
+              )}
               defaulted={composition.delivery === null}
               delivery={delivery}
               onBody={composition.setDraft}
@@ -1730,7 +1716,8 @@ export function AgentsPage(): ReactNode {
           ) : null}
         </div>
       )}
-      <EndedAgentsWithReplies live={agents} />
+      {/* A session the list does not hold has ended only when the list is current. */}
+      {current ? <EndedAgentsWithReplies live={agents} /> : null}
     </section>
   );
 }

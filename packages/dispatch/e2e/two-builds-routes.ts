@@ -15,7 +15,6 @@ export interface WalkRoute {
 export const walkRoutes = [
   { page: "InboxPage", path: "/" },
   { page: "AnswersPage", path: "/answers" },
-  { page: "RepliesPage", path: "/replies" },
   { page: "AgentsPage", path: "/agents" },
   { page: "BroadcastsPage", path: "/agents/broadcasts" },
   { page: "BroadcastPage", path: "/agents/broadcasts/:id" },
@@ -23,6 +22,8 @@ export const walkRoutes = [
   // which `MountedLiveViews` imports as the address brings that view up.
   { page: "LiveViewRoute", path: "/agents/:sessionId/live" },
   { page: "AgentArtifactPage", path: "/agents/:sessionId/artifacts/:slug" },
+  { page: "MachinesPage", path: "/machines" },
+  { page: "MachinePage", path: "/machines/:machine" },
   { page: "IssuePage", path: "/issues/:key/*" },
   { page: "ProjectPage", path: "/projects/:key" },
   { page: "ProjectPage", path: "/projects/:key/architecture" },

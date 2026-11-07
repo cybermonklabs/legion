@@ -27,6 +27,7 @@ import type {
   CreateProjectInput,
   CreateVersionInput,
   CredentialPendingResponse,
+  DispatchLimits,
   DispatchServiceErrorShape,
   EditArtifactInput,
   EditArtifactResponse,
@@ -52,6 +53,7 @@ import type {
   MessageRead,
   MessageReplyInput,
   MessageReplyResult,
+  MyRepliesResponse,
   OpenAsksResponse,
   Project,
   RecordCheckResultInput,
@@ -1049,6 +1051,12 @@ export class DispatchClient {
     return this.#json("GET", ["api", "v1", "whoami"]);
   }
 
+  /** `GET /api/v1/limits`: the bounds this server holds a write to, each read from the constant
+   *  that enforces it. The client keeps no copy of them: it prints what the server answers. */
+  async limits(): Promise<DispatchLimits> {
+    return this.#json("GET", ["api", "v1", "limits"]);
+  }
+
   /** `GET /api/v1/inbox?assignee=<who>`: the open asks one person's Inbox lists, in the server's
    *  own order (the owning issue's priority, then whose turn it is, then the latest activity),
    *  which no reader re-sorts. `me` is the caller, and keeps the rows on issues assigned to them,
@@ -1056,6 +1064,16 @@ export class DispatchClient {
    *  scope and refuses a credential without it with 403 OAUTH_SCOPE_REQUIRED. */
   async inbox(assignee: string): Promise<InboxRow[]> {
     return this.#json("GET", ["api", "v1", "inbox"], undefined, { assignee });
+  }
+
+  /** `GET /api/v1/me/replies?kind=reply,agent`: every unread thread the caller's Inbox lists —
+   *  a thread they wrote in that somebody else has written in since, and a one-off message they
+   *  sent an agent session that it answered — newest reply first, in the server's own order,
+   *  which no reader re-sorts. No `limit` is asked for, so the answer holds every row. The route
+   *  reads the caller's own `person` scope and refuses a credential without it with 403
+   *  OAUTH_SCOPE_REQUIRED, as the Inbox does. */
+  async myReplies(): Promise<MyRepliesResponse> {
+    return this.#json("GET", ["api", "v1", "me", "replies"], undefined, { kind: "reply,agent" });
   }
 
   /** `GET /api/v1/credential-requests?approver=me`: the credential requests the caller may

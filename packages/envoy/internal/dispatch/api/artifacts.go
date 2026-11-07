@@ -772,6 +772,15 @@ func (s *server) getArtifactBlocks(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The windows of a document's blocks are written under the artifact id; a block the live
+	// document holds and no window covers - a block inside another, whose text its parent's
+	// window already holds, and every block of a version the indexer has not windowed yet -
+	// reads as model.BlockNotEmbedded.
+	embedding, err := refs.BlockEmbeddingStates(r.Context(), s.deps.Store.Pool, refs.DocumentWindowKind, artifact.ID)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	for index := range blocks {
 		counts := references[blocks[index].ID]
 		for _, descendantID := range blocks[index].DescendantIDs {
@@ -780,6 +789,7 @@ func (s *server) getArtifactBlocks(w http.ResponseWriter, r *http.Request) {
 			counts.Asks += descendant.Asks
 		}
 		blocks[index].References = counts
+		blocks[index].Embedding = blockEmbedding(embedding, blocks[index].ID)
 	}
 	WriteJSON(w, http.StatusOK, blocks)
 }
@@ -867,6 +877,9 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
+		hash := sha256.Sum256([]byte(markdown))
+		sha := hex.EncodeToString(hash[:])
+		version.SHA256 = &sha
 		WriteJSON(w, http.StatusOK, struct {
 			Markdown string `json:"markdown"`
 			model.Version
@@ -1798,6 +1811,9 @@ func artifactSlug(name string) string {
 var roleSlugs = map[string]string{
 	model.ArtifactRoleVerification: "verification-md",
 	model.ArtifactRolePlan:         "plan-md",
+	// The Decisions view already spells the decisions document's slug, which a reference to it
+	// names, so the role takes that constant rather than a second copy of the same word.
+	model.ArtifactRoleDecisions: decisionsDocumentSlug,
 }
 
 // documentRole is the role a document takes when its row is created: an issue's markdown
@@ -1852,11 +1868,12 @@ func documentRolePredicate(alias, role string) string {
 // that names no alias, since the queries that hold a row to it are written as string literals.
 var verificationRolePredicate = documentRolePredicate("", model.ArtifactRoleVerification)
 
-// aliasedVerificationRole and aliasedPlanRole are the same two predicates for a query whose
-// artifacts table is aliased `a`: the issue read, the coverage read and the check resolver all
-// join it that way.
+// aliasedVerificationRole, aliasedPlanRole and aliasedDecisionsRole are the same predicate for a
+// query whose artifacts table is aliased `a`: the issue read, the coverage read and the check
+// resolver all join it that way.
 var aliasedVerificationRole = documentRolePredicate("a", model.ArtifactRoleVerification)
 var aliasedPlanRole = documentRolePredicate("a", model.ArtifactRolePlan)
+var aliasedDecisionsRole = documentRolePredicate("a", model.ArtifactRoleDecisions)
 
 // artifactKindMismatch is the 400 refusing an upload under name, of kind, as the next version of
 // artifact, the one the name or slug finds, whose kind is another.

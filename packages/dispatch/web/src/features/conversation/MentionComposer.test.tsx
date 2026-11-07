@@ -1,13 +1,19 @@
 import { expect, jest, type Mock, spyOn, test } from "bun:test";
+import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
 import { type MutationKey, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
-import { ApiError, api } from "../../api/client";
+import { AGENT_LIST_REFILLING, ApiError, api } from "../../api/client";
 import type { Agent, Comment, ItemBlock, ItemBlocks, Message } from "../../api/types";
 import { useSending } from "../../hooks/useSending";
-import { KEYED_SEND_ATTEMPT_MS, SEND_DEADLINE_MS, SendStoppedError } from "../writes/keyed-write";
+import {
+  KEYED_SEND_ATTEMPT_MS,
+  SEND_DEADLINE_MS,
+  SendExpiredError,
+  SendStoppedError,
+} from "../writes/keyed-write";
 import type { ComposerOwner, ReplyTarget } from "./composer-model";
 import { MentionComposer, reconcileMentions } from "./MentionComposer";
 import { KEYED_SEND_LATE_TEXT } from "./send-request";
@@ -675,6 +681,52 @@ test("an accepted mention survives its target going offline before Send", async 
     view.unmount();
     listAgents.mockRestore();
     createComment.mockRestore();
+  }
+});
+
+// A refilling agent list keeps the suggestions an earlier read gave and never says nobody
+// matches: it says the list is refilling instead.
+test("mention suggestions say the agent list is refilling instead of that no agent matches", async () => {
+  const listAgents = spyOn(api, "listAgents").mockRejectedValue(
+    new ApiError(503, { code: "ENVOY_REFILLING", error: "The agent list is refilling." })
+  );
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  queryClient.setQueryData(["agents"], [planner]);
+  const view = render(
+    <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+      <QueryClientProvider client={queryClient}>
+        <MentionComposer
+          onClose={() => {}}
+          onSent={() => {}}
+          owner={{ issueKey: "CORE-1", kind: "issue" }}
+        />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+    fireEvent.change(field, { target: { value: "@" } });
+    const suggestions = await screen.findByRole("listbox", { name: "Mention suggestions" });
+    expect((await within(suggestions).findByTestId("agent-list-refilling")).textContent).toBe(
+      AGENT_LIST_REFILLING
+    );
+    const kept = within(suggestions).getByRole("option", { name: "Planner" });
+    // The suggestion kept from the earlier read draws its agent's running state as unknown, never
+    // as not running, while the list it would be judged by is refilling.
+    expect(kept.querySelector('[data-agent-name="A"]')?.getAttribute("data-agent-state")).toBe(
+      "unknown"
+    );
+
+    fireEvent.change(field, { target: { value: "@nobody" } });
+    await waitFor(() => expect(within(suggestions).queryAllByRole("option")).toHaveLength(0));
+    expect(within(suggestions).getByTestId("agent-list-refilling")).toBeTruthy();
+    expect(within(suggestions).queryByText("No live agents match.")).toBeNull();
+  } finally {
+    view.unmount();
+    listAgents.mockRestore();
   }
 });
 
@@ -1968,7 +2020,7 @@ function sentKeys(createAgentMessage: Mock<typeof api.createAgentMessage>): stri
   return createAgentMessage.mock.calls.map(([, , bounds]) => bounds.key);
 }
 
-const SEND_KEY = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const SEND_KEY = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 /** Dispatch's verdict on a message to a session, which a Retry of the same message meets again. */
 const messageRefused = new ApiError(400, {
@@ -2203,6 +2255,55 @@ test("a send kept failing shows Stop trying once late, which stops it for Retry 
     expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
     await tick(30 * 60_000);
     expect(createAgentMessage).toHaveBeenCalledTimes(tried);
+  } finally {
+    jest.advanceTimersByTime(1);
+    jest.useRealTimers();
+    view.unmount();
+    createAgentMessage.mockRestore();
+  }
+});
+
+// A stopped send waits for the reader, and a day later Dispatch has forgotten the key its
+// attempts went out under: the Retry sends nothing under that key. The composer says what
+// happened in the refusal's own words - a Retry is a new message, delivered a second time if the
+// first one was - and keeps the draft, Retry and Discard draft. As `api.createAgentMessage` does,
+// each attempt tells its request before anything goes out: that is how the key is known to have
+// carried one, and the Retry is a press of its own whose entry has sent nothing yet.
+test("a stopped send the reader comes back to a day later says its key has run out", async () => {
+  const createAgentMessage = spyOn(api, "createAgentMessage").mockImplementation(
+    (sessionID, input, bounds) => {
+      bounds.sent?.({ body: input, method: "POST", path: `/api/v1/agents/${sessionID}/messages` });
+      return Promise.reject(
+        new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" })
+      );
+    }
+  );
+  jest.useFakeTimers();
+  const { view } = renderComposer({ owner: { kind: "session", sessionId: "A" } });
+
+  try {
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+    fireEvent.change(field, { target: { value: "Status please" } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    });
+    await failToTheDeadline();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Stop trying" }));
+    });
+    await tick(0);
+    const tried = createAgentMessage.mock.calls.length;
+
+    await tick(IDEMPOTENCY_KEY_TTL_MS);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    });
+    await tick(0);
+    expect(createAgentMessage).toHaveBeenCalledTimes(tried);
+    expect(screen.getByText(new SendExpiredError().message)).toBeTruthy();
+    expect(field.value).toBe("Status please");
+    expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Discard draft" })).toBeTruthy();
   } finally {
     jest.advanceTimersByTime(1);
     jest.useRealTimers();

@@ -24,7 +24,7 @@ import {
 import { useLiveViewState } from "../agent-view/live-views";
 import { pinnedAgentSessions, useAgentPinWrite } from "../agents/pins";
 import { totalUnreadReplies, unreadRepliesLabel } from "../agents/unread";
-import { useNeedsYouCount } from "../inbox/BlockedOnYou";
+import { useInboxCount } from "../inbox/useInboxCount";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import {
   buildIssuePath,
@@ -32,10 +32,8 @@ import {
   liveViewSessionOf,
   parseIssuePath,
   parseProjectPath,
-  REPLIES_PATH,
   routeIsInbox,
 } from "../refs/routes";
-import { useRepliesCount } from "../replies/useRepliesCount";
 
 /** The rows the Agents heading folds, named so the heading's chevron can say what it controls. */
 const PINNED_AGENTS_ID = "rail-pinned-agents";
@@ -155,7 +153,9 @@ export function Sidebar({
     queryFn: () => api.listIssues({ pinned: true }),
   });
   const projects = useQuery(projectsQuery());
-  const needsYouCount = useNeedsYouCount();
+  // One number on Inbox, composed in one place (`useInboxCount.ts`): the work waiting on
+  // the reader plus the threads they have not read, which the Inbox lists beside those asks now.
+  const inboxCount = useInboxCount();
   const agentState = useQuery(userAgentStateQuery()).data;
   const unreadReplies = totalUnreadReplies(agentState);
   // The rail's own list: the person's pinned agents, oldest pin first, and the control that
@@ -168,7 +168,6 @@ export function Sidebar({
   // The live view the reader is in, which its row marks as the page and which makes a move to
   // another pinned agent a replacement rather than a step of its own.
   const currentLiveView = liveViewSessionOf(location.pathname);
-  const unreadThreads = useRepliesCount();
   const currentIssue = parseIssuePath(location.pathname)?.key;
   const currentProject = parseProjectPath(location.pathname)?.project;
 
@@ -212,11 +211,11 @@ export function Sidebar({
             to="/"
           >
             <span>Inbox</span>
-            {needsYouCount === 0 ? null : (
+            {inboxCount === 0 ? null : (
               <span
                 className={`rounded-full px-1.5 py-0.5 text-xs ${railNeedsYouBadgeBg} ${railNeedsYouBadgeText}`}
               >
-                Needs you {needsYouCount}
+                {inboxCount}
               </span>
             )}
           </Link>
@@ -287,29 +286,6 @@ export function Sidebar({
               </ul>
             )
           ) : null}
-        </section>
-        {/* Listed at 0 too, so the page is always one click away; the count shows only above 0,
-            and the link then reads `Replies N`, as the compact header's does. */}
-        <section>
-          <Link
-            aria-current={location.pathname === REPLIES_PATH ? "page" : undefined}
-            className={
-              location.pathname === REPLIES_PATH
-                ? `mt-1 flex items-baseline gap-2 rounded px-2 py-1.5 text-sm font-medium ${railActiveBg} ${railAccentText}`
-                : `mt-1 flex items-baseline gap-2 rounded px-2 py-1.5 text-sm font-medium ${railSecondaryText} ${railHoverBg} ${railHoverText}`
-            }
-            onClick={onNavigate}
-            to={REPLIES_PATH}
-          >
-            <span>Replies</span>
-            {unreadThreads === 0 ? null : (
-              <span
-                className={`rounded-full px-1.5 py-0.5 text-xs ${railNeedsYouBadgeBg} ${railNeedsYouBadgeText}`}
-              >
-                {unreadThreads}
-              </span>
-            )}
-          </Link>
         </section>
         <section>
           <ul className="mt-1 space-y-0.5">

@@ -1,4 +1,3 @@
-import { ASK_QUESTION_MAX, DISPATCH_BODY_MAX } from "@legion/contracts/dispatch-tools";
 import { hashKey, type MutationKey } from "@tanstack/react-query";
 import {
   type ClipboardEvent,
@@ -16,10 +15,16 @@ import {
   useState,
 } from "react";
 
-import { type ArtifactOwner, api, apiErrorMessage, isAnchorMissing } from "../../api/client";
+import {
+  type ArtifactOwner,
+  api,
+  apiErrorMessage,
+  isAnchorMissing,
+  isCapExceeded,
+} from "../../api/client";
 import type { Agent, AskOption, AskUrgency } from "../../api/types";
 import { Chip } from "../../components/Chip";
-import { QueryError } from "../../components/QueryError";
+import { AgentListRefilling, QueryError } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
 import { TruncatedText } from "../../components/TruncatedText";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
@@ -399,8 +404,8 @@ function draftRefusal(
 /** What the composer shows for `refusal`: the host's own words, where it has some about the mark
  *  this send names - the margin's, when the server refused the send for a mark it cannot see and
  *  the margin could not write that mark again - else the words of a refusal written for the
- *  reader (the server's missing anchor, a send they stopped), else the page's wording around what
- *  went wrong. */
+ *  reader (the server's missing anchor, a send they stopped, a text past a bound Dispatch holds
+ *  it to), else the page's wording around what went wrong. */
 function refusalMessage(
   refusal: Error,
   anchor: ComposerAnchor | undefined,
@@ -410,7 +415,7 @@ function refusalMessage(
   if (anchorMissing && anchorRefusal !== undefined && anchorRefusal.markId === anchor?.mark_id) {
     return anchorRefusal.text;
   }
-  return anchorMissing || refusal instanceof SendStoppedError
+  return anchorMissing || refusal instanceof SendStoppedError || isCapExceeded(refusal)
     ? refusal.message
     : `Couldn't send — ${apiErrorMessage(refusal, "network error")}`;
 }
@@ -463,6 +468,12 @@ interface MentionComposerProps {
   readonly owner: ComposerOwner;
   readonly replyTo?: ReplyTarget | null;
   readonly saveEdit?: SaveCommentEdit;
+  /** The reply target is this box's own standing address rather than a Reply the reader
+   *  pressed: the Inbox reading column's thread box, which is the thread's permanent reply and
+   *  is remounted whenever the column follows the selection onto another row. Taking a target
+   *  normally takes the focus, so the reader can write at once; a standing box takes neither,
+   *  since the reader's place is the list the column follows and the next `j` belongs to it. */
+  readonly standing?: boolean;
   /** Shows the Comment / Suggest / Ask switch and hands each pick to the host, which answers
    *  through `kind` - a selected document mark is the only surface where the kind can change, and
    *  its mark has to change with it (the margin retypes it) - or returns, in the reader's words,
@@ -491,6 +502,7 @@ export function MentionComposer({
   owner,
   replyTo = null,
   saveEdit,
+  standing = false,
 }: MentionComposerProps): ReactNode {
   // This composer's send, held by its target rather than by this mount (`useComposerSend`): a
   // composer that mounts where a send is out, or was refused, shows that send and its draft.
@@ -576,6 +588,9 @@ export function MentionComposer({
     autocompleteOpen
   );
   const agents = suppliedAgents ?? live.agents;
+  // A host's own list is its answer; the composer's own read says who is absent only while it is
+  // current (`useAgents`).
+  const agentsCurrent = suppliedAgents !== undefined || live.current;
   const text = useAgentText();
   const options = useMemo(() => mentionOptions(agents, text), [agents, text]);
   const filteredOptions = useMemo(() => {
@@ -684,8 +699,13 @@ export function MentionComposer({
     }
     if (previousReply.current === replyTo.id) return;
     previousReply.current = replyTo.id;
+    // A standing box never takes the focus for its own target: nobody asked for it, and the
+    // Inbox column mounts one for every row the reader steps onto.
+    const takeFocus = () => {
+      if (!standing) textarea.current?.focus();
+    };
     if (tookHeldDraft) {
-      textarea.current?.focus();
+      takeFocus();
       return;
     }
     const initial = replyTo.mentions ?? [];
@@ -709,8 +729,8 @@ export function MentionComposer({
         return { end, start, target: mention.target, text };
       }),
     });
-    textarea.current?.focus();
-  }, [replaceDraft, replyTo]);
+    takeFocus();
+  }, [replaceDraft, replyTo, standing]);
 
   /** A send the server took, while this composer is mounted: the store has refreshed what it
    *  wrote. The draft is the composer's own, so it clears to what the channel it addresses now
@@ -1214,7 +1234,6 @@ export function MentionComposer({
         <textarea
           aria-label={bodyLabel}
           className={`mt-1 block w-full rounded-lg border px-3 py-2 font-normal outline-none ${inline ? "min-h-11 resize-none" : "min-h-24"} ${inputClasses(true)} ${textPrimaryOnSurface}`}
-          maxLength={kind === "ask" ? ASK_QUESTION_MAX : DISPATCH_BODY_MAX}
           onChange={(event) => onBodyChange(event.target.value, event.target.selectionStart)}
           onDrop={
             uploadOwner === undefined
@@ -1316,9 +1335,24 @@ export function MentionComposer({
               </button>
             );
           })}
-          {filteredOptions.length === 0 ? (
-            <p className={`px-3 py-2 text-sm ${textMutedOnSurface}`}>No live agents match.</p>
-          ) : null}
+          {agentsCurrent ? (
+            filteredOptions.length === 0 ? (
+              <p className={`px-3 py-2 text-sm ${textMutedOnSurface}`}>No live agents match.</p>
+            ) : null
+          ) : live.refilling ? (
+            <AgentListRefilling className={`px-3 py-2 text-sm ${textMutedOnSurface}`} />
+          ) : live.isPending ? (
+            <p
+              className={`px-3 py-2 text-sm ${textMutedOnSurface}`}
+              data-testid="agent-list-loading"
+            >
+              Loading live agents…
+            </p>
+          ) : (
+            <p className={`px-3 py-2 text-sm ${dangerText}`} data-testid="agent-list-unreachable">
+              Could not load live agents — Envoy listener unreachable.
+            </p>
+          )}
         </div>
       )}
       {plainNotice.length > 0 ? (

@@ -3,6 +3,7 @@ import {
   type AgentStreamCommand,
   type AgentStreamFrame,
   type AgentStreamSettingsReported,
+  IDEMPOTENCY_KEY_TTL_MS,
   LIVE_SOCKET_MAX_AGE_CLOSE,
 } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -19,6 +20,7 @@ import {
 import type { ReactNode } from "react";
 import { Link, MemoryRouter, Route, Routes, useParams } from "react-router-dom";
 
+import { onFakeClock } from "../../__tests__/fake-clock";
 import {
   errorFrame,
   type FakeLiveSocket,
@@ -26,12 +28,17 @@ import {
   installFakeLiveSockets,
 } from "../../__tests__/live-socket-harness";
 import { answerAgentMessages, answerAgentStates } from "../../__tests__/send-answers";
-import { ApiError, api, NetworkError } from "../../api/client";
+import { AGENT_LIST_REFILLING, ApiError, api, NetworkError } from "../../api/client";
 import { liveSocketFor } from "../../api/live-socket";
 import type { Agent, Message, MessageRead, UserAgentStates } from "../../api/types";
 import { KEYED_SEND_LATE_TEXT } from "../conversation/send-request";
 import { Sidebar } from "../sidebar/Sidebar";
-import { KEYED_SEND_ATTEMPT_MS, SEND_DEADLINE_MS, SendStoppedError } from "../writes/keyed-write";
+import {
+  KEYED_SEND_ATTEMPT_MS,
+  SEND_DEADLINE_MS,
+  SendExpiredError,
+  SendStoppedError,
+} from "../writes/keyed-write";
 import { AgentConversationPage } from "./AgentConversationPage";
 
 /** What each attempt of the live view's send is held to, beside the message it carries: its own
@@ -128,13 +135,20 @@ function mockDispatch({
   putAgentState,
 }: {
   agentState: UserAgentStates;
-  agents: Agent[];
+  /** The live sessions, or an Error the agent registry read rejects with. */
+  agents: Agent[] | Error;
   messages: () => MessageRead[];
   putAgentState: Mock<typeof api.putAgentState>;
 }): void {
+  const listAgents = spyOn(api, "listAgents");
+  if (agents instanceof Error) {
+    listAgents.mockRejectedValue(agents);
+  } else {
+    listAgents.mockResolvedValue(agents);
+  }
   spies.push(
     spyOn(api, "whoAmI").mockResolvedValue({ event_head: "0", kind: "user", login: "sami" }),
-    spyOn(api, "listAgents").mockResolvedValue(agents),
+    listAgents,
     spyOn(api, "listAgentMessages").mockImplementation(async () => messages()),
     spyOn(api, "getMyAgentState").mockResolvedValue(agentState),
     spyOn(api, "getInbox").mockResolvedValue([]),
@@ -213,6 +227,7 @@ function answer(
  */
 function renderLiveView({
   agentState,
+  agents,
   capabilities = agent.capabilities,
   messages,
   other,
@@ -221,6 +236,8 @@ function renderLiveView({
   responding,
 }: {
   agentState: UserAgentStates;
+  /** What the agent list answers in place of SESSION alone: another list, or a failure. */
+  agents?: Agent[] | Error;
   capabilities?: string[];
   messages: MessageRead[];
   other?: { replay?: AgentStreamFrame[] };
@@ -231,7 +248,7 @@ function renderLiveView({
   let thread = messages;
   mockDispatch({
     agentState,
-    agents: [
+    agents: agents ?? [
       { ...agent, capabilities },
       ...(other === undefined ? [] : [{ ...agent, session_id: OTHER, title: "Reviewer" }]),
     ],
@@ -605,20 +622,6 @@ async function sendFromLiveView(body: string): Promise<void> {
   });
 }
 
-/** Runs `body` on the fake clock, which moves a millisecond before the real one comes back: a
- *  timer left at zero delay would otherwise hang a later `waitFor`. */
-async function onFakeClock(body: () => Promise<void>): Promise<void> {
-  jest.useFakeTimers();
-  try {
-    await body();
-  } finally {
-    act(() => {
-      jest.advanceTimersByTime(1);
-    });
-    jest.useRealTimers();
-  }
-}
-
 // A message sent from the live view is one key, minted when the person presses Send: a fetch that
 // fails, or a Dispatch that cannot answer yet, is tried again under it, so the session gets the
 // message once. The next press is another message, with a key of its own.
@@ -877,6 +880,50 @@ test("the live view says a session advertising no delivery mode takes no message
   });
   await screen.findByRole("combobox", { name: "Delivery mode" });
   expect(screen.queryByTestId("agent-takes-no-messages")).toBeNull();
+});
+
+// Only a current agent list says a session is gone. One that is refilling says that instead, and
+// one Dispatch could not read says that; neither narrows the delivery modes to none.
+test("the live view says the session may have ended only from a current agent list", async () => {
+  const putAgentState = () => spyOn(api, "putAgentState").mockResolvedValue({ unread_replies: 0 });
+  const modes = async () =>
+    [
+      ...((await screen.findByRole("combobox", { name: "Delivery mode" })) as HTMLSelectElement)
+        .options,
+    ].map((option) => option.textContent);
+
+  renderLiveView({
+    agentState: {},
+    agents: new ApiError(503, { code: "ENVOY_REFILLING", error: AGENT_LIST_REFILLING }),
+    messages: [],
+    putAgentState: putAgentState(),
+  });
+  expect((await screen.findByTestId("agent-list-refilling")).textContent).toBe(
+    AGENT_LIST_REFILLING
+  );
+  expect(screen.queryByText(/may have ended/)).toBeNull();
+  expect(await modes()).toEqual(["Send", "Aside", "BTW"]);
+
+  cleanup();
+  for (const spy of spies.splice(0)) spy.mockRestore();
+  renderLiveView({
+    agentState: {},
+    agents: new ApiError(503, { code: "ENVOY_UNAVAILABLE", error: "Envoy listener unreachable" }),
+    messages: [],
+    putAgentState: putAgentState(),
+  });
+  await screen.findByTestId("agent-list-unreachable");
+  expect(screen.queryByTestId("agent-list-refilling")).toBeNull();
+  expect(screen.queryByText(/may have ended/)).toBeNull();
+  expect(await modes()).toEqual(["Send", "Aside", "BTW"]);
+
+  cleanup();
+  for (const spy of spies.splice(0)) spy.mockRestore();
+  renderLiveView({ agentState: {}, agents: [], messages: [], putAgentState: putAgentState() });
+  expect((await screen.findByTestId("agent-not-listed")).textContent).toBe(
+    "Not in the live session list — it may have ended."
+  );
+  expect(screen.queryByTestId("agent-list-refilling")).toBeNull();
 });
 
 /** An assistant message the session streamed, optionally naming the model that produced it
@@ -1614,6 +1661,27 @@ test("a refused switch shows the session's reason and the header keeps its value
   expect(picker("Model").value).toBe("anthropic/model-a");
   expect(screen.getByTestId("agent-session-model").textContent).toBe("anthropic/model-a");
   expect(picker("Thinking level").value).toBe("auto");
+});
+
+// A switch tried until Dispatch has forgotten its key is sent no more: the page says so in the
+// refusal's own words - a Retry of it is a new message, delivered a second time if the first one
+// was - and the pickers are the reader's again, to send a new switch with.
+test("a switch whose key has run out says so, and frees the pickers", async () => {
+  const createAgentMessage = answerAgentMessages().mockRejectedValue(
+    new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" })
+  );
+  spies.push(createAgentMessage);
+  await renderWithPickers([settingsFrame(1), commandsFrame(2, SWITCHES)]);
+
+  await onFakeClock(async () => {
+    fireEvent.change(picker("Model"), { target: { value: "anthropic/model-b" } });
+    await tick(0);
+    expect(createAgentMessage).toHaveBeenCalledTimes(1);
+
+    await tick(IDEMPOTENCY_KEY_TTL_MS);
+    expect(screen.getByTestId("agent-send-error").textContent).toBe(new SendExpiredError().message);
+    expect(held(picker("Model"))).toBe(false);
+  });
 });
 
 /** A turn the session is still producing: the thread is mid-turn while it lasts. */

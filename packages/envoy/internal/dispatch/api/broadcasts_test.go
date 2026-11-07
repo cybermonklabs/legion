@@ -152,6 +152,10 @@ func TestBroadcastSendsOneMessagePerRecipientAndExcludesTheRest(t *testing.T) {
 		if got := itemBlockRefs(t, database, "message", recipient.Message.ID); len(got) != 0 {
 			t.Fatalf("%s message block mentions = %v, want none", recipient.SessionID, got)
 		}
+		// Its message.created names the sender, as every other direct root's event names its
+		// author: the one Inbox an Agent row of this conversation can sit in once the recipient
+		// replies. An event naming nobody would send every viewer's Inbox back for a refetch.
+		requireThreadLogins(t, database, "message.created", recipient.Message.ID, "alice")
 	}
 	delivered := awaitBroadcastDeliveries(t, handler, created.ID)
 	for _, recipient := range delivered.Recipients {
@@ -625,8 +629,12 @@ func TestBroadcastRejectsMalformedInput(t *testing.T) {
 		"unknown mode": {map[string]any{"body": "hi", "delivery": "shout", "session_ids": []string{"planner"}}, "BROADCAST_INPUT"},
 		"no sessions":  {map[string]any{"body": "hi", "delivery": "btw", "session_ids": []string{" "}}, "BROADCAST_INPUT"},
 		"over the cap": {map[string]any{"body": "hi", "delivery": "btw", "session_ids": tooMany}, "BROADCAST_INPUT"},
-		"over the body cap": {
-			map[string]any{"body": strings.Repeat("x", contracts.DispatchBodyMax+1), "delivery": "btw", "session_ids": []string{"planner"}},
+		"over the block bound": {
+			map[string]any{"body": strings.Repeat("x", contracts.DispatchBlockUnits+1), "delivery": "btw", "session_ids": []string{"planner"}},
+			"CAP_EXCEEDED",
+		},
+		"over the block count": {
+			map[string]any{"body": paragraphBody(contracts.DispatchItemBlocks+1, 1), "delivery": "btw", "session_ids": []string{"planner"}},
 			"CAP_EXCEEDED",
 		},
 	} {

@@ -1,26 +1,29 @@
-/**
- * The four states a live session is in (INFRA-812, R7), as one rule two surfaces read: the
- * Agents page's groups and, on dispatch://INFRA-883, a machine's tmux panes. It takes a
- * session's row of `GET /api/v1/agents`, the Inbox tally of that session's open asks waiting on
- * the person, and the person's unread replies from it, and answers the row's state. It fetches
- * nothing and knows nothing of the page that draws it.
- */
 import type { Agent } from "../../api/types";
-import { compareTimestamps } from "../../lib/timestamps";
+import { compareTimestamps, isTimestamp } from "../../lib/timestamps";
 
-/** Dispatch activity inside this long is `active`. */
-export const ACTIVE_WITHIN_MS = 2 * 60_000;
+/** Dispatch activity this recent is a session someone is working with right now. */
+const ACTIVE_WITHIN_MS = 2 * 60_000;
 
-/** Nothing heard from the listener for this long is `quiet`. */
+/** Past this much silence from the registry the session is Quiet. It is the ten minutes the
+ *  Agents page has always folded `Inactive` on, which it takes from here, so one session does
+ *  not sit in two groups' worth of rules. */
 export const QUIET_AFTER_MS = 10 * 60_000;
 
-/** The four states, in the order a person reads them, which is also the order their tests are
- *  tried in. */
-export const AGENT_GROUPS = ["needs-you", "active", "idle", "quiet"] as const;
+/**
+ * Which of the four groups a session's row belongs in.
+ *
+ * `quiet` is not today's `Inactive` fold: that one holds every session unseen for ten minutes
+ * whatever it is owed, while a session with an open ask for the viewer is `needs-you` however
+ * long it has been silent.
+ */
+export type AgentGroup = "needs-you" | "active" | "idle" | "quiet";
 
-export type AgentGroup = (typeof AGENT_GROUPS)[number];
+/** The four groups in the order a person reads them, which is also the order `agentGroup` tries
+ *  their tests in. The Agents page draws its groups in this order (INFRA-812, R7). */
+export const AGENT_GROUPS: readonly AgentGroup[] = ["needs-you", "active", "idle", "quiet"];
 
-/** What each state is called wherever it is shown. */
+/** What each group is called wherever it is shown: the Agents page's group headings and the
+ *  group filter's options. */
 export const AGENT_GROUP_LABELS: Record<AgentGroup, string> = {
   active: "Active",
   idle: "Idle",
@@ -29,30 +32,36 @@ export const AGENT_GROUP_LABELS: Record<AgentGroup, string> = {
 };
 
 /**
- * The state of one session: **Needs you** when an open ask of its own waits on the person or it
- * has replies they have not read; **Active** when Dispatch heard from it inside two minutes;
- * **Quiet** when the listener has not heard from it for ten; **Idle** otherwise, which holds
- * every session Dispatch itself has never heard from (`last_activity` null).
+ * The group one session's row belongs in, from that row alone.
  *
- * The four tests overlap, and the first match wins in that order (INFRA-812's D2): a session
- * with an open ask that has been silent for an hour is Needs you, not Quiet, because a person
- * reads "who is waiting for me" first. So Quiet is not the same set as the Agents page's old
- * `Inactive` fold - a silent session with an open ask leaves it.
+ * The four tests overlap, so the answer is the first that matches, in this order: an ask whose
+ * turn is the viewer's or a reply they have not read (`needs-you`); Dispatch activity inside two
+ * minutes (`active`); otherwise heard from by the registry inside ten minutes (`idle`, which is
+ * where a session Dispatch has never heard from sits, since its `last_activity` is null); and a
+ * session unseen for ten minutes (`quiet`).
  *
- * Nothing here reads a pin (D3): a pinned session is in the group its own row puts it in.
+ * `asksForYou` is this session's count from the viewer's inbox tally and `unreadReplies` its
+ * unread replies to them; `now` is an argument rather than `Date.now()` so a caller's clock
+ * decides and a test is deterministic. A pin lifts no row out of its group here: a pinned
+ * session is in the group its own row earns.
  */
 export function agentGroup(
   agent: Agent,
-  needsYou: number,
+  asksForYou: number,
   unreadReplies: number,
-  now: number = Date.now()
+  now: number
 ): AgentGroup {
-  if (needsYou > 0 || unreadReplies > 0) return "needs-you";
-  // `last_activity` is the server's own timestamp, so the bound is written the way the server
-  // writes one and read by `compareTimestamps`: `Date.parse` drops the microseconds it carries.
-  const activeSince = new Date(now - ACTIVE_WITHIN_MS).toISOString();
-  if (agent.last_activity !== null && compareTimestamps(agent.last_activity, activeSince) >= 0) {
+  if (asksForYou > 0 || unreadReplies > 0) {
+    return "needs-you";
+  }
+  const active =
+    agent.last_activity !== null &&
+    // A timestamp the comparison would throw on is read as no activity rather than taking a
+    // whole list of rows down with it.
+    isTimestamp(agent.last_activity) &&
+    compareTimestamps(agent.last_activity, new Date(now - ACTIVE_WITHIN_MS).toISOString()) >= 0;
+  if (active) {
     return "active";
   }
-  return now - agent.last_seen >= QUIET_AFTER_MS ? "quiet" : "idle";
+  return now - agent.last_seen < QUIET_AFTER_MS ? "idle" : "quiet";
 }

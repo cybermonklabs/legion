@@ -1,8 +1,8 @@
-import { useEffect, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useCallback, useMemo } from "react";
 
 import type { Agent, InboxRow } from "../../api/types";
 import { useCappedSearchParam } from "../../lib/query-param";
+import { AGENTS_MACHINE_PARAM } from "../refs/routes";
 import type { AgentGroup } from "./agent-groups";
 
 /**
@@ -17,39 +17,45 @@ export interface AgentFilters {
   readonly search: string;
 }
 
-/** The free-text query is the page's one URL-backed filter field (`?q=`, through the same
- *  capped, history-`replace`d hook `useIssueFilters` uses); the group, machine and role
- *  selections stay plain component state, as the machine and role did before the box. */
+/** The page's two URL-backed filter fields, each through the same capped, history-`replace`d
+ *  hook `useIssueFilters` uses: the free-text query (`?q=`) and the machines (`?machine=`).
+ *  `groups` and `roles` stay plain component state, as `role` was before this box. Both
+ *  parameters live here rather than in the page, so the control around them can be rebuilt
+ *  without moving them. */
 export function useAgentSearch(): readonly [string, (next: string) => void] {
   return useCappedSearchParam("q");
 }
 
-/**
- * The machine a link into this page named (`/agents?machine=<host>`), taken once and then
- * removed from the address, so the machine filter has one owner: the control. The machines page
- * of dispatch://INFRA-883 links here that way, and a host with no live session must still read
- * as a machine the person picked, which it does, since the control keeps a picked value as a row
- * it can untick. Leaving the parameter in place would make a reload undo the clearing.
- */
-export function useMachineFromAddress(): readonly string[] {
-  const [searchParams, setSearchParams] = useSearchParams();
-  const [taken] = useState(() => searchParams.get("machine") ?? "");
-  useEffect(() => {
-    if (taken === "") return;
-    setSearchParams(
-      (current) => {
-        const params = new URLSearchParams(current.toString());
-        params.delete("machine");
-        return params;
-      },
-      { replace: true }
-    );
-  }, [setSearchParams, taken]);
-  return taken === "" ? EMPTY_MACHINES : [taken];
-}
+/** One frozen empty list, so an address naming no machine gives the page the same value every
+ *  render rather than new filter state. */
+const NO_MACHINES: readonly string[] = [];
 
-/** One frozen empty list, so the page's filter state is not new on every render. */
-const EMPTY_MACHINES: readonly string[] = [];
+/**
+ * The machine filter, which is the address's own `?machine=` rather than part of `?q=`: the
+ * free-text query matches the directory as well as the machine, so `?q=<host>` would also find
+ * a session whose directory holds the machine's name, while `/machines/<machine>`'s link to
+ * `/agents?machine=<host>` must name exactly the sessions on that machine.
+ *
+ * The control is a multi-select, so the parameter carries the picked machines as a
+ * comma-separated list: `?machine=relay-1` is the one machine that link has always meant, and
+ * two picked machines read `?machine=relay-1,relay-2`. Unticking the last one deletes the
+ * parameter, so a reload does not bring the filter back.
+ */
+export function useAgentMachines(): readonly [
+  readonly string[],
+  (next: readonly string[]) => void,
+] {
+  const [value, setValue] = useCappedSearchParam(AGENTS_MACHINE_PARAM);
+  const machines = useMemo(() => {
+    const picked = value.split(",").filter((machine) => machine !== "");
+    return picked.length === 0 ? NO_MACHINES : picked;
+  }, [value]);
+  const setMachines = useCallback(
+    (next: readonly string[]) => setValue(next.join(",")),
+    [setValue]
+  );
+  return [machines, setMachines] as const;
+}
 
 /** Every word `search` names, lowercased; an empty query has none. The page splits this once per
  *  render (`AgentsPage`'s `words`) rather than once per agent, since every row's `matchesFilters`
@@ -91,19 +97,33 @@ export function matchesFilters(
   return words.every((word) => haystack.includes(word));
 }
 
-/** The machines and roles the live sessions actually occupy: a filter can only offer what is
- *  there, so a stale option can never hide every agent. */
-export function filterOptions(agents: readonly Agent[]): {
+/**
+ * The machines and roles the filter control offers: the ones the live sessions occupy, and every
+ * machine the filter already names wherever no live session reports it.
+ *
+ * That last one is the whole of this rule. `?machine=` can name a host nothing live reports —
+ * an old link, a machine whose sessions have ended, or `/machines/<machine>`'s own "Agents on
+ * this machine" link, which that page shows even when it draws nothing. The list is then
+ * honestly empty, which is the filter doing its job; but with the live hosts alone for options
+ * the control would offer no row for the picked machine, read as though nothing were picked
+ * while every row was hidden, and leave the reader nothing to untick — the one control that
+ * seems to show the filter could not clear it. Offering the picked machines keeps the control
+ * showing the filter in force, so a stale option can never hide every agent with no way back.
+ */
+export function filterOptions(
+  agents: readonly Agent[],
+  machines: readonly string[]
+): {
   machines: string[];
   roles: string[];
 } {
-  const machines = new Set<string>();
+  const hosts = new Set<string>(machines.filter((machine) => machine !== ""));
   const roles = new Set<string>();
   for (const agent of agents) {
-    if (agent.host !== "") machines.add(agent.host);
+    if (agent.host !== "") hosts.add(agent.host);
     for (const role of agent.roles) roles.add(role);
   }
-  return { machines: [...machines].sort(), roles: [...roles].sort() };
+  return { machines: [...hosts].sort(), roles: [...roles].sort() };
 }
 
 /** Every issue key an OPEN ask by each session names, keyed by session id - the search box's
