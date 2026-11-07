@@ -310,17 +310,20 @@ func (l *Limiter) Arrive(class Class, weight int) *Arrival {
 }
 
 // Arrival is the place one request holds in a Limiter's arrival order, with the class and units
-// it asks for and how long it has waited for them so far. A request asks for room more than
-// once when it gives its units back to wait for something else (Ticket.Park) and takes them back
-// after (Ticket.Resume): each ask queues it at the place it arrived, and its class's wait is
-// its wait over all of them, so the queue costs it one wait however often it asks.
+// it asks for and how long it has waited for them so far. A request waits more than once when
+// it waits for a heavy read's lane before it asks for units (EnterLane), and when it gives its
+// units back to wait for something else (Ticket.Park), waits for it, and takes them back after
+// (Ticket.Resume): each ask queues it at the place it arrived, each wait outside admission is
+// counted back by its holder (Ticket.Waited), and its class's wait is its wait over all of them,
+// so everything it waits for costs it one wait between them.
 type Arrival struct {
 	limiter *Limiter
 	class   Class
 	units   int
 	seq     uint64
-	// waited is how long the request has spent in the queue so far. Only the request's own
-	// goroutine touches it: a request is in the queue once at a time.
+	// waited is how long the request has spent waiting so far: in its lane (EnterLane), in
+	// its class's queue, and parked for something outside admission (Ticket.Waited). Only the
+	// request's own goroutine touches it: a request waits for one thing at a time.
 	waited time.Duration
 }
 
@@ -452,6 +455,35 @@ func (t *Ticket) Resume(ctx context.Context) error {
 	}
 	t.held = true
 	return nil
+}
+
+// Remaining is what is left of the one wait the queues cost the ticket's request: its class's
+// wait less the time the request has already spent waiting - in its lane, in its class's queue,
+// and parked for something outside admission that counted its wait back (Waited). A holder that
+// waits for something outside admission - a document's writer gate, where a parked write would
+// otherwise wait for as long as its request lives - bounds that wait by this, so the request is
+// answered within the wait its class states whatever it waited for. It is zero for a request
+// whose wait is spent, and for a nil Ticket, a request admission did not count, whose caller
+// bounds its own wait (docs.AcquireDocumentWriter).
+func (t *Ticket) Remaining() time.Duration {
+	if t == nil {
+		return 0
+	}
+	return max(t.arrival.limiter.classes[t.arrival.class].wait-t.arrival.waited, 0)
+}
+
+// Waited counts waited into the one wait the request has: the time its holder spent parked for
+// something outside admission - the writer gate's queue (docs.AcquireDocumentWriter) - which the
+// Limiter's own queues cannot see. Remaining, the bound of whatever the request waits for next,
+// and the wait of the Resume that takes the parked units back then have only what is left, so a
+// write that parks for a document, resumes and gates again is answered within one wait of its
+// arrival rather than one per thing it waited for. Only the request's own goroutine calls it, as
+// with every other wait of its arrival: a request waits for one thing at a time.
+func (t *Ticket) Waited(waited time.Duration) {
+	if t == nil || waited <= 0 {
+		return
+	}
+	t.arrival.waited += waited
 }
 
 // Release gives the ticket's units back for good. It runs once; every later call, and a call on

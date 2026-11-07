@@ -204,9 +204,11 @@ func (e *ErrInvalidPrecondition) Error() string {
 	return "invalid document edit precondition: " + e.Reason
 }
 
-// ErrPreconditionBusy reports that a document's writer gate already has as many writers queued as
-// it holds (maxQueuedDocumentWriters), so the write was refused before its transaction opened.
-var ErrPreconditionBusy = errors.New("document writer queue is full")
+// ErrPreconditionBusy reports a document too busy to take this write before its transaction
+// opened: its writer gate already holds as many writers as it queues (maxQueuedDocumentWriters),
+// or this write waited at that gate for what was left of its admission wait and the gate never
+// reached it (AcquireDocumentWriter). Nothing of the write ran either way.
+var ErrPreconditionBusy = errors.New("the document is busy with other writes")
 
 // ErrPreconditionFailed reports a stale document or block token without changing the live tree.
 type ErrPreconditionFailed struct {

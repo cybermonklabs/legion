@@ -65,6 +65,18 @@ func writerGateHandler(
 	return withDeadline(mux), service, database
 }
 
+// patientWriterLimiter is the server's admission with a write wait no test here can run out of.
+// A writer waits at a document's gate for what is left of its request's admission wait
+// (docs.AcquireDocumentWriter), and a test that holds a gate on purpose while writers queue
+// behind it is about the queue, not the wait: with the server's 2 s, the writers at the back of a
+// queue of 32, each of which waits out every transaction ahead of it, are refused for their wait
+// on a slow enough machine rather than landing as the test expects.
+func patientWriterLimiter() *admission.Limiter {
+	limits := admission.DefaultLimits()
+	limits.WriteWait = time.Minute
+	return admission.New(limits)
+}
+
 // waitForQueuedWriters waits until want writers are queued for a document's writer gate.
 func waitForQueuedWriters(t *testing.T, service *docs.Service, want int64) {
 	t.Helper()
@@ -127,7 +139,7 @@ func requireEditsLanded(t *testing.T, responses []*httptest.ResponseRecorder) {
 // the writer slot, and writers clustered on one document took the whole pool.
 func TestAnchoredWritesQueuedForADocumentHoldNoConnection(t *testing.T) {
 	gate := &gatedMarkQuote{entered: make(chan struct{}), release: make(chan struct{})}
-	handler, service, database := writerGateHandler(t, 16, nil, func(service *docs.Service) docs.API {
+	handler, service, database := writerGateHandler(t, 16, patientWriterLimiter(), func(service *docs.Service) docs.API {
 		gate.API = service
 		return gate
 	})
@@ -174,7 +186,7 @@ func TestAnchoredWritesQueuedForADocumentHoldNoConnection(t *testing.T) {
 // A document's writer gate queues at most 32 writers behind its holder; the next is answered 429
 // EDIT_QUEUE_FULL with Retry-After before it opens a transaction, and the queued ones still land.
 func TestTheWriterQueuedPastTheBoundIsRefusedWithRetryAfter(t *testing.T) {
-	handler, service, _ := writerGateHandler(t, 8, nil, nil)
+	handler, service, _ := writerGateHandler(t, 8, patientWriterLimiter(), nil)
 	issue := createInteractionIssue(t, handler, "TEST", "Writer queue bound", "First line.")
 	_, hold, err := service.AcquireDocumentWriter(context.Background(), issue.PrimaryArtifactID)
 	if err != nil {
@@ -201,7 +213,7 @@ func TestTheWriterQueuedPastTheBoundIsRefusedWithRetryAfter(t *testing.T) {
 
 // Writers queued for one document do not hold up a write to another.
 func TestAWriteToAnotherDocumentProceedsWhileWritersQueueOnTheFirst(t *testing.T) {
-	handler, service, _ := writerGateHandler(t, 8, nil, nil)
+	handler, service, _ := writerGateHandler(t, 8, patientWriterLimiter(), nil)
 	issue := createInteractionIssue(t, handler, "TEST", "Writers on two documents", "First line.")
 	other := createSecondDocument(t, handler, issue.Key)
 	_, hold, err := service.AcquireDocumentWriter(context.Background(), issue.PrimaryArtifactID)
@@ -246,10 +258,13 @@ func TestWritersQueuedOnADocumentLeaveAdmissionRoomForOthers(t *testing.T) {
 }
 
 // A writer that gave its admission unit back while it queued, and finds no room to take it back
-// once the gate passes to it, is answered 429 OVERLOADED, and hands the gate on.
+// once the gate passes to it, is answered 429 OVERLOADED, and hands the gate on. The write wait
+// is the whole of the writer's wait at the gate as well as of its take-back
+// (docs.AcquireDocumentWriter), so it is long enough here for the gate to reach the writer: a
+// shorter one would answer it the gate's own 429 EDIT_QUEUE_FULL before this test's holder let go.
 func TestAQueuedWriterThatFindsNoAdmissionRoomIsRefusedOverloaded(t *testing.T) {
 	limiter := admission.New(admission.Limits{
-		Read: 4, Write: 1, ReadWait: 20 * time.Millisecond, WriteWait: 20 * time.Millisecond,
+		Read: 4, Write: 1, ReadWait: 20 * time.Millisecond, WriteWait: 2 * time.Second,
 	})
 	gate := &gatedMarkQuote{entered: make(chan struct{}), release: make(chan struct{})}
 	handler, service, _ := writerGateHandler(t, 8, limiter, func(service *docs.Service) docs.API {
@@ -307,6 +322,147 @@ func TestAQueuedWriterThatFindsNoAdmissionRoomIsRefusedOverloaded(t *testing.T) 
 		t.Fatalf("the document's gate after the refused writer = %v, want it free", err)
 	}
 	next()
+}
+
+// A write that parks at a document's gate for most of its wait and then finds its class full when
+// it takes its units back is answered within one write wait of when it arrived, not one per thing
+// it waited for: the park is counted back into the request's one wait
+// (admission.Ticket.Waited), so the take-back's timer gets only what is left of it. Uncounted,
+// this write waited 2 s at the gate and then a whole fresh 3 s for a unit.
+func TestAWriteParkedAtAGateAndRefusedOnItsTakeBackCostsOneWait(t *testing.T) {
+	const (
+		writeWait = 3 * time.Second
+		parkFor   = 2 * time.Second
+		slack     = time.Second
+	)
+	limiter := admission.New(admission.Limits{
+		Read: 4, Write: 1, ReadWait: 20 * time.Millisecond, WriteWait: writeWait,
+	})
+	gate := &gatedMarkQuote{entered: make(chan struct{}), release: make(chan struct{})}
+	handler, service, _ := writerGateHandler(t, 8, limiter, func(service *docs.Service) docs.API {
+		gate.API = service
+		return gate
+	})
+	var released sync.Once
+	release := func() { released.Do(func() { close(gate.release) }) }
+	defer release()
+	issue := createInteractionIssue(t, handler, "TEST", "One wait over a park", "First line.")
+	other := createSecondDocument(t, handler, issue.Key)
+	_, hold, err := service.AcquireDocumentWriter(context.Background(), issue.PrimaryArtifactID)
+	if err != nil {
+		t.Fatalf("hold the document's writer gate: %v", err)
+	}
+	var held sync.Once
+	releaseHold := func() { held.Do(hold) }
+	defer releaseHold()
+
+	started := time.Now()
+	wait := queuedEdits(t, handler, service, issue.PrimaryArtifactID, 1)
+	// An anchored comment on the other document takes the only write unit and keeps it, held
+	// inside its anchoring, so the parked edit finds no room for its take-back.
+	var comment sync.WaitGroup
+	comment.Add(1)
+	commented := 0
+	go func() {
+		defer comment.Done()
+		commented = dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments",
+			map[string]any{
+				"anchor": map[string]string{"artifact": other, "quote": "other body"},
+				"body":   "holds the unit",
+			}, "alice").Code
+	}()
+	<-gate.entered
+	// The gate passes to the parked edit once it has spent parkFor of its writeWait there.
+	time.Sleep(time.Until(started.Add(parkFor)))
+	releaseHold()
+
+	refused := wait()[0]
+	if elapsed := time.Since(started); elapsed > writeWait+slack {
+		t.Errorf("the write was answered %v after it arrived, want it within its one %v wait and %v of slack: it waited %v at the gate and then again for a unit",
+			elapsed, writeWait, slack, parkFor)
+	}
+	if refused.Code != http.StatusTooManyRequests || decodeBody[struct {
+		Code string `json:"code"`
+	}](t, refused).Code != admission.CodeOverloaded {
+		t.Errorf("a parked writer with no admission room to resume: status=%d body=%s, want 429 %s",
+			refused.Code, refused.Body.String(), admission.CodeOverloaded)
+	}
+	if retryAfter := refused.Header().Get("Retry-After"); retryAfter != admission.RetryAfter {
+		t.Errorf("Retry-After = %q, want %q", retryAfter, admission.RetryAfter)
+	}
+	release()
+	comment.Wait()
+	if commented != http.StatusCreated {
+		t.Errorf("the comment holding the unit: status=%d, want 201", commented)
+	}
+}
+
+// A write parked at a busy document's writer gate is answered within what is left of its one
+// admission wait, 429 EDIT_QUEUE_FULL with Retry-After, rather than held for as long as the
+// writer holding the document holds it. At ten times the load the writers of a hot document took
+// 6 to 30 s each, so a write behind them was answered up to 16 s after it arrived - and answered
+// "the server has no room for another write request", which was neither true nor within any wait
+// (INFRA-592).
+func TestAWriteParkedAtABusyDocumentIsAnsweredWithinItsWait(t *testing.T) {
+	const (
+		writeWait = 500 * time.Millisecond
+		// Slack for the work the write does before it parks: its body, its admission, and the
+		// reads that name the document it gates.
+		slack    = 2 * time.Second
+		gateHeld = 15 * time.Second
+	)
+	limiter := admission.New(admission.Limits{Read: 4, Write: 4, WriteWait: writeWait})
+	handler, service, _ := writerGateHandler(t, 8, limiter, nil)
+	issue := createInteractionIssue(t, handler, "TEST", "Parked at a busy document", "First line.")
+	_, hold, err := service.AcquireDocumentWriter(context.Background(), issue.PrimaryArtifactID)
+	if err != nil {
+		t.Fatalf("hold the document's writer gate: %v", err)
+	}
+	var held sync.Once
+	releaseHold := func() { held.Do(hold) }
+	defer releaseHold()
+
+	answered := make(chan *httptest.ResponseRecorder, 1)
+	started := time.Now()
+	go func() {
+		answered <- editDocument(t, handler, issue.PrimaryArtifactID, insertAtEnd("Parked behind the holder."))
+	}()
+	var refused *httptest.ResponseRecorder
+	select {
+	case refused = <-answered:
+	case <-time.After(gateHeld):
+		releaseHold()
+		<-answered
+		t.Fatalf("the write parked at the document's writer gate was still unanswered %v after it was sent, want 429 EDIT_QUEUE_FULL within its %v wait",
+			gateHeld, writeWait)
+	}
+	if elapsed := time.Since(started); elapsed > writeWait+slack {
+		t.Errorf("the parked write was answered %v after it was sent, want it within its %v wait and %v of slack",
+			elapsed, writeWait, slack)
+	}
+	if refused.Code != http.StatusTooManyRequests || decodeBody[struct {
+		Code string `json:"code"`
+	}](t, refused).Code != "EDIT_QUEUE_FULL" {
+		t.Errorf("the write parked at a busy document: status=%d body=%s, want 429 EDIT_QUEUE_FULL",
+			refused.Code, refused.Body.String())
+	}
+	if retryAfter := refused.Header().Get("Retry-After"); retryAfter != admission.RetryAfter {
+		t.Errorf("Retry-After = %q, want %q", retryAfter, admission.RetryAfter)
+	}
+	// The write gave back everything it held: its admission units, and the gate it never took.
+	for _, stats := range limiter.Stats() {
+		if stats.Class == admission.Write && stats.InFlight != 0 {
+			t.Errorf("the refused write left %d write units in flight, want none", stats.InFlight)
+		}
+	}
+	if queued := service.QueuedDocumentWriters(); queued != 0 {
+		t.Errorf("the refused write left %d writers queued for the document, want none", queued)
+	}
+	releaseHold()
+	if edited := editDocument(t, handler, issue.PrimaryArtifactID, insertAtEnd("Written once the holder left.")); edited.Code != http.StatusOK {
+		t.Errorf("a write to the document once its holder left: status=%d body=%s, want 200",
+			edited.Code, edited.Body.String())
+	}
 }
 
 // A comment edit whose input is refused on its own - blocks with no base_revision - is answered

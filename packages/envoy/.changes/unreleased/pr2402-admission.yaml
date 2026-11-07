@@ -25,11 +25,13 @@ body: |-
   wait is answered `429 OVERLOADED` with
   `Retry-After: 1` and `Cache-Control: no-store`, after its body is off the connection: nothing
   of it ran, so any method may be sent again. That wait is the wait over the whole request,
-  however often it asks: a write admitted, parked while it waits for a document's writer gate
-  and resumed queues again where it arrived, ahead of every write that arrived after it, and is
-  refused only within what is left of its one wait, where a second whole wait refused writes
+  however often it waits: a read held by its heavy-read lane before it asked for units, and a
+  write admitted, parked while it waits for a document's writer gate
+  and resumed, queue again where they arrived, ahead of everything that arrived after them, and
+  are refused only within what is left of that one wait, the time the write spent waiting for
+  the gate counted into it as well, where a second whole wait refused writes
   the server had already admitted (at ten times the load, refusals reached a p99 of 2.1 seconds
-  and a maximum of 5.8). A read has a deadline of 20 seconds, and a file version download 5
+  and a maximum of 5.8) and answered lane routes at twice their stated second. A read has a deadline of 20 seconds, and a file version download 5
   minutes for the work it does before its answer begins - reading its row and opening the file
   store - after which the answer's own bounds carry the file's bytes however long its reader
   takes; past either is `503 REQUEST_TIMEOUT`. A write has none and runs to completion

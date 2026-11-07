@@ -6,7 +6,15 @@ body: |-
   comment or ask, a reply that writes into its document, a comment edited, resolved, reopened,
   accepted or rejected, an ask answered, resolved or edited. `429 EDIT_QUEUE_FULL`, which only a
   conditional edit could get, now answers any such write that finds 32 already waiting for its
-  document, and carries `Retry-After: 1`. Each such write hands the gate on once its transaction
+  document, and one that waits at the gate for what is left of its own admission wait - about two
+  seconds for a write - without the document coming free, where such a write used to wait for as
+  long as the holder held it: at ten times the load the writers of a hot document took 6 to 30
+  seconds each, so a write behind them was answered 16 seconds after it arrived, and told the
+  server had no room for it rather than that the document was busy. The answer carries
+  `Retry-After: 1`. The time a write waits at a gate counts against that same one wait, so its
+  wait there, the room it takes back after it, and a second set of gates it takes when its
+  documents moved add up to one wait from when the write arrived rather than one each.
+  Each such write hands the gate on once its transaction
   has committed and published, before the work it does after the commit - an ask's related-item
   check, a comment's mention deliveries - so the next writer of the document waits for that
   transaction alone. A write that finds, under its locks, that it changes other documents than

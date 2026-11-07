@@ -833,14 +833,19 @@ func (s *server) serveRoute(route apiRoute, limiter *admission.Limiter, deadline
 // A request whose client went away while it waited is answered nothing, since nobody is left to
 // read it, and its line carries 499 rather than the 200 of a handler that wrote nothing: under
 // load a client that gives up while queued is the most frequent way a request ends unanswered.
-// A heavy read takes its lane first (admission.EnterLane, apiRoute.Lane): a lane is one route's
-// own limit, and a request waiting for it holds no class unit, so the routes whose statements the
-// database spends its processors on cannot take them from everything else. Its refusal is the same
-// 429 OVERLOADED, naming the lane.
+// A heavy read takes its lane before it asks for units (admission.EnterLane, apiRoute.Lane): a
+// lane is one route's own limit, and a request waiting for it holds no class unit, so the routes
+// whose statements the database spends its processors on cannot take them from everything else.
+// Its refusal is the same 429 OVERLOADED, naming the lane. The arrival is taken before the lane
+// and passed to it, so the lane's wait is what is left of the request's one wait and the class
+// queue gets the rest, and a read the lane held waits in the class queue at the place it
+// arrived rather than behind everything that arrived while it waited: before that a lane route
+// cost up to two whole waits, one in the lane and a fresh one in its class (INFRA-592).
 func admitted(limiter *admission.Limiter, weight int, lane admission.Lane, handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		arrival := limiter.Arrive(admission.ClassOf(r.Method), weight)
 		if lane != admission.NoLane {
-			leave, err := limiter.EnterLane(r.Context(), lane)
+			leave, err := limiter.EnterLane(r.Context(), lane, arrival)
 			if err != nil {
 				var refusal *admission.Refusal
 				if errors.As(err, &refusal) {
@@ -852,7 +857,6 @@ func admitted(limiter *admission.Limiter, weight int, lane admission.Lane, handl
 			}
 			defer leave()
 		}
-		arrival := limiter.Arrive(admission.ClassOf(r.Method), weight)
 		ticket := arrival.AdmitNow()
 		if ticket == nil {
 			if body, drained := r.Body.(*drainedBody); drained && !body.readWhole() {

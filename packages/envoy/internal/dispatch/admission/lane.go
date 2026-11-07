@@ -99,8 +99,10 @@ const MaxHeavyReadLane = MaxReadLimit / int(laneCount-1)
 
 // laneGate is one lane's limit and its queue: as a class's gate, but with a lane's own mutex,
 // since a lane is taken before the classes and holds none of their units while it waits. Its
-// waiters are served first in, first out - a request takes its lane before anything else it does,
-// so the order it reaches the queue is the order it arrived in.
+// waiters are served first in, first out - a request takes its lane before anything else it
+// waits for, right after the arrival that stamps its place (Limiter.Arrive), so the order it
+// reaches the queue is the order it arrived in. Its wait is the read class's, which EnterLane
+// counts against the wait the request has already spent.
 type laneGate struct {
 	lane  Lane
 	limit int
@@ -137,16 +139,24 @@ func (l *Limiter) LaneStats() []LaneStats {
 	return stats
 }
 
-// EnterLane takes a place in lane for a request about to ask for its class's units, and returns
-// the release that gives the place back. A request that finds the lane full waits in its queue,
-// in arrival order, for the read wait (Limits.ReadWait), holding no admission unit while it waits -
-// which is the point of taking the lane first: a heavy read waiting for its lane costs the other
-// routes nothing. One that finds the queue already holding queueFactor times the lane's limit is
-// refused at once, and one whose wait runs out is refused then: either way a *Refusal naming the
-// lane, which its caller answers 429 OVERLOADED with Retry-After, as it answers a class's refusal.
+// EnterLane takes a place in lane for a request that has arrived (Limiter.Arrive) and is about to
+// ask for its class's units, and returns the release that gives the place back. A request that
+// finds the lane full waits in its queue, in arrival order, holding no admission unit while it
+// waits - which is the point of taking the lane before the units: a heavy read waiting for its
+// lane costs the other routes nothing. One that finds the queue already holding queueFactor times
+// the lane's limit is refused at once, and one whose wait runs out is refused then: either way a
+// *Refusal naming the lane, which its caller answers 429 OVERLOADED with Retry-After, as it
+// answers a class's refusal.
+//
+// The wait is what is left of arrival's one wait (the read wait, Limits.ReadWait, for the class
+// the lanes belong to), and the time spent here is added to it as a class queue's is: the lane
+// and the class queue the request joins next cost it one wait between them, not one each. So a
+// read held 0.9 s by a busy lane has 0.1 s left to wait in the read queue rather than a fresh
+// second, and a refusal from either comes within the one wait its class states - where a lane
+// route refused by its class answered at up to twice that wait (INFRA-592).
 //
 // A request of NoLane takes nothing and releases nothing.
-func (l *Limiter) EnterLane(ctx context.Context, lane Lane) (func(), error) {
+func (l *Limiter) EnterLane(ctx context.Context, lane Lane, arrival *Arrival) (func(), error) {
 	if lane <= NoLane || lane >= laneCount {
 		return func() {}, nil
 	}
@@ -166,15 +176,19 @@ func (l *Limiter) EnterLane(ctx context.Context, lane Lane) (func(), error) {
 	element := g.waiters.PushBack(ready)
 	g.mu.Unlock()
 
-	timer := time.NewTimer(g.wait)
+	queuedAt := time.Now()
+	timer := time.NewTimer(max(g.wait-arrival.waited, 0))
 	defer timer.Stop()
 	var failure error
 	select {
 	case <-ready:
+		arrival.waited += time.Since(queuedAt)
 		return func() { g.leave() }, nil
 	case <-ctx.Done():
+		arrival.waited += time.Since(queuedAt)
 		failure = ctx.Err()
-	case <-timer.C:
+	case fired := <-timer.C:
+		arrival.waited += fired.Sub(queuedAt)
 		failure = &Refusal{Class: Read, Reason: WaitExceeded, Lane: lane}
 	}
 

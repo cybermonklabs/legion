@@ -5,9 +5,12 @@ body: |-
   `GET /api/v1/search`, the reference closure (`GET /api/v1/issues/{key}/references`),
   `GET /api/v1/issues/{key}/artifacts` and `GET /api/v1/issues`. A request takes its lane before it
   takes its class's admission units, so one waiting for a busy lane holds nothing from the other
-  routes; a lane's queue holds twice its limit and its wait is a read's one second, and a request
-  refused by either is answered the same `429 OVERLOADED` with `Retry-After`, its message naming the
-  lane. Four new series report each lane: `dispatch_http_lane_in_flight`,
+  routes; a lane's queue holds twice its limit, and the lane and the class behind it cost the
+  request one wait between them - the lane waits out what is left of the read's one second, counts
+  the time it took, and leaves the rest to the class queue, which the request joins at the place it
+  arrived rather than behind everything that arrived while the lane held it. A request refused by
+  either is answered the same `429 OVERLOADED` with `Retry-After`, its message naming the lane.
+  Four new series report each lane: `dispatch_http_lane_in_flight`,
   `dispatch_http_lane_queued`, `dispatch_http_lane_limit` and `dispatch_http_lane_refused_total`.
   The limit is measured: in the seconds after a burst of writes where every request answered
   slowly, Postgres had three to five of those four statements running at once and was waiting on no

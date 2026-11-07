@@ -112,6 +112,49 @@ func TestARequestPastTheAdmissionLimitIsRefusedOverloaded(t *testing.T) {
 	}
 }
 
+// A heavy read its lane holds and its class then refuses is answered within the one wait its
+// class states, counted from when it arrived: a route's lane and its class cost it one wait
+// between them, not one each. admitted stamps the arrival before it takes the lane and hands the
+// lane that arrival, so the 300 ms the lane holds this search comes off the 400 ms it has to wait
+// for a read unit. Taking the lane first and arriving after cost such a request two whole waits,
+// which is where INFRA-592's slow read refusals came from: at ten times the load 103 to 167 reads
+// a run were refused between 1.0 and 2.4 s into a 1 s wait, every one of them on a lane route.
+func TestALaneRouteIsRefusedWithinOneWaitOfItsArrival(t *testing.T) {
+	const (
+		wait     = 400 * time.Millisecond
+		laneHeld = 300 * time.Millisecond
+		slack    = 250 * time.Millisecond
+	)
+	limiter := admission.New(admission.Limits{Read: 1, Write: 4, HeavyReadLane: 1, ReadWait: wait})
+	handler, _, _ := newTestServer(t, testServerOptions{admission: limiter})
+	ctx := context.Background()
+	leave, err := limiter.EnterLane(ctx, admission.Search, limiter.Arrive(admission.Read, 1))
+	if err != nil {
+		t.Fatalf("take the search lane's only place: %v", err)
+	}
+	// The read class's only unit, held for the whole test, so the class is what refuses the
+	// search once its lane lets it through.
+	ticket, err := limiter.Admit(ctx, admission.Read, 1)
+	if err != nil {
+		t.Fatalf("take the read class's only unit: %v", err)
+	}
+	defer ticket.Release()
+
+	answered := make(chan *httptest.ResponseRecorder, 1)
+	started := time.Now()
+	go func() {
+		answered <- dispatchRequest(t, handler, http.MethodGet, "/api/v1/search?q=anything", nil, "alice")
+	}()
+	time.AfterFunc(laneHeld, leave)
+
+	refused := awaitResponse(t, answered)
+	if elapsed := time.Since(started); elapsed > wait+slack {
+		t.Errorf("the search was answered %v after it was sent, want it within its one %v wait and %v of slack",
+			elapsed, wait, slack)
+	}
+	assertRetryable(t, refused.Result(), http.StatusTooManyRequests, admission.CodeOverloaded)
+}
+
 // waitForWritesInFlight returns once limiter has admitted writes of them.
 func waitForWritesInFlight(t *testing.T, limiter *admission.Limiter, writes int) {
 	t.Helper()
