@@ -2,8 +2,8 @@
 
 Part of `skill://legion-worker`. Read it when GitHub reports the pull request `CONFLICTING`, the
 controller asks you to resolve a conflict, the change needs something only the base has, the pull
-request is retargeted to a new base, you compare two heads after such a merge, or you are about to
-rewrite a commit you already pushed.
+request is retargeted to a new base, you compare two heads after such a merge, your issue's base
+is not the repository's default branch, or you are about to rewrite a commit you already pushed.
 Every path it cites is in cybermonklabs/legion.
 
 ## Reintegrating the base
@@ -67,8 +67,50 @@ Every path it cites is in cybermonklabs/legion.
 - **After a retarget.** Retargeting a pull request to a new base does not re-run Tests. Read
   `base` again and merge the bookmark onto it in one command
   (`base=$(gh pr view <n> -R <owner>/<repo> --json baseRefName -q '.baseRefName | @json') && jj -R "$LEGION_WORKSPACE" new legion/<KEY> "${base}@origin" -m "<message>"`) and push it the
-  ordinary way — a genuine fast-forward, never `--allow-backwards` — so the new head runs Tests
-  against the new merge result, and cite that run in the PR body.
+  ordinary way, so the new head runs Tests against the new merge result, and cite that run in the
+  PR body. A retarget's merge is a genuine fast-forward: for a retarget, never
+  `--allow-backwards`.
+
+## Starting on a base that is not the default branch
+
+Your issue's base is not the repository's default branch when the deployment's instructions, the
+issue's plan or your task says so. The daemon created `legion/<KEY>` at the repository's default
+branch before any role started, so the branch is moved onto the base once, by the first role that
+commits. That role does this:
+
+1. **Read the base as a jj string literal**, as the merge recipe above reads it. A branch name
+   can hold `|`, `(` or `)`, and jj reads those characters as revset syntax. The name is in the
+   plan or in the instructions, and the first role to commit has no pull request to read it
+   from, so write it with your file tool to `$TMPDIR/<KEY>-base` rather than typing it into a
+   command, then `base=$(jq -Rs 'rtrimstr("\n")' "$TMPDIR/<KEY>-base")`. Once a pull request is
+   open, `base=$(gh pr view <n> -R <owner>/<repo> --json baseRefName -q '.baseRefName | @json')`
+   gives the same quoted form. Why the name is never typed:
+   `skill://legion-worker/references/default-branch-check.md`.
+2. **Fetch the base by name**: `jj -R "$LEGION_WORKSPACE" git fetch --branch "$base"`. A pod's
+   workspace holds the default branch and the issue branches, and need not hold any other. The
+   one quoted value serves both `--branch`, which takes a string pattern, and the revsets below.
+3. **Start the work at the base's tip**: `jj -R "$LEGION_WORKSPACE" new "${base}@origin"`. Then
+   commit as every role commits: `jj -R "$LEGION_WORKSPACE" split -m "<message>" <paths…>`.
+4. **Move the issue's bookmark onto that commit**:
+   `jj -R "$LEGION_WORKSPACE" bookmark set legion/<KEY> -r @- --allow-backwards`. Write `-r @-`,
+   never `-r @`: after a split, `@` is an undescribed commit, and `jj git push` refuses a commit
+   with no description.
+5. **Push the ordinary way**: `jj -R "$LEGION_WORKSPACE" git push --bookmark legion/<KEY>`. jj
+   takes the lease itself. There is no force flag here, and none is wanted.
+6. **Open the pull request on that base**: `gh pr create --base <the base's plain name> --repo
+   <owner>/<repo> …`. Pass the name itself here, never `$base`: `$base` carries its own quote
+   characters for jj's revset parser, and `gh` would read those quotes as part of the branch
+   name.
+7. **Merge a conflict forward with that base**, never with the repository's default branch. The
+   recipe in *Reintegrating the base* above reads `baseRefName`, so it already names the base the
+   pull request takes, and it needs no change.
+
+This backward move of the bookmark is planned, and it loses nothing. It leaves the commit the
+daemon created at the default branch: no one has built on that commit, and the default branch
+still carries it. The file's other rules hold as they are. A `jj git push` the remote refuses
+because another role moved the branch since your fetch still goes to the architect with its
+output, and is never forced. A forward merge and a retarget are still genuine fast-forwards, and
+neither uses `--allow-backwards`.
 
 ## The unchanged-diff check
 
@@ -142,8 +184,12 @@ rewrite it. Put the change in a new commit on top instead, and report the listed
 architect.
 
 Once the guard has cleared, rewrite, resolve, and push once, moving the bookmark backwards onto
-the rewritten head — the one sanctioned non-fast-forward move, and the only place
-`--allow-backwards` is ever used:
+the rewritten head. That backward move and the planned move in *Starting on a base that is not
+the default branch* above are the two non-fast-forward bookmark moves this file allows, and the
+only two that use `--allow-backwards`. The count is of the worker's own procedures, not of the
+repository: the daemon moves bookmarks with the same flag
+(`packages/daemon/internal/launcher/restore.go`, `internal/workspace/bookmark.go`). Move the
+bookmark and push:
 
 ```bash
 cd -- "$LEGION_WORKSPACE" && jj -R "$LEGION_WORKSPACE" bookmark set legion/<KEY> -r @- --allow-backwards && jj -R "$LEGION_WORKSPACE" git push --bookmark legion/<KEY>
