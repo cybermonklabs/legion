@@ -432,8 +432,6 @@ async function startSession(
   };
 
   let taken = 0;
-  // How many relay frames this test has published: each takes the next stream sequence.
-  let relayed = 0;
   const session: CardSession = {
     root,
     turns,
@@ -486,9 +484,12 @@ async function startSession(
         closed
       );
       const frame = headers();
-      frame.set(RelayHeader.subject, subject);
-      relayed += 1;
-      frame.set(RelayHeader.streamSeq, String(relayed));
+      frame.set(RelayHeader.subject, stored);
+      // The next sequence of the one stream this case publishes on, shared with relayFrame, so a
+      // late frame never repeats or rewinds a sequence the session's ledger has already read: its
+      // lateness is the delivered count below and nothing else.
+      streamSeq += 1;
+      frame.set(RelayHeader.streamSeq, String(streamSeq));
       frame.set(RelayHeader.streamID, RELAY_STREAM);
       // Delivered before: the frame is late (`ConsumerFrame.late`), which is what makes a BTW an
       // inert card rather than a side turn.
@@ -858,7 +859,7 @@ test.skipIf(skip)(
 // written to the transcript as one card and nothing more. That is the only path `handCard` hands
 // an inert card on, and the state it stamps is `inert` whatever the host is doing, since
 // `UnwrittenFrames` holds the card until the host is settled and hands it only then (`hostSettled`).
-// `relayed` is a relay frame, so a late BTW reaches a session under consumer delivery alone: this
+// What `lateBtw` publishes is a relay frame, so a late BTW reaches a session under consumer delivery alone: this
 // session is the only one that registers for it, and the stand-in answers it a relay on the
 // session's own deliver subject. The state is read off the file the host wrote, as the two cases
 // above read theirs: an inert card the host persisted without `handOver` would be read, in a later
