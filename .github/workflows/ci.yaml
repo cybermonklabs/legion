@@ -2772,10 +2772,16 @@ jobs:
     needs: changes
     if: needs.changes.outputs.dispatch == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
-    # A backstop and not a measurement, this job being new: it checks out, restores the Go cache
-    # and runs one `go build` of four commands, which is the shape of this file's other
-    # build-only jobs, and ci-images and envoy-infra-go both carry 15.
-    timeout-minutes: 15
+    # Measured over three dispatched runs of this branch, jobs 128520516081 (83 s),
+    # 128528093378 (84 s) and 128528969380 (69 s), whose build steps took 45, 52 and 56 s. No
+    # step here carries a budget, so the rule's job budget is the measured maximum of every step,
+    # 84 s, rounded up: two minutes. The figure below is larger than that on purpose, and this
+    # is the one place in this file where a budget is not the rule's arithmetic. Every run of
+    # that sample restored the Go cache; a run that misses it builds four commands cold, which
+    # the planner measured at 3m37s for ./cmd/dispatch alone, and two minutes would cancel it.
+    # So the budget carries the cold build rather than the warm one, as this file's install
+    # step used to carry its own retry arithmetic rather than its measured maximum.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -2870,28 +2876,34 @@ jobs:
     # what gives it, and `--shm-size=2g` is not needed beside it. Docker's own default would be
     # 64 MB, which is where Chromium runs out of shared memory mid-page.
     #
-    # The job budget below and the browser step's are measured: GitHub's jobs API over the
-    # 397 of the newest 400 ci.yaml runs that could be read, created between 2026-11-05T04:52:45Z
-    # and 2026-11-05T21:06:27Z (268 pull_request, 120 merge_group, 12 push), over the 217 jobs of
-    # this name that concluded success. Three runs could not be read, 41995538189, 42034266338 and
-    # 42087689355, whose jobs endpoint answered HTTP 502 on four attempts. The whole window is
-    # after the commit that moved this job to four lanes, 9689e2c54 of 2026-11-05T04:09:18Z, so no
-    # run is left out for being older than it.
+    # The browser step's budget is the one this file already carried, and it keeps its own
+    # measurement, because this change moves where the suite runs and not what it runs (every
+    # project, every lane and every row count is what the merge base's run gave, which this
+    # issue's own check records). That measurement: GitHub's jobs API over the 397 of the newest
+    # 400 ci.yaml runs that could be read, created between 2026-11-05T04:52:45Z and
+    # 2026-11-05T21:06:27Z (268 pull_request, 120 merge_group, 12 push), over the 217 jobs of
+    # this name that concluded success. Three runs could not be read, 41995538189, 42034266338
+    # and 42087689355, whose jobs endpoint answered HTTP 502 on four attempts. The whole window
+    # is after the commit that moved this job to four lanes, 9689e2c54 of 2026-11-05T04:09:18Z,
+    # so no run is left out for being older than it.
     #
     #   step                               median    95th     max
     #   Browser-test dispatch dashboard    1475 s  1582 s  1671 s
-    #   every other step summed             199 s   221 s   232 s
-    #   the whole job                      1715 s  1875 s  2348 s
     #
     # The rule: a step budget is that step's measured maximum plus 15 per cent, rounded up to the
-    # next whole minute, with a floor of two minutes. So 1671 s x 1.15 = 1922 s -> 33 min for the
-    # browser step. The job budget is the sum of its step budgets plus the measured maximum of
-    # every step without one, rounded up: 1320 + 1980 + 232 s = 3532 s -> 59 min. The spread is
-    # the fleet's rather than the suite's, which is why each budget is that measured maximum plus
-    # a margin rather than a figure near the median.
+    # next whole minute, with a floor of two minutes. So 1671 s x 1.15 = 1922 s -> 33 min, the
+    # figure below. The three container runs of this branch stay inside it, at 1377 s, 1262 s and
+    # 828 s, and are not what sets it: three runs are no maximum of a step whose spread is the
+    # fleet's, and the 217-job population is of the same suite at the same width.
     #
-    # The 1320 s term of that sum is the budget of an install step this head no longer has, so
-    # both budgets are re-derived at this head rather than adjusted by arithmetic here.
+    # The job budget is re-derived here, and it had to be: its old 59 min was the sum of this
+    # step's 33 and an install step's 22 that this head no longer has. The rule gives the sum of
+    # the step budgets plus the measured maximum of every step without one, rounded up, and that
+    # second term is what the container changed, so it is measured on the container: three
+    # dispatched runs of this branch, jobs 128520862173 (1487 s), 128528443148 (1359 s) and
+    # 128529259226 (940 s), whose every-other-step sums are 105 s, 93 s and 106 s. The maximum is
+    # 106 s, and `Initialize containers` is in it at 29, 27 and 35 s, with no budget of its own.
+    # So 1980 + 106 s = 2086 s -> 35 min.
     #
     # Budgets on the steps and not on the job alone, because a step the runner cancels at its own
     # budget fails that step and names it (`The action '<step name>' has timed out after <N>
@@ -2899,7 +2911,7 @@ jobs:
     # upload steps below still run and the Playwright report, the memory samples and the CPU
     # samples still reach the run, which a cancelled job loses. The job budget is the backstop
     # above the sum of the step budgets, so it never fires first.
-    timeout-minutes: 59
+    timeout-minutes: 35
     steps:
       # The first step of this container's first run, and of every run after it: these readings
       # are what decide the container's own shape, and they are deliberate rather than left over
