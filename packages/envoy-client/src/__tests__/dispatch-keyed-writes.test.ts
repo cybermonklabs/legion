@@ -1189,29 +1189,35 @@ describe("DispatchClient's uploads on a real connection", () => {
       actor,
     });
 
-  // The body goes out in four paced steps of 450 ms, so it is on the connection for about 1,800 ms
-  // against a silence bound of 1,500 ms and still lands in one attempt. The pace is a fixed number
-  // of steps rather than a rate because every step is a wait a busy machine can stretch: at 8 KiB
-  // a ms this row made 384 waits of 8 ms, and one wait passing the bound cut the attempt off and
-  // made the upload land in two, which is how it failed in a 2-CPU pod, 1 run of 20 under 16 busy
-  // loops (8 x nproc), `toHaveLength(1)` receiving 2. Four waits of 450 ms each leave 1,050 ms of
-  // the bound to spare. The body stays at 24 MiB, and the steps sit in its first half, because what
-  // the client counts as progress is the connection taking its bytes: a body the socket buffers
-  // swallow whole leaves the client silent for every pause that follows, and measured in this pod a
-  // 4 MiB body was swallowed whole and cut off 3 runs of 3 under that load. The 30 s limit is a
-  // hang guard, not a budget: it fires only if the server's resume or the client's stream never
-  // comes. Measured in that pod: 1.99 s idle; under those 16 loops, 5.02 s at most in a
-  // whole-suite run and 3.09 s with this file alone.
+  // The body goes out in four paced steps of 2,200 ms, so it is on the connection for about 8,800
+  // ms against a silence bound of 8,000 ms and still lands in one attempt. The pace is a fixed
+  // number of steps rather than a rate because every step is a wait a busy machine can stretch,
+  // and what matters is how far one wait has to stretch before it passes the bound. At 8 KiB a ms
+  // this row made 384 waits of 8 ms against a 1,000 ms bound, and one of them passing it cut the
+  // attempt off and made the upload land in two. Four waits of 450 ms against a 1,500 ms bound
+  // left 1,050 ms, and that was still not enough: in a 2-CPU pod under 16 busy loops (8 x nproc)
+  // the row failed 1 whole-suite run of 20 at 5,207.83 ms with `toHaveLength(1)` receiving 2. The
+  // overshoot is not the timer, which was late by 224.9 ms at most over 180 rounds under the same
+  // loops; it is the suite process's own work while 24 MiB streams through it, which only a
+  // whole-suite run has. Four waits of 2,200 ms against 8,000 ms leave 5,800 ms, five and a half
+  // times that overshoot, and keep the number of waits at four. The body stays at 24 MiB, and the
+  // steps sit in its first half, because what the client counts as progress is the connection
+  // taking its bytes: a body the socket buffers swallow whole leaves the client silent for every
+  // pause that follows, and measured in this pod a 4 MiB body was swallowed whole and cut off 3
+  // runs of 3 under that load. The 60 s limit is a hang guard, not a budget: it fires only if the
+  // server's resume or the client's stream never comes. Measured in that pod: 9.01 s idle; under
+  // those 16 loops, 9.62 s at most in a whole-suite run, since the row's cost is its own pacing
+  // and the load barely moves it.
   test("an upload going out for longer than silenceMs lands in one attempt", async () => {
-    const silenceMs = 1_500;
-    const dispatch = await dispatchOn([{ pauses: 4, pauseMs: 450 }]);
+    const silenceMs = 8_000;
+    const dispatch = await dispatchOn([{ pauses: 4, pauseMs: 2_200 }]);
     const started = performance.now();
     await upload(dispatch.url, silenceMs, 24 << 20);
 
     expect(performance.now() - started).toBeGreaterThan(silenceMs);
     expect(dispatch.writes).toHaveLength(1);
     expect(dispatch.writes[0]?.received).toBe(dispatch.writes[0]?.length as number);
-  }, 30_000);
+  }, 60_000);
 
   // The claim is that an upload its connection stops taking is cut off and sent again under its key,
   // not that exactly two attempts do it: a second attempt a busy machine also stalls is cut off too,
