@@ -536,7 +536,7 @@ test("a row stored after the turn's last request is quoted, though its step answ
   await turn("turn-after-unread", 1)
 })
 
-// Repro `R-C` (INFRA-1026 review, round eleven; `../src/mod-session.ts:577` before this change):
+// Repro `R-C` (INFRA-1026 review, round three):
 // a row stored behind a submit that the session then drops waited for a turn that never starts,
 // so nothing ever pointed the model at it. The mod gives the prompt it handed over
 // `TURN_START_MS` to start its turn, and points at the rows behind a prompt that started none.

@@ -247,19 +247,6 @@ test("a send whose notification failed is delivered when it is sent again", asyn
   }
 })
 
-// The tester's test `a card whose submit entered the session is not submitted again when Envoy
-// resends it` stood here until round eleven (INFRA-1026). It pinned the guarantee that a card
-// Envoy sends again reaches the model one time, under the rule of the time: the server kept the
-// event ids of the cards that entered and answered a resend itself. That rule is gone — a
-// request the mod never answered now leaves its frame unanswered on purpose, so Envoy sends it
-// again, and the mod's own write is what makes the repeat safe (`../hooks/mod`, `writeOnce` over
-// `$.store` keyed by the session id and the event id). The retired test held a submit pending and
-// asserted that no second write went out, which the new rule contradicts by construction, so no
-// code can satisfy both. The guarantee it pinned is kept where it now lives: `the same event id
-// handed over twice is written once, at once or later` in `./mod.test.ts`, driven against the
-// real mod, and `a card the mod never answered is written again when Envoy resends it` below,
-// which is the server's half of it. The architect approved the swap; the tester judges it.
-
 // What replaces the server's record of the cards it has (INFRA-1026 review, round eleven): the
 // server is at-least-once and re-hands the event, and the mod's write is idempotent by the
 // Envoy event id, so the engine sees the one message once. Both copies are therefore handed

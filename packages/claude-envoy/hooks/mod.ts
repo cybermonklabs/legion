@@ -128,8 +128,8 @@ const PROMPT_ROW_MS = 2_000
  *
  * `turn.start` followed the submit's resolution by 8 ms to 11 ms in the same six submits, so a
  * prompt that has started no turn by now starts none: its rows are pointed at rather than left
- * waiting for a `turn.complete` that never comes (INFRA-1026 review, round eleven, on the rule
- * at `../src/mod-session.ts:577` before this change).
+ * waiting for a `turn.complete` that never comes (INFRA-1026 review, round three, repro
+ * `R-C`).
  */
 const TURN_START_MS = 2_000
 
@@ -137,8 +137,10 @@ const TURN_START_MS = 2_000
  * The most Envoy events the mod remembers the row of, in `$.store`.
  *
  * Each record is a key of some seventy bytes and a small object, so the whole of it is about
- * 30 KiB, against the 4 MiB of compact JSON `set` refuses past. The bound is what keeps a
- * session of months off that wall and off the cost of a big store: measured on 2.1.310, a
+ * 30 KiB, against the 4 MiB of compact JSON `set` refuses past. The store is one file for every
+ * session under one `CLAUDE_CONFIG_DIR`, so this bound is shared by all of them, and the
+ * eviction pass (`remember`) drops the oldest record whichever session wrote it. The bound is
+ * what keeps that store off the wall and off the cost of a big store: measured on 2.1.310, a
  * 3.9 MiB store cost `get` 7–20 ms, `set` 44 ms and `keys()` up to 16 ms, against about 1 ms
  * each on an empty one (`/legion/scratch/tmp/infra-1026-store/README.md`).
  */
