@@ -40,7 +40,7 @@ same step before and after its change, and compares the two rows.
 | `routes.go` | The route-mix file parser and the request paths |
 | `delivery.go` | The join of writes, database commits and receipts into delivery latencies |
 | `sample.go` | The 5 s sampler: CPU, RSS, Postgres connections, goroutines, pool waiters, NATS `/varz`, and the heap every 15 s under `-heap-samples`. The transaction-id probe. |
-| `lockprobe.go` | The 20 ms sampler of the commit-order lock |
+| `lockprobe.go` | The one-second sampler of the commit-order lock |
 | `locksampler.go` | The 1 s sampler of every ungranted lock in `pg_locks` |
 | `pgpoll.go` | The poll loop of the lock probes (`pollPG`), and the error policy of the probes' reads, which the 5 s sampler shares: failed reads are counted, the first three are logged, and so is their total past three |
 | `live.go` | The dashboard live sockets' reader of `GET /ws/live` event frames, and the live frame latencies |
@@ -1957,10 +1957,13 @@ leave it off where Dispatch's CPU is (a replay that compares one build against a
 
 ### Commit-order lock
 
-The lock probe reads every 20 ms from 20 s after the window start to the window end. When the
+The lock probe reads once a second from 20 s after the window start to the window end. When the
 window is shorter than 20 s, it starts at the window start. The lock is Dispatch's database-wide
 advisory lock `0x4449535041544348` (`internal/dispatch/events/broker.go`), which orders event
 commits.
+It read every 20 ms before INFRA-988 measured what that cost on the instance it was measuring:
+68,062 calls in one 1x hour for 2,938 s of database time, 7.3% of every statement the window ran
+and about 0.82 of one of the instance's 8 cores.
 
 | Column | Unit | What it shows | Source |
 | --- | --- | --- | --- |
@@ -2048,11 +2051,12 @@ The first blocker is the backend with the lowest pid that holds the same lock, g
 `pg_locks` read. For a relation lock, that holder can hold a mode that does not conflict with the
 wait. Each statement is the `query` of `pg_stat_activity`, cut to 80 characters.
 
-The sampler reads once a second, not every 20 ms as the lock probe does, because each read costs
-Postgres CPU on the box it measures. Read every 20 ms with about 45 waiters at 1x, one read took 75
-to 180 ms of a Postgres backend, and 1x committed 0.29 to 0.82 events/s, against 1.63 to 1.81
-without the sampler, on the same build and seed (2026-10-27). It never calls `pg_blocking_pids`,
-which takes exclusive access to Postgres's lock manager.
+The sampler reads once a second, as the lock probe now does, because each read costs Postgres CPU
+on the box it measures. Read every 20 ms with about 45 waiters at 1x, one read took 75 to 180 ms
+of a Postgres backend, and 1x committed 0.29 to 0.82 events/s, against 1.63 to 1.81 without the
+sampler, on the same build and seed (2026-10-27). The lock probe kept its own 20 ms until
+INFRA-988 measured the same effect on it (Commit-order lock, above). It never calls
+`pg_blocking_pids`, which takes exclusive access to Postgres's lock manager.
 
 | Column | Unit | What it shows | Source |
 | --- | --- | --- | --- |
