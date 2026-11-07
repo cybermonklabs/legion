@@ -695,6 +695,59 @@ is queued for it, since the next phase start or re-admission resumes it as befor
   go. The process is stopped and nothing is started; the claim waits `launching` with no process,
   keeps its task, and the same launch is tried again every `probe_interval_seconds` until the write
   lands. If the line keeps coming, look at the database.
+- **`supervise: a claim write the database did not take`** at Warn, with `store=` (the store
+  method whose call failed) and `owed=`, means the daemon decided something about a claim and its
+  Postgres did not take the write. With `owed=true` the write is kept and made again at that
+  claim's next write that lands, which is the repair at the head of its next decision or a later
+  write that decision makes of the claim as the daemon holds it: the daemon's memory is ahead of
+  the row. The mark is held in memory only, so a daemon that stops while a write is owed loses
+  that write and the reports it carried, as a stop between a decision and its write always has.
+  The line comes again with `owed=true` at each decision whose repair fails again. With
+  `owed=false` a repair's write reached the server, which judged the statement and would judge it
+  the same way again, so the owed write and the reports it carried are dropped and the row stays
+  as it was; that line also carries `droppedReports=`, how many reports went with it, and it is
+  the only record that they were lost — that one is a defect to look at, not an outage. A
+  decision's own write that fails drops the event that decision was handling, as it always has:
+  one the server judged writes no such line and is the `supervise: an event failed` error with
+  the store's message, and one it did not judge writes this line with `owed=true` beside that
+  error. A repair that fails drops nothing, and the decision goes on.
+- **`supervise: the store holds no such delivery; the refusal is of a retirement it has already
+  made`** at Warn, with `delivery=`, means the daemon retired a task and the store answered that
+  the claim's row holds no delivery at all: the retirement this daemon already made, whose answer
+  an earlier broken connection lost. The line is written for that refusal and for no other. Memory
+  drops the delivery to match the row and the claim goes on deciding, and the line is followed by
+  the one above with `store=RetireDelivery` and `owed=true`, since that transaction rolled the
+  claim write back with the delete and it is made again at the claim's next decision. The store's
+  other refusal of the same delete — `the claim's row holds another delivery`, naming both the
+  delivery asked for and the one the row holds — is not this one and writes no line of its own. It
+  means a write that rotated the delivery's id, an interruption or a take-back, committed after
+  its answer was cut off, so the store holds one delivery where the daemon's memory holds another.
+  That refusal fails the decision as any other store failure does, reaching the log as `supervise:
+  an event failed` with the store's message, and owes no write: read as a retirement already made
+  it would drop the delivery memory holds and leave the stored one pending and retired by nobody.
+  The decision that met it is the one event lost. The daemon marks the delivery its memory holds
+  unwritten, so it writes that delivery over the row the rotation left, at the latest at the
+  claim's next decision, and the retirement that follows it, once the task's turn is over, finds
+  it under the id memory holds; the claim decides every event after the one the refusal cost, and
+  no restart is needed to bring the row and memory together. A person's decision the rotated row
+  held is not lost: the tree's next start or catch-up names it again, at worst a second time.
+- **`supervise: a claim write the database did not take was made`** at Info, with `store=` (the
+  store method that landed), is the close of that story: the owed write landed, and the row says
+  what the daemon holds again. The reports that write carried — a turn that started, a claim that
+  went ready or failed — are made right behind it, oldest first and before the report of the
+  decision whose write landed, except one of a generation the claim has left (`supervise: an owed
+  report is dropped; the claim has left the generation it was owed at`, at Info with its `state=`
+  and `generation=`). A claim whose last `owed=true` line has no such line after it is still
+  behind, and its next decision will try again; one whose last line is `owed=false` has dropped
+  the write, and nothing tries it again.
+- **`supervise: a turn started`** and **`supervise: a turn ended`** at Info, each with the claim
+  and its `generation`, and with `delivery=` where the turn is a task's, are how a reader tells a
+  turn that started from one the daemon never saw, and a turn that ended from one still running.
+  A start with no end means the turn is running, or that it ended another way: look for
+  `supervise: process died`, `supervise: the agent's turn has not ended; suspending it mid-turn`,
+  `supervise: claim failed`, `supervise: the agent reported its exit`, `supervise: the process
+  speaks another plugin contract; relaunching it onto the current plugin`, or `supervise: the
+  update round is over for this claim`, each of which says what became of the turn instead.
 - **`supervise: restoring a launch the previous daemon did not finish as launch_uncertain; no
   process is recorded for it`** at boot names a claim the store held live with no process, with the
   state it was stored in (`stored=`): a launch the previous daemon began and never recorded. The
@@ -909,9 +962,10 @@ legion state --config legion.yaml --json | jq '.consumers[] | {name, waiting, ol
   `retryable intake processing failure` and the other warnings naming a `subject` of that
   consumer, whose `error` says what fails. A handler that does not finish writes none of those
   while it holds: intake reports its message in progress, and the stall is all that shows until
-  the handler passes its ten-minute limit and the daemon writes `an intake handler outran its
-  limit and was cut`, so search for that line too
-  ([GitHub, NATS and the Secrets Broker](#github-nats-and-the-secrets-broker)). A consumer that
+  the handler passes the intake handler limit and the daemon writes `an intake handler outran
+  its limit and was cut`, so search for that line too
+  ([GitHub, NATS and the Secrets Broker](#github-nats-and-the-secrets-broker)), whose entry
+  says the limit this deployment runs with and where the daemon prints it. A consumer that
   stops is not a stall: it stops the daemon (`workflow intake stopped: …`).
 - **`unavailable`** names what NATS did not answer in time, or refused; the rest of the state is
   served all the same. Every consumer is read at the same time, each within two seconds,
@@ -972,15 +1026,24 @@ notice comes once per handoff commit, from whichever pass finds it first.
   head's CI from its check runs and tells an architect `pull-request-missing`, so none of those
   waits for the backlog to drain.
 - **`an intake handler outran its limit and was cut`** (a warning with `consumer`, `event_id`,
-  `fact` and `limit`). One message's handling ran past `limit`, ten minutes, which no setting
-  changes, so the daemon cut it and naked the message: nothing of that event was applied, and
-  JetStream delivers it again. While a handler runs, intake reports its message in progress, so a
-  handler that hangs shows neither as the preparation work of a redelivery nor as a rising
-  `delivered` count, and this warning is the one line that names the cut. The warning written
-  right after it with the same `event_id` names the step that was running, with the error
-  `context deadline exceeded`. Each Dispatch or GitHub read is cut on its own at the
-  acknowledgement window, so a handling that reaches ten minutes is most often waiting on the
-  database. One Postgres advisory lock is what it most often waits on,
+  `fact` and `limit`). One message's handling ran past `limit`, the handler limit
+  `worker_rpc_timeout_seconds` derives for this deployment, so the daemon cancelled the
+  handling's context and naked the message: nothing of that event was applied. Intake reports
+  the message in progress only until the limit, and the handler returns once the step that is
+  running honours the cancelled context, which every step does at once today; only then is
+  this warning written and the message naked. This consumer asks for one message at a time and
+  has none outstanding while the handler runs, so the event is sent again, and its `delivered`
+  count goes up by one, no sooner than that return: one nak delay (a second) after the nak, or
+  at the consumer's next pull where the step held the handler past about one acknowledgement
+  window after the limit, whichever the server takes first. A step that ignored the cancelled
+  context would hold the message, and this warning, for the whole of its own run. Between this
+  warning and the nak the daemon writes one more line under the same `event_id`, naming the
+  step that was running, with the error `context deadline exceeded`; this warning is the one
+  that names the cut. Every step is a `pgx` call or a Dispatch or GitHub read that gives up on
+  a cancelled context, so the wait for the return is short, and each read is cut on its own at
+  the acknowledgement window, so a handling that reaches the limit is most often waiting on the
+  database. One Postgres advisory lock is what
+  it most often waits on,
   `pg_advisory_xact_lock(hashtext('legion.apply_fact'))`, which every fact takes for the length of
   its transaction and the daemon's other lifecycle writes take too, so the holder is as often one
   of those as another fact. Ask the daemon's database who holds it rather than guessing:
@@ -998,13 +1061,22 @@ notice comes once per handoff commit, from whichever pass finds it first.
 
   The first row is the holder, the rest are waiting on it, and `xact_start` says how long it has
   held. The next delivery of the same event takes the same path and is cut the same way.
+
+  The limit this deployment runs with is in the daemon's log at every boot, in a line beginning
+  `intake: one fact's handling is cut after <n>s`, at warn when the limit is above an hour,
+  where the cut comes too late to return a wedged handler's message while an operator is still
+  looking. At the ten-minute floor that line names the floor as what decided the limit; above
+  it, `legion start --check-config` prints the same sentence, which an operator can read before
+  a rollout. The limit is one acknowledgement window for each of a review's three bounded reads
+  and one more for the fact's transaction and its wait on the apply lock, never below ten
+  minutes, so `worker_rpc_timeout_seconds` is the key that changes it.
 - **`an intake fact outlived its acknowledgement window and was held in progress while it ran`**
   (an info line with `consumer`, `event_id`, `delivered` and `took`). The handling took longer
   than the consumer's acknowledgement window (`worker_rpc_timeout_seconds`), and intake held the
   delivery for `took` rather than let JetStream deliver the event a second time. The fact was
   applied: this is a fact that is slow, not one that failed, and this is the only line that says
   how long a fact took. One of them asks nothing of an operator; a `took` creeping towards the
-  ten-minute limit, or many at once, names where to look for the slow read behind them.
+  handler limit, or many at once, names where to look for the slow read behind them.
 - **`webhook App missing on <repo>: <reason>`** in `legion state` (`repositories.withoutWebhookApp`
   in `--json`). Dispatch's GitHub App, the Envoy App whose webhook carries GitHub's events, is not
   known to be installed on a repository the daemon serves. With `Dispatch's GitHub App is not
