@@ -171,6 +171,19 @@ A service a test left running holds its rooms, and their documents, for the rest
 `grep -rn "runtime.AddCleanup\|runtime.SetFinalizer" --include=*.go .` finds those two sites and nothing else.
 A `runtime.AddCleanup` or `runtime.SetFinalizer` added in another package comes with a detector job of its own, in the same pull request.
 
+## A parallel test's cleanup lets go of what it held
+
+A test cleanup of `packages/envoy/internal/dispatch/docs` is registered through that package's `cleanupAndRelease` (`service_test.go`), never through `t.Cleanup` directly: it registers the function and drops its reference to it the moment the function has run.
+The testing package holds a cleanup for as long as the test's own `*testing.T`, which for a parallel test is longer than the test.
+`testing.common.runCleanup` takes the last function off `common.cleanups` and shortens the slice, leaving the element it ran in the backing array, and `testing.T.Parallel` appends the test to `parent.sub`, which holds it until the parent ends - for a top-level test, until `m.Run` returns.
+A cleanup closing over a `*Service` therefore holds that service, every room it had loaded and each room's document for the rest of the binary's run, however cleanly that cleanup shut the service down.
+Every cleanup of the package goes through the helper rather than the ones whose closure looks heavy, so no test has to judge what its own closure reaches, and a closure that grows a service later is right without being revisited.
+
+That is what this package's test binary did once its tests ran in parallel (dispatch://INFRA-1075).
+`go test -run TestRenderReuse` built 45 services and held 38 of them at once, peaking at 4,021,096 kB resident with 3,108,906 kB live after two forced collections; through `cleanupAndRelease` the same run holds at most 3, peaks at 717,396 kB resident and 456,587 kB live.
+The leak line above answers nothing here: it runs once `m.Run` has returned, when the root `*testing.T` and every cleanup it held are themselves unreachable, so it read `0 still alive` in both runs.
+What reads the retention is a sample taken while the tests run - two `runtime.GC()` calls, then `runtime.ReadMemStats` and the package's own `liveServices` - or a heap profile written at the same moment, where the retained bytes stand under `crdt.decodeItem` and `crdt.NewYXmlElement` from `websocket.(*Server).loadRoom`.
+
 ## A database a Go test creates
 
 A Go test that creates a Postgres database writes `create database … strategy file_copy`, as

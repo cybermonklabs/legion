@@ -398,7 +398,7 @@ func newPeeredService(t *testing.T, markdown string) (*Service, string, string) 
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, markdown)
 	server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(server.Close)
+	cleanupAndRelease(t, server.Close)
 	return service, artifactID, server.URL
 }
 
@@ -477,7 +477,7 @@ func typeIntoDocument(t *testing.T, service *Service, serverURL, artifactID stri
 	// the peer's last update, and, once no other peer is typing into the room, it makes every
 	// update durable, before the connection closes. The service's shutdown then has none of the
 	// peers' updates left to drain inside its budget, which a backlog of keystrokes would overrun.
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		close(stopped)
 		done.Wait()
 		client := peer.Doc.ClientID()

@@ -68,7 +68,7 @@ func TestStoredOrderBackfillDoesNotStoreTheRoomsCommittedEditTwice(t *testing.T)
 	committed, release := make(chan persistence.Version, 1), make(chan struct{})
 	var opened, closed sync.Once
 	releaseWorker := func() { closed.Do(func() { close(release) }) }
-	t.Cleanup(releaseWorker)
+	cleanupAndRelease(t, releaseWorker)
 	appends.afterAppendCommit = func(room string, version persistence.Version) {
 		held := false
 		if room == artifactID {

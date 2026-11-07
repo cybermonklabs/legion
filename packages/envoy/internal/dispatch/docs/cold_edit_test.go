@@ -130,7 +130,7 @@ func TestABrowserOpeningADocumentMidColdWriteKeepsBothEdits(t *testing.T) {
 				ServerURL:   "https://dispatch.example",
 				Settle:      time.Hour,
 			})
-			t.Cleanup(func() {
+			cleanupAndRelease(t, func() {
 				if err := service.Shutdown(context.Background()); err != nil {
 					t.Errorf("shutdown document service: %v", err)
 				}

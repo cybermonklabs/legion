@@ -146,7 +146,7 @@ func TestABufferedFoldWaitsForASlotWithinItsContext(t *testing.T) {
 	appendUpdates(t, versioned, waiting, rows...)
 	held, released := make(chan struct{}), make(chan struct{})
 	release := sync.OnceFunc(func() { close(released) })
-	t.Cleanup(release)
+	cleanupAndRelease(t, release)
 	var waitedFolds atomic.Int32
 	versioned.beforeFold = func(room string) {
 		switch room {
@@ -320,7 +320,7 @@ func roomLoadService(t *testing.T) (*Service, *PgVersioned, *roomDecodes) {
 	service := New(Deps{Store: database, Persistence: versioned, Events: events.NewBroker(), Settle: time.Hour})
 	decodes := &roomDecodes{states: make(map[string][][]byte)}
 	service.bootstrapping = decodes.decoded
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		stop, cancel := context.WithTimeout(context.Background(), recoveryBound)
 		defer cancel()
 		_ = service.Shutdown(stop)
@@ -435,7 +435,7 @@ func TestARoomWhoseHistoryDoesNotDecodeFailsFromTheRoomsOwnDecode(t *testing.T) 
 		case <-finished:
 		}
 	}
-	t.Cleanup(func() { close(finished) })
+	cleanupAndRelease(t, func() { close(finished) })
 	unfoldable, _ := unfoldableHistory()
 	merged, err := crdt.MergeUpdatesV1(unfoldable...)
 	if err != nil {

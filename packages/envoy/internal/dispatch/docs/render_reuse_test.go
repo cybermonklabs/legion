@@ -216,7 +216,7 @@ func watchRenders(t *testing.T, service *Service, artifactID string) *renderShad
 		}
 		sh.forkRead()
 	}
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		sh.mu.Lock()
 		sh.closed = true
 		sh.mu.Unlock()
@@ -1440,7 +1440,7 @@ func TestRenderReuseAReplicaRebuiltFromTheLogHoldsWhatTheRoomParked(t *testing.T
 	// A log of the test's own, opened before the peer's commits, to read what each one parked:
 	// the replica's log hands its updates to the observer, which drains it.
 	parked := live.OpenUpdateLog()
-	t.Cleanup(parked.Close)
+	cleanupAndRelease(t, parked.Close)
 
 	const firstText = "A paragraph the peer's first transaction wrote."
 	const secondText = "A paragraph the peer's second transaction wrote."
@@ -1953,7 +1953,7 @@ func pauseCollections(t *testing.T) (resume func()) {
 	previous := debug.SetGCPercent(-1)
 	var once sync.Once
 	resume = func() { once.Do(func() { debug.SetGCPercent(previous) }) }
-	t.Cleanup(resume)
+	cleanupAndRelease(t, resume)
 	return resume
 }
 

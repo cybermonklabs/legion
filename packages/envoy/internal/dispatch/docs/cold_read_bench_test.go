@@ -111,7 +111,7 @@ func newColdBenchmarkDocument(b *testing.B, size int) (*Service, *PgVersioned, s
 		b.Fatal(err)
 	}
 	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour})
-	b.Cleanup(func() {
+	cleanupAndRelease(b, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			b.Errorf("shutdown cold benchmark service: %v", err)
 		}

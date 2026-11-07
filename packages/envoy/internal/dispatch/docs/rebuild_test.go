@@ -85,7 +85,7 @@ func TestRebuildDocumentRestoresDocumentThatCannotLoad(t *testing.T) {
 	}
 
 	service := newSchemaRepairService(database)
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown rebuilt service: %v", err)
 		}
@@ -205,7 +205,7 @@ func TestRebuildDocumentWritesThroughItsInjectedPersistence(t *testing.T) {
 		invalid:        true,
 	}
 	service := New(Deps{Store: database, Persistence: persist})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	cleanupAndRelease(t, func() { _ = service.Shutdown(context.Background()) })
 	replacement := "replacement\n"
 	if _, _, err := rebuildDocument(t, service, artifactID, &replacement); err != nil {
 		t.Fatalf("rebuild document: %v", err)
@@ -231,7 +231,7 @@ func TestARebuildFromTheLatestVersionRestoresItWhateverItWeighs(t *testing.T) {
 		t.Fatalf("store a version past the element limit: %v", err)
 	}
 	service := New(Deps{Store: database, Persistence: &rebuildCaptureStore{VersionedStore: NewPgVersioned(database), invalid: true}})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	cleanupAndRelease(t, func() { _ = service.Shutdown(context.Background()) })
 	if _, _, err := rebuildDocument(t, service, artifactID, nil); err != nil {
 		t.Fatalf("rebuild from a version past the element limit: %v", err)
 	}
@@ -266,7 +266,7 @@ func TestARebuildWhoseSeedPassesTheItemCapIsRefusedAsTooLarge(t *testing.T) {
 	before := history(t)
 	persist := &rebuildCaptureStore{VersionedStore: NewPgVersioned(database), invalid: true}
 	service := New(Deps{Store: database, Persistence: persist})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	cleanupAndRelease(t, func() { _ = service.Shutdown(context.Background()) })
 	_, _, err := rebuildDocument(t, service, artifactID, nil)
 	if !errors.Is(err, ErrDocumentTooLarge) || !strings.HasPrefix(err.Error(), "document too large to store: ") || !strings.Contains(err.Error(), fmt.Sprintf("exceed the %d", maxUpdateItems)) {
 		t.Fatalf("rebuild from a version past ygo's item cap: %v, want ErrDocumentTooLarge naming the cap, unwrapped", err)
@@ -286,7 +286,7 @@ func TestARebuildFromSuppliedMarkdownIsWeighedAsANewDocument(t *testing.T) {
 	artifactID := createDocument(t, database, "before\n")
 	persist := &rebuildCaptureStore{VersionedStore: NewPgVersioned(database), invalid: true}
 	service := New(Deps{Store: database, Persistence: persist})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	cleanupAndRelease(t, func() { _ = service.Shutdown(context.Background()) })
 	headings := func(width int) string {
 		return strings.Repeat("# "+strings.Repeat("a", width-3)+"\n", 16_384)
 	}
@@ -319,7 +319,7 @@ func TestAnAskWrittenWithOptionsAndNoQuestion(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "")
 	service := newSchemaRepairService(database)
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown: %v", err)
 		}
@@ -350,7 +350,7 @@ func TestAnAskWrittenWithOptionsAndNoQuestion(t *testing.T) {
 	// The rebuild path runs for a document that does not load, which is the maintenance case:
 	// rebuildCaptureStore{invalid: true} is how rebuild_test stands one up.
 	rebuilding := New(Deps{Store: database, Persistence: &rebuildCaptureStore{VersionedStore: NewPgVersioned(database), invalid: true}})
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		if err := rebuilding.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown rebuilding service: %v", err)
 		}
@@ -366,7 +366,7 @@ func TestAnAskWrittenWithOptionsAndNoQuestion(t *testing.T) {
 	var invalid *ErrInvalidAskBlock
 	third := createDocument(t, database, "")
 	fresh := newSchemaRepairService(database)
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		if err := fresh.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown fresh service: %v", err)
 		}

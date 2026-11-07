@@ -477,12 +477,12 @@ func shrinkPendingItems(t *testing.T, service *Service, versioned *PgVersioned) 
 	if service != nil {
 		was := service.maxPendingItems
 		service.maxPendingItems, service.srv.MaxPendingItems = testPendingItems, testPendingItems
-		t.Cleanup(func() { service.maxPendingItems, service.srv.MaxPendingItems = was, was })
+		cleanupAndRelease(t, func() { service.maxPendingItems, service.srv.MaxPendingItems = was, was })
 	}
 	if versioned != nil {
 		was := versioned.maxPendingItems
 		versioned.maxPendingItems = testPendingItems
-		t.Cleanup(func() { versioned.maxPendingItems = was })
+		cleanupAndRelease(t, func() { versioned.maxPendingItems = was })
 	}
 }
 

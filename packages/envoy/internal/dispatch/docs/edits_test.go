@@ -276,7 +276,7 @@ func queueDepth(gate *conditionalEditGate) int {
 // block id comes from, so any test whose write mints an id beside it would be given this test's.
 func TestApplyOperationRetypesAParagraphInPlace(t *testing.T) {
 	pmdoc.SetBlockIDGenerator(func() string { return "generated-body" })
-	t.Cleanup(func() { pmdoc.SetBlockIDGenerator(nil) })
+	cleanupAndRelease(t, func() { pmdoc.SetBlockIDGenerator(nil) })
 	tree, err := pmdoc.Parse("Which transport should we expose?\n")
 	if err != nil {
 		t.Fatalf("parse source paragraph: %v", err)

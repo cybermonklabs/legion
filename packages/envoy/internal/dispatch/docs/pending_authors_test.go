@@ -506,7 +506,7 @@ func TestALoadNeverWaitsForTheDocumentLock(t *testing.T) {
 		t.Fatalf("hold the document lock: %v", err)
 	}
 	server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(server.Close)
+	cleanupAndRelease(t, server.Close)
 	browser := connectPeer(t, server.URL, artifactID, "reader")
 	if err := browser.AskForDocument(); err != nil {
 		t.Fatalf("ask the room for its document: %v", err)
@@ -1161,12 +1161,12 @@ func TestTwoVersionsBeforeAnAppendAsksForTheLockListItsAuthorOnce(t *testing.T) 
 		ServerURL:   "https://dispatch.example",
 		Settle:      time.Hour,
 	})
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		if persistence.released.CompareAndSwap(false, true) {
 			close(release)
 		}
 	})
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}

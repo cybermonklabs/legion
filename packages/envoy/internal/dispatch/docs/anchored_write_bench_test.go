@@ -145,7 +145,7 @@ func newAnchoredWriteFixture(b *testing.B, markdown string, anchors int) *anchor
 	b.Helper()
 	database := storetest.Open(b)
 	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour})
-	b.Cleanup(func() {
+	cleanupAndRelease(b, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			b.Errorf("shutdown anchored write benchmark service: %v", err)
 		}

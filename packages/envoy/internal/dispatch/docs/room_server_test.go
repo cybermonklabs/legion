@@ -74,7 +74,7 @@ func TestARepairRefusesRatherThanWaitsForACloseUnderWay(t *testing.T) {
 			service.srv.releaseGate(artifactID, closing)
 		}
 	}
-	t.Cleanup(release)
+	cleanupAndRelease(t, release)
 	settled := make(chan struct{})
 	go func() {
 		defer close(settled)
@@ -153,7 +153,7 @@ func TestACancelledEvictionLeavesTheFailedRoomForItsOwnEviction(t *testing.T) {
 		close(evicting)
 		<-evict
 	}
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		letGo()
 		recoverRoom()
 		<-applied

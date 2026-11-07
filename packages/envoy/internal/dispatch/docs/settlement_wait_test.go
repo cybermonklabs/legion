@@ -37,7 +37,7 @@ func TestShutdownsDrainWakesOnceWhenARoomsHeldAppendLands(t *testing.T) {
 		}
 	}
 	appends := &heldStore{VersionedStore: persist, room: artifactID, entered: make(chan struct{}), release: make(chan struct{})}
-	t.Cleanup(appends.let)
+	cleanupAndRelease(t, appends.let)
 	service := newShutdownTestService(t, database, appends)
 	var wakes atomic.Int64
 	service.settlementWoke = func(room string) {

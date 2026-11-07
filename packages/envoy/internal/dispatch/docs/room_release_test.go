@@ -49,7 +49,7 @@ func TestDocumentsOpenAfterMoreThanTheRoomCapWereTouched(t *testing.T) {
 	writtenIDs, readIDs, openedIDs := ids[:written], ids[written:written+read], ids[written+read:len(ids)-1]
 	untouched := ids[len(ids)-1]
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(httpServer.Close)
+	cleanupAndRelease(t, httpServer.Close)
 
 	for _, id := range writtenIDs {
 		appendThroughAPI(t, service, id)
@@ -87,7 +87,7 @@ func TestRoomsTheAPIOpenedReleaseTheCapOnceIdle(t *testing.T) {
 	ids := createDocuments(t, database, maxLiveRooms+51)
 	touched, untouched := ids[:len(ids)-1], ids[len(ids)-1]
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(httpServer.Close)
+	cleanupAndRelease(t, httpServer.Close)
 
 	for index, id := range touched {
 		if index%2 == 0 {
@@ -121,7 +121,7 @@ func TestAStateWithNoTimerIsReleasedWhileAnotherRoomArmsOne(t *testing.T) {
 	const id = "00000000-0000-4000-8000-000000000513"
 	timerID := service.nextSettleTimer.Add(1)
 	service.registerSettleTimer(timerID)
-	t.Cleanup(func() { service.unregisterSettleTimer(timerID) })
+	cleanupAndRelease(t, func() { service.unregisterSettleTimer(timerID) })
 	state := service.lockState(id)
 	service.unlockState(id, state)
 	if _, kept := service.rooms.Load(id); kept {
@@ -223,7 +223,7 @@ func newRoomReleaseService(t *testing.T) (*Service, *store.Store) {
 	// ygo's idle sweeper reads it when the first room starts it, so it is set before any room.
 	service.srv.RoomIdleTimeout = time.Second
 	// Production's cap: what these tests touch is more documents than it admits live.
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}

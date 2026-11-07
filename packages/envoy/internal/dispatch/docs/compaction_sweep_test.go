@@ -26,7 +26,7 @@ func TestTheCompactionSweepFoldsADocumentTheRestartedServiceNeverOpened(t *testi
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
 	before := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = before.Shutdown(context.Background()) })
+	cleanupAndRelease(t, func() { _ = before.Shutdown(context.Background()) })
 	foldPoint := writeRoomRows(t, before, artifactID)
 	// The rows are young as the service stops, so its rooms' close compactions leave them; they
 	// come of age while no service runs.
@@ -38,7 +38,7 @@ func TestTheCompactionSweepFoldsADocumentTheRestartedServiceNeverOpened(t *testi
 	reading := storedReading(t, NewPgVersioned(database), artifactID)
 
 	restarted := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = restarted.Shutdown(context.Background()) })
+	cleanupAndRelease(t, func() { _ = restarted.Shutdown(context.Background()) })
 	restarted.compactionSweepTick(ctx, excerptLeases(t, database))
 
 	requireCompactedFrom(t, database, artifactID, rows, foldPoint, cursor)
@@ -58,11 +58,11 @@ func TestTheCompactionSweepRunsOnceAnHourAcrossProcesses(t *testing.T) {
 	logs := &storetest.LockedLog{}
 	previous := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(logs, nil)))
-	t.Cleanup(func() { slog.SetDefault(previous) })
+	cleanupAndRelease(t, func() { slog.SetDefault(previous) })
 	first := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = first.Shutdown(context.Background()) })
+	cleanupAndRelease(t, func() { _ = first.Shutdown(context.Background()) })
 	other := New(Deps{Store: second, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = other.Shutdown(context.Background()) })
+	cleanupAndRelease(t, func() { _ = other.Shutdown(context.Background()) })
 
 	swept := storeAgedRows(t, database, 3, 20*time.Minute)
 	first.compactionSweepTickAt(ctx, excerptLeases(t, database), sweepDue)
@@ -101,7 +101,7 @@ func TestTheCompactionSweepLeavesADocumentWhoseRowsAreYoungerThanTheAgeRule(t *t
 	ctx := context.Background()
 	database := storetest.Open(t)
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	cleanupAndRelease(t, func() { _ = service.Shutdown(context.Background()) })
 	old := storeAgedRows(t, database, 3, 20*time.Minute)
 	young := storeAgedRows(t, database, 3, 5*time.Minute)
 	oldRows, youngRows := storedRows(t, database, old), storedRows(t, database, young)
@@ -227,7 +227,7 @@ func TestTheCompactionSweepForgetsADocumentWithNoRowAfterItsFirst(t *testing.T) 
 	ctx := context.Background()
 	database := storetest.Open(t)
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	cleanupAndRelease(t, func() { _ = service.Shutdown(context.Background()) })
 	pruned := storeAgedRows(t, database, 3, time.Hour)
 	if err := NewPgVersioned(database).PruneAfter(ctx, pruned, 1, nil); err != nil {
 		t.Fatalf("prune to version 1: %v", err)
@@ -282,7 +282,7 @@ func TestTheCompactionSweepReadsNoRowOfADocumentThatIsNotDue(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	cleanupAndRelease(t, func() { _ = service.Shutdown(context.Background()) })
 	const notDue = 2000
 	createDocuments(t, database, notDue)
 	due := storeAgedRows(t, database, 3, 20*time.Minute)
@@ -359,7 +359,7 @@ func TestTheCompactionSweepHandsABusyDocumentToTheQueue(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	cleanupAndRelease(t, func() { _ = service.Shutdown(context.Background()) })
 	steps := quickCompactionQueue(service, 20*time.Millisecond)
 	busy := storeAgedRows(t, database, 3, 20*time.Minute)
 	free := storeAgedRows(t, database, 3, 20*time.Minute)

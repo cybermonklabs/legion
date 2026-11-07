@@ -39,7 +39,7 @@ func blockIndexService(t *testing.T) (*store.Store, *Service) {
 		t.Fatalf("seed project CORE: %v", err)
 	}
 	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour})
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		stop, cancel := context.WithTimeout(context.Background(), roomWait(t))
 		defer cancel()
 		_ = service.Shutdown(stop)

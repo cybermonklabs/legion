@@ -67,7 +67,7 @@ func requireReadUnchangedWhenReused(t *testing.T, service *Service) *readInvaria
 			t.Errorf("a settlement of room %s reused the rendering of the tree it read, which changed after the read:\nread:    %s\nversion: %s", room, before, after)
 		}
 	}
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		service.afterSettleTreeRead = nil
 		service.beforeSettleVersionRender = nil
 	})

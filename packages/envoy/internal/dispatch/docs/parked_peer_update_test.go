@@ -28,7 +28,7 @@ func TestTheStoredRowsOfARoomFoldToItsDocumentWhenAPeerUpdateParks(t *testing.T)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "Seed.\n")
 	server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(server.Close)
+	cleanupAndRelease(t, server.Close)
 	alpha := connectPeer(t, server.URL, artifactID, "alice")
 	beta := connectPeer(t, server.URL, artifactID, "alice")
 	waitFor(t, 10*time.Second, "both peers to hold the room's document", func() bool {

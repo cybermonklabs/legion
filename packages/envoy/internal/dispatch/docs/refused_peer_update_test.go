@@ -30,7 +30,7 @@ func TestARefusedPeerUpdateLeavesTheRoomAsItsOtherPeersHoldIt(t *testing.T) {
 	shrinkPendingItems(t, service, nil)
 	seedServiceText(t, service, artifactID, "hello world")
 	server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(server.Close)
+	cleanupAndRelease(t, server.Close)
 	alpha := connectPeer(t, server.URL, artifactID, "alice")
 	beta := connectPeer(t, server.URL, artifactID, "alice")
 	waitFor(t, 10*time.Second, "both peers to hold the room's document", func() bool {

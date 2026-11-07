@@ -37,7 +37,7 @@ func TestDeletingADeeplyNestedLiveTreeNeedsNoStackPerLevel(t *testing.T) {
 		service.settle = time.Hour
 		seedServiceText(t, service, artifactID, "before")
 		httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-		t.Cleanup(httpServer.Close)
+		cleanupAndRelease(t, httpServer.Close)
 
 		peer := connectPeer(t, httpServer.URL, artifactID, "alice")
 		// The peer writes on the room's document, as a browser does once the room has sent it, so

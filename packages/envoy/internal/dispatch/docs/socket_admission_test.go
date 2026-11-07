@@ -48,7 +48,7 @@ func admitSocket(t *testing.T, serverURL, id, what string) *gws.Conn {
 		}
 		t.Fatalf("%s: the socket was refused (%s: %v), want it admitted", what, status, err)
 	}
-	t.Cleanup(func() { _ = connection.Close() })
+	cleanupAndRelease(t, func() { _ = connection.Close() })
 	_ = connection.SetReadDeadline(time.Now().Add(10 * time.Second))
 	if _, message, err := connection.ReadMessage(); err != nil {
 		t.Fatalf("%s: the socket's first frame = %q (%v), want the room's sync", what, message, err)
@@ -159,7 +159,7 @@ func TestAWarmSocketOpenRendersNothingAndAColdOpenRendersOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open the room an update took outside the schema: response=%v err=%v, want an upgrade the server closes", response, err)
 	}
-	t.Cleanup(func() { _ = connection.Close() })
+	cleanupAndRelease(t, func() { _ = connection.Close() })
 	_ = connection.SetReadDeadline(time.Now().Add(10 * time.Second))
 	_, message, err := connection.ReadMessage()
 	var closed *gws.CloseError
@@ -191,7 +191,7 @@ func TestAPreloadOvertakenByTheRoomsLoadIsReleasedWhileItsSocketStaysOpen(t *tes
 	var overtaken atomic.Bool
 	var releasedOnce sync.Once
 	releaseOvertaken := func() { releasedOnce.Do(func() { close(release) }) }
-	t.Cleanup(releaseOvertaken)
+	cleanupAndRelease(t, releaseOvertaken)
 	service.admissionRendered = func(room string) {
 		if room != artifactID || overtaken.Swap(true) {
 			return
@@ -213,7 +213,7 @@ func TestAPreloadOvertakenByTheRoomsLoadIsReleasedWhileItsSocketStaysOpen(t *tes
 	if overtakenSocket.err != nil {
 		t.Fatalf("the overtaken socket was refused (%v), want it admitted to the resident room", overtakenSocket.err)
 	}
-	t.Cleanup(func() { _ = overtakenSocket.connection.Close() })
+	cleanupAndRelease(t, func() { _ = overtakenSocket.connection.Close() })
 	_ = overtakenSocket.connection.SetReadDeadline(time.Now().Add(roomWait(t)))
 	if _, message, err := overtakenSocket.connection.ReadMessage(); err != nil {
 		t.Fatalf("the overtaken socket's first frame = %q (%v), want the room's sync", message, err)
@@ -407,7 +407,7 @@ func TestConcurrentSocketOpensStayWithinTheCapsAndAreRefusedWith503(t *testing.T
 		}
 		close(start)
 		dials.Wait()
-		t.Cleanup(func() {
+		cleanupAndRelease(t, func() {
 			for _, connection := range admitted {
 				_ = connection.Close()
 			}
@@ -426,14 +426,14 @@ func TestConcurrentSocketOpensStayWithinTheCapsAndAreRefusedWith503(t *testing.T
 			MaxLiveRooms:      rooms,
 			MaxDocConnections: connections,
 		})
-		t.Cleanup(func() {
+		cleanupAndRelease(t, func() {
 			if err := service.Shutdown(context.Background()); err != nil {
 				t.Errorf("shutdown document service: %v", err)
 			}
 		})
 		service.srv.RoomIdleTimeout = time.Hour
 		server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-		t.Cleanup(server.Close)
+		cleanupAndRelease(t, server.Close)
 		return service, server.URL
 	}
 	refusedOtherwise := func(refusals map[int]int) map[int]int {
@@ -491,7 +491,7 @@ func TestAPreloadOfferedAfterAnEarlierRoomsLateUnloadIsNotKeptWhileTheRoomIsLoad
 	unloadGo := make(chan struct{})
 	var unloadOnce, unloadGoOnce sync.Once
 	letUnload := func() { unloadGoOnce.Do(func() { close(unloadGo) }) }
-	t.Cleanup(letUnload)
+	cleanupAndRelease(t, letUnload)
 	unload := service.srv.OnUnloadDocument
 	service.srv.OnUnloadDocument = func(ctx context.Context, room string) {
 		if room == artifactID {
@@ -514,7 +514,7 @@ func TestAPreloadOfferedAfterAnEarlierRoomsLateUnloadIsNotKeptWhileTheRoomIsLoad
 	var held atomic.Bool
 	var releaseOnce sync.Once
 	letOffer := func() { releaseOnce.Do(func() { close(release) }) }
-	t.Cleanup(letOffer)
+	cleanupAndRelease(t, letOffer)
 	service.admissionRendered = func(room string) {
 		if room != artifactID || held.Swap(true) {
 			return
@@ -544,7 +544,7 @@ func TestAPreloadOfferedAfterAnEarlierRoomsLateUnloadIsNotKeptWhileTheRoomIsLoad
 	if socket.err != nil {
 		t.Fatalf("the held cold socket was refused (%v), want it admitted to the resident room", socket.err)
 	}
-	t.Cleanup(func() { _ = socket.connection.Close() })
+	cleanupAndRelease(t, func() { _ = socket.connection.Close() })
 	_ = socket.connection.SetReadDeadline(time.Now().Add(roomWait(t)))
 	if _, message, err := socket.connection.ReadMessage(); err != nil {
 		t.Fatalf("the held socket's first frame = %q (%v), want the room's sync", message, err)
@@ -592,7 +592,7 @@ func TestUnloadsOfTwoRoomsInEitherOrderLeaveNoResidentBytes(t *testing.T) {
 	proceed := make(chan struct{})
 	var proceedOnce sync.Once
 	letProceed := func() { proceedOnce.Do(func() { close(proceed) }) }
-	t.Cleanup(letProceed)
+	cleanupAndRelease(t, letProceed)
 	var held atomic.Bool
 	r.service.beforeUnloadEndsLoad = func(room string) {
 		if room != r.room || held.Swap(true) {
@@ -657,7 +657,7 @@ func unloadAcrossAReload(t *testing.T) *reloadedRoom {
 	enter := make(chan struct{})
 	var enterOnce sync.Once
 	r.letFirstUnload = func() { enterOnce.Do(func() { close(enter) }) }
-	t.Cleanup(r.letFirstUnload)
+	cleanupAndRelease(t, r.letFirstUnload)
 	var entered atomic.Bool
 	unload := service.srv.OnUnloadDocument
 	service.srv.OnUnloadDocument = func(ctx context.Context, room string) {
@@ -733,7 +733,7 @@ func TestAPreloadOfferedWhileTheRoomLoadsIsReleasedAtThatLoad(t *testing.T) {
 	reading, release := make(chan struct{}), make(chan struct{})
 	var releaseOnce sync.Once
 	letLoad := func() { releaseOnce.Do(func() { close(release) }) }
-	t.Cleanup(letLoad)
+	cleanupAndRelease(t, letLoad)
 	// The load holds inside its own read of the store, once that read has returned and before
 	// Load hands it back, which is where LoadDoc makes it: after takePreload has found nothing.
 	store := &insideFirstLoadStore{VersionedStore: NewPgVersioned(database), room: artifactID, during: func() {
@@ -749,14 +749,14 @@ func TestAPreloadOfferedWhileTheRoomLoadsIsReleasedAtThatLoad(t *testing.T) {
 		ServerURL:   "https://dispatch.example",
 		Settle:      time.Hour,
 	})
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		letLoad()
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})
 	server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(server.Close)
+	cleanupAndRelease(t, server.Close)
 	offered := make(chan struct{})
 	var offeredOnce sync.Once
 	service.afterSocketPreload = func(room string, _ *persistence.LoadResult) {
@@ -790,7 +790,7 @@ func TestAPreloadOfferedWhileTheRoomLoadsIsReleasedAtThatLoad(t *testing.T) {
 	if socket.err != nil {
 		t.Fatalf("the cold socket was refused (%v), want it admitted to the resident room", socket.err)
 	}
-	t.Cleanup(func() { _ = socket.connection.Close() })
+	cleanupAndRelease(t, func() { _ = socket.connection.Close() })
 	_ = socket.connection.SetReadDeadline(time.Now().Add(roomWait(t)))
 	if _, message, err := socket.connection.ReadMessage(); err != nil {
 		t.Fatalf("the cold socket's first frame = %q (%v), want the room's sync", message, err)

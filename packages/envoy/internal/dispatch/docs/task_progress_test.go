@@ -80,7 +80,7 @@ func runTaskProgress(t *testing.T, service *Service) <-chan struct{} {
 		defer close(done)
 		service.RunTaskProgressReconciliation(ctx)
 	}()
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		cancel()
 		<-done
 	})
@@ -98,7 +98,7 @@ func TestTaskProgressIsCountedAtStartAndThenNothingRuns(t *testing.T) {
 	counter := &storetest.StatementCounter{}
 	counted := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
 	service := New(Deps{Store: counted, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	cleanupAndRelease(t, func() { _ = service.Shutdown(context.Background()) })
 
 	done := runTaskProgress(t, service)
 	select {
@@ -142,7 +142,7 @@ func TestTaskProgressLockedThroughTheBootPassIsCountedByARetry(t *testing.T) {
 	// running when the writer lets go, which is what the test is about (dispatch://INFRA-1075).
 	service.taskProgressRetryBackoff = 20 * time.Millisecond
 	service.taskProgressBootRetryFirst = 200 * time.Millisecond
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	cleanupAndRelease(t, func() { _ = service.Shutdown(context.Background()) })
 
 	done := runTaskProgress(t, service)
 	waitFor(t, 20*time.Second, "the boot pass to give up on the held row", func() bool {

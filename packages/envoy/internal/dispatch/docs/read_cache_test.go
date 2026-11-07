@@ -276,7 +276,7 @@ func TestAnUndecodableHistoryLoadsAsDocumentUnloadable(t *testing.T) {
 		t.Fatalf("load an over-cap history: %v, want ErrDocumentUnloadable", err)
 	}
 	service := newSchemaRepairService(database)
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	cleanupAndRelease(t, func() { _ = service.Shutdown(context.Background()) })
 	if _, err := service.Text(context.Background(), artifactID); !errors.Is(err, ErrDocumentUnloadable) || errors.Is(err, ErrServiceUnavailable) {
 		t.Fatalf("read an over-cap history: %v, want ErrDocumentUnloadable and not ErrServiceUnavailable", err)
 	}
@@ -351,7 +351,7 @@ func newReadCacheService(t *testing.T, database *store.Store, persistence Versio
 		ServerURL:   "https://dispatch.example",
 		Settle:      time.Hour,
 	})
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown read-cache service: %v", err)
 		}
@@ -482,7 +482,7 @@ func TestCancelledColdReaderLeavesTheFoldForOtherReaders(t *testing.T) {
 	seedServiceText(t, service, artifactID, "before\n")
 
 	leaderCtx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
+	cleanupAndRelease(t, cancel)
 	leader := make(chan error, 1)
 	go func() {
 		_, err := service.Text(leaderCtx, artifactID)

@@ -38,12 +38,12 @@ func startEditInFlight(t *testing.T, service *Service, artifactID string, ops ..
 	if err != nil {
 		t.Fatalf("begin edit transaction: %v", err)
 	}
-	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	cleanupAndRelease(t, func() { _ = tx.Rollback(context.Background()) })
 	if _, _, err := lockArtifactOwner(ctx, tx, artifactID); err != nil {
 		t.Fatalf("lock document owner: %v", err)
 	}
 	joined, ledger := service.Join(ctx, tx)
-	t.Cleanup(ledger.Discard)
+	cleanupAndRelease(t, ledger.Discard)
 	if _, err := service.ApplyOps(joined, artifactID, ops, lostEditAgent, nil); err != nil {
 		t.Fatalf("apply agent operations: %v", err)
 	}

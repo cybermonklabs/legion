@@ -56,9 +56,9 @@ func TestADeletionTheRoomTakesAfterAWritesReadIsVersionedAfterTheWrite(t *testin
 	if err != nil {
 		t.Fatalf("begin transactional edit: %v", err)
 	}
-	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	cleanupAndRelease(t, func() { _ = tx.Rollback(context.Background()) })
 	joinedCtx, ledger := service.Join(ctx, tx)
-	t.Cleanup(ledger.Discard)
+	cleanupAndRelease(t, ledger.Discard)
 
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	if _, err := service.ApplyOps(joinedCtx, artifactID, []model.EditOp{{
@@ -105,9 +105,9 @@ func TestAnAnchorWhoseQuoteTheRoomDeletedIsOrphanedByTheVersionWrite(t *testing.
 	if err != nil {
 		t.Fatalf("begin transactional edit: %v", err)
 	}
-	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	cleanupAndRelease(t, func() { _ = tx.Rollback(context.Background()) })
 	joinedCtx, ledger := service.Join(ctx, tx)
-	t.Cleanup(ledger.Discard)
+	cleanupAndRelease(t, ledger.Discard)
 
 	if _, err := service.ApplyOps(joinedCtx, artifactID, []model.EditOp{{
 		Op: "replace", Find: "before", With: "after",
@@ -159,9 +159,9 @@ func TestARoomChangeAfterAWritesReadCostsItsVersionNoRender(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin transactional edit: %v", err)
 	}
-	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	cleanupAndRelease(t, func() { _ = tx.Rollback(context.Background()) })
 	joinedCtx, ledger := service.Join(ctx, tx)
-	t.Cleanup(ledger.Discard)
+	cleanupAndRelease(t, ledger.Discard)
 
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	if _, err := service.ApplyOps(joinedCtx, artifactID, []model.EditOp{{
@@ -216,7 +216,7 @@ func TestACaptureNeverReusesARenderingTheForkHasMovedPast(t *testing.T) {
 	t.Parallel()
 	const passes, offsets = 4, 160
 	var reused, stale atomic.Int64
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		t.Logf("captures that reused the cached rendering: %d of %d; stale: %d",
 			reused.Load(), passes*offsets, stale.Load())
 	})

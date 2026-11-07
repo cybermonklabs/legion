@@ -159,7 +159,7 @@ func TestAForcedCloseKeepsWhatTheRoomThatReplacedItLoaded(t *testing.T) {
 	closeWithABrowserJoining := func(t *testing.T, service *Service, artifactID string) *roomState {
 		t.Helper()
 		server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-		t.Cleanup(server.Close)
+		cleanupAndRelease(t, server.Close)
 		var joined atomic.Bool
 		service.afterRoomClosed = func(room string) {
 			if room != artifactID || !joined.CompareAndSwap(false, true) {

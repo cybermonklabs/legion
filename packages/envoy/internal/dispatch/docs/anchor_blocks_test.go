@@ -107,7 +107,7 @@ func TestAnchorRefreshKeepsABlockIDPinnedAfterItReadTheRow(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("create anchor refresh hold trigger: %v", err)
 	}
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		_, _ = service.store.Pool.Exec(context.Background(), `drop trigger if exists dispatch_test_hold_anchor_refresh on events`)
 		_, _ = service.store.Pool.Exec(context.Background(), `drop function if exists dispatch_test_hold_anchor_refresh()`)
 	})

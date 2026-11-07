@@ -251,7 +251,7 @@ func writeCorpusSha256(text string) string {
 // operation with "<mode>/<transaction>/<operation>".
 func runWriteCorpus(t *testing.T, service *Service, specName, markdown string, observe func(step string)) writeCorpusLine {
 	t.Helper()
-	t.Cleanup(func() { pmdoc.SetBlockIDGenerator(nil) })
+	cleanupAndRelease(t, func() { pmdoc.SetBlockIDGenerator(nil) })
 	if observe == nil {
 		observe = func(string) {}
 	}

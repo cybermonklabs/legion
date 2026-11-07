@@ -586,7 +586,7 @@ func TestAForgedAnsweredBlockOnTheSocketCarriesNoApproval(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "Context\n")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: 20 * time.Millisecond})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	cleanupAndRelease(t, func() { _ = service.Shutdown(context.Background()) })
 	seedServiceText(t, service, artifactID, "Context\n")
 	approveStoredVersion(t, database, artifactID, 1, "alice")
 
@@ -669,7 +669,7 @@ func seededRegionDocument(t *testing.T, settle time.Duration) (*store.Store, *Se
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, regionSpec)
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: settle})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	cleanupAndRelease(t, func() { _ = service.Shutdown(context.Background()) })
 	seedServiceText(t, service, artifactID, regionSpec)
 	// Settlement indexes the block as an ask of this document, the row the carry reads. It runs
 	// now, whatever window the caller chose for its own steps.

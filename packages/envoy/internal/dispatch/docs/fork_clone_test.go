@@ -262,7 +262,7 @@ func TestEveryForkLeavesTheWriteAuthoringUnderItsForksClientID(t *testing.T) {
 	server := websocket.NewServer()
 	server.RoomIdleTimeout = time.Hour
 	service := &Service{srv: newRoomServer(server)}
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		ctx, cancel := context.WithTimeout(context.Background(), roomWait(t))
 		defer cancel()
 		if err := server.Shutdown(ctx); err != nil {

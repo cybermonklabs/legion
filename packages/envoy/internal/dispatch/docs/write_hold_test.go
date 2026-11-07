@@ -32,9 +32,9 @@ func TestSnapshotReusesTheTransactionsRenderedDocument(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin transactional edit: %v", err)
 	}
-	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	cleanupAndRelease(t, func() { _ = tx.Rollback(context.Background()) })
 	joinedCtx, ledger := service.Join(ctx, tx)
-	t.Cleanup(ledger.Discard)
+	cleanupAndRelease(t, ledger.Discard)
 
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	if _, err := service.ApplyOps(joinedCtx, artifactID, []model.EditOp{{
@@ -78,9 +78,9 @@ func TestContentTheRoomGainsAfterAWritesReadIsVersionedAfterTheWrite(t *testing.
 	if err != nil {
 		t.Fatalf("begin transactional edit: %v", err)
 	}
-	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	cleanupAndRelease(t, func() { _ = tx.Rollback(context.Background()) })
 	joinedCtx, ledger := service.Join(ctx, tx)
-	t.Cleanup(ledger.Discard)
+	cleanupAndRelease(t, ledger.Discard)
 
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	if _, err := service.ApplyOps(joinedCtx, artifactID, []model.EditOp{{
@@ -133,13 +133,13 @@ func countedService(t *testing.T) (*Service, string, *anchorQueryCounter) {
 	if err != nil {
 		t.Fatalf("open counted pool: %v", err)
 	}
-	t.Cleanup(counted.Close)
+	cleanupAndRelease(t, counted.Close)
 	service := New(Deps{
 		Store:  &store.Store{Pool: store.NewPool(counted)},
 		Events: events.NewBroker(),
 		Settle: time.Hour,
 	})
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -209,9 +209,9 @@ func TestAnEditRefreshesItsAnchorsOncePerTransaction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin transactional edit: %v", err)
 	}
-	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	cleanupAndRelease(t, func() { _ = tx.Rollback(context.Background()) })
 	joinedCtx, ledger := service.Join(ctx, tx)
-	t.Cleanup(ledger.Discard)
+	cleanupAndRelease(t, ledger.Discard)
 
 	counter.count.Store(0)
 	if _, err := service.ApplyOps(joinedCtx, artifactID, []model.EditOp{{
@@ -253,9 +253,9 @@ func TestAnEditAnnouncesEachChangedAnchorOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin transactional edit: %v", err)
 	}
-	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	cleanupAndRelease(t, func() { _ = tx.Rollback(context.Background()) })
 	joinedCtx, ledger := service.Join(ctx, tx)
-	t.Cleanup(ledger.Discard)
+	cleanupAndRelease(t, ledger.Discard)
 
 	if _, err := service.ApplyOps(joinedCtx, artifactID, []model.EditOp{{
 		Op: "replace", Find: "before", With: "BEFORE",
@@ -362,9 +362,9 @@ func TestFormattingTheRoomGainsAfterAWritesReadIsVersionedAfterTheWrite(t *testi
 	if err != nil {
 		t.Fatalf("begin transactional edit: %v", err)
 	}
-	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	cleanupAndRelease(t, func() { _ = tx.Rollback(context.Background()) })
 	joinedCtx, ledger := service.Join(ctx, tx)
-	t.Cleanup(ledger.Discard)
+	cleanupAndRelease(t, ledger.Discard)
 
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	if _, err := service.ApplyOps(joinedCtx, artifactID, []model.EditOp{{

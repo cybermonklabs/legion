@@ -54,7 +54,7 @@ func TestAHealthyRoomUnderWritesIsNeverRefused(t *testing.T) {
 	loads := watchRoomLoads(service)
 	seedServiceText(t, service, artifactID, "before")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(httpServer.Close)
+	cleanupAndRelease(t, httpServer.Close)
 	headers := http.Header{"X-Dispatch-User": []string{"alice"}}
 	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/ws/doc/" + artifactID
 
@@ -227,7 +227,7 @@ func TestAWriteInsideApplyOutlivesTheRoomsLastPeer(t *testing.T) {
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(httpServer.Close)
+	cleanupAndRelease(t, httpServer.Close)
 	peer, response, err := gws.DefaultDialer.Dial("ws"+strings.TrimPrefix(httpServer.URL, "http")+"/ws/doc/"+artifactID, http.Header{"X-Dispatch-User": []string{"alice"}})
 	if err != nil {
 		t.Fatalf("connect peer: response=%#v err=%v", response, err)
@@ -763,7 +763,7 @@ func newRetiringRoomService(t *testing.T) (*Service, *store.Store) {
 		ServerURL: "https://dispatch.example",
 		Settle:    time.Hour,
 	})
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		ctx, cancel := context.WithTimeout(context.Background(), roomWait(t))
 		defer cancel()
 		if err := service.Shutdown(ctx); err != nil {
@@ -823,7 +823,7 @@ func TestAPublishSurvivesACloseOfItsRoomAskedForWhileItRuns(t *testing.T) {
 			committed, proceed := make(chan struct{}), make(chan struct{})
 			var once, proceeded sync.Once
 			letGo := func() { proceeded.Do(func() { close(proceed) }) }
-			t.Cleanup(letGo)
+			cleanupAndRelease(t, letGo)
 			load := service.srv.OnLoadDocument
 			service.srv.OnLoadDocument = func(ctx context.Context, room string, doc *crdt.Doc) error {
 				if err := load(ctx, room, doc); err != nil {
@@ -848,12 +848,12 @@ func TestAPublishSurvivesACloseOfItsRoomAskedForWhileItRuns(t *testing.T) {
 			}
 			if test.peer {
 				httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-				t.Cleanup(httpServer.Close)
+				cleanupAndRelease(t, httpServer.Close)
 				peer, response, err := gws.DefaultDialer.Dial("ws"+strings.TrimPrefix(httpServer.URL, "http")+"/ws/doc/"+artifactID, http.Header{"X-Dispatch-User": []string{"alice"}})
 				if err != nil {
 					t.Fatalf("connect peer: response=%#v err=%v", response, err)
 				}
-				t.Cleanup(func() { _ = peer.Close() })
+				cleanupAndRelease(t, func() { _ = peer.Close() })
 				peer.SetReadDeadline(time.Now().Add(5 * time.Second))
 				if _, _, err := peer.ReadMessage(); err != nil {
 					t.Fatalf("peer's first frame: %v", err)

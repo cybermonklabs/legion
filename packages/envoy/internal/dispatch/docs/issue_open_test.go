@@ -238,7 +238,7 @@ func TestAKeystrokeTakenBeforeTheIssueClosedIsStoredWhenItsAppendReachesTheGateA
 	// Registered here, so it runs before every cleanup registered above it: a test that fails
 	// with the gate held leaves neither the room's close nor the service's shutdown waiting on an
 	// append that never comes.
-	t.Cleanup(appends.release)
+	cleanupAndRelease(t, appends.release)
 	typeOver(t, alice, "before", "typed before the close")
 	waitFor(t, roomWait(t), "task A's room to take alice's keystroke and its append to reach the held gate", func() bool {
 		return appends.waiting.Load() > 0 &&
@@ -421,7 +421,7 @@ func newHeldAppendsService(t *testing.T, database *store.Store) (*Service, *http
 		Settle:    time.Hour,
 		TestHooks: true,
 	})
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}

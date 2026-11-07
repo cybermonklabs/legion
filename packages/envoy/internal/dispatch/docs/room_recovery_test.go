@@ -137,7 +137,7 @@ func TestARoomThatFailsWhileItIsLoadingRecovers(t *testing.T) {
 		failed:         make(chan struct{}),
 	}
 	service := New(Deps{Store: database, Persistence: persist, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		stop, cancel := context.WithTimeout(context.Background(), recoveryBound)
 		defer cancel()
 		_ = service.Shutdown(stop)
@@ -195,7 +195,7 @@ func TestAPublishRefusedByAFailedRoomLeavesTheReplacementAlone(t *testing.T) {
 		failed:         make(chan struct{}),
 	}
 	service := New(Deps{Store: database, Persistence: persist, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		stop, cancel := context.WithTimeout(context.Background(), recoveryBound)
 		defer cancel()
 		_ = service.Shutdown(stop)
@@ -232,7 +232,7 @@ func TestAPublishRefusedByAFailedRoomLeavesTheReplacementAlone(t *testing.T) {
 	persist.loading, persist.hold = make(chan struct{}), make(chan struct{})
 	var released sync.Once
 	release := func() { released.Do(func() { close(persist.hold) }) }
-	t.Cleanup(release)
+	cleanupAndRelease(t, release)
 	persist.armed.Store(true)
 	go func() { _ = service.warmLiveDocument(context.Background(), artifactID) }()
 	<-persist.loading
@@ -794,7 +794,7 @@ func TestAWriteWhoseRoomFailsBeforeItsFirstAppendFailsFast(t *testing.T) {
 		release:        make(chan struct{}),
 	}
 	service := New(Deps{Store: database, Persistence: store, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	cleanupAndRelease(t, func() { _ = service.Shutdown(context.Background()) })
 	seedServiceText(t, service, artifactID, "before")
 	liveTree(t, service, artifactID)
 

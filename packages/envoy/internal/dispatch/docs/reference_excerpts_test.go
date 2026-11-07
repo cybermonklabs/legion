@@ -147,7 +147,7 @@ func newExcerptService(t *testing.T, database *store.Store, persistence Versione
 	service := New(Deps{Store: database, Persistence: persistence, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour})
 	// The server's own pace (referenceExcerptSchedule), which the windows these tests watch for
 	// statements are measured against.
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	cleanupAndRelease(t, func() { _ = service.Shutdown(context.Background()) })
 	return service
 }
 
@@ -161,7 +161,7 @@ func runExcerpts(t *testing.T, run func(ctx context.Context)) {
 		defer close(done)
 		run(ctx)
 	}()
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		cancel()
 		select {
 		case <-done:
@@ -354,7 +354,7 @@ func TestAMentionOwedAnExcerptWakesTheReconciliation(t *testing.T) {
 		defer close(hubDone)
 		hub.Run(hubCtx)
 	}()
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		stopHub()
 		<-hubDone
 	})

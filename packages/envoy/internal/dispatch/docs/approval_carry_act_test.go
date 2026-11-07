@@ -45,7 +45,7 @@ func seededActDocument(t *testing.T) (*store.Store, *Service, string) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, actAnswerSpec)
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Second})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	cleanupAndRelease(t, func() { _ = service.Shutdown(context.Background()) })
 	seedServiceText(t, service, artifactID, actAnswerSpec)
 	service.SettleNow(artifactID)
 	// 30 s rather than 3: this waits for an event - the settlement indexing both blocks - and on

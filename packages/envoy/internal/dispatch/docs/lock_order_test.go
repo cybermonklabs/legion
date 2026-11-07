@@ -16,7 +16,7 @@ import (
 func lockOrderServiceFor(t *testing.T, database *store.Store) *Service {
 	t.Helper()
 	service := New(Deps{Store: database, Settle: time.Hour})
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		stop, cancel := context.WithTimeout(context.Background(), roomWait(t))
 		defer cancel()
 		_ = service.Shutdown(stop)
@@ -147,7 +147,7 @@ func ownerLockedTransaction(t *testing.T, ctx context.Context, database *store.S
 	if err != nil {
 		t.Fatalf("begin the owner-locked transaction: %v", err)
 	}
-	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	cleanupAndRelease(t, func() { _ = tx.Rollback(context.Background()) })
 	if _, _, err := lockArtifactOwner(ctx, tx, id); err != nil {
 		t.Fatalf("lock the document owner: %v", err)
 	}

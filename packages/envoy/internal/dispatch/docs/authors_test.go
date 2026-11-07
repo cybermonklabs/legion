@@ -374,7 +374,7 @@ func holdObserver(t *testing.T, service *Service, artifactID string, hook *func(
 	held := make(chan struct{})
 	proceed := make(chan struct{})
 	let := sync.OnceFunc(func() { close(proceed) })
-	t.Cleanup(let)
+	cleanupAndRelease(t, let)
 	var holding atomic.Bool
 	holding.Store(true)
 	*hook = func(name string) {

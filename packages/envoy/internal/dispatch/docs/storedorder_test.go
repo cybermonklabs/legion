@@ -422,8 +422,8 @@ func heldAppendService(t *testing.T) (service *Service, artifactID string, enter
 			close(releaseCh)
 		}
 	}
-	t.Cleanup(release)
-	t.Cleanup(func() {
+	cleanupAndRelease(t, release)
+	cleanupAndRelease(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -752,7 +752,7 @@ func soakTyping(t *testing.T, service *Service, serverURL, artifactID string, ga
 	})
 	// As typeIntoDocument's: the writing ends, the room applies the peer's last update, and the
 	// last peer of the room waits for every update to be stored, before the connection closes.
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		close(stopped)
 		done.Wait()
 		client := peer.Doc.ClientID()
@@ -848,13 +848,13 @@ func TestStoredOrderSoak(t *testing.T) {
 		Settle:      30 * time.Millisecond,
 	})
 	watched.service.Store(service)
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})
 	server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(server.Close)
+	cleanupAndRelease(t, server.Close)
 
 	type soakDocument struct {
 		id             string

@@ -600,7 +600,7 @@ func TestEditNoticeSweepOfTwoServicesSendsEachNoticeOnce(t *testing.T) {
 	database := storetest.Open(t)
 	first := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
 	second := New(Deps{Store: storetest.SecondProcess(t, database), Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		_ = first.Shutdown(context.Background())
 		_ = second.Shutdown(context.Background())
 	})
@@ -886,7 +886,7 @@ func TestEditNoticeAPersonsRebuildOpensTheWindow(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before\n")
 	service := New(Deps{Store: database, Persistence: &rebuildCaptureStore{VersionedStore: NewPgVersioned(database), invalid: true}})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	cleanupAndRelease(t, func() { _ = service.Shutdown(context.Background()) })
 	replacement := "replacement\n"
 	_, written, err := rebuildDocument(t, service, artifactID, &replacement)
 	if err != nil || !written.Wrote {
@@ -946,7 +946,7 @@ func TestOutsideReviewColdAgentVersionLastHuman(t *testing.T) {
 	editAsConnectedPeer(t, first, artifactID, 2, adam, replaceRun("Second.", "Second, by adam."))
 	waitForLandedAppends(t, first, artifactID)
 	second := New(Deps{Store: storetest.SecondProcess(t, first.store), Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = second.Shutdown(context.Background()) })
+	cleanupAndRelease(t, func() { _ = second.Shutdown(context.Background()) })
 	agent := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
 	if err := joinedWrite(second, func(ctx context.Context) error {
 		if _, err := second.ApplyOps(ctx, artifactID, []model.EditOp{{Op: "replace", Find: "Third.", With: "Third, by agent."}}, agent, nil); err != nil {
@@ -1014,7 +1014,7 @@ func TestEditNoticeTwoConnectedOneEditsNamesNobody(t *testing.T) {
 	// Adam only watches; zoe types. Adam's id sorts first, so a notice naming him is the defect.
 	service.addConnection(artifactID, 1, adam)
 	service.addConnection(artifactID, 2, zoe)
-	t.Cleanup(func() { service.removeConnection(artifactID, 1); service.removeConnection(artifactID, 2) })
+	cleanupAndRelease(t, func() { service.removeConnection(artifactID, 1); service.removeConnection(artifactID, 2) })
 	editAsPeer(t, service, artifactID, replaceRun("First.", "First, typed by one of them."))
 	settleCurrentGeneration(t, service, artifactID)
 	if row, open := readEditNotice(t, service, artifactID); open {
@@ -1037,7 +1037,7 @@ func TestEditNoticeASessionPeerEditingBesideAConnectedPersonNamesNobody(t *testi
 	agent := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
 	service.addConnection(artifactID, 1, adam)
 	service.addConnection(artifactID, 2, agent)
-	t.Cleanup(func() { service.removeConnection(artifactID, 1); service.removeConnection(artifactID, 2) })
+	cleanupAndRelease(t, func() { service.removeConnection(artifactID, 1); service.removeConnection(artifactID, 2) })
 	editAsPeer(t, service, artifactID, replaceRun("First.", "First, by one of the two peers."))
 	settleCurrentGeneration(t, service, artifactID)
 	if row, open := readEditNotice(t, service, artifactID); open {
@@ -1094,7 +1094,7 @@ func TestEditNoticeARebuildNamesThePersonWhoRebuiltIt(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before\n")
 	service := New(Deps{Store: database, Persistence: &rebuildCaptureStore{VersionedStore: NewPgVersioned(database), invalid: true}})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	cleanupAndRelease(t, func() { _ = service.Shutdown(context.Background()) })
 	zoe := model.Actor{Kind: "user", ID: "zoe@example.com"}
 	if _, err := database.Pool.Exec(context.Background(), `
 		insert into doc_pending_authors (artifact_id, actor_kind, actor_id, actor, written_through)

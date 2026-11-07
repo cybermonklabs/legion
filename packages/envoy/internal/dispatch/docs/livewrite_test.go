@@ -40,7 +40,7 @@ func TestSettlementBetweenCommitAndPublishWaitsForTheWrite(t *testing.T) {
 		defer close(settled)
 		service.settleRoom(artifactID, generation)
 	}()
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		select {
 		case <-resume:
 		default:
@@ -225,7 +225,7 @@ func TestAWriteAfterItsTransactionStoredTheRoomsLingeringUpdateForksTheRoom(t *t
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
 	appends := &heldStore{VersionedStore: NewPgVersioned(database), room: artifactID, entered: make(chan struct{}), release: make(chan struct{})}
-	t.Cleanup(appends.let)
+	cleanupAndRelease(t, appends.let)
 	service := newShutdownTestService(t, database, appends)
 	seedServiceText(t, service, artifactID, "First.\n")
 	settleCurrentGeneration(t, service, artifactID)

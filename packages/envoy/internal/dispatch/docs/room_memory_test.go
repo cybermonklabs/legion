@@ -95,7 +95,7 @@ func TestALosingPreloadIsReleasedAtOnce(t *testing.T) {
 	release := make(chan struct{})
 	var released sync.Once
 	releaseSockets := func() { released.Do(func() { close(release) }) }
-	t.Cleanup(releaseSockets)
+	cleanupAndRelease(t, releaseSockets)
 	service.afterSocketPreload = func(room string, loaded *persistence.LoadResult) {
 		if room != artifactID {
 			return
@@ -140,7 +140,7 @@ func TestALosingPreloadIsReleasedAtOnce(t *testing.T) {
 			t.Fatalf("open a cold socket: %v", socket.err)
 		}
 		connections = append(connections, socket.connection)
-		t.Cleanup(func() { _ = socket.connection.Close() })
+		cleanupAndRelease(t, func() { _ = socket.connection.Close() })
 	}
 	waitFor(t, roomWait(t), "both sockets to join the loaded room", func() bool {
 		return service.srv.GetDoc(artifactID) != nil && registeredConnections(service) == 2

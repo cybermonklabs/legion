@@ -17,7 +17,7 @@ func TestLastPeerDisconnectSettlesDocumentBeforeEviction(t *testing.T) {
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(httpServer.Close)
+	cleanupAndRelease(t, httpServer.Close)
 	connection, response, err := gws.DefaultDialer.Dial(
 		"ws"+strings.TrimPrefix(httpServer.URL, "http")+"/ws/doc/"+artifactID,
 		http.Header{"X-Dispatch-User": []string{"alice"}},

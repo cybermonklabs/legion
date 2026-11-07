@@ -23,7 +23,7 @@ func TestRecordedMarkRefsListsOnlyTheDocumentsAnchoredRows(t *testing.T) {
 	documentA := createDocument(t, database, "")
 	documentB := createDocument(t, database, "")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	cleanupAndRelease(t, func() { _ = service.Shutdown(context.Background()) })
 	seedServiceText(t, service, documentA, "The quick brown fox")
 	seedServiceText(t, service, documentB, "The quick brown fox")
 
@@ -74,7 +74,7 @@ func TestRecordedMarkRefsSkipsAnAnchorArtifactIDThatDoesNotCast(t *testing.T) {
 	documentA := createDocument(t, database, "")
 	documentB := createDocument(t, database, "")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	cleanupAndRelease(t, func() { _ = service.Shutdown(context.Background()) })
 	seedServiceText(t, service, documentA, "The quick brown fox")
 
 	askID := insertAnchoredAsk(t, service, documentA, "brown")

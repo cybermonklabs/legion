@@ -20,7 +20,7 @@ import (
 func newEditNoticeSweeper(t *testing.T, database *store.Store) *Service {
 	t.Helper()
 	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	cleanupAndRelease(t, func() { _ = service.Shutdown(context.Background()) })
 	return service
 }
 
@@ -34,7 +34,7 @@ func runEditNoticeLoop(t *testing.T, run func(ctx context.Context)) {
 		defer close(done)
 		run(ctx)
 	}()
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		cancel()
 		select {
 		case <-done:
@@ -58,7 +58,7 @@ func startEditNoticeHub(t *testing.T, database *store.Store) <-chan struct{} {
 		defer close(done)
 		hub.Run(ctx)
 	}()
-	t.Cleanup(func() {
+	cleanupAndRelease(t, func() {
 		stop()
 		<-done
 	})
