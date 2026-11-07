@@ -39,6 +39,28 @@
 #                recorded output is committed beside this script, and it counts as a
 #                citation, so a section whose only evidence is a measurement is not a
 #                section with no citation.
+#   Figure       Any number a document attributes to a numbered experiment: the 92 of
+#                "Experiment 1 drove ... 92 history events". It resolves when that text,
+#                as written, is a number of its own in that experiment's committed
+#                transcript: no digit and no decimal point stands immediately before or
+#                after it there, so a figure of 1.8 is not resolved by a timestamp
+#                reading 51.864119017 and a figure of 0.16 is not resolved by a cost
+#                reading 0.164294. A figure quoted from a run nobody committed fails,
+#                and so does a figure written 1,015 where the transcript prints 1015.
+#                The scope a number is read in is one table cell, and one sentence
+#                within it: cells are separated by ` | ` in the rendered text, and a
+#                sentence ends at ". ", "; ", "? " or the line end. A scope never runs
+#                across a ` | `, so the verdict table's experiment column never lends
+#                its experiment to the line counts in the next column. In a scope
+#                naming experiment N, every numeric token is a figure except: the
+#                experiment numbers themselves; a token in a code span; a token
+#                immediately after a code span, after an optional comma, which is how
+#                both documents write a Legion line count (`internal/workflow`, 8,158);
+#                a token in a dispatch:// reference or a web address; a token inside a
+#                YYYY-MM-DD date; and a single digit. A trailing comma, full stop or
+#                semicolon is the sentence's, not the number's. Where a scope names
+#                more than one experiment, any of their transcripts holding the text
+#                resolves the figure.
 #   Dispatch     A bare dispatch:// reference, resolved by `dispatch read --ref`.
 #   Web          An https:// address immediately followed by ` (read YYYY-MM-DD)`. A
 #                404 or a 410 fails. Any other answer, and a timeout, print unreachable
@@ -47,12 +69,13 @@
 #
 # It exits non-zero on: a file that does not hold the identifier it is cited with; an
 # identifier cited in the code form that the file holds only as a string; a table no
-# migration creates; a dispatch:// reference that does not read; a web address with no
-# read date beside it; an address answering 404 or 410; and a document with no citation
-# at all, because an empty set of citations is no evidence. That last rule holds per
-# document: each of the two must carry evidence of its own. A document that does not
-# exist, or that Dispatch will not read, is refused by name before any citation of
-# either document is resolved.
+# migration creates; a dispatch:// reference that does not read; a number a document
+# attributes to an experiment that the experiment's committed transcript does not hold;
+# a web address with no read date beside it; an address answering 404 or 410; and a
+# document with no citation at all, because an empty set of citations is no evidence.
+# That last rule holds per document: each of the two must carry evidence of its own.
+# A document that does not exist, or that Dispatch will not read, is refused by name
+# before any citation of either document is resolved.
 #
 # --self-test runs the resolver over a fixture of deliberately broken citations held in
 # this script and over a set of well-formed ones, so a tester can show the check
@@ -255,6 +278,140 @@ resolve_experiment() {
 	fi
 }
 
+# Prints one record per number a scope of the document attributes to an experiment:
+#
+#   <the experiment numbers of the scope, comma separated>\t<the number>\t<the scope>
+#
+# The scoping rule is the one the Figure paragraph at the head of this script states.
+# The same number attributed to the same experiments twice is one record.
+# shellcheck disable=SC2016  # the backticks below are markdown, not substitution
+experiment_figures() {
+	awk '
+	function blank(n,   s) {
+		s = ""
+		while (n-- > 0) s = s " "
+		return s
+	}
+
+	# Blanks out what the rule excludes by its position: a code span, a numeric token
+	# immediately after one, a dispatch:// reference or a web address, and a date.
+	# Blanking rather than deleting keeps every other token where it was.
+	function sanitize(s,   out, i, j, k, m, n, c) {
+		out = ""
+		i = 1
+		n = length(s)
+		while (i <= n) {
+			c = substr(s, i, 1)
+			if (substr(s, i) ~ /^(https?|dispatch):\/\//) {
+				j = i
+				while (j <= n && substr(s, j, 1) != " " && substr(s, j, 1) != "\t") j++
+				out = out blank(j - i)
+				i = j
+				continue
+			}
+			if (c == "`") {
+				j = i + 1
+				while (j <= n && substr(s, j, 1) != "`") j++
+				k = (j <= n) ? j + 1 : j
+				out = out blank(k - i)
+				i = k
+				m = i
+				if (substr(s, m, 1) == ",") m++
+				while (substr(s, m, 1) == " ") m++
+				if (substr(s, m, 1) ~ /[0-9]/) {
+					k = m
+					while (k <= n && substr(s, k, 1) ~ /[0-9.,]/) k++
+					out = out substr(s, i, m - i) blank(k - m)
+					i = k
+				}
+				continue
+			}
+			if (substr(s, i) ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/) {
+				out = out blank(10)
+				i += 10
+				continue
+			}
+			out = out c
+			i++
+		}
+		return out
+	}
+
+	function figures(text,   numbers, named, pos, hit, t, n, i, j, k, token, own) {
+		sub(/^[ \t]+/, "", text)
+		sub(/[ \t]+$/, "", text)
+
+		# Every experiment the scope names, possessive or not, 1 to 18.
+		numbers = ""
+		pos = 1
+		while (match(substr(text, pos), /[Ee]xperiment (1[0-8]|[1-9])([^0-9]|$)/) > 0) {
+			hit = substr(text, pos + RSTART - 1, RLENGTH)
+			sub(/^[Ee]xperiment /, "", hit)
+			sub(/[^0-9]$/, "", hit)
+			if (index("," numbers ",", "," hit ",") == 0)
+				numbers = numbers (numbers == "" ? "" : ",") hit
+			pos = pos + RSTART + RLENGTH - 2
+		}
+		if (numbers == "") return
+		split(numbers, named, ",")
+
+		t = sanitize(text)
+		n = length(t)
+		i = 1
+		while (i <= n) {
+			if (substr(t, i, 1) !~ /[0-9]/) { i++; continue }
+			j = i
+			while (j <= n && substr(t, j, 1) ~ /[0-9.,]/) j++
+			token = substr(t, i, j - i)
+			i = j
+			# The sentence punctuation a number carries is no part of it.
+			while (token ~ /[.,;]$/) token = substr(token, 1, length(token) - 1)
+			if (length(token) < 2) continue
+			own = 0
+			for (k in named) if (named[k] == token) own = 1
+			if (own) continue
+			if (seen[numbers "\t" token]++) continue
+			print numbers "\t" token "\t" text
+		}
+	}
+
+	{
+		cells = split($0, cell, / \| /)
+		for (ci = 1; ci <= cells; ci++) {
+			sentences = split(cell[ci], sentence, /\. |; |\? /)
+			for (si = 1; si <= sentences; si++) figures(sentence[si])
+		}
+	}
+	' <<<"$1"
+}
+
+resolve_experiment_figure() {
+	local numbers=$1 figure=$2 scope=$3 text detail digit transcript escaped pattern
+	local -a recorded=() searched=()
+	text="the figure $figure of experiment ${numbers//,/ or }"
+	# The figure as a number of its own: neither a digit nor a decimal point touches it.
+	escaped=${figure//./\\.}
+	pattern='(^|[^0-9.])'"$escaped"'([^0-9.]|$)'
+	for digit in ${numbers//,/ }; do
+		mapfile -t recorded < <(find "$script_dir" -maxdepth 1 -type f -name "experiment-${digit}-*.txt" -size +0 | sort)
+		for transcript in "${recorded[@]}"; do
+			searched+=("${transcript##*/}")
+			if grep -qE -- "$pattern" "$transcript"; then
+				report resolved figure "$text" "written in ${transcript##*/}"
+				return
+			fi
+		done
+	done
+	if ((${#searched[@]} == 0)); then
+		detail="no recorded output of experiment ${numbers//,/ or } is committed beside this script, so the figure is quoted from a run nobody committed"
+	elif ((${#searched[@]} == 1)); then
+		detail="${searched[0]} does not hold $figure as a number of its own"
+	else
+		detail="none of ${searched[*]} holds $figure as a number of its own"
+	fi
+	report failed figure "$text" "$detail; the scope reads: $scope"
+}
+
 resolve_dispatch() {
 	local ref=$1
 	if dispatch read --ref "$ref" >/dev/null 2>&1; then
@@ -294,7 +451,7 @@ resolve_web() {
 resolve_document() {
 	local document=$2 before
 	local -a matches
-	local match path rest ident table column digit ref url dated
+	local match path rest ident table column digit ref url dated numbers figure scope
 
 	document_label=$1
 	before=$((count_resolved + count_unreachable + count_failed))
@@ -337,6 +494,12 @@ resolve_document() {
 	for match in "${matches[@]}"; do
 		digit=${match##* }
 		resolve_experiment "$match" "$digit"
+	done
+
+	mapfile -t matches < <(experiment_figures "$document")
+	for match in "${matches[@]}"; do
+		IFS=$'\t' read -r numbers figure scope <<<"$match"
+		resolve_experiment_figure "$numbers" "$figure" "$scope"
 	done
 
 	mapfile -t matches < <(grep -oE "$dispatch_pattern" <<<"$document" | sort -u)
@@ -402,6 +565,29 @@ Web: https://docs.temporal.io/evaluate/development-production-features (read 202
 EOF
 }
 
+# The experiment-figure rule, in one fixture: three figures experiment 1's committed
+# transcript holds, one it does not, one that its transcript holds only inside a longer
+# number, and one number in the cell beside an experiment mention, which the cell
+# boundary keeps out of the check. The table row is the line that fails if a scope is
+# ever allowed to run across a ` | `: experiment 1 never recorded 1,294, which is
+# Legion's own count of the table and the engine. The 0.16 is the line that fails if a
+# figure is ever resolved by a longer number it is a part of: experiment 2's transcript
+# prints the thousand-gate cost as 0.164294 and never as 0.16.
+experiment_figure_fixture() {
+	cat <<'EOF'
+Experiment 1 drove one issue in a 27-line workflow function over a data table, 12 signals and 92 history events, as its committed transcript holds it.
+Experiment 1 recorded 999999 history events, a figure no committed transcript of it holds.
+Experiment 2 priced a thousand gates standing open at 0.16 dollars of Active storage.
+| Phase transitions | the measurement is experiment 1 | 1,294 lines of table and engine |
+EOF
+}
+
+# Two resolved citations of the experiments themselves and three resolved figures, 27,
+# 12 and 92; two refusals, 999999 and 0.16. The 1,294 of the last cell is no figure of
+# experiment 1, so it is neither.
+readonly experiment_figure_fixture_resolved=5
+readonly experiment_figure_fixture_failed=2
+
 self_test() {
 	local failures=0
 
@@ -437,9 +623,22 @@ self_test() {
 		failures=$((failures + 1))
 	fi
 
+	printf '\nself-test, the experiment-figure rule: a figure the transcript holds resolves, one it does not is refused, one it holds only inside a longer number is refused, and a number in the cell beside an experiment mention is not checked at all\n\n'
+	reset_counts
+	resolve_document figures "$(experiment_figure_fixture)"
+	summary
+	if ((count_resolved != experiment_figure_fixture_resolved || count_failed != experiment_figure_fixture_failed)); then
+		printf 'self-test: expected %d resolved and %d refused of the experiment-figure fixture, got %d resolved, %d refused and %d unreachable\n' \
+			"$experiment_figure_fixture_resolved" "$experiment_figure_fixture_failed" \
+			"$count_resolved" "$count_failed" "$count_unreachable" >&2
+		failures=$((failures + 1))
+	else
+		printf 'self-test: the figure in the transcript resolved, the figure outside it and the figure only inside a longer number were refused, and the number in the next cell was not checked\n'
+	fi
+
 	printf '\n'
 	if ((failures > 0)); then
-		printf 'self-test: %d of 3 checks did not hold\n' "$failures" >&2
+		printf 'self-test: %d of 4 checks did not hold\n' "$failures" >&2
 		return 1
 	fi
 	printf 'self-test: the resolver refuses every broken form and resolves every well-formed one\n'
