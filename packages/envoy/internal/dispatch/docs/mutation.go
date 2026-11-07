@@ -1161,15 +1161,27 @@ func modelBlockPath(path pmdoc.BlockPath) model.BlockPath {
 // (flushOtherRooms), takes the document's owner row and then its writer slot, and leaves the
 // transaction's later document calls to find the write already open.
 //
-// It is the first step of the lock order for a transaction that reads the document under its
-// advisory lock before it writes: a comment or an ask anchored to a mark the document already
-// holds (api/anchors.go, resolveAnchor's mark_id branch), which verifies the mark and pins the
-// version its anchor names (VerifyMark, SnapshotVersion) and writes the comment's margin record
-// after that (ProjectMark). Without it that version's capture takes the advisory lock with no
-// write joined (captureLiveTextAndAuthors, lockedHead) and the margin write's own join then asks
-// for the flush while the transaction holds the lock every other process's append waits on, so
-// the flush is skipped and the other process's room is never stored (roomQueries.ask). The quote
-// branch needs none: MarkQuote joins the write before anything takes the lock.
+// It is where a transaction that reads the document under its advisory lock before it writes
+// joins its write: a comment or an ask anchored to a mark the document already holds
+// (api/anchors.go, resolveAnchor's mark_id branch), which verifies the mark, joins the write,
+// pins the version its anchor names, and, for a comment, writes the comment's margin record into
+// the same transaction after that (VerifyMark, JoinWrite, SnapshotVersion, ProjectMark - that
+// order).
+//
+// The join comes after VerifyMark, not before it: VerifyMark waits for a mark whose append is
+// still in flight and re-reads the document on each of the room's updates (marks.go), and a
+// write joined before it would have the first of those reads take the fork under the document's
+// advisory lock (readFork, lockedHead) and freeze it, so the wait would read the same frozen
+// tree while holding the lock the awaited append waits on.
+//
+// It comes before SnapshotVersion because that is the first call that takes the lock. Without
+// the join the version's capture takes it with no write joined (captureLiveTextAndAuthors,
+// lockedHead), and the transaction's first join - a comment's margin write (applyMargin), or
+// nothing at all on an ask, which pins its version over rooms that were never asked to store -
+// then asks for the flush while the transaction holds the lock every other process's append
+// waits on, so the flush is skipped and the other process's room is never stored
+// (roomQueries.ask). The quote branch needs no call: MarkQuote joins the write before anything
+// takes the lock.
 //
 // The write it opens is a write like any other - it waits for the transaction holding the slot,
 // refuses a failed room and a shutting-down document - and it records the owner row's state

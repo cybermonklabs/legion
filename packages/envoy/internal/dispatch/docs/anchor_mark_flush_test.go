@@ -10,32 +10,58 @@ import (
 )
 
 // A comment anchored to a mark the document already holds (api/anchors.go, resolveAnchor's
-// mark_id branch, and comment_create.go behind it) writes nothing into the document's tree: in
-// one transaction it joins the document's write, verifies the mark, pins the version its anchor
-// names and writes the comment's margin record. The join comes first because the version's
-// capture takes the document's advisory lock and holds it to the commit (lockedHead), and the
-// join is what has every other process store its room of the document (flushOtherRooms): asked
-// under that lock, which every other process's append waits on, the flush is skipped and the
-// other process's room is never stored (roomQueries.ask).
+// mark_id branch, and comment_create.go behind it) writes nothing into the document's tree. In
+// one transaction it verifies the mark, joins the document's write, pins the version its anchor
+// names and writes the comment's margin record - VerifyMark, JoinWrite, SnapshotVersion,
+// ProjectMark, in that order.
 //
-// The tests here run that order with a second envoy-dispatch process on the same database
-// (processPair), open issue and closed, and hold the other process's append at a gate, so the
-// flush is answered only once that append is durable.
+// The join is after VerifyMark because that call waits for a mark whose append may still be in
+// flight and re-reads the document on each of the room's updates (marks.go): a write joined
+// before it would have the first of those reads take and freeze the fork under the document's
+// advisory lock (readFork, lockedHead), and the wait would re-read one frozen tree while
+// holding the lock the awaited append waits on.
+//
+// The join is before SnapshotVersion because that is the first call that takes the lock, and
+// the join is what has every other process store its room of the document (flushOtherRooms):
+// with the version's capture first, the transaction's first join - the margin record's own -
+// asks for that flush while holding the lock every other process's append waits on, so the
+// flush is skipped and the other process's room is never stored (roomQueries.ask). That order
+// is driven here too (joinAfterTheVersion), so this file fails if production's ever goes back
+// to it.
+//
+// The tests run with a second envoy-dispatch process on the same database (processPair), open
+// issue and closed, and hold the other process's append at a gate, so the flush is answered only
+// once that append is durable.
 
-// anchorToAMark is the order a mark_id anchor runs in the request's one transaction
-// (api/anchors.go, resolveAnchor's mark_id branch; comment_create.go, the margin record after
-// the comment's row): the document's live write, the mark, the version the anchor pins, and the
+// joinPoint is where a mark_id anchor's transaction joins the document's live write.
+type joinPoint int
+
+const (
+	// joinBeforeTheVersion is production's order: the join between VerifyMark and
+	// SnapshotVersion (api/anchors.go, resolveAnchor's mark_id branch).
+	joinBeforeTheVersion joinPoint = iota
+	// joinAfterTheVersion is the order without that call, the one the lock order refuses: the
+	// version's capture takes the advisory lock with no write joined, and the transaction's
+	// first join is the margin record's own, made under it.
+	joinAfterTheVersion
+)
+
+// anchorToAMark is what a mark_id anchor runs in the request's one transaction (api/anchors.go,
+// resolveAnchor's mark_id branch; comment_create.go, the margin record after the comment's row):
+// the mark, the document's live write where join says, the version the anchor pins, and the
 // comment's margin record, all under WithCommentMarks.
-func anchorToAMark(service *Service, artifactID, markID string, actor model.Actor) (Anchored, VersionResult, error) {
+func anchorToAMark(service *Service, artifactID, markID string, actor model.Actor, join joinPoint) (Anchored, VersionResult, error) {
 	var anchored Anchored
 	var snapshot VersionResult
 	err := joinedWrite(service, func(ctx context.Context) (err error) {
 		ctx = WithCommentMarks(ctx)
-		if err := service.JoinWrite(ctx, artifactID); err != nil {
-			return err
-		}
 		if anchored, err = service.VerifyMark(ctx, artifactID, MarkComment, markID); err != nil {
 			return err
+		}
+		if join == joinBeforeTheVersion {
+			if err := service.JoinWrite(ctx, artifactID); err != nil {
+				return err
+			}
 		}
 		if snapshot, err = service.SnapshotVersion(ctx, artifactID, actor); err != nil {
 			return err
@@ -87,7 +113,7 @@ func TestAMarkAnchorFlushesTheOtherProcessesRoomBeforeTheDocumentsLock(t *testin
 	released := time.AfterFunc(held, pair.gateB.release)
 	defer released.Stop()
 	started := time.Now()
-	anchored, snapshot, err := anchorToAMark(pair.taskA, pair.artifactID, "c1", model.Actor{Kind: "user", ID: "carol"})
+	anchored, snapshot, err := anchorToAMark(pair.taskA, pair.artifactID, "c1", model.Actor{Kind: "user", ID: "carol"}, joinBeforeTheVersion)
 	waited := time.Since(started)
 
 	if err != nil {
@@ -129,7 +155,7 @@ func TestAMarkAnchorOnAClosedIssueAsksItsFlushBeforeTheDocumentsLock(t *testing.
 	pair := markedPair(t, "c1")
 	closeIssueAgo(t, pair.database, "DOC-1", closeMargin+30*time.Second)
 
-	anchored, snapshot, err := anchorToAMark(pair.taskA, pair.artifactID, "c1", model.Actor{Kind: "user", ID: "carol"})
+	anchored, snapshot, err := anchorToAMark(pair.taskA, pair.artifactID, "c1", model.Actor{Kind: "user", ID: "carol"}, joinBeforeTheVersion)
 
 	if err != nil {
 		t.Fatalf("a comment anchored to a mark already in the closed issue's document: %v", err)
@@ -151,5 +177,28 @@ func TestAMarkAnchorOnAClosedIssueAsksItsFlushBeforeTheDocumentsLock(t *testing.
 		return err
 	}); err != nil {
 		t.Fatalf("the mark the pinned version names, read again: %v", err)
+	}
+}
+
+// The order production must not go back to: with no join between the mark and the version, the
+// version's capture takes the document's advisory lock and the margin record's own join asks the
+// other process for its room's flush under it, which is skipped. The comment is still written -
+// the request answers as it always did - and the other process's room is left unstored, which is
+// what the ERROR says. This is the test above's control: it fails if asking a flush under the
+// lock ever stops being a mistake, and the two together pin the order.
+func TestAMarkAnchorThatJoinsItsWriteOnlyAfterTheVersionSkipsTheFlush(t *testing.T) {
+	logs := captureWarnings(t)
+	pair := markedPair(t, "c1")
+
+	anchored, snapshot, err := anchorToAMark(pair.taskA, pair.artifactID, "c1", model.Actor{Kind: "user", ID: "carol"}, joinAfterTheVersion)
+
+	if err != nil {
+		t.Fatalf("a comment anchored without joining the document's write first: %v", err)
+	}
+	if !strings.Contains(logs.String(), skippedFlush) {
+		t.Fatalf("the anchor's flush was asked for under no lock: %s", logs.String())
+	}
+	if anchored.Quote != "Alpha" || snapshot.Version.Number == 0 {
+		t.Fatalf("the anchor = %#v at version %#v, want the comment written whatever the flush did", anchored, snapshot.Version)
 	}
 }
