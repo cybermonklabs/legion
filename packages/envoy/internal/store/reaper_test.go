@@ -242,6 +242,39 @@ func TestAPassKeepsALapsedClaimThatNamesNoProcessWhileItsHolderIsAlive(t *testin
 	assertRoleHolder(t, reg, role, "")
 }
 
+// restoredRoleClaimRegistry seeds the role bucket through the bucket's own handle and then
+// opens a registry over it, so every claim seed stores is one that registry restored at its own
+// start: the restart grace is given to no other claim (releaseReadExpiredRoleClaim). seed is
+// handed that handle and the moment the registry's clock starts at, and the advance returned
+// moves that clock that far past the start, as clockedColdRegistry's does.
+func restoredRoleClaimRegistry(t *testing.T, seed func(roles natsgo.KeyValue, start time.Time)) (*Registry, func(time.Duration)) {
+	t.Helper()
+	conn, cleanup := connectNATS(t)
+	t.Cleanup(cleanup)
+	js, err := conn.JetStream()
+	if err != nil {
+		t.Fatalf("open JetStream: %v", err)
+	}
+	raw, err := js.CreateKeyValue(&natsgo.KeyValueConfig{Bucket: bus.RoleClaimBucket, Replicas: 1, Storage: natsgo.FileStorage})
+	if err != nil {
+		t.Fatalf("create the role bucket: %v", err)
+	}
+	start := time.Date(2026, 11, 6, 9, 30, 0, 0, time.UTC)
+	seed(raw, start)
+	var elapsed atomic.Int64
+	reg, err := Open(conn, WithReplicas(1), WithClock(func() time.Time { return start.Add(time.Duration(elapsed.Load())) }))
+	if err != nil {
+		t.Fatalf("open a registry over the stored claims: %v", err)
+	}
+	t.Cleanup(reg.StopWatch)
+	ready, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := reg.WaitForCacheReady(ready); err != nil {
+		t.Fatalf("WaitForCacheReady: %v", err)
+	}
+	return reg, func(since time.Duration) { elapsed.Store(int64(since)) }
+}
+
 // The restart grace is untouched by the rule above it. A registry that restored a claim at its
 // own start gives that claim one sessionTTL before it can be freed, whatever the claim's renewal
 // says, so a holder that was there before the restart has that long to register again
@@ -255,32 +288,12 @@ func TestTheRestartGraceOfARestoredClaimStillHolds(t *testing.T) {
 		liveWindow = time.Minute
 		sessionTTL = 2 * time.Minute
 	)
-	conn, cleanup := connectNATS(t)
-	defer cleanup()
-	js, err := conn.JetStream()
-	if err != nil {
-		t.Fatalf("open JetStream: %v", err)
-	}
-	raw, err := js.CreateKeyValue(&natsgo.KeyValueConfig{Bucket: bus.RoleClaimBucket, Replicas: 1, Storage: natsgo.FileStorage})
-	if err != nil {
-		t.Fatalf("create the role bucket: %v", err)
-	}
-	start := time.Date(2026, 11, 6, 9, 30, 0, 0, time.UTC)
-	putRenewedRoleClaim(t, raw, role, holder, roleClaimInstance, start.Add(-2*liveWindow))
-	var elapsed atomic.Int64
-	reg, err := Open(conn, WithReplicas(1), WithClock(func() time.Time { return start.Add(time.Duration(elapsed.Load())) }))
-	if err != nil {
-		t.Fatalf("open a registry over the stored claim: %v", err)
-	}
-	t.Cleanup(reg.StopWatch)
-	ready, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := reg.WaitForCacheReady(ready); err != nil {
-		t.Fatalf("WaitForCacheReady: %v", err)
-	}
+	reg, advance := restoredRoleClaimRegistry(t, func(raw natsgo.KeyValue, start time.Time) {
+		putRenewedRoleClaim(t, raw, role, holder, roleClaimInstance, start.Add(-2*liveWindow))
+	})
 	gone := func(string) bool { return false }
 
-	elapsed.Store(int64(sessionTTL - time.Second))
+	advance(sessionTTL - time.Second)
 	sweep, err := reg.ReapRoleClaims(context.Background(), gone, sessionTTL, liveWindow)
 	if err != nil || sweep != (RoleClaimSweep{}) {
 		t.Fatalf("a pass %s into the restart grace = %+v, %v; want nothing freed: the holder has one session TTL to register again",
@@ -288,12 +301,52 @@ func TestTheRestartGraceOfARestoredClaimStillHolds(t *testing.T) {
 	}
 	assertRoleHolder(t, reg, role, holder)
 
-	elapsed.Store(int64(sessionTTL))
+	advance(sessionTTL)
 	sweep, err = reg.ReapRoleClaims(context.Background(), gone, sessionTTL, liveWindow)
 	if err != nil || sweep != (RoleClaimSweep{Reaped: 1}) {
 		t.Fatalf("a pass once the restart grace is spent = %+v, %v; want the one claim freed", sweep, err)
 	}
 	assertRoleHolder(t, reg, role, "")
+}
+
+// The restart grace is for a holder to register again after a listener restart, and a claim its
+// own holder handed back is one no registration will renew whoever sends it
+// (Registry.renewRoleClaim): the mark is that holder's own word that it gave the role up. So
+// the grace has nothing to do over a marked claim but hold the role past the bound the reaper
+// states - one live window after the claim's last renewal and up to one reap interval - and a
+// marked claim this registry restored is freed by the first pass past that renewal.
+//
+// The unmarked claim beside it, lapsed just as long and held by the same gone session, is what
+// the grace is for and is kept by that same pass (TestTheRestartGraceOfARestoredClaimStillHolds
+// holds that on its own); the pass that follows the grace frees it too.
+func TestARestoredClaimItsHolderHandedBackTakesNoRestartGrace(t *testing.T) {
+	const (
+		marked     = "legion-reviewer"
+		unmarked   = "legion-controller"
+		holder     = "ses_handed_the_role_back_before_the_restart"
+		liveWindow = time.Minute
+		sessionTTL = 2 * time.Minute
+	)
+	reg, advance := restoredRoleClaimRegistry(t, func(raw natsgo.KeyValue, start time.Time) {
+		putHandedBackRoleClaim(t, raw, marked, holder, roleClaimInstance, start.Add(-2*liveWindow))
+		putRenewedRoleClaim(t, raw, unmarked, holder, roleClaimInstance, start.Add(-2*liveWindow))
+	})
+	gone := func(string) bool { return false }
+
+	sweep, err := reg.ReapRoleClaims(context.Background(), gone, sessionTTL, liveWindow)
+	if err != nil || sweep != (RoleClaimSweep{Reaped: 1}) {
+		t.Fatalf("the first pass inside the restart grace = %+v, %v; want the marked claim freed: no registration renews it, so the grace can only hold the role longer",
+			sweep, err)
+	}
+	assertRoleHolder(t, reg, marked, "")
+	assertRoleHolder(t, reg, unmarked, holder)
+
+	advance(sessionTTL)
+	sweep, err = reg.ReapRoleClaims(context.Background(), gone, sessionTTL, liveWindow)
+	if err != nil || sweep != (RoleClaimSweep{Reaped: 1}) {
+		t.Fatalf("a pass once the restart grace is spent = %+v, %v; want the unmarked claim freed: the grace is the whole of what kept it", sweep, err)
+	}
+	assertRoleHolder(t, reg, unmarked, "")
 }
 
 // logLine returns the first line of logs carrying msg, for a test that holds what one line says.

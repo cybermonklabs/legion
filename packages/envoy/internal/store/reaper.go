@@ -172,7 +172,9 @@ type RoleClaimSweep struct {
 // A marked claim is freed one live window after its last renewal and not at once, and that
 // window is load-bearing: a holder an older client's hand-back marked wrongly claims the role
 // again at its next heartbeat and has it back, the record that grant writes carrying no mark
-// (SetRoleWithPrevious). The window must stay longer than a heartbeat.
+// (SetRoleWithPrevious). The window must stay longer than a heartbeat. Nothing else holds a
+// marked claim: the restart grace is for a holder to register again and no registration renews
+// a marked claim, so the release gives it none (releaseReadExpiredRoleClaim).
 //
 // Only a claim neither rule keeps is released (releaseReadExpiredRoleClaim, which weighs
 // sessionTTL, the restart grace, and reads the renewal no second time: this pass has read it
@@ -314,9 +316,9 @@ func (r *Registry) StartReaper(ctx context.Context, live func(sessionID string) 
 // a point-to-point route rather than a general subscription. It runs until ctx ends, and the
 // channel it returns is closed once it has returned, as StartReaper's is. Each pass keeps a
 // claim renewed inside liveWindow, a lapsed claim no hand-back marked whose holder session
-// isAlive reports alive, and a restored claim inside sessionTTL (ReapRoleClaims), and logs
-// what it reaped beside what it skipped, since only a reaper whose failures are visible from
-// its own line can be read as the backstop it is (RoleClaimSweep).
+// isAlive reports alive, and a restored claim no hand-back marked inside sessionTTL
+// (ReapRoleClaims), and logs what it reaped beside what it skipped, since only a reaper whose
+// failures are visible from its own line can be read as the backstop it is (RoleClaimSweep).
 //
 // isAlive is given the holder session id of every claim whose renewal has lapsed, and it
 // decides each of them but one: a claim its holder handed back (RoleClaim.HandedBack) is freed

@@ -195,11 +195,20 @@ const roleClaimReleaseAttempts = 3
 // where it named none, so the release stopped there and answered success over a claim still
 // standing. The administrator's force meets the same case.
 //
-// A re-read this release may no longer free is the claim another process holds now. It is not
-// success: it is the claim the first read met, under a process now named, so it is handed to
-// the mark exactly as the first read is - marked handed back where the release is
-// its caller's own hand-back of this role, and otherwise left as it stands. That is the one
-// path by which a hand-back whose delete lost to an adoption still has its effect. A re-read
+// A re-read this release may no longer free names a process where the claim first read named
+// none, and two different records read that way. One is the claim the first read met, adopted
+// by a process of this session, which carries over the moment it was claimed at
+// (Registry.renewRoleClaim writes nothing but the instance and the renewal). The other is a
+// record the role was granted again under since this release read it - a fresh claim no
+// hand-back has released, stamped with a moment of its own. Neither is success, and only the
+// first is this release's to mark: the re-read is handed to the mark where the release is its
+// caller's own hand-back of this role and the record was claimed at the very moment the claim
+// first read was, which is the one path by which a hand-back whose delete lost to an adoption
+// still has its effect. A grant moves ClaimedAt where an adoption and a renewal carry it over,
+// so a claim granted since the read is left standing and unmarked, exactly as
+// markRoleClaimHandedBack leaves one granted since its own read: marking it would take back a
+// role its holder has just been given, through a mark that holder's own registration can no
+// longer clear. That is no error either, as a claim another session holds is none. A re-read
 // that finds no record is a role already free and is no error: the bucket answered
 // nats.ErrKeyNotFound, which RoleClaim reads as a claim at a zero revision.
 //
@@ -230,9 +239,12 @@ func (r *Registry) releaseReadRoleClaim(ctx context.Context, sessionID, role str
 	}
 	// The claim that stands is one this release may not free - another session's, another
 	// process's, or no record at all - so the role is still its holder's, and the hand-back
-	// this release is leaves its mark on it.
+	// this release is leaves its mark on it, while it is still the claim this release read:
+	// a record granted again since that read is another claim, which this hand-back never
+	// released, and the claim's own ClaimedAt is what tells a grant from the adoption that
+	// carries it over.
 	stands := stood.HolderSessionID == sessionID
-	if !release.handsBack {
+	if !release.handsBack || stood.ClaimedAt != claim.ClaimedAt {
 		return stands, nil
 	}
 	return stands, r.markRoleClaimHandedBack(ctx, sessionID, role, stood)
@@ -303,14 +315,21 @@ func (r *Registry) markRoleClaimHandedBack(ctx context.Context, sessionID, role 
 // releaseReadExpiredRoleClaim drops role, over a claim the caller has read already and found
 // expired, once a restored claim has exhausted sessionTTL. A listener restart therefore gives an
 // existing holder one sessionTTL to register again, while an already-expired holder cannot block
-// a new claimant forever.
+// a new claimant forever. A claim its own holder handed back (RoleClaim.HandedBack) takes no
+// such grace: the first pass past its own renewal drops it.
 //
 // The claim's own renewal is weighed by the caller and not here: the one caller
 // (ReapRoleClaims) skips a claim its holder still answers for before it reaches this call, over
 // this very claim value, so a claim that gets here is one no renewal keeps and no later instant
 // can make renewed again. sessionTTL is the other grant, and it is this call's own: the restart
 // grace, measured from this registry's own start and given only to a claim this registry
-// restored at that start. A sessionTTL of zero grants no restart grace.
+// restored at that start. A sessionTTL of zero grants no restart grace, and neither does a
+// claim carrying the hand-back mark: the grace exists for a holder to register again after a
+// listener restart, and no registration renews a marked claim (Registry.renewRoleClaim), so
+// over such a claim the grace can do nothing but hold the role past the bound the reaper's own
+// rule states - one live window after the claim's last renewal and up to one reap interval.
+// That live window is untouched here, because it is the window a holder an older client's
+// hand-back marked wrongly claims the role again inside (ReapRoleClaims).
 //
 // The holder it releases from is the one the claim names, and it is the caller that decided the
 // claim may be taken from that holder (ReapRoleClaims): either the holder's session is gone, or
@@ -341,7 +360,7 @@ func (r *Registry) releaseReadExpiredRoleClaim(ctx context.Context, role string,
 	r.mu.RLock()
 	restoredRevision, restored := r.restoredRoleRevisions[role]
 	r.mu.RUnlock()
-	if restored && restoredRevision == claim.Revision && sessionTTL > 0 && r.now().Sub(r.openedAt) < sessionTTL {
+	if restored && restoredRevision == claim.Revision && !claim.HandedBack && sessionTTL > 0 && r.now().Sub(r.openedAt) < sessionTTL {
 		return ExpiredRoleClaimRetained, nil
 	}
 	epoch := r.roleViewEpoch()
