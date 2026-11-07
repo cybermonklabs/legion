@@ -904,7 +904,8 @@ func subscribeDurable(client *bus.Client, wanted natsgo.ConsumerConfig, deliverS
 }
 
 // deliver handles one message on its key's goroutine: it routes the envelope's payload by the
-// settings the cache holds under intakeMessageTimeout, and acks: a malformed envelope has nothing
+// settings the cache holds under intakeMessageTimeout, and answers it through the delivery, which
+// acknowledges it when the link is live (acknowledgeWhenLive): a malformed envelope has nothing
 // to retry, and a route error (a failed GitHub call, or that deadline passing) is caught up by the
 // next reconcile pass rather than by NATS redelivery -- see the package doc comment. The deadline
 // is what makes intakeAckWait a bound rather than a hope: without it one stuck GitHub call could
@@ -913,18 +914,18 @@ func subscribeDurable(client *bus.Client, wanted natsgo.ConsumerConfig, deliverS
 // acknowledged and nothing else: no log line and no freshness write. One it handles records the
 // event's time, whatever its handler decided.
 //
-// The one message it does not ack is one whose handling the stop gave up (handling cancelled,
-// StopDelivering): that is handed back through the delivery (giveBack), so the next holder of the
-// durable redoes it at once rather than this event waiting five minutes for the reconcile.
-// Through the delivery rather than a Nak of its own, because the stop a connection event runs
-// gives its handlers up while the link may still be down, where a Nak is refused and the message
-// would instead wait out the ack wait in the next holder's window: the delivery holds it until
-// the stop has released, which is after the stop has waited for a live connection, and hands it
-// back with the rest. Its writes are the upserts reconcile makes too, so redoing what had in fact
+// The one message it does not acknowledge is one whose handling the stop gave up (handling
+// cancelled, StopDelivering): that is handed back through the delivery (giveBack), so the next
+// holder of the durable redoes it at once rather than this event waiting five minutes for the
+// reconcile. Its writes are the upserts reconcile makes too, so redoing what had in fact
 // finished just before the stop gave it up writes the same facts again.
 //
-// It takes the delivery rather than the handling context alone because that hand-back is the
-// delivery's; handling is read from it, and nothing else calls deliver.
+// Both answers go through the delivery rather than straight to NATS, and for one reason: the
+// stop a connection event runs begins with the link down, where the bus refuses a publish, so
+// the delivery holds either answer until the stop has waited for a live connection and makes it
+// then (acknowledgeWhenLive, giveBack). A handler that finished inside such a stop would
+// otherwise hold one of the next holder's in-flight slots for the whole ack wait, for work that
+// was done. handling is read from the delivery too, and nothing else calls deliver.
 func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 	msg, handling := message.msg, d.handling
 	defer func() {
@@ -933,7 +934,7 @@ func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 			d.giveBack(msg)
 			return
 		}
-		acknowledge(msg)
+		d.acknowledgeWhenLive(msg)
 	}()
 	ctx, cancel := context.WithTimeout(handling, intakeMessageTimeout)
 	defer cancel()
