@@ -133,9 +133,16 @@ func (s *server) sendResolvedDelivery(
 //
 // The two fields are the whole test. Nothing reads the body: a comment's text does not open an
 // ask, and a program that judged what an agent wrote is what this rule refuses to be.
+//
+// A remark leaves the field out (ExpectsReplyUnset) rather than writing the literal false that
+// says the same thing, because a listener built before #2903 reads expects_reply only as a
+// string and answers 400 to a send carrying false, so a Dispatch server rolled ahead of the
+// listeners of its deployment could deliver no plain mention at all. What removes the
+// workaround: every listener of a deployment at or after #2903, after which this returns
+// contracts.ExpectsReplyNone and the delivery says "nothing wanted back" out loud.
 func commentExpectsReply(comment model.Comment) contracts.ExpectsReply {
 	if comment.AskID == nil && comment.ReplyTo == nil {
-		return contracts.ExpectsReplyNone
+		return contracts.ExpectsReplyUnset
 	}
 	return contracts.ExpectsReplyOptional
 }

@@ -8,16 +8,18 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// An answered ask and an approved artifact are receipts: a person decided, and the session the
-// event reaches has nothing to send back. Their envelopes say so, and a session that answered one
-// anyway cost that person a read (INFRA-1225). Every other event type says nothing about a reply,
-// an ask event the same branch gives an urgency included.
+// What an event's envelope says about a reply. No event type says anything: an answered ask and
+// an approved artifact are receipts a reader has nothing to send back to, and they would say so
+// out loud were it not for the listeners built before #2903, which read expects_reply only as a
+// string and drop a frame carrying the literal false (see envelope() in publisher.go for what
+// removes that). Every other event type has never said anything either, an ask event the same
+// branch gives an urgency included.
 //
-// What is read here is the marshalled envelope, because that is what the bus carries: the no-reply
-// value is the JSON literal false, not the word it used to be. And each envelope is validated as
-// resolveDestinations validates it before publishing, because an envelope Validate() refuses is
-// backed off forever and holds every later event of its owner behind it.
-func TestReceiptEnvelopesWantNoReplyAndEveryOtherEventSaysNothing(t *testing.T) {
+// What is read here is the marshalled envelope, because that is what the bus carries. And each
+// envelope is validated as resolveDestinations validates it before publishing, because an
+// envelope Validate() refuses is backed off forever and holds every later event of its owner
+// behind it.
+func TestNoEventEnvelopeSaysAnythingAboutAReply(t *testing.T) {
 	const ask = "00000000-0000-0000-0000-000000000030"
 	for _, tc := range []struct {
 		name  string
@@ -26,15 +28,14 @@ func TestReceiptEnvelopesWantNoReplyAndEveryOtherEventSaysNothing(t *testing.T) 
 		want string
 	}{
 		{
-			name: "an answered ask",
+			name: "an answered ask, a receipt that stays silent",
 			event: model.Event{
 				ID: 1, IssueKey: new("T-1"), Type: "ask.answered", CreatedAt: time.Now(),
 				Payload: map[string]any{"id": ask, "answer": "Approve", "urgency": "high"},
 			},
-			want: "false",
 		},
 		{
-			name: "an approved artifact",
+			name: "an approved artifact, the other one",
 			event: model.Event{
 				ID: 2, IssueKey: new("T-1"), Type: "artifact.approved", CreatedAt: time.Now(),
 				Payload: map[string]any{
@@ -42,7 +43,6 @@ func TestReceiptEnvelopesWantNoReplyAndEveryOtherEventSaysNothing(t *testing.T) 
 					"name":        "spec.md", "version": 3, "ask_id": ask,
 				},
 			},
-			want: "false",
 		},
 		{
 			name: "an opened ask, which wants an answer the envelope does not name",
