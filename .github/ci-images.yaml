@@ -35,8 +35,9 @@
 #
 # To add an image: add its row and push. ci.yaml's ci-images job copies the rows the package
 # does not hold yet, and then reads the package, which is the half of the gate that answers for
-# it. That job is the one copy path, and it runs on a pull request, on a merge group and on a
-# push to main. The gate refuses a consumer that names anything but a digest this file holds.
+# it. That job is the one copy path, and it runs on every event ci.yaml runs on: a pull request,
+# a merge group and a dispatch. The gate refuses a consumer that names anything but a digest this
+# file holds.
 #
 # To add an image this repository builds rather than copies, push the Dockerfile first: that
 # push is what builds the image and lands it in the package, and the row carrying the digest

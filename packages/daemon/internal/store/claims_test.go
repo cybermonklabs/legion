@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"math"
 	"reflect"
 	"strings"
@@ -46,7 +47,10 @@ func tmuxClaim(token claim.Token) supervise.Claim {
 		// is waiting on, and queue a task the claim was already given.
 		LastStartRow:      7,
 		ServingGeneration: 4,
-		DeliveredRows:     []int64{5, 6},
+		// The look of the production check this claim's worker last took, which says its next
+		// turn's completion is a report on that look rather than a phase completion.
+		ServingCheckLook: supervise.CheckLook{Look: 2, OpenedAt: at(3)},
+		DeliveredRows:    []int64{5, 6},
 	}
 }
 
@@ -56,8 +60,16 @@ func sameClaim(t *testing.T, got, want supervise.Claim) {
 	t.Helper()
 	gotPending, wantPending := got.Pending, want.Pending
 	got.Pending, want.Pending = nil, nil
+	// The served look's check instance is a timestamptz, handed back in the session's zone, so it
+	// is compared as an instant and left out of the whole-struct comparison, as the delivery's
+	// times are below.
+	gotOpened, wantOpened := got.ServingCheckLook.OpenedAt, want.ServingCheckLook.OpenedAt
+	got.ServingCheckLook.OpenedAt, want.ServingCheckLook.OpenedAt = time.Time{}, time.Time{}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("claim read back differs:\n got %+v\nwant %+v", got, want)
+	}
+	if !gotOpened.Equal(wantOpened) {
+		t.Errorf("the served look's check opened %v, want %v", gotOpened, wantOpened)
 	}
 	if (gotPending == nil) != (wantPending == nil) {
 		t.Fatalf("pending delivery read back = %+v, want %+v", gotPending, wantPending)
@@ -68,7 +80,7 @@ func sameClaim(t *testing.T, got, want supervise.Claim) {
 	// Every field but the times is compared whole, so a field added to the delivery is read back
 	// or this fails; the times are compared below as instants.
 	untimed := func(d supervise.Delivery) supervise.Delivery {
-		d.QueuedAt, d.DeliveredAt, d.ConfirmedAt = time.Time{}, time.Time{}, time.Time{}
+		d.QueuedAt, d.DeliveredAt, d.ConfirmedAt, d.CheckLook.OpenedAt = time.Time{}, time.Time{}, time.Time{}, time.Time{}
 		return d
 	}
 	if !reflect.DeepEqual(untimed(*gotPending), untimed(*wantPending)) {
@@ -81,6 +93,7 @@ func sameClaim(t *testing.T, got, want supervise.Claim) {
 		{"QueuedAt", gotPending.QueuedAt, wantPending.QueuedAt},
 		{"DeliveredAt", gotPending.DeliveredAt, wantPending.DeliveredAt},
 		{"ConfirmedAt", gotPending.ConfirmedAt, wantPending.ConfirmedAt},
+		{"CheckLook.OpenedAt", gotPending.CheckLook.OpenedAt, wantPending.CheckLook.OpenedAt},
 	} {
 		if !field.got.Equal(field.want) {
 			t.Errorf("pending delivery %s = %v, want %v", field.name, field.got, field.want)
@@ -109,6 +122,7 @@ func TestAClaimRoundTripsWithItsLocatorAndDelivery(t *testing.T) {
 		Task:        "implement the plan",
 		Phase:       phase.Implementing,
 		Generation:  4,
+		CheckLook:   supervise.CheckLook{Look: 2, OpenedAt: at(3)},
 		QueuedAt:    at(1),
 		DeliveredAt: at(2),
 		Interrupted: true,
@@ -384,6 +398,57 @@ func TestRetireDeliveryRefusesADeliveryTheClaimDoesNotHold(t *testing.T) {
 		t.Errorf("refusal does not name the delivery it refused: %v", err)
 	}
 	c.Pending = &delivery
+	sameClaim(t, onlyClaim(t, store), c)
+}
+
+// A delete that removes no row says one of two things, because pending_task_deliveries is keyed
+// on the claim rather than on the delivery, and the daemon answers them in opposite ways. The
+// row holds no delivery at all: the retirement this caller already committed, whose answer a
+// broken connection lost, which supervise reads as its own write made good. Or the row holds a
+// delivery under another id: a write that rotated the id committed after its answer was cut
+// off, which is no retirement of anything and fails the decision. Only the row can tell them
+// apart, so the store does, in the transaction the delete found nothing in, and the second
+// refusal names both ids — the one asked for and the one the row holds — since an operator
+// reading it has no other way to learn which delivery is stranded.
+func TestRetireDeliveryTellsARetirementAlreadyMadeFromARetirementUnderAnotherId(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	c := tmuxClaim("legion-LEGION-209-reviewer")
+	if err := store.PutClaim(ctx, c); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+
+	err := store.RetireDelivery(ctx, c, "delivery-retired")
+	if !errors.Is(err, supervise.ErrNoSuchDelivery) {
+		t.Fatalf("retiring against a row with no delivery = %v, want supervise.ErrNoSuchDelivery", err)
+	}
+	if errors.Is(err, supervise.ErrOtherDelivery) {
+		t.Fatalf("the refusal of a row holding nothing also reads as one holding another delivery: %v", err)
+	}
+
+	// The rotation committed after its answer was cut off: the row holds the new delivery while
+	// the caller is retiring the old one.
+	rotated := supervise.Delivery{ID: "delivery-rotated", Task: "review it again", QueuedAt: at(8)}
+	if err := store.PutDelivery(ctx, c.Token, rotated); err != nil {
+		t.Fatalf("put the rotated delivery: %v", err)
+	}
+
+	err = store.RetireDelivery(ctx, c, "delivery-old")
+	if !errors.Is(err, supervise.ErrOtherDelivery) {
+		t.Fatalf("retiring against a row holding another delivery = %v, want supervise.ErrOtherDelivery", err)
+	}
+	if errors.Is(err, supervise.ErrNoSuchDelivery) {
+		t.Fatalf("the refusal reads as a retirement already made, which would drop the delivery its caller holds: %v", err)
+	}
+	for _, want := range []string{"delivery-old", rotated.ID} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not name %q: %v", want, err)
+		}
+	}
+
+	// Neither refusal wrote anything: the claim it carried went back with the delete, and the
+	// delivery the row holds is where it was.
+	c.Pending = &rotated
 	sameClaim(t, onlyClaim(t, store), c)
 }
 

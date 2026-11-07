@@ -301,7 +301,7 @@ read the person's comments and replies. Read the wait:
 
 ```sh
 legion state --config legion.yaml --json |
-  jq '.issues["<KEY>"] | {phase, waitingOn, designGate}'
+  jq '.issues["<KEY>"] | {phase, waitingOn, designGate, gatedSteps}'
 ```
 
 `waitingOn.kind` is `ask` for a wait on a question, with `waitingOn.ask` the question, or `gate`
@@ -312,10 +312,11 @@ names how — not always by a person: `ask` or `reply` (a person's act on an ask
 the approval request is on the architect's turn), `closed` (a session or anyone else who is not a
 person closed the question), `turn` (a session handed it back to the agent's turn), `retracted`
 (Dispatch's settlement), and `approved` also when the spec's gate stands open with nobody's
-approval under `gates.design: off`, or when the gate was switched off while the root waited on it. The root is
+approval on a deployment that gates no step, or when the last gated step was taken out of
+`gates.design` while the root waited on it. The root is
 at the front of `admission.waiting` and resumes itself there: at once, holding no slot, once its
-design gate has opened, and at the next free slot while its architect is still writing the first
-spec. Do not park it or
+design gate has opened at every gated step, and at the next free slot while its architect is
+still writing the first design. Do not park it or
 start it by hand. Without `answeredAt`, check, in order:
 
 1. **The question is still with the person.** `dispatch read <KEY>` shows the root's asks. A
@@ -354,6 +355,10 @@ gives its slot back at that daemon's first boot. The gate stays closed until a p
 spec at its current version; `designGate.approvedVersion` is `null`, or lower than `currentVersion`,
 until someone approves the latest version from the document's header or the Inbox. An approval of an
 earlier version does not count: the spec changed since. The merger's `READY` waits on the same approval.
+Where `gates.design` lists more than one step, `gatedSteps` carries one entry per step, each with
+its own `artifactId`, `currentVersion`, `approvedVersion` and `status` (`unregistered`, `waiting`,
+`approved` or `changes_requested`): the tree waits until every entry reads `approved`, and
+`designGate` beside it is the `spec` step's record alone.
 
 ## A parked tree did not come back after a decision
 
@@ -365,8 +370,8 @@ the root on each of these lines:
 
 - `outbox parked decision sent to the controller` or `workflow: a person's decision on a parked
   tree goes to the controller`: the controller received the decision.
-- `outbox parked decision not relayed: it names no person`: the gate opened under
-  `gates.design: off`, so no person made the decision.
+- `outbox parked decision not relayed: it names no person`: the gate opened on a deployment that
+  gates no step, so no person made the decision.
 - `outbox parked decision not relayed: its root is not parked` or `workflow: a decision on a
   lingering root someone moved back into the workflow is not relayed`: someone moved the
   lingering root back to a status of the workflow (`in_progress` and the like), so it is nobody's
@@ -488,6 +493,28 @@ kubectl -n legion describe pod <pod>     # scheduling, image pulls, mounts
 ```
 
 ## A tree does not move after a restart
+
+A restart's wakes go out at the pace the operator set (`worker_wakes_per_minute`, 8 a minute by
+default, with `worker_wake_burst` 1), so a tree whose process has not come back yet may simply be
+waiting its turn. One wake has its session read its whole context again, which the provider charges
+as uncached input — a mean of 576,083 tokens, a median of 493,636 and a ninetieth percentile of
+1,327,888 — and the pacing is what spreads that over the minutes after a restart. A wave sustains
+about two thirds of the rate, about 5 a minute at the default, so a hundred claims take about
+twenty minutes. Read what the pacing still holds before you act on anything below:
+
+```sh
+legion state --config legion.yaml --json | jq '.wakesWaiting'
+```
+
+`legion state` prints the same as a `wakes waiting:` line, and prints no such line when nothing
+waits. Each entry names the `claim`, its `issue` and `role`, the `kind` of wake (`launch`, a role
+process about to start; `plugin-task`, the update task a stale-plugin round queues to a session
+that already runs; `catch-up`, the notice a start writes to an architect that is already running)
+and `dueAt`, the moment the pacing gave it, which is when it runs. An empty array says the wave has
+gone out; the last `dueAt` in it says when the last of the wave goes. A claim on that list needs
+nothing from you: its wake is reserved and it runs at the moment named. Your own requests are what
+drop it — a resume, a retry or a task you send that claim is run at once, taking the reserved wake
+back, so nothing you ask for waits for a turn.
 
 A restart re-adopts every process still running, but a claim with no process runs again only when
 something starts it. A worker is started by the workflow when its phase begins, and a tree's
@@ -668,6 +695,59 @@ is queued for it, since the next phase start or re-admission resumes it as befor
   go. The process is stopped and nothing is started; the claim waits `launching` with no process,
   keeps its task, and the same launch is tried again every `probe_interval_seconds` until the write
   lands. If the line keeps coming, look at the database.
+- **`supervise: a claim write the database did not take`** at Warn, with `store=` (the store
+  method whose call failed) and `owed=`, means the daemon decided something about a claim and its
+  Postgres did not take the write. With `owed=true` the write is kept and made again at that
+  claim's next write that lands, which is the repair at the head of its next decision or a later
+  write that decision makes of the claim as the daemon holds it: the daemon's memory is ahead of
+  the row. The mark is held in memory only, so a daemon that stops while a write is owed loses
+  that write and the reports it carried, as a stop between a decision and its write always has.
+  The line comes again with `owed=true` at each decision whose repair fails again. With
+  `owed=false` a repair's write reached the server, which judged the statement and would judge it
+  the same way again, so the owed write and the reports it carried are dropped and the row stays
+  as it was; that line also carries `droppedReports=`, how many reports went with it, and it is
+  the only record that they were lost — that one is a defect to look at, not an outage. A
+  decision's own write that fails drops the event that decision was handling, as it always has:
+  one the server judged writes no such line and is the `supervise: an event failed` error with
+  the store's message, and one it did not judge writes this line with `owed=true` beside that
+  error. A repair that fails drops nothing, and the decision goes on.
+- **`supervise: the store holds no such delivery; the refusal is of a retirement it has already
+  made`** at Warn, with `delivery=`, means the daemon retired a task and the store answered that
+  the claim's row holds no delivery at all: the retirement this daemon already made, whose answer
+  an earlier broken connection lost. The line is written for that refusal and for no other. Memory
+  drops the delivery to match the row and the claim goes on deciding, and the line is followed by
+  the one above with `store=RetireDelivery` and `owed=true`, since that transaction rolled the
+  claim write back with the delete and it is made again at the claim's next decision. The store's
+  other refusal of the same delete — `the claim's row holds another delivery`, naming both the
+  delivery asked for and the one the row holds — is not this one and writes no line of its own. It
+  means a write that rotated the delivery's id, an interruption or a take-back, committed after
+  its answer was cut off, so the store holds one delivery where the daemon's memory holds another.
+  That refusal fails the decision as any other store failure does, reaching the log as `supervise:
+  an event failed` with the store's message, and owes no write: read as a retirement already made
+  it would drop the delivery memory holds and leave the stored one pending and retired by nobody.
+  The decision that met it is the one event lost. The daemon marks the delivery its memory holds
+  unwritten, so it writes that delivery over the row the rotation left, at the latest at the
+  claim's next decision, and the retirement that follows it, once the task's turn is over, finds
+  it under the id memory holds; the claim decides every event after the one the refusal cost, and
+  no restart is needed to bring the row and memory together. A person's decision the rotated row
+  held is not lost: the tree's next start or catch-up names it again, at worst a second time.
+- **`supervise: a claim write the database did not take was made`** at Info, with `store=` (the
+  store method that landed), is the close of that story: the owed write landed, and the row says
+  what the daemon holds again. The reports that write carried — a turn that started, a claim that
+  went ready or failed — are made right behind it, oldest first and before the report of the
+  decision whose write landed, except one of a generation the claim has left (`supervise: an owed
+  report is dropped; the claim has left the generation it was owed at`, at Info with its `state=`
+  and `generation=`). A claim whose last `owed=true` line has no such line after it is still
+  behind, and its next decision will try again; one whose last line is `owed=false` has dropped
+  the write, and nothing tries it again.
+- **`supervise: a turn started`** and **`supervise: a turn ended`** at Info, each with the claim
+  and its `generation`, and with `delivery=` where the turn is a task's, are how a reader tells a
+  turn that started from one the daemon never saw, and a turn that ended from one still running.
+  A start with no end means the turn is running, or that it ended another way: look for
+  `supervise: process died`, `supervise: the agent's turn has not ended; suspending it mid-turn`,
+  `supervise: claim failed`, `supervise: the agent reported its exit`, `supervise: the process
+  speaks another plugin contract; relaunching it onto the current plugin`, or `supervise: the
+  update round is over for this claim`, each of which says what became of the turn instead.
 - **`supervise: restoring a launch the previous daemon did not finish as launch_uncertain; no
   process is recorded for it`** at boot names a claim the store held live with no process, with the
   state it was stored in (`stored=`): a launch the previous daemon began and never recorded. The
@@ -861,7 +941,7 @@ it, then look at what the row `waitsOn` names is doing.
 
 A pull request's opened, push, review or CI settlement, or a Dispatch status change, reaches the
 daemon as a message on the `ENVOY_NOTIFICATIONS` stream and waits there until the daemon's durable
-consumer for it gets to it. `legion state` shows how far behind each of the three consumers is on
+consumer for it gets to it. `legion state` shows how far behind each consumer is on
 its `consumer` lines ([Running Legion](/legion/legion/running-legion/#observe)), and `--json`
 under `consumers`:
 
@@ -885,10 +965,14 @@ legion state --config legion.yaml --json | jq '.consumers[] | {name, waiting, ol
   The daemon is handling none of them: each delivery fails and is put back to retry (the database
   out of reach, say), or the message in hand does not finish. Search the daemon's log for
   `retryable intake processing failure` and the other warnings naming a `subject` of that
-  consumer, whose `error` says what fails. A consumer that stops is not a stall: it stops the
-  daemon (`workflow intake stopped: …`).
+  consumer, whose `error` says what fails. A handler that does not finish writes none of those
+  while it holds: intake reports its message in progress, and the stall is all that shows until
+  the handler passes its ten-minute limit and the daemon writes `an intake handler outran its
+  limit and was cut`, so search for that line too
+  ([GitHub, NATS and the Secrets Broker](#github-nats-and-the-secrets-broker)). A consumer that
+  stops is not a stall: it stops the daemon (`workflow intake stopped: …`).
 - **`unavailable`** names what NATS did not answer in time, or refused; the rest of the state is
-  served all the same. The three consumers are read at the same time, each within two seconds,
+  served all the same. Every consumer is read at the same time, each within two seconds,
   so one consumer's read that does not answer leaves the others' as they are. `read the consumer's
   info: …` leaves `waiting` 0 and `stalled` false, since neither is known: check that the daemon
   reaches NATS and that the consumer exists (`nats consumer info ENVOY_NOTIFICATIONS <name>`).
@@ -945,6 +1029,40 @@ notice comes once per handoff commit, from whichever pass finds it first.
   still records each open pull request GitHub lists, applies a lost close, merge or push, settles a
   head's CI from its check runs and tells an architect `pull-request-missing`, so none of those
   waits for the backlog to drain.
+- **`an intake handler outran its limit and was cut`** (a warning with `consumer`, `event_id`,
+  `fact` and `limit`). One message's handling ran past `limit`, ten minutes, which no setting
+  changes, so the daemon cut it and naked the message: nothing of that event was applied, and
+  JetStream delivers it again. While a handler runs, intake reports its message in progress, so a
+  handler that hangs shows neither as the preparation work of a redelivery nor as a rising
+  `delivered` count, and this warning is the one line that names the cut. The warning written
+  right after it with the same `event_id` names the step that was running, with the error
+  `context deadline exceeded`. Each Dispatch or GitHub read is cut on its own at the
+  acknowledgement window, so a handling that reaches ten minutes is most often waiting on the
+  database. One Postgres advisory lock is what it most often waits on,
+  `pg_advisory_xact_lock(hashtext('legion.apply_fact'))`, which every fact takes for the length of
+  its transaction and the daemon's other lifecycle writes take too, so the holder is as often one
+  of those as another fact. Ask the daemon's database who holds it rather than guessing:
+
+  ```sql
+  select a.pid, a.state, a.xact_start, a.query
+    from pg_locks l
+    join pg_stat_activity a on a.pid = l.pid
+   where l.locktype = 'advisory'
+     and l.classid = (hashtext('legion.apply_fact')::bigint >> 32 & 4294967295)::oid
+     and l.objid = (hashtext('legion.apply_fact')::bigint & 4294967295)::oid
+     and l.objsubid = 1
+   order by l.granted desc, a.xact_start;
+  ```
+
+  The first row is the holder, the rest are waiting on it, and `xact_start` says how long it has
+  held. The next delivery of the same event takes the same path and is cut the same way.
+- **`an intake fact outlived its acknowledgement window and was held in progress while it ran`**
+  (an info line with `consumer`, `event_id`, `delivered` and `took`). The handling took longer
+  than the consumer's acknowledgement window (`worker_rpc_timeout_seconds`), and intake held the
+  delivery for `took` rather than let JetStream deliver the event a second time. The fact was
+  applied: this is a fact that is slow, not one that failed, and this is the only line that says
+  how long a fact took. One of them asks nothing of an operator; a `took` creeping towards the
+  ten-minute limit, or many at once, names where to look for the slow read behind them.
 - **`webhook App missing on <repo>: <reason>`** in `legion state` (`repositories.withoutWebhookApp`
   in `--json`). Dispatch's GitHub App, the Envoy App whose webhook carries GitHub's events, is not
   known to be installed on a repository the daemon serves. With `Dispatch's GitHub App is not

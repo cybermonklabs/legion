@@ -365,8 +365,7 @@ const streamFullPrefix = "envoy: the message bus refused the message because its
 // A message the stream refused because it is full (bus.ErrStreamFull) is answered ahead of the
 // bus-unavailable 503 too, with a 503 and Retry-After of its own under streamFullPrefix: the bus
 // answered, so the body must not say it did not, but the same message is taken once the stream
-// has room, so the caller's retry is right. A republish that failed because the stream is full
-// (bus.ErrNotStored wrapping bus.ErrStreamFull) is answered the same way.
+// has room, so the caller's retry is right.
 func writeBusUnavailable(w http.ResponseWriter, err error) int {
 	if errors.Is(err, bus.ErrPublishDenied) {
 		writeJSONError(w, http.StatusForbidden, fmt.Sprintf("%s: %s", publishDeniedPrefix, err))
@@ -990,7 +989,11 @@ type sessionInfo struct {
 	State     session.State `json:"state"`
 	MachineID string        `json:"machine_id"`
 	Host      string        `json:"host"`
-	Dir       string        `json:"dir"`
+	// TmuxPlace is where the session's process sits in tmux, as its last registration reported
+	// it. Absent, rather than null, for a session in no pane: a cluster whose sessions run
+	// outside tmux adds no bytes to any row of this list.
+	TmuxPlace *session.TmuxPlace `json:"tmux_place,omitempty"`
+	Dir       string             `json:"dir"`
 	// Port is 0 for every entry this listener writes: it refuses a registration that names a
 	// serving port (subscribeHandler) and delivers to no port. An entry an earlier listener
 	// stored with a port is answered with that port until it lapses (the session bucket's TTL).
@@ -1063,6 +1066,7 @@ func sessionInfoWith(entry session.ListEntry, held []string) sessionInfo {
 		State:          entry.State,
 		MachineID:      entry.MachineID,
 		Host:           entry.HostOrMachine(),
+		TmuxPlace:      entry.TmuxPlace,
 		Dir:            entry.Dir,
 		Port:           entry.Port,
 		Title:          entry.Title,
