@@ -54,6 +54,7 @@ import {
   activeDispatchSettings,
   dispatchSettings,
 } from "@legion/envoy-client/dispatch-config";
+import { defaultExec } from "@legion/envoy-client/dispatch-cwd";
 import {
   dispatchFirstSkillFile,
   readDispatchFirstContext,
@@ -73,6 +74,7 @@ import {
 import { subscriptionRemovedTopics } from "@legion/envoy-client/dispatch-subscribe";
 import { askgateSetting, readEnvoyConfig } from "@legion/envoy-client/envoy-config";
 import {
+  DEFAULT_TMUX_PLACE_CACHE_MS,
   heartbeatRetryDelayMs,
   MIN_PASS_DEADLINE_MS,
   REGISTRATION_SETTLE_MS,
@@ -108,6 +110,8 @@ import {
   sessionSettings,
 } from "@legion/envoy-client/session-settings";
 import { postSlackReply } from "@legion/envoy-client/slack-post";
+import { readTmuxPlace, type TmuxPlace } from "@legion/envoy-client/tmux-place";
+import { createTmuxPlaceCache } from "@legion/envoy-client/tmux-place-cache";
 import {
   EnvoyToolOperation,
   envoyToolSpecs,
@@ -170,7 +174,7 @@ import {
   modelReference,
 } from "../src/agent-stream";
 import { CardAges } from "../src/card-age";
-import { CardWake } from "../src/card-wake";
+import { CardWake, type EnvoyCardMarker } from "../src/card-wake";
 import { transcriptPictures, withDeliveredPictures } from "../src/delivery-pictures";
 import { withDispatchFirst } from "../src/dispatch-first";
 import { sessionDispatchClient } from "../src/dispatch-session";
@@ -206,7 +210,7 @@ import { ServerClock } from "../src/server-clock";
 import { type CarriedAnswers, withSessionAnswers } from "../src/session-answers-context";
 import { sideTurn } from "../src/side-turn";
 import { TypedPictures } from "../src/typed-pictures";
-import { type CardDelivery, UnwrittenFrames, unwrittenCardKeys } from "../src/unwritten-frames";
+import { type CardDelivery, UnwrittenFrames } from "../src/unwritten-frames";
 import { type AskGateRegistration, registerAskGate } from "./askgate/askgate";
 import {
   ADVISOR_GATE_ENTRY_TYPE,
@@ -1142,6 +1146,9 @@ export default function envoyExtension(pi: PiApi): void {
   // on the message it writes, beside the wake's card marker. An `inert` card is a steer that starts
   // no turn on an idle host; a turn streaming when it is handed takes it and runs another model
   // turn for it, so `UnwrittenFrames` hands an inert card only to a settled host (`hostSettled`).
+  // It carries `details` of its own all the same, the hand-over state `inert`, so a reading of the
+  // stored transcripts says which state held every waiting card; it carries no `envoyCard`, since
+  // the wake tracks no inert card and an id there would name nothing.
   // Every other card goes as the wake says (`CardWake.deliveryFor`): an aside with `triggerTurn`,
   // never a steer, so no card waits in the steering queue a person's typed message uses; the wake
   // records a startup card, which goes as a follow-up, before the host has it.
@@ -1151,14 +1158,13 @@ export default function envoyExtension(pi: PiApi): void {
     identity: DedupeIdentity | undefined
   ): void => {
     const known = identity === undefined ? {} : replayLedgerIdentity(identity);
-    const frame = unwrittenCardKeys(known).length === 0 ? undefined : { ...known };
     if (deliverAs === "inert") {
       pi.sendMessage(
         {
           customType: "envoy-message",
           content,
           display: true,
-          ...(frame === undefined ? {} : { details: frame }),
+          details: { ...known, handOver: "inert" } satisfies Pick<EnvoyCardMarker, "handOver">,
         },
         { deliverAs: "steer", triggerTurn: false }
       );
@@ -1169,7 +1175,7 @@ export default function envoyExtension(pi: PiApi): void {
       activeSessionContext
     );
     pi.sendMessage(
-      { customType: "envoy-message", content, display: true, details: { ...frame, ...details } },
+      { customType: "envoy-message", content, display: true, details: { ...known, ...details } },
       options
     );
   };
@@ -2726,6 +2732,22 @@ export default function envoyExtension(pi: PiApi): void {
     await registrationState.deregister(id);
   };
 
+  // Where this session's pane sits in tmux, so Dispatch can draw the machine's layout from what
+  // the sessions themselves report. The reading runs between registrations, never inside one: a
+  // registration takes what the cache holds in the turn it is built (`sendRegistration`), so a
+  // tmux server driving a wall of panes delays no registration and leaves none in flight behind
+  // a slow call. The cache reads once a `tmuxPlaceCacheMs` — on a timer of its own between the
+  // heartbeats, which are three lifetimes apart — rather than once a registration, so a shared
+  // server is asked once a lifetime by each of its sessions and the place a registration carries
+  // is a lifetime old rather than a heartbeat old. A session shutting down stops that timer and
+  // stops the reading already away from writing anything (`createTmuxPlaceCache`).
+  const tmuxPlaces = createTmuxPlaceCache({
+    read: () => readTmuxPlace(process.env, defaultExec),
+    lifetimeMs: () => active?.settings.tmuxPlaceCacheMs ?? DEFAULT_TMUX_PLACE_CACHE_MS,
+    onFailure: (error) =>
+      logger.debug("envoy: the tmux place reading failed", { error: messageFor(error) }),
+  });
+
   // What this session registers with the listener, read afresh at every registration. The
   // listener delivers nothing to a self-subscribed session (it takes its topics over its own
   // NATS subscriptions), so the registered topics serve recovery on resume; a role-bound subject
@@ -2734,7 +2756,10 @@ export default function envoyExtension(pi: PiApi): void {
   // While the session's relay subject is open, the registration asks for consumer delivery
   // (`delivery`: the relay's epoch and resume point), the relay taking the topics it carries as
   // followed first; its answer says whether the listener relays them.
-  const registrationInput = (asking: Relay | undefined): RegistrationInput => {
+  const registrationInput = (
+    asking: Relay | undefined,
+    place: TmuxPlace | undefined
+  ): RegistrationInput => {
     const own = agentSubject(sessionID);
     const topics = [
       ...new Set([
@@ -2762,6 +2787,7 @@ export default function envoyExtension(pi: PiApi): void {
       selfSubscribed: true,
       plugin: { name: packageName, version: packageVersion },
       ...(asking === undefined ? {} : { delivery: asking.delivery.registration() }),
+      ...(place === undefined ? {} : { place }),
     };
   };
 
@@ -2769,9 +2795,15 @@ export default function envoyExtension(pi: PiApi): void {
   // queue, a queued task's own fenced `handle.register` inside one. While this session's relay
   // subject is open the registration asks for consumer delivery, and the answer decides whether
   // the listener relays the topics it carried (`takeDeliveryAnswer`).
-  const sendRegistration = (
+  const sendRegistration = async (
     send: (input: RegistrationInput) => Promise<SubscribeResult>
   ): Promise<SubscribeResult> => {
+    // Taken in the turn this call starts, with no await ahead of it, so the whole body is built
+    // and posted without a tmux call in between: the session the deregistration at shutdown
+    // waits out is the one that reaches the wire, and no registration can resume behind the
+    // DELETE (dispatch://INFRA-392). The cache answers the last reading, none while it has had
+    // none, and starts the reading the registration after this one carries.
+    const place = tmuxPlaces.place();
     const registeringFor = sessionID;
     // While a sweep still owes the session's own inbox from the stream's oldest message (its start
     // could not be read when it registered with NATS down, `ReplayEngine.startPending`), the
@@ -2783,11 +2815,10 @@ export default function envoyExtension(pi: PiApi): void {
       replay?.startPending() !== true
         ? relay
         : undefined;
-    const input = registrationInput(asking);
-    return send(input).then((result) => {
-      takeDeliveryAnswer(registeringFor, input.topics, asking, result);
-      return result;
-    });
+    const input = registrationInput(asking, place);
+    const result = await send(input);
+    takeDeliveryAnswer(registeringFor, input.topics, asking, result);
+    return result;
   };
 
   // Registers the session outside any queue, carrying this instance's client instance id: a
@@ -3598,6 +3629,10 @@ export default function envoyExtension(pi: PiApi): void {
 
   pi.on("session_shutdown", async (_event, context) => {
     shuttingDown = true;
+    // A reading still away answers nobody from here on: the DELETE below is what the session
+    // leaves behind, and a place written after it would be a registration the heartbeat has
+    // stopped refreshing (dispatch://INFRA-392).
+    tmuxPlaces.shutDown();
     cardWake.cancel();
     if (publishedInterface !== undefined) {
       const bound = publishedInterface.roleClaim.instances.indexOf(claimInstance);

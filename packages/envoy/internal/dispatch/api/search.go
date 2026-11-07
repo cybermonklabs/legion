@@ -391,14 +391,15 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
 // own rows pay for one lateral fetch of their text and, after that, a snippet. totals is joined
 // outside the page, so a page past the end still answers how many rows the query matches. This is
 // the keyword-only fallback (LEGION-549 degraded mode); the related-item check runs its body,
-// with its keyword arms ranked by relatedCoordinationRank, over its own q.
+// with its keyword arms ranked by relatedCoordinationRank, over its own q and with the owners it
+// leaves out filtered out of kinds (searchKindsCTE).
 //
 // Parameters: $1 q, $2 project (empty for every project), $3 limit, $4 firstTerm,
 // $5 headlineOptions, $6 offset, $7 contracts.SearchKindDepth, $8 searchFusionK, then
 // searchQOpener's own six from $9: $9 the fallback's rarest words, $10 the words it excludes,
 // $11 the issues the query names by key, $12 status, $13 author, $14 updated_since
 // (searchQueryArguments).
-var searchQuery = searchQOpener(9) + searchQueryBody(searchKeywordLegsSQL)
+var searchQuery = searchQOpener(9) + searchQueryBody(searchKeywordLegsSQL, "")
 
 // searchQOpener opens searchQuery and searchQueryMeaning: their q, the query text read as
 // websearch_to_tsquery, its first term ($4) for the snippet window, the issues the query names by
@@ -431,12 +432,32 @@ with q as (select
 `, base, base+1, base+2, base+3, base+4, base+5)
 }
 
-// searchQueryBody is searchQuery after its q, over keywordLegs (searchKeywordLegs): every CTE it
-// reads q from and the page.
-func searchQueryBody(keywordLegs string) string {
-	return `kinds as (` + keywordLegs + `
+// searchKindsCTE is the kinds CTE both bodies open with: the arms whose rows the query ranks,
+// with every row exclude names dropped before anything ranks, counts or pages them. exclude is
+// an SQL predicate over the arms' own columns, true of a row the caller leaves out, and empty
+// for a query that leaves nothing out, whose text is then the arms as they stand. Search leaves
+// nothing out; the related-item check passes relatedExcludedOwners, because the page it takes is
+// ten rows deep (suggestionSearchDepth) and rows dropped after that page took places in it and
+// hid the matches the check exists to find (INFRA-1160).
+//
+// The arms are a union whose first select names every column, so the derived table the filter
+// reads carries those names on to ranked below unchanged.
+func searchKindsCTE(arms, exclude string) string {
+	if exclude == "" {
+		return `kinds as (` + arms + `
 ),
-ranked as (
+`
+	}
+	return `kinds as (select * from (` + arms + `
+) arms where not (` + exclude + `)
+),
+`
+}
+
+// searchQueryBody is searchQuery after its q, over keywordLegs (searchKeywordLegs) and without
+// or with an exclusion (searchKindsCTE): every CTE it reads q from and the page.
+func searchQueryBody(keywordLegs, exclude string) string {
+	return searchKindsCTE(keywordLegs, exclude) + `ranked as (
   select *, row_number() over (partition by kind order by own desc, r desc, updated_at desc, id) as pos,
          count(*) over (partition by kind) as matches
     from kinds
@@ -550,10 +571,11 @@ func (s *server) beginMeaningScan(ctx context.Context) (pgx.Tx, error) {
 // $10 searchMeaningFloor, $11 the query embedder's identity, then searchQOpener's own six from
 // $12: $12 the fallback's rarest words, $13 the words it excludes, $14 the issues the query names
 // by key, $15 status, $16 author, $17 updated_since (searchMeaningQueryArguments).
-var searchQueryMeaning = searchQOpener(12) + searchQueryMeaningBody(searchKeywordLegsSQL)
+var searchQueryMeaning = searchQOpener(12) + searchQueryMeaningBody(searchKeywordLegsSQL, "")
 
-// searchQueryMeaningBody is searchQueryMeaning after its q, over keywordLegs (searchKeywordLegs).
-func searchQueryMeaningBody(keywordLegs string) string {
+// searchQueryMeaningBody is searchQueryMeaning after its q, over keywordLegs (searchKeywordLegs)
+// and without or with an exclusion (searchKindsCTE).
+func searchQueryMeaningBody(keywordLegs, exclude string) string {
 	return `meaning_issue_candidates as (
   select i.key as issue_key, i.key as id, i.title as issue_title, i.status as issue_status, i.updated_at,
          1 - (e.embedding <=> $9::vector) as r
@@ -658,14 +680,12 @@ meaning_message as (
     from meaning_message_candidates where r >= $10
    order by meaning_message_candidates.id, r desc, window_id
 ),
-kinds as (` + keywordLegs + `
+` + searchKindsCTE(keywordLegs+`
   union all select * from meaning_issue
   union all select * from meaning_document
   union all select * from meaning_comment
   union all select * from meaning_ask
-  union all select * from meaning_message
-),
-ranked as (
+  union all select * from meaning_message`, exclude) + `ranked as (
   select *, row_number() over (partition by kind, list order by own desc, r desc, updated_at desc, id) as pos
     from kinds
 ),

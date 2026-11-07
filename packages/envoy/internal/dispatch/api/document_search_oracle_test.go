@@ -378,8 +378,8 @@ var (
 	// oracle is for; a change to the rest moves both, which main's frozen meaning copy would have
 	// caught and this does not. That is the price of a meaning body whose rows main's own text
 	// cannot see.
-	searchQueryMeaningOverMainsDocumentArm  = searchQOpener(12) + searchQueryMeaningBody(mainSearchKeywordLegsSQL)
-	relatedMeaningQueryOverMainsDocumentArm = relatedQOpener + relatedTermWeights(12) + searchQueryMeaningBody(mainRelatedKeywordLegs)
+	searchQueryMeaningOverMainsDocumentArm  = searchQOpener(12) + searchQueryMeaningBody(mainSearchKeywordLegsSQL, "")
+	relatedMeaningQueryOverMainsDocumentArm = relatedQOpener + relatedTermWeights(12) + searchQueryMeaningBody(mainRelatedKeywordLegs, "")
 )
 
 // mainRelatedProbeSQL is main's relatedProbeSQL, the fifth statement of R1.
