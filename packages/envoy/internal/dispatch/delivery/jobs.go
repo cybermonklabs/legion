@@ -144,7 +144,7 @@ func (j *JobIntake) Run(ctx context.Context) {
 			sub, outcome := j.bind(ctx, stopping)
 			if outcome == bindBound {
 				// Nothing polls while this process holds the durable; a give-up starts the ticker
-				// again, at the cost of one early poll when a tick was already in the channel.
+				// again, a full durableBindInterval from the Reset, as Intake.Run's does.
 				binds.Stop()
 				select {
 				case <-ctx.Done():

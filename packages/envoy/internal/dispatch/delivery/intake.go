@@ -126,8 +126,9 @@ func (in *Intake) Run(ctx context.Context) {
 		if in.settings.Load() != nil && in.nats.Connected() {
 			if in.bind(ctx, stopping) == bindBound {
 				// Nothing polls while this process holds the durable, so the ticker stops here
-				// rather than waking every two seconds; a give-up starts it again, at the cost of
-				// one early poll when a tick was already in the channel.
+				// rather than waking every two seconds; a give-up starts it again, a full
+				// durableBindInterval from the Reset, since a tick prepared before a Stop or a
+				// Reset is never received after it (Go 1.23's timer channels).
 				binds.Stop()
 				select {
 				case <-ctx.Done():

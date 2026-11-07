@@ -174,7 +174,18 @@ func (d *intakeDelivery) stop(ctx context.Context) {
 		// Returns once every handler has, which a handler given up (abandon) does promptly: its
 		// GitHub calls and its writes all run under its context.
 		d.keys.wait()
-		d.awaitLiveConnection(ctx)
+		// Only a hand-back needs a connection. With nothing held and the handle ended rather
+		// than drained -- the unsubscribe a give-up with the link down makes, which leaves
+		// nats.go delivering this callback nothing more -- there is no acknowledgement to wait
+		// for, and waiting would hold this stop's caller through the whole outage: the undo of a
+		// bind the server never confirmed runs inside the durable's consumer lease, so no other
+		// process could take the durable over for every second of it.
+		d.mu.Lock()
+		holding := len(d.held)
+		d.mu.Unlock()
+		if holding > 0 || draining != nil {
+			d.awaitLiveConnection(ctx, holding)
+		}
 		d.mu.Lock()
 		d.released = true
 		held := d.held
@@ -215,8 +226,10 @@ func (d *intakeDelivery) stop(ctx context.Context) {
 // that lease for as long as the process lives, and no other process could reconcile the durable.
 //
 // The signal is taken before the connection's state is read, as ConnectionChanged's own contract
-// asks, so a connection installed between the two still wakes the wait.
-func (d *intakeDelivery) awaitLiveConnection(ctx context.Context) {
+// asks, so a connection installed between the two still wakes the wait. holding is how many
+// messages the stop has to hand back, for the line a wait the budget ends writes: its caller
+// waits at all only while there are messages or a drain that may yet deliver one.
+func (d *intakeDelivery) awaitLiveConnection(ctx context.Context, holding int) {
 	waiting, cancel := context.WithTimeout(ctx, intakeStopBudget)
 	defer cancel()
 	waitedFrom := time.Now()
@@ -228,7 +241,7 @@ func (d *intakeDelivery) awaitLiveConnection(ctx context.Context) {
 		select {
 		case <-waiting.Done():
 			slog.Warn("dispatch delivery: no NATS connection to hand the intake's messages back on; they wait out the ack wait",
-				"waited", time.Since(waitedFrom), "ack_wait", intakeAckWait())
+				"messages", holding, "waited", time.Since(waitedFrom), "ack_wait", intakeAckWait())
 			return
 		case <-changed:
 		}
