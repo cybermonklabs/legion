@@ -71,8 +71,8 @@ export const DEFAULT_STALL_LIMITS: StallLimits = {
   // add four minutes to the ladder the daemon's own backstop bound must stay above. The second
   // step's own wait on the host's `abort()` is bounded by this same number and adds nothing to
   // those four minutes: the gap is counted from the sweep that ran the step, not from the moment
-  // the step handed back, and one sweep waits it once for the whole turn, however many of its
-  // calls are overdue together (`src/stall-watchdog.ts`, `abortTurn`).
+  // the step handed back, and one turn waits it once, however many of its calls go overdue and
+  // in however many sweeps they reach that step (`src/stall-watchdog.ts`, `abortTurn`).
   stepMs: 120_000,
 };
 

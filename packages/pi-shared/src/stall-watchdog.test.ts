@@ -540,9 +540,9 @@ test("an abort whose Promise never settles hands back at the step gap, and the l
 });
 
 test("two calls of one turn overdue together take one abort, one message and one step gap", async () => {
-  // The abort ends the turn, not one call, so the second step is one act for the sweep however
-  // many of the turn's calls are overdue. Its wait on the host's `abort()` is bounded by a real
-  // host timer, as in the case above, so k aborts in one sweep would be k of those waits and the
+  // The abort ends the turn, not one call, so the second step is one act for the turn however
+  // many of its calls are overdue. Its wait on the host's `abort()` is bounded by a real host
+  // timer, as in the case above, so k aborts in one sweep would be k of those waits and the
   // last call's third step would come (k-1) gaps late — which is the arithmetic the daemon's own
   // backstop floor is computed from (`src/stall-limits.ts`, `stepMs`).
   const gap = SECOND;
@@ -575,8 +575,8 @@ test("two calls of one turn overdue together take one abort, one message and one
     "abort-turn",
   ]);
   expect(r.steps[3]?.outcome).toBe(
-    "this sweep had already run the turn's abort() for another overdue call of it, so this call " +
-      "took no abort and no message of its own"
+    "this turn's abort() had already been run for toolu_1, so this call took no abort and no " +
+      "message of its own"
   );
   // The sweep paid the abort's bounded wait once and not twice.
   expect(waited).toBeGreaterThan(gap / 2);
@@ -590,6 +590,143 @@ test("two calls of one turn overdue together take one abort, one message and one
   await r.watchdog.sweep();
   expect(r.steps.slice(4).map((step) => step.step)).toEqual(["exit-process", "exit-process"]);
   expect(r.exitCodes[0]).toBe(STALL_EXIT_CODE);
+});
+
+test("two calls of one turn that reach the abort in sweeps of their own take one abort between them", async () => {
+  // The fact the step keeps is the turn's and not the sweep's. Two calls of one turn judged by
+  // different numbers go overdue in sweeps of their own, so a fact kept per sweep would run the
+  // turn's `abort()` twice, send two messages for one ended turn, and — where the second abort
+  // falls in the sweep that carries the other call to its last step, which the map's order
+  // decides — pay the bounded wait again ahead of that step and push it a gap late. The gap is
+  // a real host timer here, as in the two cases above, so it is wall-clock and short.
+  const gap = SECOND / 2;
+  const r = rig({ limits: { stepMs: gap } });
+  r.abortHangs = true;
+  // `toolu_1` is judged by the role's bound (an hour) and `toolu_2` by its own deadline (its
+  // tool's 300 seconds and the 5-minute grace), so the call the map lists first is the one that
+  // reaches the abort second.
+  running(r.watchdog, "eval", { code: "while True: pass" }, "toolu_1");
+  running(r.watchdog, "bash", { command: "sleep 100000", pty: true }, "toolu_2");
+
+  // Ten minutes in, only `toolu_2` is overdue, and it takes the first step alone.
+  r.tick(10 * MINUTE + SECOND);
+  await r.watchdog.sweep();
+  expect(r.steps.map((step) => [step.call.toolCallId, step.step])).toEqual([
+    ["toolu_2", "end-processes"],
+  ]);
+
+  // Past the hour: `toolu_1` is overdue now and takes its own first step, and `toolu_2` takes
+  // the second — the turn's one `abort()`, which hangs, and the one message naming it.
+  r.tick(50 * MINUTE);
+  await r.watchdog.sweep();
+  expect(r.aborts).toHaveLength(1);
+  expect(r.messages).toHaveLength(1);
+  expect(r.messages[0]).toContain("toolu_2");
+  expect(r.steps.map((step) => [step.call.toolCallId, step.step])).toEqual([
+    ["toolu_2", "end-processes"],
+    ["toolu_1", "end-processes"],
+    ["toolu_2", "abort-turn"],
+  ]);
+
+  // `toolu_1` reaches the second step a sweep later. The turn's abort has run, so this call
+  // makes none, sends nothing and waits for nothing — and `toolu_2`, which the map lists behind
+  // it, takes its last step in this same sweep rather than a gap late.
+  r.tick(2 * gap);
+  const began = Date.now();
+  await r.watchdog.sweep();
+  const waited = Date.now() - began;
+  // The three facts the reviewer measured, in one answer: one `abort()` for the turn, one
+  // message for it, and a sweep that waited on no abort — a second one would have cost this
+  // sweep the whole bounded gap ahead of `toolu_2`'s last step below.
+  expect({
+    aborts: r.aborts.length,
+    messages: r.messages.length,
+    waitedOnAnAbort: waited > gap / 2,
+  }).toEqual({ aborts: 1, messages: 1, waitedOnAnAbort: false });
+  expect(r.steps.slice(3).map((step) => [step.call.toolCallId, step.step])).toEqual([
+    ["toolu_1", "abort-turn"],
+    ["toolu_2", "exit-process"],
+  ]);
+  expect(r.steps[3]?.outcome).toBe(
+    "this turn's abort() had already been run for toolu_2, so this call took no abort and no " +
+      "message of its own"
+  );
+  expect(r.exitCodes).toEqual([STALL_EXIT_CODE]);
+
+  // Each call records the second step exactly once, and `toolu_1` reaches its own last step one
+  // gap after its own second, carried by neither call's clock but its own.
+  r.tick(2 * gap);
+  await r.watchdog.sweep();
+  expect(r.steps.filter((step) => step.step === "abort-turn")).toHaveLength(2);
+  expect(r.steps.slice(5).map((step) => [step.call.toolCallId, step.step])).toEqual([
+    ["toolu_1", "exit-process"],
+  ]);
+});
+
+/** Each path that clears a turn's calls, and so the turn's one abort with them. A call closing
+ * is not one of them: it is the one closer that leaves the rest of the turn standing. */
+const TURN_CLEARERS: readonly {
+  readonly name: string;
+  readonly clear: (w: StallWatchdog) => void;
+}[] = [
+  { name: "the turn's end", clear: (w) => w.turnEnded() },
+  { name: "a session switch", clear: (w) => w.sessionChanged() },
+  {
+    name: "an assistant message that ends aborted",
+    clear: (w) => w.assistantMessage({ role: "assistant", stopReason: "aborted" }),
+  },
+];
+
+test("the next turn aborts for itself, whichever path ended the turn that was aborted", async () => {
+  for (const clearer of TURN_CLEARERS) {
+    const r = await stuckShellCall();
+    r.tick(2 * MINUTE);
+    await r.watchdog.sweep();
+    expect(r.aborts, clearer.name).toHaveLength(1);
+
+    clearer.clear(r.watchdog);
+
+    // A later turn of the same session, with a stuck call of its own: the abort it needs is not
+    // the one the turn before it had.
+    running(r.watchdog, "bash", { command: "sleep 100000", pty: true }, "toolu_2");
+    r.tick(10 * MINUTE + SECOND);
+    await r.watchdog.sweep();
+    r.tick(2 * MINUTE);
+    await r.watchdog.sweep();
+    expect(r.aborts, clearer.name).toHaveLength(2);
+    expect(r.messages[1], clearer.name).toContain("toolu_2");
+    expect(r.steps.at(-1)?.outcome, clearer.name).toContain(
+      "the turn was ended with the host's abort()"
+    );
+  }
+});
+
+test("a call closing clears no turn's abort: a later call of the same turn takes none", async () => {
+  const r = await stuckShellCall();
+  r.tick(2 * MINUTE);
+  await r.watchdog.sweep();
+  expect(r.aborts).toHaveLength(1);
+
+  // The host closes the aborted call, and the turn runs on — the abort did not end it — with a
+  // second call that goes overdue later. One abort was made for this turn and no second is.
+  r.watchdog.executionEnded({ toolCallId: "toolu_1" });
+  running(r.watchdog, "bash", { command: "sleep 100000", pty: true }, "toolu_2");
+  r.tick(10 * MINUTE + SECOND);
+  await r.watchdog.sweep();
+  r.tick(2 * MINUTE);
+  await r.watchdog.sweep();
+  expect(r.aborts).toHaveLength(1);
+  expect(r.messages).toHaveLength(1);
+  expect(r.steps.map((step) => [step.call.toolCallId, step.step])).toEqual([
+    ["toolu_1", "end-processes"],
+    ["toolu_1", "abort-turn"],
+    ["toolu_2", "end-processes"],
+    ["toolu_2", "abort-turn"],
+  ]);
+  expect(r.steps.at(-1)?.outcome).toBe(
+    "this turn's abort() had already been run for toolu_1, so this call took no abort and no " +
+      "message of its own"
+  );
 });
 
 test("a turn the abort ended never reaches the exit", async () => {

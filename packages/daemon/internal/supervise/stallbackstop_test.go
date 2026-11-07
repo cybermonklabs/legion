@@ -3,6 +3,12 @@ package supervise
 import (
 	"context"
 	"errors"
+	"go/ast"
+	"go/parser"
+	gotoken "go/token"
+	"path/filepath"
+	"slices"
+	"strconv"
 	"testing"
 	"time"
 
@@ -475,11 +481,15 @@ func TestTheBackstopTellsNobodyOfAnEndTheStoreRefusedBeforeItWasMade(t *testing.
 	}
 }
 
-// Nor is a replacement the pacing parked told as an end: the claim keeps the process and its
-// turn, and the wake's own turn is what replaces it later (reserveWake, wakeNow). It is the
-// same news as the turn left alone — nothing has happened to this worker yet — and the one a
-// report written from the error alone would get wrong, since this launch returns nil.
-func TestTheBackstopTellsNobodyOfAReplacementThePacingParked(t *testing.T) {
+// A replacement the pacing parked is an end of its own, and it is told as that
+// (EndRelaunchParked). The take-back has already run, so the task the stalled agent was serving
+// is owed to it again; the claim keeps the process and the wake's own turn is what stops it and
+// brings the session back (reserveWake, wakeNow). An owner told nothing here is an owner who
+// hears of this stall never — the claim leaves StateWorking at that turn, and the sweep that
+// would post again skips it — and an owner told "its session was brought back" is told of a
+// process that does not exist yet. The wake's turn tells nobody again: the end this notice
+// named is the one that turn carries out.
+func TestTheBackstopTellsTheOwnerOfAReplacementThePacingParkedOnce(t *testing.T) {
 	h := pacedHarness(t, wakeRate)
 	var stops []StallBackstopStop
 	h.deps.StallBackstopped = func(_ Claim, stop StallBackstopStop) { stops = append(stops, stop) }
@@ -487,6 +497,8 @@ func TestTheBackstopTellsNobodyOfAReplacementThePacingParked(t *testing.T) {
 	working := stalePluginClaim(wakeClaim(secondToken, StateWorking), h.deps.PluginContract)
 	working.State = StateWorking
 	working.Step = StepRecord{At: stepped, TurnStartedAt: stepped, Tool: "bash", CallID: "toolu_turn1_0", StartedAt: stepped}
+	working.Pending = &Delivery{ID: "outbox:7", Task: "implement the plan", QueuedAt: stepped,
+		DeliveredAt: stepped, ConfirmedAt: stepped}
 	stalled := h.machineFor(working)
 
 	// The harness's own claim takes the limiter's one token, so the backstop's own relaunch
@@ -502,8 +514,249 @@ func TestTheBackstopTellsNobodyOfAReplacementThePacingParked(t *testing.T) {
 	if c := stalled.Claim(); c.State != StateWorking || c.Locator == nil {
 		t.Fatalf("the claim is %s with locator %+v, want it left in its turn until the wake's turn comes", c.State, c.Locator)
 	}
+	if c := stalled.Claim(); c.Pending == nil || !c.Pending.Interrupted || !c.Pending.ConfirmedAt.IsZero() {
+		t.Fatalf("the claim's task after the park = %+v, want it taken back and owed: this is what the owner is told of", c.Pending)
+	}
 	h.wantStarts(secondToken, 0)
-	if len(stops) != 0 {
-		t.Fatalf("the backstop reported %+v over a replacement the pacing parked, want nobody told", stops)
+	want := StallBackstopStop{Step: working.Step, LastStep: stepped, Bound: backstopBound, End: EndRelaunchParked}
+	if len(stops) != 1 || stops[0] != want {
+		t.Fatalf("the backstop reported %+v over a replacement the pacing parked, want the one end it made, %+v", stops, want)
+	}
+
+	h.clock.Advance(wakeInterval + wakePart)
+	stalled.Wait()
+
+	h.wantStarts(secondToken, 1)
+	if c := stalled.Claim(); c.State != StateLaunching {
+		t.Fatalf("the claim is %s after the wake's turn, want it launching on the replacement that turn made", c.State)
+	}
+	if len(stops) != 1 {
+		t.Fatalf("the backstop reported %+v, want the one notice: the wake's turn carries out the end already told", stops)
+	}
+}
+
+// The fourth of the failure paths: a held suspension whose write the store refused. The process
+// is stopped and the claim is suspended in memory, so the worker has stopped whatever the store
+// took, and the owner is told the end that was reached rather than the write that failed
+// (endHeld, suspendedFor).
+func TestTheBackstopTellsTheOwnerOfASuspendedEndWhoseWriteFailed(t *testing.T) {
+	h, stops := backstopReports(t)
+	h.workingOnATask("implement the plan")
+	if err := h.handle(RequestSuspend{Claim: h.token, By: SuspendedByOperator}); !errors.Is(err, ErrSuspendHeld) {
+		t.Fatalf("suspend mid-turn = %v, want ErrSuspendHeld", err)
+	}
+	loc := h.locator()
+	last := h.clock.Now().Add(-backstopBound - time.Minute)
+	stalled := StepRecord{At: last, TurnStartedAt: last, Tool: "bash", CallID: "toolu_turn1_0", StartedAt: last}
+	h.m.steppedAt, h.m.claim.Step = last, stalled
+	h.store.fail("PutClaim", errBoom)
+
+	if err := h.handle(h.backstopOf(last, stalled)); !errors.Is(err, errBoom) {
+		t.Fatalf("the backstop whose suspension the store would not write = %v, want the store's refusal", err)
+	}
+
+	h.wantState(StateSuspended)
+	h.wantCalls("Resume", 0)
+	if suspend := h.wantCalls("Suspend", 1)[0]; suspend.Locator != loc {
+		t.Fatalf("suspended %+v, want the stalled process %+v", suspend.Locator, loc)
+	}
+	want := StallBackstopStop{Step: stalled, LastStep: last, Bound: backstopBound, End: EndSuspended}
+	if len(*stops) != 1 || (*stops)[0] != want {
+		t.Fatalf("the backstop reported %+v, want the one end it made told to the owner, %+v", *stops, want)
+	}
+}
+
+// The enumeration the owner's notice rests on, walked by the type's own values rather than by a
+// list of the paths anyone thought of (ProcessEnds). Every end a replacement can reach has a
+// case here that drives the machine to it, and each case asserts the two things R5 asks: the
+// owner is told exactly once of an end that happened, and never at all of one that did not
+// (ProcessEnd.TellsOwner). A value added to the type with no case fails the walk, so the next
+// reader cannot add a tenth path that tells nobody without being told to write its case.
+//
+// What this catches is a value left untold or undriven. What it cannot catch is a second caller
+// of Deps.StallBackstopped added elsewhere: exactly-once rests on backstopStalledTurn being the
+// only call, which its own doc states, and these cases would each count two if it were not.
+func TestEveryProcessEndTellsItsOwnerExactlyOnce(t *testing.T) {
+	reached := map[ProcessEnd]func(t *testing.T) []StallBackstopStop{
+		EndNotMade: func(t *testing.T) []StallBackstopStop {
+			h, stops := backstopReports(t)
+			last := stalledFor(h)
+			h.store.fail("PutDelivery", errBoom)
+			if err := h.handle(h.backstop(last)); !errors.Is(err, errBoom) {
+				t.Fatalf("the backstop whose take-back the store would not take = %v, want the store's refusal", err)
+			}
+			return *stops
+		},
+		EndRelaunched: func(t *testing.T) []StallBackstopStop {
+			h, stops := backstopReports(t)
+			h.must(h.backstop(stalledFor(h)))
+			h.wantState(StateLaunching)
+			return *stops
+		},
+		EndRelaunchParked: func(t *testing.T) []StallBackstopStop {
+			h := pacedHarness(t, wakeRate)
+			var stops []StallBackstopStop
+			h.deps.StallBackstopped = func(_ Claim, stop StallBackstopStop) { stops = append(stops, stop) }
+			stepped := h.clock.Now().Add(-backstopBound - time.Minute)
+			working := stalePluginClaim(wakeClaim(secondToken, StateWorking), h.deps.PluginContract)
+			working.State = StateWorking
+			working.Step = StepRecord{At: stepped, TurnStartedAt: stepped, Tool: "bash", CallID: "toolu_turn1_0", StartedAt: stepped}
+			stalled := h.machineFor(working)
+			h.must(RequestSpawn{Claim: h.token})
+			h.mustPostTo(stalled, StallBackstop{Claim: secondToken, Bound: backstopBound,
+				Deadline: stepped.Add(backstopBound), Step: working.Step})
+			if parked := stalled.View().WakeWaiting; parked == nil || parked.Kind != WakeLaunch {
+				t.Fatalf("the claim holds wake %+v, want the backstop's launch waiting its turn", parked)
+			}
+			return stops
+		},
+		EndRelaunchPending: func(t *testing.T) []StallBackstopStop {
+			h, stops := backstopReports(t)
+			last := stalledFor(h)
+			h.store.fail("PutClaim", errBoom)
+			if err := h.handle(h.backstop(last)); !errors.Is(err, errBoom) {
+				t.Fatalf("the backstop whose launch the store would not take = %v, want the store's refusal", err)
+			}
+			return *stops
+		},
+		EndSuspended: func(t *testing.T) []StallBackstopStop {
+			h, stops := backstopReports(t)
+			h.workingOnATask("implement the plan")
+			if err := h.handle(RequestSuspend{Claim: h.token, By: SuspendedByOperator}); !errors.Is(err, ErrSuspendHeld) {
+				t.Fatalf("suspend mid-turn = %v, want ErrSuspendHeld", err)
+			}
+			last := h.clock.Now().Add(-backstopBound - time.Minute)
+			stalled := StepRecord{At: last, TurnStartedAt: last, Tool: "bash", CallID: "toolu_turn1_0", StartedAt: last}
+			h.m.steppedAt, h.m.claim.Step = last, stalled
+			h.must(h.backstopOf(last, stalled))
+			h.wantState(StateSuspended)
+			return *stops
+		},
+		EndFailed: func(t *testing.T) []StallBackstopStop {
+			h, stops := backstopReports(t)
+			last := stalledFor(h)
+			refused := errors.New("the pod did not start")
+			for range testLimits().LaunchFailures {
+				h.rt.ScriptResume(fake.SpawnResult{Err: refused})
+			}
+			if err := h.handle(h.backstop(last)); !errors.Is(err, refused) {
+				t.Fatalf("the backstop whose every relaunch the runtime refused = %v, want the runtime's refusal", err)
+			}
+			h.wantState(StateFailed)
+			return *stops
+		},
+	}
+	for _, end := range ProcessEnds() {
+		drive, written := reached[end]
+		if !written {
+			t.Errorf("no case of this walk drives a backstop to the end %q: add one to reached, which tells the owner once where %q is news and never where it is not", end, end)
+			continue
+		}
+		t.Run(string(end), func(t *testing.T) {
+			told := drive(t)
+			if !end.TellsOwner() {
+				if len(told) != 0 {
+					t.Fatalf("the backstop reported %+v over the end %q, want nobody told: nothing happened to this worker", told, end)
+				}
+				return
+			}
+			if len(told) != 1 {
+				t.Fatalf("the backstop reported %+v over the end %q, want the owner told exactly once", told, end)
+			}
+			if told[0].End != end {
+				t.Fatalf("the backstop reported the end %q where the machine reached %q: the notice is written from this", told[0].End, end)
+			}
+		})
+	}
+	for end := range reached {
+		if !slices.Contains(ProcessEnds(), end) {
+			t.Errorf("this walk drives a case for %q, which is no value of ProcessEnd: add it to ProcessEnds or drop the case", end)
+		}
+	}
+}
+
+// stalledFor walks the harness's claim into a turn whose recorded last step is past its bound,
+// and reports the moment that record names: the start every case of the walk above that does
+// not need a suspension or a second machine shares.
+func stalledFor(h *harness) time.Time {
+	h.t.Helper()
+	h.workingOnATask("implement the plan")
+	h.advance(time.Minute)
+	h.stepped("bash", "toolu_turn1_0", toolArgs, false)
+	last := h.clock.Now()
+	h.advance(backstopBound + time.Minute)
+	return last
+}
+
+// ProcessEnds is the list the walks read, so a value declared and left out of it would be
+// walked by nothing: this reads the package's own source and holds the list to every constant
+// of the type declared in it.
+//
+// It catches a value added to the type and forgotten here, which is the whole of how a value
+// enters this package. What it cannot catch is an end some other package manufactures by
+// converting a string, which no caller does and which the daemon's notice answers by naming the
+// value rather than claiming a relaunch (the daemon's stallBackstopEnd).
+func TestProcessEndsListsEveryEndDeclared(t *testing.T) {
+	sources, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatalf("read this package's source: %v", err)
+	}
+	fileset := gotoken.NewFileSet()
+	declared := map[string]string{}
+	for _, source := range sources {
+		file, err := parser.ParseFile(fileset, source, nil, parser.SkipObjectResolution)
+		if err != nil {
+			t.Fatalf("parse %s: %v", source, err)
+		}
+		for _, decl := range file.Decls {
+			general, isGeneral := decl.(*ast.GenDecl)
+			if !isGeneral || general.Tok != gotoken.CONST {
+				continue
+			}
+			for _, spec := range general.Specs {
+				value, isValue := spec.(*ast.ValueSpec)
+				if !isValue {
+					continue
+				}
+				named, isNamed := value.Type.(*ast.Ident)
+				if !isNamed || named.Name != "ProcessEnd" {
+					continue
+				}
+				if len(value.Values) != len(value.Names) {
+					t.Fatalf("%s declares %d constants of ProcessEnd with %d values; this walk reads one string literal each",
+						source, len(value.Names), len(value.Values))
+				}
+				for i, ident := range value.Names {
+					literal, isLiteral := value.Values[i].(*ast.BasicLit)
+					if !isLiteral || literal.Kind != gotoken.STRING {
+						t.Fatalf("%s declares %s as something other than a string literal; this walk reads literals only", source, ident.Name)
+					}
+					text, err := strconv.Unquote(literal.Value)
+					if err != nil {
+						t.Fatalf("%s declares %s as %s: %v", source, ident.Name, literal.Value, err)
+					}
+					declared[ident.Name] = text
+				}
+			}
+		}
+	}
+	if len(declared) == 0 {
+		t.Fatal("this walk found no constant of type ProcessEnd in the package's source; it reads the source of the directory it runs in")
+	}
+	listed := map[ProcessEnd]bool{}
+	for _, end := range ProcessEnds() {
+		if listed[end] {
+			t.Errorf("ProcessEnds lists %q twice", end)
+		}
+		listed[end] = true
+	}
+	for name, text := range declared {
+		if !listed[ProcessEnd(text)] {
+			t.Errorf("the constant %s (%q) is a value of ProcessEnd that ProcessEnds does not list: add it there, give it a case in TestEveryProcessEndTellsItsOwnerExactlyOnce, and give it a sentence in the daemon's stallBackstopEnds", name, text)
+		}
+		delete(listed, ProcessEnd(text))
+	}
+	for end := range listed {
+		t.Errorf("ProcessEnds lists %q, which this package declares no constant for", end)
 	}
 }

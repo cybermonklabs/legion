@@ -188,10 +188,11 @@ const stallBackstopNotice = "worker-stalled"
 // never what the sweep asked for and never what the machine set out to do: a turn a suspension
 // was already waiting for ends in that suspension, with nothing launched in its place, and an
 // owner told that the session had come back would go looking for a process that is not there.
-// The three ends beside that one read the same way — a replacement the store would not write
-// has stopped the worker and not brought it back yet, and one whose every try the runtime
-// refused has failed the claim — so each says what is running for the claim now and what the
-// owner is waiting on.
+// Every other end reads the same way — a replacement the pacing parked has taken the task back
+// and not replaced the process yet, one the store would not write has stopped the worker and
+// not brought it back, and one whose every try the runtime refused has failed the claim — so
+// each says what is running for the claim now and what the owner is waiting on
+// (stallBackstopEnds).
 func stallBackstopRecord(c supervise.Claim, stop supervise.StallBackstopStop, silent time.Duration) string {
 	call := "the daemon saw no call of this turn"
 	if stop.Step.CallID != "" {
@@ -207,24 +208,55 @@ func stallBackstopRecord(c supervise.Claim, stop supervise.StallBackstopStop, si
 		c.Role, stallInstant(stop.LastStep), silent.Round(time.Minute), stop.Bound, stallInstant(stop.Step.TurnStartedAt), call, end, charged)
 }
 
+// stallEndWords is what the notice says of one end: the clause that says what became of the
+// worker, and the one that says what the claim was charged for it.
+type stallEndWords struct{ end, charged string }
+
+// stallNothingCharged is the charge clause of every end but the one that failed the claim. The
+// stall itself charges nothing, which is the whole reason this recovery is not the death path
+// (supervise's backstopStalledTurn).
+const stallNothingCharged = "nothing was charged to the claim."
+
+// stallBackstopEnds is the sentence the owner's notice carries for each end the machine can
+// reach (supervise.ProcessEnd). It is a table keyed by the end, and not a switch with a
+// default, because a default is how this notice came to tell an owner that a session had been
+// brought back for ends nobody had worded: the wording is total over the type, and
+// TestTheNoticeHasWordsForEveryEndThatTellsItsOwner walks supervise.ProcessEnds() and fails
+// until a new end has a row here. An end that tells nobody (supervise.ProcessEnd.TellsOwner)
+// has no row, because no notice is ever written from it.
+//
+// The launch failures of a replacement that never started are charged, as every launch failure
+// is, and the one end that carries them says so rather than leaving the owner a sentence its
+// budgets contradict.
+var stallBackstopEnds = map[supervise.ProcessEnd]stallEndWords{
+	supervise.EndRelaunched: {end: "its session was brought back on a new process", charged: stallNothingCharged},
+	supervise.EndRelaunchParked: {
+		end:     "the launch that replaces its process is waiting its turn in the daemon's wake pacing, which is tens of minutes in a wave: the stalled process runs until that turn comes, and is stopped and replaced there",
+		charged: stallNothingCharged},
+	supervise.EndRelaunchPending: {
+		end:     "its process was stopped, and the daemon could not write the launch that replaces it: nothing runs for the claim until one of the daemon's retries of that launch lands",
+		charged: stallNothingCharged},
+	supervise.EndSuspended: {
+		end:     "a suspension that was already waiting for this turn ended the process rather than replacing it, so nothing runs for the claim until it is resumed",
+		charged: stallNothingCharged},
+	supervise.EndFailed: {
+		end:     "its process was stopped and every try at the replacement was refused, which ran the claim's launch budget out, so the claim has failed and nothing runs for it until it is retried",
+		charged: "the stall itself charged the claim nothing; the launch failures of the replacement that could not be started are what it was charged."},
+}
+
 // stallBackstopEnd is the clause of the notice that says what became of the worker, and the one
-// that says what the claim was charged for it. The stall itself charges nothing, which is the
-// whole reason this recovery is not the death path (supervise's backstopStalledTurn); the launch
-// failures of a replacement that never started are charged, as every launch failure is, and the
-// one end that carries them says so rather than leaving the owner a sentence its budgets
-// contradict.
+// that says what the claim was charged for it (stallBackstopEnds).
+//
+// An end the table has no row for is named rather than described, and claims nothing: a daemon
+// whose machines reach an end its notices have no words for still tells the owner that the turn
+// was ended and what the record said, which is what R5 asks of it, and a reader who meets this
+// sentence has the value to look up. The walk above keeps it unreachable for every end this
+// daemon declares.
 func stallBackstopEnd(made supervise.ProcessEnd) (end, charged string) {
-	charged = "nothing was charged to the claim."
-	switch made {
-	case supervise.EndSuspended:
-		return "a suspension that was already waiting for this turn ended the process rather than replacing it, so nothing runs for the claim until it is resumed", charged
-	case supervise.EndRelaunchPending:
-		return "its process was stopped, and the daemon could not write the launch that replaces it: nothing runs for the claim until one of the daemon's retries of that launch lands", charged
-	case supervise.EndFailed:
-		return "its process was stopped and every try at the replacement was refused, which ran the claim's launch budget out, so the claim has failed and nothing runs for it until it is retried",
-			"the stall itself charged the claim nothing; the launch failures of the replacement that could not be started are what it was charged."
+	if words, ok := stallBackstopEnds[made]; ok {
+		return words.end, words.charged
 	}
-	return "its session was brought back on a new process", charged
+	return fmt.Sprintf("what became of it is recorded as %q, which this daemon has no sentence for", made), stallNothingCharged
 }
 
 // stallInstant is a moment of the record as the notice and the log line write it, and "no time

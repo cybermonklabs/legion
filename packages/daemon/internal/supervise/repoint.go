@@ -54,18 +54,31 @@ func (m *Machine) displaced(ctx context.Context, observation runtime.Observation
 // worker — and a caller that tells somebody about it needs the second (backstopStalledTurn,
 // Deps.StallBackstopped). A process ended whose record the store then refused is ended all the
 // same, and a replacement that stopped before it touched the process ended nothing at all.
+//
+// It is the daemon's whole classification of what became of a worker, so a state a replacement
+// can leave a worker in is a value here and never a hole between two values: the owner's notice
+// is written from this type alone, and three things are total over it rather than over the paths
+// anyone remembered — the telling (TellsOwner), the sentence the notice carries (the daemon's
+// stallBackstopEnds) and the case that drives each end (the walk in stallbackstop_test.go).
+// Every value is listed in ProcessEnds, which those walks read.
 type ProcessEnd string
 
 const (
 	// EndNotMade is the claim still holding the process the replacement found, and its turn with
-	// it: the take-back that replacement begins with was refused (interrupted), the launch's own
-	// lifecycle recheck was (relaunchRefused), or the pacing parked that launch and the wake's
-	// own turn is what replaces the process later (reserveWake, wakeNow). Nothing has happened
-	// to this worker yet.
+	// it: the take-back that replacement begins with was refused (interrupted), or the launch's
+	// own lifecycle recheck was (relaunchRefused). Nothing has happened to this worker, which is
+	// why it is the one end told to nobody (TellsOwner).
 	EndNotMade ProcessEnd = "not made"
 	// EndRelaunched is the process let go and stopped and the claim's session brought back on a
 	// new one, which the claim records (launchNow).
 	EndRelaunched ProcessEnd = "relaunched"
+	// EndRelaunchParked is the turn's task taken back (interrupted) and the launch that replaces
+	// the process parked by the wake pacing until its turn (reserveWake, parkWake). The claim
+	// still records the process and still runs it; that turn is what stops it and brings the
+	// session back (wakeNow, launchNow), tens of minutes later over a wave. It is an end of its
+	// own because something has happened to this worker — the task it was serving is owed to it
+	// again — while nothing has been relaunched yet, and the two sentences are not the same news.
+	EndRelaunchParked ProcessEnd = "relaunch parked"
 	// EndRelaunchPending is the process let go and stopped with nothing in its place: the
 	// launch's own write was refused and the same launch waits on the probe interval
 	// (relaunchLater), or the daemon's stop cut it short and the next boot makes it. The claim
@@ -78,6 +91,32 @@ const (
 	// (launchNow, fail): nothing runs for the claim and nothing relaunches it.
 	EndFailed ProcessEnd = "failed"
 )
+
+// ProcessEnds is every value of ProcessEnd, in the order they are declared. A value added to the
+// type is added here: TestProcessEndsListsEveryEndDeclared reads this package's own source and
+// fails until it is, and the walks that keep the owner's notice total over the type read this
+// list (TestEveryProcessEndTellsItsOwnerExactlyOnce, the daemon's
+// TestTheNoticeHasWordsForEveryEndThatTellsItsOwner). A fresh slice is returned so that no
+// caller can edit the one the next reads.
+func ProcessEnds() []ProcessEnd {
+	return []ProcessEnd{EndNotMade, EndRelaunched, EndRelaunchParked, EndRelaunchPending, EndSuspended, EndFailed}
+}
+
+// TellsOwner is whether this end is news for the claim's owner, which is the one thing the
+// machine decides about the telling: the call that tells is a single one (backstopStalledTurn),
+// so an end that tells, tells exactly once.
+//
+// Every end but EndNotMade is something that happened to the worker — its task taken back, its
+// process stopped, its session brought back, its claim failed — and EndNotMade is the claim
+// exactly as the decision found it, which telling of would send an architect looking for a
+// recovery nobody made.
+//
+// It is written as "everything but" rather than as a list of the ends that tell, because the
+// failure this rule exists against is silence: a value added to the type tells its owner before
+// anyone remembers to enumerate it, and the worst it can then say is that the daemon has no
+// sentence for what it did (the daemon's stallBackstopEnd), which is a notice somebody reads
+// rather than a worker that stopped with nobody told.
+func (e ProcessEnd) TellsOwner() bool { return e != EndNotMade }
 
 // replaceProcess is the recovery a process ended or found stale through no fault of its own
 // (repoint's stale address, refreshPlugin's stale plugin contract, displaced's replaced pod)
@@ -100,8 +139,9 @@ func (m *Machine) replaceProcess(ctx context.Context, interruption string, outOf
 	if loc := m.claim.Locator; loc != nil {
 		found = loc.Incarnation
 	}
+	parked := m.wake
 	err := m.replaceNow(ctx, interruption, outOfMemory)
-	return m.endReached(found), err
+	return m.endReached(found, parked), err
 }
 
 // replaceNow is the replacement itself, whose end replaceProcess reads off the claim it leaves.
@@ -116,12 +156,21 @@ func (m *Machine) replaceNow(ctx context.Context, interruption string, outOfMemo
 }
 
 // endReached is the end a replacement made, read from the claim it left beside found, the
-// incarnation that claim recorded when the replacement began. The claim says it whole: a claim
-// still recording that incarnation was never let go of, one recording another is relaunched, and
-// a claim recording none was let go and is where the let-go left it — suspended, failed, or
-// launching with the launch still to make, since every caller of letGo writes the claim's state
-// in the same step. The caller holds mu.
-func (m *Machine) endReached(found string) ProcessEnd {
+// incarnation that claim recorded when the replacement began, and parked, the wake that claim
+// held before it. The claim says it whole: a claim whose launch the pacing has just parked waits
+// for that wake's turn, one still recording that incarnation was never let go of, one recording
+// another is relaunched, and a claim recording none was let go and is where the let-go left it —
+// suspended, failed, or launching with the launch still to make, since every caller of letGo
+// writes the claim's state in the same step.
+//
+// The park is read first and by identity, because it is the one end the claim alone cannot show:
+// a parked launch leaves the claim exactly as the replacement found it, process and state and
+// all (parkWake), and the wake the machine holds after is this replacement's only where it is
+// not the one it began with. The caller holds mu.
+func (m *Machine) endReached(found string, parked *wake) ProcessEnd {
+	if m.wake != nil && m.wake != parked {
+		return EndRelaunchParked
+	}
 	if loc := m.claim.Locator; loc != nil {
 		if loc.Incarnation == found {
 			return EndNotMade

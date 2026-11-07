@@ -385,6 +385,12 @@ func TestTheStallBackstopLeavesTheseClaimsAlone(t *testing.T) {
 
 // The project controller's claim is on no issue, so there is no owner to tell: its turn is ended
 // like any other, and the record is in the line the daemon logs.
+//
+// What this case reads of the telling is the machine's own report, counted inside the decision
+// that made it (reported): the write runs on a goroutine of supervision's own, so a check that
+// no write was tried, read straight after the claim settled, would pass over a supervision that
+// writes one a moment later. The rule that no write is tried at all is read where it is
+// decided, in the call itself (TestTheStallBackstopWritesNothingForAClaimOnNoIssue).
 func TestTheStallBackstopEndsAStalledControllerAndWritesOnNoIssue(t *testing.T) {
 	rig := newBackstopRig(t)
 	project, err := claim.ProjectToken("legion")
@@ -404,8 +410,35 @@ func TestTheStallBackstopEndsAStalledControllerAndWritesOnNoIssue(t *testing.T) 
 	if rows := rig.written(""); len(rows) != 0 {
 		t.Fatalf("rows written on no issue = %+v, want none: a controller's claim has no owner to tell", rows)
 	}
-	if rig.attemptsMade() != 0 {
-		t.Fatalf("supervision tried %d writes, want none: a controller's claim is on no issue", rig.attemptsMade())
+	if told := rig.reported(); told != 1 {
+		t.Fatalf("the machines' reports = %d, want the one end the backstop made: the controller's turn is ended like any other", told)
+	}
+}
+
+// The no-issue rule itself, read where it is decided rather than through a goroutine: a claim
+// with no issue has no owner to tell, so the call writes nothing and reports the owner told —
+// a notice nobody is owed is not one to keep and try again at the next sweep (oweStallNotice).
+func TestTheStallBackstopWritesNothingForAClaimOnNoIssue(t *testing.T) {
+	rig := newBackstopRig(t)
+	project, err := claim.ProjectToken("legion")
+	if err != nil {
+		t.Fatal(err)
+	}
+	controller := rig.claim(claim.RolePlanner, "LEGION-218", backstopBound+time.Hour, true)
+	controller.Token = claim.ControllerToken(project)
+	controller.Role, controller.Issue, controller.Tree = claim.RoleController, "", ""
+	stop := supervise.StallBackstopStop{Step: controller.Step, LastStep: controller.Step.LastStep(),
+		Bound: backstopBound, End: supervise.EndRelaunched}
+
+	if told := rig.s.tellStallBackstopped(context.Background(), controller, stop); !told {
+		t.Fatal("the notice of a claim on no issue reports the owner untold, want it told: there is nobody to tell, and keeping it would retry it at every sweep")
+	}
+
+	if tried := rig.attemptsMade(); tried != 0 {
+		t.Fatalf("supervision tried %d writes, want none: a controller's claim is on no issue", tried)
+	}
+	if rows := rig.written(""); len(rows) != 0 {
+		t.Fatalf("rows written on no issue = %+v, want none", rows)
 	}
 }
 
@@ -614,4 +647,57 @@ func TestTheStallBackstopTellsTheOwnerOfAnEndThatFailedTheClaim(t *testing.T) {
 	if strings.Contains(notices[0].Reason, "nothing was charged to the claim") {
 		t.Errorf("the notice says nothing was charged, and the launch failures were: %q", notices[0].Reason)
 	}
+}
+
+// The notice's wording walked by the machine's own classification rather than by the ends
+// anyone remembered (supervise.ProcessEnds): every end that tells its owner has a sentence of
+// its own, no end that tells nobody has one, and the relaunch is claimed by the one end that
+// made it. A notice claiming a relaunch that did not happen is the defect this table's default
+// clause had, so the wording is total over the type and the default is unreachable for every
+// end this daemon declares (stallBackstopEnds, stallBackstopEnd).
+//
+// It catches an end added with no sentence, an end whose sentence claims the wrong thing, and a
+// row left behind for an end that no longer exists. It cannot catch a sentence that is merely
+// wrong about what the machine did: the cases above read each end's own notice for that.
+func TestTheNoticeHasWordsForEveryEndThatTellsItsOwner(t *testing.T) {
+	const relaunched = "its session was brought back on a new process"
+	worded := map[supervise.ProcessEnd]bool{}
+	for end := range stallBackstopEnds {
+		worded[end] = true
+	}
+	for _, end := range supervise.ProcessEnds() {
+		words, has := stallBackstopEnds[end]
+		delete(worded, end)
+		if !end.TellsOwner() {
+			if has {
+				t.Errorf("the notice has a sentence for %q, an end told to nobody: drop the row, or make the end tell its owner", end)
+			}
+			continue
+		}
+		if !has {
+			t.Errorf("the notice has no sentence for the end %q: add a row to stallBackstopEnds saying what is running for the claim now and what its owner is waiting on", end)
+			continue
+		}
+		if words.end == "" || words.charged == "" {
+			t.Errorf("the notice's row for %q is %+v, want both clauses: what became of the worker and what the claim was charged", end, words)
+		}
+		if claimed := strings.Contains(words.end, relaunched); claimed != (end == supervise.EndRelaunched) {
+			t.Errorf("the sentence for %q is %q, which says %q: only %q brought a session back, and a notice that claims a relaunch nobody made sends an architect looking for a process that is not there",
+				end, words.end, relaunched, supervise.EndRelaunched)
+		}
+		stop := supervise.StallBackstopStop{Bound: backstopBound, End: end}
+		if told := stallBackstopRecord(rigClaim(), stop, time.Hour); !strings.Contains(told, words.end) {
+			t.Errorf("the notice of %q reads %q, which does not carry its own sentence", end, told)
+		}
+	}
+	for end := range worded {
+		t.Errorf("the notice has a sentence for %q, which is no end the machine can reach: drop the row, or add the end to supervise.ProcessEnds", end)
+	}
+}
+
+// rigClaim is a claim of the rig's shape for a case that writes a notice from it directly,
+// without a machine to end a turn on.
+func rigClaim() supervise.Claim {
+	return supervise.Claim{Token: "legion-legion-legion-225-implementer", Project: "legion", Tree: "LEGION-225",
+		Issue: "LEGION-225", Role: claim.RoleImplementer, State: supervise.StateWorking}
 }

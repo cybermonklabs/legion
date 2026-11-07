@@ -1183,6 +1183,13 @@ func TestListShowsTheStoredStepOfASupervisedClaim(t *testing.T) {
 // agent steps here through its machine, as the worker stream reports it, so the record is
 // written exactly as production writes it and the machine keeps none of it (supervise's
 // putStep).
+//
+// Every route that answers through operatorAnswer is walked, and each is walked over a claim
+// that takes it: the root's own stop is refused, since a tree root ends at its tree's close, so
+// stop is read over a worker of that tree, whose record is put where the stream's own call
+// would have left it. The order is the one the states allow — the claim is spawned, given a
+// task, suspended, resumed, failed, forgotten, retried, and its tree closed last, because the
+// close retires every claim of it.
 func TestEveryOperatorAnswerAboutOneClaimCarriesItsStoredStep(t *testing.T) {
 	h := newHarness(t)
 	h.operator(http.MethodPost, "/legion/v1/operator/claims", spawnBody())
@@ -1208,25 +1215,101 @@ func TestEveryOperatorAnswerAboutOneClaimCarriesItsStoredStep(t *testing.T) {
 		t.Fatalf("the machine's own copy of the record = %+v, want it as the machine was built: this case is about the answer the routes build from the store", held)
 	}
 
-	want := StepViewOf(stored)
-	for _, action := range []string{"deliver", "suspend", "resume"} {
-		var body any
-		if action == "deliver" {
-			body = DeliverRequest{Task: "carry on"}
+	// The worker the stop is read over, of the same tree, with a record of its own where the
+	// stream's call would have written one. Its machine keeps none of it either.
+	spawnWorker := spawnBody()
+	spawnWorker.Issue, spawnWorker.Role = "LEGION-209", claim.RoleImplementer
+	h.operator(http.MethodPost, "/legion/v1/operator/claims", spawnWorker)
+	workerToken, err := claim.NewToken(testProject, spawnWorker.Issue, spawnWorker.Role)
+	if err != nil {
+		t.Fatal(err)
+	}
+	began := time.Date(2026, 9, 22, 11, 0, 0, 0, time.UTC)
+	workerStep := supervise.StepRecord{At: began.Add(time.Minute), TurnStartedAt: began, Tool: "bash",
+		CallID: "toolu_turn2_4", ArgsBytes: 64, ArgsHash: "1a2b3c4d5e6f7a8b", StartedAt: began.Add(time.Minute)}
+	if known, err := h.store.PutClaimStep(h.ctx, workerToken, workerStep); err != nil || !known {
+		t.Fatalf("put the worker's step = %t, %v", known, err)
+	}
+
+	// The spawn route answers through operatorAnswer too, over the one claim it ever answers
+	// about: the one it creates. Every state in which it would find an existing claim refuses
+	// it — launched, uncertain, suspended, failed, retired (supervise's table) — so what its
+	// answer carries is the store's record for a claim that has not stepped, which is none, and
+	// an answer that invented one would print a call for a claim whose agent has made none.
+	fresh := spawnBody()
+	fresh.Issue, fresh.Role = "LEGION-210", claim.RoleTester
+	created := h.operator(http.MethodPost, "/legion/v1/operator/claims", fresh)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("spawn = %d, want 201; body %s", created.Code, created.Body)
+	}
+	var spawned OperatorClaim
+	decodeInto(t, created, &spawned)
+	if spawned.Step != nil {
+		t.Fatalf("spawn answered step %+v, want none: the claim it created has not stepped", spawned.Step)
+	}
+
+	// failArchitect spends the architect's launch budget, which is the state its retry and its
+	// forget-session are answered in.
+	failArchitect := func() {
+		t.Helper()
+		refused := fake.SpawnResult{Err: errors.New("the runtime refused the relaunch")}
+		h.runtime.ScriptResume(refused, refused)
+		locator := m.Claim().Locator
+		if locator == nil {
+			t.Fatalf("the architect records no process, and this step fails it through the one it runs")
 		}
-		recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(architectToken)+"/"+action, body)
+		if err := m.Handle(h.ctx, supervise.RuntimeObservation{Observation: runtime.Observation{
+			Locator: *locator, Kind: runtime.Gone}}); err == nil {
+			t.Fatal("the relaunches the runtime refused were taken, want the refusal")
+		}
+		if failed := h.stored(architectToken); failed.State != supervise.StateFailed {
+			t.Fatalf("the architect is %s, want it failed before its forget-session and its retry", failed.State)
+		}
+	}
+
+	for _, answer := range []struct {
+		route  string
+		target string
+		body   any
+		token  claim.Token
+		step   supervise.StepRecord
+		before func()
+	}{
+		{route: "deliver", target: "/legion/v1/operator/claims/" + string(architectToken) + "/deliver",
+			body: DeliverRequest{Task: "carry on"}, token: architectToken, step: stored},
+		{route: "suspend", target: "/legion/v1/operator/claims/" + string(architectToken) + "/suspend",
+			token: architectToken, step: stored},
+		{route: "resume", target: "/legion/v1/operator/claims/" + string(architectToken) + "/resume",
+			token: architectToken, step: stored},
+		{route: "forget-session", target: "/legion/v1/operator/claims/" + string(architectToken) + "/forget-session",
+			body: ForgetSessionRequest{Session: "ses_architect"}, token: architectToken, step: stored, before: failArchitect},
+		{route: "retry", target: "/legion/v1/operator/claims/" + string(architectToken) + "/retry",
+			token: architectToken, step: stored},
+		{route: "stop", target: "/legion/v1/operator/claims/" + string(workerToken) + "/stop",
+			token: workerToken, step: workerStep},
+		{route: "close", target: "/legion/v1/operator/claims/" + string(architectToken) + "/close",
+			token: architectToken, step: stored},
+	} {
+		if answer.before != nil {
+			answer.before()
+		}
+		recorder := h.operator(http.MethodPost, answer.target, answer.body)
 		if recorder.Code != http.StatusOK {
-			t.Fatalf("%s = %d, want 200; body %s", action, recorder.Code, recorder.Body)
+			t.Fatalf("%s = %d, want 200; body %s", answer.route, recorder.Code, recorder.Body)
 		}
 		var got OperatorClaim
 		decodeInto(t, recorder, &got)
+		if got.Token != answer.token {
+			t.Fatalf("%s answered for %s, want %s", answer.route, got.Token, answer.token)
+		}
+		want := StepViewOf(answer.step)
 		// The times are compared by instant: the wire carries them to the fraction of a second
 		// and not in the location the store's own read built them in.
 		if got.Step == nil || got.Step.Tool != want.Tool || got.Step.CallID != want.CallID ||
 			got.Step.ArgsBytes != want.ArgsBytes || got.Step.ArgsHash != want.ArgsHash ||
 			got.Step.At == nil || !got.Step.At.Equal(*want.At) ||
 			got.Step.StartedAt == nil || !got.Step.StartedAt.Equal(*want.StartedAt) {
-			t.Fatalf("%s answered step %+v, want the record the store holds, %+v", action, got.Step, want)
+			t.Fatalf("%s answered step %+v, want the record the store holds, %+v", answer.route, got.Step, want)
 		}
 	}
 }
