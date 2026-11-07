@@ -10,7 +10,7 @@ import {
   primaryButtonHoverBg,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import { currentAddress, firstScreenAwaits } from "../doc/first-screen";
+import { currentAddress, theServerDrewTheFirstScreen } from "../doc/first-screen";
 import * as markdownEngine from "../refs/markdown-engine";
 
 // The tab's recovery reloads, as a JSON array of the epoch-millisecond times they started: a chunk
@@ -314,7 +314,11 @@ export function DeploymentResilience(): ReactNode {
     // the same engine as it mounts and is the only surface on the page that needs it
     // (dispatch://INFRA-341, R11). So that page warms it, through the surface that uses it,
     // and this holds off.
-    if (firstScreenAwaits(currentAddress(window.location.pathname))) {
+    // Asked of the record rather than of the page, because the preview takes those blocks out as
+    // it mounts: whether this effect runs before or after that is the order of two mounts, and
+    // on a slower phone it goes the other way, which built the engine on the reader's own path in
+    // two measured runs for 611 and 965 ms.
+    if (theServerDrewTheFirstScreen(currentAddress(window.location.pathname))) {
       return;
     }
     const timer = window.setTimeout(() => {

@@ -35,12 +35,34 @@ export function currentAddress(pathname: string): string {
   }
 }
 
+/** The address the page was sent a draw for, kept after the draw itself has been taken out of the
+ *  page. `firstScreenAwaits` answers whether the blocks are still there, which stops being true
+ *  the moment `DocumentPreview` adopts them - about a second into the load - and so cannot tell a
+ *  later caller whether this address ever had one. Everything that decides what is worth doing
+ *  *because* the reader already has the document needs the second question, not the first:
+ *  measured on this pod, `DeploymentResilience` mounted after that adoption in two traced runs
+ *  and built the headless Markdown engine on the reader's critical path, 611 and 965 ms of it,
+ *  for a draw the editor replaces (dispatch://INFRA-341, R11). Asking this instead holds whatever
+ *  the order of the two mounts. */
+let drawnFor: string | undefined;
+
 /** Whether the page still carries the server's draw for `address`, which is what lets the
  *  document's own surface draw its preview before its text has arrived: those blocks are the
  *  reader's document, and they are on the screen already. */
 export function firstScreenAwaits(address: string): boolean {
   const drawn = document.getElementById(FIRST_SCREEN_ID)?.firstElementChild ?? null;
-  return drawn !== null && drawn.getAttribute(ADDRESS_ATTRIBUTE) === address;
+  const awaits = drawn !== null && drawn.getAttribute(ADDRESS_ATTRIBUTE) === address;
+  if (awaits) {
+    drawnFor = address;
+  }
+  return awaits;
+}
+
+/** Whether the server drew this address's opening blocks into the page it sent, whether or not
+ *  they are still in the page: true once anything has seen them, and true where they are still
+ *  there to be seen. */
+export function theServerDrewTheFirstScreen(address: string): boolean {
+  return drawnFor === address || firstScreenAwaits(address);
 }
 
 /** The server's draw for `address`, taken out of the page: its blocks, and the element they were
@@ -52,6 +74,7 @@ export function takeFirstScreen(address: string): DocumentFragment | undefined {
   if (host === null || drawn === null || drawn.getAttribute(ADDRESS_ATTRIBUTE) !== address) {
     return undefined;
   }
+  drawnFor = address;
   const blocks = document.createDocumentFragment();
   blocks.append(...drawn.childNodes);
   host.remove();
@@ -61,6 +84,9 @@ export function takeFirstScreen(address: string): DocumentFragment | undefined {
 /** Drops the server's draw where nothing will take it: the reader is at another address, so the
  *  blocks belong to a document that is no longer on the screen. */
 export function dropFirstScreen(address: string): void {
+  if (drawnFor !== undefined && drawnFor !== address) {
+    drawnFor = undefined;
+  }
   const host = document.getElementById(FIRST_SCREEN_ID);
   const drawn = host?.firstElementChild ?? null;
   if (host !== null && (drawn === null || drawn.getAttribute(ADDRESS_ATTRIBUTE) !== address)) {
