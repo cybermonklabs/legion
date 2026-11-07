@@ -511,7 +511,23 @@ func TestMessageHandlersRejectInvalidEnums(t *testing.T) {
 			name:  "publish expects reply",
 			path:  "/v1/messages/publish",
 			body:  `{"topic":"notifications.github.example-org.example-repo.pr.1","message":"hello","expects_reply":"soon"}`,
-			want:  "expects_reply must be one of none, optional, required",
+			want:  "expects_reply must be one of false, optional, required",
+			field: "expects_reply",
+		},
+		{
+			name:  "send expects reply",
+			path:  "/v1/messages/send",
+			body:  `{"target_session":"ses_target","message":"hello","expects_reply":"later"}`,
+			want:  "expects_reply must be one of false, optional, required",
+			field: "expects_reply",
+		},
+		{
+			// true is the one JSON literal the new vocabulary leaves out, and reading the
+			// field raw means it is refused by name rather than as unreadable JSON.
+			name:  "send expects reply true",
+			path:  "/v1/messages/send",
+			body:  `{"target_session":"ses_target","message":"hello","expects_reply":true}`,
+			want:  "expects_reply must be one of false, optional, required",
 			field: "expects_reply",
 		},
 	}
@@ -2219,6 +2235,105 @@ func TestSessionsHandlerReportsHostWithFallbackToMachineID(t *testing.T) {
 	}
 }
 
+// exampleTmuxPlace is the place the listener's tmux tests register, all ten members named so
+// that a member dropped on the way to an answer shows up as a changed value.
+func exampleTmuxPlace() *session.TmuxPlace {
+	return &session.TmuxPlace{
+		Socket:      "/tmp/tmux-1000/default",
+		ServerPID:   "4242",
+		SessionName: "legion",
+		WindowID:    "@7",
+		WindowIndex: 3,
+		WindowName:  "infra-883",
+		PaneID:      "%12",
+		PaneIndex:   1,
+		Layout:      "a1b2,180x44,0,0,7",
+		Zoomed:      true,
+	}
+}
+
+// GET /v1/sessions answers the whole place of a session that sits in a pane, and leaves the key
+// off a session that does not: a cluster whose sessions run outside tmux pays no bytes per row,
+// and a reader can tell "no pane" from a pane whose members happen to be empty.
+func TestSessionsHandlerAnswersTheTmuxPlaceAndOmitsItForASessionOutsideTmux(t *testing.T) {
+	registry, sessions := setupSessionsTest(t, nil, nil)
+	if err := sessions.Put("ses_paned", session.SessionEntry{SelfSubscribed: true, MachineID: "example-listener", TmuxPlace: exampleTmuxPlace()}); err != nil {
+		t.Fatalf("put the session sitting in a pane: %v", err)
+	}
+	if err := sessions.Put("ses_outside", session.SessionEntry{SelfSubscribed: true, MachineID: "example-listener"}); err != nil {
+		t.Fatalf("put the session outside tmux: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	sessionsHandler(registry, sessions).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", recorder.Code, recorder.Body.String())
+	}
+	var rows []map[string]json.RawMessage
+	if err := json.NewDecoder(recorder.Body).Decode(&rows); err != nil {
+		t.Fatalf("decode sessions response: %v", err)
+	}
+	byID := make(map[string]map[string]json.RawMessage, len(rows))
+	for _, row := range rows {
+		var sessionID string
+		if err := json.Unmarshal(row["session_id"], &sessionID); err != nil {
+			t.Fatalf("decode a row's session id: %v", err)
+		}
+		byID[sessionID] = row
+	}
+	raw, named := byID["ses_paned"]["tmux_place"]
+	if !named {
+		t.Fatalf("row for ses_paned = %v, want a tmux_place", byID["ses_paned"])
+	}
+	var answered session.TmuxPlace
+	if err := json.Unmarshal(raw, &answered); err != nil {
+		t.Fatalf("decode the answered place: %v", err)
+	}
+	if answered != *exampleTmuxPlace() {
+		t.Fatalf("answered place = %+v, want %+v", answered, *exampleTmuxPlace())
+	}
+	if _, named := byID["ses_outside"]["tmux_place"]; named {
+		t.Fatalf("row for ses_outside = %v, want no tmux_place key at all", byID["ses_outside"])
+	}
+}
+
+// A session leaves tmux when its pane closes or its server dies, and registers again with no
+// place. That registration must clear the place its entry held: the entry is built fresh from
+// each body and written whole, so nothing carries the stale pane forward onto the layout.
+func TestASecondRegistrationWithoutATmuxPlaceClearsTheStoredTmuxPlace(t *testing.T) {
+	_, sessions := setupSessionsTest(t, nil, nil)
+	var placed subscribeBody
+	if err := json.Unmarshal([]byte(`{
+		"session_id":"ses_moved",
+		"tmux_place":{
+			"socket":"/tmp/tmux-1000/default","server_pid":"4242","session_name":"legion",
+			"window_id":"@7","window_index":3,"window_name":"infra-883",
+			"pane_id":"%12","pane_index":1,"layout":"a1b2,180x44,0,0,7","zoomed":true
+		}
+	}`), &placed); err != nil {
+		t.Fatalf("decode the registration that names a pane: %v", err)
+	}
+	if err := sessions.Put("ses_moved", sessionEntryFromSubscribe(placed, "example-listener", sessionDeliveryOutcome{})); err != nil {
+		t.Fatalf("store the registration that names a pane: %v", err)
+	}
+
+	var left subscribeBody
+	if err := json.Unmarshal([]byte(`{"session_id":"ses_moved"}`), &left); err != nil {
+		t.Fatalf("decode the registration that names none: %v", err)
+	}
+	if err := sessions.Put("ses_moved", sessionEntryFromSubscribe(left, "example-listener", sessionDeliveryOutcome{})); err != nil {
+		t.Fatalf("store the registration that names none: %v", err)
+	}
+
+	stored, err := sessions.Get("ses_moved")
+	if err != nil {
+		t.Fatalf("read the session back: %v", err)
+	}
+	if stored.TmuxPlace != nil {
+		t.Fatalf("stored place = %+v, want nil once the session registered with none", stored.TmuxPlace)
+	}
+}
+
 func TestSendHandler_StampsInterestSenderWithoutSessionEntry(t *testing.T) {
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, map[string][]string{
@@ -2383,6 +2498,153 @@ func TestPublishHandlerPreservesAllOptionalMessageFields(t *testing.T) {
 		response.ExpectsReply != "required" {
 		t.Fatalf("optional fields = %+v", response)
 	}
+}
+
+// The answer to a send or a publish is the request's own expects_reply bytes, so every sender
+// reads back the dialect it spoke: a request that wrote the old string "none" is answered
+// "none", since the plugin build old enough to write that word holds an EnvelopeSchema whose
+// expects_reply is the three-word enum and fails to parse the literal false in the answer to its
+// own send - a delivered message reported unconfirmed and sent again. The envelope the listener
+// puts on the bus is the parsed value instead, so it carries the one new vocabulary - false,
+// "optional" or "required" - whichever spelling the request used, and carries no expects_reply
+// at all for a request that said nothing about a reply.
+//
+// Each case therefore asserts both: the answer's bytes, and the field of the envelope that
+// reached the bus. Reading the bus is what proves the route still carries the sender's intent:
+// the answer alone is only the request read back.
+func TestTheMessageRoutesAnswerExpectsReplyInTheRequestsOwnDialect(t *testing.T) {
+	client := setupPublishTestClient(t)
+	registry, sessions := setupSessionsTest(t, nil, []string{"ses_target"})
+	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
+	const topic = "notifications.github.example-org.example-repo.expects-reply-dialect"
+	for _, tc := range []struct {
+		// wantAnswer and wantBus are the expects_reply bytes the answer and the envelope on the
+		// bus carry, and the empty string is neither word nor literal: it is the field absent.
+		name, path, body, subject, wantAnswer, wantBus string
+	}{
+		{
+			name:       "a send writing the literal false",
+			path:       "/v1/messages/send",
+			body:       `{"target_session":"ses_target","message":"hello","expects_reply":false,"idempotency_key":"dialect-send-false"}`,
+			subject:    contracts.AgentSubject("ses_target"),
+			wantAnswer: `false`,
+			wantBus:    `false`,
+		},
+		{
+			name:       "a send writing the old none",
+			path:       "/v1/messages/send",
+			body:       `{"target_session":"ses_target","message":"hello","expects_reply":"none","idempotency_key":"dialect-send-none"}`,
+			subject:    contracts.AgentSubject("ses_target"),
+			wantAnswer: `"none"`,
+			wantBus:    `false`,
+		},
+		{
+			name:       "a send writing required",
+			path:       "/v1/messages/send",
+			body:       `{"target_session":"ses_target","message":"hello","expects_reply":"required","idempotency_key":"dialect-send-required"}`,
+			subject:    contracts.AgentSubject("ses_target"),
+			wantAnswer: `"required"`,
+			wantBus:    `"required"`,
+		},
+		{
+			name:       "a publish writing the literal false",
+			path:       "/v1/messages/publish",
+			body:       `{"topic":"` + topic + `","message":"hello","expects_reply":false}`,
+			subject:    topic,
+			wantAnswer: `false`,
+			wantBus:    `false`,
+		},
+		{
+			name:       "a publish writing the old none",
+			path:       "/v1/messages/publish",
+			body:       `{"topic":"` + topic + `","message":"hello","expects_reply":"none"}`,
+			subject:    topic,
+			wantAnswer: `"none"`,
+			wantBus:    `false`,
+		},
+		{
+			name:       "a publish writing optional",
+			path:       "/v1/messages/publish",
+			body:       `{"topic":"` + topic + `","message":"hello","expects_reply":"optional"}`,
+			subject:    topic,
+			wantAnswer: `"optional"`,
+			wantBus:    `"optional"`,
+		},
+		{
+			// The escaped spelling of "none" is the one input that tells the two answers apart:
+			// echoing the request's own bytes writes these very bytes back, while re-marshalling
+			// the envelope would write the literal false. The bus gets the parsed value, false.
+			name:       "a publish writing the escaped spelling of the old none",
+			path:       "/v1/messages/publish",
+			body:       `{"topic":"` + topic + `","message":"hello","expects_reply":"\u006eone"}`,
+			subject:    topic,
+			wantAnswer: `"\u006eone"`,
+			wantBus:    `false`,
+		},
+		{
+			// A request that wrote null said nothing about a reply, and an answer that wrote
+			// null back would be refused by the EnvelopeSchema of a plugin whose expects_reply
+			// is the three-word enum, so the answer omits the field, as the envelope does.
+			name:       "a publish writing null",
+			path:       "/v1/messages/publish",
+			body:       `{"topic":"` + topic + `","message":"hello","expects_reply":null}`,
+			subject:    topic,
+			wantAnswer: ``,
+			wantBus:    ``,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			probe, err := client.Conn.SubscribeSync(tc.subject)
+			if err != nil {
+				t.Fatalf("subscribe %s: %v", tc.subject, err)
+			}
+			t.Cleanup(func() { _ = probe.Unsubscribe() })
+			if err := client.Conn.Flush(); err != nil {
+				t.Fatalf("flush the probe on %s: %v", tc.subject, err)
+			}
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body))
+			if tc.path == "/v1/messages/send" {
+				sendHandler(state, logging.New("test")).ServeHTTP(recorder, request)
+			} else {
+				publishHandler(state, logging.New("test")).ServeHTTP(recorder, request)
+			}
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body = %s", recorder.Code, recorder.Body.String())
+			}
+			if answered := rawJSONField(t, recorder.Body.Bytes(), "expects_reply"); answered != tc.wantAnswer {
+				t.Fatalf("answered expects_reply = %s, want %s; body = %s", quotedOrAbsent(answered), quotedOrAbsent(tc.wantAnswer), recorder.Body.String())
+			}
+			message, err := probe.NextMsg(5 * time.Second)
+			if err != nil {
+				t.Fatalf("read the envelope on %s: %v", tc.subject, err)
+			}
+			if wire := rawJSONField(t, message.Data, "expects_reply"); wire != tc.wantBus {
+				t.Fatalf("the envelope on %s carries expects_reply %s, want %s: %s", tc.subject, quotedOrAbsent(wire), quotedOrAbsent(tc.wantBus), message.Data)
+			}
+		})
+	}
+}
+
+// rawJSONField reads one top-level field of document exactly as it is written there, escapes and
+// all, and answers the empty string for a document with no such key - which no value can be
+// mistaken for, since the empty string is not JSON.
+func rawJSONField(t *testing.T, document []byte, name string) string {
+	t.Helper()
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(document, &fields); err != nil {
+		t.Fatalf("decode %s: %v", document, err)
+	}
+	return string(fields[name])
+}
+
+// quotedOrAbsent names what rawJSONField read in a failure, so the absent field reads as a word
+// rather than as nothing at all.
+func quotedOrAbsent(raw string) string {
+	if raw == "" {
+		return "no expects_reply key"
+	}
+	return raw
 }
 
 // A caller's message NATS cannot take whole is the caller's to fix, so both message routes answer
