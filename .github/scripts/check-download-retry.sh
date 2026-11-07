@@ -32,11 +32,27 @@
 # cannot read green locally. Workflows and actions are parsed as YAML, never grepped, and only a
 # step's `run:` is read. This check reads its own file like any other script.
 #
-# The one limit of that reading set: "a script a CI job calls" has no closure in this tree. A
-# script a job calls from outside .github/scripts/ would escape this check. None exists today —
-# every CI job's script lives in that directory — and a new one there is read without anyone
-# remembering to list it. The harnesses left out are named at TEST_HARNESS below, with the two
-# network calls they hold today and why a retry at either would destroy what the test measures.
+# Rule 8 reads one step across more than one of those files: a step that runs a script under
+# .github/scripts/ carries that script's own retried calls, and those of every script it calls
+# in turn. SCRIPT_CALL finds a call by the path it writes, scripts_called reads one body's calls
+# and script_arithmetic walks them under a `seen` set, which counts a file two of a step's paths
+# reach once and stops a cycle. Three budgets of this tree were a one-line `run:` of a script
+# call and nothing else — ci.yaml's `pr-title` and `ci-ok` steps and pr-title.yaml's, 1200 s,
+# 600 s and 900 s of retries under a 20-, a 10- and a 15-minute budget — and a rule 8 that
+# stopped at the `run:` saw the arithmetic of none of them.
+#
+# Two limits are left in that reading set, and each is a script this check cannot name. A call
+# that does not write the script's path — one that builds the path as it runs, or runs a
+# variable holding the whole command — is a call SCRIPT_CALL does not find: the script is still
+# read as a file of its own, so rules 1 to 6 hold it, but its arithmetic reaches no step's
+# budget. And a script outside .github/scripts/ is not read at all, since that one directory is
+# the whole set: a `run:` that calls the repository's own scripts/<name>.sh or a
+# packages/<package>/scripts/<name>.sh — ci.yaml and the release workflows each hold such calls
+# — is read no further than its own words, so a download written inside one of those files is
+# held to no floor here and sits in no budget. Moving it under .github/scripts/ is what brings
+# it back under both rules, and a new file there is read without anyone remembering to list it.
+# The harnesses left out are named at TEST_HARNESS below, with the two network calls they hold
+# today and why a retry at either would destroy what the test measures.
 #
 # THE VERBS. A fetch is one of these commands, in command position, after the wrappers below are
 # stripped: curl, wget, apt-get/apt (update, install, download, upgrade, dist-upgrade, source,
@@ -119,6 +135,23 @@
 #      and exit 0. A `mise x` that follows no install fetches only as a side effect of the
 #      resolution that install should have done. Holding either to the floor would be demanding
 #      the one shape this rule refuses, so the check reads these four only to refuse a retry.
+#
+#   8. A step that holds a retried fetch and carries its own `timeout-minutes` gives that budget
+#      strictly more time than the attempts it allows: 60 x <minutes> is strictly greater than
+#      that step's arithmetic, which is 5 x <bound> + 150 s for each `retry_fetch` call and
+#      8 x <bound> + 127 s for each curl making its own attempts, summed over the step's own
+#      calls, over those of every script under .github/scripts/ the step runs and every script
+#      that one runs in turn, and, for a `uses:` step of a local composite action, over that
+#      action's calls and the scripts and actions it reaches the same way. Equal is
+#      not enough: the last attempt's own error and the runner's kill then land at the same
+#      instant, and the retry can lose that race. Measured in run 42386541065's job
+#      128445139635, where a `gh api` read bounded at 30 s sat under `timeout-minutes: 5`, its
+#      own arithmetic of 5 x 30 + 150 = 300 s against a budget of 300 s: the helper's `::error::`
+#      landed at 17:22:16.7444966Z and the runner's kill at 17:22:16.7483230Z, four milliseconds
+#      apart. Lose that race and the step reports GitHub's bare `The action '…' has timed out
+#      after 5 minutes.` instead of naming the site and its attempts, which is the loud failure
+#      the retry exists to give. GitHub's granularity is the minute, so a whole minute is the
+#      smallest margin that can be written.
 #
 # THE EXCEPTIONS, which are R2's four and no others. Each is a site this repository refuses to
 # retry on purpose. Each one written out as an entry of EXEMPTIONS below must match something: an
@@ -251,6 +284,13 @@ SELF = ".github/scripts/check-download-retry.sh"
 # publishes and prints SKIP when the read fails. A retry at either would destroy what the test
 # measures, and neither brings a tool, a toolchain or a dependency into a job.
 TEST_HARNESS = ".test.sh"
+# What names a script in a call: a word ending in `/<name>.sh`, wherever on the line it sits —
+# `.github/scripts/x.sh`, `"$script_dir/x.sh"`, `"$GITHUB_ACTION_PATH/../../scripts/x.sh"`,
+# `tag=$(.github/scripts/x.sh)`, `. .github/scripts/ci-retry.sh`. Only the name is read, and only
+# a name SCRIPTS holds is followed: every script a CI job runs lives in that one directory, and
+# the path a call writes in front of the name is one of half a dozen ways of reaching the same
+# file. A `.test.sh` harness matches nothing here, since the name this reads holds no dot.
+SCRIPT_CALL = re.compile(r"/([a-z0-9-]+\.sh)")
 # The canonical inline retry of a Dockerfile RUN, already in the shape the comparison uses: its
 # continuations joined and each run of blank space one space.
 CANONICAL = (
@@ -260,6 +300,13 @@ CANONICAL = (
 )
 RETRY_FLOOR = 7
 ATTEMPT_FLOOR = 5
+# Rule 8's arithmetic, the worst case of one retried call. The helper sleeps 10, 20, 40 and 80
+# seconds between its five attempts; curl, making `RETRY_FLOOR + 1` attempts itself, waits
+# 1, 2, 4, 8, 16, 32 and 64 seconds between its own.
+HELPER_WAIT = 150
+CURL_WAIT = 127
+# What a `timeout` argument's suffix multiplies its number by, as timeout(1) reads it.
+SUFFIX = {"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400}
 # The one Python function a `urllib.request` read of a script under .github/scripts/ goes through,
 # and the one file that defines it.
 PYTHON_READER = "read_retrying"
@@ -546,11 +593,13 @@ def structure(commands: list[Command]) -> dict[str, int]:
     return function_loop
 
 
-def reduce_words(words: list[str]) -> tuple[list[str], str | None, bool]:
+def reduce_words(words: list[str]) -> tuple[list[str], str | None, bool, int | None]:
     """The words of the command that actually runs, the retry wrapping it (`retry_fetch`, the one
-    helper, or `retry`, a Dockerfile's inline definition), and whether something bounds it."""
+    helper, or `retry`, a Dockerfile's inline definition), whether something bounds it, and the
+    seconds of that bound where it is written as a number — rule 8's `<bound>`."""
     retry = None
     bounded = False
+    bound: int | None = None
     words = list(words)
     while words:
         first = words[0]
@@ -563,9 +612,11 @@ def reduce_words(words: list[str]) -> tuple[list[str], str | None, bool]:
                 words.pop(0)
                 if words and re.fullmatch(r"\d+", words[0]):
                     break
-            if words and re.fullmatch(r"\d+[smhd]?", words[0]):
+            if words and (match := re.fullmatch(r"(\d+)([smhd]?)", words[0])):
                 words.pop(0)
                 bounded = True
+                if bound is None:
+                    bound = int(match.group(1)) * SUFFIX[match.group(2)]
             continue
         if first == "retry_fetch":
             retry = "retry_fetch"
@@ -576,17 +627,22 @@ def reduce_words(words: list[str]) -> tuple[list[str], str | None, bool]:
                 if not words:
                     break
                 word = words.pop(0)
-                bounded = bounded or bool(re.fullmatch(r"[1-9]\d*", word))
+                if re.fullmatch(r"[1-9]\d*", word):
+                    bounded = True
+                    if bound is None:
+                        bound = int(word)
                 if word == "--":
                     break
             continue
         if first == "retry" and len(words) > 2 and re.fullmatch(r"\d+", words[1]):
             retry = "retry"
             bounded = True
+            if bound is None:
+                bound = int(words[1])
             del words[:3]
             continue
         break
-    return words, retry, bounded
+    return words, retry, bounded, bound
 
 
 def subcommand(words: list[str]) -> str | None:
@@ -716,6 +772,20 @@ def curl_options(words: list[str]) -> tuple[int | None, bool, bool, bool]:
     return retries, all_errors, bounded, fails
 
 
+def curl_bound(words: list[str]) -> int | None:
+    """The seconds a curl gives each of its own attempts, its `--max-time`, where that option
+    carries a number: rule 8's `<bound>` for a curl that makes the attempts itself."""
+    for index, word in enumerate(words):
+        value = None
+        if word.startswith("--max-time="):
+            value = word.partition("=")[2]
+        elif word in ("--max-time", "-m") and index + 1 < len(words):
+            value = words[index + 1]
+        if value and re.fullmatch(r"\d+", value):
+            return int(value)
+    return None
+
+
 def apt_error_mode(words: list[str]) -> bool:
     """Whether this `apt-get update` fails when an index read fails, rather than warning and
     exiting 0: `-o APT::Update::Error-Mode=any`, in any spelling apt takes for an option. Option
@@ -735,12 +805,13 @@ def apt_error_mode(words: list[str]) -> bool:
 
 
 class Site:
-    """One network fetch: where it is, what verb it uses, what retries it, and what it is in.
-    `silent` marks rule 7's shape instead: a `mise x`, `mise exec`, `mise up` or `mise upgrade`
-    with a retry around it, which is no fetch to hold to the floor but a retry to refuse."""
+    """One network fetch: where it is, what verb it uses, what retries it, what bounds each of
+    its attempts, and what it is in. `silent` marks rule 7's shape instead: a `mise x`, `mise
+    exec`, `mise up` or `mise upgrade` with a retry around it, which is no fetch to hold to the
+    floor but a retry to refuse."""
 
     def __init__(self, path: str, line: int, verb: str, step: str, words: list[str],
-                 retry: str | None, bounded: bool, loop: int | None,
+                 retry: str | None, bounded: bool, loop: int | None, bound: int | None = None,
                  silent: bool = False) -> None:
         self.path = path
         self.line = line
@@ -750,7 +821,43 @@ class Site:
         self.retry = retry
         self.bounded = bounded
         self.loop = loop
+        self.bound = bound
         self.silent = silent
+
+
+def arithmetic_of(site: Site) -> int:
+    """Rule 8's arithmetic for one call: the wall time it takes to exhaust its attempts. Five at
+    the helper's own bound with its sleeps of 10, 20, 40 and 80 s between them, or eight at
+    curl's `--max-time` with curl's waits doubling from one second, where curl makes the
+    attempts itself. A call whose bound is not written as a number adds nothing: there is no
+    arithmetic to do, and rule 4 is what refuses an unbounded attempt."""
+    if site.bound is None or site.silent:
+        return 0
+    if site.retry == "retry_fetch":
+        return ATTEMPT_FLOOR * site.bound + HELPER_WAIT
+    if site.verb == "curl" and site.retry is None:
+        return (RETRY_FLOOR + 1) * site.bound + CURL_WAIT
+    return 0
+
+
+def scripts_called(text: str) -> set[str]:
+    """The scripts under .github/scripts/ a shell body runs, whose own retried calls rule 8
+    counts as this body's: a step that runs a script waits for every attempt that script makes.
+
+    Read off the text by the path each call writes, with backslash continuations joined and
+    comment lines left out, rather than off the commands this file scans elsewhere: a call
+    reaches a script in command position, inside a `$(…)`, as the value of an assignment, behind
+    a `source` or `.`, or out of a heredoc a `python3` runs, and the path is the one thing all
+    of those write. A name SCRIPTS does not hold is nothing this check reads."""
+    found = set()
+    for line in text.replace("\\\n", " ").split("\n"):
+        if line.lstrip().startswith("#"):
+            continue
+        for name in SCRIPT_CALL.findall(line):
+            path = str(SCRIPTS / name)
+            if path in script_files:
+                found.add(path)
+    return found
 
 
 def commands_of(body: str,
@@ -792,10 +899,12 @@ def unpacks_dropped(found: list[Site]) -> list[Site]:
 
 def sites_of_command(path: str, command: Command, function_loop: dict[str, int],
                      step: str, retry: str | None = None, bounded: bool = False,
-                     depth: int = 0) -> list[Site]:
-    words, wrapped, wrapped_bound = reduce_words(command.words)
+                     depth: int = 0, bound: int | None = None) -> list[Site]:
+    words, wrapped, wrapped_bound, wrapped_seconds = reduce_words(command.words)
     retry = retry or wrapped
     bounded = bounded or wrapped_bound
+    if bound is None:
+        bound = wrapped_seconds
     if not words or depth > 3:
         return []
     name = PROGRAM.sub("", words[0]).rsplit("/", 1)[-1]
@@ -817,7 +926,8 @@ def sites_of_command(path: str, command: Command, function_loop: dict[str, int],
         for sub in inner:
             sub.line = command.line
             sub.offset = command.offset
-            found += sites_of_command(path, sub, function_loop, step, retry, bounded, depth + 1)
+            found += sites_of_command(path, sub, function_loop, step, retry, bounded, depth + 1,
+                                      bound)
         return found
     if name in function_loop:
         # A loop that runs what it is handed: the verb among the call's words is that loop's fetch.
@@ -825,9 +935,9 @@ def sites_of_command(path: str, command: Command, function_loop: dict[str, int],
         if not held:
             return []
         verb, rest = held
-        _, _, inner_bound = reduce_words(rest)
+        _, _, inner_bound, inner_seconds = reduce_words(rest)
         return [Site(path, command.line, verb, step, rest, retry, bounded or inner_bound,
-                     function_loop[name])]
+                     function_loop[name], bound if bound is not None else inner_seconds)]
     silent = silent_verb_of(words)
     if silent:
         # Rule 7. A bare one is no fetch this check holds to anything; a retried one is the
@@ -835,13 +945,16 @@ def sites_of_command(path: str, command: Command, function_loop: dict[str, int],
         if not retry:
             return []
         return [Site(path, command.line, silent, step, words, retry, bounded, command.loop,
-                     True)]
+                     bound, silent=True)]
     verb = verb_of(words)
     if not verb:
         return []
     if verb in ("curl", "wget") and loopback_only(words):
         return []
-    return [Site(path, command.line, verb, step, words, retry, bounded, command.loop)]
+    if verb == "curl" and retry is None:
+        # curl makes the attempts itself, and `--max-time` is what bounds each one of them.
+        bound = curl_bound(words) or bound
+    return [Site(path, command.line, verb, step, words, retry, bounded, command.loop, bound)]
 
 
 def loopback_only(words: list[str]) -> bool:
@@ -941,10 +1054,53 @@ for dockerfile in DOCKERFILES:
 
 sites: list[Site] = []
 exempted: list[Site] = []
-# The steps of a workflow or a composite action, as (job, step name, run, line).
 
 
-def steps_of(path: str, document: Mapping) -> list[tuple[str | None, str, str, int]]:
+class Budget:
+    """One step that carries its own `timeout-minutes`, which rule 8 holds above the attempts it
+    allows: where the budget is written, what the step is called, the minutes it gives, the
+    arithmetic of the calls the step's own `run:` holds, the local composite action a `uses:`
+    step runs, whose calls are the step's too, and the scripts the step's `run:` invokes, whose
+    calls are the step's too for the same reason."""
+
+    def __init__(self, path: str, line: int, step: str, minutes: int, cost: int,
+                 uses: str | None, scripts: set[str]) -> None:
+        self.path = path
+        self.line = line
+        self.step = step
+        self.minutes = minutes
+        self.cost = cost
+        self.uses = uses
+        self.scripts = scripts
+
+
+budgets: list[Budget] = []
+# The arithmetic of each composite action's own `run:` steps, and the local actions and the
+# scripts each one calls in turn: a `uses:` step of one carries the whole of it.
+action_cost: dict[str, int] = {}
+action_uses: dict[str, list[str]] = {}
+action_scripts: dict[str, set[str]] = {}
+action_by_directory = {str(Path(path).parent): path for path in actions}
+action_files = set(actions)
+# The arithmetic of each script's own calls, and the scripts it calls in turn: whoever runs one
+# of them waits for the whole of it.
+script_cost: dict[str, int] = {}
+script_calls: dict[str, set[str]] = {}
+script_files = set(scripts)
+
+
+def local_action(uses: object) -> str | None:
+    """The action.yml a `uses:` names, where it is one of this repository's own composite
+    actions. A third-party reference and a called workflow are neither of them read: exception
+    (b) above, and a called workflow's jobs carry their own budgets."""
+    if not isinstance(uses, str) or not uses.startswith("./"):
+        return None
+    return action_by_directory.get(uses[2:].rstrip("/"))
+
+
+def steps_of(path: str, document: Mapping) -> list[tuple[str | None, str, Mapping]]:
+    """The steps of a workflow's jobs and of a composite action's `runs`, each with the job it
+    sits in (None in an action) and the name a problem calls it by."""
     found = []
     holders: list[tuple[str | None, object]] = []
     runs = document.get("runs")
@@ -957,10 +1113,10 @@ def steps_of(path: str, document: Mapping) -> list[tuple[str | None, str, str, i
         if not isinstance(steps, list):
             continue
         for step in steps:
-            if not isinstance(step, Mapping) or not isinstance(step.get("run"), str):
+            if not isinstance(step, Mapping):
                 continue
             name = step.get("name") or step.get("id") or "-"
-            found.append((job, str(name), step["run"], step.lines.get("run", 0)))
+            found.append((job, str(name), step))
     return found
 
 
@@ -973,21 +1129,38 @@ for path in workflows + actions:
     if not isinstance(document, Mapping):
         continue
     credentialed = credentialed_jobs(path, document)
-    for job, name, run, line in steps_of(path, document):
-        for site in sites_of(path, run, line, name):
-            if job in credentialed:
-                exempted.append(site)
-                continue
-            covering = next((entry for entry in EXEMPTIONS if entry.covers(site, job)), None)
-            if covering:
-                covering.used += 1
-                exempted.append(site)
-                continue
-            sites.append(site)
+    for job, name, step in steps_of(path, document):
+        cost = 0
+        called: set[str] = set()
+        if isinstance(step.get("run"), str):
+            called = scripts_called(step["run"])
+            for site in sites_of(path, step["run"], step.lines.get("run", 0), name):
+                cost += arithmetic_of(site)
+                if job in credentialed:
+                    exempted.append(site)
+                    continue
+                covering = next((entry for entry in EXEMPTIONS if entry.covers(site, job)), None)
+                if covering:
+                    covering.used += 1
+                    exempted.append(site)
+                    continue
+                sites.append(site)
+        uses = local_action(step.get("uses"))
+        if path in action_files:
+            action_cost[path] = action_cost.get(path, 0) + cost
+            action_scripts.setdefault(path, set()).update(called)
+            if uses:
+                action_uses.setdefault(path, []).append(uses)
+        minutes = step.get("timeout-minutes")
+        if isinstance(minutes, int) and not isinstance(minutes, bool):
+            budgets.append(Budget(path, step.lines.get("timeout-minutes", 0), name, minutes,
+                                  cost, uses, called))
 
 for path in scripts:
     text = Path(path).read_text()
+    script_calls[path] = scripts_called(text)
     for site in sites_of(path, text, 1, "-"):
+        script_cost[path] = script_cost.get(path, 0) + arithmetic_of(site)
         covering = next((entry for entry in EXEMPTIONS if entry.covers(site, None)), None)
         if covering:
             covering.used += 1
@@ -1163,6 +1336,69 @@ for site in sites:
             f"this loop retries `{site.verb}` itself, which makes it a second copy of the retry "
             f"{HELPER} holds. One rule holds the attempts (dispatch://INFRA-1545, R2): delete the "
             "loop and call `retry_fetch \"<what>\" <bound in seconds> -- <command...>`.")
+
+# Rule 8: a retried step's own budget strictly exceeds the attempts it allows, so the last
+# attempt's own error reaches the log before the runner's kill does.
+
+
+def script_arithmetic(path: str, seen: set[str]) -> int:
+    """The arithmetic a call of this script carries: its own calls and those of every script it
+    calls in turn. `seen` is what the step has counted already, so a script two of its calls
+    reach is counted once, and a cycle — which the shell would run until something failed, but
+    which must not hang this check — stops."""
+    if path in seen:
+        return 0
+    seen.add(path)
+    total = script_cost.get(path, 0)
+    for target in sorted(script_calls.get(path, ())):
+        total += script_arithmetic(target, seen)
+    return total
+
+
+def action_arithmetic(path: str, seen: set[str]) -> int:
+    """The arithmetic a `uses:` of this composite action carries: its own calls, the scripts its
+    steps run, and every local action it calls in turn, which carries its own the same way.
+    `seen` stops a cycle, which GitHub would refuse to run but which must not hang this check."""
+    if path in seen:
+        return 0
+    seen.add(path)
+    total = action_cost.get(path, 0)
+    for target in sorted(action_scripts.get(path, ())):
+        total += script_arithmetic(target, seen)
+    for target in action_uses.get(path, ()):
+        total += action_arithmetic(target, seen)
+    return total
+
+
+for budget in budgets:
+    # One `seen` for the whole step: the script its `run:` calls, the action it uses and that
+    # action's own scripts are one reading set, and a file two of those paths reach is one file
+    # the step runs once.
+    seen: set[str] = set()
+    cost = budget.cost
+    for target in sorted(budget.scripts):
+        cost += script_arithmetic(target, seen)
+    if budget.uses:
+        cost += action_arithmetic(budget.uses, seen)
+    if not cost or 60 * budget.minutes > cost:
+        continue
+    followed = sorted(target for target in seen if target in script_files)
+    through = (f" That arithmetic is the step's own and that of {', '.join(followed)}, which it "
+               "runs: a step waits for every attempt the scripts it calls make." if followed
+               else "")
+    problem(budget.path, budget.line,
+            f"step '{budget.step}' carries `timeout-minutes: {budget.minutes}`, "
+            f"{60 * budget.minutes} s, and its own retries take {cost} s to exhaust, which that "
+            f"budget does not strictly exceed.{through} A budget its own retries reach is a race "
+            "between the last attempt's error and the runner's kill, and the retry can lose it: "
+            "in run 42386541065's job 128445139635 a `gh api` read bounded at 30 s under "
+            "`timeout-minutes: 5` — 5 x 30 + 150 = 300 s against 300 s — printed "
+            "`attempt 5 of 5 reached its 30s bound` at 17:22:16.7444966Z and was killed at "
+            "17:22:16.7483230Z, four milliseconds later. Lose that race and the step reports "
+            "GitHub's bare `The action '…' has timed out after N minutes.` rather than naming "
+            "the site and its attempts, which is the loud failure the retry exists to give. "
+            f"GitHub's granularity is the minute, so write `timeout-minutes: {cost // 60 + 1}` "
+            "or more.")
 
 for entry in EXEMPTIONS:
     if entry.used:

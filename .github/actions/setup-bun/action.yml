@@ -12,26 +12,20 @@ description: >-
   `ARG BUN_VERSION` default of packages/daemon/docker/worker.Dockerfile and every `FROM`.
 
   The restore below runs on every ref: it reads the `bun` cache family, one entry holding
-  ~/.bun/bin keyed on the pinned version, which ci.yaml's lint job saves on a push to main
-  (that file's Caches note). no-cache: true then runs on every ref too, so setup-bun writes no
-  second entry of its own — an entry a pull request writes is readable by no other pull request,
-  and the family above is the one copy worth keeping. On a hit setup-bun finds ~/.bun/bin/bun,
-  reads its `bun --revision`, takes it as an existing installation of the version this file
-  names, and downloads nothing: the release asset it fetches on a miss is 51,794,595 bytes.
-  That branch of setup-bun runs before any cache logic of its own, which is why no-cache: true
-  does not cost the restore.
+  ~/.bun/bin keyed on the pinned version. no-cache: true runs on every ref too, so
+  oven-sh/setup-bun writes no entry of its own — an entry a pull request writes is readable by no
+  other pull request, and the family above is the one copy worth keeping. On a hit setup-bun
+  finds ~/.bun/bin/bun, reads its `bun --revision`, takes it as an existing installation of the
+  version this file names, and downloads nothing: the release asset it fetches on a miss is
+  51,794,595 bytes. That branch of setup-bun runs before any cache logic of its own, which is why
+  no-cache: true does not cost the restore.
 
-outputs:
-  cache-primary-key:
-    description: >-
-      The key the restore looked for, so the job that saves this family passes it to
-      actions/cache/save rather than spelling the expression a second time.
-    value: ${{ steps.bun-cache.outputs.cache-primary-key }}
-  cache-hit:
-    description: >-
-      'true' when the restore found that key. The saving job tests it: an entry already in the
-      family is not written again.
-    value: ${{ steps.bun-cache.outputs.cache-hit }}
+  The save below is what writes that family, on a push to main alone, since only an event that
+  writes the default branch's cache scope leaves an entry every later run can read. ci.yaml runs
+  on no push, so no job of the router writes it; the entry comes from the workflows that do run
+  on that push — .github/workflows/ci-caches.yaml, whose browsers job calls this action on every
+  one of them, claude-envoy-rebuild.yaml, docs-pages.yaml (through docs-site.yaml), release.yaml
+  and release-envoy-listener.yaml.
 
 runs:
   using: composite
@@ -56,3 +50,12 @@ runs:
       with:
         bun-version-file: .bun-version
         no-cache: true
+
+    # What the install above left in ~/.bun/bin, kept for every later run: on a push to main for
+    # the scope reason above, and only where the restore missed, since an entry already under
+    # this key is never replaced and re-uploading 51,794,595 bytes would buy nothing.
+    - if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.bun-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.bun/bin
+        key: bun-${{ runner.os }}-${{ steps.bun-pin.outputs.version }}

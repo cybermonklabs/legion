@@ -60,8 +60,10 @@ jobs:
     # Budget (the Budgets note in .github/workflows/ci.yaml's header): 1500 s, the 25 minutes
     # this job carried, plus its slowest retried step alone — the Go module download's two
     # calls, 2 x (5 x 180 + 150) = 2100 s, above the Playwright install's 1650 s, the workspace
-    # install's 1050 s and the ci-ok report's 600 s. 1500 + 2100 = 3600 s -> 60 min.
-    timeout-minutes: 60
+    # install's 1050 s and the ci-ok report's 600 s. That arithmetic is a whole number of
+    # minutes, so the step's own budget takes one more and this job takes it too:
+    # 1500 + 2160 = 3660 s -> 61 min.
+    timeout-minutes: 61
     # The screenshots step boots Dispatch on the e2e harness, which needs a database it may
     # truncate.
     services:
@@ -123,8 +125,9 @@ jobs:
       # far shorter.
       - name: Download the Go modules the site's binaries compile
         # Its own retry arithmetic, so an exhausted download fails this step by name rather than
-        # being cut part way by the job: two calls, 2 x (5 x 180 + 150) = 2100 s -> 35 min.
-        timeout-minutes: 35
+        # being cut part way by the job: two calls, 2 x (5 x 180 + 150) = 2100 s, a whole number
+        # of minutes, so the budget is the next one strictly above it -> 36 min.
+        timeout-minutes: 36
         run: |
           . .github/scripts/ci-retry.sh
           retry_fetch "packages/daemon's Go modules" 180 -- go -C packages/daemon mod download
@@ -204,7 +207,7 @@ jobs:
           ls -l docs/site/dist/THIRD_PARTY_NOTICES.txt
       # The built site, generated reference pages and copied media captions include no private
       # deployment repository, company, internal host, or Tailscale MagicDNS host. ci.yaml's lint
-      # job checks the sources, on a pull request and on a push to main alike.
+      # job checks the sources, on a pull request and on a merge group alike.
       - name: Check the built site has no private name, internal host, or tailnet host
         run: .github/scripts/check-private-names.sh docs/site/dist
       # The caller's deploy job publishes this artifact. Only docs-pages.yaml asks for it.
@@ -219,11 +222,17 @@ jobs:
             ~/go/pkg/mod
             ~/.cache/go-build
           key: ${{ steps.go-cache.outputs.cache-primary-key }}
-      # ci.yaml's call only: this job's result, and ci-ok itself when this job is that run's last.
-      - name: Report ci-ok when this is the run's last job
-        # Its own retry arithmetic: ci-ok-report.sh's two `gh api` reads, 2 x (5 x 30 + 150)
-        # = 600 s -> 10 min.
-        timeout-minutes: 10
+      # ci.yaml's call only: on a merge-group run whose group this job's own result decides it
+      # posts the failing ci-ok at once, and on every other run it posts nothing, the verdict
+      # being ci.yaml's `ci-ok` job's own check run (.github/actions/ci-ok-report says how).
+      # ci.yaml's docs job runs on a pull request and on a merge group alike, so the step is live
+      # here; docs-pages.yaml's call passes no `ci-ok-changes`, and the step skips.
+      - name: Report ci-ok when this job decides a merge-group run
+        # Its own retry arithmetic: ci-ok-report.sh's `gh api` read and post-check-run.sh's POST
+        # of the check run, 2 x (5 x 30 + 150) = 600 s. 720 s and not rule 8's minimum of 660 s:
+        # this step posts the required ci-ok check, and a budget that cuts it between those two
+        # ladders loses the check run rather than reporting a failure (ci.yaml's Budgets note).
+        timeout-minutes: 12
         if: always() && inputs.ci-ok-changes != ''
         uses: ./.github/actions/ci-ok-report
         with:
