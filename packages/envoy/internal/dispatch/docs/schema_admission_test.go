@@ -779,10 +779,10 @@ func requireNothingWrittenAfterTheRevoke(t *testing.T, writes []socketWrite, rev
 	}
 }
 
-// admitSocket is one document socket of room, admitted as presented and writable, on a request
-// context of its own, as Service.ServeHTTP and authorize make it: the admission holds that
-// context's cancel, and the context carries the admission.
-func admitSocket(t *testing.T, service *Service, room, token string, presented schemaPage, writable bool) (context.Context, *schemaAdmission) {
+// admitSchemaSocket is one document socket of room, admitted as presented and writable, on a
+// request context of its own, as Service.ServeHTTP and authorize make it: the admission holds
+// that context's cancel, and the context carries the admission.
+func admitSchemaSocket(t *testing.T, service *Service, room, token string, presented schemaPage, writable bool) (context.Context, *schemaAdmission) {
 	t.Helper()
 	ctx, cancel := context.WithCancelCause(context.Background())
 	t.Cleanup(func() { cancel(nil) })
@@ -824,8 +824,8 @@ func TestATokenIsAnsweredFromItsOwnSocketInEitherOrder(t *testing.T) {
 				}
 			}
 			service := &Service{}
-			liveCtx, liveAdmission := admitSocket(t, service, room, token, live, true)
-			revokedCtx, revokedAdmission := admitSocket(t, service, room, token, losing, true)
+			liveCtx, liveAdmission := admitSchemaSocket(t, service, room, token, live, true)
+			revokedCtx, revokedAdmission := admitSchemaSocket(t, service, room, token, losing, true)
 
 			closed := service.schemaAdmissions.revokeUnless(schemaFleet{minVersion: 2, maxCreatable: 1})
 			if len(closed) != 1 || closed[0] != revokedAdmission {
@@ -870,12 +870,12 @@ func TestATokenIsAnsweredFromItsOwnSocketInEitherOrder(t *testing.T) {
 func TestARevokedPagesReconnectIsAdmittedBesideItsLateToken(t *testing.T) {
 	const room, token = "room", "2"
 	service := &Service{}
-	revokedCtx, revoked := admitSocket(t, service, room, token, schemaPage{version: 2, creatable: 2, valid: true}, true)
+	revokedCtx, revoked := admitSchemaSocket(t, service, room, token, schemaPage{version: 2, creatable: 2, valid: true}, true)
 	if closed := service.schemaAdmissions.revokeUnless(schemaFleet{minVersion: 2, maxCreatable: 1}); len(closed) != 1 || closed[0] != revoked {
 		t.Fatalf("the rollback revoked %d sockets, want the newer page's alone", len(closed))
 	}
 
-	reconnectCtx, _ := admitSocket(t, service, room, token, schemaPage{version: 2, creatable: 2, valid: true}, false)
+	reconnectCtx, _ := admitSchemaSocket(t, service, room, token, schemaPage{version: 2, creatable: 2, valid: true}, false)
 	for _, answer := range []struct {
 		what string
 		ctx  context.Context
