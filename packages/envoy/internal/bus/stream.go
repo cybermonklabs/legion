@@ -638,9 +638,12 @@ func ensureStreamWithConfig(js nats.JetStreamContext, cfg *nats.StreamConfig, de
 			created.Metadata = map[string]string{}
 		}
 		created.Metadata[StreamIDMetadataKey] = id.New()
-		// A create whose answer was lost is made again, and the server then answers the second
-		// send ErrStreamNameAlreadyInUse, which this branch already reads as another start's
-		// create and follows with the read below.
+		// A create whose answer was lost is made again with the same configuration and the same
+		// id, drawn once above. A server that applied the lost create reads the second send as an
+		// equal create and answers it with the stream (v2.15.1 server/jetstream_cluster.go
+		// jsClusteredStreamRequest, "This is an equal assignment"), so the start goes on; only
+		// another start's create, which carries another id, draws ErrStreamNameAlreadyInUse, which
+		// this branch reads as such and follows with the read below.
 		if _, err = sentAgain("STREAM.CREATE", func() (*nats.StreamInfo, error) { return js.AddStream(&created) }); !errors.Is(err, nats.ErrStreamNameAlreadyInUse) {
 			return refusedSettings(err, nil, &created)
 		}
@@ -850,10 +853,12 @@ const unansweredSends = 3
 // that loses the answer to its own stream read is the listener that dies ten seconds after it
 // binds its port, serving nothing: cmd/listener's role-lane row
 // (TestRoleLaneRefusedSharedQueueFallsBackToMachineGroupsAndStoresOneCopy), whose fatal line was
-// the bare "context deadline exceeded" of the JetStream context's own ten-second wait. This is
-// the tolerance updateStream has had for the update: a request is never lost for want of sending
-// it again. Nor is it the in-process server's own fault: the production server leaves a JetStream
-// request unanswered too while its meta leader changes.
+// the bare "context deadline exceeded" of the JetStream context's own ten-second wait. An update
+// is read again rather than sent again (updateStream), since one that drew no answer may still
+// land; a read changes nothing, and a create sent again carries the same id as the one that may
+// have landed, so neither resend can contradict the send before it. Nor is it the in-process
+// server's own fault: the production server leaves a JetStream request unanswered too while its
+// meta leader changes.
 func sentAgain[T any](request string, send func() (T, error)) (T, error) {
 	var answer T
 	var err error
