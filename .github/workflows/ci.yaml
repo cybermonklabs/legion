@@ -1145,6 +1145,14 @@ jobs:
               # packages/proof-editor/tests/ask-concurrent-edit.test.ts:269-275, which this job
               # runs, reads block-node-types.json beside it.
               - 'packages/envoy/internal/dispatch/pmdoc/schema/**'
+              # The one markdown fixture table, read through web/src/__tests__/pmdoc-fixtures.ts:44
+              # by the three suites this job runs over it: features/refs/fixture-table-readings.test.ts,
+              # markdown-engine.test.ts and markdown-surfaces.test.tsx. The dispatch job declares it
+              # too, for the browser rows that import the same module, but that job runs no unit test.
+              - 'packages/envoy/internal/dispatch/pmdoc/testdata/fixtures.json'
+              # The digest table holding e2e/heavy-bodies.ts's bodies to the Go shapes that spell the
+              # same bytes, read by e2e/__tests__/heavy-bodies-digests.test.ts:44-50, which this job runs.
+              - 'packages/envoy/internal/dispatch/pmdoc/heavybodies/testdata/shared-bodies.json'
               # e2e/__tests__/local-instance-support.test.ts:153-154 holds shellQuote to this table.
               - 'packages/envoy/scripts/fixtures/shell-quote.json'
               # The answers packages/envoy/going's filter emitted for every probe of its own
