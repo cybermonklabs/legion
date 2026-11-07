@@ -1206,8 +1206,8 @@ describe("DispatchClient's uploads on a real connection", () => {
   // pause that follows, and measured in this pod a 4 MiB body was swallowed whole and cut off 3
   // runs of 3 under that load. The 60 s limit is a hang guard, not a budget: it fires only if the
   // server's resume or the client's stream never comes. Measured in that pod: 9.01 s idle; under
-  // those 16 loops, 9.62 s at most in a whole-suite run, since the row's cost is its own pacing
-  // and the load barely moves it.
+  // those 16 loops, 9.62 s at most over the three whole-suite runs that sized the step and 11.25 s
+  // over the twenty that proved it, since the row's cost is mostly its own pacing.
   test("an upload going out for longer than silenceMs lands in one attempt", async () => {
     const silenceMs = 8_000;
     const dispatch = await dispatchOn([{ pauses: 4, pauseMs: 2_200 }]);
