@@ -77,19 +77,22 @@ func (p *PgVersioned) appendUpdateTxClass(ctx context.Context, tx pgx.Tx, room s
 	if err != nil {
 		return 0, err
 	}
-	if read.pruneCeiling != nil && pending == nil {
-		ceiling, recovering, err := p.recoverPruneTx(ctx, tx, room)
-		if err != nil {
-			return 0, err
+	if pending == nil {
+		var recovered *int64
+		if read.pruneCeiling != nil {
+			ceiling, recovering, err := p.recoverPruneTx(ctx, tx, room)
+			if err != nil {
+				return 0, err
+			}
+			recovered = ceilingOf(ceiling, recovering)
+			// The recovery's deletes go on the transaction's write phase, so the gate is read
+			// again under the ceiling they leave rather than over rows they have not taken out
+			// yet.
+			if read, err = readAppendGate(ctx, tx, room, through, recovered); err != nil {
+				return 0, err
+			}
 		}
-		// The recovery's deletes go on the transaction's write phase, so the gate is read again
-		// under the ceiling they leave rather than over rows they have not taken out yet.
-		if read, err = readAppendGate(ctx, tx, room, through, ceilingOf(ceiling, recovering)); err != nil {
-			return 0, err
-		}
-		pending = recordPendingRoom(ctx, tx, room, read.latest, ceilingOf(ceiling, recovering))
-	} else if pending == nil {
-		pending = recordPendingRoom(ctx, tx, room, read.latest, nil)
+		pending = recordPendingRoom(ctx, tx, room, read.latest, recovered)
 	}
 	read = read.after(pending)
 	latest := read.latest

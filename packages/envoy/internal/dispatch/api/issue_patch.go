@@ -567,7 +567,6 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			appended = append(appended, addedEvent)
 		}
 	}
-	// The advice read before the first write describes after: its status, labels and parent.
 	if closing {
 		// The close's last statement before its commit stamps closed_at again, at the moment it
 		// runs (clock_timestamp()), over the start of the transaction (now()) the update above

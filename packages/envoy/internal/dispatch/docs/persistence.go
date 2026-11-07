@@ -461,16 +461,14 @@ func (p *PgVersioned) headAfterPrune(ctx context.Context, tx pgx.Tx, room string
 
 // recordPendingRoom records room's stored history, as the writes tx has queued to it leave it, on
 // the ledger that queues them (pendingRoom), and returns it: head is the version it stands at and
-// recovered the ceiling of an interrupted prune whose recovery the transaction queued. An entry
-// already recorded is returned as it stands. Nil for a transaction whose writes are not queued,
-// which has nothing pending.
+// recovered the ceiling of an interrupted prune whose recovery the transaction queued. Every
+// caller reads the ledger's entry for room first (pendingRoomOf) and records only where there is
+// none, so a room is recorded once. Nil for a transaction whose writes are not queued, which has
+// nothing pending.
 func recordPendingRoom(ctx context.Context, tx pgx.Tx, room string, head int64, recovered *int64) *pendingRoom {
 	ledger := queueFor(ctx, tx)
 	if ledger == nil {
 		return nil
-	}
-	if pending := ledger.rooms[room]; pending != nil {
-		return pending
 	}
 	pending := &pendingRoom{head: head, recovered: recovered}
 	if ledger.rooms == nil {
