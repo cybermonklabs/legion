@@ -92,8 +92,9 @@ async function startChannelServer(
     answers: {
       "session.message": (args) => {
         channel.push(shownText(args))
-        // The row the prompt an idle session took became, which is what answers the frame.
-        return { uuid: `row-${channel.length}`, as: "prompt" }
+        // The prompt an idle session took, which is what answers the frame: a prompt carries
+        // no row of its own (`../hooks/mod-protocol.ts`, `ModCallResults["session.message"]`).
+        return { as: "prompt" }
       },
     },
   })

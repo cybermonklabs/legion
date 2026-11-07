@@ -331,8 +331,8 @@ function createLink(): SessionLink {
       case "session.message": {
         const { eventId } = request.args
         return eventId === undefined
-          ? await writer.writeMessage(request.args)
-          : await writer.writeOnce(eventId, request.args)
+          ? await writer.writeMessage(engine, request.args)
+          : await writer.writeOnce(engine, eventId, request.args)
       }
       case "command.run":
         return await engine.runCommand(request.args)
@@ -485,8 +485,7 @@ function createLink(): SessionLink {
     readonly origin: ModAppendOrigin
     readonly message: ModAppendMessage
   }): void => {
-    const wrote =
-      arrived.door === "prompt" ? writer.claimRow(arrived.uuid, arrived.message.content) : undefined
+    const wrote = arrived.door === "prompt" ? writer.claimRow(arrived.message.content) : undefined
     send({ kind: "append", ...arrived, ...(wrote === undefined ? {} : { wrote }) })
   }
 
@@ -639,11 +638,6 @@ export function register(on: On): void {
   })
 
   on("turn.step", async function* (_, e, next) {
-    // A subagent's request is its loop's: it is none of this session's, so it raises no count
-    // here - a row stored after the main turn's last request looked read by a subagent's step
-    // and was never quoted - and the live view publishes nothing of it, which is where the
-    // spec puts a subagent's work ("their work shows as the parent's tool call").
-    if (ofSubagent(e)) return yield* next(e)
     // The effort the request really carries. Claude Code names the effort of the model the
     // request is for, and names none for a model that takes none: measured on 2.1.310, a request
     // of `claude-opus-5-5` before any pick carried `output_config.effort: medium`, while with a
@@ -655,6 +649,15 @@ export function register(on: On): void {
     const set = link.effortNow()
     const request: TurnStepInput =
       set === null || e.effort === undefined ? e : { ...e, effort: set }
+    // The pick is the session's, so it is on this request whichever loop made it: a subagent's
+    // step carries the session's own effort (measured on 2.1.310), and a pick left off it ran
+    // every Task subagent at the level Claude Code had saved while the header read the pick
+    // (INFRA-1026 review, round five). What is skipped for a subagent is this session's
+    // bookkeeping, which its loop is none of: its request raises no count here - a row stored
+    // after the main turn's last request looked read by a subagent's step and was never quoted -
+    // and the live view publishes nothing of it, which is where the spec puts a subagent's work
+    // ("their work shows as the parent's tool call").
+    if (ofSubagent(e)) return yield* next(request)
     const step: StepParts = { parts: [], blocks: new Map() }
     const snapshot = (done: boolean, stopReason?: ModStopReason): void => {
       link.send({

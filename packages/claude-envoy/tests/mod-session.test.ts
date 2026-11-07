@@ -68,7 +68,7 @@ function driven(answer?: Answer, showMs = 100) {
 // (`../hooks/mod-writer.ts`, `writeOnce`). What the card becomes in the session is the mod's to
 // decide.
 test("a card is handed to the mod as one message, under its own Envoy event id", async () => {
-  const mod = driven(() => ({ as: "prompt", uuid: "prompt-row-1" }))
+  const mod = driven(() => ({ as: "prompt" }))
 
   await mod.session.show({ content: BLOCKS, eventId: EVENT, text: CARD })
 
@@ -174,7 +174,7 @@ test("a person's message answers with the row an append wrote, and with none for
     },
   ])
 
-  const prompted = driven(() => ({ as: "prompt", uuid: "prompt-row-1" }))
+  const prompted = driven(() => ({ as: "prompt" }))
   expect(await prompted.session.deliver(delivered)).toBeUndefined()
 })
 

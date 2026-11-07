@@ -250,7 +250,7 @@ function commandOutput(text: string): ModEvent {
 }
 
 test("a Send becomes the person's own message only once Dispatch has accepted that attempt", async () => {
-  const mod = fakeMod({ "session.message": () => ({ as: "prompt", uuid: "prompt-row-1" }) })
+  const mod = fakeMod({ "session.message": () => ({ as: "prompt" }) })
   const session = await harness({ link: mod.link, accept: () => accepted("ship it") })
   try {
     const took = await session.router.route(frame(personSends("ship it")))
@@ -282,7 +282,7 @@ test("an accept that answers 404, throws, or times out leaves the card and puts 
     },
     () => ({ message_id: MESSAGE }),
   ]) {
-    const mod = fakeMod({ "session.message": () => ({ as: "prompt", uuid: "prompt-row-1" }) })
+    const mod = fakeMod({ "session.message": () => ({ as: "prompt" }) })
     const session = await harness({ link: mod.link, accept: refuse })
     try {
       const took = await session.router.route(frame(personSends("ship it")))
@@ -300,7 +300,7 @@ test("an accept that answers 404, throws, or times out leaves the card and puts 
 
 test("a frame naming an attempt Dispatch does not confirm never becomes a message, a command or a pick", async () => {
   const mod = fakeMod({
-    "session.message": () => ({ as: "prompt", uuid: "prompt-row-1" }),
+    "session.message": () => ({ as: "prompt" }),
     "command.run": () => ({ text: "ran" }),
     "config.set": (args) => ({ value: args.value }),
   })
@@ -328,13 +328,13 @@ test("a frame naming an attempt Dispatch does not confirm never becomes a messag
 test("the attempts a session handled survive its restart, and the next process refuses them", async () => {
   const directory = await mkdtemp(join(tmpdir(), "claude-envoy-turns-"))
   try {
-    const first = fakeMod({ "session.message": () => ({ as: "prompt", uuid: "prompt-row-1" }) })
+    const first = fakeMod({ "session.message": () => ({ as: "prompt" }) })
     const before = await harness({ link: first.link, accept: () => accepted("ship it"), directory })
     expect(await before.router.route(frame(personSends("ship it")))).toBe(true)
     await before.state.idle()
 
     // Another process, the same state directory: the record is the file, not this process.
-    const second = fakeMod({ "session.message": () => ({ as: "prompt", uuid: "prompt-row-2" }) })
+    const second = fakeMod({ "session.message": () => ({ as: "prompt" }) })
     const after = await harness({ link: second.link, accept: () => accepted("ship it"), directory })
 
     expect(await after.router.route(frame(personSends("ship it")))).toBe(false)
@@ -469,11 +469,12 @@ test("a person's message whose answer was late is one write with the card its re
   }
 })
 
-// A message the mod took as the prompt of a new turn answers with that prompt's own row, which
-// is no row of this message's: the router recognises it by its text instead, and records
-// nothing here (`../src/mod-session`, `deliver`).
+// A message the mod took as the prompt of a new turn answers with the prompt alone and no row
+// of its own: the row Claude Code writes for a prompt is the prompt's, the router recognises
+// the message by its text instead, and nothing is recorded here (`../src/mod-session`,
+// `deliver`).
 test("a body the mod took as a prompt is recorded as no row of its own", async () => {
-  const mod = fakeMod({ "session.message": () => ({ as: "prompt", uuid: "prompt-row-1" }) })
+  const mod = fakeMod({ "session.message": () => ({ as: "prompt" }) })
   const session = await harness({ link: mod.link, accept: () => accepted("ship it") })
   try {
     expect(await session.router.route(frame(personSends("ship it")))).toBe(true)

@@ -553,15 +553,12 @@ function quotedUnread(message: ModUnreadMessage, fence: string): string {
  * What each message is, the prompt says in a label of its own, and the label carries this
  * prompt's fence (`promptFence`): the label is the router's, never the text's. A card that
  * wrote the person's label into its own text took their authority for what followed it, and
- * any client on the bus can send a card (INFRA-1026 review, security[prompt]).
- *
- * `fence` is this prompt's mark, fresh for each call. A caller passes one only to write the
- * same prompt twice, which is what a test comparing the prompt the mod submitted does.
+ * any client on the bus can send a card (INFRA-1026 review, security[prompt]). The mark is
+ * minted here and nowhere else, fresh for every call: a mark a caller could name is a mark a
+ * message could carry.
  */
-export function unreadRowPrompt(
-  unread: readonly ModUnreadMessage[],
-  fence: string = promptFence(unread),
-): string {
+export function unreadRowPrompt(unread: readonly ModUnreadMessage[]): string {
+  const fence = promptFence(unread)
   const one = unread.length === 1
   const them = one ? "it" : "them"
   const count = one ? "a message" : `${unread.length} messages`
@@ -642,7 +639,8 @@ export interface ModCallArguments {
 /** What each call answers with. */
 export interface ModCallResults {
   /**
-   * The row the message became, and which write wrote it, or why nothing was written.
+   * What the message was written as, and the row where there is one, or why nothing was
+   * written.
    *
    * The mod's answer is the proof: a caller answers its Envoy frame on a write this reports - a
    * row appended, or a prompt the engine took - and on nothing else.
@@ -652,17 +650,18 @@ export interface ModCallResults {
    * dropped is the person's to be told about, where a row the session refused leaves the frame
    * unanswered (`../src/mod-session.ts`, `deliver`).
    *
-   * The middle arm is the prompt the engine took whose row the mod did not see within
-   * `PROMPT_ROW_MS` (`./mod-writer.ts`, `submitPrompt`). The message is in the session, so this
-   * is no refusal: answered as one, the mod recorded nothing for the Envoy event and the
-   * resend submitted the card a second time, while a person's own message had Dispatch tell them
-   * their session dropped a prompt it had in fact taken (INFRA-1026 review). It carries no
-   * uuid, which costs a caller nothing: the row of a prompt is the prompt's own and `deliver`
-   * answers undefined for it either way.
+   * A prompt carries no row. The row Claude Code writes for a prompt is the prompt's own and
+   * no caller reads it — `deliver` answers undefined for a prompt and `show` reads `deny`
+   * alone — and the mod does not always see that row (`./mod-writer.ts`, `PROMPT_ROW_MS`). So
+   * a prompt the engine took is `{ as: "prompt" }` whether or not its row arrived, and it is
+   * never a refusal: answered as one, the mod recorded nothing for the Envoy event and the
+   * resend submitted the card a second time, while a person's own message had Dispatch tell
+   * them their session dropped a prompt it had in fact taken (INFRA-1026 review). This is the
+   * one statement of that rule; the writer's own doc blocks name it rather than repeat it.
    */
   "session.message":
-    | { readonly uuid: string; readonly as: "row" | "prompt"; readonly deny?: undefined }
-    | { readonly uuid?: undefined; readonly as: "prompt"; readonly deny?: undefined }
+    | { readonly as: "row"; readonly uuid: string; readonly deny?: undefined }
+    | { readonly as: "prompt"; readonly uuid?: undefined; readonly deny?: undefined }
     | { readonly deny: string; readonly as: "row" | "prompt"; readonly uuid?: undefined }
   /** The command's output and the notes it left the model (`CommandRunResult`). */
   "command.run": { readonly text?: string; readonly context?: readonly string[] }

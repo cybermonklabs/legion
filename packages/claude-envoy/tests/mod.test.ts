@@ -35,7 +35,6 @@ import {
   MOD_MIN_CLAUDE_VERSION,
   type ModCallResults,
   type ModEvent,
-  type ModUnreadMessage,
   unreadRowPrompt,
 } from "../hooks/mod-protocol"
 import { type ModLink, startModLink } from "../src/mod-link"
@@ -104,6 +103,9 @@ const submits: { readonly text: string; readonly asUser: boolean }[] = []
  *  what holds that call open, where a test wants a message handed over while it is in flight. */
 let dropNextPrompt: string | undefined
 let holdNextPrompt: PromiseWithResolvers<void> | undefined
+/** What holds the engine's next `$.session.append` open, where a test wants the session to move
+ *  on while a row of it is still being stored. */
+let holdNextAppend: PromiseWithResolvers<void> | undefined
 /** True where the engine takes the next prompt and writes no row this mod can see, which is
  *  the one case a prompt the session holds has no row to answer with (`PROMPT_ROW_MS`). */
 let hideNextPromptRow = false
@@ -170,6 +172,9 @@ function engineOn(directory: string): EngineInterface {
       // `session.append` hook runs for it: Claude Code does not re-enter a mod's own, which is
       // why the mod reports the row itself.
       append: async (args) => {
+        const heldAppend = holdNextAppend
+        holdNextAppend = undefined
+        if (heldAppend !== undefined) await heldAppend.promise
         const uuid = appendedRow(appends.length + 1)
         appends.push({ text: rowText(args.message.content), uuid })
         return { message: { ...args.message, isMeta: true, role: "user" } as const, uuid }
@@ -342,14 +347,15 @@ async function until(what: string, holds: () => boolean): Promise<void> {
   throw new Error(`timed out waiting for ${what}`)
 }
 
-/** The prompt `submitted` should be, written again with the mark that prompt carries: the mark
- *  is minted fresh for every prompt and checked absent from the messages it quotes
- *  (`unreadRowPrompt`), so a case compares every other character of it exactly. */
-function promptLike(submitted: string | undefined, unread: readonly ModUnreadMessage[]): string {
-  const named = /the mark \[([0-9a-z]+)\]/.exec(submitted ?? "")
-  const fence = named?.[1]
-  if (fence === undefined) throw new Error("the prompt the mod submitted names no mark")
-  return unreadRowPrompt(unread, fence)
+/** `prompt` with the mark it carries put aside, so a prompt the mod submitted and the prompt
+ *  it should be compare equal: the mark is minted fresh for every prompt and checked absent
+ *  from the messages it quotes (`unreadRowPrompt`), so this leaves every other character of
+ *  the two to be compared exactly. A text naming no mark is no prompt of this plugin's. */
+function promptLike(prompt: string | undefined): string {
+  const text = prompt ?? ""
+  const fence = /the mark \[([0-9a-z]+)\]/.exec(text)?.[1]
+  if (fence === undefined) throw new Error("the prompt names no mark")
+  return text.replaceAll(fence, "<mark>")
 }
 
 /** One message into the session, as the server hands one over. */
@@ -518,10 +524,10 @@ test("a message handed to a running turn is a row, reported as the row this plug
     async (e) => ({ text: e.answer }),
   )
   await until("the prompt at the unread row", () => submits.length === 1)
-  expect(submits[0]).toEqual({
-    asUser: false,
-    text: promptLike(submits[0]?.text, [{ kind: "card", text: card }]),
-  })
+  expect(submits[0]?.asUser).toBe(false)
+  expect(promptLike(submits[0]?.text)).toBe(
+    promptLike(unreadRowPrompt([{ kind: "card", text: card }])),
+  )
   expect((await rowReported("prompt-row-1")).wrote).toBe("pointer")
   // The prompt started its turn, which reads it: the mod stops holding rows for it.
   await turn("turn-after-pointer", 1)
@@ -563,7 +569,9 @@ test("a row stored after the turn's last request is quoted, though its step answ
     expect((await message(card)).as).toBe("row")
   })
   await until("the prompt at the unread row", () => submits.length === sent + 1)
-  expect(submits[sent]?.text).toBe(promptLike(submits[sent]?.text, [{ kind: "card", text: card }]))
+  expect(promptLike(submits[sent]?.text)).toBe(
+    promptLike(unreadRowPrompt([{ kind: "card", text: card }])),
+  )
   await turn("turn-after-unread", 1)
 })
 
@@ -588,23 +596,63 @@ test("a row stored behind a prompt the session dropped is pointed at", async () 
   expect(await prompting).toEqual({ as: "prompt", deny: "a UserPromptSubmit hook blocked it" })
 
   await until("the prompt at the row the dropped prompt left", () => submits.length === sent + 1)
-  expect(submits[sent]?.text).toBe(
-    promptLike(submits[sent]?.text, [{ kind: "card", text: behind }]),
+  expect(promptLike(submits[sent]?.text)).toBe(
+    promptLike(unreadRowPrompt([{ kind: "card", text: behind }])),
   )
   await turn("turn-after-dropped", 1)
+})
+
+// The same row one tick later (INFRA-1026 review, round five): the prompt it was stored behind
+// is dropped while its own store is still in flight. The drop's `stopPrompting` finds nothing,
+// because the row is not watched yet, so the end of that store is the last moment anything can
+// catch it. Read off the turn as it stood before the store — `undefined`, since it was a prompt
+// and not a turn that was running — that moment said there was nothing to catch, and the row sat
+// in the watch with its Envoy frame already answered, waiting for a turn nobody would start.
+test("a row stored behind a prompt dropped while that row was being stored is pointed at", async () => {
+  const sent = submits.length
+  const held = Promise.withResolvers<void>()
+  holdNextPrompt = held
+  // Nothing is running, so this message is the prompt — and the engine holds it open.
+  const prompting = message("the first card, which the session will refuse", "evt-strand-1")
+  await until("the submit to be in flight", () => holdNextPrompt === undefined)
+
+  // Handed over while that prompt is in flight: a row — and the engine holds its store open.
+  const heldRow = Promise.withResolvers<void>()
+  holdNextAppend = heldRow
+  const behind = "the second card, stored while the first was being dropped"
+  const storing = message(behind, "evt-strand-2")
+  await until("the store of that row to be in flight", () => holdNextAppend === undefined)
+
+  // The prompt is dropped with the row still in flight: no turn ever runs, and the drop sees
+  // nothing of the row.
+  dropNextPrompt = "a UserPromptSubmit hook blocked it"
+  held.resolve()
+  expect(await prompting).toEqual({ as: "prompt", deny: "a UserPromptSubmit hook blocked it" })
+  heldRow.resolve()
+  expect((await storing).as).toBe("row")
+
+  await until("the prompt at the row the dropped prompt left", () => submits.length === sent + 1)
+  expect(promptLike(submits[sent]?.text)).toBe(
+    promptLike(unreadRowPrompt([{ kind: "card", text: behind }])),
+  )
+  await turn("turn-after-strand", 1)
 })
 
 // An idle session takes the message as the prompt of a new turn and nothing else: an appended
 // row starts nothing, so a card only appended would wait for the person to type, and a card
 // appended *and* quoted reached the model twice (INFRA-1026, handoff v6). The row Claude Code
-// writes for that prompt is what the mod answers with, and it is the proof the session has it.
-test("an idle session takes the message as its prompt, answered with the prompt's own row", async () => {
+// writes for that prompt is the prompt's own: the mod stamps it for the live view and answers
+// the write with no row at all (`../hooks/mod-protocol.ts`, `ModCallResults["session.message"]`).
+test("an idle session takes the message as its prompt, answered as a prompt and no row", async () => {
   const sent = submits.length
   const stored = appends.length
   const card = "a teammate's message, to an idle session"
 
-  expect(await message(card)).toEqual({ as: "prompt", uuid: `prompt-row-${promptRows}` })
+  expect(await message(card)).toEqual({ as: "prompt" })
   expect(appends.length).toBe(stored)
+  // The prompt's own row is claimed and stamped all the same: that stamp is what the live view
+  // reads such a row by (`ModEvent`'s `wrote`).
+  expect((await rowReported(`prompt-row-${promptRows}`)).wrote).toBe("message")
   // Without `asUser`: nobody at this session typed a card. A person's own words go with it.
   expect(submits[sent]).toEqual({ asUser: false, text: card })
   await turn("turn-after-card", 1)
@@ -683,7 +731,9 @@ test("a subagent's turn inside the main turn is none of the main turn's", async 
     async (e) => ({ text: e.answer }),
   )
   await until("the prompt at the unread row", () => submits.length === sent + 1)
-  expect(submits[sent]?.text).toBe(promptLike(submits[sent]?.text, [{ kind: "card", text: card }]))
+  expect(promptLike(submits[sent]?.text)).toBe(
+    promptLike(unreadRowPrompt([{ kind: "card", text: card }])),
+  )
 
   // And nothing of that loop reached the live view: no turn of its own, no step of its own, no
   // row of its own.
@@ -729,8 +779,67 @@ test("a background subagent's step is none of the main turn's requests", async (
     async (e) => ({ text: e.answer }),
   )
   await until("the prompt at the unread row", () => submits.length === sent + 1)
-  expect(submits[sent]?.text).toBe(promptLike(submits[sent]?.text, [{ kind: "card", text: card }]))
+  expect(promptLike(submits[sent]?.text)).toBe(
+    promptLike(unreadRowPrompt([{ kind: "card", text: card }])),
+  )
   await turn("turn-after-background", 1)
+})
+
+// The pick is the session's, so it rides on every request of the session, a subagent's loop
+// included (requirement R8, `docs/site/src/content/docs/dispatch/agents.md`). Measured on
+// 2.1.310, a subagent's `turn.step` carries the session's own effort, so a hook that passed one
+// straight through left the main loop at the picked level while every Task subagent ran at the
+// level Claude Code had saved, under a header reading the pick (INFRA-1026 review, round five).
+// What a subagent's step is still none of is this session's bookkeeping: the count the unread
+// rule reads, and the live view.
+test("a subagent's step takes the session's pick and is still none of this session's requests", async () => {
+  const { engine, server, turnStart, turnComplete } = started()
+  expect(await server.request("set-effort", { effort: "low" })).toEqual({ effort: "low" })
+  const sent = submits.length
+  const card = "a card stored after the main turn's last request"
+  await turnStart(engine, { text: "go", turnId: "turn-pick" }, async (e) => ({ turnId: e.turnId }))
+  await runStep({
+    turnId: "turn-pick",
+    index: 0,
+    model: MODEL_WITH_EFFORT,
+    effort: "max",
+    messageCount: 2,
+  })
+  expect((await message(card)).as).toBe("row")
+
+  // The subagent's own step, with the effort Claude Code saved for this session on it: the
+  // request that goes out carries the pick instead, as the main loop's does.
+  const requested = await runStep({
+    agentId: "a0f31c7b5d2e4a908",
+    turnId: "turn-pick-sub",
+    index: 0,
+    model: MODEL_WITH_EFFORT,
+    effort: "medium",
+    messageCount: 9,
+  })
+  expect(requested.effort).toBe("low")
+
+  // And it raised no count of this session's: the row stored before it is still unread, so the
+  // main turn's end points the model at it.
+  await turnComplete(
+    engine,
+    { answer: "done", durationMs: 1, isAborted: false, reason: "answer", turnId: "turn-pick" },
+    async (e) => ({ text: e.answer }),
+  )
+  await until("the prompt at the unread row", () => submits.length === sent + 1)
+  expect(promptLike(submits[sent]?.text)).toBe(
+    promptLike(unreadRowPrompt([{ kind: "card", text: card }])),
+  )
+
+  // And the live view was told nothing of that step: the spec puts a subagent's work inside the
+  // parent's tool call.
+  const stream = await eventsThrough(
+    (event) => event.kind === "turn-complete" && event.turnId === "turn-pick",
+  )
+  expect(stream.filter((event) => "turnId" in event && event.turnId === "turn-pick-sub")).toEqual(
+    [],
+  )
+  await turn("turn-after-pick", 1)
 })
 
 // A person's message whose answer was late is sent again by Envoy and arrives as a card, the
@@ -749,8 +858,8 @@ test("a person's message and the card its resend becomes are one write", async (
   })
   // One row, so one message went unread, and the turn's end quotes the person's own words once.
   await until("the prompt at the unread row", () => submits.length === sent + 1)
-  expect(submits[sent]?.text).toBe(
-    promptLike(submits[sent]?.text, [{ kind: "person", messageId: MESSAGE, text: words }]),
+  expect(promptLike(submits[sent]?.text)).toBe(
+    promptLike(unreadRowPrompt([{ kind: "person", messageId: MESSAGE, text: words }])),
   )
   await turn("turn-after-resend", 1)
 })

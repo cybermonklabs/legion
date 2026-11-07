@@ -9,8 +9,10 @@
  * Envoy sends the event. Deciding it needs the turn's events and this plugin's writes in one
  * order, which is the mod and nowhere else.
  *
- * It reaches the session through four closures the transport half passes in — the host, the
- * event queue, the clock and the session id — and holds everything else itself.
+ * Every write is handed the session it writes into, by the request that asked for it, and this
+ * half holds everything else itself. The four closures the transport half passes in are the
+ * rest: the host for the one write no request asks for (`pointAt`), the event queue, the clock
+ * and the session id.
  */
 import type {
   PromptSubmitArgs,
@@ -29,13 +31,14 @@ import {
 } from "./mod-protocol"
 
 /**
- * How long the writer waits for the row Claude Code writes for a prompt it submitted.
+ * How long the writer watches for the row Claude Code writes for a prompt it submitted, to
+ * stamp that row for the server (`claimRow`).
  *
  * The row is there before the call answers: in all six `$.prompt.submit` calls recorded on
  * 2.1.310 the prompt's own `prompt`-door row landed 15 ms to 26 ms before the call resolved
  * (`/legion/scratch/tmp/infra-1026-spike/logs/mod2.jsonl:144-145`,
- * `logs/mod3-q2-310.jsonl:51-52,86-87`, `logs/mod3-q1q3q5.jsonl:236-239`). So this is a guard
- * on a wait that is normally over before it starts, at about eighty times the largest gap.
+ * `logs/mod3-q2-310.jsonl:51-52,86-87`, `logs/mod3-q1q3q5.jsonl:236-239`). So this is a bound
+ * on a watch that is normally over before it starts, at about eighty times the largest gap.
  */
 const PROMPT_ROW_MS = 2_000
 
@@ -101,35 +104,20 @@ interface WatchedRow {
   readonly message: ModUnreadMessage
 }
 
-/** One prompt this mod submitted whose row has not arrived: the text the row carries, what the
- *  row is to the server, and what is woken by it. */
+/** One prompt this mod submitted whose row has not arrived: the text the row carries, and what
+ *  that row is to the server, which the row's own hook stamps it with (`claimRow`). */
 interface AwaitedRow {
   readonly text: string
   readonly wrote: "message" | "pointer"
-  readonly seen: (uuid: string) => void
 }
 
-/**
- * What became of one prompt this mod handed the engine (`submitPrompt`): the engine took it and
- * the mod saw the row Claude Code wrote for it, the engine took it and no row arrived within
- * `PROMPT_ROW_MS`, or the engine dropped it and the prompt is in no session.
- *
- * The second arm is the one a caller must not read as the third: the message is in the session
- * there, so a caller that answers it as a refusal writes the message again and tells a person
- * their session dropped words it took (INFRA-1026 review).
- */
-type SubmittedPrompt =
-  | { readonly took: true; readonly uuid?: string }
-  | { readonly took: false; readonly drop: string }
-
-/** What this mod recorded one Envoy event's write as, in `$.store`. Values round-trip as
- *  `JSON.parse(JSON.stringify(value))` (measured on 2.1.310), so this is plain JSON data. The
- *  second shape is the one write that has no row to record: the prompt the engine took whose
- *  row the mod did not see (`submitPrompt`). The write happened, so it is recorded and the
- *  resend answers from the record rather than writing the message a second time. */
-type RecordedWrite =
-  | { readonly uuid: string; readonly as: "row" | "prompt" }
-  | { readonly uuid?: undefined; readonly as: "prompt" }
+/** What this mod recorded one Envoy event's write as, in `$.store`: the write it answered the
+ *  server with, minus the refusals, which are no write and are recorded as none. Values
+ *  round-trip as `JSON.parse(JSON.stringify(value))` (measured on 2.1.310), so this is plain
+ *  JSON data. A prompt is recorded with no row of its own, as it is answered with none
+ *  (`./mod-protocol`, `ModCallResults["session.message"]`): the write happened, so the resend
+ *  answers from the record rather than writing the message a second time. */
+type RecordedWrite = Exclude<ModCallResults["session.message"], { readonly deny: string }>
 
 /** `value` as this mod recorded a write, or undefined where it is anything else: the store is
  *  this plugin's own, and a value it did not write is no record of one. */
@@ -137,16 +125,22 @@ function recordedWrite(value: unknown): RecordedWrite | undefined {
   if (typeof value !== "object" || value === null) return undefined
   if (!("as" in value)) return undefined
   const { as } = value
-  if (as !== "row" && as !== "prompt") return undefined
+  if (as === "prompt") return { as }
+  if (as !== "row") return undefined
   const uuid = "uuid" in value ? value.uuid : undefined
-  if (uuid === undefined) return as === "prompt" ? { as } : undefined
   return typeof uuid === "string" ? { uuid, as } : undefined
 }
 
 /** What the transport half gives the writer: the session, the event queue, the clock and the id
  *  the store's keys are scoped by. */
 export interface MessageWriterOptions {
-  /** The session now, or undefined before `session.start` and after the link gave up. */
+  /**
+   * The session now, or undefined before `session.start` and after the link gave up.
+   *
+   * Read by `pointAt` alone: the prompt at a turn's unread rows is work of the writer's own,
+   * at a turn's end with no request in hand. Every other write is made for one request, which
+   * carries the session the server's call reached (`./mod.ts`, `invoke`).
+   */
   readonly engine: () => WriterHost | undefined
   /** Queue one event for the server; never throws (`./mod.ts`, `send`). */
   readonly send: (event: ModEvent) => void
@@ -161,10 +155,12 @@ export interface MessageWriter {
   /** Write one message into the session as the session stands now: a row of the turn running,
    *  or the prompt of a new turn. */
   readonly writeMessage: (
+    engine: WriterHost,
     args: ModCallArguments["session.message"],
   ) => Promise<ModCallResults["session.message"]>
   /** Write the message of `eventId` once, however many times Envoy sends it. */
   readonly writeOnce: (
+    engine: WriterHost,
     eventId: string,
     args: ModCallArguments["session.message"],
   ) => Promise<ModCallResults["session.message"]>
@@ -179,10 +175,7 @@ export interface MessageWriter {
   readonly stepRequested: () => void
   /** One row of the `prompt` door, claimed for the prompt of this mod's it is the row of, and
    *  stamped with what that prompt wrote; undefined for a person's own prompt. */
-  readonly claimRow: (
-    uuid: string,
-    content: readonly ModContentBlock[],
-  ) => "message" | "pointer" | undefined
+  readonly claimRow: (content: readonly ModContentBlock[]) => "message" | "pointer" | undefined
 }
 
 /** The writer for one session: all of it closure state, as the link it belongs to is. */
@@ -210,20 +203,13 @@ export function createMessageWriter(options: MessageWriterOptions): MessageWrite
    *  under. A row leaves it when its turn ends, which is also when the prompt pointing at it
    *  goes out, so this holds the rows of the turn running and nothing else. */
   const watched = new Map<string, WatchedRow>()
-  /** The prompts this mod submitted whose row has not arrived, oldest first. Each entry is
-   *  dropped by the wait that put it there, so nothing else bounds this. */
+  /** The prompts this mod submitted whose row has not arrived, oldest first. An entry leaves
+   *  it when the row arrives, and `PROMPT_ROW_MS` after it was made where no row does, so
+   *  nothing else bounds this. */
   const awaitedRows: AwaitedRow[] = []
   /** The write running for each Envoy event id, so a copy of that event which arrives while the
    *  first is still running waits for it and then finds what it recorded (`writeOnce`). */
   const writing = new Map<string, Promise<void>>()
-
-  /** The session, or the reason there is none to write into: the link clears it when it gives
-   *  up, and a call the server makes after that answers the throw. */
-  const engineNow = (): WriterHost => {
-    const engine = options.engine()
-    if (engine === undefined) throw new Error("the session is gone")
-    return engine
-  }
 
   /** The key `$.store` holds one Envoy event's write under: this session's id with the event
    *  id. A `/clear` moves the id, and the conversation it moves to is one the card is not in,
@@ -254,39 +240,27 @@ export function createMessageWriter(options: MessageWriterOptions): MessageWrite
     }
   }
 
-  /** Wait for the row Claude Code writes for the prompt carrying `text`, and stamp that row
-   *  `wrote` for the server. Registered before the submit goes out, because the row reaches
-   *  this mod's own `session.append` hook before the call resolves (`PROMPT_ROW_MS`). */
-  const awaitRow = (
-    text: string,
-    wrote: "message" | "pointer",
-  ): { readonly uuid: () => Promise<string | undefined>; readonly drop: () => void } => {
-    const settle = Promise.withResolvers<string | undefined>()
-    const waiting: AwaitedRow = { text, wrote, seen: settle.resolve }
+  /** Watch for the row Claude Code writes for the prompt carrying `text`, so that row is
+   *  stamped `wrote` for the server (`claimRow`). Registered before the submit goes out,
+   *  because the row reaches this mod's own `session.append` hook before the call resolves,
+   *  and given up after `PROMPT_ROW_MS`, by when a row that was coming has come. Nothing waits
+   *  on it: the write is answered with the prompt alone (`./mod-protocol`,
+   *  `ModCallResults["session.message"]`). */
+  const awaitRow = (text: string, wrote: "message" | "pointer"): { readonly drop: () => void } => {
+    const waiting: AwaitedRow = { text, wrote }
     awaitedRows.push(waiting)
     const drop = (): void => {
       const at = awaitedRows.indexOf(waiting)
       if (at !== -1) awaitedRows.splice(at, 1)
     }
-    return {
-      drop,
-      uuid: async (): Promise<string | undefined> => {
-        try {
-          return await Promise.race([settle.promise, sleep(PROMPT_ROW_MS).then(() => undefined)])
-        } finally {
-          drop()
-        }
-      },
-    }
+    void sleep(PROMPT_ROW_MS).then(drop)
+    return { drop }
   }
 
   /** One row of the `prompt` door, claimed for the prompt of this mod's it is the row of, if
    *  any: the oldest whose text this row carries, since Claude Code writes its own framing in
    *  front of a submit that named no `asUser`. Every other prompt row is a person's own. */
-  const claimRow = (
-    uuid: string,
-    content: readonly ModContentBlock[],
-  ): AwaitedRow["wrote"] | undefined => {
+  const claimRow = (content: readonly ModContentBlock[]): AwaitedRow["wrote"] | undefined => {
     const text = content
       .map((block) => (typeof block["text"] === "string" ? block["text"] : ""))
       .join("\n")
@@ -294,7 +268,6 @@ export function createMessageWriter(options: MessageWriterOptions): MessageWrite
     const waiting = awaitedRows[at]
     if (waiting === undefined) return undefined
     awaitedRows.splice(at, 1)
-    waiting.seen(uuid)
     return waiting.wrote
   }
 
@@ -303,11 +276,11 @@ export function createMessageWriter(options: MessageWriterOptions): MessageWrite
    * those no request read, with the one prompt that quotes them all (`unreadRowPrompt`).
    *
    * The three moments a row leaves the watch pass their own `leaves` and share everything
-   * else: the turn that ends, the prompt that started no turn, and the one row whose turn
-   * ended while it was being stored. A row that leaves having been stored since this session's
-   * last request is a row nothing read — in the last two moments every row that leaves is such
-   * a row, since no request can have gone out meanwhile: a step belongs to a turn, and in both
-   * there is no turn.
+   * else: the turn that ends, the prompt that started no turn, and the one row the session
+   * fell idle under while it was being stored. A row that leaves having been stored since
+   * this session's last request is a row nothing read — in the last two moments every row
+   * that leaves is such a row, since no request can have gone out meanwhile: a step belongs
+   * to a turn, and in both there is no turn.
    */
   const pointAtUnread = (leaves: (uuid: string, row: WatchedRow) => boolean): void => {
     const unread: ModUnreadMessage[] = []
@@ -339,27 +312,26 @@ export function createMessageWriter(options: MessageWriterOptions): MessageWrite
   }
 
   /**
-   * Hand the engine one prompt and answer with what became of it.
+   * Hand the engine one prompt and answer with the reason it dropped it, where it did.
    *
    * `$.prompt.submit` resolves once the engine has taken the prompt, not at the end of the turn
    * it starts: in all six calls recorded on 2.1.310 the prompt's own row landed 15 ms to 26 ms
    * before the call resolved and `turn.start` 8 ms to 11 ms after it, and the long resolutions
    * — 8.5 s, 11.2 s and 12.4 s — are the wait for a turn that was already running, which ended
    * just before (`/legion/scratch/tmp/infra-1026-spike/logs/mod2.jsonl:136-147`,
-   * `logs/mod3-q2-310.jsonl:72-89`, `logs/mod3-q1q3q5.jsonl:163-179`). So the row is there by
-   * the time this answers, and what the caller waits for is the prompt entering, never a turn.
+   * `logs/mod3-q2-310.jsonl:72-89`, `logs/mod3-q1q3q5.jsonl:163-179`). So what the caller
+   * waits for is the prompt entering, never a turn.
    *
-   * A prompt the engine took whose row `claimRow` did not match within `PROMPT_ROW_MS` is
-   * `{ took: true }` with no uuid, never a drop: the engine has the prompt either way, and the
-   * two answered alike had the caller treat a message the session holds as one it refused
-   * (INFRA-1026 review).
+   * The row that prompt becomes is the prompt's own and is answered to nobody, so nothing here
+   * waits for it: it is watched only to be stamped (`awaitRow`, `./mod-protocol`,
+   * `ModCallResults["session.message"]`).
    */
   const submitPrompt = async (
     engine: WriterHost,
     text: string,
     asUser: boolean,
     wrote: "message" | "pointer",
-  ): Promise<SubmittedPrompt> => {
+  ): Promise<{ readonly drop?: string }> => {
     // Set before the call and in the same tick as the check that chose this branch: a message
     // handed over from here on is a row of the turn this prompt starts.
     prompting = true
@@ -375,11 +347,10 @@ export function createMessageWriter(options: MessageWriterOptions): MessageWrite
     if (answer.drop !== undefined) {
       row.drop()
       stopPrompting()
-      return { took: false, drop: answer.drop }
+      return { drop: answer.drop }
     }
     guardTurnStart()
-    const uuid = await row.uuid()
-    return uuid === undefined ? { took: true } : { took: true, uuid }
+    return {}
   }
 
   /** Submit the one prompt that points the model at `unread`, quoting each message in full
@@ -394,9 +365,9 @@ export function createMessageWriter(options: MessageWriterOptions): MessageWrite
   /** Write one message into the session as the session stands now: a row of the turn running,
    *  or the prompt of a new turn. */
   const writeMessage = async (
+    engine: WriterHost,
     args: ModCallArguments["session.message"],
   ): Promise<ModCallResults["session.message"]> => {
-    const engine = engineNow()
     if (turn === undefined && !prompting) {
       // Nothing is running: an appended row would be read at the turn's next request, and an
       // idle session makes none, so the message is the prompt itself and nothing else is
@@ -408,14 +379,10 @@ export function createMessageWriter(options: MessageWriterOptions): MessageWrite
         args.message.kind === "person",
         "message",
       )
-      if (!sent.took) return { deny: sent.drop, as: "prompt" }
-      // Taken, whether or not its row arrived. A prompt whose row went unseen is written all
-      // the same — answered as a refusal, the Envoy event was recorded nowhere and its resend
-      // submitted the message a second time, and a person was told on Dispatch that their
-      // session had dropped a prompt it took (INFRA-1026 review).
-      return sent.uuid === undefined ? { as: "prompt" } : { uuid: sent.uuid, as: "prompt" }
+      // A prompt the engine took is the write, with no row of its own; only one it dropped is
+      // a refusal (`./mod-protocol`, `ModCallResults["session.message"]`).
+      return sent.drop === undefined ? { as: "prompt" } : { deny: sent.drop, as: "prompt" }
     }
-    const started = turn
     const answer = await engine.append({ message: { type: "user", content: args.content } })
     if (answer.deny !== undefined) return { deny: answer.deny, as: "row" }
     // Claude Code does not re-enter this mod's own `session.append` hook for a row this mod
@@ -445,10 +412,14 @@ export function createMessageWriter(options: MessageWriterOptions): MessageWrite
       requests,
       ...(turn === undefined ? {} : { turnId: turn }),
     })
-    // The turn ended while the row was being stored, with no other starting: no request will
-    // read it, so the model is pointed at it now rather than at a `turn.complete` that has been
-    // and gone.
-    if (started !== undefined && turn === undefined && !prompting) {
+    // Nothing is running any more. Reaching this branch meant something was - a turn, or a
+    // prompt of this mod's waiting for one, read in the same tick as the check above - and it
+    // ended while the row was being stored, with nothing starting in its place. So no request
+    // will read the row, and the model is pointed at it here rather than at a `turn.complete`
+    // or a `stopPrompting` that has been and gone: both ran while this row was not in the watch
+    // yet. Read off the turn alone, this moment missed the dropped prompt, whose row then sat
+    // in the watch with its Envoy frame answered (INFRA-1026 review, round five).
+    if (turn === undefined && !prompting) {
       pointAtUnread((uuid) => uuid === answer.uuid)
     }
     return { uuid: answer.uuid, as: "row" }
@@ -466,6 +437,7 @@ export function createMessageWriter(options: MessageWriterOptions): MessageWrite
    * moment (same spike).
    */
   const writeOnce = (
+    engine: WriterHost,
     eventId: string,
     args: ModCallArguments["session.message"],
   ): Promise<ModCallResults["session.message"]> => {
@@ -475,16 +447,15 @@ export function createMessageWriter(options: MessageWriterOptions): MessageWrite
       async () => {
         let written: ModCallResults["session.message"]
         try {
-          const engine = engineNow()
           const recorded = recordedWrite(
             await engine.storeGet(recordKey(eventId)).catch(() => undefined),
           )
           // A store that refuses the read answers nothing, so the message is written again:
           // at-least-once is this path's rule, and a message lost is the failure that matters.
-          written = recorded ?? (await writeMessage(args))
+          written = recorded ?? (await writeMessage(engine, args))
           if (recorded === undefined && written.deny === undefined) {
-            // The write is the record: a prompt the engine took whose row went unseen records
-            // itself without one, which is what keeps the resend from writing it again.
+            // The write is the record: a prompt the engine took is recorded with no row of its
+            // own, which is what keeps the resend from writing it again.
             await remember(engine, eventId, written)
           }
         } catch (error) {

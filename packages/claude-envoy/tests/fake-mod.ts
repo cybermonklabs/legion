@@ -46,8 +46,9 @@ let prompts = 0
  * `prompt` door, under the plugin's origin, carrying `asUser` where the submit did and Claude
  * Code's own framing in front of the text where it did not
  * (`/legion/scratch/tmp/infra-1026-spike/logs/mod3-q7-int.jsonl:52-53`). The mod stamps the row
- * it wrote, which is what the server claims it by (`ModEvent`'s `wrote`), and answers the
- * server with its uuid: the row is the proof the session has the message.
+ * it wrote, which is what the server claims it by (`ModEvent`'s `wrote`); it answers the
+ * server with the prompt alone, since that row is the prompt's own
+ * (`../hooks/mod-protocol.ts`, `ModCallResults["session.message"]`).
  */
 function promptRow(
   args: ModCallArguments["session.message"],
@@ -97,10 +98,9 @@ export async function startFakeMod(
         if (own !== undefined) return await own(request.args)
         // What the real mod does with a session that has no turn running: the message is the
         // prompt, Claude Code writes its row before the submit resolves, and the mod answers
-        // the server with that row (`../hooks/mod-writer.ts`, `writeMessage`).
-        const row = promptRow(request.args)
-        await send(row)
-        return { uuid: row.uuid, as: "prompt" }
+        // the server with the prompt and no row (`../hooks/mod-writer.ts`, `writeMessage`).
+        await send(promptRow(request.args))
+        return { as: "prompt" }
       }
       case "command.run": {
         const own = answers["command.run"]

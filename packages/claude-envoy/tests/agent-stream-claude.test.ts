@@ -406,15 +406,14 @@ test("a card shows in both states, appended during a turn and submitted while id
 // round ten). The session says which prompt row is its own prompt at unread rows by the uuid
 // Claude Code wrote the row under, and claims no other.
 test("a card carrying the unread prompt's own words is drawn for the person", async () => {
-  // The mod answers with the row the prompt became, which is what the card's frame rests on.
+  // The mod answers with the prompt the idle session took, which is what the card's frame
+  // rests on (`../hooks/mod-protocol`, `ModCallResults["session.message"]`).
   const session = modSession({
     link: {
       connected: () => true,
       request: <N extends ModCallName>(call: N): Promise<ModCallResults[N]> =>
         call === "session.message"
-          ? (Promise.resolve({ as: "prompt", uuid: "row-card-prompt" }) as Promise<
-              ModCallResults[N]
-            >)
+          ? (Promise.resolve({ as: "prompt" }) as Promise<ModCallResults[N]>)
           : Promise.reject(new Error(`no answer for ${call}`)),
     },
     warn: () => undefined,

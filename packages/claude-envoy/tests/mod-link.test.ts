@@ -493,9 +493,10 @@ function sessionOn(link: ModLink, showMs: number): ModSession {
   return session
 }
 
-/** What the mod answers one `session.message` with: the row the message became. */
-function wrote(request: ModRequest, uuid: string): ModResult {
-  return { id: request.id, ok: true, value: { as: "prompt", uuid } }
+/** What the mod answers one `session.message` with: the prompt an idle session took, which
+ *  carries no row of its own (`../hooks/mod-protocol.ts`, `ModCallResults["session.message"]`). */
+function wrote(request: ModRequest): ModResult {
+  return { id: request.id, ok: true, value: { as: "prompt" } }
 }
 
 // Repro `R-A` (INFRA-1026 review, round eleven): a mod that is not polling - stopped,
@@ -522,7 +523,7 @@ test("a card no mod answered is written once, by its resend, when the mod finall
   // `writeOnce`).
   expect((asked.args as { eventId?: string }).eventId).toBe("evt-1")
   await call(link.socketPath, "POST", MOD_ROUTE_RESULTS, {
-    results: [wrote(asked, "prompt-row-1")],
+    results: [wrote(asked)],
   })
   await showing
 
