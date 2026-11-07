@@ -173,6 +173,14 @@ func (s *SessionConsumers) SubscribeReplies(subject string, handler nats.MsgHand
 type SessionConsumerStart struct {
 	// Created is set when the call created the consumer.
 	Created bool
+	// Updated is Ensure's report that it found the consumer and sent an update that changed it:
+	// its filters, or one of the settings a session consumer carries (updated). An Ensure with
+	// neither Created nor Updated set found the consumer already as it asked for and sent
+	// nothing, so a caller repairing a consumer knows from the two whether it created it,
+	// changed it, or left it standing (cmd/listener's repairRegistered logs which). A restart
+	// (RestartAtFloor, KeepListed) reports neither: what it did to a consumer it kept is the
+	// start it answers.
+	Updated bool
 	// StartSeq is the stream sequence the consumer starts at: the one a consumer the call created
 	// starts at, and, for one it found and updated, the one it was created at (an update may not
 	// change it, and a restart that recreated it reports where it started again). Every message at
@@ -260,7 +268,8 @@ func (s *SessionConsumers) Ensure(ctx context.Context, sessionID string, subject
 		// failed never reached the server, or its create did. Its start is the sequence it was
 		// created at, which the caller records for the durable path (SessionConsumerStart).
 		s.setPendingStart(name, 0)
-		return SessionConsumerStart{StartSeq: info.Config.OptStartSeq, AckFloor: ackFloor(info)}, s.update(ctx, name, info.Config, filters)
+		changed, err := s.update(ctx, name, info.Config, filters)
+		return SessionConsumerStart{StartSeq: info.Config.OptStartSeq, AckFloor: ackFloor(info), Updated: changed}, err
 	}
 }
 
@@ -275,7 +284,8 @@ func (s *SessionConsumers) UpdateFilter(ctx context.Context, sessionID string, s
 	if err != nil {
 		return err
 	}
-	return s.update(ctx, name, info.Config, filters)
+	_, err = s.update(ctx, name, info.Config, filters)
+	return err
 }
 
 // RestartAtFloor restarts sessionID's consumer at its ack floor: it reads the stream sequence up to
@@ -357,7 +367,7 @@ func (s *SessionConsumers) keepAtFloor(ctx context.Context, name string, info *j
 	if err != nil {
 		return SessionConsumerStart{}, err
 	}
-	if err := s.update(ctx, name, info.Config, filters); err != nil {
+	if _, err := s.update(ctx, name, info.Config, filters); err != nil {
 		return SessionConsumerStart{}, err
 	}
 	s.setPendingStart(name, 0)
@@ -548,14 +558,14 @@ func (s *SessionConsumers) applySettings(config *jetstream.ConsumerConfig, filte
 }
 
 // update sends consumer name's current configuration with the session consumer settings and
-// filters applied, when that changes anything.
-func (s *SessionConsumers) update(ctx context.Context, name string, current jetstream.ConsumerConfig, filters []string) error {
+// filters applied, when that changes anything, and reports whether it sent it.
+func (s *SessionConsumers) update(ctx context.Context, name string, current jetstream.ConsumerConfig, filters []string) (bool, error) {
 	next, changed := s.updated(current, filters)
 	if !changed {
-		return nil
+		return false, nil
 	}
 	_, err := s.upsert(ctx, name, next, "update")
-	return err
+	return err == nil, err
 }
 
 // updated is current with the session consumer settings and filters applied, and whether that

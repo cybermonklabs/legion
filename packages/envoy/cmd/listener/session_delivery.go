@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -14,7 +13,6 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -177,6 +175,17 @@ type sessionDelivery struct {
 	// pass. A call made in it that takes the same session's lock waits for the registration's pass
 	// to release it, so a test drives such a call from a goroutine of its own.
 	afterRegisterFilter func()
+	// beforeRepairPlan and afterRepairPlan run in each pass of a repair of a session's consumer
+	// (repairRegistered), the first before that pass reads the bucket's newest record and
+	// interest row and the second after that read and before the consumer call that writes what
+	// they ask for; nil unless a test sets them. A registration on another listener that sets
+	// this consumer's filter before the read and stores its row after it is what the repair's
+	// write would put an older row's filter over, and only a test holding both ends of that read
+	// can build that order and prove the write is fenced on the row it was built from
+	// (fenceFilterWrite). Both run for every pass of one repair, so a test that takes the window
+	// once drives the first pass alone.
+	beforeRepairPlan func()
+	afterRepairPlan  func()
 	// locks keeps the consumer calls made for one session one at a time: a registration's create or
 	// filter update, an unsubscribe's filter update, the relay's restart at the ack floor, which
 	// deletes the consumer and creates it again when a message awaits an ack, and the delete the
@@ -309,10 +318,10 @@ func (m *sessionDelivery) ackFloorBeforeDelete(ctx context.Context, sessionID st
 	}
 }
 
-// confirmRegistered reads sessionID's consumer again once its registration has written the
-// session's entry, under the lock that registration holds (registerPass), and makes that consumer
-// what the bucket's newest record and interest row ask for: it creates it again when the consumer
-// is gone, and sets its filter again when the live one is not the filter those topics build. It
+// confirmRegistered makes sessionID's consumer what the bucket's newest record and interest row
+// ask for once its registration has written the session's entry, under the lock that registration
+// holds (registerPass): it creates the consumer again where a delete took it away, and sets its
+// filter to the topics the newest row holds where the live one is not what those topics build. It
 // is the registration's side of the invariant a session answered 200 with consumer delivery holds
 // a consumer, filtered on the topics it was answered for, whatever delete raced it, on whatever
 // listener.
@@ -326,70 +335,161 @@ func (m *sessionDelivery) ackFloorBeforeDelete(ctx context.Context, sessionID st
 // a delete that landed before it is repaired here, and one that lands after it reads the entry
 // and the row this registration wrote and repairs itself (deleteConsumer).
 //
-// Both repairs go through the bucket (registeredTarget) rather than through this registration's
-// own topics: the record this registration wrote may itself have been deleted since, by a stop or
-// a reaper pass that ran wholly after it, and a consumer created for a session the bucket no
+// The repair goes through the bucket (registeredTarget) rather than through this registration's
+// own topics: the record this registration wrote may itself have been deleted since, by a stop
+// or a reaper pass that ran wholly after it, and a consumer created for a session the bucket no
 // longer holds would stand until the stream's inactive threshold took it; and the newest row is
 // the one every registration of that session was answered for, this one's and any another
-// listener wrote since. ackFloor is the floor this registration's own consumer call read
-// (bus.SessionConsumerStart.AckFloor), the last floor anyone read of the consumer, and it holds
-// the start of a create as it does for the delete's repair; a consumer the stream holds keeps its
-// own position whatever start the call names (bus.SessionConsumers.Ensure), so what a repair of
-// it changes is the filter.
+// listener wrote since.
 //
-// The filters are compared as sets (consumerFilters): the server reports the list a call reduced
-// to (bus.ReduceFilterSubjects), in an order of its own. A consumer already filtered on what the
-// newest row asks for costs the one consumer info and the two bucket reads and no consumer call
-// beyond them; the create or the filter write follows only where the live consumer differs.
+// The repair is the delete's own, down to the call (repairRegistered): the consumer's filters are
+// judged by the call that writes them (bus.SessionConsumers.Ensure sends nothing where the live
+// consumer is already what the row asks for), so this listener holds no second judgement of them
+// and reads no consumer configuration of its own. ackFloor is the floor this registration's own
+// consumer call read (bus.SessionConsumerStart.AckFloor), the last floor anyone read of the
+// consumer, and it holds the start of a create as it does for the delete's repair; a consumer the
+// stream holds keeps its own position whatever start the call names, so what a repair of it
+// changes is the filter.
 func (m *sessionDelivery) confirmRegistered(ctx context.Context, d *listenerDeps, sessionID string, ackFloor uint64) {
 	if m == nil || m.consumers == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
 	defer cancel()
-	info, err := m.consumers.Info(ctx, sessionID)
-	switch {
-	case errors.Is(err, bus.ErrSessionConsumerNotFound):
-		m.restoreRegistered(ctx, d, sessionID, ackFloor)
-		return
-	case err != nil:
-		m.logger.Warn("listener could not read the consumer of the session it has just registered",
-			slog.String("session_id", sessionID), slog.String("error", err.Error()))
-		return
-	}
-	want, ok := m.registeredTarget(ctx, d, sessionID, ackFloor)
-	if !ok {
-		return
-	}
-	live, asked := consumerFilters(info), bus.ReduceFilterSubjects(want.filter)
-	if slices.Equal(live, asked) {
-		return
-	}
-	if _, err := m.consumers.Ensure(ctx, sessionID, want.filter, want.start); err != nil {
-		m.logger.Warn("listener could not set the filter of the consumer of the session it has just registered to the topics the bucket holds for it",
-			slog.String("session_id", sessionID), slog.Any("filter", asked), slog.Any("had", live), slog.String("error", err.Error()))
-		return
-	}
-	m.logger.Warn("listener set the filter of the consumer of the session it has just registered to the topics the bucket holds for it",
-		slog.String("session_id", sessionID), slog.Any("filter", asked), slog.Any("had", live))
+	m.repairRegistered(ctx, d, sessionID, ackFloor, repairAfterRegistration)
 }
 
-// consumerFilters is the subjects a consumer filters on as the server reports them, sorted and
-// each once, so that two filter lists compare as the sets they are (confirmRegistered): a
-// consumer carries the list a call reduced to (bus.ReduceFilterSubjects) in FilterSubjects, or a
-// single subject in FilterSubject, which is where the server puts the one filter of a consumer
-// created before this build.
-func consumerFilters(info *jetstream.ConsumerInfo) []string {
-	filters := slices.Clone(info.Config.FilterSubjects)
-	if info.Config.FilterSubject != "" {
-		filters = append(filters, info.Config.FilterSubject)
+// restoreRegistered gives sessionID its consumer back when the bucket holds a record for it: the
+// delete of a consumer follows the delete of that session's record (the reaper's pass, a clean
+// stop), so a record that is there once the consumer is gone was written by a registration that
+// landed in between, and that registration was answered 200 with consumer delivery. It is the
+// delete's side of the repair both sides make (deleteConsumer, confirmRegistered), on the filter
+// and the start the bucket asks for (registeredTarget).
+func (m *sessionDelivery) restoreRegistered(ctx context.Context, d *listenerDeps, sessionID string, ackFloor uint64) {
+	m.repairRegistered(ctx, d, sessionID, ackFloor, repairAfterDelete)
+}
+
+// repairAfterRegistration and repairAfterDelete name what a repair of a session's consumer
+// follows, which its log line carries: the registration that wrote the session's entry
+// (confirmRegistered) or the delete that took the consumer away (restoreRegistered).
+const (
+	repairAfterRegistration = "registration"
+	repairAfterDelete       = "delete"
+)
+
+// repairRegistered makes sessionID's consumer what the bucket's newest record and interest row
+// ask for (registeredTarget): one consumer call creates it where it is gone, sets its filter
+// where the live one is not what the row builds, and sends nothing where it is already that,
+// which is every repair of a session nothing raced (bus.SessionConsumers.Ensure, whose answer
+// says which of the three it did). after names what this repair follows, for the log.
+//
+// The write is fenced on the interest row it was built from (fenceFilterWrite): a registration on
+// another listener can store its row between this repair's read and its call, and an older row's
+// filter landing over that registration's leaves the session answered 200 for a topic its
+// consumer does not filter on, with nothing to find it again - a filter update keeps the
+// consumer's position, so every message published on that topic in the window is skipped for
+// good.
+//
+// A failure is logged, not returned: the caller's answer does not change, the record is deleted
+// or not whatever this call did, and the session's next registration repairs the consumer again.
+// The line names the session, which is what an operator reading a pause in its delivery has to go
+// on.
+func (m *sessionDelivery) repairRegistered(ctx context.Context, d *listenerDeps, sessionID string, ackFloor uint64, after string) {
+	fenceFilterWrite(ctx, d.registry, sessionID, func(int) (uint64, bool) {
+		if m.beforeRepairPlan != nil {
+			m.beforeRepairPlan()
+		}
+		want, ok := m.registeredTarget(ctx, d, sessionID, ackFloor)
+		if !ok {
+			return 0, false
+		}
+		if m.afterRepairPlan != nil {
+			m.afterRepairPlan()
+		}
+		start, err := m.consumers.Ensure(ctx, sessionID, want.filter, want.start)
+		switch {
+		case err != nil:
+			m.logger.Warn("listener could not repair the consumer of a session the bucket holds a record for",
+				slog.String("session_id", sessionID), slog.String("after", after), slog.Any("filter", want.filter),
+				slog.Uint64("consumer_start", want.start), slog.String("error", err.Error()))
+			return 0, false
+		case start.Created:
+			m.logger.Warn("listener created the consumer of a session the bucket holds a record for again",
+				slog.String("session_id", sessionID), slog.String("after", after), slog.Any("filter", want.filter),
+				slog.Uint64("consumer_start", want.start), slog.Uint64("ack_floor", ackFloor))
+		case start.Updated:
+			m.logger.Warn("listener set the filter of the consumer of a session to the topics the bucket holds for it",
+				slog.String("session_id", sessionID), slog.String("after", after), slog.Any("filter", want.filter))
+		default:
+			// The call sent nothing, so no filter of this row's landed anywhere and there is
+			// nothing for the fence to hold. This is every repair of a session nothing raced,
+			// and it costs one bucket read fewer than one that wrote.
+			return 0, false
+		}
+		return want.revision, true
+	})
+}
+
+// filterFenceAttempts bounds the writes one fenced filter write makes: the first, and two more
+// over rows that landed under it (fenceFilterWrite). A session whose row moves under three
+// writes in a row is written to faster than this listener's calls return, and the registration
+// that writes each of those rows sets the filter of the row it stores itself.
+const filterFenceAttempts = 3
+
+// fenceFilterWrite makes a write of a session consumer's filter and lets no write built from an
+// interest row another writer has replaced stand.
+//
+// Every such write is built from a bucket read and lands at the server after it
+// (repairRegistered, refollow, sessionRelays.settleFilter). A row stored between the two makes
+// what lands an older row's filter, over the filter a newer registration set, and the session is
+// then answered 200 for a topic its consumer does not filter on; because a filter update keeps the
+// consumer's position, the messages that pass in that window are skipped for good. The server
+// holds no conditional consumer update to write that filter under, so the fence is the interest
+// row's KV revision read again after the write (store.Registry.RefreshAt): write answers the
+// revision of the row it built its write from, and while the bucket answers a higher one the loop
+// plans and writes again, ending when the row the write was built from is still the newest.
+//
+// What the fence leaves open: both reads are direct gets, so with ENVOY_NATS_REPLICAS above 1 a
+// copy one write behind the leader can answer an older row, and an older revision, at either end
+// of the loop (bus.KeyValue.Get states that limit and why this build leaves it standing); a row
+// stored after the loop's last read stands unfenced, as does one stored under the write of the
+// last attempt; and a read that failed ends the loop, since a fence that cannot read the bucket
+// cannot judge the write it made. Each of the three costs the messages published on the topics
+// the two rows differ by until the session's next registration, which writes its own row and the
+// filter of it.
+//
+// write plans its write from a bucket read, makes it, and answers the KV revision of the interest
+// row it was built from with whether the loop goes on: false where nothing landed - it planned no
+// write, the call failed, or the call found the consumer already as the row asks - since a write
+// that did not land puts no older row's filter over anything. It takes the pass it is in, counted
+// from 0, for a caller whose first write is already made. Every failure is logged by write
+// itself, which names what it was doing.
+func fenceFilterWrite(ctx context.Context, registry *store.Registry, sessionID string, write func(attempt int) (uint64, bool)) {
+	for attempt := range filterFenceAttempts {
+		wrote, ok := write(attempt)
+		if !ok {
+			return
+		}
+		newest, read := interestRevision(registry.RefreshAt(ctx, sessionID))
+		if !read || newest == wrote {
+			return
+		}
 	}
-	slices.Sort(filters)
-	return slices.Compact(filters)
+}
+
+// interestRevision is the KV revision an interest row read answered at, and whether the read
+// answered at all. The two answers interestTopics takes for topics of none are answers here too:
+// a session the bucket holds no row for is revision 0, and a row this build cannot decode carries
+// the revision a write of it is fenced on just as a row this build reads does.
+func interestRevision(_ store.Interest, revision uint64, err error) (uint64, bool) {
+	if errors.Is(err, nats.ErrKeyNotFound) || errors.Is(err, store.ErrMalformedInterest) {
+		return revision, true
+	}
+	return revision, err == nil
 }
 
 // registeredConsumer is what the bucket's newest record and interest row of a session ask of its
-// consumer: both repairs write it (restoreRegistered, confirmRegistered).
+// consumer: the repair of both sides writes it (repairRegistered).
 type registeredConsumer struct {
 	// filter is the subjects the consumer filters on, built from the row's topics
 	// (sessionConsumerFilter); a consumer call reduces them to the filters the server holds.
@@ -397,6 +497,9 @@ type registeredConsumer struct {
 	// start is the stream sequence a create starts the consumer at. A consumer the stream holds
 	// keeps the position it has, whatever start says (bus.SessionConsumers.Ensure).
 	start uint64
+	// revision is the KV revision of the interest row filter was built from, which the write of
+	// that filter is fenced on (fenceFilterWrite); 0 where the bucket holds no row.
+	revision uint64
 }
 
 // registeredTarget reads sessionID's record and interest row from the bucket and builds what they
@@ -405,11 +508,13 @@ type registeredConsumer struct {
 // the caller then leaves the consumer as it is.
 //
 // Both reads are of the bucket and not of the cache (session.SessionRegistry.Refresh,
-// store.Registry.Refresh), since the watch that fills the cache may not have delivered the
+// store.Registry.RefreshAt), since the watch that fills the cache may not have delivered the
 // registration this repair answers for yet, and a cache that has not is exactly the reader that
 // would leave the session with no consumer, or with one filtered on topics a registration has
 // replaced: a topic it was answered 200 for would be left out, and the session would receive
-// nothing on it until its next heartbeat.
+// nothing on it until its next heartbeat. The row read answers the revision it read at, which the
+// write built from it is fenced on (fenceFilterWrite), since the bucket orders the writers this
+// listener's lock does not.
 //
 // Both reads are direct gets, which is where that limit costs this repair (bus.KeyValue.Get
 // states it and why this build leaves it standing): with ENVOY_NATS_REPLICAS above 1 a copy one
@@ -444,7 +549,8 @@ func (m *sessionDelivery) registeredTarget(ctx context.Context, d *listenerDeps,
 	case entry.Delivery != session.DeliveryConsumer:
 		return registeredConsumer{}, false
 	}
-	topics, err := interestTopics(d.registry.Refresh(ctx, sessionID))
+	row, revision, err := d.registry.RefreshAt(ctx, sessionID)
+	topics, err := interestTopics(row, err)
 	if err != nil {
 		m.logger.Warn("listener could not read the topics of a session whose consumer it is repairing",
 			slog.String("session_id", sessionID), slog.String("error", err.Error()))
@@ -454,33 +560,7 @@ func (m *sessionDelivery) registeredTarget(ctx context.Context, d *listenerDeps,
 	if ackFloor > 0 {
 		start = max(start, ackFloor+1)
 	}
-	return registeredConsumer{filter: sessionConsumerFilter(sessionID, topics), start: start}, true
-}
-
-// restoreRegistered gives sessionID its consumer back when the bucket holds a record for it: the
-// delete of a consumer follows the delete of that session's record (the reaper's pass, a clean
-// stop), so a record that is there once the consumer is gone was written by a registration that
-// landed in between, and that registration was answered 200 with consumer delivery. It is the
-// repair of both sides where the consumer is gone, the delete's and the registration's
-// (deleteConsumer, confirmRegistered), on the filter and the start the bucket asks for
-// (registeredTarget).
-//
-// A failure is logged, not returned: the record is deleted or not whatever this call did, the
-// caller's answer does not change, and the session's next registration creates the consumer at
-// its own resume point. The line names the session, which is what an operator reading a pause in
-// its delivery has to go on.
-func (m *sessionDelivery) restoreRegistered(ctx context.Context, d *listenerDeps, sessionID string, ackFloor uint64) {
-	want, ok := m.registeredTarget(ctx, d, sessionID, ackFloor)
-	if !ok {
-		return
-	}
-	if _, err := m.consumers.Ensure(ctx, sessionID, want.filter, want.start); err != nil {
-		m.logger.Warn("listener could not restore the consumer of a session that registered while its consumer was deleted",
-			slog.String("session_id", sessionID), slog.Uint64("consumer_start", want.start), slog.String("error", err.Error()))
-		return
-	}
-	m.logger.Warn("listener restored the consumer of a session that registered while its consumer was deleted",
-		slog.String("session_id", sessionID), slog.Uint64("consumer_start", want.start), slog.Uint64("ack_floor", ackFloor))
+	return registeredConsumer{filter: sessionConsumerFilter(sessionID, topics), start: start, revision: revision}, true
 }
 
 // mark returns the next of the marks that order registrations against the relay's restarts: a
@@ -776,11 +856,17 @@ func (m *sessionDelivery) granted() {
 // refollow sets the filter of sessionID's consumer to its stored interest topics after a change
 // that removed some (an unsubscribe), when the session's entry records consumer delivery; a
 // session whose entry records none, an entry the previous build wrote, or whose consumer is gone,
-// is left alone, and its next registration sets the filter. The topics are read under the
-// session's lock, as register's consumer call is made under it, so a registration that stored
-// more topics meanwhile and wrote its filter first is not overwritten with the set read before
-// it. A failure is logged, not returned: the consumer then still delivers a topic the session no
-// longer follows, and the plugin drops a frame no followed topic matches.
+// is left alone, and its next registration sets the filter. A failure is logged, not returned:
+// the consumer then still delivers a topic the session no longer follows, and the plugin drops a
+// frame no followed topic matches.
+//
+// The topics are read from the bucket and not from the cache (store.Registry.RefreshAt) and
+// under the session's lock, as register's consumer call is made under it: the lock orders this
+// listener's own calls, so a registration here that stored more topics and wrote its filter first
+// is not overwritten with the set read before it, and the bucket read is what carries a
+// registration on another listener, whose row this listener's watch need not have delivered yet.
+// The write is fenced on the row it was built from (fenceFilterWrite), since the bucket orders
+// the writers the lock does not.
 func (m *sessionDelivery) refollow(ctx context.Context, d *listenerDeps, sessionID string) {
 	if m == nil || m.consumers == nil {
 		return
@@ -792,18 +878,23 @@ func (m *sessionDelivery) refollow(ctx context.Context, d *listenerDeps, session
 	ctx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
 	defer cancel()
 	unlock := m.locks.lock(sessionID)
-	topics, err := interestTopics(d.registry.Get(ctx, sessionID))
-	if err != nil {
-		unlock()
-		m.logger.Warn("session consumer filter left unchanged: the session's interests could not be read",
-			slog.String("session_id", sessionID), slog.String("error", err.Error()))
-		return
-	}
-	err = m.consumers.UpdateFilter(ctx, sessionID, sessionConsumerFilter(sessionID, topics))
-	unlock()
-	if err != nil && !errors.Is(err, bus.ErrSessionConsumerNotFound) {
-		m.logger.Warn("session consumer filter update failed", slog.String("session_id", sessionID), slog.String("error", err.Error()))
-	}
+	defer unlock()
+	fenceFilterWrite(ctx, d.registry, sessionID, func(int) (uint64, bool) {
+		row, revision, err := d.registry.RefreshAt(ctx, sessionID)
+		topics, err := interestTopics(row, err)
+		if err != nil {
+			m.logger.Warn("session consumer filter left unchanged: the session's interests could not be read",
+				slog.String("session_id", sessionID), slog.String("error", err.Error()))
+			return 0, false
+		}
+		if err := m.consumers.UpdateFilter(ctx, sessionID, sessionConsumerFilter(sessionID, topics)); err != nil {
+			if !errors.Is(err, bus.ErrSessionConsumerNotFound) {
+				m.logger.Warn("session consumer filter update failed", slog.String("session_id", sessionID), slog.String("error", err.Error()))
+			}
+			return 0, false
+		}
+		return revision, true
+	})
 }
 
 // interestTopics is the topics of the interest row a read of the interest registry answered
@@ -811,10 +902,10 @@ func (m *sessionDelivery) refollow(ctx context.Context, d *listenerDeps, session
 // this build cannot decode (store.ErrMalformedInterest), whose topics nothing routes. Every
 // other failure is the caller's to answer for.
 //
-// Which read the topics come from is the caller's own line: store.Registry.Refresh is the row
-// the bucket holds, for a caller whose answer must hold a write this listener's watch need not
-// have delivered yet, and store.Registry.Get is the watched cache, which a bucket read fills on
-// a miss.
+// Every caller reads the row from the bucket (store.Registry.RefreshAt), since every one of
+// them writes the session consumer's filter from what it reads and must hold a registration
+// this listener's watch need not have delivered yet; the revision that read answers is what
+// each write is fenced on (fenceFilterWrite).
 func interestTopics(interest store.Interest, err error) ([]string, error) {
 	if errors.Is(err, nats.ErrKeyNotFound) || errors.Is(err, store.ErrMalformedInterest) {
 		return nil, nil

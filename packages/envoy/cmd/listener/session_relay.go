@@ -650,12 +650,14 @@ func (m *sessionRelays) relay(ctx context.Context, run *relayRun) {
 // restart loses the session's position. Only a consumer missing with no start pending (never
 // created, or removed after its inactive threshold) pauses the relay until the next registration.
 //
-// The restart reads the session's stored topics under the session's lock, as an unsubscribe reads
-// them before it writes the filter, and a registration holds that lock from the filter it sets,
-// on the plan it is about to store, through that plan's write (registerPass): so the restart
-// never reads the row between a registration's filter and that registration's write, and the
-// filter it writes is the row as it stood when it read it under that lock. It takes its mark
-// (sessionDelivery.mark) first, under the lock, and records it once it succeeds
+// The restart reads the session's stored topics from the bucket under the session's lock, as an
+// unsubscribe reads them before it writes the filter, and a registration holds that lock from the
+// filter it sets, on the plan it is about to store, through that plan's write (registerPass): so
+// the restart never reads the row between a registration's filter and that registration's write,
+// and the filter it writes is the row as the bucket held it when it read it under that lock. The
+// lock orders only this listener's calls, so the write is fenced on the row it was built from
+// against a registration made on another listener (storedFilter, settleFilter). The restart takes
+// its mark (sessionDelivery.mark) first, under the lock, and records it once it succeeds
 // (relayRun.restartedAt).
 //
 // The first restart of a run the burst of gaining the durable binding started has the session's
@@ -669,11 +671,14 @@ func (m *sessionRelays) restart(ctx context.Context, run *relayRun) (bus.Session
 		unlock := m.delivery.locks.lock(sessionID)
 		callCtx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
 		defer cancel()
-		filter, ok := m.storedFilter(callCtx, sessionID)
+		filter, _, ok := m.storedFilter(callCtx, sessionID)
 		if !ok {
 			unlock()
 			return bus.SessionConsumerStart{}, nil, relayRetry
 		}
+		// A keep sends no call at all (bus.SessionConsumers.KeepListed): nothing of this filter
+		// lands on the server, so there is nothing for a fence to hold. A restart the row moved
+		// under is the one below.
 		start, kept, err := m.delivery.consumers.KeepListed(callCtx, sessionID, filter, listed)
 		unlock()
 		if err == nil && kept {
@@ -701,12 +706,15 @@ func (m *sessionRelays) restart(ctx context.Context, run *relayRun) (bus.Session
 	at := m.delivery.mark()
 	callCtx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
 	defer cancel()
-	filter, ok := m.storedFilter(callCtx, sessionID)
+	filter, revision, ok := m.storedFilter(callCtx, sessionID)
 	if !ok {
 		unlock()
 		return bus.SessionConsumerStart{}, nil, relayRetry
 	}
 	start, err := m.delivery.consumers.RestartAtFloor(callCtx, sessionID, filter)
+	if err == nil {
+		m.settleFilter(callCtx, sessionID, revision)
+	}
 	unlock()
 	if err == nil {
 		run.restartedAt.Store(at)
@@ -718,15 +726,55 @@ func (m *sessionRelays) restart(ctx context.Context, run *relayRun) (bus.Session
 	return m.restartFailed(ctx, sessionID, err)
 }
 
-// storedFilter is the filter of sessionID's consumer for its stored interest topics, read within
-// ctx under the session's lock, which the caller holds; false, logged, when they cannot be read.
-func (m *sessionRelays) storedFilter(ctx context.Context, sessionID string) ([]string, bool) {
-	topics, err := interestTopics(m.registry.Get(ctx, sessionID))
+// storedFilter is the filter of sessionID's consumer for its stored interest topics, with the KV
+// revision of the interest row it was built from, read within ctx under the session's lock, which
+// the caller holds; false, logged, when they cannot be read.
+//
+// The row is read from the bucket and not from the watched cache (store.Registry.RefreshAt): a
+// registration on another listener may have added a topic this listener's watch has not delivered
+// yet, and a restart filtering on the cached row would drop a topic that registration was
+// answered 200 for while keeping the consumer's position, so every message published on it in
+// that window would be skipped for good. The revision is what the write of this filter is fenced
+// on (settleFilter).
+func (m *sessionRelays) storedFilter(ctx context.Context, sessionID string) ([]string, uint64, bool) {
+	row, revision, err := m.registry.RefreshAt(ctx, sessionID)
+	topics, err := interestTopics(row, err)
 	if err != nil {
 		m.logger.Warn("session relay could not read the session's interests; retrying", slog.String("session_id", sessionID), slog.String("error", err.Error()))
-		return nil, false
+		return nil, 0, false
 	}
-	return sessionConsumerFilter(sessionID, topics), true
+	return sessionConsumerFilter(sessionID, topics), revision, true
+}
+
+// settleFilter holds a restart's filter write to the interest row it was built from: wrote is the
+// KV revision of that row, and while the bucket answers a higher one the consumer's filter is set
+// again from the newest row (fenceFilterWrite), since the restart's write may be an older row's
+// filter over the one a registration on another listener set. The correction is a filter update
+// and no second restart: the consumer the restart left keeps the position it has, which is where
+// the restart put it.
+//
+// The caller holds the session's lock, as it does for the restart's own call, so the corrections
+// are ordered with every other consumer call this listener makes for the session. A consumer gone
+// by the time a correction is sent is left to the session's next registration, as the restart
+// itself leaves it.
+func (m *sessionRelays) settleFilter(ctx context.Context, sessionID string, wrote uint64) {
+	fenceFilterWrite(ctx, m.registry, sessionID, func(attempt int) (uint64, bool) {
+		if attempt == 0 {
+			return wrote, true // the restart's own write, already made
+		}
+		filter, revision, ok := m.storedFilter(ctx, sessionID)
+		if !ok {
+			return 0, false
+		}
+		if err := m.delivery.consumers.UpdateFilter(ctx, sessionID, filter); err != nil {
+			if !errors.Is(err, bus.ErrSessionConsumerNotFound) {
+				m.logger.Warn("session relay could not set the filter of the consumer it restarted to the topics the bucket holds for it",
+					slog.String("session_id", sessionID), slog.String("error", err.Error()))
+			}
+			return 0, false
+		}
+		return revision, true
+	})
 }
 
 // restartFailed is the outcome of a restart (sessionRelays.restart) whose call or pull failed

@@ -30,17 +30,22 @@ func (r *Registry) Get(ctx context.Context, sessionID string) (Interest, error) 
 	return item, err
 }
 
-// Refresh is Get read from the bucket and never from the cache, for a caller whose answer must
-// hold a write its own cache need not hold yet: the listener's restore of a
-// session's consumer, which filters it on the row of a registration made on another listener
-// (cmd/listener's restoreRegistered, as session.SessionRegistry.Refresh reads that session's
-// record). The record read is cached as Get's own bucket read is, and a record this build cannot
-// decode is ErrMalformedInterest here too. The bucket read is a direct get: bus.KeyValue.Get
-// states that limit and why this build leaves it standing, and cmd/listener's registeredTarget
-// what it costs the repair reading this.
-func (r *Registry) Refresh(ctx context.Context, sessionID string) (Interest, error) {
-	item, _, err := r.getWithRevision(ctx, sessionID, true)
-	return item, err
+// RefreshAt is Get read from the bucket and never from the cache, with the bucket revision the
+// row it answers was read at, for a caller whose answer must hold a write its own cache need not
+// hold yet: the listener's repair of a session's consumer, which filters it on the row of a
+// registration made on another listener (cmd/listener's repairRegistered, as
+// session.SessionRegistry.Refresh reads that session's record). The row read is cached as Get's
+// own bucket read is, and a row this build cannot decode is ErrMalformedInterest here too. The
+// bucket read is a direct get: bus.KeyValue.Get states that limit and why this build leaves it
+// standing, and cmd/listener's registeredTarget what it costs the repair reading this.
+//
+// The revision is what a write of the filter built from this row is fenced on (cmd/listener's
+// fenceFilterWrite): a row the bucket answers at a higher revision afterwards moved under that
+// write, so the filter it carries may be an older row's, over a newer registration's. A session
+// the bucket holds no row for answers revision 0 with nats.ErrKeyNotFound, and a row this build
+// cannot decode answers the revision a write of it is fenced on with ErrMalformedInterest.
+func (r *Registry) RefreshAt(ctx context.Context, sessionID string) (Interest, uint64, error) {
+	return r.getWithRevision(ctx, sessionID, true)
 }
 
 // getWithRevision is Get with the bucket revision the record it answers was read at: the revision
@@ -55,7 +60,7 @@ func (r *Registry) Refresh(ctx context.Context, sessionID string) (Interest, err
 // be behind a write its answer must hold: one whose compare-and-swap the bucket refused, since
 // the cache is then behind the row that refused it and a plan made from the cache would be
 // refused again (UpsertPlanned), and one reading the topics a registration on another listener
-// has just stored (Refresh).
+// has just stored (RefreshAt).
 func (r *Registry) getWithRevision(ctx context.Context, sessionID string, fromBucket bool) (Interest, uint64, error) {
 	if !fromBucket {
 		r.mu.RLock()
