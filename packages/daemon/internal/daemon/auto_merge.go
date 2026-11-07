@@ -50,6 +50,16 @@ const mergeWaitWarn = time.Hour
 // minutes of the first UNMERGEABLE read, the bound plus the one backoff that follows it.
 const queueConflictBound = 10 * time.Minute
 
+// conflictUnknownBound is how long a ready_merge row keeps asking GitHub for the merge state of a
+// pull request its merge queue took out for a conflict while GitHub answers UNKNOWN, having
+// computed none, before it reads that removal as any other and ends the row with the architect
+// told (conflictRemoval). It answers the one question the merge state decides — whether the head
+// conflicts with the base itself or with an entry ahead of it in the queue — on an answer GitHub
+// gave, never on its silence. GitHub computes the state of a pull request no longer queued within
+// seconds, and the row asks again on the outbox's backoff, capped at 64 seconds (retryBackoff),
+// so five minutes is at least six further reads before the row gives the answer up.
+const conflictUnknownBound = 5 * time.Minute
+
 // autoMergeDisable disarms pull request payload.Number as the implement App, which submits READY's
 // merge (ghautomerge.Disarm), deciding by the record when it runs, never by when the row was queued:
 // while the issue awaits its merge, the merger's READY commit is the head whose arm is kept, and
@@ -87,7 +97,11 @@ func (r *outbox) autoMergeDisable(ctx context.Context, row record.OutboxRow, pay
 // that finds it gone reads the removal from GitHub instead of submitting again: the merge queue
 // failing the merge sends the issue back to implementing (intake.MergeFailed, applied through the
 // workflow), and anyone else's removal ends the row with the architect told (ghautomerge.Removed,
-// merge-removed). A refusal a retry would meet again (ghautomerge.Refused) and a disagreement with
+// merge-removed). The queue's own removal for a conflict is neither of those until the pull
+// request's merge state says which conflict it was (ghautomerge.ConflictRemoval, conflictRemoval):
+// a head GitHub still merges cleanly conflicted with an entry ahead of it in the queue, which is
+// submitted once more, and only a head that conflicts with the base itself ends the row. A
+// refusal a retry would meet again (ghautomerge.Refused) and a disagreement with
 // the record that has stood on GitHub longer than ghautomerge.LagBound (ghautomerge.Lagging.Stalled)
 // end it too, the architect told (permanentRefusal, finishRefused); every other failure retries. A
 // merge-queue entry GitHub keeps reporting unmergeable while it is built on the base branch's own
@@ -112,6 +126,13 @@ func (r *outbox) readyMerge(ctx context.Context, row record.OutboxRow, payload r
 		return head, err
 	}
 	outcome, err := ghautomerge.Submit(ctx, github, repo, payload.Number, payload.Head, payload.Armed, keep)
+	// The queue's conflict removal is decided before the arms below, since what the row does with
+	// it — a further submission, a wait for GitHub's merge state, or the end of the row — is read
+	// off that decision's own answer, which those arms then handle as any other.
+	var conflicted *ghautomerge.ConflictRemoval
+	if errors.As(err, &conflicted) {
+		outcome, err = r.conflictRemoval(ctx, row, &payload, conflicted, github, repo, keep)
+	}
 	var armed *ghautomerge.Armed
 	var failed *ghautomerge.MergeFailed
 	switch {
@@ -208,6 +229,89 @@ func (r *outbox) queueConflict(ctx context.Context, row record.OutboxRow, payloa
 	}
 	r.log.Info(message, "row", row.ID, "issue", row.Issue, "number", payload.Number, "head", payload.Head, "base", armed.BaseName, "baseCommit", armed.QueueBase)
 	return true, nil
+}
+
+// conflictRemoval decides what the merge queue's removal of the row's entry for a conflict
+// (ghautomerge.ConflictRemoval) leaves the row to do, and answers the outcome and failure
+// readyMerge's own arms then handle. GitHub gives the one reason, merge_conflict, to two
+// different things, and the merge state of the pull request the removal left behind, which
+// GitHub computes once the entry is no longer queued, tells them apart:
+//
+//   - DIRTY is the head conflicting with the base itself, which no further submission can merge:
+//     the removal is returned as the *Removed it is (ghautomerge.ConflictRemoval.Ended), which
+//     ends the row with the architect told (permanentRefusal, merge-removed). The two-minute
+//     required-checks pass reads that conflict from GitHub itself and returns the issue, naming
+//     the base to merge forward.
+//   - UNKNOWN is GitHub having computed no merge state yet, which decides nothing: the first such
+//     read is marked on the payload (record.ReadyMerge.ConflictUnknown) and the removal is
+//     returned for the row to ask again on its own backoff, until conflictUnknownBound has passed
+//     from that mark and the row ends as a DIRTY one does.
+//   - Any other state is GitHub still merging the head cleanly, so what the queue could not merge
+//     was this head against an entry ahead of it: no check failed, the removal is nobody's to
+//     undo and nothing else in Legion would ever submit that merge again. The row submits it once
+//     more at the same head and leaves the issue in awaiting_merge, with its recorded head and
+//     round count untouched: no fact of this reaches the workflow, and the architect's topic
+//     hears nothing.
+//
+// The further submission is spent before it is made: the mark that records it
+// (record.ReadyMerge.Resubmitted) and the message that tells the issue of it are written in one
+// transaction under the row's lease, as rememberWait writes its notice, and only then is GitHub
+// asked. A submission that fails after the mark stands retries once and then ends the row with
+// the architect told, where a mark written after it would submit again on every run — the loop
+// LEGION-800 records. A replacement that did not take, the row's lease gone to another worker,
+// submits nothing and leaves that worker to read the removal itself. The mark is cleared only by
+// the workflow's queue of a new READY at a new head, which replaces the whole payload, so a
+// second removal of the same head, this one's own re-queue of the pull request included, ends the
+// row. The entry is left where it is on every path: taking one out is the disarm's alone
+// (ghautomerge.Disarm).
+func (r *outbox) conflictRemoval(ctx context.Context, row record.OutboxRow, payload *record.ReadyMerge, conflict *ghautomerge.ConflictRemoval,
+	github githubrest.Client, repo ghrepo.Repository, keep ghautomerge.Keep) (ghautomerge.Outcome, error) {
+	now := r.now().UTC()
+	switch {
+	case payload.Resubmitted, conflict.MergeState == "DIRTY":
+		return "", conflict.Ended()
+	case conflict.MergeState == "UNKNOWN":
+		if !payload.ConflictUnknown.IsZero() {
+			if now.Sub(payload.ConflictUnknown) >= conflictUnknownBound {
+				return "", conflict.Ended()
+			}
+			return "", conflict
+		}
+		payload.ConflictUnknown = now
+		if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+			_, err := r.records.ReplaceOutboxPayload(ctx, tx, row.ID, row.LeaseToken, *payload)
+			return err
+		}); err != nil {
+			return "", fmt.Errorf("record the merge state GitHub had not computed when outbox row %d read its conflict removal: %w", row.ID, err)
+		}
+		return "", conflict
+	}
+	payload.Resubmitted = true
+	told, err := record.NewOutboxRow(row.Issue, readyMergeResubmitted(*payload, conflict), now)
+	if err != nil {
+		return "", err
+	}
+	// The message is written in the payload's own transaction, which owns the commit hook that
+	// write registers (projectRecords, intake.OnCommit), so its lane is woken as the payload
+	// commits.
+	scoped, committed := intake.WithCommitHooks(ctx)
+	var replaced bool
+	if err := pgx.BeginFunc(scoped, r.pool, func(tx pgx.Tx) error {
+		var err error
+		if replaced, err = r.records.ReplaceOutboxPayload(scoped, tx, row.ID, row.LeaseToken, *payload); err != nil || !replaced {
+			return err
+		}
+		return r.records.Enqueue(scoped, tx, told)
+	}); err != nil {
+		return "", fmt.Errorf("record the further submission outbox row %d makes after the merge queue's conflict: %w", row.ID, err)
+	}
+	committed()
+	if !replaced {
+		return "", conflict
+	}
+	r.log.Warn("outbox READY merge was taken out of the merge queue for a conflict GitHub's merge state leaves with an entry ahead of it; it is submitted once more",
+		"row", row.ID, "issue", row.Issue, "number", payload.Number, "head", payload.Head, "mergeState", conflict.MergeState, "removal", conflict.Error())
+	return ghautomerge.Submit(ctx, github, repo, payload.Number, payload.Head, false, keep)
 }
 
 // rememberWait records on row what its wait learned that its next run must know, and tells the
@@ -336,6 +440,19 @@ func readyMergeWaiting(payload record.ReadyMerge, waited time.Duration, cause er
 	return record.Notice{Kind: "merge-waiting", Role: claim.RoleArchitect,
 		Reason: fmt.Sprintf("Legion submitted the merge of pull request #%d at READY's head %s %s ago and GitHub has not completed it; GitHub last answered: %s. The merge has not been withdrawn, the issue stays in awaiting_merge and the daemon goes on submitting it: read the pull request on GitHub to find what GitHub is waiting for",
 			payload.Number, payload.Head, waited.Round(time.Minute), cause)}
+}
+
+// readyMergeResubmitted is the message posted on the issue when the merge queue took its pull
+// request out for a conflict GitHub's merge state leaves with an entry ahead of it, and the row
+// submitted the merge once more (conflictRemoval): the removal GitHub recorded, the head it was
+// made at, and the submission the row has now spent on that head. It is written on the issue and
+// nowhere else: nothing has gone wrong and nothing is anyone's to do — no check failed, the issue
+// stays in awaiting_merge at the same head and the daemon submits it — so the architect's topic
+// is left alone, and the issue's own record carries why a second submission of the same head
+// stands on it.
+func readyMergeResubmitted(payload record.ReadyMerge, conflict *ghautomerge.ConflictRemoval) record.MessagePost {
+	return record.MessagePost{Body: fmt.Sprintf("Legion submitted the merge of pull request #%d at READY's head %s once more: GitHub's merge queue took the pull request out at %s without merging it (%s), while GitHub reports its merge state %s. That merge state leaves the conflict with an entry ahead of it in the queue rather than with the base, and no check failed, so nothing else would ever submit this merge again. This is the one further submission this head gets: a second removal of it for a conflict ends the merge and tells the architect.",
+		payload.Number, payload.Head, conflict.Removal.At.UTC().Format(time.RFC3339), conflict.Removal.Reason, conflict.MergeState)}
 }
 
 // graphQL is a GitHub GraphQL client carrying the implement App's token, the App that writes the

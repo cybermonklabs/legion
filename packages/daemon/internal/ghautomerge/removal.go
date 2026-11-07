@@ -79,9 +79,12 @@ const moreChecks = `query MergeGroupContexts($owner: String!, $name: String!, $o
 // again (timelineItem.restarts): the daemon's own disarm landing late, and auto-merge a close turned
 // off, which the pull request's reopen at READY's head undid. Any other is Removed, the latest of
 // them: GitHub's own (Removed.ByGitHub) when it names the account the token acts as, whose own
-// disarm leaves no other reason. A timeline that shows no removal since the last arm is behind the
+// disarm leaves no other reason; a queue removal for merge_conflict is that same removal carried as
+// a ConflictRemoval instead, with mergeState, the merge state the read that found nothing armed
+// answered for the pull request, since what the daemon does with it is decided by that state and
+// not by the removal alone. A timeline that shows no removal since the last arm is behind the
 // read of the pull request (Disappeared).
-func removal(ctx context.Context, github githubrest.Client, repo ghrepo.Repository, number int, head string) error {
+func removal(ctx context.Context, github githubrest.Client, repo ghrepo.Repository, number int, head, mergeState string) error {
 	var answer struct {
 		Viewer struct {
 			Login string `json:"login"`
@@ -141,8 +144,12 @@ func removal(ctx context.Context, github githubrest.Client, repo ghrepo.Reposito
 		return &MergeFailed{Number: number, Head: head, Reason: failed.Reason, Commit: commit,
 			Runs: runs, Event: failed.ID, At: failed.CreatedAt}
 	case other != nil:
-		return &Removed{Number: number, Head: head, Actor: other.actor(), Reason: other.removalReason(), Detail: other.detail(),
+		removed := &Removed{Number: number, Head: head, Actor: other.actor(), Reason: other.removalReason(), Detail: other.detail(),
 			Queue: other.Type == "RemovedFromMergeQueueEvent", ByGitHub: self != "" && other.actor() == self, At: other.CreatedAt}
+		if other.Type == "RemovedFromMergeQueueEvent" && other.Reason == "merge_conflict" {
+			return &ConflictRemoval{Removal: *removed, MergeState: mergeState}
+		}
+		return removed
 	case since == len(items):
 		return &Disappeared{Number: number, Repo: repo, Head: head}
 	default:

@@ -365,6 +365,62 @@ func TestAConflictFoundInTheQueueSendsTheAwaitedREADYBackToImplementing(t *testi
 	}
 }
 
+// A merge_conflict removal the daemon's merge row answers by submitting the merge once more
+// reaches the workflow as nothing at all (INFRA-1442). GitHub's merge queue gives that one reason
+// to two different things, and where its merge state leaves the conflict with an entry ahead of
+// the head in the queue the row submits the same head again and posts what it did on the issue,
+// applying no fact: the issue stays in awaiting_merge at its recorded head, the implementer's
+// round count is untouched and no READY withdrawal is posted or published. The conflict that does
+// move the issue is the one GitHub reports of the head itself, which the required-checks pass
+// reads (intake.PullRequestMergeability CONFLICTING) and which withdraws the READY as a red head
+// does: it is the contrast here, so a fact the re-submitting path ever applied would show as a
+// move this table would catch.
+func TestAMergeTheQueueTookOutForAConflictTheDaemonSubmitsAgainMovesTheIssueNowhere(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// facts is everything the ready_merge row applies on its removal, which for the further
+		// submission is nothing at all.
+		facts  []intake.Fact
+		want   phase.Phase
+		rounds int
+		// withdrawn is the READY's withdrawal posted on the issue and published to the merge
+		// queue role.
+		withdrawn bool
+	}{
+		{name: "the removal the daemon answers by submitting again", want: phase.AwaitingMerge},
+		{name: "the conflict with the base GitHub reports of the head itself", want: phase.Implementing, rounds: 1, withdrawn: true,
+			facts: []intake.Fact{intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, Base: "main", Mergeable: record.MergeabilityConflicting}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.AwaitingMerge,
+				Generation: 1, Status: "retro", Rank: "U"})
+			seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head"})
+			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim"})
+			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleMerger, Claim: "merge-claim", HandoffCommit: "head", Summary: readyPacket})
+			applyRefusingNothing(t, pool, readyEngine("merge-queue"), tc.facts...)
+			if got := issuePhase(t, pool); got != tc.want {
+				t.Fatalf("phase %s, want %s", got, tc.want)
+			}
+			var head string
+			if err := pool.QueryRow(context.Background(), "select head_sha from pull_requests where issue = 'LEGION-208'").Scan(&head); err != nil || head != "head" {
+				t.Fatalf("the recorded head %q (%v), want the READY head the issue awaits", head, err)
+			}
+			if rounds := implementerRounds(t, pool); rounds != tc.rounds {
+				t.Fatalf("the implementer's rounds %d, want %d", rounds, tc.rounds)
+			}
+			withdrawn := false
+			for _, body := range messageBodies(t, pool) {
+				withdrawn = withdrawn || strings.HasPrefix(body, "READY withdrawn for LEGION-208")
+			}
+			publishes := mergeQueuePublishes(t, pool)
+			if withdrawn != tc.withdrawn || (len(publishes) != 0) != tc.withdrawn {
+				t.Fatalf("the READY's withdrawal posted %t and published %v, want both %t", withdrawn, publishes, tc.withdrawn)
+			}
+		})
+	}
+}
+
 // A READY the design gate refused is posted when a human approves: the packet is kept with the
 // merger's completion across the refusal, and nothing is posted before the approval.
 func TestAREADYTheGateRefusedIsPostedWhenAHumanApproves(t *testing.T) {

@@ -1209,6 +1209,183 @@ func TestARemovalByAPersonEndsTheREADYMergeAndTellsTheArchitect(t *testing.T) {
 	}
 }
 
+// GitHub's merge queue takes a pull request out with the one reason merge_conflict for two
+// different things, and the merge state GitHub computes once the entry is no longer queued tells
+// them apart (INFRA-1442). Where GitHub still merges the head, what the queue could not merge was
+// this head against an entry ahead of it: no check failed, nobody withdrew anything, and nothing
+// else in Legion would ever submit that merge again, so the row submits it once more at the same
+// head, marks the submission spent on its payload and posts what it did on the issue, with no
+// notice written at all. A head that conflicts with the base itself (DIRTY) ends the row with the
+// architect told, as any other removal does, and so does a second conflict removal of a head
+// whose submission is spent: the row's own re-queue of the pull request never clears that mark,
+// so a third submission is never made. A merge state GitHub has not computed (UNKNOWN) decides
+// nothing — the row asks again on its own backoff and ends only once conflictUnknownBound has
+// passed from the first such read. The issue stays in awaiting_merge at its recorded head on
+// every path, with no round counted against anyone.
+func TestAMergeTheQueueTookOutForAConflictIsSubmittedOnceMoreOrEnded(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// mergeState is what GitHub answers for the pull request once its entry is gone, and gap
+		// how long after the row's read of the removal it reads again; a zero gap reads once.
+		mergeState string
+		gap        time.Duration
+		// removedAgain is the merge queue taking the pull request out for a conflict a second
+		// time, after the row's further submission put it back in the queue.
+		removedAgain bool
+		// arms is every enable the row sent, READY's own submission among them; messages the
+		// Dispatch messages posted on the issue, notices the notices written for its architect,
+		// and standing whether the ready_merge row is left to run again.
+		arms, messages, notices int
+		standing                bool
+		// spent is the mark of the one further submission this head has had
+		// (record.ReadyMerge.Resubmitted), and unknown whether the row holds the moment of its
+		// first read of an uncomputed merge state (record.ReadyMerge.ConflictUnknown).
+		spent, unknown bool
+	}{
+		{name: "GitHub merges the head cleanly", mergeState: "CLEAN", arms: 2, messages: 1, standing: true, spent: true},
+		{name: "GitHub merges the head cleanly and the queue takes it out again", mergeState: "CLEAN", removedAgain: true, arms: 2, messages: 1, notices: 1},
+		{name: "the head conflicts with the base itself", mergeState: "DIRTY", arms: 1, notices: 1},
+		{name: "GitHub has computed no merge state yet", mergeState: "UNKNOWN", gap: conflictUnknownBound - time.Minute, arms: 1, standing: true, unknown: true},
+		{name: "GitHub has computed no merge state within five minutes", mergeState: "UNKNOWN", gap: conflictUnknownBound, arms: 1, notices: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// A merge-queue base GitHub reports mergeable: READY's own submission enqueues the
+			// pull request, as the further submission does once the queue has taken it out.
+			github := newQueueGitHub(t, "CLEAN")
+			pool := isolatedOutboxPool(t)
+			records := record.NewStore()
+			seedReadyMerge(t, pool, records, "LEGION-208", awaitingREADY)
+			now := time.Now().UTC().Truncate(time.Second)
+			enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208", record.ReadyMerge{Number: 42, Head: "ready-head", Queued: now}, now))
+			clock := now
+			runner := mergeRunner(pool, records, github.url, quietLogger(), func() time.Time { return clock })
+			// The workflow is wired in so that a fact this path applied would move the issue: it
+			// applies none, and the record below is what says so.
+			runner.handlers = []intake.Handler{workflow.New(records, workflow.Config{Project: "LEGION", Steps: config.DesignGateRootIssues.Steps()}, quietLogger())}
+			run := func(step string) {
+				t.Helper()
+				if err := runner.RunOnce(context.Background()); err != nil {
+					t.Fatalf("RunOnce %s: %v", step, err)
+				}
+				clock = clock.Add(time.Minute)
+			}
+			run("READY's submission")
+			github.set(func(g *armableGitHub) { g.mergeState = tc.mergeState })
+			github.remove(dequeuedEvent("merge_conflict", "github-merge-queue", "null"))
+			read := clock
+			run("the read that finds the removal")
+			if tc.gap != 0 {
+				clock = read.Add(tc.gap)
+				run("the read after the gap")
+			}
+			if tc.removedAgain {
+				github.set(func(g *armableGitHub) { g.mergeState = tc.mergeState })
+				github.remove(dequeuedEvent("merge_conflict", "github-merge-queue", "null"))
+				run("the read that finds the second removal")
+				run("a later drain")
+			}
+			if _, arms := github.counts(); arms != tc.arms {
+				t.Fatalf("enables %d, want %d: READY's own submission and what the conflict removal left", arms, tc.arms)
+			}
+			left := 0
+			if tc.standing {
+				left = 1
+			}
+			reasons := assertMergeRows(t, pool, left, "merge-removed", tc.notices)
+			for _, want := range reasons {
+				for _, name := range []string{"#42", "merge queue", "merge_conflict", "ready-head"} {
+					if !strings.Contains(want, name) {
+						t.Fatalf("merge-removed reason %q, want it to name %q", want, name)
+					}
+				}
+			}
+			if kinds := noticeCount(t, pool); kinds != tc.notices {
+				t.Fatalf("notices of every kind %d, want %d: a further submission tells the architect nothing", kinds, tc.notices)
+			}
+			posts := messagePosts(t, pool)
+			if len(posts) != tc.messages {
+				t.Fatalf("Dispatch messages %q, want %d", posts, tc.messages)
+			}
+			for _, post := range posts {
+				for _, name := range []string{"#42", "ready-head", "merge_conflict", "once more", tc.mergeState} {
+					if !strings.Contains(post, name) {
+						t.Fatalf("the message posted on the issue %q, want it to name %q", post, name)
+					}
+				}
+			}
+			spent, unknown, standing := conflictMarks(t, pool)
+			switch {
+			case standing != tc.standing:
+				t.Fatalf("the ready_merge row stands %t, want %t", standing, tc.standing)
+			case standing && (spent != tc.spent || unknown.IsZero() == tc.unknown):
+				t.Fatalf("the row's further submission is spent %t and its first uncomputed read %s, want %t and a mark %t", spent, unknown, tc.spent, tc.unknown)
+			}
+			var at, head string
+			var rounds int
+			if err := pool.QueryRow(context.Background(), `select i.phase, p.head_sha, coalesce((select sum(rounds) from phases where issue = 'LEGION-208'), 0)
+				from issues i join pull_requests p on p.issue = i.key where i.key = 'LEGION-208'`).Scan(&at, &head, &rounds); err != nil {
+				t.Fatalf("read LEGION-208's record: %v", err)
+			}
+			if at != string(phase.AwaitingMerge) || head != "ready-head" || rounds != 0 {
+				t.Fatalf("LEGION-208 in %q at %q with %d rounds counted, want it awaiting its merge at ready-head with none", at, head, rounds)
+			}
+		})
+	}
+}
+
+// conflictMarks is what the one ready_merge row holds of the merge queue's conflict removal: the
+// further submission spent on its head (record.ReadyMerge.Resubmitted) and the moment of its first
+// read of a merge state GitHub had not computed (ConflictUnknown), with standing false where no
+// ready_merge row is left at all.
+func conflictMarks(t *testing.T, pool *pgxpool.Pool) (spent bool, unknown time.Time, standing bool) {
+	t.Helper()
+	var at *string
+	if err := pool.QueryRow(context.Background(),
+		`select coalesce((payload->>'resubmitted')::boolean, false), payload->>'conflictUnknown' from outbox where kind = 'ready_merge'`).Scan(&spent, &at); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, time.Time{}, false
+		}
+		t.Fatalf("read the ready_merge row's conflict marks: %v", err)
+	}
+	if at != nil {
+		read, err := time.Parse(time.RFC3339Nano, *at)
+		if err != nil {
+			t.Fatalf("parse the row's uncomputed merge state read %q: %v", *at, err)
+		}
+		unknown = read.UTC()
+	}
+	return spent, unknown, true
+}
+
+// noticeCount is every notice the outbox holds, whatever its kind.
+func noticeCount(t *testing.T, pool *pgxpool.Pool) int {
+	t.Helper()
+	var notices int
+	if err := pool.QueryRow(context.Background(), `select count(*) from outbox where kind = 'notice'`).Scan(&notices); err != nil {
+		t.Fatalf("count the notices: %v", err)
+	}
+	return notices
+}
+
+// messagePosts is every Dispatch message the outbox holds, oldest first.
+func messagePosts(t *testing.T, pool *pgxpool.Pool) []string {
+	t.Helper()
+	rows, err := pool.Query(context.Background(), `select payload->>'body' from outbox where kind = 'dispatch_message' order by id`)
+	if err != nil {
+		t.Fatalf("read the Dispatch messages: %v", err)
+	}
+	defer rows.Close()
+	var bodies []string
+	for rows.Next() {
+		var body string
+		if err := rows.Scan(&body); err != nil {
+			t.Fatalf("scan a Dispatch message: %v", err)
+		}
+		bodies = append(bodies, body)
+	}
+	return bodies
+}
+
 // On a base with a merge queue, enabling auto-merge before GitHub reports the pull request mergeable
 // arms it rather than enqueueing it, and an armed pull request fails a required check that judges
 // the arm (LEGION-800). The row waits instead, quietly at debug however long, while a required check

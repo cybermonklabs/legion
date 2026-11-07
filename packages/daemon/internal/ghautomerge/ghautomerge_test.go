@@ -656,8 +656,10 @@ func disabled(reasonCode, actor string) string {
 // merge failed - GitHub's reason failed_checks, or a reason GitHub gives no other meaning with a run
 // that failed on the commit the queue built - is MergeFailed, naming each failing check and its run
 // and not one that passed. Anyone else's removal since the last arm (a person's dequeue, a person
-// turning auto-merge off, the queue finding a conflict) is Removed, naming who, GitHub's reason and
-// whether it was the queue. The queue's removal for the merge itself waits for GitHub to show the
+// turning auto-merge off) is Removed, naming who, GitHub's reason and whether it was the queue,
+// and the queue finding a conflict is a ConflictRemoval instead, no Removed at all, since what
+// that removal means is the merge state's to say and the daemon's to decide (INFRA-1442).
+// The queue's removal for the merge itself waits for GitHub to show the
 // merge, routinely, and a timeline with no removal since the arm waits on GitHub too, but not
 // routinely. Only removals that restart the submission submit again: the App submitting's own
 // (GraphQL's viewer: the daemon's disarm landing late), and auto-merge a close turned off, which the
@@ -691,11 +693,13 @@ func TestSubmitReadsARemovalItDidNotMakeInsteadOfSubmittingAgain(t *testing.T) {
 		// many such reads Submit makes.
 		failPages bool
 		pages     int
-		// failed names what MergeFailed must name; removed what Removed must; wait the wait, merging
-		// (GitHub's own merge, routine) or disappeared (not routine); resubmit is a second submission.
-		failed, removed []string
-		wait            string
-		resubmit        bool
+		// failed names what MergeFailed must name; removed what Removed must; conflict what the
+		// queue's ConflictRemoval must, which is no Removed and ends no merge row here; wait the
+		// wait, merging (GitHub's own merge, routine) or disappeared (not routine); resubmit is a
+		// second submission.
+		failed, removed, conflict []string
+		wait                      string
+		resubmit                  bool
 	}{
 		{name: "a person dequeues it while its merge group runs", queue: true, timeline: []string{enqueued, dequeued("manual", "a-maintainer", cancelled)},
 			removed: []string{"a-maintainer", "merge queue", "manual"}},
@@ -710,7 +714,7 @@ func TestSubmitReadsARemovalItDidNotMakeInsteadOfSubmittingAgain(t *testing.T) {
 		{name: "a person dequeues it from a merge group of more than 100 checks", queue: true, timeline: []string{enqueued, dequeued("manual", "a-maintainer", pagedChecks)},
 			failPages: true, removed: []string{"a-maintainer", "merge queue", "manual"}},
 		{name: "the merge queue finds a conflict in a merge group of more than 100 checks", queue: true, timeline: []string{enqueued, dequeued("merge_conflict", "github-merge-queue", pagedChecks)},
-			failPages: true, removed: []string{"github-merge-queue", "merge queue", "merge_conflict"}},
+			failPages: true, conflict: []string{"#42", "head", "merge_conflict", "CLEAN"}},
 		{name: "the merge queue takes it out to merge a merge group of more than 100 checks", queue: true, timeline: []string{enqueued, dequeued("merged", "github-merge-queue", pagedChecks)},
 			failPages: true, wait: "merging"},
 		{name: "the merge queue removes it for failed_checks", queue: true, timeline: []string{enqueued, dequeued("failed_checks", "github-merge-queue", red)},
@@ -724,7 +728,7 @@ func TestSubmitReadsARemovalItDidNotMakeInsteadOfSubmittingAgain(t *testing.T) {
 		{name: "a person dequeues it", queue: true, timeline: []string{enqueued, dequeued("manual", "a-maintainer", "null")},
 			removed: []string{"a-maintainer", "merge queue", "manual", "#42", "head"}},
 		{name: "the merge queue finds a conflict", queue: true, timeline: []string{enqueued, dequeued("merge_conflict", "github-merge-queue", "null")},
-			removed: []string{"github-merge-queue", "merge queue", "merge_conflict"}},
+			conflict: []string{"#42", "head", "merge_conflict", "CLEAN"}},
 		{name: "a person turns its auto-merge off", timeline: []string{enabled, disabled("manually_disabled", "a-maintainer")},
 			removed: []string{"a-maintainer turned off the auto-merge", "manually_disabled: Manually disabled by user"}},
 		{name: "auto-merge is turned off with GitHub naming no actor", timeline: []string{enabled, disabled("manually_disabled", "")},
@@ -753,6 +757,7 @@ func TestSubmitReadsARemovalItDidNotMakeInsteadOfSubmittingAgain(t *testing.T) {
 			_, err := Submit(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, "head", true, keeping("head"))
 			var failed *MergeFailed
 			var removed *Removed
+			var conflict *ConflictRemoval
 			var merging *Merging
 			var disappeared *Disappeared
 			var routine interface{ Routine() bool }
@@ -787,6 +792,19 @@ func TestSubmitReadsARemovalItDidNotMakeInsteadOfSubmittingAgain(t *testing.T) {
 				if (removed.Detail == "") != removed.Queue {
 					t.Fatalf("Removed %q with Detail %q, want GitHub's sentence in Detail for an auto-merge disable and none for a queue removal", err, removed.Detail)
 				}
+			case tc.conflict != nil:
+				if !errors.As(err, &conflict) || errors.As(err, &removed) || errors.Is(err, wait.ErrWaiting) {
+					t.Fatalf("Submit = %v (%T), want a ConflictRemoval that is no Removed: the daemon decides that removal", err, err)
+				}
+				for _, want := range tc.conflict {
+					if !strings.Contains(err.Error(), want) {
+						t.Fatalf("ConflictRemoval %q, want it to name %q", err, want)
+					}
+				}
+				ended := conflict.Ended()
+				if !ended.Queue || ended.Actor != "github-merge-queue" || ended.Reason != "merge_conflict" || ended.Head != "head" || ended.Number != 42 {
+					t.Fatalf("ConflictRemoval ended as %+v, want the merge queue's removal of #42 at head for merge_conflict", *ended)
+				}
 			case tc.wait == "merging":
 				if !errors.As(err, &merging) || !errors.Is(err, wait.ErrWaiting) || !merging.Routine() {
 					t.Fatalf("Submit = %v (%T), want a routine Merging wait", err, err)
@@ -811,6 +829,111 @@ func TestSubmitReadsARemovalItDidNotMakeInsteadOfSubmittingAgain(t *testing.T) {
 			}
 			if g.pageReads != tc.pages {
 				t.Fatalf("reads of the queue commit's further checks %d, want %d", g.pageReads, tc.pages)
+			}
+		})
+	}
+}
+
+// A removal of the arm or merge-queue entry at a head Submit still finds open and unarmed is read
+// from the timeline, and every reason GitHub can give it has an error of its own. The merge
+// queue's conflict (merge_conflict) is the one whose error the reason alone does not decide: it is
+// a ConflictRemoval carrying the merge state GitHub answered for the pull request once the entry
+// was gone, since a head that conflicts with the base itself reads DIRTY while a head GitHub
+// merges cleanly conflicted with an entry ahead of it in the queue, and the daemon's row decides
+// between them (INFRA-1442). It is deliberately no Removed, the error that ends the merge row by
+// itself. Every other reason answers exactly as it did before: a failed merge (failed_checks, or
+// a reason GitHub gives no other meaning with a run that failed on the commit the queue built) is
+// MergeFailed, the merge itself is a wait for GitHub to show it, a person's dequeue is Removed,
+// and the two removals that restart the submission - the App's own disarm and auto-merge a close
+// turned off - submit the head again.
+func TestARemovalAtAnUnchangedHeadIsReadByItsReasonAndMergeState(t *testing.T) {
+	// failing is the commit the merge queue built, with a run that failed on it.
+	const failing = `{"oid":"group-sha","statusCheckRollup":{"contexts":{"nodes":[` +
+		`{"__typename":"CheckRun","name":"integration","status":"COMPLETED","conclusion":"FAILURE","detailsUrl":"` + failedRun + `/job/2","checkSuite":{"workflowRun":{"url":"` + failedRun + `"}}}]}}}`
+	for _, tc := range []struct {
+		name string
+		// queue says the base requires a merge queue, and mergeState is what GitHub answers for
+		// the pull request in the read that found nothing armed.
+		queue      bool
+		mergeState string
+		timeline   []string
+		// want is the error the removal gives: conflict, failed, removed, merging or resubmit.
+		want string
+		// names is what that error must say.
+		names []string
+	}{
+		{name: "a conflict GitHub still merges the head through", queue: true, mergeState: "CLEAN",
+			timeline: []string{enqueued, dequeued("merge_conflict", "github-merge-queue", "null")},
+			want:     "conflict", names: []string{"#42", "head", "merge_conflict", "CLEAN"}},
+		{name: "a conflict with the base itself", queue: true, mergeState: "DIRTY",
+			timeline: []string{enqueued, dequeued("merge_conflict", "github-merge-queue", "null")},
+			want:     "conflict", names: []string{"#42", "head", "merge_conflict", "DIRTY"}},
+		{name: "a conflict whose merge state GitHub has not computed", queue: true, mergeState: "UNKNOWN",
+			timeline: []string{enqueued, dequeued("merge_conflict", "github-merge-queue", "null")},
+			want:     "conflict", names: []string{"#42", "head", "merge_conflict", "UNKNOWN"}},
+		{name: "a merge the queue failed", queue: true, mergeState: "CLEAN",
+			timeline: []string{enqueued, dequeued("failed_checks", "github-merge-queue", failing)},
+			want:     "failed", names: []string{"failed_checks", "group-sha", "integration (failure, " + failedRun + ")"}},
+		{name: "a reason GitHub gives no other meaning with a run that failed on the queue's commit", queue: true, mergeState: "CLEAN",
+			timeline: []string{enqueued, dequeued(unexplained, "github-merge-queue", failing)},
+			want:     "failed", names: []string{unexplained, "integration (failure, " + failedRun + ")"}},
+		{name: "the merge itself", queue: true, mergeState: "CLEAN",
+			timeline: []string{enqueued, dequeued("merged", "github-merge-queue", "null")}, want: "merging"},
+		{name: "a person's dequeue", queue: true, mergeState: "CLEAN",
+			timeline: []string{enqueued, dequeued("manual", "a-maintainer", "null")},
+			want:     "removed", names: []string{"a-maintainer", "merge queue", "manual"}},
+		{name: "the App's own disarm", mergeState: "BLOCKED",
+			timeline: []string{enabled, disabled("manually_disabled", "legion-implementer")}, want: "resubmit"},
+		{name: "auto-merge a close turned off", mergeState: "BLOCKED",
+			timeline: []string{enabled, disabled("closed", "a-maintainer")}, want: "resubmit"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := &github{head: "head", mergeState: tc.mergeState, queueRequired: tc.queue, autoMergeOK: true, timeline: tc.timeline}
+			client := githubrest.Client{Token: "token", API: githubrest.GraphQLAPI(g.serve(t))}
+			_, err := Submit(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, "head", true, keeping("head"))
+			var conflict *ConflictRemoval
+			var failed *MergeFailed
+			var removed *Removed
+			var merging *Merging
+			var armed *Armed
+			switch tc.want {
+			case "conflict":
+				if !errors.As(err, &conflict) || errors.As(err, &removed) || errors.Is(err, wait.ErrWaiting) {
+					t.Fatalf("Submit = %v (%T), want a ConflictRemoval that is no Removed and no wait", err, err)
+				}
+				if conflict.MergeState != tc.mergeState || !conflict.Ended().Queue || conflict.Ended().Reason != "merge_conflict" {
+					t.Fatalf("ConflictRemoval %+v ending as %+v, want the queue's merge_conflict removal at merge state %s", *conflict, *conflict.Ended(), tc.mergeState)
+				}
+			case "failed":
+				if !errors.As(err, &failed) || errors.Is(err, wait.ErrWaiting) {
+					t.Fatalf("Submit = %v (%T), want MergeFailed", err, err)
+				}
+			case "removed":
+				if !errors.As(err, &removed) || errors.As(err, &conflict) || errors.Is(err, wait.ErrWaiting) {
+					t.Fatalf("Submit = %v (%T), want Removed", err, err)
+				}
+			case "merging":
+				if !errors.As(err, &merging) || !errors.Is(err, wait.ErrWaiting) {
+					t.Fatalf("Submit = %v (%T), want a Merging wait", err, err)
+				}
+			case "resubmit":
+				if !errors.As(err, &armed) {
+					t.Fatalf("Submit = %v (%T), want the head submitted again and an Armed wait", err, err)
+				}
+			}
+			for _, want := range tc.names {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("Submit = %q, want it to name %q", err, want)
+				}
+			}
+			g.mu.Lock()
+			defer g.mu.Unlock()
+			var want []string
+			if tc.want == "resubmit" {
+				want = []string{submitted("enable")}
+			}
+			if !slices.Equal(g.mutations, want) {
+				t.Fatalf("mutations %v, want %v: only a removal that restarts the submission submits again", g.mutations, want)
 			}
 		})
 	}

@@ -156,6 +156,11 @@ func Disarm(ctx context.Context, github githubrest.Client, repo ghrepo.Repositor
 // failed is MergeFailed, and any other removal, a person's dequeue or turning auto-merge off, is
 // Removed; only a removal that restarts the submission submits again: the submitting App's own, the
 // daemon's disarm landing late, and auto-merge a close turned off, undone by the reopen at head.
+// The queue's removal for a conflict is a ConflictRemoval, that same removal with the merge state
+// this read answered for the pull request (pull.MergeStateStatus, which GitHub computes once the
+// entry is no longer queued): the conflict can be with the base itself or with an entry ahead of
+// it in the queue, and only that state tells them apart, so Submit leaves the two to its caller
+// rather than ending the submission on either.
 // While the record still awaits head, a pull request GitHub shows closed, merged at another head, or
 // at another head is a wait too (Lagging): the webhook that moves the record has not been applied
 // yet, or GitHub's read is the one behind, and the next run decides again. GitHub always answers
@@ -192,7 +197,7 @@ func Submit(ctx context.Context, github githubrest.Client, repo ghrepo.Repositor
 	case pull.armed():
 		return "", pull.armedWait(repo, number, head)
 	case armed:
-		if err := removal(ctx, github, repo, number, head); err != nil {
+		if err := removal(ctx, github, repo, number, head, pull.MergeStateStatus); err != nil {
 			return "", err
 		}
 	}
@@ -401,6 +406,36 @@ func (r *Removed) Error() string {
 		text = r.Actor + " " + text
 	}
 	return text + " without merging it: the daemon submits it no further, and the issue stays in awaiting_merge"
+}
+
+// ConflictRemoval is the merge queue taking a pull request out at READY's head because the merge
+// conflicted (GitHub's reason merge_conflict): Removal is that removal as every other one is
+// reported, and MergeState is GitHub's merge state for the pull request from the read that found
+// nothing armed, which GitHub computes freely once the entry is no longer queued (it answers
+// UNKNOWN while one is). The two conflicts GitHub gives the one reason are told apart by that
+// state alone: a head that conflicts with the base itself reads DIRTY, where the merge is over
+// and the removal stands, and a head GitHub still merges cleanly conflicted with an entry ahead
+// of it in the queue, which no check failed on and which nothing in Legion would ever submit
+// again. Deciding between them is the daemon's (its conflictRemoval), so this is deliberately no
+// *Removed and answers errors.As no *Removed either: the row's own rule that a *Removed ends the
+// row (the daemon's permanentRefusal) must not reach it. Ended is the ending the daemon chooses,
+// as the *Removed its architect's notice is written from.
+type ConflictRemoval struct {
+	Removal    Removed
+	MergeState string
+}
+
+func (c *ConflictRemoval) Error() string {
+	return fmt.Sprintf("the merge queue took pull request #%d out at READY's head %s at %s (%s) while GitHub reports its merge state %s: the daemon decides by that state whether the head conflicts with the base itself or with an entry ahead of it in the queue",
+		c.Removal.Number, c.Removal.Head, c.Removal.At.UTC().Format(time.RFC3339), c.Removal.Reason, c.MergeState)
+}
+
+// Ended is the removal as the end of the submission, for the daemon that decides the merge is
+// over: the *Removed every other removal of an arm is reported as, which the architect's notice
+// of a merge row ended without a merge is written from.
+func (c *ConflictRemoval) Ended() *Removed {
+	removal := c.Removal
+	return &removal
 }
 
 // Merging is the merge queue having taken pull request Number of Repo out at READY's Head to merge
