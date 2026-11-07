@@ -14,9 +14,12 @@ body: |-
   restart leaves the view refilling, the arm answers the bus-unavailable `503` with
   `Retry-After: 1` naming it and claims nothing, so a refill longer than the live window hands
   no live holder's role to a second process; a claim from the process the standing claim names
-  rests on no renewal and is granted through the refill. A hard claim is
-  unchanged, and the predecessor rule is unchanged, still reading the claimant's stored instance
-  where the request states none. `POST /v1/interests/subscribe` renews every claim the
+  rests on no renewal and is granted through the refill. A hard claim is unchanged, except one
+  whose conditional write did not answer or failed: the route reports the role held only where
+  the standing claim names the claimant's process too, so a claimant that states no process is
+  told the write's error where it was answered `200`. The predecessor rule is unchanged, still
+  reading the claimant's stored instance where the request states none.
+  `POST /v1/interests/subscribe` renews every claim the
   registering session holds that names the registering process, whatever topics the registration
   carries, and the first registration of that session stating any instance adopts a claim that
   names none — any process of the session id, not only the one that took the role; one that

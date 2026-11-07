@@ -1609,8 +1609,11 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     // not queued, and it costs this session its role and nothing more. A claim the listener
     // refused naming this very session is queued the same way, on the `"pending"` the restore
     // answers: the process this one resumed renewed that claim at its last heartbeat, and the
-    // role comes back a live window and up to one reap interval later to a process that keeps
-    // asking.
+    // role comes back from the standing claim itself rather than from the reaper, which never
+    // frees it while this process keeps that session alive. The listener grants it to a process
+    // that keeps asking once that renewal is older than the live window
+    // (`roleOwnSessionVerdict`), so the role is back one live window after that renewal, plus
+    // up to the one heartbeat tick it takes this process to ask again.
     try {
       roleTransferFrom = (await restoreRole(identity.id)) === "pending" ? identity.id : undefined
     } catch (error) {

@@ -162,7 +162,8 @@ const defaultSessionReapInterval = time.Minute
 // its holder gone. Judged every minute, a stalled holder would lose its role up to five times
 // sooner than the fixed pass this change replaces, which is the opposite of what this change is
 // for; the raise of that maximum age past the gone horizon is dispatch://INFRA-887's, and it
-// cannot land first. The grace a restored claim gets is measured from the listener's own start
+// cannot land first. The grace a restored claim gets - and a claim the hand-back marked gets
+// none, since no registration renews a marked claim - is measured from the listener's own start
 // against the live window (store.Registry.releaseReadExpiredRoleClaim, which the reaper's pass
 // hands the claim it read), not counted in passes, so the period does not move it; what the
 // period decides is how long after a holder is gone its role is free.
@@ -1324,10 +1325,13 @@ func main() {
 	// from this listener's start to register again, not one bucket maximum age: the window is
 	// what makes a session live to every other reader, and with a maximum age raised past the
 	// gone horizon the age would hold a dead holder's claim for an hour after the reaper had
-	// already found it gone. And every claim, restored or not, is kept while its own holder
-	// answered for it inside one live window, so a holder that goes on renewing its claim keeps
-	// its role even where the session id it registered under has left the bucket - which is
-	// what a second process that resumes that id and then deregisters it leaves behind
+	// already found it gone. A claim the hand-back marked takes none of that grace: the grace
+	// is for a holder to register again, no registration renews a marked claim, and so over
+	// such a claim it could only hold the role past the window its own renewal is weighed
+	// against. And every claim, restored or not, is kept while its own holder answered for it
+	// inside one live window, so a holder that goes on renewing its claim keeps its role even
+	// where the session id it registered under has left the bucket - which is what a second
+	// process that resumes that id and then deregisters it leaves behind
 	// (store.Registry.ReapRoleClaims).
 	//
 	// The role claim reaper runs at ENVOY_ROLE_CLAIM_REAP_INTERVAL, its own period and not the

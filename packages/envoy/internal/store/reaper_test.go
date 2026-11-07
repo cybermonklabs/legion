@@ -159,7 +159,7 @@ func TestAPassKeepsALapsedClaimThatNamesAProcessWhileItsHolderIsAlive(t *testing
 // The claim beside it is that same holder session's, as stale, and unmarked - and it is kept.
 // The two together are the whole of the rule: the mark moves a claim past a live holder, and
 // nothing else does.
-func TestAPassFreesALapsedClaimWhileItsHolderSessionIsStillAlive(t *testing.T) {
+func TestAPassFreesAHandedBackClaimWhileItsHolderSessionIsStillAlive(t *testing.T) {
 	const (
 		marked     = "legion-reviewer"
 		unmarked   = "legion-controller"

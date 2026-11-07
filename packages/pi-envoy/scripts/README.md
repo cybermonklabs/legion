@@ -419,6 +419,20 @@ because no client in the checkout can be made to send them (`old_register`, `old
 `unregistered`). It is sourced, never run, and reads three variables the caller sets:
 `envoy_url`, `work` and `curl_max_time`.
 
+## role-takeover/clients.sh
+
+The clients themselves, in the third sourced file `smoke-role-takeover.sh` brings in, beside the
+Bun drivers it starts: a recording proxy and a process per client (`start_proxy`, `start_omp`,
+`start_claude`), the stdin and stdout one command is sent and answered over (`client_fifo`,
+`client_ready`, `send`), the readers of each client's proxy log — the claims it made
+(`claim_status`, `claim_holder`, `first_claim_status`, `first_claim_holder`, `made_claim`,
+`claim_count`), the registrations it sent (`instance_id`, `registered_at`), its deregistration
+(`delete_answer`) and its hand-backs (`release_status`, `release_instance`, `released`) — and the
+two ways a row makes a holder answer for its claim (`renew_omp`, `renew_claude`). It is sourced,
+never run: it starts no process of its own, and it reads the scratch directory, the driver
+directory, the checkout, the listener and natsd URLs, the Oh My Pi client's windows, the two
+client timeouts and the run id that the smoke sets.
+
 ## skill-scenarios/rig.sh
 
 Replays skill scenarios on real agents, to compare two versions of a skill. Each label is one
