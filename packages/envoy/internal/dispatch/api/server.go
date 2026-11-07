@@ -346,6 +346,9 @@ type server struct {
 	// issue reads judge routes against and agents lists list (issue_route_status.go). Only
 	// register gives it non-zero TTLs.
 	rosters rosterCache
+	// writes is how many of this server's transactions may be open at once, held from before
+	// each one takes a connection (apiWriteLimit, begin).
+	writes writeLimiter
 	// deliveryHub keeps the open Delivery and Pipeline pages current (LEGION-690); every server
 	// register mounts has one, and only a server a test builds directly (directServer) has none.
 	deliveryHub *deliveryHub
@@ -1566,15 +1569,24 @@ func (s *server) publish(events ...model.Event) {
 	}
 }
 
+// begin opens one of the API's transactions. The write limit is taken first, before any
+// connection and before any lock, so a caller the pool has no room for waits holding nothing
+// and the connections the limit leaves stay free for the callers that take one without a
+// transaction - the room workers' durable appends among them (apiWriteLimit).
 func (s *server) begin(ctx context.Context) (pgx.Tx, error) {
 	if s.deps.Store == nil || s.deps.Store.Pool == nil {
 		return nil, errorf(http.StatusServiceUnavailable, "DATABASE_UNAVAILABLE", "database unavailable")
 	}
+	release, err := s.writes.take(ctx)
+	if err != nil {
+		return nil, err
+	}
 	tx, err := s.deps.Store.Pool.Begin(ctx)
 	if err != nil {
+		release()
 		return nil, fmt.Errorf("begin transaction: %w", err)
 	}
-	return tx, nil
+	return &limitedTx{Tx: tx, release: release}, nil
 }
 
 // readyPool is the pool a route reads through before it opens its transaction, with the

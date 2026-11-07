@@ -232,11 +232,12 @@ func fakeSwept(limit int64) (*roomBudget, <-chan struct{}) {
 // in: one room charged past a limit it fills, and the sweep that could close nothing having run,
 // which is what raises full (roomBudget.swept).
 //
-// Raising full on its own is not that state and does not drive it: the hook reads full and then
-// waits for the budget's sweep before the pressure weighs anything, and a budget whose charges
-// fit its limit frees that wait at once and is under no pressure at all
-// (Service.underPressure, roomBudget.awaitRoom). The budget here is a test's, which never
-// sweeps, so the wait ends the moment it starts.
+// Raising full on its own is not that state and does not drive it: full is a sweep's own
+// verdict, and a budget whose charges fit its limit lowers it again (roomBudget.unlock), so a
+// budget that never swept is under no pressure at all. The hook reads full, starts a sweep and
+// is refused at once, waiting for nothing (Service.underPressure,
+// roomBudget.sweepForPressure). The budget here is a test's, which never sweeps, so that start
+// does nothing and full stands where this leaves it.
 func fillRoomBudget(t *testing.T, budget *roomBudget) {
 	t.Helper()
 	budget.load("the room that fills the budget", 1<<20)

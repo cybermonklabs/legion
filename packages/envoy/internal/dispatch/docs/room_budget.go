@@ -249,14 +249,16 @@ func (b *roomBudget) settleLocked(reservation *roomReservation) {
 	b.dropIfEmptyLocked(reservation.room, entry)
 }
 
-// awaitRoom waits for the budget's sweep to bring the charges back within the limit, and reports
-// whether they are: what an admission waits for, with a weight of nothing. A browser's update
-// about to be refused for the pressure waits for it too, so the rooms nothing is still using are
-// closed before anything is refused (Service.underPressure, the spec's R3 and A3).
-func (b *roomBudget) awaitRoom(ctx context.Context, deadline time.Time) bool {
+// sweepForPressure starts the budget's sweep for a browser's update the pressure is about to
+// refuse, and answers the charges as they stand for the line that refusal leaves. It does not
+// wait for the sweep, and nothing on a person's read loop does: the rooms nothing is still
+// using are closed for the retry the transient refusal asks the editor for, not for the update
+// being refused (Service.underPressure, the spec's R3 and A3).
+func (b *roomBudget) sweepForPressure() (used, limit int64) {
 	b.mu.Lock()
-	defer b.unlock()
-	return b.await(ctx, deadline, func() bool { return b.used+b.reserved <= b.limit })
+	defer b.mu.Unlock()
+	b.sweepAgainLocked()
+	return b.used, b.limit
 }
 
 // await waits until fits reports room for an admission, and reports whether it does. Its caller

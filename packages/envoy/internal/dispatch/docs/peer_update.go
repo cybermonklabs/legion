@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
-	"time"
 	"weak"
 
 	"github.com/reearth/ygo/crdt"
@@ -435,33 +434,33 @@ func (s *Service) weighPeerUpdate(info websocket.PeerUpdateInfo, apply func() er
 	return s.refusedByApply(info, allowance, scanning, err)
 }
 
-// peerPressureSweepWait is how long a browser's update waits for the budget's sweep before it is
-// refused for the pressure: the sweep closes the rooms nothing is still using, which is what R3
-// asks of Dispatch before it refuses anything and what A3 asks of it before any refusal. It is
-// two seconds, which is long enough for a sweep that has rooms to close - a close flushes the
-// room's updates and compacts them - and short enough that a person whose edit is going to be
-// refused is told within the time a keystroke's round trip already allows. It costs nothing on
-// an ordinary edit: the wait is reached only while the budget is full, which is one atomic read
-// away on every other update.
-const peerPressureSweepWait = 2 * time.Second
-
 // underPressure is whether room's next update is weighed under the budget's pressure: the budget
-// is full and a sweep could not make room within peerPressureSweepWait. The sweep runs here, on
-// the peer's read loop, because R3 puts closing the rooms nothing is still using before refusing
-// anything, and an admission already waits for exactly this sweep (roomBudget.refusal); an
-// update that would be refused for the budget waits for it too, and applies where it frees a
-// room. The line names how long the wait took, so what the sweep costs this path can be read
-// off a loaded pod.
+// is full, which is a sweep having closed every room it could and left the charges over the
+// limit (roomBudget.swept).
+//
+// It starts a sweep and does not wait for it. R3 puts closing the rooms nothing is still using
+// before refusing anything, and that close is the sweep started here; what the refusal no
+// longer does is hold a person's keystroke while it runs. The update is refused at once with
+// the transient DocumentBusyCloseCode, which the editor retries, and the retry applies where
+// the sweep has freed a room - so R3's order is kept by the retry rather than by the peer's
+// read loop waiting on it.
+//
+// It waited two seconds before, the time a sweep that has rooms to close needs. Every
+// measurement of that wait freed nothing: thirteen waits over the growing-rooms drive, each
+// `freed=false waited_ms=0`, because a browser's departure closes its own room by the handler's
+// path before any sweep looks, and no sweep line named any of the ten rooms that had gone. What
+// it cost is a person's typing: under the burst of 320 concurrent API writes it took 2,066 ms
+// of one keystroke's 2,069, and 1,574 ms of another's 1,574
+// (cmd/dispatch, TestABurstOfConcurrentLiveWritesStaysUnderThePodsMemory, INFRA-179's keystroke
+// measurement). The sweep stays and the refusal stays; only the wait is gone.
 func (s *Service) underPressure(room string) bool {
 	if !s.budget.full.Load() {
 		return false
 	}
-	started := time.Now()
-	freed := s.budget.awaitRoom(context.Background(), started.Add(peerPressureSweepWait))
-	used, limit := s.budget.figures()
-	slog.Info("dispatch: a browser's update waited for the room budget's sweep before the pressure weighed it",
-		"room", room, "freed", freed, "waited_ms", time.Since(started).Milliseconds(), "charged", used, "limit", limit)
-	return !freed
+	used, limit := s.budget.sweepForPressure()
+	slog.Info("dispatch: a browser's update started the room budget's sweep and was weighed under the pressure at once",
+		"room", room, "charged", used, "limit", limit)
+	return true
 }
 
 // refusedBeforeApply is the one refusal the hook makes without applying: an update carrying the
