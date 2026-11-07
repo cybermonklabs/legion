@@ -305,6 +305,7 @@ test("no skill, agent or plugin file keeps work in the foreground, and each that
     expect(dispatching.sort()).toEqual([
       "skills/AGENTS.md",
       "skills/dispatch-writing-specs/SKILL.md",
+      "skills/legion-architect/SKILL.md",
       "skills/legion-architect/references/decomposition.md",
       "skills/legion-architect/references/design-gate.md",
       "skills/legion-controller/references/weekly-audit.md",
@@ -312,6 +313,7 @@ test("no skill, agent or plugin file keeps work in the foreground, and each that
       "skills/legion-retro/SKILL.md",
       "skills/legion-worker/references/merge-gate.md",
       "skills/simplify-settled-diff/SKILL.md",
+      "the fresh Claude plugin's skills/legion-architect/SKILL.md",
       "the fresh Claude plugin's skills/legion-architect/references/decomposition.md",
       "the fresh Claude plugin's skills/legion-architect/references/design-gate.md",
       "the fresh Claude plugin's skills/legion-controller/references/weekly-audit.md",

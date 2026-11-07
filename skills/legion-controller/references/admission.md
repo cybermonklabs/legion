@@ -22,7 +22,7 @@ A root left in the workflow at a status only a running tree has (`in_progress`, 
 wait explains, does not stay that way: every pass of admission (a Dispatch
 event, the daemon's boot read, its tick) takes it out of the workflow and sends the `unslotted`
 wake — an unanswered `awaiting_person` root only when its label or its Dispatch claim makes a
-resume unsafe. Holding no slot is by itself no fault: a root in `accepting`, in `awaiting_merge`,
+resume unsafe. Holding no slot is by itself no fault: a root in `accepting`, in `merging`,
 waiting on a person, waiting in the line, waiting on a blocker or waiting for its children holds
 none while its tree runs. The wake is live only, so a controller that starts later finds such a
 root by the last row, as its start procedure does.

@@ -77,15 +77,15 @@ func StandsIn(issue Issue, phases ...phase.Phase) bool {
 }
 
 // Accepted says whether the daemon has already accepted issue's own reviewed head and the issue
-// has not closed: it stands in its retro, its merge or its wait for that merge, or is held from
-// one of them (StandsIn). Work entering the workflow beneath an issue in one of those phases
+// has not closed: it stands in its retro or in its merge, or is held from one of them
+// (StandsIn). Work entering the workflow beneath an issue in one of those phases
 // would let that issue merge first, which is the one thing a parent must not do
 // (dispatch://INFRA-980, "Children first"). The reviewed head of a root whose worker died in
-// retro, merging or awaiting_merge is accepted still, so the hold must not let work in beneath
+// retro or merging is accepted still, so the hold must not let work in beneath
 // it: the line held no issue under such a root, the two doors let one in, and the close of a
 // root held from retro handed over nobody.
 //
-// The three phases are named here and nowhere else, so that no rule of the acceptance order can
+// The two phases are named here and nowhere else, so that no rule of the acceptance order can
 // read a list of its own: one that did is what let a child held from retro through. Every one
 // of those rules asks this predicate instead, through the nearest accepted ancestor
 // (AcceptedAncestor): the waiting line's hold (HeldUnderAccepted), the doors' refusal (api's
@@ -503,7 +503,7 @@ func later(a, b time.Time) time.Time {
 // a root whose design gate has never opened at every step the deployment gates, where its
 // architect is writing the design; after that opening the root's own turns start no phase
 // worker, and its children do the work. Every other phase is a wait: a child at admitted,
-// accepting, awaiting_merge, held, awaiting_person, done.
+// accepting, merging, held, awaiting_person, done.
 func AtWork(issue Issue, gate TreeGate) bool {
 	switch issue.Phase {
 	case phase.Planning, phase.Implementing, phase.Testing, phase.Reviewing, phase.Retro:
@@ -617,7 +617,7 @@ func CanWaitOnPerson(root Issue, gate TreeGate, slotted bool) bool {
 // the generation it carries has not run — it stands at admitted with its design gate never
 // opened, or it arrived from another tree carrying the phase it ran there (ran). So a person's
 // todo on a running root puts it back in no queue: the root whose gate has opened waits here for
-// its own first phase, and the root in accepting, in awaiting_merge or at work waits for
+// its own first phase, and the root in accepting, in merging or at work waits for
 // nothing. The slot used to say this, and cannot any longer: a running root holds one only while
 // a worker of it has work.
 //
@@ -855,9 +855,9 @@ func QueuedRoot(issue Issue, gate TreeGate) bool {
 // it and starts the role of whatever phase it carries. The mark is the arrival and not the
 // root's whole life: the promotion that opens its tree clears it (admit's promoteHolds), because
 // from then on the run the record carries is this tree's own. Without that a person's todo on
-// such a root, running and holding no slot in accepting or awaiting_merge, would queue it here
-// again and promote it a second time, moving its awaiting_merge to merging where its merge
-// closes nothing.
+// such a root, running and holding no slot in accepting or merging, would queue it here
+// again and promote it a second time, starting its merger over a merge that has already been
+// made.
 func ran(issue Issue, gate TreeGate) bool {
 	return issue.HandedOverFrom == "" && (issue.CarriesRun() || gate.EverOpened())
 }
