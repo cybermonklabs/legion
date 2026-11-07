@@ -128,9 +128,11 @@ func newJobIntake(natsClient *bus.Client, pool *store.Pool, leases duty.Leases, 
 // bound again by the client on a replacement connection -- beside the process that took the
 // durable over meanwhile, so both would deliver every job event of it (INFRA-1551). The give-up
 // needs no budget of the delivery intake's kind: this intake acknowledges each message on receipt
-// (deliver), so it has nothing in flight to hand back and nothing to wait for. What the drain
-// does hand the callback is what the client had already buffered, after this returns: deliver
-// leaves each of those messages for the next holder.
+// (deliver), so at either give-up it holds nothing in flight to hand back and has nothing to wait
+// for. What a drain does hand the callback is what the client had already buffered, after the
+// give-up has returned, and there the two give-ups part: at a connection event Run goes on, so
+// deliver handles those messages as it does any other, while at the shutdown j.ctx is done and
+// deliver hands each of them back, which gives the next holder of the durable them at once.
 func (j *JobIntake) Run(ctx context.Context) {
 	j.ctx = ctx
 	defer j.stopPending()
@@ -218,18 +220,30 @@ func (j *JobIntake) bind(ctx, stopping context.Context) (*natsgo.Subscription, b
 // the run's end event (Intake) and the reconcile both read every job of a run, so a process that
 // dies with a read pending loses only the early signal, and a message never waits on GitHub.
 //
-// A message that arrives once j.ctx is done is the exception: it is neither acked nor read. The
-// stop drains this subscription (giveUp), so the client hands this callback what it had already
-// buffered after Run has returned, where acking would lose the early signal for good and the
-// read that follows it would fail under the cancelled context with an ERROR line of its own. It
-// is left unacknowledged rather than Nak'd because the subscription is still bound while the
-// drain runs: a Nak would have the server redeliver the message to this same callback at once,
-// which would answer it the same way, round after round. Unacknowledged, it stays outstanding
-// and the next holder is handed it when jobAckWait expires -- what the bare unsubscribe this
-// give-up replaced left behind, and what the run's end event and the five-minute reconcile both
-// cover anyway.
+// A message that arrives once j.ctx is done is the exception: it is handed back, neither acked
+// nor read. The stop drains this subscription (giveUp), so the client hands this callback what
+// it had already buffered after Run has returned, where acking would lose the early signal for
+// good and the read that follows it would fail under the cancelled context with an ERROR line
+// of its own.
+//
+// The hand-back does not come back here, because the drain's UNSUB is already on the wire ahead
+// of it. nats.go v1.53.1's Conn.unsubscribe (:5416-5476) holds the connection's lock for the
+// whole of a drain's start: it marks the subscription draining and starts checkDrained
+// (:5447-5453), then appends the UNSUB to the connection's write buffer and kicks the flusher
+// (:5457-5460), and checkDrained's own first act is an nc.Flush() (:5333-5345) that waits for
+// that same lock. The callback meanwhile is handed what the client buffered, one message at a
+// time, and this Nak is a publish appended to that one write buffer behind the UNSUB. The
+// server therefore sees the unsubscribe first, and redelivers what this callback hands back to
+// the next subscriber of the durable rather than to this one; the delivery intake's stop turns
+// on the same order (intake_delivery.go's stop, which drains before it answers anything).
+//
+// A Nak the link refuses -- which is the state a give-up over an outage begins in -- leaves the
+// message outstanding, as the bare unsubscribe this give-up replaced left it: the next holder is
+// handed it when jobAckWait expires, and the run's end event and the five-minute reconcile both
+// cover it in any case.
 func (j *JobIntake) deliver(msg *natsgo.Msg) {
 	if j.ctx.Err() != nil {
+		negativelyAcknowledge(msg)
 		return
 	}
 	if err := msg.Ack(); err != nil {

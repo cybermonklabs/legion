@@ -104,7 +104,9 @@ func TestAHolderWhoseConnectionWasReplacedLeavesTheDurableToTheProcessThatTookIt
 // reconcile this intake exists to beat. A handling well inside that wait is the hand-back's.
 //
 // R2 is this durable's alone: the job intake acknowledges each message as it receives it (jobs.go's
-// deliver), so it has nothing in flight to hand back.
+// deliver), so no handler of its own ever holds a message its stop must wait for and hand back.
+// What that intake does hand back, it hands back from the callback itself: a message the drain
+// gives it once its context is done is Nak'd there (jobs.go's deliver), with no stop involved.
 func TestAMessageInFlightWhenTheDurableIsGivenUpReachesTheProcessThatKeepsIt(t *testing.T) {
 	// The give-up's own budget, and nothing else: the stop a connection event runs waits under it
 	// for the handler it abandons and for a live connection to hand that handler's message back
