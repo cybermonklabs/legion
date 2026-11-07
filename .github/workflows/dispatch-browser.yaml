@@ -71,7 +71,85 @@ env:
   GOPROXY: https://proxy.golang.org|direct
 
 jobs:
+  # The Go binaries the browser suite's lanes run: the Dispatch server and the real broker's
+  # three commands, built once here and handed to the shard and alone jobs below in one
+  # artifact.
+  #
+  # Why the build is a job of this file rather than of each caller: an artifact is visible only
+  # inside the run that uploaded it, and both callers run this file - ci.yaml's dispatch-browser
+  # job and dispatch-browser-nightly.yaml's full job. A build left in one caller would hand the
+  # other's run nothing, and that run's shard and alone jobs would fail downloading an artifact
+  # their run never held.
+  #
+  # Why those two jobs do not build the binaries themselves: they run in a container, and
+  # .github/scripts/ci_filter_coverage.py's shell_reason counts a `container:` as something that
+  # can move what a go command compiles, so a go command there would fall out of
+  # check-ci-filters.sh's reduction and be counted as reading every Go file of the repository,
+  # which is the opposite of what the `dispatch_browser` filter is for. So the builds live in
+  # this job, which takes no container, and the suite's own scripts execute what it built
+  # instead of building it (packages/dispatch/e2e/run-server.sh's DISPATCH_E2E_SERVER_BIN and
+  # run-broker.sh's DISPATCH_E2E_BROKER_BIN_DIR).
+  #
+  # It carries no `if:` of its own, as no job of a reusable workflow needs one: the caller has
+  # already decided the call. ci.yaml's dispatch-browser job holds the `dispatch_browser` filter
+  # and the merge-group attempt term, and the nightly calls this file unconditionally, so a
+  # condition here could only hold back a run its caller had asked for.
+  binaries:
+    runs-on: ubuntu-24.04
+    # Measured over three dispatched runs of this branch, jobs 128520516081 (83 s),
+    # 128528093378 (84 s) and 128528969380 (69 s), whose build steps took 45, 52 and 56 s. No
+    # step here carries a budget, so the rule in this file's head gives this job the measured
+    # maximum of every step, 84 s, rounded up: two minutes. The figure below is larger than that
+    # on purpose and is not that arithmetic. Every run of that sample restored the Go cache; a
+    # run that misses it builds four commands cold, which the planner measured at 3m37s for
+    # ./cmd/dispatch alone, and two minutes would cancel it. So the budget carries the cold build
+    # rather than the warm one, as the multiprocess job's Playwright install step below carries
+    # its own retry arithmetic rather than its measured maximum.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          cache: false
+      # go-envoy, restored only: this job builds the Dispatch server and the real broker's three
+      # commands, not the listener and natsd ci-caches.yaml's envoy job builds to fill the
+      # family, and no job here saves it. Without it this build is a cold one. The shard and
+      # alone jobs restored the same family for exactly this build until it became a job of its
+      # own.
+      - id: go-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-{0}-', runner.os) }}
+      # One `go build -o <directory>/` writes one binary per package, each named after it:
+      # dispatch, broker, dev-oidc-issuer and requestseed. CGO_ENABLED=0 is pinned on the build
+      # rather than left to the runner's default, so each binary is static by construction: the
+      # shard and alone jobs run them in a container of this repository's own image, and a
+      # binary with a PT_INTERP has a glibc there to disagree with. They are written under
+      # $RUNNER_TEMP, so the checkout stays clean.
+      - name: Build the binaries the browser suite runs
+        run: |
+          mkdir -p "$RUNNER_TEMP/dispatch-e2e-bin"
+          CGO_ENABLED=0 go build -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed
+        working-directory: packages/envoy
+      # One name for the whole run, with no `github.run_attempt` in it: a re-run of a run's
+      # failed jobs re-runs a shard or an alone leg without this one, and that attempt must find
+      # the artifact this job uploaded on the attempt before.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dispatch-e2e-binaries
+          path: ${{ runner.temp }}/dispatch-e2e-bin
+          if-no-files-found: error
+
   shard:
+    needs: binaries
     runs-on: ubuntu-24.04
     # One leg of the lane's rows. Each leg runs the lane's projects with `--shard=N/4`, one
     # Playwright worker per lane of e2e/run.ts, each lane with a Postgres, a harness and a
@@ -102,9 +180,9 @@ jobs:
       image: ghcr.io/cybermonklabs/legion/ci@sha256:5f5aca44f3ada006603a0ff98681f879f0825fdffcb14004d33361df4b92df83
       options: --user 1001 --ipc=host --init
     #
-    # This job runs no `go` command, directly or through a script: ci.yaml's dispatch-binaries
-    # job builds every binary the suite's scripts would have built and hands them over in one
-    # artifact. It has to be that way round, and ci.yaml's comment on that job says why:
+    # This job runs no `go` command, directly or through a script: the binaries job above builds
+    # every binary the suite's scripts would have built and hands them over in one artifact. It
+    # has to be that way round, and that job's own header says why:
     # ci_filter_coverage.py's shell_reason counts a `container:` as something that can move what
     # a go command compiles, so a go command here would fall out of check-ci-filters.sh's
     # reduction and be counted as reading every Go file of the repository. For the same reason
@@ -189,7 +267,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # What ci.yaml's dispatch-binaries job built, in place of this job's own actions/setup-go
+      # What the binaries job above built, in place of this job's own actions/setup-go
       # and go-envoy cache restore, which are gone: with no go command left here they bought
       # nothing, and the restore was there only for the build run-server.sh no longer does.
       # The directory is the one run-broker.sh built the broker's three binaries in, which is
@@ -370,7 +448,7 @@ jobs:
           # binaries provider: initdb and pg_ctl live in that directory alone, and a job inside a
           # container has no docker to run the image provider's digest with.
           export DISPATCH_E2E_PG_BIN=/usr/lib/postgresql/18/bin
-          # What ci.yaml's dispatch-binaries job built, which run-server.sh and run-broker.sh
+          # What the binaries job built, which run-server.sh and run-broker.sh
           # execute instead of building: the server by its path, the broker's three by the
           # directory that holds them.
           export DISPATCH_E2E_SERVER_BIN="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker/dispatch"
@@ -512,6 +590,7 @@ jobs:
           if-no-files-found: ignore
 
   alone:
+    needs: binaries
     if: inputs.lane == 'full'
     runs-on: ubuntu-24.04
     # The three projects whose rows are read from the wall clock, one machine each. Each runs with
@@ -583,7 +662,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # What ci.yaml's dispatch-binaries job built, in place of this job's own actions/setup-go
+      # What the binaries job above built, in place of this job's own actions/setup-go
       # and go-envoy cache restore, which are gone: the shard job's step of this name says why,
       # and this job's lane runs the same two scripts from the same directory.
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -715,7 +794,7 @@ jobs:
           # binaries provider: initdb and pg_ctl live in that directory alone, and a job inside a
           # container has no docker to run the image provider's digest with.
           export DISPATCH_E2E_PG_BIN=/usr/lib/postgresql/18/bin
-          # What ci.yaml's dispatch-binaries job built, which run-server.sh and run-broker.sh
+          # What the binaries job built, which run-server.sh and run-broker.sh
           # execute instead of building: the server by its path, the broker's three by the
           # directory that holds them.
           export DISPATCH_E2E_SERVER_BIN="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker/dispatch"

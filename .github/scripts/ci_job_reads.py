@@ -171,7 +171,8 @@ def at_docs(step):
 # job, whose if: the dispatch_browser filter gates, and every step citation names the job of
 # dispatch-browser.yaml that holds the step.
 BROWSER_JOB = "dispatch-browser"
-BROWSER_SHARD, BROWSER_ALONE, BROWSER_MP, BROWSER_MERGE = "shard", "alone", "multiprocess", "merge"
+BROWSER_BINARIES, BROWSER_SHARD = "binaries", "shard"
+BROWSER_ALONE, BROWSER_MP, BROWSER_MERGE = "alone", "multiprocess", "merge"
 BROWSER_SITE_SELF = reads((BROWSER_SITE, "the browser suite reads the definition of the steps it runs"))
 
 
@@ -717,15 +718,14 @@ RUN_SERVER = "packages/dispatch/e2e/run-server.sh"
 BUILD_BINARIES = "docs/site/scripts/build-binaries.sh"
 DISPATCH_SERVER_BUILD = "flock ./.dispatch-e2e.lock go build -o ./dispatch-e2e ./cmd/dispatch"
 # The three commands of the real broker's harness rows, and the Dispatch server with them: the
-# dispatch-binaries job builds all four, since the shard and alone jobs run them in a container
-# and so run no go command of their own (ci.yaml says why).
+# binaries job of dispatch-browser.yaml builds all four, since the shard and alone jobs run
+# them in a container and so run no go command of their own (that file says why).
 BROKER_PKGS = ["./cmd/broker", "./cmd/dev-oidc-issuer", "./internal/broker/brokertest/requestseed"]
-DISPATCH_BINARIES = "dispatch-binaries"
-DISPATCH_BINARIES_STEP = "Build the binaries the browser suite runs"
-DISPATCH_BINARIES_SCRIPT = """\
+# The steps of .github/workflows/dispatch-browser.yaml this table cites by name.
+BROWSER_BINARIES_STEP = "Build the binaries the browser suite runs"
+BROWSER_BINARIES_SCRIPT = """\
 mkdir -p "$RUNNER_TEMP/dispatch-e2e-bin"
 CGO_ENABLED=0 go build -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed"""
-# The steps of .github/workflows/dispatch-browser.yaml this table cites by name.
 BROWSER_SHARD_SPECS = "Browser-test dispatch dashboard (shard ${{ matrix.shard }} of 4)"
 BROWSER_ALONE_SPECS = "Browser-test dispatch dashboard (${{ matrix.project }})"
 BROWSER_MP_SPECS = "Browser-test dispatch dashboard against two server processes"
@@ -981,32 +981,16 @@ GATES = [
         ("packages/envoy-client/test/fake-dispatch.ts", f"packages/dispatch/e2e/__tests__/delivery-live-probe.test.ts:6-9 and local-instance-support.test.ts:2-5 import @legion/envoy-client/test/fake-dispatch, and {at('dispatch-ui', 'Test dispatch dashboard')} runs both"),
     ) + biome(at("dispatch-ui", "Lint dispatch dashboard")) + bun_job("dispatch-ui") + CI_SELF),
 
-    # The Go binaries the browser suite's lanes run, and the one gate of this filter that holds
-    # a go command of its own: ci.yaml's dispatch-binaries job builds the four commands the
-    # shard and alone jobs' scripts built before those jobs moved into a container, so it
-    # compiles that closure and no other. check-ci-filters.sh keys a claim by (job, step), so
-    # this gate and the one below claim different steps of different jobs and do not collide.
-    # The step names an output (-o) and pins CGO_ENABLED on the line, neither of which the
-    # simple form reduces, so the step is pinned whole; the Run carries that CGO_ENABLED, since
-    # the closure go lists without cgo is the one this build compiles.
-    gate("dispatch_browser", DISPATCH_BINARIES, exact=[
-        pinned_step(DISPATCH_BINARIES, DISPATCH_BINARIES_STEP, ENVOY, DISPATCH_BINARIES_SCRIPT, [
-            (ENVOY, ["./cmd/dispatch"] + BROKER_PKGS,
-             "CGO_ENABLED=0 go build of the Dispatch server, the real broker, its dev OIDC issuer and the seeding step",
-             {"mode": "build", "env": {"CGO_ENABLED": "0"}}),
-        ]),
-    ], reads=setup_go(DISPATCH_BINARIES, f"{ENVOY}/go.mod") + CI_SELF),
-
-    # The browser suite, every row of it: the shard legs, the three `-alone` projects, the
-    # two-process job and the merge job, all in dispatch-browser.yaml, which ci.yaml's
-    # dispatch-browser job and the nightly both call (at_browser cites their steps).
+    # The browser suite, every row of it: the binaries job, the shard legs, the three `-alone`
+    # projects, the two-process job and the merge job, all in dispatch-browser.yaml, which
+    # ci.yaml's dispatch-browser job and the nightly both call (at_browser cites their steps).
     #
     # ci_filter_coverage.py's check_table reads a gate whose ci.yaml job calls a local workflow
     # over the jobs of that workflow, so dispatch-browser.yaml's go commands, `env:` blocks and
-    # `shell:` keys are held here exactly as a job's own steps are: the multiprocess job's build
-    # step is the exact entry below, and a name outside ENV_ALLOWED, or a `shell:`, in that job
-    # or in the file around it drops that step out of the check's reduction, which then counts
-    # it as reading every Go file of the repository.
+    # `shell:` keys are held here exactly as a job's own steps are: the binaries job's build
+    # step and the multiprocess job's are the exact entries below, and a name outside
+    # ENV_ALLOWED, or a `shell:`, in either job or in the file around it drops that step out of
+    # the check's reduction, which then counts it as reading every Go file of the repository.
     #
     # This gate lists no script Run, and cannot: a Run pinned to a script's text is reduced only
     # where nothing around the ci.yaml job can move what the script compiles, and around_job
@@ -1014,11 +998,22 @@ GATES = [
     # container (dispatch://INFRA-1443), which shell_reason counts as exactly such a thing, so a
     # script Run here would fall to reading every Go file of the repository. It costs this
     # filter nothing. Those two jobs run no go command at all - run-server.sh and run-broker.sh
-    # execute the binaries the dispatch-binaries gate above covers - and the two scripts the
-    # multiprocess job still starts compile closures this filter already carries: run-server.sh
-    # builds ./cmd/dispatch, which that job's own pinned build step below names, and
-    # run-signin-issuer.sh builds ./cmd/dev-oidc-issuer, which the gate above names.
+    # execute the binaries the first entry below builds - and the two scripts the multiprocess
+    # job still starts compile closures this filter already carries: run-server.sh builds
+    # ./cmd/dispatch, which that job's own pinned build step below names, and
+    # run-signin-issuer.sh builds ./cmd/dev-oidc-issuer, which that first entry names.
     gate("dispatch_browser", BROWSER_JOB, exact=[
+        # The four commands the shard and alone jobs' scripts built before those jobs moved
+        # into a container, built once in the binaries job and downloaded by both: this is the
+        # closure that build compiles and no other. The step names an output (-o) and pins
+        # CGO_ENABLED on the line, neither of which the simple form reduces, so the step is
+        # pinned whole; the Run carries that CGO_ENABLED, since the closure go lists without
+        # cgo is the one this build compiles.
+        pinned_step(BROWSER_BINARIES, BROWSER_BINARIES_STEP, ENVOY, BROWSER_BINARIES_SCRIPT, [
+            (ENVOY, ["./cmd/dispatch"] + BROKER_PKGS,
+             "CGO_ENABLED=0 go build of the Dispatch server, the real broker, its dev OIDC issuer and the seeding step",
+             {"mode": "build", "env": {"CGO_ENABLED": "0"}}),
+        ], workflow=BROWSER_SITE),
         # The multiprocess job builds the server once, so its two processes find it current and
         # start in seconds rather than waiting out run-server.sh's own build in each boot wait.
         # The line has an `-o`, which is no form this check reduces, so the entry pins the whole
@@ -1044,6 +1039,7 @@ GATES = [
         ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:11 (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),
     ) + envoy_client_dep("imported by packages/envoy-client/bin/dispatch.ts, which "
                          "packages/dispatch/e2e/cli-body-cap.e2e.ts:52,57,65 run")
+      + setup_go(BROWSER_BINARIES, f"{ENVOY}/go.mod", BROWSER_SITE)
       + setup_go(BROWSER_MP, f"{ENVOY}/go.mod", BROWSER_SITE) + bun_job(BROWSER_SHARD, BROWSER_SITE)
       + CI_SELF + BROWSER_SITE_SELF),
 

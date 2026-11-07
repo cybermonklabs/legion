@@ -52,8 +52,8 @@ name: CI
 # actions/cache/restore: go-daemon (typecheck, test and pi-legion), go-docs (docs, and the build job
 # of docs-pages.yaml, which saves it), go-envoy (envoy-e2e-local and envoy-session-stall, which
 # build the same listener and natsd, listener-server-change and envoy-go-checks, which build the
-# listener, and dispatch-binaries, envoy-go-race-docs, envoy-go-docs-finalizers and the
-# multiprocess job of dispatch-browser.yaml), go-envoy-test (envoy-go alone: it builds the test
+# listener, and envoy-go-race-docs, envoy-go-docs-finalizers and the binaries and multiprocess
+# jobs of dispatch-browser.yaml), go-envoy-test (envoy-go alone: it builds the test
 # binary of every package of the envoy module, a set no other job builds), go-envoy-infra
 # (envoy-infra-go) and go-notices (lint's notices step). Every family but go-docs is filled by
 # .github/workflows/ci-caches.yaml, which builds those sets on a push to main and saves them;
@@ -144,7 +144,6 @@ env:
       "pi-envoy": "pi_envoy",
       "pi-legion": "pi_legion",
       "dispatch-ui": "dispatch_ui",
-      "dispatch-binaries": "dispatch_browser",
       "dispatch-browser": "dispatch_browser",
       "claude-envoy": "claude_envoy",
       "envoy-go": "envoy_go",
@@ -1082,10 +1081,11 @@ jobs:
               - 'packages/dispatch/**'
               - 'packages/proof-editor/**'
               - 'packages/contracts/src/**'
-              # The Dispatch server this suite runs: the dispatch-binaries job builds it, with
-              # the real broker's three commands, for the shard and alone jobs, and the
-              # two-process job builds it in a step of its own and again in e2e/run-server.sh
-              # (run-server.sh:340), on the socket scripts/e2e/lib/held-port.py holds
+              # The Dispatch server this suite runs: dispatch-browser.yaml's binaries job
+              # builds it, with the real broker's three commands, for the shard and alone jobs,
+              # and the two-process job builds it in a step of its own and again in
+              # e2e/run-server.sh (run-server.sh:340), on the socket
+              # scripts/e2e/lib/held-port.py holds
               # (run-server.sh:80).
               - *go_workspace
               - *dispatch_server
@@ -2808,85 +2808,10 @@ jobs:
           changes: ${{ toJSON(needs.changes) }}
           job-status: ${{ job.status }}
 
-  # The Go binaries the browser suite's lanes run, built here and handed to
-  # .github/workflows/dispatch-browser.yaml's shard and alone jobs through one artifact. Those
-  # two jobs run in a container, and .github/scripts/ci_filter_coverage.py's shell_reason counts
-  # a `container:` as something that can move what a go command compiles, so a go command there
-  # would fall out of check-ci-filters.sh's reduction and be counted as reading every Go file of
-  # the repository, which is the opposite of what the `dispatch_browser` filter is for. So the
-  # builds live here, in a job with no container, and the suite's own scripts execute what this
-  # job built instead of building it (packages/dispatch/e2e/run-server.sh's
-  # DISPATCH_E2E_SERVER_BIN and run-broker.sh's DISPATCH_E2E_BROKER_BIN_DIR).
-  #
-  # It takes no filter of its own: the four commands it builds are the ones those jobs' scripts
-  # built before, so the Go closure has not moved and the `dispatch_browser` filter already
-  # names every file of it. It shares that filter, that `changes` output and one entry of
-  # CI_OK_SELECTED_BY with the job below, as envoy-go-docs-finalizers shares envoy-go-race-docs'.
-  dispatch-binaries:
-    needs: changes
-    if: needs.changes.outputs.dispatch_browser == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
-    runs-on: ubuntu-24.04
-    # Measured over three dispatched runs of this branch, jobs 128520516081 (83 s),
-    # 128528093378 (84 s) and 128528969380 (69 s), whose build steps took 45, 52 and 56 s. No
-    # step here carries a budget, so the rule's job budget is the measured maximum of every step,
-    # 84 s, rounded up: two minutes. The figure below is larger than that on purpose, and this
-    # is the one place in this file where a budget is not the rule's arithmetic. Every run of
-    # that sample restored the Go cache; a run that misses it builds four commands cold, which
-    # the planner measured at 3m37s for ./cmd/dispatch alone, and two minutes would cancel it.
-    # So the budget carries the cold build rather than the warm one, as the Playwright install
-    # step this change deleted carried its own retry arithmetic rather than its measured maximum.
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - id: setup-go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: packages/envoy/go.mod
-          cache: false
-      # go-envoy, restored only: this job builds the Dispatch server and the real broker's three
-      # commands, not the listener and natsd ci-caches.yaml's envoy job builds to fill the
-      # family, and no job here saves it. Without it this build is a cold one. The shard and
-      # alone jobs restored the same family for exactly this build until it moved here.
-      - id: go-cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/go/pkg/mod
-            ~/.cache/go-build
-          key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ format('go-envoy-{0}-', runner.os) }}
-      # One `go build -o <directory>/` writes one binary per package, each named after it:
-      # dispatch, broker, dev-oidc-issuer and requestseed. CGO_ENABLED=0 is pinned on the build
-      # rather than left to the runner's default, so each binary is static by construction: the
-      # shard and alone jobs run them in a container of this repository's own image, and a
-      # binary with a PT_INTERP has a glibc there to disagree with. They are written under
-      # $RUNNER_TEMP, so the checkout stays clean.
-      - name: Build the binaries the browser suite runs
-        run: |
-          mkdir -p "$RUNNER_TEMP/dispatch-e2e-bin"
-          CGO_ENABLED=0 go build -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed
-        working-directory: packages/envoy
-      # One name for the whole run, with no `github.run_attempt` in it: a re-run of a run's
-      # failed jobs re-runs a shard or an alone leg without this one, and that attempt must find
-      # the artifact this job uploaded on the attempt before.
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: dispatch-e2e-binaries
-          path: ${{ runner.temp }}/dispatch-e2e-bin
-          if-no-files-found: error
-
-      - name: Report ci-ok when this job decides a merge-group run
-        if: always()
-        uses: ./.github/actions/ci-ok-report
-        with:
-          changes: ${{ toJSON(needs.changes) }}
-          job-status: ${{ job.status }}
-
   # Every browser row of the Dispatch suite, which .github/workflows/dispatch-browser.yaml
-  # holds: the shard legs, the three `-alone` projects a machine each, the two-process job and
-  # the merge job that joins their reports into one and posts this job's ci-ok report.
+  # holds: the binaries job that builds the Go commands the lanes run, the shard legs, the
+  # three `-alone` projects a machine each, the two-process job and the merge job that joins
+  # their reports into one and posts this job's ci-ok report.
   #
   # Two lanes, and which run pays for which. A pull request without the label `full-ci` runs
   # `pull-request`, the two projects a change is held to (chromium and iphone), so such a run
@@ -2910,17 +2835,10 @@ jobs:
   # that workflow, and one job of it - the merge job, which needs every other - posts the single
   # report this job id gets.
   #
-  # `needs: dispatch-binaries` beside `needs: changes`: the shard and alone jobs download that
-  # job's artifact rather than building the binaries themselves, so the whole called workflow
-  # waits for it. A caller job takes its `needs:` as any other job does; the inputs below are
-  # unchanged by it.
-  #
   # No timeout-minutes: GitHub's keywords for a job that calls a reusable workflow leave it out.
   # Each job of dispatch-browser.yaml carries its own limit.
   dispatch-browser:
-    needs:
-      - changes
-      - dispatch-binaries
+    needs: changes
     if: needs.changes.outputs.dispatch_browser == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     uses: ./.github/workflows/dispatch-browser.yaml
     with:
@@ -4403,7 +4321,6 @@ jobs:
       - pi-envoy
       - pi-legion
       - dispatch-ui
-      - dispatch-binaries
       - dispatch-browser
       - claude-envoy
       - envoy-go-checks

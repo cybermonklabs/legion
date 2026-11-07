@@ -14,10 +14,10 @@ name: CI caches
 #
 # Five Go families, each one a restore step of ci.yaml's run names, keyed on the Go version the
 # family's own module installs: go-notices (lint's notices step), go-daemon (typecheck, test and
-# pi-legion), go-envoy (dispatch-binaries, envoy-go-checks, envoy-go-race-docs,
-# envoy-go-docs-finalizers, listener-server-change, envoy-e2e-local, envoy-session-stall and
-# the multiprocess job of .github/workflows/dispatch-browser.yaml, which ci.yaml's
-# dispatch-browser job calls), go-envoy-test (envoy-go) and go-envoy-infra (envoy-infra-go). One
+# pi-legion), go-envoy (envoy-go-checks, envoy-go-race-docs, envoy-go-docs-finalizers,
+# listener-server-change, envoy-e2e-local, envoy-session-stall and the binaries and multiprocess
+# jobs of .github/workflows/dispatch-browser.yaml, which ci.yaml's dispatch-browser job calls),
+# go-envoy-test (envoy-go) and go-envoy-infra (envoy-infra-go). One
 # Go setup, since the key carries the version that module's go.mod names: the daemon's go.mod for
 # go-daemon and for go-notices, which lint installs the daemon's Go for; the envoy module's for
 # go-envoy and go-envoy-test; the infra module's for go-envoy-infra. Each family is first looked up
