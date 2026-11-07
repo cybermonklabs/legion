@@ -34,18 +34,6 @@ RUN set -eu; \
       exit 1; \
     fi
 
-# python3, make and g++ are what node-gyp compiles better-sqlite3 with, and this install reaches
-# it: packages/proof-editor depends on proof-sdk, which depends on better-sqlite3, and
-# prebuild-install refuses to fetch that package's prebuilt binary under Bun at all
-# ("prebuild-install warn install 'better-sqlite3' is not yet supported in Bun",
-# oven-sh/bun#4290), so every install of it here runs node-gyp. Without these three the install
-# ends `gyp ERR! find Python ... Could not find any Python installation to use` and the build
-# fails, measured on run 42416913757 of this repository, job 128536953071, where the line was
-# taken out. The layer sits in bun-deps, above the manifests, so the cache holds it and a run
-# that imports that stage pays for it once rather than in every build.
-RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ \
-    && rm -rf /var/lib/apt/lists/*
-
 COPY package.json bun.lock ./
 COPY patches patches
 COPY packages/contracts/package.json packages/contracts/package.json
@@ -70,7 +58,10 @@ COPY docs/site/package.json docs/site/package.json
 # --frozen-lockfile stays immediately after install:
 # .github/scripts/check-bun-workspace-manifests.sh matches `bun install --frozen-lockfile`, and a
 # flag written between the two takes this install out of that check's sight, silently.
-RUN bun install --frozen-lockfile --filter './' --filter './packages/dispatch' --filter './packages/contracts' --filter './packages/proof-editor'
+# PROBE ONLY (dispatch://INFRA-1526): --ignore-scripts, so better-sqlite3's node-gyp compile does
+# not run and the toolchain above can go. The build is the test: k4's and k9's comparisons say
+# whether what the image ships moved.
+RUN bun install --frozen-lockfile --ignore-scripts --filter './' --filter './packages/dispatch' --filter './packages/contracts' --filter './packages/proof-editor'
 
 FROM bun-deps AS web
 
