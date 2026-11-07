@@ -302,8 +302,12 @@ func TestRedactionPrintsNoHiddenByte(t *testing.T) {
 		walkers.Add(1)
 		go func() {
 			defer walkers.Done()
+			// The tally a shard fills is this goroutine's own and is handed over once, rather
+			// than counted straight into shards[first]: those elements sit two to a cache line,
+			// and a counter another core is writing beside yours is read back from memory on
+			// every increment.
 			for first := range next {
-				shard := &shards[first]
+				var shard corpusTally
 				shard.leaks, shard.swallowed = map[string]bool{}, map[string]bool{}
 				shard.texts = eachTextFrom(first, corpusDepth, true, func(text string) {
 					at := strings.Index(text, marker)
@@ -332,6 +336,7 @@ func TestRedactionPrintsNoHiddenByte(t *testing.T) {
 						}
 					}
 				})
+				shards[first] = shard
 			}
 		}()
 	}
