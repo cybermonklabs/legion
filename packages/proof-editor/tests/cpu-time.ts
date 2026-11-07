@@ -197,8 +197,43 @@ export function fastestCpuTimeOf(work: () => unknown, samples = defaultSamples):
 }
 
 /**
+ * The cost of a parse the mode refuses, with the refusal itself. `fastestCpuTimeOf` samples a
+ * refused parse as many times as it samples any other work, and raises a `CpuTimedError` whose
+ * `cpuMs` is the least reading and whose `cause` is the refusal, so a row reads both from it.
+ *
+ * It throws when the parse it was given returned rather than being refused, so a row that means
+ * to measure a refusal cannot read a plain reading as one.
+ */
+export function refusedCostOf(parse: () => unknown): CpuTimedError {
+  try {
+    fastestCpuTimeOf(parse);
+  } catch (error) {
+    if (error instanceof CpuTimedError) return error;
+    throw error;
+  }
+  throw new Error("the parse was expected to be refused and was not");
+}
+
+/**
+ * Whether `full`, the cost at the full size, grew more than `slack` times faster than the input
+ * did at `step` (`growthVerdict` in `linear_test.go`). Both costs are in milliseconds.
+ *
+ * The step and the slack are arguments, defaulting to this module's own, so that
+ * tests/cpu-time.test.ts can run this arithmetic at another step and read what it decides there.
+ */
+export function costGrewTooFast(
+  small: number,
+  full: number,
+  step = growthStep,
+  slack = linearSlack
+): boolean {
+  return full > slack * step * small;
+}
+
+/**
  * Fails when `full`, the cost at the full size, grew more than `linearSlack` times faster than the
- * input did at `growthStep` (`growthVerdict` in `linear_test.go`). Both costs are in milliseconds.
+ * input did at `growthStep`. It reports what `costGrewTooFast` decided, as `growsLinearly` in
+ * `linear_test.go` reports `growthVerdict`'s. Both costs are in milliseconds.
  *
  * It does not catch a parse that is 3 times slower and still linear, and it reads two measurements
  * each wrong by up to 4 per cent before the machine's own noise, which is what the slack pays for.
@@ -209,5 +244,5 @@ export function expectCostGrowsLinearly(name: string, small: number, full: numbe
   const reading = `${Math.round(full)} ms at the full size against ${Math.round(small)} ms`;
   const grew = `at an eighth of it, ${ratio.toFixed(1)} times for an input ${growthStep} times`;
   const message = `${name} cost ${reading} ${grew} larger (at most ${bound} times)`;
-  expect(full, message).toBeLessThanOrEqual(bound * small);
+  expect(costGrewTooFast(small, full), message).toBe(false);
 }

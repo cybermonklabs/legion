@@ -16,11 +16,11 @@ import type { Node as ProseMirrorNode } from "@milkdown/kit/prose/model";
 import type { BlockSchema } from "../src/block-schema.js";
 import { createHeadlessProof } from "../src/lib-headless.js";
 import {
-  CpuTimedError,
   expectCostGrowsLinearly,
   fastestCpuTimeOf,
   growthStep,
   parseCpuBudgetMs,
+  refusedCostOf,
 } from "./cpu-time";
 
 /** The document service's own block schema: its callout takes `block+`, so callouts nest. */
@@ -124,23 +124,6 @@ async function readOnlyProof() {
 
 async function defaultProof() {
   return createHeadlessProof({ blockSchema: serverBlockSchema });
-}
-
-/**
- * The cost of a parse the mode refuses, with the refusal itself. `fastestCpuTimeOf` samples a
- * refused parse as many times as it samples any other work, and raises a `CpuTimedError` whose
- * `cpuMs` is the least reading and whose `cause` is the refusal, so a row reads both from it.
- * This mirrors `refusedCostOf` in tests/heavy-bodies.test.ts, which importing would run the
- * tests of that file.
- */
-function refusedCostOf(parse: () => unknown): CpuTimedError {
-  try {
-    fastestCpuTimeOf(parse);
-  } catch (error) {
-    if (error instanceof CpuTimedError) return error;
-    throw error;
-  }
-  throw new Error("the parse was expected to be refused and was not");
 }
 
 // The `60_000` the four rows below carry replaces bun's own default of 5,000 ms, which is real

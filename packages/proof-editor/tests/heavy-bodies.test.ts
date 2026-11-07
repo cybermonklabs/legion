@@ -33,11 +33,11 @@ import { unified } from "unified";
 import { createHeadlessProof, type HeadlessProofEditor } from "../src/lib-headless.js";
 import { serverBlockSchema } from "./block-schema-fixture";
 import {
-  CpuTimedError,
   expectCostGrowsLinearly,
   fastestCpuTimeOf,
   growthStep,
   parseCpuBudgetMs,
+  refusedCostOf,
 } from "./cpu-time";
 
 /** The longest comment, message or broadcast body a caller may write, in characters. */
@@ -186,21 +186,6 @@ function readOnlyProof(): Promise<HeadlessProofEditor> {
 function defaultProof(): Promise<HeadlessProofEditor> {
   editor ??= createHeadlessProof({ blockSchema: serverBlockSchema });
   return editor;
-}
-
-/**
- * The cost of a parse the mode refuses, with the refusal itself. `fastestCpuTimeOf` samples a
- * refused parse as many times as it samples any other work, and raises a `CpuTimedError` whose
- * `cpuMs` is the least reading and whose `cause` is the refusal, so a row reads both from it.
- */
-function refusedCostOf(parse: () => unknown): CpuTimedError {
-  try {
-    fastestCpuTimeOf(parse);
-  } catch (error) {
-    if (error instanceof CpuTimedError) return error;
-    throw error;
-  }
-  throw new Error("the parse was expected to be refused and was not");
 }
 
 /** How many blocks of type `type` stand inside one another on `node`'s deepest path. */
