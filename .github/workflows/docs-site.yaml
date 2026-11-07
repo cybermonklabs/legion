@@ -129,6 +129,15 @@ jobs:
         timeout-minutes: 15
         env:
           DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      # The baseline side of dispatch://INFRA-1443's screenshot check: this branch is the merge
+      # base carrying this step alone, so a run of it renders the pages with Playwright's
+      # `tools` fonts still installed and hands the shots over for comparison. Nothing merges
+      # from this branch.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: docs-screenshots-${{ github.run_attempt }}
+          path: docs/site/public/media
+          if-no-files-found: error
       # What each failed shot's page showed, and the harness's process logs: a hang leaves the
       # Dispatch server's goroutines at the end of dispatch.log.
       - if: failure()
