@@ -21,10 +21,9 @@ so is easiest to read past.
 One line per item: the goal first, then each requirement in the spec's order.
 
 - **met** — every part it names is at the head and does what the requirement's words say, named
-  by file, symbol or recorded run. A part that is there but does less is unmet; a flaw the
-  requirement does not name is a finding beside met.
-- **unmet** — a part the spec names is missing, a test or measurement among them: quote that
-  part and what you read at the head.
+  by file, symbol or recorded run. A flaw the requirement does not name is a finding beside met.
+- **unmet** — a part the requirement's words name is missing or does less, a test or measurement
+  among them: quote that part and what you read at the head.
 
 ## Constraints
 
