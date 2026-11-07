@@ -182,8 +182,9 @@ const multiprocessProjects = [
 // The specs whose rows are read from the wall clock: that a document write answers in under a
 // second (`heavy-document-writes.e2e.ts`), that a card's draw holds the main thread for less
 // than one (`heavy-bodies.e2e.ts` and `nested-directive.e2e.ts`, both through
-// `main-thread-hold.ts`), and what a live view costs in time - that one comes back inside half
-// a second and paints inside 100 ms with no task longer than 50
+// `main-thread-hold.ts`), and what the agent surfaces cost in time - a sleeping live view comes
+// back inside half a second, and the Agents page paints six hundred sessions inside 100 ms with
+// no task longer than 50
 // (`agent-workspace-timing.e2e.ts`, INFRA-812's D14). Four lanes on one machine leave such a
 // claim unmeasurable - the wall time of a write holds what the other three lanes took as surely
 // as the work the server did - so these files run in the `-alone` projects at the end of this
@@ -363,9 +364,9 @@ const parallelProjects = [
  * `webkit`, for the reasons written above those projects, and runs here in all three;
  * `heavy-document-writes.e2e.ts`, which drives no browser, and `nested-directive.e2e.ts` ran in
  * `chromium` alone and run in `chromium-alone` alone, as does
- * `agent-workspace-timing.e2e.ts`, whose rows time the live view in the one engine the timed
- * halves are claimed for (INFRA-812's D14; the untimed halves of those checks stay in
- * `chromium` and `iphone`, in `agent-view.e2e.ts`).
+ * `agent-workspace-timing.e2e.ts`, whose rows time the live view and the Agents page in the one
+ * engine the timed halves are claimed for (INFRA-812's D14; the untimed halves of those checks
+ * stay in `chromium` and `iphone`, in `agent-view.e2e.ts` and `agents-window.e2e.ts`).
  *
  * These three select by `testMatch` alone, where `webkit` and `firefox` select by an engine tag:
  * their axis is the file, not a behaviour. Every row of a clock-read file runs here whatever it
