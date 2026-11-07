@@ -467,10 +467,10 @@ func textColumn(ctx context.Context, fill *store.Pool, kind, query string, args 
 
 // askTexts reads back every stored text an ask holds: its question, the label and description of
 // each of its options, the text of the answer it carries and the reason it was resolved with.
-// The list itself is texttrees.AskShownTexts, the one a reader of an ask is shown (api's
-// askReadDisplayTexts), so the pass stores the trees that read answers and no others. The three
-// jsonb columns are decoded here rather than read as columns because that is how the row holds
-// them.
+// The list itself is texttrees.VisitAskTexts, the one walk every path over an ask's texts makes
+// (api's askRead.shape is the read's), so the pass stores the trees that read answers and no
+// others. The three jsonb columns are decoded here rather than read as columns because that is
+// how the row holds them.
 //
 // A column this process cannot decode is logged and skipped, and the rest of the ask is stored:
 // the pass must not stop on one row, since a pass that fails on it would take the same batch
@@ -511,7 +511,12 @@ func askTexts(ctx context.Context, fill *store.Pool, ids []string) ([]string, er
 		} else if held {
 			carriedResolution = &resolved
 		}
-		texts = texttrees.AskShownTexts(texts, question, carried, carriedAnswer, carriedResolution)
+		texts = texttrees.AppendAskTexts(texts, texttrees.AskContent{
+			Question:   question,
+			Options:    carried,
+			Answer:     carriedAnswer,
+			Resolution: carriedResolution,
+		})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read the stored texts of %q: %w", kindAsk, err)

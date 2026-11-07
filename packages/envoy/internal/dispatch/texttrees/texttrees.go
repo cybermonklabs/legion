@@ -6,8 +6,8 @@
 // server, because neither of the two packages that write stored texts can own it: api and docs
 // both write them, and docs cannot import api. Everything either of them needs is here, so a
 // third writer - the architecture importer is one - reaches the table the same way, and the one
-// list of an ask's stored texts a reader and the background fill must agree on lives here too
-// (AskShownTexts).
+// walk of an ask's stored texts that every path touching one must agree with lives here too
+// (VisitAskTexts).
 package texttrees
 
 import (

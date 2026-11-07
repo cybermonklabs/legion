@@ -5,11 +5,11 @@ import (
 	"encoding/json"
 	"encoding/json/jsontext"
 	"log/slog"
-	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/texttrees"
 )
 
 // eventPayloadPrefix opens every key of an event's trees map: the path of the text the tree was
@@ -102,42 +102,20 @@ func eventTypeHoldsBody(eventType string) bool {
 		strings.HasPrefix(eventType, "suggestion.")
 }
 
-// askTexts is the stored texts of one ask-shaped object: its question, the label and description
-// of each option, its answer's text and its resolution's reason. The edit payload's `previous` is
-// the same shape with the question and the options alone, and the fields it does not hold are
-// simply not there.
-type askTexts struct {
-	Question   string             `json:"question"`
-	Options    []askOptionTexts   `json:"options"`
-	Answer     *askAnswerText     `json:"answer"`
-	Resolution *askResolutionText `json:"resolution"`
-}
-
-// askOptionTexts is one answer choice's two stored texts.
-type askOptionTexts struct {
-	Label       string `json:"label"`
-	Description string `json:"description"`
-}
-
-// askAnswerText is the text a human wrote with their answer.
-type askAnswerText struct {
-	Text string `json:"text"`
-}
-
-// askResolutionText is why an ask no longer needs an answer.
-type askResolutionText struct {
-	Reason string `json:"reason"`
-}
-
-// askEventTexts is every stored text an ask event's payload can hold: the ask's own, the content
-// an edit replaced (`previous`), the answer an edit or a second answer superseded
-// (`previous_answer`), and a body, which no ask payload carries today and which is read here so
-// that one that gains it answers the same key every other event's body answers.
+// askEventTexts is every stored text an ask event's payload can hold: the ask's own
+// (model.Ask), the content an edit replaced (`previous`), the answer an edit or a second answer
+// superseded (`previous_answer`), and a body, which no ask payload carries today and which is
+// read here so that one that gains it answers the same key every other event's body answers.
+//
+// The payload is decoded into the model types a write publishes rather than into mirrors of
+// them, so that the one walk of an ask's texts (texttrees.VisitAskTexts) answers here exactly
+// what it answers a read shape and the background fill: a text a mirror had not been given
+// would be a key this path never answered and a tree no reader of the feed takes.
 type askEventTexts struct {
-	askTexts
-	Body           string         `json:"body"`
-	Previous       *askTexts      `json:"previous"`
-	PreviousAnswer *askAnswerText `json:"previous_answer"`
+	model.Ask
+	Body           string                 `json:"body"`
+	Previous       *model.AskEditPrevious `json:"previous"`
+	PreviousAnswer *model.AskAnswer       `json:"previous_answer"`
 }
 
 // askEventPayloadTexts visits the stored texts of an ask event: the ask's own, the ones an edit
@@ -146,37 +124,28 @@ type askEventTexts struct {
 // one pass into the fields that can hold one rather than scanned for each.
 //
 // A payload no text can be read from - one that is not a JSON object, which no payload Dispatch
-// appends is - decodes to no texts, and so does a field of an unexpected type: each such text
-// stays empty, which is visited for nothing, so a malformed field costs its own tree and no
-// other's, as reading each field on its own did. That is what the decode's error says, and why it
-// is not read.
+// appends is - decodes to no texts, and a field of an unexpected type is left as it stood, which
+// for a text is the empty string and is visited for nothing: a malformed field costs its own
+// tree and no other's. That is what the decode's error says, and why it is not read.
 func askEventPayloadTexts(raw json.RawMessage, visit func(path, text string)) {
 	var payload askEventTexts
 	_ = json.Unmarshal(raw, &payload)
 	visitText(visit, eventPayloadPrefix, "body", payload.Body)
-	visitAskTexts(visit, eventPayloadPrefix, &payload.askTexts)
+	visitAskContentTexts(visit, eventPayloadPrefix, texttrees.AskContentOf(payload.Ask))
 	if payload.Previous != nil {
-		visitAskTexts(visit, eventPayloadPrefix+".previous", payload.Previous)
+		visitAskContentTexts(
+			visit, eventPayloadPrefix+".previous", texttrees.AskEditPreviousContent(*payload.Previous),
+		)
 	}
-	if payload.PreviousAnswer != nil {
-		visitText(visit, eventPayloadPrefix+".previous_answer", "text", payload.PreviousAnswer.Text)
+	if payload.PreviousAnswer != nil && payload.PreviousAnswer.Text != nil {
+		visitText(visit, eventPayloadPrefix+".previous_answer", "text", *payload.PreviousAnswer.Text)
 	}
 }
 
-// visitAskTexts visits the texts of one ask-shaped object standing at path.
-func visitAskTexts(visit func(path, text string), path string, texts *askTexts) {
-	visitText(visit, path, "question", texts.Question)
-	if texts.Answer != nil {
-		visitText(visit, path+".answer", "text", texts.Answer.Text)
-	}
-	if texts.Resolution != nil {
-		visitText(visit, path+".resolution", "reason", texts.Resolution.Reason)
-	}
-	for index, option := range texts.Options {
-		optionPath := path + ".options." + strconv.Itoa(index)
-		visitText(visit, optionPath, "label", option.Label)
-		visitText(visit, optionPath, "description", option.Description)
-	}
+// visitAskContentTexts visits the texts of one ask-shaped object standing at path, each under
+// the path its field answers by (texttrees.AskText.Path).
+func visitAskContentTexts(visit func(path, text string), path string, content texttrees.AskContent) {
+	texttrees.VisitAskTexts(content, func(text texttrees.AskText) { visit(text.Path(path), text.Text) })
 }
 
 // visitText visits text under "<path>.<name>", where there is something in it. A field the payload

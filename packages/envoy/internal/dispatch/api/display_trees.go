@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/texttrees"
 )
 
 // displayTreesHeader is what a caller sends to be given the display tree of every stored text in
@@ -168,31 +169,86 @@ type askRead struct {
 }
 
 // shape rebuilds the shadowing fields from the ask they stand in front of, and registers each of
-// its texts with the request's reader. The texts are texttrees.AskShownTexts, the list this read
-// and the background fill of the trees share.
+// its texts with the request's reader. The texts are texttrees.VisitAskTexts, the one walk this
+// read, the event path and the background fill of the trees all make, and treeField says where
+// each of them lands here: a text the walk gains that this shape has no field for is registered
+// nowhere, which is what the agreement test refuses (ask_texts_test.go).
 func (a *askRead) shape(reader *displayTreeReader) {
-	a.Options = askOptionReads(a.Ask.Options, reader)
-	a.Answer = newAskAnswerWithTree(a.Ask.Answer, reader)
+	a.Options = askOptionReads(a.Ask.Options)
+	a.Answer = askAnswerWithTree(a.Ask.Answer)
 	a.Resolution = nil
 	if a.Ask.Resolution != nil {
-		resolution := &askResolutionRead{AskResolution: *a.Ask.Resolution}
-		reader.text(&resolution.ReasonTree, a.Ask.Resolution.Reason)
-		a.Resolution = resolution
+		a.Resolution = &askResolutionRead{AskResolution: *a.Ask.Resolution}
 	}
-	reader.text(&a.QuestionTree, a.Ask.Question)
+	registerAskTexts(reader, texttrees.AskContentOf(a.Ask), a.treeField)
 }
 
-// askOptionReads is the options with their trees, keeping an absent list absent so a row that
-// carried no options still writes null rather than an empty list.
-func askOptionReads(options []model.AskOption, reader *displayTreeReader) []askOptionRead {
+// treeField is the field of this read that carries the tree of text, and nil for a text this
+// read shows nowhere.
+func (a *askRead) treeField(text texttrees.AskText) *json.RawMessage {
+	switch text.Field {
+	case texttrees.AskQuestionText:
+		return &a.QuestionTree
+	case texttrees.AskAnswerText:
+		if a.Answer == nil {
+			return nil
+		}
+		return &a.Answer.TextTree
+	case texttrees.AskResolutionReasonText:
+		if a.Resolution == nil {
+			return nil
+		}
+		return &a.Resolution.ReasonTree
+	default:
+		return askOptionTreeField(a.Options, text)
+	}
+}
+
+// registerAskTexts registers every stored text of content with reader, each against the field of
+// the read that shows it (fieldOf). A text that read holds no field for - an answer on an edit's
+// previous content, which only the ask itself carries - is registered nowhere and read nowhere.
+//
+// Each field must stand where it will still stand when the reader resolves, which is why every
+// shadowing field is built before the walk and none of them is appended to afterwards.
+func registerAskTexts(
+	reader *displayTreeReader,
+	content texttrees.AskContent,
+	fieldOf func(texttrees.AskText) *json.RawMessage,
+) {
+	texttrees.VisitAskTexts(content, func(text texttrees.AskText) {
+		if field := fieldOf(text); field != nil {
+			reader.text(field, text.Text)
+		}
+	})
+}
+
+// askOptionTreeField is the field of reads that carries text's tree, and nil for a text that is
+// no option's or whose option these reads do not hold.
+func askOptionTreeField(reads []askOptionRead, text texttrees.AskText) *json.RawMessage {
+	if text.Option < 0 || text.Option >= len(reads) {
+		return nil
+	}
+	switch text.Field {
+	case texttrees.AskOptionLabelText:
+		return &reads[text.Option].LabelTree
+	case texttrees.AskOptionDescriptionText:
+		return &reads[text.Option].DescriptionTree
+	default:
+		return nil
+	}
+}
+
+// askOptionReads is the options shaped to carry the trees of their label and description,
+// keeping an absent list absent so a row that carried no options still writes null rather than
+// an empty list. The trees themselves are registered by the walk over the ask or over the
+// content an edit replaced (registerAskTexts).
+func askOptionReads(options []model.AskOption) []askOptionRead {
 	if options == nil {
 		return nil
 	}
 	reads := make([]askOptionRead, len(options))
 	for index, option := range options {
 		reads[index] = askOptionRead{AskOption: option}
-		reader.text(&reads[index].LabelTree, option.Label)
-		reader.text(&reads[index].DescriptionTree, option.Description)
 	}
 	return reads
 }
@@ -241,11 +297,21 @@ func askEditReads(edits []model.AskEdit, reader *displayTreeReader) []askEditRea
 	for index, edit := range edits {
 		reads[index] = askEditRead{AskEdit: edit, Previous: askEditPreviousRead{
 			AskEditPrevious: edit.Previous,
-			Options:         askOptionReads(edit.Previous.Options, reader),
+			Options:         askOptionReads(edit.Previous.Options),
 		}}
-		reader.text(&reads[index].Previous.QuestionTree, edit.Previous.Question)
+		previous := &reads[index].Previous
+		registerAskTexts(reader, texttrees.AskEditPreviousContent(edit.Previous), previous.treeField)
 	}
 	return reads
+}
+
+// treeField is the field of this previous content that carries the tree of text, and nil for a
+// text an edit never carried away: the answer and the resolution are the ask's own.
+func (p *askEditPreviousRead) treeField(text texttrees.AskText) *json.RawMessage {
+	if text.Field == texttrees.AskQuestionText {
+		return &p.QuestionTree
+	}
+	return askOptionTreeField(p.Options, text)
 }
 
 // replyBlockRead is the block a reply answers, with the tree of the excerpt it stored.
@@ -381,12 +447,22 @@ func attachNodeTrees(node *model.GraphNode, reader *displayTreeReader) {
 }
 
 // newAskAnswerWithTree is an answer a read gives with the tree of its text, nil where nobody
-// answered. A search hit's ask and a person's answer history both read one.
+// answered. A search hit's ask and a person's answer history both read one. An ask read shapes
+// its own answer through askAnswerWithTree instead and registers that text with the rest of the
+// ask's (askRead.shape), so the one walk names every text of an ask exactly once.
 func newAskAnswerWithTree(answer *model.AskAnswer, reader *displayTreeReader) *model.AskAnswerWithTree {
+	read := askAnswerWithTree(answer)
+	if read != nil {
+		reader.textOf(&read.TextTree, answer.Text)
+	}
+	return read
+}
+
+// askAnswerWithTree is that same shape with no tree registered, for a caller that registers the
+// answer's text itself.
+func askAnswerWithTree(answer *model.AskAnswer) *model.AskAnswerWithTree {
 	if answer == nil {
 		return nil
 	}
-	read := &model.AskAnswerWithTree{AskAnswer: *answer}
-	reader.textOf(&read.TextTree, answer.Text)
-	return read
+	return &model.AskAnswerWithTree{AskAnswer: *answer}
 }
