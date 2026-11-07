@@ -57,22 +57,41 @@ func strandedReleaseWakes(wakes []ReleasedWake, now time.Time) map[releasedRole]
 // Stranded is every claim of s's issues that nothing will wake, by issue and then role. A claim
 // is stranded when its issue's tree runs — its lifecycle stands open under the workflow, the root
 // does not linger and the root is not itself waiting in the line, the rule record.TreeRuns applies
-// — nothing will wake it, and it is suspended or failed and one of:
+// — nothing will wake it, and it is suspended, failed or retired and one of:
 //
 //   - A worker of its issue's phase: the role RoleFor gives the phase its worker works
 //     (workingPhase), which a held issue keeps from the phase it left. Only a start of that phase
-//     retries a failed worker, so one is stranded once no such start is queued (StartFor, the rule
-//     promotion reads). A suspended one is stranded when an operator suspended it, or when its
-//     suspension was recorded before migration 0038 (unknown) and no start is queued for it: the
-//     boot resumes neither, and a start queued for an unknown one resumes it. The daemon resumes
-//     one it or its own exit suspended by rule (supervise's ByRule), at boot (DaemonBooted) and at
-//     the phase's next start, so the report leaves those sources out.
+//     brings back a failed or a retired worker, so either is stranded once no such start is queued
+//     (StartFor, the rule promotion reads). A suspended one is stranded when an operator suspended
+//     it, or when its suspension was recorded before migration 0038 (unknown) and no start is
+//     queued for it: the boot resumes neither, and a start queued for an unknown one resumes it.
+//     The daemon resumes one it or its own exit suspended by rule (supervise's ByRule), at boot
+//     (DaemonBooted) and at the phase's next start, so the report leaves those sources out.
 //   - Its tree's architect: only its tree's admission starts it, whoever suspended it. A notice to a
 //     suspended one is held until it holds its role again, which nothing in the daemon brings
-//     about, and a notice to a failed one finishes undelivered (the notice executor). Its tree
-//     moves through its phases without it, and stops at the first decision that needs it. One
-//     the daemon or its own exit suspended, or one that failed, is stranded once no admission start
-//     is queued (StartFor).
+//     about, and a notice to a failed or a retired one finishes undelivered (the notice executor).
+//     Its tree moves through its phases without it, and stops at the first decision that needs it.
+//     One the daemon or its own exit suspended, one that failed, and one a close retired while its
+//     tree runs again, are each stranded once no admission start is queued (StartFor).
+//
+// A retired claim is here for the reason a failed one is, and a queued start is what takes either
+// of them out. The state is not the end of the claim: the outbox's start executor provisions the
+// workspace for a retired claim and sends supervise.RequestRetry (the StateRetired branch in
+// internal/daemon/outbox.go), and RequestRetry's own row accepts StateRetired beside StateFailed
+// (internal/supervise/table.go), so the kept session relaunches with fresh budgets. What nothing
+// does by itself is queue that start: no rule the daemon runs starts a retired claim, the boot's
+// repair reads only a suspension, and the operator's retry refuses a claim that has not failed
+// (supervise.RequestOperatorRetry). So the rule this report states is unchanged in meaning — a
+// claim no queued start will reach — and what was wrong was the states it read.
+//
+// Two shapes of retired worker reach the report through workingPhase. One is a retired claim of
+// the issue's own phase: the worker that left the phase it still owns. The other is a retired
+// claim of the phase a hold took the issue from, which is why a held issue's retired worker is
+// reported until its architect's retry_or_escalate queues that phase's start; that start is what
+// relaunches it, and the claim leaves the report with the hold. A retired tree architect is
+// reported by the same widening, since the architect branch stands above the role switch: a
+// running tree whose architect a close retired has nothing but its own tree's admission to start
+// it, so it is stranded while no admission start is queued.
 //
 // A suspension that holds for the operator is stranded whatever starts are queued for it: each one
 // waits, on its row's backoff, until the operator resumes the claim (the outbox's start answers
@@ -104,7 +123,8 @@ func strandedReleaseWakes(wakes []ReleasedWake, now time.Time) map[releasedRole]
 //
 // Candidates' queued starts and their claims are read through RoleRuns in bounded batches: a
 // fleet of hundreds of suspended claims makes a few snapshot queries, never one pair per claim.
-func Stranded(ctx context.Context, tx pgx.Tx, s record.Store, project string, claims []supervise.Claim, wakes []ReleasedWake, now time.Time) ([]supervise.Claim, error) {
+// steps are the design-gate steps the deployment gates, which say whether a root's tree runs.
+func Stranded(ctx context.Context, tx pgx.Tx, s record.Store, project string, steps []record.DesignStep, claims []supervise.Claim, wakes []ReleasedWake, now time.Time) ([]supervise.Claim, error) {
 	woken := strandedReleaseWakes(wakes, now)
 	issues, err := s.Issues(ctx, tx)
 	if err != nil {
@@ -114,7 +134,7 @@ func Stranded(ctx context.Context, tx pgx.Tx, s record.Store, project string, cl
 	for _, issue := range issues {
 		recorded[issue.Key] = issue
 	}
-	running, err := record.ReadRunningRoots(ctx, tx, s, project, issues)
+	running, err := record.ReadRunningRoots(ctx, tx, s, project, issues, steps)
 	if err != nil {
 		return nil, err
 	}
@@ -126,7 +146,7 @@ func Stranded(ctx context.Context, tx pgx.Tx, s record.Store, project string, cl
 	}
 	candidates := make([]candidate, 0, len(claims))
 	for _, c := range claims {
-		if c.State != supervise.StateSuspended && c.State != supervise.StateFailed {
+		if c.State != supervise.StateSuspended && c.State != supervise.StateFailed && c.State != supervise.StateRetired {
 			continue
 		}
 		issue, ok := recorded[c.Issue]
