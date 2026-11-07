@@ -704,8 +704,8 @@ func TestAHandBackThatRacesAFreshGrantOverAClaimNamingNoProcessMarksNothing(t *t
 	)
 	roleTopic := contracts.RoleTopicPrefix + role
 	for name, instance := range map[string]string{
-		"the process the release is made for": roleClaimInstance,
-		"a second process of that session":    roleClaimSecondInstance,
+		"the session's own process":        roleClaimInstance,
+		"a second process of that session": roleClaimSecondInstance,
 	} {
 		t.Run(name, func(t *testing.T) {
 			reg := releasableRoleClaim(t, role, holder, "")
