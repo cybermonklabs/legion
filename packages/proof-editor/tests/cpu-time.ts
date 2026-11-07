@@ -110,7 +110,7 @@ function measureCpuClockStepMs(): number {
  * then assert the refusal itself.
  */
 export class CpuTimedError extends Error {
-  /** The CPU time one run cost: the window the throw ended, divided by the runs it managed. */
+  /** The CPU time one run cost: the window the runs filled, divided by those runs. */
   readonly cpuMs: number;
 
   constructor(cpuMs: number, cause: unknown) {
@@ -130,25 +130,38 @@ export class CpuTimedError extends Error {
  * is further, so a run a little slower than this window's average still lands the next window past
  * the mark.
  *
- * A throw ends the measurement at once, with no further runs, and reaches the caller as a
- * `CpuTimedError` carrying the original throw as its `cause` and the reading as its `cpuMs`.
+ * A run that throws does not end the window. The measurement keeps the throw aside, runs the rest
+ * of the window, and raises a `CpuTimedError` carrying the window's per-run cost as its `cpuMs`
+ * and the throw it kept as its `cause`. The parses these rows measure refuse their input every
+ * time, so every run of such a window throws and the window measures exactly the work the refusal
+ * costs. The window is what makes the reading steady: one unrepeated run of a 20 ms refusal reads
+ * as 10, 20 or 30 ms on this pod's 10 ms clock, an error of up to 50 per cent on the baseline of
+ * a growth check. A throw from a window too short to keep is kept as well, so a work that throws
+ * once and returns on every later run reaches its caller as a throw, never as a plain reading.
  */
 export function cpuTimeOf(work: () => unknown): number {
   const want = windowSteps * cpuClockStepMs();
+  let threw = false;
+  let thrown: unknown;
   let runs = 1;
   for (;;) {
-    let ran = 0;
     const started = processCpuMs();
-    try {
-      for (let run = 0; run < runs; run++) {
-        ran++;
-        work();
+    // The runs sit inside one `try`, as they do for a work that never throws; a throw re-enters
+    // it at the next run, so the window goes on and a work that never throws costs no more.
+    for (let run = 0; run < runs; ) {
+      try {
+        for (; run < runs; run++) work();
+      } catch (cause) {
+        threw = true;
+        thrown = cause;
+        run++;
       }
-    } catch (cause) {
-      throw new CpuTimedError((processCpuMs() - started) / ran, cause);
     }
     const took = processCpuMs() - started;
-    if (took >= want) return took / runs;
+    if (took >= want) {
+      if (threw) throw new CpuTimedError(took / runs, thrown);
+      return took / runs;
+    }
     if (took <= 0) {
       runs *= 10;
       continue;
@@ -162,14 +175,24 @@ export function cpuTimeOf(work: () => unknown): number {
  *
  * Both sides of a growth check take the same number of samples. Sampling the small side more often
  * than the large one biases the baseline low under bursty load and inflates the ratio, which is the
- * defect `linear_test.go`'s own `sampleCount` comment records from its third round.
+ * defect `linear_test.go`'s own `sampleCount` comment records from its third round. A work that
+ * throws is sampled as many times as any other, and raises a `CpuTimedError` carrying the least of
+ * those readings and the throw of the last sample.
  */
 export function fastestCpuTimeOf(work: () => unknown, samples = defaultSamples): number {
-  let best = cpuTimeOf(work);
-  for (let sample = 1; sample < samples; sample++) {
-    const took = cpuTimeOf(work);
-    if (took < best) best = took;
+  let best = Number.POSITIVE_INFINITY;
+  let thrown: CpuTimedError | undefined;
+  for (let sample = 0; sample < samples; sample++) {
+    try {
+      const took = cpuTimeOf(work);
+      if (took < best) best = took;
+    } catch (error) {
+      if (!(error instanceof CpuTimedError)) throw error;
+      if (error.cpuMs < best) best = error.cpuMs;
+      thrown = error;
+    }
   }
+  if (thrown !== undefined) throw new CpuTimedError(best, thrown.cause);
   return best;
 }
 

@@ -189,9 +189,9 @@ function defaultProof(): Promise<HeadlessProofEditor> {
 }
 
 /**
- * The cost of a parse the mode refuses, with the refusal itself. `cpuTimeOf` gives a throw back
- * as a `CpuTimedError` whose `cpuMs` is what the refused parse cost and whose `cause` is the
- * refusal, so a row reads both from one measurement.
+ * The cost of a parse the mode refuses, with the refusal itself. `fastestCpuTimeOf` samples a
+ * refused parse as many times as it samples any other work, and raises a `CpuTimedError` whose
+ * `cpuMs` is the least reading and whose `cause` is the refusal, so a row reads both from it.
  */
 function refusedCostOf(parse: () => unknown): CpuTimedError {
   try {
