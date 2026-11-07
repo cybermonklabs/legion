@@ -126,8 +126,8 @@ jobs:
     # 23:13:54 with the install step starting at 23:14:00, so those 482 MB landed inside 6 s and
     # this cache's 114 MB are under that. They are counted here as 7 s on top of the 85 s row,
     # and no save follows the install: .github/workflows/ci-caches.yaml's browsers and apt-debs
-    # jobs fill both entries on a push to main, which is the only event that writes the default
-    # branch's cache scope, and this workflow restores them.
+    # jobs fill both entries, on a push to main and on a workflow_dispatch of that file, each of
+    # which writes the default branch's cache scope, and this workflow restores them.
     #
     # So the job budget is the install step's 1320 s, the browser step's 540 s and 92 s of every
     # other step summed: 1952 s -> 33 min.

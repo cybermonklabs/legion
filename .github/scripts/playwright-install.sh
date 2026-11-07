@@ -174,11 +174,11 @@
 # cache. The calling job's `actions/cache/restore` of ~/apt-archives is a workflow step, because
 # a script cannot call an action; the seeding of what it found is here, below. The entry itself
 # is filled by .github/workflows/ci-caches.yaml's apt-debs job, which downloads the same list on
-# a push to main - the only event that writes the default branch's cache scope - so no caller of
-# this script saves anything. apt takes a file in its archive directory whose
-# name and size match the index without fetching it and without hashing it (the pkgAcqArchive
-# constructor in apt-pkg/acquire-item.cc, lines 3499-3507 of apt 2.7.14, compares the size
-# alone), so a restored file is trusted as the fill that wrote the entry left it. The key
+# a push to main or a workflow_dispatch of that file, each of which writes the default branch's
+# cache scope, so no caller of this script saves anything. apt takes a file in its archive
+# directory whose name and size match the index without fetching it and without hashing it (the
+# pkgAcqArchive constructor in apt-pkg/acquire-item.cc, lines 3499-3507 of apt 2.7.14, compares
+# the size alone), so a restored file is trusted as the fill that wrote the entry left it. The key
 # names the Playwright version bun.lock pins, because that version decides Playwright's list, and
 # the runner image, because the image decides which versions apt resolves, so an image roll
 # misses the entry rather than restoring files the new image's indexes no longer name. It names

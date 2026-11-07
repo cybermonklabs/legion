@@ -1057,27 +1057,22 @@ jobs:
               - *omp_install
             # The browser suite (dispatch-browser), which .github/workflows/dispatch-browser.yaml
             # holds: the shards, the three `-alone` projects, the two-process job and the merge
-            # job. The first half of the list is the dashboard, its contracts and the Dispatch
-            # server its harness builds, which the retired `dispatch` job's filter held through an
-            # anchor until that job went; what follows is what only the browser rows read. The
-            # dispatch_browser gate in .github/scripts/ci_job_reads.py says what this suite reads,
-            # and check-ci-filters.sh holds this filter to that gate.
+            # job. Every entry is something a browser row reads: the dashboard and its contracts,
+            # the Dispatch server its harness builds, and the two workflow files that hold the
+            # steps. The retired `dispatch` job's filter also held three fixture sets whose only
+            # readers are the dashboard's and the proof editor's unit tests, and they are not here:
+            # dispatch-ui's filter names all three, and with this output ungated on a pull request
+            # they would start four shard machines and the merge job for a fixture-only change.
+            # The dispatch_browser gate in .github/scripts/ci_job_reads.py says what this suite
+            # reads, and check-ci-filters.sh holds this filter to that gate - it refuses a filter
+            # that misses a read, never one that is too wide, so a path is in this list because a
+            # browser row reads it and for no other reason.
             dispatch_browser:
               - '.github/workflows/ci.yaml'
               - *bun_install
               - 'packages/dispatch/**'
               - 'packages/proof-editor/**'
               - 'packages/contracts/src/**'
-              # Three sets of fixtures no browser row reads: what reads them are the dashboard's
-              # and the proof editor's unit tests
-              # (web/src/features/delivery/lib/applyDelta.test.ts:2-4,
-              # web/src/features/doc/decision-blocks.test.ts:10 and
-              # packages/proof-editor/tests/going-answer-no-link.test.ts:111-112), which run in
-              # dispatch-ui, whose filter names all three itself. They are here because the
-              # retired job's filter held them, and retiring that job narrows no filter.
-              - 'packages/contracts/fixtures/live/**'
-              - 'packages/contracts/fixtures/decision-blocks/**'
-              - 'packages/envoy/going/testdata/**'
               # The Dispatch server e2e/run-server.sh builds (run-server.sh:340), on the socket
               # scripts/e2e/lib/held-port.py holds (run-server.sh:80).
               - *go_workspace
@@ -1086,12 +1081,13 @@ jobs:
               # The SPA build writes dist/THIRD_PARTY_NOTICES.txt (web/vite.config.ts:11).
               - 'scripts/third-party-notices.ts'
               # The workflow that holds every browser step, which this job reads as its own
-              # definition, and the nightly, the other caller of that file. A pull request runs
-              # the pull-request lane, the two projects a change is held to; the merge group
-              # runs the full lane, every project and the two-process job, which is the lane the
-              # nightly calls. So the group is where a change to either file meets the whole
-              # suite before main, and the nightly, started from the default branch alone,
-              # answers for no pull request.
+              # definition, and the nightly, the other caller of that file. An unlabelled pull
+              # request runs the pull-request lane, the two projects a change is held to; a pull
+              # request carrying `full-ci`, the merge group and a dispatch run the full lane,
+              # every project and the two-process job, which is the lane the nightly calls. So a
+              # worker can put the whole suite on a pull request with the label, the group is
+              # where a change to either file meets it before main anyway, and the nightly,
+              # started from the default branch alone, answers for no pull request.
               - '.github/workflows/dispatch-browser.yaml'
               - '.github/workflows/dispatch-browser-nightly.yaml'
               # The install both browser jobs run, which reads the pinned apt list and ends with
