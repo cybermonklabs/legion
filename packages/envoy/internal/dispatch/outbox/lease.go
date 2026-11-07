@@ -94,12 +94,15 @@ type Outbox struct {
 	// arriving later as a scan out of nowhere. Set it only before Run starts, so nothing races
 	// it.
 	afterListening func()
-	// afterServeWait is called in serve each time it is about to wait, with whether a wake is
-	// already pending. Nil in production; a test uses it to know the holder has stopped working
-	// for now. A wait with no wake pending is the outbox at rest only while its NATS connection
-	// is up: a holder whose publisher is disconnected waits here without having scanned, and
-	// says nothing about what is due. Set it only before Run starts, so nothing races it.
-	afterServeWait func(wakePending bool)
+	// afterServeWait is called in serve each time it is about to wait. Nil in production; a test
+	// uses it to know the holder has stopped working for now. What is pending is not handed in:
+	// serve would have to read the wake queue before the call, and a test judging rest on that
+	// reading would be judging one taken before the wake it is looking for. A test reads the
+	// queue itself, under whatever lock it holds its own facts with. Even then a wait is the
+	// outbox at rest only while its NATS connection is up: a holder whose publisher is
+	// disconnected waits here without having scanned, and says nothing about what is due. Set it
+	// only before Run starts, so nothing races it.
+	afterServeWait func()
 	// probeBeforeHold is set when this process gave the publisher hold up for NATS lost, and
 	// cleared once a probe of its connection is answered (answering). Only Run's goroutine reads
 	// and writes it.
@@ -412,7 +415,7 @@ func (o *Outbox) serve(ctx context.Context, hold *duty.Hold) holdEnd {
 			}
 		}
 		if o.afterServeWait != nil {
-			o.afterServeWait(len(o.wake) > 0)
+			o.afterServeWait()
 		}
 		select {
 		case <-ctx.Done():

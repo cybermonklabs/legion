@@ -176,10 +176,11 @@ const outboxHangGuard = 60 * time.Second
 // backOffDue is how long the back-off of the row below is due in, and the one bound the row puts
 // on the outbox's own work: the insert's notification must reach the holder, and the scan it
 // wakes must read next_attempt_at, inside it. A scan later than that finds the back-off already
-// due, arms a wait of zero and is caught by the lower end of the wait assertion, so the row still
-// fails on what happened rather than on a clock - but it would be failing for the machine's
-// slowness and not the outbox's, which is why this is ten seconds against the single-digit
-// milliseconds that work takes on an idle pod.
+// due and publishes it there and then, arming no wait at all, which the row catches where it
+// requires exactly one wait armed between the insert and the publish - so it still fails on what
+// happened rather than on a clock, but it would be failing for the machine's slowness and not
+// the outbox's, which is why this is ten seconds against the single-digit milliseconds that work
+// takes on an idle pod.
 const backOffDue = 10 * time.Second
 
 // An idle outbox scans nothing: no claim runs while no event is written and no retry falls due.
@@ -216,16 +217,6 @@ func TestTheOutboxDoesNotScanWhileIdle(t *testing.T) {
 		defer armedMu.Unlock()
 		return slices.Clone(armed)
 	}
-	var listening atomic.Bool
-	outbox.afterListening = func() {
-		listening.Store(true)
-		// One wake more, so the holder is certain to enter a wait after this flag is set.
-		// OnConnected signals before it reports, so the holder may have taken that connection's
-		// own wake, scanned and parked again while the flag was still false, and such a wait
-		// records nothing; without this the row could read a rest the catch-up scan has yet to
-		// follow.
-		outbox.signal()
-	}
 	// restingAt is the claims the outbox had made when the holder last entered its wait with
 	// nothing pending and the LISTEN connection already up, and -1 until it enters one. A wait
 	// entered with a wake pending records nothing, because the scan that wake causes is still to
@@ -235,10 +226,30 @@ func TestTheOutboxDoesNotScanWhileIdle(t *testing.T) {
 	// equals the claims made the holder is waiting and nothing has scanned since - a state that
 	// holds for as long as the outbox has nothing to do, rather than an edge a reader can arrive
 	// too late to see.
+	//
+	// Both hooks take restMu, and the wait's own queue is read under it rather than handed in,
+	// because the two facts have to be read together: the holder could otherwise record a rest
+	// in the gap between the flag going up and the wake that follows it, and the scan that wake
+	// causes would then land inside the window. Under one lock a wait either runs before the
+	// connection is reported, and the flag refuses it, or after the wake is queued, and the
+	// queue refuses it.
+	var restMu sync.Mutex
+	listening := false
 	var restingAt atomic.Int64
 	restingAt.Store(-1)
-	outbox.afterServeWait = func(wakePending bool) {
-		if !wakePending && listening.Load() {
+	outbox.afterListening = func() {
+		restMu.Lock()
+		defer restMu.Unlock()
+		listening = true
+		// One wake more, so the holder is certain to enter a wait after the flag is set.
+		// OnConnected signals before it reports, so the holder may have taken that connection's
+		// own wake, scanned and parked again while the flag was still false.
+		outbox.signal()
+	}
+	outbox.afterServeWait = func() {
+		restMu.Lock()
+		defer restMu.Unlock()
+		if listening && len(outbox.wake) == 0 {
 			restingAt.Store(outbox.claims.Load())
 		}
 	}
@@ -341,12 +352,13 @@ func TestTheOutboxDoesNotScanWhileIdle(t *testing.T) {
 		t.Fatalf("the outbox armed %d waits between the back-off's insert and its publish, want 1: %v", len(since), since)
 	}
 	// The wait is a value the database computed from its own next_attempt_at, not an elapsed time
-	// this test measured, so a loaded runner can only make it smaller: the only way past backOffDue
-	// is a wait armed for something that is not this back-off. The lower end rules out the one
-	// case left: a wait of zero is the first scan after the insert reading a next_attempt_at
-	// already past, so that scan came more than backOffDue after the inserting transaction began -
-	// whatever delayed it - and the run never exercised the armed timer at all. backOffDue's own
-	// comment says why ten seconds is enough room for that scan.
+	// this test measured, so a loaded runner can only make it smaller: the only way past
+	// backOffDue is a wait armed for something that is not this back-off. The lower end is the
+	// cheaper half of the same statement: nextRetry clamps a back-off already due to zero, so a
+	// wait of zero is a timer armed to fire at once, which is not the timer this row is about.
+	// A scan so late that the back-off is already due does not arm even that - it publishes the
+	// back-off in that scan and arms nothing - and the assertion above, exactly one wait armed,
+	// is what catches that.
 	if since[0].wait <= 0 || since[0].wait > backOffDue {
 		t.Fatalf("the outbox armed a %s wait for a back-off due in %s, want one above zero and no more than %s",
 			since[0].wait, backOffDue, backOffDue)
