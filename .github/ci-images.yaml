@@ -73,7 +73,7 @@ images:
     tag: ubuntu-534baea6
     digest: sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
 
-  # The Envoy listener image's web stage. Its upstream tag carries the Bun version .bun-version
+  # The Envoy listener image's bun-deps stage. Its upstream tag carries the Bun version .bun-version
   # locks, and check-ci-images.sh refuses a file where no row carries that version.
   - upstream: docker.io/oven/bun:1.4.4
     tag: bun-1.4.4-1d22548f

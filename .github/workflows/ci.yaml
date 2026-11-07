@@ -1464,10 +1464,10 @@ jobs:
             # steps' reads.
             envoy_smoke:
               - '.github/workflows/ci.yaml'
-              # The image: the Dockerfile, its context's .dockerignore, the web stage's frozen
-              # install (every workspace manifest) and the Bun pin that stage holds its own Bun
-              # to, the packages it builds the SPA and the Go binaries from, and the notices
-              # scripts.
+              # The image: the Dockerfile, its context's .dockerignore, the bun-deps stage's
+              # frozen install (every workspace manifest) and the Bun pin that stage holds its
+              # own Bun to, the packages it builds the SPA and the Go binaries from, and the
+              # notices scripts.
               - 'packages/envoy/docker/Dockerfile'
               - '.dockerignore'
               - '.bun-version'
@@ -4336,15 +4336,20 @@ jobs:
         with:
           go-version-file: packages/envoy/go.mod
           cache: false
-      # Every image the build or the test starts (testnats.Image and the smoke image's base
-      # images) is pulled first, for the reason .github/actions/pull-test-images gives. A FROM
-      # that names an earlier stage of the same file names no image to pull, so the awk below
-      # passes it over, the rule .github/scripts/check-ci-images.sh applies when it reads these
-      # same FROMs; the stage names are matched both as written and after the substitution.
-      # Every FROM that does name an image names a digest and no ARG, so that substitution
-      # expands nothing today; it stays because a FROM written as an ARG would otherwise be
-      # pulled as the literal `${NAME}`.
-      - name: Read the smoke image's base images
+      # Every image the build or the test starts is pulled first, for the reason
+      # .github/actions/pull-test-images gives: testcontainers does not retry a pull, and a
+      # reset fails every test sharing that container.
+      # The images read here are the held-port image's, not the smoke image's. The smoke image's
+      # build runs on the container builder set up below, which has a store of its own and pulls
+      # its own bases, so pulling those into the daemon would fetch the Bun and Debian images for
+      # nobody and the Go image twice, on a job whose disk is watched (dispatch://INFRA-1085).
+      # The held-port build is the one that still runs on Docker's own driver.
+      # Two kinds of FROM name no image to pull and the awk passes each over: one that names an
+      # earlier stage of the same file, the rule .github/scripts/check-ci-images.sh applies when
+      # it reads these same FROMs, matched both as written and after the substitution; and one
+      # still holding a `${NAME}` after it, which is an ARG whoever runs the build passes
+      # (`FROM ${BASE}`, the smoke image this job loaded a step earlier).
+      - name: Read the held-port image's base images
         id: base-images
         run: |
           {
@@ -4360,9 +4365,10 @@ jobs:
                 if (tolower(image) in stages) next
                 for (name in args) gsub("[$][{]" name "[}]", args[name], image)
                 if (tolower(image) in stages) next
+                if (image ~ /[$][{]/) next
                 print image
               }
-            ' docker/Dockerfile
+            ' infra/host/heldportwrapper/Dockerfile
             echo "IMAGES"
           } >> "$GITHUB_OUTPUT"
         working-directory: packages/envoy

@@ -1,11 +1,12 @@
 # Build context is the repo root (bun workspace + Go module in packages/envoy).
 
 # Dispatch SPA build + Go contract codegen.
-# Both come from the bun workspace, so they share one stage, which sits on the bun-deps install
-# below, keyed off the root lockfile.
+# Both come from the bun workspace, so they share one stage, the web stage, which sits on the
+# bun-deps install below, keyed off the root lockfile.
 #
-# bun-deps holds that install and nothing else: the lockfile, the patches and the workspace
-# manifests, inputs that move far less often than the sources the stage after it copies.
+# bun-deps holds that install, the Bun pin it runs under and the toolchain it compiles with, and
+# nothing of the sources: the lockfile, the patches and the workspace manifests move far less
+# often than the packages the stage after it copies.
 # .github/workflows/ci-caches.yaml's envoy-listener-deps job builds this target and go-deps on a
 # push to the default branch, so the envoy-smoke build reads both from the layer cache instead of
 # installing and downloading again.
@@ -78,6 +79,9 @@ COPY packages/dispatch packages/dispatch
 COPY packages/proof-editor packages/proof-editor
 # The SPA build writes dist/THIRD_PARTY_NOTICES.txt with this (packages/dispatch/web/vite.config.ts).
 COPY scripts/third-party-notices.ts scripts/third-party-notices.ts
+# WORKDIR rather than `RUN cd … && …`, which Docker's build best-practices page names. The
+# stage ends at /repo/packages/dispatch, which reaches nothing: every later stage copies out of
+# it by absolute path (`COPY --from=web /repo/…`).
 WORKDIR /repo/packages/contracts
 RUN bun run gen:go
 WORKDIR /repo/packages/dispatch

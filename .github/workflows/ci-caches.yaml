@@ -66,12 +66,11 @@ concurrency:
   group: ci-caches-${{ github.ref }}
   cancel-in-progress: false
 
-# Reading the tree and the caches is nearly all this workflow does: an actions/cache scope needs
-# no token scope of its own, and nothing here reports a check or writes an artifact. The one
-# exception is the envoy-listener-deps job below, which carries a permissions block of its own
-# naming `actions: read` beside `contents: read`: its builds reach the layer cache through the
-# Actions cache API, with the token docker/build-push-action hands to BuildKit, and that read is
-# a token scope.
+# Reading the tree and the caches is all this workflow does: a cache scope needs no token scope
+# of its own, and nothing here reports a check or writes an artifact. That holds for the
+# BuildKit layer caches below as well: the Actions cache service answers the runtime token the
+# runner gives every job, which is why the five actions/cache jobs here save their entries under
+# this block alone.
 permissions:
   contents: read
 
@@ -444,15 +443,9 @@ jobs:
     # two cache exports. 20 min is that sum with a slow runner's margin, and it is the same bound
     # the apt-debs job above carries.
     timeout-minutes: 20
-    # A job-level permissions block REPLACES the workflow's rather than adding to it, so
-    # `contents: read` is named again here: a job that named `actions: read` alone could not
-    # check the tree out. `actions: read` is here because docker/build-push-action hands its
-    # token to BuildKit for the Actions cache API, which is what reads and writes the scopes
-    # below - the scope .github/workflows/ci.yaml already grants at its top level (lines
-    # 112-115), which is why its envoy-smoke job needs no block of its own.
-    permissions:
-      contents: read
-      actions: read
+    # No permissions block of its own: the workflow's `contents: read` is what the checkout
+    # needs, and the two cache exports below reach the Actions cache service with the runner's
+    # own runtime token rather than with this job's, as every actions/cache job above does.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
