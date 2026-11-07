@@ -31,7 +31,7 @@ type SettingsChangeResponse struct {
 	Settings map[string]SettingResult `json:"settings"`
 }
 
-// SettingResult is one path's verdict. Exactly one of Applied and Refused is set.
+// SettingResult is one path's verdict. Exactly one of Applied, Failed and Refused is set.
 //
 // Applied is when the change takes effect — `at-once` for a value every decision reads,
 // `rebuilt` for one a client or listener holds, which the daemon has already built again, and
@@ -41,11 +41,20 @@ type SettingsChangeResponse struct {
 // configuration did not carry. Unchanged says the daemon was already running on that value: the
 // path is the route's from now on, and nothing moved.
 //
+// Failed is a change the daemon took into its settings and could not carry into something that
+// holds the value: the value is the daemon's from now on, and every reader that reads the path
+// as it decides reads the new one, but a holder of it kept what it had. The text names that
+// holder and what stopped it — a NATS that refused the new seed, intake consumers that would
+// not reopen — so a caller that asked for a change the daemon could not make is told, rather
+// than being answered `rebuilt` while the failure sat in the daemon's log alone. Old, New and
+// Holder read as they do for an applied change, since the change itself was applied.
+//
 // Refused is why the daemon will not change the path: a path fixed for the process is refused
 // with the reason its row gives, and a path the class table does not hold is an unknown setting
 // (config.Refusal).
 type SettingResult struct {
 	Applied   string `json:"applied,omitempty"`
+	Failed    string `json:"failed,omitempty"`
 	Refused   string `json:"refused,omitempty"`
 	Holder    string `json:"holder,omitempty"`
 	Old       string `json:"old,omitempty"`
@@ -75,13 +84,21 @@ func (a SettingsRouteAuth) configured() bool {
 	return a.Verifier != nil && len(a.ServiceAccounts) > 0
 }
 
+// SettingsRebuildFailures is why the daemon could not build a holder again for the change it
+// has just applied, by that holder's name (config.HolderNATS and its neighbours), with the
+// name in the text so a path several things hold says which of them kept what it had. A
+// rebuild runs inside the apply, under the settings holder's lock, so what it could not do is
+// known by the time this answer is written; the daemon's rebuild observer records it
+// (internal/daemon's rebuilder).
+type SettingsRebuildFailures map[string]string
+
 // ApplySettings is how the route reaches the daemon's one settings holder (internal/settings'
 // Keeper.Route): it applies the change, records it so it survives the daemon's next restart, and
-// answers what it applied and what it refused. caller is the arm the request came in on, which
-// decides what it may set: the operator bearer sets every path the loader takes, and a projected
-// ServiceAccount token only a path whose value is plain data (config.Caller). Nil is a daemon
-// that changes no setting, and the route answers 503.
-type ApplySettings func(ctx context.Context, caller config.Caller, by string, changes map[string]any) ([]config.Change, []config.Refusal, error)
+// answers what it applied, what it refused, and what it could not build again for it. caller is
+// the arm the request came in on, which decides what it may set: the operator bearer sets every
+// path the loader takes, and a projected ServiceAccount token only a path whose value is plain
+// data (config.Caller). Nil is a daemon that changes no setting, and the route answers 503.
+type ApplySettings func(ctx context.Context, caller config.Caller, by string, changes map[string]any) ([]config.Change, []config.Refusal, SettingsRebuildFailures, error)
 
 // invalidSettingsCaller is the settings route's one refusal of a caller it does not admit: the
 // operator bearer, or a ServiceAccount token this deployment named, and nothing else. It never
@@ -119,7 +136,7 @@ func (s *server) settingsChange(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, errorBody("this daemon holds no settings it can change"))
 		return
 	}
-	applied, refused, err := s.applySettings(r.Context(), caller, by, changes)
+	applied, refused, failed, err := s.applySettings(r.Context(), caller, by, changes)
 	var notRecorded *config.NotRecorded
 	switch {
 	case errors.As(err, &notRecorded):
@@ -131,7 +148,7 @@ func (s *server) settingsChange(w http.ResponseWriter, r *http.Request) {
 		// not finish the work the caller asked for.
 		s.log.Error("api: a settings change was applied and not recorded; the daemon runs on it and its next restart will not",
 			"by", by, "paths", slices.Sorted(maps.Keys(changes)), "error", err)
-		writeJSON(w, http.StatusInternalServerError, SettingsChangeResponse{Settings: settingResults(changes, applied, refused)})
+		writeJSON(w, http.StatusInternalServerError, SettingsChangeResponse{Settings: settingResults(changes, applied, refused, failed)})
 		return
 	case err != nil:
 		// The loader refused the configuration the change makes — a value of the wrong shape, a
@@ -142,7 +159,7 @@ func (s *server) settingsChange(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorBody("the configuration does not resolve under this change: "+err.Error()))
 		return
 	}
-	writeJSON(w, http.StatusOK, SettingsChangeResponse{Settings: settingResults(changes, applied, refused)})
+	writeJSON(w, http.StatusOK, SettingsChangeResponse{Settings: settingResults(changes, applied, refused, failed)})
 }
 
 // authoredBy is the change's author as the daemon records it and its log line names: the person
@@ -167,8 +184,8 @@ func authoredBy(caller config.Caller, identity, named string) string {
 }
 
 // settingResults is the answer the caller reads: one result per path it named, whether that path
-// changed a value, changed nothing, or was refused.
-func settingResults(changes map[string]any, applied []config.Change, refused []config.Refusal) map[string]SettingResult {
+// changed a value, changed nothing, could not be carried into what holds it, or was refused.
+func settingResults(changes map[string]any, applied []config.Change, refused []config.Refusal, failed SettingsRebuildFailures) map[string]SettingResult {
 	results := make(map[string]SettingResult, len(changes))
 	for path := range changes {
 		// A path the class table does not hold, and one fixed for the process, come back as
@@ -182,14 +199,41 @@ func settingResults(changes map[string]any, applied []config.Change, refused []c
 	// whole, or a key whose default another key decides. It is answered for too, since it is
 	// part of what this call did.
 	for _, change := range applied {
-		results[change.Path] = SettingResult{
+		result := SettingResult{
 			Applied: string(change.Outcome), Holder: change.Holder, Old: change.Old, New: change.New,
 		}
+		if why := rebuildFailure(change, failed); why != "" {
+			result.Applied, result.Failed = "", why
+		}
+		results[change.Path] = result
 	}
 	for _, refusal := range refused {
 		results[refusal.Path] = SettingResult{Refused: refusal.Reason}
 	}
 	return results
+}
+
+// rebuildFailure is why the daemon could not build again something that holds change's value:
+// the holder the caller is told was rebuilt (Change.Holder) or any other holder of the same row
+// (config.Row.Also), since a `repository_renames` whose intake consumers would not reopen is as
+// unfinished as a `nats_urls` whose connection would not, and the row names only one of the
+// holders a change reaches. Two failures of one path read in the row's own order, the named
+// holder first.
+func rebuildFailure(change config.Change, failed SettingsRebuildFailures) string {
+	if len(failed) == 0 {
+		return ""
+	}
+	holders := []string{change.Holder}
+	if row, known := config.ClassOf(change.Path); known {
+		holders = append(holders, row.Also...)
+	}
+	var why []string
+	for _, holder := range holders {
+		if reason, could := failed[holder]; holder != "" && could && !slices.Contains(why, reason) {
+			why = append(why, reason)
+		}
+	}
+	return strings.Join(why, "; ")
 }
 
 // settingsCaller is who this request is, which arm it came in on, and whether the daemon admits

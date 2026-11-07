@@ -433,29 +433,43 @@ func openWorkflow(ctx context.Context, cfg config.Config, live *config.Live, reb
 	if err := backfillRepositories(ctx, w.pool, w.records, w.dispatch, cfg.Project, cfg.StateDir, w.defaultBranches, cfg.RepositoryRenames, log); err != nil {
 		return nil, err
 	}
-	if err := w.queueGatedStepsPublish(ctx); err != nil {
+	// The project's Dispatch row as a holder of the design gate: the boot queues this list
+	// below, and the holder queues the new one at every live change of `gates.design`, which
+	// nothing else publishes (gatedStepsHolder).
+	rebuild.register(newGatedStepsHolder(w))
+	if err := w.queueGatedStepsPublish(ctx, w.gatedSteps()); err != nil {
 		return nil, err
 	}
 	return w, nil
 }
 
-// queueGatedStepsPublish queues the deployment's design-gate steps for the project's Dispatch
-// row. The boot queues it rather than writing it, so a Dispatch that is down or has not got the
-// route refuses no boot; the outbox's first sweep after attach runs the row.
+// queueGatedStepsPublish queues steps, the deployment's design-gate steps, for the project's
+// Dispatch row. Its callers queue rather than write, so a Dispatch that is down or has not got
+// the route refuses no boot and holds up no settings change; the row is the outbox's to send,
+// and the lane it is written on is woken as the transaction commits
+// (projectRecords.EnqueueGatedSteps), so a change made while the daemon runs waits for no
+// sweep.
+//
+// Two things queue it: the boot, with the list the daemon booted on, and the holder of the
+// key, with the list a live change settled (gatedStepsHolder). The list is a parameter so each
+// says which it is publishing rather than reading the settings holder again behind its
+// caller's back.
 //
 // It queues at every boot, because the daemon stores no list it last published: the route writes
 // only a difference (`gated_steps is distinct from`), so a boot on an unchanged list touches no
 // row and appends no event. A row of the kind still in the outbox is replaced rather than left
-// standing (EnqueueGatedSteps), so the queued row always carries this boot's list: the row can
-// have waited there since a boot on a list the operator has changed since, and a restart loop
-// still queues no second row.
-func (w *workflowRuntime) queueGatedStepsPublish(ctx context.Context) error {
-	publish := record.GatedStepsPublish{Project: w.dispatchProject, Steps: w.gatedSteps()}
-	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
-		return w.records.EnqueueGatedSteps(ctx, tx, publish, time.Now().UTC())
+// standing (EnqueueGatedSteps), so the queued row always carries the list of whatever queued
+// last: the row can have waited there since a boot on a list the operator has changed since,
+// and a restart loop still queues no second row.
+func (w *workflowRuntime) queueGatedStepsPublish(ctx context.Context, steps []record.DesignStep) error {
+	publish := record.GatedStepsPublish{Project: w.dispatchProject, Steps: steps}
+	scoped, committed := intake.WithCommitHooks(ctx)
+	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
+		return w.records.EnqueueGatedSteps(scoped, tx, publish, time.Now().UTC())
 	}); err != nil {
 		return fmt.Errorf("queue the gated-steps publish of %s: %w", w.dispatchProject, err)
 	}
+	committed()
 	return nil
 }
 
@@ -495,6 +509,13 @@ func engineConfig(cfg *config.Config, reviewAppLogin string) workflow.Config {
 // The connection and its consumers are a rebuildable holder from here on (natsHolder): a change
 // of `nats_urls` or of either nkey seed opens a new connection through this very path, moves the
 // durable consumers onto it, and closes the old connection once its in-flight acks have settled.
+//
+// ctx is this call's and nothing the holder keeps runs on it. Boot runs connect inside
+// readinessAttempt, whose deferred cancel ends ctx the moment connect returns, while the holder
+// rebuilds for the rest of the daemon's life, so the open and the handover it is built with
+// take their context from the rebuild that calls them (natsHolder.rebuild, natsRebuildBound).
+// Given ctx instead — through a closure, which is how it happened — every live rebuild was
+// refused `context canceled` while the settings route answered the caller `rebuilt`.
 func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, rebuild *rebuilder, lookup func(string) (string, bool)) error {
 	w.log.Info("legion workflow boot stage", "stage", "intake")
 	heard, err := w.heardAtBoot(ctx)
@@ -508,7 +529,7 @@ func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, rebuil
 	// stop being heard the moment anything reopened the connection: its merges, check runs and
 	// reviews would be skipped by JetStream's own filter, and nothing redelivers them when the
 	// filter widens again.
-	open := func(c config.Config, hearing []ghrepo.Repository) (*nats.Conn, *intake.Consumers, error) {
+	open := func(ctx context.Context, c config.Config, hearing []ghrepo.Repository) (*nats.Conn, *intake.Consumers, error) {
 		return openNATS(ctx, w, c, lookup, intake.ConsumerSpec{
 			Project: c.Project, Repositories: hearing, Renames: c.RepositoryRenames,
 			AckWait: c.WorkerRPCTimeout, NakDelay: time.Second, Logger: w.log,
@@ -516,7 +537,7 @@ func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, rebuil
 			RepositoryMapping: w.mappingChange, PrepareRepository: w.prepareRepository, PrepareArtifact: w.prepareArtifact,
 		})
 	}
-	conn, consumers, err := open(cfg, heard)
+	conn, consumers, err := open(ctx, cfg, heard)
 	if err != nil {
 		return err
 	}
@@ -526,13 +547,10 @@ func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, rebuil
 	// carries (natsHandover, natsHearing), under one hold of the lock every fact applies under
 	// (serializeFacts, intake.SerializeFacts) and under the lock a mapping read is made under
 	// (mappingMu). natsHolder.rebuild is where both holds are explained, and what they cost.
-	rebuildOpen := func(c config.Config) (*nats.Conn, *intake.Consumers, error) {
-		return open(c, w.nats.intake().Repositories())
+	rebuildOpen := func(ctx context.Context, c config.Config) (*nats.Conn, *intake.Consumers, error) {
+		return open(ctx, c, w.nats.intake().Repositories())
 	}
-	w.nats = newNATSHolder(conn, consumers, w.log, rebuildOpen, &w.mappingMu,
-		func(consumers *intake.Consumers, renames ghrepo.Renames, swap func()) error {
-			return w.natsHandover(ctx, consumers, renames, swap)
-		})
+	w.nats = newNATSHolder(conn, consumers, w.log, rebuildOpen, &w.mappingMu, w.natsHandover)
 	// The mapping is registered before the consumers, and that order is this daemon's answer to
 	// a mapping read that would narrow the GitHub durable's filter with renames older than the
 	// ones it was built with. rebuilder.observe builds holders in the order they were registered,

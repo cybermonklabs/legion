@@ -23,11 +23,14 @@ import (
 // position is lost — the consumers are durable, and the new ones resume where the old ones
 // stopped.
 type natsHolder struct {
-	// open builds a connection and this project's durable consumers from a configuration. It
-	// runs under no lock every fact applies under: the dial, the reconnect and the four consumer
-	// opens are network work, and a fact applying while a rebuild ran would otherwise wait on it
-	// (workflowRuntime.connect).
-	open func(cfg config.Config) (*nats.Conn, *intake.Consumers, error)
+	// open builds a connection and this project's durable consumers from a configuration, on
+	// the context the rebuild hands it and never on one it closed over: the dial, the reconnect
+	// and the four consumer opens are network work, and a fact applying while a rebuild ran
+	// would otherwise wait on it (workflowRuntime.connect). The context is a parameter because
+	// the one connect itself runs on is boot's readiness attempt, which is cancelled the moment
+	// connect returns (readinessAttempt), while this runs at every rebuild for the rest of the
+	// daemon's life.
+	open func(ctx context.Context, cfg config.Config) (*nats.Conn, *intake.Consumers, error)
 	// holdMapping is the lock a mapping read is made under (workflowRuntime.mappingMu). The
 	// rebuild holds it from before it opens its consumers to after the swap; rebuild says why,
 	// and what that hold costs every other settings change.
@@ -39,8 +42,9 @@ type natsHolder struct {
 	// from — hands it to them, and calls swap, this holder's own swap of its connection, its
 	// consumers and its generation, before the hold is let go. A mapping read holds that same
 	// lock across its own SetRepositories (refreshMapping); rebuild says why the three are one
-	// hold. A handover that returns an error has not called swap, so nothing was swapped.
-	handover func(consumers *intake.Consumers, renames ghrepo.Renames, swap func()) error
+	// hold. A handover that returns an error has not called swap, so nothing was swapped. Its
+	// context is the rebuild's, for the reason open's is.
+	handover func(ctx context.Context, consumers *intake.Consumers, renames ghrepo.Renames, swap func()) error
 	log      *slog.Logger
 
 	mu         sync.Mutex
@@ -56,9 +60,9 @@ type natsHolder struct {
 }
 
 func newNATSHolder(conn *nats.Conn, consumers *intake.Consumers, log *slog.Logger,
-	open func(cfg config.Config) (*nats.Conn, *intake.Consumers, error),
+	open func(ctx context.Context, cfg config.Config) (*nats.Conn, *intake.Consumers, error),
 	holdMapping sync.Locker,
-	handover func(consumers *intake.Consumers, renames ghrepo.Renames, swap func()) error,
+	handover func(ctx context.Context, consumers *intake.Consumers, renames ghrepo.Renames, swap func()) error,
 ) *natsHolder {
 	if log == nil {
 		log = slog.Default()
@@ -158,20 +162,34 @@ func (h *natsHolder) rebuilt(generation uint64) bool {
 // reads, bounded at 15 s each (appMintAttempt, installReadAttempt), so a change that rebuilds
 // NATS can hold the daemon's settings for tens of seconds, as the drain after the swap can
 // (drainBound).
+//
+// The open and the handover run on a context this rebuild makes for itself (natsRebuildBound),
+// never on one the holder closed over. The holder is built inside workflowRuntime.connect,
+// whose own context is boot's readiness attempt, cancelled the moment connect returns
+// (readinessAttempt): a closure of connect's that kept it would have every rebuild of a live
+// daemon refused `context canceled`, so `nats_urls` and both nkey seeds would never take
+// effect without a restart, a rotated seed would be retried at every wake of the file watcher,
+// and a `repository_renames` change would never widen the GitHub durable's filter — while the
+// settings route answered the caller `rebuilt`. The context is therefore made here, at the
+// rebuild, for that rebuild alone, and ended with it.
 func (h *natsHolder) rebuild(cfg *config.Config) error {
 	h.holdMapping.Lock()
-	conn, consumers, err := h.open(*cfg)
+	// The clock starts once the mapping lock is held, so a mapping read this rebuild waits
+	// behind spends none of this rebuild's own budget.
+	ctx, cancel := context.WithTimeout(context.Background(), natsRebuildBound)
+	defer cancel()
+	conn, consumers, err := h.open(ctx, *cfg)
 	if err != nil {
 		h.holdMapping.Unlock()
 		return err
 	}
 	var old *nats.Conn
-	var cancel context.CancelFunc
+	var endOldRun context.CancelFunc
 	var settled chan struct{}
-	err = h.handover(consumers, cfg.RepositoryRenames, func() {
+	err = h.handover(ctx, consumers, cfg.RepositoryRenames, func() {
 		h.mu.Lock()
 		defer h.mu.Unlock()
-		old, cancel, settled = h.conn, h.cancelRun, h.settled
+		old, endOldRun, settled = h.conn, h.cancelRun, h.settled
 		h.conn, h.consumers, h.generation = conn, consumers, h.generation+1
 		h.cancelRun, h.settled = nil, nil
 	})
@@ -183,8 +201,8 @@ func (h *natsHolder) rebuild(cfg *config.Config) error {
 		conn.Close()
 		return err
 	}
-	if cancel != nil {
-		cancel()
+	if endOldRun != nil {
+		endOldRun()
 	}
 	if settled != nil {
 		select {

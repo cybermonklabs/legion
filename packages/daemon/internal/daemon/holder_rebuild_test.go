@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -18,6 +19,72 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 )
+
+// connectAsBootDoes opens the workflow's NATS the way a daemon's boot opens it: inside
+// readinessAttempt's own shape — a context bounded by bootTimeout whose deferred cancel runs
+// the moment connect returns (readiness.go, daemon.go's serve) — and not on a context that
+// lives as long as the test.
+//
+// Every test that rebuilds the holder connects through this, because the context connect is
+// given is what a later rebuild runs on. Handed t.Context() instead, which lives for the whole
+// test, a rebuild that kept boot's context passes here and fails in every daemon.
+func connectAsBootDoes(t *testing.T, w *workflowRuntime, cfg config.Config, rebuild *rebuilder, lookup func(string) (string, bool)) error {
+	t.Helper()
+	bounded, cancel := context.WithTimeout(t.Context(), bootTimeout)
+	defer cancel()
+	return w.connect(bounded, cfg, rebuild, lookup)
+}
+
+// A NATS rebuild on a daemon that booted as a daemon boots. Boot calls connect inside
+// readinessAttempt, whose deferred cancel ends that context as soon as connect returns
+// (readiness.go:28-30, daemon.go's serve), while the holder connect leaves behind rebuilds for
+// the rest of the daemon's life: a change of `nats_urls` or of either nkey seed, a rotated seed
+// the file watcher finds, and the widening a `repository_renames` change owes the GitHub
+// durable's filter all run through it, long after that context is dead.
+//
+// The control is one argument: hand connect t.Context() instead, as every test here did, and
+// this same body passes, because t.Context() lives for the whole test. That is why the suite
+// missed it, and why connectAsBootDoes is now what the tests of this holder connect through.
+func TestANatsRebuildUnderAProductionContext(t *testing.T) {
+	url := testnats.URL(t)
+	probe, err := nats.Connect(url, nats.Timeout(5*time.Second))
+	if err != nil {
+		t.Fatalf("connect to the test NATS server: %v", err)
+	}
+	t.Cleanup(probe.Close)
+	js, err := jetstream.New(probe)
+	if err != nil {
+		t.Fatalf("open JetStream: %v", err)
+	}
+	testnats.CreateStream(t, js, jetstream.StreamConfig{Name: "ENVOY_NOTIFICATIONS", Subjects: []string{"notifications.>"}})
+	w := grantWorkflow(t, &syncBuffer{})
+	cfg := daemonGrantConfig(url)
+	if err := connectAsBootDoes(t, w, cfg, newRebuilder(w.log, config.Settled(cfg)), func(string) (string, bool) { return "", false }); err != nil {
+		t.Fatalf("connect the workflow's NATS as boot does: %v", err)
+	}
+	t.Cleanup(w.stop)
+	before := w.nats.connection()
+
+	// Any rebuild: the operator's changed `nats_urls`, a rotated seed, a `repository_renames`
+	// change. Boot is over, and its attempt's context with it.
+	if err := w.nats.rebuild(&cfg); err != nil {
+		t.Fatalf("rebuild the NATS holder on a daemon whose boot is over: %v", err)
+	}
+
+	after := w.nats.connection()
+	if after == before {
+		t.Fatal("the rebuild left the daemon on the connection it had, want a new one")
+	}
+	if !after.IsConnected() {
+		t.Fatalf("the rebuilt NATS client is not connected: %v", after.LastError())
+	}
+	if !before.IsClosed() {
+		t.Fatal("the connection the rebuild replaced was not closed")
+	}
+	if w.nats.intake() == nil {
+		t.Fatal("the rebuilt client carries no durable consumers")
+	}
+}
 
 // A NATS rebuild ends the old connection's intake and waits for it to settle before it closes
 // that connection: an ack or a nak of a fact in flight goes to the connection it was delivered
@@ -41,7 +108,7 @@ func TestANatsRebuildWaitsForTheIntakeItEndedToSettle(t *testing.T) {
 	testnats.CreateStream(t, js, jetstream.StreamConfig{Name: "ENVOY_NOTIFICATIONS", Subjects: []string{"notifications.>"}})
 	w := grantWorkflow(t, &syncBuffer{})
 	cfg := daemonGrantConfig(url)
-	if err := w.connect(t.Context(), cfg, newRebuilder(w.log, config.Settled(cfg)), func(string) (string, bool) { return "", false }); err != nil {
+	if err := connectAsBootDoes(t, w, cfg, newRebuilder(w.log, config.Settled(cfg)), func(string) (string, bool) { return "", false }); err != nil {
 		t.Fatalf("connect the workflow's NATS: %v", err)
 	}
 	t.Cleanup(w.stop)
@@ -358,6 +425,92 @@ func changeOfPath(t *testing.T, path string) config.Change {
 		t.Fatalf("the class table holds no %s row", path)
 	}
 	return config.Change{Path: path, Holder: row.Holder, Class: row.Class, Outcome: row.Class.Outcome()}
+}
+
+// namedHolder is a holder of a name given to it, whose rebuild records the mark it was built
+// with: two of one name tell which of them the rebuilder is holding.
+type namedHolder struct {
+	name  string
+	mark  string
+	built *[]string
+}
+
+func (h *namedHolder) holder() string { return h.name }
+
+func (h *namedHolder) rebuild(*config.Config) error {
+	*h.built = append(*h.built, h.mark)
+	return nil
+}
+
+// The first registration of a name decides both its place in the rebuild order and the holder
+// in that place, and a later registration of the same name moves neither. The daemon rests on
+// that rule: the repository mapping is registered before the intake consumers so a mapping read
+// made between their two rebuilds reads the equivalence the consumers' filter was built with
+// (workflowRuntime.connect), and a second registration that took the first's place would hand
+// the rebuilder a holder built from state the daemon has moved on from.
+//
+// It is the rule rather than an accident of the registry, so register says it and this holds it
+// to it.
+func TestTheFirstRegistrationOfANameDecidesItsPlaceAndItsHolder(t *testing.T) {
+	var built []string
+	cfg := config.Config{}
+	rebuild := newRebuilder(quietLogger(), config.Settled(cfg))
+	rebuild.register(
+		&namedHolder{name: config.HolderRepositoryMapping, mark: "mapping", built: &built},
+		&namedHolder{name: config.HolderNATS, mark: "nats", built: &built},
+	)
+	// A second place registering a name the first already did, which the daemon no longer does
+	// (daemon.go's serve registers the mapping only where there is no workflow).
+	rebuild.register(&namedHolder{name: config.HolderRepositoryMapping, mark: "mapping-again", built: &built})
+
+	rebuild.observe(&cfg, []config.Change{changeOfPath(t, "repository_renames")})
+
+	if want := []string{"mapping", "nats"}; !slices.Equal(built, want) {
+		t.Fatalf("the rebuilder built %v, want %v: the first registration of a name holds both its place and its holder", built, want)
+	}
+}
+
+// refusingHolder is a holder whose rebuild never succeeds.
+type refusingHolder struct {
+	name string
+	why  error
+}
+
+func (h *refusingHolder) holder() string { return h.name }
+
+func (h *refusingHolder) rebuild(*config.Config) error { return h.why }
+
+// The settings route is told of a rebuild the caller's own change asked for and the daemon
+// could not make. rebuilder.rebuild logs the failure and leaves the old connection, client or
+// listener serving, which is right; answering the caller `rebuilt` all the same was not, so
+// the route's way into the settings holder carries what the apply's own rebuilds could not do
+// (rebuilder.route, api.SettingsRebuildFailures).
+//
+// What it carries is this apply's alone: a failure standing from an earlier change, or from the
+// file watcher's own reread of the credential files, is dropped before the apply runs.
+func TestTheSettingsRouteIsToldOfARebuildThatFailed(t *testing.T) {
+	cfg := config.Config{}
+	rebuild := newRebuilder(quietLogger(), config.Settled(cfg))
+	rebuild.register(&refusingHolder{name: config.HolderNATS, why: errors.New("connect Envoy NATS: no servers available for connection")})
+	// A failure of an earlier change, which this caller is owed nothing about.
+	rebuild.rebuild(&cfg, &refusingHolder{name: config.HolderDispatchClient, why: errors.New("read the Dispatch bearer")})
+
+	route := rebuild.route(func(context.Context, config.Caller, string, map[string]any) ([]config.Change, []config.Refusal, error) {
+		rebuild.observe(&cfg, []config.Change{changeOfPath(t, "nats_urls")})
+		return []config.Change{changeOfPath(t, "nats_urls")}, nil, nil
+	})
+	_, _, failed, err := route(t.Context(), config.CallerOperator, "someone", map[string]any{"nats_urls": []string{"nats://10.0.0.9:4222"}})
+
+	if err != nil {
+		t.Fatalf("apply the change: %v", err)
+	}
+	want := "nats: connect Envoy NATS: no servers available for connection"
+	if failed[config.HolderNATS] != want {
+		t.Fatalf("the route was told %v, want the NATS holder's own failure %q", failed, want)
+	}
+	if _, told := failed[config.HolderDispatchClient]; told {
+		t.Fatalf("the route was told %v, which carries a failure of a rebuild this change did not cause", failed)
+	}
 }
 
 // `repository_renames` is held by four things — the API server's settings, the project's

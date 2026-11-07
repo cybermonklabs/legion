@@ -36,6 +36,14 @@ instructions: /etc/legion/instructions.md
 // store does with a change is internal/settings' own test.
 func settingsRouteServer(t *testing.T, auth SettingsRouteAuth) (http.Handler, *config.Live) {
 	t.Helper()
+	return settingsRouteServerFailing(t, auth, nil)
+}
+
+// settingsRouteServerFailing is settingsRouteServer whose rebuilds of the holders a change
+// names could not be made: failed is what the daemon's rebuild observer records of them and
+// answers the route with (internal/daemon's rebuilder.route), by holder name.
+func settingsRouteServerFailing(t *testing.T, auth SettingsRouteAuth, failed SettingsRebuildFailures) (http.Handler, *config.Live) {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "legion.yaml")
 	if err := os.WriteFile(path, []byte(settingsRouteFile), 0o600); err != nil {
 		t.Fatalf("write %s: %v", path, err)
@@ -46,8 +54,12 @@ func settingsRouteServer(t *testing.T, auth SettingsRouteAuth) (http.Handler, *c
 	}
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
 	keeper := settings.New(live, nil, quiet)
+	apply := func(ctx context.Context, caller config.Caller, by string, changes map[string]any) ([]config.Change, []config.Refusal, SettingsRebuildFailures, error) {
+		applied, refused, err := keeper.Route(ctx, caller, by, changes)
+		return applied, refused, failed, err
+	}
 	server := NewServer("127.0.0.1", 8439, Options{
-		Project: testProject, Log: quiet, ApplySettings: keeper.Route,
+		Project: testProject, Log: quiet, ApplySettings: apply,
 		Settings: NewLiveSettings(HeldSettings{OperatorToken: testOperatorToken, SettingsRoute: auth}),
 	})
 	return server.Handler, live
@@ -127,6 +139,66 @@ func TestTheSettingsRouteSaysWhenAKeyWasAlreadyWhatWasAsked(t *testing.T) {
 	want := SettingResult{Applied: string(config.OutcomeAtOnce), Unchanged: true}
 	if got := settingsAnswer(t, recorder)["admission_cap"]; got != want {
 		t.Fatalf("the answer = %+v, want %+v", got, want)
+	}
+}
+
+// A change whose holder the daemon could not build again is answered failed, not `rebuilt`.
+// The daemon applies the value and only then builds what holds it (config.Live.Apply's
+// observers, internal/daemon's rebuilder), and a rebuild that failed left the old connection,
+// client or listener serving and said so in the log alone: the caller — an operator rotating a
+// seed, a Dispatch user widening `repository_renames` — was told the change was made.
+//
+// A path whose value more than one thing holds is answered for all of them: the row names the
+// one holder the caller is told was rebuilt, and the rest are its Also (config.Row), so a
+// `repository_renames` whose intake consumers would not reopen is as unfinished as a
+// `nats_urls` whose connection would not.
+func TestASettingsChangeWhoseHolderCouldNotBeBuiltIsAnsweredFailed(t *testing.T) {
+	const refused = "nats: connect Envoy NATS: nats: no servers available for connection"
+	for _, testCase := range []struct {
+		name, path, value, holder string
+	}{
+		{name: "the holder the row names", path: "nats_urls", value: `["nats://10.0.0.9:4222"]`, holder: config.HolderNATS},
+		{name: "another holder of the row", path: "repository_renames", value: `[{"from":"acme/widgets","to":"acme-archive/widgets"}]`, holder: config.HolderAPIServer},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			handler, _ := settingsRouteServerFailing(t, SettingsRouteAuth{},
+				SettingsRebuildFailures{config.HolderNATS: refused})
+
+			recorder := settingsCall(t, handler, testOperatorToken, SettingsChangeRequest{
+				Changes: map[string]json.RawMessage{testCase.path: json.RawMessage(testCase.value)},
+			})
+
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("the settings route = %d; body %s", recorder.Code, recorder.Body)
+			}
+			got := settingsAnswer(t, recorder)[testCase.path]
+			if got.Failed != refused {
+				t.Errorf("the answer for %s = %+v, want it failed with %q", testCase.path, got, refused)
+			}
+			if got.Applied != "" {
+				t.Errorf("the answer for %s = %+v, want no applied verdict beside the failure", testCase.path, got)
+			}
+			if got.Holder != testCase.holder {
+				t.Errorf("the answer for %s names holder %q, want %q, the one its row names", testCase.path, got.Holder, testCase.holder)
+			}
+		})
+	}
+}
+
+// A change nothing failed to build is answered as it was: the failures of an earlier change are
+// the daemon's to keep out of this answer (internal/daemon's rebuilder.route), and a holder no
+// row of the changed path names is no business of the caller's.
+func TestASettingsChangeIsNotFailedByAnotherHoldersTrouble(t *testing.T) {
+	handler, _ := settingsRouteServerFailing(t, SettingsRouteAuth{},
+		SettingsRebuildFailures{config.HolderNATS: "nats: connect Envoy NATS: nats: no servers available for connection"})
+
+	recorder := settingsCall(t, handler, testOperatorToken, SettingsChangeRequest{
+		Changes: map[string]json.RawMessage{"admission_cap": json.RawMessage(`9`)},
+	})
+
+	want := SettingResult{Applied: string(config.OutcomeAtOnce), Old: "4", New: "9"}
+	if got := settingsAnswer(t, recorder)["admission_cap"]; got != want {
+		t.Fatalf("the answer = %+v, want %+v: nothing that holds admission_cap failed", got, want)
 	}
 }
 
@@ -341,9 +413,9 @@ func TestASettingsChangeAppliedAndNotRecordedIsNotAnsweredAsARefusal(t *testing.
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
 	server := NewServer("127.0.0.1", 8439, Options{
 		Project: testProject, Log: quiet, Settings: NewLiveSettings(HeldSettings{OperatorToken: testOperatorToken}),
-		ApplySettings: func(context.Context, config.Caller, string, map[string]any) ([]config.Change, []config.Refusal, error) {
+		ApplySettings: func(context.Context, config.Caller, string, map[string]any) ([]config.Change, []config.Refusal, SettingsRebuildFailures, error) {
 			applied := []config.Change{{Path: "admission_cap", Old: "4", New: "9", Class: config.ClassDecision, Outcome: config.OutcomeAtOnce}}
-			return applied, nil, &config.NotRecorded{Paths: []string{"admission_cap"}, Err: errors.New("the store is unreachable")}
+			return applied, nil, nil, &config.NotRecorded{Paths: []string{"admission_cap"}, Err: errors.New("the store is unreachable")}
 		},
 	})
 
@@ -422,9 +494,9 @@ func TestTheProjectedArmRecordsTheServiceAccountBesideTheNamedPerson(t *testing.
 			Verifier:        oidc.NewLazyVerifier(issuer.URL(), audience),
 			ServiceAccounts: []string{dispatch},
 		}}),
-		ApplySettings: func(_ context.Context, _ config.Caller, by string, _ map[string]any) ([]config.Change, []config.Refusal, error) {
+		ApplySettings: func(_ context.Context, _ config.Caller, by string, _ map[string]any) ([]config.Change, []config.Refusal, SettingsRebuildFailures, error) {
 			recorded = append(recorded, by)
-			return []config.Change{{Path: "admission_cap", Old: "4", New: "9", Class: config.ClassDecision, Outcome: config.OutcomeAtOnce}}, nil, nil
+			return []config.Change{{Path: "admission_cap", Old: "4", New: "9", Class: config.ClassDecision, Outcome: config.OutcomeAtOnce}}, nil, nil, nil
 		},
 	})
 	body := SettingsChangeRequest{By: "ana@example.com", Changes: map[string]json.RawMessage{"admission_cap": json.RawMessage(`9`)}}

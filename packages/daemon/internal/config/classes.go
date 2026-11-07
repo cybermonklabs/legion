@@ -73,6 +73,11 @@ const (
 	// HolderRepositoryMapping is the project's repository mapping, which holds the deployment's
 	// repository equivalence (`repository_renames`) it compares two names with.
 	HolderRepositoryMapping = "repository-mapping"
+	// HolderGatedSteps is the project's Dispatch row, which carries the design-gate steps the
+	// deployment gates (`gates.design`) so a person reading Dispatch sees what it holds a
+	// tree's work for. The gate itself is read per decision; the row is the one copy of the
+	// list, and only a daemon with a workflow holds it.
+	HolderGatedSteps = "gated-steps"
 )
 
 // Row is one settable unit of `legion.yaml`, keyed by the Go field it is read into.
@@ -262,14 +267,16 @@ var Classes = []Row{
 	{Field: "Config.Capabilities", Path: "capabilities", Class: ClassDecision, Block: true},
 	{Field: "Capabilities.Decided", Path: "capabilities.decided", Class: ClassDecision},
 	// The design gate is read per decision — the workflow engine and the outbox each read it
-	// from the settings holder as they decide — and two things hold a copy of it: the API
-	// server, which a reader asks for the gate, and the launch specs, which write it into every
-	// tree architect's and the controller's prompt. Both are built again here, so the next
-	// launch is told the policy the daemon is deciding by; a row names the one holder an
-	// operator is told was rebuilt (Change.Holder), which is why this one names the API server
-	// and leaves the launch specs to Also.
-	{Field: "Config.Gates", Path: "gates", Class: ClassDecision, Holder: HolderAPIServer, Also: []string{HolderLaunchSpecs}, Block: true},
-	{Field: "Gates.Design", Path: "gates.design", Class: ClassDecision, Holder: HolderAPIServer, Also: []string{HolderLaunchSpecs}},
+	// from the settings holder as they decide — and three things hold a copy of it: the API
+	// server, which a reader asks for the gate; the launch specs, which write it into every
+	// tree architect's and the controller's prompt; and the project's Dispatch row, which
+	// shows a person what the deployment holds a tree's work for. All three are built again
+	// here, so the next launch is told the policy the daemon is deciding by and the row says
+	// it without a restart; a row names the one holder an operator is told was rebuilt
+	// (Change.Holder), which is why this one names the API server and leaves the other two to
+	// Also.
+	{Field: "Config.Gates", Path: "gates", Class: ClassDecision, Holder: HolderAPIServer, Also: []string{HolderLaunchSpecs, HolderGatedSteps}, Block: true},
+	{Field: "Gates.Design", Path: "gates.design", Class: ClassDecision, Holder: HolderAPIServer, Also: []string{HolderLaunchSpecs, HolderGatedSteps}},
 
 	// Held by a client, a listener or a connection.
 	{Field: "Config.WorkerRPCTimeout", Path: "worker_rpc_timeout_seconds", Class: ClassRebuild, Holder: HolderWorkerStream},

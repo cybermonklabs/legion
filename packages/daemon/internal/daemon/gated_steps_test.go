@@ -21,6 +21,10 @@ func gating(steps ...record.DesignStep) *config.Live {
 	return config.Settled(config.Config{Gates: config.Gates{Design: steps}})
 }
 
+// bootSteps is the list a boot on live would publish: what the boot reads from the settings
+// holder and hands the queue (openWorkflow).
+func bootSteps(w *workflowRuntime) []record.DesignStep { return w.gatedSteps() }
+
 // A boot publishes the design-gate steps it is configured with onto the project's Dispatch row,
 // through the outbox: the boot queues one row addressed to the project key and the lane writes
 // it. The daemon keeps no record of what it last published, so a boot that finds its own row
@@ -35,10 +39,10 @@ func TestGatedStepsPublishAtBoot(t *testing.T) {
 	boot := &workflowRuntime{pool: pool, records: records, dispatchProject: "LEGION",
 		live: gating(record.DesignStepCriteria, record.DesignStepSpec)}
 
-	if err := boot.queueGatedStepsPublish(ctx); err != nil {
+	if err := boot.queueGatedStepsPublish(ctx, bootSteps(boot)); err != nil {
 		t.Fatalf("the first boot's publish: %v", err)
 	}
-	if err := boot.queueGatedStepsPublish(ctx); err != nil {
+	if err := boot.queueGatedStepsPublish(ctx, bootSteps(boot)); err != nil {
 		t.Fatalf("a second boot's publish: %v", err)
 	}
 	if rows := outboxRows(t, pool); rows != 1 {
@@ -65,11 +69,11 @@ func TestGatedStepsPublishAtBoot(t *testing.T) {
 	// lane. The row waits for as long as Dispatch is down or has yet to take the route, so this
 	// boot writes its own list into it rather than leaving the stale one to be published.
 	boot.live = gating(record.DesignStepSpec)
-	if err := boot.queueGatedStepsPublish(ctx); err != nil {
+	if err := boot.queueGatedStepsPublish(ctx, bootSteps(boot)); err != nil {
 		t.Fatalf("the boot whose publish waits: %v", err)
 	}
 	boot.live = gating(record.DesignStepCriteria)
-	if err := boot.queueGatedStepsPublish(ctx); err != nil {
+	if err := boot.queueGatedStepsPublish(ctx, bootSteps(boot)); err != nil {
 		t.Fatalf("the boot on the changed list: %v", err)
 	}
 	if rows := outboxRows(t, pool); rows != 1 {
@@ -84,7 +88,7 @@ func TestGatedStepsPublishAtBoot(t *testing.T) {
 
 	// The next boot gates nothing, and publishes that rather than leaving the stale list standing.
 	boot.live = gating()
-	if err := boot.queueGatedStepsPublish(ctx); err != nil {
+	if err := boot.queueGatedStepsPublish(ctx, bootSteps(boot)); err != nil {
 		t.Fatalf("the boot that gates nothing: %v", err)
 	}
 	if err := runner.RunOnce(ctx); err != nil {
@@ -102,5 +106,41 @@ func TestGatedStepsPublishWithoutADispatchClientIsRefused(t *testing.T) {
 	err := (&outbox{}).execute(context.Background(), row)
 	if err == nil || err.Error() != "gated steps executor has no Dispatch client" {
 		t.Fatalf("execute without a Dispatch client = %v, want the refusal naming the missing client", err)
+	}
+}
+
+// A `gates.design` change made while the daemon runs reaches the project's Dispatch row. That
+// row is what tells a person what the deployment holds work for (`GET /api/v1/projects`,
+// record.GatedStepsPublish, docs/running-legion.md), and the gate itself is read per decision,
+// so until this the daemon gated the new steps from the moment the change settled while the
+// row still showed the list the daemon booted on — until someone restarted it.
+//
+// The change goes through the daemon's own path: the settings holder applies it, its observers
+// run (config.Live.Apply), and the publish the change queues is run by the outbox as the boot's
+// own is.
+func TestALiveDesignGateChangeIsPublishedToTheProjectRow(t *testing.T) {
+	ctx := context.Background()
+	live := liveSettings(t, "gates:", "  design: [spec]")
+	project := live.Snapshot().Project
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	w := &workflowRuntime{pool: pool, records: records, dispatchProject: project, live: live, log: quietLogger()}
+	rebuild := newRebuilder(w.log, live)
+	live.OnChange(rebuild.observe)
+	rebuild.register(newGatedStepsHolder(w))
+
+	apply(t, live, map[string]any{"gates.design": []any{"criteria", "spec"}})
+
+	client := &outboxDispatch{}
+	runner := &outbox{pool: pool, dispatchProject: project, records: records, dispatch: client,
+		now: func() time.Time { return time.Now().UTC() }, log: quietLogger()}
+	if err := runner.RunOnce(ctx); err != nil {
+		t.Fatalf("run the publish the change queued: %v", err)
+	}
+	if want := [][]string{{"criteria", "spec"}}; !reflect.DeepEqual(client.gatedSteps, want) {
+		t.Fatalf("Dispatch was sent %v, want %v: the list the change settled, published without a restart", client.gatedSteps, want)
+	}
+	if want := []string{project}; !reflect.DeepEqual(client.gatedStepsOf, want) {
+		t.Fatalf("the publish went to %v, want %v, the one project this daemon serves", client.gatedStepsOf, want)
 	}
 }

@@ -349,15 +349,21 @@ func TestAChangedNatsSeedRebuildsTheNatsClient(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the repositories this project hears about: %v", err)
 	}
+	// The context boot gives the open it runs: readinessAttempt's own, bounded and cancelled
+	// the moment that open returns (readiness.go, daemon.go's serve). The holder below is built
+	// as workflowRuntime.connect builds it — the open and the handover take the context of the
+	// rebuild that calls them — so the rebuild the change makes runs on what a daemon's rebuild
+	// runs on and not on a context that lives as long as the test.
+	booting, bootOver := context.WithTimeout(t.Context(), bootTimeout)
 	var seeds []string
-	open := func(c config.Config) (*nats.Conn, *intake.Consumers, error) {
+	open := func(ctx context.Context, c config.Config) (*nats.Conn, *intake.Consumers, error) {
 		seeds = append(seeds, c.NatsNkeySeedFile)
 		c.NatsNkeySeedFile = ""
-		return openNATS(t.Context(), w, c, func(string) (string, bool) { return "", false }, intake.ConsumerSpec{
+		return openNATS(ctx, w, c, func(string) (string, bool) { return "", false }, intake.ConsumerSpec{
 			Project: c.Project, Repositories: heard, AckWait: c.WorkerRPCTimeout, NakDelay: time.Second, Logger: w.log,
 		})
 	}
-	conn, consumers, err := open(*live.Snapshot())
+	conn, consumers, err := open(booting, *live.Snapshot())
 	if err != nil {
 		t.Fatalf("open the workflow's NATS: %v", err)
 	}
@@ -369,10 +375,8 @@ func TestAChangedNatsSeedRebuildsTheNatsClient(t *testing.T) {
 	// mapping's own lock, and the handover — what the rebuilt consumers are to hear, worked out
 	// and handed to them, and the swap — under the lock every fact applies under
 	// (natsHandover), all the daemon's own.
-	w.nats = newNATSHolder(conn, consumers, w.log, open, &w.mappingMu,
-		func(consumers *intake.Consumers, renames ghrepo.Renames, swap func()) error {
-			return w.natsHandover(t.Context(), consumers, renames, swap)
-		})
+	w.nats = newNATSHolder(conn, consumers, w.log, open, &w.mappingMu, w.natsHandover)
+	bootOver()
 	rebuild.register(w.nats)
 	t.Cleanup(w.stop)
 	before := w.nats.connection()
@@ -426,7 +430,7 @@ func TestANatsRebuildHearsTheRepositoriesMappedSinceBoot(t *testing.T) {
 	cfg := daemonGrantConfig(url)
 	// The boot: the consumers are opened through the daemon's own path, with the repositories
 	// the mapping serves now (grantWorkflow's sjawhar/legion).
-	if err := w.connect(t.Context(), cfg, newRebuilder(w.log, config.Settled(cfg)), func(string) (string, bool) { return "", false }); err != nil {
+	if err := connectAsBootDoes(t, w, cfg, newRebuilder(w.log, config.Settled(cfg)), func(string) (string, bool) { return "", false }); err != nil {
 		t.Fatalf("connect the workflow's NATS: %v", err)
 	}
 	t.Cleanup(w.stop)
@@ -471,7 +475,7 @@ func TestANatsRebuildWaitsForAMappingReadHoldingTheFactLock(t *testing.T) {
 	testnats.CreateStream(t, js, jetstream.StreamConfig{Name: "ENVOY_NOTIFICATIONS", Subjects: []string{"notifications.>"}})
 	w := grantWorkflow(t, &syncBuffer{})
 	cfg := daemonGrantConfig(url)
-	if err := w.connect(t.Context(), cfg, newRebuilder(w.log, config.Settled(cfg)), func(string) (string, bool) { return "", false }); err != nil {
+	if err := connectAsBootDoes(t, w, cfg, newRebuilder(w.log, config.Settled(cfg)), func(string) (string, bool) { return "", false }); err != nil {
 		t.Fatalf("connect the workflow's NATS: %v", err)
 	}
 	t.Cleanup(w.stop)
@@ -543,7 +547,7 @@ func TestANatsRebuildOpensNoConsumerWhileAMappingReadHoldsTheMappingLock(t *test
 	testnats.CreateStream(t, js, jetstream.StreamConfig{Name: "ENVOY_NOTIFICATIONS", Subjects: []string{"notifications.>"}})
 	w := grantWorkflow(t, &syncBuffer{})
 	cfg := daemonGrantConfig(url)
-	if err := w.connect(t.Context(), cfg, newRebuilder(w.log, config.Settled(cfg)), func(string) (string, bool) { return "", false }); err != nil {
+	if err := connectAsBootDoes(t, w, cfg, newRebuilder(w.log, config.Settled(cfg)), func(string) (string, bool) { return "", false }); err != nil {
 		t.Fatalf("connect the workflow's NATS: %v", err)
 	}
 	t.Cleanup(w.stop)
@@ -606,9 +610,7 @@ func TestANatsRebuildOpensNoConsumerWhileAMappingReadHoldsTheMappingLock(t *test
 // The two holders are registered as the daemon registers them: the mapping before the consumers
 // (workflowRuntime.connect), so the equivalence reaches the mapping first and the consumers'
 // rebuild follows it. What they hear is worked out all the same from the configuration that
-// rebuild is handed, not from the mapping's own (workflowRuntime.natsHearing). The call below
-// is the registration a daemon with no workflow makes (daemon.go's serve) and decides no order:
-// a second registration of a name keeps the position the first gave it.
+// rebuild is handed, not from the mapping's own (workflowRuntime.natsHearing).
 func TestAChangedRepositoryRenamesHasGitHubIntakeHearThePartner(t *testing.T) {
 	url := testnats.URL(t)
 	probe, err := nats.Connect(url, nats.Timeout(5*time.Second))
@@ -624,11 +626,10 @@ func TestAChangedRepositoryRenamesHasGitHubIntakeHearThePartner(t *testing.T) {
 	w := grantWorkflow(t, &syncBuffer{})
 	cfg := daemonGrantConfig(url)
 	rebuild := newRebuilder(w.log, config.Settled(cfg))
-	if err := w.connect(t.Context(), cfg, rebuild, func(string) (string, bool) { return "", false }); err != nil {
+	if err := connectAsBootDoes(t, w, cfg, rebuild, func(string) (string, bool) { return "", false }); err != nil {
 		t.Fatalf("connect the workflow's NATS: %v", err)
 	}
 	t.Cleanup(w.stop)
-	rebuild.register(newMappingHolder(w.repositories))
 	stream, err := js.Stream(t.Context(), "ENVOY_NOTIFICATIONS")
 	if err != nil {
 		t.Fatalf("open the notification stream: %v", err)
@@ -715,19 +716,17 @@ func TestAMappingReadBetweenTheRenameRebuildsNarrowsNoGitHubFilter(t *testing.T)
 	cfg := config.Config{Project: project, NatsURLs: []string{url}, WorkerRPCTimeout: time.Second,
 		Projects: map[string]config.Project{project: {}}}
 	rebuild := newRebuilder(w.log, config.Settled(cfg))
-	if err := w.connect(t.Context(), cfg, rebuild, func(string) (string, bool) { return "", false }); err != nil {
+	if err := connectAsBootDoes(t, w, cfg, rebuild, func(string) (string, bool) { return "", false }); err != nil {
 		t.Fatalf("connect the workflow's NATS: %v", err)
 	}
 	t.Cleanup(w.stop)
-	// The registration a daemon with no workflow makes (daemon.go's serve). It decides no order:
-	// a second registration of a name keeps the position the first gave it.
-	rebuild.register(newMappingHolder(w.repositories))
 
 	// The read, made the moment the consumers' own rebuild returns: the first instant of the
 	// window between the two holders, with the filter that rebuild has just written on the
-	// durable.
+	// durable. It takes the place of the NATS holder the daemon's own path registered, so every
+	// holder keeps the position that path gave it (rebuilder.replace).
 	var filterBuiltWith, handed []ghrepo.Repository
-	rebuild.register(&readingNATSHolder{natsHolder: w.nats, read: func() {
+	rebuild.replace(&readingNATSHolder{natsHolder: w.nats, read: func() {
 		filterBuiltWith = w.nats.intake().Repositories()
 		if err := w.refreshMapping(t.Context()); err != nil {
 			t.Errorf("read the repository mapping in the window: %v", err)
@@ -760,9 +759,8 @@ func TestAMappingReadBetweenTheRenameRebuildsNarrowsNoGitHubFilter(t *testing.T)
 
 // readingNATSHolder is the daemon's own NATS holder with a read of the repository mapping made
 // the moment its rebuild returns, which is the window a `repository_renames` change opens
-// between that rebuild and the mapping's. It answers the NATS holder's own name, so registering
-// it replaces that holder where the daemon registered it and moves no holder's position
-// (rebuilder.register).
+// between that rebuild and the mapping's. It answers the NATS holder's own name, so putting it
+// in that holder's place moves no holder's position (rebuilder.replace).
 type readingNATSHolder struct {
 	*natsHolder
 	read func()

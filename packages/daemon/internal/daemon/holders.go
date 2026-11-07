@@ -106,15 +106,33 @@ type rebuilder struct {
 	// keeps a wake of the file watcher from rebuilding a holder whose credentials have not moved
 	// since (rereadCredentials).
 	credentialDigests map[string]string
+	// failed is why each holder's last rebuild could not be made, by holder name, as the
+	// settings route answers the caller that asked for it (route, rebuild). A rebuild that
+	// succeeded drops its holder's entry. It has a lock of its own because the route reads it
+	// from the request's goroutine, outside the settings holder's lock every rebuild runs
+	// under.
+	failedMu sync.Mutex
+	failed   map[string]string
 }
 
 // newRebuilder is the rebuild observer of the daemon running on live, whose snapshot every
 // registration reads the new holder's credentials from.
 func newRebuilder(log *slog.Logger, live *config.Live) *rebuilder {
-	return &rebuilder{log: log, live: live, holders: map[string]rebuilt{}, credentialDigests: map[string]string{}}
+	return &rebuilder{log: log, live: live, holders: map[string]rebuilt{},
+		credentialDigests: map[string]string{}, failed: map[string]string{}}
 }
 
-// register adds one holder. A second registration of the same name replaces the first.
+// register adds holders, each in the place its name's first registration gives it. That place
+// never moves and nor does the holder in it: a name already registered is a second place
+// registering what one place owns, which the daemon does not do, so it is logged and left as
+// it is. A test that deliberately puts another holder in a name's place uses replace.
+//
+// The order is load-bearing, which is why the rule is here and not left to the registry's
+// behaviour: rebuilder.observe builds the holders of one change in registration order, and the
+// repository mapping is registered before the intake consumers so a mapping read made between
+// their two rebuilds works out what GitHub intake is to hear under the equivalence the
+// consumers' filter was just built with, never under one older than it
+// (workflowRuntime.connect, refreshMapping).
 //
 // A holder built from a credential is registered having just been built from it, so what that
 // credential says now is recorded here: without it the first reread after boot would count every
@@ -126,14 +144,29 @@ func (r *rebuilder) register(holders ...rebuilt) {
 		if h == nil {
 			continue
 		}
-		if _, known := r.holders[h.holder()]; !known {
-			r.order = append(r.order, h.holder())
+		if _, known := r.holders[h.holder()]; known {
+			r.log.Error("legion settings: a holder is registered twice; the daemon keeps the one registered first",
+				"holder", h.holder())
+			continue
 		}
+		r.order = append(r.order, h.holder())
 		r.holders[h.holder()] = h
 		if credentials, reads := h.(credentialHolder); reads {
 			r.credentialDigests[h.holder()] = credentials.credentials(r.live.Snapshot())
 		}
 	}
+}
+
+// replace puts holder in the place its name already holds, which register refuses. Nothing in
+// the daemon replaces a holder: a test that wants to see what a rebuild of one does — a read of
+// the repository mapping made the instant the intake consumers' rebuild returns, say — wraps
+// the holder the daemon built and puts it back under the same name, so the order every other
+// holder was registered in is the order the test observes.
+func (r *rebuilder) replace(holder rebuilt) {
+	if _, known := r.holders[holder.holder()]; !known {
+		r.order = append(r.order, holder.holder())
+	}
+	r.holders[holder.holder()] = holder
 }
 
 // observe is what config.Live calls once every apply has settled: it is registered with
@@ -201,12 +234,61 @@ func (r *rebuilder) rebuild(cfg *config.Config, holder rebuilt) {
 	if err := holder.rebuild(cfg); err != nil {
 		r.log.Error("legion settings: rebuilding a holder failed; the daemon keeps the one it has",
 			"holder", name, "error", err)
+		r.noteRebuild(name, err)
 		return
 	}
+	r.noteRebuild(name, nil)
 	if reads {
 		r.credentialDigests[name] = built
 	}
 	r.log.Info("legion settings: holder rebuilt", "holder", name)
+}
+
+// noteRebuild records why name's rebuild could not be made, or drops what an earlier one
+// recorded when it could: what the settings route answers the caller that asked for the change
+// (route). The holder's own name is in the text, because a path whose value several things
+// hold is answered for all of them and the caller is owed the one that kept what it had.
+func (r *rebuilder) noteRebuild(name string, err error) {
+	r.failedMu.Lock()
+	defer r.failedMu.Unlock()
+	if err == nil {
+		delete(r.failed, name)
+		return
+	}
+	r.failed[name] = fmt.Sprintf("%s: %v", name, err)
+}
+
+// route is how the settings route reaches the daemon's settings holder (api.ApplySettings):
+// apply, the holder's own route arm (internal/settings' Keeper.Route), and then what the
+// rebuilds that change caused could not do. Without it a caller that asked for a change the
+// daemon could not make — a seed the new NATS refuses, a `repository_renames` whose intake
+// consumers would not reopen — was answered `rebuilt` and told nothing, while the failure sat
+// in the daemon's log alone.
+//
+// What is answered is what this apply recorded: whatever stood before it is dropped, so a
+// failure of an earlier change or of the file watcher's own reread is never read as this
+// caller's. Every rebuild runs under the settings holder's lock, which the apply holds across
+// its observers (config.Live.Apply, rebuilder.observe), so no other change's rebuild runs
+// inside the window this takes.
+func (r *rebuilder) route(apply func(context.Context, config.Caller, string, map[string]any) ([]config.Change, []config.Refusal, error)) api.ApplySettings {
+	return func(ctx context.Context, caller config.Caller, by string, changes map[string]any) ([]config.Change, []config.Refusal, api.SettingsRebuildFailures, error) {
+		r.takeFailures()
+		applied, refused, err := apply(ctx, caller, by, changes)
+		return applied, refused, r.takeFailures(), err
+	}
+}
+
+// takeFailures empties what the rebuilds since the last call recorded and answers it, nil for
+// none.
+func (r *rebuilder) takeFailures() api.SettingsRebuildFailures {
+	r.failedMu.Lock()
+	defer r.failedMu.Unlock()
+	if len(r.failed) == 0 {
+		return nil
+	}
+	taken := api.SettingsRebuildFailures(r.failed)
+	r.failed = map[string]string{}
+	return taken
 }
 
 // credentialHolder is a holder built from a credential that can move under the daemon with no
@@ -285,6 +367,22 @@ func credentialDigest(files ...string) string {
 // launch bound where that is the longer, which is the one wait that may hold a settings change
 // for as long as a launch; a rebuild answering for work it has not finished would be neither.
 const drainBound = 2 * time.Minute
+
+// natsRebuildBound bounds the work of one NATS rebuild: the dial, the four consumer opens and
+// the handover's one read-only transaction (natsHolder.rebuild). A rebuild is neither a boot
+// attempt nor a request, so it takes neither's context — boot's is cancelled the moment
+// workflowRuntime.connect returns (readinessAttempt), and a route's when the answer is written
+// — and makes its own, at the rebuild and for that rebuild alone. It is what boot's own
+// attempt gives the identical work (bootTimeout), and a rebuild that runs this long holds a
+// NATS or a Postgres that stopped answering, which must not hold every other settings change
+// behind the settings holder's lock for ever.
+const natsRebuildBound = bootTimeout
+
+// gatedStepsQueueBound bounds the one transaction a live `gates.design` change spends queueing
+// the publish of the new list (gatedStepsHolder, workflowRuntime.queueGatedStepsPublish): a
+// single upsert of one outbox row. It is a context of the rebuild's own for the reason
+// natsRebuildBound is, and short because the row is sent by the outbox and not here.
+const gatedStepsQueueBound = 30 * time.Second
 
 // rereadCredentials builds every holder whose credentials have moved since that holder was
 // built again, whatever the configuration says: the answer to a rotation of a file whose path
@@ -633,10 +731,9 @@ func (h *apiHolder) settingsRoute(cfg config.Config) api.SettingsRouteAuth {
 // The mapping itself — which repositories Dispatch serves — is read from Dispatch and is no
 // setting of this file's, so a rebuild replaces the equivalence alone, under the mapping's own
 // lock, and every later read compares with the new one. It takes no other lock, reaches no
-// consumer and cannot fail, which is why a daemon with a workflow registers it before the
-// intake consumers and has rebuilder.observe build it first: a mapping read between the two
-// rebuilds then works out what GitHub intake is to hear under the equivalence the consumers'
-// filter is built with, never under one older than it (workflowRuntime.connect, refreshMapping).
+// consumer and cannot fail, which is why it is registered before the intake consumers and
+// rebuilt before them: workflowRuntime.connect, which registers both, is where that order is
+// argued, and rebuilder.register is where the rule it rests on is stated.
 type mappingHolder struct{ repositories *repositories }
 
 func newMappingHolder(repositories *repositories) *mappingHolder {
@@ -648,6 +745,40 @@ func (h *mappingHolder) holder() string { return config.HolderRepositoryMapping 
 func (h *mappingHolder) rebuild(cfg *config.Config) error {
 	h.repositories.setRenames(cfg.RepositoryRenames)
 	return nil
+}
+
+// gatedStepsHolder is the project's Dispatch row as a holder of the design gate
+// (config.HolderGatedSteps, `gates.design`): the steps the deployment gates, written onto that
+// row so a person reading Dispatch sees what the deployment holds a tree's work for
+// (record.GatedStepsPublish, `GET /api/v1/projects`).
+//
+// The gate itself is read as each decision is made, so the key stays a `decision` row and the
+// caller is told at-once; the row is the one thing that holds a copy of the list, and nothing
+// else queues its publish. Without this holder a live change gated the new steps from the
+// moment it settled while that row went on showing the list the daemon booted on, until
+// someone restarted the daemon.
+//
+// A rebuild queues the publish rather than making it, exactly as the boot does
+// (workflowRuntime.queueGatedStepsPublish): the row is the outbox's to send, so a Dispatch that
+// is down or has not got the route costs the settings change nothing but a retry on the lane,
+// and the enqueue replaces a publish of an earlier list still waiting there rather than
+// queueing beside it.
+//
+// Only a daemon with a workflow registers it (openWorkflow): one with no Dispatch has no
+// project row to write, and a change of the gate there names a holder this daemon did not
+// build, which rebuilder.observe logs and passes over.
+type gatedStepsHolder struct{ workflow *workflowRuntime }
+
+func newGatedStepsHolder(workflow *workflowRuntime) *gatedStepsHolder {
+	return &gatedStepsHolder{workflow: workflow}
+}
+
+func (h *gatedStepsHolder) holder() string { return config.HolderGatedSteps }
+
+func (h *gatedStepsHolder) rebuild(cfg *config.Config) error {
+	ctx, cancel := context.WithTimeout(context.Background(), gatedStepsQueueBound)
+	defer cancel()
+	return h.workflow.queueGatedStepsPublish(ctx, cfg.Gates.Steps())
 }
 
 // workerStreamHolder is the worker stream listener's held settings (config.HolderWorkerStream):

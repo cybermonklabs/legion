@@ -195,7 +195,7 @@ func connectDaemonGrant(t *testing.T, uri, seed string, logs *syncBuffer) *workf
 	t.Helper()
 	cfg := daemonGrantConfig(uri)
 	w := grantWorkflow(t, logs)
-	if err := w.connect(t.Context(), cfg, newRebuilder(w.log, config.Settled(cfg)), daemonSeedLookup(seed)); err != nil {
+	if err := connectAsBootDoes(t, w, cfg, newRebuilder(w.log, config.Settled(cfg)), daemonSeedLookup(seed)); err != nil {
 		t.Fatalf("connect the daemon: %v", err)
 	}
 	return w

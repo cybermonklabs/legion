@@ -742,12 +742,12 @@ func (w *workflowRuntime) nameMapping(ctx context.Context) error {
 // (servedGaps, kept ones included) replace the last read's with the publication; a failed check
 // keeps nothing out and asks for no read again.
 // What it hands the consumers it works out under the mapping's own equivalence
-// (repositories.Renames), which is never older than the one their filter was built with: the two
-// are rebuilt by one observe, the mapping first (workflowRuntime.connect), so a read landing
-// between the two rebuilds reads the equivalence the operator has just configured and hands the
-// consumers the partner of every pair their filter either already carries or is about to. A read
-// under older renames would narrow that filter instead, and the events arriving under the name
-// the repository moved to would be stepped past by JetStream with nothing to redeliver them.
+// (repositories.Renames), which is never older than the one their filter was built with,
+// because a `repository_renames` change rebuilds the mapping before the consumers: a read
+// landing between those two rebuilds reads the equivalence the operator has just configured
+// and hands the consumers the partner of every pair their filter either already carries or is
+// about to. workflowRuntime.connect, which registers both holders, is where that order is
+// argued and what a read under older renames would cost.
 func (w *workflowRuntime) refreshMapping(ctx context.Context) error {
 	w.mappingMu.Lock()
 	defer w.mappingMu.Unlock()

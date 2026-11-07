@@ -2028,16 +2028,16 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	p.rebuild.register(keeping)
 	if workflow != nil {
 		workflow.keeper = keeping
+	} else {
+		// The project's repository mapping as a holder of the deployment's repository
+		// equivalence: a change of `repository_renames` reaches it as it reaches the API
+		// server's settings, the intake consumers and the runtime's gh bundles
+		// (config.Row.Also). This is the registration of a daemon with no workflow, which
+		// holds no intake consumers for the mapping to be ordered against; a daemon with one
+		// registers the same holder as it opens them, before them and for the order's sake
+		// (workflowRuntime.connect).
+		p.rebuild.register(newMappingHolder(p.repositories))
 	}
-	// The project's repository mapping as a holder of the deployment's repository equivalence:
-	// a change of `repository_renames` reaches it as it reaches the API server's settings, the
-	// intake consumers and the runtime's gh bundles (config.Row.Also). This is the registration
-	// of a daemon with no workflow, which holds no intake consumers for the mapping to be
-	// ordered against. A daemon with one registered the same holder as it opened them
-	// (workflowRuntime.connect), before the consumers and for the order's own sake, and a second
-	// registration of a name keeps the position the first gave it (rebuilder.register), so this
-	// call cannot move the mapping behind them.
-	p.rebuild.register(newMappingHolder(p.repositories))
 
 	server := api.NewServer(cfg.Bind, cfg.Port, api.Options{
 		State: &source{
@@ -2059,16 +2059,18 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 			sources:      sources,
 			commit:       p.commit,
 		},
-		StateTransactions:  st,
-		ConsumerLag:        consumerLag,
-		CallerPod:          callerPodOf(s.runtime),
-		Supervisor:         s.supervisor,
-		PodUpdateRounds:    s.podUpdateRoundsView,
-		BootTokens:         s.tokens,
-		Project:            p.project,
-		DispatchProject:    cfg.Project,
-		Settings:           held.settings,
-		ApplySettings:      p.settings.Route,
+		StateTransactions: st,
+		ConsumerLag:       consumerLag,
+		CallerPod:         callerPodOf(s.runtime),
+		Supervisor:        s.supervisor,
+		PodUpdateRounds:   s.podUpdateRoundsView,
+		BootTokens:        s.tokens,
+		Project:           p.project,
+		DispatchProject:   cfg.Project,
+		Settings:          held.settings,
+		// Through the rebuild observer, so a path whose holder the change could not build again
+		// is answered failed and not `rebuilt` (rebuilder.route).
+		ApplySettings:      p.rebuild.route(p.settings.Route),
 		Controller:         st,
 		ControllerLaunched: keeping.launchedNow,
 		PluginRelaunchable: p.pluginRelaunchable,
@@ -2287,6 +2289,20 @@ func (s projectRecords) Enqueue(ctx context.Context, tx pgx.Tx, row record.Outbo
 		return err
 	}
 	s.wakeOnCommit(ctx, row)
+	return nil
+}
+
+// EnqueueGatedSteps wakes the board lane as Enqueue does. Its row belongs to no issue — its
+// issue column is the bare project key (record.GatedStepsPublish) — and it is written by the
+// boot, where there is no outbox yet and the wake reaches nothing, and by the holder of
+// `gates.design`, where a live change of the design gate would otherwise wait on the lane's
+// next sweep before a person reading Dispatch saw what the deployment now holds work for
+// (gatedStepsHolder).
+func (s projectRecords) EnqueueGatedSteps(ctx context.Context, tx pgx.Tx, publish record.GatedStepsPublish, nextAt time.Time) error {
+	if err := s.Store.EnqueueGatedSteps(ctx, tx, publish, nextAt); err != nil {
+		return err
+	}
+	s.wakeOnCommit(ctx, record.OutboxRow{Issue: publish.Project, Kind: record.OutboxKindGatedStepsPublish})
 	return nil
 }
 
