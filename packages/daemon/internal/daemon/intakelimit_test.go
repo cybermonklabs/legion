@@ -53,10 +53,10 @@ var intakeHandlerLimitWindows = []struct {
 	// derived is IntakeHandlerLimitLine's second answer, true only when the window lifted the
 	// limit above that floor, which is what `legion start --check-config` prints on.
 	derived bool
-	// windowsClause is what the floor's sentence must say the derivation came to, written out
-	// here rather than built from intake.WindowsPerLimit: the line reads that constant, so a row
-	// that read it too would pass whatever it became. Empty for a window that derives its own
-	// limit, whose sentence carries no such clause.
+	// windowsClause is what the floor's sentence must say this window alone would derive,
+	// written out here rather than built from intake.WindowsPerLimit: the line reads that
+	// constant, so a row that read it too would pass whatever it became. Empty for a window
+	// that derives its own limit, whose sentence carries no such clause.
 	windowsClause string
 	// ceilingClause is whether the sentence ends with the clause about the cut coming too late.
 	ceilingClause bool
@@ -65,12 +65,12 @@ var intakeHandlerLimitWindows = []struct {
 }{
 	{
 		name: "the daemon's default window", window: 5 * time.Second,
-		limitSeconds: 600, decidedBy: intakeFloorDecided, windowsClause: "4 windows of it come to 20s",
+		limitSeconds: 600, decidedBy: intakeFloorDecided, windowsClause: "this window alone would derive 20s",
 		derived: false, ceilingClause: false, level: slog.LevelInfo,
 	},
 	{
 		name: "the last window the floor covers", window: 150 * time.Second,
-		limitSeconds: 600, decidedBy: intakeFloorDecided, windowsClause: "4 windows of it come to 600s",
+		limitSeconds: 600, decidedBy: intakeFloorDecided, windowsClause: "this window alone would derive 600s",
 		derived: false, ceilingClause: false, level: slog.LevelInfo,
 	},
 	{
@@ -132,12 +132,12 @@ func TestIntakeHandlerLimitLineNamesBothNumbersAndClausesOnlyAboveTheCeiling(t *
 				t.Errorf("IntakeHandlerLimitLine(worker_rpc_timeout_seconds=%s) = %q, want it to name the window as %q",
 					row.window, line, want)
 			}
-			// What the derivation came to, for the floor's sentence: the count is intake's
-			// WindowsPerLimit and the total is that many of this window, and a read added to a
-			// fact moves both. This is the one place either number is checked, since the line
-			// reads the constant and cmd/legion's verbatim row holds only the derived shape.
+			// What the window alone would derive, for the floor's sentence: intake's
+			// WindowsPerLimit of this window, so a read added to a fact moves it. This is the
+			// one place that figure is checked, since the line reads the constant and
+			// cmd/legion's verbatim row holds only the derived shape.
 			if row.windowsClause != "" && !strings.Contains(line, row.windowsClause) {
-				t.Errorf("IntakeHandlerLimitLine(worker_rpc_timeout_seconds=%s) = %q, want it to say what the derivation came to as %q",
+				t.Errorf("IntakeHandlerLimitLine(worker_rpc_timeout_seconds=%s) = %q, want it to say what this window alone would derive as %q",
 					row.window, line, row.windowsClause)
 			}
 			if derived != row.derived {

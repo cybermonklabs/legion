@@ -35,7 +35,9 @@ const (
 // at AckWait. A review makes three — whether its pull request is recorded (recordedPullRequest),
 // its truncated body (resolveReviewBody) and its author's repository permission
 // (resolveReviewPermission) — and handleMessage makes them one after another, so they add up
-// rather than overlap. Every other fact makes one read or none.
+// rather than overlap. Every other fact makes one read or none. The operator's sentence for the
+// limit names those three reads in its own words (daemon.IntakeHandlerLimitLine), written by
+// hand there, so a read added here has to be named there by hand too.
 const boundedReadsPerFact = 3
 
 // HandlerLimitCeiling is the derived limit above which a wedged handler's message no longer
@@ -47,19 +49,18 @@ const HandlerLimitCeiling = time.Hour
 
 // WindowsPerLimit is how many acknowledgement windows HandlerLimitFor gives one fact's handling:
 // one for each bounded read a fact may make (boundedReadsPerFact) and one more for the part
-// nothing bounds. It is exported because the operator's sentence for the limit names the count
-// and the total it comes to (daemon.IntakeHandlerLimitLine), and a copy of the number written
-// there by hand would go on printing the old count at every boot after a read was added here,
-// with every test still passing — the drift between a relation and its prose that
-// dispatch://INFRA-1574 exists to remove.
+// nothing bounds. It is exported because the operator's sentence for the limit says what this
+// window alone would derive, which is this many of it (daemon.IntakeHandlerLimitLine), and a
+// copy of the number written there by hand would go on printing the old one at every boot after
+// a read was added here, with every test still passing.
 const WindowsPerLimit = boundedReadsPerFact + 1
 
 // HandlerLimitFor is the limit a caller that sets no HandlerLimit gets for a given AckWait:
-// (boundedReadsPerFact + 1) * ackWait, floored at defaultHandlerLimit — derived true only when
-// the window lifted the limit above that floor. The first term, boundedReadsPerFact * ackWait, is
-// the bounded reads one fact may make, each of which handleMessage bounds at ackWait; the one
-// window more is for what nothing bounds, ApplyFact's wait on the one advisory lock plus the
-// transaction itself. So the bounded reads never take more than three quarters of the limit.
+// WindowsPerLimit * ackWait, floored at defaultHandlerLimit — derived true only when the window
+// lifted the limit above that floor. boundedReadsPerFact of those windows are the bounded reads
+// one fact may make, each of which handleMessage bounds at ackWait; the one window more is for
+// what nothing bounds, ApplyFact's wait on the one advisory lock plus the transaction itself.
+// So the bounded reads never take more than three quarters of the limit.
 //
 // That one window of headroom is a judgement, and what it is a judgement about is the lock wait:
 // ApplyFact's wait on pg_advisory_xact_lock(hashtext('legion.apply_fact')) cannot be derived from
@@ -104,11 +105,10 @@ type ConsumerSpec struct {
 	// nak the message with NakDelay. This consumer asks for one message at a time and has none
 	// outstanding while the handler runs, so JetStream sends the message again, and its
 	// delivered count rises, no sooner than that return: one NakDelay after the nak, or at the
-	// consumer's next pull when the step held the handler past about one AckWait after the
-	// limit and the window made the message redeliverable first, whichever the server takes
-	// first. A step that ignored its context would hold the message, and the warning, for the
-	// whole of its own run. This comment is where that mechanism is written; the rows that
-	// exercise it point here rather than retelling it.
+	// consumer's next pull where the step held the handler past about one AckWait after the
+	// limit, whichever the server takes first. A step that ignored its context would hold the
+	// message, and the warning, for the whole of its own run. This comment is where that
+	// mechanism is written, and the rows that exercise it point here for it.
 	HandlerLimit time.Duration
 	Logger       *slog.Logger
 	// Now is the clock Consumers reads when it records a consumer opened or a message handled,

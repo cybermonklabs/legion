@@ -45,8 +45,7 @@ import (
 // costs a couple of seconds; the sleep is five times it, so the gap this row measures between
 // the deadline and the handler's return is seconds rather than the milliseconds a loaded
 // machine's scheduling can add. What makes the message redeliverable while that sleep runs is
-// the sleep outlasting the limit by more than one acknowledgement window (1.6 s against 200 ms),
-// not the limit's ratio to the window.
+// the sleep outlasting cutHandlerLimit by more than consumerSpec's AckWait.
 const (
 	cutHandlerLimit = 400 * time.Millisecond
 	ignoredSleep    = 5 * cutHandlerLimit
@@ -64,7 +63,7 @@ const cutHandlerLine = "an intake handler outran its limit and was cut"
 // has to report the deadline it was given, when its sleep returned, and what the daemon had
 // written about the message by that moment.
 //
-// Only the first delivery sleeps: that second delivery is how the row sees the message come
+// Only the first delivery sleeps: the second delivery is how the row sees the message come
 // back, and a second sleep would only hold it in the daemon for another limit. Which of the nak
 // and the expired window brings it is ConsumerSpec.HandlerLimit's account and the race the
 // comment at the end of the row records.
@@ -208,10 +207,10 @@ func TestTheCutEndsAHandlerOnceItsStepHonoursTheCancelledContext(t *testing.T) {
 	// after the first returned cannot fail: this consumer works one message at a time
 	// (jetstream.PullMaxMessages(1) in consumeConsumer), so no second delivery can reach the
 	// step before the first returns. Which of the two things that bring it back actually did —
-	// the acknowledgement window, which the sleep outlasts, or the nak that follows the cut — is
-	// a race nothing here settles: the window's
-	// redelivery is marked while the step sleeps, but with no pull request outstanding it is
-	// handed over only at the client's next pull, which races the nak the same return sends.
+	// the acknowledgement window, which the sleep outlasts, or the nak that follows the cut —
+	// is a race nothing here settles: the window's redelivery is marked while the step sleeps,
+	// but with no pull request outstanding it is handed over only at the client's next pull,
+	// which races the nak the same return sends.
 	// Measured in this pod with NakDelay at 3 s: the second delivery reached the step 21-28 ms
 	// after the return over fifteen runs on an idle machine, the window's, and exactly 3.03 s
 	// under a loaded one, the nak's. So an assertion either way is an assertion about which
