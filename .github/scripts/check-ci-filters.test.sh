@@ -748,6 +748,121 @@ check "fails once the step is gone" "$(is "$status" 1)"
 check "names the step, its job and the file that does not have it" \
   "$(contains "$out" 'a why cites step "echo build" of job build, which .github/workflows/site.yaml does not have')"
 
+# A job that calls a reusable workflow gives it its steps, so the go commands, the `env:` blocks
+# and the shells that decide what that job compiles are in the called file. The check reads them
+# there, exactly as it reads a job's own steps: ci.yaml's dispatch-browser job does this with
+# dispatch-browser.yaml, whose multiprocess job builds the Dispatch server.
+
+# calls_workflow <root>: a `suite` job that calls .github/workflows/suite.yaml, whose `rows` job
+# builds ./cmd/app, with the filter, the ci-ok map entry and the gate that go with it.
+calls_workflow() {
+  local root=$1
+  replace "$root/.github/workflows/ci.yaml" '      image: ${{ steps.filter.outputs.image }}' \
+    $'      image: ${{ steps.filter.outputs.image }}\n      suite: ${{ steps.filter.outputs.suite }}'
+  replace "$root/.github/workflows/ci.yaml" "            image:" \
+    $'            suite:\n              - \'.github/workflows/ci.yaml\'\n              - \'.github/workflows/suite.yaml\'\n              - *workspace\n              - \'mod/cmd/app/*\'\n              - \'mod/lib/*\'\n            image:'
+  replace "$root/.github/workflows/ci.yaml" '{"app": "app", "image": "image"}' \
+    '{"app": "app", "image": "image", "suite": "suite"}'
+  # The verdict job waits for every job of the file, and a job of ci.yaml carries the term that
+  # holds it back on a re-run attempt of a merge-group run: rules 7 and 12 hold this job to both,
+  # as they hold the real dispatch-browser job that calls dispatch-browser.yaml.
+  replace "$root/.github/workflows/ci.yaml" "    needs: [changes, app, image, lint]" \
+    "    needs: [changes, app, image, lint, suite]"
+  cat >> "$root/.github/workflows/ci.yaml" <<'YAML'
+  suite:
+    needs: changes
+    if: needs.changes.outputs.suite == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    uses: ./.github/workflows/suite.yaml
+    with:
+      ci-ok-changes: ${{ toJSON(needs.changes) }}
+YAML
+  cat > "$root/.github/workflows/suite.yaml" <<'YAML'
+name: Suite
+on:
+  workflow_call:
+    inputs:
+      ci-ok-changes:
+        type: string
+        default: ""
+jobs:
+  rows:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Build the app
+        run: go build ./cmd/app
+        working-directory: mod
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: suite
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+YAML
+  replace "$root/.github/scripts/ci_job_reads.py" 'EXCLUDED = {' \
+    $'GATES.append(gate("suite", "suite", runs=[\n    run("mod", ["./cmd/app"], at("rows", "Build the app", ".github/workflows/suite.yaml") + ": go build ./cmd/app",\n        step="Build the app", text="go build ./cmd/app", mode="build"),\n], reads=[Read(".github/workflows/ci.yaml", "a job reads its own definition"),\n          Read(".github/workflows/suite.yaml", "the suite reads the definition of the steps it runs")]))\nEXCLUDED = {'
+}
+
+echo "case: a gate whose job calls a workflow is read over that workflow's jobs"
+root=$(fixture called-workflow-green)
+calls_workflow "$root"
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "counts the called job's files" "$(contains "$out" '^suite: [0-9][0-9]* files, 0 uncovered (filter suite)$')"
+
+echo "case: a package added to the called workflow's go command, outside the job's filter"
+root=$(fixture called-workflow-package)
+calls_workflow "$root"
+replace "$root/.github/workflows/suite.yaml" "        run: go build ./cmd/app" "        run: go build ./cmd/app ./other"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the job of the called file and the line" \
+  "$(contains "$out" 'job rows of .github/workflows/suite.yaml, which job suite calls step "Build the app" runs `go build ./cmd/app ./other`')"
+check "names the package the called job now also builds" "$(contains "$out" 'it also names ./other')"
+
+echo "case: a go command of the called workflow that no Run claims"
+root=$(fixture called-workflow-unclaimed)
+calls_workflow "$root"
+replace "$root/.github/workflows/suite.yaml" "      - name: Build the app" \
+  $'      - name: Vet the library\n        run: go vet ./lib\n        working-directory: mod\n      - name: Build the app'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "asks for the Run" \
+  "$(contains "$out" 'job rows of .github/workflows/suite.yaml, which job suite calls step "Vet the library" runs `go vet ./lib`, which no Run in ci_job_reads.py lists')"
+
+# The three comments of dispatch-browser.yaml that tell a reader to keep a name out of a step's
+# `env:` rest on this: the called file's env: and shell: reach the gate's go commands, so one
+# the check cannot read drops them to everything a go command can read.
+echo "case: a name outside ENV_ALLOWED in the called workflow's step env"
+root=$(fixture called-workflow-env)
+calls_workflow "$root"
+replace "$root/.github/workflows/suite.yaml" "        working-directory: mod" \
+  $'        working-directory: mod\n        env:\n          PROBE_SETTING: on'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the env it cannot read" "$(contains "$out" 'step "Build the app".s env sets PROBE_SETTING')"
+check "and falls to every Go file of the repository" "$(contains "$out" 'mod/other/other.go')"
+
+echo "case: a shell: on the called workflow's step"
+root=$(fixture called-workflow-shell)
+calls_workflow "$root"
+replace "$root/.github/workflows/suite.yaml" "        working-directory: mod" \
+  $'        working-directory: mod\n        shell: bash'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the shell" "$(contains "$out" 'step "Build the app" runs under shell: `bash`')"
+check "and falls to every Go file of the repository" "$(contains "$out" 'mod/other/other.go')"
+
+# A `#` line is not a command. dispatch-browser.yaml's install steps say in a comment that the
+# job writes nothing to $GITHUB_ENV, and reading that as a write would be exactly backwards.
+echo "case: a comment naming \$GITHUB_ENV in the called workflow's step"
+root=$(fixture called-workflow-env-comment)
+calls_workflow "$root"
+replace "$root/.github/workflows/suite.yaml" "        run: go build ./cmd/app" \
+  $'        run: |\n          # This job writes nothing to $GITHUB_ENV, for the reason its head gives.\n          go build ./cmd/app'
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
 echo "case: a package added to a go command the table claims, outside the job's filter"
 root=$(fixture appended-package)
 replace "$root/.github/workflows/ci.yaml" "run: go test ./cmd/app ./lib" "run: go test ./cmd/app ./lib ./other"
@@ -1231,6 +1346,47 @@ check "fails" "$(is "$status" 1)"
 check "names the job and the family" \
   "$(contains "$out" "job fill's actions/cache/restore of family go-app has restore-keys")"
 
+# A job of ci.yaml that calls a local workflow gives it its steps, cache steps among them: the
+# real dispatch-browser job restores the browser and apt archive families in the shard and alone
+# jobs of dispatch-browser.yaml. So the rule reads those jobs' restores as it reads ci.yaml's
+# own, and names the file that holds them. Read over ci.yaml alone, the fill below would be a
+# family nothing restores.
+#
+# suite_cache <root>: a second family, go-suite, that ci-caches.yaml's fill job saves and only
+# the called workflow's `rows` job restores. Call it after cache_workflow and calls_workflow.
+suite_cache() {
+  cat >> "$1/.github/workflows/ci-caches.yaml" <<'YAML'
+      - if: steps.go-app.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-suite-${{ runner.os }}
+YAML
+  replace "$1/.github/workflows/suite.yaml" "      - name: Build the app" \
+    $'      - id: go-suite-cache\n        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0\n        with:\n          path: |\n            ~/go/pkg/mod\n            ~/.cache/go-build\n          key: go-suite-${{ runner.os }}\n      - name: Build the app'
+}
+
+echo "case: a family only a called workflow's job restores"
+root=$(fixture cache-called-workflow)
+cache_workflow "$root"
+calls_workflow "$root"
+suite_cache "$root"
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a called workflow's restore key that drifted from the save's"
+root=$(fixture cache-called-workflow-drift)
+cache_workflow "$root"
+calls_workflow "$root"
+suite_cache "$root"
+replace "$root/.github/workflows/suite.yaml" 'key: go-suite-${{ runner.os }}' 'key: go-suite-${{ runner.os }}-v2'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the called workflow's job and both keys" \
+  "$(contains "$out" 'job fill saves family go-suite under key .*, but job rows of .github/workflows/suite.yaml restores it under .*-v2')"
+
 # ci-caches.yaml's race build fills the cache ci.yaml's race step restores, so the packages it
 # compiles are DAEMON_RACE_PACKAGES, each spelled as a go command spells it. A package on one
 # side alone fails nothing by itself - the fill holds a race binary no job restores, or the step
@@ -1682,8 +1838,8 @@ echo "case: the slow-suite list a reader is given names the jobs the label gates
 # one by one. The set it must equal is derivable from the jobs rather than from the outputs: a
 # slow suite is a job whose `if:` tests a changes output whose own expression carries the
 # `full-ci` term. Reading the outputs alone is not enough, because two jobs can share one output
-# - main's envoy-go-docs-finalizers rides envoy_go_race_docs - and then the guide can name eight
-# jobs while nine are held back. Nothing else holds the two together, so a job another tree adds
+# - main's envoy-go-docs-finalizers rides envoy_go_race_docs - and then the guide can name seven
+# jobs while eight are held back. Nothing else holds the two together, so a job another tree adds
 # or deletes, which a forward merge then brings here, leaves the guide naming a job that does not
 # exist or missing one that does, in the file every agent of this repository loads.
 mismatch=$(PYTHONDONTWRITEBYTECODE=1 python3 - "$script_dir/../workflows/ci.yaml" "$script_dir/../../AGENTS.md" <<'PY'

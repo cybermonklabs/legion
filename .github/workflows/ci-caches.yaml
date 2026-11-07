@@ -12,11 +12,12 @@ name: CI caches
 # request lands in that run's own scope, which the next pull request's run cannot read, so it
 # would reach nobody.
 #
-# Five Go families, each one a restore step of ci.yaml names, keyed on the Go version the
+# Five Go families, each one a restore step of ci.yaml's run names, keyed on the Go version the
 # family's own module installs: go-notices (lint's notices step), go-daemon (typecheck, test and
-# pi-legion), go-envoy (dispatch-binaries, dispatch-browser-multiprocess, envoy-go-checks,
-# envoy-go-race-docs, envoy-go-docs-finalizers, listener-server-change, envoy-e2e-local and
-# envoy-session-stall), go-envoy-test (envoy-go) and go-envoy-infra (envoy-infra-go). One job per
+# pi-legion), go-envoy (dispatch-binaries, envoy-go-checks, envoy-go-race-docs,
+# envoy-go-docs-finalizers, listener-server-change, envoy-e2e-local, envoy-session-stall and
+# the multiprocess job of .github/workflows/dispatch-browser.yaml, which ci.yaml's
+# dispatch-browser job calls), go-envoy-test (envoy-go) and go-envoy-infra (envoy-infra-go). One
 # Go setup, since the key carries the version that module's go.mod names: the daemon's go.mod for
 # go-daemon and for go-notices, which lint installs the daemon's Go for; the envoy module's for
 # go-envoy and go-envoy-test; the infra module's for go-envoy-infra. Each family is first looked up
@@ -26,6 +27,13 @@ name: CI caches
 # nothing, so a run that finds every key costs a checkout and a setup-go. Where a job fills two
 # families it fills the smaller one first, so the entry that carries the other's objects too is
 # the one that was large already.
+#
+# Five families and no more: every entry this workflow fills is a Go family. Two that were not
+# went with the jobs that read them - the Playwright browsers and the .deb files of the apt list
+# the browser suite installed - because dispatch-browser.yaml's shard and alone jobs run in the
+# image this repository builds, which carries the browsers and their host packages, so neither
+# entry has a restore left to serve (dispatch://INFRA-1443). A save whose restore is gone is
+# what check-ci-filters.sh refuses, so the two jobs that wrote them are gone with them.
 #
 # go-docs is not here: docs-pages.yaml saves it on this same push, from the build job it shares
 # with ci.yaml's docs job. The Bun cache is not here either: .github/actions/setup-bun reads and

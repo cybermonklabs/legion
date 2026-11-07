@@ -1,0 +1,1342 @@
+name: Dispatch browser suite
+
+# Every browser job of the Dispatch suite, in one place. ci.yaml's dispatch-browser job calls it
+# with the pull-request lane on a pull request that carries no `full-ci` label and the full lane
+# on everything else, and the nightly workflow calls it with the full lane. The rows are spread
+# over four shard machines, the three `-alone` projects get a machine each, and one merge job
+# joins what they wrote into a single report and publishes the run's flake rate.
+#
+# Two lanes, one input. `pull-request` runs the two projects a pull request is held to, `chromium`
+# and `iphone`; `full` runs all eight parallel projects, the three `-alone` ones and the
+# two-process job. So an unlabelled pull request pays for the rows that answer it, and the merge
+# queue, a labelled pull request, a workflow_dispatch and the nightly run pay for the rest, each
+# of which has the wall time for them.
+#
+# A reusable workflow, not a composite action, for the reason docs-site.yaml's head comment
+# gives: `services:` is a job-level key and a composite action's step keys do not include
+# timeout-minutes, and this file needs both. That is also why the shard and alone jobs repeat
+# their step lists rather than sharing one - they are kept textually identical where they are the
+# same, so a reader can diff them.
+#
+# That reason is a composite action's, and not a script's: a step that calls a script keeps its
+# own timeout-minutes. So the one body the two jobs really share is a script, written once and
+# called from both - .github/scripts/dispatch-browser-samples.sh for the memory and CPU sampler
+# and its two readings - and that file's head is where what it does and why is written down.
+# Two more stood beside it, the Playwright install and the key its apt archive cache was
+# restored under: the shard and alone jobs run in the image this repository builds now, which
+# carries the three browsers and every host package they need, so both scripts are gone with
+# the steps that called them (dispatch://INFRA-1443).
+#
+# The budget rule every job and step below follows, this file being where it is written down now
+# that ci.yaml's dispatch job is gone: a step's budget is its measured maximum plus 15 per cent,
+# rounded up to the next whole minute, with a floor of two minutes; a job's budget is the sum of
+# its step budgets plus the measured maximum of every step without one. The budgets sit on the
+# steps and not on the job alone, because a step the runner cancels at its own budget fails that
+# step and names it (`The action '<step name>' has timed out after <N> minutes.`), where a job
+# budget cancels the job. So the `if: always()` and `if: failure()` upload steps still run and the
+# report, the memory samples and the CPU samples still reach the run, which a cancelled job loses.
+# A job budget is the backstop above the sum of its step budgets, so it never fires first.
+#
+# No permissions: block, so each caller's permissions stand. The merge job reads the run's jobs
+# through the API (`actions: read`) and ends with the ci-ok report (`checks: write`), both of
+# which ci.yaml already gives the job that calls this workflow.
+on:
+  workflow_call:
+    inputs:
+      lane:
+        description: >-
+          Which projects run: `pull-request` for `chromium` and `iphone`, the two a pull request
+          is held to, or `full` for every project, the `-alone` ones and the two-process job
+          among them. The shard job reads it for the projects it runs; no job reads it for a
+          browser to install any more, since the image the shard and alone jobs run in carries
+          all three engines. Any other value fails the shard job's browser step by name, before
+          it starts a row.
+        type: string
+        required: true
+      ci-ok-changes:
+        description: >-
+          ci.yaml's `toJSON(needs.changes)`: end the merge job with ci-ok's report
+          (.github/actions/ci-ok-report), as every job of ci.yaml ends, for its dispatch-browser
+          job. Empty for the nightly workflow, which reports no check.
+        type: string
+        default: ""
+
+env:
+  # A `|` between proxy entries makes a go command fall through to the next source after ANY error,
+  # where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
+  # proxy.golang.org reset a download mid-stream and turned a Go lane red on a module whose hash
+  # go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same bytes
+  # straight from the source and checks them against go.sum, so this is a second path, not a weaker
+  # check.
+  GOPROXY: https://proxy.golang.org|direct
+
+jobs:
+  shard:
+    runs-on: ubuntu-24.04
+    # One leg of the lane's rows. Each leg runs the lane's projects with `--shard=N/4`, one
+    # Playwright worker per lane of e2e/run.ts, each lane with a Postgres, a harness and a
+    # file-store bucket of its own (packages/dispatch/e2e/run.ts), so this job has no `postgres:`
+    # service and no job-level DATABASE_URL: a run of more than one lane refuses a caller-set
+    # DATABASE_URL, since one database cannot serve lanes that truncate it per row.
+    #
+    # The image this repository builds and publishes for every CI job that can launch WebKit or
+    # Firefox (.github/docker/browser.Dockerfile, the one `built:` row of .github/ci-images.yaml,
+    # tag browser-5f5aca44): Playwright's own browser host, which bakes Chromium, WebKit and
+    # Firefox and every host package they need under /ms-playwright - where its
+    # PLAYWRIGHT_BROWSERS_PATH points - with PostgreSQL 18 and pgvector, the SeaweedFS `weed`
+    # binary, gh, jq, yq, python3, flock and a DejaVu core font added. So this job downloads no
+    # browser and installs no browser host package from Ubuntu's mirror pool at run time
+    # (dispatch://INFRA-1443). The digest is written out as a literal rather than through an
+    # expression because .github/scripts/check-ci-images.sh reads a `container:` image out of
+    # the parsed YAML and refuses one holding a `${{ }}`, which it cannot resolve to a row.
+    #
+    # --user 1001 is the image's own pwuser, and the uid the runner owns $GITHUB_WORKSPACE and
+    # every bind mount with: initdb refuses to run as root and refuses a uid with no passwd
+    # entry, so the lanes' clusters need exactly this uid, and a job that is not root keeps
+    # Chromium's own sandbox on. --ipc=host is Playwright's own Docker guidance: without it the
+    # container gets Docker's default 64 MB of /dev/shm and Chromium runs out of shared memory
+    # mid-page. With it /dev/shm is the host's, 7.9 GB, which this job's first step reads, so
+    # `--shm-size=2g` is not needed beside it. --init gives the container a pid 1 that reaps the
+    # browsers' orphans, which four lanes of them make many of.
+    container:
+      image: ghcr.io/cybermonklabs/legion/ci@sha256:5f5aca44f3ada006603a0ff98681f879f0825fdffcb14004d33361df4b92df83
+      options: --user 1001 --ipc=host --init
+    #
+    # This job runs no `go` command, directly or through a script: ci.yaml's dispatch-binaries
+    # job builds every binary the suite's scripts would have built and hands them over in one
+    # artifact. It has to be that way round, and ci.yaml's comment on that job says why:
+    # ci_filter_coverage.py's shell_reason counts a `container:` as something that can move what
+    # a go command compiles, so a go command here would fall out of check-ci-filters.sh's
+    # reduction and be counted as reading every Go file of the repository. For the same reason
+    # this job pins no `defaults.run.shell` and no step-level `shell:`. So every `run:` of this
+    # job is executed by `sh -e {0}`, not bash - measured in job 128496236572, whose every step
+    # logs that shell - and each one must stay POSIX. A script a step calls carries its own
+    # `#!/usr/bin/env bash` and is unaffected.
+    #
+    # The lanes' PostgreSQL binaries and worker count are set on the browser step's own command
+    # line, where they have always been, rather than in an `env:`. DISPATCH_E2E_FILE_STORE_ENDPOINT
+    # and DISPATCH_E2E_FILE_STORE_BUCKET are in ci_filter_coverage.py's ENV_ALLOWED and stay in
+    # the browser step's `env:`; the multiprocess job's pinned build step below is read under
+    # this file's own `env:` and defaults, so neither may grow a name outside that set.
+    #
+    # The budgets below, this one and the one on the browser step, are measured, on the two runs
+    # of the head that sharded this suite: 42334424798, the pull-request lane, and 42316487530,
+    # the full lane. Four legs each, in shard order, in seconds:
+    #
+    #   step                                     pull-request lane        full lane
+    #   Browser-test dispatch dashboard         413, 293, 307, 292  419, 297, 334, 295
+    #   every other step summed                  76, 67, 72, 85      79, 76, 80, 77
+    #
+    # The rule is in this file's head. The browser step's maximum is the full lane's 419 s, so
+    # 419 x 1.15 = 482 s -> 9 min, which is the bound this issue's R1 asks of the longest
+    # shard's browser step, and which the container does not move: it is the same rows in the
+    # same browsers.
+    #
+    # The job budget is NOT the rule's arithmetic and is to be re-derived. What it was is the
+    # sum of a 22-minute Playwright install step, the browser step's 9 and 92 s of every other
+    # step summed; that install step is gone, and the steps the container brought - the
+    # container's own `Initialize containers`, the artifact download, the PostgreSQL reading and
+    # the file store's start and wait - have no reading on this job yet. The figure below is
+    # therefore left at what it was, which is a backstop above anything the steps can sum to
+    # rather than a measurement, and the implementer re-derives it from a run of this shape.
+    #
+    # The rows behind those seconds were the suite of the head those runs measured. Listed at
+    # this head, after the forward merges of main, the suite holds 1,200 rows: 1,145 in the
+    # eight projects the full lane's four shards run, of which 1,058 are in the two the
+    # pull-request lane runs. The remaining 55 are the three `-alone` projects', which the alone
+    # job runs.
+    timeout-minutes: 33
+    strategy:
+      fail-fast: false
+      # Four legs. The count is written here and in the `--shard` denominator of the browser step
+      # below, and nowhere else, so the two move together: a denominator larger than the leg list
+      # would leave the rows of the missing legs unrun with nothing red.
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      # The first step of this container's first run, and of every run after it: these readings
+      # are what decide the container's own shape, and they are deliberate rather than left over
+      # from the spike. `id -u`, `id -g`, `id` and $HOME say which user the job really runs as
+      # and whether that uid has a passwd entry and a home, which is what initdb refuses to run
+      # without. The `ls -ld` of $GITHUB_WORKSPACE, $RUNNER_TEMP, /__w, /__e, /github/home and
+      # /opt/hostedtoolcache says which of the runner's own directories uid 1001 can write, and
+      # the ownership of /opt/hostedtoolcache and $RUNNER_TEMP is what decides whether a setup
+      # action can install a tool at this uid at all. /dev/shm's mode and size decide whether
+      # `--shm-size=2g` replaces `--ipc=host` in this job's container options above, since
+      # shared memory is the one thing Chromium needs the host's IPC namespace for. nproc,
+      # free -m and df say what four lanes share. `go` and `docker` are expected MISSING: this
+      # job runs no go command, as the head above says, and a job inside a container can start
+      # no container. `bun` is expected MISSING too, since ./.github/actions/setup-bun installs
+      # it further down.
+      - name: Read what this container gives the suite
+        run: |
+          id -u
+          id -g
+          id
+          echo "HOME=$HOME"
+          ls -ld "$GITHUB_WORKSPACE" "$RUNNER_TEMP" /__w /__e /github/home /opt/hostedtoolcache || true
+          ls -ld /dev/shm
+          df -h /dev/shm
+          nproc
+          free -m || true
+          df -h /tmp "$RUNNER_TEMP"
+          for tool in psql initdb pg_ctl pg_config python3 flock gh jq yq weed git openssl unzip tar curl node bun go docker sudo; do
+            printf '%-14s %s\n' "$tool" "$(command -v "$tool" || echo MISSING)"
+          done
+          pg_config --version
+          python3 --version
+          node --version
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # What ci.yaml's dispatch-binaries job built, in place of this job's own actions/setup-go
+      # and go-envoy cache restore, which are gone: with no go command left here they bought
+      # nothing, and the restore was there only for the build run-server.sh no longer does.
+      # The directory is the one run-broker.sh built the broker's three binaries in, which is
+      # where packages/dispatch/e2e/real-broker.ts:30-31 runs requestseed from; the server
+      # binary rides along in it and is named by path below.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dispatch-e2e-binaries
+          path: packages/envoy/out/dispatch-e2e-broker
+      # actions/upload-artifact keeps no executable bit, so all four arrive at mode 0644.
+      # run-server.sh:201-203 and run-broker.sh refuse a path that is not executable, and that
+      # refusal would otherwise surface in a lane's own log, far from this cause.
+      - name: Make the downloaded binaries executable
+        run: chmod +x packages/envoy/out/dispatch-e2e-broker/*
+      - uses: ./.github/actions/setup-bun
+      - run: bun install --frozen-lockfile
+      - name: Build contracts for dispatch e2e
+        # e2e/agent-view.e2e.ts imports AGENT_STREAM_LIMITS and capAgentStreamText as values
+        # (LEGION-548), which Playwright's own Node resolution reads from contracts' built
+        # dist/: under Node the package's "default" condition is dist/index.js. A type-only
+        # import needs none of it, and neither does the dashboard's own Vite build, which
+        # reaches contracts' src/ through the aliases at packages/dispatch/web/vite.config.ts
+        # (the "bun" export condition is Bun's own and is no part of how Vite resolves it).
+        run: bun run build
+        working-directory: packages/contracts
+      # The build writes dist/THIRD_PARTY_NOTICES.txt, failing on a bundled package whose license
+      # cannot be determined; the listing shows the build shipped it.
+      - name: Build dispatch dashboard
+        run: |
+          bun run build:web
+          ls -l web/dist/THIRD_PARTY_NOTICES.txt
+        working-directory: packages/dispatch
+      # What the lanes' databases are, read from the same binaries they use and before they
+      # use them: packages/dispatch/e2e/harness-postgres.ts runs `initdb` once per run and
+      # copies the data directory per lane, and this starts one of those clusters and asks it.
+      # The suite's own lanes leave nothing behind to read afterwards, since e2e/run.ts removes
+      # its run directory when it ends, so the server version and the extension this job's
+      # image carries are recorded here or nowhere. It also times what the provider costs,
+      # which is the figure harness-postgres.ts records for itself.
+      - name: Read the lanes' PostgreSQL and time its provider
+        run: |
+          bin=/usr/lib/postgresql/18/bin
+          work="$RUNNER_TEMP/pg-reading"
+          rm -rf "$work"
+          mkdir -p "$work/template"
+          start=$(date +%s.%N)
+          "$bin/initdb" -D "$work/template/pgdata" -U postgres --auth=trust --no-sync -E UTF8 > /dev/null
+          after_initdb=$(date +%s.%N)
+          "$bin/pg_ctl" -D "$work/template/pgdata" -l "$work/template/postgres.log" \
+            -o "-p 55432 -h 127.0.0.1 -k $work/template" -w start > /dev/null
+          url="postgres://postgres@127.0.0.1:55432/postgres?sslmode=disable"
+          "$bin/psql" "$url" -v ON_ERROR_STOP=1 -c 'create database dispatch_e2e' > /dev/null
+          lane="postgres://postgres@127.0.0.1:55432/dispatch_e2e?sslmode=disable"
+          "$bin/psql" "$lane" -v ON_ERROR_STOP=1 -c 'create extension vector' > /dev/null
+          "$bin/psql" "$lane" -XAt -v ON_ERROR_STOP=1 -c 'select version()'
+          "$bin/psql" "$lane" -XAt -v ON_ERROR_STOP=1 \
+            -c "select 'vector ' || extversion from pg_extension where extname = 'vector'"
+          "$bin/pg_ctl" -D "$work/template/pgdata" -m fast -w stop > /dev/null
+          after_template=$(date +%s.%N)
+          for lane_number in 0 1 2 3; do
+            mkdir -p "$work/lane-$lane_number"
+            cp -a "$work/template/pgdata" "$work/lane-$lane_number/pgdata"
+          done
+          done_at=$(date +%s.%N)
+          awk -v a="$start" -v b="$after_initdb" -v c="$after_template" -v d="$done_at" 'BEGIN {
+            printf "initdb:               %.2f s\n", b - a
+            printf "template db + vector: %.2f s\n", c - b
+            printf "four lane copies:     %.2f s\n", d - c
+            printf "the whole provider:   %.2f s\n", d - a
+          }'
+          rm -rf "$work"
+      # The file store the browser suite uploads through: the server runs with
+      # DISPATCH_FILE_STORE_BUCKET set (e2e/run-server.sh reads
+      # DISPATCH_E2E_FILE_STORE_ENDPOINT), so every upload and download the dashboard makes goes
+      # through the store, as production's does. CI ran it as a `docker run` of this
+      # repository's copy of the SeaweedFS image; a job inside a container can neither start a
+      # container nor reach one, so that image's `weed` binary is baked into this job's image
+      # (.github/docker/browser.Dockerfile) and started here, in the background, on the same
+      # 127.0.0.1:18333. Its data directory and its log go under $RUNNER_TEMP, which the run
+      # keeps and the checkout never sees.
+      #
+      # The three flags after `-dir` are the image's, not weed's own defaults, and they come
+      # with the binary because its entrypoint does not: that image's /entrypoint.sh adds
+      # `-volume.max=0 -master.volumePreallocate -master.volumeSizeLimitMB=1024` to every
+      # `server` it runs, and copying the binary out left them behind. `-volume.max=0` is the
+      # one that bites. Without it a volume server takes 8 volumes and no more, the master
+      # grows seven for the first bucket it is asked about, and every later bucket is refused
+      # with `topo failed to pick 1 from 0 node candidates` and
+      # `create 7 volume, created 0: Not enough data nodes found!`. The suite makes one bucket
+      # per lane, so the readiness wait's own bucket worked and ten upload rows of run
+      # 42409479235 failed on 502s from the Dispatch server's PutObject, all of them for
+      # `dispatch-e2e-files-lane-*`.
+      #
+      # So, for whoever moves the seaweedfs row of .github/ci-images.yaml to a new version:
+      # read that image's /entrypoint.sh again and reconcile these flags with its `server`
+      # case, because they are the script's and this job runs the binary without it. The row
+      # pins a digest, so the entrypoint cannot change under this job between bumps, which is
+      # what makes the rule a read at bump time rather than a check on every run. Read it with
+      # `crane export ghcr.io/cybermonklabs/legion/ci@<the row's digest> - | tar -xO entrypoint.sh`.
+      - name: Start an S3-compatible server for uploaded files
+        run: |
+          mkdir -p "$RUNNER_TEMP/weed"
+          nohup weed server -s3 -dir="$RUNNER_TEMP/weed" -ip=127.0.0.1 -s3.port=18333 \
+            -volume.max=0 -master.volumePreallocate -master.volumeSizeLimitMB=1024 \
+            > "$RUNNER_TEMP/weed.log" 2>&1 &
+      - name: Wait for the S3-compatible server
+        # The readiness wait of the step that started it. An anonymous PUT makes the bucket, as
+        # each lane makes its own (dispatch-e2e-files-lane-N) with the same request
+        # (e2e/run.ts). Then an object is written, read back and deleted, because a bucket PUT
+        # is answered by the filer alone and says nothing about the volume server the objects
+        # land in: run 42404500479's job 128499619657 passed this wait with a bucket and then
+        # failed ten upload rows nineteen minutes later, every one of them a 502 from the
+        # Dispatch server's own PutObject. A store that cannot take an object now fails here, by
+        # this step's name, with the log the step above redirected -- which is what a job in a
+        # container has in place of `docker logs`.
+        run: |
+          for attempt in $(seq 1 60); do
+            curl -sf -o /dev/null http://127.0.0.1:18333/ && break
+            [ "$attempt" -lt 60 ] || { cat "$RUNNER_TEMP/weed.log"; exit 1; }
+            sleep 1
+          done
+          store=http://127.0.0.1:18333/dispatch-e2e-files
+          curl -sf -X PUT -o /dev/null "$store" || { cat "$RUNNER_TEMP/weed.log"; exit 1; }
+          # The write is retried: the bucket exists as soon as the filer answers, while the
+          # volume server the object lands in can still be coming up behind it.
+          for attempt in $(seq 1 60); do
+            printf 'ready' | curl -sf -X PUT --data-binary @- -o /dev/null "$store/readiness" && break
+            [ "$attempt" -lt 60 ] || { echo "::error::the file store took no object"; cat "$RUNNER_TEMP/weed.log"; exit 1; }
+            sleep 1
+          done
+          [ "$(curl -sf "$store/readiness")" = ready ] || { echo "::error::the file store did not serve back what it stored"; cat "$RUNNER_TEMP/weed.log"; exit 1; }
+          curl -sf -X DELETE -o /dev/null "$store/readiness"
+      - name: Browser-test dispatch dashboard (shard ${{ matrix.shard }} of 4)
+        # `bun run e2e` builds the SPA itself, which would rebuild it a second time in this job.
+        # Calling the wrapper directly reuses the "Build dispatch dashboard" step's dist above and
+        # drops this job to one Vite build. Safe because that build and this one are now the same
+        # binary: `packages/dispatch` no longer has an E2E-only build flag (removed with its sole,
+        # unconsumed consumer, the `window.__dispatchDocument` inspection probe). e2e/run.ts starts
+        # the harness on ports the OS chooses and runs Playwright with them; the config starts no
+        # server.
+        #
+        # DISPATCH_E2E_WORKERS is how many lanes e2e/run.ts starts, one per Playwright worker,
+        # each a harness, a bucket and a Postgres of its own, that last one an initdb and a
+        # pg_ctl out of DISPATCH_E2E_PG_BIN (e2e/harness-postgres.ts), this image's PostgreSQL 18
+        # with pgvector. They are set on the command line, not in this step's `env:`, for the
+        # reason the job's head gives.
+        #
+        # The memory and CPU sampler both this job and the alone job run is
+        # .github/scripts/dispatch-browser-samples.sh: MemAvailable and where the CPU goes,
+        # every 5 s for the length of this step, started below and read back at the end of it.
+        # Its head says what each reading holds and what it does not; on this job `everything
+        # else` holds the file store too, which runs beside the lanes. Both sample files are
+        # written into the record directory the step below collects and uploads, under
+        # $RUNNER_TEMP beside the lanes' own run directory: a file this step wrote into the
+        # checkout would leave it dirty afterwards. The blob report goes beside the list
+        # reporter's output, so a green run reports what it ran too.
+        timeout-minutes: 9
+        run: |
+          # $RUNNER_TEMP holds everything this step writes, the run directory of e2e/run.ts
+          # (mkdtempSync in os.tmpdir(), :183) among it, which is what the upload steps below
+          # read. TMPDIR is exported on the command line, not in this step's `env:`, for the
+          # reason the job's head gives.
+          export TMPDIR="$RUNNER_TEMP"
+          # The two directories this step's output is sorted into, each of them one artifact
+          # below: the leg's report, which the merge job reads, and the record of what the run
+          # left behind. One directory per artifact because only the first line of a multi-line
+          # `path:` is translated into the container's own filesystem - the step below says what
+          # that cost when it was not done.
+          mkdir -p "$RUNNER_TEMP/leg-report/rows" "$RUNNER_TEMP/dispatch-e2e-record"
+          # The sampler, started as a background process of this step's own shell and killed by
+          # the trap below, as the alone job starts and kills it. It writes memory-samples.txt
+          # and cpu-samples.txt into the directory it is given, which the record below is, and
+          # the reading at the end of this step takes them from there.
+          "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-samples.sh" sample "$RUNNER_TEMP/dispatch-e2e-record" &
+          sampler=$!
+          trap 'kill "$sampler" 2>/dev/null || true' EXIT
+          # This image's own PostgreSQL 18 with pgvector, through e2e/harness-postgres.ts's
+          # binaries provider: initdb and pg_ctl live in that directory alone, and a job inside a
+          # container has no docker to run the image provider's digest with.
+          export DISPATCH_E2E_PG_BIN=/usr/lib/postgresql/18/bin
+          # What ci.yaml's dispatch-binaries job built, which run-server.sh and run-broker.sh
+          # execute instead of building: the server by its path, the broker's three by the
+          # directory that holds them.
+          export DISPATCH_E2E_SERVER_BIN="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker/dispatch"
+          export DISPATCH_E2E_BROKER_BIN_DIR="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker"
+          export DISPATCH_E2E_WORKERS=4
+          # The blob report this leg hands the merge job. Its name carries the leg, so the legs'
+          # reports keep their own names when the merge job downloads them into one directory.
+          export PLAYWRIGHT_BLOB_OUTPUT_DIR="$RUNNER_TEMP/leg-report/blob-report"
+          export PLAYWRIGHT_BLOB_OUTPUT_NAME="report-shard-${{ matrix.shard }}.zip"
+          # The lane's projects, named rather than left to the config, and the one place either
+          # lane's list is written. An unknown lane ends the step here rather than running the
+          # default set under a name nobody meant, and this is the one place that refuses it now
+          # that no install step reads the lane for engines.
+          case "${{ inputs.lane }}" in
+            pull-request) projects="--project=chromium --project=iphone" ;;
+            full)
+              projects="--project=chromium --project=iphone --project=webkit --project=webkit-iphone
+              --project=firefox --project=firefox-download-navigation --project=chromium-plain-http
+              --project=chromium-plain-http-sign-out"
+              ;;
+            *)
+              echo "::error::lane must be pull-request or full, not '${{ inputs.lane }}'"
+              exit 1
+              ;;
+          esac
+          # Why the projects are named at all: Playwright shards top-level projects only, and the
+          # three `-alone` projects name every other project in their `dependencies`
+          # (e2e/playwright.config.ts), so a shard over the whole list would shard `webkit-alone`
+          # alone and run every other project whole in all four shards. Naming the eight parallel
+          # projects with `--project` leaves the `-alone` ones out of the run, so every project
+          # left is top-level and every one of them shards. The alone job runs those three.
+          #
+          # `list` beside `blob`: the blob reporter prints nothing, and this leg's row count is
+          # read from the list reporter's `Running N tests using M workers` line, which the merge
+          # job reports against the merged report's own count. $projects is left unquoted on
+          # purpose, to split into words.
+          #
+          # The suite's own status is carried in a file, not in `$?` and not in `${PIPESTATUS[0]}`:
+          # the run is piped into `tee`, so `$?` after the pipeline is `tee`'s and a failing
+          # suite would leave this step green, and PIPESTATUS is bash's where this step's shell
+          # is `sh -e {0}` (the job's head says why it must stay that). Each side of a pipeline
+          # is its own subshell, so a variable set in the left-hand one does not survive it; the
+          # `||` is what keeps `sh -e` from ending the subshell before the status is written.
+          rm -f "$RUNNER_TEMP/suite-status"
+          { bun e2e/run.ts -- bunx playwright test --config e2e/playwright.config.ts $projects --shard=${{ matrix.shard }}/4 --reporter=list,blob 2>&1 ||
+              echo "$?" > "$RUNNER_TEMP/suite-status"; } | tee "$RUNNER_TEMP/playwright-log.txt"
+          status=0
+          [ ! -f "$RUNNER_TEMP/suite-status" ] || status=$(cat "$RUNNER_TEMP/suite-status")
+          kill "$sampler" 2>/dev/null || true
+          # The row count this leg printed, for the merge job's first reading. It travels beside
+          # the blob report, in a directory of its own so that `merge-reports` sees zips alone.
+          sed -n 's/^Running \([0-9][0-9]*\) tests\? using .*/\1/p' "$RUNNER_TEMP/playwright-log.txt" |
+            tail -n 1 > "$RUNNER_TEMP/leg-report/rows/shard-${{ matrix.shard }}.txt"
+          # The sampler's two readings, titled with this leg so a run's notices say which
+          # machine each is from. After the suite and before the exit below, so this step still
+          # ends on the suite's own status.
+          "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-samples.sh" report "$RUNNER_TEMP/dispatch-e2e-record" "shard ${{ matrix.shard }}"
+          exit "$status"
+        working-directory: packages/dispatch
+        # The file store the step above started. Set here, not written to $GITHUB_ENV, which
+        # every later step would inherit, and which check-ci-filters.sh treats as reaching a
+        # job's go commands unseen.
+        env:
+          DISPATCH_E2E_FILE_STORE_ENDPOINT: http://127.0.0.1:18333
+          DISPATCH_E2E_FILE_STORE_BUCKET: dispatch-e2e-files
+      # This leg's half of the run's report. Always, not on failure alone: the merge job reads
+      # every leg's blob, and a leg whose blob is missing fails it by name.
+      #
+      # One directory, not the two-line path this upload carried before the container: only the
+      # first line of a multi-line path is translated into the container's own filesystem - a
+      # `${{ runner.temp }}` is the runner's `/home/runner/work/_temp` where the job writes the
+      # container's `/__w/_temp` - and upload-artifact reported `there will be 1 file uploaded`
+      # for a four-line path whose four files all existed (runs 42407623876 and 42409479235).
+      # The browser step writes blob-report/ and rows/ into one directory instead, so the
+      # artifact holds the same two entries under the same names, which is what
+      # .github/scripts/dispatch-browser-latest-blobs.sh and the merge job read.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: dispatch-browser-blob-shard-${{ matrix.shard }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/leg-report
+      # What the run left behind: in the job's own log, where a reader of a failed row looks
+      # first, and collected into the one directory the artifact below takes. A failed row's
+      # trace says what the browser saw; these say what its lane's own servers did, which is
+      # where a lane-only failure (a port, a migration, a server that never came up) is legible.
+      # CI read `docker logs dispatch-e2e-files` for the store before this job ran in a
+      # container of its own; the store's log is a file now, and the lanes' own servers write
+      # beside it. The sampler's two files are already in this directory, which is why the
+      # artifact below carries them in place of the samples artifact this job uploaded before.
+      #
+      # The lane log glob is the run directory e2e/run.ts made under $TMPDIR, which the step
+      # above pointed at $RUNNER_TEMP; mkdtempSync gives the directory a random suffix, so the
+      # glob matches it however many lanes ran.
+      #
+      # Always, not `if: failure()`: the config retries a failed row once on CI
+      # (`retries: process.env.CI ? 1 : 0`), so a flaky row passes on its retry and this leg
+      # ends green, and the memory and CPU readings are of the run that passed as much as of the
+      # one that did not.
+      - name: What the run left behind
+        if: always()
+        run: |
+          echo "=== $RUNNER_TEMP ==="
+          ls -l "$RUNNER_TEMP"
+          echo "=== the file store's log (tail) ==="
+          tail -80 "$RUNNER_TEMP/weed.log" 2>/dev/null || echo "no weed log"
+          echo "=== the lanes' own logs (tail) ==="
+          for log in "$RUNNER_TEMP"/dispatch-e2e-run-*/lane-*/log/*.log; do
+            [ -f "$log" ] || continue
+            echo "--- $log"
+            tail -30 "$log"
+          done
+          record="$RUNNER_TEMP/dispatch-e2e-record"
+          mkdir -p "$record/lanes"
+          [ ! -f "$RUNNER_TEMP/weed.log" ] || cp "$RUNNER_TEMP/weed.log" "$record/"
+          for log in "$RUNNER_TEMP"/dispatch-e2e-run-*/lane-*/log/*.log; do
+            [ -f "$log" ] || continue
+            lane=$(basename "$(dirname "$(dirname "$log")")")
+            mkdir -p "$record/lanes/$lane"
+            cp "$log" "$record/lanes/$lane/"
+          done
+          ls -lR "$record"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: dispatch-browser-record-shard-${{ matrix.shard }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/dispatch-e2e-record
+      # The traces of the rows that failed, which the step above does not collect: they are
+      # under the checkout, so this path needs no translation and stays as it was. Always, for
+      # the reason that step gives - `if: failure()` would upload nothing of a row that failed
+      # and passed on its retry, the trace the merge job's flake reading exists to explain among
+      # it. The trace it carries is of the attempt that failed: the config's
+      # `trace: 'retain-on-first-failure'` records the first attempt and keeps it when that
+      # attempt failed. A green run's upload is small.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: dispatch-browser-test-results-shard-${{ matrix.shard }}-${{ github.run_attempt }}
+          path: packages/dispatch/e2e/test-results
+          if-no-files-found: ignore
+
+  alone:
+    if: inputs.lane == 'full'
+    runs-on: ubuntu-24.04
+    # The three projects whose rows are read from the wall clock, one machine each. Each runs with
+    # one worker and `--no-deps`, so nothing else is on the machine while it measures. The full
+    # lane alone: a pull request runs no clock row, since a shard job's machine cannot hold one
+    # still enough to measure.
+    #
+    # Its steps are the shard job's, with three differences - one worker rather than four, the
+    # Playwright command below, and no file store on the machine - and their commands are kept
+    # the same everywhere else, so the two can be diffed; the sampler is the same script on
+    # both, which is part of what keeps them so. They are not one composite action for the
+    # reason this file's head gives. The container, the `sh -e {0}` rule and the `env:` rule of
+    # the shard job's head hold here too, and so do their reasons.
+    container:
+      image: ghcr.io/cybermonklabs/legion/ci@sha256:5f5aca44f3ada006603a0ff98681f879f0825fdffcb14004d33361df4b92df83
+      options: --user 1001 --ipc=host --init
+    # This job takes the container because its matrix holds webkit-alone and firefox-alone,
+    # which launch the two engines the image exists for; chromium-alone is a leg of a container
+    # job and rides in it, which is what keeps one job list and not two
+    # (dispatch://INFRA-1443). The shard job's head says what each option is for and why the
+    # digest is a literal.
+    #
+    # The budgets below, this one and the one on the browser step, are measured, on the
+    # full-lane run of the head that sharded this suite, 42316487530. The pull-request lane runs
+    # no leg of this job, so there is one run and three legs behind each figure, in seconds:
+    #
+    #   step                                    chromium-alone  firefox-alone  webkit-alone
+    #   Browser-test dispatch dashboard                    116            111           141
+    #   every other step summed                             74             72            82
+    #
+    # The rule is in this file's head. The browser step's maximum is webkit-alone's 141 s, so
+    # 141 x 1.15 = 162 s -> 3 min. Three legs of one run is a thin reading, and these are the
+    # projects whose rows are read from the wall clock, so a slower machine moves them further
+    # than it moves a parallel row. The 15 per cent the rule adds is what carries that, and a
+    # leg that outran it fails the browser step by name, which is a reading of its own.
+    #
+    # The job budget is NOT the rule's arithmetic and is to be re-derived, for the reason the
+    # shard job's head gives: what it was is the sum of a 22-minute Playwright install step, the
+    # browser step's 3 and 89 s of every other step summed, and that install step is gone while
+    # the steps the container brought have no reading on this job yet. The figure below is left
+    # at what it was, a backstop above anything the steps can sum to rather than a measurement.
+    timeout-minutes: 27
+    strategy:
+      fail-fast: false
+      matrix:
+        project: [chromium-alone, firefox-alone, webkit-alone]
+    steps:
+      # The shard job's step of this name, and what it reads is that job's head's business: the
+      # two jobs run the same image with the same options, so a reading that moved on one
+      # machine and not the other is itself the thing worth seeing.
+      - name: Read what this container gives the suite
+        run: |
+          id -u
+          id -g
+          id
+          echo "HOME=$HOME"
+          ls -ld "$GITHUB_WORKSPACE" "$RUNNER_TEMP" /__w /__e /github/home /opt/hostedtoolcache || true
+          ls -ld /dev/shm
+          df -h /dev/shm
+          nproc
+          free -m || true
+          df -h /tmp "$RUNNER_TEMP"
+          for tool in psql initdb pg_ctl pg_config python3 flock gh jq yq weed git openssl unzip tar curl node bun go docker sudo; do
+            printf '%-14s %s\n' "$tool" "$(command -v "$tool" || echo MISSING)"
+          done
+          pg_config --version
+          python3 --version
+          node --version
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # What ci.yaml's dispatch-binaries job built, in place of this job's own actions/setup-go
+      # and go-envoy cache restore, which are gone: the shard job's step of this name says why,
+      # and this job's lane runs the same two scripts from the same directory.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dispatch-e2e-binaries
+          path: packages/envoy/out/dispatch-e2e-broker
+      # actions/upload-artifact keeps no executable bit, so all four arrive at mode 0644.
+      # run-server.sh:201-203 and run-broker.sh refuse a path that is not executable, and that
+      # refusal would otherwise surface in a lane's own log, far from this cause.
+      - name: Make the downloaded binaries executable
+        run: chmod +x packages/envoy/out/dispatch-e2e-broker/*
+      - uses: ./.github/actions/setup-bun
+      - run: bun install --frozen-lockfile
+      - name: Build contracts for dispatch e2e
+        # This job is a matrix and each leg runs one project, so the readers here are not the
+        # shard job's. The two every leg runs: e2e/heavy-bodies.ts:7, which imports
+        # DISPATCH_BLOCK_UNITS from @legion/contracts/dispatch-tools, reached from
+        # heavy-bodies.e2e.ts, which every leg runs; and e2e/agents.ts:1, which imports
+        # DELIVERY_CAPABILITIES from @legion/contracts, reached through e2e/seed.ts, which every
+        # clock spec imports. chromium-alone has one of its own, heavy-document-writes.e2e.ts:14,
+        # since it is the only leg that runs that spec: its testMatch is `clockSpecs`
+        # (e2e/playwright.config.ts:382), where firefox-alone and webkit-alone take
+        # /heavy-bodies\.e2e\.ts/ alone (:390, :402).
+        #
+        # Playwright's own Node resolution reads each from contracts' built dist/: under Node the
+        # package's "default" condition is dist/index.js, or dist/dispatch-tools.js for that
+        # subpath. A type-only import needs none of it, and neither does the dashboard's own Vite
+        # build, which reaches contracts' src/ through the aliases at
+        # packages/dispatch/web/vite.config.ts (the "bun" export condition is Bun's own and is no
+        # part of how Vite resolves it).
+        run: bun run build
+        working-directory: packages/contracts
+      # The build writes dist/THIRD_PARTY_NOTICES.txt, failing on a bundled package whose license
+      # cannot be determined; the listing shows the build shipped it.
+      - name: Build dispatch dashboard
+        run: |
+          bun run build:web
+          ls -l web/dist/THIRD_PARTY_NOTICES.txt
+        working-directory: packages/dispatch
+      # The shard job's step of this name, on this job's one lane: what the image's PostgreSQL
+      # is and what the provider costs, read from the same binaries the lane uses. Its head
+      # says why it is read here or nowhere. One copy rather than four, since this job runs one
+      # lane.
+      - name: Read the lanes' PostgreSQL and time its provider
+        run: |
+          bin=/usr/lib/postgresql/18/bin
+          work="$RUNNER_TEMP/pg-reading"
+          rm -rf "$work"
+          mkdir -p "$work/template"
+          start=$(date +%s.%N)
+          "$bin/initdb" -D "$work/template/pgdata" -U postgres --auth=trust --no-sync -E UTF8 > /dev/null
+          after_initdb=$(date +%s.%N)
+          "$bin/pg_ctl" -D "$work/template/pgdata" -l "$work/template/postgres.log" \
+            -o "-p 55432 -h 127.0.0.1 -k $work/template" -w start > /dev/null
+          url="postgres://postgres@127.0.0.1:55432/postgres?sslmode=disable"
+          "$bin/psql" "$url" -v ON_ERROR_STOP=1 -c 'create database dispatch_e2e' > /dev/null
+          lane="postgres://postgres@127.0.0.1:55432/dispatch_e2e?sslmode=disable"
+          "$bin/psql" "$lane" -v ON_ERROR_STOP=1 -c 'create extension vector' > /dev/null
+          "$bin/psql" "$lane" -XAt -v ON_ERROR_STOP=1 -c 'select version()'
+          "$bin/psql" "$lane" -XAt -v ON_ERROR_STOP=1 \
+            -c "select 'vector ' || extversion from pg_extension where extname = 'vector'"
+          "$bin/pg_ctl" -D "$work/template/pgdata" -m fast -w stop > /dev/null
+          after_template=$(date +%s.%N)
+          mkdir -p "$work/lane-0"
+          cp -a "$work/template/pgdata" "$work/lane-0/pgdata"
+          done_at=$(date +%s.%N)
+          awk -v a="$start" -v b="$after_initdb" -v c="$after_template" -v d="$done_at" 'BEGIN {
+            printf "initdb:               %.2f s\n", b - a
+            printf "template db + vector: %.2f s\n", c - b
+            printf "one lane copy:        %.2f s\n", d - c
+            printf "the whole provider:   %.2f s\n", d - a
+          }'
+          rm -rf "$work"
+      - name: Browser-test dispatch dashboard (${{ matrix.project }})
+        # `bun run e2e` builds the SPA itself, which would rebuild it a second time in this job.
+        # Calling the wrapper directly reuses the "Build dispatch dashboard" step's dist above and
+        # drops this job to one Vite build. Safe because that build and this one are now the same
+        # binary: `packages/dispatch` no longer has an E2E-only build flag (removed with its sole,
+        # unconsumed consumer, the `window.__dispatchDocument` inspection probe). e2e/run.ts starts
+        # the harness on ports the OS chooses and runs Playwright with them; the config starts no
+        # server.
+        #
+        # DISPATCH_E2E_WORKERS is how many lanes e2e/run.ts starts, one per Playwright worker,
+        # each a harness and a Postgres of its own, that last one an initdb and a pg_ctl out of
+        # DISPATCH_E2E_PG_BIN (e2e/harness-postgres.ts), this image's PostgreSQL 18 with
+        # pgvector. They are set on the command line, not in this step's `env:`, for the reason
+        # the job's head gives. One lane here, not four: these projects' rows are read from the
+        # wall clock, and three other lanes on the machine would be in the reading.
+        #
+        # No file store on this machine, and no DISPATCH_E2E_FILE_STORE_* names: every spec these
+        # legs run is a clock spec, and no clock spec uploads or downloads anything.
+        # chromium-alone runs all three (`clockSpecs`: heavy-bodies, heavy-document-writes and
+        # nested-directive, named at e2e/playwright.config.ts:201 and taken by that project at
+        # :382), firefox-alone and webkit-alone run
+        # heavy-bodies alone (:390, :402). And e2e/run.ts:126-130 makes no lane bucket at one
+        # worker. A store serving nothing would be charged to the very reading these rows exist
+        # for, which is why the `weed` the image carries is started on the shard job's machines
+        # and not on these. A clock spec that later uploads fails here by name rather than
+        # quietly.
+        #
+        # The memory and CPU sampler both this job and the shard job run is
+        # .github/scripts/dispatch-browser-samples.sh: MemAvailable and where the CPU goes,
+        # every 5 s for the length of this step, started below and read back at the end of it.
+        # Its head says what each reading holds and what it does not; on this job `everything
+        # else` is also the reading that says the machine was quiet, which is the claim these
+        # rows rest on. Both sample files are written into the record directory the step below
+        # collects and uploads, under $RUNNER_TEMP beside the lane's own run directory: a file
+        # this step wrote into the checkout would leave it dirty afterwards. The blob report
+        # goes beside the list reporter's output, so a green run reports what it ran too.
+        timeout-minutes: 3
+        run: |
+          # $RUNNER_TEMP holds everything this step writes, the run directory of e2e/run.ts
+          # (mkdtempSync in os.tmpdir(), :183) among it, which is what the upload steps below
+          # read. TMPDIR is exported on the command line, not in this step's `env:`, for the
+          # reason the job's head gives.
+          export TMPDIR="$RUNNER_TEMP"
+          # The two directories this step's output is sorted into, each of them one artifact
+          # below, as the shard job sorts its own and for the same reason: only the first line
+          # of a multi-line `path:` is translated into the container's own filesystem.
+          mkdir -p "$RUNNER_TEMP/leg-report/rows" "$RUNNER_TEMP/dispatch-e2e-record"
+          # The sampler, started as a background process of this step's own shell and killed by
+          # the trap below, as the shard job starts and kills it. It writes memory-samples.txt
+          # and cpu-samples.txt into the directory it is given, which the record below is, and
+          # the reading at the end of this step takes them from there.
+          "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-samples.sh" sample "$RUNNER_TEMP/dispatch-e2e-record" &
+          sampler=$!
+          trap 'kill "$sampler" 2>/dev/null || true' EXIT
+          # This image's own PostgreSQL 18 with pgvector, through e2e/harness-postgres.ts's
+          # binaries provider: initdb and pg_ctl live in that directory alone, and a job inside a
+          # container has no docker to run the image provider's digest with.
+          export DISPATCH_E2E_PG_BIN=/usr/lib/postgresql/18/bin
+          # What ci.yaml's dispatch-binaries job built, which run-server.sh and run-broker.sh
+          # execute instead of building: the server by its path, the broker's three by the
+          # directory that holds them.
+          export DISPATCH_E2E_SERVER_BIN="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker/dispatch"
+          export DISPATCH_E2E_BROKER_BIN_DIR="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker"
+          export DISPATCH_E2E_WORKERS=1
+          # The blob report this leg hands the merge job. Its name carries the leg, so the legs'
+          # reports keep their own names when the merge job downloads them into one directory.
+          export PLAYWRIGHT_BLOB_OUTPUT_DIR="$RUNNER_TEMP/leg-report/blob-report"
+          export PLAYWRIGHT_BLOB_OUTPUT_NAME="report-alone-${{ matrix.project }}.zip"
+          # `--no-deps` is required, not tidiness: each `-alone` project names every parallel
+          # project in its `dependencies` (e2e/playwright.config.ts), so without it Playwright
+          # would run the whole suite here before this leg's own rows, and the shard jobs would
+          # have run it already. With it this machine runs one project, one row at a time.
+          #
+          # `list` beside `blob`: the blob reporter prints nothing, and this leg's row count is
+          # read from the list reporter's `Running N tests using M workers` line, which the merge
+          # job reports against the merged report's own count. No `--shard`: these projects are
+          # not sharded, which is the whole reason they have a job.
+          #
+          # The suite's own status is carried in a file rather than in `$?` or in PIPESTATUS,
+          # for the reason the shard job's own browser step gives at length.
+          rm -f "$RUNNER_TEMP/suite-status"
+          { bun e2e/run.ts -- bunx playwright test --config e2e/playwright.config.ts --no-deps --project="${{ matrix.project }}" --reporter=list,blob 2>&1 ||
+              echo "$?" > "$RUNNER_TEMP/suite-status"; } | tee "$RUNNER_TEMP/playwright-log.txt"
+          status=0
+          [ ! -f "$RUNNER_TEMP/suite-status" ] || status=$(cat "$RUNNER_TEMP/suite-status")
+          kill "$sampler" 2>/dev/null || true
+          # The row count this leg printed, for the merge job's first reading. It travels beside
+          # the blob report, in a directory of its own so that `merge-reports` sees zips alone.
+          sed -n 's/^Running \([0-9][0-9]*\) tests\? using .*/\1/p' "$RUNNER_TEMP/playwright-log.txt" |
+            tail -n 1 > "$RUNNER_TEMP/leg-report/rows/alone-${{ matrix.project }}.txt"
+          # The sampler's two readings, titled with this leg so a run's notices say which
+          # machine each is from. After the suite and before the exit below, so this step still
+          # ends on the suite's own status.
+          "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-samples.sh" report "$RUNNER_TEMP/dispatch-e2e-record" "${{ matrix.project }}"
+          exit "$status"
+        working-directory: packages/dispatch
+      # This leg's half of the run's report. Always, not on failure alone: the merge job reads
+      # every leg's blob, and a leg whose blob is missing fails it by name. One directory, as
+      # the shard job's upload of this name is and for the reason it gives.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: dispatch-browser-blob-alone-${{ matrix.project }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/leg-report
+      # What the run left behind: the lane's own server logs, in the job's own log and collected
+      # into the one directory the artifact below takes, beside the sampler's two files, which
+      # the browser step already wrote there. No file store runs on this machine, so there is no
+      # store log to collect.
+      #
+      # Always, not `if: failure()`: a green leg's logs are worth as much as a red one's here,
+      # since they say what the lane's servers did while the clock was read, and the memory and
+      # CPU readings are also what says the machine was quiet while it measured. These three
+      # projects set `retries: 0` of their own (e2e/playwright.config.ts), so no row of this job
+      # is retried and none is reported flaky.
+      - name: What the run left behind
+        if: always()
+        run: |
+          echo "=== $RUNNER_TEMP ==="
+          ls -l "$RUNNER_TEMP"
+          echo "=== the lane's own logs (tail) ==="
+          for log in "$RUNNER_TEMP"/dispatch-e2e-run-*/lane-*/log/*.log; do
+            [ -f "$log" ] || continue
+            echo "--- $log"
+            tail -30 "$log"
+          done
+          record="$RUNNER_TEMP/dispatch-e2e-record"
+          mkdir -p "$record/lanes"
+          for log in "$RUNNER_TEMP"/dispatch-e2e-run-*/lane-*/log/*.log; do
+            [ -f "$log" ] || continue
+            lane=$(basename "$(dirname "$(dirname "$log")")")
+            mkdir -p "$record/lanes/$lane"
+            cp "$log" "$record/lanes/$lane/"
+          done
+          ls -lR "$record"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: dispatch-browser-record-alone-${{ matrix.project }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/dispatch-e2e-record
+      # The traces of the rows that failed, which the step above does not collect: they are
+      # under the checkout, so this path needs no translation and stays as it was. A row that
+      # fails fails the leg, and the trace it carries is of its one attempt, which the config's
+      # `trace: 'retain-on-first-failure'` keeps. A green run's upload is small.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: dispatch-browser-test-results-alone-${{ matrix.project }}-${{ github.run_attempt }}
+          path: packages/dispatch/e2e/test-results
+          if-no-files-found: ignore
+
+  # The browser suite's two-process mode (packages/dispatch/e2e/harness-processes.ts): two
+  # envoy-dispatch processes against one Postgres, behind e2e/round-robin-proxy.ts, B serving a
+  # second build of the dashboard, which is what a rolling release puts in front of a browser. It
+  # runs only the *.multiprocess.e2e.ts specs, in Chromium, in a job of its own so the default
+  # suite's job does not wait on a second Vite build and two more servers.
+  multiprocess:
+    if: inputs.lane == 'full'
+    runs-on: ubuntu-24.04
+    # The budgets below, this one and the three on steps, are measured: GitHub's jobs API over
+    # the 397 of the newest 400 ci.yaml runs that could be read, created between
+    # 2026-11-05T04:52:45Z and 2026-11-05T21:06:27Z (268 pull_request, 120 merge_group, 12
+    # push), over the 335 jobs of this name that concluded success. That window is before
+    # cybermonklabs/legion#2771 took ci.yaml's push trigger away, which is why it holds push runs
+    # and a window measured today would hold none; the durations are of the same steps either way.
+    #
+    #   step                                                          median   95th    max
+    #   Install Playwright Chromium                                     20 s   34 s  339 s
+    #   Browser-test dispatch dashboard against two server processes   102 s  188 s  202 s
+    #   Browser-test a sign-in across two server processes              11 s   12 s   13 s
+    #   every other step summed                                         68 s   94 s  135 s
+    #   the whole job                                                  207 s  305 s  516 s
+    #
+    # The rule, and why the budgets sit on the steps rather than on the job alone, are in this
+    # file's head; this job states only what it measured and what that rule gives here. 202 s x
+    # 1.15 = 232 s -> 4 min for the dashboard step, 13 s x 1.15 = 15 s -> the two-minute floor
+    # for the sign-in step, and 4 min for the install step, for the reason its own comment gives.
+    # The job budget is the sum of its step budgets plus the measured maximum of every step
+    # without one, rounded up: 4 + 4 + 2 min plus 135 s = 13 min. With budgets on the steps, the
+    # `if: failure()` upload below still runs, which a cancelled job skips.
+    #
+    # The move into this workflow changed none of that: the job runs the same steps on the same
+    # machine, and this head's full-lane run, 42316487530, falls inside every figure above - 9 s
+    # install, 191 s dashboard, 12 s sign-in, 96 s in the steps without a budget, 313 s whole.
+    timeout-minutes: 13
+    services:
+      postgres:
+        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          cache: false
+      # go-envoy, restored only: its modules are the envoy module's, but this job builds the
+      # Dispatch server and the dev OIDC issuer, not the listener and natsd the family's saving
+      # jobs build, so it saves none.
+      - id: go-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-{0}-', runner.os) || '' }}
+      - uses: ./.github/actions/setup-bun
+      - run: bun install --frozen-lockfile
+      - name: Build contracts for dispatch e2e
+        # The e2e helpers the specs import read some of contracts' values from its built dist/,
+        # through Playwright's own Node resolution (the shard job's step of the same name).
+        run: bun run build
+        working-directory: packages/contracts
+      - name: Build the Dispatch server
+        # run-server.sh builds it too, inside the harness's boot wait for each server
+        # (e2e/harness-start.ts, bounded by the listener's bootMs); built here, both servers find it
+        # current and start in seconds.
+        run: go build -o ./dispatch-e2e ./cmd/dispatch
+        working-directory: packages/envoy
+      - name: Install Playwright Chromium
+        # No apt in this step at all. Playwright's `chromium` entry in its ubuntu24.04-x64 table
+        # adds no package this GitHub ubuntu-24.04 image lacks, so `--with-deps` installed only
+        # Playwright's `tools` list: the CJK, Thai and Cyrillic font packages and xvfb. Measured
+        # at the merge base in job 127214381394, that was `0 upgraded, 9 newly installed`, `Need
+        # to get 21.1 MB of archives`, plus 12.8 MB of package indexes in `apt-get update`. All
+        # of that is gone, and with it this step's removal of the runner image's chrome-stable
+        # apt source, which it carried only because that source's index intermittently failed
+        # `apt-get update`.
+        #
+        # The fonts are not needed: this job's two specs, signin.multiprocess.e2e.ts and
+        # two-builds.multiprocess.e2e.ts, run headless Chromium and compare no screenshot
+        # (neither holds `toHaveScreenshot` or `toMatchSnapshot`), and fonts-liberation and
+        # fonts-noto-color-emoji are on the image already. A row that later needs CJK or Thai
+        # glyphs would fail visibly.
+        #
+        # The 4-minute budget: this step downloads browsers only, and Playwright makes up to
+        # five attempts, across its download hosts, inside it. Of the 339 s maximum above,
+        # measured in job 127214381394, 317 s were the Ubuntu mirror serving 21.1 MB at
+        # 66.4 kB/s, which this step no longer asks for; Chromium, its headless shell and
+        # ffmpeg downloaded in 6 s there. Healthy today is a 20 s median and a 34 s 95th
+        # percentile for the whole step.
+        #
+        # No browser cache here: it would save about 4 s, since the three archives - Chrome for
+        # Testing, its headless shell and ffmpeg - download in 8 to 9 s, and it would add about
+        # 250 MiB to a cache store already holding 18.6 GB in 162 entries, where each existing
+        # playwright-Linux- entry is 481 MiB. There is no browser cache anywhere in this
+        # workflow to join: the shard and alone jobs restored one until they moved into the
+        # image that carries the browsers, which took their restores and ci-caches.yaml's
+        # browsers job with them (dispatch://INFRA-1443). This job stays on the runner, because
+        # nothing can make it launch another engine, and so keeps this one download.
+        timeout-minutes: 4
+        run: bunx playwright install chromium
+        working-directory: packages/dispatch
+      - name: Browser-test dispatch dashboard against two server processes
+        # Builds the dashboard twice (A's and B's, with distinct build ids) and runs the
+        # multiprocess specs through the round-robin proxy.
+        timeout-minutes: 4
+        run: bun run e2e:multiprocess
+        working-directory: packages/dispatch
+      - name: Browser-test a sign-in across two server processes
+        # Both processes sign people in through the dev OIDC issuer (DISPATCH_E2E_SIGNIN=oidc,
+        # e2e/harness-signin.ts), and its one spec starts a sign-in on A and completes it on B. The
+        # step before built the dashboard; B serves A's build, which this spec does not tell apart.
+        timeout-minutes: 2
+        run: DISPATCH_E2E_PROCESSES=2 DISPATCH_E2E_SIGNIN=oidc bun e2e/run.ts -- bunx playwright test --config e2e/playwright.config.ts
+        working-directory: packages/dispatch
+      # `if: failure()`, which this job can afford where the shard job cannot: its project sets
+      # `retries: 0` (e2e/playwright.config.ts), so a row that fails fails this job and this
+      # upload runs. The shard job's copy is `if: always()` because a retried row there can pass
+      # and leave the job green.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure()
+        with:
+          name: dispatch-browser-multiprocess-test-results-${{ github.run_attempt }}
+          path: packages/dispatch/e2e/test-results
+
+  # What the legs together ran. It joins every shard's and every alone leg's blob report into one
+  # report, publishes three readings of it - the rows, the flake rate and the legs that did not
+  # succeed - and is the one job of this workflow that reports ci-ok, so a run gets one verdict
+  # and not seven.
+  #
+  # This job must never be skipped: .github/scripts/ci-ok.sh fails a selected job whose result is
+  # `skipped`, and a shard leg that failed would otherwise skip it and take ci-ok with it. It
+  # reads the upstream results itself instead, in its last check before the ci-ok report.
+  #
+  # `!cancelled()` is what says that and no more. It is false only when the whole run is
+  # cancelled, so a leg that failed, or that hit one of its own budgets, still gets this job.
+  # `always()` reaches further and costs: it is not cancelled when the run is, so a pull-request
+  # run that ci.yaml superseded (`cancel-in-progress`) would hold this job in the queue and then
+  # run it, the superseded run would stay in progress, the next run of that group would queue
+  # behind it, and the old head would collect a red ci-ok. ci.yaml writes `!cancelled()` on its
+  # own jobs for the same reason. The step-level `if: always()` inside this job are a different
+  # thing and stay: a step's condition is about the steps before it, not about the run.
+  merge:
+    needs: [shard, alone, multiprocess]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    # The budget is measured. This job ran 27 s on the pull-request lane of this head
+    # (42334424798) and 22 s on its full lane (42316487530); over the twelve merge jobs of this
+    # branch's ten ci.yaml runs the maximum is 37 s, on the green second attempt of 42328655988.
+    # No step here carries a budget of its own, so by the rule in this file's head the job's
+    # budget is that maximum: 37 x 1.15 = 43 s, which the rule's two-minute floor raises to
+    # 2 min.
+    #
+    # What that sample does not hold: no browser step failed in any of those runs, so no blob
+    # report in them carries a failed row's trace, and the download, the merge and reading
+    # three's per-leg merge all grow with those. A job cancelled at this budget posts no ci-ok,
+    # so the run is red and read again from the jobs API; it cannot pass a verdict it never
+    # reached.
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      - run: bun install --frozen-lockfile
+      # Every leg's blob report and row count, one directory per artifact. Each artifact holds a
+      # blob-report/ and a rows/ directory, so the zips land together and the counts land beside
+      # them rather than among them: `merge-reports` reads the zips of the directory it is given.
+      #
+      # No `merge-multiple`, so each artifact is extracted into a directory named for it
+      # (dispatch-browser-blob-shard-1-2/blob-report/report-shard-1.zip) and the step below can
+      # tell the attempts apart. A run's artifact list holds every attempt's artifacts and this
+      # pattern matches them all; two attempts of one leg hold the same inner paths, so merging
+      # them into one directory let one attempt overwrite the other in an order nothing fixes.
+      - name: Download every leg's blob report
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: dispatch-browser-blob-*
+          path: ${{ runner.temp }}/blobs
+      # The newest attempt of each leg, and no other, into one directory of the shape the steps
+      # below read. A leg a failed-only re-run did not run keeps the attempt that ran it, which
+      # is what .github/scripts/ci-ok-report.sh already does with the jobs' ci-ok reports; the
+      # script's head says what two attempts of one leg did to a merged report when they were
+      # downloaded over each other. It runs from $GITHUB_WORKSPACE, this step's own directory,
+      # and its log names the attempt it took for each leg.
+      - name: Take the newest attempt of each leg's blob report
+        run: .github/scripts/dispatch-browser-latest-blobs.sh "$RUNNER_TEMP/blobs" "$RUNNER_TEMP/selected-blobs"
+      - name: Merge the legs' blob reports into one report
+        # The JSON report is the one packages/dispatch/e2e/tools/check-slow-rows.ts reads, and
+        # this merged report is now its source: one run's rows, from every leg, in one file. The
+        # HTML report is for a person; the list reporter prints the run's result into this step's
+        # own log. It reads the selected directory the step above wrote, which holds one attempt
+        # per leg. The three output paths are exported here rather than in an `env:` block, for
+        # the reason the shard job's head gives.
+        run: |
+          blobs="$RUNNER_TEMP/selected-blobs/blob-report"
+          if [ ! -d "$blobs" ] || [ -z "$(ls -A "$blobs" 2>/dev/null)" ]; then
+            echo "::error::no leg uploaded a blob report, so there is nothing to merge;" \
+              "the reading below names the legs that owed one"
+            exit 1
+          fi
+          export PLAYWRIGHT_HTML_OUTPUT_DIR="$RUNNER_TEMP/report-html"
+          export PLAYWRIGHT_HTML_OPEN=never
+          export PLAYWRIGHT_JSON_OUTPUT_NAME="$RUNNER_TEMP/report.json"
+          status=0
+          bunx playwright merge-reports --reporter=html,json,list "$blobs" || status=$?
+          # `merge-reports` exits 1 on a report holding a failed row as much as on a blob it
+          # could not read, so the exit alone does not say which happened. A failed row is the
+          # readings' and the verdict step's to report, by leg and by name, so this step fails
+          # only where no report was written at all - the one case that leaves them nothing to
+          # read.
+          if [ ! -f "$RUNNER_TEMP/report.json" ]; then
+            echo "::error::merge-reports wrote no JSON report (it exited $status), so the legs'" \
+              "blob reports could not be joined"
+            exit 1
+          fi
+        working-directory: packages/dispatch
+      - name: Upload the merged report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dispatch-browser-report-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/report-html
+            ${{ runner.temp }}/report.json
+          if-no-files-found: ignore
+      # Reading one. Each reading is written to the step summary, for a person, and printed as a
+      # `::notice::` line, for a script reading the log: the two readers want the same figures in
+      # different places.
+      - name: Reading one, the rows
+        if: always()
+        run: |
+          blobs="$RUNNER_TEMP/selected-blobs/blob-report"
+          counts="$RUNNER_TEMP/selected-blobs/rows"
+          report="$RUNNER_TEMP/report.json"
+          jobs="$RUNNER_TEMP/jobs.json"
+          # The run's own token, exported here rather than in an `env:` block, for the reason the
+          # shard job's head gives. `actions: read` is the caller's, and ci.yaml's job that calls
+          # this workflow already holds it.
+          export GH_TOKEN="${{ github.token }}"
+          # This run's jobs, the newest attempt of each, fetched once here and read again by
+          # reading three below. The jobs API lists the caller's jobs too, so the name is held to
+          # this workflow's four; a called workflow's job is named `<the caller's job> / <this
+          # job>`, with a matrix leg in brackets after it.
+          #
+          # `filter=all` lists every attempt's jobs, so the newest attempt of each name is taken
+          # here, as the blob selection above takes each leg's newest artifact and as
+          # .github/scripts/ci-ok-report.sh takes each job's newest report. Without that, a green
+          # re-run names the attempt the re-run replaced: measured on run 42328655988, whose
+          # attempt 1 lost shards 3 and 4 to a transient `bun install` failure and whose attempt
+          # 2 was green, reading three named both of those jobs and the superseded merge job as
+          # legs that did not succeed.
+          #
+          # The fetch and the filter are two commands, and that is what makes the grouping work.
+          # `gh api --paginate --jq` runs the filter once per page, so a `group_by(.name)` inside
+          # it groups each page by itself and not the run, and a superseded leg on another page
+          # is named again. With `filter=all` the list holds every job of every attempt of the
+          # calling workflow, about 37 an attempt, so it passes one 100-job page at the third
+          # attempt, which is where that bug begins. `--slurp` collects the pages into one array,
+          # and gh refuses it beside `--jq` (`the --slurp option is not supported with --jq or
+          # --template`, gh 2.98.0), so the filter runs as its own `jq` over that array - once,
+          # over every page. The array holds the page objects, which is why the filter opens
+          # `.[].jobs[]`.
+          pages="$RUNNER_TEMP/jobs-pages.json"
+          gh api --paginate --slurp \
+            "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?filter=all&per_page=100" \
+            > "$pages" || {
+            echo "::error::this run's jobs could not be read, so the legs this lane owed are unknown"
+            exit 1
+          }
+          # Each job's leg name is derived here, once, beside the fields it travels with, so the
+          # two readings below take it rather than each parsing the job name again. It was parsed
+          # twice until a review found it, and the fix for a leg name the parse could not read
+          # then had to land in both copies.
+          #
+          # `shard (3)` becomes `shard-3` and `alone (webkit-alone)` becomes `alone-webkit-alone`,
+          # after either caller's prefix. `merge` and `multiprocess` are this workflow's other two
+          # jobs: they pass the name filter below and get a null leg, so reading one passes them
+          # over and reading three names them as holding no row. ci.yaml's jobs do not get a null
+          # leg - that filter drops them before this expression sees them, which is what keeps
+          # them out of reading three, since reading three selects on conclusion alone. The two
+          # that come nearest are ci.yaml's own `dispatch-multiprocess` and `broker-multiprocess`,
+          # kept out only because the character before `multiprocess` is a hyphen and the filter
+          # wants a space or a line start; anyone who loosens it pulls them in.
+          #
+          # The project part takes any name that holds no `)`, and the loops below read one leg
+          # per line, so a project name holding a space or a comma is one leg here rather than
+          # two. It read `[a-z-]*` until retro found it, which silently dropped a project named
+          # with a digit or a capital, and a leg absent from reading one's list is a leg whose
+          # missing blob nothing reports, which is the one thing that list is for. A name holding
+          # `)` is the one shape this still would not read, and no project holds one.
+          #
+          # That is a promise about these two readings and no more of the lane. A project the
+          # alone job could not run, or whose blob it would name differently, still needs work
+          # elsewhere: the blob and the artifact are named from `matrix.project` alone, so a
+          # second matrix dimension would leave a leg's derived name and its blob's name apart
+          # and reading one would call it MISSING. Nothing of that is reachable from today's
+          # matrix, and whoever widens it reads the alone job's own steps, not this line.
+          jq '[.[].jobs[] | select(.name | test("(^| )(shard|alone|multiprocess|merge)( \\(|$)"))]
+            | group_by(.name) | map(max_by(.run_attempt) | {id, name, conclusion,
+                leg: ((.name | capture(" shard \\((?<n>[0-9]+)\\)$") | "shard-\(.n)")
+                  // (.name | capture(" alone \\((?<p>[^)]*)\\)$") | "alone-\(.p)")
+                  // null)})' "$pages" > "$jobs"
+          # The legs this lane owed, read from those jobs rather than written out a second time
+          # here. A leg the lane does not run is skipped by its job's own `if:` - the alone and
+          # multiprocess jobs on the pull-request lane - and owes nothing. A leg that failed
+          # before it could upload is in the list and still owes its blob.
+          legs=$(jq -r '.[] | select(.leg != null and .conclusion != "skipped") | .leg' "$jobs" |
+            sort)
+          if [ -z "$legs" ]; then
+            echo "::error::this run's jobs hold no shard or alone leg, so there is nothing to" \
+              "hold the merged report against"
+            exit 1
+          fi
+          missing=""
+          printed_total=0
+          line=""
+          {
+            echo "### The rows"
+            echo
+            echo "| leg | rows its log printed | blob report |"
+            echo "| --- | --- | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          # One leg per line, not `for leg in $legs`: a matrix value may hold a space, and the
+          # capture above takes it, so word splitting would read one leg as two. A here-string
+          # rather than a pipe, because this loop adds up $printed_total and $missing and a
+          # pipe would run it in a subshell and throw both away.
+          while IFS= read -r leg; do
+            [ -n "$leg" ] || continue
+            printed=$(cat "$counts/$leg.txt" 2>/dev/null || true)
+            case "$printed" in '' | *[!0-9]*) printed=0 ;; esac
+            if [ -f "$blobs/report-$leg.zip" ]; then
+              held=yes
+            else
+              held=MISSING
+              missing="$missing $leg"
+            fi
+            printed_total=$((printed_total + printed))
+            line="$line$leg $printed, "
+            echo "| $leg | $printed | $held |" >> "$GITHUB_STEP_SUMMARY"
+          done <<< "$legs"
+          # `unknown` where the merge step failed: this reading still names the legs that owed a
+          # blob, which is what says why.
+          merged=unknown
+          if [ -f "$report" ]; then
+            merged=$(jq '.stats.expected + .stats.unexpected + .stats.flaky + .stats.skipped' "$report")
+          fi
+          {
+            echo
+            echo "The merged report holds $merged rows; the legs' logs printed $printed_total."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice title=dispatch-browser rows::the merged report holds $merged rows," \
+            "against $printed_total printed by the legs (${line%, })"
+          if [ -n "$missing" ]; then
+            echo "::error::no blob report arrived from:$missing;" \
+              "the merged report is short of those legs' rows"
+            exit 1
+          fi
+          # Every owed blob arrived, so the two counts are of the same rows and must be equal:
+          # both count every row the legs ran, skipped rows included. They differ when the merge
+          # dropped rows the legs ran, and nothing else here would catch that - reading two and
+          # the verdict step both read the merged report alone, so a dropped failure would leave
+          # the run green. A leg whose log printed no count lands here too, and the table above
+          # says which leg it was.
+          if [ "$merged" != unknown ] && [ "$merged" -ne "$printed_total" ]; then
+            echo "::error::the merged report holds $merged rows and the legs printed" \
+              "$printed_total, with every leg's blob report present:" \
+              "the merge dropped rows the legs ran"
+            exit 1
+          fi
+      # Reading two. Read from the merged JSON report with jq, and nowhere else: a flake is a row
+      # that failed and passed on its retry, which only the report of the whole run holds.
+      - name: Reading two, the flake rate
+        if: always()
+        run: |
+          report="$RUNNER_TEMP/report.json"
+          if [ ! -f "$report" ]; then
+            echo "::warning::no merged report, so no flake rate; the step above says why"
+            exit 0
+          fi
+          total=$(jq '.stats.expected + .stats.unexpected + .stats.flaky + .stats.skipped' "$report")
+          flaky=$(jq '.stats.flaky' "$report")
+          rate=$(awk -v f="$flaky" -v t="$total" 'BEGIN { printf "%.2f", t ? 100 * f / t : 0 }')
+          rows=$(jq -r '[.. | objects | select(has("specs")) | .specs[] as $spec | $spec.tests[]
+            | select(.status == "flaky")
+            | "\($spec.file):\($spec.line) [\(.projectName)] \($spec.title)"] | sort | .[]' "$report")
+          {
+            echo "### The flake rate"
+            echo
+            echo "$flaky flaky rows of $total, which is $rate per cent."
+            echo
+            if [ -n "$rows" ]; then
+              echo "$rows" | while IFS= read -r row; do echo "- $row"; done
+            else
+              echo "No row passed on a retry."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice title=dispatch-browser flake rate::$flaky flaky rows of $total, $rate per cent"
+          # One line per flaky row, so a log reader gets what the summary got. A row's trace is in
+          # its leg's dispatch-browser-test-results artifact, which is uploaded on a green run too.
+          [ -z "$rows" ] || echo "$rows" | while IFS= read -r row; do
+            echo "::notice title=dispatch-browser flaky row::$row"
+          done
+      # Reading three. A leg that ended red with no failed row in the report died outside the
+      # suite - a budget, a runner fault, a step before the browser step - and that is a different
+      # fault from a failing row, so it is named apart.
+      - name: Reading three, the leg exits with no failed row
+        if: always()
+        run: |
+          blobs="$RUNNER_TEMP/selected-blobs/blob-report"
+          jobs="$RUNNER_TEMP/jobs.json"
+          unhappy="$RUNNER_TEMP/unhappy-jobs.tsv"
+          # The jobs reading one fetched: the newest attempt of each job of this workflow, with
+          # its id, its name, its conclusion and its leg. That step says what the fetch holds and
+          # why it cannot be done a page at a time. It is read here rather than fetched again so
+          # the two readings cannot disagree about which attempt ran.
+          if [ ! -f "$jobs" ]; then
+            echo "::warning::no jobs list, so no leg exits; reading one above says why"
+            exit 0
+          fi
+          # Every one of those jobs that has concluded and did not succeed. This job's own
+          # conclusion is still null while this step runs, so it selects itself out.
+          #
+          # `skipped` is left out too, and not because a skip is uninteresting: on the
+          # pull-request lane the alone and multiprocess jobs are skipped by their own
+          # `if: inputs.lane == 'full'`, so naming them here would report the lane working as
+          # designed as a leg that did not succeed. A skip that is not by design is caught where
+          # it matters instead: reading one fails this job when a leg the lane owed a blob report
+          # did not upload one, and the verdict step fails on an upstream result that is neither
+          # success nor skipped.
+          # `.leg` is the name derived once above, not parsed again here. It is written as `-`
+          # when the job is no leg, never as an empty field: a tab is IFS whitespace, so an empty
+          # field would be swallowed and `read` would take the next one in its place. `name` stays
+          # last, where `read -r` lets it hold the spaces a job name carries.
+          jq -r '.[]
+            | select(.conclusion != null and .conclusion != "success" and .conclusion != "skipped")
+            | [.id, .conclusion, (.leg // "-"), .name] | @tsv' "$jobs" > "$unhappy"
+          {
+            echo "### The legs that did not succeed"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ ! -s "$unhappy" ]; then
+            echo "Every leg of this workflow concluded success." >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice title=dispatch-browser leg exits::every leg of this workflow concluded success"
+            exit 0
+          fi
+          while IFS="$(printf '\t')" read -r id conclusion leg name; do
+            if [ "$leg" = "-" ]; then
+              text="job $id ($name) ended $conclusion; it is no shard, so the merged report holds no row of it"
+            elif [ ! -f "$blobs/report-$leg.zip" ]; then
+              text="job $id ($name) ended $conclusion and uploaded no blob report, so the merged report holds none of its rows"
+            else
+              # That leg's own rows, which are its part of the merged report: the merged report
+              # does not say which leg ran a row, and this leg's blob is exactly the rows it
+              # contributed to it.
+              work="$RUNNER_TEMP/leg-$leg"
+              mkdir -p "$work/in"
+              cp "$blobs/report-$leg.zip" "$work/in/"
+              # `|| true`, because `merge-reports` exits 1 on a report holding a failed row,
+              # which is the case this reading is looking for: under `bash -e` the bare call
+              # would end the step at the first red leg, before it named any of them. What the
+              # call wrote is read instead, and a call that wrote nothing is said so.
+              ( cd "$GITHUB_WORKSPACE/packages/dispatch" &&
+                PLAYWRIGHT_JSON_OUTPUT_NAME="$work/report.json" bunx playwright merge-reports --reporter=json "$work/in" > /dev/null ) || true
+              if [ ! -f "$work/report.json" ]; then
+                text="job $id ($name) ended $conclusion and its blob report could not be read, so what it ran is unknown"
+              else
+                failed=$(jq '.stats.unexpected' "$work/report.json")
+                if [ "$failed" -eq 0 ]; then
+                  text="job $id ($name) ended $conclusion with no failed row in the merged report, so it died outside the suite"
+                else
+                  text="job $id ($name) ended $conclusion with $failed failed rows in the merged report"
+                fi
+              fi
+            fi
+            echo "- $text" >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice title=dispatch-browser leg exits::$text"
+          done < "$unhappy"
+      # The verdict, which the three readings above do not give: they report, and this fails. Two
+      # of the job's three failures are here - an upstream job that neither succeeded nor was
+      # skipped, and a failed row in the merged report - and the third, a missing blob, is in
+      # reading one, where it is found.
+      - name: Fail when a leg failed or the merged report holds a failed row
+        if: always()
+        run: |
+          failed=0
+          for pair in "shard:${{ needs.shard.result }}" "alone:${{ needs.alone.result }}" \
+            "multiprocess:${{ needs.multiprocess.result }}"; do
+            case "${pair#*:}" in
+              success | skipped) ;;
+              *)
+                echo "::error::the ${pair%%:*} job's result is ${pair#*:}, which is neither success nor skipped"
+                failed=1
+                ;;
+            esac
+          done
+          report="$RUNNER_TEMP/report.json"
+          if [ -f "$report" ]; then
+            unexpected=$(jq '.stats.unexpected' "$report")
+            if [ "$unexpected" -gt 0 ]; then
+              echo "::error::the merged report holds $unexpected failed rows;" \
+                "reading three above says which legs they came from"
+              failed=1
+            fi
+          fi
+          exit "$failed"
+      # ci.yaml's call only: on a merge-group run whose group ci.yaml's dispatch-browser job's
+      # own result decides it posts the failing ci-ok at once, and on every other run it posts
+      # nothing, the verdict being ci.yaml's `ci-ok` job's own check run
+      # (.github/actions/ci-ok-report says how). This is the job that posts for that call: it
+      # needs every other job of this workflow, and the step is its last, which is the shape
+      # .github/scripts/ci_filter_coverage.py's check_ci_ok holds a called workflow to. The
+      # nightly workflow passes no `ci-ok-changes`, and the step skips.
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always() && inputs.ci-ok-changes != ''
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: dispatch-browser
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}

@@ -8,6 +8,59 @@ A blank line separates list items.
 Add a new item next to the item it belongs with, never at the end of a list unless it belongs there, so two pull requests that add items or change different sentences do not conflict.
 `bun scripts/semantic-line-breaks.ts AGENTS.md` checks the layout, and `--write` fixes it.
 
+## Design principles
+
+Each line is a default and its reason.
+Where two collide, decide the case and say why.
+A measurement outranks any line here.
+
+- **Everything in Dispatch is a node in the graph, and a feature is a query over it.**
+  When a feature is hard to build over the model, the model is the defect.
+
+- **The daemon is a state machine, not a gateway.**
+
+- **Agents are engineers.**
+  They get the privileges their work needs.
+
+- **Start with the standard answer, then make it agent-native.**
+
+- **Status quo is not an excuse.**
+  Reject historical mistakes.
+  Fix it now, not later.
+
+- **A self-regulating system is more robust.**
+  Event-based over polling.
+
+- **Make it modular.**
+
+- **Instrument and log everything.**
+
+- **Self-organization over coordination.**
+
+- **Waste is a design defect.**
+  Fix the waste before buying capacity; never design around a cap you have not hit.
+
+- **Read the code.
+  Read the docs.
+  Read the logs.
+  Read the goddamn code.**
+
+- **"Testing" means you boot and run it.**
+  Unit tests are just scaffolding.
+
+- **In writing, clarity of communication is the most important principle.**
+
+* **Optimizing ruthlessly is a competency we develop.**
+  Performance is part of the design, and the scale to build for is the one we are heading to.
+
+- **Make invalid input impossible to represent.**
+  Typing is your friend.
+
+* **There are no rules, there are only reasons.**
+  Explain what is not obvious, but do not turn that into law.
+
+Evidence for each line, with the issues behind it and the cases that cut against it: dispatch://INFRA-1225/artifact/principles-evidence-md.
+
 ## Architecture
 
 Legion's issue lifecycle lives entirely on native Dispatch (triage → done); the daemon never creates, reads, or writes a GitHub issue.
@@ -115,7 +168,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 
   Run the daemon in the foreground for the project that file names (./legion.yaml by default);
   with `LEGION_LISTEN_FD=<n>` it serves its API on that inherited listening socket instead of binding, and refuses to start unless the file's `bind` and `port` name the socket's address (docs/deployment.md "Serving on a socket the harness holds");
-  --check-config never reads it, and also prints the configuration's open capability gaps after its OK line (exit 0), and under `runtime: kubernetes` the repository cache each mapped repository gets (docs/kubernetes.md "The repository cache") and the plugin pair a stale-plugin relaunch would install or the gap that leaves it relaunching none (docs/kubernetes.md "Contract discipline")
+  --check-config never reads it, and also prints the configuration's open capability gaps after its OK line (exit 0), the intake handler limit under either runtime when `worker_rpc_timeout_seconds` derives one above the ten-minute floor (the daemon's boot log names it at every boot, derived or not), and under `runtime: kubernetes` the repository cache each mapped repository gets (docs/kubernetes.md "The repository cache") and the plugin pair a stale-plugin relaunch would install or the gap that leaves it relaunching none (docs/kubernetes.md "Contract discipline")
 
 - `legion status <team>`
 
@@ -566,10 +619,11 @@ Each item below names a task and where its code is, then notes on it.
 - **Tests** — co-located `__tests__/` dirs, Bun test runner (`bun:test`)
 
 - **The slow test suites run in the merge queue, not on a pull-request push**
-  — ten jobs of `ci.yaml` (`dispatch`, `dispatch-binaries`, `envoy-go`, `envoy-go-race`, `envoy-go-race-api`, `envoy-go-race-docs`, `envoy-go-docs-finalizers`, `dispatch-memory`, `dispatch-multiprocess` and `envoy-smoke`) are held back on a pull request, and the merge queue runs them on the tree the change lands as, which is where their result normally comes from.
+  — eight jobs of `ci.yaml` (`envoy-go`, `envoy-go-race`, `envoy-go-race-api`, `envoy-go-race-docs`, `envoy-go-docs-finalizers`, `dispatch-memory`, `dispatch-multiprocess` and `envoy-smoke`) are held back on a pull request, and the merge queue runs them on the tree the change lands as, which is where their result normally comes from.
+  The browser suite (`dispatch-browser`, and `dispatch-binaries`, which builds the Go commands its lanes run) runs on every pull request that changes what it reads, in its two-project `pull-request` lane; the label puts it on the full lane the merge queue runs.
   A worker adds the label `full-ci` to its pull request only to check a fix for a slow-suite failure that took the pull request out of the queue, or when a person asks.
   The label is read from the pull request as the run's own event carries it, so it takes effect at the next push, not when it is added.
-  The worker takes it off again once that run has passed, because the label stays on the pull request and every later push would run the ten again.
+  The worker takes it off again once that run has passed, because the label stays on the pull request and every later push would run the eight again, and the browser suite's full lane with them.
 
 - **Release jobs keep credentials away from dependency code**
   — in `release.yaml`, `release-envoy-listener.yaml` and `release-envoy-infra.yaml`, a job that holds `contents: write`, `id-token: write`, `attestations: write`, `actions: write` or the deploy key runs no dependency code (no `bun`, `go`, `node`, no built binary, no `scripts/` program) and restores no cache (`cache-mode: none`);
@@ -790,6 +844,9 @@ the daemon sets it `todo` with the label in one Dispatch write, and the write's 
 A child that never started is handed over too, carrying no run, whatever held it where it stood — an unfinished Dispatch issue, an ancestor the daemon had accepted, or one that closed during the linger:
 the expiry reads the child's own state rather than the reason it waited, so every member the tree leaves in the workflow at `todo` and `admitted` becomes a root of its own.
 A child a person has taken out of the workflow, and one the architect has filed and not released, is in no such state and stays where it is.
+A root that does not stay `done` through its linger, one a person or a controller parked, hands over only a child standing at `awaiting_merge` whose pull request is still open and whose own status is in the workflow:
+the linger's start disarmed that pull request, only a new READY arms it again, and the daemon re-admits no root left parked, so the child comes back in `merging` under a tree of its own, its merger writes that READY, and its merge closes it.
+Park such a child too when its merge should wait with its parked root.
 A child whose old root had no gate (cleared by a reopen in its linger) carries none:
 its architect registers its own spec while the child is before `awaiting_merge` (after that its READY is already through), and decomposes nothing anew, since its workers already run their phases.
 A role of a carried child still in a turn under its old tree stops first:
