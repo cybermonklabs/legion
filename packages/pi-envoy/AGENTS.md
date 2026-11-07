@@ -620,6 +620,17 @@ with no Dispatch has no write to review and gets no gate; the test runs at load,
 turns Dispatch on later has none either. In such a session `envoy.ts` reads the switch
 (`askgateSetting` in `@legion/envoy-client/envoy-config`, the top-level `askgate` section of that
 file) and calls `registerAskGate` unless that switch is off.
+AskGate's one setting of its own is NOT in that file: `askgate.sharedAccountProviders`, the
+provider ids of a machine that bill one account, is declared on Oh My Pi's own settings registry
+by `askgate.ts` (`register`, with `lookup` first so a second evaluation reuses the handle) and
+read from omp's config. envoy.json would be the wrong home: a named profile's envoy.json is one
+file with the default profile's on a machine where the shim links them, while omp keeps a
+profile's config layer separate (`config.local.yml` against `config.<profile>.local.yml`), and
+this is exactly the fact a profile that bills another account must be able to state for itself.
+The comparison is `sameAccount` in `askgate-core.ts`, read through the `sharedAccountProviders`
+dep at each call: it decides the `skipped` outcome and which fallback models of the chain may be
+asked. An empty list, which a machine that declares nothing gives, makes both the plain
+provider-id comparison the gate made before the setting existed.
 `registerAskGate` (`askgate.ts`) registers the gate's one
 `tool_call` handler at once, in the factory, after `envoy.ts`'s own, and starts the load of Oh My
 Pi's own modules through string-literal `import()`, declared in `../pi-shared/src/omp-host.d.ts`.
@@ -666,7 +677,7 @@ cannot write after a switch is a UI notice at once. For each literal call it let
 mints one single-use marker in that store (`mintFor`): the argv the CLI gets, bound behind a review
 or a deliberate pass (a rebuttal, a breaker trip) to the dry run's arguments and to the sha256 of
 each file the argv names (`fileOperands`), as the gate read it in place; argv-only for a call no
-verdict stands behind (`UNREVIEWED_OUTCOMES`, a halt and another provider among them) and
+verdict stands behind (`UNREVIEWED_OUTCOMES`, a halt and another account among them) and
 for a `task` subagent's literal call. A marker goes when its call ends or at shutdown, and the CLI
 refuses one older than two hours (`MARKER_MAX_AGE_MS`). The CLI reads each named file once,
 consumes one matching marker by unlinking it before it posts a gated write under a live record,
