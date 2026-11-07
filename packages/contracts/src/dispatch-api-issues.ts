@@ -509,14 +509,25 @@ export interface ArchitectureTreeComponent {
   readonly paths: string[];
   readonly external: boolean;
   readonly prose: string;
-  /** The display tree of `prose`, absent unless the request sent `Dispatch-Trees: 1`. */
-  readonly prose_tree?: DisplayTree;
   readonly done: number;
   readonly total: number;
   readonly own_done: number;
   readonly own_total: number;
   readonly issues: ArchitectureTreeIssue[];
 }
+
+/** One component as the web app reads it, with the tree of the prose its source's files declare
+ *  it with. The component itself is the shared row of the model, and gains no field; a tree
+ *  rides on this reading of it, absent unless the request sent `Dispatch-Trees: 1`. */
+export type ArchitectureTreeComponentWithTrees = ArchitectureTreeComponent & {
+  readonly prose_tree?: DisplayTree;
+};
+
+/** The project's component model as the web app reads it: the tree, with every component
+ *  carrying that tree. The side lists name issues and carry no prose. */
+export type ArchitectureTreeWithTrees = Omit<ArchitectureTree, "components"> & {
+  readonly components: ArchitectureTreeComponentWithTrees[];
+};
 
 /** How an issue counts for a component; the strongest wins when several apply. */
 export type ArchitectureTreeAttachment = "direct" | "inherited" | "contained";

@@ -5,9 +5,9 @@ import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../../api/client";
 import { architectureSourcesQuery } from "../../api/queries";
 import type {
-  ArchitectureTree,
   ArchitectureTreeComponent,
   ArchitectureTreeSource,
+  ArchitectureTreeWithTrees,
 } from "../../api/types";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { QueryError } from "../../components/QueryError";
@@ -186,7 +186,7 @@ function ArchitectureTreeView({
   project: string;
   refresh: RefreshState | null;
   selectedId: string | null;
-  tree: ArchitectureTree;
+  tree: ArchitectureTreeWithTrees;
   update: UpdatePaneState;
   view: PaneView | null;
 }): ReactNode {

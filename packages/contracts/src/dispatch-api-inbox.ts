@@ -13,7 +13,7 @@ import type {
 } from "./dispatch-api-asks";
 import type { CommentWithTrees } from "./dispatch-api-comments";
 import type { Actor, Anchor, AskUrgency, DisplayTree } from "./dispatch-api-core";
-import type { ArtifactApproval } from "./dispatch-api-documents";
+import type { ArtifactApprovalWithTrees } from "./dispatch-api-documents";
 import type { Issue, IssuePriority } from "./dispatch-api-issues";
 import type { AskTurn, SessionAnswerRelation } from "./dispatch-api-limits";
 
@@ -83,7 +83,7 @@ export interface ApprovalRequestResponse {
   readonly ask: Ask | null;
   readonly artifact_id: string;
   readonly version: number;
-  readonly approval: ArtifactApproval;
+  readonly approval: ArtifactApprovalWithTrees;
   /** One line per requirement of the issue's spec with no check, or the single line `the spec
    *  marks no requirements` for a spec that marks none, as `IssueCoverage.gaps` writes them; no
    *  line at all for a spec every requirement of which has a check, empty for a document that is

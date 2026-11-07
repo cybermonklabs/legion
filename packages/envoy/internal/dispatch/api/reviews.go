@@ -550,10 +550,10 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	type response struct {
-		Ask        *askRead               `json:"ask"`
-		ArtifactID string                 `json:"artifact_id"`
-		Version    int                    `json:"version"`
-		Approval   model.ArtifactApproval `json:"approval"`
+		Ask        *askRead             `json:"ask"`
+		ArtifactID string               `json:"artifact_id"`
+		Version    int                  `json:"version"`
+		Approval   artifactApprovalRead `json:"approval"`
 		// Coverage is one line per requirement of the spec with no check, as the approver reads
 		// them (coverage.go); never a missing plan task, since the plan comes after the
 		// approval, and empty for any document that is not an issue's spec. A gap refuses
@@ -579,11 +579,10 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	if settled {
 		// The approval's reason is read where it stands: this answer carries what the request
 		// has just written, and the write beside it stored the tree.
-		shapeBuilt(trees, func(reader *displayTreeReader) {
-			attachApprovalTrees(reader, []model.Artifact{artifact})
-		})
 		WriteJSON(w, http.StatusOK, response{Ask: nil, ArtifactID: artifact.ID, Version: version,
-			Approval: *artifact.Approval, Coverage: coverage, CoverageUnread: coverageUnread})
+			Approval:       newArtifactApprovalRead(*artifact.Approval, trees),
+			Coverage:       coverage,
+			CoverageUnread: coverageUnread})
 		return
 	}
 	// The open request is found by any document this one names, not by the named document
@@ -635,16 +634,17 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	if len(events) > 0 {
 		status = http.StatusCreated
 	}
-	shapeBuilt(trees, func(reader *displayTreeReader) {
-		attachApprovalTrees(reader, []model.Artifact{artifact})
-	})
 	var askAnswer *askRead
 	if ask != nil {
 		read := newAskRead(*ask, trees)
 		askAnswer = &read
 	}
+	// The reason, like the question above, is read where it stands: the write beside it stored
+	// its tree.
 	WriteJSON(w, status, response{Ask: askAnswer, ArtifactID: artifact.ID, Version: version,
-		Approval: *artifact.Approval, Coverage: coverage, CoverageUnread: coverageUnread})
+		Approval:       newArtifactApprovalRead(*artifact.Approval, trees),
+		Coverage:       coverage,
+		CoverageUnread: coverageUnread})
 }
 
 // openApprovalAsk inserts the approval request naming documents, asking question, and appends

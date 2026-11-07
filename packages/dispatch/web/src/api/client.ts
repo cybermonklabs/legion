@@ -18,8 +18,7 @@ import type {
   AgentToken,
   AnswerAskInput,
   ArchitectureSource,
-  ArchitectureTree,
-  Artifact,
+  ArchitectureTreeWithTrees,
   ArtifactBlock,
   ArtifactRebuildReport,
   ArtifactReview,
@@ -28,6 +27,7 @@ import type {
   ArtifactUploadResponse,
   ArtifactVersionContent,
   ArtifactVersionText,
+  ArtifactWithTrees,
   Ask,
   AskRead,
   AskSnooze,
@@ -70,7 +70,7 @@ import type {
   DuplicateCandidate,
   EditCommentInput,
   Event,
-  GraphReferences,
+  GraphReferencesWithTrees,
   Handoff,
   HandoffSummary,
   IDCandidate,
@@ -993,8 +993,10 @@ export class DispatchApiClient {
   }
 
   /** The project's component tree with the work attached; 404 SOURCE_NOT_FOUND without a source. */
-  getArchitecture(project: string): Promise<ArchitectureTree> {
-    return this.json<ArchitectureTree>(`/api/v1/projects/${pathSegment(project)}/architecture`);
+  getArchitecture(project: string): Promise<ArchitectureTreeWithTrees> {
+    return this.json<ArchitectureTreeWithTrees>(
+      `/api/v1/projects/${pathSegment(project)}/architecture`
+    );
   }
 
   listAgentTokens(): Promise<AgentToken[]> {
@@ -1315,12 +1317,12 @@ export class DispatchApiClient {
     return this.json<Handoff>(`/api/v1/handoffs/${pathSegment(id)}`);
   }
 
-  listArtifacts(key: string): Promise<Artifact[]> {
-    return this.json<Artifact[]>(`/api/v1/issues/${pathSegment(key)}/artifacts`);
+  listArtifacts(key: string): Promise<ArtifactWithTrees[]> {
+    return this.json<ArtifactWithTrees[]>(`/api/v1/issues/${pathSegment(key)}/artifacts`);
   }
 
-  listProjectArtifacts(key: string, unlinked?: boolean): Promise<Artifact[]> {
-    return this.json<Artifact[]>(
+  listProjectArtifacts(key: string, unlinked?: boolean): Promise<ArtifactWithTrees[]> {
+    return this.json<ArtifactWithTrees[]>(
       pathWithQuery(`/api/v1/projects/${pathSegment(key)}/artifacts`, { unlinked })
     );
   }
@@ -1351,12 +1353,12 @@ export class DispatchApiClient {
     return this.post<ArtifactUploadResponse>(path, body, bounds);
   }
 
-  getArtifact(id: string): Promise<Artifact> {
-    return this.json<Artifact>(`/api/v1/artifacts/${pathSegment(id)}`);
+  getArtifact(id: string): Promise<ArtifactWithTrees> {
+    return this.json<ArtifactWithTrees>(`/api/v1/artifacts/${pathSegment(id)}`);
   }
 
-  getProjectArtifact(key: string, slug: string): Promise<Artifact> {
-    return this.json<Artifact>(
+  getProjectArtifact(key: string, slug: string): Promise<ArtifactWithTrees> {
+    return this.json<ArtifactWithTrees>(
       `/api/v1/projects/${pathSegment(key)}/artifacts/${pathSegment(slug)}`
     );
   }
@@ -1370,8 +1372,8 @@ export class DispatchApiClient {
   }
 
   /** An artifact of an agent's conversation, with its versions. */
-  getAgentArtifact(sessionId: string, slug: string): Promise<Artifact> {
-    return this.json<Artifact>(
+  getAgentArtifact(sessionId: string, slug: string): Promise<ArtifactWithTrees> {
+    return this.json<ArtifactWithTrees>(
       `/api/v1/agents/${pathSegment(sessionId)}/artifacts/${pathSegment(slug)}`
     );
   }
@@ -1511,8 +1513,11 @@ export class DispatchApiClient {
   }
   /** The edges at a node; `kind` keeps those of one kind - `part_of` lists a document's blocks,
    *  which a document's read otherwise leaves out. */
-  getReferences(reference: string, options: { kind?: string } = {}): Promise<GraphReferences> {
-    return this.json<GraphReferences>(
+  getReferences(
+    reference: string,
+    options: { kind?: string } = {}
+  ): Promise<GraphReferencesWithTrees> {
+    return this.json<GraphReferencesWithTrees>(
       pathWithQuery("/api/v1/references", { kind: options.kind, to: reference })
     );
   }

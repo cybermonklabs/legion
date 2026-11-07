@@ -782,17 +782,14 @@ type ArchitectureTreeTotals struct {
 // counted, each saying how it qualified. Source is the repository of the
 // source whose files define it.
 type ArchitectureTreeComponent struct {
-	ID        string   `json:"id"`
-	Source    string   `json:"source"`
-	Title     string   `json:"title"`
-	Parent    *string  `json:"parent"`
-	DependsOn []string `json:"depends_on"`
-	Paths     []string `json:"paths"`
-	External  bool     `json:"external"`
-	Prose     string   `json:"prose"`
-	// ProseTree is the ProseMirror tree Prose is shown as, present only for a caller that sent
-	// `Dispatch-Trees: 1`.
-	ProseTree json.RawMessage         `json:"prose_tree,omitempty"`
+	ID        string                  `json:"id"`
+	Source    string                  `json:"source"`
+	Title     string                  `json:"title"`
+	Parent    *string                 `json:"parent"`
+	DependsOn []string                `json:"depends_on"`
+	Paths     []string                `json:"paths"`
+	External  bool                    `json:"external"`
+	Prose     string                  `json:"prose"`
 	Done      int                     `json:"done"`
 	Total     int                     `json:"total"`
 	OwnDone   int                     `json:"own_done"`
@@ -913,21 +910,18 @@ type ArtifactReview struct {
 // among them where At, its transaction's start, cannot. Seq orders; Version, not
 // Seq, says which version the review covers.
 type ArtifactApproval struct {
-	State         string  `json:"state"`
-	LatestVersion int     `json:"latest_version"`
-	Version       *int    `json:"version,omitempty"`
-	By            *Actor  `json:"by,omitempty"`
-	At            *string `json:"at,omitempty"`
-	Seq           *int64  `json:"seq,omitempty"`
-	Reason        *string `json:"reason,omitempty"`
-	// ReasonTree is the ProseMirror tree Reason is shown as, present only for a caller that sent
-	// `Dispatch-Trees: 1`.
-	ReasonTree          json.RawMessage `json:"reason_tree,omitempty"`
-	AskID               *string         `json:"ask_id,omitempty"`
-	ContentSHA256       *string         `json:"content_sha256,omitempty"`
-	ContentSHA256Source *string         `json:"content_sha256_source,omitempty"`
-	RequestedBy         *Actor          `json:"requested_by,omitempty"`
-	WaitingOn           string          `json:"waiting_on,omitempty"`
+	State               string  `json:"state"`
+	LatestVersion       int     `json:"latest_version"`
+	Version             *int    `json:"version,omitempty"`
+	By                  *Actor  `json:"by,omitempty"`
+	At                  *string `json:"at,omitempty"`
+	Seq                 *int64  `json:"seq,omitempty"`
+	Reason              *string `json:"reason,omitempty"`
+	AskID               *string `json:"ask_id,omitempty"`
+	ContentSHA256       *string `json:"content_sha256,omitempty"`
+	ContentSHA256Source *string `json:"content_sha256_source,omitempty"`
+	RequestedBy         *Actor  `json:"requested_by,omitempty"`
+	WaitingOn           string  `json:"waiting_on,omitempty"`
 	// Kind is the latest review's Kind, so a reader can say an approval is a plan review's
 	// rather than a person's; empty while no review stands.
 	Kind string `json:"kind,omitempty"`
@@ -2321,10 +2315,7 @@ type GraphNode struct {
 	Parent         *NodeParent `json:"parent"`
 	ParentVersion  *int        `json:"parent_version"`
 	Text           string      `json:"text,omitempty"`
-	// TextTree is the ProseMirror tree Text is shown as, present only for a caller that sent
-	// `Dispatch-Trees: 1`: a reference's title is read from it, as an ask's and a comment's are.
-	TextTree json.RawMessage `json:"text_tree,omitempty"`
-	Pin      *BlockPin       `json:"pin,omitempty"`
+	Pin            *BlockPin   `json:"pin,omitempty"`
 }
 
 // NodeParent names the node a graph node belongs to: its kind and its node id (an artifact's
@@ -2341,14 +2332,11 @@ type NodeParent struct {
 // is "unchanged" when its current text equals Text, "changed" when it differs, and "removed"
 // when no current version holds the block; RemovedVersion is then the version that deleted it.
 type BlockPin struct {
-	Version int    `json:"version"`
-	Ref     string `json:"ref"`
-	Text    string `json:"text"`
-	// TextTree is the ProseMirror tree Text is shown as, present only for a caller that sent
-	// `Dispatch-Trees: 1`.
-	TextTree       json.RawMessage `json:"text_tree,omitempty"`
-	State          string          `json:"state"`
-	RemovedVersion int             `json:"removed_version,omitempty"`
+	Version        int    `json:"version"`
+	Ref            string `json:"ref"`
+	Text           string `json:"text"`
+	State          string `json:"state"`
+	RemovedVersion int    `json:"removed_version,omitempty"`
 }
 
 // GraphExcerpt is the text shown for an edge: the block containing a document mention (with its

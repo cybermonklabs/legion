@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -216,6 +217,94 @@ func TestEveryReadCarriesItsDisplayTreesOnlyUnderTheHeader(t *testing.T) {
 			}
 		}
 	})
+}
+
+// displayTreeFields names every field of row, and of every row it holds, whose JSON name ends
+// in `_tree`, each under the path it stands at. A type is walked once, which is enough to say
+// whether any tree stands on it.
+func displayTreeFields(row reflect.Type, path string, seen map[reflect.Type]bool) []string {
+	for row.Kind() == reflect.Pointer || row.Kind() == reflect.Slice || row.Kind() == reflect.Array {
+		row = row.Elem()
+	}
+	if row.Kind() != reflect.Struct || seen[row] {
+		return nil
+	}
+	seen[row] = true
+	var found []string
+	for index := range row.NumField() {
+		field := row.Field(index)
+		name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
+		switch name {
+		case "-":
+			continue
+		case "":
+			name = field.Name
+		}
+		at := name
+		if path != "" {
+			at = path + "." + name
+		}
+		if strings.HasSuffix(name, "_tree") {
+			found = append(found, at)
+		}
+		found = append(found, displayTreeFields(field.Type, at, seen)...)
+	}
+	return found
+}
+
+// A display tree stands on the shape a read answers and never on the row the whole deployment
+// shares, because an event payload carries that row (the spec's R6: the trees "are not part of
+// the message-bus schemas"). A document's approval is the case that was got wrong: the
+// `artifact.created` payload is the document row itself (artifactCreatedEventPayload), so a
+// `reason_tree` on model.ArtifactApproval would be a response field published on the bus. Here
+// one document is reviewed, its read answers the tree of the reason, and the payload of its own
+// creation - and of every other event of its issue - carries none.
+func TestAnArtifactPayloadCarriesNoApprovalTreeThoughItsReadDoes(t *testing.T) {
+	for _, row := range []any{
+		model.Artifact{}, model.ArtifactApproval{},
+		model.GraphNode{}, model.BlockPin{}, model.ArchitectureTreeComponent{},
+	} {
+		shared := reflect.TypeOf(row)
+		if fields := displayTreeFields(shared, "", map[reflect.Type]bool{}); len(fields) > 0 {
+			t.Errorf("model.%s carries the display tree %v; a read's own shape holds it (display_trees.go)",
+				shared.Name(), fields)
+		}
+	}
+
+	handler := newTestHandler(t)
+	const reason = "The **rollback** step is missing."
+	issue := createInteractionIssue(t, handler, "PAYL", "Payload trees", "# Spec\n\nThe plan.\n")
+	document := uploadIssueDocument(t, handler, issue.Key, "Rollout plan.md", "# Rollout\n\nFirst.\n")
+	review := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+document.ID+"/reviews",
+		map[string]any{"state": "changes_requested", "reason": reason}, "alice")
+	if review.Code != http.StatusCreated && review.Code != http.StatusOK {
+		t.Fatalf("request changes: status=%d body=%s", review.Code, review.Body.String())
+	}
+
+	requireDisplayTree(t, handler, "/api/v1/artifacts/"+document.ID,
+		"approval.reason", "approval.reason_tree")
+
+	target := "/api/v1/issues/" + issue.Key + "/events"
+	var events []struct {
+		Type    string          `json:"type"`
+		Payload json.RawMessage `json:"payload"`
+	}
+	if err := json.Unmarshal(treesRequest(t, handler, target, true).Body.Bytes(), &events); err != nil {
+		t.Fatalf("decode the event log: %v", err)
+	}
+	carried := false
+	for _, event := range events {
+		payload := string(event.Payload)
+		if event.Type == "artifact.created" && strings.Contains(payload, document.ID) {
+			carried = true
+		}
+		if strings.Contains(payload, "_tree") {
+			t.Errorf("the %s payload carries a display tree: %s", event.Type, payload)
+		}
+	}
+	if !carried {
+		t.Error("the issue's event log carried no artifact.created of the reviewed document, whose payload is its row")
+	}
 }
 
 // Every answer says its body depends on the trees header and on the encoding the caller takes, so

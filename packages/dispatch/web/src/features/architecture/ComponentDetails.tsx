@@ -5,7 +5,7 @@ import { Link } from "react-router-dom";
 import { issueQuery } from "../../api/queries";
 import type {
   ArchitectureTree,
-  ArchitectureTreeComponent,
+  ArchitectureTreeComponentWithTrees,
   ArchitectureTreeIssue,
 } from "../../api/types";
 import { ChevronIcon, DisclosureToggle } from "../../components/DisclosureToggle";
@@ -57,7 +57,7 @@ export function ComponentDetails({
   rowSearch,
   tree,
 }: {
-  component: ArchitectureTreeComponent;
+  component: ArchitectureTreeComponentWithTrees;
   project: string;
   rowSearch: (id: string) => string;
   tree: ArchitectureTree;

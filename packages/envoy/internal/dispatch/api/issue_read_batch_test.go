@@ -169,7 +169,7 @@ func sequentialIssueRead(t *testing.T, deps Deps, key string) []byte {
 	WriteJSON(recorder, http.StatusOK, issueDetail{
 		Issue:             issue,
 		Progress:          progress,
-		Artifacts:         artifacts,
+		Artifacts:         artifactReads(artifacts, nil),
 		OpenAsks:          issueOpenAsksOf(asks, replies, nil),
 		Children:          children,
 		ReferencedByCount: counts[issue.Key],

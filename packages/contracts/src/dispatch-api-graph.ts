@@ -111,8 +111,6 @@ export interface GraphNode {
   readonly parent?: GraphNodeParent | null;
   readonly parent_version?: number | null;
   readonly text?: string;
-  /** The display tree of `text`, absent unless the request sent `Dispatch-Trees: 1`. */
-  readonly text_tree?: DisplayTree;
   readonly pin?: BlockPin;
 }
 
@@ -134,11 +132,25 @@ export interface BlockPin {
   readonly version: number;
   readonly ref: string;
   readonly text: string;
-  /** The display tree of `text`, absent unless the request sent `Dispatch-Trees: 1`. */
-  readonly text_tree?: DisplayTree;
   readonly state: "unchanged" | "changed" | "removed";
   readonly removed_version?: number;
 }
+
+// BlockPinWithTrees is a pinned block reference as the web app reads it, with the tree of the
+// text the pinned version held. The pin itself stands on a node a shared row carries, and gains
+// no field; a tree rides on this reading of it.
+export type BlockPinWithTrees = BlockPin & {
+  readonly text_tree?: DisplayTree;
+};
+
+// GraphNodeWithTrees is one end of an edge as the web app reads it: the node, the tree of its
+// own text, and its pin carrying the tree of the text that version held. A reference's title is
+// read from one of those trees. Every tree is absent unless the request sent
+// `Dispatch-Trees: 1`, so this reading is a `GraphNode` wherever one is wanted.
+export type GraphNodeWithTrees = Omit<GraphNode, "pin"> & {
+  readonly text_tree?: DisplayTree;
+  readonly pin?: BlockPinWithTrees;
+};
 
 // GraphExcerpt is the text shown beside an edge: the block containing a document mention
 // (with its block id) or the head of the other node's own text.
@@ -165,6 +177,13 @@ export interface GraphEdge {
 // GraphReferences is GET /api/v1/references: the queried node and its edges, newest first.
 export interface GraphReferences {
   readonly node: GraphNode;
+  readonly edges: GraphEdge[];
+}
+
+// GraphReferencesWithTrees is that read as the web app reads it: the queried node carrying its
+// trees, with the edges, which hold no stored text of their own.
+export interface GraphReferencesWithTrees {
+  readonly node: GraphNodeWithTrees;
   readonly edges: GraphEdge[];
 }
 

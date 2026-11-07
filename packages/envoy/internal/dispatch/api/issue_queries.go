@@ -544,7 +544,7 @@ type issueDetail struct {
 	// must never be stored in one (model.IssueClaimLiveness carries the rest of the reason).
 	model.IssueClaimLiveness
 	Progress  model.IssueProgress `json:"progress"`
-	Artifacts []model.Artifact    `json:"artifacts"`
+	Artifacts []artifactRead      `json:"artifacts"`
 	OpenAsks  []issueOpenAsk      `json:"open_asks"`
 	Children  []model.IssueChild  `json:"children"`
 	// ReferencedByCount is what the header's `Referenced by (N)` control names. The page
@@ -561,6 +561,7 @@ type issueDetail struct {
 func (s *server) readIssue(ctx context.Context, key string, trees bool) (issueDetail, error) {
 	var read issueDetail
 	var links []model.ExternalLink
+	var artifacts []model.Artifact
 	var asks []model.Ask
 	var replies map[string]model.AskLastReply
 	issueCounts := map[string]int{}
@@ -583,7 +584,7 @@ func (s *server) readIssue(ctx context.Context, key string, trees bool) (issueDe
 	})
 	first.Queue(issueArtifactsStatement, key).Query(func(rows pgx.Rows) error {
 		scanned, err := collectArtifacts(rows)
-		read.Artifacts = scanned
+		artifacts = scanned
 		return err
 	})
 	first.Queue(listIssueAsksQueryOpen, key).Query(func(rows pgx.Rows) error {
@@ -608,7 +609,7 @@ func (s *server) readIssue(ctx context.Context, key string, trees bool) (issueDe
 	read.Issue.ExternalLinks = links
 	read.ReferencedByCount = issueCounts[read.Issue.Key]
 
-	if err := s.readIssueDetails(ctx, artifactPointers(read.Artifacts), askReadPointers(asks)); err != nil {
+	if err := s.readIssueDetails(ctx, artifactPointers(artifacts), askReadPointers(asks)); err != nil {
 		return issueDetail{}, err
 	}
 	// The approvals are read by the second batch, so their reasons are registered after it,
@@ -616,7 +617,7 @@ func (s *server) readIssue(ctx context.Context, key string, trees bool) (issueDe
 	// texts are one query of the stored trees, and what it did not hold is stored behind the
 	// read.
 	reader := s.readDisplayTrees(ctx, trees, key)
-	attachApprovalTrees(reader, read.Artifacts)
+	read.Artifacts = artifactReads(artifacts, reader)
 	read.OpenAsks = issueOpenAsksOf(asks, replies, reader)
 	defer reader.resolve()()
 	return read, nil

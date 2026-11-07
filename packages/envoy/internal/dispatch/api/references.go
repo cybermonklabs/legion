@@ -106,9 +106,10 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 		if node.Pin != nil && node.Pin.State == "removed" {
 			// The graph lists no link to a block no current version holds.
 			reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r), query.ID)
-			attachNodeTrees(&node, reader)
+			answer := graphReferencesRead{Node: graphNodeRead{GraphNode: node}, Edges: []model.GraphEdge{}}
+			answer.Node.shape(reader)
 			defer reader.resolve()()
-			WriteJSON(w, http.StatusOK, model.GraphReferences{Node: node, Edges: []model.GraphEdge{}})
+			WriteJSON(w, http.StatusOK, answer)
 			return
 		}
 	} else {
@@ -153,9 +154,10 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r), query.ID)
-	attachNodeTrees(&node, reader)
+	answer := graphReferencesRead{Node: graphNodeRead{GraphNode: node}, Edges: edges}
+	answer.Node.shape(reader)
 	defer reader.resolve()()
-	WriteJSON(w, http.StatusOK, model.GraphReferences{Node: node, Edges: edges})
+	WriteJSON(w, http.StatusOK, answer)
 }
 
 // wholeReference is ref with its item id, or its block id, written whole where the request

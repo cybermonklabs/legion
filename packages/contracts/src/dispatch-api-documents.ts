@@ -5,7 +5,6 @@ import {
   ActorSchema,
   type BlockEmbedding,
   type DisplayTree,
-  DisplayTreeSchema,
   type DocEditOp,
   InboundWriterSchema,
 } from "./dispatch-api-core";
@@ -118,8 +117,6 @@ export const ArtifactApprovalSchema = z
      *  `artifact.version`. */
     seq: z.number().int().optional(),
     reason: z.string().nullable().optional(),
-    /** The display tree of `reason`, absent unless the request sent `Dispatch-Trees: 1`. */
-    reason_tree: DisplayTreeSchema.optional(),
     ask_id: z.string().nullable().optional(),
     content_sha256: z.string().optional(),
     content_sha256_source: z.enum(["insert", "backfill"]).optional(),
@@ -140,6 +137,14 @@ export const ArtifactApprovalSchema = z
   .readonly();
 
 export type ArtifactApproval = z.output<typeof ArtifactApprovalSchema>;
+
+/** A document's approval as the web app reads it, with the tree of the reason its latest review
+ *  gave. The approval itself is part of the artifact a message-bus payload carries
+ *  (`WrittenArtifactCreatedEventPayloadSchema`) and gains no field; a tree rides on this reading
+ *  of it, which every route that answers the dashboard serves. */
+export type ArtifactApprovalWithTrees = ArtifactApproval & {
+  readonly reason_tree?: DisplayTree;
+};
 
 export const artifactFields = {
   id: z.string(),
@@ -171,6 +176,13 @@ export const artifactFields = {
 export const ArtifactSchema = z.strictObject(artifactFields).readonly();
 
 export type Artifact = z.output<typeof ArtifactSchema>;
+
+/** A document as the web app reads it: the artifact, its approval carrying the tree of that
+ *  approval's reason. The tree is absent unless the request sent `Dispatch-Trees: 1`, so this
+ *  reading is an `Artifact` wherever one is wanted. */
+export type ArtifactWithTrees = Omit<Artifact, "approval"> & {
+  readonly approval?: ArtifactApprovalWithTrees;
+};
 
 export interface ArtifactBlock {
   readonly id: string;

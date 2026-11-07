@@ -63,9 +63,9 @@ func (s *server) listArtifacts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r), r.PathValue("key"))
-	attachApprovalTrees(reader, artifacts)
+	reads := artifactReads(artifacts, reader)
 	defer reader.resolve()()
-	WriteJSON(w, http.StatusOK, artifacts)
+	WriteJSON(w, http.StatusOK, reads)
 }
 
 type artifactUploadInput struct {
@@ -726,9 +726,10 @@ func (s *server) getArtifact(w http.ResponseWriter, r *http.Request) {
 	// (`GET /api/v1/references?to=`, and `GET /api/v1/artifacts/{id}/references` for agents),
 	// so this read does not pay for them.
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r), artifact.ID)
-	attachApprovalTrees(reader, []model.Artifact{artifact})
+	read := artifactRead{Artifact: artifact}
+	read.shape(reader)
 	defer reader.resolve()()
-	WriteJSON(w, http.StatusOK, artifact)
+	WriteJSON(w, http.StatusOK, read)
 }
 
 func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {

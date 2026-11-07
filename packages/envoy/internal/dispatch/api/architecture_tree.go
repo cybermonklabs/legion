@@ -44,12 +44,10 @@ func (s *server) getArchitectureTree(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The components' prose is registered here and filled once, after the issues are attached:
-	// the trees are the table's rows where it holds them, and the read stores what it did not.
+	// Each component's prose is registered with the request's reader as the component is shaped
+	// into the answer below: the trees are the table's rows where it holds them, and the read
+	// stores what it did not.
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r), project)
-	for _, component := range components {
-		reader.text(&component.ProseTree, component.Prose)
-	}
 	issues, err := loadTreeIssues(r.Context(), pool, project)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -60,14 +58,11 @@ func (s *server) getArchitectureTree(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The trees are filled before the components are copied into the answer, and the store of
-	// what the table did not hold runs once the answer is written.
-	defer reader.resolve()()
-	tree.Components = make([]model.ArchitectureTreeComponent, 0, len(components))
+	answer := architectureTreeRead{Components: make([]architectureComponentRead, len(components))}
 	tree.Unassigned = []model.ArchitectureTreeIssueRef{}
 	tree.NotArchitectural = []model.ArchitectureTreeNone{}
 	tree.RetiredLinks = []model.ArchitectureTreeRetired{}
-	for _, component := range components {
+	for index, component := range components {
 		for _, row := range component.Issues {
 			component.Total++
 			if row.Status == "done" {
@@ -83,7 +78,8 @@ func (s *server) getArchitectureTree(w http.ResponseWriter, r *http.Request) {
 		if component.Total == 0 && !component.External {
 			tree.Totals.ComponentsWithoutWork++
 		}
-		tree.Components = append(tree.Components, *component)
+		answer.Components[index].ArchitectureTreeComponent = *component
+		reader.text(&answer.Components[index].ProseTree, component.Prose)
 	}
 	for _, issue := range issues {
 		tree.Totals.IssuesTotal++
@@ -111,7 +107,11 @@ func (s *server) getArchitectureTree(w http.ResponseWriter, r *http.Request) {
 	tree.Totals.Unassigned = len(tree.Unassigned)
 	tree.Totals.NotArchitectural = len(tree.NotArchitectural)
 	tree.Totals.RetiredLinks = len(tree.RetiredLinks)
-	WriteJSON(w, http.StatusOK, tree)
+	// The trees are filled before the answer is written, and the store of what the table did
+	// not hold runs once it is.
+	defer reader.resolve()()
+	answer.ArchitectureTree = tree
+	WriteJSON(w, http.StatusOK, answer)
 }
 
 // loadTreeComponents reads the project's current model — every source's components — in id

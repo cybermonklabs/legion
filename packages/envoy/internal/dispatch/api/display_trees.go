@@ -424,26 +424,102 @@ func artifactReviewReads(reviews []model.ArtifactReview, reader *displayTreeRead
 	return reads
 }
 
-// attachApprovalTrees registers the reason of each document's approval with the request's
-// reader. It runs where a route answers a reader rather than in attachApprovals, which every
-// read of a document goes through, request or not: only a reader is shown the reason, and only
-// one that asked for the trees.
-func attachApprovalTrees(reader *displayTreeReader, artifacts []model.Artifact) {
-	for index := range artifacts {
-		if approval := artifacts[index].Approval; approval != nil {
-			reader.textOf(&approval.ReasonTree, approval.Reason)
-		}
+// artifactApprovalRead is a document's approval with the tree of the reason its latest review
+// gave. The tree stands here rather than on model.ArtifactApproval because that approval is part
+// of the artifact an event payload carries, and no payload gains a tree field.
+type artifactApprovalRead struct {
+	model.ArtifactApproval
+	ReasonTree json.RawMessage `json:"reason_tree,omitempty"`
+}
+
+// artifactRead is a document as the dashboard reads it: the document, with its approval carrying
+// the tree of that approval's reason.
+type artifactRead struct {
+	model.Artifact
+	Approval *artifactApprovalRead `json:"approval,omitempty"`
+}
+
+// shape rebuilds the shadowing approval from the document it stands in front of and registers
+// its reason with the request's reader. It runs where a route answers a reader rather than in
+// attachApprovals, which every read of a document goes through, request or not: only a reader is
+// shown the reason, and only one that asked for the trees.
+func (a *artifactRead) shape(reader *displayTreeReader) {
+	a.Approval = nil
+	if approval := a.Artifact.Approval; approval != nil {
+		a.Approval = &artifactApprovalRead{ArtifactApproval: *approval}
+		reader.textOf(&a.Approval.ReasonTree, approval.Reason)
 	}
 }
 
-// attachNodeTrees registers a graph node's own text and the text a pinned block reference
-// recorded: a reference's title is read from the tree of the block it names, as an ask's and a
-// comment's titles are read from theirs.
-func attachNodeTrees(node *model.GraphNode, reader *displayTreeReader) {
-	reader.text(&node.TextTree, node.Text)
-	if node.Pin != nil {
-		reader.text(&node.Pin.TextTree, node.Pin.Text)
+// newArtifactApprovalRead is one approval shaped for a response of its own: the answer of the
+// call that wrote it, which reads its reason where it stands (shapeBuilt).
+func newArtifactApprovalRead(approval model.ArtifactApproval, trees bool) artifactApprovalRead {
+	read := artifactApprovalRead{ArtifactApproval: approval}
+	shapeBuilt(trees, func(reader *displayTreeReader) {
+		reader.textOf(&read.ReasonTree, approval.Reason)
+	})
+	return read
+}
+
+// artifactReads is a list of documents shaped for the dashboard, an absent list staying absent.
+func artifactReads(artifacts []model.Artifact, reader *displayTreeReader) []artifactRead {
+	if artifacts == nil {
+		return nil
 	}
+	reads := make([]artifactRead, len(artifacts))
+	for index := range artifacts {
+		reads[index].Artifact = artifacts[index]
+		reads[index].shape(reader)
+	}
+	return reads
+}
+
+// blockPinRead is a block reference pinned to a version, with the tree of the text that version
+// held.
+type blockPinRead struct {
+	model.BlockPin
+	TextTree json.RawMessage `json:"text_tree,omitempty"`
+}
+
+// graphNodeRead is one end of a reference-graph edge as the dashboard reads it: the node, the
+// tree of its own text, and the pin carrying the tree of the text it recorded. A reference's
+// title is read from one of those trees, as an ask's and a comment's titles are read from theirs.
+type graphNodeRead struct {
+	model.GraphNode
+	TextTree json.RawMessage `json:"text_tree,omitempty"`
+	Pin      *blockPinRead   `json:"pin,omitempty"`
+}
+
+// shape rebuilds the shadowing pin from the node and registers both texts with the request's
+// reader.
+func (n *graphNodeRead) shape(reader *displayTreeReader) {
+	n.Pin = nil
+	if pin := n.GraphNode.Pin; pin != nil {
+		n.Pin = &blockPinRead{BlockPin: *pin}
+		reader.text(&n.Pin.TextTree, pin.Text)
+	}
+	reader.text(&n.TextTree, n.GraphNode.Text)
+}
+
+// graphReferencesRead is what GET /api/v1/references answers: the queried node shaped to carry
+// its trees, and the edges, which carry no stored text of their own.
+type graphReferencesRead struct {
+	Node  graphNodeRead     `json:"node"`
+	Edges []model.GraphEdge `json:"edges"`
+}
+
+// architectureComponentRead is one component of the model with the tree of the prose its
+// source's files declare it with.
+type architectureComponentRead struct {
+	model.ArchitectureTreeComponent
+	ProseTree json.RawMessage `json:"prose_tree,omitempty"`
+}
+
+// architectureTreeRead is what GET /api/v1/projects/{key}/architecture answers: the tree, with
+// every component shaped to carry that tree. The side lists name issues and carry no prose.
+type architectureTreeRead struct {
+	model.ArchitectureTree
+	Components []architectureComponentRead `json:"components"`
 }
 
 // newAskAnswerWithTree is an answer a read gives with the tree of its text, nil where nobody

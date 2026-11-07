@@ -8,6 +8,7 @@ import type {
 } from "./dispatch-api-core";
 import type {
   Artifact,
+  ArtifactWithTrees,
   EditOp,
   EditPrecondition,
   EditPreconditionCurrent,
@@ -290,7 +291,7 @@ export interface EditArtifactInput {
 
 export interface IssueDetails extends Issue, IssueRouteReach, IssueClaimLiveness {
   readonly progress: IssueProgress;
-  readonly artifacts: Artifact[];
+  readonly artifacts: ArtifactWithTrees[];
   readonly open_asks: Ask[];
   readonly children: IssueChild[];
   /** How many graph edges point at this issue, counted with the detail so the header's
