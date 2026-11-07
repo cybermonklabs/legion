@@ -34,6 +34,13 @@ import (
 // is no connection.
 var ErrAirlockNoNames = errors.New("this grant holds no airlock name the session may still have")
 
+// ErrAirlockValueShape is airlockSplitOf's refusal of a value that does not hold what its kind
+// releases: no JSON object, a missing or non-string token, two installations of one owner. The
+// release of that name is refused rather than made, since the one other answer would be to hand
+// over the real value the rules hold back, and no retry changes a value's shape, so the proxy
+// answers it 403 in these words.
+var ErrAirlockValueShape = errors.New("a name of this grant does not hold what its kind releases")
+
 // The slots of a secret. A slot names which value of a secret a placeholder stands for, because
 // one secret can release several values at once and each needs a placeholder of its own:
 //
@@ -252,20 +259,28 @@ func (s airlockSplit) slots() []string { return slices.Sorted(maps.Keys(s.values
 // The policy kind decides first and the entry's kind only for a stored secret, because the kind
 // is what says how the broker built the value, where the entry says where that value may go. A
 // value that does not hold what its kind releases — no object, a missing or non-string token — is
-// an error rather than a release, since the one other answer would be to release the real value
-// the rules hold back.
+// an ErrAirlockValueShape rather than a release, since the one other answer would be to release
+// the real value the rules hold back.
 func airlockSplitOf(entry *airlock.SecretRule, kind, value string) (airlockSplit, error) {
+	var split airlockSplit
+	var err error
 	switch {
 	case kind == policy.KindGitHubApp:
-		return githubAppSplit(value)
+		split, err = githubAppSplit(value)
 	case kind == policy.KindAzureLogin:
-		return objectSplit(value, map[string]string{"federated_token": SlotAzureFederated}, nil)
+		split, err = objectSplit(value, map[string]string{"federated_token": SlotAzureFederated}, nil)
 	case kind == "" && entry.Kind == airlock.KindAWS:
-		return objectSplit(value, map[string]string{"access_key_id": SlotAWSAccessKeyID, "secret_access_key": SlotAWSSecretAccessKey},
+		split, err = objectSplit(value, map[string]string{"access_key_id": SlotAWSAccessKeyID, "secret_access_key": SlotAWSSecretAccessKey},
 			map[string]string{"session_token": SlotAWSSessionToken})
 	default:
 		return valueSplit(value), nil
 	}
+	if err != nil {
+		// One wrap for every shape the helpers below refuse, so each keeps its own words and
+		// none of them can be the one that forgets the sentinel.
+		return airlockSplit{}, fmt.Errorf("%w: %w", ErrAirlockValueShape, err)
+	}
+	return split, nil
 }
 
 // valueSplit is the split of a value that is one string: the value slot, holding the whole of it.

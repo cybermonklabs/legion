@@ -470,22 +470,43 @@ func (s *Server) watchJoined(ctx context.Context, decrypted net.Conn, info connI
 // joinRefusal is why the grant behind a joined connection no longer carries it, and "" while it
 // does: the grant's own expiry, the connection read's refusals, and the name this upgrade was
 // decided for going out of the grant, which is how a name an operator withholds reaches a socket
-// that reads no request again. Any other error of that read leaves the connection alone, with
-// the error logged where grantRefusal logs one: a read that failed says nothing about the grant,
-// and a database failover must cut no WebSocket the airlock carries.
+// that reads no request again. The second read is the one every other request makes for the
+// values it is handled for (valuesFor): it answers from what this pod holds unless the live
+// policy version has moved, which is a pointer read, so it costs a joined socket nothing on the
+// common path and reads the grant again exactly when a policy change could have ended it - a
+// retag, a raised tier, a narrowed requesters list - which the connection read never sees. Any
+// error of either read that is no refusal of this grant leaves the connection alone, with the
+// error logged where grantRefusal logs one: a read that failed says nothing about the grant, and
+// a database failover must cut no WebSocket the airlock carries.
 func (s *Server) joinRefusal(ctx context.Context, info connInfo, name string) (int, string) {
 	if expires := info.grant.Expires; expires != nil && !s.now().Before(*expires) {
 		return http.StatusProxyAuthRequired, "this grant expired while this connection was joined to the service"
 	}
 	grant, err := s.grants.AirlockConnection(ctx, info.password)
 	if err != nil {
-		if status, why := s.grantRefusal("connection", err); status == http.StatusProxyAuthRequired {
-			return status, why
-		}
-		return 0, ""
+		return s.joinRead("connection", err)
 	}
 	if _, carried := grant.Names[name]; !carried {
 		return http.StatusForbidden, name + " is no longer a name of this grant"
+	}
+	values, err := s.valuesFor(ctx, grant.GrantID)
+	if err != nil {
+		return s.joinRead("values", err)
+	}
+	if _, carried := values[name]; !carried {
+		return http.StatusForbidden, name + " is no longer a name of this grant"
+	}
+	return 0, ""
+}
+
+// joinRead is what one read of joinRefusal's answers for the join: a refusal of this grant
+// closes the connection, in the status and words every other call of that grant is refused with,
+// and anything else is a read that did not happen, which grantRefusal has logged and which
+// closes nothing.
+func (s *Server) joinRead(read string, err error) (int, string) {
+	status, why := s.grantRefusal(read, err)
+	if requests.IsRefusal(err) {
+		return status, why
 	}
 	return 0, ""
 }

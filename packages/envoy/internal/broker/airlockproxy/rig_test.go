@@ -167,6 +167,16 @@ func (f *fakeGrants) setValues(grantID string, values map[string]requests.Airloc
 	f.values[grantID] = values
 }
 
+// refuseValues is what the release checks answer for every grant from here on: the refusal a
+// grant the current policy no longer allows gets, among the others. It is taken under the lock
+// because a row that writes it while a joined connection's watcher is reading would otherwise
+// be a race of its own.
+func (f *fakeGrants) refuseValues(why error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.valuesErr = why
+}
+
 func (f *fakeGrants) valueReads(grantID string) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()

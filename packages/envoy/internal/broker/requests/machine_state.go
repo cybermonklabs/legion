@@ -101,6 +101,31 @@ var (
 	ErrSessionIDInvalid = errors.New("session id must be at most 128 characters with no whitespace or control character")
 )
 
+// refusals is every sentinel this package refuses a request or a grant with: the ones above and
+// the two of airlock.go. A sentinel added to this package belongs in it, which is why it sits
+// beside them rather than in a caller that reads them.
+var refusals = []error{
+	ErrNotYours, ErrNotApprover, ErrTerminal, ErrExpired, ErrGrantNotLive, ErrGrantChainInvalid,
+	ErrSecretNotInStore, ErrMixedApprovers, ErrGrantRequiresLifetime, ErrMintFailed,
+	ErrNarrowingNotApplicable, ErrNarrowingOwnerNotListed, ErrNarrowingBehindAirlock,
+	ErrRequestPending, ErrSessionIDInvalid, ErrAirlockNoNames, ErrAirlockValueShape,
+}
+
+// IsRefusal reports whether err is one of this package's own refusals, as against a read that
+// did not answer at all. The broker's proxy port answers a refusal of a grant in the error's own
+// words, since they are the broker's answer about that grant and no retry clears them, and
+// answers every other error in words of its own, because a Postgres connect error carries the
+// database's user, its name and its address and because a read that failed is no proof that a
+// grant ended (airlockproxy's grantRefusal, the one caller).
+func IsRefusal(err error) bool {
+	for _, refusal := range refusals {
+		if errors.Is(err, refusal) {
+			return true
+		}
+	}
+	return false
+}
+
 // maxSessionIDLength bounds the request body's session_id override; see ErrSessionIDInvalid.
 const maxSessionIDLength = 128
 

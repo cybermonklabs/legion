@@ -662,8 +662,10 @@ func TestOneRequestIsHandledForOneNameOfTheGrant(t *testing.T) {
 
 // TestAGrantTheReleaseChecksRefuseIsRefused: the full checks run once per grant per pod, and
 // their refusal is this request's. A grant that is no longer live is 407, as the connection
-// check's own refusals are; a read of those checks that did not happen at all is 503 in the
-// broker's own fixed words, and the store's own error reaches the log and no answer.
+// check's own refusals are; every other refusal those checks make is 403 in the broker's own
+// words, since no retry clears one of them; a read of those checks that did not happen at all
+// is 503 in the broker's own fixed words, and the store's own error reaches the log and no
+// answer.
 func TestAGrantTheReleaseChecksRefuseIsRefused(t *testing.T) {
 	for _, row := range []struct {
 		name string
@@ -673,12 +675,17 @@ func TestAGrantTheReleaseChecksRefuseIsRefused(t *testing.T) {
 	}{
 		{"a grant that is no longer live", fmt.Errorf("%w: AUTO_TOKEN's airlock entry changed since this grant was decided", requests.ErrGrantNotLive), http.StatusProxyAuthRequired, requests.ErrGrantNotLive.Error()},
 		{"a read of those checks the broker could not make", databaseDown, http.StatusServiceUnavailable, grantUnreadable},
-		// Not every refusal of the release checks is about the grant: a secret the store no
-		// longer holds, and a mint its own minter refused, are the broker's own answer about
-		// this grant's secret, in words that name nothing of the store, and each stays the
-		// 403 it was.
+		// Not every refusal of the release checks is about the grant's life: a chain that no
+		// longer verifies, a secret the store no longer holds, a mint its own minter refused
+		// and a value the airlock cannot take apart are the broker's own answer about this
+		// grant or its secret, in words that name nothing of the store. Each is 403: a command
+		// told to make the call again would make it for ever.
+		{"a grant whose approval chain no longer verifies", fmt.Errorf("%w: record 9f2c: stored body does not reproduce its id", requests.ErrGrantChainInvalid), http.StatusForbidden, requests.ErrGrantChainInvalid.Error()},
 		{"a secret the store no longer holds", fmt.Errorf("%w: AUTO_TOKEN", requests.ErrSecretNotInStore), http.StatusForbidden, requests.ErrSecretNotInStore.Error()},
 		{"a mint the secret's own minter refused", fmt.Errorf("%w: the minter said no", requests.ErrMintFailed), http.StatusForbidden, requests.ErrMintFailed.Error()},
+		// The shape error as the release loop hands it over: the name it refused for, and the
+		// sentinel that says the airlock could not take the value apart (requests.readRelease).
+		{"a value the airlock cannot take apart", fmt.Errorf("release %s behind the airlock: %w: its value is not a JSON object, which the airlock must take apart to stand placeholders in for its fields", workerName, requests.ErrAirlockValueShape), http.StatusForbidden, requests.ErrAirlockValueShape.Error()},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			r := newRig(t, Options{})

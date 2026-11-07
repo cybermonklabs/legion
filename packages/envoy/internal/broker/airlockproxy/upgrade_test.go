@@ -12,6 +12,7 @@ package airlockproxy
 import (
 	"bufio"
 	"crypto/tls"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -313,6 +314,43 @@ func TestAJoinedConnectionIsClosedWhenItsGrantStopsCarryingIt(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestAJoinedConnectionIsClosedWhenTheCurrentPolicyRefusesItsGrant: the connection read says
+// nothing about the policy - it checks the grant's liveness, its enrollment's lease and the
+// names its operator withheld, and no more - so a grant the current policy refuses is found by
+// the read of the values, the one every other request of that grant makes for itself. A joined
+// connection makes it too, and is closed by what it answers: the frames stop, and a frame
+// written after that reaches no service, where a new call of that grant is already answered 407.
+func TestAJoinedConnectionIsClosedWhenTheCurrentPolicyRefusesItsGrant(t *testing.T) {
+	// The refusal the release checks make for a name the policy no longer allows this session
+	// (requests.stillAllowed): a grant that is not live, which ends no grant of its own, so the
+	// connection read goes on answering this grant while the values read refuses it.
+	refusal := fmt.Errorf("%w: the current policy no longer allows %s", requests.ErrGrantNotLive, workerName)
+	const carried = "a frame while the policy allows this grant"
+	r := newRig(t, Options{Watch: watchFast})
+	stand, conn, reader := joinedThrough(t, r)
+	frame(t, conn, reader, carried)
+
+	// A policy change the broker took by its periodic reload: the version moves, so the values
+	// this pod holds for the grant are read again rather than answered from, and that read is
+	// what the current policy refuses.
+	r.grants.refuseValues(refusal)
+	r.grants.setPolicyVersion("policy-v2")
+	waitClosed(t, conn, reader)
+	_, _ = conn.Write([]byte("a frame after the policy refused the grant\n"))
+	time.Sleep(5 * watchFast)
+	if frames := stand.read(); !slices.Equal(frames, []string{carried}) {
+		t.Fatalf("the service read %q; want the one frame from before the policy refused the grant", frames)
+	}
+
+	lines := r.logs.joins()
+	if len(lines) != 1 {
+		t.Fatalf("the proxy wrote %d lines for the close; want the one", len(lines))
+	}
+	if got := lines[0].fields["reason"]; got != refusal.Error() {
+		t.Errorf("the close logged the reason %v; want %q, the read's own words", got, refusal)
 	}
 }
 

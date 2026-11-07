@@ -67,7 +67,8 @@ const (
 // is the whole of how long one may carry bytes once its grant has ended, and fifteen seconds is
 // short beside the shortest grant the broker issues. It costs one connection read per joined
 // connection per interval, the three indexed reads AirlockConnection makes, which a pod holding
-// a handful of sockets pays a few times a minute.
+// a handful of sockets pays a few times a minute, and beside it a read of the policy version,
+// which is a pointer: the values a pod holds are read again only once that version has moved.
 const watchInterval = 15 * time.Second
 
 // GrantSource is the reads of requests.Machine the proxy makes: one per connection, one per
@@ -439,11 +440,14 @@ const grantUnreadable = "the broker could not read this grant just now; make the
 //   - A grant that has ended, and a grant holding no name this session may have, are the read's
 //     own answer about that grant, so they are 407 in the broker's own words, which is what
 //     tells a command to ask for a new grant.
-//   - A secret the store no longer holds, and a mint the secret's own minter refused, are the
-//     broker's own answer about this grant's secret rather than about the grant, so they stay
-//     403 in those words, as they were before this rule existed. Neither carries anything of
-//     the store the read went to.
-//   - Every other error is a read that did not happen - a database that did not answer, most of
+//   - Every other refusal the broker made about this grant - a chain that no longer verifies, a
+//     secret the store no longer holds, a mint the secret's own minter refused, a value whose
+//     shape the airlock cannot take apart - is 403 in those words. No retry clears one of them,
+//     so telling a command to make the call again would be untrue, and none of them carries
+//     anything of the store the read went to. Which errors those are is the read's own package
+//     to say (requests.IsRefusal), since a sentinel added there would be missed by a list kept
+//     here.
+//   - Everything left is a read that did not happen - a database that did not answer, most of
 //     them - and is 503 and grantUnreadable, with the error itself in the log, where it is
 //     wanted: a failed read is no proof that a grant ended, and a database failover must not
 //     send every agent in the middle of a call to ask for a grant it already holds, which on
@@ -453,7 +457,7 @@ func (s *Server) grantRefusal(read string, err error) (int, string) {
 	switch {
 	case errors.Is(err, requests.ErrGrantNotLive), errors.Is(err, requests.ErrAirlockNoNames):
 		return http.StatusProxyAuthRequired, err.Error()
-	case errors.Is(err, requests.ErrSecretNotInStore), errors.Is(err, requests.ErrMintFailed):
+	case requests.IsRefusal(err):
 		return http.StatusForbidden, err.Error()
 	}
 	s.log.Error("airlock proxy: a grant could not be read", "read", read, "error", err)
