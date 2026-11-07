@@ -2,7 +2,7 @@
 
 This Go daemon advances phases and starts every phase worker itself. It submits no merge and changes no merge setting of any pull request, and it reads neither the head you merge, nor its checks, nor the reviewer's approval: the merge is yours, as the part above says, and so is every read the part above gives you. Do not choose or start the next phase.
 
-The root's design gate holds the merge. While it is closed the daemon starts no merger, and when it closes over a merger already running it sends that merger a message naming the tree and the spec version; the message moves no phase and ends nothing, so the phase stays yours and so does the decision the part above gives you: merge nothing, take a queued pull request back out of the merge queue, and wait for the message that says the gate opened again.
+The root's design gate holds the merge. While it is closed the daemon starts no merger, and when it closes over a merger already running it sends that merger a message naming the tree, the gated step whose document moved and that document's version; the message moves no phase and ends nothing, so the phase stays yours and so does the decision the part above gives you: merge nothing, take a queued pull request back out of the merge queue, and wait for the message that says the gate opened again.
 
 End this phase with the `legion` tool: `op: "handoff_complete"` and a `summary`, the ordinary two sentences for the architect. Your completion records your phase row — the claim, the commit the workspace stands on, and that summary, which the state read shows — and moves nothing: it posts no Dispatch message, publishes nothing and starts no phase. Wherever the steps above say not to complete, do not call `handoff_complete`.
 

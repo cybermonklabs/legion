@@ -72,22 +72,18 @@ const (
 //     rule 0);
 //   - a root whose tree this boot's own step list opens and whose work that opening releases: one
 //     standing at admitted, whose first phase the waiting line offers a slot to (record.Waiting
-//     classes it LineFirstPhase, and StartFirstPhase runs it), and one of a tree with a member in
-//     merging, which may be holding a READY a step this list no longer gates refused
-//     (the pass's own first-phase starts). merging is the tree of every issue
-//     standing in phase.Merging, read from the whole issue listing because that member is often a
-//     child rather than the root.
+//     classes it LineFirstPhase, and StartFirstPhase runs it).
 //
 // gate is the root's own design gate under this boot's step list, the zero value for a root with
 // no step of it registered; slotted is the key of every issue holding an admission slot. A root in
-// a phase of its own tree is read by neither this nor ReconcileAwaiting unless its tree holds a
-// member in merging: the phase's worker holds the work, and the root's architect waits for it.
+// a phase of its own tree is read by neither this nor ReconcileAwaiting: the phase's worker holds
+// the work, and the root's architect waits for it.
 //
 // The boot must read every root that pass can move, or it would decide one on a mirror of its
 // asks that has not caught up with what Dispatch recorded while the daemon was down — a person's
 // answer given then would read as unanswered, and the root would enter awaiting_person; and a
-// tree a shorter list releases would be started, or its refused READY posted, at a document
-// version a waiting event supersedes, which nothing moves back. A root waiting in line for its
+// tree a shorter list releases would be started at a document version a waiting event supersedes,
+// which nothing moves back. A root waiting in line for its
 // first slot is not one of them: its gate stands at no open step, its architect has never run and
 // has handed nothing back, its admission is a handout of its own, and the event log below that
 // handout is history this release must not replay.

@@ -44,14 +44,14 @@ You resolve no review thread: the reviewer's approval already judged them, and t
 
 ## A closed design gate
 
-The root's design gate holds the merge, and you are one of the phase holders told when it moves. A message reading `The design gate of <tree> closed at spec version <n>` says a new version of the spec is with its reviewer, so the design this head implements may change: merge nothing, enqueue nothing, and do not complete while the gate is closed. A pull request already in a merge queue comes back out at once, since the queue would merge it under you:
+The root's design gate holds the merge, and you are one of the phase holders told when it moves. A message reading `The design gate of <tree> closed: version <n> of its <step> document (<id>)` says a new version of one gated document is with its reviewer, so the design this head implements may change: merge nothing, enqueue nothing, and do not complete while the gate is closed. A pull request already in a merge queue comes back out at once, since the queue would merge it under you:
 
 ```bash
 gh api graphql -f query='mutation($pr:ID!){dequeuePullRequest(input:{pullRequestId:$pr}){mergeQueueEntry{position}}}' \
   -f pr="$(gh pr view <n> -R <o>/<r> --json id -q .id)"
 ```
 
-Then wait. The message reading `The design gate of <tree> opened at spec version <n>` is what releases the merge, and you begin again at step 1, reading the head afresh: it may have moved while you waited. A merger the daemon has not started yet waits for the gate in the daemon's own start row, so a closed gate you are told of is one that closed while you were running.
+Then wait. The message reading `The design gate of <tree> opened: a person approved version <n> of its <step> document (<id>), and every step the deployment gates now stands open` is what releases the merge, and it comes only once every gated step stands open, so a deployment that gates more than one document sends it for the last of them, and you begin again at step 1, reading the head afresh: it may have moved while you waited. A merger the daemon has not started yet waits for the gate in the daemon's own start row, so a closed gate you are told of is one that closed while you were running.
 
 ## Completion
 

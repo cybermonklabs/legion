@@ -15,8 +15,10 @@
 -- `check_wake` for the compare INFRA-809 retired and `gated_steps_publish`, which INFRA-1272
 -- added after both of them. It is safe on a database ending at either
 -- earlier version, and on one that already carries a constraint of this name from any of them,
--- because it drops the constraint if it exists before adding it. No row is deleted: a row of a
--- retired kind exists in no database, both releases having stopped writing them before this.
+-- because it drops the constraint if it exists before adding it. No row is deleted, and none of a
+-- retired kind is left to refuse: main still writes `ready_merge`, `auto_merge_disable` and
+-- `merge_queue_publish`, so a database of that release can carry such a row, and
+-- 20261029120800 of this release deletes every one of them earlier in the same run.
 alter table outbox drop constraint if exists outbox_kind_check;
 alter table outbox add constraint outbox_kind_check check (kind in (
   'dispatch_status', 'dispatch_message', 'notice', 'controller_notice', 'supervise', 'gate_seed',

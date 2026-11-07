@@ -65,7 +65,12 @@ func (m *Mirror) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 			if child.Seq == 0 {
 				continue
 			}
-			observed := intake.IssueStatus{Key: child.Issue, Status: child.Status, Blockers: child.BlockedBy, Seq: child.Seq}
+			// The parent travels with the status: a write at an equal sequence still replaces the
+			// parent column, so an adoption that left it out would erase the child's mirrored
+			// parent and the children-first rule (record.ChildWaitsOf) would stop seeing the
+			// child under it.
+			observed := intake.IssueStatus{Key: child.Issue, Status: child.Status, Blockers: child.BlockedBy,
+				Parent: child.Parent, Seq: child.Seq}
 			if err := m.put(ctx, tx, observed); err != nil {
 				return intake.Result{}, fmt.Errorf("mirror the release's read of %s: %w", child.Issue, err)
 			}

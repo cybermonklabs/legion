@@ -36,8 +36,8 @@ func TestEveryPhaseHolderAndTheRootArchitectAreToldTheGateClosedAndOpened(t *tes
 	applyMirrored(t, pool, engine, "approved-4", intake.DispatchArtifact{
 		Key: "LEGION-208", ArtifactID: "artifact-208", Kind: intake.DispatchArtifactApproved, Version: 4})
 
-	closed := gateMovedBody(4, false)
-	opened := gateMovedBody(4, true)
+	closed := gateMovedBody(record.DesignStepSpec, "artifact-208", 4, false)
+	opened := gateMovedBody(record.DesignStepSpec, "artifact-208", 4, true)
 	assertRoleMessages(t, pool, "LEGION-208", []record.RoleMessage{
 		{Role: treeRoleToken(t, "LEGION-208", claim.RolePlanner), Body: closed},
 		{Role: treeRoleToken(t, "LEGION-208", claim.RoleArchitect), Body: closed},
@@ -66,14 +66,57 @@ func TestAGateEventThatMovesNothingTellsNobody(t *testing.T) {
 	assertOutboxCount(t, pool, "role_message", 0)
 }
 
+// Under more than one gated step, the message is of the standing of every step the deployment
+// gates, not of the one row the event names. The merger merges on it, and the merger's own start
+// is held while any required step is closed (the outbox's designGateClosed over
+// classify.StandingGate), so an "opened" message sent while another document is still under
+// review would merge a head whose design nobody has approved (dispatch://INFRA-714/spec R5,
+// under the steps INFRA-1272 gates).
+func TestTheGateMessageIsOfEveryGatedStepAndNotTheOneTheEventNames(t *testing.T) {
+	pool := migratedPool(t)
+	seedIssue(t, pool, record.Issue{Key: gatedRoot, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+		Tree: gatedRoot, Project: "LEGION", Title: "root", Phase: phase.Merging, Generation: 4, Status: "retro", Rank: "U"})
+	seedGate(t, pool, record.DesignGate{Issue: gatedRoot, Step: record.DesignStepCriteria, ArtifactID: criteriaDoc,
+		LatestVersion: 1, ApprovedVersion: new(1)})
+	seedGate(t, pool, record.DesignGate{Issue: gatedRoot, Step: record.DesignStepSpec, ArtifactID: "artifact-208",
+		LatestVersion: 3, ApprovedVersion: new(3)})
+	seedSlot(t, pool, record.Slot{Issue: gatedRoot, Index: 0, AdmittedAt: time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)})
+	engine := stepsEngine(twoSteps(), nil)
+
+	// The spec's new version closes the standing gate; the Verification document's own new
+	// version finds it closed already, and the approval of that document leaves the spec closed.
+	// One message for the move, and none for the two events that move nothing.
+	applyMirrored(t, pool, engine, "spec-4", intake.DispatchArtifact{
+		Key: gatedRoot, ArtifactID: "artifact-208", Kind: intake.DispatchArtifactVersion, Version: 4})
+	applyMirrored(t, pool, engine, "criteria-2", intake.DispatchArtifact{
+		Key: gatedRoot, ArtifactID: criteriaDoc, Kind: intake.DispatchArtifactVersion, Version: 2})
+	applyMirrored(t, pool, engine, "criteria-approved-2", stepApproval(gatedRoot, criteriaDoc, 2, record.EventMark{Seq: 11}))
+	assertRoleMessages(t, pool, gatedRoot, []record.RoleMessage{
+		{Role: treeRoleToken(t, gatedRoot, claim.RoleMerger), Body: gateMovedBody(record.DesignStepSpec, "artifact-208", 4, false)},
+		{Role: treeRoleToken(t, gatedRoot, claim.RoleArchitect), Body: gateMovedBody(record.DesignStepSpec, "artifact-208", 4, false)},
+	})
+
+	// The spec's own approval is the one that opens every gated step, so it is the one told.
+	applyMirrored(t, pool, engine, "spec-approved-4", stepApproval(gatedRoot, "artifact-208", 4, record.EventMark{Seq: 12}))
+	assertRoleMessages(t, pool, gatedRoot, []record.RoleMessage{
+		{Role: treeRoleToken(t, gatedRoot, claim.RoleMerger), Body: gateMovedBody(record.DesignStepSpec, "artifact-208", 4, false)},
+		{Role: treeRoleToken(t, gatedRoot, claim.RoleArchitect), Body: gateMovedBody(record.DesignStepSpec, "artifact-208", 4, false)},
+		{Role: treeRoleToken(t, gatedRoot, claim.RoleMerger), Body: gateMovedBody(record.DesignStepSpec, "artifact-208", 4, true)},
+		{Role: treeRoleToken(t, gatedRoot, claim.RoleArchitect), Body: gateMovedBody(record.DesignStepSpec, "artifact-208", 4, true)},
+	})
+}
+
 // gateMovedBody is the whole message a role is sent for one move of LEGION-208's design gate
 // (workflow's tellGateMoved).
-func gateMovedBody(version int, open bool) string {
-	moved, detail := "closed", "a new version of the spec is with its reviewer, so the design you are working to may change. Your phase goes on; the merge waits until the gate opens again."
+func gateMovedBody(step record.DesignStep, document string, version int, open bool) string {
 	if open {
-		moved, detail = "opened", "the version is approved, so the design you are working to is the approved one. A merge the closed gate held is released."
+		return fmt.Sprintf("The design gate of LEGION-208 opened: a person approved version %d of its %s document (%s), "+
+			"and every step the deployment gates now stands open, so the design you are working to is the approved one. "+
+			"A merge the closed gate held is released.", version, step, document)
 	}
-	return fmt.Sprintf("The design gate of LEGION-208 %s at spec version %d: %s", moved, version, detail)
+	return fmt.Sprintf("The design gate of LEGION-208 closed: version %d of its %s document (%s) is with its reviewer, "+
+		"so the design you are working to may change. Your phase goes on; the merge waits until every gated step "+
+		"stands open again.", version, step, document)
 }
 
 // treeRoleToken is the Envoy role token of one issue's role, the address a role message carries.
