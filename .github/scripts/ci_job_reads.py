@@ -1055,14 +1055,6 @@ GATES = [
         step_run("envoy-go", "Vet agentloop's live proof (no model call)", "go vet -tags modellive ./agentloop/", ENVOY,
                  ["./agentloop/"], tags="modellive", mode="vet"),
     ], exact=[
-        # `go run` is not one of the three forms the reducer reads, so the step is pinned whole
-        # and this Run stands for the command it compiles.
-        pinned_step("envoy-go-checks", "Check the OpenAPI document is generated from the route table", ENVOY,
-                    "go run ./cmd/dispatch openapi --check", [
-                        (ENVOY, ["./cmd/dispatch"],
-                         "go run ./cmd/dispatch openapi --check, which emits the document from the "
-                         "route table and compares it with the committed one", {"mode": "build"}),
-                    ]),
         # One go test per package of the plain run the race lane cannot make (RACE_IMPOSSIBLE_*),
         # each selecting that package's own tests with -run.
         pinned_step("envoy-go", RACE_IMPOSSIBLE_STEP, ENVOY, RACE_IMPOSSIBLE_SCRIPT, [
@@ -1096,6 +1088,14 @@ GATES = [
         step_run("envoy-go-checks", "Build envoy services", "go build ./cmd/dispatch ./cmd/listener", ENVOY,
                  ["./cmd/dispatch", "./cmd/listener"], mode="build"),
     ], exact=[
+        # `go run` is not one of the three forms the reducer reads, so the step is pinned whole
+        # and this Run stands for the command it compiles.
+        pinned_step("envoy-go-checks", "Check the OpenAPI document is generated from the route table", ENVOY,
+                    "go run ./cmd/dispatch openapi --check", [
+                        (ENVOY, ["./cmd/dispatch"],
+                         "go run ./cmd/dispatch openapi --check, which emits the document from the "
+                         "route table and compares it with the committed one", {"mode": "build"}),
+                    ]),
         # One linux build of the listener per architecture the loop reads from the target list.
         pinned_step("envoy-go-checks", PACK_STEP, ENVOY, PACK_SCRIPT, [
             (ENVOY, ["./cmd/listener"], f"GOOS=linux GOARCH={arch} go build ./cmd/listener",
