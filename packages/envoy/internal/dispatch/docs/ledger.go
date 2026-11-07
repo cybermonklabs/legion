@@ -139,15 +139,17 @@ type Ledger struct {
 	// of, by block id, as they will stand (recordAskBlock, loadAskBlocks).
 	askBlocks map[string]map[string]model.Ask
 	// owedAuthors holds, per document, the pending authors this transaction has queued writes of
-	// (upsertPendingAuthors), by actorKey: the appends it makes for a room credit the browser
-	// edits they store, and doc_pending_authors holds none of those rows until the write phase
-	// has run, so the versions this transaction writes read them from here as well as from the
-	// table (transactionPendingAuthors).
+	// (queuePendingAuthors, which every writer of doc_pending_authors' insert queues through),
+	// by actorKey: the appends it makes for a room credit the browser edits they store, and
+	// doc_pending_authors holds none of those rows until the write phase has run, so the
+	// versions this transaction writes read them from here as well as from the table
+	// (transactionPendingAuthors).
 	owedAuthors map[string]map[string]model.Actor
 	// askAuthors holds, per document, the durable ask block authors this transaction has queued
-	// writes of (recordAskAuthors), by block id: doc_ask_block_authors holds none of those rows
-	// until the write phase has run, so what this transaction reads of them it reads from here
-	// as well as from the table (transactionRecordedAskAuthors).
+	// writes of (queueAskAuthors, which every writer of doc_ask_block_authors' insert queues
+	// through), by block id: doc_ask_block_authors holds none of those rows until the write
+	// phase has run, so what this transaction reads of them it reads from here as well as from
+	// the table (transactionRecordedAskAuthors).
 	askAuthors map[string]map[string]model.Actor
 }
 
@@ -386,11 +388,11 @@ func (l *Ledger) queuedVersion(artifactID string, pending pendingVersion) {
 }
 
 // queuedAuthors records authors as pending authors of artifactID this transaction has queued the
-// write of (upsertPendingAuthors): until its write phase has run, doc_pending_authors holds no
-// row of theirs, and the versions this transaction writes read them from here instead
-// (transactionPendingAuthors). A queued delete of them (deleteCapturedPendingAuthors) is queued
-// after the insert, so it takes the rows back out in the write phase; nothing of this transaction
-// reads R between the two.
+// write of: until its write phase has run, doc_pending_authors holds no row of theirs, and the
+// versions this transaction writes read them from here instead (transactionPendingAuthors). Its
+// one caller is queuePendingAuthors, which queues that write, so every queue of it is here. A
+// queued delete of them (deleteCapturedPendingAuthors) is queued after the insert, so it takes
+// the rows back out in the write phase; nothing of this transaction reads R between the two.
 func (l *Ledger) queuedAuthors(artifactID string, authors []pendingAuthor) {
 	if l.owedAuthors == nil {
 		l.owedAuthors = make(map[string]map[string]model.Actor, 1)
@@ -406,12 +408,13 @@ func (l *Ledger) queuedAuthors(artifactID string, authors []pendingAuthor) {
 }
 
 // queuedAskAuthors records authors, by block id, as durable ask block authors of artifactID this
-// transaction has queued the write of (recordAskAuthors): until its write phase has run,
-// doc_ask_block_authors holds no row of theirs, and the reads this transaction makes of them take
-// them from here as well as from the table (transactionRecordedAskAuthors). The insert keeps the
-// author a row already recorded has (askAuthorsStatement), so a row the table holds wins over one
-// recorded here, and so does the first entry recorded for a block. A settlement's queued delete of
-// them (deleteSettledAskAuthors) is queued after the insert, so it takes the rows back out in the
+// transaction has queued the write of: until its write phase has run, doc_ask_block_authors
+// holds no row of theirs, and the reads this transaction makes of them take them from here as
+// well as from the table (transactionRecordedAskAuthors). Its one caller is queueAskAuthors,
+// which queues that write, so every queue of it is here. The insert keeps the author a row
+// already recorded has (askAuthorsStatement), so a row the table holds wins over one recorded
+// here, and so does the first entry recorded for a block. A settlement's queued delete of them
+// (deleteSettledAskAuthors) is queued after the insert, so it takes the rows back out in the
 // write phase; nothing of this transaction reads them between the two.
 func (l *Ledger) queuedAskAuthors(artifactID string, authors map[string]model.Actor) {
 	if l.askAuthors == nil {

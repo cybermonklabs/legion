@@ -174,30 +174,15 @@ func (p *PgVersioned) appendUpdateTxClass(ctx context.Context, tx pgx.Tx, room s
 	}
 	writes.queue("record the document's pending settlement", settlementPendingStatement, owedArgs...)
 	if include {
-		pendingAt := pendingAuthorsAt(authors, version)
-		pendingArgs, err := pendingAuthorsArgs(room, pendingAt)
-		if err != nil {
+		if err := queuePendingAuthors(ctx, tx, &writes, room, pendingAuthorsAt(authors, version)); err != nil {
 			return 0, err
-		}
-		if pendingArgs != nil {
-			writes.queue("record the document's pending authors", pendingAuthorsStatement, pendingArgs...)
-			// A queued statement writes nothing until the write phase runs, so the rows it will
-			// add are recorded for the reads of this transaction that follow it
-			// (transactionPendingAuthors), as upsertPendingAuthors records its own.
-			if ledger := queueFor(ctx, tx); ledger != nil {
-				ledger.queuedAuthors(room, pendingAt)
-			}
 		}
 	}
 	// The authors of the ask blocks this update's render first showed are recorded with it, so a
 	// settlement on any process finds them (doc_ask_block_authors), consumed credit or not: a version
 	// lists authors, not ask blocks.
-	askArgs, err := askAuthorsArgs(room, credit.takeAskAuthors())
-	if err != nil {
+	if err := queueAskAuthors(ctx, tx, &writes, room, credit.takeAskAuthors()); err != nil {
 		return 0, err
-	}
-	if askArgs != nil {
-		writes.queue("record the document's ask block authors", askAuthorsStatement, askArgs...)
 	}
 	if err := writes.send(ctx, tx); err != nil {
 		return 0, err
@@ -214,6 +199,10 @@ func (p *PgVersioned) appendUpdateTxClass(ctx context.Context, tx pgx.Tx, room s
 // what the same statements wrote one at a time. A round trip is what a browser update costs most
 // of under that lock, and every keystroke is its own append (PersistCoalesceWindow = -1), so the
 // count is what the rooms on the other processes see the typing arrive at (room_sync.go).
+//
+// A writer with one statement to make gathers it here too, so that statement is queued by the
+// same helper the append queues it through and cannot be queued without what the helper records
+// beside it (queueAskAuthors, queuePendingAuthors): it sends a step of one.
 type appendWrites struct {
 	queued []appendWrite
 }
@@ -230,8 +219,12 @@ func (w *appendWrites) queue(what, sql string, args ...any) {
 }
 
 // send puts every queued write on the transaction's write phase, in the order they were queued,
-// so a failure is reported as its own statement's.
+// so a failure is reported as its own statement's. A send with nothing queued writes nothing: a
+// step of no statements would still cost the round trip a write of its own takes (store.RunWrite).
 func (w *appendWrites) send(ctx context.Context, tx pgx.Tx) error {
+	if len(w.queued) == 0 {
+		return nil
+	}
 	return write(ctx, tx, func(b *store.WriteBatch) error {
 		for _, queued := range w.queued {
 			b.Queue(queued.what, queued.sql, queued.args...)
