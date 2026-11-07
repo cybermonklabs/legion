@@ -26,6 +26,8 @@ interface Geometry {
 
 interface Props {
   contentIds: string[];
+  /** Whether the view is the one in front, as the shell tells it. */
+  front: boolean;
   /** Where the store says this session's reader was, which a waking view starts at. */
   initialPlace: LivePlace | null;
   /** Every place the hook has reported, newest last. */
@@ -143,6 +145,7 @@ function installResizeObserver(): { fire: () => void; restore: () => void } {
 function Harness({
   contentIds,
   control,
+  front,
   geometry,
   initialPlace,
   ownSendCount,
@@ -171,6 +174,7 @@ function Harness({
   );
   control.current = useLiveFollow({
     contentIds,
+    front,
     initialPlace,
     onPlace: useCallback(
       (place: LivePlace | null) => {
@@ -228,6 +232,7 @@ function startHarness(
   const sizes = installResizeObserver();
   let props: Props = {
     contentIds,
+    front: true,
     initialPlace,
     ownSendCount: 0,
     places,
@@ -629,6 +634,71 @@ test("a view that wakes with a place starts on that turn, counting nothing new",
     live.update({ contentIds: [...SIX, "g"] });
     expect(live.position()).toBe(210);
     expect(live.count()).toBe(1);
+  } finally {
+    live.stop();
+  }
+});
+
+// The waking view the shell really mounts (R2): its session's replay is a round trip away, so
+// the first commit draws no turn at all. An empty scroller is trivially at its live end, and
+// reading it as the reader following threw their place away - the browser case of INFRA-812's
+// k2 found every woken view back at the live end with its draft intact and its place gone. The
+// place is kept until the turns are drawn, and settled in the commit that draws them.
+test("a view that wakes before its turns arrive still lands on the turn it was left on", async () => {
+  const live = startHarness([], { id: "c", top: -10 });
+
+  try {
+    // Nothing drawn and nothing given: the hook decides nothing. The place is the store's and
+    // it has nothing to tell it - above all not the `null` that forgetting it looks like.
+    expect(live.atEnd()).toBe(false);
+    expect(live.reported()).toEqual([]);
+
+    // The session answers; assistant-ui applies the turns one commit later.
+    live.update({ contentIds: [...SIX], renderedIds: [], replayCount: 1 });
+    expect(live.atEnd()).toBe(false);
+
+    await live.updateRendered([...SIX]);
+
+    expect(live.position()).toBe(210);
+    expect(live.atEnd()).toBe(false);
+    // What it woke to is what the reader was left with, not news.
+    expect(live.count()).toBe(0);
+    expect(live.reported()).toEqual([]);
+
+    live.update({ contentIds: [...SIX, "g"] });
+    expect(live.position()).toBe(210);
+    expect(live.count()).toBe(1);
+  } finally {
+    live.stop();
+  }
+});
+
+// The view the reader left (R2, D6): the shell keeps it mounted for the watch window, laid out
+// over the page rather than in it, so its scroller is suddenly another size and the browser
+// clamps a reader who had scrolled back. None of that is the reader, who is on another page -
+// before this, that clamp arrived as a scroll at the live end and the view forgot where they
+// were, which the browser case of INFRA-812's k2 found for a view left behind for a moment.
+test("a view left behind the one in front keeps its place through the shell's own resize", () => {
+  const live = startHarness([...SIX]);
+
+  try {
+    live.scroll({ scrollTop: 150 });
+    expect(live.reported().at(-1)).toEqual({ id: "b", top: -50 });
+
+    // Left behind: the shell lays it out over the page, the content fits its new box, and the
+    // clamp arrives as a scroll of the viewport's own.
+    live.update({ front: false });
+    live.scroll({ extraHeight: -400, scrollTop: 0 });
+    live.resize();
+
+    expect(live.reported().at(-1)).toEqual({ id: "b", top: -50 });
+    expect(live.atEnd()).toBe(false);
+
+    // Back in front, in the box it has then: the reader is on the turn they were reading.
+    live.scroll({ extraHeight: 0 });
+    live.update({ front: true });
+    expect(live.position()).toBe(150);
+    expect(live.atEnd()).toBe(false);
   } finally {
     live.stop();
   }

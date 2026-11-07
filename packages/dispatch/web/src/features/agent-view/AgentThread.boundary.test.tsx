@@ -58,6 +58,7 @@ function Harness({ messages }: { messages: KeyedMessage[] }): ReactNode {
         commands={undefined}
         contentIds={messages.map((message) => turnKey(message.metadata?.custom ?? {}, message.id))}
         empty="Nothing yet."
+        front
         held={false}
         initialPlace={null}
         onPlace={() => {}}

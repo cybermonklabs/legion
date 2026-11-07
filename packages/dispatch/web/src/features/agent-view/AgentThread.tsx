@@ -387,6 +387,7 @@ export function AgentThread({
   commands,
   contentIds,
   empty,
+  front,
   held,
   initialPlace,
   onPlace,
@@ -404,6 +405,10 @@ export function AgentThread({
    *  `data-message-id`: what the follow hook counts as new and finds the reader's place in. */
   contentIds: readonly string[];
   empty: string;
+  /** Whether this is the view the person is looking at. A view the shell keeps mounted behind
+   *  the one in front is laid out over the page rather than in it, so its own geometry is the
+   *  shell's doing and never the reader moving (`useLiveFollow`). */
+  front: boolean;
   /** Whether a model or thinking switch is pending on this session: Send is disabled, still
    *  reading "Send", until it ends, and `placeholder` is what says why. */
   held: boolean;
@@ -435,6 +440,7 @@ export function AgentThread({
       () => [...contentIds, ...pending.map((send) => `pending:${send.id}`)],
       [contentIds, pending]
     ),
+    front,
     initialPlace,
     onPlace,
     ownSendCount,

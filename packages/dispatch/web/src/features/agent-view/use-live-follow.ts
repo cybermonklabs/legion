@@ -91,8 +91,25 @@ function showsIds(element: HTMLElement, ids: readonly string[]): boolean {
   return shown.length === ids.length && shown.every((id, index) => id === ids[index]);
 }
 
+/**
+ * Whether the view still waits for the transcript it is to put a reader back into: it holds a
+ * place and draws no turn at all.
+ *
+ * The shell mounts a view that wakes before its session has answered its subscription, and a
+ * rebuild reaches the DOM a commit after the ids that carried it, so an empty scroller is a
+ * state every waking view passes through. It is trivially at its live end (`atLiveEnd`) and
+ * holds no turn to measure, which makes it evidence neither that the reader is following nor
+ * that the turn they were on is gone - and reading it as either forgets where they were, the
+ * place R2 keeps across a sleep. So nothing is decided there: the commit that draws the turns
+ * decides, with the turns in hand.
+ */
+function awaitingTurns(element: HTMLElement, place: LivePlace | null): boolean {
+  return place !== null && element.querySelector(TURN_SELECTOR) === null;
+}
+
 export function useLiveFollow({
   contentIds,
+  front,
   initialPlace,
   onPlace,
   ownSendCount,
@@ -103,6 +120,17 @@ export function useLiveFollow({
   /** Every turn in the transcript, in the order it is rendered, by the key the DOM carries in
    *  `data-message-id`. */
   contentIds: readonly string[];
+  /**
+   * Whether this is the view the person is looking at.
+   *
+   * The shell keeps the view left last mounted for the watch window, laid out over the page
+   * rather than in it (`MountedLiveViews`): its scroller is suddenly another size, which
+   * reflows every turn and clamps a reader who had scrolled back. None of that is the reader,
+   * who is looking at another page, so a view that is not in front answers to no geometry at
+   * all - it neither follows nor forgets the place it holds - and the commit that brings it
+   * back in front puts that place where the reader left it, in the box it has then.
+   */
+  front: boolean;
   /** Where this session's reader was when the view last reported, from the view's entry in
    *  `live-views.ts`, or `null` for a reader who was following the live end. Read at the first
    *  render and at every move to another session, which is when a place is restored. */
@@ -136,6 +164,11 @@ export function useLiveFollow({
   const previousSends = useRef(ownSendCount);
   const previousReplays = useRef(replayCount);
   const previousSession = useRef(sessionId);
+  // Whether the view is in front, as the listeners below read it: they outlive the render they
+  // were made in, as `ids` does. `wasFront` is what the effect below tells a view coming back
+  // in front by.
+  const inFront = useRef(front);
+  const wasFront = useRef(front);
   // A rebuild waiting for its turns to reach the DOM, with the ids that were on screen when it
   // arrived: the watcher below settles it as soon as they differ.
   const pendingRebuild = useRef(false);
@@ -154,6 +187,7 @@ export function useLiveFollow({
   useLayoutEffect(() => {
     ids.current = contentIds;
     given.current = initialPlace;
+    inFront.current = front;
     report.current = onPlace;
   });
 
@@ -169,17 +203,25 @@ export function useLiveFollow({
     report.current(place);
   }, []);
 
-  /** Follow from here: every turn on screen is a turn the reader has seen. */
-  const follow = useCallback(() => {
-    following.current = true;
-    remember(null);
+  /** Take the turns the transcript holds now as seen: everything in it is something the reader
+   *  has been shown, so none of it is news. Rebuilt only when the transcript is a new array:
+   *  this is called from every scroll event at the live end and from the resize observer as a
+   *  turn streams. */
+  const takeAsSeen = useCallback(() => {
     if (seenIds.current !== ids.current) {
       seen.current = new Set(ids.current);
       seenIds.current = ids.current;
     }
+  }, []);
+
+  /** Follow from here: every turn on screen is a turn the reader has seen. */
+  const follow = useCallback(() => {
+    following.current = true;
+    remember(null);
+    takeAsSeen();
     setAtEnd(true);
     setNewCount(0);
-  }, [remember]);
+  }, [remember, takeAsSeen]);
 
   /** Turns that have arrived since the reader stopped following: those the transcript holds and
    *  the reader has not seen. `ids.current` is this render's `contentIds` by the time either
@@ -210,6 +252,11 @@ export function useLiveFollow({
     (element: HTMLElement): boolean => {
       const fell = lastScrollTop.current - element.scrollTop > END_TOLERANCE_PX;
       record(element);
+      if (awaitingTurns(element, remembered.current)) {
+        // Nothing drawn and a place held: the view is still waking. Not following, and nothing
+        // for a caller to put back either - the commit that draws the turns answers both.
+        return false;
+      }
       if (atLiveEnd(element)) {
         follow();
         return true;
@@ -237,6 +284,19 @@ export function useLiveFollow({
   const settleRebuild = useCallback(
     (element: HTMLElement) => {
       const place = remembered.current;
+      if (awaitingTurns(element, place)) {
+        // The view is still waking: keep the place and settle it in the commit the turns are
+        // drawn in, which is the one below.
+        return;
+      }
+      if (place !== null && seenIds.current === null) {
+        // The turns of a woken view, drawn after it mounted: what it woke to is what the reader
+        // was left with rather than news, as `restorePlace` takes it when the turns are already
+        // there when the hook mounts.
+        following.current = false;
+        takeAsSeen();
+        setAtEnd(false);
+      }
       // Not a `[data-message-id="…"]` selector: the key is the session's to choose, and nothing
       // promises it is a valid CSS string.
       const turn = [...element.querySelectorAll<HTMLElement>(TURN_SELECTOR)].find(
@@ -253,7 +313,7 @@ export function useLiveFollow({
       record(element);
       countUnseen();
     },
-    [countUnseen, jumpToEnd, record]
+    [countUnseen, jumpToEnd, record, takeAsSeen]
   );
 
   /**
@@ -266,13 +326,12 @@ export function useLiveFollow({
     (element: HTMLElement, place: LivePlace) => {
       following.current = false;
       remember(place);
-      seen.current = new Set(ids.current);
-      seenIds.current = ids.current;
+      takeAsSeen();
       setAtEnd(false);
       setNewCount(0);
       settleRebuild(element);
     },
-    [remember, settleRebuild]
+    [remember, settleRebuild, takeAsSeen]
   );
 
   // The scroller is a node this hook can be handed more than once: the view renders it inside an
@@ -291,7 +350,12 @@ export function useLiveFollow({
       jumpToEnd();
     } else if (seenIds.current === null && place !== null) {
       // The first commit of a view that woke holding a place, where nothing has been seen yet.
-      restorePlace(element, place);
+      // A view the shell mounts before its session has answered its subscription draws no turn
+      // at all: there is nothing to put the reader back on yet, so the restore waits for the
+      // turns (`settleRebuild`), which arrive with the session's replay.
+      if (!awaitingTurns(element, place)) {
+        restorePlace(element, place);
+      }
     } else {
       settleRebuild(element);
     }
@@ -329,6 +393,16 @@ export function useLiveFollow({
       return;
     }
     const onScroll = () => {
+      // Nothing the reader did: a view that is not in front is being laid out over the page,
+      // and the clamp that follows arrives here as a scroll of its own (`front`).
+      if (!inFront.current) {
+        return;
+      }
+      // A scroll of a viewport with no turn in it says nothing about where a waking reader is,
+      // and `rememberTurn` would answer it with the one place that loses theirs: none.
+      if (awaitingTurns(element, remembered.current)) {
+        return;
+      }
       // The reader's place is re-read on every scroll they make away from the live end, not only
       // on the one that stopped following: `rememberTurn` is a hit test, so taking the place
       // again on an event `observe` has already read it on costs one layout read.
@@ -349,7 +423,9 @@ export function useLiveFollow({
       return;
     }
     const sizes = new ResizeObserver(() => {
-      if (following.current) {
+      // A view behind the one in front resizes because the shell laid it out over the page, not
+      // because its reader is there: it holds what it holds until it is in front again.
+      if (following.current && inFront.current) {
         jumpToEnd();
       }
     });
@@ -377,6 +453,26 @@ export function useLiveFollow({
     previousSession.current = sessionId;
     const rebuilt = replayCount !== previousReplays.current;
     previousReplays.current = replayCount;
+    const cameToFront = front && !wasFront.current;
+    wasFront.current = front;
+    if (!front) {
+      // A view the reader is not looking at: whatever arrives for it is counted, and nothing
+      // of its geometry is read, because the shell is laying it out over the page rather than
+      // in it. It keeps its place until the reader comes back to it.
+      countUnseen();
+      return;
+    }
+    if (cameToFront) {
+      // Back in front, in the box it has now: the reader is put on the turn this view holds
+      // for them, or at the live end if they were following it.
+      const place = remembered.current;
+      if (place === null) {
+        jumpToEnd();
+      } else {
+        restorePlace(element, place);
+      }
+      return;
+    }
     if (ownSend || switched) {
       // A move to another session puts the reader back where that session's view was left, as
       // waking a view does; with no place kept for it - a reader who was following, a view
@@ -391,6 +487,13 @@ export function useLiveFollow({
     }
     const follows = observe(element);
     if (rebuilt) {
+      if (contentIds.length === 0) {
+        // A rebuild carrying no turn at all: the transcript the reader's place was in is gone,
+        // and no later commit will draw it, so the view follows the empty conversation rather
+        // than waiting for turns that are not coming (`awaitingTurns`).
+        jumpToEnd();
+        return;
+      }
       // A rebuild answers the replay newest-first inside a budget, so it routinely drops the
       // oldest turns - exactly the ones a reader reading history sits on. It is the one event
       // that may take the reader's place away, and only when that place is gone.
@@ -412,6 +515,7 @@ export function useLiveFollow({
   }, [
     contentIds,
     countUnseen,
+    front,
     jumpToEnd,
     observe,
     ownSendCount,

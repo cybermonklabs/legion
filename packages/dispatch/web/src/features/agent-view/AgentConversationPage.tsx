@@ -263,6 +263,7 @@ export function AgentConversationPage({
           commands={commands}
           conversation={conversation}
           empty={emptyText(responding)}
+          front={front}
           onSend={onSend}
           ownSendCount={ownSendCount}
           sends={sends}
