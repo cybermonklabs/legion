@@ -4,9 +4,9 @@
 # Both come from the bun workspace, so they share one stage, the web stage, which sits on the
 # bun-deps install below, keyed off the root lockfile.
 #
-# bun-deps holds that install, the Bun pin it runs under and the toolchain it compiles with, and
-# nothing of the sources: the lockfile, the patches and the workspace manifests move far less
-# often than the packages the stage after it copies.
+# bun-deps holds that install and the Bun pin it runs under, and nothing of the sources: the
+# lockfile, the patches and the workspace manifests move far less often than the packages the
+# stage after it copies.
 # .github/workflows/ci-caches.yaml's envoy-listener-deps job builds this target and go-deps on a
 # push to the default branch, so the envoy-smoke build reads both from the layer cache instead of
 # installing and downloading again.
@@ -34,18 +34,6 @@ RUN set -eu; \
       exit 1; \
     fi
 
-# python3, make and g++ are what node-gyp compiles better-sqlite3 with, and this install reaches
-# it: packages/proof-editor depends on proof-sdk, which depends on better-sqlite3, and
-# prebuild-install refuses to fetch that package's prebuilt binary under Bun at all
-# ("prebuild-install warn install 'better-sqlite3' is not yet supported in Bun",
-# oven-sh/bun#4290), so every install of it here runs node-gyp. Without these three the install
-# ends `gyp ERR! find Python ... Could not find any Python installation to use` and the build
-# fails, measured on run 42416913757 of this repository, job 128536953071, where the line was
-# taken out. The layer sits in bun-deps, above the manifests, so the cache holds it and a run
-# that imports that stage pays for it once rather than in every build.
-RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ \
-    && rm -rf /var/lib/apt/lists/*
-
 COPY package.json bun.lock ./
 COPY patches patches
 COPY packages/contracts/package.json packages/contracts/package.json
@@ -70,7 +58,20 @@ COPY docs/site/package.json docs/site/package.json
 # --frozen-lockfile stays immediately after install:
 # .github/scripts/check-bun-workspace-manifests.sh matches `bun install --frozen-lockfile`, and a
 # flag written between the two takes this install out of that check's sight, silently.
-RUN bun install --frozen-lockfile --filter './' --filter './packages/dispatch' --filter './packages/contracts' --filter './packages/proof-editor'
+# --ignore-scripts, because one package's lifecycle script costs this stage more than every
+# other part of the install together. Bun runs an install script only for a package on its own
+# trusted list, and better-sqlite3 is on it; prebuild-install fetches no prebuilt binary for
+# that package under Bun ("not yet supported in Bun", oven-sh/bun#4290), so node-gyp compiles it
+# from source on every install, and the stage then needs python3, make and g++ for a module the
+# image never ships: packages/proof-editor reaches it through proof-sdk, and nothing of it is
+# copied out of this stage. Measured on one runner, cold, both arms in run 42420251932, job
+# 128554124167: this install takes 2.33 s for its 576 packages where main's takes 60.02 s for
+# its 928, and the whole build step 120 s against 175-180 s. The two images that run built
+# compare equal, which is what holds this honest: the same 3628 files, the same sizes and the
+# same six checksums as main's image. A dependency that ever does need its script fails this
+# build where the script would have run, loudly, and that comparison is what says whether what
+# the image ships has moved.
+RUN bun install --frozen-lockfile --ignore-scripts --filter './' --filter './packages/dispatch' --filter './packages/contracts' --filter './packages/proof-editor'
 
 FROM bun-deps AS web
 
