@@ -28,7 +28,7 @@ import { useUserPreference } from "../shell/userPreference";
 import { DocumentList } from "./DocumentList";
 import { IssueBoard } from "./IssueBoard";
 import { IssueFilters } from "./IssueFilters";
-import { IssueList, type ListGrouping, listGroupings } from "./IssueList";
+import { IssuesTable } from "./IssuesTable";
 
 type ProjectTab = "architecture" | "issues" | "documents";
 
@@ -47,11 +47,6 @@ export function ProjectPage(): ReactNode {
     "project.issue-view",
     (stored) => (stored === "board" ? "board" : "list"),
     (view) => view
-  );
-  const [grouping, setGrouping] = useUserPreference<ListGrouping>(
-    "project.list-grouping",
-    (stored) => listGroupings.find((option) => option.id === stored)?.id ?? "status",
-    (value) => value
   );
   const [showEdges, setShowEdges] = useUserPreference(
     "project.board-edges",
@@ -224,24 +219,6 @@ export function ProjectPage(): ReactNode {
             ))}
           </fieldset>
         ) : null}
-        {activeTab === "issues" && issueView === "list" ? (
-          <label
-            className={`order-7 inline-flex min-h-11 shrink-0 items-center gap-2 rounded-xl border px-3 text-sm md:order-4 md:min-h-9 md:px-2 ${borderDefault} ${textSecondaryOnCanvas}`}
-          >
-            Group by
-            <select
-              className={`rounded-lg px-1 py-0.5 font-medium ${surfaceMutedBg}`}
-              onChange={(event) => setGrouping(event.target.value as ListGrouping)}
-              value={grouping}
-            >
-              {listGroupings.map((option) => (
-                <option key={option.id} value={option.id}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
-        ) : null}
         {activeTab === "issues" && issueView === "board" ? (
           <button
             aria-pressed={showEdges}
@@ -288,18 +265,14 @@ export function ProjectPage(): ReactNode {
         role="tabpanel"
       >
         {activeTab === "issues" ? (
-          <>
-            <IssueFilters
-              key={route.project}
-              project={route.project}
-              showStatus={issueView === "list"}
-            />
-            {issueView === "list" ? (
-              <IssueList grouping={grouping} project={route.project} />
-            ) : (
+          issueView === "list" ? (
+            <IssuesTable key={route.project} project={route.project} />
+          ) : (
+            <>
+              <IssueFilters key={route.project} project={route.project} showStatus={false} />
               <IssueBoard lanes={lanes} project={route.project} showEdges={showEdges} />
-            )}
-          </>
+            </>
+          )
         ) : null}
       </div>
       <div

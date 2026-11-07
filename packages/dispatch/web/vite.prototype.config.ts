@@ -1,5 +1,7 @@
 // PROTOTYPE (dispatch://INFRA-1508): the dev server against a `dispatch:local` instance on any
 // port, named by DISPATCH_DEV_TARGET (e.g. http://127.0.0.1:43367), with hot reload.
+import { readFile } from "node:fs/promises";
+
 import { mergeConfig, type Plugin } from "vite";
 
 import base from "./vite.config";
@@ -51,8 +53,24 @@ const autoSignIn: Plugin = {
   },
 };
 
+/** The Legion phase of each issue of the local copy, from a daemon-state snapshot, until Dispatch
+ *  reads the daemon itself (dispatch://INFRA-1077). DISPATCH_PROTOTYPE_LEGION_PHASES names the
+ *  file; with none, the table shows no phase. */
+const legionPhases: Plugin = {
+  name: "prototype-legion-phases",
+  configureServer(server) {
+    server.middlewares.use("/prototype/legion-phases.json", async (_request, response) => {
+      const file = process.env.DISPATCH_PROTOTYPE_LEGION_PHASES;
+      const body = file ? await readFile(file, "utf8").catch(() => undefined) : undefined;
+      response.statusCode = body === undefined ? 404 : 200;
+      response.setHeader("content-type", "application/json");
+      response.end(body ?? "{}");
+    });
+  },
+};
+
 export default mergeConfig(base, {
-  plugins: [autoSignIn],
+  plugins: [autoSignIn, legionPhases],
   server: {
     port: 5180,
     strictPort: true,
