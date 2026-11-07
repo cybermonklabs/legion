@@ -549,7 +549,8 @@ go run ./cmd/dispatch-seed --database-url <url> [--scale <f>] [--no-migrate]
 `--scale 0.01` is about 200 issues and is what the CI test runs.
 The command migrates the database itself with `store.Migrate`, as the other subcommands do, and never by booting a server, whose background loops would write to the data set it is building;
 `--no-migrate` skips that step for a database somebody else migrated from another commit, which is what a before-and-after measurement across two commits needs.
-Seed replies inherit their parent's owner and ask thread. The writer stores the comment each reply answers when `comments.answers` is present, and can seed the schema before that column with `--no-migrate`.
+Seed replies inherit their parent's owner and ask thread.
+The writer stores the comment each reply answers when `comments.answers` is present, and can seed the schema before that column with `--no-migrate`.
 It refuses a database that already holds a `projects` or an `issues` row, naming what it found:
 it writes fixed keys, so a second run over the same rows would fail halfway through.
 
@@ -1489,12 +1490,16 @@ A B-tree entry holds at most 2704 bytes, and both indexes keyed the id itself, s
 under the 32-byte key every such write is written.
 `asks_block_id_unique` still keeps `(block_artifact_id, block_id)` unique under its name, and each index keeps the first column every read of it leads with, so the earlier release writes and reads through them as before.
 Each drop holds `asks` `ACCESS EXCLUSIVE` until the migration commits, so every read and write of an ask waits while the two indexes build over its rows.
+Each rebuild is a plain `create index`, not `concurrently`, which cannot run inside the one transaction the runner applies a migration in (`internal/dispatch/store/store.go`, `pgmigrate.Exec`).
+How long that wait lasts under production-scale data is unmeasured: this entry claims no duration, since a run on a throwaway Postgres gives a number off other disks, another cache and no live workload, which a deployer must not plan a lock window by.
 It refuses and rewrites no row: rows the old unique index held apart differ in their id, so they differ in its SHA-256.
 Its census answers `0`.
 
 Migration `0128_comments_anchor_block_id_key` rebuilds `comments_anchor_block_id_idx` (`0023`) over `0127`'s `block_id_key` the same way, so a comment anchored in a block whose id is any length is written.
 Its own migration, so its transaction holds `comments` alone:
 the drop holds it `ACCESS EXCLUSIVE`, and every read and write of a comment waits while the one index builds.
+That rebuild is a plain `create index` too, not `concurrently`, for the same reason: the runner's one transaction cannot run it.
+How long the wait lasts under production-scale data is unmeasured here as well, and this entry claims no duration.
 It refuses and rewrites no row; its census answers `0`.
 
 Migration `0129_document_edit_notices` creates `document_edit_notices`, one row per document holding a person's pending edit notice:
@@ -1906,7 +1911,8 @@ A comment write climbs the reply chain to the head of the thread before it store
 A reply whose `answers` and `reply_to` name the same comment is listed once, by `replies_to`, wherever `replies_to` is listed; an explicit `answers` query still lists it.
 A reply listed under a current comment block is not also listed as an answer to the whole comment, including when that comment is nested; explicit `answers` queries still return it.
 The column is nullable with no default, a catalog change that rewrites no row, and its foreign key to `comments(id)` matches `reply_to`'s (`0001`), so the add holds `comments` `ACCESS EXCLUSIVE` for milliseconds and the partial index `comments_answers` holds `SHARE` while it builds.
-Migration `20261105083800_comments_answers_text` adds the partial expression index on `answers::text` used by graph reads and backlink counts, retaining the UUID index for foreign-key checks. It holds `comments` `SHARE` while the index builds, rewrites no row, and its census answers `0`.
+Migration `20261105083800_comments_answers_text` adds the partial expression index on `answers::text` used by graph reads and backlink counts, retaining the UUID index for foreign-key checks.
+It holds `comments` `SHARE` while the index builds, rewrites no row, and its census answers `0`.
 Re-stating the view holds `graph_edges` `ACCESS EXCLUSIVE` for the migration's short transaction, so a reference read waits behind it.
 The arm list it re-states is `20261101183525`'s, with the new arm beside the comment reply arm, and it is the arm list a later migration re-states from.
 The release before it names the column in no statement and writes every reply with `reply_to` alone, so a reply written during the roll, or after a rollback, carries no `answers` and reads as a reply to its thread's head, which is what every release before this one shows.
@@ -2291,13 +2297,21 @@ Each list keeps its best `contracts.SearchKindDepth` (100) hits:
 the answer's `total` counts every match of every kind, and `reachable` the hits the pages can return, so an `offset` at or past `reachable` answers no hits with both counts.
 
 Search snippets are escaped text with only server-inserted `<mark>` elements around matches.
-Native issue creation rejects a title that near-duplicates an existing issue in the same project with `409 POSSIBLE_DUPLICATE` and up to five candidates;
-`force` bypasses that check, and external references skip it.
-An issue title is at most 1,000 characters (`contracts.IssueTitleMax`, UTF-16 units after trimming), on creation and on a retitle, and a longer one is `400 CAP_EXCEEDED` before the duplicate check runs.
-The check compares the new title's lexemes with those of every other title in the project, read from `issues.title_lexemes`, which the issues trigger fills with `title_lexemes(title)` (0088), the function the check calls for the new title, so a creation parses one title;
-a candidate's snippet marks the words its title shares with the new one, and the `POSSIBLE_DUPLICATE` message quotes a candidate's whole title.
-The cap bounds what one stored title adds to every later creation in its project, and how long that message can be:
-beside 2,000 stored titles at the cap, a check takes 56–95 ms, where parsing every title as it ran took 2.1–7.6 s.
+Native issue creation rejects a near copy of an open issue of the same project with `409 POSSIBLE_DUPLICATE` and up to five candidates;
+`force` bypasses that refusal, and external references skip the check.
+An issue title is at most 1,000 characters (`contracts.IssueTitleMax`, UTF-16 units after trimming), on creation and on a retitle, and a longer one is `400 CAP_EXCEEDED` before the near-copy check runs.
+The check scores the project's issues whose status is not `done`, less the new issue's ancestors (its parent and every issue above it), on the share of the new text's rarest words that a candidate's title vector and its primary document's latest vector hold together:
+the terms are the related-item check's own (`pickRelatedTerms`, `api/related_terms.go`), and the statement drives from them into `issues.search` and `document_search`, so each term is one probe of a GIN index and no candidate's spec vector is read more than once per term.
+Every lexeme an issue key contributes is dropped from those terms, so a spec that cites the nearest issue it ruled out is not refused for citing it.
+A text whose picked terms number fewer than `duplicateMinTerms` (3), or that holds no more than three lexemes of its own, is not scored at all: a share of one or two terms is 1.0 against any issue that holds them.
+Such a text is judged by equality instead (`duplicateEqualLexemesQuery`): the gate refuses an open issue of the project, outside the new issue's ancestors, whose title lexemes and whose primary document's lexemes are exactly the new title's and the new spec's as Dispatch would store it, and it names nothing else.
+A candidate at or above `duplicateRefuseScore` refuses the create; the closest one at or above `duplicateNudgeScore` and below the refusal is named to the filer as `advice.suggestions.likely_duplicate`, which refuses nothing.
+Both bars are set by `TestNearCopyRefusalReplay` over a frozen export of a project's history (`scripts/near-copy-replay.sh`), and a change to the term picker or to the scoring statement invalidates that calibration.
+A candidate's snippet marks the words its title shares with the new one, and the `POSSIBLE_DUPLICATE` message quotes a candidate's whole title.
+The check runs once for every create, forced or not, in a read transaction of its own bounded by `duplicateGateTimeout` (500 ms) on the context and by `statement_timeout` inside it:
+one bound, because two would have a read of 700 ms refuse an unforced create while recording for a forced one that the check did not answer.
+A create whose check does not answer is written either way, forced or not, and the `201` says so in `advice.suggestions.near_copy_check`: the create went in without the near-copy check an unforced create otherwise meets.
+A forced one also records `forced` with an empty `past` on its `issue.created` event, which is how the weekly audit tells it from an override.
 
 `POST /api/v1/issues`, `POST /api/v1/issues/{key}/asks` and `POST /api/v1/artifacts/{id}/asks` run the related-item check once the write has committed, and so does each decision block a document edit (`POST /api/v1/artifacts/{id}/edits`) adds, on the block's question (the check replaced LEGION-550's 300 ms keyword suggestions).
 The check never refuses the write, but the response waits for it, at most 5 s (`relatedCheckAllowance`);
@@ -2337,11 +2351,11 @@ and `search_query` is two or three of the words it used, spelled as the title sp
 `answered`, with its latest answer, who gave it, when and the options chosen;
 or `resolved`, with the resolution and the last answer a person gave before it, if any);
 `decision` names an already-answered ask that may settle the same question, with who answered and when.
-An issue create forced past the title-overlap refusal also names those issues in `title_matches`.
+An issue create forced past the near-copy refusal also names those issues in `title_matches`, and its `issue.created` event records them under `forced.past`; an unforced create names its likely duplicate in `likely_duplicate` instead, and never fills `title_matches`.
 The search leaves out everything the write's owner holds
 — the new issue and its spec, or the issue or project document an ask or a block sits on and everything inside it
 — so nothing is ever suggested that the writer already has.
-A hit on an issue that is `done` ranks below every hit on an open owner, since keyword search otherwise puts an issue already closed as a duplicate above the open issue it was closed into.
+Up to three open issues take the places before any item of another kind, and everything a `done` issue owns comes last, since an issue is what a filer can act on and keyword search otherwise puts an issue already closed as a duplicate above the open issue it was closed into.
 `GET` and `POST /api/v1/projects/{key}/related` (`dispatch related`) run the same check on a title and a text and write nothing.
 
 Every check of a write is recorded in `related_checks` (`0139`):
@@ -2964,14 +2978,15 @@ Each item below names a path with its method and identity, then its purpose.
   A window kind's items are its own rows, since the indexers own which windows exist.
   With no embedder nothing is current.
 
-- `/api/v1/projects/{key}/related?title=&text=&exclude_issue=&keywords_only=` (GET, POST; cookie, trusted header, or bearer)
+- `/api/v1/projects/{key}/related?title=&text=&exclude_issue=&exclude_issues=&keywords_only=` (GET, POST; cookie, trusted header, or bearer)
 
   Run the related-item check an issue create runs ([Search](#search)) on a title and a text, checked as the title, a newline and the text (either alone is enough), and write nothing:
   no issue, ask, suggestion or `related_checks` row.
   `exclude_issue` leaves that issue of the project, and everything it holds, out of the results and out of the word statistics (`400 EXCLUDE_ISSUE_INPUT` when it is not an issue of the project);
+  `exclude_issues`, a list of at most 50 issues of the project, leaves each of them out of the results alone, so a caller can leave out a whole subtree without changing how rare the text's words are (`400 EXCLUDE_ISSUE_INPUT` for a longer list or for a key the project does not hold);
   `keywords_only=true` skips meaning search.
-  GET takes the fields in the query, title and text together at most 1,000 UTF-16 units (`400 CAP_EXCEEDED` past it);
-  POST takes them as a JSON body `{title, text, exclude_issue, keywords_only}`, a title of at most 1,000 and a text as long as the body's 1 MiB bound.
+  GET takes the fields in the query, `exclude_issues` repeated, title and text together at most 1,000 UTF-16 units (`400 CAP_EXCEEDED` past it);
+  POST takes them as a JSON body `{title, text, exclude_issue, exclude_issues, keywords_only}`, a title of at most 1,000 and a text as long as the body's 1 MiB bound.
   It waits at most 5 seconds and answers `200` with the create's `advice.suggestions` shape (`outcome`, `search`, `search_note`, `search_query`, `related`, `decision`, `missing`), a blank title and text included (`not_made`).
   `400 INVALID_PROJECT` for a key that is not a project key, `404 PROJECT_NOT_FOUND` for an unknown one.
 
@@ -3034,7 +3049,8 @@ Each item below names a path with its method and identity, then its purpose.
   `repo` (`owner/name`) is the issue's own repository and must be mapped to its project:
   `400 INVALID_ISSUE` when it is not `owner/name`, `400 REPO_NOT_MAPPED` when it is not mapped.
   A title over 1,000 characters (`contracts.IssueTitleMax`, UTF-16 units after trimming) is `400 CAP_EXCEEDED` before the duplicate check.
-  Refuses a title that near-duplicates an issue in the project with `409 POSSIBLE_DUPLICATE` and candidates unless `force` is true; external references skip the check.
+  Refuses a near copy of an open issue of the project, other than the new issue's ancestors, with `409 POSSIBLE_DUPLICATE` and candidates unless `force` is true; external references skip the check.
+  A forced create records the issues it went past on its `issue.created` event, under `forced.past`.
   A spec whose ask block breaks its content rule (`paragraph+ bullet_list?`:
   one or more paragraphs, then at most one bullet list, last) is `400 INVALID_ASK_BLOCK`, and a spec whose markdown makes more than 65,536 elements (weighed as Element weights below lists) is `413 CAP_EXCEEDED`, naming the line that passes the limit;
   so is one whose markdown as stored (what `.../text` answers) would be longer than 1 MiB or make more than 65,536 elements.
