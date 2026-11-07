@@ -832,8 +832,10 @@ func unanswered(err error) bool {
 // answers at all, so a wait that runs out is a request that drew no answer rather than a slow
 // one, and sending it again is the only remedy there is: a longer wait buys nothing for an answer
 // that is never coming. Three sends, because a start that lost two in a row has a bus that is not
-// serving JetStream at all, which is a start that must end. Each send carries its own wait, so a
-// caller's worst case is this count times that wait.
+// serving JetStream at all, which is a start that must end. Each send carries the wait of each
+// request it makes, so this count times that wait is a caller's worst case only where the server
+// answers nothing at all and every send ends at its first request; a step whose earlier requests
+// do answer costs more, which EnsureKeyValue's doc counts.
 const unansweredSends = 3
 
 // sentAgain is what send answers, sent again while the server leaves it unanswered (unanswered)

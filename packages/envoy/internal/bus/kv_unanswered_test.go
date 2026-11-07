@@ -43,8 +43,10 @@ func accountInfoSubject() string { return "$JS.API.INFO" }
 // from the connection inside that function (jetstream.New(conn)), which takes the concrete
 // *nats.Conn. So no JetStream context a test passes in can reach any of those sends: the seam a
 // test has for them is the connection's own wire, which is this relay. The bucket's own name is
-// in each of the subjects, so only the requests about this bucket are touched, and the sends a
-// row's setup makes are counted apart from the sends of the call it is about (arm).
+// in openSubject and in createSubject, so a row dropping one of those touches only the requests
+// about its own bucket; accountInfoSubject holds no bucket name, so only a row that makes one
+// call may drop it. The sends a row's setup makes are counted apart from the sends of the call
+// it is about (arm).
 type unansweredRelay struct {
 	subject  string
 	url      string
@@ -56,7 +58,8 @@ type unansweredRelay struct {
 
 // startUnansweredRelayOn relays to the NATS server at target, a client URL such as testnats.URL
 // returns, on a loopback port of its own until the test ends, counting and dropping the client's
-// sends on subject: openSubject or createSubject of the row's bucket. Its own URL is that one with
+// sends on subject: openSubject or createSubject of the row's bucket, or accountInfoSubject,
+// which names no bucket and so is for a row that makes one call. Its own URL is that one with
 // the host and port it listens on, credentials included, as testnats.StartProxy builds its own. It
 // drops nothing until it is armed.
 func startUnansweredRelayOn(t *testing.T, target, subject string) *unansweredRelay {
@@ -238,10 +241,9 @@ func TestAnUnansweredBucketLookupIsSentAgainAndTheStartGoesOn(t *testing.T) {
 }
 
 // A start whose create of a bucket draws no answer sends it again and goes on, rather than ending
-// the program with "open envoy_unanswered_create KV bucket: KV_envoy_unanswered_create create
-// ($JS.API.INFO, STREAM.CREATE): context deadline exceeded", which is what it does today. The
-// first create never reaches the server, so the bucket is the second create's, and the handle on
-// it is usable.
+// the program with "open envoy_unanswered_create KV bucket: KV_envoy_unanswered_create create:
+// context deadline exceeded", which is what it does today. The first create never reaches the
+// server, so the bucket is the second create's, and the handle on it is usable.
 func TestAnUnansweredBucketCreateIsSentAgainAndTheStartGoesOn(t *testing.T) {
 	const bucket = "envoy_unanswered_create"
 	relay := startUnansweredRelayOn(t, testnats.URL(t), createSubject(bucket))
@@ -271,12 +273,12 @@ func TestAnUnansweredBucketCreateIsSentAgainAndTheStartGoesOn(t *testing.T) {
 }
 
 // A start whose account info draws no answer sends the create step again and goes on, rather than
-// ending the program with "open envoy_unanswered_info KV bucket: KV_envoy_unanswered_info create
-// ($JS.API.INFO, STREAM.CREATE): context deadline exceeded" with no bucket made. That request is
-// nats.go's own, sent inside js.CreateKeyValue before the STREAM.CREATE (nats.go@v1.53.1
-// kv.go:432-434), and a member that is not the metadata leader leaves it unanswered behind the
-// same gate it leaves the create behind (sentAgain). The first account info never reaches the
-// server, so the bucket is the second send's, and the handle on it is usable.
+// ending the program with "open envoy_unanswered_info KV bucket: KV_envoy_unanswered_info create:
+// context deadline exceeded" with no bucket made. That request is nats.go's own, sent inside
+// js.CreateKeyValue before the STREAM.CREATE (nats.go@v1.53.1 kv.go:432-434), and a member that is
+// not the metadata leader leaves it unanswered behind the same gate it leaves the create behind
+// (sentAgain). The first account info never reaches the server, so the bucket is the second
+// send's, and the handle on it is usable.
 func TestAnUnansweredAccountInfoIsSentAgainAndTheStartGoesOn(t *testing.T) {
 	const bucket = "envoy_unanswered_info"
 	relay := startUnansweredRelayOn(t, testnats.URL(t), accountInfoSubject())
