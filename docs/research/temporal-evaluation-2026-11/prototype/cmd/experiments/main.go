@@ -30,6 +30,12 @@ import (
 	"github.com/cybermonklabs/legion/docs/research/temporal-evaluation-2026-11/prototype/internal/exp10"
 	"github.com/cybermonklabs/legion/docs/research/temporal-evaluation-2026-11/prototype/internal/exp11"
 	"github.com/cybermonklabs/legion/docs/research/temporal-evaluation-2026-11/prototype/internal/exp12"
+	"github.com/cybermonklabs/legion/docs/research/temporal-evaluation-2026-11/prototype/internal/exp13"
+	"github.com/cybermonklabs/legion/docs/research/temporal-evaluation-2026-11/prototype/internal/exp14"
+	"github.com/cybermonklabs/legion/docs/research/temporal-evaluation-2026-11/prototype/internal/exp15"
+	"github.com/cybermonklabs/legion/docs/research/temporal-evaluation-2026-11/prototype/internal/exp16"
+	"github.com/cybermonklabs/legion/docs/research/temporal-evaluation-2026-11/prototype/internal/exp17"
+	"github.com/cybermonklabs/legion/docs/research/temporal-evaluation-2026-11/prototype/internal/exp18"
 	"github.com/cybermonklabs/legion/docs/research/temporal-evaluation-2026-11/prototype/internal/exp2"
 	"github.com/cybermonklabs/legion/docs/research/temporal-evaluation-2026-11/prototype/internal/exp3"
 	"github.com/cybermonklabs/legion/docs/research/temporal-evaluation-2026-11/prototype/internal/exp4"
@@ -60,14 +66,16 @@ func main() {
 	flag.StringVar(&cfg.RestateAdmin, "restate-admin", "127.0.0.1:9070", "the Restate server's admin address, which must be on 127.0.0.1 (experiments 10..12)")
 	flag.StringVar(&cfg.RestateServer, "restate-server", "", "absolute path of a restate-server executable, which the experiment starts itself (experiments 10..12; default: the restate-server beside this binary, and failing that a server already answering at -restate-admin)")
 	flag.StringVar(&cfg.RestateService, "restate-service", "", "absolute path of the built cmd/restateservice binary, the process Restate calls (experiments 10..12; default: the restateservice beside this binary)")
-	// The control of experiments 3, 7 and 10: run everything but the kill. Nothing
-	// then fails, so the experiment must report that it measured nothing and exit
-	// non-zero.
-	noKill := flag.Bool("no-kill", false, "experiments 3, 7 and 10 only: skip the kill, to prove a run that kills nothing fails")
+	flag.StringVar(&cfg.GWWorker, "gw-worker", "", "absolute path of the built cmd/gwworker binary (experiments 13 and 14; default: the gwworker beside this binary)")
+	flag.StringVar(&cfg.DTWorker, "dt-worker", "", "absolute path of the built cmd/dtworker binary (experiments 16 and 17; default: the dtworker beside this binary)")
+	// The control of experiments 3, 7, 10, 13 and 16: run everything but the kill.
+	// Nothing then fails, so the experiment must report that it measured nothing and
+	// exit non-zero.
+	noKill := flag.Bool("no-kill", false, "experiments 3, 7, 10, 13 and 16 only: skip the kill, to prove a run that kills nothing fails")
 	flag.Parse()
 
-	if cfg.Experiment < 1 || cfg.Experiment > 12 {
-		fmt.Fprintf(os.Stderr, "experiments: -experiment must be 1..12, got %d\n", cfg.Experiment)
+	if cfg.Experiment < 1 || cfg.Experiment > 18 {
+		fmt.Fprintf(os.Stderr, "experiments: -experiment must be 1..18, got %d\n", cfg.Experiment)
 		os.Exit(notImplemented)
 	}
 
@@ -99,6 +107,18 @@ func main() {
 		os.Exit(harness.Verdict(cfg.Experiment, exp11.Run(ctx, cfg)))
 	case 12:
 		os.Exit(harness.Verdict(cfg.Experiment, exp12.Run(ctx, cfg)))
+	case 13:
+		os.Exit(harness.Verdict(cfg.Experiment, exp13.Run(ctx, cfg, *noKill)))
+	case 14:
+		os.Exit(harness.Verdict(cfg.Experiment, exp14.Run(ctx, cfg)))
+	case 15:
+		os.Exit(harness.Verdict(cfg.Experiment, exp15.Run(ctx, cfg)))
+	case 16:
+		os.Exit(harness.Verdict(cfg.Experiment, exp16.Run(ctx, cfg, *noKill)))
+	case 17:
+		os.Exit(harness.Verdict(cfg.Experiment, exp17.Run(ctx, cfg)))
+	case 18:
+		os.Exit(harness.Verdict(cfg.Experiment, exp18.Run(ctx, cfg)))
 	default:
 		fmt.Printf("experiment %d: not implemented\n", cfg.Experiment)
 		os.Exit(notImplemented)

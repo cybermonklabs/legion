@@ -68,6 +68,14 @@ type Config struct {
 	// the process holding the handlers that Restate calls. Empty means "the
 	// restateservice next to the running binary".
 	RestateService string
+	// GWWorker is the absolute path of the built cmd/gwworker binary, which
+	// experiment 13 starts as a second process so there is a process to kill.
+	// Empty means "the gwworker next to the running binary".
+	GWWorker string
+	// DTWorker is the absolute path of the built cmd/dtworker binary, which
+	// experiments 16 and 17 start as a second process. Empty means "the dtworker
+	// next to the running binary".
+	DTWorker string
 }
 
 // WorkDir is the scratch directory the experiment may write in: what -work-dir named,
@@ -84,14 +92,27 @@ func WorkDir(cfg Config) (string, error) {
 	return dir, nil
 }
 
-// RequirePostgresDSN refuses a DBOS experiment that was given no database. The DBOS
-// experiments measure a library that keeps its state in PostgreSQL, so without one
-// there is nothing at all to measure.
+// RequirePostgresDSN refuses an experiment that was given no database. Experiments 7
+// to 9 and 13 to 18 measure libraries that keep their workflow state in PostgreSQL,
+// so without one there is nothing at all to measure.
 func RequirePostgresDSN(cfg Config) error {
 	if strings.TrimSpace(cfg.PostgresDSN) == "" {
-		return fmt.Errorf("experiment %d measures DBOS, which keeps its workflow state in PostgreSQL: pass -postgres-dsn, or set LEGION_TEST_PG_DSN, to a PostgreSQL URL this process may create a database in", cfg.Experiment)
+		return fmt.Errorf("experiment %d measures a library that keeps its workflow state in PostgreSQL: pass -postgres-dsn, or set LEGION_TEST_PG_DSN, to a PostgreSQL URL this process may create a database in", cfg.Experiment)
 	}
 	return nil
+}
+
+// GWWorker is the cmd/gwworker binary experiment 13 starts as a second process: what
+// -gw-worker named, or the gwworker beside the running binary, which is where a
+// runner that builds both of them puts it.
+func GWWorker(cfg Config) (string, error) {
+	return executable(cfg.GWWorker, "-gw-worker", "gwworker", "go build -o %s ./cmd/gwworker")
+}
+
+// DTWorker is the cmd/dtworker binary experiments 16 and 17 start as a second
+// process: what -dt-worker named, or the dtworker beside the running binary.
+func DTWorker(cfg Config) (string, error) {
+	return executable(cfg.DTWorker, "-dt-worker", "dtworker", "go build -o %s ./cmd/dtworker")
 }
 
 // DBOSWorker is the cmd/dbosworker binary the DBOS experiments start as a second
