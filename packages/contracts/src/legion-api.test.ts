@@ -1392,12 +1392,28 @@ const strandedClaimAt45 = z.strictObject({
 });
 
 test("a reader at the previous contract parses the state body this daemon serves", () => {
-  const state = fixture("state.json") as { strandedClaims: unknown[] };
-  // The golden carries both kinds: a failed claim and a released one whose wake never brought
-  // its pod back, which is the entry a `suspendedBy` would have ridden on.
-  expect(state.strandedClaims.length).toBeGreaterThan(1);
-  for (const stranded of state.strandedClaims) {
+  const state = fixture("state.json") as { strandedClaims: { state: string }[] };
+  // The golden carries all three kinds: a failed claim, a released one whose wake never brought
+  // its pod back — the entry a `suspendedBy` would have ridden on — and the retired claim
+  // contract 56 added. Every entry but the retired one is read by the 45 reader as it stands.
+  const older = state.strandedClaims.filter((stranded) => stranded.state !== "retired");
+  expect(older.length).toBeGreaterThan(1);
+  for (const stranded of older) {
     expect(strandedClaimAt45.safeParse(stranded).error?.issues ?? []).toEqual([]);
+  }
+
+  // A retired entry is the one this reader cannot take: its state enum names two values, so the
+  // entry — and with it the whole state body, since `strandedClaims` is an array this reader
+  // parses whole — is refused over the third. That is why the state route serves a pod below
+  // contract 56 the report without its retired entries (`api`'s `withoutRetiredStranded`, pinned
+  // on the Go side) rather than the body it would refuse: what such a pod is served is the list
+  // above, which parses.
+  const retired = state.strandedClaims.filter((stranded) => stranded.state === "retired");
+  expect(retired.length).toBeGreaterThan(0);
+  for (const stranded of retired) {
+    const refused = strandedClaimAt45.safeParse(stranded);
+    expect(refused.success).toBeFalse();
+    expect(refused.error?.issues[0]?.path).toEqual(["state"]);
   }
 
   // What serving it would do, and why it is not served: the 45 reader does not know the key, and
@@ -1523,14 +1539,17 @@ test("the state golden shows a claim's capability report beside its locator", ()
 });
 
 // The claims nothing will wake (contract 23): the golden names LEGION-210's failed implementer,
-// whose issue is held, and LEGION-211's released one, whose wake never brought its pod back —
-// three keys each, the released one no wider than the failed one — and a state with none carries
-// an empty list rather than none.
+// whose issue is held, LEGION-211's released one, whose wake never brought its pod back, and
+// LEGION-212's retired tester, which a close or a stop retired while its tree runs, so only a
+// start of the phase it owns — one no rule the daemon runs queues — would relaunch it (contract
+// 56) — three keys each, neither the released nor the retired one wider than the failed one —
+// and a state with none carries an empty list rather than none.
 test("the state golden names the claims nothing will wake, and the list cannot be dropped", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
   expect(state.strandedClaims).toEqual([
     { issue: "LEGION-210", role: "implementer", state: "failed" },
     { issue: "LEGION-211", role: "implementer", state: "suspended" },
+    { issue: "LEGION-212", role: "tester", state: "retired" },
   ]);
   expect(LegionStateResponse.parse(fixture("state-stage3.json")).strandedClaims).toEqual([]);
 
@@ -1628,7 +1647,7 @@ test("the state golden names the wakes the pacing holds, and the key may be abse
 // `worker_boot_timeout_seconds` and its GitHub Apps' ids and installations with no key, a
 // Stage 3 state carries the defaults, the one typed key is a positive integer, the rest rides
 // loosely, and the block cannot be dropped: a plugin from before the field refuses the state.
-// `max_fix_attempts` rode here until contract 56 removed the key.
+// `max_fix_attempts` rode here until contract 57 removed the key.
 test("the state golden carries the daemon's settings with no credential, and the block cannot be dropped", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
   expect(state.settings.max_fix_attempts).toBeUndefined();
