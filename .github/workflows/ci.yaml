@@ -6444,10 +6444,10 @@ jobs:
     if: ${{ github.event_name == 'merge_group' && github.run_attempt == '1' }}
     runs-on: ubuntu-24.04
     # Budget (the header's Budgets note): 600 s, the 10 minutes this job was written with, plus
-    # its slowest retried step alone — the force-cancel's `gh api`, 5 x 30 + 150 = 300 s, whose
-    # own budget takes one more whole minute because that arithmetic is a whole number of them.
-    # 600 + 360 = 960 s -> 16 min.
-    timeout-minutes: 16
+    # its slowest retried step alone — the one `run:` step below, whose run list and force-cancel
+    # are 5 x 30 + 150 = 300 s each, 600 s together, and whose own budget is 720 s for the
+    # reason written beside it. 600 + 720 = 1320 s -> 22 min.
+    timeout-minutes: 22
     permissions:
       actions: write
     steps:
@@ -6463,18 +6463,27 @@ jobs:
           HEAD_BRANCH: ${{ github.ref_name }}
           RUN_ID: ${{ github.run_id }}
         # Its own retry arithmetic, so an exhausted read fails this step by name rather than
-        # being cut part way by the job: the force-cancel's `gh api`, 5 x 30 + 150 = 300 s, a
-        # whole number of minutes, so the budget is the next one strictly above it -> 6 min. One
-        # term and not one per run cancelled: the loop below calls it once per removed group,
-        # and a run of them all exhausting their retries is the outage the header's Budgets note
-        # leaves to the job's own ceiling.
-        timeout-minutes: 6
+        # being cut part way by the job: the run list's 5 x 30 + 150 = 300 s and the
+        # force-cancel's 300 s, 600 s together. 720 s and not rule 8's minimum of 660 s: no
+        # pull-request run exercises this budget, so its first exercise is a merge-queue run,
+        # where a cut ejects the pull request rather than reporting a failure. What that extra
+        # minute holds is the step's own measured work beside the two ladders — about 3 s a `gh`
+        # call (the header's Retries note) over the run list and one force-cancel per removed
+        # group, at most 21 calls at the 20 groups the queue builds at once, about 63 s, which
+        # 660 s does not cover and 720 s does. One term per call and not one per run cancelled:
+        # the loop below calls the force-cancel once per removed group, and a run of them all
+        # exhausting their retries is the outage the header's Budgets note leaves to the job's
+        # own ceiling.
+        timeout-minutes: 12
         run: |
           . .github/scripts/ci-retry.sh
           # The `--limit` is 100 because the queue builds up to 20 groups at once and this pull
           # request's own groups are among them: gh's default of 20 runs could leave an older
-          # group of it out of the list, and so out of the act.
-          RUNS=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yaml --event merge_group \
+          # group of it out of the list, and so out of the act. It retries at the same 30 s an
+          # attempt as the force-cancel below: a refused list names no group at all, and every
+          # removed group's run then keeps its runners.
+          RUNS=$(retry_fetch "the merge-group runs of this repository" 30 -- \
+            gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yaml --event merge_group \
             --limit 100 --json databaseId,headBranch,status,createdAt)
           export RUNS
           acts=$(.github/scripts/merge-group-cancels.sh)

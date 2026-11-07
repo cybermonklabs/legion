@@ -59,12 +59,32 @@
 # build-dep), pip install, uv (sync, add, pip, tool, python, lock, export), bun install, bun add,
 # npm/pnpm/yarn (install, ci, add), playwright install, go mod download, go install,
 # mise (install, use), crane (copy, digest, config, pull, export, manifest, blob), docker pull,
-# gh api, gh release download, and pulumi plugin install. `mise x`, `mise exec`, `mise up` and
-# `mise upgrade` are deliberately not among them; rule 7 below says why, and what it does with
-# one instead. `bunx`, `npx`, `pnpx`, `sh -c`, `bash -c` and `eval` are transparent: the verb is
-# what they run, so a `bunx playwright install` is the Playwright download and a `bunx biome
-# check` is not a fetch at all (the binary it runs came from the workspace install, which is
-# itself a site).
+# pulumi plugin install, and gh — every subcommand of it but the local ones named next.
+#
+# gh is read the other way round from the rest, by what it is not. `gh api` and `gh release
+# download` were the whole of its table once, and an unretried `gh run list`, `gh pr view`, `gh
+# run view`, `gh cache delete`, `gh workflow run` or `gh search code` was therefore invisible
+# here: every one of them is the same HTTPS call to the same host as a `gh api`, carrying the
+# same token, and the difference between the two sets was a subcommand name and nothing else. So
+# the set is gh's own command list minus what reaches no network, read off `gh --help` and off
+# each command's own help: GH_LOCAL below — `alias`, `completion`, `config`, `extension`, `help`
+# and `version`, which answer out of the local config, the local extension directory or the
+# binary — and the four local actions of `gh auth`, `git-credential`, `setup-git`, `switch` and
+# `token`, which read the stored token or write the local git config, where `gh auth login`,
+# `logout`, `refresh` and `status` talk to the host. Anything else gh runs is a fetch, so a
+# subcommand nobody has listed is held to the floor rather than passing unseen. A verb is named
+# `gh <subcommand> <action>` for the subcommands that take an action of their own (GH_GROUPS:
+# `gh run list`, `gh release view`), and `gh <subcommand>` for the three that take an argument
+# instead (`gh api repos/owner/name`, `gh browse`, `gh status`). A gh call that writes is a site
+# like a gh call that reads: `gh api --method POST` has always been one here, and the retry is
+# for the transport, which does not know the method.
+#
+# `mise x`, `mise exec`, `mise up` and
+# `mise upgrade` are deliberately not among the verbs; rule 7 below says why, and what it does
+# with one instead. `bunx`, `npx`, `pnpx`, `sh -c`, `bash -c` and `eval` are transparent: the
+# verb is what they run, so a `bunx playwright install` is the Playwright download and a `bunx
+# biome check` is not a fetch at all (the binary it runs came from the workspace install, which
+# is itself a site).
 #
 # The wrappers stripped before the command is read are an assignment, a shell keyword, `sudo`,
 # `env`, `exec`, `command`, `nice`, `nohup`, `time`, `timeout <seconds>`, `retry_fetch <what>
@@ -177,11 +197,33 @@
 #      for the same reason; the browser download beside it, `playwright install`, is a site like
 #      any other.
 #   d. The credentialed publish jobs of release.yaml, release-envoy-listener.yaml and
-#      release-envoy-infra.yaml. .github/scripts/check-release-credentials.sh pins the command set
-#      such a job may run, and a retry wrapper there is a change to that pinned shape. A job is
+#      release-envoy-infra.yaml, and every *.sh under .github/scripts/ such a job runs.
+#      .github/scripts/check-release-credentials.sh pins the command set such a job may run, and
+#      a retry wrapper there is a change to that pinned shape. A job is
 #      credentialed by that check's own definition, WRITE_SCOPES: it holds `contents`, `id-token`,
 #      `attestations` or `actions` at `write`, or names the deploy key. Their build jobs, which
 #      hold no credential, are in scope like any other job.
+#
+#      The scripts are the second half, and they are read from the tree rather than listed: the
+#      roots are the scripts a credentialed job's steps call, and the closure adds the scripts
+#      those call in turn, which is the reading rule 8 already makes of a step. One script is in
+#      that set today, .github/scripts/release-push.sh, with .github/scripts/release-bump.sh,
+#      which it calls and which fetches nothing. release-push.sh's own fetches are the gh calls
+#      of its `restart`, `release` and `release-section` commands — `gh run list`, `gh workflow
+#      run`, `gh release view`, `gh release create`, `gh release upload` and `gh release edit` —
+#      and nothing in the tree but those publish jobs runs one of them.
+#
+#      Retrying them means sourcing .github/scripts/ci-retry.sh into the publish job, and that is
+#      what check-release-credentials.sh refuses: its rule 1(a) lets a credentialed job run no
+#      dependency code, and its dependency_command() names as dependency code any command whose
+#      path holds a `scripts/` component other than release-push.sh itself (`if
+#      DEPENDENCY_PATH.search(path) and path != RELEASE_PUSH`). A `.` of ci-retry.sh is read
+#      through that check's INTERPRETERS to exactly that path. Measured: sourcing the helper into
+#      release.yaml's `publish` step 'pi-envoy: Create GitHub release' makes that check print
+#      `job 'publish' holds a credential, but step '…' runs '.github/scripts/ci-retry.sh';
+#      dependency code runs only in a job that holds none` and exit 1. Writing the `.` inside
+#      release-push.sh instead would hide the same code from that check rather than keep it out
+#      of the job, so these sites are left unretried.
 #
 # TWO SCOPINGS OF THE SUBJECT, which are not exceptions to it: neither site is a download of a
 # tool, a toolchain or a dependency, so R1 never reached them.
@@ -283,6 +325,13 @@ SELF = ".github/scripts/check-download-retry.sh"
 # release-push.test.sh's `gh api meta`, which compares the pinned host keys with what GitHub
 # publishes and prints SKIP when the read fails. A retry at either would destroy what the test
 # measures, and neither brings a tool, a toolchain or a dependency into a job.
+#
+# The widened gh table above does not add a third. The other gh words a harness writes reach no
+# host: release-push.test.sh and check-private-names.test.sh each write a stub `gh` into the
+# test's own bin directory and put that directory first on PATH, so the words are the stub's own
+# `case` arms and the calls the script under test makes land on it; check-ci-filters.test.sh's
+# `gh run cancel` is a line of a workflow fixture it writes for the checker to read, which
+# nothing runs. A retry around any of them would wrap a shell function or a string.
 TEST_HARNESS = ".test.sh"
 # What names a script in a call: a word ending in `/<name>.sh`, wherever on the line it sits —
 # `.github/scripts/x.sh`, `"$script_dir/x.sh"`, `"$GITHUB_ACTION_PATH/../../scripts/x.sh"`,
@@ -348,6 +397,22 @@ CRANE_SUBCOMMANDS = {"copy", "cp", "digest", "config", "pull", "export", "manife
 UV_SUBCOMMANDS = {"sync", "add", "pip", "tool", "python", "lock", "export"}
 NPM_SUBCOMMANDS = {"install", "ci", "i", "install-test", "add"}
 BUN_SUBCOMMANDS = {"install", "add", "i"}
+# gh. Every subcommand of it but these reaches api.github.com over HTTPS, so the table is written
+# the other way round from the rest: what is named here is what fetches nothing, and anything
+# else gh runs is a fetch. GH_LOCAL answers out of the local config, the local extension
+# directory or the binary itself: `gh config get`, `gh alias list`, `gh completion`, `gh
+# extension list`, `gh help` and `gh version`. `gh auth` is half of each — `git-credential`,
+# `setup-git`, `switch` and `token` read the stored token or write the local git config, while
+# `login`, `logout`, `refresh` and `status` talk to the host — so its local actions are named
+# apart. GH_GROUPS is the set of subcommands that take an action word of their own, which is
+# gh's own grouping (`gh run list`, `gh release view`, `gh cache delete`): a verb of one of them
+# is named with that action, and `gh api`, `gh browse` and `gh status`, which take an argument
+# instead, are named by the subcommand alone.
+GH_LOCAL = {"alias", "completion", "config", "extension", "help", "version"}
+GH_AUTH_LOCAL = {"git-credential", "setup-git", "switch", "token"}
+GH_GROUPS = {"accessibility", "attestation", "auth", "cache", "codespace", "gist", "gpg-key",
+             "issue", "label", "org", "preview", "project", "release", "repo", "ruleset", "run",
+             "search", "secret", "ssh-key", "variable", "workflow"}
 # The write scopes check-release-credentials.sh counts as a credential (its WRITE_SCOPES), and the
 # deploy key it reads beside them.
 WRITE_SCOPES = ("contents", "id-token", "attestations", "actions")
@@ -650,6 +715,26 @@ def subcommand(words: list[str]) -> str | None:
     return next((word for word in words if not word.startswith("-")), None)
 
 
+def gh_verb_of(rest: list[str]) -> str | None:
+    """The verb a `gh` call runs, named `gh <subcommand>` or `gh <subcommand> <action>`, or None
+    where that subcommand reads and writes nothing over the network. Every gh subcommand but
+    GH_LOCAL and the four local `gh auth` actions reaches api.github.com over HTTPS, which is the
+    read `gh api` already makes, so the default here is that a gh call is a fetch: a subcommand
+    nobody listed is held to the floor rather than passing unseen."""
+    words = [word for word in rest if not word.startswith("-")]
+    sub = words[0] if words else None
+    if sub is None or sub in GH_LOCAL:
+        return None
+    action = words[1] if len(words) > 1 else None
+    if sub == "auth" and action in GH_AUTH_LOCAL:
+        return None
+    if sub not in GH_GROUPS:
+        # `api`, `browse` and `status` take no action word: the word after them is an argument
+        # (`gh api repos/owner/name`), and naming it in the verb would name every route.
+        return f"gh {sub}"
+    return f"gh {sub} {action}" if action else f"gh {sub}"
+
+
 def verb_of(words: list[str]) -> str | None:
     """The fetch verb these words run, named as the list and the messages name it, or None."""
     if not words:
@@ -706,12 +791,7 @@ def verb_of(words: list[str]) -> str | None:
     if name == "docker":
         return "docker pull" if subcommand(rest) == "pull" else None
     if name == "gh":
-        sub = subcommand(rest)
-        if sub == "api":
-            return "gh api"
-        if sub == "release" and "download" in rest:
-            return "gh release download"
-        return None
+        return gh_verb_of(rest)
     if name == "pulumi" and rest[:2] == ["plugin", "install"]:
         return "pulumi plugin install"
     return None
@@ -1054,6 +1134,10 @@ for dockerfile in DOCKERFILES:
 
 sites: list[Site] = []
 exempted: list[Site] = []
+# The scripts a credentialed publish job's steps call, and then the closure of that set: the
+# loops below fill the first and the walk between them turns it into the second.
+credentialed_roots: set[str] = set()
+credentialed_scripts: set[str] = set()
 
 
 class Budget:
@@ -1145,6 +1229,8 @@ for path in workflows + actions:
                     exempted.append(site)
                     continue
                 sites.append(site)
+        if job in credentialed:
+            credentialed_roots.update(called)
         uses = local_action(step.get("uses"))
         if path in action_files:
             action_cost[path] = action_cost.get(path, 0) + cost
@@ -1156,11 +1242,30 @@ for path in workflows + actions:
             budgets.append(Budget(path, step.lines.get("timeout-minutes", 0), name, minutes,
                                   cost, uses, called))
 
+# Exception (d) for a script: a *.sh under .github/scripts/ that a credentialed publish job runs
+# can carry no retry either, because the retry is `. .github/scripts/ci-retry.sh` and that source
+# runs inside the credentialed job, where check-release-credentials.sh's rule 1(a) allows no
+# dependency code — a command whose path holds a `scripts/` component other than release-push.sh
+# is dependency code by its own dependency_command(). Read from the tree, like (b): the roots are
+# the scripts such a job's steps call, and the closure below adds the scripts those call in turn,
+# the same reading rule 8 makes of a step. It follows a call it can see rather than the branch a
+# job takes, so it reaches a script a credentialed job could run; the sites it covers are named
+# in exception (d) of this file's header.
+while credentialed_roots:
+    path = credentialed_roots.pop()
+    if path in credentialed_scripts:
+        continue
+    credentialed_scripts.add(path)
+    credentialed_roots.update(scripts_called(Path(path).read_text()))
+
 for path in scripts:
     text = Path(path).read_text()
     script_calls[path] = scripts_called(text)
     for site in sites_of(path, text, 1, "-"):
         script_cost[path] = script_cost.get(path, 0) + arithmetic_of(site)
+        if path in credentialed_scripts:
+            exempted.append(site)
+            continue
         covering = next((entry for entry in EXEMPTIONS if entry.covers(site, None)), None)
         if covering:
             covering.used += 1

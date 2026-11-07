@@ -59,10 +59,11 @@ jobs:
     # A GraphQL read, one run list and one cancel: the limit is short so that a wedged API call
     # cannot hold a runner, and it is above the minute the timeline read can wait. 300 s, the
     # 5 minutes that gives, plus this job's slowest retried step alone, as ci.yaml's Budgets
-    # note derives one: that step holds the timeline read's 5 x 30 + 150 = 300 s and the
-    # force-cancel's 300 s, 600 s together, a whole number of minutes, so that step's own budget
-    # takes one more and this job takes it too. 300 + 660 = 960 s -> 16 min.
-    timeout-minutes: 16
+    # note derives one: that step holds the timeline read's 5 x 30 + 150 = 300 s, the run
+    # list's 300 s and the force-cancel's 300 s, 900 s together, a whole number of minutes, so
+    # that step's own budget takes one more and this job takes it too. 300 + 960 = 1260 s ->
+    # 21 min.
+    timeout-minutes: 21
     # `gh run list` and the force-cancel need `actions: write`, and nothing here needs another
     # scope: the checkout below reads a public repository's git data, which GitHub serves to any
     # valid token, and so is the GraphQL read of its pull request — the same ground on which
@@ -82,10 +83,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         # Its own retry arithmetic, so an exhausted read fails this step by name rather than
-        # being cut part way by the job: the timeline read's 5 x 30 + 150 = 300 s and the
-        # force-cancel's 5 x 30 + 150 = 300 s, 600 s, a whole number of minutes, so the budget
-        # is the next one strictly above it -> 11 min.
-        timeout-minutes: 11
+        # being cut part way by the job: the timeline read's 5 x 30 + 150 = 300 s, the run
+        # list's 300 s and the force-cancel's 300 s, 900 s, a whole number of minutes, so the
+        # budget is the next one strictly above it -> 16 min.
+        timeout-minutes: 16
         run: |
           . .github/scripts/ci-retry.sh
           query='query($owner: String!, $name: String!, $number: Int!) {
@@ -153,7 +154,10 @@ jobs:
             echo "::warning::the removal names no beforeCommit, so there is no group head to look for and nothing is cancelled"
             exit 0
           fi
-          runs=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yaml --event merge_group \
+          # The same 30 s an attempt as the reads above: a refused list would leave the removed
+          # group's run holding its runners with nothing to say about it.
+          runs=$(retry_fetch "the merge-group runs of $before" 30 -- \
+            gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yaml --event merge_group \
             --commit "$before" --limit 20 --json databaseId,headSha,status,conclusion)
           doomed=$(jq -r --arg sha "$before" \
             '.[] | select(.headSha == $sha and .status != "completed") | .databaseId' <<<"$runs")
