@@ -10878,6 +10878,9 @@
           },
           "title": {
             "type": "string"
+          },
+          "tmux_place": {
+            "$ref": "#/components/schemas/TmuxPlace"
           }
         },
         "required": [
@@ -21514,6 +21517,52 @@
         },
         "required": [
           "median_minutes"
+        ],
+        "type": "object"
+      },
+      "TmuxPlace": {
+        "properties": {
+          "layout": {
+            "type": "string"
+          },
+          "pane_id": {
+            "type": "string"
+          },
+          "pane_index": {
+            "type": "integer"
+          },
+          "server_pid": {
+            "type": "string"
+          },
+          "session_name": {
+            "type": "string"
+          },
+          "socket": {
+            "type": "string"
+          },
+          "window_id": {
+            "type": "string"
+          },
+          "window_index": {
+            "type": "integer"
+          },
+          "window_name": {
+            "type": "string"
+          },
+          "zoomed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "socket",
+          "server_pid",
+          "session_name",
+          "window_id",
+          "window_index",
+          "window_name",
+          "pane_id",
+          "pane_index",
+          "zoomed"
         ],
         "type": "object"
       },

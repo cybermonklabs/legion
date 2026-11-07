@@ -2721,6 +2721,7 @@ export interface components {
       session_id: string;
       state: string;
       title: string;
+      tmux_place?: components["schemas"]["TmuxPlace"];
     };
     AgentToken: {
       /** Format: date-time */
@@ -5048,6 +5049,18 @@ export interface components {
     };
     TimeToRestore: {
       median_minutes: null | number;
+    };
+    TmuxPlace: {
+      layout?: string;
+      pane_id: string;
+      pane_index: number;
+      server_pid: string;
+      session_name: string;
+      socket: string;
+      window_id: string;
+      window_index: number;
+      window_name: string;
+      zoomed: boolean;
     };
     UnparsedOpeners: {
       count: number;
@@ -12127,6 +12140,7 @@ export type TargetCandidate = components["schemas"]["TargetCandidate"];
 export type TestHookOK = components["schemas"]["TestHookOK"];
 export type ThreadReadInput = components["schemas"]["ThreadReadInput"];
 export type TimeToRestore = components["schemas"]["TimeToRestore"];
+export type TmuxPlace = components["schemas"]["TmuxPlace"];
 export type UnparsedOpeners = components["schemas"]["UnparsedOpeners"];
 export type UpdateAgentTokenScopesInput = components["schemas"]["UpdateAgentTokenScopesInput"];
 export type UpdateDeliverySessionGroupInput =
