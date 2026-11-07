@@ -1139,6 +1139,14 @@ func TestLoadRefuses(t *testing.T) {
 			want: "worker_boot_timeout_seconds * worker_boot_registration_deadline_intervals must be at most 2147483",
 		},
 		{
+			// A count carries no bound of its own, so the product is judged by division: this
+			// many intervals times the default 120-second timeout is a negative number of
+			// seconds, which a multiplied check would have found at most the bound.
+			name: "the registration deadline's intervals wrap the product",
+			body: minimalFile + "worker_boot_registration_deadline_intervals: 9223372036854775807\n",
+			want: "worker_boot_timeout_seconds * worker_boot_registration_deadline_intervals must be at most 2147483",
+		},
+		{
 			name: "worker_rpc_timeout_seconds zero",
 			body: minimalFile + "worker_rpc_timeout_seconds: 0\n",
 			want: "worker_rpc_timeout_seconds must be a positive integer",

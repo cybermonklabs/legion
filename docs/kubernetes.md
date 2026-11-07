@@ -4365,6 +4365,7 @@ runtime:
 Those are the defaults, and release is on under `runtime: kubernetes` wherever the file says nothing: every deployment on GKE Autopilot pays for an idle pod's requests.
 `idle_minutes: 0` turns release off, and the deployment's pods then live as they did before, from an issue's first role start to its close.
 The loader refuses a `backstop_minutes` below `idle_minutes`, which would wake a pod the daemon has only just released.
+Each of the two is at most 35791 minutes, about 24 days, the same 32-bit timer bound every duration key of the file carries.
 Whatever the setting says, the daemon releases nothing while the Envoy listener it uses does not report the role messages and direct messages of released sessions, since those two wakes would otherwise be lost.
 
 `legion state` shows a released claim apart from a suspended or a failed one, reading which it is from the operator claim routes with the bearer `--operator-token-file` names, since the state body itself carries no suspender; without that flag every stranded claim reads as the plain suspension it is, which `legion claims list --json` tells apart.

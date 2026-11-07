@@ -110,6 +110,14 @@ const maxStallMilliseconds = math.MaxInt64 / int64(time.Millisecond)
 // (maxStallMilliseconds), which the plugin takes and this leaves at the default: the daemon
 // cannot hold the number at all, and no backstop bound could be held above a ladder of a hundred
 // thousand years.
+//
+// Every string below that the two take alike, the largest among them, and the two read it the
+// same way twice over: the worker's watch judges no call overdue for about 292 years, so no step
+// of its ladder runs inside any turn a daemon will see, and the daemon's own floor and default
+// saturate at what a Duration holds (saturatingSum), so `worker_stall_backstop_hours` names no
+// bound the floor accepts but the 0 that switches the backstop off, and the sweep ends no turn.
+// A deployment that writes a bound of 292 years has switched both watches off the long way
+// round, and neither the worker nor the daemon acts on a stall.
 func stallMilliseconds(value string) (time.Duration, bool) {
 	ms, ok := jsNumber(value)
 	if !ok || ms != math.Trunc(ms) || ms < 0 || ms > float64(maxStallMilliseconds) {
@@ -247,8 +255,12 @@ func jsDigits(s string) bool {
 // (stalldefaults.go's StallDeclaredDeadlineCap). A deployment that shortens the bound to half an
 // hour has not shortened the deadline a `pty` call may declare, so a floor reckoned from the
 // bound alone would let the daemon end a working call an hour into its declared `timeout 3600`.
+//
+// The sum saturates (saturatingSum): the bound can be the largest number of milliseconds a
+// Duration holds (maxStallMilliseconds), which leaves nothing of the Duration for the grace and
+// the two gaps on top of it.
 func (c Config) StallLadderFor(role claim.Role) time.Duration {
-	return max(c.StallLimits.CallBoundFor(role), StallDeclaredDeadlineCap) + c.StallLimits.CallGrace + 2*c.StallLimits.Step
+	return saturatingSum(max(c.StallLimits.CallBoundFor(role), StallDeclaredDeadlineCap), c.StallLimits.CallGrace, c.StallLimits.Step, c.StallLimits.Step)
 }
 
 // StallBackstopFor is how long after a claim's recorded last step the daemon ends role's turn
@@ -263,11 +275,50 @@ func (c Config) StallLadderFor(role claim.Role) time.Duration {
 // bound itself: a default below that floor would have the daemon do the very thing the file is
 // refused for. 0 is the backstop off for that role, which only the file can ask for: no sweep
 // acts on a role whose bound is 0.
+//
+// The doubling saturates (saturatingSum), as the ladder's own sum does: twice a bound at the
+// top of what the reader takes is past what a Duration holds, and a default wrapped negative is
+// one every claim's recorded last step is already past, so the sweep would end the turn of
+// every claim at once.
 func (c Config) StallBackstopFor(role claim.Role) time.Duration {
 	if bound, named := c.WorkerStallBackstops[role]; named {
 		return bound
 	}
-	return max(2*c.StallLimits.CallBoundFor(role), c.StallLadderFor(role))
+	called := c.StallLimits.CallBoundFor(role)
+	return max(saturatingSum(called, called), c.StallLadderFor(role))
+}
+
+// saturatingSum is the sum of the stall numbers the deployment's own settings give, held at the
+// largest value a time.Duration carries instead of wrapped past it. Every number summed here is
+// 0 or more — the reader takes a whole number of milliseconds of 0 or more (stallMilliseconds)
+// and every default is positive — so the only way out of a Duration's range is upward.
+//
+// The two sums above need it because the reader's own maximum is the largest number of
+// milliseconds a Duration holds (maxStallMilliseconds) and each puts something on top of that
+// bound: the ladder the grace and two step gaps, the default backstop the bound a second time.
+// Wrapped, each inverts the thing it exists for — a negative floor is one every named bound
+// clears, so the refusal that keeps the daemon off a turn its worker's plugin is still
+// recovering accepts every bound; a negative default is a bound every recorded last step is
+// already past (INFRA-1274).
+//
+// Saturating is the remedy rather than a reader maximum reckoned to leave the ladder room,
+// because the grace and the step gap are themselves deployment settings
+// (LEGION_STALL_CALL_GRACE_MS, LEGION_STALL_STEP_MS): a maximum that left room for them would
+// be reckoned from two other numbers and be wrong again the day either moves, where this holds
+// for every combination of the three. It also fails in the direction that keeps the key's
+// meaning: an absurd bound gives an absurd but positive floor, so `legion.yaml` refuses almost
+// every backstop it could name rather than accepting every one, and the sweep ends no turn
+// rather than all of them. And it leaves the reader taking exactly what the worker's own reader
+// takes, which is the whole reason that reader is written out here (stallMilliseconds).
+func saturatingSum(parts ...time.Duration) time.Duration {
+	sum := time.Duration(0)
+	for _, part := range parts {
+		if part > math.MaxInt64-sum {
+			return math.MaxInt64
+		}
+		sum += part
+	}
+	return sum
 }
 
 // readStallBackstops is `worker_stall_backstop_hours`: a mapping of a Legion role

@@ -243,6 +243,13 @@ const (
 	// timers are not so bounded; the bound is kept so a file one daemon accepts, the other
 	// accepts too.
 	maxTimerSeconds = 2_147_483
+	// maxTimerMinutes is that same bound for a key written in minutes
+	// (runtime.kubernetes.idle_release), computed from it so the two cannot drift. A key in
+	// minutes needs a bound of its own for a second reason: the daemon turns it into a
+	// time.Duration (IdleReleaseConfig.Idle, Backstop), and an unbounded number of minutes
+	// multiplied by time.Minute wraps negative, which is an idle period every pod has already
+	// passed.
+	maxTimerMinutes = maxTimerSeconds / 60
 )
 
 // durationKeys are the positive-second keys and their defaults (config.ts's DEFAULT_* constants,
@@ -1206,8 +1213,14 @@ func resolveStage2(file fileConfig, configDir string, cfg *Config) error {
 		*c.field(cfg) = count
 	}
 	// The registration deadline is one timer for the product, so each factor fitting is not
-	// enough (resolveDaemonConfig in config.ts).
-	if int64(cfg.WorkerBootTimeout/time.Second)*int64(cfg.WorkerBootRegistrationDeadlineIntervals) > maxTimerSeconds {
+	// enough (resolveDaemonConfig in config.ts). The product is judged by dividing the bound
+	// rather than by multiplying the two: the timeout carries the timer bound, but a count
+	// carries none of its own, and `9223372036854775807` intervals multiplied by it wraps to a
+	// negative number of seconds, which is at most anything. Dividing refuses exactly what
+	// multiplying refuses wherever multiplying holds — for whole seconds of 1 or more,
+	// seconds × intervals > bound is intervals > bound / seconds.
+	seconds := int64(cfg.WorkerBootTimeout / time.Second)
+	if int64(cfg.WorkerBootRegistrationDeadlineIntervals) > maxTimerSeconds/seconds {
 		return fmt.Errorf("worker_boot_timeout_seconds * worker_boot_registration_deadline_intervals must be at most %d", maxTimerSeconds)
 	}
 
