@@ -51,6 +51,12 @@ const (
 	// to deliver. A pull that hears nothing from the server for twice as long ends with
 	// ErrSessionPullStalled.
 	sessionPullHeartbeat = 15 * time.Second
+	// sessionPullDrainWait and sessionPullDrainPoll bound how long Release waits for the pull's
+	// inbox subscription to go invalid, which is nats.go having handed over every message it held
+	// unread. A subscription on a local server drains in well under a millisecond, so the wait is
+	// reached only by a connection that is gone, and a run that ends costs it once.
+	sessionPullDrainWait = time.Second
+	sessionPullDrainPoll = 2 * time.Millisecond
 )
 
 // ErrSessionPullStalled ends a pull (SessionPull.Next) that heard nothing from the server, no
@@ -252,3 +258,33 @@ func (a sessionAck) NakWithDelay(delay time.Duration) error { return a.msg.NakWi
 
 // Stop ends the pull; the messages it held and Next had not returned are delivered again later.
 func (p *SessionPull) Stop() { _ = p.sub.Unsubscribe() }
+
+// Release ends the pull and returns to the server, at once, every message it holds that Next did
+// not read, and reports how many it returned. The session's next owner is delivered those
+// messages at once and in stream order, rather than after SessionConsumerAckWait.
+func (p *SessionPull) Release() int {
+	// The inbox is drained, not unsubscribed: an unsubscribe drops what nats.go holds unread,
+	// which is what this returns. A drain hands those messages to receive, which queues them.
+	if err := p.sub.Drain(); err != nil {
+		_ = p.sub.Unsubscribe()
+	}
+	for deadline := time.Now().Add(sessionPullDrainWait); p.sub.IsValid() && time.Now().Before(deadline); {
+		time.Sleep(sessionPullDrainPoll)
+	}
+	p.mu.Lock()
+	queue := p.queue
+	p.queue = nil
+	p.mu.Unlock()
+	returned := 0
+	for _, msg := range queue {
+		if status, _ := pullStatus(msg); status != "" {
+			// A pull request's status (408, 409, 503) carries no ack subject: there is nothing to
+			// return to the server.
+			continue
+		}
+		if err := msg.NakWithDelay(0); err == nil {
+			returned++
+		}
+	}
+	return returned
+}

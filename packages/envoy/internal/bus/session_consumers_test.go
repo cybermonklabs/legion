@@ -735,6 +735,81 @@ func TestNakWithDelayRedelivers(t *testing.T) {
 	}
 }
 
+// awaitAckPending waits up to 5 s for sessionID's consumer to hold want messages awaiting an ack
+// and answers the info that read it: an ack and a nak are both a publish the server answers
+// nothing to, so the count follows the call rather than arriving with it.
+func awaitAckPending(t *testing.T, consumers *SessionConsumers, sessionID string, want int) *jetstream.ConsumerInfo {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		info, err := consumers.Info(context.Background(), sessionID)
+		if err != nil {
+			t.Fatalf("info: %v", err)
+		}
+		if info.NumAckPending == want {
+			return info
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the consumer holds %d messages awaiting an ack, want %d", info.NumAckPending, want)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// Release gives the server back, at once, every message the pull holds that its caller never
+// read: the next pull of that consumer is delivered both of them straight away, each as a second
+// delivery, rather than after SessionConsumerAckWait. Stop in its place drops them, and the next
+// pull waits out that ack wait for them. A returned message is still awaiting an ack -- a nak
+// schedules a redelivery, it does not undo the delivery it answers -- so the consumer holds
+// nothing for an ack only once the next owner has taken and acked them, which is the state this
+// row ends on. The order the two come back in is the server's, not this row's to assert: with no
+// pull request that still has interest, the server's first redelivery attempt puts that message
+// behind the other in its redelivery queue. A relay's next owner is pulling by then, and one that
+// is not restarts the consumer at its ack floor (RestartAtFloor), which is where stream order
+// comes from.
+func TestReleaseReturnsTheMessagesThePullHoldsUnread(t *testing.T) {
+	owner, consumers := sessionConsumersOnStream(t)
+	ctx := context.Background()
+	const session = "ses_released"
+	agent := contracts.AgentSubject(session)
+	if _, err := consumers.Ensure(ctx, session, []string{agent}, 0); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	var stored []uint64
+	for i := range 3 {
+		stored = append(stored, publishStored(t, owner, agent, strconv.Itoa(i)))
+	}
+	pull := pullSession(t, consumers, session)
+	first := next(t, pull)
+	if first.StreamSeq != stored[0] {
+		t.Fatalf("the first message is %d, want %d", first.StreamSeq, stored[0])
+	}
+	if err := first.Ack(); err != nil {
+		t.Fatalf("ack %d: %v", first.StreamSeq, err)
+	}
+	// One pull request asks for a whole batch, so the server delivered all three: the two this
+	// row never read sit unread in the pull's queue, and they are what the consumer awaits.
+	held := awaitAckPending(t, consumers, session, 2)
+	t.Logf("before Release the consumer has NumWaiting %d and NumAckPending %d", held.NumWaiting, held.NumAckPending)
+	if returned := pull.Release(); returned != 2 {
+		t.Fatalf("Release returned %d messages, want the two the pull held unread", returned)
+	}
+	again := pullSession(t, consumers, session)
+	back := map[uint64]uint64{}
+	for range stored[1:] {
+		msg := next(t, again)
+		back[msg.StreamSeq] = msg.Delivered
+		if err := msg.Ack(); err != nil {
+			t.Fatalf("ack %d: %v", msg.StreamSeq, err)
+		}
+	}
+	if len(back) != 2 || back[stored[1]] != 2 || back[stored[2]] != 2 {
+		t.Fatalf("after Release the next pull got %v, want %d and %d back, each as a second delivery", back, stored[1], stored[2])
+	}
+	released := awaitAckPending(t, consumers, session, 0)
+	t.Logf("after Release the consumer has NumWaiting %d and NumAckPending %d", released.NumWaiting, released.NumAckPending)
+}
+
 // A session the stream holds no consumer for: its info, a restart of it and a pull of it all
 // report it missing; a session id that names no consumer is refused before anything is sent.
 func TestSessionsWithoutAConsumer(t *testing.T) {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -757,12 +758,27 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 	if pull == nil {
 		return outcome
 	}
-	defer pull.Stop()
+	// A run whose context was cancelled lost its session: the session moved to another listener,
+	// the machine's durable binding was lost, the listener is stopping, or a new epoch replaced
+	// the run. Such a run returns everything it holds; one that ended for a reason of its own
+	// leaves it where it is.
+	defer func() {
+		if ctx.Err() == nil {
+			m.forget(run)
+			pull.Stop()
+			return
+		}
+		// Every frame the run published was read from the pull's queue before anything still in
+		// it, so the frames carry the lower stream sequences: naking them before the queue is
+		// naking in stream-sequence order, which is what has the server redeliver the session's
+		// messages in stream order.
+		m.release(run)
+		pull.Release()
+	}()
 	if start.StreamID == "" {
 		m.logger.Warn("session relay could not read the stream's identity; retrying", slog.String("session_id", sessionID), slog.String("error", bus.ErrNoStreamID.Error()))
 		return relayRetry
 	}
-	defer m.forget(run)
 	streamID, gap := start.StreamID, start.Gap
 	for {
 		next := ctx
@@ -841,16 +857,41 @@ func (m *sessionRelays) receiptDeadline(run *relayRun) (time.Time, bool) {
 	return run.unanswered[0].sentAt.Add(m.receiptWait), true
 }
 
-// forget drops every frame of run still awaiting an answer: a reply to one is ignored, and its
-// message waits out its ack wait or the next restart at the ack floor.
-func (m *sessionRelays) forget(run *relayRun) {
+// forget drops every frame of run still awaiting an answer and returns them: a reply to one is
+// ignored, and its message waits out its ack wait or the next restart at the ack floor.
+func (m *sessionRelays) forget(run *relayRun) []*relayFrame {
 	m.framesMu.Lock()
 	defer m.framesMu.Unlock()
-	for token := range run.outstanding {
+	dropped := make([]*relayFrame, 0, len(run.outstanding))
+	for token, frame := range run.outstanding {
 		delete(m.frames, token)
+		dropped = append(dropped, frame)
 	}
 	run.outstanding = nil
 	run.unanswered = nil
+	return dropped
+}
+
+// release forgets run and returns the message of every frame it dropped to the server, so the
+// session's next owner is delivered them at once and in stream order rather than after their ack
+// wait (bus.SessionConsumerAckWait). A nak is safe to repeat, since the session consumer sets
+// MaxDeliver = -1 (internal/bus/session_consumers.go:471): a message returned here and delivered
+// again spends no redelivery budget. It returns how many messages it returned.
+func (m *sessionRelays) release(run *relayRun) int {
+	dropped := m.forget(run)
+	// The frames were published in stream order, so the order they were sent in is the order the
+	// server is asked to deliver them again in. No nak is sent under framesMu: it is a publish,
+	// and the lock answers every session's replies.
+	slices.SortFunc(dropped, func(a, b *relayFrame) int { return a.sentAt.Compare(b.sentAt) })
+	returned := 0
+	for _, frame := range dropped {
+		if err := frame.acker.NakWithDelay(0); err != nil {
+			m.logger.Warn("session relay could not return a frame's message to the server", slog.String("session_id", run.sessionID), slog.String("error", err.Error()))
+			continue
+		}
+		returned++
+	}
+	return returned
 }
 
 // onReply hears a session's reply to a frame: received marks the frame answered, progress restarts
