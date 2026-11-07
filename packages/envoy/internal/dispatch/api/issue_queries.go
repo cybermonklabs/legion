@@ -133,7 +133,7 @@ const issueProgressLateral = `
 // issueSummaryColumns are the columns a listing row scans, in issueSummaryRow's order.
 const issueSummaryColumns = `i.key, i.title, i.status, i.priority, i.rank, i.labels, i.parent_key,
 	       coalesce(blockers.keys, '{}'),
-	       i.assignee, i.route, i.updated_at, i.last_seq,
+	       i.assignee, i.route, i.updated_at, i.last_seq, i.created_by, i.created_at,
 	       coalesce(spec.id, ''),
 	       ` + issueClaimColumns + `,
 	       case when i.closed_at is null then coalesce(open_asks.total, 0) else 0 end,
@@ -395,6 +395,7 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 // says why), and resolving that row would refuse a page over a parent chain of its own.
 type issueSummaryRow struct {
 	issue      model.IssueSummary
+	createdBy  []byte
 	claim      claimScan
 	progress   progressScan
 	components componentsScan
@@ -404,7 +405,7 @@ type issueSummaryRow struct {
 // targets are the row's scan targets, after leading, which a paged read fills with the columns
 // it carries ahead of the issue's own.
 func (r *issueSummaryRow) targets(leading ...any) []any {
-	targets := append(leading, &r.issue.Key, &r.issue.Title, &r.issue.Status, &r.issue.Priority, &r.issue.Rank, &r.issue.Labels, &r.issue.Parent, &r.issue.BlockedBy, &r.issue.Assignee, &r.issue.Route, &r.issue.UpdatedAt, &r.issue.LastSeq, &r.issue.PrimaryArtifactID)
+	targets := append(leading, &r.issue.Key, &r.issue.Title, &r.issue.Status, &r.issue.Priority, &r.issue.Rank, &r.issue.Labels, &r.issue.Parent, &r.issue.BlockedBy, &r.issue.Assignee, &r.issue.Route, &r.issue.UpdatedAt, &r.issue.LastSeq, &r.createdBy, &r.issue.CreatedAt, &r.issue.PrimaryArtifactID)
 	targets = append(targets, r.claim.targets()...)
 	targets = append(targets, &r.issue.OpenAsks)
 	targets = append(targets, r.progress.targets()...)
@@ -425,6 +426,9 @@ func (r *issueSummaryRow) resolve() (model.IssueSummary, error) {
 		return model.IssueSummary{}, err
 	}
 	issue.Claim = claim
+	if err := json.Unmarshal(r.createdBy, &issue.CreatedBy); err != nil {
+		return model.IssueSummary{}, fmt.Errorf("decode issue actor: %w", err)
+	}
 	issue.Progress = r.progress.resolve()
 	issue.Components = r.components.resolve(issue.Key)
 	return issue, nil

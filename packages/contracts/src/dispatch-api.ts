@@ -540,6 +540,10 @@ export interface IssueSummary
   readonly labels?: string[];
   readonly open_asks: number;
   readonly progress: IssueProgress;
+  /** Who made the issue and when (PROTOTYPE, dispatch://INFRA-1508): the listing now carries
+   *  them; optional only so the existing test fixtures need no edit on this branch. */
+  readonly created_by?: Actor | null;
+  readonly created_at?: string;
 }
 
 /** Maximum entries in an issue's blocked_by input, before duplicate keys are removed. */
