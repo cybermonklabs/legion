@@ -791,8 +791,8 @@ func TestReleaseReturnsTheMessagesThePullHoldsUnread(t *testing.T) {
 	// row never read sit unread in the pull's queue, and they are what the consumer awaits.
 	held := waitForAckPending(t, consumers, session, 2)
 	t.Logf("before Release the consumer has NumWaiting %d and NumAckPending %d", held.NumWaiting, held.NumAckPending)
-	if returned := pull.Release(); returned != 2 {
-		t.Fatalf("Release returned %d messages, want the two the pull held unread", returned)
+	if returned, err := pull.Release(); returned != 2 || err != nil {
+		t.Fatalf("Release returned %d messages, %v; want the two the pull held unread and no error", returned, err)
 	}
 	again := pullSession(t, consumers, session)
 	back := map[uint64]uint64{}

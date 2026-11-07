@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"maps"
 	"slices"
@@ -833,27 +834,46 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 			pull.Stop()
 			return
 		}
+		// The pull is detached before anything is naked. A cancelled pull still has a pull
+		// request standing at the server, so a nak sent while that pull is subscribed can be
+		// delivered straight back into the pull this run is giving up, where nothing reads it
+		// and it is lost again until its ack wait passes; detached, the pull has no interest
+		// left and the frames reach the session's next owner. The reviewer measured the other
+		// order at 62cc8055, over ten runs holding 200 frames with the next owner's pull already
+		// open: six delivered messages out of stream order and four delivered one of them a
+		// third time (TestSessionConsumerRelayLosingItsSessionReturnsEveryMessageItHoldsInStreamOrder
+		// holds the fix). This call discards the detach's own error rather than dropping it:
+		// Detach answers every caller the one result, and the Release below joins that same
+		// result into what is reported.
+		_ = pull.Detach()
 		// Every frame the run published was read from the pull's queue before anything still in
 		// it, so the frames are naked first and the queue after, each in the order it was sent or
-		// queued. That is stream order, except for a message the session naked during the run,
-		// which the server delivered again and the relay sent again after frames of higher
-		// sequences. The order the next owner is delivered them in is the server's; a relay that
-		// starts later restarts the consumer at its ack floor first, which recreates a consumer
-		// whose messages still await an ack (bus.SessionConsumers.RestartAtFloor), and that
-		// delivers them in stream order.
-		returned := m.release(run)
-		returned += pull.Release()
-		// The run writes this line itself rather than the loop that cancelled it: only once the
-		// run's goroutine has given the messages back is it true that this listener relays the
-		// session no more, so a reader, and a test waiting for the hand-over, can order on it.
-		// One line per run stopped while it was pulling, so a listener that stops writes one for
-		// each session it was pulling for; a run cancelled before its pull opened, or while it
-		// waited out a pause or a retry, held nothing and writes none.
+		// queued.
+		returned, err := m.release(run)
+		fromPull, pullErr := pull.Release()
+		returned += fromPull
+		// The run writes its hand-over line itself rather than the loop that cancelled it: only
+		// once the run's goroutine has given the messages back is it true that this listener
+		// relays the session no more, so a reader, and a test waiting for the hand-over, can
+		// order on it. One line per run stopped while it was pulling, so a listener that stops
+		// writes one for each session it was pulling for; a run cancelled before its pull
+		// opened, or while it waited out a pause or a retry, held nothing and writes none.
+		//
+		// The logger stamps every line with the machine id of the process it runs in; the
+		// relay_machine_id field is the relay set's own, which a test rig names apart from its
+		// logger, and a second machine_id key in one record would leave a reader to guess which
+		// won.
+		if err := errors.Join(err, pullErr); err != nil {
+			m.logger.Warn("session relay stopped; it could not give the server back every message it held, and each one it did not is delivered again only after the consumer's ack wait",
+				slog.String("session_id", sessionID),
+				slog.String("relay_machine_id", m.machineID),
+				slog.String("reason", relayCancelledFor(ctx).String()),
+				slog.Int("returned", returned),
+				slog.String("error", err.Error()))
+			return
+		}
 		m.logger.Info("session relay stopped; it gave the server back the messages it held, so they are delivered again at once rather than after the consumer's ack wait",
 			slog.String("session_id", sessionID),
-			// The logger stamps every line with the machine id of the process it runs in; this
-			// field is the relay set's own, which a test rig names apart from its logger, and a
-			// second machine_id key in one record would leave a reader to guess which won.
 			slog.String("relay_machine_id", m.machineID),
 			slog.String("reason", relayCancelledFor(ctx).String()),
 			slog.Int("returned", returned))
@@ -968,8 +988,9 @@ func (m *sessionRelays) forget(run *relayRun) map[string]*relayFrame {
 // returned here spends no server redelivery budget. Each delivery still raises the message's
 // delivery count, which the session's client counts toward the attempts it allows a frame its
 // host fails (RELAY_ATTEMPTS_BEFORE_FAILED, packages/envoy-client/src/consumer-delivery.ts). It
-// returns how many messages it returned.
-func (m *sessionRelays) release(run *relayRun) int {
+// returns how many messages it returned, and the naks that failed as one error, so that the
+// run's one hand-over line can say whether the hand-over was whole rather than claiming it was.
+func (m *sessionRelays) release(run *relayRun) (int, error) {
 	dropped := slices.Collect(maps.Values(m.forget(run)))
 	// The frames are naked in the order they were sent, which is stream order except for a
 	// message the session naked and the relay sent again. No nak is sent under framesMu: it is a
@@ -990,13 +1011,10 @@ func (m *sessionRelays) release(run *relayRun) int {
 	if failed > 0 {
 		// A nak fails because the connection is closed or its reconnect buffer is full, which is
 		// the shutdown burst where every relay releases at once, so the failures of one run are
-		// one line naming the first error rather than up to MaxAckPending lines of the same.
-		m.logger.Warn("session relay could not return some frames' messages to the server",
-			slog.String("session_id", run.sessionID),
-			slog.Int("failed", failed),
-			slog.String("error", firstErr.Error()))
+		// one error naming the first of them rather than up to MaxAckPending copies of it.
+		return returned, fmt.Errorf("could not return %d of the session's frames to the server; the first failed with: %w", failed, firstErr)
 	}
-	return returned
+	return returned, nil
 }
 
 // onReply hears a session's reply to a frame: received marks the frame answered, progress restarts

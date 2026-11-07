@@ -695,6 +695,89 @@ func TestSessionConsumerRelayLosingItsSessionReturnsTheMessageItHolds(t *testing
 	}
 }
 
+// A relay that loses its session while it holds many messages gives every one of them back: the
+// listener the session moves to is delivered all 200, each exactly once, each as a second
+// delivery, and in stream order, rather than waiting out bus.SessionConsumerAckWait (60 s) for
+// any of them.
+//
+// What the row holds is the order of the hand-over: the cancelled run detaches its pull before it
+// naks the frames it published. Naking them while that pull was still subscribed delivered some
+// of them straight back into the pull being given up, where nothing read them and they were lost
+// again; the reviewer measured that at 62cc8055, over ten runs of this shape, as six runs in
+// which the messages came back out of stream order and four in which one arrived as a third
+// delivery. The row above, which holds one message, cannot show it: the message the server
+// happens to deliver first is the only one there is.
+func TestSessionConsumerRelayLosingItsSessionReturnsEveryMessageItHoldsInStreamOrder(t *testing.T) {
+	// The receipt wait is longer than the row, so the relay cannot pause, and so forget the
+	// frames it holds, before the row takes the session away.
+	rig := newRelayRigReceipt(t, relayPauseFirst, relayPauseMax, 60*time.Second)
+	sessionID := "ses_relay_lost_many_" + id.New()
+	// A nil answer leaves the stand-in silent, so every frame stays outstanding and every one of
+	// its messages stays delivered and unacked.
+	standIn := startSessionStandIn(t, rig.url, sessionID, nil)
+	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
+	// held is under the consumer's MaxAckPending (bus.SessionConsumerMaxAckPending, 1024), so the
+	// server delivers every one of them and the relay holds every one as a frame.
+	const held = 200
+	agent := contracts.AgentSubject(sessionID)
+	items := make([]contracts.Envelope, 0, held)
+	stored := make([]uint64, 0, held)
+	for range held {
+		item, seq := rig.storeEvent(t, agent)
+		items = append(items, item)
+		stored = append(stored, seq)
+	}
+	requireFrames(t, standIn.collect(t, held, 30*time.Second), items...)
+	awaitAckState(t, rig.consumers, sessionID, held, 0)
+
+	// The next owner's pull is open before the hand-over, as the second listener's already is
+	// when a session moves to it. That pull request is what the server delivers the naked
+	// messages into, and what the cancelled run's own pull request, left subscribed, used to
+	// take some of them away from.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pull, err := rig.consumers.Pull(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("pull the session's consumer as its next owner: %v", err)
+	}
+	defer pull.Stop()
+	// Losing the machine's durable binding cancels the run that holds the frames
+	// (sessionRelays.stopAll), as a session moving to another listener does through
+	// sessionRelays.apply; both end in the run's one deferred hand-over, which is what this row
+	// exercises.
+	rig.relays.setOwned(false)
+
+	// The 30 s of ctx is a hang guard, not the measurement: the hand-over is one nak per message
+	// on one connection. A message the relay failed to give back arrives only after
+	// bus.SessionConsumerAckWait, which is past this bound.
+	back := make([]uint64, 0, held)
+	seen := make(map[uint64]bool, held)
+	for range held {
+		msg, err := pull.Next(ctx)
+		if err != nil {
+			t.Fatalf("the session's next owner was delivered %d of the %d messages the cancelled relay held, then: %v; the rest were left to wait out bus.SessionConsumerAckWait (%s)",
+				len(back), held, err, bus.SessionConsumerAckWait)
+		}
+		if msg.Delivered != 2 {
+			t.Fatalf("seq %d came back as delivery %d, want its second: a third delivery is the relay naking it into the pull it was giving up, which lost it and left the server to deliver it once more",
+				msg.StreamSeq, msg.Delivered)
+		}
+		if seen[msg.StreamSeq] {
+			t.Fatalf("seq %d came back twice, want each of the %d messages the relay held exactly once", msg.StreamSeq, held)
+		}
+		seen[msg.StreamSeq] = true
+		back = append(back, msg.StreamSeq)
+	}
+	if !slices.Equal(back, stored) {
+		at := 0
+		for at < len(back) && back[at] == stored[at] {
+			at++
+		}
+		t.Fatalf("the messages came back out of stream order: number %d was seq %d, want %d; the whole order was %v",
+			at, back[at], stored[at], back)
+	}
+}
+
 // A session that re-registers through another listener moves to it: the first stops relaying it at
 // once and the second relays it, so each frame comes from exactly one listener, the one the session
 // last registered through. What orders the row is the first listener's own hand-over line, which

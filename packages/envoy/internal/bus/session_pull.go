@@ -51,7 +51,7 @@ const (
 	// to deliver. A pull that hears nothing from the server for twice as long ends with
 	// ErrSessionPullStalled.
 	sessionPullHeartbeat = 15 * time.Second
-	// sessionPullDrainWait and sessionPullDrainPoll bound how long Release waits for the pull's
+	// sessionPullDrainWait and sessionPullDrainPoll bound how long Detach waits for the pull's
 	// inbox subscription to go invalid, which is nats.go having handed over every message it held
 	// unread. A subscription on a local server drains in well under a millisecond, so the wait is
 	// reached only by a connection that is gone, and a run that ends costs it once. The poll is
@@ -88,6 +88,14 @@ type SessionPull struct {
 	heartbeat time.Duration
 	// wake holds a token once receive has queued a message for Next.
 	wake chan struct{}
+	// detachOnce runs the drain of the inbox subscription once and detachErr holds what it ended
+	// with, so that Detach can be called twice -- by a caller that detaches before it naks
+	// messages it holds elsewhere, and by the Release that follows -- and the second call
+	// answers the first's result. A second nats.go drain of an already drained subscription is
+	// an error of its own, which is what makes repeating the drain wrong rather than merely
+	// wasteful.
+	detachOnce sync.Once
+	detachErr  error
 
 	// mu guards queue and heard.
 	mu sync.Mutex
@@ -267,33 +275,74 @@ func (a sessionAck) NakWithDelay(delay time.Duration) error { return a.msg.NakWi
 // A caller that wants them back at once ends the pull with Release instead.
 func (p *SessionPull) Stop() { _ = p.sub.Unsubscribe() }
 
+// Detach takes the pull's interest away without answering anything: the server's next attempt to
+// deliver on the pull request still standing for this pull finds no interest and drops that
+// request. A caller that holds messages of this pull's consumer elsewhere -- a relay holding
+// frames it published -- detaches first, so that naking those does not deliver them straight back
+// into the pull it is giving up, where nothing reads them and they are lost until their ack wait
+// passes. Release detaches by itself, so a caller that only returns what the pull holds needs
+// this not at all.
+//
+// It is idempotent: the drain runs once and every call answers its result.
+func (p *SessionPull) Detach() error {
+	p.detachOnce.Do(func() {
+		// The inbox is drained, not unsubscribed: an unsubscribe drops what nats.go holds
+		// unread, which is what Release returns. A drain hands those messages to receive, which
+		// queues them.
+		if err := p.sub.Drain(); err != nil {
+			p.Stop()
+		}
+		for deadline := time.Now().Add(sessionPullDrainWait); p.sub.IsValid() && time.Now().Before(deadline); {
+			time.Sleep(sessionPullDrainPoll)
+		}
+		if p.sub.IsValid() {
+			// The caller is about to nak messages of this consumer in the belief that no
+			// interest of this pull's is left to take them, so a drain that never finished is
+			// worth a word rather than the silence it used to get.
+			p.detachErr = fmt.Errorf("bus: the inbox subscription of the pull of consumer %q did not drain within %s", p.name, sessionPullDrainWait)
+		}
+	})
+	return p.detachErr
+}
+
 // Release ends the pull and returns to the server, at once, every message it holds that Next did
-// not read, and reports how many it returned. The consumer's next pull is delivered those
-// messages at once rather than after SessionConsumerAckWait, in the server's own order; a restart
-// of the consumer at its ack floor (RestartAtFloor) delivers them in stream order.
-func (p *SessionPull) Release() int {
-	// The inbox is drained, not unsubscribed: an unsubscribe drops what nats.go holds unread,
-	// which is what this returns. A drain hands those messages to receive, which queues them.
-	if err := p.sub.Drain(); err != nil {
-		p.Stop()
-	}
-	for deadline := time.Now().Add(sessionPullDrainWait); p.sub.IsValid() && time.Now().Before(deadline); {
-		time.Sleep(sessionPullDrainPoll)
-	}
+// not read, and reports how many it returned. It detaches the pull (Detach) before it naks any of
+// them, so the server has no interest of this pull's left to deliver them back into. The
+// consumer's next pull is delivered those messages at once rather than after
+// SessionConsumerAckWait, in the server's own order; a restart of the consumer at its ack floor
+// (RestartAtFloor) delivers them in stream order.
+//
+// Its error carries both halves of what can go wrong: the detach, and the naks, as how many of
+// them failed and the first of their errors. Every message is tried whatever the others did.
+func (p *SessionPull) Release() (int, error) {
+	detachErr := p.Detach()
 	p.mu.Lock()
 	queue := p.queue
 	p.queue = nil
 	p.mu.Unlock()
-	returned := 0
+	returned, failed := 0, 0
+	var firstErr error
 	for _, msg := range queue {
 		if status, _ := pullStatus(msg); status != "" {
 			// A pull request's status (408, 409, 503) carries no ack subject: there is nothing to
 			// return to the server.
 			continue
 		}
-		if err := msg.NakWithDelay(0); err == nil {
-			returned++
+		if err := msg.NakWithDelay(0); err != nil {
+			failed++
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
 		}
+		returned++
 	}
-	return returned
+	var nakErr error
+	if failed > 0 {
+		// The naks of one pull fail together -- the connection is closed, or its reconnect
+		// buffer is full -- so they are one error naming the first of them rather than a list of
+		// up to MaxAckPending copies of it.
+		nakErr = fmt.Errorf("bus: the pull of consumer %q could not return %d of the messages it held; the first failed with: %w", p.name, failed, firstErr)
+	}
+	return returned, errors.Join(detachErr, nakErr)
 }
