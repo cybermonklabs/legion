@@ -692,3 +692,94 @@ func TestACompactionAHeldSuspensionStoppedGivesTheClaimBackNothing(t *testing.T)
 		t.Fatalf("the claim holds %+v, want the task %s still owed and unconfirmed", got, owed)
 	}
 }
+
+// restartedMidCompaction is the daemon that stopped while one of its claims was being compacted,
+// and the one its operator started again: the claim is taken, Oh My Pi is still writing the
+// summary (the compaction is held and never let go), and a new machine is built over the store
+// as a restart builds one.
+//
+// What the new machine has of the compaction is nothing. It is memory only (compacting), the
+// claim records only the working the take wrote (compactStart), and the shim carries no event of
+// a compaction either: Oh My Pi answers the `compact` request, and that answer goes to the
+// connection of the daemon that asked (shimwire.Compact). So the restored claim is the shape
+// every other restored working claim is, and its recovery is that shape's: the daemon asks the
+// agent whether the turn an earlier daemon saw start is still running (askTurnOver).
+//
+// The machine the stop left is dropped where it stands, as a stopped daemon's machines are. Its
+// Compact waits on the held connection until the harness's context ends with the test.
+func restartedMidCompaction(t *testing.T) *harness {
+	t.Helper()
+	notices := 0
+	h := ladderStuck(t, &notices)
+	h.conn.HoldCompact()
+	stopped := h.m
+	go func() { _ = stopped.Compact(h.ctx, testCompactInstructions) }()
+	waitForCompacting(t, h)
+
+	h.restart()
+
+	if got := h.store.load(h.token).State; got != StateWorking {
+		t.Fatalf("the restarted daemon reads the claim as %s, want the working the take wrote", got)
+	}
+	if h.m.View().Claim.Compacting {
+		t.Fatal("the restored claim reports itself being compacted, want nothing of the compaction: it was the stopped daemon's memory")
+	}
+	return h
+}
+
+// A daemon that restarts while one of its sessions is being compacted asks that session's agent
+// whether the turn an earlier daemon saw start is still running, and the agent answers that one
+// is. Nothing is sent into it: the claim stays working and the task it owes waits, exactly as it
+// waits for any turn this daemon did not see begin, and the end of that turn gives the claim
+// back and sends it.
+func TestARestartWhileASessionIsBeingCompactedSendsNothingWhileItsAgentIsInATurn(t *testing.T) {
+	h := restartedMidCompaction(t)
+	owed := h.pending().ID
+	h.conn.SetStreaming(true)
+
+	h.connect()
+
+	h.wantState(StateWorking)
+	h.wantPrompts(ladderSends)
+	if got := h.pending(); got.ID != owed || !got.ConfirmedAt.IsZero() {
+		t.Fatalf("the claim holds %+v, want the task %s still owed and unconfirmed", got, owed)
+	}
+
+	// Oh My Pi is done and the turn the agent reported ends.
+	h.mustQuiet(StreamTurnEnd{Claim: h.token})
+
+	h.wantState(StateIdle)
+	prompts := h.wantPrompts(ladderSends + 1)
+	if prompts[ladderSends].DeliveryID != owed {
+		t.Fatalf("the send after that turn carried %q, want the task the claim owed, %q", prompts[ladderSends].DeliveryID, owed)
+	}
+}
+
+// The same restart, and the agent answers that no turn is running — the answer the question can
+// get while Oh My Pi is still writing the summary, since a compaction is not a turn of the agent
+// and the daemon has no second word to ask about one. The restarted daemon ends the turn it was
+// asking about and the owed task goes, into a session that may still be being compacted.
+//
+// That is the recovery compactStart states and the only one a restart can make: no store and no
+// frame tells the new daemon a compaction is in flight (restartedMidCompaction), so the agent's
+// own answer is the whole of what it has to go on, and a daemon that distrusted that answer
+// would hold the claim working with nothing left to end it — the stuck worker this issue is
+// about. What the recovery must not do is lose the task, and it does not: the task stays
+// pending and unconfirmed under the id it was sent as, so a prompt a compaction swallows starts
+// no turn and the sweep that follows sends it again (observe).
+func TestARestartWhileASessionIsBeingCompactedSendsTheOwedTaskWhenItsAgentSaysNoTurnIsRunning(t *testing.T) {
+	h := restartedMidCompaction(t)
+	owed := h.pending().ID
+	h.conn.SetStreaming(false)
+
+	h.connect()
+
+	h.wantState(StateIdle)
+	prompts := h.wantPrompts(ladderSends + 1)
+	if prompts[ladderSends].DeliveryID != owed {
+		t.Fatalf("the send after the restart's question carried %q, want the task the claim owed, %q", prompts[ladderSends].DeliveryID, owed)
+	}
+	if got := h.pending(); got.ID != owed || !got.ConfirmedAt.IsZero() {
+		t.Fatalf("the claim holds %+v, want the task %s kept unconfirmed: a prompt the compaction swallows starts no turn, and the sweep sends it again", got, owed)
+	}
+}
