@@ -657,6 +657,42 @@ func TestSessionConsumerFramesStoredWhileTheOwnerWasDownArriveAfterItsRestart(t 
 	awaitAcked(t, consumers, sessionID, frames[3].seq)
 }
 
+// A relay that loses its session returns the message it holds at once: the listener that takes the
+// session over is delivered it straight away and in stream order, rather than the session waiting
+// out bus.SessionConsumerAckWait (60 s, internal/bus/session_consumers.go) for the server to
+// deliver the message again.
+func TestSessionConsumerRelayLosingItsSessionReturnsTheMessageItHolds(t *testing.T) {
+	// The receipt wait is longer than the row, so the relay cannot pause, and so forget the frame
+	// it holds, before the row takes the session away.
+	rig := newRelayRigReceipt(t, relayPauseFirst, relayPauseMax, 30*time.Second)
+	sessionID := "ses_relay_lost_" + id.New()
+	// A nil answer leaves the stand-in silent, so the frame stays outstanding and its message
+	// stays delivered and unacked.
+	standIn := startSessionStandIn(t, rig.url, sessionID, nil)
+	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
+	stored, seq := rig.storeEvent(t, contracts.AgentSubject(sessionID))
+	requireFrames(t, standIn.collect(t, 1, 5*time.Second), stored)
+	awaitAckState(t, rig.consumers, sessionID, 1, 0)
+
+	// Losing the machine's durable binding cancels the run that holds the message, the same path
+	// (sessionRelays.apply, sessionRelays.stopAll) a session moving to another listener takes. The
+	// cancelled run returns the frame it holds, so the session's next owner -- this pull, which
+	// stands in for the listener the session moved to -- is delivered that message again at once.
+	rig.relays.setOwned(false)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	pull, err := rig.consumers.Pull(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("pull the session's consumer as its next owner: %v", err)
+	}
+	defer pull.Stop()
+	msg, err := pull.Next(ctx)
+	if err != nil || msg.StreamSeq != seq || msg.Delivered != 2 {
+		t.Fatalf("the session's next owner was delivered seq %d (delivery %d), %v; want the message the cancelled relay held, seq %d, again within 5s: the relay left it to wait out bus.SessionConsumerAckWait (%s)",
+			msg.StreamSeq, msg.Delivered, err, seq, bus.SessionConsumerAckWait)
+	}
+}
+
 // A session that re-registers through another listener moves to it: the first stops relaying it at
 // once and the second relays it, so each frame comes from exactly one listener, the one the session
 // last registered through.
