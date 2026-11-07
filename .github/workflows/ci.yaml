@@ -2232,13 +2232,16 @@ jobs:
       # without one (.github/actions/install-uv).
       - uses: ./.github/actions/install-uv
 
-      # The daemon's NATS tests start testnats.Image and, for its grant test, Envoy's HubImage
-      # (packages/envoy/testnatsimages), pulled first for the reason the action gives.
+      # One test of the daemon starts a NATS container: TestDaemonPermissionsOnRealServers, whose
+      # subject is the published server images themselves, over every entry of
+      # packages/envoy/testnatsimages.Images — Envoy's Image and HubImage. Every other NATS test
+      # of the module runs its server in the test process. Pulled first for the reason the action
+      # gives.
       - name: Pull the NATS test container images
         uses: ./.github/actions/pull-test-images
         with:
           consts: |
-            packages/daemon/internal/testnats/nats.go Image
+            packages/envoy/internal/testnats/nats.go Image
             packages/envoy/internal/testnats/nats.go HubImage
 
       # internal/launcher's role-namespace tests start each role generation in unprivileged user,
