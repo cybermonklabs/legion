@@ -244,6 +244,7 @@
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { PICTURE_PLACEHOLDER } from "@legion/contracts";
 import {
   bytesDigest,
   type FileDigest,
@@ -254,7 +255,6 @@ import {
   operandPath,
   uploadIsDocument,
 } from "@legion/envoy-client/askgate-marker";
-import { PICTURE_PLACEHOLDER } from "@legion/contracts";
 import type { DispatchSession } from "../../src/dispatch-session";
 import requestTemplate from "./askgate-request.md" with { type: "text" };
 import systemTemplate from "./askgate-system.md" with { type: "text" };
