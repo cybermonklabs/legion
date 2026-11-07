@@ -28,6 +28,7 @@ var renamedWidgets = ghrepo.MustRename("acme/widgets", "cybermonklabs/widgets")
 // it is not mapped to the project at all.
 func TestARenameConfiguredBeforeTheTransferIsHeardWhileTheServedSetIsUnchanged(t *testing.T) {
 	const unserved = "a configured repository rename names a repository this project does not serve"
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name    string
 		renames ghrepo.Renames
@@ -41,8 +42,9 @@ func TestARenameConfiguredBeforeTheTransferIsHeardWhileTheServedSetIsUnchanged(t
 		{name: "no pair configured", renames: ghrepo.Renames{}, heard: []string{"acme/widgets", "zeta/tools"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			reset(t)
 			logged := &syncBuffer{}
-			w, _, _, stream := mappingRigWith(t, &installations{}, func(w *workflowRuntime) {
+			w, _, _, stream, _ := mappingRigJSOn(t, pool, &installations{}, func(w *workflowRuntime) {
 				w.repositories = newRepositories("LEGION", tc.renames)
 				w.log = slog.New(slog.NewTextHandler(logged, nil))
 			})
@@ -102,6 +104,7 @@ func TestHeardRepositoriesKeepGitHubsSpellingOverThePairs(t *testing.T) {
 	ctx := context.Background()
 	// The pair is written in the deployment's own case, which is neither name as GitHub spells it.
 	pair := ghrepo.MustRenames(ghrepo.MustRename("SJAWHAR/Legion", "CyberMonkLabs/legion"))
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name string
 		// recorded is GitHub's spelling a record of the project keeps, none when "".
@@ -114,7 +117,7 @@ func TestHeardRepositoriesKeepGitHubsSpellingOverThePairs(t *testing.T) {
 			heard: []string{"cybermonklabs/legion", "SJAWHAR/Legion"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			if tc.recorded != "" {
 				if _, err := pool.Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq, repo, default_branch, github_repo)
 					values ('LEGION-1', 'LEGION-1', 'LEGION', 'root', 'implementing', 1, 'in_progress', 'A', 1, $1, 'main', $1)`, tc.recorded); err != nil {

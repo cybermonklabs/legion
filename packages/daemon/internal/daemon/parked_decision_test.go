@@ -37,6 +37,7 @@ import (
 // failed claim on a running tree).
 func TestASpecDecisionNobodyInItsTreeHearsGoesToTheController(t *testing.T) {
 	carried := "a human approved LEGION-9's spec document at version 3, which opens the gate LEGION-1 carried; any READY it refused is released and any child waiting on it starts"
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name    string
 		state   supervise.ClaimState
@@ -53,8 +54,8 @@ func TestASpecDecisionNobodyInItsTreeHearsGoesToTheController(t *testing.T) {
 			{Kind: "carried-gate-opened", Version: 3, Reason: carried, Actor: "user:alice", Ref: "dispatch://LEGION-9/spec"},
 		} {
 			t.Run(tc.name+"/"+string(decision.Kind), func(t *testing.T) {
+				reset(t)
 				ctx := context.Background()
-				pool := isolatedOutboxPool(t)
 				records := record.NewStore()
 				noticeTree(t, pool, records, tc.lingers)
 				sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
@@ -121,6 +122,7 @@ func TestTheMachinerysNoticeToAStoppedTreeWritesNoParkedDecision(t *testing.T) {
 // release before this one queued the notice, which then carries no ref either. The log line names
 // the notice's ref, empty for the old release's notice, which is how A5 tells the two apart.
 func TestASpecDecisionThatNamesNoPersonIsNotRelayed(t *testing.T) {
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name   string
 		notice record.Notice
@@ -130,8 +132,8 @@ func TestASpecDecisionThatNamesNoPersonIsNotRelayed(t *testing.T) {
 		{"the release before this one queued it", record.Notice{Kind: "design-approved", Version: 3}, `ref=""`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			reset(t)
 			ctx := context.Background()
-			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
 			noticeTree(t, pool, records, true)
 			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
@@ -590,6 +592,7 @@ func TestAStartWhoseForgetFailedIsNotDeliveredAgainAfterItsTurn(t *testing.T) {
 // when it finishes undelivered, so the next catch-up names them again.
 func TestOnlyADeliveredCatchUpForgetsTheDecisionsItNamed(t *testing.T) {
 	spec, at := "dispatch://LEGION-1/spec", time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC)
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name      string
 		state     supervise.ClaimState
@@ -600,8 +603,8 @@ func TestOnlyADeliveredCatchUpForgetsTheDecisionsItNamed(t *testing.T) {
 		{"finished undelivered: its architect will not hold its role again", supervise.StateFailed, true, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			reset(t)
 			ctx := context.Background()
-			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
 			noticeTree(t, pool, records, false)
 			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {

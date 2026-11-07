@@ -116,8 +116,14 @@ type podUpdateRig struct {
 
 func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 	t.Helper()
+	return newPodUpdateRigOn(t, isolatedOutboxPool(t), roles...)
+}
+
+// newPodUpdateRigOn is newPodUpdateRig on a database the caller already holds, for a table-driven
+// test whose rows share one clone and empty it between them (tableDatabase).
+func newPodUpdateRigOn(t *testing.T, pool *pgxpool.Pool, roles ...podUpdateRole) *podUpdateRig {
+	t.Helper()
 	ctx := context.Background()
-	pool := isolatedOutboxPool(t)
 	dsn := pool.Config().ConnString()
 	tokens := map[claim.Role]claim.Token{}
 	claims := make([]supervise.Claim, 0, len(roles))
@@ -1296,6 +1302,7 @@ func (r *podGoneAfterTheDriftRead) PodDrift(ctx context.Context, k runtime.Known
 // reading no drift over the pod that replaced it — so the worker comes back on a new session and
 // a new disk, where its launch is what starts it.
 func TestPodUpdateTellsItsWorkerNothingHoweverTheRoundEnds(t *testing.T) {
+	pool, reset := tableDatabase(t)
 	for name, tc := range map[string]struct {
 		roles        []podUpdateRole
 		end          func(*podUpdateRig)
@@ -1316,7 +1323,8 @@ func TestPodUpdateTellsItsWorkerNothingHoweverTheRoundEnds(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			rig := newPodUpdateRig(t, tc.roles...)
+			reset(t)
+			rig := newPodUpdateRigOn(t, pool, tc.roles...)
 			rig.drifts(podUpdateDrift)
 			rig.tick()
 			// Every worker of the pod is in the round before the end under test is driven. The
@@ -1965,6 +1973,7 @@ func TestPodUpdateTellsTheControllerWhenNoClaimRecordsThePod(t *testing.T) {
 // the claude-envoy at LEGION_CLAUDE_PLUGIN_DIR, which its launch reads again. So the relaunch
 // does there what it does for an Oh My Pi pane, and the lane relaunches both workers.
 func TestStalePluginLeavesAClaudeWorkerAloneUnderKubernetesAndRelaunchesItUnderTmux(t *testing.T) {
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		runtimeName string
 		// relaunched is every role the lane started a process for, and left is the role it
@@ -1976,7 +1985,8 @@ func TestStalePluginLeavesAClaudeWorkerAloneUnderKubernetesAndRelaunchesItUnderT
 		{runtimeName: "tmux", relaunched: []claim.Role{claim.RoleImplementer, claim.RoleTester}},
 	} {
 		t.Run(tc.runtimeName, func(t *testing.T) {
-			rig := newPodUpdateRig(t,
+			reset(t)
+			rig := newPodUpdateRigOn(t, pool,
 				podUpdateRole{role: claim.RoleImplementer, state: supervise.StateReady, session: true, inPod: true,
 					contract: supervise.PodUpdateContract - 1},
 				podUpdateRole{role: claim.RoleTester, state: supervise.StateReady, session: true, inPod: true,
@@ -2386,6 +2396,7 @@ func TestPodUpdateReadsAClaimMidRelaunchWithoutWaitingAndCountsItUnanswered(t *t
 func TestPodUpdateTellsNobodyOfARoundWaitingOnlyOnAClaimMidDecision(t *testing.T) {
 	// refusedNotice is what the sweep logs when the store will not take the notice's row.
 	const refusedNotice = "supervise: tell the operator's side that an update round is stalled; telling again at the next sweep"
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name string
 		// answers is whether the tester answers the round, and held whether its machine is
@@ -2400,7 +2411,8 @@ func TestPodUpdateTellsNobodyOfARoundWaitingOnlyOnAClaimMidDecision(t *testing.T
 		{name: "the claim the round waits on has not answered", answers: false, notices: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
+			reset(t)
+			rig := newPodUpdateRigOn(t, pool, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 			rig.drifts(podUpdateDrift)
 			rig.tick()
 			rig.awaitRound(claim.RoleImplementer, podUpdateRound)

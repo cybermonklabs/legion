@@ -46,6 +46,7 @@ func architect() api.SpawnRequest {
 // Everything the daemon refuses on is refused before it touches the store, naming the key the
 // operator has to change: nothing is recorded for a daemon that could never have served.
 func TestRunRefusesAConfigurationItCannotSuperviseUnder(t *testing.T) {
+	pool, reset := tableDatabase(t)
 	for _, testCase := range []struct {
 		name   string
 		change func(*config.Config, *overrides)
@@ -110,7 +111,8 @@ func TestRunRefusesAConfigurationItCannotSuperviseUnder(t *testing.T) {
 		}, "provider_keys.ABSENT_ENV: the secrets command is not on PATH, so ABSENT_KEY cannot be read"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			cfg := testConfig(t)
+			reset(t)
+			cfg := testConfigOn(t, pool.Config().ConnString())
 			o := fakeRuntime(fake.NewRuntime(), &built{})
 			testCase.change(&cfg, &o)
 			want := strings.NewReplacer("{state}", cfg.StateDir, "{seed}", cfg.NatsNkeySeedFile).Replace(testCase.want)
@@ -211,6 +213,7 @@ func TestRunLaunchesWithThePromptInstructionsAndSecretsItWasGiven(t *testing.T) 
 // daemon with none hands none.
 func TestEveryLaunchCarriesTheNatsSeedTheDaemonResolved(t *testing.T) {
 	keySeed, envSeed := testnats.UserSeed(t), testnats.UserSeed(t)
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name    string
 		key     string
@@ -223,7 +226,8 @@ func TestEveryLaunchCarriesTheNatsSeedTheDaemonResolved(t *testing.T) {
 		{"no seed", "", []string{}, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := testConfig(t)
+			reset(t)
+			cfg := testConfigOn(t, pool.Config().ConnString())
 			cfg.NatsNkeySeedFile = tc.key
 			rt := fake.NewRuntime()
 			o := fakeRuntime(rt, &built{})
@@ -588,6 +592,7 @@ func TestRunReadoptsEveryClaimWithALiveLocatorOnRestart(t *testing.T) {
 // ReleaseUncertainLaunch writes the release) and stopped before the relaunch wrote its next
 // generation (LEGION-650).
 func TestRunLaunchesAgainALaunchThePreviousDaemonDidNotFinish(t *testing.T) {
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name  string
 		state supervise.ClaimState
@@ -596,7 +601,8 @@ func TestRunLaunchesAgainALaunchThePreviousDaemonDidNotFinish(t *testing.T) {
 		{name: "stored queued at its generation, released and never relaunched", state: supervise.StateQueued},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := testConfig(t)
+			reset(t)
+			cfg := testConfigOn(t, pool.Config().ConnString())
 			project, _ := claim.ProjectToken(cfg.Project)
 			token, _ := claim.NewToken(project, "LEGION-3", claim.RolePlanner)
 			putClaim(t, cfg, supervise.Claim{

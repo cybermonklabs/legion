@@ -325,12 +325,14 @@ func bootField(t *testing.T, logged, field string) string {
 // testConfig's own port is always 0 — this does, by configuring a nonzero one and checking
 // prepare()'s plan directly, with no listener bound.
 func TestPrepareDerivesTheWorkerStreamAddressFromWorkerStreamPort(t *testing.T) {
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct{ name, bind, advertiseHost string }{
 		{"no advertise_host", "192.0.2.30", ""},
 		{"advertise_host set", "0.0.0.0", "legion-daemon-legsmoke.legion.svc"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := kubernetesConfig(t, "https://127.0.0.1:1")
+			reset(t)
+			cfg := kubernetesConfigOn(t, "https://127.0.0.1:1", pool.Config().ConnString())
 			cfg.EnvoyTokenFile = filepath.Join(t.TempDir(), "envoy-token")
 			if err := os.WriteFile(cfg.EnvoyTokenFile, []byte("envoy-bearer\n"), 0o600); err != nil {
 				t.Fatal(err)
@@ -418,6 +420,7 @@ func TestOpenSupervisionAdvertisesAdvertiseHostNotTheWildcardBind(t *testing.T) 
 // prepare refuses what the cluster would refuse only later: a kubeconfig with no current context
 // when runtime.kubernetes.context names none, or a context the kubeconfig does not have.
 func TestAKubernetesDaemonRefusesAConfigurationTheClusterWouldRefuseLater(t *testing.T) {
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name   string
 		change func(*config.Kubernetes, *testing.T)
@@ -439,7 +442,8 @@ func TestAKubernetesDaemonRefusesAConfigurationTheClusterWouldRefuseLater(t *tes
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := kubernetesConfig(t, "https://127.0.0.1:1")
+			reset(t)
+			cfg := kubernetesConfigOn(t, "https://127.0.0.1:1", pool.Config().ConnString())
 			tc.change(cfg.Runtime.Kubernetes, t)
 			if _, err := prepare(cfg, quietLogger(), overrides{}); err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("prepare = %v, want a refusal containing %q", err, tc.want)
@@ -690,6 +694,7 @@ current-context: legion-daemon
 // or pod variable a launch secret's pointer names (the Envoy bearer's, the NATS nkey seed's) — so
 // no pod is ever built with it.
 func TestAKubernetesDaemonRefusesAnOperatorPodCollidingWithLegionsBeforeItsBoot(t *testing.T) {
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name   string
 		change func(*config.Config)
@@ -744,7 +749,8 @@ func TestAKubernetesDaemonRefusesAnOperatorPodCollidingWithLegionsBeforeItsBoot(
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := kubernetesConfig(t, "https://127.0.0.1:1")
+			reset(t)
+			cfg := kubernetesConfigOn(t, "https://127.0.0.1:1", pool.Config().ConnString())
 			cfg.EnvoyTokenFile = filepath.Join(t.TempDir(), "envoy-token")
 			if err := os.WriteFile(cfg.EnvoyTokenFile, []byte("envoy-bearer\n"), 0o600); err != nil {
 				t.Fatal(err)
@@ -791,6 +797,7 @@ func TestTheOperatorsPodReachesTheSandboxRuntime(t *testing.T) {
 // it is neither.
 func TestTheNatsSeedReachesTheSandboxRuntimeAsTheProvidersSecrets(t *testing.T) {
 	seedFile := testnats.SeedFile(t, testnats.UserSeed(t))
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name string
 		key  string
@@ -803,7 +810,8 @@ func TestTheNatsSeedReachesTheSandboxRuntimeAsTheProvidersSecrets(t *testing.T) 
 		{"no seed", "", nil, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := kubernetesConfig(t, "https://127.0.0.1:1")
+			reset(t)
+			cfg := kubernetesConfigOn(t, "https://127.0.0.1:1", pool.Config().ConnString())
 			cfg.NatsNkeySeedFile = tc.key
 			opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", "", lookup(tc.env), quietLogger())
 			if err != nil {

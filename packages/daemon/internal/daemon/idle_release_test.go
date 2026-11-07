@@ -113,8 +113,14 @@ type idleRig struct {
 
 func newIdleRig(t *testing.T) *idleRig {
 	t.Helper()
+	return newIdleRigOn(t, isolatedOutboxPool(t))
+}
+
+// newIdleRigOn is newIdleRig on a database the caller already holds, for a table-driven test
+// whose rows share one clone and empty it between them (tableDatabase).
+func newIdleRigOn(t *testing.T, pool *pgxpool.Pool) *idleRig {
+	t.Helper()
 	ctx := context.Background()
-	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 		Project: "LEGION", Tree: "LEGION-208", Title: "root", Phase: phase.Implementing, Generation: 1,
@@ -479,6 +485,7 @@ func TestAnIdleIssuesPodIsReleasedWithItsClaimsKeepingTheirPhaseAndTask(t *testi
 // pod, nothing is suspended, no Sandbox is torn down and the bundle the save stored goes with
 // the release, since the pod keeps that work in its own workspace.
 func TestADeliveryThePodIsGivenAroundTheMarkCancelsTheRelease(t *testing.T) {
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name   string
 		before bool
@@ -487,7 +494,8 @@ func TestADeliveryThePodIsGivenAroundTheMarkCancelsTheRelease(t *testing.T) {
 		{name: "queued above them", before: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			rig := newIdleRig(t)
+			reset(t)
+			rig := newIdleRigOn(t, pool)
 			ctx := context.Background()
 			rig.w.releaseIdlePods(ctx)
 			boundary := rig.boundary(t)
@@ -641,6 +649,7 @@ func TestATurnStartedAfterTheMarkCancelsTheRelease(t *testing.T) {
 // resumed into it, and no Sandbox is torn down. The work a role has not pushed is kept at the
 // cost of a pod, never dropped to save one.
 func TestABundleTheReleaseCannotSaveStopsItAndResumesTheClaims(t *testing.T) {
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name   string
 		bundle runtime.WorkspaceBundle
@@ -650,7 +659,8 @@ func TestABundleTheReleaseCannotSaveStopsItAndResumesTheClaims(t *testing.T) {
 		{name: "the bundle is over the bound", bundle: runtime.WorkspaceBundle{Bundle: make([]byte, runtime.MaxWorkspaceBundleBytes+1)}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			rig := newIdleRig(t)
+			reset(t)
+			rig := newIdleRigOn(t, pool)
 			ctx := context.Background()
 			rig.rt.bundle, rig.rt.bundleErr = tc.bundle, tc.err
 

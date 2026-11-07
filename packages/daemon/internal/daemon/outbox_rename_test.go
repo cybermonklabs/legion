@@ -149,6 +149,7 @@ func (g *renameGitHub) assertAddressed(t *testing.T, repo string) {
 // redirect. With no pair configured the same record is minted for and addressed at
 // sjawhar/legion, as it always was.
 func TestAREADYMergeOfATreeRecordedBeforeItsTransferAddressesTheRepositoryGitHubServes(t *testing.T) {
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name    string
 		renames ghrepo.Renames
@@ -159,6 +160,7 @@ func TestAREADYMergeOfATreeRecordedBeforeItsTransferAddressesTheRepositoryGitHub
 		{name: "no pair configured", served: "sjawhar/legion", want: "sjawhar/legion"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			reset(t)
 			merges := 0
 			var mu sync.Mutex
 			github := newRenameGitHub(t, func(body string) string {
@@ -170,7 +172,6 @@ func TestAREADYMergeOfATreeRecordedBeforeItsTransferAddressesTheRepositoryGitHub
 				}
 				return pullJSON("OPEN", "ready-head", "CLEAN")
 			})
-			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
 			seedTransferredREADY(t, pool, records)
 			runner := renameOutbox(t, pool, records, github.url, tc.served, tc.renames)
@@ -192,6 +193,7 @@ func TestAREADYMergeOfATreeRecordedBeforeItsTransferAddressesTheRepositoryGitHub
 // A disarm of the same tree's pull request reads and writes the same repository: readyMerge and
 // autoMergeDisable share the one client (graphQL), so both follow the transfer together.
 func TestAnAutoMergeDisableOfATreeRecordedBeforeItsTransferAddressesTheRepositoryGitHubServes(t *testing.T) {
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name    string
 		renames ghrepo.Renames
@@ -202,6 +204,7 @@ func TestAnAutoMergeDisableOfATreeRecordedBeforeItsTransferAddressesTheRepositor
 		{name: "no pair configured", served: "sjawhar/legion", want: "sjawhar/legion"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			reset(t)
 			var mu sync.Mutex
 			disables := 0
 			github := newRenameGitHub(t, func(body string) string {
@@ -213,7 +216,6 @@ func TestAnAutoMergeDisableOfATreeRecordedBeforeItsTransferAddressesTheRepositor
 				}
 				return armedPullJSON("other-head", disables == 0)
 			})
-			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
 			seedTransferredREADY(t, pool, records)
 			runner := renameOutbox(t, pool, records, github.url, tc.served, tc.renames)

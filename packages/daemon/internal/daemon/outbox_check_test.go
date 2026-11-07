@@ -139,6 +139,7 @@ func TestACheckStartResumesTheSuspendedImplementerUnderALingeringRoot(t *testing
 // no start is recorded against it.
 func TestACheckStartFinishesWithoutActingWhenItsLookIsNotOpen(t *testing.T) {
 	closed := time.Now()
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name  string
 		check func(record.ProductionCheck) record.ProductionCheck
@@ -151,7 +152,7 @@ func TestACheckStartFinishesWithoutActingWhenItsLookIsNotOpen(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			records := record.NewStore()
 			root := checkRoot()
 			putOutboxIssue(t, pool, records, root)
@@ -323,6 +324,7 @@ func TestCheckLookAndCheckBoundRowsApplyTheirFacts(t *testing.T) {
 // later merge replaced (its OpenedAt another than the issue's check's) each finish without acting:
 // the look they would end is not the issue's check's.
 func TestACheckLookRowOfNoCheckOrAReplacedOneAppliesNothing(t *testing.T) {
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name     string
 		recorded bool
@@ -334,7 +336,7 @@ func TestACheckLookRowOfNoCheckOrAReplacedOneAppliesNothing(t *testing.T) {
 		{name: "a replaced check", recorded: true, replaced: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			records := record.NewStore()
 			root := checkRoot()
 			putOutboxIssue(t, pool, records, root)
@@ -414,6 +416,7 @@ func TestACheckLookRowOfALaterCheckEndsThatChecksLook(t *testing.T) {
 // than on its backoff; a moment already past is the backoff's.
 func TestSettleRunsARowAgainAtTheMomentItsWaitNames(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Microsecond)
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name string
 		at   time.Time
@@ -423,7 +426,7 @@ func TestSettleRunsARowAgainAtTheMomentItsWaitNames(t *testing.T) {
 		{name: "a moment past", at: now.Add(-time.Minute), want: now.Add(time.Second)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := isolatedOutboxPool(t)
+			reset(t)
 			records := record.NewStore()
 			enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208", record.LingerClose{Generation: 1}, now))
 			waiting := &outboxFactHandler{err: wait.Until(tc.at, "tree LEGION-208 lingers past its deadline; member LEGION-209's production check is open")}

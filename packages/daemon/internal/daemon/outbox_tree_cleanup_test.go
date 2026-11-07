@@ -35,6 +35,7 @@ import (
 // they would leave the claims running, the reservation unconfirmed, and the tree waiting for
 // admission forever.
 func TestAReservedTreeCloseFinishesItsCleanupAfterReadmission(t *testing.T) {
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name           string
 		withChild      bool
@@ -44,8 +45,8 @@ func TestAReservedTreeCloseFinishesItsCleanupAfterReadmission(t *testing.T) {
 		{name: "cleanup delete fails transiently", deleteFailures: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			reset(t)
 			ctx := context.Background()
-			pool := isolatedOutboxPool(t)
 			st, err := store.Open(ctx, pool.Config().ConnString())
 			if err != nil {
 				t.Fatalf("open the store: %v", err)
@@ -167,13 +168,14 @@ func TestAReservedTreeCloseFinishesItsCleanupAfterReadmission(t *testing.T) {
 // runtime, which provisions each issue's workspace in a pod, it is in the session database the
 // deployment's session_store names, which every tree's pods read.
 func TestAnOrphansClaimsLeaveTheirOldTreeAndStartInTheirOwn(t *testing.T) {
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name  string
 		inPod bool
 	}{{"tmux", false}, {"a runtime that provisions each issue's workspace in its pod", true}} {
 		t.Run(tc.name, func(t *testing.T) {
+			reset(t)
 			ctx := context.Background()
-			pool := isolatedOutboxPool(t)
 			st := outboxTreeStore(t, pool, "LEGION-208")
 			records := record.NewStore()
 			until := time.Now().Add(-time.Minute)

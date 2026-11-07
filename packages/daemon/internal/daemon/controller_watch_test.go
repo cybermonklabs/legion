@@ -119,6 +119,7 @@ func envoyRoleRegistry(t *testing.T, session string, alive bool) (*httptest.Serv
 // alive. The line names the mode.
 func TestTheDaemonSaysWhenNoControllerIsRegistered(t *testing.T) {
 	const session = "ses_controller"
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name     string
 		register bool
@@ -130,7 +131,8 @@ func TestTheDaemonSaysWhenNoControllerIsRegistered(t *testing.T) {
 		{"the role has no live holder", true, false, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := testConfig(t)
+			reset(t)
+			cfg := testConfigOn(t, pool.Config().ConnString())
 			envoy, lookups := envoyRoleRegistry(t, session, tc.alive)
 			cfg.EnvoyURL = envoy.URL
 			project, err := claim.ProjectToken(cfg.Project)
@@ -197,6 +199,7 @@ func checkDaemonModeLine(t *testing.T, line map[string]any) {
 // not reported, neither the session recorded before its launch registers nor the launch once it has.
 func TestTheDaemonSaysWhenItsOwnControllerIsNotRegistered(t *testing.T) {
 	const session = "ses_controller"
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name string
 		// recorded is session registered before this boot, as a launch an earlier boot ran leaves
@@ -214,7 +217,8 @@ func TestTheDaemonSaysWhenItsOwnControllerIsNotRegistered(t *testing.T) {
 		{name: "its launch registered and holds the role", recorded: true, alive: true, register: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := testConfig(t)
+			reset(t)
+			cfg := testConfigOn(t, pool.Config().ConnString())
 			cfg.ControllerLaunch = config.ControllerLaunchDaemon
 			envoy, lookups := envoyRoleRegistry(t, session, tc.alive)
 			cfg.EnvoyURL = envoy.URL

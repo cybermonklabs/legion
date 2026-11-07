@@ -52,8 +52,10 @@ func TestTheWorkflowConnectsAsTheNatsSeedTheDaemonResolved(t *testing.T) {
 		t.Fatalf("create notification stream: %v", err)
 	}
 
+	pool, reset := tableDatabase(t)
 	t.Run("with the seed", func(t *testing.T) {
-		cfg := workflowConfig(t, url)
+		reset(t)
+		cfg := workflowConfigOn(t, url, pool.Config().ConnString())
 		cfg.NatsNkeySeedFile = testnats.SeedFile(t, seed+"\n")
 		tokens, _ := appTokens(t, func(w http.ResponseWriter, _ *http.Request, _ string, _ int) { installed(w) })
 		if err := bootsOrExits(t, cfg, tokens, 60*time.Second); err != nil {
@@ -61,7 +63,8 @@ func TestTheWorkflowConnectsAsTheNatsSeedTheDaemonResolved(t *testing.T) {
 		}
 	})
 	t.Run("without one", func(t *testing.T) {
-		cfg := workflowConfig(t, url)
+		reset(t)
+		cfg := workflowConfigOn(t, url, pool.Config().ConnString())
 		tokens, _ := appTokens(t, func(w http.ResponseWriter, _ *http.Request, _ string, _ int) { installed(w) })
 		err := bootsOrExits(t, cfg, tokens, 60*time.Second)
 		if err == nil || !strings.Contains(strings.ToLower(err.Error()), "authorization violation") {
@@ -96,8 +99,10 @@ func TestTheWorkflowConnectsAsTheDaemonSeedOverThePaneSeed(t *testing.T) {
 		t.Fatalf("create notification stream: %v", err)
 	}
 
+	pool, reset := tableDatabase(t)
 	t.Run("with both seeds", func(t *testing.T) {
-		cfg := workflowConfig(t, url)
+		reset(t)
+		cfg := workflowConfigOn(t, url, pool.Config().ConnString())
 		cfg.NatsNkeySeedFile = testnats.SeedFile(t, paneSeed+"\n")
 		cfg.NatsDaemonNkeySeedFile = testnats.SeedFile(t, daemonSeed+"\n")
 		var out syncBuffer
@@ -117,7 +122,8 @@ func TestTheWorkflowConnectsAsTheDaemonSeedOverThePaneSeed(t *testing.T) {
 		}
 	})
 	t.Run("with the pane seed alone", func(t *testing.T) {
-		cfg := workflowConfig(t, url)
+		reset(t)
+		cfg := workflowConfigOn(t, url, pool.Config().ConnString())
 		cfg.NatsNkeySeedFile = testnats.SeedFile(t, paneSeed+"\n")
 		var out syncBuffer
 		tokens, _ := appTokens(t, func(w http.ResponseWriter, _ *http.Request, _ string, _ int) { installed(w) })
@@ -168,6 +174,7 @@ func TestChooseNATSConnectionNamesTheUserTheDaemonConnectsAs(t *testing.T) {
 // variable, and no other field of the spec.
 func TestNoLaunchCarriesTheDaemonSeed(t *testing.T) {
 	daemonSeed, paneSeed := testnats.UserSeed(t), testnats.UserSeed(t)
+	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name    string
 		key     string
@@ -178,7 +185,8 @@ func TestNoLaunchCarriesTheDaemonSeed(t *testing.T) {
 		{"NATS_DAEMON_NKEY_SEED", "", []string{"NATS_DAEMON_NKEY_SEED=" + daemonSeed}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := testConfig(t)
+			reset(t)
+			cfg := testConfigOn(t, pool.Config().ConnString())
 			cfg.NatsNkeySeedFile = testnats.SeedFile(t, paneSeed)
 			cfg.NatsDaemonNkeySeedFile = tc.key
 			rt := fake.NewRuntime()
