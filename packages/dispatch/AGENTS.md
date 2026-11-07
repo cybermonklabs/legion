@@ -2099,7 +2099,9 @@ all where the browser kept nothing, so no record names a file that is not there;
 committed, or that `keepOnly` swept a day later. The row delays the engine's own open of that
 database a second (`page.addInitScript` on `dispatch-kept-files` alone) so that both windows the
 product closes - the one at the press and the one at the Retry - are held open in every run,
-rather than a 3.3 ms race the suite would meet once a week.
+rather than a 3.3 ms race the suite meets at random - once in the five `merge_group` runs of the
+afternoon the row arrived. The row counts the opens it delayed and asserts that count, since a
+hook that silently stopped delaying would leave the row passing with the product reverted.
 CI installs WebKit beside Chromium for them (`bun run e2e:install` does the same locally).
 
 The `webkit` and `firefox` projects run six rows of `e2e/deep-links.e2e.ts`, tagged for two

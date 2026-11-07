@@ -741,11 +741,21 @@ test("a retried upload survives a reload with its file @webkit @firefox", async 
     // (`Writes.run`) and the one at the Retry (`Writes.retry`). The delay is paid by each of
     // the three loads, and by the resumed read after the last of them, which the 10 s bound
     // below absorbs; the row runs in about 19 s against Playwright's 30 s default.
+    //
+    // What the hook needs to be true is not in this file: that `kept-files.ts` opens the
+    // database by that name and sets its handler by assignment. Either could change and the
+    // hook would then delay nothing, the window would be 3.3 ms again, and this row would pass
+    // with the product reverted. So the page counts the opens it delayed and the row asserts
+    // that count below, at the press and across the Retry: a selector that cannot fail is no
+    // guard (`packages/dispatch/AGENTS.md`, "Two rules keep an assertion honest").
     await page.addInitScript(() => {
+      let count = 0;
+      Object.defineProperty(window, "keptFilesOpensDelayed", { get: () => count });
       const open = IDBFactory.prototype.open;
       IDBFactory.prototype.open = function delayed(name: string, version?: number) {
         const request = open.call(this, name, version);
         if (name !== "dispatch-kept-files") return request;
+        count += 1;
         // The page's handler is taken off the request and called a second after the browser
         // opened the database, so the page waits where it would have gone on.
         // `Event` here is this file's Dispatch event, so the handler's type is read off
@@ -764,6 +774,9 @@ test("a retried upload survives a reload with its file @webkit @firefox", async 
         return request;
       };
     });
+    /** How many opens of the kept-files database this load has delayed. */
+    const delayedOpens = async (): Promise<number> =>
+      await page.evaluate(() => Number(Reflect.get(window, "keptFilesOpensDelayed") ?? -1));
     // A multipart body is no JSON, so the row keeps each attempt's key alone. The listener is the
     // page's, so it keeps counting across the reloads.
     const keys: (string | undefined)[] = [];
@@ -798,6 +811,9 @@ test("a retried upload survives a reload with its file @webkit @firefox", async 
     const indicator = pendingWrites(page);
     await expect(indicator.getByRole("status")).toHaveText("Saving 1 change…");
     await expect.poll(() => keys.length).toBe(1);
+    // The press's own window was held open: the hook saw this load's upload open the
+    // kept-files database. With the hook lapsed this reads 0 and the row stops here.
+    expect(await delayedOpens()).toBeGreaterThan(0);
 
     // The held attempt leaves the write out and kept, so the reloaded page makes it again on its
     // own - and this time Dispatch's verdict refuses it, in the indicator, with Retry.
@@ -810,10 +826,13 @@ test("a retried upload survives a reload with its file @webkit @firefox", async 
 
     // The Retry is the person's new write under a key of its own, and the kept file moves to it.
     answers = "hold";
+    const beforeRetry = await delayedOpens();
     await indicator.getByRole("button", { exact: true, name: "Retry" }).click();
     await expect.poll(() => keys.length).toBe(3);
     expect(keys[2]).toEqual(expect.any(String));
     expect(keys[2]).not.toBe(refused);
+    // And the Retry's own window with it: the put under the new key opened the database again.
+    expect(await delayedOpens()).toBeGreaterThan(beforeRetry);
 
     // The reload comes before that attempt lands: what goes out after it is the resumed write,
     // made from the file the Retry moved.
