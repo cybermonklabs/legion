@@ -998,7 +998,7 @@ describe("readSessionAnswers", () => {
     // own 5-minute back-off is its answer to a release rolling out, so no request waits out
     // attempts of a route this Dispatch has not got. No fake clock and no fake sleep here.
     const dispatch = dispatchAt();
-    const { calls, fetchImpl } = fakeDispatch(noRoute);
+    const { calls, fetchImpl } = fakeDispatchFetch({ handler: noRoute });
     const startedAt = Date.now();
     const read = await readSessionAnswers({
       session: newSession(),
