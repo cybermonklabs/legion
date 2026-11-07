@@ -1329,12 +1329,24 @@ async function settle(): Promise<void> {
 
 // Polls `condition` between event-loop turns. Only the resubscribe path waits on a real timer
 // (`ENVOY_RESUBSCRIBE_DELAY_MS`, 10 ms in these tests), which no fake clock reaches, and a busy
-// machine runs it later than any fixed sleep allows; the deadline is measured on the monotonic
+// machine runs it later than any fixed sleep allows; the wait is measured on the monotonic
 // clock, which `setSystemTime` leaves alone.
+// The deadline is a hang guard rather than a budget: what can hang here is a condition no
+// listener, relay or resubscribe path ever makes true, which would spin this loop forever.
+// 60_000 sits above every per-test limit in this file except the live-stack rows' 120_000, so a
+// stuck row reddens at the runner's limit, which names the test, and never here. The warning at
+// 2_000 keeps the diagnosis the old deadline gave — once per call, not once per poll — while the
+// polling goes on.
 async function until(condition: () => boolean, what: string): Promise<void> {
-  const deadline = performance.now() + 2_000;
+  const start = performance.now();
+  let warned = false;
   while (!condition()) {
-    if (performance.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    const waited = performance.now() - start;
+    if (waited > 60_000) throw new Error(`timed out waiting for ${what}`);
+    if (!warned && waited > 2_000) {
+      warned = true;
+      console.warn(`still waiting for ${what} after 2 s`);
+    }
     await settle();
   }
 }
@@ -4309,7 +4321,10 @@ console.log(JSON.stringify(args));
         const idle = new Date(Date.now() - MARKER_MAX_AGE_MS - 60_000);
         utimesSync(store, idle, idle);
         jest.advanceTimersByTime(STORE_BEAT_MS);
-        expect(Date.now() - statSync(store).mtimeMs).toBeLessThan(STORE_BEAT_MS);
+        // The row's subject is the touch: the beat left an mtime newer than the deliberately old
+        // one set two lines above. The old form compared `Date.now()` — bun's fake clock, this
+        // row runs under `jest.useFakeTimers()` — with the real filesystem's mtime: two clocks.
+        expect(statSync(store).mtimeMs).toBeGreaterThan(idle.getTime());
         rmSync(store, { recursive: true });
         jest.advanceTimersByTime(STORE_BEAT_MS);
         expect(statSync(join(store, "markers")).isDirectory()).toBe(true);
@@ -10704,18 +10719,20 @@ console.log(JSON.stringify(args));
         setInterval: (callback) => intervals.push(callback),
       };
       /**
-       * Ticks until the listener has accepted one more registration, and answers with the count it
-       * reached. A tick that lands inside the refresh interval posts nothing, so the row ticks
+       * Ticks until the listener has accepted one more registration, and answers with the count
+       * it reached. A tick that lands inside the refresh interval posts nothing, so the row ticks
        * again after a grace instead of deciding on one tick, and a refresh is awaited where it
-       * shows — at the listener. The deadline only a stopped refresh reaches leaves the count as
-       * it was, so the caller's own assertion says what was missing.
+       * shows — at the listener. It polls until the count moves: a refresh that never resumes is
+       * left to the row's own limit, which names the test, rather than decided on a deadline
+       * here, which would hand the caller a stale count and say nothing about why.
        */
       const refreshed = async (): Promise<number> => {
         const seen = registrations;
-        const until = Date.now() + 5_000;
-        while (registrations === seen && Date.now() < until) {
+        while (registrations === seen) {
           const waiting = Promise.withResolvers<void>();
           accepted = () => waiting.resolve();
+          // The tick's own pacing, not a bound on the row: a tick inside the refresh interval
+          // posts nothing, so this hands the loop on to the next tick.
           const grace = setTimeout(() => waiting.resolve(), 250);
           intervals[0]?.();
           await waiting.promise;
@@ -19723,6 +19740,11 @@ for (const listenerGrant of ["current", "before-session-consumers"] as const) {
 
       // The session runs on nats.js's real ping and dial timers and a real listener, so each wait
       // polls the real clock until its condition holds or its deadline passes.
+      // These deadlines stay, unlike the rest of the file's: they are hang guards against a live
+      // NATS server that never answers, and they cannot decide a healthy run. The 30_000 passed
+      // below — and the shorter ones `runFreezeScenario` passes — sit inside the two rows' own
+      // 120_000 limits and inside the `envoy-session-stall` CI job's `timeout-minutes: 15`, and
+      // these rows run only under `LEGION_E2E_ENVOY_STACK=1`.
       async function waitFor(
         condition: () => boolean | Promise<boolean>,
         deadline: number,
@@ -19893,8 +19915,7 @@ describe("a body an event carried only in part", () => {
     if (control === undefined) throw new Error("the issue topic was not subscribed");
 
     control.push(cutCommentEnvelope(topic, omitted));
-    const deadline = Date.now() + 5_000;
-    while (fixture.deliveries.length === 0 && Date.now() < deadline) {
+    while (fixture.deliveries.length === 0) {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
     const card = fixture.deliveries[0]?.content;
@@ -19918,7 +19939,9 @@ describe("a body an event carried only in part", () => {
     // blank lines (one quoted scalar), and no note, because nothing is missing.
     expect(card).toContain(`body: ${JSON.stringify(WHOLE)}`);
     expect(card).not.toContain("first part only");
-  });
+    // A hang guard rather than a budget: what can hang here is a card that is never delivered
+    // for the pushed comment event.
+  }, 30_000);
 
   test("keeps the part it carried, and the note, when that read fails", async () => {
     const card = await cardForCutComment("cut-comment-read-fails", (path) =>
@@ -19932,7 +19955,9 @@ describe("a body an event carried only in part", () => {
     expect(card).toContain(
       `the body is its first part only; read it whole with GET /api/v1/comments/${CUT_COMMENT}`
     );
-  });
+    // A hang guard rather than a budget: what can hang here is a card that is never delivered
+    // for the pushed comment event.
+  }, 30_000);
 
   test("is prompted with that body for a stand-in the bus left with no body at all", async () => {
     const reads: string[] = [];
@@ -19952,7 +19977,9 @@ describe("a body an event carried only in part", () => {
     expect(reads).toEqual([`/api/v1/comments/${CUT_COMMENT}`]);
     expect(card).toContain(`body: ${JSON.stringify(WHOLE)}`);
     expect(card).not.toContain("too large for the bus");
-  });
+    // A hang guard rather than a budget: what can hang here is a card that is never delivered
+    // for the pushed comment event.
+  }, 30_000);
 
   test("gives the note for a stand-in whose read fails, having no body to keep", async () => {
     const card = await cardForCutComment(
@@ -19968,5 +19995,7 @@ describe("a body an event carried only in part", () => {
     expect(card).toContain(
       `this event carries no body: it was too large for the bus; read it whole with GET /api/v1/comments/${CUT_COMMENT}`
     );
-  });
+    // A hang guard rather than a budget: what can hang here is a card that is never delivered
+    // for the pushed comment event.
+  }, 30_000);
 });
