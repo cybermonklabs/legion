@@ -6,8 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"go/parser"
-	"go/token"
 	"io"
 	"os"
 	"path/filepath"
@@ -111,43 +109,6 @@ func canonicalRecordJSON(raw []byte) ([]byte, error) {
 		return nil, err
 	}
 	return bytes.TrimSuffix(encoded.Bytes(), []byte("\n")), nil
-}
-
-// TestProductionImportsArePure protects the pure decision package from gaining transport, clock,
-// database, or workflow dependencies.
-func TestProductionImportsArePure(t *testing.T) {
-	packageDirectory := sourceDirectory(t)
-	files, err := filepath.Glob(filepath.Join(packageDirectory, "*.go"))
-	if err != nil {
-		t.Fatalf("list package files: %v", err)
-	}
-	imports := map[string]bool{}
-	fileSet := token.NewFileSet()
-	for _, path := range files {
-		if strings.HasSuffix(path, "_test.go") {
-			continue
-		}
-		file, err := parser.ParseFile(fileSet, path, nil, parser.ImportsOnly)
-		if err != nil {
-			t.Fatalf("parse imports in %s: %v", path, err)
-		}
-		for _, importSpec := range file.Imports {
-			imports[strings.Trim(importSpec.Path.Value, `\"`)] = true
-		}
-	}
-	allowed := map[string]bool{
-		"sort": true,
-		"time": true,
-		"github.com/sjawhar/legion/daemon/internal/record": true,
-	}
-	for imported := range imports {
-		if !allowed[imported] {
-			t.Errorf("production package imports %q; classifiers must be pure", imported)
-		}
-	}
-	if !imports["time"] || !imports["github.com/sjawhar/legion/daemon/internal/record"] {
-		t.Error("production package must retain its record and time contracts")
-	}
 }
 
 func fixtureFiles(t *testing.T) []string {

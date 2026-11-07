@@ -1,8 +1,9 @@
-package main
+package textcheck
 
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -15,7 +16,7 @@ import (
 // loadgen is reached as `stack.sh loadgen ...` or as "$LOADTEST_ROOT/bin/loadgen".
 func TestREADMEBashCommandsRunAsWritten(t *testing.T) {
 	const scriptDir = "packages/envoy/loadtest/"
-	b, err := os.ReadFile("README.md")
+	b, err := os.ReadFile(filepath.Join("..", "..", "loadtest", "README.md"))
 	if err != nil {
 		t.Fatal(err)
 	}

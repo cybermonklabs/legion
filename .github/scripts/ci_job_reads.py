@@ -287,7 +287,7 @@ RULES = {
         (f"{FIX}/capability-redaction.json", "internal/capabilities/capabilities_test.go:236 readFixture"),
         (f"{FIX}/capability-redaction-plugin-report.json", "internal/capabilities/capabilities_test.go:236 readFixture")),
     f"{DAEMON}/internal/claim/claim_test.go": reads((f"{FIX}/project-tokens.json", "internal/claim/claim_test.go:196")),
-    f"{DAEMON}/internal/classify/fixtures_test.go": reads((f"{FIX}/classification/**", "internal/classify/fixtures_test.go:179 (runtime.Caller :184)")),
+    f"{DAEMON}/internal/classify/fixtures_test.go": reads((f"{FIX}/classification/**", "internal/classify/fixtures_test.go:140 (runtime.Caller :145)")),
     f"{DAEMON}/internal/config/controller_test.go": reads(("deploy/kubernetes/daemon/controller.yaml.example", "internal/config/controller_test.go:179 (config.ControllerConfigExample)")),
     f"{DAEMON}/internal/config/kubernetes_test.go": reads(("deploy/kubernetes/operator-route/pod.yml", "internal/config/kubernetes_test.go:1322")),
     f"{DAEMON}/internal/daemon/agentmodels_omp_test.go": reads(
@@ -322,8 +322,15 @@ RULES = {
         Read(f"{DAEMON}/cmd/legion/testdata/gh-help/**", "internal/runtime/tmux/tmux_real_test.go:1822")],
     f"{DAEMON}/internal/stream/integration_test.go": [legion_build("internal/stream/integration_test.go:130 go build .../daemon/cmd/legion")],
     f"{DAEMON}/internal/runtime/workerbin/workerbin_test.go": reads((f"{DAEMON}/docker/gh", "internal/runtime/workerbin/workerbin_test.go:58")),
-    f"{DAEMON}/internal/testpg/file_copy_test.go": reads(
-        (f"{DAEMON}/**", "internal/testpg/file_copy_test.go:22 walks every .go file under packages/daemon (../..)")),
+    f"{DAEMON}/internal/textcheck/design_approved_wake_test.go": reads(
+        ("skills/legion-architect/SKILL.md", "internal/textcheck/design_approved_wake_test.go:19-26 reads it under ../../../.."),
+        ("skills/legion-architect/references/design-gate.md", "internal/textcheck/design_approved_wake_test.go:19-26 reads it under ../../../.."),
+        ("skills/legion-architect/references/wake-routing.md", "internal/textcheck/design_approved_wake_test.go:19-26 reads it under ../../../.."),
+        (f"{DAEMON}/internal/prompts/roles/architect-root.md", "internal/textcheck/design_approved_wake_test.go:19-26 reads it under ../../../..")),
+    f"{DAEMON}/internal/textcheck/file_copy_test.go": reads(
+        (f"{DAEMON}/**", "internal/textcheck/file_copy_test.go:22 walks every .go file under packages/daemon (../..)")),
+    f"{DAEMON}/internal/textcheck/production_imports_test.go": reads(
+        (f"{DAEMON}/internal/classify/*", "internal/textcheck/production_imports_test.go:14-15 globs ../classify/*.go")),
     # --- envoy
     f"{ENVOY}/cmd/broker-refgen/auth_test.go": [
         Read(f"{ENVOY}/{d}/*", "cmd/broker-refgen/auth_test.go:14 readAPI(repo root) parses it") for d in BROKER_REFGEN_DIRS],
@@ -335,9 +342,6 @@ RULES = {
     # cmd/dispatch/memory_profile_test.go:147-148 reads four guides only when
     # DISPATCH_EDIT_PROFILE_OUT is set (line 125), which CI never sets: not a CI read.
     f"{ENVOY}/cmd/dispatch/pod_grace_period_test.go": reads((f"{INFRA}/gcp/testdata/dispatch-pod.golden", "cmd/dispatch/pod_grace_period_test.go:17")),
-    f"{ENVOY}/cmd/dispatch/settings_test.go": reads(
-        (f"{ENVOY}/cmd/dispatch/**", "cmd/dispatch/settings_test.go's environmentReads walks .go files"),
-        (f"{ENVOY}/internal/dispatch/**", "cmd/dispatch/settings_test.go's environmentReads walks .go files")),
     f"{ENVOY}/cmd/listener/api_test.go": reads((f"{FIX}/dispatch-targeted-delivery.json", "cmd/listener/api_test.go:191,436,480")),
     f"{ENVOY}/internal/broker/config/config_test.go": reads((f"{ENVOY}/docker/rds-global-bundle.pem", "internal/broker/config/config_test.go:573")),
     f"{ENVOY}/internal/broker/oauth/claims_doc_test.go": reads(("docs/kubernetes.md", "internal/broker/oauth/claims_doc_test.go:161")),
@@ -376,16 +380,23 @@ RULES = {
         run(ENVOY, ["./..."], "internal/testnats/nats_test.go:708-709 go list -f ... ./... in packages/envoy", mode="build"),
         *[Read(g, "internal/testnats/nats_test.go:741-747 walks every .go file under packages/envoy but infra, node_modules, testdata")
           for g in envoy_top_level_but_infra()]],
-    f"{ENVOY}/internal/testpg/file_copy_test.go": reads(
-        (f"{ENVOY}/**", "internal/testpg/file_copy_test.go:22 walks every .go file under packages/envoy (../.., infra included)")),
+    f"{ENVOY}/internal/textcheck/environment_reads_test.go": reads(
+        (f"{ENVOY}/cmd/dispatch/**", "internal/textcheck/environment_reads_test.go's environmentReads walks .go files"),
+        (f"{ENVOY}/internal/dispatch/**", "internal/textcheck/environment_reads_test.go's environmentReads walks .go files")),
+    f"{ENVOY}/internal/textcheck/file_copy_test.go": reads(
+        (f"{ENVOY}/**", "internal/textcheck/file_copy_test.go:22 walks every .go file under packages/envoy (../.., infra included)")),
+    f"{ENVOY}/internal/textcheck/readme_commands_test.go": reads(
+        (f"{ENVOY}/loadtest/README.md", "internal/textcheck/readme_commands_test.go:19 reads ../../loadtest/README.md")),
     # --- envoy-infra
     f"{INFRA}/core/permissions_live_test.go": [
         run(ENVOY, ["./cmd/dispatch", "./cmd/listener"], "infra/core/permissions_live_test.go's buildEnvoyCommand go build . in ../../cmd/<dispatch|listener> (root go.work)", mode="build")],
-    f"{INFRA}/core/allowed_hosts_agreement_test.go": [run(f"{INFRA}/core", ["."], "infra/core/allowed_hosts_agreement_test.go:95 go list -deps .", mode="build")],
-    f"{INFRA}/gcp/imports_test.go": [run(f"{INFRA}/gcp", ["."], "infra/gcp/imports_test.go:15 go list -deps .", mode="build")],
     f"{INFRA}/host/heldportwrapper/main_test.go": [
         run(ENVOY, ["./cmd/listener"], "infra/host/heldportwrapper/main_test.go:113-114 go build . in ../../../cmd/listener (root go.work)", mode="build")],
     f"{INFRA}/host/live_test.go": [run(INFRA, ["./cmd/pulumi-resource-envoy-infra"], "infra/host/live_test.go pulumitest.Plugin -> internal/pulumitest/pulumitest.go:168 go build", mode="build")],
+    f"{INFRA}/internal/textcheck/core_imports_test.go": [
+        run(INFRA, ["./core"], "infra/internal/textcheck/core_imports_test.go:19-20 go list -deps ./core in ../..", mode="build")],
+    f"{INFRA}/internal/textcheck/gcp_imports_test.go": [
+        run(INFRA, ["./gcp"], "infra/internal/textcheck/gcp_imports_test.go:18-19 go list -deps ./gcp in ../..", mode="build")],
 }
 
 
