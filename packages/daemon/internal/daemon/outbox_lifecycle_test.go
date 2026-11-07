@@ -34,6 +34,7 @@ import (
 // generation-1 rows run, they must finish without acting, never suspending the new generation's
 // worker (nothing would restart it: the phase waits for that worker's handoff).
 func TestAnEarlierGenerationsSuperviseRowNeverActsOnTheNextGeneration(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -114,6 +115,7 @@ func TestAnEarlierGenerationsSuperviseRowNeverActsOnTheNextGeneration(t *testing
 // of a held tree's failed worker finishes, instead of being refused and retried for as long as the
 // daemon runs.
 func TestSuspendingAClaimThatRunsNothingIsDone(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -150,6 +152,7 @@ func TestSuspendingAClaimThatRunsNothingIsDone(t *testing.T) {
 // implementing and nothing relaunched; a completion it reports for a phase it no longer works is
 // refused. Only the issue's close stops it, and its session is kept.
 func TestAPhaseCompletionLeavesTheWorkerResidentUntilItsIssueCloses(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -322,6 +325,7 @@ func TestAPhaseCompletionLeavesTheWorkerResidentUntilItsIssueCloses(t *testing.T
 // no stop; once the turn ends the worker is suspended once with its session kept, and the row's
 // retry finishes it.
 func TestAnIssuesCloseWaitsForTheWorkersTurnToEnd(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -405,6 +409,7 @@ func TestAnIssuesCloseWaitsForTheWorkersTurnToEnd(t *testing.T) {
 // task while the tester is still working. The tester's turn is its own — nothing interrupts it and
 // nothing stops it — and it keeps its launch, its session and its capability.
 func TestACIRedStartsTheImplementerWhileTheTesterIsStillInItsTurn(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -523,6 +528,7 @@ func TestACIRedStartsTheImplementerWhileTheTesterIsStillInItsTurn(t *testing.T) 
 // works. When its relaunches run out, the claim fails, and the architect is told in a worker-died
 // that says the phase is not that role's; the issue is not held, since the phase's own worker is fine.
 func TestAFinishedWorkerThatDiesIsRelaunchedAndItsFailureHoldsNothing(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -643,6 +649,7 @@ func unfinishedSuperviseRows(t *testing.T, pool *pgxpool.Pool) int {
 // (only a merged or closed one belongs to the earlier generation), so the new generation's
 // implementer completion reaches testing on it.
 func TestAReadmittedTreeKeepsItsOpenPullRequest(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -700,6 +707,7 @@ func TestAReadmittedTreeKeepsItsOpenPullRequest(t *testing.T) {
 // are suspended and its phase parked, so its tester's next completion advances nothing and no
 // status write lands over the human's backlog.
 func TestAChildAHumanMovesOutOfTheWorkflowStopsAndKeepsTheHumansStatus(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -777,6 +785,7 @@ func TestAChildAHumanMovesOutOfTheWorkflowStopsAndKeepsTheHumansStatus(t *testin
 // takes whatever task it is sent; then the runtime recovers and every row runs to its end, and the
 // worker is still running with the implementing task.
 func TestASameRoleBackwardMoveNeverStopsTheWorkerInItsNewPhase(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -891,6 +900,7 @@ func TestASameRoleBackwardMoveNeverStopsTheWorkerInItsNewPhase(t *testing.T) {
 // task, leaving the phase with nobody in it. The claim records the newest start run against it,
 // so the stop knows it is superseded whatever the timing was: no ordering, no window.
 func TestAStopSupersededByANewerStartNeverActs(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -978,6 +988,7 @@ func TestAStopSupersededByANewerStartNeverActs(t *testing.T) {
 // suspended with the root in done, a phase no role works. Found by #1347's review, whose test this
 // extends.
 func TestARootLeavingTheWorkflowSuspendsEveryWorkerOfItsTree(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -1068,6 +1079,7 @@ func retryHeldPhase(t *testing.T, issue record.Issue) record.OutboxRow {
 // writes a start of its own for the same phase and run: its task would come behind the kept one as
 // a second prompt for work already under way, so the row relaunches the claim and delivers nothing.
 func TestARetryOfAClaimThatKeptItsPhasesTaskDeliversNothingMore(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Implementing, Generation: 1, Status: "in_progress"}
@@ -1095,6 +1107,7 @@ func TestARetryOfAClaimThatKeptItsPhasesTaskDeliversNothingMore(t *testing.T) {
 // a check made before the relaunch, seeing the task still held, would relaunch the claim with
 // nothing to do.
 func TestARetryOfAClaimWhoseKeptTasksTurnWasOverDeliversItsTask(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Implementing, Generation: 1, Status: "in_progress"}
@@ -1117,6 +1130,7 @@ func TestARetryOfAClaimWhoseKeptTasksTurnWasOverDeliversItsTask(t *testing.T) {
 // the claim its own task: the delivery waits behind the kept task (the claim refuses a second
 // pending one), and the row is retried until it goes.
 func TestARetryOfAClaimThatKeptOtherWorkStillDeliversItsTask(t *testing.T) {
+	t.Parallel()
 	pool, reset := tableDatabase(t)
 	for name, edit := range map[string]func(*supervise.Delivery){
 		"another phase": func(d *supervise.Delivery) { d.Phase = phase.Planning },
@@ -1147,6 +1161,7 @@ func TestARetryOfAClaimThatKeptOtherWorkStillDeliversItsTask(t *testing.T) {
 // over's task into the new run: it is dropped (phaseHolds compares the run), and the new run's
 // start gives the worker its own task.
 func TestAnOperatorResumeAfterAReadmissionDropsTheOldRunsTask(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()

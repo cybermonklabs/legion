@@ -32,6 +32,7 @@ import (
 // pane's bundle, and the issue's own panes keep that owner as their default (appauth's
 // GitHubCredential mints for a role's own owner whether or not the set holds it).
 func TestAMappingChangeAtRuntimeChangesWhatTheDaemonServes(t *testing.T) {
+	t.Parallel()
 	pool, reset := tableDatabase(t)
 	t.Run("GitHub answering at once", func(t *testing.T) {
 		reset(t)

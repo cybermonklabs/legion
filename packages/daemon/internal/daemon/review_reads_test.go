@@ -120,6 +120,7 @@ func reviewerDecision(t *testing.T, pool *pgxpool.Pool) (string, int) {
 // review, a pending draft and an outsider's approval decide nothing, as they decide nothing by
 // webhook. A round held from reviewing records the decision for the retry to end it on.
 func TestAReviewWhoseWebhookNeverArrivedDecidesItsRoundOnThePass(t *testing.T) {
+	t.Parallel()
 	const (
 		early = "2026-10-08T22:15:40Z"
 		late  = "2026-10-08T22:15:52Z"
@@ -197,6 +198,7 @@ func holdFromReviewing(t *testing.T, pool *pgxpool.Pool) {
 // the pull request's head at that approval's commit and green, the approval ends the round, its
 // head recorded as the commit GitHub names.
 func TestTheReviewsReadDecodesGitHubsOwnAnswer(t *testing.T) {
+	t.Parallel()
 	const head = "a2cd06879ab30d0e8fbeca82b2970826a2c3b6b3"
 	answer, err := os.ReadFile("testdata/legion-smoke-pull-550-reviews.json")
 	if err != nil {
@@ -238,6 +240,7 @@ func TestTheReviewsReadDecodesGitHubsOwnAnswer(t *testing.T) {
 // processed events do not catch it. The pass reads the reviews in implementing too, and finds
 // nothing newer to apply; round 2's own review, once GitHub lists it, still ends round 2.
 func TestAReviewDecisionDeliveredTwiceActsOnce(t *testing.T) {
+	t.Parallel()
 	round1 := listedReview(11, reviewReadApp, "CHANGES_REQUESTED", "code", "2026-10-08T22:15:40Z")
 	webhook := intake.PullRequestReview{Repo: "acme/widgets", Number: 86, ID: 11, SubmittedAt: time.Date(2026, 10, 8, 22, 15, 40, 0, time.UTC),
 		State: "changes_requested", CommitID: "code", HeadSHA: "code", Author: reviewReadApp, Body: "review 11"}
@@ -306,6 +309,7 @@ func TestAReviewDecisionDeliveredTwiceActsOnce(t *testing.T) {
 // sent back on the earlier request for changes, or ended in retro on the earlier approval of the
 // head. A later pass finds nothing newer to apply.
 func TestADecidingReviewOutsideARoundDecidesNoLaterRound(t *testing.T) {
+	t.Parallel()
 	const stale = "2026-10-08T22:15:40Z"
 	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
@@ -368,6 +372,7 @@ func TestADecidingReviewOutsideARoundDecidesNoLaterRound(t *testing.T) {
 // completes, and the round stays open and undecided with one round counted, rather than going back
 // to implementing a second time or on to retro on that review.
 func TestADecidingReviewBetweenRoundsDecidesNoLaterRound(t *testing.T) {
+	t.Parallel()
 	round1 := listedReview(11, reviewReadApp, "CHANGES_REQUESTED", "code", "2026-10-08T22:15:40Z")
 	pool, reset := tableDatabase(t)
 	for _, state := range []string{"CHANGES_REQUESTED", "APPROVED"} {
@@ -413,6 +418,7 @@ func TestADecidingReviewBetweenRoundsDecidesNoLaterRound(t *testing.T) {
 // permission answer's own window - the next pass neither asks about it again nor lets the approval
 // end the round. Its webhook, judged at delivery, would not have ended it either.
 func TestTheReadJudgesEachReviewOnce(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	seedCapture(t, pool, phase.Reviewing, "needs_review", completedReviewer("review-1"))
 	var reads, outsiderReads atomic.Int64
@@ -449,6 +455,7 @@ func TestTheReadJudgesEachReviewOnce(t *testing.T) {
 // refused, and the reviewer's own, though older, decides the round. Without it the pass would apply
 // the controller's review every two minutes and the workflow set it aside every time.
 func TestTheReadSetsAsideAReviewAppReviewFromAnotherSession(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	seedCapture(t, pool, phase.Reviewing, "needs_review", completedReviewer("review-1"))
 	if _, err := pool.Exec(context.Background(), `insert into claims (token, project, tree, issue, role, generation, session, session_file,
@@ -486,6 +493,7 @@ func TestTheReadSetsAsideAReviewAppReviewFromAnotherSession(t *testing.T) {
 // share it. The stand-in answers the first pull request's own read and refuses its reviews read; a
 // second open pull request is recorded, and nothing of either is read after the refusal.
 func TestARateLimitOnTheReviewsReadEndsThePass(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	seedCapture(t, pool, phase.Reviewing, "needs_review", completedReviewer("review-1"))
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {

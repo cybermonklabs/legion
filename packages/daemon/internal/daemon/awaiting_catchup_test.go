@@ -228,6 +228,7 @@ func catchUpAwaitingRootOn(t *testing.T, pool *pgxpool.Pool, waiting record.Awai
 // architect opened is mirrored and declared as the live event would have left it, and the cursor
 // moves to the sequence the read went through.
 func TestCatchUpReadsAnAdmittedRootsAsksFromItsLastHandout(t *testing.T) {
+	t.Parallel()
 	client := &awaitingDispatch{issue: dispatch.Issue{Key: "CAPTURE-100", LastSeq: 9}, events: []json.RawMessage{askOpened(9, "ask-q")}}
 	pool, w := catchUpRig(t, client, 0)
 	seedCatchUp(t, pool, func(ctx context.Context, tx pgx.Tx, records *record.Postgres) error {
@@ -325,6 +326,7 @@ func answeredIn(key string, seq int64) json.RawMessage {
 // is read again a bounded number of times, a credential refusal (401, 403) not at all, and the root
 // is then skipped and released, so the next root is caught up and the catch-up finishes.
 func TestCatchUpSkipsARootDispatchKeepsRefusing(t *testing.T) {
+	t.Parallel()
 	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		status int
@@ -362,6 +364,7 @@ func TestCatchUpSkipsARootDispatchKeepsRefusing(t *testing.T) {
 // state, and a person's reply handing the open approval request to the agent. Every one is read
 // from the root's event log, with its own sequence.
 func TestCatchUpAwaitingAppliesAPersonsAnswerMissedAtBoot(t *testing.T) {
+	t.Parallel()
 	gate := &record.DesignGate{ArtifactID: "artifact-root", LatestVersion: 3}
 	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
@@ -412,6 +415,7 @@ func TestCatchUpAwaitingAppliesAPersonsAnswerMissedAtBoot(t *testing.T) {
 // request that answered an earlier wait, and an act Dispatch recorded before the wait began. The
 // log is read once, from the root's last handout, which takes in the wait's start.
 func TestCatchUpAwaitingLeavesARootNoPersonAnswered(t *testing.T) {
+	t.Parallel()
 	gate := &record.DesignGate{ArtifactID: "artifact-root", LatestVersion: 3}
 	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
@@ -464,6 +468,7 @@ func (*unreachableEvents) EventsAfter(context.Context, string, int64) ([]json.Ra
 // Dispatch being unreachable is the one error the boot's catch-up returns, so its readiness retry
 // waits the outage out, and the root it could not read stays held meanwhile.
 func TestCatchUpAwaitingFailsWhileDispatchIsDown(t *testing.T) {
+	t.Parallel()
 	client := &unreachableEvents{awaitingDispatch{issue: dispatch.Issue{Key: "CAPTURE-2", LastSeq: 9}}}
 	pool, w := catchUpRig(t, client, 0)
 	waitingRoots(t, pool, "CAPTURE-2")
@@ -510,6 +515,7 @@ func (d *slowFirstRoot) EventsAfter(ctx context.Context, key string, after int64
 // without reading again the roots it finished. A root whose gate request read fails for good still
 // has its event log replayed, so a person's answer there is caught up.
 func TestCatchUpAwaitingBoundsEachRootAndResumesAfterTheRootsItFinished(t *testing.T) {
+	t.Parallel()
 	client := &slowFirstRoot{awaitingDispatch: awaitingDispatch{events: []json.RawMessage{answeredIn("CAPTURE-2", 9)}}}
 	pool, w := catchUpRig(t, client, 0)
 	// The bound is the stalled root's only wait; the others apply their facts well inside it, each
@@ -543,6 +549,7 @@ func TestCatchUpAwaitingBoundsEachRootAndResumesAfterTheRootsItFinished(t *testi
 // and each boot reads only the events after the cursor the last one left. A boot with no new act
 // answers nothing.
 func TestCatchUpAwaitingRecoversSuccessiveReviewsAtOneVersion(t *testing.T) {
+	t.Parallel()
 	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name    string
@@ -612,6 +619,7 @@ func TestCatchUpAwaitingRecoversSuccessiveReviewsAtOneVersion(t *testing.T) {
 // so a person who resolves the approval request, or answers another ask of the root, while the
 // daemon is down has answered the wait as surely as a review would have.
 func TestCatchUpAnswersWithAPersonsActOnAnyAskOfTheRoot(t *testing.T) {
+	t.Parallel()
 	gate := &record.DesignGate{ArtifactID: "artifact-root", LatestVersion: 3}
 	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
@@ -636,6 +644,7 @@ func TestCatchUpAnswersWithAPersonsActOnAnyAskOfTheRoot(t *testing.T) {
 // resumed only once its whole window is applied: it resumes with its gate open, never with a task
 // telling it to revise a spec the person has already approved.
 func TestCatchUpAppliesTheApprovalOfANewerVersion(t *testing.T) {
+	t.Parallel()
 	client := &awaitingDispatch{issue: dispatch.Issue{Key: "CAPTURE-100", LastSeq: 20}, events: []json.RawMessage{specVersion(19, 4), specApproved(20, 4)}}
 	pool, w := catchUpRig(t, client, 1)
 	seedCatchUp(t, pool, func(ctx context.Context, tx pgx.Tx, records *record.Postgres) error {
@@ -812,6 +821,7 @@ func assertCaptureKeptItsSlot(t *testing.T, pool *pgxpool.Pool) *record.Issue {
 // architect, give its slot away, resume it with a stale task and tell a changes request again. The
 // boot only sets the cursor to the issue's latest sequence; the next boot reads from there.
 func TestTheFirstBootAfterTheUpgradeReplaysNothing(t *testing.T) {
+	t.Parallel()
 	gate := &record.DesignGate{Issue: "CAPTURE-100", ArtifactID: "artifact-root", LatestVersion: 3}
 	client := &awaitingDispatch{issue: dispatch.Issue{Key: "CAPTURE-100", LastSeq: 9}, approval: dispatch.Approval{State: "changes_requested",
 		LatestVersion: 3, Version: new(3), Reason: new("name the rollback path"), Seq: 9},
@@ -854,6 +864,7 @@ func TestTheFirstBootAfterTheUpgradeReplaysNothing(t *testing.T) {
 // it out of admission for a window that can decide nothing, and replay, for the root that never
 // ran, history older than the handout its own admission will be.
 func TestTheCatchUpReadsNoRootWhoseArchitectDoesNotHoldTheWork(t *testing.T) {
+	t.Parallel()
 	cursor := catchUpHandout
 	opened := &record.DesignGate{Issue: "CAPTURE-100", ArtifactID: "artifact-root", LatestVersion: 4, ApprovedVersion: new(3),
 		ApprovedMark: record.EventMark{Seq: 5}, EverOpened: true}
@@ -884,6 +895,7 @@ func TestTheCatchUpReadsNoRootWhoseArchitectDoesNotHoldTheWork(t *testing.T) {
 // window could decide nothing, and the hold would keep the root out of the admission pass that
 // is there to take its slot back.
 func TestTheCatchUpReadsNoRootThatLeftTheWorkflow(t *testing.T) {
+	t.Parallel()
 	cursor := catchUpHandout
 	client := &awaitingDispatch{issue: dispatch.Issue{Key: "CAPTURE-100", LastSeq: 9},
 		events: []json.RawMessage{askOpened(7, "ask-q1")}}
@@ -908,6 +920,7 @@ func TestTheCatchUpReadsNoRootThatLeftTheWorkflow(t *testing.T) {
 // which had the answer through Dispatch already, receives no new task and keeps its slot. A window
 // that leaves a second question with the person is decided once, on that question.
 func TestAnOutageWindowIsDecidedOnceAfterItsCatchUp(t *testing.T) {
+	t.Parallel()
 	cursor := catchUpHandout
 	pool, reset := tableDatabase(t)
 	t.Run("answered within the window", func(t *testing.T) {
@@ -951,6 +964,7 @@ func TestAnOutageWindowIsDecidedOnceAfterItsCatchUp(t *testing.T) {
 // person's turn, declares the hand-back as a registration would. A request Dispatch shows on the agent's turn hands nothing
 // back, and the root keeps its slot.
 func TestARootWaitingOnItsGateAtDeployReturnsItsSlot(t *testing.T) {
+	t.Parallel()
 	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name      string
@@ -1015,6 +1029,7 @@ func slotHeld(t *testing.T, pool *pgxpool.Pool, key string) bool {
 // that version strands nothing: the gate keeps the review, no wait starts, and the gate seed and
 // the boot catch-up that re-read the same review leave the root where it is, with its slot.
 func TestADelayedRegistrationDoesNotStrandARootAcrossASeedAndABoot(t *testing.T) {
+	t.Parallel()
 	client := &awaitingDispatch{
 		issue: dispatch.Issue{Key: "CAPTURE-100", LastSeq: 11},
 		approval: dispatch.Approval{State: "changes_requested", LatestVersion: 4, Version: new(4),
@@ -1066,6 +1081,7 @@ func TestADelayedRegistrationDoesNotStrandARootAcrossASeedAndABoot(t *testing.T)
 // read answers a root waiting on its gate, and one showing the request still with the person moves
 // the wait to that version and answers nothing.
 func TestAGateSeedAnswersAGateWaitOnlyWhenTheRequestIsWithTheAgent(t *testing.T) {
+	t.Parallel()
 	client := &awaitingDispatch{approval: dispatch.Approval{State: "awaiting", LatestVersion: 5, AskID: "ask-approval", WaitingOn: "human"}}
 	pool, w := catchUpRig(t, client, 0)
 	seedCatchUp(t, pool, func(ctx context.Context, tx pgx.Tx, records *record.Postgres) error {
@@ -1114,6 +1130,7 @@ func applyLive(t *testing.T, w *workflowRuntime, events ...json.RawMessage) {
 // the daemon was down is applied with the root held and decided once, and the durable consumer's
 // redelivery of the same window after the catch-up suspends nothing and gives no slot away.
 func TestARootRecordedBeforeTheCursorGetsOneAtItsFirstHandout(t *testing.T) {
+	t.Parallel()
 	window := []json.RawMessage{askOpened(7, "ask-q1"), askClosed(9, "answered", "ask-q1", "question", alice)}
 	client := &awaitingDispatch{issue: dispatch.Issue{Key: "CAPTURE-100", LastSeq: 9}, events: window}
 	pool, w := catchUpRig(t, client, 1)
@@ -1158,6 +1175,7 @@ func TestARootRecordedBeforeTheCursorGetsOneAtItsFirstHandout(t *testing.T) {
 // gave in the old generation is not told to the new one's architect, whose processed marker is
 // per generation.
 func TestAReadmittedRootsCatchUpReadsFromItsReadmission(t *testing.T) {
+	t.Parallel()
 	const readmittedAt int64 = 50
 	client := &awaitingDispatch{issue: dispatch.Issue{Key: "CAPTURE-100", LastSeq: readmittedAt + 1},
 		events: []json.RawMessage{specChanges(20, 3, "name the rollback path")}}
@@ -1206,6 +1224,7 @@ func TestAReadmittedRootsCatchUpReadsFromItsReadmission(t *testing.T) {
 // record held, not proof that every event below it arrived, so an event below the handout the
 // durable stream had not delivered (ask-late at 7) is applied at the boot, with the root held.
 func TestACatchUpReadsFromACursorBelowTheLastHandout(t *testing.T) {
+	t.Parallel()
 	const cursor, handout int64 = 4, 8
 	client := &awaitingDispatch{issue: dispatch.Issue{Key: "CAPTURE-100", LastSeq: 9},
 		events: []json.RawMessage{askOpened(7, "ask-late"), askReplied(9, "ask-late", "agent", alice)}}
@@ -1261,6 +1280,7 @@ func (f failingFact) Apply(_ context.Context, _ pgx.Tx, fact intake.Fact) (intak
 // the event does not stop that root's catch-up. The cursor stays below it, so the next boot reads
 // it again, as the durable consumer retries it live.
 func TestAnEventThatFailsToApplyDoesNotStopTheCatchUp(t *testing.T) {
+	t.Parallel()
 	client := &awaitingDispatch{issue: dispatch.Issue{Key: "CAPTURE-100", LastSeq: 11},
 		events: []json.RawMessage{askOpened(7, "ask-broken"), askOpened(9, "ask-q"), askClosed(11, "answered", "ask-q", "question", alice)}}
 	pool, w := catchUpRig(t, client, 1)
@@ -1291,6 +1311,7 @@ func TestAnEventThatFailsToApplyDoesNotStopTheCatchUp(t *testing.T) {
 // lost to one transient failure. The events after it are applied at the first boot all the same,
 // and the second boot drops them as processed.
 func TestAnEventThatFailedOnceIsAppliedAtTheNextBoot(t *testing.T) {
+	t.Parallel()
 	client := &awaitingDispatch{issue: dispatch.Issue{Key: "CAPTURE-100", LastSeq: 11},
 		events: []json.RawMessage{askOpened(7, "ask-lost"), askOpened(9, "ask-q"), askClosed(11, "answered", "ask-q", "question", alice)}}
 	pool, w := catchUpRig(t, client, 1)
@@ -1329,6 +1350,7 @@ func TestAnEventThatFailedOnceIsAppliedAtTheNextBoot(t *testing.T) {
 // cursor between them would pass the first over for good once an outage outlasts the stream's
 // retention. The next boot applies both.
 func TestTwoEventsThatFailInOneWindowStopTheCursorBelowTheFirst(t *testing.T) {
+	t.Parallel()
 	client := &awaitingDispatch{issue: dispatch.Issue{Key: "CAPTURE-100", LastSeq: 11},
 		events: []json.RawMessage{askOpened(7, "ask-a"), askOpened(9, "ask-b"), askOpened(11, "ask-c")}}
 	pool, w := catchUpRig(t, client, 1)
@@ -1388,6 +1410,7 @@ func (c *catchUpApplies) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQuer
 // transaction each: the boot's work on the root stays one apply, however many events follow the
 // failed one, and never outgrows the root's deadline.
 func TestAnEventThatFailsAtEveryBootLeavesTheNextBootOnlyItsOwnApply(t *testing.T) {
+	t.Parallel()
 	client := &awaitingDispatch{issue: dispatch.Issue{Key: "CAPTURE-100", LastSeq: 11},
 		events: []json.RawMessage{askOpened(7, "ask-broken"), askOpened(9, "ask-q"), askClosed(11, "answered", "ask-q", "question", alice)}}
 	pool, w := catchUpRig(t, client, 1)

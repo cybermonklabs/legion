@@ -32,6 +32,7 @@ import (
 // subscriber dedupes on. The controller reads the notice the architect is sent, without the row's
 // routing.
 func TestAHeldNoticeReachesTheControllerTopicAndItsRetriesNeverResendTheArchitects(t *testing.T) {
+	t.Parallel()
 	listener := newNoticeListener()
 	server := httptest.NewServer(listener)
 	t.Cleanup(server.Close)

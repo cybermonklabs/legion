@@ -46,6 +46,10 @@ const idleRigSender = "idle-rig-sender"
 // Nine pods are launched and made quiet, and one pass of the daemon's own idle tick releases them
 // all: each live claim suspended with the source `released`, and the pod, its disk and its
 // Sandbox deleted. Each subtest then drives its own pods' wakes.
+//
+// Not parallel: its rig sets PGPASSWORD in this process's own environment
+// (idleRigSessionPassword), which the launchers it runs in this process read their password
+// from, and Go's testing package refuses t.Setenv beside t.Parallel.
 func TestIdleReleaseAndWake(t *testing.T) {
 	rig := newIdleWakeRig(t,
 		idleRigDelivery, idleRigChecks, idleRigRoleWake, idleRigAgentWake, idleRigBackstop,

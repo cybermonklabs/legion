@@ -22,6 +22,7 @@ import (
 // hour count truncated to zero would reach the engine as no linger at all, closing a finished tree
 // the moment it ends, or as no check bound, which the engine's default would then stand in for.
 func TestLingerHoursReachesTheEngineAsItsDuration(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "legion.yaml")
 	body := "project: demo\nstate_dir: /var/lib/legion\npostgres_dsn: postgres://legion@127.0.0.1:5432/legion\nlinger_hours: 0.3\nproduction_check_hours: 0.1\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
@@ -69,6 +70,7 @@ func (t loginTokens) ReadToken(ctx context.Context, role appauth.AppRole, _ stri
 // two roles resolve to one App would count no fix attempt at all: boot refuses it, and a review App
 // with no login, before anything else opens.
 func TestOpenWorkflowRefusesAReviewLoginItCannotTellFromTheImplementers(t *testing.T) {
+	t.Parallel()
 	dispatchServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !servedBootCall(t, w, r, "demo") {
 			t.Errorf("Dispatch request = %s %s", r.Method, r.URL.Path)
@@ -97,6 +99,7 @@ func TestOpenWorkflowRefusesAReviewLoginItCannotTellFromTheImplementers(t *testi
 // The boot reads the review App's bot login, the login the engine judges a push's pusher against,
 // under the App's own JWT, with no owner to mint for.
 func TestAppLoginsAtBootReturnsTheReviewAppLogin(t *testing.T) {
+	t.Parallel()
 	tokens := loginTokens{appauth.Implement: "legion-implementer[bot]", appauth.Review: "legion-reviewer[bot]"}
 	login, err := appLoginsAtBoot(context.Background(), tokens, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {

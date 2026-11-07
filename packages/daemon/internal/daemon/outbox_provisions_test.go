@@ -52,6 +52,7 @@ func storeStep(t *testing.T, request workspace.Request, inStore, worst *atomic.I
 // still provisioning (each checkout waits for the other's to begin), and their store steps never
 // overlap, since both are handed the repository's one lock.
 func TestProvisionsOfTwoIssuesOverlapAndTheirStoreStepsDoNot(t *testing.T) {
+	t.Parallel()
 	var inStore, worst atomic.Int32
 	var checkouts atomic.Int32
 	overlapped := make(chan struct{})
@@ -113,6 +114,7 @@ func TestProvisionsOfTwoIssuesOverlapAndTheirStoreStepsDoNot(t *testing.T) {
 // At most provisionConcurrency checkouts run at once: one more waits for a running one to end. Each
 // provision is handed the wait for a place, which it takes around its checkout.
 func TestCheckoutsAreBoundedByTheirConcurrency(t *testing.T) {
+	t.Parallel()
 	var running, most atomic.Int32
 	release := make(chan struct{})
 	r := &outbox{
@@ -164,6 +166,7 @@ func TestCheckoutsAreBoundedByTheirConcurrency(t *testing.T) {
 // of a repository holding its store lock and provisionConcurrency more waiting on it, a provision of
 // another repository still takes a place, checks out and finishes.
 func TestAProvisionOfAnotherRepositoryIsNotBlockedByProvisionsWaitingOnOneStoreLock(t *testing.T) {
+	t.Parallel()
 	widgets, gadgets := ghrepo.MustParse("acme/widgets"), ghrepo.MustParse("acme/gadgets")
 	var waiting atomic.Int32
 	hold := make(chan struct{})
@@ -223,6 +226,7 @@ func TestAProvisionOfAnotherRepositoryIsNotBlockedByProvisionsWaitingOnOneStoreL
 // Two launches of one issue that both found its workspace missing (ensureWorkspace) provision it
 // once: provisions of one issue take turns, and the second finds the first's workspace there.
 func TestTwoLaunchesThatFindOneWorkspaceMissingProvisionItOnce(t *testing.T) {
+	t.Parallel()
 	var provisions atomic.Int32
 	stateDir := t.TempDir()
 	repo := ghrepo.MustParse("acme/widgets")
@@ -263,6 +267,7 @@ func TestTwoLaunchesThatFindOneWorkspaceMissingProvisionItOnce(t *testing.T) {
 // start the pane in an empty working copy. A launch that then finds the workspace whole provisions
 // nothing.
 func TestALaunchProvisionsAWorkspaceWhoseCheckoutFailed(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)

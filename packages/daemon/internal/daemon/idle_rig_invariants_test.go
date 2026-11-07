@@ -47,6 +47,7 @@ func (w *idleRigSaveWatch) IssuePodRunsConfiguredImage(issue string) bool {
 // in the teardown behind those stops, as it was, every release of every pod was cancelled
 // bundle_save_failed and no pod was ever released.
 func TestTheReleaseSavesTheWorkspaceWhileTheRolesProcessIsStillRunning(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 
@@ -103,6 +104,7 @@ func TestTheReleaseSavesTheWorkspaceWhileTheRolesProcessIsStillRunning(t *testin
 // shape that catches a divergence: every test that picks one spelling and uses it on both sides
 // passes either way, which is how it was missed.
 func TestTheEngineAndTheDaemonReadThePodTablesUnderOneProject(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	st := outboxTreeStore(t, pool, "LEGION-208")

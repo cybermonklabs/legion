@@ -46,6 +46,7 @@ func architect() api.SpawnRequest {
 // Everything the daemon refuses on is refused before it touches the store, naming the key the
 // operator has to change: nothing is recorded for a daemon that could never have served.
 func TestRunRefusesAConfigurationItCannotSuperviseUnder(t *testing.T) {
+	t.Parallel()
 	pool, reset := tableDatabase(t)
 	for _, testCase := range []struct {
 		name   string
@@ -133,6 +134,7 @@ func TestRunRefusesAConfigurationItCannotSuperviseUnder(t *testing.T) {
 // the listener is the runtime's connection directory, and its address is what every pane's shim
 // is told to dial (`--connect`).
 func TestRunBuildsTheRuntimeOverTheWorkerStream(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	var record built
 	startDaemon(t, cfg, fakeRuntime(fake.NewRuntime(), &record))
@@ -153,6 +155,7 @@ func TestRunBuildsTheRuntimeOverTheWorkerStream(t *testing.T) {
 // none here, a daemon with no workflow, so the runtime makes the issue's own directory its
 // workspace.
 func TestRunLaunchesWithThePromptInstructionsAndSecretsItWasGiven(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	cfg.InstructionsPath = filepath.Join(t.TempDir(), "instructions.md")
 	if err := os.WriteFile(cfg.InstructionsPath, []byte("Never push to main.\n"), 0o600); err != nil {
@@ -212,6 +215,7 @@ func TestRunLaunchesWithThePromptInstructionsAndSecretsItWasGiven(t *testing.T) 
 // which each runtime hands the agent behind a NATS_NKEY_SEED_FILE pointer, never as a value; and a
 // daemon with none hands none.
 func TestEveryLaunchCarriesTheNatsSeedTheDaemonResolved(t *testing.T) {
+	t.Parallel()
 	keySeed, envSeed := testnats.UserSeed(t), testnats.UserSeed(t)
 	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
@@ -250,6 +254,7 @@ func TestEveryLaunchCarriesTheNatsSeedTheDaemonResolved(t *testing.T) {
 // followed by the Go daemon parts, the role's own and the one every architect shares, so tmux can
 // concatenate them before addressing and deployment instructions into its single OMP flag.
 func TestRunLaunchesTheComposedGoRolePromptWhenSpawnHasNoPromptFile(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	rt := fake.NewRuntime()
 	d := startDaemon(t, cfg, fakeRuntime(rt, &built{}))
@@ -270,6 +275,7 @@ func TestRunLaunchesTheComposedGoRolePromptWhenSpawnHasNoPromptFile(t *testing.T
 // operator's routes, the agent's routes, the worker stream's events (the hello, the turn, the
 // late refusal), and the runtime's sweep.
 func TestRunFeedsTheStreamAndTheSweepIntoTheClaimsMachine(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	rt := fake.NewRuntime()
 	var record built
@@ -455,6 +461,7 @@ func (c *heldClock) fire(after time.Duration) int {
 // API, store, stream and machines. The relaunched agent's shim says hello, the agent registers and
 // says it is ready, and it is sent the task the claim held.
 func TestRunRelaunchesAClaimWhoseAgentRegisteredAndNeverSaidReady(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	rt := fake.NewRuntime()
 	var record built
@@ -527,6 +534,7 @@ func TestRunRelaunchesAClaimWhoseAgentRegisteredAndNeverSaidReady(t *testing.T) 
 // launched again, the claim keeps its state and incarnation, and the shim's reconnect hello — with
 // the boot token it has held since its launch — is accepted.
 func TestRunReadoptsEveryClaimWithALiveLocatorOnRestart(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	first := fake.NewRuntime()
 	var record built
@@ -592,6 +600,7 @@ func TestRunReadoptsEveryClaimWithALiveLocatorOnRestart(t *testing.T) {
 // ReleaseUncertainLaunch writes the release) and stopped before the relaunch wrote its next
 // generation (LEGION-650).
 func TestRunLaunchesAgainALaunchThePreviousDaemonDidNotFinish(t *testing.T) {
+	t.Parallel()
 	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name  string
@@ -667,6 +676,7 @@ func refuseRelease(t *testing.T, cfg config.Config, token claim.Token) func() {
 // at each orphan sweep and relaunches the claim once the store takes it, rather than leave it
 // stranded until the next restart (LEGION-650).
 func TestRunRetriesAReleaseTheStoreRefusedAtTheNextOrphanSweep(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	project, _ := claim.ProjectToken(cfg.Project)
 	token, _ := claim.NewToken(project, "LEGION-3", claim.RolePlanner)
@@ -706,6 +716,7 @@ func TestRunRetriesAReleaseTheStoreRefusedAtTheNextOrphanSweep(t *testing.T) {
 // persisted its locator. A failed orphan listing leaves that process unknown, not gone, so boot
 // must not open another pane. Once reconciliation succeeds, the queued launch can proceed.
 func TestRunWaitsToRelaunchAnUnfinishedClaimUntilOrphanReconciliationSucceeds(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	project, _ := claim.ProjectToken(cfg.Project)
 	token, _ := claim.NewToken(project, "LEGION-4", claim.RoleReviewer)
@@ -806,6 +817,7 @@ func TestRunWaitsToRelaunchAnUnfinishedClaimUntilOrphanReconciliationSucceeds(t 
 // process was never recorded must clear the secret before it makes the claim launch_uncertain: the
 // old process cannot authenticate or mint a grant while boot waits for orphan reconciliation.
 func TestRunBootRepairRevokesAStaleSecretBeforeItMintsAGrant(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	project, _ := claim.ProjectToken(cfg.Project)
 	token, _ := claim.NewToken(project, "LEGION-4", claim.RoleReviewer)
@@ -870,6 +882,7 @@ func (r *reconcileHold) release() { r.released.Store(true) }
 // that, so the attempt that succeeds is the first one whose claims are read after the suspension
 // committed: a retry that answered from the boot's snapshot would still miss the claim.
 func TestRunRetriesTheBootReconciliationWithTheClaimsAsTheyAreNow(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	project, _ := claim.ProjectToken(cfg.Project)
 	unfinished, _ := claim.NewToken(project, "LEGION-4", claim.RoleReviewer)
@@ -925,6 +938,7 @@ func TestRunRetriesTheBootReconciliationWithTheClaimsAsTheyAreNow(t *testing.T) 
 // A pane's secret files live exactly as long as its process: boot removes every file no live
 // locator names, and a claim whose process ends — here, suspended — loses its own.
 func TestRunPrunesTheSecretFilesOfClaimsWithNoProcess(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	project, _ := claim.ProjectToken(cfg.Project)
 	live, _ := claim.NewToken(project, "LEGION-1", claim.RoleArchitect)
@@ -965,6 +979,7 @@ func TestRunPrunesTheSecretFilesOfClaimsWithNoProcess(t *testing.T) {
 // every pane's shim is pointed at — and boot's pruning of the pane secret files, which runs after,
 // leaves that directory alone: it is the daemon's, not any claim's.
 func TestRunResolvesProviderKeysAtBootAndKeepsThemThroughThePrune(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	cfg.ProviderKeys = []config.ProviderKey{{Env: "AGENT_ENV", Secret: "AGENT_KEY"}}
 	bin := t.TempDir()
@@ -993,6 +1008,7 @@ func TestRunResolvesProviderKeysAtBootAndKeepsThemThroughThePrune(t *testing.T) 
 // The shipped daemon writes the one Dispatch bearer panes share before any pane can launch, and
 // boot's claim-secret prune leaves it alone because it belongs to the daemon rather than a claim.
 func TestPrepareWritesTheDispatchTokenFileAndBootPruneKeepsIt(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	cfg.DispatchURL = "http://127.0.0.1:18766"
 	cfg.DispatchTokenFile = filepath.Join(t.TempDir(), "dispatch-token")
@@ -1020,6 +1036,7 @@ func TestPrepareWritesTheDispatchTokenFileAndBootPruneKeepsIt(t *testing.T) {
 // the private server is reaped once it has idled past it; the processes the claims record are
 // always known.
 func TestRunReconcilesOrphansWhileItRuns(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	rt := fake.NewRuntime()
 	o := fakeRuntime(rt, &built{})
@@ -1048,6 +1065,7 @@ func TestRunReconcilesOrphansWhileItRuns(t *testing.T) {
 // known set with no locator; a retired claim leaves it. A runtime that deletes what no known claim owns — a sandbox's
 // Sandboxes, each issue's volume with them — therefore never deletes a claim that can still resume.
 func TestRunKnowsEverySuspendedClaimToTheOrphanSweep(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	cfg.LaunchFailureLimit = 1
 	rt := fake.NewRuntime()
@@ -1171,6 +1189,7 @@ func admitIssue(t *testing.T, cfg config.Config, issue string, role claim.Role, 
 
 // The budgets and the waits a machine runs on are the configuration's, not defaults of its own.
 func TestRunSupervisesWithTheConfiguredLimitsAndTimeouts(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	cfg.LaunchFailureLimit = 2
 	rt := fake.NewRuntime()
@@ -1194,6 +1213,7 @@ func TestRunSupervisesWithTheConfiguredLimitsAndTimeouts(t *testing.T) {
 // Every agent fact the worker stream reports reaches the claim's machine as its own event — the
 // late refusal included, which the stream added after the contract was first written.
 func TestEveryStreamEventMapsToItsSuperviseEvent(t *testing.T) {
+	t.Parallel()
 	const token = claim.Token("legion-legion-legion-1-tester")
 	cases := []struct {
 		in   stream.Event
@@ -1338,6 +1358,7 @@ func secretFiles(t *testing.T, dir string) []string {
 // service at another address and re-adopted the pod) — relaunches its recorded session at once, and
 // the observation charges nothing: the daemon's own configuration moved, not a fault of the agent's.
 func TestRunRelaunchesAStaleAddressChargingNothing(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	rt := fake.NewRuntime()
 	d := startDaemon(t, cfg, fakeRuntime(rt, &built{}))

@@ -217,6 +217,7 @@ func (rig *checkWakeRig) check(t *testing.T) record.ProductionCheck {
 // session kept — so a boot that still compared would start look 2 here. Nothing is compared, the
 // check stays as it was and the implementer is never resumed.
 func TestABootOnABuildCarryingTheMergeStartsNoLook(t *testing.T) {
+	t.Parallel()
 	rig := newCheckWakeRig(t)
 	rig.boot(t)
 

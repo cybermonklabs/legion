@@ -47,6 +47,7 @@ func secretEntries(t *testing.T, stateDir string) []string {
 // stay. The provider-env directory is the one subdirectory that is nobody's claim's, and a prune
 // must never take it.
 func TestTheClaimPruneTakesTheGhDirectoryOfAClaimWrittenWithNoProcess(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	project, _ := claim.ProjectToken("omp")
 	ended, _ := claim.NewToken(project, "LEGION-1", claim.RoleTester)
@@ -88,6 +89,7 @@ func TestTheClaimPruneTakesTheGhDirectoryOfAClaimWrittenWithNoProcess(t *testing
 // killed between clearing a locator and removing its files left — and keeps a live claim's, the
 // Dispatch token file, and the provider-env directory.
 func TestBootsPruneTakesTheGhDirectoriesOfClaimsWithNoProcess(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	project, _ := claim.ProjectToken("omp")
 	crashed, _ := claim.NewToken(project, "LEGION-1", claim.RoleTester)

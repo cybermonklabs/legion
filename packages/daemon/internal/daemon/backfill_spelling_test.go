@@ -26,6 +26,7 @@ import (
 // Kubernetes, whose pods provision their own, the record takes GitHub's spelling. The default
 // branch is GitHub's either way.
 func TestTheBackfillKeepsTheSpellingOfAnExistingClone(t *testing.T) {
+	t.Parallel()
 	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name  string
@@ -88,6 +89,7 @@ func TestTheBackfillKeepsTheSpellingOfAnExistingClone(t *testing.T) {
 // Two shared clones that spell one repository in two ways leave the backfill no spelling to keep,
 // so it refuses, naming both, rather than move an issue's workspace onto either by guess.
 func TestTheBackfillRefusesTwoClonesOfOneRepository(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	if _, err := pool.Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
@@ -123,6 +125,7 @@ func TestTheBackfillRefusesTwoClonesOfOneRepository(t *testing.T) {
 // naming the issue, both repositories and the fix, and fills nothing, since a record on the wrong
 // repository would create branches there and disarm a stranger's pull request.
 func TestTheBackfillRefusesARecordWhosePullRequestIsOnAnotherRepository(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	github := newNamedGitHub(t, map[string]string{"acme/widgets": "acme/widgets@main", "zeta/tools": "zeta/tools@main"})
 	client := &listingDispatch{summaries: []dispatch.IssueSummary{{Key: "LEGION-1", ResolvedRepo: "acme/widgets"}}}
@@ -173,6 +176,7 @@ func TestTheBackfillRefusesARecordWhosePullRequestIsOnAnotherRepository(t *testi
 // anew in another repository and strand its unpushed work; a workspace under the resolved
 // repository, in any case, fills.
 func TestTheBackfillRefusesARecordWhoseWorkspaceIsInAnotherRepository(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	github := newNamedGitHub(t, map[string]string{"acme/widgets": "acme/widgets@main", "zeta/tools": "zeta/tools@main"})
 	client := &listingDispatch{summaries: []dispatch.IssueSummary{{Key: "LEGION-1", ResolvedRepo: "acme/widgets"}}}
@@ -222,6 +226,7 @@ func TestTheBackfillRefusesARecordWhoseWorkspaceIsInAnotherRepository(t *testing
 // naming what fixes it; and a record already on the old name with no GitHub spelling, which no
 // later boot can rename, refuses the boot naming why.
 func TestTheBackfillOfARepositoryGitHubRenamedNamesTheFix(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	github := newNamedGitHub(t, map[string]string{"acme/old": "301 acme/new", "acme/new": "acme/new@main"})
 	client := &listingDispatch{summaries: []dispatch.IssueSummary{{Key: "LEGION-1", ResolvedRepo: "acme/old"}}}
@@ -317,6 +322,7 @@ func (t servedOwnerTokens) Token(ctx context.Context, role appauth.AppRole, repo
 // with no GitHub spelling. The repository is then heard under both names, so the events GitHub
 // publishes under the name it moved to reach the record all the same.
 func TestTheBackfillOfAConfiguredRenameFillsTheRecordsOwnName(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	github := newNamedGitHub(t, map[string]string{"sjawhar/legion": "301 cybermonklabs/legion", "cybermonklabs/legion": "cybermonklabs/legion@main"})
 	client := &listingDispatch{summaries: []dispatch.IssueSummary{{Key: "LEGION-1", ResolvedRepo: "sjawhar/legion"}}}

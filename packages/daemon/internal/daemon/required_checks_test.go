@@ -155,6 +155,7 @@ func capturePhase(t *testing.T, pool *pgxpool.Pool) (phase.Phase, *record.PullRe
 // sent back and nobody told; a set that requires one of the reds brings a red that stands for the
 // head, which sends the work back to implementing from under the open round, naming the check.
 func TestTheBootReadOfRequiredChecksJudgesTheHeadByTheSetItRecords(t *testing.T) {
+	t.Parallel()
 	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name, requires string
@@ -191,6 +192,7 @@ func TestTheBootReadOfRequiredChecksJudgesTheHeadByTheSetItRecords(t *testing.T)
 // and GitHub's HTTP status. The next pass that reads the set judges the head: a failed required
 // check it brings sends the work back to implementing.
 func TestAnUnreadableRulesetLeavesTheHeadUndecided(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	seedUnjudgedRound(t, pool)
 	var logged bytes.Buffer
@@ -227,6 +229,7 @@ func TestAnUnreadableRulesetLeavesTheHeadUndecided(t *testing.T) {
 // the next one. Any other refusal skips only the pull request, or the listing, it answered. The
 // stand-in refuses every read; two open pull requests are recorded, on the one served repository.
 func TestARateLimitAnswerEndsTheRequiredChecksPass(t *testing.T) {
+	t.Parallel()
 	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name    string
@@ -379,6 +382,7 @@ func noticeReasons(t *testing.T, pool *pgxpool.Pool, kind string) []string {
 // pull request's required checks were read before and passed at the head, so only the workflow can
 // decide anything.
 func TestAFailedRequiredWorkflowSendsTheWorkBack(t *testing.T) {
+	t.Parallel()
 	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name   string
@@ -422,6 +426,7 @@ func TestAFailedRequiredWorkflowSendsTheWorkBack(t *testing.T) {
 // issue reaches awaiting_merge has to catch it then, with no change in the GitHub answer to key
 // off.
 func TestTheRequiredChecksPassCatchesAHeadThatStartsConflictingWithItsBase(t *testing.T) {
+	t.Parallel()
 	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name         string
@@ -471,6 +476,7 @@ func TestTheRequiredChecksPassCatchesAHeadThatStartsConflictingWithItsBase(t *te
 // issue still goes back to implementing on the conflict alone, with CONFLICTING recorded, even
 // though the required set is never read that pass.
 func TestAFailedRulesetsReadNeverDiscardsAnAlreadyDecodedConflict(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	seedCapture(t, pool, phase.AwaitingMerge, "retro",
 		record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleMerger, Claim: "merge-claim", HandoffCommit: "code", Summary: "READY #86 at code"})
@@ -509,6 +515,7 @@ func TestAFailedRulesetsReadNeverDiscardsAnAlreadyDecodedConflict(t *testing.T) 
 // for good holds it no longer. The pass decides it once - the next pass sends nothing back again -
 // and a hold that has not lapsed is left held.
 func TestThePassDecidesARedWhoseHoldLapsed(t *testing.T) {
+	t.Parallel()
 	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name    string
@@ -549,6 +556,7 @@ func TestThePassDecidesARedWhoseHoldLapsed(t *testing.T) {
 // the pass decides its green once the hold lapses; the branch moves on and back, and the head
 // settles red.
 func TestThePassDecidesARedAtAHeadTheBranchReturnedTo(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	seedCapture(t, pool, phase.Testing, "testing", record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleTester, Claim: "test-claim"})
 	w := requiredRuntime(pool, mergeableStandIn(t, "true").URL, quietLogger())

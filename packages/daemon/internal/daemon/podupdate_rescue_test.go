@@ -67,6 +67,7 @@ func (r *podUpdateRig) awaitRescues(n int, what string) {
 // The check is asked through the implementer, the role that acts as the implement App, though the
 // architect's claim comes first in the group.
 func TestPodUpdatePushesWhatTheDiskHoldsBeforeItReplacesThePod(t *testing.T) {
+	t.Parallel()
 	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name string
@@ -227,6 +228,7 @@ const podUpdateAccountDrift = "account default, now legion-worker"
 // round. The rest of the round's machinery is held by the tests around this one; this one holds
 // the daemon's half of the account's path, with PodDrift's half held in the sandbox package.
 func TestPodUpdateCarriesAnAccountDriftedPodToItsReplacement(t *testing.T) {
+	t.Parallel()
 	d := rescuetest.New(t, podUpdateIssue)
 	d.Write(d.Workspace, "account.txt", "work the pod on the old account never pushed\n")
 	d.JJ("commit", "-m", "work the pod on the old account never pushed")
@@ -277,6 +279,7 @@ func TestPodUpdateCarriesAnAccountDriftedPodToItsReplacement(t *testing.T) {
 // The check reads the disk itself, so what it committed there and never pushed reaches the remote
 // before the pod goes.
 func TestPodUpdateRescuesWhatAFailedClaimLeftOnTheDisk(t *testing.T) {
+	t.Parallel()
 	d := rescuetest.New(t, podUpdateIssue)
 	d.Write(d.Workspace, "harness.txt", "the planner's harness, committed and never pushed\n")
 	d.JJ("commit", "-m", "the planner's harness")
@@ -297,6 +300,7 @@ func TestPodUpdateRescuesWhatAFailedClaimLeftOnTheDisk(t *testing.T) {
 // naming the claim the check ran through, the workspace and the error. A later sweep checks again,
 // and once the remote takes the push the pod is replaced.
 func TestPodUpdateHoldsTheRoundWhenThePushCheckFails(t *testing.T) {
+	t.Parallel()
 	d := rescuetest.New(t, podUpdateIssue)
 	d.Write(d.Workspace, "feature.txt", "work the remote will not take\n")
 	d.JJ("commit", "-m", "work the remote will not take")
@@ -357,6 +361,7 @@ func TestPodUpdateHoldsTheRoundWhenThePushCheckFails(t *testing.T) {
 // pod was before the check: holding every pod started from an older image until its tree ends is
 // not the trade. The replacement's line and the issue say that nothing checked the disk.
 func TestPodUpdateReplacesAPodWhoseShimPredatesTheCheckAndSaysSo(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
 	rig.rt.RescueWith(func(context.Context, runtime.Known, runtime.RescueRequest) ([]runtime.WorkspaceRescue, error) {
 		return nil, fmt.Errorf("worker-stream: %w (its agent answered: Unknown command: rescue-unpushed)", runtime.ErrRescueUnsupported)
@@ -388,6 +393,7 @@ func TestPodUpdateReplacesAPodWhoseShimPredatesTheCheckAndSaysSo(t *testing.T) {
 // daemon that restarts between that second answer and the replacement reads them rather than
 // starting the refusal over.
 func TestAnswerByTurnEndEveryContract(t *testing.T) {
+	t.Parallel()
 	unsupported := func(r *podUpdateRig) {
 		r.rt.RescueWith(func(context.Context, runtime.Known, runtime.RescueRequest) ([]runtime.WorkspaceRescue, error) {
 			return nil, fmt.Errorf("worker-stream: %w (its agent answered: Unknown command: rescue-unpushed)", runtime.ErrRescueUnsupported)
@@ -456,6 +462,7 @@ func TestAnswerByTurnEndEveryContract(t *testing.T) {
 // A check the shim could not run at all — a transport failure, a shim with no workspace to read —
 // is no pass: the next process of the pod is asked, and with none left the round holds.
 func TestPodUpdateHoldsTheRoundWhenNoProcessCanRunThePushCheck(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.rt.RescueWith(func(_ context.Context, k runtime.Known, _ runtime.RescueRequest) ([]runtime.WorkspaceRescue, error) {
 		return nil, errors.New("the claim has no connection to ask over: " + string(k.Claim))

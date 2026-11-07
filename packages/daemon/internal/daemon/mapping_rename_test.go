@@ -27,6 +27,7 @@ var renamedWidgets = ghrepo.MustRename("acme/widgets", "cybermonklabs/widgets")
 // configured none of it happens: nothing is heard under the second name, and an issue resolved to
 // it is not mapped to the project at all.
 func TestARenameConfiguredBeforeTheTransferIsHeardWhileTheServedSetIsUnchanged(t *testing.T) {
+	t.Parallel()
 	const unserved = "a configured repository rename names a repository this project does not serve"
 	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
@@ -101,6 +102,7 @@ func TestARenameConfiguredBeforeTheTransferIsHeardWhileTheServedSetIsUnchanged(t
 // spelling it was written with (record.Issue.GitHubRepo), and the pair's own spelling is used for
 // the side nothing else names, which is how a pair configured before the transfer is heard.
 func TestHeardRepositoriesKeepGitHubsSpellingOverThePairs(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	// The pair is written in the deployment's own case, which is neither name as GitHub spells it.
 	pair := ghrepo.MustRenames(ghrepo.MustRename("SJAWHAR/Legion", "CyberMonkLabs/legion"))

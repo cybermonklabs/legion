@@ -29,6 +29,7 @@ import (
 )
 
 func TestOutboxMessageCrashRecoveryPostsOnceAgainstScratchDispatch(t *testing.T) {
+	t.Parallel()
 	baseURL, token := startScratchDispatch(t)
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -82,6 +83,7 @@ func TestOutboxMessageCrashRecoveryPostsOnceAgainstScratchDispatch(t *testing.T)
 // so the row run again after a crash before its finish finds its own marker and posts nothing,
 // and the issue holds exactly one message.
 func TestOutboxPostsALongPacketWholeAndOnceAgainstScratchDispatch(t *testing.T) {
+	t.Parallel()
 	baseURL, token := startScratchDispatch(t)
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -134,6 +136,7 @@ func TestOutboxPostsALongPacketWholeAndOnceAgainstScratchDispatch(t *testing.T) 
 // own block bound — is no retry's to repair. The row finishes and its issue's architect is told
 // Dispatch's own refusal, rather than the row climbing its backoff for ever and telling nobody.
 func TestOutboxFinishesAPostDispatchRefusesAndTellsTheArchitectAgainstScratchDispatch(t *testing.T) {
+	t.Parallel()
 	baseURL, token := startScratchDispatch(t)
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -182,6 +185,7 @@ func TestOutboxFinishesAPostDispatchRefusesAndTellsTheArchitectAgainstScratchDis
 // architect is told what was refused and that the status stands. Without that, the daemon's
 // record would read done while the Dispatch issue kept the status it had, and nobody would know.
 func TestOutboxSetsTheStatusOfAWriteWhoseReasonDispatchRefusesAgainstScratchDispatch(t *testing.T) {
+	t.Parallel()
 	baseURL, token := startScratchDispatch(t)
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()

@@ -47,6 +47,7 @@ func git(t *testing.T, clone string, args ...string) string {
 // logs nothing; a clone with the current helper and no useHttpPath is rewritten. A state directory
 // with no clone is nothing to do.
 func TestTmuxBootRewritesEveryOlderClonesCredentialHelper(t *testing.T) {
+	t.Parallel()
 	if _, err := os.Stat(realGit); err != nil {
 		t.Skipf("no git at %s: %v", realGit, err)
 	}

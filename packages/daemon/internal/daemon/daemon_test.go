@@ -181,6 +181,7 @@ func randomSuffix(t *testing.T) string {
 // port is never held — nothing is handed out for it — since the listener resolves port 0 itself
 // at bind time; the daemon still ends up serving a real, dialable address.
 func TestThePortsHandedToADaemonCannotBeTakenBeforeItBinds(t *testing.T) {
+	t.Parallel()
 	cfg := workflowConfig(t, workflowNATS(t))
 	cfg.Runtime = kubernetesConfig(t, "https://127.0.0.1:1").Runtime
 	address := net.JoinHostPort(cfg.Bind, strconv.Itoa(cfg.Port))
@@ -367,6 +368,7 @@ func boots(t *testing.T, cfg config.Config) (int, time.Time) {
 // A daemon told to stop still owes its store a recorded, stamped boot: the restart count and the
 // first boot time are what `legion state` answers from.
 func TestRunRecordsEveryBootAndKeepsTheFirstBootTime(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -398,6 +400,7 @@ func TestRunRecordsEveryBootAndKeepsTheFirstBootTime(t *testing.T) {
 // The refusal an operator reads when Postgres is not there names where the daemon went, and
 // never how it would have got in.
 func TestRunRefusesAnUnreachablePostgresByHostAndNotByPassword(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	cfg.PostgresDSN = "postgres://legion:hunter2@127.0.0.1:1/legion"
 
@@ -426,6 +429,7 @@ func TestRunRefusesAnUnreachablePostgresByHostAndNotByPassword(t *testing.T) {
 // row for it would inflate `daemon.boots` — the value `legion state` answers with and the stage
 // gate asserts on.
 func TestRunRecordsNoBootWhenItCannotTakeItsPort(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	address := net.JoinHostPort(cfg.Bind, strconv.Itoa(cfg.Port))
 	// The listener testConfig holds for the port is the other listener: the daemon binds the port
@@ -449,6 +453,7 @@ func TestRunRecordsNoBootWhenItCannotTakeItsPort(t *testing.T) {
 // port the kernel chose and held from then on: the daemon serves its API on that socket without
 // binding an address of its own, and its boot line names the address it serves on.
 func TestRunServesTheSocketItIsHandedAndLogsItsAddress(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	file, _ := heldSocket(t)
 	// The descriptor `legion start` inherits is a bare number no *os.File owns, which Adopt closes.
@@ -489,6 +494,7 @@ func TestRunServesTheSocketItIsHandedAndLogsItsAddress(t *testing.T) {
 // The API the daemon serves answers from the store it just migrated: this is the whole of
 // `legion state` and of the plugin's read.
 func TestRunServesTheStateOfItsOwnBoot(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	d := startDaemon(t, cfg, fakeRuntime(fake.NewRuntime(), &built{}))
 
@@ -523,6 +529,7 @@ func TestRunServesTheStateOfItsOwnBoot(t *testing.T) {
 // with a PEM and no Dispatch, so no workflow opens and no token is minted (openWorkflow); the body
 // shows the Apps' ids and neither the key nor the store's DSN.
 func TestTheStateCarriesTheDaemonsSettingsAndNoSecret(t *testing.T) {
+	t.Parallel()
 	const privateKey = "-----BEGIN PRIVATE KEY-----\nfixture\n-----END PRIVATE KEY-----"
 	cfg := testConfig(t)
 	cfg.MaxFixAttempts = 5
@@ -564,6 +571,7 @@ func TestTheStateCarriesTheDaemonsSettingsAndNoSecret(t *testing.T) {
 // route applies it with (intake.ApplyFact): the API-only daemon this harness boots carries no
 // workflow runtime, and so no lane that would run the rows the test seeds.
 func TestTheStateListsTheHeldLifecycleRowBehindItsIssuesRunningOne(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	issue := cfg.Project + "-1"
 	ctx := context.Background()
@@ -660,6 +668,7 @@ func TestTheStateListsTheHeldLifecycleRowBehindItsIssuesRunningOne(t *testing.T)
 // its turn are the whole of what is under test; nothing else of the boot's is armed anywhere near
 // as soon, the boot timeout being two minutes out and the probe interval thirty seconds.
 func TestTheStateNamesTheWakeThePacingHoldsUntilItRuns(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	// Thirty wakes a minute, one at a time: the wake behind the burst's waits one two-second
 	// interval and the part of one the daemon's jitter draws (openSupervision's rand.N), which is
@@ -737,6 +746,7 @@ func TestTheStateNamesTheWakeThePacingHoldsUntilItRuns(t *testing.T) {
 // holding is then out. Without this lane a state read during a re-admission wave would show an
 // empty queue while every architect of it still waited.
 func TestTheStateNamesThePacedCatchUpWaitingOnItsOutboxRow(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	issue := cfg.Project + "-6"
 	ctx := context.Background()
@@ -800,6 +810,7 @@ func TestTheStateNamesThePacedCatchUpWaitingOnItsOutboxRow(t *testing.T) {
 // daemon still shows the controller and still mints its grants — a restart does not cut the
 // operator's controller off, as the shipped state file did not.
 func TestAControllerRegistrationIsInTheStateAndSurvivesARestart(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	d := startDaemon(t, cfg, fakeRuntime(fake.NewRuntime(), &built{}))
 	if state := d.state(); state.ControllerLocator != nil {
@@ -1127,6 +1138,7 @@ func (s *shim) prompt() shimwire.Prompt {
 // still knows the review App's login, and its state names each left-out repository with the App it
 // lacks, for an operator to install.
 func TestWorkflowBootServingNoRepositoryReportsWhatItLeftOut(t *testing.T) {
+	t.Parallel()
 	cfg := workflowConfig(t, workflowNATS(t))
 	tokens := &workflowTokenRecorder{missing: map[string]bool{"review acme/widgets": true}}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1182,6 +1194,7 @@ func TestWorkflowBootServingNoRepositoryReportsWhatItLeftOut(t *testing.T) {
 // GitHub's failure, and one ERROR line says so, where the boot used to exit into its supervisor's
 // restart and the same failure.
 func TestWorkflowBootWhoseEveryInstallationReadFailsAnswersItsState(t *testing.T) {
+	t.Parallel()
 	cfg := workflowConfig(t, workflowNATS(t))
 	failure := errors.New("read whether the implement App is installed on acme/widgets failed (403)")
 	tokens := &workflowTokenRecorder{failing: map[string]error{"implement acme/widgets": failure}}
@@ -1249,6 +1262,7 @@ func TestWorkflowBootWhoseEveryInstallationReadFailsAnswersItsState(t *testing.T
 // The workflow has to assemble every integration boundary before opening its API. The order in
 // this log is the boot sequence operators rely on when an external dependency refuses.
 func TestWorkflowBootLogsItsDependencyOrder(t *testing.T) {
+	t.Parallel()
 	cfg := workflowConfig(t, workflowNATS(t))
 	tokens := &workflowTokenRecorder{}
 	var logged syncBuffer
@@ -1321,6 +1335,7 @@ func TestWorkflowBootLogsItsDependencyOrder(t *testing.T) {
 // so boot creates the consumers before it lists: what the listing missed, the consumer delivers.
 // The admitted issue's branch is then created under the GitHub root the daemon was given.
 func TestAnIssueMovedWhileBootListsIsStillAdmitted(t *testing.T) {
+	t.Parallel()
 	natsURL := workflowNATS(t)
 	js := workflowJetStream(t, natsURL)
 	cfg := workflowConfig(t, natsURL)
@@ -1437,6 +1452,7 @@ func TestAnIssueMovedWhileBootListsIsStillAdmitted(t *testing.T) {
 // With no notification stream the daemon would boot with no intake, and nothing Dispatch or GitHub
 // says would ever reach it. Boot refuses instead, naming the stream, before the API answers.
 func TestRunRefusesToBootWithoutTheNotificationStream(t *testing.T) {
+	t.Parallel()
 	natsURL := workflowNATS(t)
 	if err := workflowJetStream(t, natsURL).DeleteStream(context.Background(), "ENVOY_NOTIFICATIONS"); err != nil {
 		t.Fatalf("delete the notification stream: %v", err)
@@ -1465,6 +1481,7 @@ func TestRunRefusesToBootWithoutTheNotificationStream(t *testing.T) {
 // Intake ending while the daemon runs (here its durable consumer is deleted) stops the daemon with
 // that error, instead of the daemon serving on with nothing reading Dispatch or GitHub.
 func TestRunStopsWithTheErrorWhenItsIntakeEnds(t *testing.T) {
+	t.Parallel()
 	natsURL := workflowNATS(t)
 	cfg := workflowConfig(t, natsURL)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1508,6 +1525,9 @@ func TestRunStopsWithTheErrorWhenItsIntakeEnds(t *testing.T) {
 // issues, under a fast readinessRetry, and reaches /healthz — proving the wiring itself rides out
 // the outage, not just the adapter TestReadinessAttempt (readiness_test.go) already covers in
 // isolation.
+//
+// Not parallel: it assigns the production package variable readinessRetry, which every test of
+// the process shares.
 func TestRunWaitsThroughADispatch503BeforeServing(t *testing.T) {
 	fastReadiness(t, bootprobe.Retry{Initial: time.Millisecond, Max: 4 * time.Millisecond})
 	natsURL := workflowNATS(t)
@@ -1549,6 +1569,9 @@ func TestRunWaitsThroughADispatch503BeforeServing(t *testing.T) {
 // admission, and comes up once Dispatch answers. Bounded at appMintRetry's attempts, the read
 // exited the daemon, and its supervisor restarted it straight back into the same refusal. Here
 // Dispatch fails the mapping read two times more than appMintRetry's budget allows.
+//
+// Not parallel: it assigns the production package variables appMintAttempt, appMintRetry and
+// readinessRetry, which every test of the process shares.
 func TestRunWaitsForTheRepositoryMappingThroughADispatchOutage(t *testing.T) {
 	quickAppMints(t)
 	fastReadiness(t, bootprobe.Retry{Initial: time.Millisecond, Max: 4 * time.Millisecond})
@@ -1759,6 +1782,7 @@ func workflowNATS(t *testing.T) string {
 // The `runtime.tmux` block's take_over reaches the tmux runtime as the value the runtime knows,
 // and a block without it, or no block, takes nothing over.
 func TestTheTmuxOptionsCarryTheTakeOver(t *testing.T) {
+	t.Parallel()
 	cfg := config.Config{Runtime: config.Runtime{Name: "tmux", Tmux: &config.Tmux{TakeOver: config.TakeOverKubernetes}}}
 	if got := tmuxOptions(cfg, "test", nil, "", "", quietLogger()).TakeOver; got != tmux.TakeOverKubernetes {
 		t.Errorf("TakeOver = %q, want %q", got, tmux.TakeOverKubernetes)
@@ -1774,6 +1798,7 @@ func TestTheTmuxOptionsCarryTheTakeOver(t *testing.T) {
 // Every launch secret's pointer is a pane variable the operator may not set
 // (runtime.PaneVariableRefusal), refused at load and at boot rather than at every launch.
 func TestEveryLaunchSecretsPointerIsRefusedAsAPaneVariable(t *testing.T) {
+	t.Parallel()
 	cfg := config.Config{EnvoyTokenFile: "/var/run/legion/ENVOY_TOKEN", NatsNkeySeedFile: "/var/run/legion/NATS_NKEY_SEED"}
 	names := launchSecretNames(cfg, lookup(nil))
 	if len(names) != 2 {

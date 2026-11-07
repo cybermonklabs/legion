@@ -32,6 +32,7 @@ func noRepositoriesView() api.RepositoriesView { return api.RepositoriesView{} }
 // give their root architects different prompts, so what a launch is told follows the
 // configuration rather than a policy word that says nothing about which steps hold its tree.
 func TestARootArchitectIsToldTheGatedStepsAndWhatTheyAsk(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -100,6 +101,7 @@ func TestARootArchitectIsToldTheGatedStepsAndWhatTheyAsk(t *testing.T) {
 }
 
 func TestAMergerIsToldItsProjectsMergeRules(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -137,6 +139,7 @@ func TestAMergerIsToldItsProjectsMergeRules(t *testing.T) {
 // after its role's parts; every other role, and every role when the daemon names no backend, on Oh
 // My Pi with its parts alone.
 func TestAClaimsBackendIsItsRolesAndAClaudeRoleIsToldClaudeCodesTools(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -201,6 +204,7 @@ func TestAClaimsBackendIsItsRolesAndAClaudeRoleIsToldClaudeCodesTools(t *testing
 // every one, so the clause then says the daemon maps none, as the controller's does, and never
 // ends in "are .".
 func TestAWorkersAddressingNamesItsRepositoryAndTheProjects(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -266,6 +270,7 @@ func TestAWorkersAddressingNamesItsRepositoryAndTheProjects(t *testing.T) {
 // no git identity and neither App login: it works Dispatch, never a checkout or GitHub, and
 // commits nothing.
 func TestTheControllersLaunchIsItsHeadlessPromptAndNoCheckout(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -315,6 +320,7 @@ func TestTheControllersLaunchIsItsHeadlessPromptAndNoCheckout(t *testing.T) {
 // environment's LEGION_SLACK_CHANNELS is the runtime's to set (sandbox.Options.ControllerSlackChannels),
 // never the spec's, which the runtime would refuse.
 func TestTheControllersLaunchNamesTheProjectsSlackChannels(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -351,6 +357,7 @@ func TestTheControllersLaunchNamesTheProjectsSlackChannels(t *testing.T) {
 // both read where the project's issues live; a worker's addressing carries the same clause after
 // a `; `.
 func TestTheControllersAddressingGainsTheProjectsRepositories(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -395,6 +402,7 @@ func TestTheControllersAddressingGainsTheProjectsRepositories(t *testing.T) {
 // launch, naming the issue. What an issue works, its record's repository or, unrecorded, the
 // project's default, is the workflow's (TestAnUnrecordedIssueWorksTheProjectsDefaultRepository).
 func TestAWorkerLaunchIsOnItsIssuesRecordedRepository(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -442,6 +450,7 @@ func TestAWorkerLaunchIsOnItsIssuesRecordedRepository(t *testing.T) {
 // deployment's configured repository_renames — so a claim on the name a transfer moved a
 // repository away from stamps exactly as one on the name the project wrote.
 func TestASpecStampsTheIssueKeyOnlyOnARepositoryTheProjectNames(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -515,6 +524,7 @@ func TestASpecStampsTheIssueKeyOnlyOnARepositoryTheProjectNames(t *testing.T) {
 // runtime/sandbox's mainEnvironment of issuePod.agentEnv. So a Claude Code launch carries
 // LEGION_ISSUE_TRAILER into its pane exactly as an Oh My Pi one does.
 func TestAClaudeLaunchCarriesTheIssueKeyItStampsIntoItsPane(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -558,6 +568,7 @@ func TestAClaudeLaunchCarriesTheIssueKeyItStampsIntoItsPane(t *testing.T) {
 // already at the daemon's contract, or a daemon that knows no plugin pair (LEGION-164's degraded
 // mode) — and always with Contract already api.DaemonAPIVersion.
 func TestSpawnSpecPluginsIsSetOnlyForAStaleKubernetesClaimWithASession(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -603,6 +614,7 @@ func TestSpawnSpecPluginsIsSetOnlyForAStaleKubernetesClaimWithASession(t *testin
 
 // The daemon's own controller (`controller: daemon`) is covered the same way as any claim.
 func TestSpawnSpecPluginsCoversTheDaemonsControllerToo(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -625,6 +637,7 @@ func TestSpawnSpecPluginsCoversTheDaemonsControllerToo(t *testing.T) {
 // default its plugin holds (packages/pi-shared/src/stall-limits.ts). Both runtimes forward Env
 // verbatim, so this is where the four reach a pane and a pod alike.
 func TestSpawnSpecCarriesTheStallLimitsTheDaemonHolds(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -673,6 +686,7 @@ func TestSpawnSpecCarriesTheStallLimitsTheDaemonHolds(t *testing.T) {
 // the same shape is installed for as before, the daemon's own controller among them: it runs on
 // Oh My Pi whatever worker_backends names for a phase worker.
 func TestSpawnSpecPluginsSkipsAClaudeClaimAndNoOther(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -736,6 +750,7 @@ func withContract(c supervise.Claim, contract int) supervise.Claim {
 // provisions its own (a Sandbox pod), nothing is asked of the host. The controller works no
 // checkout.
 func TestAHostLaunchProvisionsItsWorkspaceFirst(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)

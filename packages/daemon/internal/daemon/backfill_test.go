@@ -30,6 +30,7 @@ func (d *listingDispatch) ListIssues(context.Context, string, []string) ([]dispa
 // per repository. A record Dispatch resolves to none refuses the boot, naming every such record,
 // and fills nothing.
 func TestTheBootFillsRecordsWithNoRepository(t *testing.T) {
+	t.Parallel()
 	pool, reset := tableDatabase(t)
 	seed := func(t *testing.T) *workflowRuntime {
 		t.Helper()

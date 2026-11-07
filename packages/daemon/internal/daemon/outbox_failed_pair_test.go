@@ -22,6 +22,7 @@ import (
 // own guard no longer held, and delivered a second prompt for the same phase. The retry belongs
 // to the row that carries the task: it comes with the slot, and the kept task is delivered once.
 func TestTheRelaunchRowLeavesAFailedClaimForTheRowThatCarriesItsTask(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()

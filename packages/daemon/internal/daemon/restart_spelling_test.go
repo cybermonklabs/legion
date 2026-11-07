@@ -26,6 +26,7 @@ import (
 // GitHub's spelling beside its own, so the boot subscribes from the database, not from a read a
 // restart forgets. The workspace keeps the clone's spelling.
 func TestARestartStillHearsAnUnmappedRepositoryInGitHubsSpelling(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := projectRecords{Store: record.NewStore(), project: "LEGION"}
@@ -106,6 +107,7 @@ func TestARestartStillHearsAnUnmappedRepositoryInGitHubsSpelling(t *testing.T) {
 // repository GitHub cannot read refuses the boot, naming the issue, rather than subscribing in a
 // spelling its events are not published under.
 func TestTheBootNamesARecordWithNoGitHubSpellingBeforeSubscribing(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool, reset := tableDatabase(t)
 	seed := func(t *testing.T) (*workflowRuntime, projectRecords) {

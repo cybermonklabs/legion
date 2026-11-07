@@ -21,6 +21,7 @@ import (
 // actor: that event is what admission takes the child in by as an orphan (LEGION-624). The labels
 // the child already carried are kept.
 func TestAHandOverReachesScratchDispatchAsOneEventCarryingTheTodoAndTheLabel(t *testing.T) {
+	t.Parallel()
 	baseURL, token := startScratchDispatch(t)
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()

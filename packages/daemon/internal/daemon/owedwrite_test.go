@@ -355,6 +355,7 @@ func (r *owedWriteRig) owedTurnStart(role claim.Role) {
 // which is what every other claim's event and every read of this claim then waits for
 // (TestNoDecisionWaitsOnTheClaimWhoseWriteTheDatabaseHasNotTaken).
 func TestTheRepairDeadlineEndsADecisionsWaitOnADatabaseThatHasStoppedAnswering(t *testing.T) {
+	t.Parallel()
 	// The bound a decision is measured against, and the bound that catches a wait which is not
 	// bounded at all: the blocked store never answers, so an unbounded decision returns at no
 	// time this test could name.
@@ -411,6 +412,7 @@ func TestTheRepairDeadlineEndsADecisionsWaitOnADatabaseThatHasStoppedAnswering(t
 // claim, a read of it, and the stop all wait on, and a decision that waits out the connection's
 // own patience holds every one of them for the length of the outage.
 func TestNoDecisionWaitsOnTheClaimWhoseWriteTheDatabaseHasNotTaken(t *testing.T) {
+	t.Parallel()
 	const claimWrite = 500 * time.Millisecond
 	// answered is what each wait here is measured against: several claim-write bounds, and far
 	// less than the outage, which never ends. The daemon's own stop allows its whole shutdown 15
@@ -503,6 +505,7 @@ func TestNoDecisionWaitsOnTheClaimWhoseWriteTheDatabaseHasNotTaken(t *testing.T)
 // it. The next boot reads the stored row, takes the claim up from it, and the claim decides
 // again.
 func TestAnOwedWriteAcrossARestartIsLostAndTheStoredClaimIsTakenUp(t *testing.T) {
+	t.Parallel()
 	const claimWrite = 250 * time.Millisecond
 	rig := newOwedWriteRig(t, claimWrite, owedRole{claim.RoleArchitect, supervise.StateReady})
 	rig.refuse(claim.RoleArchitect, brokenConnection())
@@ -541,6 +544,7 @@ func TestAnOwedWriteAcrossARestartIsLostAndTheStoredClaimIsTakenUp(t *testing.T)
 // did with the report: written in the transaction that applies the fact, keyed on the claim and
 // the generation the report named (terminalEventID), and never written by anything else.
 func TestTheOwedReportsReachTheDaemonOnceTheRepairLands(t *testing.T) {
+	t.Parallel()
 	const claimWrite = 250 * time.Millisecond
 	rig := newOwedWriteRig(t, claimWrite, owedRole{claim.RoleArchitect, supervise.StateRegistered})
 	// The daemon's own durable-state path over the rig's real pool, as the workflow installs it

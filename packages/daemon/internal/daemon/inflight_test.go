@@ -312,6 +312,7 @@ func neverStarted(t *testing.T, stopLog string) {
 // stopping and which claims are deciding, ends those relaunches with the stop instead of waiting
 // them out, and stamps its boot, well inside a pod's termination grace (LEGION-650).
 func TestRunStopsInsideAPodGraceWhileRelaunchesWaitOnTheCluster(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	rt := newStallingRuntime(t, fake.NewRuntime(), false)
 	logs := &syncBuffer{}
@@ -334,6 +335,7 @@ func TestRunStopsInsideAPodGraceWhileRelaunchesWaitOnTheCluster(t *testing.T) {
 // waited on past the stop's budget: the daemon names the claims it left deciding, stamps its boot
 // and returns, and the next boot's re-adoption and orphan sweep take those claims up.
 func TestRunStampsItsBootWithoutWaitingOutALaunchThatIgnoresTheStop(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	rt := newStallingRuntime(t, fake.NewRuntime(), true)
 	logs := &syncBuffer{}
@@ -356,6 +358,7 @@ func TestRunStampsItsBootWithoutWaitingOutALaunchThatIgnoresTheStop(t *testing.T
 // A machine holds its lock through the runtime call its decision makes, and the listing reads every
 // machine, so a daemon with a relaunch always in flight never answered it (LEGION-650).
 func TestTheOperatorListingAnswersWhileRelaunchesWaitOnTheCluster(t *testing.T) {
+	t.Parallel()
 	const listingBound = 5 * time.Second
 	cfg := testConfig(t)
 	rt := newStallingRuntime(t, fake.NewRuntime(), false)
@@ -393,6 +396,7 @@ func TestTheOperatorListingAnswersWhileRelaunchesWaitOnTheCluster(t *testing.T) 
 // runtime. One that answers to its context ends with the stop; one that answers to none is not
 // waited on past the stop's budget, and the stop names it (LEGION-650, LEGION-653).
 func TestRunStopsInsideAPodGraceWhileItRelaunchesAnUnfinishedLaunch(t *testing.T) {
+	t.Parallel()
 	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name           string
@@ -453,6 +457,7 @@ func TestRunStopsInsideAPodGraceWhileItRelaunchesAnUnfinishedLaunch(t *testing.T
 // must succeed before an unfinished launch is relaunched) wait on the cluster or the tmux server,
 // and the stop's budget bounds a boot as it bounds a daemon that serves (LEGION-650).
 func TestRunStopsInsideAPodGraceWhileItsBootReconcilesOrphans(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	rt := &bootReconcileStall{stallingRuntime: newStallingRuntime(t, fake.NewRuntime(), false), reconciling: make(chan struct{}, 1)}
 	o := fakeRuntime(rt, &built{})
@@ -548,6 +553,7 @@ func operatorRequest(d *daemon, method, path string, body []byte) <-chan int {
 // hangs up, never past the drain. The failure the cut leaves is the stop's, logged at Info
 // (LEGION-650).
 func TestRunEndsAnOperatorSpawnInFlightWithTheDrainAndNamesIt(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	rt := newStallingRuntime(t, fake.NewRuntime(), false)
 	logs := &syncBuffer{}
@@ -603,6 +609,7 @@ func (r *exitingSuspend) Suspend(ctx context.Context, loc runtime.Locator) error
 // and the store holds the claim suspended. Cut short at the signal, it would leave the claim stored
 // live, which the next boot finds dead and relaunches, undoing the operator's request (LEGION-650).
 func TestRunRecordsAnOperatorSuspensionWhoseProcessExitsWithinTheDrain(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	rt := &exitingSuspend{Runtime: fake.NewRuntime(), stopping: make(chan claim.Token, 4), exit: make(chan struct{})}
 	logs := &syncBuffer{}
@@ -697,6 +704,7 @@ func awaitLog(t *testing.T, log *syncBuffer, want string, bound time.Duration, w
 // The claim the route is deciding keeps its connection, which carries its process's shutdown frame
 // (LEGION-650).
 func TestAFrameAShimWritesDuringTheDrainWaitsInItsBacklogForTheNextDaemon(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	rt := &exitingSuspend{Runtime: fake.NewRuntime(), stopping: make(chan claim.Token, 4), exit: make(chan struct{})}
 	rec := &built{}
@@ -837,6 +845,7 @@ func (r *closingRelease) Release(ctx context.Context, k runtime.Known) error {
 // holds them from before the root's close, so the stop keeps their connections, and each one's stop
 // sends its shutdown frame rather than ending its agent unannounced (LEGION-650).
 func TestAnOperatorsTreeCloseInFlightAtTheStopStopsTheTreesClaimsOverTheirConnections(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	project, _ := claim.ProjectToken(cfg.Project)
 	root, _ := claim.NewToken(project, "LEGION-9", claim.RoleArchitect)
@@ -902,6 +911,7 @@ func TestAnOperatorsTreeCloseInFlightAtTheStopStopsTheTreesClaimsOverTheirConnec
 // stopping daemon does not report a shim reconnecting across a restart as a credential problem
 // (LEGION-650).
 func TestAHelloTheBootHoldsWhenTheStopComesClosesUnrefused(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	project, _ := claim.ProjectToken(cfg.Project)
 	token, _ := claim.NewToken(project, "LEGION-3", claim.RolePlanner)

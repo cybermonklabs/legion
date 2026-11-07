@@ -99,6 +99,7 @@ func capabilityState(t *testing.T, d capabilities.Deployment, name capabilities.
 // nothing: the row stays unchecked, as a session that no longer runs proves nothing of the one that
 // does.
 func TestDeploymentRendersTheReportsOfLiveSessionsAlone(t *testing.T) {
+	t.Parallel()
 	ready := reportingClaim("legion-LEGION-209-implementer", claim.RoleImplementer, supervise.StateReady)
 	working := reportingClaim("legion-LEGION-209-architect", claim.RoleArchitect, supervise.StateWorking)
 	idle := reportingClaim("legion-LEGION-209-tester", claim.RoleTester, supervise.StateIdle)
@@ -181,6 +182,7 @@ func TestDeploymentRendersTheReportsOfLiveSessionsAlone(t *testing.T) {
 // A supervision with no supervisor yet — `legion start --check-config`'s, and a bare test's —
 // reports the deployment from what it has.
 func TestDeploymentWithoutASupervisorRendersNoSession(t *testing.T) {
+	t.Parallel()
 	s := &supervision{cfg: config.Config{Runtime: config.Runtime{Name: "tmux"}}, log: quietLogger()}
 	if d := s.deployment(); d.Sessions != nil {
 		t.Fatalf("deployment sessions = %+v, want none", d.Sessions)
@@ -204,6 +206,7 @@ func (s *fakeReportStore) PutCapabilityReport(_ context.Context, report capabili
 // the tick's report does. A store that refuses the write is logged at error and the report kept all
 // the same: the daemon runs the session and reports what it lacks.
 func TestCapabilityReportedKeepsPersistsAndLogsTheReport(t *testing.T) {
+	t.Parallel()
 	c := reportingClaim("legion-LEGION-209-implementer", claim.RoleImplementer, supervise.StateReady)
 	report := sessionReport(c, "4242:1")
 	for _, tc := range []struct {
@@ -287,6 +290,7 @@ func TestCapabilityReportedKeepsPersistsAndLogsTheReport(t *testing.T) {
 
 // The store is shared across projects: boot keeps the reports of this project's claims alone.
 func TestReportsOfClaimsKeepsThisProjectsAlone(t *testing.T) {
+	t.Parallel()
 	own := reportingClaim("legion-LEGION-209-implementer", claim.RoleImplementer, supervise.StateReady)
 	other := reportingClaim("widgets-WIDGETS-7-implementer", claim.RoleImplementer, supervise.StateReady)
 	other.Project = "widgets"
@@ -363,6 +367,7 @@ func wantStateRedacted(t *testing.T, d *daemon, issue string, branches []redacti
 // upstream text a check quotes as it came, credential and all, as a plugin from before its own
 // redaction, or a pod the daemon cannot trust, would send it.
 func TestStateShowsWhatASessionReportedRedacted(t *testing.T) {
+	t.Parallel()
 	branches := redactionBranches(t)
 	rows := make([]claim.CapabilityRow, 0, len(branches))
 	for _, branch := range branches {
@@ -386,6 +391,7 @@ func TestStateShowsWhatASessionReportedRedacted(t *testing.T) {
 // by a daemon from before redaction (legion-v11.5.0 and v11.5.1), or before a shape it now redacts
 // — is shown redacted once a daemon re-adopts the session that reported it.
 func TestStateShowsAStoredReportRedactedAfterARestart(t *testing.T) {
+	t.Parallel()
 	branches := redactionBranches(t)
 	cfg := testConfig(t)
 	rt := fake.NewRuntime()
@@ -426,6 +432,7 @@ func TestStateShowsAStoredReportRedactedAfterARestart(t *testing.T) {
 // The task agents the registration answers are sorted, and none when the prompts dispatch none
 // (the API's register writes an empty list for a nil slice).
 func TestPromptAgentsAreSorted(t *testing.T) {
+	t.Parallel()
 	names := promptrefs.New()
 	names.Text("roles/core/architect.md", []byte(`task(agent="plan-gap-analyst") then task(agent="deep-worker")`))
 	names.Text("roles/core/reviewer.md", []byte(`task(agent="oracle") and skill://legion-worker`))

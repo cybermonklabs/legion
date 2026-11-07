@@ -46,6 +46,7 @@ func (issueProvisionTokens) Token(context.Context, ghrepo.Repository) (string, e
 // session is the store's and outlives the Sandbox, which owned no part of it. The tree stays live
 // until its linger closes, and its cleanup then finds the issue's Sandbox already gone.
 func TestIssueCloseDeletesTheSandboxAfterARestart(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	pool := isolatedOutboxPool(t)
@@ -194,6 +195,7 @@ func (s issueLaunchSpecs) SpawnSpec(context.Context, supervise.Claim) (runtime.S
 // launches fresh because its resume path was cleared, while its session id stays as reaping
 // evidence until the volume is gone.
 func TestAChildClosedDoneDeletesItsSandboxWhileItsParentRuns(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	pool := isolatedOutboxPool(t)

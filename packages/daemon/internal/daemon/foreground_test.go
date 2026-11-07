@@ -51,6 +51,9 @@ func requireProcStatus(t *testing.T) {
 // The attempt's SIGTTOU immunity ends with it: a child started after release - the controller's
 // Oh My Pi - is stopped by SIGTTOU again rather than inheriting SIG_IGN, which signal.Reset alone
 // leaves in place.
+//
+// Not parallel: it changes or reads this process's own signal dispositions, which every test of
+// the process shares.
 func TestATerminalAttemptLeavesLaterChildrenSIGTTOUsDefault(t *testing.T) {
 	requireProcStatus(t)
 	before := ignoredBy(t, bare)
@@ -77,6 +80,9 @@ func TestATerminalAttemptLeavesLaterChildrenSIGTTOUsDefault(t *testing.T) {
 
 // At the terminal the attempt ignores SIGTSTP, so a Ctrl-Z cannot stop the terminal's foreground
 // job while this process waits in the background; an attempt run as the daemon's are does not.
+//
+// Not parallel: it changes or reads this process's own signal dispositions, which every test of
+// the process shares.
 func TestATerminalAttemptIgnoresSIGTSTP(t *testing.T) {
 	requireProcStatus(t)
 	var background *terminalJob
@@ -95,6 +101,9 @@ func TestATerminalAttemptIgnoresSIGTSTP(t *testing.T) {
 // A terminal attempt the operator's Ctrl-C ended is an interrupt whether it died of SIGINT or, as
 // Oh My Pi does, caught it and exited 130; any other end is judged as an answer, and an attempt
 // away from a terminal is never an interrupt.
+//
+// Not parallel: it changes or reads this process's own signal dispositions, which every test of
+// the process shares.
 func TestATerminalAttemptEndedByCtrlCIsInterrupted(t *testing.T) {
 	ended := func(script string) *os.ProcessState {
 		t.Helper()
@@ -128,6 +137,9 @@ func TestATerminalAttemptEndedByCtrlCIsInterrupted(t *testing.T) {
 // exits 0, as Oh My Pi does when the SIGINT lands late in `omp models`: the attempt's shell records
 // the signal rather than reading it from the launch's status. Without a Ctrl-C the launch's own
 // status comes through.
+//
+// Not parallel: it changes or reads this process's own signal dispositions, which every test of
+// the process shares.
 func TestATerminalAttemptRecordsACtrlCTheLaunchExitsZeroOn(t *testing.T) {
 	job := &terminalJob{}
 	// The launch ignores SIGINT and finishes normally, exit 0: the case no exit status carries.
@@ -166,6 +178,7 @@ func (c *chunks) Write(p []byte) (int, error) {
 
 // The terminal sees the attempt's stderr as it arrives, without the load probe's report.
 func TestTheTerminalCopyDropsTheProbesReportAndShowsAPromptAtOnce(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		writes []string

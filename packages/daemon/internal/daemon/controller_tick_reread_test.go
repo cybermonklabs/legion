@@ -36,6 +36,7 @@ import (
 // This fake serves none of them, so every one of those reads answers not-found — an issue
 // Dispatch no longer serves is no error, and the tick is applied all the same.
 func TestThePeriodicTurnReReadsOnlyWhatSomethingWaitsOn(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	client := &tickDispatch{}
 	w := tickRuntime(t, pool, client)
@@ -64,6 +65,7 @@ func TestThePeriodicTurnReReadsOnlyWhatSomethingWaitsOn(t *testing.T) {
 // Nothing waiting is almost every turn, and it reads nothing from Dispatch at all: the mirror
 // alone answers, and the tick applied is the tick as it always was.
 func TestThePeriodicTurnWithNothingWaitingReadsNothingFromDispatch(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	client := &tickDispatch{}
 	w := tickRuntime(t, pool, client)
@@ -86,6 +88,7 @@ func TestThePeriodicTurnWithNothingWaitingReadsNothingFromDispatch(t *testing.T)
 // blocker, the mirror handler writes what Dispatch answered ahead of the handlers that judge in
 // the same transaction, and the root is admitted on this very tick.
 func TestThePeriodicTurnAdmitsARootWhoseBlockerClosedWithNoEvent(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	client := &tickDispatch{issues: map[string]dispatch.Issue{
 		"EXT-1": {Key: "EXT-1", Status: "done", LastSeq: 7},
@@ -113,6 +116,7 @@ func TestThePeriodicTurnAdmitsARootWhoseBlockerClosedWithNoEvent(t *testing.T) {
 // only wake a tree waiting on a refused root claim gets, so the turn logs the failure and applies
 // the tick with what it has — here nothing, which leaves the blocked root exactly where it was.
 func TestThePeriodicTurnWakesTheControllerWhenTheDispatchReadFails(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	registerTickController(t, pool)
 	client := &tickDispatch{err: errors.New("dispatch is unreachable")}
@@ -135,6 +139,7 @@ func TestThePeriodicTurnWakesTheControllerWhenTheDispatchReadFails(t *testing.T)
 // one at a time, and above it the project is listed once instead — one request rather than the
 // twenty-six single reads the waiting set would otherwise ask for.
 func TestThePeriodicTurnListsTheProjectOnceAboveTheSingleReadBound(t *testing.T) {
+	t.Parallel()
 	pool, reset := tableDatabase(t)
 	t.Run("at the bound, one read per key", func(t *testing.T) {
 		reset(t)
@@ -175,6 +180,7 @@ func TestThePeriodicTurnListsTheProjectOnceAboveTheSingleReadBound(t *testing.T)
 // The turn's re-read carries the claim Dispatch shows on each issue it reads, by a single read
 // and by the listing alike, and the mirror writes it.
 func TestThePeriodicTurnsReReadMirrorsTheClaim(t *testing.T) {
+	t.Parallel()
 	pool, reset := tableDatabase(t)
 	t.Run("a single read", func(t *testing.T) {
 		reset(t)

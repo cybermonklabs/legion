@@ -30,6 +30,7 @@ import (
 // Dispatch, and none of them ever gets a branch created on GitHub (refs/heads/legion/<key>) by this
 // daemon.
 func TestAnotherProjectsIssuesAreNotThisDaemonsToAdmit(t *testing.T) {
+	t.Parallel()
 	cfg := workflowConfig(t, workflowNATS(t))
 	cfg.AdmissionCap = 2
 	other := "OTHER" + randomSuffix(t)

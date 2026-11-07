@@ -53,6 +53,7 @@ func bufferedLogger(buf *bytes.Buffer) *slog.Logger {
 // moment the probe judged the process gone: the listener deletes the registration only while
 // nothing has been written under that session id since.
 func TestTheCleanStopDeletesTheRegistrationUnderTheMomentItsProbeJudged(t *testing.T) {
+	t.Parallel()
 	listener := &deleteRecorder{}
 	server := listener.server(t)
 	var logged bytes.Buffer
@@ -78,6 +79,7 @@ func TestTheCleanStopDeletesTheRegistrationUnderTheMomentItsProbeJudged(t *testi
 // registration. The stop is still sent — only the listener can tell what is stored when it lands
 // — and what it reports is that the live registration stayed, not that the session was stopped.
 func TestTheCleanStopReportsARegistrationTheListenerKept(t *testing.T) {
+	t.Parallel()
 	listener := &deleteRecorder{answer: `{"deleted":false,"reason":"the registration was written after the moment the delete belongs to"}`}
 	server := listener.server(t)
 	var logged bytes.Buffer
@@ -99,6 +101,7 @@ func TestTheCleanStopReportsARegistrationTheListenerKept(t *testing.T) {
 // A listener of an earlier release judges no condition and answers 200 with no body at all: it
 // deleted the registration, and the stop says so.
 func TestTheCleanStopReadsABodilessAnswerAsTheRegistrationDeleted(t *testing.T) {
+	t.Parallel()
 	listener := &deleteRecorder{}
 	server := listener.server(t)
 	var logged bytes.Buffer
@@ -115,6 +118,7 @@ func TestTheCleanStopReadsABodilessAnswerAsTheRegistrationDeleted(t *testing.T) 
 // returns reads the moment there — where no lock is waited on — and leaves the delete to a
 // goroutine.
 func TestTheCleanStopRunsOffTheMachinesDecision(t *testing.T) {
+	t.Parallel()
 	arrived := make(chan struct{})
 	listener := &deleteRecorder{arrived: arrived}
 	server := listener.server(t)
@@ -149,6 +153,7 @@ func TestTheCleanStopRunsOffTheMachinesDecision(t *testing.T) {
 // Before the allowance the stop carried time.Now() itself, and the first check below failed with
 // a gap of about zero.
 func TestCleanSessionStopDatesItselfBeforeTheMomentItWasAskedAt(t *testing.T) {
+	t.Parallel()
 	arrived := make(chan struct{})
 	listener := &deleteRecorder{arrived: arrived}
 	server := listener.server(t)
@@ -183,6 +188,7 @@ func TestCleanSessionStopDatesItselfBeforeTheMomentItWasAskedAt(t *testing.T) {
 // request is bounded, by cleanSessionStopBudget and by supervision's own end, and what it then
 // costs the session is only the wait it already had, so it is reported as the refusal it is.
 func TestTheCleanStopIsAbandonedWhenSupervisionEnds(t *testing.T) {
+	t.Parallel()
 	arrived := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		close(arrived)
@@ -208,6 +214,7 @@ func TestTheCleanStopIsAbandonedWhenSupervisionEnds(t *testing.T) {
 // With no listener configured there is nothing to tell, and the machines are given no SessionGone
 // at all.
 func TestNoCleanStopWithoutAListener(t *testing.T) {
+	t.Parallel()
 	if stop := cleanSessionStop(context.Background(), "", "", quietLogger()); stop != nil {
 		t.Fatal("a daemon with no Envoy listener was given a clean stop to call")
 	}

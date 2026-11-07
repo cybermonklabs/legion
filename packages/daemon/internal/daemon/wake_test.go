@@ -69,6 +69,7 @@ func recordListenerReady(t *testing.T, pool *pgxpool.Pool, at time.Time) {
 // fifteen minutes. The gate runs before the pass reads a single pod, so a daemon that has heard
 // nothing releases nothing at all rather than deciding each pod and then declining.
 func TestTheDaemonReleasesNothingWithoutAFreshListenerReport(t *testing.T) {
+	t.Parallel()
 	tablePool, reset := tableDatabase(t)
 	t.Run("no report at all", func(t *testing.T) {
 		reset(t)
@@ -104,6 +105,7 @@ func TestTheDaemonReleasesNothingWithoutAFreshListenerReport(t *testing.T) {
 // issue, the role and the step it waits on, and is marked, so it warns once however many passes
 // read it. The clock is the test's: every time comes from the pass's own now.
 func TestAStuckResumeIsWarnedAboutOnceAtTenMinutes(t *testing.T) {
+	t.Parallel()
 	w, pool, logged := wakeRuntime(t)
 	ctx := context.Background()
 	woke := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
@@ -164,6 +166,7 @@ func stuckMark(t *testing.T, pool *pgxpool.Pool, id int64) bool {
 // starts. The row is read from the database the restarted daemon opens, and the pass applies one
 // fact per row under the row's own id, so the backstop fires once.
 func TestABackstopThatCameDueWhileTheDaemonWasDownFiresAfterItStarts(t *testing.T) {
+	t.Parallel()
 	w, pool, _ := wakeRuntime(t)
 	ctx := context.Background()
 	due := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
@@ -250,6 +253,7 @@ func (h *terminalHandler) applied() []string {
 // R5: the first turn is stamped from the woken claim reaching working, not from a delivery's
 // confirmation, because a wake for a notice or a phase-ended message carries no delivery.
 func TestTheDaemonsOneDurableStateCallbackCarriesTheFactsAndTheResumeStamps(t *testing.T) {
+	t.Parallel()
 	w, pool, _ := wakeRuntime(t)
 	facts := &terminalHandler{}
 	w.handlers = []intake.Handler{facts}

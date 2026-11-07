@@ -164,6 +164,7 @@ func stampCreated(t *testing.T, pool *pgxpool.Pool, id int64, at time.Time) {
 // alive used to write forty catch-ups due at once, and forty sessions then read their whole
 // context inside the minute that follows.
 func TestFortyStartsOfRunningArchitectsWriteCatchUpsOnTheLimitersSchedule(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -224,6 +225,7 @@ func TestFortyStartsOfRunningArchitectsWriteCatchUpsOnTheLimitersSchedule(t *tes
 // not the architect being away. A notice waiting on the outbox's backoff beside it is released as
 // it always was.
 func TestAReadyLeavesAPacedCatchUpAtItsOwnMoment(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -258,6 +260,7 @@ func TestAReadyLeavesAPacedCatchUpAtItsOwnMoment(t *testing.T) {
 // published after the catch-up and never before it: the architect is woken once, by the catch-up,
 // and reads the later notice in the turn that wake starts.
 func TestALaterNoticeIsPublishedAfterThePacedCatchUpAndNeverBeforeIt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -305,6 +308,7 @@ func TestALaterNoticeIsPublishedAfterThePacedCatchUpAndNeverBeforeIt(t *testing.
 // attempts, and every attempt from the seventh is a warning (waitWarnAttempts), so each architect
 // of a wave would leave a column of warnings that say only that the pacing is working.
 func TestTheRowFencedBehindAPacedCatchUpRunsOnceAtItsMoment(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -368,6 +372,7 @@ func TestTheRowFencedBehindAPacedCatchUpRunsOnceAtItsMoment(t *testing.T) {
 // writes, which answers a person who is waiting. Both are written while the limiter is spent, so a
 // reservation of their own would be minutes out.
 func TestAnOrdinaryCatchUpAndAHandOversAreNotDelayed(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -417,6 +422,7 @@ func assertDueAtOnce(t *testing.T, pool *pgxpool.Pool, now time.Time, what strin
 // log finds every wake of a wave, whichever lane caused it, and the pace it names is the one the
 // daemon holds its machines to, read through the supervisor the runner already has.
 func TestTheOutboxWritesTheWakeLineWhenItRunsAPacedNoticeRow(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -466,6 +472,7 @@ func TestTheOutboxWritesTheWakeLineWhenItRunsAPacedNoticeRow(t *testing.T) {
 // waited=true with a quarter of a second as its waitedFor, where this test wants a line that
 // names no wait at all.
 func TestABurstReleasedCatchUpWritesAWakeLineThatWaitedNothing(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -516,6 +523,7 @@ func TestABurstReleasedCatchUpWritesAWakeLineThatWaitedNothing(t *testing.T) {
 // The negative control is the carry reverted (noticeAnswered's PacedAt and PacedFrom on the
 // copy): the copy then publishes with no line written, which this test reads at the wake lines.
 func TestAReHeldPacedCatchUpWritesItsOneWakeLineWhenItsCopyPublishes(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -574,6 +582,9 @@ func TestAReHeldPacedCatchUpWritesItsOneWakeLineWhenItsCopyPublishes(t *testing.
 // RetryOutbox). The operator's own check reads those lines (scripts/wake-windows.py counts every
 // paced line per minute and builds a window for each), so one retried catch-up inflated both
 // halves of it.
+//
+// Not parallel: it assigns the production package variable reserved, which every test of the
+// process shares.
 func TestARetriedPacedCatchUpWritesOneWakeLineWithTheWaitItsReservationGave(t *testing.T) {
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
@@ -630,6 +641,9 @@ func TestARetriedPacedCatchUpWritesOneWakeLineWithTheWaitItsReservationGave(t *t
 // Before, every row the pacing had ever marked was skipped, so a catch-up that failed one attempt
 // waited out its backoff after the architect reported ready — the fence holds every later notice
 // of that architect behind it meanwhile.
+//
+// Not parallel: it assigns the production package variable reserved, which every test of the
+// process shares.
 func TestAReadyReleasesAPacedCatchUpWhoseMomentHasPassed(t *testing.T) {
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)

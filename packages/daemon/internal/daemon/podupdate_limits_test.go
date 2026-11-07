@@ -217,6 +217,7 @@ func (r *fleetRig) recordAsServed(rounds api.PodUpdateRounds) string {
 // finished and freed its slot. Nothing is lost by waiting: every pod of the fleet is replaced in
 // the end, each after its own workers have pushed.
 func TestPodUpdateMaxOpenRounds(t *testing.T) {
+	t.Parallel()
 	keys := []string{"INFRA-2", "INFRA-10", "INFRA-1000", "INFRA-30", "INFRA-4"}
 	rig := newLimitRig(t, keys...)
 	rig.s.cfg.PodUpdateMaxOpenRounds = new(2)
@@ -259,6 +260,7 @@ func TestPodUpdateMaxOpenRounds(t *testing.T) {
 // did not open is still none of its business to end: a worker told to push is waited for, boot or
 // no boot.
 func TestPodUpdateMaxOpenRoundsRestart(t *testing.T) {
+	t.Parallel()
 	keys := []string{"INFRA-1", "INFRA-2", "INFRA-3", "INFRA-4"}
 	rig := newLimitRig(t, keys...)
 	// The daemon before the restart ran under no cap and opened three rounds; the fourth issue's
@@ -301,6 +303,7 @@ func TestPodUpdateMaxOpenRoundsRestart(t *testing.T) {
 // asked afresh when it gets one: a pod whose drift has gone away in the meantime, because an
 // operator rolled the template back, is a pod no round need stop any worker for.
 func TestPodUpdateMaxOpenRoundsPodless(t *testing.T) {
+	t.Parallel()
 	rig := newLimitRig(t, "INFRA-1", "INFRA-2", "INFRA-3")
 	rig.s.cfg.PodUpdateMaxOpenRounds = new(1)
 
@@ -331,6 +334,7 @@ func TestPodUpdateMaxOpenRoundsPodless(t *testing.T) {
 // round the issue is waiting for, it would hold that claim's next task for as long as the issue
 // waits for a slot, which under a fleet-wide roll is as long as the roll.
 func TestPodUpdateMaxOpenRoundsPluginRound(t *testing.T) {
+	t.Parallel()
 	// The architect of the issue the cap holds back runs on the contract before this daemon's,
 	// and the stale-plugin lane has a round of its own open over it.
 	held := limitIssue(2, "INFRA-2")
@@ -363,6 +367,7 @@ func TestPodUpdateMaxOpenRoundsPluginRound(t *testing.T) {
 // record the round that would free it — and every issue behind it would wait on a round that
 // never opened.
 func TestPodUpdateMaxOpenRoundsChargesOnlyAnAskThatReachedAWorker(t *testing.T) {
+	t.Parallel()
 	workerless := "INFRA-1"
 	keys := []string{workerless, "INFRA-2", "INFRA-3", "INFRA-4", "INFRA-5"}
 	issues := make([]fleetIssue, 0, len(keys))
@@ -407,6 +412,7 @@ func TestPodUpdateMaxOpenRoundsChargesOnlyAnAskThatReachedAWorker(t *testing.T) 
 // would hold its own slot for ever: at a cap of one, every other drifted issue of the fleet
 // would wait for the daemon to restart.
 func TestPodUpdateMaxOpenRoundsChargesNoOpeningPostedOnlyToAFailedClaim(t *testing.T) {
+	t.Parallel()
 	unreachable := "INFRA-1"
 	keys := []string{unreachable, "INFRA-2", "INFRA-3"}
 	issues := make([]fleetIssue, 0, len(keys))
@@ -472,6 +478,7 @@ func TestPodUpdateMaxOpenRoundsChargesNoOpeningPostedOnlyToAFailedClaim(t *testi
 // registered yet, which the round posts nothing to — and no claim of the issue can record the
 // round until that relaunch ends.
 func TestPodUpdateMaxOpenRoundsChargesNoSecondSlotForAnOpeningStillInFlight(t *testing.T) {
+	t.Parallel()
 	inFlight, second := "INFRA-1", "INFRA-2"
 	relaunching := limitIssue(1, inFlight)
 	relaunching.roles = []claim.Role{claim.RoleArchitect, claim.RoleImplementer}
@@ -657,6 +664,7 @@ func podChangedUnderAnOpening(t *testing.T, changed, second string) *fleetRig {
 // the slot for ever, and at a cap of one every other drifted issue of the project waits for the
 // daemon to restart.
 func TestPodUpdateMaxOpenRoundsFreesTheSlotOfAnOpeningWhosePodChangedToAnUndriftedOne(t *testing.T) {
+	t.Parallel()
 	changed, second := "INFRA-1", "INFRA-2"
 	rig := podChangedUnderAnOpening(t, changed, second)
 	// The pod in its place carries the template the runtime has now, as a pod built after the
@@ -682,6 +690,7 @@ func TestPodUpdateMaxOpenRoundsFreesTheSlotOfAnOpeningWhosePodChangedToAnUndrift
 // nothing but its own stale entry is using, which no later sweep can overwrite — and the issue
 // behind it waits with it.
 func TestPodUpdateMaxOpenRoundsFreesTheSlotOfAnOpeningWhosePodChangedToADriftedOne(t *testing.T) {
+	t.Parallel()
 	changed, second := "INFRA-1", "INFRA-2"
 	rig := podChangedUnderAnOpening(t, changed, second)
 	// Nothing is scripted here: the pod the cluster put in the place of the round's own was
@@ -709,6 +718,7 @@ func TestPodUpdateMaxOpenRoundsFreesTheSlotOfAnOpeningWhosePodChangedToADriftedO
 // — a round already open is neither ended nor paused nor asked again by it, since a worker told
 // to push and wait must be waited for — and every pod of the fleet is replaced in the end.
 func TestPodUpdateRoundsPerMinute(t *testing.T) {
+	t.Parallel()
 	keys := []string{"INFRA-1", "INFRA-2", "INFRA-3", "INFRA-4", "INFRA-5"}
 	rig := newLimitRig(t, keys...)
 	rig.s.cfg.PodUpdateRoundsPerMinute = new(1)
@@ -763,6 +773,7 @@ func TestPodUpdateRoundsPerMinute(t *testing.T) {
 // enough to stop the burst it is there to stop: a sweep that ran long and the tick that follows
 // it do not open two minutes' worth of rounds between them.
 func TestPodUpdateRoundsPerMinuteJitter(t *testing.T) {
+	t.Parallel()
 	keys := []string{"INFRA-1", "INFRA-2", "INFRA-3", "INFRA-4", "INFRA-5"}
 	rig := newLimitRig(t, keys...)
 	rig.s.cfg.PodUpdateRoundsPerMinute = new(1)
@@ -796,6 +807,7 @@ func TestPodUpdateRoundsPerMinuteJitter(t *testing.T) {
 // key the operator set. A restarted daemon is at the other end of the same question: it has no
 // record of what the daemon before it opened, so its first sweep opens as a first sweep does.
 func TestPodUpdateRoundsPerMinuteSlowSweep(t *testing.T) {
+	t.Parallel()
 	keys := []string{"INFRA-1", "INFRA-2", "INFRA-3", "INFRA-4"}
 	rig := newLimitRig(t, keys...)
 	rig.s.cfg.PodUpdateRoundsPerMinute = new(1)
@@ -849,6 +861,7 @@ func TestPodUpdateRoundsPerMinuteSlowSweep(t *testing.T) {
 // sweep, because that is the one an operator would have to raise to free it: the limits are read
 // off the record together with the issues they are holding.
 func TestClaimsListPodUpdateLine(t *testing.T) {
+	t.Parallel()
 	keys := []string{"INFRA-2", "INFRA-10", "INFRA-1000", "INFRA-30", "INFRA-4"}
 	rig := newLimitRig(t, keys...)
 	rig.s.cfg.PodUpdateMaxOpenRounds = new(2)

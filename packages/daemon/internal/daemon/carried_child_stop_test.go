@@ -37,6 +37,7 @@ import (
 // timeout. Once the turn ends, or that expiry ends a turn that never does, the new tree's architect
 // launches and the role resumes its session in the new tree.
 func TestACarriedChildsRoleStillInATurnStopsBeforeItsNewTreeLaunches(t *testing.T) {
+	t.Parallel()
 	const rootKey, childKey = "LEGION-207", "LEGION-208"
 	carries := []struct {
 		name string
@@ -286,6 +287,7 @@ func carriedChildStops(t *testing.T, pool *pgxpool.Pool, rootKey, childKey strin
 // the cluster. The check before a start reads each claim's view, which only Retree changes, and
 // goes on while the issue's architect launches.
 func TestAStartOfAnIssueInItsOwnTreeWaitsOnNoSiblingsLaunch(t *testing.T) {
+	t.Parallel()
 	sup, fakeRuntime := newOutboxSupervisor(t, "legion", t.TempDir())
 	rt := newStallingRuntime(t, fakeRuntime, false)
 	sup.deps.Runtime = rt
@@ -318,6 +320,7 @@ func TestAStartOfAnIssueInItsOwnTreeWaitsOnNoSiblingsLaunch(t *testing.T) {
 // lingers, or none recorded, leaves no close to wait for, so the stop is bounded at the stop timeout
 // from now, as an operator's is.
 func TestACarriedRolesStopDeadlineIsItsOldRootsLingerExpiry(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 10, 13, 1, 0, 0, 0, time.UTC)
 	until := now.Add(17 * time.Minute)
 	const stop = 10 * time.Second

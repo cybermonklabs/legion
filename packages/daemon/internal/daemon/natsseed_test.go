@@ -31,6 +31,9 @@ func lookup(values map[string]string) func(string) (string, bool) {
 // The workflow's own NATS connection authenticates as the seed the daemon resolved from
 // nats_nkey_seed_file — the seed every pane receives — so a daemon boots against a server whose one
 // user is that seed's nkey, and without it the same server refuses the daemon's boot.
+//
+// Not parallel: it assigns the production package variables appMintAttempt and appMintRetry,
+// which every test of the process shares.
 func TestTheWorkflowConnectsAsTheNatsSeedTheDaemonResolved(t *testing.T) {
 	quickAppMints(t)
 	seed, public := testnats.User(t)
@@ -77,6 +80,9 @@ func TestTheWorkflowConnectsAsTheNatsSeedTheDaemonResolved(t *testing.T) {
 // seed every pane receives, and logs that user once, by public key and whether it is the pane user:
 // a server whose one user is the daemon seed's admits a daemon configured with both seeds, and
 // refuses one configured with the pane seed alone, which it then connects as.
+//
+// Not parallel: it assigns the production package variables appMintAttempt and appMintRetry,
+// which every test of the process shares.
 func TestTheWorkflowConnectsAsTheDaemonSeedOverThePaneSeed(t *testing.T) {
 	quickAppMints(t)
 	daemonSeed, daemonUser := testnats.User(t)
@@ -141,6 +147,7 @@ func TestTheWorkflowConnectsAsTheDaemonSeedOverThePaneSeed(t *testing.T) {
 // chooseNATSConnection picks the daemon seed, else the pane seed, else none, and its one line says
 // which user that is and whether it is the pane user, the daemon seed naming the pane user included.
 func TestChooseNATSConnectionNamesTheUserTheDaemonConnectsAs(t *testing.T) {
+	t.Parallel()
 	daemonSeed, daemonUser := testnats.User(t)
 	paneSeed, paneUser := testnats.User(t)
 	for _, tc := range []struct {
@@ -173,6 +180,7 @@ func TestChooseNATSConnectionNamesTheUserTheDaemonConnectsAs(t *testing.T) {
 // launch carry the pane seed as NATS_NKEY_SEED and nothing of the daemon seed, in no secret, no
 // variable, and no other field of the spec.
 func TestNoLaunchCarriesTheDaemonSeed(t *testing.T) {
+	t.Parallel()
 	daemonSeed, paneSeed := testnats.UserSeed(t), testnats.UserSeed(t)
 	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {

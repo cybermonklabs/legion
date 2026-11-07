@@ -29,6 +29,7 @@ import (
 )
 
 func TestOutboxLeaseLetsOnlyOneRunnerExecuteDueRow(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	now := time.Now().UTC()
@@ -58,6 +59,7 @@ func TestOutboxLeaseLetsOnlyOneRunnerExecuteDueRow(t *testing.T) {
 }
 
 func TestOutboxRetryBacksOffFailedEffect(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	now := time.Now().UTC()
@@ -85,6 +87,7 @@ func TestOutboxRetryBacksOffFailedEffect(t *testing.T) {
 // soon as the lease has lapsed; a row due later runs when its moment comes on the clock, and the
 // sweep's tick before then leaves it alone.
 func TestOutboxRestartDrainsDueThenExpiredLeaseRows(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	clock := microClock()
@@ -133,6 +136,7 @@ func TestOutboxRestartDrainsDueThenExpiredLeaseRows(t *testing.T) {
 }
 
 func TestOutboxStaleLeaseFinishLeavesNewLeaseRowUntouched(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	now := time.Now().UTC()
@@ -287,6 +291,7 @@ func (d *blockingDispatch) count() int {
 // ran while an older one backed off, found the board at a status it did not expect, took that for a
 // human's change and finished unwritten; the older row then wrote, leaving the board a phase behind.
 func TestOutboxWritesOneIssuesStatusesInOrderWhenTheOlderFailsFirst(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	now := time.Now().UTC()
@@ -317,6 +322,7 @@ func TestOutboxWritesOneIssuesStatusesInOrderWhenTheOlderFailsFirst(t *testing.T
 // ordinary rule: this one finds the board at a status neither its own nor the one it was made
 // from, takes that for someone else's move, and leaves it.
 func TestAPermanentlyRefusedStatusWriteDoesNotHoldBackTheIssuesLaterWrites(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	now := time.Now().UTC()
@@ -367,6 +373,7 @@ func TestAPermanentlyRefusedStatusWriteDoesNotHoldBackTheIssuesLaterWrites(t *te
 // status of that issue for good, which is the one outcome this outbox exists to prevent. Each
 // case names the arm that saves it, so deleting one fails here.
 func TestACredentialOrUncodedRefusalIsRiddenOutRatherThanDroppingTheWrite(t *testing.T) {
+	t.Parallel()
 	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name    string
@@ -504,6 +511,7 @@ func (d *boardDispatch) PutGatedSteps(context.Context, string, []string) error  
 // lease, under which no sweep runs it, and the sweep after the lease lapses runs it again. The
 // row's effect is written once before the failed finish and once after.
 func TestOutboxRunSurvivesAFailedClaimAndAFailedFinish(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := &flakyOutboxStore{Store: record.NewStore(), claimFailures: 1, finishFailures: 1}
 	clock := microClock()
@@ -606,6 +614,7 @@ func (s *flakyOutboxStore) failedFinishes() int {
 // An outbox tree_close row (lingerExpired enqueues one for every claim of the tree) is the one
 // supervise request that ends the tree's root claim; the supervisor refuses any other stop of a root.
 func TestOutboxTreeCloseRowEndsTheTreesRootClaim(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	// A tree's close is the expiry of its linger, so the tree lingers when the row runs.
@@ -643,6 +652,7 @@ func TestOutboxTreeCloseRowEndsTheTreesRootClaim(t *testing.T) {
 // workflow's own decision and is never put to treeClosable, while the operator's close of the same
 // tree is refused. Without this wiring in the test, a predicate that refused both looked green.
 func TestTheWorkflowsTreeCloseIsNotPutToTheOperatorsPredicate(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	until := time.Now().Add(-time.Minute)
@@ -693,6 +703,7 @@ func TestTheWorkflowsTreeCloseIsNotPutToTheOperatorsPredicate(t *testing.T) {
 // rewrite once its issue has left the phase the task was queued for. A predicate that reads
 // anything the retry rewrites answers this wrong in production and green in a test that skips it.
 func TestAWorkflowTaskIsDroppedAfterItsRetryRewritesTheDelivery(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -781,6 +792,7 @@ func TestAWorkflowTaskIsDroppedAfterItsRetryRewritesTheDelivery(t *testing.T) {
 // on the outbox's backoff, and its first attempt is logged as a wait (wait.ErrWaiting), never as a
 // failed row.
 func TestOutboxStartWaitingOnThePendingDeliveryIsNotAFailure(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Implementing, Generation: 1, Status: "in_progress"}

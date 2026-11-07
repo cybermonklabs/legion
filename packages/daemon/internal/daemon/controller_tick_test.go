@@ -22,6 +22,7 @@ import (
 // named by the project, however many ticks pass before it is published. Here a slot is free; the
 // tick's indifference to the slots is admission's to prove (controller_wake_test.go).
 func TestTheControllerTickQueuesOneWakeWhileASlotIsFree(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	// The daemon's own path: `legion controller start` mints the capability and its session
@@ -79,6 +80,7 @@ func TestTheControllerTickQueuesOneWakeWhileASlotIsFree(t *testing.T) {
 // more often than controller_wake_interval_seconds still wakes its controller: with an hour's
 // interval, the first tick is the early one.
 func TestTheControllerTickComesShortlyAfterTheRuntimeStarts(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, log)

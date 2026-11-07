@@ -35,6 +35,9 @@ import (
 // with the rest of the tree's — there is no disk to carry, since an issue pod's disk went with
 // that pod — and the new tree's start then creates a Sandbox of the child's own and resumes the
 // role's session, which the store holds, in a pod of its own.
+//
+// Not parallel: it assigns the production package variable reserved, which every test of the
+// process shares.
 func TestAnOldTreesCleanupBeforeTheNewTreesStartDeletesTheCarriedChildsSandbox(t *testing.T) {
 	f := newCarriedCleanup(t, true)
 	ctx, st, api, logs, childKey, childSandbox, implementer := f.ctx, f.st, f.api, f.logs, f.childKey, f.childSandbox, f.implementer
@@ -84,6 +87,9 @@ func TestAnOldTreesCleanupBeforeTheNewTreesStartDeletesTheCarriedChildsSandbox(t
 // already be running in it. Once the child leaves the line (a person sets it to backlog) it can
 // no longer be admitted into that tree, so the Sandbox belongs nowhere and the sweep deletes it,
 // fenced and logged, as every other orphan is.
+//
+// Not parallel: it assigns the production package variable reserved, which every test of the
+// process shares.
 func TestTheSweepDeletesACarriedChildsOwnSandboxOnceItLeavesTheLine(t *testing.T) {
 	f := newCarriedCleanup(t, false)
 	f.cleanupAndSweep()

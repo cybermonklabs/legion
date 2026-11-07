@@ -84,6 +84,7 @@ func parkedIn(key, tree string) record.Issue {
 // todo carry none, and an unlabelled todo reads nothing up its chain. A failed read of the chain
 // retries the event rather than applying it without the chain.
 func TestPrepareReadsTheDispatchChainAboveAParent(t *testing.T) {
+	t.Parallel()
 	const tree, parent, child, other = "LEGION-168", "LEGION-169", "LEGION-214", "LEGION-170"
 	labelled := intake.DispatchIssue{Key: child, Seq: 1, Type: "issue.updated", Status: "todo", Title: child, Parent: parent, Rank: "B", HandedOver: true, ResolvedRepo: "acme/widgets"}
 	unlabelled := labelled
@@ -172,6 +173,7 @@ func TestPrepareReadsTheDispatchChainAboveAParent(t *testing.T) {
 // with one free. The boot walks the chain as its listing shows it, so a listed ancestor costs no
 // read of Dispatch.
 func TestBootReconcileHoldsATodoUnderAnUnreleasedChildOfALiveTree(t *testing.T) {
+	t.Parallel()
 	const tree, parent, child = "CAPTURE-168", "CAPTURE-169", "CAPTURE-214"
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
@@ -278,6 +280,7 @@ func TestBootReconcileHoldsATodoUnderAnUnreleasedChildOfALiveTree(t *testing.T) 
 // parent's own event leaves the issue a root of its own under no live tree, and it queues and takes
 // the free slot as any labelled todo root does. Its own next event must not be what releases it.
 func TestATodoHeldUnderAnUnreleasedChildQueuesOnceItsParentLeavesTheLiveTree(t *testing.T) {
+	t.Parallel()
 	const tree, parent, child = "LEGION-168", "LEGION-169", "LEGION-214"
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
@@ -452,6 +455,7 @@ func (l *ancestryLine) waiting(key string) bool {
 // it, reads the held issue's chain again, and the issue takes the free slot: release_children
 // would no longer reach it from the tree, so nothing would ever release it.
 func TestAnAncestryHeldRootQueuesOnceARecordedAncestorLeavesTheLiveTree(t *testing.T) {
+	t.Parallel()
 	const tree, member, parent, child = "LEGION-168", "LEGION-170", "LEGION-169", "LEGION-214"
 	line := newAncestryLine(t, tree, parkedIn(member, tree))
 	line.client.issues[member] = shownUnder(member, "backlog", tree, false)
@@ -473,6 +477,7 @@ func TestAnAncestryHeldRootQueuesOnceARecordedAncestorLeavesTheLiveTree(t *testi
 // read: that root keeps the chain it has, and every other root under the event's issue is read
 // again, so one failing read of Dispatch holds no event back.
 func TestARereadSkipsARootWhoseChainItCannotRead(t *testing.T) {
+	t.Parallel()
 	const tree, shared, stuckParent, stuck, movedParent, moved = "LEGION-168", "LEGION-172", "LEGION-169", "LEGION-214", "LEGION-171", "LEGION-215"
 	line := newAncestryLine(t, tree)
 	line.client.issues[shared] = shownUnder(shared, "backlog", tree, false)
@@ -502,6 +507,7 @@ func TestARereadSkipsARootWhoseChainItCannotRead(t *testing.T) {
 // release) is held under the running tree, whose release would reach it: the parked root, not
 // live, is passed over rather than ending the chain, whether it is the issue's parent or further up.
 func TestARootHeldPastAParkedRootOnItsChainTakesNoSlot(t *testing.T) {
+	t.Parallel()
 	const tree, parked, parent, child = "LEGION-168", "LEGION-180", "LEGION-169", "LEGION-214"
 	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
@@ -532,6 +538,7 @@ func TestARootHeldPastAParkedRootOnItsChainTakesNoSlot(t *testing.T) {
 // release_children's view of a child (prepareObserved) reads no chain again at all, though the
 // same issue's event would.
 func TestARereadReadsOnlyTheRootsWhoseChainHoldsTheEventsIssue(t *testing.T) {
+	t.Parallel()
 	const tree, movedParent, moved, keptParent, kept, unrelated = "LEGION-168", "LEGION-171", "LEGION-215", "LEGION-169", "LEGION-214", "LEGION-300"
 	ctx := context.Background()
 	line := newAncestryLine(t, tree)
@@ -567,6 +574,7 @@ func TestARereadReadsOnlyTheRootsWhoseChainHoldsTheEventsIssue(t *testing.T) {
 // running tree, reads no held root's chain again: the root its re-parent freed stays out from
 // under the tree, as Dispatch now shows it, rather than being held there again by the stale parent.
 func TestAStaleEventOfAMovedAncestorBringsBackNoAncestryHold(t *testing.T) {
+	t.Parallel()
 	const tree, other, member, parent, child = "LEGION-168", "LEGION-190", "LEGION-170", "LEGION-169", "LEGION-214"
 	line := newAncestryLine(t, tree, parkedIn(member, tree), recordedOn(other, other, "in_progress"))
 	if err := pgx.BeginFunc(context.Background(), line.pool, func(tx pgx.Tx) error {

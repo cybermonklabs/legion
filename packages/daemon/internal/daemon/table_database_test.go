@@ -22,6 +22,7 @@ import (
 // the chain not being idempotent. Everything a row wrote goes, parents and children alike, so
 // the next row's keys are free and a whole-table count answers for it alone.
 func TestTheRowResetEmptiesTheRowsAndKeepsTheMigrations(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool, reset := tableDatabase(t)
 	version, applied := migrationState(t, pool)

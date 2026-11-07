@@ -41,6 +41,7 @@ import (
 // backend and nothing else: the package's tests run under the race detector against one shared
 // PostgreSQL, where a kill by database or by login would end another test's connection.
 func TestATurnStartSurvivesABrokenDatabaseConnection(t *testing.T) {
+	t.Parallel()
 	// A database of this test's own, and a pool of its own on it: the reads below and the kill go
 	// over a connection the daemon does not own and the kill does not end.
 	pool := isolatedOutboxPool(t)

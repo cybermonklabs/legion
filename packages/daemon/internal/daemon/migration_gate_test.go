@@ -29,6 +29,7 @@ import (
 // it is no first-phase candidate, and record.ran reads ever_opened, so it is no queued root),
 // and the cap under-counts a tree that is working.
 func TestTheMigrationLeavesAGateThatNeverOpenedUnopened(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := preReleaseStore(t)
 	pool := st.Pool()

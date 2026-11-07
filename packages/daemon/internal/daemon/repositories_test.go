@@ -152,6 +152,7 @@ func (d *mappingDispatch) set(mappings ...dispatch.RepoProject) {
 // owners are the served repositories', lowercased and sorted, and a served repository is held as
 // GitHub names it, at its default branch.
 func TestTheMappingServesOnlyRepositoriesBothAppsAreInstalledOn(t *testing.T) {
+	t.Parallel()
 	github := newNamedGitHub(t, map[string]string{"acme/widgets": "Acme/Widgets@release/v7.1", "zeta/tools": "zeta/tools@main"})
 	repos := newRepositories("LEGION", ghrepo.Renames{})
 	installs := &installations{missing: map[string]bool{"review acme/gadgets": true}}
@@ -205,6 +206,7 @@ func TestTheMappingServesOnlyRepositoriesBothAppsAreInstalledOn(t *testing.T) {
 // failure, and marked as a failed read so it is read again, and the rest of the mapping is checked
 // as it stands.
 func TestTheMappingNamesEveryMissingAppAndLeavesOutOnlyARepositoryWhoseReadFailed(t *testing.T) {
+	t.Parallel()
 	client := &mappingDispatch{mappings: []dispatch.RepoProject{{Repo: "acme/gadgets", Project: "LEGION"}}}
 	installs := &installations{missing: map[string]bool{"implement acme/gadgets": true, "review acme/gadgets": true}}
 	accepted, refused, _, err := readMapping(context.Background(), client, "LEGION", installs)
@@ -246,6 +248,9 @@ func TestTheMappingNamesEveryMissingAppAndLeavesOutOnlyARepositoryWhoseReadFaile
 // refused for now. This guards checkMapping's own bound, which the code before this check already
 // had; the removed bound on a refresh as a whole, which cut such a check off, is
 // TestASlowButAnsweringGitHubIsServedOnARefresh's.
+//
+// Not parallel: it assigns the production package variable installReadAttempt, which every test
+// of the process shares.
 func TestEachInstallationReadIsBoundedOnItsOwn(t *testing.T) {
 	read := installReadAttempt
 	t.Cleanup(func() { installReadAttempt = read })
@@ -270,6 +275,7 @@ func TestEachInstallationReadIsBoundedOnItsOwn(t *testing.T) {
 // lacks an App boots serving none, each left out and reported; a mapping with one served
 // repository and one left out boots serving the one.
 func TestTheBootRefusesOnlyAnEmptyMapping(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name            string
 		mappings        []dispatch.RepoProject
@@ -325,6 +331,9 @@ func (d *unreadyDispatch) ListRepoProjects(ctx context.Context) ([]dispatch.Repo
 // supervisor restarted it straight back into the same refusal. Here Dispatch refuses two reads more
 // than appMintRetry's budget allows and then answers, and the boot serves the mapped repository.
 // GitHub's installation reads never refuse the boot (TestABootServesTheRepositoriesWhoseInstallationReadsAnswer).
+//
+// Not parallel: it assigns the production package variables appMintAttempt, appMintRetry and
+// readinessRetry, which every test of the process shares.
 func TestTheBootWaitsForTheMappingWhileDispatchRefusesEveryDial(t *testing.T) {
 	quickAppMints(t)
 	fastReadiness(t, bootprobe.Retry{Initial: time.Millisecond, Max: 4 * time.Millisecond})
@@ -356,6 +365,7 @@ func TestTheBootWaitsForTheMappingWhileDispatchRefusesEveryDial(t *testing.T) {
 // and the failure, where it refused the whole boot and its supervisor restarted it straight back
 // into GitHub's same failure. The state shows the refusal.
 func TestABootServesTheRepositoriesWhoseInstallationReadsAnswer(t *testing.T) {
+	t.Parallel()
 	for _, failure := range []error{&appauth.TransientError{Err: errors.New("GitHub answered 502")}, errors.New("read whether the implement App is installed on acme/gadgets failed (403)")} {
 		installs := &installations{}
 		installs.setFailing(failure, "implement acme/gadgets")
@@ -382,6 +392,7 @@ func TestABootServesTheRepositoriesWhoseInstallationReadsAnswer(t *testing.T) {
 // A boot whose every repository's installation read fails still comes up, serving none, and logs
 // one ERROR line naming the first failure: its API and recovery stay up, and the read again heals it.
 func TestABootWhoseEveryInstallationReadFailsServesNoneAndLogsOneError(t *testing.T) {
+	t.Parallel()
 	installs := &installations{}
 	installs.setFailing(errors.New("GitHub answered 403: Resource not accessible by integration"), "implement acme/widgets", "review acme/widgets", "implement acme/gadgets", "review acme/gadgets")
 	var logged bytes.Buffer
@@ -418,6 +429,7 @@ func TestABootWhoseEveryInstallationReadFailsServesNoneAndLogsOneError(t *testin
 // set is Dispatch's mapping either way, and `legion start --check-config` reads no Dispatch at all,
 // so the file alone cannot decide it.
 func TestTheBootWarnsOfACommitTrailerRepositoryTheProjectDoesNotServe(t *testing.T) {
+	t.Parallel()
 	const unserved = "commit_issue_trailer_repos names a repository this project does not serve"
 	for _, tc := range []struct {
 		name     string
@@ -538,6 +550,7 @@ func (d *webhookDispatch) checks(repo string) int {
 // role App is missing on is named only as refused. Once the App is installed, the next read of the
 // mapping names nothing.
 func TestARepositoryWithoutTheWebhookAppIsServedAndNamed(t *testing.T) {
+	t.Parallel()
 	standIn := newWebhookDispatch(t, true, map[string]bool{"acme/widgets": false, "zeta/tools": false})
 	w, _, _, _ := mappingRigWith(t, &installations{missing: map[string]bool{"review zeta/tools": true}}, standIn.serve)
 	if !served(w, "acme/widgets") || served(w, "zeta/tools") {
@@ -563,6 +576,9 @@ func TestARepositoryWithoutTheWebhookAppIsServedAndNamed(t *testing.T) {
 
 // A webhook App check Dispatch fails is no answer: the state names the repository with the
 // failure, and the repository is served, never left out for it nor read again of the daemon's own.
+//
+// Not parallel: it assigns the production package variable installReadRetry, which every test of
+// the process shares.
 func TestAFailedWebhookAppCheckIsNamedAndTheRepositoryKeepsBeingServed(t *testing.T) {
 	quickInstallReads(t)
 	standIn := newWebhookDispatch(t, true, map[string]bool{"zeta/tools": true})
@@ -590,6 +606,7 @@ func TestAFailedWebhookAppCheckIsNamedAndTheRepositoryKeepsBeingServed(t *testin
 // A Dispatch older than the webhook App check answers its route 404: the state names every
 // served repository with that, and serves each.
 func TestAnOlderDispatchWithoutTheWebhookAppRouteIsNamed(t *testing.T) {
+	t.Parallel()
 	standIn := newWebhookDispatch(t, false, nil)
 	w, _, _, _ := mappingRigWith(t, &installations{}, standIn.serve)
 	if !served(w, "acme/widgets") || !served(w, "zeta/tools") {
@@ -634,6 +651,7 @@ func newNamedGitHub(t *testing.T, repos map[string]string) *namedGitHub {
 // case, with its last health read; a cache whose repository the mapping no longer names is listed
 // apart with when the sweep retires it; a mapped repository with no cache carries none.
 func TestTheMappingsViewCarriesTheRepositoryCaches(t *testing.T) {
+	t.Parallel()
 	repos := newRepositories("LEGION", ghrepo.Renames{})
 	repos.set([]mappedRepository{
 		{Repo: ghrepo.MustParse("Acme/Widgets"), Default: true},
@@ -668,6 +686,7 @@ func TestTheMappingsViewCarriesTheRepositoryCaches(t *testing.T) {
 // it: a pod provisions its workspace from it, and the claim's commit identity is minted for its
 // owner. A project serving no default repository refuses the launch, naming the fix.
 func TestAnUnrecordedIssueWorksTheProjectsDefaultRepository(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	github := newNamedGitHub(t, map[string]string{"acme/widgets": "Acme/Widgets@release/v7.1", "zeta/tools": "zeta/tools@main"})
 	w := &workflowRuntime{pool: isolatedOutboxPool(t), records: record.NewStore(), dispatchProject: "LEGION", repositories: newRepositories("LEGION", ghrepo.Renames{}),
@@ -687,6 +706,7 @@ func TestAnUnrecordedIssueWorksTheProjectsDefaultRepository(t *testing.T) {
 // works, the one its launch was minted for: its record's, or, for an issue the workflow does not
 // record, the project's default. A token no claim holds is refused.
 func TestAnAdoptedPanesRepositoryIsTheOneItsIssueWorks(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	github := newNamedGitHub(t, map[string]string{"acme/widgets": "Acme/Widgets@main"})
 	w := &workflowRuntime{pool: isolatedOutboxPool(t), records: record.NewStore(), dispatchProject: "LEGION", repositories: newRepositories("LEGION", ghrepo.Renames{}),

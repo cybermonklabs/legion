@@ -35,6 +35,7 @@ import (
 // while a retirement keeps the task the claim was working and the retry sends that one, which is
 // why the task row delivers none of its own to a retired claim.
 func TestTheRelaunchRowLeavesAClaimThatHoldsItsTaskForTheRowThatCarriesIt(t *testing.T) {
+	t.Parallel()
 	const kept, owedTask = "Continue. Reason: the start the stop interrupted.", "Continue. Reason: the tree came back."
 	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {

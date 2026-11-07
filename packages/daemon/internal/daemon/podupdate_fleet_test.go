@@ -534,6 +534,7 @@ func (r *fleetRig) assertNoRootLeftTheWorkflow(issues ...string) {
 // for. And nothing of any of it moves a root out of the workflow: no root waits on a person, none
 // is parked, and no architect is suspended.
 func TestPodUpdateReplacesEachIssuesPodOnlyAfterItsOwnWorkersAnswer(t *testing.T) {
+	t.Parallel()
 	rig := newFleetRig(t,
 		fleetIssue{key: fleetIssueA, phase: phase.Implementing, pod: fleetPodA,
 			roles: []claim.Role{claim.RoleArchitect, claim.RoleImplementer, claim.RoleTester}},
@@ -639,6 +640,7 @@ func TestPodUpdateReplacesEachIssuesPodOnlyAfterItsOwnWorkersAnswer(t *testing.T
 // the same claim is refused the stale-caller 409 — the negative control — and the round is what
 // turns that refusal into the 200 a completion needs.
 func TestPodUpdateRoundServesAWorkerOnItsPreviousContract(t *testing.T) {
+	t.Parallel()
 	rig := newFleetRig(t,
 		fleetIssue{key: fleetIssueB, phase: phase.Planning, pod: fleetPodB,
 			roles: []claim.Role{claim.RoleArchitect, claim.RolePlanner}},

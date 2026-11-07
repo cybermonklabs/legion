@@ -90,6 +90,7 @@ func (p *recordedProber) ProbeImage(_ context.Context, probe sandbox.ImageProbe)
 
 // probe-boot runs the Kubernetes runtime's boot probe and refuses any other runtime by name.
 func TestProbeBootRefusesARuntimeWithoutTheSandboxProbe(t *testing.T) {
+	t.Parallel()
 	cfg, _ := probeBootConfig(t, "https://127.0.0.1:1")
 	cfg.Runtime = config.Runtime{Name: "tmux"}
 	_, err := ProbeBoot(context.Background(), cfg, lookup(nil), quietLogger())
@@ -100,6 +101,7 @@ func TestProbeBootRefusesARuntimeWithoutTheSandboxProbe(t *testing.T) {
 
 // probe-boot reads the configuration's files as boot does, so a file boot refuses refuses it too.
 func TestProbeBootRefusesWhatBootRefusesOfTheFilesItNames(t *testing.T) {
+	t.Parallel()
 	cfg, _ := probeBootConfig(t, "https://127.0.0.1:1")
 	cfg.OperatorTokenFile = filepath.Join(t.TempDir(), "absent")
 	_, err := ProbeBoot(context.Background(), cfg, lookup(nil), quietLogger())
@@ -111,6 +113,7 @@ func TestProbeBootRefusesWhatBootRefusesOfTheFilesItNames(t *testing.T) {
 // A cluster without Agent Sandbox is refused by name, as boot refuses it, before any probe; the
 // cluster is only read, and Dispatch is asked nothing.
 func TestProbeBootRefusesAClusterWithoutAgentSandboxBeforeAnyProbe(t *testing.T) {
+	t.Parallel()
 	var mu sync.Mutex
 	var requested []string
 	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -153,6 +156,7 @@ func TestProbeBootRefusesAClusterWithoutAgentSandboxBeforeAnyProbe(t *testing.T)
 // prober is built only once the check's last read, the census's Sandbox list, has been made. It
 // opens no store (its Postgres cannot be reached), connects to no NATS and asks Dispatch nothing.
 func TestProbeBootRunsTheDaemonsImageProbeAfterTheClusterCheck(t *testing.T) {
+	t.Parallel()
 	var mu sync.Mutex
 	var requested []string
 	server := agentSandboxCluster(t, &requested, &mu)

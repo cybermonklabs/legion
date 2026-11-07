@@ -35,6 +35,7 @@ import (
 // they would leave the claims running, the reservation unconfirmed, and the tree waiting for
 // admission forever.
 func TestAReservedTreeCloseFinishesItsCleanupAfterReadmission(t *testing.T) {
+	t.Parallel()
 	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name           string
@@ -167,6 +168,9 @@ func TestAReservedTreeCloseFinishesItsCleanupAfterReadmission(t *testing.T) {
 // session and resumes it under every runtime: under tmux it is on the host; under the Sandbox
 // runtime, which provisions each issue's workspace in a pod, it is in the session database the
 // deployment's session_store names, which every tree's pods read.
+//
+// Not parallel: it assigns the production package variable reserved, which every test of the
+// process shares.
 func TestAnOrphansClaimsLeaveTheirOldTreeAndStartInTheirOwn(t *testing.T) {
 	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
@@ -251,6 +255,7 @@ func TestAnOrphansClaimsLeaveTheirOldTreeAndStartInTheirOwn(t *testing.T) {
 // absent lifecycle, and every close row retried on its backoff forever, logged as a failure each
 // time.
 func TestANeverOpenedTreesLingerClosesFinishWithoutRetrying(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()

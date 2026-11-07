@@ -79,6 +79,7 @@ func (g *twoOwnersGitHub) called() []string {
 // branches created, their workspaces provisioned and removed and their pull requests disarmed in
 // their own repositories, each with the implement App's token minted for its own owner.
 func TestEachIssuesActionsActOnTheRepositoryItsRecordNames(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	github := newTwoOwnersGitHub(t)
@@ -153,6 +154,7 @@ func TestEachIssuesActionsActOnTheRepositoryItsRecordNames(t *testing.T) {
 // record's repository when it runs: the row names only the issue, and the outbox reads the
 // repository from the record at that moment.
 func TestARowQueuedBeforeTheFillActsOnTheFilledRepository(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := projectRecords{Store: record.NewStore(), project: "LEGION"}
 	if _, err := pool.Exec(context.Background(), `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)

@@ -528,6 +528,7 @@ func (r *podUpdateRig) awaitReplacement(n int, what string) []fake.Call {
 // The round's whole promise: the pod is replaced only once every claim that blocks the round has
 // answered. A claim with no session — a role nothing has ever launched — blocks nothing.
 func TestPodUpdateReplacesThePodOnlyOnceEveryBlockingClaimHasAnswered(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t,
 		readyWorker(claim.RoleImplementer),
 		readyWorker(claim.RoleTester),
@@ -597,6 +598,7 @@ func TestPodUpdateReplacesThePodOnlyOnceEveryBlockingClaimHasAnswered(t *testing
 // token sorts first: the round being decided is the one over the pod both claims run in, which
 // is what makes the tester's recorded round the earlier one.
 func TestPodUpdateWaitsForAClaimThatLeftAnEarlierRound(t *testing.T) {
+	t.Parallel()
 	previous := supervise.PodRound(podUpdatePreviousPod)
 	rig := newPodUpdateRig(t,
 		// The implementer is a worker of this pod's round and has answered it.
@@ -639,6 +641,7 @@ func TestPodUpdateWaitsForAClaimThatLeftAnEarlierRound(t *testing.T) {
 // it answers, and ends the round when it does. A role that never registered would leave the round
 // waiting on the very pod it was opened to replace.
 func TestPodUpdateEndsTheRoundOnceTheRoleStartedIntoTheKeptPodAnswers(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t,
 		readyWorker(claim.RoleImplementer),
 		podUpdateRole{role: claim.RoleArchitect, state: supervise.StateQueued},
@@ -693,6 +696,7 @@ func TestPodUpdateEndsTheRoundOnceTheRoleStartedIntoTheKeptPodAnswers(t *testing
 // A worker answers from inside a turn, and that turn ends a moment later. The replacement waits
 // for it: no role process is ended mid-turn.
 func TestPodUpdateHoldsTheReplacementWhileAClaimIsWorking(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t,
 		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateWorking, session: true, inPod: true, contract: api.DaemonAPIVersion},
 		readyWorker(claim.RoleTester),
@@ -724,6 +728,7 @@ func TestPodUpdateHoldsTheReplacementWhileAClaimIsWorking(t *testing.T) {
 // controller is told once pod_update_notice_hours after the round opened, which is what brings
 // the operator.
 func TestPodUpdateTellsTheControllerOnceAfterTheNoticeBound(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t,
 		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateSuspended, session: true,
 			contract: api.DaemonAPIVersion, suspendedBy: supervise.SuspendedByOperator},
@@ -780,6 +785,7 @@ func TestPodUpdateTellsTheControllerOnceAfterTheNoticeBound(t *testing.T) {
 // turn its ask started. Held for the planner, the round would never end, and every answered
 // worker's next task would wait behind it.
 func TestPodUpdateReplacesThePodWithoutWaitingForAFailedClaim(t *testing.T) {
+	t.Parallel()
 	behind := supervise.PodUpdateContract - 1
 	answering := []claim.Role{claim.RoleImplementer, claim.RoleReviewer, claim.RoleTester}
 	roles := []podUpdateRole{{role: claim.RolePlanner, state: supervise.StateFailed, session: true, contract: 41}}
@@ -821,6 +827,7 @@ func TestPodUpdateReplacesThePodWithoutWaitingForAFailedClaim(t *testing.T) {
 // own: the daemon matched no turn to the ask, so its end answered nothing, and the prompt's
 // result is what ends the ask and leaves the claim holding no task for the next ask to be.
 func TestPodUpdateAsksAgainAfterTheRetaskBound(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
 	rig.drifts(podUpdateDrift)
 
@@ -861,6 +868,7 @@ func TestPodUpdateAsksAgainAfterTheRetaskBound(t *testing.T) {
 // so the round completes, the pod is replaced and the controller is told nothing: a contract
 // change rolls with no drain and no operator.
 func TestPodUpdateTakesATurnsEndAsTheAnswerOfAClaimBelowTheUpdateContract(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t,
 		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateReady, session: true, inPod: true, contract: supervise.PodUpdateContract - 1},
 		readyWorker(claim.RoleTester),
@@ -911,6 +919,7 @@ func TestPodUpdateTakesATurnsEndAsTheAnswerOfAClaimBelowTheUpdateContract(t *tes
 // be replaced. So the pod is replaced here too, which is one restart of each worker in its own
 // session.
 func TestPodUpdateReplacesThePodWhenTheDriftClearsUnderAnOpenRound(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
 	rig.drifts(podUpdateDrift)
 
@@ -948,6 +957,7 @@ func TestPodUpdateReplacesThePodWhenTheDriftClearsUnderAnOpenRound(t *testing.T)
 // claims it asked and what each had done when it left (supervise's Claim.UpdateLeftRound), so
 // it is the same either way. A claim that records no pod at all says nothing of the kind.
 func TestPodUpdateWritesOnTheIssueWhenThePodWentWithoutItsRound(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.drifts(podUpdateDrift)
 
@@ -1032,6 +1042,7 @@ func (r *podUpdateRig) podGone() {
 // of those processes is an answer about a pod the round never covered: counted, it would say the
 // issue lost nothing where the implementer's unpushed work went with the disk.
 func TestPodUpdateEndsTheRoundAtTheFirstReadOfAGonePod(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.drifts(podUpdateDrift)
 
@@ -1109,6 +1120,7 @@ func TestPodUpdateEndsTheRoundAtTheFirstReadOfAGonePod(t *testing.T) {
 // would be of that pod — and the operator's side is told nothing either: a round that ends with
 // nothing lost is nobody's business.
 func TestPodUpdateEndsAGonePodsRoundWithNoMessageWhenEveryWorkerAnswered(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.drifts(podUpdateDrift)
 
@@ -1157,6 +1169,7 @@ func TestPodUpdateEndsAGonePodsRoundWithNoMessageWhenEveryWorkerAnswered(t *test
 // The claim records the pod again when its operator resumes it, and the sweep that reads it
 // there replaces the pod and ends the round, which is the only end the round had left.
 func TestPodUpdateKeepsARoundWhoseLiveClaimStopsRecordingItsLivePod(t *testing.T) {
+	t.Parallel()
 	const replaced = "supervise: every worker of this update round has answered; the pod is replaced and the round is over"
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
 	rig.drifts(podUpdateDrift)
@@ -1245,6 +1258,7 @@ func (r *podUpdateRig) resumeInPod(role claim.Role) {
 // what that path writes: nothing, because every worker of this round had answered and the pod
 // took nothing unpushed with it.
 func TestPodUpdateEndsTheRoundWhenTheRuntimeSaysItsUnrecordedPodIsGone(t *testing.T) {
+	t.Parallel()
 	const overAGonePod = "supervise: the pod of this issue's update round is not there, and every claim of the round had answered; nothing was lost and the round is over"
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
 	rig.drifts(podUpdateDrift)
@@ -1302,6 +1316,7 @@ func (r *podGoneAfterTheDriftRead) PodDrift(ctx context.Context, k runtime.Known
 // reading no drift over the pod that replaced it — so the worker comes back on a new session and
 // a new disk, where its launch is what starts it.
 func TestPodUpdateTellsItsWorkerNothingHoweverTheRoundEnds(t *testing.T) {
+	t.Parallel()
 	pool, reset := tableDatabase(t)
 	for name, tc := range map[string]struct {
 		roles        []podUpdateRole
@@ -1366,6 +1381,7 @@ func TestPodUpdateTellsItsWorkerNothingHoweverTheRoundEnds(t *testing.T) {
 // the answer already given are all read back, and the next sweep replaces the pod on the answer
 // the previous daemon received.
 func TestPodUpdateResumesAnOpenRoundAfterARestart(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.drifts(podUpdateDrift)
 
@@ -1456,6 +1472,7 @@ func promptsOf(conn *fake.Conn, deliveryID string) []fake.Prompt {
 // claims run in, that leftover round would say "the pod is gone, work is lost" at every tick for
 // the rest of the tree's life.
 func TestPodUpdateIgnoresARetiredClaimsLeftoverRound(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t,
 		readyWorker(claim.RoleImplementer),
 		podUpdateRole{role: claim.RoleTester, state: supervise.StateRetired, session: true,
@@ -1499,6 +1516,7 @@ func TestPodUpdateIgnoresARetiredClaimsLeftoverRound(t *testing.T) {
 // round until the operator acts. Reading an empty pod as "the pod went" would write a false
 // data-loss message on the issue and end a round no worker had answered.
 func TestPodUpdateWaitsWhileNoClaimRecordsThePod(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
 	rig.drifts(podUpdateDrift)
 
@@ -1532,6 +1550,7 @@ func TestPodUpdateWaitsWhileNoClaimRecordsThePod(t *testing.T) {
 // nothing: starting that process again is the operator's to do, and the claim's next launch
 // installs this daemon's plugin anyway.
 func TestPodUpdatePluginRoundEndDoesNotRelaunchAnOperatorSuspendedClaim(t *testing.T) {
+	t.Parallel()
 	round := supervise.PluginRound(api.DaemonAPIVersion)
 	rig := newPodUpdateRig(t, podUpdateRole{
 		role: claim.RoleImplementer, state: supervise.StateReady, session: true, inPod: true,
@@ -1565,6 +1584,7 @@ func TestPodUpdatePluginRoundEndDoesNotRelaunchAnOperatorSuspendedClaim(t *testi
 // it rather than telling the operator to drain the pod, which at this release's own roll would
 // fire for every issue a boot relaunched a moment before.
 func TestPodUpdateDoesNotCallALaunchingClaimUnableToAnswer(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t,
 		readyWorker(claim.RoleImplementer),
 		podUpdateRole{role: claim.RoleTester, state: supervise.StateLaunching, session: true,
@@ -1592,6 +1612,7 @@ func TestPodUpdateDoesNotCallALaunchingClaimUnableToAnswer(t *testing.T) {
 // left suspended for the contract of a process that has ended would block every round this
 // deployment ever opens over its pod.
 func TestPodUpdateRevivesASuspendedClaimBelowTheUpdateContract(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t,
 		readyWorker(claim.RoleImplementer),
 		podUpdateRole{role: claim.RoleTester, state: supervise.StateSuspended, session: true,
@@ -1621,6 +1642,7 @@ func TestPodUpdateRevivesASuspendedClaimBelowTheUpdateContract(t *testing.T) {
 // released pod: the sweep opens no round over it, writes nothing on the issue about work the
 // release's bundle is holding, and leaves the wake to bring the pod back.
 func TestPodUpdateReadsAReleasedPodAsNoPodRatherThanAPodThatWent(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t,
 		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateSuspended, session: true,
 			contract: api.DaemonAPIVersion, suspendedBy: supervise.SuspendedByReleased},
@@ -1653,6 +1675,7 @@ func TestPodUpdateReadsAReleasedPodAsNoPodRatherThanAPodThatWent(t *testing.T) {
 // answers by ending the turn the round's task starts, so neither needs a relaunch and a relaunch
 // would cut a turn the round is waiting on.
 func TestStalePluginLeavesEveryClaimInARoundToThatRound(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t,
 		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateReady, session: true, inPod: true,
 			contract: supervise.PodUpdateContract - 1, round: podUpdateRound, reasons: podUpdateDrift},
@@ -1691,6 +1714,7 @@ func TestStalePluginLeavesEveryClaimInARoundToThatRound(t *testing.T) {
 // told, naming the turns the round waits on. Without it a turn that never ends holds every
 // signalled worker's next task for ever, with only a log line to show for it.
 func TestPodUpdateTellsTheControllerWhenTheTurnsNeverEnd(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t,
 		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateWorking, session: true, inPod: true,
 			contract: api.DaemonAPIVersion},
@@ -1741,6 +1765,7 @@ func TestPodUpdateTellsTheControllerWhenTheTurnsNeverEnd(t *testing.T) {
 // answered, the pod is still there, and every one of them is holding its next task. Past the
 // notice bound the controller is told, and the error the runtime gave is the reason.
 func TestPodUpdateTellsTheControllerWhenTheReplacementKeepsFailing(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
 	rig.drifts(podUpdateDrift)
 
@@ -1775,6 +1800,7 @@ func TestPodUpdateTellsTheControllerWhenTheReplacementKeepsFailing(t *testing.T)
 // contracts of a plugin round — so the notice carries what the round records, whole. A list built
 // by splitting that string cuts one reason into pieces that each read as a reason of their own.
 func TestPodUpdateNoticeKeepsTheReasonsWhole(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, podUpdateRole{
 		role: claim.RoleImplementer, state: supervise.StateReady, session: true, inPod: true,
 		contract: api.DaemonAPIVersion, round: supervise.PluginRound(api.DaemonAPIVersion),
@@ -1823,6 +1849,7 @@ func wantAnswered(t *testing.T, notice record.ControllerNotice, roles ...claim.R
 // alone (takeBackSignal), and a sweep deciding from the snapshot would see neither the turn nor
 // the answer going: it would end that turn and delete the disk the turn's work is on.
 func TestPodUpdateReadsTheClaimsAgainBeforeItReplacesThePod(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.drifts(podUpdateDrift)
 
@@ -1870,6 +1897,7 @@ func TestPodUpdateReadsTheClaimsAgainBeforeItReplacesThePod(t *testing.T) {
 // round answered just before the bound would spend its one notice on a turn that ends seconds
 // later, and the stall that followed would be told nothing at all.
 func TestPodUpdateMeasuresTheLateNoticeFromTheLastAnswer(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t,
 		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateWorking, session: true, inPod: true,
 			contract: api.DaemonAPIVersion},
@@ -1917,6 +1945,7 @@ func TestPodUpdateMeasuresTheLateNoticeFromTheLastAnswer(t *testing.T) {
 // is told at the same bound as every other stall, naming the claim it waits on; without that, a
 // lone operator-suspended worker's operator is never told.
 func TestPodUpdateTellsTheControllerWhenNoClaimRecordsThePod(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
 	rig.drifts(podUpdateDrift)
 
@@ -1973,6 +2002,7 @@ func TestPodUpdateTellsTheControllerWhenNoClaimRecordsThePod(t *testing.T) {
 // the claude-envoy at LEGION_CLAUDE_PLUGIN_DIR, which its launch reads again. So the relaunch
 // does there what it does for an Oh My Pi pane, and the lane relaunches both workers.
 func TestStalePluginLeavesAClaudeWorkerAloneUnderKubernetesAndRelaunchesItUnderTmux(t *testing.T) {
+	t.Parallel()
 	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		runtimeName string
@@ -2053,6 +2083,7 @@ func (r *podUpdateRig) notDue() []fake.Call { return r.rt.CallsOf("ReplacePodNot
 // claim admitted before the sweep reached this replacement, and this last word is what catches
 // one admitted while the runtime waits the pod out.
 func TestPodUpdateAbortsTheReplacementForAClaimTheGroupNeverHeld(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t,
 		readyWorker(claim.RoleImplementer),
 		podUpdateRole{role: claim.RoleTester, state: supervise.StateQueued},
@@ -2117,6 +2148,7 @@ func TestPodUpdateAbortsTheReplacementForAClaimTheGroupNeverHeld(t *testing.T) {
 // daemon one statement before the write that ends every process in the pod, the daemon reads the
 // claims again there, and the replacement is refused rather than made.
 func TestPodUpdateDoesNotCutATurnThatStartsWhileTheReplacementWaits(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.drifts(podUpdateDrift)
 
@@ -2180,6 +2212,7 @@ func TestPodUpdateDoesNotCutATurnThatStartsWhileTheReplacementWaits(t *testing.T
 // nothing and refused nothing. What carries such a claim is the round over its pod, which asks
 // it, takes the end of its turn as the answer, and replaces the pod onto the new image.
 func TestStalePluginLeavesAClaudeWorkerBelowTheContractToItsRound(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t,
 		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateReady, session: true, inPod: true,
 			contract: supervise.PodUpdateContract - 1},
@@ -2262,6 +2295,7 @@ func TestStalePluginLeavesAClaudeWorkerBelowTheContractToItsRound(t *testing.T) 
 // locator go. Nothing is stalled there and nobody has anything to do about it, so the controller
 // is told nothing — a notice would open a finding ask over a round that needs no one.
 func TestPodUpdateTellsNobodyOfAPodlessRoundEveryWorkerHasAnswered(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
 	rig.drifts(podUpdateDrift)
 
@@ -2293,6 +2327,7 @@ func TestPodUpdateTellsNobodyOfAPodlessRoundEveryWorkerHasAnswered(t *testing.T)
 // has not answered, and the controller's playbook must be told nothing of the other: publishing
 // the update task to a claim that has answered starts a turn, which takes that answer back.
 func TestPodUpdatePodlessNoticeListsOnlyTheWorkersThatHaveNotAnswered(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.drifts(podUpdateDrift)
 
@@ -2333,6 +2368,7 @@ func TestPodUpdatePodlessNoticeListsOnlyTheWorkersThatHaveNotAnswered(t *testing
 // answer back, and counting the answer would delete a disk under work that turn can still
 // commit. The cost is one sweep.
 func TestPodUpdateReadsAClaimMidRelaunchWithoutWaitingAndCountsItUnanswered(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.drifts(podUpdateDrift)
 	rig.tick()
@@ -2394,6 +2430,7 @@ func TestPodUpdateReadsAClaimMidRelaunchWithoutWaitingAndCountsItUnanswered(t *t
 // The control is the same round past the same bound with a worker that really has not answered:
 // there the unmasked read finds it waiting, and the operator's side is told once, naming it.
 func TestPodUpdateTellsNobodyOfARoundWaitingOnlyOnAClaimMidDecision(t *testing.T) {
+	t.Parallel()
 	// refusedNotice is what the sweep logs when the store will not take the notice's row.
 	const refusedNotice = "supervise: tell the operator's side that an update round is stalled; telling again at the next sweep"
 	pool, reset := tableDatabase(t)
@@ -2519,6 +2556,7 @@ func (r *podUpdateRig) settleAll() {
 // What each really left is the round's own record, written where the launch records the pod the
 // claim came up in: the round it left, and whether it had answered it by then.
 func TestPodUpdateNamesOnlyTheRoundsOwnMembersAsHavingLostWork(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t,
 		readyWorker(claim.RoleImplementer),
 		readyWorker(claim.RoleTester),
@@ -2584,6 +2622,7 @@ func TestPodUpdateNamesOnlyTheRoundsOwnMembersAsHavingLostWork(t *testing.T) {
 // claim stopped counting as one that had left, and this answer was taken for the round. It names
 // work the dead pod's disk held, which no process of this claim has seen, so it is refused.
 func TestPodUpdateRefusesALateAnswerFromAClaimSuspendedAfterItLeftTheRound(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
 	rig.drifts(podUpdateDrift)
 
@@ -2653,6 +2692,7 @@ func (r *podUpdateRig) envoyTurn(role claim.Role) {
 // pod ends a round by (endRoundOverAGonePod), the turn in the new pod is left running, and the
 // operator's side is told nothing, however long past the notice bound the sweep runs.
 func TestPodUpdateDecidesAGonePodsRoundRatherThanWaitForATurnInThePodThatReplacedIt(t *testing.T) {
+	t.Parallel()
 	const held = "supervise: every worker of this update round has answered; the replacement waits for the turns still running"
 	const overAGonePod = "supervise: the pod of this issue's update round is not there, and every claim of the round had answered; nothing was lost and the round is over"
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
@@ -2715,6 +2755,7 @@ func TestPodUpdateDecidesAGonePodsRoundRatherThanWaitForATurnInThePodThatReplace
 // would have taken the answer back (takeBackSignal) and the issue would be told a worker lost
 // work that worker had pushed.
 func TestPodUpdateTellsTheIssueNothingWhenAnAnsweredWorkerTakesATurnInTheNewPod(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.drifts(podUpdateDrift)
 
@@ -2765,6 +2806,7 @@ func TestPodUpdateTellsTheIssueNothingWhenAnAnsweredWorkerTakesATurnInTheNewPod(
 // The round ends at the sweep that reads them there, the pod it could replace is gone, and the
 // issue is told nothing: each worker had answered when it left the round.
 func TestPodUpdateTellsTheIssueNothingWhenTheReplacementTimesOutAfterItsSuspensionLanded(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.drifts(podUpdateDrift)
 
@@ -2816,6 +2858,7 @@ func TestPodUpdateTellsTheIssueNothingWhenTheReplacementTimesOutAfterItsSuspensi
 // of this claim has seen, so it is refused (ErrLeftPodRound) and nothing of it is recorded; and
 // the round ends with the report, so no later sweep writes the message again.
 func TestPodUpdateTellsTheIssueOnceOfAWorkerThatAnswersOnlyInTheNewPod(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.drifts(podUpdateDrift)
 

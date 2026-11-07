@@ -149,6 +149,7 @@ func (g *renameGitHub) assertAddressed(t *testing.T, repo string) {
 // redirect. With no pair configured the same record is minted for and addressed at
 // sjawhar/legion, as it always was.
 func TestAREADYMergeOfATreeRecordedBeforeItsTransferAddressesTheRepositoryGitHubServes(t *testing.T) {
+	t.Parallel()
 	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name    string
@@ -193,6 +194,7 @@ func TestAREADYMergeOfATreeRecordedBeforeItsTransferAddressesTheRepositoryGitHub
 // A disarm of the same tree's pull request reads and writes the same repository: readyMerge and
 // autoMergeDisable share the one client (graphQL), so both follow the transfer together.
 func TestAnAutoMergeDisableOfATreeRecordedBeforeItsTransferAddressesTheRepositoryGitHubServes(t *testing.T) {
+	t.Parallel()
 	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name    string
@@ -253,6 +255,7 @@ func (t identityTokens) Token(ctx context.Context, role appauth.AppRole, repo gh
 // (adoptIdentity), hand it the recorded repository and leave the owner to it. With no pair
 // configured the same record is minted for sjawhar, as it always was.
 func TestTheGitIdentityOfATreeRecordedBeforeAConfiguredRenameIsMintedForTheOwnerGitHubServes(t *testing.T) {
+	t.Parallel()
 	recorded := ghrepo.MustParse("sjawhar/legion")
 	for _, tc := range []struct {
 		name    string

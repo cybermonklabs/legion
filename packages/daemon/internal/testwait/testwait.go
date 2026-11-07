@@ -19,7 +19,21 @@ const poll = 10 * time.Millisecond
 // so a `-timeout` smaller than a minute still reports the wait rather than the binary's panic.
 func Eventually(t *testing.T, what string, condition func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(time.Minute)
+	EventuallyWithin(t, time.Minute, what, condition)
+}
+
+// EventuallyWithin is Eventually on a longer leash, for a condition that is many facts rather
+// than one: a wave of forty claims settles forty rows through the daemon's own pacing, and on a
+// machine running the rest of this package beside it that is legitimately slower than a minute,
+// where one delivery is not. A test takes this only where the count is what makes it slow, and
+// names that count in what; everything else takes Eventually, whose minute is the package's
+// standard and whose expiry is a real failure.
+//
+// The bound is still cut to the test binary's own deadline less a second, so a `-timeout`
+// smaller than it still reports the wait rather than the binary's panic.
+func EventuallyWithin(t *testing.T, bound time.Duration, what string, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(bound)
 	if testDeadline, ok := t.Deadline(); ok && testDeadline.Add(-time.Second).Before(deadline) {
 		deadline = testDeadline.Add(-time.Second)
 	}

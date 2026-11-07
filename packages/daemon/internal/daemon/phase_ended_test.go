@@ -34,6 +34,7 @@ import (
 // GitHub supplies stand apart from the daemon's own words. It is no
 // architect notice: the architect's own notice goes out beside it, to the architect's topic.
 func TestACIRedTellsTheRoleWhosePhaseEndedOnItsOwnTopic(t *testing.T) {
+	t.Parallel()
 	const red = "CI is red at sha-1: ci"
 	tail := " Nothing of yours is stopped: your turn, your jobs, your process and your session run on." +
 		" The workspace is the implementing phase's now, so stop writing it at once and leave whatever you have uncommitted." +
@@ -117,6 +118,7 @@ func TestACIRedTellsTheRoleWhosePhaseEndedOnItsOwnTopic(t *testing.T) {
 // next task from the daemon names its phase anyway: the row ends with one log line rather than
 // waiting as an architect's notice waits, and the implementer's start goes on all the same.
 func TestAPhaseEndedMessageNobodyHoldsEndsAndTheStartGoesOn(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	publisher := &holderPublisher{}
 	runner, sup, pool := redRunner(t, phase.Testing, "testing", false, publisher)
@@ -153,6 +155,7 @@ func TestAPhaseEndedMessageNobodyHoldsEndsAndTheStartGoesOn(t *testing.T) {
 // forward the listener's own NATS grant denies goes through once an operator changes that grant.
 // Only a role with no live holder ends the row.
 func TestAPhaseEndedMessageRetriesEveryFailureButNoHolder(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	row := mustOutboxRow(t, "LEGION-208", record.PhaseEnded{Role: claim.RoleTester, From: phase.Testing,
 		To: phase.Implementing, Reason: "CI is red at sha-1: ci"}, time.Now())

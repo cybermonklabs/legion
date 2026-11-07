@@ -484,6 +484,7 @@ func toldInPlacePath(r *mainPathRig) string {
 // there the answer says no, the task is held rather than prompted to an architect no run of the
 // root owns, and the start of the root's next run is what releases it.
 func TestARootThatMainsCodeResumesGetsItsTaskWithRootHearsWired(t *testing.T) {
+	t.Parallel()
 	pool, reset := tableDatabase(t)
 	for _, path := range mainPaths {
 		t.Run(path.name, func(t *testing.T) {

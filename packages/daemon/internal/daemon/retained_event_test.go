@@ -84,6 +84,7 @@ func retainedIssueEnvelope(t *testing.T, key string, id, seq int64, status strin
 // snapshot admission holds behind it never stands in for the event's own, actor-bearing write. The
 // daemon's preparation fills a recorded issue's missing repository from its record.
 func TestARetainedEventKeepsTheSessionFenceOfItsActor(t *testing.T) {
+	t.Parallel()
 	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name     string
@@ -193,6 +194,7 @@ func TestARetainedEventKeepsTheSessionFenceOfItsActor(t *testing.T) {
 // that detail shows it, at its sequence; it is never applied with no repository, and never
 // dropped for the boot snapshot to stand in for.
 func TestARetainedEventOfAnUnrecordedIssueReadsItsRepositoryFromDispatch(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -255,6 +257,7 @@ func TestARetainedEventOfAnUnrecordedIssueReadsItsRepositoryFromDispatch(t *test
 // is not overruled: the redelivery is applied as Dispatch now shows the issue, which records
 // nothing, whatever failed before.
 func TestAnAdmissionWhoseApplyFailedIsAppliedAsDispatchNowShowsIt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()

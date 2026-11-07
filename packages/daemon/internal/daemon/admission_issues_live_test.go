@@ -94,6 +94,7 @@ type admissionIssuesArchitect struct {
 // and leaves its start waiting for a slot the full cap has none of, and the parking of the two
 // children, which frees the slots that return and that parent's first phase then take.
 func TestTheCapCountsIssuesAndAParentWaitsForItsChildrenLive(t *testing.T) {
+	t.Parallel()
 	r := newAdmissionIssuesLive(t)
 	r.step("step1-two-live-trees-hold-no-slot", r.liveTreesHoldNoSlot)
 	r.step("step2-the-released-children-hold-both-slots-and-their-parent-waits", r.childrenHoldTheSlots)

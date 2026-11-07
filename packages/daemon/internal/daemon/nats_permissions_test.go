@@ -48,6 +48,7 @@ const (
 // rather than the nats-server the rest of the package's NATS tests link in, and skips where no
 // container runtime answers.
 func TestDaemonPermissionsOnRealServers(t *testing.T) {
+	t.Parallel()
 	testnats.RequireContainerRuntime(t)
 	pool, reset := tableDatabase(t)
 	for _, image := range testnatsimages.Images {

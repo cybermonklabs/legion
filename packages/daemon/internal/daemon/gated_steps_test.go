@@ -17,6 +17,7 @@ import (
 // row ran publishes again — which is what lets a deployment that changed its list have the new
 // one written without anyone asking.
 func TestGatedStepsPublishAtBoot(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -86,6 +87,7 @@ func TestGatedStepsPublishAtBoot(t *testing.T) {
 // The publish executor refuses a runner with no Dispatch client rather than dropping the row, as
 // every other Dispatch write of the outbox does: the row is retried once a client is there.
 func TestGatedStepsPublishWithoutADispatchClientIsRefused(t *testing.T) {
+	t.Parallel()
 	row := mustOutboxRow(t, "LEGION", record.GatedStepsPublish{Project: "LEGION", Steps: []record.DesignStep{record.DesignStepSpec}}, time.Now())
 	err := (&outbox{}).execute(context.Background(), row)
 	if err == nil || err.Error() != "gated steps executor has no Dispatch client" {

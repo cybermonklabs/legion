@@ -330,7 +330,11 @@ func waitingWakes(t *testing.T, d *daemon) []api.WakeWaiting {
 func awaitWave(t *testing.T, d *daemon, count int) []api.WakeWaiting {
 	t.Helper()
 	var waiting, settled []api.WakeWaiting
-	testwait.Eventually(t, fmt.Sprintf("the pacing to hold %d of the wave's %d wakes", count-1, count), func() bool {
+	// Three minutes rather than testwait's standard one: this waits for `count` facts to be
+	// written by as many goroutines, not for one, and a package running the rest of itself
+	// beside this test on two cores takes longer than a minute over forty of them, where one
+	// delivery still does not.
+	testwait.EventuallyWithin(t, 3*time.Minute, fmt.Sprintf("the pacing to hold %d of the wave's %d wakes", count-1, count), func() bool {
 		waiting, settled = waitingWakes(t, d), waiting
 		return len(waiting) == count-1 && slices.Equal(waiting, settled)
 	})
@@ -489,6 +493,7 @@ func runWave(t *testing.T, clock *waveClock, rt *waveRuntime, waiting []api.Wake
 // (TestWithNoPacingTheBootWaveGoesOutInOneTick): all forty launches then go out inside one tick of
 // the test clock, which is the restart of 2026-11-04.
 func TestABootWaveOfLaunchesGoesOutAtTheOperatorsPace(t *testing.T) {
+	t.Parallel()
 	cfg := waveConfig(t)
 	tokens := waveClaims(t, cfg, claim.RoleImplementer, func(i int, _ claim.Token) supervise.Claim { return unfinishedLaunch(t, i) })
 	clock, logged := newWaveClock(), &syncBuffer{}
@@ -551,6 +556,7 @@ func waveIssue(cfg config.Config, i int) string {
 // (TestWithNoPacingTheCatchUpWaveIsWrittenDueAtOnce): all forty rows are then due in the same
 // instant, which is forty architects reading their whole context in one minute.
 func TestAWaveOfCatchUpsIsWrittenOnTheLimitersScheduleInTheOrderItBecameReady(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -612,6 +618,7 @@ func TestAWaveOfCatchUpsIsWrittenOnTheLimitersScheduleInTheOrderItBecameReady(t 
 // own wiring when the rate is 0 (openWorkflow). Every catch-up of the wave is then written due at
 // once, and the architects it wakes all read their context in the same minute.
 func TestWithNoPacingTheCatchUpWaveIsWrittenDueAtOnce(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -655,6 +662,7 @@ func TestWithNoPacingTheCatchUpWaveIsWrittenDueAtOnce(t *testing.T) {
 // (TestWithNoPacingTheStalePluginWaveOpensEveryRoundInOneTick): all forty rounds then open inside
 // one tick of the test clock, which is forty live sessions woken in the same minute.
 func TestAStalePluginWaveQueuesItsUpdateTasksAtTheOperatorsPace(t *testing.T) {
+	t.Parallel()
 	cfg := waveConfig(t)
 	tokens := waveClaims(t, cfg, claim.RoleImplementer, func(i int, token claim.Token) supervise.Claim {
 		return liveClaim(i, token, supervise.PodUpdateContract)
@@ -758,6 +766,7 @@ func openRounds(t *testing.T, d *daemon, tokens []claim.Token, round string) int
 // of the forty rounds opens inside one tick of the test clock — forty live sessions woken in the
 // same minute, which is the plugin wave the cap counts.
 func TestWithNoPacingTheStalePluginWaveOpensEveryRoundInOneTick(t *testing.T) {
+	t.Parallel()
 	cfg := waveConfig(t)
 	cfg.WorkerWakesPerMinute = 0
 	tokens := waveClaims(t, cfg, claim.RoleImplementer, func(i int, token claim.Token) supervise.Claim {
@@ -783,6 +792,7 @@ func TestWithNoPacingTheStalePluginWaveOpensEveryRoundInOneTick(t *testing.T) {
 // this test holds the daemon to it so that a pacing silently turned off is not read as a pacing
 // that works.
 func TestWithNoPacingTheBootWaveGoesOutInOneTick(t *testing.T) {
+	t.Parallel()
 	cfg := waveConfig(t)
 	cfg.WorkerWakesPerMinute = 0
 	tokens := waveClaims(t, cfg, claim.RoleImplementer, func(i int, _ claim.Token) supervise.Claim { return unfinishedLaunch(t, i) })
@@ -819,6 +829,7 @@ func TestWithNoPacingTheBootWaveGoesOutInOneTick(t *testing.T) {
 // The negative control is this same wave with the rate at 0
 // (TestWithNoPacingTheDisplacedWaveGoesOutInOneTick): all forty resume inside one tick.
 func TestADisplacedWaveOfLaunchesGoesOutAtTheOperatorsPace(t *testing.T) {
+	t.Parallel()
 	cfg := waveConfig(t)
 	tokens := waveClaims(t, cfg, claim.RoleImplementer, func(i int, token claim.Token) supervise.Claim {
 		return liveClaim(i, token, api.DaemonAPIVersion)
@@ -861,6 +872,7 @@ func TestADisplacedWaveOfLaunchesGoesOutAtTheOperatorsPace(t *testing.T) {
 // The negative control of the displaced case: the pacing reverted, the rate at 0, and the whole
 // roll's forty relaunches go out inside one tick of the test clock.
 func TestWithNoPacingTheDisplacedWaveGoesOutInOneTick(t *testing.T) {
+	t.Parallel()
 	cfg := waveConfig(t)
 	cfg.WorkerWakesPerMinute = 0
 	tokens := waveClaims(t, cfg, claim.RoleImplementer, func(i int, token claim.Token) supervise.Claim {
@@ -901,6 +913,7 @@ func TestWithNoPacingTheDisplacedWaveGoesOutInOneTick(t *testing.T) {
 // a non-exempt operator resume would leave the resumed claim parked launching with the state
 // naming its wake, which this test's own assertions would then read.
 func TestAnOperatorsResumeAndTheControllersOwnWakeNeverWait(t *testing.T) {
+	t.Parallel()
 	cfg := waveConfig(t)
 	cfg.ControllerLaunch = config.ControllerLaunchDaemon
 	tokens := waveClaims(t, cfg, claim.RoleImplementer, func(i int, _ claim.Token) supervise.Claim { return unfinishedLaunch(t, i) })
@@ -1017,6 +1030,7 @@ func TestAnOperatorsResumeAndTheControllersOwnWakeNeverWait(t *testing.T) {
 // then answers 202 with the claim still launching, which this test reads at the suspend itself,
 // and the claim is suspended only when its turn comes.
 func TestEveryEventOnAWaitingClaimIsDecidedWhileTheWakesStillWait(t *testing.T) {
+	t.Parallel()
 	cfg := waveConfig(t)
 	waveClaims(t, cfg, claim.RoleArchitect, func(i int, _ claim.Token) supervise.Claim { return unfinishedLaunch(t, i) })
 	// Two claims of the wave that are not their trees' roots, so one of them is always waiting when
@@ -1161,6 +1175,7 @@ func TestEveryEventOnAWaitingClaimIsDecidedWhileTheWakesStillWait(t *testing.T) 
 // then stopped and replaced inside one tick of the test clock
 // (TestWithNoPacingTheStaleRelaunchWaveReplacesEveryProcessInOneTick).
 func TestARelaunchKeepsTheRunningProcessUntilItsTurnAndNoSweepReapsIt(t *testing.T) {
+	t.Parallel()
 	cfg := waveConfig(t)
 	tokens := waveClaims(t, cfg, claim.RoleImplementer, func(i int, token claim.Token) supervise.Claim {
 		c := liveClaim(i, token, supervise.PodUpdateContract-1)
@@ -1261,6 +1276,7 @@ func resumedPrevious(t *testing.T, rt *waveRuntime, token claim.Token) runtime.L
 // every one of the forty running processes is stopped and replaced inside one tick of the test
 // clock.
 func TestWithNoPacingTheStaleRelaunchWaveReplacesEveryProcessInOneTick(t *testing.T) {
+	t.Parallel()
 	cfg := waveConfig(t)
 	cfg.WorkerWakesPerMinute = 0
 	tokens := waveClaims(t, cfg, claim.RoleImplementer, func(i int, token claim.Token) supervise.Claim {
@@ -1293,6 +1309,7 @@ func TestWithNoPacingTheStaleRelaunchWaveReplacesEveryProcessInOneTick(t *testin
 // whole wave before the restart (TestWithNoPacingTheBootWaveGoesOutInOneTick), and there is no
 // wave left for a restart to lose.
 func TestARestartRaisesTheWakesStillWaitingAndEachHappensOnce(t *testing.T) {
+	t.Parallel()
 	cfg := waveConfig(t)
 	tokens := waveClaims(t, cfg, claim.RoleImplementer, func(i int, _ claim.Token) supervise.Claim { return unfinishedLaunch(t, i) })
 	clock, logged := newWaveClock(), &syncBuffer{}
@@ -1357,6 +1374,7 @@ func TestARestartRaisesTheWakesStillWaitingAndEachHappensOnce(t *testing.T) {
 // stored launching when the daemon stops, the restart counts it among the unfinished launches,
 // and it is relaunched — the drain undone by a restart nobody connected to it.
 func TestASuspendDecidedWhileTheWakeWaitedSurvivesARestart(t *testing.T) {
+	t.Parallel()
 	cfg := waveConfig(t)
 	tokens := waveClaims(t, cfg, claim.RoleImplementer, func(i int, _ claim.Token) supervise.Claim { return unfinishedLaunch(t, i) })
 	clock, logged := newWaveClock(), &syncBuffer{}
@@ -1472,6 +1490,7 @@ func waitingWakeOf(t *testing.T, tree *laneTree, role claim.Role) (*supervise.Ma
 // and the issue's lane logs the row held behind it
 // (TestARunningLifecycleRowLogsEachRowHeldBehindItOnceItHasWaitedLong pins that shape).
 func TestALaneRunsOnWhileTheClaimsWakeWaits(t *testing.T) {
+	t.Parallel()
 	var logged syncBuffer
 	tree, _ := pacedLaneTree(t, slog.New(slog.NewJSONHandler(&logged, nil)))
 
@@ -1559,6 +1578,7 @@ func TestALaneRunsOnWhileTheClaimsWakeWaits(t *testing.T) {
 // launches at once, there is no wake for a second start to meet, and
 // TestWithNoPacingTheBootWaveGoesOutInOneTick holds that shape for the launches themselves.
 func TestASecondStartOfAWaitingClaimTakesNoTokenAndStartsNoSecondLaunch(t *testing.T) {
+	t.Parallel()
 	tree, limiter := pacedLaneTree(t, nil)
 
 	tree.commit(t, "architect-start", tree.start(t, claim.RoleArchitect))
@@ -1617,6 +1637,7 @@ func noticeRowOf(t *testing.T, pool *pgxpool.Pool, issue string) (noticeRow, boo
 // (TestWithNoPacingTheCatchUpWaveIsWrittenDueAtOnce): the catch-up is then due at once, the ready
 // has nothing to leave where it was, and the architect's minute holds the whole wave.
 func TestAReadyAndALaterNoticeLeaveThePacedCatchUpWhereTheQueueHoldsIt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()

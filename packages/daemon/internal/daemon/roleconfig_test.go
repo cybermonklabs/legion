@@ -16,6 +16,7 @@ import (
 // settled it: the tmux runtime's Options and the Sandbox runtime's, which tell each role its own
 // overlays and hand the image probe every role's.
 func TestRoleConfigFilesReachEitherRuntime(t *testing.T) {
+	t.Parallel()
 	files := map[claim.Role][]string{
 		claim.RoleImplementer: {"/etc/legion-operator/fallback.yml"},
 		claim.RoleController:  {"/etc/legion-operator/fallback.yml", "/etc/legion-operator/controller.yml"},
@@ -40,6 +41,7 @@ func TestRoleConfigFilesReachEitherRuntime(t *testing.T) {
 // the boot, naming the role, the file and Oh My Pi's error line, rather than failing each launch of
 // that role; a role file Oh My Pi starts on, or no key at all, passes.
 func TestTheTmuxBootGateRefusesARoleOverlayOhMyPiCannotParse(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	omp := filepath.Join(dir, "omp")
 	script := "#!/bin/sh\nIFS=:\nfor f in $PI_CONFIG_FILES; do case \"$f\" in *malformed*)\n" +
@@ -80,6 +82,7 @@ func TestTheTmuxBootGateRefusesARoleOverlayOhMyPiCannotParse(t *testing.T) {
 // The gate boot builds for a tmux daemon (prepare) refuses a role file Oh My Pi cannot parse,
 // before the plugin gate's load probes run, naming the role and the file.
 func TestTheTmuxBootRefusesARoleOverlayOhMyPiCannotParse(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	omp := filepath.Join(dir, "omp")
 	script := "#!/bin/sh\nIFS=:\nfor f in $PI_CONFIG_FILES; do case \"$f\" in *malformed*)\n" +

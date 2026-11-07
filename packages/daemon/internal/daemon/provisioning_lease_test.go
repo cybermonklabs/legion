@@ -203,6 +203,7 @@ func provisioningRefusal(w http.ResponseWriter) {
 //   - one in GitHub's trouble (a 500): the error is returned as it came, with no fallback mint and
 //     nothing logged.
 func TestTheProvisioningTokenIsAReadingLease(t *testing.T) {
+	t.Parallel()
 	const (
 		readingOwner = "acme-reading"
 		narrowOwner  = "acme-no-actions"
@@ -386,6 +387,7 @@ func TestTheProvisioningTokenIsAReadingLease(t *testing.T) {
 // narrows, for as long as the limit lasts. The adapter returns the trouble, makes no fallback
 // mint and says nothing; the next provisioning asks again.
 func TestARateLimited422OfTheProvisioningReadIsNoFallbackToTheWriteToken(t *testing.T) {
+	t.Parallel()
 	const (
 		limitedOwner        = "acme-rate-limited"
 		limitedInstallation = "55"

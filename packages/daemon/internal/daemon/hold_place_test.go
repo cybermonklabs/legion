@@ -63,6 +63,7 @@ func waitingLine(t *testing.T, pool *pgxpool.Pool) []string {
 // between them, a pass that passed the held root over would hand the root behind it a slot that
 // is never taken back.
 func TestTheBootCatchUpHoldKeepsItsRootsPlaceOnTheRuntime(t *testing.T) {
+	t.Parallel()
 	answered := catchUpClock().Add(-time.Hour)
 	client := &awaitingDispatch{}
 	var logs syncBuffer

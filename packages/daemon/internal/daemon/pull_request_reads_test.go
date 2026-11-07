@@ -85,6 +85,7 @@ func headReads(t *testing.T, pool *pgxpool.Pool, kind string) int {
 // have carried, with GitHub's updated_at, so the handler's own clock fence decides it. A head that
 // did not move applies nothing, and a read older than the record's clock moves nothing.
 func TestThePassFollowsAHeadWhoseSynchronizeHasNotArrived(t *testing.T) {
+	t.Parallel()
 	read := time.Date(2026, 10, 26, 20, 0, 0, 0, time.UTC)
 	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
@@ -125,6 +126,7 @@ func TestThePassFollowsAHeadWhoseSynchronizeHasNotArrived(t *testing.T) {
 // new head with it, so the push the webhook would have carried is recorded, and that webhook
 // arriving afterwards decides nothing.
 func TestThePassFollowsAPushAboveAnApprovalAsANewHead(t *testing.T) {
+	t.Parallel()
 	read := time.Date(2026, 10, 26, 20, 0, 0, 0, time.UTC)
 	pool := isolatedOutboxPool(t)
 	seedCapture(t, pool, phase.Reviewing, "needs_review", record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleReviewer, Claim: "review-claim"})
@@ -146,6 +148,7 @@ func TestThePassFollowsAPushAboveAnApprovalAsANewHead(t *testing.T) {
 // reaches it. followHead compares GitHub's head with the record as it stands then, so a head the
 // webhook already recorded applies nothing again.
 func TestFollowHeadComparesWithTheRecordAsItStandsNow(t *testing.T) {
+	t.Parallel()
 	read := time.Date(2026, 10, 26, 20, 0, 0, 0, time.UTC)
 	pool := isolatedOutboxPool(t)
 	seedCapture(t, pool, phase.Testing, "testing", record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleTester, Claim: "test-claim"})
@@ -175,6 +178,7 @@ func TestFollowHeadComparesWithTheRecordAsItStandsNow(t *testing.T) {
 // generation removes the closed pull request), the same pull request against the new record is a
 // new fact, and the workflow records it.
 func TestAnOpenedTheWorkflowDoesNotRecordIsAppliedOnceWhileNothingChanges(t *testing.T) {
+	t.Parallel()
 	opened := time.Date(2026, 10, 26, 19, 30, 0, 0, time.UTC)
 	pool := isolatedOutboxPool(t)
 	seedDeclinedOpened(t, pool, opened)
@@ -225,6 +229,7 @@ func seedDeclinedOpened(t *testing.T, pool *pgxpool.Pool, opened time.Time) {
 // a listing GitHub fails, and a pass GitHub's rate limit cuts short at the listing, leave the next
 // pass skipping the same opened.
 func TestAPassThatDoesNotListTheRepositoryKeepsTheDeclinedOpened(t *testing.T) {
+	t.Parallel()
 	opened := time.Date(2026, 10, 26, 19, 30, 0, 0, time.UTC)
 	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
@@ -263,6 +268,7 @@ func TestAPassThatDoesNotListTheRepositoryKeepsTheDeclinedOpened(t *testing.T) {
 // itself, where Legion pushes the issue's work: one on another branch records nothing, and neither
 // does one on a branch of the issue's name in a fork, or in a fork GitHub no longer has.
 func TestThePassTakesOnlyAPullRequestOnTheIssuesBranch(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	seedUnrecorded(t, pool, "handoff")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -289,6 +295,7 @@ func TestThePassTakesOnlyAPullRequestOnTheIssuesBranch(t *testing.T) {
 // read is no newer than what moved it, and following it could move the head back. A read newer
 // than the record's clock is followed.
 func TestFollowHeadKeepsARecordMovedSinceTheListByWhatItReadNoLater(t *testing.T) {
+	t.Parallel()
 	at := time.Date(2026, 10, 26, 20, 0, 0, 0, time.UTC)
 	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
@@ -349,6 +356,7 @@ func seedUnrecorded(t *testing.T, pool *pgxpool.Pool, handoff string) {
 // webhook's fact does, the mapping's spelling, so the webhooks that follow find the record. One
 // pass lists the repository once, whatever the issues.
 func TestThePassRecordsAnOpenPullRequestWhoseOpenedHasNotArrived(t *testing.T) {
+	t.Parallel()
 	opened := time.Date(2026, 10, 26, 19, 30, 0, 0, time.UTC)
 	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
@@ -540,6 +548,7 @@ func lateWebhookPushDecidesNothing(t *testing.T, pool *pgxpool.Pool, w *workflow
 // one GitHub shows open that the record lacks and applies it, leaving the phase where it is. The
 // webhook arriving afterwards is a redelivery and changes nothing.
 func TestThePassRecordsAnOpenedLostInAnyPhase(t *testing.T) {
+	t.Parallel()
 	at := time.Date(2026, 10, 26, 20, 0, 0, 0, time.UTC)
 	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
@@ -575,6 +584,7 @@ func TestThePassRecordsAnOpenedLostInAnyPhase(t *testing.T) {
 // lists it open again, and the pass applies its reopen, which opens the record with what the
 // pull request had carried. The reopened webhook arriving afterwards changes nothing.
 func TestThePassRecordsAReopenLostInReviewing(t *testing.T) {
+	t.Parallel()
 	at := time.Date(2026, 10, 26, 20, 0, 0, 0, time.UTC)
 	pool := isolatedOutboxPool(t)
 	seedCapture(t, pool, phase.Reviewing, "needs_review", record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleReviewer, Claim: "review-claim"})
@@ -597,6 +607,7 @@ func TestThePassRecordsAReopenLostInReviewing(t *testing.T) {
 // architect once; it reads nothing else of that pull request. A second pass reads it no more, and
 // the closed webhook arriving afterwards changes nothing.
 func TestThePassAppliesACloseWithoutMergeLost(t *testing.T) {
+	t.Parallel()
 	at := time.Date(2026, 10, 26, 20, 0, 0, 0, time.UTC)
 	pool := isolatedOutboxPool(t)
 	seedCapture(t, pool, phase.Testing, "testing", record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleTester, Claim: "test-claim"})
@@ -623,6 +634,7 @@ func TestThePassAppliesACloseWithoutMergeLost(t *testing.T) {
 // and opens the child's production check on the merge commit. The merged webhook arriving
 // afterwards changes nothing.
 func TestThePassAppliesAMergeLostInAwaitingMerge(t *testing.T) {
+	t.Parallel()
 	at := time.Date(2026, 10, 26, 20, 0, 0, 0, time.UTC)
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -676,6 +688,7 @@ func TestThePassAppliesAMergeLostInAwaitingMerge(t *testing.T) {
 // told pr-merged, the issue staying where it is. The merged webhook arriving afterwards changes
 // nothing.
 func TestThePassAppliesAMergeLostInImplementing(t *testing.T) {
+	t.Parallel()
 	at := time.Date(2026, 10, 26, 20, 0, 0, 0, time.UTC)
 	pool := isolatedOutboxPool(t)
 	seedCapture(t, pool, phase.Implementing, "in_progress")
@@ -700,6 +713,7 @@ func TestThePassAppliesAMergeLostInImplementing(t *testing.T) {
 // closed without merging is missing too; one it holds merged is not: its merge told the architect
 // (pr-merged), and the implementer's completion moves the issue on it.
 func TestThePassTellsTheArchitectOfAPullRequestMissingOncePerHandoff(t *testing.T) {
+	t.Parallel()
 	pool, reset := tableDatabase(t)
 	t.Run("the listing shows none", func(t *testing.T) {
 		reset(t)
@@ -807,6 +821,7 @@ func seedPassIssue(t *testing.T, pool *pgxpool.Pool, issue record.Issue, pr *rec
 // #86's no more. A rate-limit answer to a listing ends the pass: no repository after it is listed,
 // and nobody is told a pull request is missing.
 func TestThePassKeepsItsRequestBudget(t *testing.T) {
+	t.Parallel()
 	at := time.Date(2026, 10, 26, 20, 0, 0, 0, time.UTC)
 	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
@@ -1052,6 +1067,7 @@ func webhookPush(before, after, pusher string) intake.Push {
 // the tests leave is planned, as the webhooks would have left them. The push webhooks arriving
 // afterwards decide nothing.
 func TestThePassRebuildsTheReviewAppsRedTestPushesLost(t *testing.T) {
+	t.Parallel()
 	at := time.Date(2026, 10, 26, 20, 0, 0, 0, time.UTC)
 	pool := isolatedOutboxPool(t)
 	seedCapture(t, pool, phase.Testing, "testing", record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleTester, Claim: "test-claim"})
@@ -1086,6 +1102,7 @@ func TestThePassRebuildsTheReviewAppsRedTestPushesLost(t *testing.T) {
 // unplanned, so the implementer's next push, lost too, is a counted fix attempt. The fix's push
 // webhook arriving afterwards decides nothing.
 func TestThePassRebuildsTheImplementersFixPushLost(t *testing.T) {
+	t.Parallel()
 	at := time.Date(2026, 10, 26, 20, 0, 0, 0, time.UTC)
 	pool := isolatedOutboxPool(t)
 	seedCapture(t, pool, phase.Implementing, "in_progress")
@@ -1125,6 +1142,7 @@ func TestThePassRebuildsTheImplementersFixPushLost(t *testing.T) {
 // that activity: any push may change code, so it is a counted fix attempt. Either way the head
 // is judged with its push, and the push webhook arriving afterwards decides nothing.
 func TestThePassRebuildsAPushLostWhateverTheActivityCallsIt(t *testing.T) {
+	t.Parallel()
 	at := time.Date(2026, 10, 26, 20, 0, 0, 0, time.UTC)
 	pool, reset := tableDatabase(t)
 	for _, kind := range []string{"push", "force_push"} {
@@ -1150,6 +1168,7 @@ func TestThePassRebuildsAPushLostWhateverTheActivityCallsIt(t *testing.T) {
 // again), or GitHub fails the read - the pass applies no push, logs a WARN saying why, and applies
 // the synchronize as it did before it read the activity.
 func TestThePassAppliesNoPushWhenTheActivityCannotBeFollowed(t *testing.T) {
+	t.Parallel()
 	at := time.Date(2026, 10, 26, 20, 0, 0, 0, time.UTC)
 	zero := strings.Repeat("0", 40)
 	pool, reset := tableDatabase(t)

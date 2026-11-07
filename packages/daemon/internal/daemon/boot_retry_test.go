@@ -13,6 +13,7 @@ import (
 // timeout included — is logged at ERROR and applied again, never skipped in silence; only the
 // daemon's stop ends it unapplied, and that stop logs no error.
 func TestABootFactThatFailsWhileServingIsRetriedAndOnlyTheStopEndsIt(t *testing.T) {
+	t.Parallel()
 	var logged bytes.Buffer
 	log := slog.New(slog.NewTextHandler(&logged, nil))
 	calls := 0

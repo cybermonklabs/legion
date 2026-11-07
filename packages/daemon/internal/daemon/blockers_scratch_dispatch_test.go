@@ -66,6 +66,7 @@ import (
 //     takes back and nothing else, so step 8 cannot pass by checking everything;
 //  10. the roots of step 8 are admitted when that blocker closes.
 func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
+	t.Parallel()
 	// The NATS server is started first: it is this test's own (testnats.URL), and Dispatch
 	// reconciles ENVOY_NOTIFICATIONS on it on its first connection, which the daemon then consumes
 	// from.

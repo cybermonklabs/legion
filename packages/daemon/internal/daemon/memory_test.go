@@ -40,6 +40,7 @@ func memoryBlock(mode config.MemoryMode) config.Memory {
 // mode moved to off still has files to name. A project with no block hands over none, which is
 // the pane every deployment built before this release.
 func TestAProjectThatNamesOverlaysHandsThemToTheTmuxRuntimeAtEveryMode(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		memory config.Memory
@@ -63,6 +64,7 @@ func TestAProjectThatNamesOverlaysHandsThemToTheTmuxRuntimeAtEveryMode(t *testin
 // The Sandbox runtime is handed the same list on the same rule, since a pod's memory-group role
 // names those overlays whatever the project's mode is now.
 func TestAProjectThatNamesOverlaysHandsThemToTheSandboxRuntimeAtEveryMode(t *testing.T) {
+	t.Parallel()
 	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name   string
@@ -125,6 +127,7 @@ func memorySpawn(t *testing.T, s specs, tree, issue string, role claim.Role) run
 // the daemon materialized at boot, after the deployment's own. A role of a tree with no group, and
 // the daemon's controller, carry neither.
 func TestMemoryReachesOnlyTheRolesOfAMemoryTree(t *testing.T) {
+	t.Parallel()
 	const instructions = "/state/memory-instructions.md"
 	s := memorySpecs(t, instructions)
 	for _, role := range []claim.Role{claim.RoleArchitect, claim.RolePlanner, claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer, claim.RoleMerger} {
@@ -157,6 +160,7 @@ func TestMemoryReachesOnlyTheRolesOfAMemoryTree(t *testing.T) {
 // removing the block takes the files away (dispatch://INFRA-990's spec: every tree keeps its
 // group for its life; INFRA-1101's R3 and R6).
 func TestAMemoryTreeKeepsItsFilesAfterTheProjectMovesToModeOff(t *testing.T) {
+	t.Parallel()
 	const instructions = "/state/memory-instructions.md"
 	// The mode reaches no launch at all, so the one builder serves every mode; what the tmux and
 	// Sandbox options hand over at off is the two tables above.
@@ -177,6 +181,7 @@ func TestAMemoryTreeKeepsItsFilesAfterTheProjectMovesToModeOff(t *testing.T) {
 // appended to their prompt. A reader that cannot answer refuses the launch rather than running it
 // as a tree with no memory.
 func TestMemoryWithoutInstructionsAppendsNothingAndAFailedReadRefuses(t *testing.T) {
+	t.Parallel()
 	on := memorySpecs(t, "")
 	spec := memorySpawn(t, on, "LEGION-1", "LEGION-2", claim.RoleTester)
 	if !spec.Memory || spec.Prompt.MemoryInstructionsPath != "" {
@@ -201,6 +206,7 @@ func TestMemoryWithoutInstructionsAppendsNothingAndAFailedReadRefuses(t *testing
 // already drawn into the memory group names those overlays under any mode, so an unreadable one
 // would stop its roles at off as surely as at on. A project with no overlays has none to read.
 func TestMemoryOverlaysNoPaneCouldReadRefuseTheBoot(t *testing.T) {
+	t.Parallel()
 	want := "projects.test.memory.config_files names /etc/legion-memory/absent.yml, which a memory-group role's Oh My Pi could not read: "
 	for _, mode := range []config.MemoryMode{config.MemoryOn, config.MemoryRandom, config.MemoryOff, ""} {
 		cfg := memoryConfig(config.Memory{Mode: mode, ConfigFiles: []string{"/etc/legion-memory/absent.yml"}})
@@ -224,6 +230,7 @@ func TestMemoryOverlaysNoPaneCouldReadRefuseTheBoot(t *testing.T) {
 // already drawn into the memory group starts on it. A project with no overlays is probed as it
 // was before the block existed.
 func TestTheTmuxBootGateReadsAMemoryRolesWholeValue(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	omp := filepath.Join(dir, "omp")
 	// The stub refuses exactly the pair: a value naming both the controller's file and a memory
