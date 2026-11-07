@@ -24,6 +24,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/airlock/airlocktest"
 	"github.com/sjawhar/envoy/internal/broker/requests"
+	"github.com/sjawhar/envoy/internal/broker/secrets"
 )
 
 // upgradePath is the path these rows upgrade at: the stand-in service answers an upgrade
@@ -396,6 +397,44 @@ func TestAGrantReadThatFailedLeavesAJoinedConnectionAlone(t *testing.T) {
 
 	if frames := stand.read(); len(frames) != 2 {
 		t.Fatalf("the service read %q; want both frames: a read that failed closes no connection", frames)
+	}
+	if lines := r.logs.joins(); len(lines) != 0 {
+		t.Fatalf("the proxy closed the joined connection and logged %d lines for it; want none", len(lines))
+	}
+}
+
+// TestAJoinedConnectionSurvivesAMintWhoseUpstreamCouldNotBeAsked: the values read of a grant
+// holding a minted name re-mints it, and a minter that could not ask its upstream - no answer,
+// a 5xx, a rate limit - refuses with ErrMintUpstream inside an ErrMintFailed. That is a
+// refusal of the requests package and no answer about this grant: the grant is live and the
+// command's placeholder still opens it. GCLOUD_SAMI, AZURE_ADMIN and GWS_THEOREM_ADMIN_OAUTH
+// are minted names this deployment puts behind the airlock, so a bad minute of Google's or
+// GitHub's would otherwise cut every WebSocket the airlock carries for them.
+func TestAJoinedConnectionSurvivesAMintWhoseUpstreamCouldNotBeAsked(t *testing.T) {
+	upstream := fmt.Errorf("%w: %w: github app 42: installation 7: 502 Bad Gateway", requests.ErrMintFailed, secrets.ErrMintUpstream)
+	r := newRig(t, Options{Watch: watchFast})
+	stand, conn, reader := joinedThrough(t, r)
+	frame(t, conn, reader, "a frame while the minter answers")
+
+	// The version moves, so the values this pod holds are read again rather than answered
+	// from, and that read is the one the minter's upstream refuses.
+	before := r.grants.valueReads(testGrantID)
+	r.grants.refuseValues(upstream)
+	r.grants.setPolicyVersion("policy-v2")
+	// Three reads the upstream refused, so that what this row reads back is what the watcher
+	// did with them rather than a watcher that has not run yet.
+	deadline := time.Now().Add(10 * time.Second)
+	for r.grants.valueReads(testGrantID) < before+3 {
+		if time.Now().After(deadline) {
+			t.Fatalf("the grant's values were read %d times in ten seconds; want three more than the %d before the upstream went down",
+				r.grants.valueReads(testGrantID), before)
+		}
+		time.Sleep(watchFast)
+	}
+	frame(t, conn, reader, "a frame while the minter's upstream is down")
+
+	if frames := stand.read(); len(frames) != 2 {
+		t.Fatalf("the service read %q; want both frames: a mint whose upstream could not be asked closes no connection", frames)
 	}
 	if lines := r.logs.joins(); len(lines) != 0 {
 		t.Fatalf("the proxy closed the joined connection and logged %d lines for it; want none", len(lines))

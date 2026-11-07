@@ -503,9 +503,16 @@ func (s *Server) joinRefusal(ctx context.Context, info connInfo, name string) (i
 // closes the connection, in the status and words every other call of that grant is refused with,
 // and anything else is a read that did not happen, which grantRefusal has logged and which
 // closes nothing.
+//
+// What tells the two apart is grantRefusal's own answer and not the error, because the two do
+// not always agree: a mint whose upstream could not be asked reaches here as an ErrMintFailed,
+// which is a refusal of the requests package, and grantRefusal answers it 503 all the same,
+// since nothing of it says the grant has ended. Reading the error here would close a WebSocket
+// a github-app, google-login or azure-login name still carries every time its upstream has a
+// bad minute.
 func (s *Server) joinRead(read string, err error) (int, string) {
 	status, why := s.grantRefusal(read, err)
-	if requests.IsRefusal(err) {
+	if status == http.StatusProxyAuthRequired || status == http.StatusForbidden {
 		return status, why
 	}
 	return 0, ""

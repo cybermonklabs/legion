@@ -37,6 +37,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/requests"
+	"github.com/sjawhar/envoy/internal/broker/secrets"
 )
 
 // TestACredentialThatOpensNothingIsRefusedAndTunnelsNothing: the proxy's password is a
@@ -683,6 +684,13 @@ func TestAGrantTheReleaseChecksRefuseIsRefused(t *testing.T) {
 		{"a grant whose approval chain no longer verifies", fmt.Errorf("%w: record 9f2c: stored body does not reproduce its id", requests.ErrGrantChainInvalid), http.StatusForbidden, requests.ErrGrantChainInvalid.Error()},
 		{"a secret the store no longer holds", fmt.Errorf("%w: AUTO_TOKEN", requests.ErrSecretNotInStore), http.StatusForbidden, requests.ErrSecretNotInStore.Error()},
 		{"a mint the secret's own minter refused", fmt.Errorf("%w: the minter said no", requests.ErrMintFailed), http.StatusForbidden, requests.ErrMintFailed.Error()},
+		// And the one mint failure that is no answer about this grant at all: the minter could
+		// not even ask its upstream, which did not answer or answered a 5xx or a rate limit.
+		// It reaches here wrapped in ErrMintFailed like any other, so the sentinel the secrets
+		// package put inside it is what tells them apart, and a re-mint of a github-app,
+		// google-login or azure-login name behind the airlock fails this way whenever its
+		// upstream has a bad minute. 503, and nothing of the upstream's own words.
+		{"a mint whose upstream could not be asked", fmt.Errorf("%w: %w: github app 42: installation 7: 502 Bad Gateway", requests.ErrMintFailed, secrets.ErrMintUpstream), http.StatusServiceUnavailable, grantUnreadable},
 		// The shape error as the release loop hands it over: the name it refused for, and the
 		// sentinel that says the airlock could not take the value apart (requests.readRelease).
 		{"a value the airlock cannot take apart", fmt.Errorf("release %s behind the airlock: %w: its value is not a JSON object, which the airlock must take apart to stand placeholders in for its fields", workerName, requests.ErrAirlockValueShape), http.StatusForbidden, requests.ErrAirlockValueShape.Error()},

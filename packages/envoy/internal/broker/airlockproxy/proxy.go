@@ -44,6 +44,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/requests"
+	"github.com/sjawhar/envoy/internal/broker/secrets"
 )
 
 // readHeaderTimeout bounds how long a connection on this port may take to send the head of a
@@ -440,6 +441,13 @@ const grantUnreadable = "the broker could not read this grant just now; make the
 //   - A grant that has ended, and a grant holding no name this session may have, are the read's
 //     own answer about that grant, so they are 407 in the broker's own words, which is what
 //     tells a command to ask for a new grant.
+//   - A mint the secret's own minter could not even ask for - the upstream did not answer, or
+//     answered a 5xx or a rate limit (secrets.ErrMintUpstream) - is a read that did not happen,
+//     and it falls to the last answer below. It reaches here wrapped in ErrMintFailed, which is
+//     a refusal of the package the line below asks, so it has to be read first: a re-mint of a
+//     github-app, google-login or azure-login name behind the airlock fails this way whenever
+//     its upstream has a bad minute, and answering that 403 would tell a command no retry
+//     clears it and would close a WebSocket the grant still carries.
 //   - Every other refusal the broker made about this grant - a chain that no longer verifies, a
 //     secret the store no longer holds, a mint the secret's own minter refused, a value whose
 //     shape the airlock cannot take apart - is 403 in those words. No retry clears one of them,
@@ -457,6 +465,9 @@ func (s *Server) grantRefusal(read string, err error) (int, string) {
 	switch {
 	case errors.Is(err, requests.ErrGrantNotLive), errors.Is(err, requests.ErrAirlockNoNames):
 		return http.StatusProxyAuthRequired, err.Error()
+	case errors.Is(err, secrets.ErrMintUpstream):
+		// The upstream, not the grant: this one falls through to the 503 below, ahead of the
+		// refusal line, which would otherwise take it for one.
 	case requests.IsRefusal(err):
 		return http.StatusForbidden, err.Error()
 	}
