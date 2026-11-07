@@ -807,7 +807,7 @@ func TestReleaseReturnsTheMessagesThePullHoldsUnread(t *testing.T) {
 		t.Fatalf("after Release the next pull got %v, want %d and %d back, each as a second delivery", back, stored[1], stored[2])
 	}
 	released := waitForAckPending(t, consumers, session, 0)
-	t.Logf("after Release the consumer has NumWaiting %d and NumAckPending %d", released.NumWaiting, released.NumAckPending)
+	t.Logf("once the next pull has acked both, the consumer has NumWaiting %d (that pull's own request) and NumAckPending %d", released.NumWaiting, released.NumAckPending)
 }
 
 // A session the stream holds no consumer for: its info, a restart of it and a pull of it all

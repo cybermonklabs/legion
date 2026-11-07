@@ -149,8 +149,8 @@ const (
 // moves to another machine id stops being relayed here at once, and a listener that starts relays
 // every session the cache holds for it with no registration. A relay cancelled that way returns
 // every message it still holds to the server before its run ends (sessionRelays.release), so the
-// listener the session moved to is delivered them at once and in stream order rather than after
-// the consumer's ack wait, and writes one line saying it has.
+// listener the session moved to is delivered them at once rather than after the consumer's ack
+// wait, and writes one line saying it has.
 //
 // One loop goroutine owns the set of relays (relays) and applies the events it is sent in order;
 // each relay runs on a goroutine of its own.
@@ -834,17 +834,21 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 			return
 		}
 		// Every frame the run published was read from the pull's queue before anything still in
-		// it, so the frames carry the lower stream sequences: naking them before the queue is
-		// naking in stream-sequence order, which is what has the server redeliver the session's
-		// messages in stream order. The two calls stand apart so that order is the statements'
-		// rather than an expression's evaluation order.
+		// it, so the frames are naked first and the queue after, each in the order it was sent or
+		// queued. That is stream order, except for a message the session naked during the run,
+		// which the server delivered again and the relay sent again after frames of higher
+		// sequences. The order the next owner is delivered them in is the server's; a relay that
+		// starts later restarts the consumer at its ack floor first, which recreates a consumer
+		// whose messages still await an ack (bus.SessionConsumers.RestartAtFloor), and that
+		// delivers them in stream order.
 		returned := m.release(run)
 		returned += pull.Release()
 		// The run writes this line itself rather than the loop that cancelled it: only once the
 		// run's goroutine has given the messages back is it true that this listener relays the
 		// session no more, so a reader, and a test waiting for the hand-over, can order on it.
-		// One line per stopped run, so a listener that stops writes one for each session it was
-		// relaying.
+		// One line per run stopped while it was pulling, so a listener that stops writes one for
+		// each session it was pulling for; a run cancelled before its pull opened, or while it
+		// waited out a pause or a retry, held nothing and writes none.
 		m.logger.Info("session relay stopped; it gave the server back the messages it held, so they are delivered again at once rather than after the consumer's ack wait",
 			slog.String("session_id", sessionID),
 			// The logger stamps every line with the machine id of the process it runs in; this
@@ -958,15 +962,18 @@ func (m *sessionRelays) forget(run *relayRun) map[string]*relayFrame {
 }
 
 // release forgets run and returns the message of every frame it dropped to the server, so the
-// session's next owner is delivered them at once and in stream order rather than after their ack
-// wait (bus.SessionConsumerAckWait). A nak is safe to repeat, since the session consumer sets
-// MaxDeliver = -1 (internal/bus/session_consumers.go:471): a message returned here and delivered
-// again spends no redelivery budget. It returns how many messages it returned.
+// session's next owner is delivered them at once rather than after their ack wait
+// (bus.SessionConsumerAckWait). A nak is safe to repeat as far as the server goes, since the
+// session consumer sets MaxDeliver = -1 (internal/bus/session_consumers.go:471): a message
+// returned here spends no server redelivery budget. Each delivery still raises the message's
+// delivery count, which the session's client counts toward the attempts it allows a frame its
+// host fails (RELAY_ATTEMPTS_BEFORE_FAILED, packages/envoy-client/src/consumer-delivery.ts). It
+// returns how many messages it returned.
 func (m *sessionRelays) release(run *relayRun) int {
 	dropped := slices.Collect(maps.Values(m.forget(run)))
-	// The frames were published in stream order, so the order they were sent in is the order the
-	// server is asked to deliver them again in. No nak is sent under framesMu: it is a publish,
-	// and the lock answers every session's replies.
+	// The frames are naked in the order they were sent, which is stream order except for a
+	// message the session naked and the relay sent again. No nak is sent under framesMu: it is a
+	// publish, and the lock answers every session's replies.
 	slices.SortFunc(dropped, func(a, b *relayFrame) int { return a.sentAt.Compare(b.sentAt) })
 	returned, failed := 0, 0
 	var firstErr error

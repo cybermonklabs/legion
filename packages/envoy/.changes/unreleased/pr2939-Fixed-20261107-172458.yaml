@@ -1,12 +1,11 @@
 kind: Fixed
 body: |-
     A session that re-registers through another listener is now delivered the message that was in
-    flight at the hand-over at once and in stream order. The listener that loses the session
-    returns every message its relay still holds, the frames the session has not answered and what
-    its pull held unread, with a nak and no delay; until now it dropped them, and the server kept
-    each one for the session consumer's 60-second ack wait before the new listener was delivered
-    it, behind the messages published after it. A rolling deploy moves many sessions at once, so
-    the path is an ordinary one.
+    flight at the hand-over at once. The listener that loses the session returns every message its
+    relay still holds, the frames the session has not answered and what its pull held unread, with
+    a nak and no delay; until now it dropped them, and the server kept each one for the session
+    consumer's 60-second ack wait before the new listener was delivered it, behind the messages
+    published after it.
 time: 2026-11-07T17:24:58.914640790Z
 custom:
     Issue: pr2939

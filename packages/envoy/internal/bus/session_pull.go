@@ -67,11 +67,13 @@ const (
 // connection nats.go replaced.
 var ErrSessionPullStalled = errors.New("bus: the session consumer's pull heard nothing from the server")
 
-// SessionPull is a pull of one session consumer's messages, which arrive in stream order, a
-// redelivery included. It sends the consumer's pull requests ($JS.API.CONSUMER.MSG.NEXT) itself,
-// one at a time, each for sessionPullBatch messages, and the next once the server has delivered
-// them all or the request expired, so starting it is one publish and no API call. The server
-// answers on the pull's own inbox, which holds one subscription.
+// SessionPull is a pull of one session consumer's messages, which arrive in stream order, except
+// messages naked back to the server (Release), which arrive in the server's own order unless a
+// restart at the ack floor (RestartAtFloor) came first. It sends the consumer's pull requests
+// ($JS.API.CONSUMER.MSG.NEXT) itself, one at a time, each for sessionPullBatch messages, and the
+// next once the server has delivered them all or the request expired, so starting it is one
+// publish and no API call. The server answers on the pull's own inbox, which holds one
+// subscription.
 type SessionPull struct {
 	conn *nats.Conn
 	sub  *nats.Subscription
@@ -266,8 +268,9 @@ func (a sessionAck) NakWithDelay(delay time.Duration) error { return a.msg.NakWi
 func (p *SessionPull) Stop() { _ = p.sub.Unsubscribe() }
 
 // Release ends the pull and returns to the server, at once, every message it holds that Next did
-// not read, and reports how many it returned. The session's next owner is delivered those
-// messages at once and in stream order, rather than after SessionConsumerAckWait.
+// not read, and reports how many it returned. The consumer's next pull is delivered those
+// messages at once rather than after SessionConsumerAckWait, in the server's own order; a restart
+// of the consumer at its ack floor (RestartAtFloor) delivers them in stream order.
 func (p *SessionPull) Release() int {
 	// The inbox is drained, not unsubscribed: an unsubscribe drops what nats.go holds unread,
 	// which is what this returns. A drain hands those messages to receive, which queues them.

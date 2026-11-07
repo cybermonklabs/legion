@@ -658,9 +658,9 @@ func TestSessionConsumerFramesStoredWhileTheOwnerWasDownArriveAfterItsRestart(t 
 }
 
 // A relay that loses its session returns the message it holds at once: the listener that takes the
-// session over is delivered it straight away and in stream order, rather than the session waiting
-// out bus.SessionConsumerAckWait (60 s, internal/bus/session_consumers.go) for the server to
-// deliver the message again.
+// session over is delivered it straight away, rather than the session waiting out
+// bus.SessionConsumerAckWait (60 s, internal/bus/session_consumers.go) for the server to deliver
+// the message again.
 func TestSessionConsumerRelayLosingItsSessionReturnsTheMessageItHolds(t *testing.T) {
 	// The receipt wait is longer than the row, so the relay cannot pause, and so forget the frame
 	// it holds, before the row takes the session away.
@@ -674,10 +674,12 @@ func TestSessionConsumerRelayLosingItsSessionReturnsTheMessageItHolds(t *testing
 	requireFrames(t, standIn.collect(t, 1, 5*time.Second), stored)
 	awaitAckState(t, rig.consumers, sessionID, 1, 0)
 
-	// Losing the machine's durable binding cancels the run that holds the message, the same path
-	// (sessionRelays.apply, sessionRelays.stopAll) a session moving to another listener takes. The
-	// cancelled run returns the frame it holds, so the session's next owner -- this pull, which
-	// stands in for the listener the session moved to -- is delivered that message again at once.
+	// Losing the machine's durable binding cancels the run that holds the message
+	// (sessionRelays.stopAll). A session moving to another listener cancels it through
+	// sessionRelays.apply instead; both end in the run's one deferred release, which is what this
+	// row exercises. The cancelled run returns the frame it holds, so the session's next owner --
+	// this pull, which stands in for the listener the session moved to -- is delivered that
+	// message again at once.
 	rig.relays.setOwned(false)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
