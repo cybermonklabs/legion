@@ -46,9 +46,9 @@ type TurnEnd struct {
 
 // ToolStep is one tool call of the agent's turn beginning or ending
 // (shimwire.ToolExecutionStart, shimwire.ToolExecutionEnd): the only fact on the wire that says
-// an agent mid-turn is still moving. The connection computes nothing from it — the supervisor
-// stamps it, measures it and decides what it means — because this is the one event that arrives
-// per tool call rather than per turn.
+// an agent mid-turn is still moving. The connection measures the start's arguments (below) and
+// nothing else — the supervisor stamps the step and decides what it means — because this is the
+// one event that arrives per tool call rather than per turn.
 //
 // ArgsBytes is the length of the start's arguments as Oh My Pi wrote them and ArgsHash their
 // fingerprint (stepArgsHash), both measured here and both zero for an end, which carries no

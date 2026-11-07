@@ -185,7 +185,7 @@ const legionClaimView = z.object({
   updateHead: nonEmptyString.optional(),
   /** What the daemon last saw this claim's agent do; absent for a claim whose agent has neither
    * begun a turn nor made a call the daemon saw. A caller in a pod whose plugin declares a
-   * contract below 54 is served the state with no such key at all (the daemon's
+   * contract below 56 is served the state with no such key at all (the daemon's
    * `withoutStallRecord`), so every reader takes it as optional. */
   step: legionStepView.optional(),
 });
