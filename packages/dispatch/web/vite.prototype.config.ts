@@ -6,9 +6,12 @@ import base from "./vite.config";
 
 const target = process.env.DISPATCH_DEV_TARGET ?? "http://localhost:8766";
 
-/** A page load without a session the local server accepts goes through its dev sign-in first, so
- *  any prototype link opens signed in, whatever path it names, and a cookie left by an earlier
- *  server process (dev sessions are valid on one process only) is replaced. */
+/** A page load without a session the local server accepts gets a small page that signs in through
+ *  the local server's dev sign-in and then reloads itself. Not a redirect: Dispatch's session
+ *  cookie is SameSite=Strict, so on a redirect chain another site started (a link clicked in the
+ *  Dispatch Inbox) the browser never sends it and the check would redirect forever. A reload the
+ *  page itself starts is same-site, so the cookie goes with it. The page signs in once; if the
+ *  session still does not take, it says so instead of looping. */
 const autoSignIn: Plugin = {
   name: "prototype-auto-sign-in",
   configureServer(server) {
@@ -20,12 +23,30 @@ const autoSignIn: Plugin = {
         headers: { cookie: request.headers.cookie ?? "" },
       }).catch(() => undefined);
       if (whoami?.ok) return next();
-      response.statusCode = 302;
-      response.setHeader(
-        "location",
-        `/auth/_dev/signin?login=sami@theorem.dev&next=${encodeURIComponent(url)}`
-      );
-      response.end();
+      response.statusCode = 200;
+      response.setHeader("content-type", "text/html; charset=utf-8");
+      response.setHeader("cache-control", "no-store");
+      response.end(`<!doctype html><meta charset="utf-8"><title>Signing in…</title>
+<p style="font:16px system-ui;margin:3em">Signing in to the local Dispatch…</p>
+<script>
+(async () => {
+  // Reached again within 3 s means the navigation did not carry the session: say so, never loop.
+  const last = Number(sessionStorage.getItem("prototype-signin") ?? 0);
+  if (Date.now() - last < 3000) {
+    document.querySelector("p").textContent =
+      "Signing in to the local Dispatch did not take. Reload to try again.";
+    return;
+  }
+  await fetch("/auth/_dev/signin?login=sami@theorem.dev&next=/", { redirect: "manual" });
+  if (!(await fetch("/auth/whoami")).ok) {
+    document.querySelector("p").textContent =
+      "The local Dispatch did not sign you in. Reload to try again.";
+    return;
+  }
+  sessionStorage.setItem("prototype-signin", String(Date.now()));
+  location.replace(location.href);
+})();
+</script>`);
     });
   },
 };
