@@ -74,9 +74,6 @@ jobs:
       - name: Build contracts for pi-legion
         run: bun run build
         working-directory: packages/contracts
-      - name: Lint pi-legion
-        run: bun run lint
-        working-directory: packages/pi-legion
       - name: Typecheck pi-legion
         run: bun run typecheck
         working-directory: packages/pi-legion

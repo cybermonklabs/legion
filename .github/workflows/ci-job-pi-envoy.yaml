@@ -65,9 +65,6 @@ jobs:
       - name: Build contracts for pi-envoy
         run: bun run build
         working-directory: packages/contracts
-      - name: Lint pi-envoy
-        run: bun run lint
-        working-directory: packages/pi-envoy
       - name: Typecheck pi-envoy
         run: bun run typecheck
         working-directory: packages/pi-envoy

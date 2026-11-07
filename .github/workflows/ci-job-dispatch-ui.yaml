@@ -51,18 +51,12 @@ jobs:
       - name: Build contracts for the suites that spawn Playwright
         run: bun run build
         working-directory: packages/contracts
-      - name: Lint proof editor
-        run: bun run lint
-        working-directory: packages/proof-editor
       - name: Typecheck proof editor
         run: bun run typecheck
         working-directory: packages/proof-editor
       - name: Test proof editor
         run: bun run test
         working-directory: packages/proof-editor
-      - name: Lint dispatch dashboard
-        run: bun run lint
-        working-directory: packages/dispatch
       - name: Typecheck dispatch dashboard
         run: bun run typecheck
         working-directory: packages/dispatch

@@ -31,7 +31,10 @@
 #
 # Its inputs, from the ci-ok job's step and from ci-ok-report.sh:
 #   NEEDS              `changes`' result and outputs, as `toJSON(needs.changes)` gives them, and
-#                      every other job's result, in the shape `toJSON(needs)` would give it.
+#                      every other job's result, in the shape `toJSON(needs)` would give it. One
+#                      of those outputs, `filter_verdicts`, is the paths filter's own answer for
+#                      every filter rather than a gate on a job: it is how a job the `full-ci`
+#                      label held back is told from one its paths never selected (ci-ok.jq).
 #   EVENT              `github.event_name`.
 #   SELECTED_BY        a JSON object mapping every job but those ALWAYS_RUN names to the
 #                      `changes` output its `if:` tests; the job is selected when that output is
@@ -40,7 +43,8 @@
 #                      pull_request: one is selected only when EVENT is pull_request too.
 #                      check-ci-filters.sh holds it to ci.yaml. (A job an event must hold back
 #                      otherwise needs no list: `changes` sets its output false there, as it does
-#                      for the nine slow suites on a pull request without the label full-ci.)
+#                      for the nine slow suites on a pull request without the label full-ci, whose
+#                      skip this verdict accepts and whose line says the label held it back.)
 #   ALWAYS_RUN         a JSON array of the jobs no `changes` output gates, `changes` among them:
 #                      each runs on every change, so ci-ok passes only when it succeeded, and a
 #                      skip, a cancellation or an absence fails. ci.yaml's env names them in

@@ -901,7 +901,7 @@ GATES = [
       + bun_job(DOCS_JOB, DOCS_SITE) + CI_SELF + DOCS_SITE_SELF, workflow=CI),
 
     gate("contracts", "contracts", reads=reads(
-        ("packages/contracts/**", f"{at('contracts', 'Lint contracts')}, typecheck, test (src/, scripts/gen-go.test.ts) and build in packages/contracts"),
+        ("packages/contracts/**", f"{at('contracts', 'Typecheck contracts')}, test (src/, scripts/gen-go.test.ts) and build in packages/contracts"),
         ("skills/dispatch/SKILL.md", "packages/contracts/src/dispatch-tools.test.ts's dispatchSkillHeadings reads skills/dispatch/SKILL.md headings"),
         ("skills/dispatch-writing-specs/SKILL.md", "packages/contracts/src/dispatch-tools.test.ts:1056 existsSync(skills/dispatch-writing-specs/SKILL.md)"),
         (f"{ENVOY}/internal/dispatch/text/testdata/dispatch-href-references.json", "packages/contracts/src/dispatch-href.test.ts:49-53"),
@@ -912,7 +912,7 @@ GATES = [
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/typed-block-id-spellings.json", "packages/contracts/src/dispatch-block-ref.test.ts:147 reads pmdoc's own JSON copy of the typed block id spellings by relative path"),
         (f"{ENVOY}/internal/contracts/generated.go", "packages/contracts/scripts/gen-go.test.ts:6,54-58 and gen-go.ts's outputs list (--check compares the committed file)"),
         (f"{ENVOY}/internal/dispatch/pmdoc/schema_generated.go", "packages/contracts/scripts/gen-go.test.ts:7-10,54-58 and gen-go.ts's outputs list (the block schema's shape, generated from schemas/block-schema.schema.json)"),
-    ) + biome(at("contracts", "Lint contracts")) + bun_job("contracts") + CI_SELF + job_self("contracts")),
+    ) + bun_job("contracts") + CI_SELF + job_self("contracts")),
 
     gate("conflicts_script", "conflicts-script", reads=reads(
         ("scripts/conflicts/**", f"{at('conflicts-script', 'Lint the conflict measurement script')}, typecheck (tsc -p scripts/conflicts) "
@@ -921,18 +921,18 @@ GATES = [
       + CI_SELF + job_self("conflicts-script")),
 
     gate("envoy_client", "envoy-client", reads=reads(
-        ("packages/envoy-client/**", f"{at('envoy-client', 'Lint Envoy client')}, typecheck, test and build in packages/envoy-client"),
-        ("packages/broker-client/**", f"{at('envoy-client', 'Lint broker client')}, {at('envoy-client', 'Typecheck broker client')} and {at('envoy-client', 'Test broker client')}; packages/envoy-client/src/broker-credential.ts:21-22 imports @legion/broker-client/environment and @legion/broker-client/token-client"),
+        ("packages/envoy-client/**", f"{at('envoy-client', 'Typecheck Envoy client')}, test and build in packages/envoy-client"),
+        ("packages/broker-client/**", f"{at('envoy-client', 'Typecheck broker client')} and {at('envoy-client', 'Test broker client')}; packages/envoy-client/src/broker-credential.ts:21-22 imports @legion/broker-client/environment and @legion/broker-client/token-client"),
         (CONTRACTS_SRC, f"{at('envoy-client', 'Build contracts for Envoy client')}; tsconfig paths @legion/contracts -> ../contracts/src/index.ts"),
         (f"{FIX}/dispatch-targeted-delivery.json", "packages/envoy-client/src/__tests__/delivery.test.ts:16-17, dispatch-text.test.ts:117-118"),
         (f"{FIX}/dispatch-public-url.json", "packages/envoy-client/src/__tests__/dispatch-config.test.ts:5"),
         (f"{ENVOY}/internal/dispatch/api/testdata/**", "packages/envoy-client/src/__tests__/askgate-new-asks.test.ts:14-21 reads the Dispatch server's table of decision-block inserts, which packages/envoy/internal/dispatch/api's TestDocumentEditAdviceCountsTheAskBlocksTheEditAdded reads too"),
         ("skills/**", "packages/envoy-client/src/__tests__/dispatch-advice.test.ts:683-690 reads skills/<skill>/SKILL.md for every skill a notice cites"),
         (f"{ENVOY}/internal/brokerclient/testdata/wire.json", "packages/broker-client/src/__tests__/wire.test.ts:23-29 reads the Go package's own corpus by relative path - that file itself, never a copy, so the two clients are held to one wire"),
-    ) + biome(at("envoy-client", "Lint Envoy client")) + bun_job("envoy-client") + CI_SELF + job_self("envoy-client")),
+    ) + bun_job("envoy-client") + CI_SELF + job_self("envoy-client")),
 
     gate("pi_shared", "pi-shared", reads=reads(
-        ("packages/pi-shared/**", f"{at('pi-shared', 'Lint pi-shared')}, typecheck and test in packages/pi-shared"),
+        ("packages/pi-shared/**", f"{at('pi-shared', 'Typecheck pi-shared')} and test in packages/pi-shared"),
         # envoy-client's sources, and broker-client's with them, are the shared read below.
         ("packages/envoy-client/test/fake-dispatch.ts", "packages/pi-shared/src/handoff-record.test.ts:7 imports @legion/envoy-client/test/fake-dispatch"),
         (CONTRACTS_SRC, "pi-shared and envoy-client import @legion/contracts (contracts exports.bun -> src)"),
@@ -943,10 +943,10 @@ GATES = [
         (".github/workflows/release.yaml", "packages/pi-shared/test/skills-partition.test.ts:82"),
     ) + envoy_client_dep("packages/pi-shared/tsconfig.json paths @legion/envoy-client/errors; src imports "
                          "@legion/envoy-client/* (exports.bun -> src)")
-      + biome(at("pi-shared", "Lint pi-shared")) + bun_job("pi-shared") + CI_SELF + job_self("pi-shared")),
+      + bun_job("pi-shared") + CI_SELF + job_self("pi-shared")),
 
     gate("pi_envoy", "pi-envoy", reads=reads(
-        ("packages/pi-envoy/**", f"{at('pi-envoy', 'Lint pi-envoy')}, typecheck, test and pack in packages/pi-envoy"),
+        ("packages/pi-envoy/**", f"{at('pi-envoy', 'Typecheck pi-envoy')}, test and pack in packages/pi-envoy"),
         ("packages/pi-shared/src/**", "packages/pi-envoy/tsconfig.json paths @legion/pi-shared/* and include ../pi-shared/src/omp-host.d.ts; the bundle inlines it"),
         ("packages/pi-shared/test/**", "packages/pi-envoy/extensions/dispatch-first-omp.test.ts:13, src/skills-guard.test.ts:23, scripts/prepack.test.ts:6"),
         # envoy-client's sources, and broker-client's with them, are the shared read below.
@@ -962,7 +962,7 @@ GATES = [
         ("scripts/e2e/lib/pack-plugin.sh", "packages/pi-envoy/scripts/prepack.test.ts:92-102"),
         (f"{DAEMON}/internal/prompts/**", "packages/pi-envoy/src/skills-guard.test.ts:30-33 (skillAndPromptRoots)"),
     ) + envoy_client_dep("packages/pi-envoy/tsconfig.json paths @legion/envoy-client/*; extensions/envoy.ts:19-101 imports")
-      + install_jj("pi-envoy") + install_omp("pi-envoy") + biome(at("pi-envoy", "Lint pi-envoy")) + bun_job("pi-envoy")
+      + install_jj("pi-envoy") + install_omp("pi-envoy") + bun_job("pi-envoy")
       + CI_SELF + job_self("pi-envoy")),
 
     gate("pi_legion", "pi-legion", runs=[
@@ -971,7 +971,7 @@ GATES = [
                    f"daemon-pane.test.ts, run by {at('pi-legion', 'Test pi-legion')}", DAEMON, ["./cmd/daemon-pane"], mode="build",
                    overlay={f"{DAEMON}/cmd/daemon-pane/main.go": "packages/pi-legion/scripts/skill-scenarios/daemon-pane.go"}),
     ], reads=reads(
-        ("packages/pi-legion/**", f"{at('pi-legion', 'Lint pi-legion')}, typecheck, test and pack in packages/pi-legion"),
+        ("packages/pi-legion/**", f"{at('pi-legion', 'Typecheck pi-legion')}, test and pack in packages/pi-legion"),
         ("packages/pi-envoy/**", "packages/pi-legion/extensions/legion.test.ts:143 and legion-role-claim.test.ts:61 import ../../pi-envoy/extensions/envoy; packages/pi-shared/test/omp-harness.ts:662"),
         ("packages/claude-envoy/**", "packages/pi-legion/src/skills-guard.test.ts:24,275 spawns packages/claude-envoy/scripts/build.ts and asserts an exact file list over the tree it writes, so that script and everything it reads - its BUNDLE_ENTRYPOINTS at scripts/build.ts:41-46 among them - are read by this job through a spawn, which carries no import and which no derivation sees"),
         ("packages/envoy-client/bin/dispatch.ts", "the fourth entry of that builder's BUNDLE_ENTRYPOINTS (packages/claude-envoy/scripts/build.ts:41-46), outside the package it builds"),
@@ -999,7 +999,7 @@ GATES = [
     ) + envoy_client_dep("packages/pi-legion/tsconfig.json paths @legion/envoy-client/*; scripts/skill-scenarios/*.ts "
                          "import @legion/envoy-client/*")
       + install_jj("pi-legion") + install_omp("pi-legion") + setup_go("pi-legion", f"{DAEMON}/go.mod")
-      + biome(at("pi-legion", "Lint pi-legion")) + bun_job("pi-legion") + CI_SELF + job_self("pi-legion")),
+      + bun_job("pi-legion") + CI_SELF + job_self("pi-legion")),
 
     gate("dispatch", "dispatch", runs=[
         script_run(RUN_SERVER, DISPATCH_SERVER_BUILD, f"started by packages/dispatch/e2e/harness-listeners.ts's dispatchServer, which e2e/run.ts starts in "
@@ -1033,8 +1033,8 @@ GATES = [
     # The dashboard's and the proof editor's fast checks, split out of the dispatch job above
     # (ci.yaml's comment on dispatch-ui says why). No go command runs here.
     gate("dispatch_ui", "dispatch-ui", reads=reads(
-        ("packages/dispatch/**", f"{at('dispatch-ui', 'Lint dispatch dashboard')}, typecheck, test, build, check:classes and check:asset-sizes in packages/dispatch"),
-        ("packages/proof-editor/**", f"{at('dispatch-ui', 'Lint proof editor')}, typecheck and test; packages/dispatch/web/vite.config.ts:104-123"),
+        ("packages/dispatch/**", f"{at('dispatch-ui', 'Typecheck dispatch dashboard')}, test, build, check:classes and check:asset-sizes in packages/dispatch"),
+        ("packages/proof-editor/**", f"{at('dispatch-ui', 'Typecheck proof editor')} and test; packages/dispatch/web/vite.config.ts:104-123"),
         (CONTRACTS_SRC, 'packages/dispatch/web/vite.config.ts:94-103 aliases; tsc and bun read @legion/contracts through its "bun" export condition (src/)'),
         (f"{FIX}/live/**", "packages/dispatch/web/src/features/delivery/lib/applyDelta.test.ts:2-4, e2e/__tests__/delivery-live-probe.test.ts:8-12"),
         (f"{FIX}/decision-blocks/**", "packages/dispatch/web/src/features/doc/decision-blocks.test.ts:10, features/inbox/AskCard.test.tsx:411"),
@@ -1047,7 +1047,7 @@ GATES = [
                            "above put envoy-client's sources in this job's program too (check-ts-filters.sh measures it); "
                            "@legion/broker-client does not come with them, since no source of this program reaches "
                            "packages/envoy-client/src/broker-credential.ts"),
-    ) + biome(at("dispatch-ui", "Lint dispatch dashboard")) + bun_job("dispatch-ui") + CI_SELF + job_self("dispatch-ui")),
+    ) + bun_job("dispatch-ui") + CI_SELF + job_self("dispatch-ui")),
 
     # Its "Build the Dispatch server" step names an output (-o), which the simple form does not
     # reduce, so the step is pinned whole.

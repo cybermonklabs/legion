@@ -43,22 +43,16 @@ jobs:
       - name: Build contracts for Envoy client
         run: bun run build
         working-directory: packages/contracts
-      - name: Lint Envoy client
-        run: bun run lint
-        working-directory: packages/envoy-client
       - name: Typecheck Envoy client
         run: bun run typecheck
         working-directory: packages/envoy-client
       # packages/envoy-client/src/broker-credential.ts:21-22 imports
       # @legion/broker-client/environment and @legion/broker-client/token-client, so this job
-      # already stands on that package; its typecheck and its tests run in no other job, and its
-      # own lint script runs nowhere else either, though the lint job's whole-tree Biome pass
-      # does lint its 13 files under the same root config. They sit before the NATS pull because
-      # they need no image and no server: the five test files import only bun:test, jose, node:
-      # and the package's own modules.
-      - name: Lint broker client
-        run: bun run lint
-        working-directory: packages/broker-client
+      # already stands on that package; its typecheck and its tests run in no other job. Its lint
+      # is not here: the lint job's whole-tree `bunx biome check .` already lints its 13 files
+      # under the same root config, so a second pass over them would only cost the run time
+      # twice. They sit before the NATS pull because they need no image and no server: the five
+      # test files import only bun:test, jose, node: and the package's own modules.
       - name: Typecheck broker client
         run: bun run typecheck
         working-directory: packages/broker-client

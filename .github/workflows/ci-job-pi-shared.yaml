@@ -40,9 +40,6 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
-      - name: Lint pi-shared
-        run: bun run lint
-        working-directory: packages/pi-shared
       - name: Typecheck pi-shared
         run: bun run typecheck
         working-directory: packages/pi-shared

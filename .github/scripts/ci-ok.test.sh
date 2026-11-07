@@ -12,7 +12,10 @@
 # smoke-gate, for the cases that prove the list is read rather than hard-coded. Some cases pass
 # another event than pull_request, which is what
 # PULL_REQUEST_ONLY turns on; the script takes the event as a string and knows no workflow's
-# triggers. The script under test is the file CI runs.
+# triggers. docs also stands for one of the nine slow suites, whose output a pull request
+# without the label `full-ci` holds false whatever the paths filter answered: three cases hand
+# the run the filter's own verdicts beside the outputs (with_verdicts below) and hold the report
+# to telling that skip from a filter miss.
 #
 # Run from anywhere: .github/scripts/ci-ok.test.sh
 # CI runs it in ci.yaml's test job.
@@ -49,6 +52,20 @@ selects='{"typecheck": "true", "envoy_client": "false", "worker_image": "true", 
 selects_docs='{"typecheck": "true", "envoy_client": "false", "worker_image": "true", "docs": "true"}'
 # The same outputs read on another event, docs unselected: ci-ok.sh takes EVENT as given.
 push_selects='{"typecheck": "true", "envoy_client": "false", "worker_image": "true", "docs": "false"}'
+
+# `changes` publishes the paths filter's own verdict for every filter beside its outputs
+# (ci.yaml's changes job, filter_verdicts), as the JSON text toJSON() gives. The nine slow
+# suites' outputs carry a `full-ci` term in front of that verdict, so on a pull request without
+# the label the output is false whatever the filter said; docs stands for one of the nine below.
+with_verdicts() { # with_verdicts <outputs> <the filter's own verdicts>
+  jq -nc --argjson outputs "$1" --argjson verdicts "$2" '$outputs + {filter_verdicts: ($verdicts | tojson)}'
+}
+# The filter said yes and the output is false: only the missing label can have done that.
+gated_selects=$(with_verdicts "$selects" \
+  '{"typecheck": "true", "envoy_client": "false", "worker_image": "true", "docs": "true"}')
+# The filter said no, so the label decided nothing and the output would be false with it too.
+unmatched_selects=$(with_verdicts "$selects" \
+  '{"typecheck": "true", "envoy_client": "false", "worker_image": "true", "docs": "false"}')
 
 # run_ci_ok <needs> [<event>] [<always run>]: sets out and status. The event defaults to
 # pull_request and the always-run list to ci.yaml's own two jobs.
@@ -134,6 +151,27 @@ run_ci_ok "$(needs success "$selects_docs" success typecheck=success envoy-clien
 check "fails" "$(is "$status" 1)"
 check "names it" \
   "$(contains "$out" "^::error::docs ended skipped, but changes selected it (needs.changes.outputs.docs is true)")"
+
+echo "case: docs' paths matched and the pull request has no full-ci label, so changes held it back"
+run_ci_ok "$(needs success "$gated_selects" success typecheck=success envoy-client=skipped worker-image=success docs=skipped)"
+check "passes, as it does for any job changes did not select" "$(is "$status" 0)"
+check "says the label held it back, not the filter" \
+  "$(contains "$out" '^docs: skipped (not selected: selected by paths, gated by full-ci: runs in the merge queue)$')"
+check "reports no error" "$(is "$(contains "$out" '::error::')" false)"
+
+echo "case: docs' paths did not match on a pull request, where the label would have changed nothing"
+run_ci_ok "$(needs success "$unmatched_selects" success typecheck=success envoy-client=skipped worker-image=success docs=skipped)"
+check "passes" "$(is "$status" 0)"
+check "keeps today's wording" \
+  "$(contains "$out" '^docs: skipped (not selected: needs.changes.outputs.docs is false)$')"
+check "says nothing about full-ci" "$(is "$(contains "$out" 'gated by full-ci')" false)"
+
+echo "case: a merge-group run never says full-ci, since the label term of those outputs is already true there"
+run_ci_ok "$(needs success "$gated_selects" success typecheck=success envoy-client=skipped worker-image=skipped docs=skipped)" merge_group
+check "passes" "$(is "$status" 0)"
+check "keeps today's wording" \
+  "$(contains "$out" '^docs: skipped (not selected: needs.changes.outputs.docs is false)$')"
+check "says nothing about full-ci" "$(is "$(contains "$out" 'gated by full-ci')" false)"
 
 echo "case: changes failed"
 run_ci_ok "$(needs failure '{}' success typecheck=success envoy-client=skipped worker-image=skipped docs=skipped)"

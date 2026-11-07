@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""The Go test functions each `go test` step of ci.yaml runs, and every one two steps run.
+"""The Go test functions each `go test` step of ci.yaml's router runs, and every one two steps run.
 
 This is the tool check k1 of dispatch://INFRA-1408 asks for (its A1): it expands every `go test`
-step of `.github/workflows/ci.yaml` whose working directory is `packages/envoy` or
-`packages/envoy/infra` into the test functions the step really runs - through the step's own
-packages, `-tags`, `-race` and `-run`, with `go test -list` - and prints every (package, function)
-pair more than one step runs. It exits 1 on a pair no declared exception covers, and 0 when every
-such pair is declared with the requirement that makes it run twice (EXCEPTIONS below).
+step of `.github/workflows/ci.yaml`, and of every workflow a job of it calls, whose working
+directory is `packages/envoy` or `packages/envoy/infra` into the test functions the step really
+runs - through the step's own packages, `-tags`, `-race` and `-run`, with `go test -list` - and
+prints every (package, function) pair more than one step runs. It exits 1 on a pair no declared
+exception covers, and 0 when every such pair is declared with the requirement that makes it run
+twice (EXCEPTIONS below).
 
 No CI job runs it, and none should. It compiles every test binary of both modules, the `-race`
 ones included: minutes of compile on a warm module cache, and tens of minutes on a cold one, for
@@ -39,6 +40,9 @@ merge base in a clone under a temporary directory:
 It reads the repository root off its own path, so the copy under the temporary directory checks
 itself and not the workspace it was copied from, and it reads a step's directory and its
 comment-free lines with `ci_filter_coverage`'s own helpers, which sit beside it in both trees.
+Each job of ci.yaml holds its steps in a `ci-job-<id>.yaml` of its own, so the set of documents
+it reads is ci.yaml and every workflow a job of it calls, which it derives with that module's
+`called_workflows` (`documents()` below says why it loads them itself).
 Keep `GOMODCACHE` and `GOCACHE` the same for both runs: the second run then reuses the first
 run's compile.
 
@@ -73,10 +77,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
-from ci_filter_coverage import script_lines, step_workdir
+from ci_filter_coverage import called_workflows, script_lines, step_workdir
 
 ROOT = Path(__file__).resolve().parents[2]
-WORKFLOW = ROOT / ".github/workflows/ci.yaml"
+# Repository-relative, as the documents below are keyed and as every message names them.
+WORKFLOW = ".github/workflows/ci.yaml"
 # The two Go modules this check covers. A step of packages/daemon is another job's business.
 MODULE_DIRS = ("packages/envoy", "packages/envoy/infra")
 
@@ -85,10 +90,11 @@ MODULE_DIRS = ("packages/envoy", "packages/envoy/infra")
 class Exception_:
     """A pair two steps may run, and the requirement that makes it run twice.
 
-    `steps` must be exactly the steps that run it, `package` its import path, `functions` the
-    function names (None: every function of that package those steps share). An entry whose
-    `requirement` is empty is refused: a duplicate with no requirement written beside it is a
-    duplicate, not an exception.
+    `steps` must be exactly the steps that run it, each named as `Step.key` names it - the
+    repository-relative workflow file that holds the step, and the step's `name:` - `package` its
+    import path, `functions` the function names (None: every function of that package those steps
+    share). An entry whose `requirement` is empty is refused: a duplicate with no requirement
+    written beside it is a duplicate, not an exception.
     """
 
     steps: frozenset[tuple[str, str]]
@@ -100,8 +106,8 @@ class Exception_:
 EXCEPTIONS = (
     Exception_(
         steps=frozenset({
-            ("envoy-smoke", "Live tests of envoy-infra's host:Listener"),
-            ("envoy-infra-go", "Unit test envoy-infra"),
+            (".github/workflows/ci-job-envoy-smoke.yaml", "Live tests of envoy-infra's host:Listener"),
+            (".github/workflows/ci-job-envoy-infra-go.yaml", "Unit test envoy-infra"),
         }),
         package="github.com/sjawhar/envoy/infra/host",
         functions=None,
@@ -114,8 +120,8 @@ EXCEPTIONS = (
     ),
     Exception_(
         steps=frozenset({
-            ("envoy-go", "Test what the race build cannot run at all or at full size"),
-            ("envoy-go-race-docs", "Race-test the document service"),
+            (".github/workflows/ci-job-envoy-go.yaml", "Test what the race build cannot run at all or at full size"),
+            (".github/workflows/ci-job-envoy-go-race-docs.yaml", "Race-test the document service"),
         }),
         package="github.com/sjawhar/envoy/internal/dispatch/docs",
         functions=(
@@ -152,18 +158,22 @@ class Refused(Exception):
 
 @dataclass
 class Step:
+    workflow: str  # repository-relative: the file that holds this step
     job: str
     name: str
-    workdir: str  # repository-relative, as ci.yaml writes it
+    workdir: str  # repository-relative, as the file writes it
     script: str
 
     @property
     def label(self) -> str:
-        return f"{self.job} / {self.name}"
+        return f"{self.workflow}'s {self.job} / {self.name}"
 
+    # The file and the step's name, which is what an EXCEPTIONS entry declares: a step name is
+    # unique within the file that holds it, while a job id is ci.yaml's and the name of the step
+    # may be another file's too (release-envoy-infra.yaml has its own "Unit test envoy-infra").
     @property
     def key(self) -> tuple[str, str]:
-        return (self.job, self.name)
+        return (self.workflow, self.name)
 
     @property
     def directory(self) -> Path:
@@ -217,25 +227,44 @@ def expand(text: str, variables: dict[str, str]) -> str:
     return SHELL_VAR.sub(one, text)
 
 
-def steps_of(workflow: dict) -> list[Step]:
-    """Every step whose run: holds a `go test` and whose directory is one of the two modules. The
-    directory and the comment-free lines are read with check-ci-filters.sh's own helpers
-    (ci_filter_coverage.step_workdir, script_lines), so this tool and the gate agree on what a
-    step runs and where."""
-    found = []
-    for job, body in workflow.get("jobs", {}).items():
-        for index, step in enumerate(body.get("steps", []) or []):
-            script = step.get("run")
-            if not script:
-                continue
-            workdir = step_workdir(workflow, body, step)
-            if workdir not in MODULE_DIRS:
-                continue
-            if not re.search(r"\bgo\s+test\b", "\n".join(script_lines(script))):
-                continue
-            name = step.get("name") or f"step {index + 1}"
-            found.append(Step(job=job, name=name, workdir=workdir, script=script))
+def documents() -> dict:
+    """ci.yaml and every workflow a job of it calls, keyed by repository-relative path. A job of
+    ci.yaml keeps its id, its `needs: changes` and its whole `if:` there and holds its steps in
+    the `ci-job-<id>.yaml` its `uses:` names, so ci.yaml alone holds none of the `go test` steps
+    below. The set is the one check-ci-filters.sh reads, derived with that check's own
+    `called_workflows`; it is loaded here rather than through `ci_filter_coverage`'s
+    `workflow_documents`, which roots itself at the current working directory and appends to the
+    checker's problem list, because this script roots itself at its own path (the module header
+    says why) and refuses instead."""
+    found = {WORKFLOW: yaml.safe_load((ROOT / WORKFLOW).read_text()) or {}}
+    for path, job_id in called_workflows(found[WORKFLOW]).items():
+        if not (ROOT / path).is_file():
+            raise Refused(f"job {job_id} of {WORKFLOW} calls {path}, which is not in the "
+                          f"repository, so the steps it runs are read by nothing here")
+        found[path] = yaml.safe_load((ROOT / path).read_text()) or {}
     return found
+
+
+def steps_of(found: dict) -> list[Step]:
+    """Every step of those documents whose run: holds a `go test` and whose directory is one of
+    the two modules. The directory and the comment-free lines are read with check-ci-filters.sh's
+    own helpers (ci_filter_coverage.step_workdir, script_lines), so this tool and the gate agree
+    on what a step runs and where."""
+    steps = []
+    for path, document in found.items():
+        for job, body in (document.get("jobs") or {}).items():
+            for index, step in enumerate((body or {}).get("steps", []) or []):
+                script = step.get("run")
+                if not script:
+                    continue
+                workdir = step_workdir(document, body, step)
+                if workdir not in MODULE_DIRS:
+                    continue
+                if not re.search(r"\bgo\s+test\b", "\n".join(script_lines(script))):
+                    continue
+                name = step.get("name") or f"step {index + 1}"
+                steps.append(Step(workflow=path, job=job, name=name, workdir=workdir, script=script))
+    return steps
 
 
 def commands_of(step: Step) -> list[GoTest]:
@@ -381,10 +410,11 @@ def list_tests(command: GoTest) -> dict[str, list[str]]:
 
 def expansion() -> tuple[list[Step], dict[tuple[str, str], list[Step]], list[str]]:
     """Every (package, function) pair, with the steps that run it, and a line per step."""
-    workflow = yaml.safe_load(WORKFLOW.read_text())
-    steps = steps_of(workflow)
+    found = documents()
+    steps = steps_of(found)
     if not steps:
-        raise Refused(f"{WORKFLOW} has no `go test` step in {' or '.join(MODULE_DIRS)}")
+        raise Refused(f"{WORKFLOW} and the {len(found) - 1} workflow(s) its jobs call have no "
+                      f"`go test` step in {' or '.join(MODULE_DIRS)}")
     pairs: dict[tuple[str, str], list[Step]] = {}
     report = []
     for step in steps:
@@ -439,7 +469,7 @@ def main() -> int:
         print(f"refused: {refusal}", file=sys.stderr)
         return 2
 
-    print(f"# go test step expansion of {WORKFLOW.relative_to(ROOT)} under {ROOT}")
+    print(f"# go test step expansion of {WORKFLOW} and the workflows its jobs call, under {ROOT}")
     print("# Every test function each go test step of packages/envoy and packages/envoy/infra")
     print("# runs, through go test -list over the step's own packages, -tags, -race and -run.")
     print("# Run it at two commits and compare the pair sets:")

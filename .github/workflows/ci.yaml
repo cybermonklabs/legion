@@ -269,6 +269,17 @@ jobs:
       go_notices: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_notices }}
       ci_filters: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_filters }}
       ci_images: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_images }}
+      # The paths filter's own verdict for every filter, before the `full-ci` term above rewrites
+      # the eight outputs the nine slow suites run behind. On a pull request without that label
+      # each of those eight is `false` whether its paths matched or not, so a reader of the
+      # outputs alone cannot tell "the filter said no" from "the label is absent"; with this
+      # beside them ci-ok's report tells the two apart and says which
+      # (.github/scripts/ci-ok.jq's `selection`). It gates no job and needs no plumbing of its
+      # own: `toJSON(needs.changes)` carries every output of this job, so the ci-ok job and
+      # ci-ok-report.sh both already have it. On a dispatched run the filter step is skipped and
+      # this is `{}`, which is right - the label holds nothing back there, and the outputs above
+      # are all 'true'.
+      filter_verdicts: ${{ toJSON(steps.filter.outputs) }}
     steps:
       # On pull_request dorny/paths-filter reads the file list from the API and never reads the
       # tree; merge_group diffs with git and needs the clone (a merge group diffs its
@@ -889,7 +900,6 @@ jobs:
               - *ci_router
               - '.github/workflows/ci-job-contracts.yaml'
               - *bun_install
-              - *biome
               - 'packages/contracts/**'
               # src/dispatch-tools.test.ts:60-61,1044 reads these skills.
               - 'skills/dispatch/SKILL.md'
@@ -926,7 +936,6 @@ jobs:
               - *ci_router
               - '.github/workflows/ci-job-envoy-client.yaml'
               - *bun_install
-              - *biome
               - 'packages/envoy-client/**'
               # src/broker-credential.ts:21-22 imports @legion/broker-client/environment and
               # @legion/broker-client/token-client, and this job runs that package's own typecheck
@@ -951,7 +960,6 @@ jobs:
               - *ci_router
               - '.github/workflows/ci-job-pi-shared.yaml'
               - *bun_install
-              - *biome
               - 'packages/pi-shared/**'
               - 'packages/envoy-client/src/**'
               # And @legion/broker-client with it: src/broker-credential.ts:21-22 imports it, so
@@ -978,7 +986,6 @@ jobs:
               - *ci_router
               - '.github/workflows/ci-job-pi-envoy.yaml'
               - *bun_install
-              - *biome
               - 'packages/pi-envoy/**'
               - 'packages/pi-shared/src/**'
               # The omp harness and the skills guard (extensions/dispatch-first-omp.test.ts:12,
@@ -1011,7 +1018,6 @@ jobs:
               - *ci_router
               - '.github/workflows/ci-job-pi-legion.yaml'
               - *bun_install
-              - *biome
               - 'packages/pi-legion/**'
               # extensions/legion.test.ts:121 and legion-role-claim.test.ts:61 load the Envoy
               # plugin's entry beside this one, and the typecheck reaches its sources.
@@ -1163,7 +1169,6 @@ jobs:
               - *ci_router
               - '.github/workflows/ci-job-dispatch-ui.yaml'
               - *bun_install
-              - *biome
               - 'packages/dispatch/**'
               - 'packages/proof-editor/**'
               # packages/dispatch/web/vite.config.ts:94-103 aliases @legion/contracts, and tsc and
