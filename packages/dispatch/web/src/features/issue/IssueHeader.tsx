@@ -20,7 +20,7 @@ import {
   issuePatchRequest,
 } from "../../api/client";
 import { mergeIssue } from "../../api/issue-cache";
-import { userStateQuery } from "../../api/queries";
+import { projectsQuery, userStateQuery } from "../../api/queries";
 import type { Artifact, IssueDetails, UserIssueState, UserState } from "../../api/types";
 import { PinButton } from "../../components/PinButton";
 import { QueryError } from "../../components/QueryError";
@@ -65,9 +65,11 @@ import { ReferencedBy, ReferencedByToggle } from "../refs/ReferencedBy";
 import { buildDispatchReference, buildIssuePath, sessionOfAddress } from "../refs/routes";
 import { useKeymap } from "../shell/keymap";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { ApprovalSteps } from "./ApprovalSteps";
 import { AssigneeControl } from "./AssigneeControl";
 import { ClaimChip } from "./ClaimChip";
 import { GitHubLink } from "./GitHubLink";
+import { gatedStepEntries } from "./gated-steps";
 import { IssueComponentsLine } from "./IssueComponentsLine";
 import { IssueLabels } from "./IssueLabels";
 import { PriorityEditor } from "./PriorityControl";
@@ -280,6 +282,22 @@ export function IssueHeader({
         ? `Waiting on you (${waitingForHuman.length})`
         : `Waiting on agents (${waitingOnAgents})`;
   const approvalRequestOpen = openAsks.some((ask) => ask.kind === "approval");
+  // The one shared read of the projects, under the key the shell's sidebar and the search
+  // palette already hold, so the daemon's `project.updated` publish refreshes these steps with
+  // no reload and the header makes no second, per-issue read. While that read is pending or
+  // failed there is no row, so the steps are empty and the header draws its one chip below
+  // rather than claiming a gate it has not read. Only a root issue has steps at all
+  // (`gatedStepEntries`), so a child issue does not ask for the list: a disabled query still
+  // reads whatever the shared cache holds, and a child draws the single chip either way.
+  const projects = useQuery({ ...projectsQuery(), enabled: issue.parent === null });
+  const projectRow = projects.data?.find((candidate) => candidate.key === issue.project);
+  const entries = gatedStepEntries(projectRow, issue);
+  // Which document a step reviews is `gated-steps.ts`'s to say, so the chip asks the drawn
+  // entries rather than the gate's words: a gate that names no step for the primary document
+  // leaves that document's own state and its two controls to the chip.
+  const stepHoldsPrimaryDocument = entries.some(
+    (entry) => entry.document?.id === issue.primary_artifact_id
+  );
   const showApprovalActions =
     documentArtifact?.approval !== undefined &&
     (documentArtifact.approval.state !== "draft" || approvalRequestOpen);
@@ -515,13 +533,21 @@ export function IssueHeader({
           {/* Progress is state about how far the work has got, like the status and the claim,
               so it sits in this wrapping row with them; the metadata rail below clips. */}
           <ProgressChips bar progress={issue.progress} />
-          {documentArtifact === undefined ? null : (
+          {/* A root issue of a gated project reads its gate step by step, after the chip's
+              place; the chip itself stays beside those steps whenever no step drawn reviews the
+              primary document, since otherwise an open request on that document could not be
+              answered on this page at all. Every other issue - and any issue whose project is
+              still unread - keeps that chip for the primary document alone, unchanged. */}
+          {documentArtifact === undefined || stepHoldsPrimaryDocument ? null : (
             <ApprovalChip
               artifact={documentArtifact}
               layout="contents"
               showActions={showApprovalActions}
               variant="header"
             />
+          )}
+          {entries.length === 0 ? null : (
+            <ApprovalSteps entries={entries} primaryArtifactId={issue.primary_artifact_id} />
           )}
           {/* Whether the route reaches anyone is state about who is working this, like the
               claim, and it sits in this wrapping row for the same reason: the metadata rail
