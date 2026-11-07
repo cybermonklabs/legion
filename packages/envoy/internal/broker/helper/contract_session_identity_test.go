@@ -96,8 +96,7 @@ func TestContractARebootKeepsAGrantTheSessionWasGiven(t *testing.T) {
 	}
 
 	// --- the machine reboots: the helper stops, and the recorded process is gone ---
-	cr.cancel()
-	rebootRecords(t, cr.sessionsPath)
+	cr.reboot(t, reg.EnrollmentID)
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	next := &Server{
@@ -148,6 +147,50 @@ func TestContractARebootKeepsAGrantTheSessionWasGiven(t *testing.T) {
 	if got := contractDecode[contractValues](t, body).Values["TEST_SECRET"]; got != "test-secret-v1" {
 		t.Fatalf("the released value is %q, want test-secret-v1", got)
 	}
+}
+
+// contractRebootWait bounds reboot's wait for the helper's own record to reach the disk. The
+// save it waits for is already under way when the wait begins, so the bound is a loaded
+// runner's scheduling, not any work: ten seconds, this package's other end-to-end waits
+// (waitForIssued) being twenty.
+const contractRebootWait = 10 * time.Second
+
+// reboot is the machine going down and coming up again under the helper: it waits for the
+// record on disk to hold enrollmentID, stops the helper, shuts the door on any save of the
+// helper's still to come, and only then rewrites the records as a reboot leaves them
+// (rebootRecords).
+//
+// Both of those come before the rewrite, and the flake that cost is why. A register answers the
+// moment its session is enrolled — the reply waits on the identity, not on the file — while the
+// enrollment reaches the records file later, on enrollLoop's own goroutine (its s.save, after
+// setEnrolledAt). Rewriting the file in that window writes a record the helper then overwrites:
+// Registry.Save puts back the LIVE start ticks of a session still in the registry, so Recover
+// finds the recorded process alive, re-pins it and keeps its enrollment rather than parking its
+// identity, and the reboot this test is about never happened. Waiting for the enrollment on
+// disk is waiting for that very save (the only one these tests leave outstanding), and
+// Registry.Close, which waits for a save in progress and makes every later one write nothing,
+// is what makes the file the test's alone from here on. The same ordering is kept in
+// server_test.go's restart row, which waits for the enrolled record and quiesces the old
+// session before it simulates the helper's death.
+func (cr *contractRig) reboot(t *testing.T, enrollmentID string) {
+	t.Helper()
+	deadline := time.Now().Add(contractRebootWait)
+	for {
+		recs, err := LoadRecords(cr.sessionsPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if slices.ContainsFunc(recs, func(rec Record) bool { return rec.EnrollmentID == enrollmentID }) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the enrollment %s never reached %s, so a reboot would not leave it behind: %+v", enrollmentID, cr.sessionsPath, recs)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cr.cancel()
+	cr.srv.Registry.Close()
+	rebootRecords(t, cr.sessionsPath)
 }
 
 // rebootRecords rewrites the records file as a reboot leaves it: every recorded process is gone,
@@ -210,8 +253,7 @@ func TestContractASessionThatDoesNotComeBackLosesItsGrant(t *testing.T) {
 		t.Fatalf("an agent-tier secret is granted at once: %+v", created)
 	}
 
-	cr.cancel()
-	rebootRecords(t, cr.sessionsPath)
+	cr.reboot(t, reg.EnrollmentID)
 
 	// The grace is the Server's, never a package variable: a test writing a global that the
 	// Server's goroutines read is a data race, and was one.

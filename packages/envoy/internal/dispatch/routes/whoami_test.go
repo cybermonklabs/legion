@@ -149,6 +149,13 @@ func TestAnEventsSubscriptionFromTheWhoamiHeadReplaysWhatCommittedSince(t *testi
 	// read deadline on a two-core pod, against 0.48 s with the package to itself, and on CI run
 	// 41868325451 it failed that deadline waiting for its events_start. The api package took the
 	// same family of tests out of its parallel set for this (dispatch://INFRA-1075).
+	//
+	// The instance is the other half of it, and no test can choose that: with this package in
+	// envoy-go's unit call, beside eight other packages' clones on the one server, the same
+	// deadline failed again on runs 42378432951 and 42424201523, the server's own warning
+	// naming the open transaction each time. CI runs this package against a Postgres service of
+	// its own for that reason (ci.yaml's postgres_routes), so the ids this wait turns on are the
+	// ones named above and nothing else's.
 	database := storetest.Open(t)
 	handler := storeRouter(t, database)
 	server := httptest.NewServer(handler)

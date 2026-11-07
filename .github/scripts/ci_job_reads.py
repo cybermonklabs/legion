@@ -579,18 +579,27 @@ def race_step(job):
     ])
 
 
-# The unit step runs the module less two things: the lane's packages, which the three race jobs
-# run under the detector, and internal/integration, which envoy-go's integration step runs. Its
-# `grep -Ev` is `/integration`, then, in the lane's own order, each package in the form go list's
-# import paths need - a tree matching the package and everything under it, any other the package
-# alone.
+# The unit step runs the module less three things: the lane's packages, which the three race jobs
+# run under the detector, internal/integration, which envoy-go's integration step runs, and
+# internal/dispatch/routes, which that job's own routes step runs against a second Postgres
+# service (ci.yaml says why). Its `grep -Ev` is `/integration`, then, in the lane's own order,
+# each package in the form go list's import paths need - a tree matching the package and
+# everything under it, any other the package alone - and the routes package last.
+ROUTES_PACKAGE = "internal/dispatch/routes"
 UNIT_TEST_STEP = "Unit test envoy Go package"
 UNIT_TEST_PATTERN = "|".join(
-    ["/integration"] + [f"/{p.name}($|/)" if p.tree else f"/{p.name}$" for job in ENVOY_RACE_LANE for p in job.packages])
+    ["/integration"] + [f"/{p.name}($|/)" if p.tree else f"/{p.name}$" for job in ENVOY_RACE_LANE for p in job.packages]
+    + [f"/{ROUTES_PACKAGE}$"])
 # -p 8 and -parallel 12, and the stream the step writes, are ci.yaml's own comment's to explain.
 UNIT_TEST_SCRIPT = json_stream_script(
     f"go list ./... | grep -Ev '{UNIT_TEST_PATTERN}' | xargs go test -json -count=1 -p 8 -parallel 12 -timeout 20m",
     "unit.json")
+# The routes package's own step, which the unit step's pattern leaves out: the event log's safe
+# horizon is instance-wide, so this one runs against a Postgres service of its own and nothing
+# else runs against it (ci.yaml's postgres_routes service).
+ROUTES_STEP = "Test the routes package on an instance of its own"
+ROUTES_SCRIPT = json_stream_script(
+    f"go test -json -count=1 -timeout 10m ./{ROUTES_PACKAGE}/", "routes.json")
 
 
 # A test of a Go file: `go help test`'s Test, Fuzz and Example functions, whose name goes on with
@@ -1129,11 +1138,15 @@ GATES = [
             (ENVOY, [f"./{under}"], f"go test -run of what the race build cannot run in ./{under}", {})
             for under in RACE_IMPOSSIBLE_PACKAGES
         ]),
-        # ./... but the race lane's packages and internal/integration, which the integration step
-        # tests: a Run cannot name "./... but those", so the entry declares the superset ./...,
-        # which over-declares and so keeps this gate's wide patterns justified.
+        # ./... but the race lane's packages, internal/integration, which the integration step
+        # tests, and internal/dispatch/routes, which the routes step below tests: a Run cannot
+        # name "./... but those", so the entry declares the superset ./..., which over-declares
+        # and so keeps this gate's wide patterns justified.
         pinned_step("envoy-go", UNIT_TEST_STEP, ENVOY, UNIT_TEST_SCRIPT, [
             (ENVOY, ["./..."], "go list ./... piped into go test, counted as go test ./...", {}),
+        ]),
+        pinned_step("envoy-go", ROUTES_STEP, ENVOY, ROUTES_SCRIPT, [
+            (ENVOY, [f"./{ROUTES_PACKAGE}/"], f"go test ./{ROUTES_PACKAGE}/", {}),
         ]),
         pinned_step("envoy-go", INTEGRATION_STEP, ENVOY, INTEGRATION_SCRIPT, [
             (ENVOY, ["./internal/integration/"], "go test ./internal/integration/", {}),

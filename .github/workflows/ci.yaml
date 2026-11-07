@@ -3005,11 +3005,12 @@ jobs:
     # before it at their measured times plus its own limit: about 1 minute of setup, then the
     # plain race-impossible step's three 10-minute runs, which is 31; after that step's measured
     # 2 minutes the unit step's own 20 is 23; after the unit step, which runs strictly fewer
-    # packages than the 35 minutes it measured before the race lane's left it and so cannot
-    # exceed that, natslive's default 10 and the bus matrix's own 5 are 53, and the integration
-    # step's 5 is less. 53, then, is the bound, and this job is held to it rather than to the 60
-    # it carried when the unit step ran the whole module in two 20-minute runs.
-    timeout-minutes: 53
+    # packages than the 35 minutes it measured before the race lane's and the routes package's
+    # left it and so cannot exceed that, the routes step's own 10 is 48; after that step's
+    # measured 1 minute, natslive's default 10 and the bus matrix's own 5 are 55, and the
+    # integration step's 5 is less. 55, then, is the bound, and this job is held to it rather
+    # than to the 60 it carried when the unit step ran the whole module in two 20-minute runs.
+    timeout-minutes: 55
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -3057,6 +3058,41 @@ jobs:
         # that out (run 42307926510, "Initialize containers", 22 s of which 15 s was the wait).
         # A `pg_isready` a second for the job's length is one short exec of the service
         # container, which no step of this job is measured against (dispatch://INFRA-1075).
+        options: >-
+          --shm-size=1g
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 1s
+          --health-timeout 5s
+          --health-retries 50
+      # internal/dispatch/routes gets an instance of its own, and the step below is the only one
+      # pointed at it. Its tests wait for the event log's safe horizon, which is instance-wide
+      # by design: it rests on pg_snapshot_xmin, so ANY transaction running anywhere on the
+      # instance holds it back until it ends, this job's other package binaries' `create
+      # database … strategy file_copy` among them (internal/dispatch/events/horizon.go, "Safe
+      # horizon"). That is not a cost a setting can take away - the settings below are this
+      # server's too - so the only way to keep those waits off the other packages' transactions
+      # is a second instance. Measured on a pod: one transaction holding a transaction id on
+      # another database of the same instance, with no load at all, takes
+      # TestAnEventsSubscriptionFromTheWhoamiHeadReplaysWhatCommittedSince to the exact failure
+      # CI saw twice in three runs ("read the events_start: … i/o timeout", runs 42378432951 and
+      # 42424201523), with the server's own warning naming the holder: "event horizon held back
+      # by an open transaction; live event readers wait for it … query=select
+      # pg_current_xact_id(), pg_sleep(30)". The subscription is open throughout - the socket's
+      # read deadline is what ends it, not the socket - so the wait is the horizon's
+      # (dispatch://INFRA-1075).
+      postgres_routes:
+        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        # 5433 on the runner: the service above holds 5432, and two services cannot publish one
+        # host port. The container's own port is 5432 either way.
+        ports: ["5433:5432"]
+        # The five settings of the service above, for the reasons given there: this server is
+        # as disposable as that one, one package's binary opens as many connections per store,
+        # and the event log's floor test prepares a transaction. The read-back step below holds
+        # this server to every one of them too.
+        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=500 -c max_prepared_transactions=20
         options: >-
           --shm-size=1g
           --health-cmd "pg_isready -U postgres"
@@ -3119,6 +3155,22 @@ jobs:
             value=$(docker exec "$id" psql -U postgres -Atc "show $setting")
             read_back="$read_back $setting=$value"
             [ "$value" = "${want#*=}" ] || { echo "::error::the Postgres service reports $setting=$value, not ${want#*=}"; failed=1; }
+          done
+          echo "$id:$read_back"
+          [ -z "$failed" ] || exit 1
+      # The same five settings, read back from the routes package's own instance: it is a second
+      # server, started from a second command: line, so a runner that dropped that one would
+      # leave this one on the image's defaults with nothing else saying so.
+      - name: Read the routes service's settings back
+        run: |
+          id="${{ job.services.postgres_routes.id }}"
+          failed=
+          read_back=
+          for want in fsync=off full_page_writes=off synchronous_commit=off max_connections=500 max_prepared_transactions=20; do
+            setting=${want%%=*}
+            value=$(docker exec "$id" psql -U postgres -Atc "show $setting")
+            read_back="$read_back $setting=$value"
+            [ "$value" = "${want#*=}" ] || { echo "::error::the routes Postgres service reports $setting=$value, not ${want#*=}"; failed=1; }
           done
           echo "$id:$read_back"
           [ -z "$failed" ] || exit 1
@@ -3191,33 +3243,51 @@ jobs:
       # packages were still in this call; the race lane runs them now, so the call they bound is
       # a lighter one.
       #
-      # internal/dispatch/routes is in that call too, and had a Postgres service of its own until
-      # this change. Its tests read the event log's safe horizon, which is instance-wide by
-      # design: it rests on pg_snapshot_xmin, so a transaction running anywhere on the instance
-      # holds it back, another package's `create database … template` among them
-      # (internal/dispatch/events/horizon.go, "Safe horizon"). On a durable server those clones
-      # held it back long enough to take the package red - "event horizon held back by an open
-      # transaction … query=create database dispatch_test_… template dispatch_template_…" (run
-      # 41868325451) - and that is the cost this service no longer pays: a clone here writes
-      # nothing durable and ends within the wait the tests already allow. A second instance comes
-      # back only if a run shows those waits failing or the package missing its bar in this call
-      # (dispatch://INFRA-1075).
+      # internal/dispatch/routes is NOT in that call: it runs in the step below, against the
+      # second Postgres service, for the reason that service's own comment gives. It was in this
+      # call for one revision of this change, and CI answered the question that put it here -
+      # whether a disposable server's clones hold the safe horizon back long enough to matter -
+      # by failing TestAnEventsSubscriptionFromTheWhoamiHeadReplaysWhatCommittedSince on its
+      # events_start twice in three runs (42378432951 and 42424201523, passing in between). The
+      # settings this service carries make a clone cheap; they do not make it free of a
+      # transaction id, and the horizon waits on the oldest one open anywhere on the instance,
+      # whatever it is doing (dispatch://INFRA-1075).
       #
       # Everything the three race jobs run is left out here, since they run it under the detector,
       # and so is internal/integration, which the integration step below tests. The pattern is
       # built in .github/scripts/ci_job_reads.py from the same list those jobs' own steps are built
       # from, so what this step leaves out and what the lane runs cannot drift apart. What is left
-      # is the rest of the module, the two longest packages of it (the API's and the documents
-      # service's) now among the ones the lane runs, so its 20 minutes are ample.
+      # is the rest of the module less the routes package, the two longest packages of it (the
+      # API's and the documents service's) now among the ones the lane runs, so its 20 minutes
+      # are ample.
       - name: Unit test envoy Go package
         run: |
           mkdir -p "$RUNNER_TEMP/go-test-json"
           s=0
-          go list ./... | grep -Ev '/integration|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$' | xargs go test -json -count=1 -p 8 -parallel 12 -timeout 20m > "$RUNNER_TEMP/go-test-json/unit.json" || s=$?
+          go list ./... | grep -Ev '/integration|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$|/internal/dispatch/routes$' | xargs go test -json -count=1 -p 8 -parallel 12 -timeout 20m > "$RUNNER_TEMP/go-test-json/unit.json" || s=$?
           if [ "$s" -eq 0 ]; then
             jq -rj 'select(.Action == "build-output" or (.Action == "output" and .Test == null)) | .Output' "$RUNNER_TEMP/go-test-json/unit.json"
           else
             jq -rj 'select(.Action == "build-output" or .Action == "output") | .Output' "$RUNNER_TEMP/go-test-json/unit.json"
+          fi
+          exit $s
+        working-directory: packages/envoy
+      # The routes package alone, on the second service: DISPATCH_TEST_DATABASE_URL names 5433
+      # here and nowhere else, so the only transactions its horizon waits on are its own tests'.
+      # It runs after the unit step rather than beside it because a step is a step; the package
+      # measured 56 s with an instance to itself on a loaded two-core pod, so 10 minutes is
+      # ample and the job's bound above counts it at 1 minute.
+      - name: Test the routes package on an instance of its own
+        env:
+          DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5433/postgres?sslmode=disable
+        run: |
+          mkdir -p "$RUNNER_TEMP/go-test-json"
+          s=0
+          go test -json -count=1 -timeout 10m ./internal/dispatch/routes/ > "$RUNNER_TEMP/go-test-json/routes.json" || s=$?
+          if [ "$s" -eq 0 ]; then
+            jq -rj 'select(.Action == "build-output" or (.Action == "output" and .Test == null)) | .Output' "$RUNNER_TEMP/go-test-json/routes.json"
+          else
+            jq -rj 'select(.Action == "build-output" or .Action == "output") | .Output' "$RUNNER_TEMP/go-test-json/routes.json"
           fi
           exit $s
         working-directory: packages/envoy
