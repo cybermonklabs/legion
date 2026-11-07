@@ -797,7 +797,8 @@ describe("DispatchClient", () => {
   // dropping tags one at a time over the whole body costs this row 179 s and fails it by that
   // limit, where the row itself costs 0.03 s idle and, under 16 busy loops (8 x nproc), 0.20 s at
   // most in a whole-suite run and 0.56 s with this file alone. The limit is a bound on work, not a
-  // hang guard.
+  // hang guard. It stays on the row rather than taking the suite's 30 s default, because the row's
+  // claim is that number.
   test("builds the excerpt of a megabyte of unclosed tags in bounded time", async () => {
     const megabyte = 1 << 20;
     // The last three hold the client's bearer, "secret", everywhere, or almost everywhere.
@@ -935,7 +936,8 @@ describe("DispatchClient", () => {
   // without reading a clock: measured in a 2-CPU pod, a search per piece costs this row 114 s and
   // fails it by that limit, where the row itself costs 0.01 s idle and, under 16 busy loops
   // (8 x nproc), 0.05 s at most in a whole-suite run and 0.16 s with this file alone. The limit is
-  // a bound on work, not a hang guard.
+  // a bound on work, not a hang guard. It stays on the row rather than taking the suite's 30 s
+  // default, because the row's claim is that number.
   test("redacts a bearer of one character repeated from a 64 KiB body in bounded time", async () => {
     const { fetchImpl } = fakeFetch([
       new Response("x".repeat(64 * 1024), {

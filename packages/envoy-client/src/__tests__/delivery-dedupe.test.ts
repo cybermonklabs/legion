@@ -60,10 +60,10 @@ test("a key that names its event is remembered for the duplicate window and not 
 // (2026-09-30), and a host is handed no more keys than the stream carries on the topics it
 // follows. A host that follows all of them still recognises a Retry made at the end of the window.
 //
-// The 30 s limit is a hang guard, not a budget: the 100,029 claims are pure CPU work, and bun's
-// unwritten 5,000 ms per-test default is a limit on that work rather than on a hang. Measured in a
-// 2-CPU pod: 0.33 s idle; under 16 busy loops (8 x nproc), 3.02 s at most in a whole-suite run and
-// 6.93 s with this file alone. It fires only if a claim stops returning.
+// The suite's 30 s default (test/default-timeout.ts) is this row's hang guard: bun's own unwritten
+// 5,000 ms default was a limit on its 100,029 claims of pure CPU work rather than on a hang.
+// Measured in a 2-CPU pod: 0.33 s idle; under 16 busy loops (8 x nproc), 6.19 s at most in a
+// whole-suite run and 6.93 s with this file alone. It fires only if a claim stops returning.
 test("a repeat is still recognised after as many other keys as the whole stream stored in one window", () => {
   const dedupe = createDeliveryDedupe(() => 0);
   const frame = (n: number) => ({
@@ -75,17 +75,17 @@ test("a repeat is still recognised after as many other keys as the whole stream 
   for (let n = 1; n <= 100_028; n++) dedupe.claim(frame(n));
 
   expect(dedupe.claim({ ...frame(0), event_id: "evt-0-retry" })).toBeUndefined();
-}, 30_000);
+});
 
 // A flood of fresh keys inside the window cannot grow the record past its limit: the oldest key
 // goes first, and every later one is still recognised. Each frame carries an event id as well, and
 // those are held apart, so they do not spend the key limit.
 //
-// Measured in a 2-CPU pod: 0.95 s idle; under 16 busy loops (8 x nproc), 7.40 s at most in a
+// Measured in a 2-CPU pod: 0.95 s idle; under 16 busy loops (8 x nproc), 15.90 s at most in a
 // whole-suite run and 15.76 s with this file alone, so bun's unwritten 5,000 ms per-test default
 // timed this row out on a busy machine, 16 runs of 20. The count is DELIVERY_DEDUPE_KEY_LIMIT
 // itself, the boundary the row exists to prove, so it stays and the limit becomes an explicit 60 s
-// hang guard: it fires only if a claim stops returning.
+// hang guard, above the suite's 30 s default: it fires only if a claim stops returning.
 test("past the key limit the oldest key is forgotten first, and only it", () => {
   const dedupe = createDeliveryDedupe(() => 0);
   let sends = 0;

@@ -888,6 +888,8 @@ describe("readSessionAnswers", () => {
   // the row by that limit instead of by what the machine cost. The limit is that discriminator
   // rather than a bound on work: measured in a 2-CPU pod the row costs 0.06 s idle and, under 16
   // busy loops (8 x nproc), 0.08 s at most in a whole-suite run and 0.10 s with this file alone.
+  // The 30 s stays on the row rather than taking the suite's default, because the row's claim is
+  // that number.
   test("waits at most the deadline, does not wait again on a read past it, and the late answer fills the cache", async () => {
     const session = newSession();
     const dispatch = dispatchAt();
