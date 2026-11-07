@@ -1,0 +1,78 @@
+name: CI job envoy-e2e-local
+
+# The steps of ci.yaml's `envoy-e2e-local` job, in a file of its own.
+# ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
+# whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
+#
+# The split is for the filters. Every filter of the `changes` job names ci.yaml today, so a
+# change to that one file runs every job; once this job's filter names this file instead, a
+# change to these steps selects this job alone.
+#
+# The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
+# decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
+# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+on:
+  workflow_call:
+    inputs:
+      ci-ok-changes:
+        description: >-
+          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          (.github/actions/ci-ok-report), as every job of ci.yaml ends.
+        type: string
+        required: true
+
+# A `|` between proxy entries makes a go command fall through to the next source after ANY error,
+# where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
+# proxy.golang.org reset a download mid-stream and turned a Go lane red on a module whose hash
+# go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same bytes
+# straight from the source and checks them against go.sum, so this is a second path, not a weaker
+# check.
+env:
+  GOPROXY: https://proxy.golang.org|direct
+
+jobs:
+  envoy-e2e-local:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      - run: bun install --frozen-lockfile
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          cache: false
+      # go-envoy: the listener and natsd e2e-local.sh builds.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-{0}-', runner.os) }}
+      # scripts/e2e-local.test.sh drives the driver's refusals, which the acceptance run below
+      # never reaches: an unknown option, --help, and an E2E_NATS_PORT, E2E_PORT or E2E_SESSION_PORT
+      # another process already holds, which the driver uses as given and fails on rather than
+      # replacing it or running against a server it did not start. It needs the bun and go this job
+      # already has, and it runs first because it is seconds (INFRA-250).
+      - name: Refusal test for e2e-local.sh
+        run: bash scripts/e2e-local.test.sh
+        working-directory: packages/envoy
+      - name: Local end-to-end acceptance
+        run: bash scripts/e2e-local.sh
+        working-directory: packages/envoy
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure()
+        with:
+          name: envoy-e2e-local-evidence-${{ github.run_attempt }}
+          path: packages/envoy/out/e2e
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: envoy-e2e-local
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}

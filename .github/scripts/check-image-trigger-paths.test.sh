@@ -1355,6 +1355,28 @@ PYEOF
   chmod +x "$root/.github/scripts/check-image-trigger-paths.sh"
 }
 
+# pin_plumbing <root> <step id> <commands>: replaces the symlinked checker with a copy whose
+# BUILD_PLUMBING_STEPS pins one run step of the fixture's docker job to <commands> - the
+# reviewed edit that says a step is the image build's own plumbing, so a job holding it still
+# reads as building only.
+pin_plumbing() {
+  local root=$1
+  rm -f "$root/.github/scripts/check-image-trigger-paths.sh"
+  python3 - "$check_script" "$root/.github/scripts/check-image-trigger-paths.sh" "$2" "$3" <<'PYEOF'
+import sys
+source, destination, identifier, pinned = sys.argv[1:5]
+text = open(source).read()
+anchor = "BUILD_PLUMBING_STEPS: list[tuple[str, str, str, tuple[str, ...], str]] = [\n"
+entry = (
+    f"    ('.github/workflows/image.yaml', 'docker', {identifier!r}, ({pinned},), "
+    f"'the fixture pins it as plumbing of the image build'),\n"
+)
+assert anchor in text
+open(destination, "w").write(text.replace(anchor, anchor + entry, 1))
+PYEOF
+  chmod +x "$root/.github/scripts/check-image-trigger-paths.sh"
+}
+
 echo "case: every build shape is refused, and only a listed step is excused"
 # A table, not single literals: every row is a real invocation, asserting the refusal, that the
 # step is named and that the matched text is printed, so no row can pass on the zero-build
@@ -2443,6 +2465,52 @@ printf "  test:\n    needs: changes\n    if: needs.changes.outputs.worker_image 
 run_check "$root"
 check "a filter that also gates a job doing more than build is left alone" "$(is "$status" 0)"
 check "  and says why" "$(contains "$out" 'not checked for files no image build reads, since jobs.changes filter worker_image gates jobs.test, which does more than build an image')"
+
+echo "case: a called workflow whose job builds and then runs a step of its own"
+# A job is the same job wherever its steps are: ci.yaml's jobs each hold theirs in a workflow of
+# their own, so one that builds an image and then runs a suite against it does more than build,
+# and the filter gating its caller owes the suite's files.
+root=$(fixture router-called-does-more)
+ci_router "$root" "$excluding_inputs" some-with-excludes
+printf '      - run: echo test\n' >> "$root/.github/workflows/image.yaml"
+run_check "$root"
+check "a caller of a workflow whose job does more is left alone" "$(is "$status" 0)"
+check "  and says why" "$(contains "$out" 'not checked for files no image build reads, since jobs.changes filter worker_image gates jobs.worker-image, which does more than build an image')"
+
+root=$(fixture router-called-builds-only)
+ci_router "$root" "$excluding_inputs" some-with-excludes
+run_check "$root"
+check "the same called file without that step is read as building only" "$(is "$status" 0)"
+check "  and the filter is held to the files the build reads" "$(contains "$out" 'jobs.changes filter worker_image): matches only files its image builds read')"
+
+echo "case: BUILD_PLUMBING_STEPS is held to the step it pins"
+# The list is how a `run:` step of such a job says it is the build's own plumbing, and it is
+# held to that step: a step that runs something else, or is gone, must not go on being excused.
+root=$(fixture plumbing-pinned)
+ci_router "$root" "$excluding_inputs" some-with-excludes
+extra_step "$root" 'echo "tag=v1" >> "$GITHUB_OUTPUT"'
+step_id "$root" "Extra" "tag"
+pin_plumbing "$root" "tag" "'echo \"tag=v1\" >> \"\$GITHUB_OUTPUT\"'"
+run_check "$root"
+check "a pinned run step leaves its job building only" "$(is "$status" 0)"
+check "  and the filter is held to the files the build reads" "$(contains "$out" 'jobs.changes filter worker_image): matches only files its image builds read')"
+
+root=$(fixture plumbing-text-moved)
+ci_router "$root" "$excluding_inputs" some-with-excludes
+extra_step "$root" 'echo "tag=v2" >> "$GITHUB_OUTPUT"'
+step_id "$root" "Extra" "tag"
+pin_plumbing "$root" "tag" "'echo \"tag=v1\" >> \"\$GITHUB_OUTPUT\"'"
+run_check "$root"
+check "an entry whose step runs something else is refused" "$(is "$status" 1)"
+check "  and names the entry, the pinned text and the step's" \
+  "$(contains "$out" "BUILD_PLUMBING_STEPS pins .github/workflows/image.yaml job docker step id 'tag' to \['echo \"tag=v1\" >> \"\$GITHUB_OUTPUT\"'\], and it runs \['echo \"tag=v2\" >> \"\$GITHUB_OUTPUT\"'\]")"
+
+root=$(fixture plumbing-step-gone)
+ci_router "$root" "$excluding_inputs" some-with-excludes
+pin_plumbing "$root" "tag" "'echo \"tag=v1\" >> \"\$GITHUB_OUTPUT\"'"
+run_check "$root"
+check "an entry matching no step is refused" "$(is "$status" 1)"
+check "  and says the key names none" "$(contains "$out" "step id 'tag', which matches 0 run steps; an entry must name exactly one")"
 
 root=$(fixture router-push-only)
 ci_router "$root" "$all_inputs"

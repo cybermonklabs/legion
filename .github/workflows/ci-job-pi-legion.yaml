@@ -1,0 +1,121 @@
+name: CI job pi-legion
+
+# The steps of ci.yaml's `pi-legion` job, in a file of its own.
+# ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
+# whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
+#
+# The split is for the filters. Every filter of the `changes` job names ci.yaml today, so a
+# change to that one file runs every job; once this job's filter names this file instead, a
+# change to these steps selects this job alone.
+#
+# The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
+# decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
+# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+on:
+  workflow_call:
+    inputs:
+      ci-ok-changes:
+        description: >-
+          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          (.github/actions/ci-ok-report), as every job of ci.yaml ends.
+        type: string
+        required: true
+
+# A `|` between proxy entries makes a go command fall through to the next source after ANY error,
+# where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
+# proxy.golang.org reset a download mid-stream and turned a Go lane red on a module whose hash
+# go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same bytes
+# straight from the source and checks them against go.sum, so this is a second path, not a weaker
+# check.
+env:
+  GOPROXY: https://proxy.golang.org|direct
+
+jobs:
+  pi-legion:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # The NATS server the Envoy role claim of extensions/controller-start-omp.test.ts's controller
+    # needs (LEGION_TEST_NATS_URL on the test step), on the image the envoy-client job pulls.
+    services:
+      nats:
+        # ghcr.io/cybermonklabs/legion/ci, the copy of nats:2.10 (.github/ci-images.yaml)
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f
+        ports: ["4222:4222"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      - uses: ./.github/actions/install-jj
+      # extensions/legion-phase-stall-omp.test.ts and controller-start-omp.test.ts run the pinned
+      # Oh My Pi against stand-ins (packages/pi-shared/test/omp-harness.ts) and refuse on GitHub
+      # Actions without one. The pin is read from .omp-pin, the repository's one copy of it,
+      # installed through the mise install-jj leaves at ~/.local/bin/mise
+      # (.github/actions/install-omp).
+      - uses: ./.github/actions/install-omp
+      # scripts/skill-scenarios/rig.test.ts runs rig.sh judge-omp's container with the runner's own
+      # Docker. Every image a CI job fetches is a copy in ghcr.io/cybermonklabs/legion/ci, named by
+      # digest, which ci.yaml's ci-images job publishes from .github/ci-images.yaml.
+      # scripts/skill-scenarios/daemon-pane.test.ts runs daemon-pane.go with `go run` inside packages/daemon.
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/daemon/go.mod
+          cache: false
+      # go-daemon, shared with typecheck and test.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-daemon-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-daemon-{0}-', runner.os) }}
+      - run: bun install --frozen-lockfile
+      - name: Build contracts for pi-legion
+        run: bun run build
+        working-directory: packages/contracts
+      - name: Lint pi-legion
+        run: bun run lint
+        working-directory: packages/pi-legion
+      - name: Typecheck pi-legion
+        run: bun run typecheck
+        working-directory: packages/pi-legion
+      - name: Test pi-legion
+        run: bun run test
+        working-directory: packages/pi-legion
+        env:
+          LEGION_TEST_NATS_URL: nats://127.0.0.1:4222
+      # The release's pack (release.yaml's pi_legion_build job), which is also this job's build: the
+      # manifest pointed at the one bundle, then scripts/pi-plugin-prepack.sh, which bundles
+      # legion.ts, writes dist/THIRD_PARTY_NOTICES (failing the pack on a bundled package whose
+      # license cannot be determined) and stages this plugin's nine skills. The listing shows the
+      # tarball ships those, its agents/, and nothing of the Envoy plugin's: no envoy.js, none of
+      # its skills.
+      - name: Pack pi-legion
+        run: |
+          jq '.omp.extensions = ["dist/legion.js"]' package.json > "$RUNNER_TEMP/package.json"
+          mv "$RUNNER_TEMP/package.json" package.json
+          bun pm pack --destination ../../out/pr-artifacts
+          listing=$RUNNER_TEMP/pi-legion-listing
+          tar tzf ../../out/pr-artifacts/*.tgz > "$listing"
+          for shipped in package/dist/legion.js package/dist/THIRD_PARTY_NOTICES package/dist/skills/legion-worker/SKILL.md package/agents/deep-worker.md; do
+            grep -qxF "$shipped" "$listing" || { echo "::error::the pi-legion tarball does not ship $shipped"; exit 1; }
+          done
+          for envoy in package/dist/envoy.js package/dist/skills/dispatch/; do
+            if grep -qF "$envoy" "$listing"; then
+              echo "::error::the pi-legion tarball ships $envoy, which is the Envoy plugin's"
+              exit 1
+            fi
+          done
+        working-directory: packages/pi-legion
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pi-legion-pr
+          path: out/pr-artifacts/*.tgz
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: pi-legion
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}

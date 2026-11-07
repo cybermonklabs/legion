@@ -1,0 +1,102 @@
+name: CI job envoy-go-docs-finalizers
+
+# The steps of ci.yaml's `envoy-go-docs-finalizers` job, in a file of its own.
+# ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
+# whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
+#
+# The split is for the filters. Every filter of the `changes` job names ci.yaml today, so a
+# change to that one file runs every job; once this job's filter names this file instead, a
+# change to these steps selects this job alone.
+#
+# The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
+# decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
+# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+on:
+  workflow_call:
+    inputs:
+      ci-ok-changes:
+        description: >-
+          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          (.github/actions/ci-ok-report), as every job of ci.yaml ends.
+        type: string
+        required: true
+
+# A `|` between proxy entries makes a go command fall through to the next source after ANY error,
+# where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
+# proxy.golang.org reset a download mid-stream and turned a Go lane red on a module whose hash
+# go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same bytes
+# straight from the source and checks them against go.sum, so this is a second path, not a weaker
+# check.
+env:
+  GOPROXY: https://proxy.golang.org|direct
+
+jobs:
+  envoy-go-docs-finalizers:
+    runs-on: ubuntu-24.04
+    # The step's -timeout 29m must fire before the runner cancels the job, so a hung test prints
+    # the dump that names it. Both numbers come from this job's own green runs, the slowest of
+    # them 128148376484: 1022 s in the package, against 950 s in 127770782204 and 927 s in
+    # 127053239518, and 55 s of checkout, setup and compile before any of them. The package has
+    # grown twice under this pull request, first when main took in #2414's tests (953 services
+    # built to 1068) and again on the merge of #2870, which moved work into this lane. The step's
+    # deadline is the smallest whole minute at which the slowest package time is at most 60 % of
+    # it, and this limit is six minutes above that. Measure again before changing either, and
+    # from the slowest run rather than the newest: a package that has grown past 60 % of its
+    # deadline is a deadline to raise, not a flake to re-run.
+    timeout-minutes: 35
+    services:
+      postgres:
+        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    # Load-bearing, not boilerplate: this package's TestMain is storetest.Main
+    # (internal/dispatch/docs/persistence_test.go:19), and storetest.Open skips every test that
+    # opens the store when DISPATCH_TEST_DATABASE_URL is unset
+    # (internal/dispatch/store/storetest/storetest.go:67-71). A skip is a pass, so without the
+    # service this job would be green having run almost nothing.
+    env:
+      DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          cache: false
+      # go-envoy, restored only: its modules are the envoy module's, but this job builds the
+      # document service's test binary, not the listener and natsd of
+      # .github/workflows/ci-caches.yaml's envoy job, which is what fills this family, so it
+      # saves none.
+      - id: go-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-{0}-', runner.os) }}
+      # -v, because the package's leak check prints its line from TestMain after the tests have
+      # run: go test in package-list mode buffers the test binary's own output and drops it when
+      # the package passes, so without -v a green run would carry the `ok` line and nothing else,
+      # and the count of services the tests left alive is the half of this job that no detector
+      # of Go's reports.
+      - name: Test the document service under the cleanup detector
+        run: GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 29m ./internal/dispatch/docs/
+        working-directory: packages/envoy
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: envoy-go-docs-finalizers
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}

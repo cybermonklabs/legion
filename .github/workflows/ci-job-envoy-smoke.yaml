@@ -1,0 +1,205 @@
+name: CI job envoy-smoke
+
+# The steps of ci.yaml's `envoy-smoke` job, in a file of its own.
+# ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
+# whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
+#
+# The split is for the filters. Every filter of the `changes` job names ci.yaml today, so a
+# change to that one file runs every job; once this job's filter names this file instead, a
+# change to these steps selects this job alone.
+#
+# The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
+# decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
+# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+on:
+  workflow_call:
+    inputs:
+      ci-ok-changes:
+        description: >-
+          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          (.github/actions/ci-ok-report), as every job of ci.yaml ends.
+        type: string
+        required: true
+
+# A `|` between proxy entries makes a go command fall through to the next source after ANY error,
+# where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
+# proxy.golang.org reset a download mid-stream and turned a Go lane red on a module whose hash
+# go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same bytes
+# straight from the source and checks them against go.sum, so this is a second path, not a weaker
+# check.
+env:
+  GOPROXY: https://proxy.golang.org|direct
+
+jobs:
+  envoy-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      # The runner VM is discarded after the job, so testcontainers' Ryuk reaper has nothing to
+      # clean up, and its image would be one more registry pull a test could fail on.
+      TESTCONTAINERS_RYUK_DISABLED: "true"
+      # The listener image the smoke test runs, built by its own step below.
+      ENVOY_SMOKE_IMAGE: legion-envoy-smoke:${{ github.sha }}
+      # The image envoy-infra's live tests run, built on top of ENVOY_SMOKE_IMAGE by its own step
+      # below.
+      ENVOY_SMOKE_HELD_PORT_IMAGE: legion-envoy-smoke-heldport:${{ github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          cache: false
+      # Every image the build or the test starts (testnats.Image and the smoke image's base
+      # images) is pulled first, for the reason .github/actions/pull-test-images gives. Every
+      # FROM of docker/Dockerfile names a digest and no ARG, so the substitution below expands
+      # nothing today; it stays because a FROM written as an ARG would otherwise be pulled as
+      # the literal `${NAME}`.
+      - name: Read the smoke image's base images
+        id: base-images
+        run: |
+          {
+            echo "images<<IMAGES"
+            awk '
+              $1 == "ARG" { eq = index($2, "="); if (eq > 0) args[substr($2, 1, eq - 1)] = substr($2, eq + 1) }
+              $1 == "FROM" { image = $2; for (name in args) gsub("[$][{]" name "[}]", args[name], image); print image }
+            ' docker/Dockerfile
+            echo "IMAGES"
+          } >> "$GITHUB_OUTPUT"
+        working-directory: packages/envoy
+      - name: Pull test container images
+        uses: ./.github/actions/pull-test-images
+        with:
+          consts: packages/envoy/internal/testnats/nats.go Image
+          images: ${{ steps.base-images.outputs.images }}
+      # The image build is a step of its own: what TestSmoke asserts is the container's
+      # behaviour, so a slow build must fail nothing. Inside the test it spent 256.60–289.47 s
+      # of `go test -timeout 5m` across ten Release Envoy Listener runs while the five
+      # assertions measured 0.00 s each (LEGION-361;
+      # docs/solutions/testing/a-container-build-inside-go-test-spends-the-tests-deadline.md).
+      # The test refuses to run without ENVOY_SMOKE_IMAGE rather than building one, so dropping
+      # or renaming this step turns the lane red instead of restoring that budget silently.
+      # `load: true` is Docker's documented test-before-push shape, and the only build form
+      # .github/scripts/check-image-trigger-paths.sh can read. No LEGION_COMMIT: this job
+      # publishes no image to match. The pull step above put the base images in the daemon's
+      # store, which the default `docker` driver reads.
+      - name: Build the listener image the smoke test runs against
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        env:
+          # This build never pushes, and its Metadata log is confirmed empty of both an
+          # attestation and this job's pull_request payload today (no docker/setup-buildx-action
+          # here means no docker-container builder, so buildx never captures the CI event into the
+          # provenance predicate in the first place). Hardened anyway, so a future change that adds
+          # one (for cache, say) can't reopen either leak; worker-image.yaml's identical block is
+          # the confirmed-necessary case.
+          BUILDX_METADATA_PROVENANCE: disabled
+          DOCKER_BUILD_SUMMARY: "false"
+        with:
+          context: .
+          file: packages/envoy/docker/Dockerfile
+          load: true
+          provenance: false
+          tags: ${{ env.ENVOY_SMOKE_IMAGE }}
+      # The image envoy-infra's live tests run (pulumitest.HeldPortImage): the smoke image above with
+      # packages/envoy/infra/host/heldportwrapper as its envoy-listener, which takes the listening
+      # socket the test holds for the container's port over an abstract unix socket and executes the
+      # real listener on it, so the port stays held from the test's bind until the listener serves.
+      # Its Dockerfile builds the wrapper from the tree, on the Go image the smoke image's build
+      # pulled, so this build reads only files the envoy_smoke filter names. The smoke test keeps
+      # running the smoke image itself.
+      - name: Build the held-port listener image the envoy-infra live tests run
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        env:
+          # As the smoke image's build above.
+          BUILDX_METADATA_PROVENANCE: disabled
+          DOCKER_BUILD_SUMMARY: "false"
+        with:
+          context: .
+          file: packages/envoy/infra/host/heldportwrapper/Dockerfile
+          build-args: BASE=${{ env.ENVOY_SMOKE_IMAGE }}
+          load: true
+          provenance: false
+          tags: ${{ env.ENVOY_SMOKE_HELD_PORT_IMAGE }}
+      # The image's notices (packages/envoy/docker/Dockerfile): the build fails when a license cannot
+      # be determined, and the listing shows the image ships both files.
+      - name: List the image's third-party notices
+        run: >-
+          docker run --rm --entrypoint ls "$ENVOY_SMOKE_IMAGE" -l
+          /usr/share/doc/legion/THIRD_PARTY_NOTICES /srv/dispatch-web/THIRD_PARTY_NOTICES.txt
+      # 5m bounds only what the test does: pull NATS, start both containers behind the test's
+      # own 60 s health wait, and assert. This job has measured 1.82 s, 3.16 s and 1.88 s (the
+      # last in run 36508580490), and 2.2–20.7 s across four runs on a devbox at load average
+      # 80, so the bound is deliberate headroom, not a build budget.
+      - name: Container smoke test (testcontainers)
+        run: go test -tags smoke -v -timeout 5m ./internal/smoke/
+        working-directory: packages/envoy
+      # The envoy-infra plugin's live tests (packages/envoy/infra/host/live_test.go) apply Pulumi
+      # YAML programs with the pinned Pulumi CLI (.github/actions/install-pulumi) against this
+      # runner's Docker, on the held-port image built above and on the docker provider the plugin's
+      # first consumer pins. Each download is checked against its SHA-256 before it is unpacked or
+      # installed.
+      - name: Install the Pulumi CLI
+        uses: ./.github/actions/install-pulumi
+      # The version is the one the live programs pin, read from pulumitest.DockerPluginVersion, and
+      # the step hands the tarball's path to the live tests as its `tarball` output, set in their
+      # step's env as ENVOY_INFRA_DOCKER_PLUGIN (not written to $GITHUB_ENV, which every later step
+      # would inherit and check-ci-filters.sh treats as reaching the job's go commands). The
+      # release's own checksums file lists SHA-1 digests (this asset's is
+      # 9a7f6014d3ebc330030ec033ddc7222ec13ad116); the SHA-256 is the digest GitHub records for the
+      # release asset, which hashes to that same SHA-1. The live tests install the verified tarball
+      # into a PULUMI_HOME of their own, so the CLI downloads none.
+      - name: Download the docker provider plugin the live tests pin
+        id: docker-plugin
+        run: |
+          version=$(sed -n 's/^const DockerPluginVersion = "\(.*\)"$/\1/p' internal/pulumitest/pulumitest.go)
+          [ -n "$version" ] || { echo "::error::no const DockerPluginVersion in internal/pulumitest/pulumitest.go"; exit 1; }
+          tarball="$RUNNER_TEMP/pulumi-resource-docker-v$version-linux-amd64.tar.gz"
+          curl -fsSL -o "$tarball" "https://github.com/pulumi/pulumi-docker/releases/download/v$version/pulumi-resource-docker-v$version-linux-amd64.tar.gz"
+          echo "4dbcd9defa0fb03999cdfeab50bd461451b7c65e8566927994f63ee956055ffe  $tarball" | sha256sum -c -
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+        working-directory: packages/envoy/infra
+      # The live tests build container images on this runner's disk, and a job that runs out of
+      # space says only that it did. The pair around the step measures it: `start` prints what
+      # each file system the job writes to has free and leaves a sampler watching the one that
+      # holds /tmp, `report` stops the sampler and prints the free space the step began with,
+      # the least it ever had and the difference, with `margin short` when the step used more
+      # than half of what it started with (dispatch://INFRA-1085). The report prints and never
+      # fails the job: this is the measurement, not a new gate. The two steps share their state
+      # through a file under $RUNNER_TEMP rather than $GITHUB_ENV, which every later step of the
+      # job would inherit and check-ci-filters.sh treats as reaching the job's go commands.
+      - name: Start the disk watch over the live tests
+        run: .github/scripts/disk_watch.py start --path /tmp --state "$RUNNER_TEMP/disk-watch.json"
+      - name: Live tests of envoy-infra's host:Listener
+        run: go test -tags pulumilive -v -timeout 15m ./host/
+        working-directory: packages/envoy/infra
+        env:
+          ENVOY_INFRA_DOCKER_PLUGIN: ${{ steps.docker-plugin.outputs.tarball }}
+      - name: Report the disk the live tests used
+        if: always()
+        run: .github/scripts/disk_watch.py report --state "$RUNNER_TEMP/disk-watch.json"
+      # The schema carries both of the things the release build stamps into the plugin: the
+      # version, and the download URL .github/scripts/repo-paths.sh derives from the repository
+      # the run is in (release-envoy-infra.yaml's "Derive the plugin's download URL" and its
+      # build step). That workflow runs on main alone, so this build is what proves the stamp
+      # before a merge, and it proves it under the name the transfer gives the repository rather
+      # than today's: a provider.go that pinned the address instead of taking the -X would still
+      # serve cybermonklabs/legion here and fail. ${VERSION} is Pulumi's own placeholder, filled in at
+      # install, so the URL is compared literally. The step runs in the module, so the script is
+      # reached by its path from the repository root, and the binary goes under $RUNNER_TEMP as
+      # the docker provider's tarball above does.
+      - name: The envoy-infra plugin's schema carries the version and the download URL it was built with
+        run: |
+          url=$(GITHUB_REPOSITORY=cybermonklabs/legion ../../../.github/scripts/repo-paths.sh plugin_download_url)
+          go build -ldflags "-X main.version=1.2.3 -X 'github.com/sjawhar/envoy/infra/provider.downloadURL=$url'" -o "$RUNNER_TEMP/pr" ./cmd/pulumi-resource-envoy-infra
+          # shellcheck disable=SC2016 # ${VERSION} is Pulumi's placeholder, not a shell expansion
+          pulumi package get-schema "$RUNNER_TEMP/pr" | jq -e '.version == "1.2.3" and .pluginDownloadURL == "https://github.com/cybermonklabs/legion/releases/download/envoy-infra-v${VERSION}"'
+        working-directory: packages/envoy/infra
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: envoy-smoke
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}

@@ -119,11 +119,28 @@ jobs:
     steps:
       - uses: ./.github/actions/pull-test-images
       - run: docker pull $REGISTRY@$NATS
-      # The three shapes IMAGE_FROM covers in the real tree, so this fixture holds its entries
-      # to a command each, as the check demands.
+YAML
+  # The three shapes IMAGE_FROM covers in the real tree, so this fixture holds its entries to a
+  # command each, as the check demands. Two of them are in a called file of a job, where
+  # ci.yaml's job of that id holds the gate and the file the steps.
+  cat > "$root/.github/workflows/ci-job-dispatch.yaml" <<YAML
+name: CI job dispatch
+on: [workflow_call]
+jobs:
+  dispatch:
+    runs-on: ubuntu-24.04
+    steps:
       - run: |
           image=\$(sed -n 's/^const Image = "\\(.*\\)"\$/\\1/p' packages/envoy/internal/tests3/seaweedfs.go)
           docker pull "\$image"
+YAML
+  cat > "$root/.github/workflows/ci-job-envoy-smoke.yaml" <<YAML
+name: CI job envoy-smoke
+on: [workflow_call]
+jobs:
+  envoy-smoke:
+    runs-on: ubuntu-24.04
+    steps:
       - run: docker run --rm "\$ENVOY_SMOKE_IMAGE" ls
 YAML
   cat > "$root/.github/actions/pull-test-images/action.yml" <<'YAML'

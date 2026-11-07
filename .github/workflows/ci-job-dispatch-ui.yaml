@@ -1,0 +1,103 @@
+name: CI job dispatch-ui
+
+# The steps of ci.yaml's `dispatch-ui` job, in a file of its own.
+# ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
+# whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
+#
+# The split is for the filters. Every filter of the `changes` job names ci.yaml today, so a
+# change to that one file runs every job; once this job's filter names this file instead, a
+# change to these steps selects this job alone.
+#
+# The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
+# decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
+# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+on:
+  workflow_call:
+    inputs:
+      ci-ok-changes:
+        description: >-
+          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          (.github/actions/ci-ok-report), as every job of ci.yaml ends.
+        type: string
+        required: true
+
+# A `|` between proxy entries makes a go command fall through to the next source after ANY error,
+# where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
+# proxy.golang.org reset a download mid-stream and turned a Go lane red on a module whose hash
+# go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same bytes
+# straight from the source and checks them against go.sum, so this is a second path, not a weaker
+# check.
+env:
+  GOPROXY: https://proxy.golang.org|direct
+
+jobs:
+  dispatch-ui:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      - run: bun install --frozen-lockfile
+      # The suites below read some of contracts' values through plain Node resolution rather than
+      # through the workspace's "bun" export condition: e2e/__tests__/row-configurations.test.ts
+      # spawns Playwright, whose own resolution reads contracts' built dist/. Without this step
+      # that spawn fails the moment contracts' source gains an export its dist lacks, measured on
+      # run 42303677853 at 5636a301, where both of its cases failed with "The requested module
+      # '@legion/contracts/dispatch-tools' does not provide an export named
+      # 'DISPATCH_BLOCK_UNITS'" and passed again once contracts was built (the dispatch and
+      # dispatch-browser-multiprocess jobs carry the same step for the same reason).
+      - name: Build contracts for the suites that spawn Playwright
+        run: bun run build
+        working-directory: packages/contracts
+      - name: Lint proof editor
+        run: bun run lint
+        working-directory: packages/proof-editor
+      - name: Typecheck proof editor
+        run: bun run typecheck
+        working-directory: packages/proof-editor
+      - name: Test proof editor
+        run: bun run test
+        working-directory: packages/proof-editor
+      - name: Lint dispatch dashboard
+        run: bun run lint
+        working-directory: packages/dispatch
+      - name: Typecheck dispatch dashboard
+        run: bun run typecheck
+        working-directory: packages/dispatch
+      # The lane cases of e2e/__tests__/psql-session.test.ts and harness-lanes.test.ts skip
+      # themselves where no database is named, so in this job they do not run: it has no
+      # `postgres:` service, as this job's head says. A container of the pinned image for this
+      # step alone was tried and taken out again, in the dispatch job below where these tests ran
+      # before: it cost an image pull and a readiness wait, about 90 s, and the wait timed out on
+      # one runner in three. What those cases prove - that a lane's psql reads its own lane's
+      # database and not the plain name - is proven on any machine with DATABASE_URL set, which
+      # is how a developer and an issue pod run them (`bun run test` in packages/dispatch), and
+      # the lane contract they guard is also covered end to end by every multi-lane run of the
+      # browser suite itself.
+      - name: Test dispatch dashboard
+        run: bun run test
+        working-directory: packages/dispatch
+      # The build writes dist/THIRD_PARTY_NOTICES.txt, failing on a bundled package whose license
+      # cannot be determined; the listing shows the build shipped it.
+      - name: Build dispatch dashboard
+        run: |
+          bun run build:web
+          ls -l web/dist/THIRD_PARTY_NOTICES.txt
+        working-directory: packages/dispatch
+      - name: Check dispatch dashboard CSS classes
+        run: bun run check:classes
+        working-directory: packages/dispatch
+      # The server refuses to boot on a build holding an asset over 8 MiB (it publishes every
+      # asset to its database at boot), which would stall a roll; refuse the build here instead.
+      - name: Check dispatch dashboard asset sizes
+        run: bun run check:asset-sizes
+        working-directory: packages/dispatch
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: dispatch-ui
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}

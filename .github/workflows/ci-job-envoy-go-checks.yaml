@@ -1,0 +1,130 @@
+name: CI job envoy-go-checks
+
+# The steps of ci.yaml's `envoy-go-checks` job, in a file of its own.
+# ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
+# whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
+#
+# The split is for the filters. Every filter of the `changes` job names ci.yaml today, so a
+# change to that one file runs every job; once this job's filter names this file instead, a
+# change to these steps selects this job alone.
+#
+# The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
+# decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
+# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+on:
+  workflow_call:
+    inputs:
+      ci-ok-changes:
+        description: >-
+          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          (.github/actions/ci-ok-report), as every job of ci.yaml ends.
+        type: string
+        required: true
+
+# A `|` between proxy entries makes a go command fall through to the next source after ANY error,
+# where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
+# proxy.golang.org reset a download mid-stream and turned a Go lane red on a module whose hash
+# go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same bytes
+# straight from the source and checks them against go.sum, so this is a second path, not a weaker
+# check.
+env:
+  GOPROXY: https://proxy.golang.org|direct
+
+jobs:
+  envoy-go-checks:
+    runs-on: ubuntu-24.04
+    # The builds below download the envoy module's dependencies and compile ./cmd/listener for
+    # each release architecture, so the job restores go-envoy, the family whose entry holds that
+    # same listener build (.github/workflows/ci-caches.yaml fills it on a push to main). Without
+    # it the pack step would recompile the set per architecture from nothing on every push, which
+    # is the runner time this change exists to cut.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      - run: bun install --frozen-lockfile
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          cache: false
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-{0}-', runner.os) }}
+      - name: Check Go formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt -l lists files that are not gofmt-formatted; run gofmt -w on them:"
+            echo "$unformatted"
+            exit 1
+          fi
+        working-directory: packages/envoy
+      - name: Check Go contracts are generated from the shared schema
+        run: bun run check:go
+        working-directory: packages/contracts
+      - name: Check pmdoc fixtures are up to date
+        run: bun run check
+        working-directory: packages/envoy/internal/dispatch/pmdoc/gen
+      - name: Isolation test for dev-broker.sh (fakes docker/go/curl; no real Postgres or network)
+        run: bash scripts/dev-broker.test.sh
+        working-directory: packages/envoy
+      - name: Isolation test for dev-stack.sh (fakes go/psql/curl/python3; no real Postgres or network)
+        run: bash scripts/dev-stack.test.sh
+        working-directory: packages/envoy
+      - name: Reuse test for dev-postgres.sh (a fake docker; refuses a dispatch-pg off the pinned image)
+        run: bash scripts/dev-postgres.test.sh
+        working-directory: packages/envoy
+      - name: Verdict test for listener-deploy-probe.sh (two fake listener tasks on 127.0.0.1 and 127.0.0.2)
+        run: bash scripts/listener-deploy-probe.test.sh
+        working-directory: packages/envoy
+      - name: One-run-at-a-time test for loadtest/run-step.sh and run-series.sh (fakes go and uv; no stack)
+        run: bash loadtest/run-step.test.sh
+        working-directory: packages/envoy
+      - name: Lock test for loadtest/common.sh (inherited lock, refusals, holders in another PID namespace; no stack)
+        run: bash loadtest/common.test.sh
+        working-directory: packages/envoy
+      - name: Test loadtest/cluster/cluster.sh (fakes kubectl, gh and curl; no cluster) and compare nats.yaml with a fresh render
+        run: bash loadtest/cluster/cluster.test.sh
+        working-directory: packages/envoy
+      # The test runs its URL cases under en_US.UTF-8, where bash's [[ =~ ]] ranges reach past ASCII,
+      # to hold the deployer's URL grammar to ASCII; it refuses to run without that locale.
+      - name: Rollback and credential test for deploy/scripts/autodeploy.sh (fakes docker/jj/curl and a libpq client; no real Compose or Postgres)
+        run: |
+          sudo locale-gen en_US.UTF-8
+          bash deploy/scripts/autodeploy_test.sh
+        working-directory: packages/envoy
+      - name: Build envoy services
+        run: go build ./cmd/dispatch ./cmd/listener
+        working-directory: packages/envoy
+      # The release's archives (release-envoy-listener.yaml), THIRD_PARTY_NOTICES included.
+      - name: Pack envoy binaries
+        run: |
+          for arch in $(jq -r '.envoy[]' ../../.github/go-release-targets.json); do
+            out="../../out/pr-artifacts/envoy-$arch"
+            mkdir -p "$out"
+            GOOS=linux GOARCH=$arch go build -buildvcs=false -o "$out/envoy-listener" ./cmd/listener
+            GOOS=linux GOARCH=$arch ../../scripts/go-third-party-notices.sh "$out/THIRD_PARTY_NOTICES" ./cmd/listener
+            tar czf "../../out/pr-artifacts/legion-envoy-$arch.tar.gz" -C "$out" envoy-listener THIRD_PARTY_NOTICES
+            tar tzvf "../../out/pr-artifacts/legion-envoy-$arch.tar.gz"
+          done
+        working-directory: packages/envoy
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: legion-envoy-binaries-pr
+          path: |
+            out/pr-artifacts/legion-envoy-amd64.tar.gz
+            out/pr-artifacts/legion-envoy-arm64.tar.gz
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: envoy-go-checks
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}

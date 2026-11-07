@@ -1,0 +1,172 @@
+name: CI job envoy-go
+
+# The steps of ci.yaml's `envoy-go` job, in a file of its own.
+# ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
+# whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
+#
+# The split is for the filters. Every filter of the `changes` job names ci.yaml today, so a
+# change to that one file runs every job; once this job's filter names this file instead, a
+# change to these steps selects this job alone.
+#
+# The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
+# decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
+# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+on:
+  workflow_call:
+    inputs:
+      ci-ok-changes:
+        description: >-
+          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          (.github/actions/ci-ok-report), as every job of ci.yaml ends.
+        type: string
+        required: true
+
+# A `|` between proxy entries makes a go command fall through to the next source after ANY error,
+# where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
+# proxy.golang.org reset a download mid-stream and turned a Go lane red on a module whose hash
+# go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same bytes
+# straight from the source and checks them against go.sum, so this is a second path, not a weaker
+# check.
+env:
+  GOPROXY: https://proxy.golang.org|direct
+
+jobs:
+  envoy-go:
+    runs-on: ubuntu-24.04
+    # Each go test step's -timeout must fire before the runner cancels the job, so a hung test
+    # prints the dump that names it. A timed-out step fails the job, so the bound is the steps
+    # before it at their measured times plus its own limit: about 1 minute of setup, then the
+    # plain race-impossible step's three 10-minute runs, which is 31; after that step's measured
+    # 2 minutes the unit step's own 20 is 23; after the unit step, which runs strictly fewer
+    # packages than the 35 minutes it measured before the race lane's left it and so cannot
+    # exceed that, natslive's default 10 and the bus matrix's own 5 are 53, and the integration
+    # step's 5 is less.
+    timeout-minutes: 60
+    services:
+      postgres:
+        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      # The runner VM is discarded after the job, so testcontainers' Ryuk reaper has nothing to
+      # clean up, and its image would be one more registry pull a test could fail on.
+      TESTCONTAINERS_RYUK_DISABLED: "true"
+      # (The smoke test and the image it runs live in the envoy-smoke job below.)
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      - run: bun install --frozen-lockfile
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          cache: false
+      # go-envoy-test: this job builds and runs the test binary of every package of the envoy
+      # module, a set no other job builds, so it keeps a family of its own.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-test-{0}-', runner.os) }}
+      # The server's version and the pgvector version it offers, read from the service itself, so
+      # the run shows which Postgres the tests below ran on.
+      - name: Postgres service version
+        run: |
+          docker exec "${{ job.services.postgres.id }}" psql -U postgres -Atc "select current_setting('server_version_num'), coalesce((select default_version from pg_available_extensions where name = 'vector'), 'no vector')"
+      # Every image the tests here start: testnats.Image and testnats.HubImage, which the
+      # natslive step below runs the two-image matrix on, and tests3.Image, pulled first for the
+      # reason the action gives.
+      - name: Pull test container images
+        uses: ./.github/actions/pull-test-images
+        with:
+          consts: |
+            packages/envoy/internal/testnats/nats.go Image
+            packages/envoy/internal/testnats/nats.go HubImage
+            packages/envoy/internal/tests3/seaweedfs.go Image
+      # The tests the race detector makes impossible, which the race job of each of these packages
+      # therefore cannot make, so envoy-go keeps a plain run of exactly them: internal/bus counts
+      # HoldsSeed's allocations, which the race runtime's own allocations would be counted into;
+      # the API's two guards read the module's source, to which the detector adds nothing; and the
+      # documents package measures the heap a room keeps, which the detector's shadow memory and
+      # instrumentation move. Those are out of the race build altogether (//go:build !race), and
+      # the two render-reuse storms run fewer seeds and fewer edits under it (raceEnabled), so this
+      # is their full-size run. It comes before the unit step for the reason the API package's own
+      # run did: run beside the other package binaries, its Postgres-backed tests and the
+      # room-memory measurements queue their per-test database cleanup on the service's one
+      # checkpointer, and the API's live-feed and delivery-hub tests wait for the event log's safe
+      # horizon, which any open transaction on this job's Postgres delays. The three -run lists are
+      # derived in .github/scripts/ci_job_reads.py from the race lane's own packages and those
+      # files' //go:build !race and raceEnabled, so a test added to either and missing here fails
+      # the ci-filters job naming this step. Measured over three runs on a two-vCPU pod: the bus
+      # under a tenth of a second, the API 8 to 10 s, the documents package 92 to 127 s, so 10
+      # minutes each is ample.
+      - name: Test what the race build cannot run at all or at full size
+        run: |
+          go test -count=1 -timeout 10m -run '^(TestHoldsSeedAllocatesAtMostOneCopyPerDecoding)$' ./internal/bus
+          go test -count=1 -timeout 10m -run '^(TestCopyLockComesBeforeEveryPendingRowAndEvent|TestCopyLockOrderGuardFollowsTheLockTakers|TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks|TestTheKeyedWriteGuardSeesWhatItGuards)$' ./internal/dispatch/api
+          go test -count=1 -timeout 10m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$' ./internal/dispatch/docs
+        working-directory: packages/envoy
+      # Everything the three race jobs run is left out here, since they run it under the detector,
+      # and so is internal/integration, which the integration step below tests. The pattern is
+      # built in .github/scripts/ci_job_reads.py from the same list those jobs' own steps are built
+      # from, so what this step leaves out and what the lane runs cannot drift apart. What is left
+      # is the rest of the module, the two longest packages of it (the API's and the documents
+      # service's) now among the ones the lane runs, so its 20 minutes are ample.
+      - name: Unit test envoy Go package
+        run: |
+          go list ./... | grep -Ev '/integration|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$' | xargs go test -count=1 -timeout 20m
+        working-directory: packages/envoy
+      # agentloop's live proof makes a real model call, so it sits behind a build tag and CI
+      # never runs it. Vetting it keeps it compiling as the package changes.
+      - name: Vet agentloop's live proof (no model call)
+        run: go vet -tags modellive ./agentloop/
+        working-directory: packages/envoy
+      # internal/testnats runs its server in the test process, so the untagged step above starts
+      # no container. The two-image matrix, which proves a rendered authorization on nats:2.10 and
+      # on the image the hub runs, is the one thing an in-process server cannot reproduce: it sits
+      # behind the natslive tag, and this step is where it runs (INFRA-250). internal/bus has one
+      # test of its own on that matrix: the module links nats-server v2.15.1 in process, which
+      # caps a stream that sets no cap at a default of its own and takes a change of MaxConsumers
+      # on a stream that already exists, so the raise of an uncapped ENVOY_NOTIFICATIONS to the
+      # consumer cap this binary compiles and the keeper's restore of a cap an operator lowered or
+      # unset are proved in process. What is left for a real image is the pair of 2.10 cases - the
+      # stream with no cap the binary must leave alone, and the refusal of the raise of a lower
+      # cap, naming the field, the cap and the first server taking the change - and the hub's own
+      # reconcile on the nats:2.15.1-alpine image the deployment runs (INFRA-1384). Each
+      # package runs only the tests its tag adds: `-tags natslive ./pkg` would re-run the
+      # package's untagged tests, which already run elsewhere - internal/testnats in the unit step
+      # above, and internal/bus in envoy-go-race, which the unit step's grep -Ev leaves out - so
+      # the -run comes from .github/scripts/go-tagged-tests.sh, which reads the names off the
+      # source at run time, and no test name is spelled here. Each assignment is a line of its
+      # own: under bash -e it carries the script's exit status, so an empty or refused list fails
+      # the step instead of running -run "", which matches every test.
+      - name: Test the container-backed NATS matrix (natslive)
+        run: |
+          rig=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/testnats)
+          go test -count=1 -tags natslive -run "$rig" ./internal/testnats/
+          cap=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/bus)
+          go test -count=1 -timeout 5m -tags natslive -run "$cap" -v ./internal/bus/
+        working-directory: packages/envoy
+      - name: Integration test envoy (a real NATS server, in the test process)
+        run: go test ./internal/integration/ -timeout 300s -count=1
+        working-directory: packages/envoy
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: envoy-go
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}

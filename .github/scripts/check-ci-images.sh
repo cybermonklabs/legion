@@ -252,12 +252,12 @@ IMAGE_FROM = {
         "arguments of packages/envoy/docker/Dockerfile; every one of those files is in the reach "
         "above, and this check reads the references in them"
     ),
-    (".github/workflows/ci.yaml", "image"): (
+    (".github/workflows/ci-job-dispatch.yaml", "image"): (
         "the dispatch job's step reads it from `const Image` of "
         "packages/envoy/internal/tests3/seaweedfs.go, which is in the reach above"
     ),
-    (".github/workflows/ci.yaml", "ENVOY_SMOKE_IMAGE"): (
-        "the local tag the envoy-smoke job's own build loaded (ci.yaml sets it to "
+    (".github/workflows/ci-job-envoy-smoke.yaml", "ENVOY_SMOKE_IMAGE"): (
+        "the local tag the envoy-smoke job's own build loaded (the job sets it to "
         "legion-envoy-smoke:<sha>); no registry holds it, so the run fetches nothing"
     ),
 }

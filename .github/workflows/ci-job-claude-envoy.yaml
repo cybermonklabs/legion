@@ -1,0 +1,79 @@
+name: CI job claude-envoy
+
+# The steps of ci.yaml's `claude-envoy` job, in a file of its own.
+# ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
+# whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
+#
+# The split is for the filters. Every filter of the `changes` job names ci.yaml today, so a
+# change to that one file runs every job; once this job's filter names this file instead, a
+# change to these steps selects this job alone.
+#
+# The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
+# decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
+# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+on:
+  workflow_call:
+    inputs:
+      ci-ok-changes:
+        description: >-
+          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          (.github/actions/ci-ok-report), as every job of ci.yaml ends.
+        type: string
+        required: true
+
+# A `|` between proxy entries makes a go command fall through to the next source after ANY error,
+# where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
+# proxy.golang.org reset a download mid-stream and turned a Go lane red on a module whose hash
+# go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same bytes
+# straight from the source and checks them against go.sum, so this is a second path, not a weaker
+# check.
+env:
+  GOPROXY: https://proxy.golang.org|direct
+
+jobs:
+  claude-envoy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      # tests/answers-claude.test.ts runs the pinned Claude Code against a stand-in Messages
+      # endpoint and Dispatch, and refuses on GitHub Actions without one. The pin is read from
+      # .claude-code-pin, the repository's one copy of it (.github/actions/install-claude-code).
+      - uses: ./.github/actions/install-claude-code
+      - run: bun install --frozen-lockfile
+      - name: Lint Claude Envoy plugin
+        run: bun run lint
+        working-directory: packages/claude-envoy
+      - name: Typecheck Claude Envoy plugin
+        run: bun run typecheck
+        working-directory: packages/claude-envoy
+      # Nothing commits dist/ or legion/: release.yaml's claude_envoy_build builds them and packs
+      # them into the tarball it publishes to npm. So this builds and checks them from the head's
+      # source as that job does: packages/claude-envoy/scripts/verify-build.sh.
+      - name: Build, check and pack the plugin as the release does
+        run: bun run verify-build "$RUNNER_TEMP/claude-envoy-built.tar"
+        working-directory: packages/claude-envoy
+      # The pack step packs the package's own dist/ and legion/ (release-push.sh extract-built).
+      - name: Put the checked build into CI's checkout for the pack
+        run: .github/scripts/release-push.sh extract-built "$RUNNER_TEMP/claude-envoy-built.tar"
+      - name: Test Claude Envoy plugin
+        run: bun run test
+        working-directory: packages/claude-envoy
+      - name: Pack Claude Envoy plugin
+        run: bun pm pack --destination ../../out/pr-artifacts
+        working-directory: packages/claude-envoy
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: claude-envoy-pr
+          path: out/pr-artifacts/*.tgz
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: claude-envoy
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}

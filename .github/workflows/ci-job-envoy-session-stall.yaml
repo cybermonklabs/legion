@@ -1,0 +1,88 @@
+name: CI job envoy-session-stall
+
+# The steps of ci.yaml's `envoy-session-stall` job, in a file of its own.
+# ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
+# whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
+#
+# The split is for the filters. Every filter of the `changes` job names ci.yaml today, so a
+# change to that one file runs every job; once this job's filter names this file instead, a
+# change to these steps selects this job alone.
+#
+# The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
+# decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
+# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+on:
+  workflow_call:
+    inputs:
+      ci-ok-changes:
+        description: >-
+          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          (.github/actions/ci-ok-report), as every job of ci.yaml ends.
+        type: string
+        required: true
+
+# A `|` between proxy entries makes a go command fall through to the next source after ANY error,
+# where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
+# proxy.golang.org reset a download mid-stream and turned a Go lane red on a module whose hash
+# go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same bytes
+# straight from the source and checks them against go.sum, so this is a second path, not a weaker
+# check.
+env:
+  GOPROXY: https://proxy.golang.org|direct
+
+jobs:
+  envoy-session-stall:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      LEGION_E2E_ENVOY_STACK: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      - run: bun install --frozen-lockfile
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          cache: false
+      # go-envoy: the listener and natsd test/envoy-stack.ts builds, as envoy-e2e-local's
+      # e2e-local.sh does.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-{0}-', runner.os) }}
+      - name: Build contracts for the stall suites
+        run: bun run build
+        working-directory: packages/contracts
+      - name: Stall test of envoy-client's NATS connection options
+        run: bun test src/__tests__/nats-stall.test.ts
+        working-directory: packages/envoy-client
+      # A path, not a filter: bun test discovers only names holding ".test" or ".spec", and takes
+      # this one as a file because of the leading "./".
+      - name: Session state rig of a stalled session
+        run: bun test ./test/session-stall.ts
+        working-directory: packages/envoy-client
+      - name: Stall test of pi-envoy
+        run: bun test extensions/envoy.test.ts -t "NATS path freezes"
+        working-directory: packages/pi-envoy
+      - name: Stall test of claude-envoy
+        run: bun test tests/envoy-channel-stall.test.ts
+        working-directory: packages/claude-envoy
+      # The role takeover smoke (INFRA-404, A5): one line per row of its spec's R8 table, driven
+      # with real client processes against a listener and natsd this job already sets Go up for.
+      # It needs no model provider and no deployment, so unlike the other smokes in
+      # packages/pi-envoy/scripts it runs here.
+      - name: Role takeover smoke
+        run: bash packages/pi-envoy/scripts/smoke-role-takeover.sh
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: envoy-session-stall
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}

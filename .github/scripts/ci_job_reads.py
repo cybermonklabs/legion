@@ -32,11 +32,14 @@ header says what is proved).
             cover every file the tag step's filter covers.
 
 A Read's glob is expanded over the repository's files; a why cites the step (at()) or the
-source line that reads it. at()'s third argument is the workflow file that holds the step, and
-it is ci.yaml unless a job gives its steps away: ci.yaml's docs job calls docs-site.yaml, so the
-docs gate cites that file's build job (at_docs). The Read lists of the jobs without Go steps
-(the Bun packages) are as hand-kept as RULES: the check proves the filter covers them, not that
-they are complete.
+source line that reads it. at()'s third argument, and a gate's `workflow`, is the workflow file
+that holds the job's steps, and it is the job's own called file (job_file): ci.yaml's job of
+each gated id keeps the gate and calls .github/workflows/ci-job-<id>.yaml, which holds the
+steps. The one gate whose steps are elsewhere names its file itself: ci.yaml's docs job calls
+docs-site.yaml, whose job carries an id of its own, so that gate stays on ci.yaml, the file its
+own job id is in, and cites docs-site.yaml's build job (at_docs). The Read lists of the jobs
+without Go steps (the Bun packages) are as hand-kept as RULES: the check proves the filter
+covers them, not that they are complete.
 """
 
 import json
@@ -45,7 +48,8 @@ import re
 from pathlib import Path
 from typing import NamedTuple
 
-from ci_filter_coverage import CACHE_WORKFLOW, Read, TagRun, at, exact, gate, go_skips_dir, run
+from ci_filter_coverage import CACHE_WORKFLOW, Read, TagRun, exact, go_skips_dir, run
+from ci_filter_coverage import at as at_in, gate as gate_in
 
 ENVOY = "packages/envoy"
 DAEMON = "packages/daemon"
@@ -58,6 +62,27 @@ NOTICES = "scripts/go-third-party-notices.sh"
 NOTICES_LOOPS = ".github/scripts/go-release-notices.sh"
 CI = ".github/workflows/ci.yaml"
 DOCS_SITE = ".github/workflows/docs-site.yaml"
+
+
+def job_file(job: str) -> str:
+    """The workflow file that holds a job's steps. ci.yaml's job of that id keeps the gate - its
+    `needs: changes` and its whole `if:` - and calls .github/workflows/ci-job-<id>.yaml, which
+    holds the steps, so that is where a gate's step, an Exact entry's, a TAG_RUNS row's and a
+    why's citation are looked for."""
+    return f".github/workflows/ci-job-{job}.yaml"
+
+
+def at(job, step, workflow=""):
+    """A citation of a step, in the file that holds it: the job's own called file, unless the
+    caller names another (at_docs, for the build job ci.yaml's docs job calls)."""
+    return at_in(job, step, workflow or job_file(job))
+
+
+def gate(filter, job, runs=(), reads=(), step="", exact=(), workflow=""):
+    """A gate, whose job holds its steps in its own called file unless another file is named.
+    The job is ci.yaml's, which keeps the `if:` the filter gates whichever file holds the
+    steps."""
+    return gate_in(filter, job, runs, reads, step, exact, workflow or job_file(job))
 
 
 def targets(path: str, key: str) -> list:
@@ -109,7 +134,7 @@ def root_workspaces():
 WORKSPACES = root_workspaces()
 
 
-def bun_job(job, workflow=CI):
+def bun_job(job, workflow=""):
     """.github/actions/setup-bun and a frozen `bun install`. No bunfig.toml at the root and no
     .npmrc anywhere; packages/dispatch/bunfig.toml is read only by bun test there."""
     install = at(job, "bun install --frozen-lockfile", workflow)
@@ -145,7 +170,7 @@ def install_omp(job):
     )
 
 
-def setup_go(job, gomod, workflow=CI):
+def setup_go(job, gomod, workflow=""):
     return reads((gomod, f"{at(job, 'actions/setup-go', workflow)} go-version-file"))
 
 
@@ -818,7 +843,9 @@ GATES = [
       + biome(at("test", "Lint the Dispatch census script")) + bun_job("test") + CI_SELF),
 
 
-    # The job ci.yaml gates is docs, and the steps it runs are docs-site.yaml's (at_docs).
+    # The job ci.yaml gates is docs, and the steps it runs are docs-site.yaml's (at_docs), under
+    # a job id of its own, `build`. So this gate keeps `workflow=CI`, the file that holds a job
+    # named docs, where every other gate takes the called file job_file() names.
     gate("docs", "docs", runs=[
         script_run(BUILD_BINARIES, 'go -C "$root/$legion_module" build -o "$bin/legion" ./cmd/legion',
                    f"docs/site/scripts/generate.ts:116, run by {at_docs('Build the docs site')}", DAEMON, ["./cmd/legion"], mode="build"),
@@ -861,7 +888,7 @@ GATES = [
         (f"{ENVOY}/cmd/agent-secrets/*", "broker-refgen parses it (packages/envoy/cmd/broker-refgen/pages.go:17, codes.go:68)"),
         (f"{ENVOY}/internal/broker/approval/*", "broker-refgen parses it (packages/envoy/cmd/broker-refgen/routes.go:34,664)"),
     ) + setup_go(DOCS_JOB, f"{DAEMON}/go.mod", DOCS_SITE) + biome(at_docs("Lint the docs site"))
-      + bun_job(DOCS_JOB, DOCS_SITE) + CI_SELF + DOCS_SITE_SELF),
+      + bun_job(DOCS_JOB, DOCS_SITE) + CI_SELF + DOCS_SITE_SELF, workflow=CI),
 
     gate("contracts", "contracts", reads=reads(
         ("packages/contracts/**", f"{at('contracts', 'Lint contracts')}, typecheck, test (src/, scripts/gen-go.test.ts) and build in packages/contracts"),
@@ -1227,6 +1254,10 @@ GATES = [
         (f"{ENVOY}/listenfd/**", "packages/envoy/docker/Dockerfile:79 COPY packages/envoy/listenfd ./listenfd"),
         (f"{ENVOY}/migrationid/**", "packages/envoy/docker/Dockerfile:86 COPY packages/envoy/migrationid ./migrationid"),
         (f"{ENVOY}/roleholder/**", "packages/envoy/docker/Dockerfile:88 COPY packages/envoy/roleholder ./roleholder"),
+        # The one called file a filter names today: check-image-trigger-paths.sh counts the
+        # workflow holding a build step among the image's inputs, so the envoy_smoke filter
+        # names this file, and a filter pattern must match a file its job reads.
+        (job_file("envoy-smoke"), "the job reads the definition of the steps it runs"),
     ) + setup_go("envoy-smoke", f"{ENVOY}/go.mod") + CI_SELF),
 
     gate("envoy_e2e_local", "envoy-e2e-local", runs=[
@@ -1319,18 +1350,24 @@ GATES = [
 # one to another job is caught.
 TAG_RUNS = [
     TagRun("dispatch_memory", "dispatch-memory", MEMORY_STEP, "envoy_go", "envoy-go",
-           f"envoy-go's \"{UNIT_TEST_STEP}\" runs ./cmd/dispatch's untagged tests"),
+           f"envoy-go's \"{UNIT_TEST_STEP}\" runs ./cmd/dispatch's untagged tests",
+           job_file("dispatch-memory")),
     TagRun("dispatch_multiprocess", "dispatch-multiprocess", DISPATCH_MP_STEP, "envoy_go", "envoy-go",
-           f"envoy-go's \"{UNIT_TEST_STEP}\" runs ./cmd/dispatch's untagged tests"),
+           f"envoy-go's \"{UNIT_TEST_STEP}\" runs ./cmd/dispatch's untagged tests",
+           job_file("dispatch-multiprocess")),
     TagRun("broker_multiprocess", "broker-multiprocess", BROKER_MP_STEP, "envoy_go", "envoy-go",
-           f"envoy-go's \"{UNIT_TEST_STEP}\" runs ./cmd/broker's untagged tests"),
+           f"envoy-go's \"{UNIT_TEST_STEP}\" runs ./cmd/broker's untagged tests",
+           job_file("broker-multiprocess")),
     # envoy-go's unit step leaves /cmd/listener$ out, since the lane runs it under the detector.
     TagRun("listener_server_change", "listener-server-change", SOAK_STEP, "envoy_go_race", "envoy-go-race",
-           f"envoy-go-race's \"{RACE_JOBS['envoy-go-race'].step}\" runs ./cmd/listener's untagged tests"),
+           f"envoy-go-race's \"{RACE_JOBS['envoy-go-race'].step}\" runs ./cmd/listener's untagged tests",
+           job_file("listener-server-change")),
     TagRun("envoy_go", "envoy-go", NATS_MATRIX_STEP, "envoy_go", "envoy-go",
-           f"envoy-go's own \"{UNIT_TEST_STEP}\" runs ./internal/testnats's untagged tests"),
+           f"envoy-go's own \"{UNIT_TEST_STEP}\" runs ./internal/testnats's untagged tests",
+           job_file("envoy-go")),
     TagRun("envoy_infra_go", "envoy-infra-go", INFRA_NATSLIVE_STEP, "envoy_infra_go", "envoy-infra-go",
-           f"envoy-infra-go's own \"Unit test envoy-infra\" runs {', '.join(INFRA_NATSLIVE_PACKAGES)} untagged"),
+           f"envoy-infra-go's own \"Unit test envoy-infra\" runs {', '.join(INFRA_NATSLIVE_PACKAGES)} untagged",
+           job_file("envoy-infra-go")),
 ]
 
 EXCLUDED = {

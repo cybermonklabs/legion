@@ -1,0 +1,113 @@
+name: CI job pi-envoy
+
+# The steps of ci.yaml's `pi-envoy` job, in a file of its own.
+# ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
+# whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
+#
+# The split is for the filters. Every filter of the `changes` job names ci.yaml today, so a
+# change to that one file runs every job; once this job's filter names this file instead, a
+# change to these steps selects this job alone.
+#
+# The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
+# decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
+# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+on:
+  workflow_call:
+    inputs:
+      ci-ok-changes:
+        description: >-
+          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          (.github/actions/ci-ok-report), as every job of ci.yaml ends.
+        type: string
+        required: true
+
+# A `|` between proxy entries makes a go command fall through to the next source after ANY error,
+# where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
+# proxy.golang.org reset a download mid-stream and turned a Go lane red on a module whose hash
+# go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same bytes
+# straight from the source and checks them against go.sum, so this is a second path, not a weaker
+# check.
+env:
+  GOPROXY: https://proxy.golang.org|direct
+
+jobs:
+  pi-envoy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # The NATS server extensions/card-delivery-omp.test.ts delivers Envoy cards and a person's Send
+    # through (LEGION_TEST_NATS_URL on the test step): the 2.10 image the envoy-client job pulls,
+    # pinned by digest as this file's other service images are.
+    services:
+      nats:
+        # ghcr.io/cybermonklabs/legion/ci, the copy of nats:2.10 (.github/ci-images.yaml)
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f
+        ports: ["4222:4222"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      # Only for the mise it leaves at ~/.local/bin/mise, which install-omp installs the pin through:
+      # nothing in this package drives jj.
+      - uses: ./.github/actions/install-jj
+      # extensions/dispatch-first-omp.test.ts, extensions/askgate/askgate-omp.test.ts,
+      # extensions/card-delivery-omp.test.ts and extensions/tmux-place-omp.test.ts run the pinned
+      # Oh My Pi against stand-ins (packages/pi-shared/test/omp-harness.ts) and refuse on GitHub
+      # Actions without one. The pin is read from .omp-pin, the repository's one copy of it
+      # (.github/actions/install-omp).
+      - uses: ./.github/actions/install-omp
+      # extensions/tmux-place-omp.test.ts runs that binary in a pane of a tmux server of its own,
+      # the only way the place a session registers can be read from the session itself, and refuses
+      # on GitHub Actions without a tmux.
+      - name: Install tmux
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tmux
+      - run: bun install --frozen-lockfile
+      - name: Build contracts for pi-envoy
+        run: bun run build
+        working-directory: packages/contracts
+      - name: Lint pi-envoy
+        run: bun run lint
+        working-directory: packages/pi-envoy
+      - name: Typecheck pi-envoy
+        run: bun run typecheck
+        working-directory: packages/pi-envoy
+      - name: Test pi-envoy
+        run: bun run test
+        working-directory: packages/pi-envoy
+        env:
+          LEGION_TEST_NATS_URL: nats://127.0.0.1:4222
+      # The release's pack (release.yaml's pi_envoy_build job), which is also this job's build: the
+      # manifest pointed at the one bundle, then scripts/pi-plugin-prepack.sh, which bundles
+      # envoy.ts, writes dist/THIRD_PARTY_NOTICES (failing the pack on a bundled package whose
+      # license cannot be determined) and stages this plugin's eight skills. The listing shows the
+      # tarball ships those and nothing of the Legion plugin's: no legion.js, no agents/, none of
+      # its skills.
+      - name: Pack pi-envoy
+        run: |
+          jq '.omp.extensions = ["dist/envoy.js"]' package.json > "$RUNNER_TEMP/package.json"
+          mv "$RUNNER_TEMP/package.json" package.json
+          bun pm pack --destination ../../out/pr-artifacts
+          listing=$RUNNER_TEMP/pi-envoy-listing
+          tar tzf ../../out/pr-artifacts/*.tgz > "$listing"
+          for shipped in package/dist/envoy.js package/dist/THIRD_PARTY_NOTICES package/dist/skills/dispatch/SKILL.md; do
+            grep -qxF "$shipped" "$listing" || { echo "::error::the pi-envoy tarball does not ship $shipped"; exit 1; }
+          done
+          for legion in package/dist/legion.js package/agents/ package/dist/skills/legion-worker/; do
+            if grep -qF "$legion" "$listing"; then
+              echo "::error::the pi-envoy tarball ships $legion, which is the Legion plugin's"
+              exit 1
+            fi
+          done
+        working-directory: packages/pi-envoy
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pi-envoy-pr
+          path: out/pr-artifacts/*.tgz
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: pi-envoy
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}

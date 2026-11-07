@@ -127,15 +127,19 @@
 #   6. the other direction: a pull request trigger path that starts an image build and nothing
 #      else, yet matches a file no build it starts reads, since each push to a pull request
 #      touching only such files then builds an image for nothing. That is (a) a `pull_request`
-#      or `pull_request_target` trigger of a workflow whose every job builds, calls a workflow
-#      that only builds, or needs a job that does, with no paths-filter filter selecting the
+#      or `pull_request_target` trigger of a workflow whose every job only builds or needs a job
+#      that does, with no paths-filter filter selecting the
 #      build; and (b) a path that paths-filter filters select, where each of those filters
 #      decides only jobs that only build — a building job with nothing beside its build but
-#      checkout, buildx and registry steps, or a call of a workflow that only builds — and the
+#      checkout, buildx and registry steps, or a call of a workflow whose jobs pass that same
+#      test — and the
 #      job's gates admit a pull request event. There the event's paths AND the filters must
 #      match only files the builds read, or the workflows involved (the building one and the
 #      caller). A `push` or `merge_group` trigger, a filter that also decides a job doing more,
 #      and a workflow with other jobs are left alone: what they start reads more than an image.
+#      One test for a job wherever its steps are: ci.yaml's jobs each hold theirs in a called
+#      workflow of their own, so a job that builds an image and then runs a suite against it is
+#      a job doing more whether its steps are in ci.yaml or in the file ci.yaml calls.
 #
 # Files are discovered by walking the tree, not by asking git, so an unsnapshotted change cannot
 # read green locally.
@@ -1562,7 +1566,11 @@ for workflow, job_name, *_ in builds:
     building_jobs.setdefault(workflow, set()).add(job_name)
 
 # The steps a job may run and still have an image build as its only purpose: the build itself,
-# and steps that prepare or publish it and read no file of the tree.
+# and steps that prepare or publish it and read no file of the tree. The exception is the
+# router's own report step, which every job ci.yaml runs ends with
+# (.github/actions/ci-ok-report): it reports the job's result rather than doing work of the
+# job's, and the files it reads are its own action and ci.yaml, which is the origin of every
+# trigger that could owe a pattern for it.
 BUILD_PLUMBING = {
     "actions/checkout",
     "docker/build-push-action",
@@ -1570,7 +1578,97 @@ BUILD_PLUMBING = {
     "docker/metadata-action",
     "docker/setup-buildx-action",
     "docker/setup-qemu-action",
+    "./.github/actions/ci-ok-report",
 }
+
+# The `run:` steps such a job may hold too: plumbing of that same image build, which a step's
+# own text cannot say and this list does. Keyed like NOT_A_BUILD_STEPS, by (workflow, job,
+# step `id:`) — a step's name is neither required nor unique — and pinning the full text of
+# every command the step runs, line by line as the step writes it (run_lines). An entry
+# matching no step or more than one fails, and so does one whose step's commands are no
+# longer the pinned ones, so a
+# step that grows work of its own is refused here rather than riding its entry.
+#
+# What may be listed: a step that prepares or publishes the image and reads no file of the
+# tree, or none that the job's trigger would owe a pattern for. What may not: work of the
+# job's own, which is what makes the job do more than build — the filter gating it then owes
+# that work's files, and rule 6's other direction must leave that trigger alone.
+BUILD_PLUMBING_STEPS: list[tuple[str, str, str, tuple[str, ...], str]] = [
+    # (workflow file, job id, step id, the step's exact commands, why it is the build's plumbing)
+    (
+        ".github/workflows/worker-image.yaml", "build", "image",
+        (
+            'image=$(.github/scripts/repo-paths.sh worker_image)',
+            'echo "IMAGE=$image" >> "$GITHUB_ENV"',
+        ),
+        "derives the repository this build pushes to and hands it to the build and push steps "
+        "through $GITHUB_ENV; .github/scripts/repo-paths.sh is the one file of the tree it "
+        "reads, and no pattern of the worker_image filter matches that script, so the step "
+        "justifies no breadth of the trigger",
+    ),
+    (
+        ".github/workflows/worker-image.yaml", "build", "meta",
+        (
+            'short="${BUILT_SHA::12}"',
+            'version_label="sha-$short"',
+            'if [ "$GITHUB_REF" = "refs/heads/main" ] && [ -n "$LEGION_VERSION" ]; then',
+            'version_label="$LEGION_VERSION"',
+            'fi',
+            '{',
+            'echo "built_sha=$BUILT_SHA"',
+            'echo "version_label=$version_label"',
+            'echo "tags=${IMAGE}:sha-${short}"',
+            '} >> "$GITHUB_OUTPUT"',
+        ),
+        "computes the image's tags and labels from the built commit and the caller's "
+        "legion_version input, and writes them to $GITHUB_OUTPUT for the push: it reads the "
+        "event context and no file at all",
+    ),
+    (
+        ".github/workflows/worker-image.yaml", "build", "record",
+        (
+            'test -n "$DIGEST"',
+            'REF="${IMAGE}@${DIGEST}"',
+            '{',
+            'echo "image=$IMAGE"',
+            'echo "digest=$DIGEST"',
+            'echo "ref=$REF"',
+            '} >> "$GITHUB_OUTPUT"',
+            '{',
+            'echo "### Worker image"',
+            'echo',
+            'echo "\\`$REF\\`"',
+            'echo',
+            'echo "Tag: \\`$TAG\\`"',
+            'echo',
+            'echo "Pin \\`runtime.kubernetes.image\\` to the digest reference above; the daemon refuses a tag."',
+            '} >> "$GITHUB_STEP_SUMMARY"',
+        ),
+        "publishes what the push produced — the digest the build step output, as this job's "
+        "outputs and as the run's summary: it reads earlier steps' outputs and no file at all",
+    ),
+]
+
+PINNED_PLUMBING = {(w, j, i): texts for w, j, i, texts, _ in BUILD_PLUMBING_STEPS}
+
+
+def run_lines(script: str) -> tuple[str, ...]:
+    """A `run:` step's commands as the step writes them: its lines, comments and blank ones
+    aside, each stripped. The text a BUILD_PLUMBING_STEPS entry pins is this, not the
+    detector's reading of it, whose quoted strings and substitutions are blanked."""
+    return tuple(line.strip() for line in strip_comments(script).splitlines() if line.strip())
+
+
+def plumbing_step(workflow: Path, job_name: str, step) -> bool:
+    """True for a step of a building job that is the build's own plumbing: an action of
+    BUILD_PLUMBING, or a `run:` step BUILD_PLUMBING_STEPS pins, while it runs exactly the
+    commands the entry holds."""
+    if not isinstance(step, dict):
+        return False
+    if str(step.get("uses", "")).split("@", 1)[0] in BUILD_PLUMBING:
+        return True
+    pinned = PINNED_PLUMBING.get((str(workflow), job_name, str(step.get("id", "")))) if step.get("id") else None
+    return pinned is not None and "run" in step and run_lines(str(step["run"])) == tuple(pinned)
 
 
 def local_call(job: dict) -> Path | None:
@@ -1580,15 +1678,15 @@ def local_call(job: dict) -> Path | None:
 
 
 def only_builds(workflow: Path, seen: frozenset = frozenset()) -> bool:
-    """True when every job of the workflow builds an image, calls a workflow that only builds,
-    or transitively needs a job that does either, so whatever starts the workflow starts an
-    image build and nothing else."""
+    """True when every job of the workflow is a job whose only purpose is an image build
+    (builds_only), or transitively needs one, so whatever starts the workflow starts an image
+    build and nothing else. It is builds_only's test and not a looser one of its own, because a
+    job is the same job wherever its steps are written: ci.yaml's jobs hold their steps in a
+    called workflow each (.github/workflows/ci-job-<id>.yaml), so a workflow whose one job
+    builds an image and then runs a suite against it would read as building only, and its
+    caller's filter - which owes that suite's files - would be refused for matching them."""
     jobs = documents[workflow].get("jobs") or {}
-    building = set(building_jobs.get(workflow, set()))
-    for name, job in jobs.items():
-        target = local_call(job)
-        if target and target not in seen | {workflow} and only_builds(target, seen | {workflow}):
-            building.add(name)
+    building = {name for name in jobs if builds_only(workflow, name, seen | {workflow})}
 
     def reaches(name: str, path: frozenset) -> bool:
         if name in building:
@@ -1600,20 +1698,18 @@ def only_builds(workflow: Path, seen: frozenset = frozenset()) -> bool:
     return bool(jobs) and all(reaches(name, frozenset()) for name in jobs)
 
 
-def builds_only(workflow: Path, job_name: str) -> bool:
+def builds_only(workflow: Path, job_name: str, seen: frozenset = frozenset()) -> bool:
     """True for a job whose only purpose is an image build: a call of a workflow that only
-    builds, or a building job whose every step is in BUILD_PLUMBING. A run step or any other
-    action may read files no build reads, so a job with one does more."""
+    builds, or a building job whose every step is in BUILD_PLUMBING or pinned in
+    BUILD_PLUMBING_STEPS. Any other action, and any `run:` step that list does not hold, may
+    read files no build reads, so a job with one does more."""
     job = (documents[workflow].get("jobs") or {}).get(job_name) or {}
     target = local_call(job)
     if target:
-        return only_builds(target)
+        return target not in seen and only_builds(target, seen)
     if job_name not in building_jobs.get(workflow, set()):
         return False
-    return all(
-        isinstance(step, dict) and str(step.get("uses", "")).split("@", 1)[0] in BUILD_PLUMBING
-        for step in job.get("steps") or []
-    )
+    return all(plumbing_step(workflow, job_name, step) for step in job.get("steps") or [])
 
 
 def jobs_selected_by(workflow: Path, label: str) -> list[str]:
@@ -1705,6 +1801,37 @@ for entry in NOT_A_BUILD_STEPS:
         f"{entry[2]!r}, which matches {len(found)} steps that build; an entry must name exactly "
         f"one, so remove it or correct the id"
     )
+
+# The same discipline for BUILD_PLUMBING_STEPS: an entry names exactly one step of that job,
+# and that step runs exactly the commands it pins. Zero means the step was deleted, renamed or
+# re-keyed; more than one means the key does not identify a step; different commands mean the
+# step does something the entry's reason was not written for. Each fails, so the list cannot go
+# on excusing a step that has moved on. An entry naming a workflow the tree has not got excuses
+# nothing there and is passed over, which is what lets this check run over a tree of its own.
+for workflow_path, job_name, step_id, pinned, _ in BUILD_PLUMBING_STEPS:
+    document = documents.get(Path(workflow_path))
+    if document is None:
+        continue
+    found = [
+        step
+        for step in ((document.get("jobs") or {}).get(job_name) or {}).get("steps") or []
+        if isinstance(step, dict) and str(step.get("id", "")) == step_id and "run" in step
+    ]
+    if len(found) != 1:
+        problems.append(
+            f"::error file={workflow_path}::BUILD_PLUMBING_STEPS names {workflow_path} job "
+            f"{job_name} step id {step_id!r}, which matches {len(found)} run steps; an entry "
+            f"must name exactly one, so remove it or correct the id"
+        )
+        continue
+    ran = run_lines(str(found[0]["run"]))
+    if ran != tuple(pinned):
+        problems.append(
+            f"::error file={workflow_path}::BUILD_PLUMBING_STEPS pins {workflow_path} job "
+            f"{job_name} step id {step_id!r} to {list(pinned)}, and it runs {list(ran)}: the "
+            f"entry says the step is the image build's own plumbing, so update the entry's "
+            f"commands and its reason, or drop the entry and let the job read as doing more"
+        )
 
 problems = list(dict.fromkeys(problems))
 for problem in problems:

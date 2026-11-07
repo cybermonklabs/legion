@@ -1,0 +1,186 @@
+name: CI job lint
+
+# The steps of ci.yaml's `lint` job, in a file of its own.
+# ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
+# whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
+#
+# The split is for the filters. Every filter of the `changes` job names ci.yaml today, so a
+# change to that one file runs every job; once this job's filter names this file instead, a
+# change to these steps selects this job alone.
+#
+# The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
+# decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
+# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+on:
+  workflow_call:
+    inputs:
+      ci-ok-changes:
+        description: >-
+          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          (.github/actions/ci-ok-report), as every job of ci.yaml ends.
+        type: string
+        required: true
+      changes-result:
+        description: >-
+          ci.yaml's `needs.changes.result`: the two notices steps below run when `changes` did
+          not succeed, as they do in ci.yaml.
+        type: string
+        required: true
+      go_notices:
+        description: >-
+          ci.yaml's `needs.changes.outputs.go_notices`: the two notices steps below run when
+          that filter matched.
+        type: string
+        required: true
+
+# A `|` between proxy entries makes a go command fall through to the next source after ANY error,
+# where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
+# proxy.golang.org reset a download mid-stream and turned a Go lane red on a module whose hash
+# go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same bytes
+# straight from the source and checks them against go.sum, so this is a second path, not a weaker
+# check.
+env:
+  GOPROXY: https://proxy.golang.org|direct
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # This job runs on every change, so the pin check runs on every change rather than only on
+      # one that touches a package.
+      - name: Check every Bun install reads .bun-version
+        run: .github/scripts/check-bun-version.sh
+
+      - name: Check frozen Bun installs copy every workspace manifest
+        run: .github/scripts/check-bun-workspace-manifests.sh
+
+      - name: Check every manifest names the one exact zod
+        run: .github/scripts/check-zod-version.sh
+
+      - name: Check the saved gh help is the worker image's gh
+        run: .github/scripts/check-gh-version.sh
+
+      - name: Check image triggers cover every image input
+        run: .github/scripts/check-image-trigger-paths.sh
+
+      - name: Check every image a CI job fetches is a row of .github/ci-images.yaml
+        run: .github/scripts/check-ci-images.sh tree
+
+      - name: Check every remote action is pinned to a commit SHA
+        run: .github/scripts/check-action-pins.sh
+
+      - name: Check no file names the private deployment repository, company, internal host, or tailnet host
+        run: .github/scripts/check-private-names.sh
+
+      - name: Check no current file names the pre-split Oh My Pi plugin
+        run: .github/scripts/check-plugin-names.sh
+
+      - name: Check the release workflows keep credentials out of jobs that run dependency code
+        run: .github/scripts/check-release-credentials.sh
+
+      # Every package whose fragments a release renders is a line of .github/changelog-packages,
+      # which this check reads: a fragment of any other package is rendered nowhere and nothing
+      # would report it, so it is refused here, on every pull request.
+      - name: Check every changelog fragment belongs to a listed package
+        run: |
+          # shellcheck disable=SC2046 # the file is the package list, split on purpose
+          .github/scripts/release-push.sh fold-orphans $(<.github/changelog-packages)
+
+      # No setup-go cache: gofmt needs none, and the notices step below keeps its own (go-notices),
+      # keyed on the Go version this step installs.
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/daemon/go.mod
+          cache: false
+
+      # The skill-scenario rig's daemon-pane.go belongs to no module (it runs with `go run -overlay`
+      # inside packages/daemon), so it is formatted here with the daemon.
+      - name: Check the Go daemon's formatting
+        run: |
+          unformatted=$(gofmt -l packages/daemon packages/pi-legion/scripts/skill-scenarios/daemon-pane.go)
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt -l lists files that are not gofmt-formatted; run gofmt -w on them:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # The frozen install above does not refuse a workspace `version` the lockfile does not hold.
+      # --lockfile-only writes the lockfile the manifests imply and installs nothing, so a
+      # difference here is what a reader's own `bun install` would write.
+      - name: Check bun.lock agrees with the workspace manifests
+        run: |
+          bun install --lockfile-only
+          if ! git diff --exit-code bun.lock; then
+            echo "::error file=bun.lock::bun.lock disagrees with the workspace manifests; run bun install and commit bun.lock, and after a forward merge of main take one side's bun.lock whole before installing"
+            exit 1
+          fi
+
+      # A package's `bun run lint` checks only the paths its recipe names. This is the command
+      # AGENTS.md documents, over the whole tree, so a fixture, config or test file that Biome
+      # would rewrite fails here instead of on the next person who runs it.
+      - name: Check the whole tree with Biome
+        run: bunx biome check .
+
+      # After the install, which is what gives it node_modules: it lists each Bun gate's tsc
+      # program with `bunx tsc --listFilesOnly` and holds every file of it to that gate's filter,
+      # so the TypeScript half of what those filters must select is derived rather than
+      # hand-kept. In this job because the ci-filters job has neither Bun nor node_modules, and
+      # because this one is gated by no `changes` output, so a change anywhere can start it.
+      - name: Check every Bun gate's filter selects the files its typecheck compiles
+        run: .github/scripts/check-ts-filters.sh
+
+      # The notices step below builds go-licenses and loads every release binary's modules. It
+      # keeps them in a cache family of its own, go-notices: one entry, read on every run, so never
+      # evicted, and refreshed only when Go is bumped. Keyed on the go.sum files it would leave a
+      # 2.2 GB entry per key change; keyed on the Go version, a go.sum change only downloads the
+      # changed modules and rebuilds the changed packages, since Go's build cache is
+      # content-addressed. Restored only when the notices step runs; ci-caches.yaml fills it.
+      - if: inputs.changes-result != 'success' || inputs.go_notices == 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+            ~/.cache/legion
+          key: go-notices-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-notices-{0}-', runner.os) }}
+
+      # Every Go archive a release ships carries THIRD_PARTY_NOTICES, written at build time with
+      # the build's own GOOS, GOARCH and CGO_ENABLED (release.yaml's legion_build job and
+      # release-envoy-listener.yaml, whose targets .github/go-release-targets.json lists for all of
+      # them, and release-envoy-infra.yaml, whose targets .github/envoy-infra-targets.json lists).
+      # Writing them here for each of those builds fails the pull request that brings in a module
+      # whose license cannot be determined, before a release does. Writing notices loads packages
+      # without type-checking them, so the darwin agent-secrets client and every command of the
+      # envoy-infra module, which no other pull-request job builds for each of its targets, are also
+      # compiled here, with their release builds' CGO_ENABLED and -buildvcs: a compile error on one
+      # platform only fails the pull request rather than the release after the merge. It runs when
+      # the go_notices filter matches (a Go package it loads, a module file, a target list or the
+      # notices script changed), and whenever `changes` did not succeed.
+      #
+      # The loops are in .github/scripts/go-release-notices.sh, which
+      # .github/workflows/ci-caches.yaml's daemon job runs too, to fill the go-notices entry this
+      # step restores: one script, so the fill cannot warm anything but what this step builds.
+      - name: Check every Go release archive's third-party notices can be written and the cross-built commands compile
+        if: inputs.changes-result != 'success' || inputs.go_notices == 'true'
+        run: .github/scripts/go-release-notices.sh "$RUNNER_TEMP/notices"
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: lint
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}

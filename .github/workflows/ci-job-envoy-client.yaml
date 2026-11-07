@@ -1,0 +1,106 @@
+name: CI job envoy-client
+
+# The steps of ci.yaml's `envoy-client` job, in a file of its own.
+# ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
+# whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
+#
+# The split is for the filters. Every filter of the `changes` job names ci.yaml today, so a
+# change to that one file runs every job; once this job's filter names this file instead, a
+# change to these steps selects this job alone.
+#
+# The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
+# decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
+# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+on:
+  workflow_call:
+    inputs:
+      ci-ok-changes:
+        description: >-
+          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          (.github/actions/ci-ok-report), as every job of ci.yaml ends.
+        type: string
+        required: true
+
+# A `|` between proxy entries makes a go command fall through to the next source after ANY error,
+# where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
+# proxy.golang.org reset a download mid-stream and turned a Go lane red on a module whose hash
+# go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same bytes
+# straight from the source and checks them against go.sum, so this is a second path, not a weaker
+# check.
+env:
+  GOPROXY: https://proxy.golang.org|direct
+
+jobs:
+  envoy-client:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      - run: bun install --frozen-lockfile
+      - name: Build contracts for Envoy client
+        run: bun run build
+        working-directory: packages/contracts
+      - name: Lint Envoy client
+        run: bun run lint
+        working-directory: packages/envoy-client
+      - name: Typecheck Envoy client
+        run: bun run typecheck
+        working-directory: packages/envoy-client
+      # packages/envoy-client/src/broker-credential.ts:21-22 imports
+      # @legion/broker-client/environment and @legion/broker-client/token-client, so this job
+      # already stands on that package; its typecheck and its tests run in no other job, and its
+      # own lint script runs nowhere else either, though the lint job's whole-tree Biome pass
+      # does lint its 13 files under the same root config. They sit before the NATS pull because
+      # they need no image and no server: the five test files import only bun:test, jose, node:
+      # and the package's own modules.
+      - name: Lint broker client
+        run: bun run lint
+        working-directory: packages/broker-client
+      - name: Typecheck broker client
+        run: bun run typecheck
+        working-directory: packages/broker-client
+      - name: Test broker client
+        run: bun run test
+        working-directory: packages/broker-client
+      - name: Pre-pull the NATS image the credential tests run
+        # ghcr.io/cybermonklabs/legion/ci, the copy of nats:2.10 (.github/ci-images.yaml). This job
+        # pulls the image here, and does not call .github/actions/pull-test-images: that action
+        # reads a Go `const` line, and this image is a TypeScript constant
+        # (packages/envoy-client/src/__tests__/nats-server.ts:9-10). The registry is this
+        # repository's own, so a failed pull is a fault of this repository. Show it, do not retry
+        # it.
+        run: docker pull ghcr.io/cybermonklabs/legion/ci@sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f
+      # TMPDIR is a directory of this step's own, read by the step below: a test file that leaves
+      # its temporary directory behind is how 7,063 of them gathered on a shared machine
+      # (`packages/envoy-client/test/temp-dir.ts`). It is exported on the command line rather than
+      # set in `env:` so the reading step can name the same path.
+      - name: Test Envoy client
+        run: |
+          mkdir -p "$RUNNER_TEMP/envoy-client-tmp"
+          TMPDIR="$RUNNER_TEMP/envoy-client-tmp" bun run test
+        working-directory: packages/envoy-client
+        env:
+          LEGION_E2E: "1"
+      - name: Check the Envoy client suite left no temporary directory behind
+        run: |
+          left=$(ls -A "$RUNNER_TEMP/envoy-client-tmp")
+          if [ -n "$left" ]; then
+            echo "the suite left these in its temporary directory:" >&2
+            printf '%s\n' "$left" >&2
+            exit 1
+          fi
+          echo "the suite left nothing in its temporary directory"
+      - name: Build Envoy client
+        run: bun run build
+        working-directory: packages/envoy-client
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: envoy-client
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
