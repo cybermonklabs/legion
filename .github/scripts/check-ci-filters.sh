@@ -36,13 +36,19 @@
 #      tsc program, so it stays hand-kept here,
 #   2. a gate whose filter the changes job lacks, or whose job's (or step's) if: does not test it,
 #   3. a job or step gated on a filter the table neither lists in GATES nor EXCLUDES,
-#   4. a run: line of a ci.yaml job that starts a go command (test, vet, build, run, list,
-#      install, generate) no Run of a gate on that job claims and no exact entry's step holds, or
-#      a claimed line in the simple form (below) whose packages, -tags, -race or mode (test, vet,
-#      or build) are not exactly its Run's,
+#   4. a run: line of a job of ci.yaml, or of a job of a workflow ci.yaml calls, that starts a go
+#      command (test, vet, build, run, list, install, generate) no Run of a gate on that job
+#      claims and no exact entry's step holds, or a claimed line in the simple form (below) whose
+#      packages, -tags, -race or mode (test, vet, or build) are not exactly its Run's. A job that
+#      calls a reusable workflow keeps its id, its needs: changes and the whole if: that tests
+#      its filter in ci.yaml and holds its steps in the called file, which runs them inside the
+#      caller's own run, so the steps of every one of those files are read here and each refusal
+#      names the file the step is in,
 #   5. a Run whose pinned text its step or script no longer holds, an exact entry whose step the
 #      job no longer has, a RULES source file that is gone, or a why citing a step the job no
-#      longer has,
+#      longer has. A gate's step is looked for in the file that gate names - ci.yaml, or the
+#      workflow it calls that holds that job's steps - and a why's in the file its citation
+#      names, so a step that moved between the two fails here until the table says where it went,
 #   6. a go command that fails or a first-party package go list cannot load, since its closure
 #      is then unknown, and a `!` pattern under `some` or a brace in a gate's filter,
 #   7. a CI_OK_SELECTED_BY in ci.yaml's env that is not exactly {job: the output its if: tests}
@@ -82,22 +88,33 @@
 #      the files they mean starts no job. A `!` pattern is exempt, since it names what to leave out.
 #  10. an `if:` of ci.yaml, a job's or a step's, that tests `github.event_name == 'push'` or
 #      `github.event_name != 'push'`, or that compares `github.ref` with a single-quoted
-#      `'refs/heads/...'` literal with `==` or `!=` (either operand first), naming the job, the
+#      `'refs/heads/...'` literal with `==` or `!=` (either operand first), naming the file, the
+#      job, the
 #      step and the expression: this workflow has no `push:` trigger, so such a condition gates
 #      its job or step on what no run of it ever is, and the dead code reads as live - a step
 #      behind `if: github.event_name == 'push'`, or a job behind `if: github.ref ==
 #      'refs/heads/main'`, runs in no run of this workflow while its text says it runs on main.
 #      A cache that must be filled on a push to main belongs in .github/workflows/ci-caches.yaml;
 #      a job that must run at main's tip is reached by the workflow_dispatch the bypass check
-#      (.github/workflows/main-bypass-check.yaml) sends. It refuses those two comparisons and
+#      (.github/workflows/main-bypass-check.yaml) sends. It reads ci.yaml, and with it every
+#      workflow ci.yaml calls that is ci.yaml's alone: no other workflow of .github/workflows
+#      names it in a `uses: ./.github/workflows/...` and its `on:` declares workflow_call and
+#      nothing else. A reusable workflow runs inside its caller's run and under its caller's
+#      event, so the reason above carries to a called file only when ci.yaml is the only way
+#      into it: docs-site.yaml is called by docs-pages.yaml too, which runs on a push to main,
+#      and worker-image.yaml by release.yaml, so a push condition in either is live code there,
+#      while one in a file that holds the steps of a single ci.yaml job is as dead as it would
+#      be in ci.yaml itself. It refuses those two comparisons and
 #      nothing else: `github.ref_name`, and `github.ref` outside such a comparison, are left
 #      alone, since a merge_group run's github.ref really is a branch ref
 #      (refs/heads/gh-readonly-queue/...) and a startsWith on it is live. As everywhere here, the
 #      same test written as a function call is the review's to catch, not this check's.
 #  11. a cache family .github/workflows/ci-caches.yaml saves whose `key:` or `path:` is not
-#      exactly that of the matching actions/cache/restore of ci.yaml (the keys compared as text,
-#      trailing whitespace aside, the paths as ordered lists of stripped lines), or that ci.yaml
-#      restores nowhere, and an actions/cache/restore of ci-caches.yaml that is not
+#      exactly that of the matching actions/cache/restore of ci.yaml or of a workflow ci.yaml
+#      calls (the keys compared as text,
+#      trailing whitespace aside, the paths as ordered lists of stripped lines), naming the file
+#      the restore is in, or that none of those files
+#      restores, and an actions/cache/restore of ci-caches.yaml that is not
 #      `lookup-only: true` or that carries restore-keys. ci-caches.yaml fills the entries ci.yaml
 #      restores, and a key or a path that drifts apart makes every restore miss silently: nothing
 #      fails, every job just rebuilds from nothing what the fill already built. A save is matched
@@ -149,18 +166,24 @@
 #      then does not read the POST - pull request #2847 was refused with `Required status check
 #      "ci-ok" is expected` while a green ci-ok sat in PR Title's suite. Work that must run on a
 #      merge group belongs in ci.yaml.
-#  15. a tag step of ci.yaml that passes `-run` and whose pairing in ci_job_reads.py's TAG_RUNS
+#  15. a tag step of ci.yaml, or of a workflow ci.yaml calls, that passes `-run` and whose
+#      pairing in ci_job_reads.py's TAG_RUNS
 #      is missing or no longer holds. A step that runs a package under a build tag and passes
 #      `-run` runs only the tests the tag adds, so the package's untagged tests must run
 #      elsewhere in every run that step runs. The job that runs them is declared, and its filter
 #      must cover every file the tag step's filter covers; otherwise a change to a file only the
 #      tag step's filter matches runs the tagged tests alone and the untagged ones nowhere. It
 #      fails naming both jobs, the step and those paths (up to 20, with how many more there
-#      are). The table is no entry's to opt into: every `go test` step of ci.yaml that passes
-#      both `-tags` and `-run` must be named by an entry, matched by its job and step name, and
-#      one no entry names fails naming the job and the step, so a tag step added without an
+#      are). The table is no entry's to opt into: every `go test` step of those files that
+#      passes
+#      both `-tags` and `-run` must be named by an entry, matched by the file it is in and by
+#      its job and step name, and
+#      one no entry names fails naming that file, the job and the step, so a tag step added
+#      without an
 #      entry, or an entry deleted while its step stays, is held too. Nor can the table go stale:
-#      an entry naming a filter the changes job does not have, a job ci.yaml does not have, a
+#      an entry naming a filter the changes job does not have, a job the file the entry names
+#      does not have (the job that runs the untagged tests may be in any of those files, since
+#      it keeps its caller in ci.yaml), a
 #      step that job does not have, or a step whose run: holds no -run is a failure of its own.
 #  16. a `go test -race` build of .github/workflows/ci-caches.yaml whose packages are not
 #      ci_job_reads.py's DAEMON_RACE_PACKAGES, in that order. That build fills the cache

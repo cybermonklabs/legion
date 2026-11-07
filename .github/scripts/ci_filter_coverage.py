@@ -92,7 +92,10 @@ def exact(step, workdir, script, runs):
 @dataclass(frozen=True)
 class Gate:
     """A dorny/paths-filter filter of the changes job and what the job (or, with `step`, the one
-    step) it gates reads."""
+    step) it gates reads. `workflow` is the file that holds that job's steps: ci.yaml, or a
+    workflow ci.yaml calls, since a job that calls a reusable workflow keeps its id, its
+    `needs: changes` and the whole `if:` that tests the filter in ci.yaml and holds its steps in
+    the called file under the same id."""
 
     filter: str
     job: str
@@ -100,10 +103,11 @@ class Gate:
     reads: tuple = ()
     step: str = ""
     exact: tuple = ()
+    workflow: str = WORKFLOW
 
 
-def gate(filter, job, runs=(), reads=(), step="", exact=()):
-    return Gate(filter, job, tuple(runs), tuple(reads), step, tuple(exact))
+def gate(filter, job, runs=(), reads=(), step="", exact=(), workflow=WORKFLOW):
+    return Gate(filter, job, tuple(runs), tuple(reads), step, tuple(exact), workflow)
 
 
 def gate_runs(g: Gate) -> list:
@@ -113,9 +117,11 @@ def gate_runs(g: Gate) -> list:
 
 @dataclass(frozen=True)
 class TagRun:
-    """A step of ci.yaml that runs a package under a build tag and selects with `-run` only the
+    """A step of ci.yaml, or of a workflow it calls, that runs a package under a build tag and
+    selects with `-run` only the
     tests the tag adds, paired with the job that runs that package's untagged tests: `filter`,
-    `job` and `step` are the tag step's gate, job and step name, `untagged_filter` and
+    `job` and `step` are the tag step's gate, job and step name, `workflow` the file that holds
+    that job and that step, `untagged_filter` and
     `untagged_job` the other job's filter and name, and `why` names the step that runs the
     untagged tests - the judgement check_tag_runs cannot derive and this table records."""
 
@@ -125,6 +131,7 @@ class TagRun:
     untagged_filter: str
     untagged_job: str
     why: str
+    workflow: str = WORKFLOW
 
 
 # Every workflow step a why cites through at(), checked to exist so a renamed step fails here.
@@ -138,6 +145,49 @@ def at(job: str, step: str, workflow: str = WORKFLOW) -> str:
     that calls a reusable workflow keeps its gate here and its steps there."""
     CITED.append((workflow, job, step))
     return f'{os.path.basename(workflow)} {job} "{step}"'
+
+
+# ---------------------------------------------------------------- the workflow documents
+# The prefix of a `uses:` that names a reusable workflow of this repository. A job of ci.yaml
+# that carries one keeps its id, its `needs: changes` and its whole `if:` in ci.yaml and holds
+# its steps in the called file, which runs them inside the caller's own run. So the rules that
+# read a job's steps, its go commands or its cache restores read a set of documents - ci.yaml
+# and every file its jobs call - rather than ci.yaml alone, and each of them names the file it
+# found a job in rather than the constant WORKFLOW.
+LOCAL_WORKFLOW = "./.github/workflows/"
+
+
+def called_workflows(document: dict) -> dict:
+    """Every reusable workflow of this repository a job of `document` calls, as {its
+    repository-relative path: the first job that calls it}, in the order the jobs name them."""
+    called: dict = {}
+    for job_id, job in (document.get("jobs") or {}).items():
+        uses = str((job or {}).get("uses", ""))
+        if uses.startswith(LOCAL_WORKFLOW):
+            called.setdefault(uses.removeprefix("./"), job_id)
+    return called
+
+
+def workflow_documents(problems: list) -> dict:
+    """ci.yaml and every workflow its jobs call, keyed by repository-relative path, ci.yaml
+    first and the called ones in the order the jobs name them. A `uses:` naming a file this
+    repository does not have is a problem of its own: the steps of that job are then nowhere,
+    and every rule below would pass over them in silence."""
+    documents = {WORKFLOW: yaml.safe_load((REPO / WORKFLOW).read_text()) or {}}
+    for path, job_id in called_workflows(documents[WORKFLOW]).items():
+        if not (REPO / path).is_file():
+            problems.append(f"::error file={WORKFLOW}::job {job_id} calls {path}, which is not in the repository, "
+                            f"so the steps it runs are read by nothing here")
+            continue
+        documents[path] = yaml.safe_load((REPO / path).read_text()) or {}
+    return documents
+
+
+def document_steps(documents: dict, path: str, job_id: str) -> list:
+    """The steps of job `job_id` as the document at `path` holds it: none when the set has no
+    such file, or that file no such job."""
+    jobs = (documents.get(path) or {}).get("jobs") or {}
+    return (jobs.get(job_id) or {}).get("steps") or []
 
 
 # ---------------------------------------------------------------- go list
@@ -387,6 +437,10 @@ def flatten(value) -> list:
 
 
 def changes_filters(document: dict, problems: list) -> tuple:
+    """The filters the changes job declares, with the quantifier each was declared under. It
+    reads ci.yaml alone, and no workflow ci.yaml calls: the changes job and its paths-filter
+    steps are ci.yaml's, and a called file is reached only through a caller job the changes job
+    already gates."""
     filters, quantifiers = {}, {}
     steps = ((document.get("jobs") or {}).get("changes") or {}).get("steps") or []
     for step in steps:
@@ -595,40 +649,58 @@ def tag_set(tags: str) -> frozenset:
 
 
 # ---------------------------------------------------------------- the check
-def check_table(document: dict, data, filters: dict, files: set, problems: list) -> dict:
+def check_table(documents: dict, data, filters: dict, files: set, problems: list) -> dict:
     """The table must say what ci.yaml says: every gate a real filter on a real job, every go
-    command a job's run: steps start listed, every pin and citation still found. Returns, per
+    command a job's run: steps start listed, every pin and citation still found. `documents` is
+    ci.yaml and every workflow its jobs call (workflow_documents), since a gate's job may hold
+    its steps in a called file: the caller job in ci.yaml keeps the id and the `if:`, so the
+    filter test is read off ci.yaml, and the steps are read off the file Gate.workflow names.
+    Returns, per
     filter, each claimed command it does not reduce: (Run, the command as the job runs it, why)."""
-    jobs = document.get("jobs") or {}
+    caller_jobs = documents[WORKFLOW].get("jobs") or {}
     gates = {g.filter: g for g in data.GATES}
     excluded = dict(data.EXCLUDED)
     for name in sorted(set(gates) & set(excluded)):
         problems.append(f"::error file=.github/scripts/ci_job_reads.py::{name} is both a gate and EXCLUDED")
-    gated = defaultdict(set)  # job -> filters its job-level if: names
-    for job_id, job in jobs.items():
-        refs = conditions(job)
-        for step, condition in refs:
-            for name in GATE_REF.findall(condition):
-                if step is None:
-                    gated[job_id].add(name)
-                if name not in gates and name not in excluded:
-                    where = where_if(job_id, step)
-                    problems.append(f"::error file={WORKFLOW}::{where} is gated on filter {name}, which "
-                                    f"ci_job_reads.py neither lists in GATES nor EXCLUDES; add the gate with its reads")
+    # Rule 3 over every document of the set: a called file's job or step is gated on an input of
+    # its own rather than on a changes output, but one that does name an output is held here too,
+    # and the refusal names the file the condition is in.
+    gated = defaultdict(set)  # (workflow, job) -> filters its job-level if: names
+    for path, document in documents.items():
+        for job_id, job in (document.get("jobs") or {}).items():
+            for step, condition in conditions(job or {}):
+                for name in GATE_REF.findall(condition):
+                    if step is None:
+                        gated[(path, job_id)].add(name)
+                    if name not in gates and name not in excluded:
+                        where = where_if(job_id, step)
+                        problems.append(f"::error file={path}::{where} is gated on filter {name}, which "
+                                        f"ci_job_reads.py neither lists in GATES nor EXCLUDES; add the gate with its reads")
     for g in data.GATES:
         if g.filter not in filters:
             problems.append(f"::error file={WORKFLOW}::{g.job} has no filter {g.filter} in the changes job")
-        job = jobs.get(g.job)
-        if job is None:
+        # The caller job is ci.yaml's, whichever file holds the steps: it keeps the job id and
+        # the `if:` that tests the filter, so both are looked for there.
+        if g.job not in caller_jobs:
             problems.append(f"::error file=.github/scripts/ci_job_reads.py::gate {g.filter} names job {g.job}, "
                             f"which {WORKFLOW} does not have")
+            continue
+        steps_document = documents.get(g.workflow)
+        if steps_document is None:
+            problems.append(f"::error file=.github/scripts/ci_job_reads.py::gate {g.filter} holds job {g.job}'s "
+                            f"steps in {g.workflow}, which {WORKFLOW} neither is nor calls")
+            continue
+        job = (steps_document.get("jobs") or {}).get(g.job)
+        if job is None:
+            problems.append(f"::error file=.github/scripts/ci_job_reads.py::gate {g.filter} names job {g.job}, "
+                            f"which {g.workflow} does not have")
             continue
         if g.step:
             steps = [s for s in job.get("steps") or [] if step_matches(s, g.step)]
             if len(steps) != 1 or g.filter not in GATE_REF.findall(str(steps[0].get("if", ""))):
-                problems.append(f"::error file={WORKFLOW}::gate {g.filter} names step \"{g.step}\" of {g.job}, but "
+                problems.append(f"::error file={g.workflow}::gate {g.filter} names step \"{g.step}\" of {g.job}, but "
                                 f"no single step of that name has an if: on needs.changes.outputs.{g.filter}")
-        elif g.filter not in gated[g.job]:
+        elif g.filter not in gated[(WORKFLOW, g.job)]:
             problems.append(f"::error file={WORKFLOW}::job {g.job}'s if: does not test needs.changes.outputs.{g.filter}")
     for name in excluded:
         if name not in filters:
@@ -641,9 +713,18 @@ def check_table(document: dict, data, filters: dict, files: set, problems: list)
     # that cannot move it; its packages, -tags, -race and mode must then be exactly the Run's. Any
     # other claimed command is unreduced and falls to everything a go command can read, as does
     # every run of an Exact entry whose step's script, directory or surroundings differ.
-    skipped = {j for j, names in gated.items() if names and names <= set(excluded)}
-    claims = defaultdict(list)  # (job, step label) -> pinned texts
-    exacts = defaultdict(list)  # (job, step label) -> (the gate's filter, Exact)
+    # Each index is keyed by the file the job is in as well as the job's id, so two documents may
+    # hold a job of the same id - which is what a job whose steps moved into a called file of its
+    # own is - without one's steps answering for the other's.
+    skipped = {key for key, names in gated.items() if names and names <= set(excluded)}
+    # A called file's jobs run inside the caller job's run and under its `if:`, so a caller whose
+    # gate is EXCLUDED hands its skip to them: the go commands of those steps are the other
+    # check's too, exactly as the caller's own would be.
+    for path, caller in called_workflows(documents[WORKFLOW]).items():
+        if (WORKFLOW, caller) in skipped:
+            skipped |= {(path, job_id) for job_id in (documents.get(path) or {}).get("jobs") or {}}
+    claims = defaultdict(list)  # (workflow, job, step label) -> pinned texts
+    exacts = defaultdict(list)  # (workflow, job, step label) -> (the gate's filter, Exact)
     owner = {}  # id(Run) -> the gate's filter
     unreduced = defaultdict(list)  # filter -> (Run, the command as the job runs it, why it is not reduced)
     for g in data.GATES:
@@ -652,73 +733,77 @@ def check_table(document: dict, data, filters: dict, files: set, problems: list)
                 problems.append(f"::error file=.github/scripts/ci_job_reads.py::gate {g.filter}'s run "
                                 f"{r.workdir} {' '.join(r.pkgs)} is pinned to no step or source text")
             if r.step:
-                claims[(g.job, r.step)].append(r)
+                claims[(g.workflow, g.job, r.step)].append(r)
                 owner[id(r)] = g.filter
         for e in g.exact:
-            exacts[(g.job, e.step)].append((g.filter, e))
-    for job_id, job in jobs.items():
-        if job_id in skipped:
-            continue
-        for step in job.get("steps") or []:
-            if "run" not in step:
+            exacts[(g.workflow, g.job, e.step)].append((g.filter, e))
+    for path, document in documents.items():
+        for job_id, job in (document.get("jobs") or {}).items():
+            if (path, job_id) in skipped:
                 continue
-            script = str(step["run"])
-            workdir = step_workdir(document, job, step)
-            around = around_reason(document, job, [step]) or script_reason(script)
-            entries = [fe for (j, ref), fes in exacts.items() if j == job_id and step_matches(step, ref) for fe in fes]
-            for name, e in entries:
-                reason = (around or ("" if script.rstrip() == e.script.rstrip() else "the step's script is not the pinned text")
-                          or ("" if workdir == clean_dir(e.workdir) else f"its step runs in {workdir}, the entry's in {e.workdir}"))
-                if reason:
-                    where = f"job {job_id} step \"{step_label(step)}\"'s pinned script"
-                    unreduced[name] += [(r, where, reason) for r in e.runs]
-            if entries:
-                continue  # every go line of the step is claimed by its Exact entries
-            mine = [r for (j, ref), rs in claims.items() if j == job_id and step_matches(step, ref) for r in rs]
-            for line in go_lines(script):
-                where = f"job {job_id} step \"{step_label(step)}\" runs `{line}`"
-                pinned = [r for r in mine if squash(r.text) in squash(line)]
-                if not pinned:
-                    problems.append(f"::error file={WORKFLOW}::{where}, which no Run in ci_job_reads.py lists; add it "
-                                    f"to the job's gate so its closure is checked")
+            job = job or {}
+            for step in job.get("steps") or []:
+                if "run" not in step:
                     continue
-                reason = around or ("" if script_lines(script) == [line] else
-                                    "it is not its step's whole run: script, comments and blank lines aside")
-                named, tags, mode, race, reason = reduce_line(line) if not reason else (None, None, None, None, reason)
-                for r in pinned:
-                    if workdir != clean_dir(r.workdir):
-                        unreduced[owner[id(r)]].append((r, where, reason or f"its step runs in {workdir}, the Run in {r.workdir}"))
-                        continue
+                script = str(step["run"])
+                workdir = step_workdir(document, job, step)
+                around = around_reason(document, job, [step]) or script_reason(script)
+                entries = [fe for (w, j, ref), fes in exacts.items()
+                           if (w, j) == (path, job_id) and step_matches(step, ref) for fe in fes]
+                for name, e in entries:
+                    reason = (around or ("" if script.rstrip() == e.script.rstrip() else "the step's script is not the pinned text")
+                              or ("" if workdir == clean_dir(e.workdir) else f"its step runs in {workdir}, the entry's in {e.workdir}"))
                     if reason:
-                        unreduced[owner[id(r)]].append((r, where, reason))
+                        where = f"job {job_id} step \"{step_label(step)}\"'s pinned script"
+                        unreduced[name] += [(r, where, reason) for r in e.runs]
+                if entries:
+                    continue  # every go line of the step is claimed by its Exact entries
+                mine = [r for (w, j, ref), rs in claims.items()
+                        if (w, j) == (path, job_id) and step_matches(step, ref) for r in rs]
+                for line in go_lines(script):
+                    where = f"job {job_id} step \"{step_label(step)}\" runs `{line}`"
+                    pinned = [r for r in mine if squash(r.text) in squash(line)]
+                    if not pinned:
+                        problems.append(f"::error file={path}::{where}, which no Run in ci_job_reads.py lists; add it "
+                                        f"to the job's gate so its closure is checked")
                         continue
-                    parts = []
-                    extra = sorted(named - set(r.pkgs))
-                    missing = sorted(set(r.pkgs) - named)
-                    if extra:
-                        parts.append(f"it also names {' '.join(extra)}")
-                    if missing:
-                        parts.append(f"it no longer names {' '.join(missing)}")
-                    if tags != tag_set(r.tags):
-                        parts.append(f"it builds with -tags {','.join(sorted(tags)) or '(none)'}, the Run with "
-                                     f"{','.join(sorted(tag_set(r.tags))) or '(none)'}")
-                    if race != r.race:
-                        parts.append("it runs with -race, the Run without" if race else "it runs without -race, the Run with it")
-                    if mode != r.mode:
-                        parts.append(f"its go command is a {mode} run, the Run a {r.mode} run")
-                    if parts:
-                        problems.append(f"::error file={WORKFLOW}::{where}, which is not the Run's "
-                                        f"({' '.join(r.pkgs)}): {'; '.join(parts)}; make the Run in ci_job_reads.py "
-                                        f"name exactly the packages, tags, -race and mode the line does, so the closure "
-                                        f"checked against the job's filter is the one it compiles")
-    for (job_id, ref), fes in exacts.items():
-        steps = [s for s in (jobs.get(job_id) or {}).get("steps") or [] if "run" in s and step_matches(s, ref)]
+                    reason = around or ("" if script_lines(script) == [line] else
+                                        "it is not its step's whole run: script, comments and blank lines aside")
+                    named, tags, mode, race, reason = reduce_line(line) if not reason else (None, None, None, None, reason)
+                    for r in pinned:
+                        if workdir != clean_dir(r.workdir):
+                            unreduced[owner[id(r)]].append((r, where, reason or f"its step runs in {workdir}, the Run in {r.workdir}"))
+                            continue
+                        if reason:
+                            unreduced[owner[id(r)]].append((r, where, reason))
+                            continue
+                        parts = []
+                        extra = sorted(named - set(r.pkgs))
+                        missing = sorted(set(r.pkgs) - named)
+                        if extra:
+                            parts.append(f"it also names {' '.join(extra)}")
+                        if missing:
+                            parts.append(f"it no longer names {' '.join(missing)}")
+                        if tags != tag_set(r.tags):
+                            parts.append(f"it builds with -tags {','.join(sorted(tags)) or '(none)'}, the Run with "
+                                         f"{','.join(sorted(tag_set(r.tags))) or '(none)'}")
+                        if race != r.race:
+                            parts.append("it runs with -race, the Run without" if race else "it runs without -race, the Run with it")
+                        if mode != r.mode:
+                            parts.append(f"its go command is a {mode} run, the Run a {r.mode} run")
+                        if parts:
+                            problems.append(f"::error file={path}::{where}, which is not the Run's "
+                                            f"({' '.join(r.pkgs)}): {'; '.join(parts)}; make the Run in ci_job_reads.py "
+                                            f"name exactly the packages, tags, -race and mode the line does, so the closure "
+                                            f"checked against the job's filter is the one it compiles")
+    for (path, job_id, ref), fes in exacts.items():
+        steps = [s for s in document_steps(documents, path, job_id) if "run" in s and step_matches(s, ref)]
         if len(steps) != 1:
             for name, _ in fes:
                 problems.append(f"::error file=.github/scripts/ci_job_reads.py::gate {name}'s exact entry names step "
                                 f"\"{ref}\" of job {job_id}, which is not one run: step of it; update or remove the entry")
-    for (job_id, ref), rs in claims.items():
-        steps = [s for s in (jobs.get(job_id) or {}).get("steps") or [] if step_matches(s, ref)]
+    for (path, job_id, ref), rs in claims.items():
+        steps = [s for s in document_steps(documents, path, job_id) if step_matches(s, ref)]
         text = squash(" ".join(str(s.get("run", "")) for s in steps))
         for r in rs:
             if not steps or squash(r.text) not in text:
@@ -736,10 +821,11 @@ def check_table(document: dict, data, filters: dict, files: set, problems: list)
                 problems.append(f"::error file={r.source}::{r.source} no longer holds `{r.text}`, the go command "
                                 f"gate {g.filter} lists; update or remove the Run")
                 continue
-            job = jobs.get(g.job) or {}
+            steps_document = documents.get(g.workflow) or {}
+            job = ((steps_document.get("jobs") or {}).get(g.job)) or {}
             lines = (REPO / r.source).read_text().split("\n")
             held = [i for i, line in enumerate(lines) if r.text in line]
-            reason = around_reason(document, job, job.get("steps") or []) or ("" if held else "its text spans lines")
+            reason = around_reason(steps_document, job, job.get("steps") or []) or ("" if held else "its text spans lines")
             for i in held:
                 line = lines[i].strip(" \t")
                 if not reason and line != r.text:
@@ -753,8 +839,9 @@ def check_table(document: dict, data, filters: dict, files: set, problems: list)
             problems.append(f"::error file=.github/scripts/ci_job_reads.py::RULES names {source}, which is not "
                             f"in the repository; update or remove the rule")
     # A citation names the workflow file that holds the step: ci.yaml, or a workflow one of its
-    # jobs calls. The step must still be there, so a rename or a move fails here.
-    cited_documents = {WORKFLOW: document}
+    # jobs calls. The step must still be there, so a rename or a move fails here. The set already
+    # holds every workflow ci.yaml calls, so only a citation naming another file is read here.
+    cited_documents = dict(documents)
     for path, job_id, ref in CITED:
         if path not in cited_documents:
             cited_documents[path] = (yaml.safe_load((REPO / path).read_text()) or {}) if (REPO / path).is_file() else None
@@ -824,7 +911,13 @@ def check_ci_ok(document: dict, problems: list) -> None:
     ci-ok's three classes — CI_OK_SELECTED_BY maps it, ALWAYS_RUN_LIST names it, or EXEMPT_LIST
     does: a job in none is one ci-ok.sh fails on every run whatever the job did, and a job in two
     is read by whichever class ci-ok.sh reaches first. A job ALWAYS_RUN_LIST names is gated by no
-    output of changes, since ci-ok.sh holds it to success on a run that rightly skipped it."""
+    output of changes, since ci-ok.sh holds it to success on a run that rightly skipped it.
+
+    It reads ci.yaml alone, and no workflow ci.yaml calls: the three class lists are ci.yaml's
+    env, the jobs they must account for are ci.yaml's jobs, and a job that gave its steps to a
+    called file keeps its caller here, which is the job ci-ok's verdict needs and the one the
+    report step of the called file names. What that called file owes is checked from here all
+    the same, through the caller's `uses:`: the report step below."""
     jobs = document.get("jobs") or {}
     env = document.get("env") or {}
     try:
@@ -1046,44 +1139,60 @@ TAG_RUN_TEST = re.compile(r"\bgo\s+(?:-C\s+\S+\s+)?test\b")
 TAG_RUN_FLAGS = (re.compile(r"(?<![\w-])-tags\b"), re.compile(r"(?<![\w-])-run\b"))
 
 
-def tag_run_steps(jobs: dict) -> list:
-    """Every run: step of `jobs` whose script holds a line running `go test` with both -tags and
-    -run, as (the job, the step). Read with script_lines, so a comment is no trigger and both
+def tag_run_steps(documents: dict) -> list:
+    """Every run: step of ci.yaml and the workflows it calls whose script holds a line running
+    `go test` with both -tags and
+    -run, as (the workflow file, the job, the step). Read with script_lines, so a comment is no
+    trigger and both
     flags must be on the go test line itself, as every such step of ci.yaml writes them."""
     found = []
-    for name, job in jobs.items():
-        for step in (job or {}).get("steps") or []:
-            if any(TAG_RUN_TEST.search(line) and all(flag.search(line) for flag in TAG_RUN_FLAGS)
-                   for line in script_lines(str(step.get("run", "")))):
-                found.append((name, step))
+    for path, document in documents.items():
+        for name, job in (document.get("jobs") or {}).items():
+            for step in (job or {}).get("steps") or []:
+                if any(TAG_RUN_TEST.search(line) and all(flag.search(line) for flag in TAG_RUN_FLAGS)
+                       for line in script_lines(str(step.get("run", "")))):
+                    found.append((path, name, step))
     return found
 
 
-def check_tag_runs(document: dict, data, filters: dict, quantifiers: dict, files: list, problems: list) -> list:
+def check_tag_runs(documents: dict, data, filters: dict, quantifiers: dict, files: list, problems: list) -> list:
     """A step that runs a package under a build tag and passes `-run` runs only the tests the tag
     adds, so the package's untagged tests must run elsewhere in every run that step runs. The job
     that runs them is declared (TAG_RUNS), and its filter must cover every file the tag step's
     filter covers; otherwise a change to a file only the tag step's filter matches runs the tagged
     tests alone and the untagged ones nowhere. The table is no entry's to opt into: a `go test`
-    step of ci.yaml passing both -tags and -run that no entry names is a failure of its own, and
-    so is a stale entry - one naming a filter the changes job does not have, a job ci.yaml does
-    not have, a step that job does not have, or a step whose run: holds no -run. Returns the
+    step of ci.yaml or of a workflow it calls passing both -tags and -run that no entry names is
+    a failure of its own, and
+    so is a stale entry - one naming a filter the changes job does not have, a job its own
+    workflow does
+    not have, a step that job does not have, or a step whose run: holds no -run. The tagged job
+    and its step are looked for in the file the entry's `workflow` names; the job that runs the
+    untagged tests is looked for in every document of the set, since it may hold its steps in a
+    called file of its own. Returns the
     report lines."""
     report = []
-    jobs = document.get("jobs") or {}
+    # Every job id the set holds, in any of its documents: what the untagged job is held to.
+    every_job = {job_id for document in documents.values() for job_id in (document.get("jobs") or {})}
     for entry in data.TAG_RUNS:
         where = f'{entry.job} step "{entry.step}"'
         gone_filters = [name for name in (entry.filter, entry.untagged_filter) if name not in filters]
         for name in gone_filters:
             problems.append(f"::error file=.github/scripts/ci_job_reads.py::TAG_RUNS names filter {name} for {where}, "
                             f"which the changes job does not have")
-        gone_jobs = [name for name in (entry.job, entry.untagged_job) if name not in jobs]
-        for name in gone_jobs:
+        tagged_jobs = (documents.get(entry.workflow) or {}).get("jobs") or {}
+        # The entry's own job is held to the file the entry names, which is where its step is;
+        # the untagged job only has to be a job of the set, since a job that gave its steps to a
+        # called file keeps its caller in ci.yaml, and one the set does not hold at all is no
+        # job of ci.yaml either, which is the file that refusal names.
+        gone_jobs = [(entry.job, entry.workflow)] if entry.job not in tagged_jobs else []
+        if entry.untagged_job not in every_job:
+            gone_jobs.append((entry.untagged_job, WORKFLOW))
+        for name, found_in in gone_jobs:
             problems.append(f"::error file=.github/scripts/ci_job_reads.py::TAG_RUNS names job {name}, which "
-                            f"{WORKFLOW} does not have")
+                            f"{found_in} does not have")
         if gone_filters or gone_jobs:
             continue
-        job = jobs[entry.job] or {}
+        job = tagged_jobs[entry.job] or {}
         steps = [s for s in job.get("steps") or [] if "run" in s and step_matches(s, entry.step)]
         if len(steps) != 1:
             problems.append(f"::error file=.github/scripts/ci_job_reads.py::TAG_RUNS names step \"{entry.step}\" of "
@@ -1101,7 +1210,7 @@ def check_tag_runs(document: dict, data, filters: dict, quantifiers: dict, files
                       f"uncovered by {entry.untagged_job} (filter {entry.untagged_filter})")
         if uncovered:
             more = f", and {len(uncovered) - SHOWN} more" if len(uncovered) > SHOWN else ""
-            problems.append(f"::error file={WORKFLOW}::{where} runs only what its tag adds (-run), so {entry.untagged_job} "
+            problems.append(f"::error file={entry.workflow}::{where} runs only what its tag adds (-run), so {entry.untagged_job} "
                             f"must run that package's untagged tests in every run it runs ({entry.why}), but filter "
                             f"{entry.untagged_filter} does not match {' '.join(uncovered[:SHOWN])}{more}, which filter "
                             f"{entry.filter} matches: a change to one of them runs the tagged tests alone and the "
@@ -1110,10 +1219,10 @@ def check_tag_runs(document: dict, data, filters: dict, quantifiers: dict, files
     # entry names - a step added without one, or an entry deleted while its step stayed. A step
     # whose entry is itself stale is named all the same, so it keeps the refusal above rather
     # than drawing a second, confusing one.
-    for name, step in tag_run_steps(jobs):
-        if any(entry.job == name and step_matches(step, entry.step) for entry in data.TAG_RUNS):
+    for path, name, step in tag_run_steps(documents):
+        if any((entry.workflow, entry.job) == (path, name) and step_matches(step, entry.step) for entry in data.TAG_RUNS):
             continue
-        problems.append(f"::error file={WORKFLOW}::{name} step \"{step_label(step)}\" runs only what its tag adds "
+        problems.append(f"::error file={path}::{name} step \"{step_label(step)}\" runs only what its tag adds "
                         f"(-run), but no TAG_RUNS entry of .github/scripts/ci_job_reads.py names it: the job that "
                         f"runs that package's untagged tests must be declared there, so the check holds it to "
                         f"running in every run this step runs")
@@ -1136,7 +1245,9 @@ def check_dead_patterns(data, filters: dict, expander: Expander, problems: list)
     to hold the filter to, so a change to the files they mean starts no job, on the pull request
     and again on main. Judged over repo_files() with the Expander the rest of the check uses, so
     a pattern is held to exactly the files a dorny/paths-filter run sees. A `!` pattern is exempt:
-    it names what to leave out, and leaving nothing out is no fault."""
+    it names what to leave out, and leaving nothing out is no fault. It reads the filter block of
+    ci.yaml alone, and no workflow ci.yaml calls: the filters are the changes job's, and a
+    declared read is the table's rather than any workflow's."""
     for name in sorted(filters):
         for pattern in dict.fromkeys(filters[name]):
             if pattern.startswith("!") or expander.expand(pattern):
@@ -1152,7 +1263,10 @@ def check_dead_patterns(data, filters: dict, expander: Expander, problems: list)
 
 def main() -> int:
     problems: list = []
-    document = yaml.safe_load((REPO / WORKFLOW).read_text())
+    # ci.yaml and every workflow its jobs call: a job that calls one keeps its gate, its id and
+    # its if: here and holds its steps there, so the rules that read steps read the set.
+    documents = workflow_documents(problems)
+    document = documents[WORKFLOW]
     import ci_job_reads as data  # imported here so its at() citations land in this module's CITED
     # The rules of ci.yaml that read no filter and no go command's closure, in a module of their
     # own. It is imported here, not at the top, because it imports this module's constants and
@@ -1161,11 +1275,11 @@ def main() -> int:
 
     filters, quantifiers = changes_filters(document, problems)
     files = repo_files()
-    unreduced = check_table(document, data, filters, set(files), problems)
+    unreduced = check_table(documents, data, filters, set(files), problems)
     check_ci_ok(document, problems)
-    rules.check_push_conditions(document, problems)
+    rules.check_push_conditions(documents, problems)
     rules.check_rerun_guard(document, problems)
-    rules.check_cache_round_trip(document, problems)
+    rules.check_cache_round_trip(documents, problems)
     rules.check_race_fill_packages(data.DAEMON_RACE_PACKAGES, problems)
     rules.check_workspace_table(data.WORKSPACES, problems)
     rules.check_one_merge_group_workflow(problems)
@@ -1221,7 +1335,7 @@ def main() -> int:
             problems += held
     problems += session.problems
     report += check_push_workflows(data, filters, problems)
-    report += check_tag_runs(document, data, filters, quantifiers, files, problems)
+    report += check_tag_runs(documents, data, filters, quantifiers, files, problems)
     for line in report:
         print(line)
     problems = list(dict.fromkeys(problems))

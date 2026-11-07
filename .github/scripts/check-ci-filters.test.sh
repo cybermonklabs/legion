@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Tests for `check-ci-filters.sh`: every ci.yaml filter must match every file its job reads, the
 # Go closures recomputed with go list (with -race for a -race command), the table of go commands
-# must say what ci.yaml says, a claimed go command the check does not reduce (another form, a
+# must say what ci.yaml and the workflows its jobs call say, a claimed go command the check does
+# not reduce (another form, a
 # step that is more than the go line, a shell, a container, a BASH_ENV) and a step off its exact
 # entry's pinned script count as reading every Go file of the repository and every file under a
 # Go module's directory, a why that cites a step must name a workflow file that still holds it,
@@ -281,6 +282,50 @@ check "fails" "$(is "$status" 1)"
 check "names the job, the step and the command" \
   "$(contains "$out" 'job app step "Test the app" runs `go vet ./...`, which no Run in ci_job_reads.py lists')"
 check "and passes over the comment" "$(is "$(contains "$out" 'go build ./... in a comment')" false)"
+
+# A job that calls a reusable workflow keeps its gate, its id and its if: in ci.yaml and holds
+# its steps in the called file, which runs them inside the caller's own run. So rule 4 reads
+# that file too: a go command in one of its steps that no Run claims is the same hole as one in
+# a step of ci.yaml - the job runs a closure no filter is held to - and the refusal names the
+# file the step is in rather than ci.yaml.
+echo "case: a go command of a workflow a ci.yaml job calls that the table does not list"
+root=$(fixture called-unlisted-command)
+cat > "$root/.github/workflows/called.yaml" <<'YAML'
+name: Called
+on:
+  workflow_call:
+    inputs:
+      ci-ok-changes:
+        type: string
+        required: false
+        default: ""
+jobs:
+  called:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Test the library
+        run: echo nothing to compile
+        working-directory: mod
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: called
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+YAML
+replace "$root/.github/workflows/ci.yaml" "  lint:" \
+  $'  called:\n    needs: changes\n    if: needs.changes.outputs.app == \'true\' && (github.event_name != \'merge_group\' || github.run_attempt == \'1\')\n    uses: ./.github/workflows/called.yaml\n    with:\n      ci-ok-changes: ${{ toJSON(needs.changes) }}\n  lint:'
+replace "$root/.github/workflows/ci.yaml" "CI_OK_SELECTED_BY: '{\"app\": \"app\", \"image\": \"image\"}'" \
+  "CI_OK_SELECTED_BY: '{\"app\": \"app\", \"image\": \"image\", \"called\": \"app\"}'"
+replace "$root/.github/workflows/ci.yaml" "needs: [changes, app, image, lint]" "needs: [changes, app, image, lint, called]"
+run_check "$root"
+check "passes while the called file starts no go command" "$(is "$status" 0)"
+replace "$root/.github/workflows/called.yaml" "        run: echo nothing to compile" "        run: go test ./lib"
+run_check "$root"
+check "fails once one of its steps runs one" "$(is "$status" 1)"
+check "names the called file, the job, the step and the command" \
+  "$(contains "$out" '::error file=.github/workflows/called.yaml::job called step "Test the library" runs `go test ./lib`, which no Run in ci_job_reads.py lists')"
 
 echo "case: a Run whose pinned text the step no longer runs"
 root=$(fixture stale-pin)
@@ -1204,14 +1249,14 @@ check "fails" "$(is "$status" 1)"
 check "names both path lists" \
   "$(contains "$out" 'job fill saves family go-app from ~/go/pkg/mod, ~/.cache/go-build, but job app of .github/workflows/ci.yaml restores it into ~/go/pkg/mod, ~/.cache/go-build, ~/.cache/legion')"
 
-echo "case: a family ci-caches.yaml fills that ci.yaml restores nowhere"
+echo "case: a family ci-caches.yaml fills that ci.yaml and the workflows it calls restore nowhere"
 root=$(fixture cache-unrestored)
 cache_workflow "$root"
 replace "$root/.github/workflows/ci.yaml" 'key: go-app-${{ runner.os }}' 'key: go-other-${{ runner.os }}'
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the family nothing restores" \
-  "$(contains "$out" 'job fill saves cache family go-app, which no actions/cache/restore of .github/workflows/ci.yaml reads')"
+  "$(contains "$out" 'job fill saves cache family go-app, which no actions/cache/restore of .github/workflows/ci.yaml or of a workflow it calls reads')"
 
 echo "case: a lookup of ci-caches.yaml that downloads the entry"
 root=$(fixture cache-lookup-only)
