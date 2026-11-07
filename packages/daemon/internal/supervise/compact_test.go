@@ -439,10 +439,10 @@ func TestACompactionWhoseClaimLosesItsProcessLeavesTheOwedTaskToTheRelaunch(t *t
 
 // A death the wake pacing parks the relaunch of leaves the claim exactly as the park found it:
 // working, over the dead process it still records, at the generation the compaction was taken
-// at. The one mark of the death is the launch waiting its turn to replace that process
-// (launchWaits), so the end of the compaction has that one thing to read. Taken for a
-// compaction that ran, the end would give the claim back idle and prompt a process that is
-// gone, and the answer would promise its caller both.
+// at. The park writes nothing of the claim at all, so the death is marked on the compaction
+// itself (compactionLostProcess) and that mark is what the end of the compaction reads
+// (ownsCompaction). Taken for a compaction that ran, the end would give the claim back idle and
+// prompt a process that is gone, and the answer would promise its caller both.
 func TestACompactionWhoseRelaunchWaitsItsTurnLeavesTheOwedTaskToThatTurn(t *testing.T) {
 	notices := 0
 	h := ladderStuck(t, &notices, pacedDeps(wakeRate))
@@ -481,6 +481,103 @@ func TestACompactionWhoseRelaunchWaitsItsTurnLeavesTheOwedTaskToThatTurn(t *test
 	prompts := h.wantPrompts(ladderSends + 1)
 	if prompts[ladderSends].DeliveryID != owed {
 		t.Fatalf("the claim the wake's turn relaunched was sent %q, want the task it owed, %q", prompts[ladderSends].DeliveryID, owed)
+	}
+}
+
+// A process found alive at a stale address is replaced rather than lost (repoint), and the wake
+// pacing can park that replacement over a session being compacted. The compaction ran on a
+// process that is still running, so it is the claim's own to the end: the claim is given back,
+// its run of provider-error turns starts again, and the answer is the compaction's own. What
+// waits is the owed task, which goes at the turn of the launch parked over the process a send
+// would reach (sendPending), not into a process that turn is about to replace.
+//
+// Read as a lost process — which a parked launch alone says nothing about — the caller would be
+// told its compaction failed for a compaction that ran, the claim would be left working with
+// its run of provider errors still at the notice, and the controller, told only at that run,
+// could never be told a second time.
+func TestACompactionUnderAParkedRepointGivesTheClaimBackAndLeavesTheTaskToThatTurn(t *testing.T) {
+	notices := 0
+	h := ladderStuck(t, &notices, pacedDeps(wakeRate))
+	owed := h.pending().ID
+	release := h.conn.HoldCompact()
+	compacted := make(chan error, 1)
+	go func() { compacted <- h.m.Compact(h.ctx, testCompactInstructions) }()
+	waitForCompacting(t, h)
+
+	// A claim of the wave takes the turn the limiter had saved, so the relaunch the stale
+	// address raises waits for the next one rather than running where it is raised.
+	queueAhead(h, 1)
+	h.observe(runtime.StaleAddress)
+	waiting := h.wantWaitingWake(WakeLaunch)
+	release()
+
+	if err := <-compacted; err != nil {
+		t.Fatalf("a compaction under a parked repoint answered %v, want the claim given back", err)
+	}
+	h.m.Wait()
+	h.wantState(StateIdle)
+	if got := h.claim().ProviderErrorRun; got != 0 {
+		t.Fatalf("the run of provider errors is %d after the compaction, want 0", got)
+	}
+	if got := h.store.load(h.token).ProviderErrorRun; got != 0 {
+		t.Fatalf("the stored run of provider errors is %d after the compaction, want 0", got)
+	}
+	h.wantWakeDueAt(waiting)
+	h.wantPrompts(ladderSends)
+	if got := h.pending(); got.ID != owed || !got.ConfirmedAt.IsZero() {
+		t.Fatalf("the claim holds %+v, want the task %s still owed and unconfirmed", got, owed)
+	}
+
+	h.advance(waiting.At.Sub(h.clock.Now()))
+	h.relaunched()
+
+	h.m.Wait()
+	prompts := h.wantPrompts(ladderSends + 1)
+	if prompts[ladderSends].DeliveryID != owed {
+		t.Fatalf("the claim the wake's turn relaunched was sent %q, want the task it owed, %q", prompts[ladderSends].DeliveryID, owed)
+	}
+}
+
+// A compaction asked for while a launch already waits its turn over the claim's process is a
+// take that did not happen: that launch lets the process go at its turn, so nothing is asked of
+// its session, nothing is written and nothing is sent. The claim is left exactly where the
+// request found it — idle, holding the task it owes, its run of provider errors still at the
+// notice — and its caller answers the one failure it is (api's compact, 409 COMPACTION_FAILED).
+func TestACompactionAskedOverALaunchWaitingItsTurnIsNotTaken(t *testing.T) {
+	notices := 0
+	h := ladderStuck(t, &notices, pacedDeps(wakeRate))
+	owed := h.pending().ID
+	stale := h.locator()
+	queueAhead(h, 1)
+	h.observe(runtime.StaleAddress)
+	waiting := h.wantWaitingWake(WakeLaunch)
+
+	err := h.m.Compact(h.ctx, testCompactInstructions)
+
+	if !errors.Is(err, ErrCompactNotTaken) {
+		t.Fatalf("a compaction asked over a launch waiting its turn answered %v, want ErrCompactNotTaken", err)
+	}
+	h.m.Wait()
+	if asked := h.conn.Compactions(); len(asked) != 0 {
+		t.Fatalf("Oh My Pi was asked %+v, want nothing: the claim was never taken", asked)
+	}
+	h.wantState(StateIdle)
+	if got := h.store.load(h.token).State; got != StateIdle {
+		t.Fatalf("the stored claim is %s, want the idle the request found", got)
+	}
+	if h.m.View().Claim.Compacting {
+		t.Fatal("the claim reports itself being compacted, want no compaction: the take did not happen")
+	}
+	if got := h.claim().Locator; got == nil || *got != stale {
+		t.Fatalf("the claim records %+v, want the process the parked launch replaces, %+v", got, stale)
+	}
+	h.wantWakeDueAt(waiting)
+	h.wantPrompts(ladderSends)
+	if got := h.pending(); got.ID != owed || !got.ConfirmedAt.IsZero() {
+		t.Fatalf("the claim holds %+v, want the task %s still owed and unconfirmed", got, owed)
+	}
+	if got := h.claim().ProviderErrorRun; got != providerErrorRunTold {
+		t.Fatalf("the run of provider errors is %d, want the %d it carried: nothing was compacted", got, providerErrorRunTold)
 	}
 }
 

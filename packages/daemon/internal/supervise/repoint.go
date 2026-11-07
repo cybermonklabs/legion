@@ -20,7 +20,11 @@ import (
 // (launch): a Resume of its recorded session, or a Spawn over the claim's existing Sandbox when it
 // has not registered yet, onto a process handed the current addresses. The stale observation is
 // never charged, unlike a death (chargeDeath, relaunchAfterFailure): the process did nothing wrong.
-// A relaunch the runtime refuses is charged as any launch failure is.
+// A relaunch the runtime refuses is charged as any launch failure is. The process runs on, so a
+// compaction of its session runs on with it: the end of one gives the claim back as it would have
+// without the repoint, and the task that end owes waits for the relaunch's turn rather than going
+// to a process that turn replaces (ownsCompaction, sendPending). A compaction asked for after the
+// relaunch is parked is refused before anything is sent (compactStart).
 func (m *Machine) repoint(ctx context.Context, observation runtime.Observation) error {
 	m.log.Warn("supervise: the process is alive at a stale address; replacing it with one at the current address",
 		"incarnation", m.claim.Locator.Incarnation, "detail", observation.Detail)
@@ -35,13 +39,16 @@ func (m *Machine) repoint(ctx context.Context, observation runtime.Observation) 
 // nothing wrong, so it is recovered as repoint recovers a stale one: nothing is charged, neither a
 // launch failure nor a death with work outstanding, and the claim's session is relaunched at once
 // (replaceProcess). A turn the process was in is lost, and its task goes back to waiting, sent
-// again once the session resumes; a held suspension ends in a suspension. It is the one recovery
-// that carries an out-of-memory end's note (runtime.Observation.OutOfMemory), since a pod the
-// daemon replaced can also have run out of memory before the replacement landed, and the role
-// whose turn that end cut off is told so wherever the end is recovered.
+// again once the session resumes; a held suspension ends in a suspension. The process is gone, so
+// a compaction running over it is marked as having lost it (compactionLostProcess) and its end
+// gives the claim back nothing. It is the one recovery that carries an out-of-memory end's note
+// (runtime.Observation.OutOfMemory), since a pod the daemon replaced can also have run out of
+// memory before the replacement landed, and the role whose turn that end cut off is told so
+// wherever the end is recovered.
 func (m *Machine) displaced(ctx context.Context, observation runtime.Observation) error {
 	m.log.Warn("supervise: the process was displaced through no fault of its own, its pod replaced by the daemon or it another runtime's process this daemon takes over; relaunching it uncharged",
 		"incarnation", m.claim.Locator.Incarnation, "process", m.claim.Locator.Label(), "observed", string(observation.Kind), "detail", observation.Detail)
+	m.compactionLostProcess()
 	return m.replaceProcess(ctx, "the process was displaced mid-turn, its pod replaced by the daemon or it another runtime's process this daemon takes over", observation.OutOfMemory)
 }
 

@@ -25,10 +25,11 @@ import (
 var ErrCompactInstructions = errors.New("a compaction carries custom instructions, so Oh My Pi writes its summary as text rather than snapcompact's images")
 
 // ErrCompactNotTaken is a compaction nothing was asked for: the claim could not be written as
-// working, it lost its process between the take and the ask, or its shim is not connected, so
-// the daemon had nothing to ask through (compactStart). The claim is where the request found it
-// and no task was sent, where every other outcome gives the claim back and sends the task it
-// owes (compactEnded).
+// working, it lost its process between the take and the ask, its shim is not connected, or a
+// launch the wake pacing holds waits its turn to replace the process its session runs on, so
+// the daemon had nothing to ask through or nothing worth asking (compactStart). The claim is
+// where the request found it and no task was sent, where every other outcome gives the claim
+// back and sends the task it owes (compactEnded).
 var ErrCompactNotTaken = errors.New("the claim was not taken for a compaction, so nothing was asked of its session")
 
 // ErrCompactNotEnded is a compaction whose end the store would not write: Oh My Pi answered and
@@ -40,9 +41,10 @@ var ErrCompactNotTaken = errors.New("the claim was not taken for a compaction, s
 var ErrCompactNotEnded = errors.New("the compaction ended and the claim could not be given back, so the task it owes was not sent")
 
 // ErrCompactProcessGone is a compaction whose end found it was no longer the claim's own
-// (ownsCompaction): the process it ran on was let go, a relaunch has moved the claim past it, or
-// a launch waits to replace that process. So compactEnded never ran: the claim was not given
-// back and the task it owes was not sent.
+// (ownsCompaction): the process it ran on was found gone while Oh My Pi wrote the summary
+// (died, displaced), it was let go for a suspension or a failure (letGo), or a relaunch has
+// moved the claim past the generation the compaction was taken at. So compactEnded never ran:
+// the claim was not given back and the task it owes was not sent.
 //
 // What happens to the claim next is its own path's, and that path is not always a relaunch. A
 // claim whose death the daemon relaunches is sent the owed task when its agent is ready again
@@ -50,11 +52,11 @@ var ErrCompactNotEnded = errors.New("the compaction ended and the claim could no
 // only when an operator retries or resumes them, and the task waits for that.
 var ErrCompactProcessGone = errors.New("the claim lost its process while its session was being compacted, so it was not given back and the task it owes was not sent")
 
-// compacting is the compaction a claim is in: the connection it runs over and the generation it
-// was taken at. Its presence and that generation are two of the three things the end of a
-// compaction is fenced on (ownsCompaction). It is memory only, as a held suspension is: a
-// daemon that restarts mid-compaction leaves a claim stored working, which its agent's own
-// answer to "are you streaming" then ends (askTurnOver), and the owed task goes on
+// compacting is the compaction a claim is in: the connection it runs over, the generation it
+// was taken at, and whether the process it runs over has been found gone since. Those three
+// are what the end of a compaction is fenced on (ownsCompaction). It is memory only, as a held
+// suspension is: a daemon that restarts mid-compaction leaves a claim stored working, which its
+// agent's own answer to "are you streaming" then ends (askTurnOver), and the owed task goes on
 // that end.
 type compacting struct {
 	conn       runtime.Conn
@@ -68,6 +70,13 @@ type compacting struct {
 	// Envoy follow-up it queued, which starts as the compaction ends. The claim is left
 	// working for that turn and its end gives the claim back (compactEnded, turnEnded).
 	inTurn bool
+	// processGone is whether the process the compaction runs over has been found gone since it
+	// was taken (died, displaced, through compactionLostProcess). It is recorded where that
+	// judgement is made rather than read off the claim at the end, because a death whose
+	// relaunch the wake pacing parks leaves the claim exactly as the take found it — working,
+	// over that process, at that generation — until the wake's turn comes (reserveWake,
+	// launchNow).
+	processGone bool
 }
 
 // Compact compacts the claim's Oh My Pi session and sends the task it owes again. It is no event
@@ -87,20 +96,22 @@ type compacting struct {
 // Nil is a session compacted and the claim given back. A compaction Oh My Pi refused or skipped
 // — a session too small, one already compacted, a summarizer that failed — carries its words
 // (runtime.RefusalReason); a wait that ran out, or a transport that failed, is an error of its
-// own. The claim is given back and the owed task is sent again in every one of those cases, and
-// only a compaction that ran puts the claim's run of provider-error turns back to zero
-// (compactEnded). A take that did not happen at all is ErrCompactNotTaken or a *RefusedError,
-// and leaves the claim where it was with its task unsent.
+// own. The claim is given back in every one of those cases, and the task it owes goes with it —
+// or waits for the turn of a launch the pacing parked over its process, where every send of
+// such a claim waits (sendPending) — and only a compaction that ran puts the claim's run of
+// provider-error turns back to zero (compactEnded). A take that did not happen at all is
+// ErrCompactNotTaken or a *RefusedError, and leaves the claim where it was with its task unsent.
 //
 // A compaction that ran and did not end is neither, and the end's own answer is what tells the
 // two apart: ErrCompactNotEnded is the end the store would not write, and ErrCompactProcessGone
-// the end the machine judged no longer the claim's own. That judgement is made under the
-// machine's lock, where the claim cannot move under it (ownsCompaction), and it is the whole of
-// what is read here: nothing of the claim is read from this side of the lock, where a relaunch
-// the end itself raises would be taken for the process the compaction lost (afterTurn's
-// refreshPlugin). Each leaves the owed task unsent, and each says so in the daemon's own words:
-// what Oh My Pi answered such a compaction goes to the log rather than to the caller, which no
-// model's words reach through (api's reasonBound).
+// the end the machine judged no longer the claim's own — the process it ran over found gone
+// under it, or the claim moved past the generation it was taken at (ownsCompaction). That
+// judgement is made under the machine's lock, where the claim cannot move under it, and it is
+// the whole of what is read here: nothing of the claim is read from this side of the lock,
+// where a relaunch the end itself raises would be taken for the process the compaction lost
+// (afterTurn's refreshPlugin). Each leaves the owed task unsent, and each says so in the
+// daemon's own words: what Oh My Pi answered such a compaction goes to the log rather than to
+// the caller, which no model's words reach through (api's reasonBound).
 func (m *Machine) Compact(ctx context.Context, customInstructions string) error {
 	if strings.TrimSpace(customInstructions) == "" {
 		return ErrCompactInstructions
@@ -162,12 +173,33 @@ func (m *Machine) compaction() (compacting, bool) {
 //
 // A compaction is the claim's own when the claim records one, since letGo drops the compaction
 // with the process it ran on; when it is the one this end names, since launchNow's bump leaves
-// an earlier generation's behind; and when no launch waits to replace the process it ran on
-// (launchWaits), which is the whole of what a death whose relaunch the wake pacing parked leaves
-// on the claim — it is still working, still over that process and still at that generation
-// (parkWake), and nothing else of the claim waits there.
+// an earlier generation's behind; and when the process it ran over has not been found gone
+// under it (compacting.processGone, recorded by died and displaced). That third fact is the
+// death the wake pacing parks the relaunch of, which letGo has not reached and no bump has
+// moved past: the claim is still working, still over the dead process and still at the
+// generation the compaction was taken at until the wake's turn comes (parkWake, launchNow).
+//
+// A process still running that a parked launch is to replace is no such loss, and the two are
+// told apart here because the daemon marks the death rather than the park: the compaction ran
+// over a live session, so its end gives the claim back (compactEnded), and the task that end
+// owes waits for the launch's turn where every send of such a claim waits (sendPending's
+// launchWaits).
 func (m *Machine) ownsCompaction(generation uint64) bool {
-	return m.compacting != nil && m.compacting.generation == generation && !m.launchWaits()
+	return m.compacting != nil && m.compacting.generation == generation && !m.compacting.processGone
+}
+
+// compactionLostProcess records on the compaction in flight, where one is, that the process it
+// runs over is gone: its end then gives the claim back nothing and sends nothing
+// (ownsCompaction, ErrCompactProcessGone). Its callers are the two judgements that end a
+// process — a death and a displacement (died, displaced) — and not the two that replace one
+// still running (repoint, refreshPlugin), whose compaction keeps the session it is compacting.
+// A death the machine acts on at once drops the compaction with the process anyway (letGo); the
+// mark is what a death whose relaunch the pacing parks leaves behind, since the park writes
+// nothing of the claim at all (reserveWake).
+func (m *Machine) compactionLostProcess() {
+	if m.compacting != nil {
+		m.compacting.processGone = true
+	}
 }
 
 // compactStart takes the claim for a compaction: it is working until the compaction ends
@@ -193,6 +225,17 @@ func (m *Machine) ownsCompaction(generation uint64) bool {
 // the aborted prompt no longer names (Machine.fence), and the end of the compaction sends it.
 // A task re-sent after work that may have run is this operation's lesser fault, as it is at
 // every other send that may repeat one (sendPending).
+//
+// A claim whose launch waits its turn in the wake pacing is taken for nothing either
+// (launchWaits). What becomes of the process its session runs on is already decided — the turn
+// lets it go and starts the next (wakeNow, launchNow) — and such a process is asked nothing
+// anywhere else: no task is handed to it (sendPending), no observation of it is judged and no
+// probe is made of it (judge, probe). A compaction is the longest ask of them all, up to ten
+// minutes of a model reading the transcript, over a connection that turn is about to close. It
+// is answered as the shim that is not connected above is, a take that did not happen
+// (ErrCompactNotTaken): the claim is left exactly where the request found it, nothing is asked
+// and nothing is sent, and its caller answers 409 COMPACTION_FAILED carrying the sentence this
+// returns (api's compact).
 func compactStart(m *Machine, ctx context.Context, _ Event) error {
 	conn, ok := m.deps.Conns.Conn(m.claim.Token)
 	if !ok {
@@ -201,6 +244,11 @@ func compactStart(m *Machine, ctx context.Context, _ Event) error {
 		// happen, so its caller reports the one failure it is rather than reading the claim's
 		// state for a cause that state does not hold (api's compact).
 		return errors.New("the claim's shim is not connected, so nothing can be asked of its session")
+	}
+	if m.launchWaits() {
+		// No refusal of the claim's state either: a launch the pacing holds is about to let this
+		// process go, so there is nothing of its session worth asking.
+		return errors.New("a launch waits its turn to replace the claim's process, so nothing is asked of its session")
 	}
 	if m.claim.Pending != nil && (m.send != nil || m.resultPending()) {
 		m.log.Info("supervise: the compaction aborts the turn this task's prompt is running; the task goes back to waiting",

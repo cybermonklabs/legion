@@ -1640,10 +1640,14 @@ func (m *Machine) stopPrevious(ctx context.Context) error {
 // This is the one judgement that the agent behind the claim's Envoy session has ended, so it is
 // where the session's clean stop is sent (sessionGone): a connection closing is not — a daemon
 // restart closes every stream while the agents run on — and the probe that reaches here is what
-// tells the two apart.
+// tells the two apart. A compaction running over the process loses it here too, and is marked
+// so before anything else is decided (compactionLostProcess): the relaunch below can be one the
+// wake pacing parks, which writes nothing of the claim and so leaves its end nothing else to
+// read.
 func (m *Machine) died(ctx context.Context, observation runtime.Observation) error {
 	m.log.Warn("supervise: process died", "incarnation", m.claim.Locator.Incarnation, "observed", string(observation.Kind),
 		"detail", observation.Detail)
+	m.compactionLostProcess()
 	m.sessionGone()
 	if err := m.interrupted(ctx, "the process died in the task's turn", observation.OutOfMemory); err != nil {
 		return err
@@ -1783,9 +1787,10 @@ func (m *Machine) retire(ctx context.Context) error {
 // make is the one this end replaces — no send talks to it, no suspension is held for its turn,
 // no stale-plugin relaunch waits for that turn either (refreshPlugin) — the process it was to
 // replace is gone — no compaction runs against it (Machine.Compact, whose end then finds the
-// claim in another state and decides nothing) — and the process the claim records, when it
-// records one, moves into previous — the claim no longer runs it (it was stopped, found dead,
-// or left behind), and the next launch of the same session waits it out.
+// claim records none and answers ErrCompactProcessGone, giving it back nothing and sending
+// nothing: ownsCompaction) — and the process the claim records, when it records one, moves into
+// previous — the claim no longer runs it (it was stopped, found dead, or left behind), and the
+// next launch of the same session waits it out.
 func (m *Machine) letGo() {
 	m.disarmAll()
 	m.relaunch = nil
