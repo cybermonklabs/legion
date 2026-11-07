@@ -3,6 +3,7 @@ package delivery
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -10,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -658,4 +661,73 @@ func TestAQueuedJobReadsDeadlineStartsOnceItHoldsItsSlot(t *testing.T) {
 			len(failed), runs, stored, took.Round(time.Millisecond), deadline, jobsLatency, first)
 	}
 	t.Logf("%d runs read in %s, %d at a time, each inside its %s deadline", runs, took.Round(time.Millisecond), reconcilePartialConcurrency, deadline)
+}
+
+// TestAJobEventHandledAfterTheIntakeStoppedIsLeftForTheNextHolder: the shutdown gives this
+// intake's subscription up through the client (giveUp), which on a live link drains it rather
+// than dropping what the client had buffered, so the callback is handed job events after Run has
+// returned. Such an event must be left outstanding on the durable: acknowledged, its early
+// signal would be lost for good, since the read it asks for cannot run under the cancelled
+// context. Left unacknowledged, the next holder is handed it once jobAckWait expires.
+func TestAJobEventHandledAfterTheIntakeStoppedIsLeftForTheNextHolder(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	seedDeliverySettings(t, ctx, pool)
+	seedRunningDeployRun(t, ctx, pool)
+	fake := newJobsFake(t)
+	clock := newFakeJobClock()
+	natsClient := intakeTestClient(t)
+	jobs := newJobIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), clock, loadedSettingsCache(t, ctx, pool))
+	// j.ctx is Run's context, and this row does not run Run: a stopped intake is that field set
+	// to a context already cancelled, which is what the drained callback sees.
+	stopped, stop := context.WithCancel(ctx)
+	stop()
+	jobs.ctx = stopped
+
+	// The durable as bind leaves it, created here because Run is not what binds it. It starts at
+	// new messages (jobConsumerConfig), so a durable an earlier row left on the package's shared
+	// stream is recreated and handed this row's event alone.
+	wanted := jobConsumerConfig()
+	if err := natsClient.JS().DeleteConsumer(bus.Stream, wanted.Durable); err != nil && !errors.Is(err, natsgo.ErrConsumerNotFound) {
+		t.Fatalf("delete the job durable: %v", err)
+	}
+	if _, err := natsClient.JS().AddConsumer(bus.Stream, &wanted); err != nil {
+		t.Fatalf("create the job durable: %v", err)
+	}
+	handled := make(chan struct{}, 1)
+	sub, err := subscribeDurable(natsClient, wanted, "", func(msg *natsgo.Msg) {
+		jobs.deliver(msg)
+		handled <- struct{}{}
+	})
+	if err != nil {
+		t.Fatalf("subscribe to the job durable: %v", err)
+	}
+	t.Cleanup(func() { _, _ = natsClient.DrainSubscription(sub) })
+	consumer := func() *natsgo.ConsumerInfo {
+		t.Helper()
+		info, err := natsClient.JS().ConsumerInfo(bus.Stream, wanted.Durable)
+		if err != nil {
+			t.Fatalf("read the job durable: %v", err)
+		}
+		return info
+	}
+
+	publishGitHubEnvelope(t, natsClient, "notifications.github.acme.widgets.job.500.completed", jobPayload("acme/widgets", 500))
+	select {
+	case <-handled:
+	case <-time.After(20 * time.Second):
+		t.Fatalf("the job event never reached deliver: %+v", consumer())
+	}
+
+	// A second of quiet, well inside the durable's 30 s ack wait: no acknowledgement arrives late
+	// and nothing is redelivered yet, so what the server reports now is what deliver left behind.
+	time.Sleep(time.Second)
+	if info := consumer(); info.NumAckPending != 1 {
+		t.Fatalf("the job durable reports ack_pending=%d delivered=%d ack_floor=%d redelivered=%d, want one message outstanding: "+
+			"the event the drain handed the stopped intake must be left for the next holder",
+			info.NumAckPending, info.Delivered.Consumer, info.AckFloor.Consumer, info.NumRedelivered)
+	}
+	if armed, calls, mints := clock.armed(), fake.calls.Load(), fake.tokenMints.Load(); armed != 0 || calls != 0 || mints != 0 {
+		t.Fatalf("an event handled after the stop: %d timers, %d jobs reads, %d token mints, want none: nothing is read under the cancelled context",
+			armed, calls, mints)
+	}
 }

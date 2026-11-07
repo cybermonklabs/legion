@@ -80,8 +80,9 @@ const (
 	jobQuiet         = 2 * time.Second
 	jobMaxWait       = 10 * time.Second
 	jobMaxAckPending = 64
-	// jobAckWait only bounds a message the handler never reached: every message is acked on
-	// receipt, before its checks.
+	// jobAckWait bounds a message the handler never reached, and one the handler was given after
+	// the stop and left unacknowledged (deliver); every other message is acked on receipt, before
+	// its checks.
 	jobAckWait = 30 * time.Second
 	// jobCheckTimeout bounds one message's indexed read (RunTracked).
 	jobCheckTimeout = 10 * time.Second
@@ -127,7 +128,9 @@ func newJobIntake(natsClient *bus.Client, pool *store.Pool, leases duty.Leases, 
 // bound again by the client on a replacement connection -- beside the process that took the
 // durable over meanwhile, so both would deliver every job event of it (INFRA-1551). The give-up
 // needs no budget of the delivery intake's kind: this intake acknowledges each message on receipt
-// (deliver), so it has nothing in flight to hand back and nothing to wait for.
+// (deliver), so it has nothing in flight to hand back and nothing to wait for. What the drain
+// does hand the callback is what the client had already buffered, after this returns: deliver
+// leaves each of those messages for the next holder.
 func (j *JobIntake) Run(ctx context.Context) {
 	j.ctx = ctx
 	defer j.stopPending()
@@ -214,7 +217,21 @@ func (j *JobIntake) bind(ctx, stopping context.Context) (*natsgo.Subscription, b
 // deliver acks a job message on receipt, then hands its payload to receive. Acking first is safe:
 // the run's end event (Intake) and the reconcile both read every job of a run, so a process that
 // dies with a read pending loses only the early signal, and a message never waits on GitHub.
+//
+// A message that arrives once j.ctx is done is the exception: it is neither acked nor read. The
+// stop drains this subscription (giveUp), so the client hands this callback what it had already
+// buffered after Run has returned, where acking would lose the early signal for good and the
+// read that follows it would fail under the cancelled context with an ERROR line of its own. It
+// is left unacknowledged rather than Nak'd because the subscription is still bound while the
+// drain runs: a Nak would have the server redeliver the message to this same callback at once,
+// which would answer it the same way, round after round. Unacknowledged, it stays outstanding
+// and the next holder is handed it when jobAckWait expires -- what the bare unsubscribe this
+// give-up replaced left behind, and what the run's end event and the five-minute reconcile both
+// cover anyway.
 func (j *JobIntake) deliver(msg *natsgo.Msg) {
+	if j.ctx.Err() != nil {
+		return
+	}
 	if err := msg.Ack(); err != nil {
 		slog.Error("dispatch delivery: acknowledge job message", "subject", msg.Subject, "error", err)
 	}
