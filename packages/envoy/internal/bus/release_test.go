@@ -2,6 +2,7 @@ package bus_test
 
 import (
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -266,6 +267,114 @@ func TestDrainSubscriptionWhileTheConnectionIsDownLeavesNoPushBindingBehind(t *t
 	waitFor(t, 10*time.Second, "the second client to be handed what was published meanwhile", func() bool { return fresh.Load() == 1 })
 	if got := stopped.Load(); got != 0 {
 		t.Fatalf("the given-up subscription's handler was handed %d message(s)", got)
+	}
+}
+
+// A link that drops while the drain is still in flight leaves no push binding behind either: the
+// drained handle is unsubscribed at the client's disconnect, so the reconnect's resend does not
+// find it in the connection's subscription list, and the server reports the durable free for
+// another process to take over. This is the second window in which a drain meets a reconnect:
+// nats.go keeps a draining subscription in that list until its handler has taken what was
+// buffered (checkDrained), and a SUB re-sent for it binds the durable to a client whose handler
+// has stopped.
+//
+// Two levers hold the drain open across the drop, and are what make the row deterministic rather
+// than a race with checkDrained. The relay is armed before the give-up, so the drain's UNSUB and
+// the flush checkDrained opens with are swallowed: the server never learns of the drain, and the
+// binding it reports afterwards is the one the resend leaves. And the handler is held inside its
+// delivery, which keeps the subscription's pending count above zero, so checkDrained goes on
+// through the reconnect instead of removing the subscription in its first pass after the drop --
+// the drop releases its flush at once (clearPendingFlushCalls), and an idle handler would let it
+// remove the subscription before the resend and hide the window. The handler is let go only once
+// the server has been read.
+//
+// The server is read from a second client connected to it directly, as the row above does: the
+// giving-up client's own reads run over the link under test.
+func TestDrainSubscriptionWhileTheDrainIsInFlightLeavesNoPushBindingBehind(t *testing.T) {
+	_, uri := startNATS(t)
+	relay := startRelayProxy(t, uri)
+	client, err := bus.ConnectOwningStream([]string{relay.url()})
+	if err != nil {
+		t.Fatalf("connect through the relay: %v", err)
+	}
+	defer client.Close()
+	direct, err := bus.ConnectOwningStream([]string{uri})
+	if err != nil {
+		t.Fatalf("connect the second client: %v", err)
+	}
+	defer direct.Close()
+	consumer := releaseDurable(t, direct, "released")
+	hooked := make(chan struct{}, 8)
+	client.AddReconnectHook(func(*natsgo.Conn) error {
+		hooked <- struct{}{}
+		return nil
+	})
+
+	handling := make(chan struct{}, 1)
+	held := make(chan struct{})
+	letGo := sync.OnceFunc(func() { close(held) })
+	defer letGo()
+	var stopped atomic.Int32
+	sub, err := client.Subscribe("", func(msg *natsgo.Msg) {
+		stopped.Add(1)
+		_ = msg.Ack()
+		handling <- struct{}{}
+		<-held
+	}, natsgo.Bind(bus.Stream, consumer), natsgo.ManualAck())
+	if err != nil {
+		t.Fatalf("bind the durable: %v", err)
+	}
+	awaitPushBound(t, direct, consumer, true, "the durable to take the subscription's binding")
+
+	// The handler stays inside this delivery until the checks below have run: nats.go counts a
+	// message pending until its handler returns, and a drain ends at the pass that finds nothing
+	// pending.
+	publishReleaseProbe(t, direct, "notifications.github.test.held")
+	select {
+	case <-handling:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the handler was never handed the message that holds the drain open")
+	}
+
+	relay.arm("UNSUB")
+	drained, err := client.DrainSubscription(sub)
+	if err != nil {
+		t.Fatalf("give the subscription up while the connection is live: %v", err)
+	}
+	if drained != sub {
+		t.Fatalf("DrainSubscription returned %p to wait on, want the drained handle (%p): the give-up took no drain, so no drain was in flight at the drop", drained, sub)
+	}
+	select {
+	case <-relay.swallowed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the drain's UNSUB never reached the link, so the drop did not land on a drain in flight")
+	}
+
+	relay.refuse.Store(true)
+	relay.drop()
+	waitFor(t, 10*time.Second, "the client to start reconnecting", client.Conn.IsReconnecting)
+	publishReleaseProbe(t, direct, "notifications.github.test.released")
+
+	relay.refuse.Store(false)
+	// The reconnect is where the drain shows: nats.go sends every subscription the connection
+	// still holds anew, so the checks below read the durable only once that resend has landed.
+	awaitHook(t, hooked)
+	awaitPushBound(t, direct, consumer, false, "the durable to be left free by the give-up")
+	if client.SubOK() {
+		t.Fatal("SubOK reports a subscription bound after it was given up")
+	}
+
+	letGo()
+	waitFor(t, 10*time.Second, "the drain to end", func() bool { return !drained.IsValid() })
+	if got := stopped.Load(); got != 1 {
+		t.Fatalf("the given-up subscription's handler was handed %d message(s), want only the one it was held inside", got)
+	}
+
+	var fresh atomic.Int32
+	bindCounting(t, direct, consumer, &fresh)
+	waitFor(t, 10*time.Second, "the second client to be handed what was published meanwhile", func() bool { return fresh.Load() == 1 })
+	if got := stopped.Load(); got != 1 {
+		t.Fatalf("the given-up subscription's handler was handed %d message(s) after the drain ended", got)
 	}
 }
 
