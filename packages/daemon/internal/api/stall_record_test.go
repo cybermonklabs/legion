@@ -138,8 +138,8 @@ func TestTheOperatorsControllerClaimCarriesItsStepRecord(t *testing.T) {
 	}
 	view := operatorView(supervise.Claim{
 		Token: claim.ControllerToken("legion"), Role: claim.RoleController,
-		State: supervise.StateWorking, Session: "ses_controller", Step: step,
-	})
+		State: supervise.StateWorking, Session: "ses_controller",
+	}, step)
 
 	if view.Step == nil {
 		t.Fatalf("the operator's controller claim = %+v, want the record of the call it is in", view)

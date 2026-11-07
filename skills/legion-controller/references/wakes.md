@@ -130,14 +130,19 @@ passed, when the turn began, and the last call the daemon saw, with its tool, it
 started and whether it ended — never a call's arguments, whose text the daemon keeps in no
 column. It says what the daemon did as well, which is not always a relaunch: where a suspension
 was already waiting for that turn, the process was ended and nothing runs for the claim until it
-is resumed, and the notice says so.
+is resumed; where the launch that replaces the process could not be written, the process was
+stopped and the daemon is still retrying that launch; and where every try at that launch was
+refused, the claim has failed and nothing relaunches it. The notice says which.
 
-Nothing failed and nothing was charged to the claim: the task that architect was serving is still
-owed to it and is sent to it again, no issue was held, and no status moved. Do nothing to the
-tree — park nothing, re-admit nothing, set no status — and start nothing. One copy comes per
-stall, so an architect that stalls again and again sends one each time: that is a finding to put
-to a person ([Findings](skill://legion-controller/SKILL.md#findings-and-the-issues-you-file)),
-with the records you were sent in it.
+Nothing was charged to the claim for the stall itself, and on every end but the failed one
+nothing failed either: the task that architect was serving is still owed to it and is sent to it
+again, no issue was held, and no status moved. Do nothing to the tree — park nothing, re-admit
+nothing, set no status — and start nothing. A notice that names the failed end is the exception:
+that architect's claim is failed, its `worker-died` reaches you as any other does, and you answer
+that notice as its own section says. One copy comes per stall, so an architect that stalls again
+and again sends one each time: that is a finding to put to a person
+([Findings](skill://legion-controller/SKILL.md#findings-and-the-issues-you-file)), with the
+records you were sent in it.
 
 ## `update-stalled on <KEY>` (`{kind: "update-stalled", reason, update}`)
 

@@ -151,6 +151,35 @@ func (s *Store) PutClaimStep(ctx context.Context, token claim.Token, step superv
 	return known, nil
 }
 
+// ClaimStep is the step record of one claim: what the daemon last saw that claim's agent do, as
+// the store holds it (PutClaimStep). It is the read behind every operator answer about one claim
+// (internal/api's operatorAnswer), where reading every claim to serve one would be the whole
+// table; the listing of them all reads them with their claims (Claims).
+//
+// A token no claim holds answers the zero record, which says the daemon has seen nothing of that
+// agent — the same answer a claim that has neither begun a turn nor made a call gives, and the
+// truthful one for a row that is gone.
+func (s *Store) ClaimStep(ctx context.Context, token claim.Token) (supervise.StepRecord, error) {
+	var (
+		step                   supervise.StepRecord
+		stepAt, turnStarted    *time.Time
+		stepStarted, stepEnded *time.Time
+	)
+	err := s.pool.QueryRow(ctx, `select step_at, turn_started_at, step_tool, step_call_id,
+		step_args_bytes, step_args_hash, step_started_at, step_ended_at from claims where token = $1`,
+		string(token)).Scan(&stepAt, &turnStarted, &step.Tool, &step.CallID,
+		&step.ArgsBytes, &step.ArgsHash, &stepStarted, &stepEnded)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return supervise.StepRecord{}, nil
+	}
+	if err != nil {
+		return supervise.StepRecord{}, fmt.Errorf("read the step of claim %s: %w", token, err)
+	}
+	step.At, step.TurnStartedAt = orZero(stepAt), orZero(turnStarted)
+	step.StartedAt, step.EndedAt = orZero(stepStarted), orZero(stepEnded)
+	return step, nil
+}
+
 // putClaim writes a claim through whichever executor the caller has: the pool, or a transaction
 // that carries the delivery write that goes with it.
 func putClaim(ctx context.Context, db execer, c supervise.Claim) error {

@@ -108,6 +108,14 @@ func (s *memoryClaims) Claims(context.Context) ([]supervise.Claim, error) {
 	return claims, nil
 }
 
+// Step is the step record the rows hold, as the store's own narrow read answers it
+// (store.Store.ClaimStep): what the operator routes serve for one claim.
+func (s *memoryClaims) Step(_ context.Context, token legionclaim.Token) (supervise.StepRecord, error) {
+	s.rowsMu.Lock()
+	defer s.rowsMu.Unlock()
+	return s.rows[token].Step, nil
+}
+
 func (s *memoryClaims) PutClaim(_ context.Context, c supervise.Claim) error {
 	s.rowsMu.Lock()
 	defer s.rowsMu.Unlock()

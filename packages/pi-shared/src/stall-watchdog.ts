@@ -339,20 +339,17 @@ export function effectiveDeadlineMs(
 }
 
 /**
- * Whether this call has missed a beat at `now`, and by how much. It has not while `callBoundMs`
- * is 0, which is this worker's watch switched off altogether and not merely its bound rule
- * waived — a call the deadline rule would judge is not judged either, since the only reading of
- * 0 the deployment is offered is "off" (`src/stall-limits.ts`, `running-legion.md`). It has not
- * while its clock has not started, and not while it is still inside the rule that judges it: its
- * own deadline plus `callGraceMs` where it promised one, and its role's bound where it promised
- * none.
+ * Whether this call has missed a beat at `now`, and by how much. It has not while its clock has
+ * not started, and not while it is still inside the rule that judges it: its own deadline plus
+ * `callGraceMs` where it promised one, and its role's bound where it promised none. The watch's
+ * off switch is not here: a `callBoundMs` of 0 keeps the two handlers from writing a call down
+ * at all (`createStallWatchdog`, `watching`), so nothing this rule could judge exists.
  */
 export function callOverdue(
   call: StallCall,
   now: number,
   limits: StallLimits
 ): StallOverdue | undefined {
-  if (limits.callBoundMs === 0) return undefined;
   if (call.startedAt === undefined) return undefined;
   const openMs = now - call.startedAt;
   if (call.deadlineMs !== undefined) {
@@ -440,7 +437,9 @@ type AbortEnd =
  * `abort()` still unsettled when the gap has passed has not ended the turn, which is the one
  * condition the third step exists for. The gap the sweep then counts runs from the sweep that
  * ran this step and not from here, so a step that waits the whole gap still leaves the ladder
- * its two gaps and the daemon's backstop the same ladder to stay above.
+ * its two gaps and the daemon's backstop the same ladder to stay above. One sweep waits here
+ * once, for the turn and not for each of its overdue calls (`abortTurn`), so parallel hung
+ * calls do not stretch that ladder either.
  *
  * **A late settle does nothing.** The promise is left to settle on its own; nothing reads it
  * after the bound, so the sweep never takes a late answer for a second step, and the rejection
@@ -466,6 +465,14 @@ async function abortEnd(abort: () => Promise<void> | void, boundMs: number): Pro
     clearTimeout(timer);
   }
   return end ?? { kind: "unsettled" };
+}
+
+/** What one sweep has already done for the turn as a whole rather than for one of its calls.
+ * The ladder's second step is the only one of the three that is not about a single call — the
+ * host's `abort()` ends the turn every overdue call of the sweep belongs to — so it runs once a
+ * sweep, and this is where that fact is kept (`abortTurn`). */
+interface Sweep {
+  aborted: boolean;
 }
 
 export function createStallWatchdog(deps: StallWatchdogDeps): StallWatchdog {
@@ -560,8 +567,27 @@ export function createStallWatchdog(deps: StallWatchdogDeps): StallWatchdog {
    * the failure three reviews of the abandoned branch found: the ladder goes on to step three at
    * the next gap however this step came out. The abort's own wait is bounded by the step gap
    * (`abortEnd`); the message that follows it is the host's synchronous `pi.sendMessage` and
-   * waits for nothing (`packages/pi-legion/src/stall-abort.ts`). */
-  async function abortTurn(call: StallCall, overdue: StallOverdue): Promise<void> {
+   * waits for nothing (`packages/pi-legion/src/stall-abort.ts`).
+   *
+   * **One act for the turn.** The abort ends the whole turn, not the one call it was made for,
+   * so a sweep runs this step once however many of the turn's calls are overdue: the first of
+   * them makes the host's `abort()` and sends the one message, and every other is recorded at
+   * this step and carried past it. k aborts would be k of the bounded waits above in one sweep,
+   * which would leave the last call's third step (k-1) gaps late and send k messages for one
+   * ended turn — and the two gaps are what the daemon's backstop floor is computed from
+   * (`src/stall-limits.ts`, `stepMs`). */
+  async function abortTurn(call: StallCall, overdue: StallOverdue, sweep: Sweep): Promise<void> {
+    if (sweep.aborted) {
+      await record(
+        call,
+        "abort-turn",
+        overdue.openMs,
+        "this sweep had already run the turn's abort() for another overdue call of it, so this " +
+          "call took no abort and no message of its own"
+      );
+      return;
+    }
+    sweep.aborted = true;
     const outcomes: string[] = [];
     const ended = await abortEnd(() => deps.aborter.abortTurn(), deps.limits.stepMs);
     if (ended.kind === "ended") outcomes.push("the turn was ended with the host's abort()");
@@ -618,7 +644,7 @@ export function createStallWatchdog(deps: StallWatchdogDeps): StallWatchdog {
 
   /** One overdue call, one step. The record is read again from the map at every await boundary:
    * an event may have closed the call while a step ran, and a closed call is left alone. */
-  async function advance(toolCallId: string, now: number): Promise<void> {
+  async function advance(toolCallId: string, now: number, sweep: Sweep): Promise<void> {
     const open = calls.get(toolCallId);
     if (open === undefined) return;
     const overdue = callOverdue(open, now, deps.limits);
@@ -636,7 +662,7 @@ export function createStallWatchdog(deps: StallWatchdogDeps): StallWatchdog {
     const step = STALL_LADDER[call.step];
     if (step === undefined) return;
     if (step === "end-processes") await endProcesses(call, overdue);
-    else if (step === "abort-turn") await abortTurn(call, overdue);
+    else if (step === "abort-turn") await abortTurn(call, overdue, sweep);
     else await exitProcess(call, overdue);
 
     const after = calls.get(toolCallId);
@@ -688,12 +714,15 @@ export function createStallWatchdog(deps: StallWatchdogDeps): StallWatchdog {
         .map((call) => call.toolCallId);
       if (overdue.length === 0) return;
       sweeping = true;
+      // The second step is one act for the turn, so what this sweep has already run travels with
+      // the sweep rather than with one of its calls.
+      const sweep: Sweep = { aborted: false };
       try {
         for (const toolCallId of overdue) {
           // One call's step never costs another its sweep, and the host's managed interval is
           // never handed a rejection.
           try {
-            await advance(toolCallId, now);
+            await advance(toolCallId, now, sweep);
           } catch (error) {
             deps.log.warn("legion: the stall watch could not carry a stuck call one step", {
               toolCallId,

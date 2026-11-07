@@ -42,9 +42,14 @@ type backstopRig struct {
 	mu  sync.Mutex
 	// rows are the outbox payloads supervision wrote, by issue; attempts how many writes it
 	// tried, refused ones included, which is what a case waits on before it reads that none was
-	// taken; refuse the error the store answers while it is set.
+	// taken; refuse the error the store answers while it is set. reports is how many ends the
+	// machines told supervision of, counted inside the decision that made each: the row is
+	// written on a goroutine of supervision's own (stallBackstopped), so a case that read rows
+	// alone would read "nobody was told" of a machine that told and whose goroutine has not run
+	// yet, and that assertion could never fail.
 	rows     map[string][]record.OutboxPayload
 	attempts int
+	reports  int
 	refuse   error
 }
 
@@ -78,9 +83,37 @@ func newBackstopRig(t *testing.T) *backstopRig {
 		},
 	}
 	// The machines tell supervision what each stall backstop ended, as the daemon's own boot
-	// wires them (openSupervision): nothing else writes the owner's notice.
-	sup.deps.StallBackstopped = rig.s.stallBackstopped
+	// wires them (openSupervision): nothing else writes the owner's notice. The rig counts each
+	// report where the machine makes it, before passing it on, so a case that has waited for the
+	// events it posted to be decided (settled, awaitResumed) has every report those events will
+	// ever make.
+	sup.deps.StallBackstopped = func(c supervise.Claim, stop supervise.StallBackstopStop) {
+		rig.mu.Lock()
+		rig.reports++
+		rig.mu.Unlock()
+		rig.s.stallBackstopped(c, stop)
+	}
 	return rig
+}
+
+// reported is how many ends the rig's machines have told supervision of, counted inside each
+// machine's own decision rather than through the row it leads to.
+func (r *backstopRig) reported() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.reports
+}
+
+// claimStore is the claims store the rig's machines write through, for a case that drives a
+// decision the store would not take. It is the rig's own fake, built with the supervisor
+// (newPluginSupervisor).
+func (r *backstopRig) claimStore() *outboxClaimStore {
+	r.t.Helper()
+	store, ok := r.sup.deps.Store.(*outboxClaimStore)
+	if !ok {
+		r.t.Fatalf("the rig's store is %T, want the claims fake the supervisor is built with", r.sup.deps.Store)
+	}
+	return store
 }
 
 // refusing sets, or clears, the error the rig's store answers every write with.
@@ -272,6 +305,9 @@ func TestTheStallBackstopEndsAStalledTurnAndTellsTheOwnerOnce(t *testing.T) {
 	// end a machine made is told at all.
 	rig.sweep(claims)
 	rig.settled(stalled)
+	if told := rig.reported(); told != 1 {
+		t.Fatalf("the machines' reports = %d, want the owner told once per stall: the second sweep ended nothing", told)
+	}
 	if notices := rig.notices("LEGION-209"); len(notices) != 1 {
 		t.Fatalf("notices after the second sweep = %+v, want the owner told once per stall", notices)
 	}
@@ -337,6 +373,9 @@ func TestTheStallBackstopLeavesTheseClaimsAlone(t *testing.T) {
 			if resumes := rig.resumes(left.Token); len(resumes) != 0 {
 				t.Fatalf("resumes = %d, want the claim left alone", len(resumes))
 			}
+			if told := rig.reported(); told != 0 {
+				t.Fatalf("the machines' reports = %d, want nobody told: this claim's turn is not the backstop's to end", told)
+			}
 			if notices := rig.notices(left.Issue); len(notices) != 0 {
 				t.Fatalf("notices = %+v, want nobody told", notices)
 			}
@@ -390,6 +429,9 @@ func TestTheStallBackstopTellsTheOwnerAgainWhenTheRowIsRefused(t *testing.T) {
 	rig.sweep(claims)
 	rig.settled(stalled)
 
+	if told := rig.reported(); told != 1 {
+		t.Fatalf("the machines' reports = %d, want the one end told however often its row is written", told)
+	}
 	if notices := rig.notices("LEGION-219"); len(notices) != 1 {
 		t.Fatalf("notices after the refusal cleared = %+v, want the owner told then", notices)
 	}
@@ -453,8 +495,8 @@ func TestTheStallBackstopTellsNobodyOfATurnItDidNotEnd(t *testing.T) {
 	if resumes := rig.resumes(moving.Token); len(resumes) != 0 {
 		t.Fatalf("resumes = %d, want the turn left alone: the claim's own record is inside its bound", len(resumes))
 	}
-	if got := rig.attemptsMade(); got != 0 {
-		t.Fatalf("supervision tried %d notice writes, want none: no turn was ended", got)
+	if told := rig.reported(); told != 0 {
+		t.Fatalf("the machines' reports = %d, want none: no turn was ended", told)
 	}
 	if notices := rig.notices("LEGION-221"); len(notices) != 0 {
 		t.Fatalf("notices = %+v, want nobody told of a turn that was not ended", notices)
@@ -493,5 +535,83 @@ func TestTheStallBackstopTellsASuspendedEndAsSuspended(t *testing.T) {
 	}
 	if strings.Contains(notices[0].Reason, "brought back") {
 		t.Errorf("the notice says the session was brought back, and none was: %q", notices[0].Reason)
+	}
+}
+
+// A turn the daemon ended whose replacement the store would not write reaches its owner all the
+// same, and the notice says what is true of it: the worker's process was stopped and nothing is
+// running in its place until one of the daemon's retries of that launch lands (supervise's
+// launchNow, relaunchLater). It is the store's transient refusal that this exists for — the one
+// a sweep sees often enough to have been measured — so a stall that falls in it is a worker
+// stopped and an owner who would otherwise hear nothing at all.
+func TestTheStallBackstopTellsTheOwnerOfAnEndTheStoreWouldNotWrite(t *testing.T) {
+	rig := newBackstopRig(t)
+	stalled := rig.claim(claim.RoleImplementer, "LEGION-223", backstopBound+time.Hour, true)
+	claims := rig.supervising(stalled)
+	rig.claimStore().refuse(errors.New("the store is down"))
+
+	rig.sweep(claims)
+
+	notices := rig.awaitNotices("LEGION-223", 1)
+	if told := rig.reported(); told != 1 {
+		t.Fatalf("the machines' reports = %d, want the one end the backstop made", told)
+	}
+	if resumes := rig.resumes(stalled.Token); len(resumes) != 0 {
+		t.Fatalf("resumes = %d, want none: the launch that replaces the stopped process was never written", len(resumes))
+	}
+	m, ok := rig.sup.Machine(stalled.Token)
+	if !ok {
+		t.Fatal("the stalled claim is not supervised")
+	}
+	if c := m.Claim(); c.State != supervise.StateLaunching || c.Locator != nil {
+		t.Fatalf("the claim is %s with locator %+v, want it launching with the stalled process let go", c.State, c.Locator)
+	}
+	for _, want := range []string{"still owed", "its process was stopped, and the daemon could not write the launch that replaces it",
+		"nothing runs for the claim until one of the daemon's retries of that launch lands", "nothing was charged to the claim"} {
+		if !strings.Contains(notices[0].Reason, want) {
+			t.Errorf("the notice says %q, which does not carry %q", notices[0].Reason, want)
+		}
+	}
+	if strings.Contains(notices[0].Reason, "brought back") {
+		t.Errorf("the notice says the session was brought back, and none was: %q", notices[0].Reason)
+	}
+}
+
+// And a turn whose replacement the runtime refused until the claim's launch budget was gone:
+// the claim has failed, nothing relaunches it, and the notice says so rather than leaving its
+// owner waiting for a session that is never coming back. The launch failures that end is made
+// of are the one thing a stall does charge, so the notice names them instead of the sentence
+// every other end carries.
+func TestTheStallBackstopTellsTheOwnerOfAnEndThatFailedTheClaim(t *testing.T) {
+	rig := newBackstopRig(t)
+	stalled := rig.claim(claim.RoleTester, "LEGION-224", backstopBound+time.Hour, true)
+	claims := rig.supervising(stalled)
+	refused := errors.New("the pod did not start")
+	for range rig.sup.deps.Limits.LaunchFailures {
+		rig.rt.ScriptResume(fake.SpawnResult{Err: refused})
+	}
+
+	rig.sweep(claims)
+
+	notices := rig.awaitNotices("LEGION-224", 1)
+	if told := rig.reported(); told != 1 {
+		t.Fatalf("the machines' reports = %d, want the one end the backstop made", told)
+	}
+	m, ok := rig.sup.Machine(stalled.Token)
+	if !ok {
+		t.Fatal("the stalled claim is not supervised")
+	}
+	if c := m.Claim(); c.State != supervise.StateFailed {
+		t.Fatalf("the claim is %s, want it failed: every try at the replacement was refused", c.State)
+	}
+	for _, want := range []string{"still owed", "every try at the replacement was refused",
+		"the claim has failed and nothing runs for it until it is retried",
+		"the launch failures of the replacement that could not be started are what it was charged"} {
+		if !strings.Contains(notices[0].Reason, want) {
+			t.Errorf("the notice says %q, which does not carry %q", notices[0].Reason, want)
+		}
+	}
+	if strings.Contains(notices[0].Reason, "nothing was charged to the claim") {
+		t.Errorf("the notice says nothing was charged, and the launch failures were: %q", notices[0].Reason)
 	}
 }

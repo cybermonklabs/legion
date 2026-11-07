@@ -76,16 +76,18 @@ interface Rig {
   /** Whether `abortTurn` answers with a Promise that never settles of itself: the host whose
    * `abort()` waits on the very call that is stuck, which is what bounds the second step. */
   abortHangs: boolean;
-  /** Settles the Promise a hung `abortTurn` answered with, late and from outside. */
-  readonly settleAbort: () => void;
+  /** Settles the Promise a hung `abortTurn` answered with, late and from outside, and hands back
+   * once every handler the module put on it has run: a sweep runs its way to a step before it
+   * yields, so a case that did not wait here would judge before the late answer was read. */
+  readonly settleAbort: () => Promise<void>;
   /** A message the session refuses the self-message with. */
   sendThrows: string | undefined;
 }
 
 function rig(options: { role?: string; limits?: Partial<StallLimits> } = {}): Rig {
   let clock = START;
-  /** The resolver of the Promise a hung `abortTurn` last answered with. */
-  let hung: (() => void) | undefined;
+  /** The Promise a hung `abortTurn` last answered with, and its resolver. */
+  let hung: { readonly promise: Promise<void>; readonly resolve: () => void } | undefined;
   const state: Omit<Rig, "watchdog" | "tick" | "now" | "settleAbort"> = {
     told: [],
     steps: [],
@@ -138,7 +140,7 @@ function rig(options: { role?: string; limits?: Partial<StallLimits> } = {}): Ri
         state.aborts.push(clock);
         if (!state.abortHangs) return;
         const never = Promise.withResolvers<void>();
-        hung = never.resolve;
+        hung = { promise: never.promise, resolve: () => never.resolve() };
         return never.promise;
       },
       sendMessage: (text) => {
@@ -166,7 +168,13 @@ function rig(options: { role?: string; limits?: Partial<StallLimits> } = {}): Ri
       clock += ms;
     },
     now: () => clock,
-    settleAbort: () => hung?.(),
+    settleAbort: async () => {
+      hung?.resolve();
+      await hung?.promise;
+      // One tick more than the settle itself, for the `async` wrapper `abortEnd` adopts it
+      // through.
+      await Promise.resolve();
+    },
   });
 }
 
@@ -417,24 +425,6 @@ test("a bound of 0 records no call and ends nothing, deadline-judged calls inclu
   expect(r.endedCalls).toEqual([]);
   expect(r.aborts).toEqual([]);
   expect(r.exitCodes).toEqual([]);
-
-  // And the rule itself says so, for a reader who reaches it with a call of their own: the
-  // deadline branch is behind the off switch, not in front of it.
-  const deadlineCall: StallCall = {
-    toolCallId: "toolu_3",
-    toolName: "bash",
-    input: { command: "sleep 100000", pty: true, timeout: 30 },
-    startedAt: START,
-    deadlineMs: 30 * SECOND,
-    step: 0,
-    steppedAt: undefined,
-    told: undefined,
-  };
-  const off: StallLimits = { ...limitsFor("tester"), callBoundMs: 0 };
-  expect(callOverdue(deadlineCall, START + 10 * HOUR, off)).toBeUndefined();
-  expect(callOverdue({ ...deadlineCall, deadlineMs: undefined }, START + 10 * HOUR, off)).toBe(
-    undefined
-  );
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -533,21 +523,73 @@ test("an abort whose Promise never settles hands back at the step gap, and the l
   // has something waiting to restart it.
   expect(r.messages).toHaveLength(1);
 
+  // The abort answers, late: after the step that waited for it handed back, and before the
+  // sweep that carries the call on. Nothing reads it past its bound (`abortEnd`, "A late settle
+  // does nothing"), so the ladder is where that step left it.
+  await r.settleAbort();
+
   // Step three at the next gap, exactly as the ladder says, because the abort did not end the
-  // turn.
+  // turn within the gap. The late answer took no step of its own: this sweep records one
+  // `exit-process` and no second `abort-turn`, and the host's `abort()` was called once.
   r.tick(2 * MINUTE);
   await r.watchdog.sweep();
   expect(r.steps.map((step) => step.step)).toEqual(["end-processes", "abort-turn", "exit-process"]);
+  expect(r.aborts).toHaveLength(1);
+  expect(r.messages).toHaveLength(1);
   expect(r.exitCodes).toEqual([STALL_EXIT_CODE]);
+});
 
-  // A late settle is not a second step: the Promise answering now records nothing and ends
-  // nothing, because nothing is reading it any more.
-  r.settleAbort();
-  // The sweep below is itself an await, so the resolution above has run by the time it judges.
+test("two calls of one turn overdue together take one abort, one message and one step gap", async () => {
+  // The abort ends the turn, not one call, so the second step is one act for the sweep however
+  // many of the turn's calls are overdue. Its wait on the host's `abort()` is bounded by a real
+  // host timer, as in the case above, so k aborts in one sweep would be k of those waits and the
+  // last call's third step would come (k-1) gaps late — which is the arithmetic the daemon's own
+  // backstop floor is computed from (`src/stall-limits.ts`, `stepMs`).
+  const gap = SECOND;
+  const r = rig({ limits: { stepMs: gap } });
+  r.abortHangs = true;
+  running(r.watchdog, "bash", { command: "sleep 100000", pty: true }, "toolu_1");
+  running(r.watchdog, "bash", { command: "sleep 200000", pty: true }, "toolu_2");
+  r.tick(10 * MINUTE + SECOND);
+
+  // Step one is one call's own processes, so each overdue call runs it for itself, and each
+  // owner is told about the call that is theirs.
+  await r.watchdog.sweep();
+  expect(r.told).toHaveLength(2);
+  expect(r.endedCalls).toEqual(["toolu_1", "toolu_2"]);
+  expect(r.steps.map((step) => step.step)).toEqual(["end-processes", "end-processes"]);
+
+  // Step two, for both calls at once: one `abort()`, one message naming the call it was made
+  // for, and a record for each call saying what it got.
+  r.tick(2 * MINUTE);
+  const began = Date.now();
+  await r.watchdog.sweep();
+  const waited = Date.now() - began;
+  expect(r.aborts).toHaveLength(1);
+  expect(r.messages).toHaveLength(1);
+  expect(r.messages[0]).toContain("toolu_1");
+  expect(r.steps.map((step) => step.step)).toEqual([
+    "end-processes",
+    "end-processes",
+    "abort-turn",
+    "abort-turn",
+  ]);
+  expect(r.steps[3]?.outcome).toBe(
+    "this sweep had already run the turn's abort() for another overdue call of it, so this call " +
+      "took no abort and no message of its own"
+  );
+  // The sweep paid the abort's bounded wait once and not twice.
+  expect(waited).toBeGreaterThan(gap / 2);
+  expect(waited).toBeLessThan(2 * gap);
+
+  // So both calls reach the last step at the next gap, and not one of them a gap behind the
+  // other. The fake's `exitProcess` returns where the host's own does not
+  // (`packages/pi-legion/extensions/legion.ts`, `process.exit`), so the second call's step runs
+  // behind a process that would already be gone.
   r.tick(2 * MINUTE);
   await r.watchdog.sweep();
-  expect(r.steps).toHaveLength(3);
-  expect(r.exitCodes).toHaveLength(1);
+  expect(r.steps.slice(4).map((step) => step.step)).toEqual(["exit-process", "exit-process"]);
+  expect(r.exitCodes[0]).toBe(STALL_EXIT_CODE);
 });
 
 test("a turn the abort ended never reaches the exit", async () => {

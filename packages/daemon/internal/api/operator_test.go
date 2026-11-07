@@ -1175,6 +1175,61 @@ func TestListShowsTheStoredStepOfASupervisedClaim(t *testing.T) {
 	}
 }
 
+// Every operator answer about one claim carries the record the store holds, as the listing
+// does: the routes an operator runs on a worker that has stopped moving are these, and an
+// answer built from the machine's own copy would print `-`, or a call hours old, on the very
+// commands that ask what the worker is doing (operatorAnswer, cmd/legion's printClaim). The
+// agent steps here through its machine, as the worker stream reports it, so the record is
+// written exactly as production writes it and the machine keeps none of it (supervise's
+// putStep).
+func TestEveryOperatorAnswerAboutOneClaimCarriesItsStoredStep(t *testing.T) {
+	h := newHarness(t)
+	h.operator(http.MethodPost, "/legion/v1/operator/claims", spawnBody())
+	conn := fake.NewConn()
+	h.conns.Register(architectToken, conn)
+	h.ready(architectToken, "ses_architect", 1)
+	m, supervised := h.supervisor.Machine(architectToken)
+	if !supervised {
+		t.Fatal("the spawned claim has no machine: this case is about what a supervised claim's answers show")
+	}
+	if err := m.Handle(h.ctx, supervise.StreamToolStep{Claim: architectToken, Tool: "bash",
+		CallID: "toolu_turn7_2", ArgsBytes: 128, ArgsHash: "9f2b7c0d1e3a4b5c", ConnSequence: conn.Sequence()}); err != nil {
+		t.Fatalf("the agent's tool step: %v", err)
+	}
+	stored, err := h.store.ClaimStep(h.ctx, architectToken)
+	if err != nil {
+		t.Fatalf("read the stored step: %v", err)
+	}
+	if stored.CallID != "toolu_turn7_2" {
+		t.Fatalf("the stored record = %+v, want the call the agent is in", stored)
+	}
+	if held := m.Claim().Step; held.CallID != "" {
+		t.Fatalf("the machine's own copy of the record = %+v, want it as the machine was built: this case is about the answer the routes build from the store", held)
+	}
+
+	want := StepViewOf(stored)
+	for _, action := range []string{"deliver", "suspend", "resume"} {
+		var body any
+		if action == "deliver" {
+			body = DeliverRequest{Task: "carry on"}
+		}
+		recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(architectToken)+"/"+action, body)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("%s = %d, want 200; body %s", action, recorder.Code, recorder.Body)
+		}
+		var got OperatorClaim
+		decodeInto(t, recorder, &got)
+		// The times are compared by instant: the wire carries them to the fraction of a second
+		// and not in the location the store's own read built them in.
+		if got.Step == nil || got.Step.Tool != want.Tool || got.Step.CallID != want.CallID ||
+			got.Step.ArgsBytes != want.ArgsBytes || got.Step.ArgsHash != want.ArgsHash ||
+			got.Step.At == nil || !got.Step.At.Equal(*want.At) ||
+			got.Step.StartedAt == nil || !got.Step.StartedAt.Equal(*want.StartedAt) {
+			t.Fatalf("%s answered step %+v, want the record the store holds, %+v", action, got.Step, want)
+		}
+	}
+}
+
 // A claim's view carries the record of the sends of its task that never reached a turn — how
 // many failed, when the last of them failed and the error it failed with — beside the queued,
 // delivered and confirmed times. Without it, a claim that has waited days on a send which never

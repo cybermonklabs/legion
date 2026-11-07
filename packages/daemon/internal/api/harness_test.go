@@ -140,6 +140,10 @@ func (s *testSupervisor) Claims(ctx context.Context) ([]supervise.Claim, error) 
 	return s.store.Claims(ctx)
 }
 
+func (s *testSupervisor) Step(ctx context.Context, token claim.Token) (supervise.StepRecord, error) {
+	return s.store.ClaimStep(ctx, token)
+}
+
 type harness struct {
 	t          *testing.T
 	ctx        context.Context

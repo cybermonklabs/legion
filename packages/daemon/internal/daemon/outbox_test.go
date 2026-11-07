@@ -2532,11 +2532,24 @@ type outboxClaimStore struct {
 	mu         sync.Mutex
 	claims     map[claim.Token]supervise.Claim
 	deliveries map[claim.Token]supervise.Delivery
+	// refused is the error every claim write answers while it is set, which is how a case drives
+	// a decision the store would not take (the stall backstop's own relaunch).
+	refused error
+}
+
+// refuse sets, or clears, the error this store answers every claim write with.
+func (s *outboxClaimStore) refuse(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.refused = err
 }
 
 func (s *outboxClaimStore) PutClaim(_ context.Context, c supervise.Claim) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.refused != nil {
+		return s.refused
+	}
 	if s.claims == nil {
 		s.claims = map[claim.Token]supervise.Claim{}
 	}

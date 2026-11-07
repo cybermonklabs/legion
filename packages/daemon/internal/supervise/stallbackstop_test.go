@@ -1,11 +1,13 @@
 package supervise
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 )
 
 // backstopBound is the bound the daemon's sweep would hand this claim's role: four hours for an
@@ -296,7 +298,7 @@ func TestTheBackstopReportsOnlyTheEndItMade(t *testing.T) {
 	h.must(h.backstop(last))
 
 	h.wantState(StateLaunching)
-	want := StallBackstopStop{Step: swept, LastStep: last, Bound: backstopBound}
+	want := StallBackstopStop{Step: swept, LastStep: last, Bound: backstopBound, End: EndRelaunched}
 	if len(*stops) != 1 || (*stops)[0] != want {
 		t.Fatalf("the backstop reported %+v, want one end of the turn, %+v", *stops, want)
 	}
@@ -343,8 +345,165 @@ func TestTheBackstopReportsASuspendedEndAsSuspended(t *testing.T) {
 	if suspend := h.wantCalls("Suspend", 1)[0]; suspend.Locator != loc {
 		t.Fatalf("suspended %+v, want the stalled process %+v", suspend.Locator, loc)
 	}
-	want := StallBackstopStop{Step: stalled, LastStep: last, Bound: backstopBound, Suspended: true}
+	want := StallBackstopStop{Step: stalled, LastStep: last, Bound: backstopBound, End: EndSuspended}
 	if len(*stops) != 1 || (*stops)[0] != want {
 		t.Fatalf("the backstop reported %+v, want one end the held suspension made, %+v", *stops, want)
+	}
+}
+
+// A turn the daemon ended reaches its owner whatever the store then refused. The end the
+// machine reached is what the notice says, and the write of that end is a separate thing: the
+// process is gone either way, so a stall told to nobody is a worker that stopped and an
+// architect that never hears of it. Here the launch the backstop made could not be written, so
+// the stalled process was let go and stopped and its replacement waits on the probe interval
+// (launchNow, relaunchLater).
+func TestTheBackstopTellsTheOwnerOfAnEndWhoseLaunchWriteFailed(t *testing.T) {
+	h, stops := backstopReports(t)
+	h.workingOnATask("implement the plan")
+	h.advance(time.Minute)
+	h.stepped("bash", "toolu_turn1_0", toolArgs, false)
+	last := h.clock.Now()
+	swept := h.store.step(h.token)
+	h.advance(backstopBound + time.Minute)
+	h.store.fail("PutClaim", errBoom)
+
+	if err := h.handle(h.backstop(last)); !errors.Is(err, errBoom) {
+		t.Fatalf("the backstop whose launch the store would not take = %v, want the store's refusal", err)
+	}
+
+	if c := h.claim(); c.State != StateLaunching || c.Locator != nil {
+		t.Fatalf("the claim is %s with locator %+v, want it launching with the stalled process let go", c.State, c.Locator)
+	}
+	want := StallBackstopStop{Step: swept, LastStep: last, Bound: backstopBound, End: EndRelaunchPending}
+	if len(*stops) != 1 || (*stops)[0] != want {
+		t.Fatalf("the backstop reported %+v, want the one end it made told to the owner, %+v", *stops, want)
+	}
+}
+
+// The same rule where the replacement started and the write of it did not: the session is back
+// on a new process, which is what the owner is told, and the claim write that failed is owed
+// and made again at its next decision.
+func TestTheBackstopTellsTheOwnerOfARelaunchWhoseWriteFailed(t *testing.T) {
+	h, stops := backstopReports(t)
+	h.workingOnATask("implement the plan")
+	h.advance(time.Minute)
+	h.stepped("bash", "toolu_turn1_0", toolArgs, false)
+	last := h.clock.Now()
+	swept := h.store.step(h.token)
+	h.advance(backstopBound + time.Minute)
+	h.m.deps.Runtime = &failingWriteAfterResume{Runtime: h.rt, store: h.store}
+
+	if err := h.handle(h.backstop(last)); !errors.Is(err, errBoom) {
+		t.Fatalf("the backstop whose started process could not be written = %v, want the store's refusal", err)
+	}
+
+	if c := h.claim(); c.State != StateLaunching || c.Locator == nil {
+		t.Fatalf("the claim is %s with locator %+v, want it launching on the process the runtime started", c.State, c.Locator)
+	}
+	want := StallBackstopStop{Step: swept, LastStep: last, Bound: backstopBound, End: EndRelaunched}
+	if len(*stops) != 1 || (*stops)[0] != want {
+		t.Fatalf("the backstop reported %+v, want the one end it made told to the owner, %+v", *stops, want)
+	}
+}
+
+// failingWriteAfterResume starts the replacement and then refuses every claim write, which is
+// the window launchNow's own last line sits in: the process runs and the record of it does not
+// reach the store.
+type failingWriteAfterResume struct {
+	*fake.Runtime
+	store *memStore
+}
+
+func (r *failingWriteAfterResume) Resume(ctx context.Context, prev *runtime.Locator, spec runtime.SpawnSpec) (runtime.Locator, error) {
+	loc, err := r.Runtime.Resume(ctx, prev, spec)
+	r.store.fail("PutClaim", errBoom)
+	return loc, err
+}
+
+// A backstop whose replacement the runtime refuses until the claim's launch budget is gone ends
+// in a failed claim, and the owner is told that end: nothing runs for the claim, and an owner
+// told its session had come back would wait for a worker that is never coming.
+func TestTheBackstopTellsTheOwnerOfAnEndThatFailedTheClaim(t *testing.T) {
+	h, stops := backstopReports(t)
+	h.workingOnATask("implement the plan")
+	h.advance(time.Minute)
+	h.stepped("bash", "toolu_turn1_0", toolArgs, false)
+	last := h.clock.Now()
+	swept := h.store.step(h.token)
+	h.advance(backstopBound + time.Minute)
+	refused := errors.New("the pod did not start")
+	for range testLimits().LaunchFailures {
+		h.rt.ScriptResume(fake.SpawnResult{Err: refused})
+	}
+
+	if err := h.handle(h.backstop(last)); !errors.Is(err, refused) {
+		t.Fatalf("the backstop whose every relaunch the runtime refused = %v, want the runtime's refusal", err)
+	}
+	h.wantState(StateFailed)
+
+	want := StallBackstopStop{Step: swept, LastStep: last, Bound: backstopBound, End: EndFailed}
+	if len(*stops) != 1 || (*stops)[0] != want {
+		t.Fatalf("the backstop reported %+v, want the one end it made told to the owner, %+v", *stops, want)
+	}
+}
+
+// The other half of the same rule, and the easier one to lose: nothing that did not happen is
+// ever told. A take-back the store refuses leaves the turn exactly as it stands — the process
+// still runs it, holding its task — so there is no end to tell, and an architect sent here
+// would go looking for a recovery nobody made.
+func TestTheBackstopTellsNobodyOfAnEndTheStoreRefusedBeforeItWasMade(t *testing.T) {
+	h, stops := backstopReports(t)
+	h.workingOnATask("implement the plan")
+	h.advance(time.Minute)
+	h.stepped("bash", "toolu_turn1_0", toolArgs, false)
+	last := h.clock.Now()
+	loc := h.locator()
+	h.advance(backstopBound + time.Minute)
+	h.store.fail("PutDelivery", errBoom)
+
+	if err := h.handle(h.backstop(last)); !errors.Is(err, errBoom) {
+		t.Fatalf("the backstop whose take-back the store would not take = %v, want the store's refusal", err)
+	}
+
+	c := h.claim()
+	if c.State != StateWorking || c.Locator == nil || *c.Locator != loc {
+		t.Fatalf("the claim is %s with locator %+v, want its turn left on the process %+v", c.State, c.Locator, loc)
+	}
+	h.wantCalls("Resume", 0)
+	if len(*stops) != 0 {
+		t.Fatalf("the backstop reported %+v over a turn it did not end, want nobody told", *stops)
+	}
+}
+
+// Nor is a replacement the pacing parked told as an end: the claim keeps the process and its
+// turn, and the wake's own turn is what replaces it later (reserveWake, wakeNow). It is the
+// same news as the turn left alone — nothing has happened to this worker yet — and the one a
+// report written from the error alone would get wrong, since this launch returns nil.
+func TestTheBackstopTellsNobodyOfAReplacementThePacingParked(t *testing.T) {
+	h := pacedHarness(t, wakeRate)
+	var stops []StallBackstopStop
+	h.deps.StallBackstopped = func(_ Claim, stop StallBackstopStop) { stops = append(stops, stop) }
+	stepped := h.clock.Now().Add(-backstopBound - time.Minute)
+	working := stalePluginClaim(wakeClaim(secondToken, StateWorking), h.deps.PluginContract)
+	working.State = StateWorking
+	working.Step = StepRecord{At: stepped, TurnStartedAt: stepped, Tool: "bash", CallID: "toolu_turn1_0", StartedAt: stepped}
+	stalled := h.machineFor(working)
+
+	// The harness's own claim takes the limiter's one token, so the backstop's own relaunch
+	// parks rather than running where it is raised.
+	h.must(RequestSpawn{Claim: h.token})
+
+	h.mustPostTo(stalled, StallBackstop{Claim: secondToken, Bound: backstopBound,
+		Deadline: stepped.Add(backstopBound), Step: working.Step})
+
+	if parked := stalled.View().WakeWaiting; parked == nil || parked.Kind != WakeLaunch {
+		t.Fatalf("the claim holds wake %+v, want the backstop's launch waiting its turn", parked)
+	}
+	if c := stalled.Claim(); c.State != StateWorking || c.Locator == nil {
+		t.Fatalf("the claim is %s with locator %+v, want it left in its turn until the wake's turn comes", c.State, c.Locator)
+	}
+	h.wantStarts(secondToken, 0)
+	if len(stops) != 0 {
+		t.Fatalf("the backstop reported %+v over a replacement the pacing parked, want nobody told", stops)
 	}
 }

@@ -184,10 +184,14 @@ const stallBackstopNotice = "worker-stalled"
 // deployment with no workflow leaves the same account in its log as the notice would have
 // carried.
 //
-// What it says happened is what the machine reported (supervise.StallBackstopStop), never what
-// the sweep asked for: a turn a suspension was already waiting for ends in that suspension, with
-// nothing launched in its place, and an owner told that the session had come back would go
-// looking for a process that is not there.
+// What it says happened is the end the machine reported (supervise.StallBackstopStop.End),
+// never what the sweep asked for and never what the machine set out to do: a turn a suspension
+// was already waiting for ends in that suspension, with nothing launched in its place, and an
+// owner told that the session had come back would go looking for a process that is not there.
+// The three ends beside that one read the same way — a replacement the store would not write
+// has stopped the worker and not brought it back yet, and one whose every try the runtime
+// refused has failed the claim — so each says what is running for the claim now and what the
+// owner is waiting on.
 func stallBackstopRecord(c supervise.Claim, stop supervise.StallBackstopStop, silent time.Duration) string {
 	call := "the daemon saw no call of this turn"
 	if stop.Step.CallID != "" {
@@ -198,12 +202,29 @@ func stallBackstopRecord(c supervise.Claim, stop supervise.StallBackstopStop, si
 				stop.Step.Tool, stop.Step.CallID, stallInstant(stop.Step.StartedAt), stallInstant(stop.Step.EndedAt))
 		}
 	}
-	end := "its session was brought back on a new process"
-	if stop.Suspended {
-		end = "a suspension that was already waiting for this turn ended the process rather than replacing it, so nothing runs for the claim until it is resumed"
+	end, charged := stallBackstopEnd(stop.End)
+	return fmt.Sprintf("the daemon ended the %s's turn: its agent last stepped at %s, %s ago, past the %s this deployment gives the role (worker_stall_backstop_hours). The turn began at %s, and %s. The task it was serving is still owed to it and %s; %s The arguments of a call are never recorded, so they are in no part of this notice.",
+		c.Role, stallInstant(stop.LastStep), silent.Round(time.Minute), stop.Bound, stallInstant(stop.Step.TurnStartedAt), call, end, charged)
+}
+
+// stallBackstopEnd is the clause of the notice that says what became of the worker, and the one
+// that says what the claim was charged for it. The stall itself charges nothing, which is the
+// whole reason this recovery is not the death path (supervise's backstopStalledTurn); the launch
+// failures of a replacement that never started are charged, as every launch failure is, and the
+// one end that carries them says so rather than leaving the owner a sentence its budgets
+// contradict.
+func stallBackstopEnd(made supervise.ProcessEnd) (end, charged string) {
+	charged = "nothing was charged to the claim."
+	switch made {
+	case supervise.EndSuspended:
+		return "a suspension that was already waiting for this turn ended the process rather than replacing it, so nothing runs for the claim until it is resumed", charged
+	case supervise.EndRelaunchPending:
+		return "its process was stopped, and the daemon could not write the launch that replaces it: nothing runs for the claim until one of the daemon's retries of that launch lands", charged
+	case supervise.EndFailed:
+		return "its process was stopped and every try at the replacement was refused, which ran the claim's launch budget out, so the claim has failed and nothing runs for it until it is retried",
+			"the stall itself charged the claim nothing; the launch failures of the replacement that could not be started are what it was charged."
 	}
-	return fmt.Sprintf("the daemon ended the %s's turn: its agent last stepped at %s, %s ago, past the %s this deployment gives the role (worker_stall_backstop_hours). The turn began at %s, and %s. The task it was serving is still owed to it and %s; nothing was charged to the claim. The arguments of a call are never recorded, so they are in no part of this notice.",
-		c.Role, stallInstant(stop.LastStep), silent.Round(time.Minute), stop.Bound, stallInstant(stop.Step.TurnStartedAt), call, end)
+	return "its session was brought back on a new process", charged
 }
 
 // stallInstant is a moment of the record as the notice and the log line write it, and "no time

@@ -23,15 +23,16 @@ func (s StepRecord) LastStep() time.Time {
 
 // StallBackstopStop is what the daemon's stall backstop did to one claim, told to the daemon
 // once the machine has done it (Deps.StallBackstopped, the daemon's stallBackstopped): the
-// record the request carried, the moment the machine judged from, the bound it passed, and
-// whether the turn ended in a suspension rather than a relaunch. The owner's notice is written
-// from this and not from what the sweep asked for, because the sweep asks over claims it read
-// before the decision and the machine can answer by leaving the turn exactly as it stands.
+// record the request carried, the moment the machine judged from, the bound it passed, and the
+// end the machine reached — relaunched, the relaunch still to make, suspended, or the claim
+// failed (ProcessEnd). The owner's notice is written from this and not from what the sweep
+// asked for, because the sweep asks over claims it read before the decision and the machine can
+// answer by leaving the turn exactly as it stands.
 type StallBackstopStop struct {
-	Step      StepRecord
-	LastStep  time.Time
-	Bound     time.Duration
-	Suspended bool
+	Step     StepRecord
+	LastStep time.Time
+	Bound    time.Duration
+	End      ProcessEnd
 }
 
 // backstopStalledTurn is the daemon's stall backstop reaching a claim whose recorded last step is
@@ -65,9 +66,14 @@ type StallBackstopStop struct {
 // requirement is that the claim come back with its task still owed.
 //
 // Only a stop that was made is told (Deps.StallBackstopped), and it is told which end it made:
-// the owner's notice says what happened to the worker, and the three answers above — the turn
-// left alone, the turn left to a parked wake, and the turn ended — are not the same news. A
-// replacement the runtime or the store refuses tells nobody and leaves the record as it found
+// the owner's notice says what happened to the worker, and the answers above — the turn left
+// alone, the turn left to a parked wake, and the turn ended — are not the same news. What is
+// told is the end the machine reached and never whether the writes that end needed all landed
+// (replaceProcess, ProcessEnd): a launch whose write the store refused, a launch that ran the
+// claim's budget out, and a held suspension whose write failed have each ended the worker's
+// turn, and the one thing the owner must not be left with is a worker that stopped and nobody
+// told. A replacement that ended nothing — the take-back refused, the lifecycle recheck
+// refused, or the launch parked on the pacing — tells nobody and leaves the record as it found
 // it, so the next sweep posts over it again.
 //
 // The record in that report is the request's, which is the store's own as the sweep read it: the
@@ -101,13 +107,12 @@ func (m *Machine) backstopStalledTurn(ctx context.Context, ev StallBackstop) err
 		"incarnation", m.claim.Locator.Incarnation, "bound", ev.Bound, "deadline", ev.Deadline,
 		"lastStep", last, "turnStartedAt", ev.Step.TurnStartedAt, "tool", ev.Step.Tool, "callId", ev.Step.CallID,
 		"callStartedAt", ev.Step.StartedAt, "heldSuspension", suspended)
-	if err := m.replaceProcess(ctx, "the daemon's stall backstop ended a turn whose agent stopped stepping", ordinaryEnd); err != nil {
-		return err
+	end, err := m.replaceProcess(ctx, "the daemon's stall backstop ended a turn whose agent stopped stepping", ordinaryEnd)
+	if end != EndNotMade && m.deps.StallBackstopped != nil {
+		m.deps.StallBackstopped(m.current(), StallBackstopStop{Step: ev.Step, LastStep: last, Bound: ev.Bound, End: end})
 	}
-	if m.deps.StallBackstopped != nil {
-		m.deps.StallBackstopped(m.current(), StallBackstopStop{Step: ev.Step, LastStep: last, Bound: ev.Bound, Suspended: suspended})
-	}
-	return nil
+	m.log.Info("supervise: the stall backstop's end of the stalled turn", "end", end)
+	return err
 }
 
 // backstopStall is the StallBackstop event's row, for the one state a claim is in a turn in.
