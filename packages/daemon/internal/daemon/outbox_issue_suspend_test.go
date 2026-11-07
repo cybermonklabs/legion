@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -402,4 +403,290 @@ func TestAChildClosedDoneDeletesItsSandboxWhileItsParentRuns(t *testing.T) {
 	if got := storedClaim(planner.Token); got.SessionFile != "" {
 		t.Fatalf("re-entered child's planner = %+v, want a fresh launch with no session to resume", got)
 	}
+}
+
+// A start that outlives its issue's departure from the workflow starts nothing. The workflow
+// writes a role's start while its issue is still in the workflow, and the row can reach the runner
+// after the close or the park that took that issue out: it serves the same generation, it names
+// the same tree, and a start that names no phase has no phase to be held to, so none of the
+// start's own fences stands between it and the claim. The departure has already given the issue's
+// Sandbox back, so a start acted on here builds the pod again behind an issue the board shows
+// closed or parked, and brings back the claim that departure had just put down. Which of the two
+// rows was written first decides nothing: a stop is fenced by the newest start run against its
+// claim and not by the row ids, so a start queued before the departure and one queued after it
+// both reach the runner behind it, and both must be declined. The Sandbox goes exactly once
+// either way: the runtime reads it before it deletes and returns at once when it is already gone
+// ((*Runtime).SuspendIssue), so no second delete is ever issued, and a drain that ends with no
+// effect of the issue left has no suspension that could issue one. The fence is the status rule
+// itself (record.OutOfWorkflow) rather than a list of its own, so every status that takes an issue
+// out of the workflow declines the start while a status the workflow runs in still starts it.
+func TestAStartThatOutlivesItsIssuesDepartureStartsNothing(t *testing.T) {
+	// fenceRig is the fixture TestAChildClosedDoneDeletesItsSandboxWhileItsParentRuns builds, cut
+	// to one child: a running root holding its admission slot, a child under it whose planner is
+	// suspended with its session kept, a Sandbox apiece, and the outbox over the real Sandbox
+	// runtime. Each part below takes a rig of its own, because a departure gives its issue's
+	// Sandbox back and a Sandbox is given back once.
+	type fenceRig struct {
+		ctx          context.Context
+		pool         *pgxpool.Pool
+		api          *issueSandboxAPI
+		engine       *workflow.Engine
+		admission    *admit.Admission
+		child        record.Issue
+		sandbox      string
+		base         time.Time
+		run          func(what string)
+		storedClaim  func() supervise.Claim
+		effectsLeft  func() int
+		enqueueStart func(due time.Time) int64
+	}
+	newRig := func(t *testing.T, status string, at phase.Phase) *fenceRig {
+		t.Helper()
+		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(cancel)
+		pool := isolatedOutboxPool(t)
+		st, err := store.Open(ctx, pool.Config().ConnString())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(st.Close)
+		records := record.NewStore()
+		root := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "root", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U", LastDispatchSeq: 1}
+		parent := root.Key
+		child := record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: root.Key, Parent: &parent, Title: "child", Phase: at, Generation: 1, Status: status, Rank: "V", LastDispatchSeq: 1}
+		for _, issue := range []record.Issue{root, child} {
+			putOutboxIssue(t, pool, records, issue)
+		}
+		approved := 1
+		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			if err := records.PutSlot(ctx, tx, record.Slot{Issue: root.Key, Index: 0, AdmittedAt: time.Now()}); err != nil {
+				return err
+			}
+			return records.PutGate(ctx, tx, record.DesignGate{Issue: root.Key, ArtifactID: "artifact-208", LatestVersion: 1, ApprovedVersion: &approved})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.OpenTreeLifecycle(ctx, "legion", root.Key, treelifecycle.AuthorityWorkflow); err != nil {
+			t.Fatal(err)
+		}
+		rootSandbox, childSandbox := "legion-legion-legion-208", "legion-legion-legion-209"
+		api := newIssueSandboxAPI(
+			issueSandbox(rootSandbox, "sandbox-uid-root", root.Key, root.Key),
+			issueSandbox(childSandbox, "sandbox-uid-child", root.Key, child.Key),
+		)
+		server := httptest.NewServer(api)
+		t.Cleanup(func() { cancel(); server.Close() })
+		runtimeCtx, stopRuntime := context.WithCancel(ctx)
+		t.Cleanup(stopRuntime)
+		rt, err := sandbox.New(runtimeCtx, sandboxRESTConfig(server.URL), sandbox.Options{
+			Namespace: "legion", Project: "legion", Store: st, Image: "ghcr.io/example/worker@sha256:" + strings.Repeat("a", 64),
+			StorageClass: "standard", IssueVolume: resource.MustParse("1Gi"), StreamURL: "tcp://127.0.0.1:13371", Resources: defaultReservations(t),
+			SessionStore: ompsessions.Store{Kind: ompsessions.StorePostgres, DSNSecret: "SESSION_DSN"},
+			Tools:        sandbox.Tools{GH: "/usr/bin/gh", Git: "/usr/bin/git", JJ: "/usr/bin/jj", Legion: "/opt/legion/bin/legion", AgentSecrets: "/opt/legion/bin/agent-secrets"},
+			BootTimeout:  300 * time.Millisecond, RegistrationIntervals: 3, BusyBackoff: time.Millisecond, TerminationGrace: 100 * time.Millisecond, ProbeInterval: time.Hour, AdoptTimeout: time.Second,
+			Tokens: issueProvisionTokens{}, GitHubCredential: appauth.GitHubCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, nil, quietLogger()),
+			ControllerCredential: appauth.ControllerCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, nil, quietLogger()),
+			GitHubDirs:           legionDirs, Conns: fake.NewConns(), Log: quietLogger(),
+			RepositoryCache: defaultRepositoryCache(t), Mapped: noRepositories,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		prompt := filepath.Join(t.TempDir(), "role.md")
+		if err := os.WriteFile(prompt, []byte("You are the role.\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		sup := newSupervisor(runtimeCtx, st, "legion", t.TempDir(), quietLogger())
+		sup.deps = supervise.Deps{
+			Runtime: rt, Conns: fake.NewConns(), Store: st, Specs: issueLaunchSpecs{prompt: prompt}, Clock: stillClock{}, Log: quietLogger(),
+			Limits:         supervise.Limits{LaunchFailures: 1, PromptFailures: 2, PromptRetires: 2},
+			Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
+			PluginContract: 24,
+		}
+		t.Cleanup(sup.stop)
+		// The root's architect works on, so the tree runs and never lingers: a lingering tree has
+		// a start fence of its own, and the fence this test reads must be the issue's own standing.
+		architect := supervise.Claim{Token: "legion-legion-legion-208-architect", Project: "legion", Tree: root.Key, TreeEpoch: 1, Issue: root.Key, Role: claim.RoleArchitect,
+			State: supervise.StateWorking, Generation: 1, Session: "saved-architect", SessionFile: "/legion/sessions/architect.jsonl"}
+		planner := supervise.Claim{Token: "legion-legion-legion-209-planner", Project: "legion", Tree: root.Key, TreeEpoch: 1, Issue: child.Key, Role: claim.RolePlanner,
+			State: supervise.StateSuspended, Generation: 1, Session: "saved-planner", SessionFile: "/legion/sessions/planner.jsonl"}
+		for _, c := range []supervise.Claim{architect, planner} {
+			if err := st.PutClaim(ctx, c); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := sup.restore(ctx, []supervise.Claim{planner}); err != nil {
+			t.Fatal(err)
+		}
+		base := time.Now()
+		clock := base
+		engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour}, quietLogger())
+		admission := admit.New(records, engine, 2, "LEGION", quietLogger())
+		runner := &outbox{pool: pool, records: records, project: "legion", dispatchProject: "LEGION", supervisor: sup, trees: st, tokens: outboxTokens{},
+			stateDir: t.TempDir(), githubAPI: newBranchGitHub(t, nil, branchExists).url,
+			dispatch: &outboxDispatch{issue: dispatch.Issue{Key: child.Key, Status: "todo"}}, notices: &outboxPublisher{},
+			handlers: []intake.Handler{engine, admission}, log: quietLogger(), now: func() time.Time { return clock },
+		}
+		rig := &fenceRig{ctx: ctx, pool: pool, api: api, engine: engine, admission: admission, child: child, sandbox: childSandbox, base: base}
+		rig.run = func(what string) {
+			t.Helper()
+			clock = clock.Add(2 * time.Second)
+			if err := runner.RunOnce(ctx); err != nil {
+				t.Fatalf("%s: %v", what, err)
+			}
+		}
+		rig.storedClaim = func() supervise.Claim {
+			t.Helper()
+			claims, err := st.Claims(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, c := range claims {
+				if c.Token == planner.Token {
+					return c
+				}
+			}
+			t.Fatalf("no stored claim %s", planner.Token)
+			return supervise.Claim{}
+		}
+		rig.effectsLeft = func() int {
+			t.Helper()
+			var left int
+			if err := pool.QueryRow(ctx, `select count(*) from outbox where issue = $1 and kind in ('supervise', 'issue_suspend')`, child.Key).Scan(&left); err != nil {
+				t.Fatal(err)
+			}
+			return left
+		}
+		// enqueueStart queues the planner's start and answers its row id. It names no phase, as a
+		// relaunch and a production check's look do, so the phase fence never answers for the
+		// standing fence this test reads; due is the row's next_at, which is what puts it behind
+		// the departure's own rows in the drain (record.Store.DueRows orders by next_at, then id).
+		rig.enqueueStart = func(due time.Time) int64 {
+			t.Helper()
+			row := mustOutboxRow(t, child.Key, record.SuperviseRequest{Op: "start", Tree: child.Tree, Role: claim.RolePlanner, Generation: 1}, due)
+			var id int64
+			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+				var err error
+				id, err = records.EnqueueID(ctx, tx, row)
+				return err
+			}); err != nil {
+				t.Fatalf("enqueue the planner's start: %v", err)
+			}
+			return id
+		}
+		return rig
+	}
+	// departed reads what a declined start leaves behind: nothing launched — the fixture seeds the
+	// child's Sandbox, so a Sandbox created here is a relaunch and nothing else — no start recorded
+	// against the claim, a claim with no process and no locator, and the issue's Sandbox given back
+	// with its pod and the disk under it, fenced to the Sandbox the departure read. The delete
+	// happened once: nothing is left of the issue to issue a second one.
+	departed := func(t *testing.T, rig *fenceRig, start int64) {
+		t.Helper()
+		if slices.Contains(rig.api.created, rig.sandbox) {
+			t.Fatalf("the start of the departed issue created %v, want no Sandbox %s built again", rig.api.created, rig.sandbox)
+		}
+		got := rig.storedClaim()
+		if got.LastStartRow != 0 {
+			t.Fatalf("the departed issue's planner records start row %d, want start row %d declined before it was recorded", got.LastStartRow, start)
+		}
+		if !got.RunsNothing() || got.Locator != nil {
+			t.Fatalf("the departed issue's planner = %s with locator %+v, want a claim that runs nothing and holds no process", got.State, got.Locator)
+		}
+		options, deleted := rig.api.deleted(rig.sandbox)
+		if mode := rig.api.mode(rig.sandbox); mode != "deleted" || !deleted || options.PropagationPolicy == nil || *options.PropagationPolicy != metav1.DeletePropagationForeground {
+			t.Fatalf("the departed issue's Sandbox = %s, delete %+v (requested %t), want it deleted with foreground propagation", mode, options, deleted)
+		}
+		if options.Preconditions == nil || options.Preconditions.UID == nil || *options.Preconditions.UID != "sandbox-uid-child" {
+			t.Fatalf("the departed issue's Sandbox delete preconditions = %+v, want fenced to uid sandbox-uid-child", options.Preconditions)
+		}
+		if left := rig.effectsLeft(); left != 0 {
+			t.Fatalf("%d supervise/issue_suspend rows of the departed issue remain, want the start finished and no suspension left to delete its Sandbox a second time", left)
+		}
+	}
+
+	// The start queued before the close carries the lower id and the later next_at, so the drain
+	// hands it to the runner after the close's own rows: the claim is retired and the Sandbox
+	// given back by the time it runs, and it must start nothing on top of that.
+	t.Run("a start queued before the close runs after it", func(t *testing.T) {
+		rig := newRig(t, "testing", phase.Testing)
+		start := rig.enqueueStart(rig.base.Add(time.Second))
+		if _, err := intake.ApplyFact(rig.ctx, rig.pool, "dispatch", "child-done", intake.DispatchIssue{Key: rig.child.Key, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.closed", Status: "done", Title: rig.child.Title, Parent: "LEGION-208", Rank: "V"}, rig.engine, rig.admission); err != nil {
+			t.Fatal(err)
+		}
+		rig.run("the child's close, with a start queued before it")
+		departed(t, rig, start)
+		if got := rig.storedClaim(); got.State != supervise.StateRetired {
+			t.Fatalf("the closed issue's planner = %s, want it left retired as its close retired it", got.State)
+		}
+	})
+
+	// The same start written after the close carries the higher id, which is the order a stop's
+	// own fence (workflow.StopActs) would read as a newer run: it is not one, and the start is
+	// declined as the one before it was.
+	t.Run("a start queued after the close waits behind it", func(t *testing.T) {
+		rig := newRig(t, "testing", phase.Testing)
+		if _, err := intake.ApplyFact(rig.ctx, rig.pool, "dispatch", "child-done", intake.DispatchIssue{Key: rig.child.Key, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.closed", Status: "done", Title: rig.child.Title, Parent: "LEGION-208", Rank: "V"}, rig.engine, rig.admission); err != nil {
+			t.Fatal(err)
+		}
+		start := rig.enqueueStart(rig.base.Add(time.Second))
+		rig.run("the child's close, with a start queued after it")
+		departed(t, rig, start)
+		if got := rig.storedClaim(); got.State != supervise.StateRetired {
+			t.Fatalf("the closed issue's planner = %s, want it left retired as its close retired it", got.State)
+		}
+	})
+
+	// A park is the same departure by another op: the child moved to backlog has stopped rather
+	// than finished, so its roles keep their sessions and the departure suspends them where a
+	// close retires them. Its Sandbox goes either way, and so does the start.
+	t.Run("a start queued before the park runs after it", func(t *testing.T) {
+		rig := newRig(t, "in_progress", phase.Planning)
+		start := rig.enqueueStart(rig.base.Add(time.Second))
+		if _, err := intake.ApplyFact(rig.ctx, rig.pool, "dispatch", "child-backlog", intake.DispatchIssue{Key: rig.child.Key, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "backlog", Title: rig.child.Title, Parent: "LEGION-208", Rank: "V"}, rig.engine, rig.admission); err != nil {
+			t.Fatal(err)
+		}
+		rig.run("the child's park, with a start queued before it")
+		departed(t, rig, start)
+		if got := rig.storedClaim(); got.State != supervise.StateSuspended || got.Session != "saved-planner" || got.SessionFile != "/legion/sessions/planner.jsonl" {
+			t.Fatalf("the parked issue's planner = %+v, want it left suspended with its session kept", got)
+		}
+	})
+
+	// The fence is the standing rule and not a list of its own. Every status record.OutOfWorkflow
+	// names declines the start, whether or not a departure ran in this drain, and the control
+	// below starts the same row at a status the workflow runs in: without it a fence written for
+	// done and backlog alone would read the same here.
+	for _, status := range []string{"triage", "icebox", "backlog", "done"} {
+		t.Run("a start of an issue at "+status, func(t *testing.T) {
+			if !record.OutOfWorkflow(status) {
+				t.Fatalf("%s no longer takes an issue out of the workflow; this table reads the rule the fence is held to", status)
+			}
+			rig := newRig(t, status, phase.Planning)
+			start := rig.enqueueStart(rig.base)
+			rig.run("the start of the issue at " + status)
+			if slices.Contains(rig.api.created, rig.sandbox) {
+				t.Fatalf("the start of the issue at %s created %v, want no Sandbox built behind it", status, rig.api.created)
+			}
+			got := rig.storedClaim()
+			if got.LastStartRow != 0 || got.State != supervise.StateSuspended || got.Session != "saved-planner" {
+				t.Fatalf("the planner of the issue at %s = %s with last start %d and session %q, want start row %d declined and the claim untouched",
+					status, got.State, got.LastStartRow, got.Session, start)
+			}
+			if left := rig.effectsLeft(); left != 0 {
+				t.Fatalf("the start of the issue at %s left %d rows, want it declined and finished", status, left)
+			}
+		})
+	}
+	t.Run("a start of an issue the workflow still runs", func(t *testing.T) {
+		if record.OutOfWorkflow("testing") {
+			t.Fatal("testing now takes an issue out of the workflow; this control reads a status the workflow runs in")
+		}
+		rig := newRig(t, "testing", phase.Testing)
+		start := rig.enqueueStart(rig.base)
+		rig.run("the start of the issue at testing")
+		if got := rig.storedClaim(); got.LastStartRow != start {
+			t.Fatalf("the planner of the issue at testing records start row %d, want start row %d to have reached it", got.LastStartRow, start)
+		}
+	})
 }
