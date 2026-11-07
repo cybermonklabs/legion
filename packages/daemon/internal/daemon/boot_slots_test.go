@@ -191,9 +191,12 @@ func TestASecondBootOnTheSameStoreLeavesEverySlotStartAndPlaceAsItWas(t *testing
 // so the one every test of the first boot watches Store.Migrate apply.
 const issueSlotsMigration = 20261103183833
 
-// preReleaseStore is a database of this test's own carrying every embedded migration except
+// preReleaseStore is an empty database of this test's own (testdb.Database, not the migrated
+// clone testDSN hands every other test) carrying every embedded migration except
 // issueSlotsMigration, each applied as Store.Migrate applies it — the migration's SQL, the
-// widening of schema_version for a timestamped version, and the version row.
+// widening of schema_version for a timestamped version, and the version row. Its subject is
+// what Store.Migrate does from the schema that precedes this release, so it has to start from a
+// database carrying nothing.
 //
 // It withholds that one migration rather than cutting the series at its version because the two
 // halves of a pre-release store are wanted at once: the schema must take this release's own

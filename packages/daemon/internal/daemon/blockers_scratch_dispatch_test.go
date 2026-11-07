@@ -909,12 +909,12 @@ func registerLaunch(t *testing.T, d *daemon, launch runtime.SpawnSpec) (string, 
 	return session, registered.Secret
 }
 
-// blockersDatabase is a Postgres database of this daemon's own, dropped when the test ends. The
-// daemon migrates it itself at boot. It matters because of one table: processed_events, keyed by
-// (source, event_id) alone. The scratch Dispatch numbers its own events from one in a database of
-// its own, so every run publishes `dispatch-1` again, and a daemon sharing the test server's
-// database with every other test would take this run's events for ones already processed and skip
-// them. The admission slot index, unique across the whole database, is a second reason.
+// blockersDatabase is an empty Postgres database, dropped when the test ends, which this test's
+// daemon migrates itself at boot: the schema it carries is Legion's own, not the scratch
+// Dispatch's, which keeps a database of its own (startScratchDispatchOn). Every test of this
+// package already has a database to itself (testDSN), so what this fixture adds is that
+// migration: the daemon here comes up on a database nothing has shaped, as a deployment's daemon
+// does, rather than on a clone of the package's migrated template.
 func blockersDatabase(t *testing.T) string {
 	t.Helper()
 	return testdb.Database(t, "legion_blockers_test")

@@ -49,6 +49,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -57,18 +58,32 @@ import (
 
 const testOperatorToken = "operator-bearer-for-daemon-tests"
 
-// testDSN is the one database this run's tests write in, made by TestMain on the devbox and CI
-// Postgres LEGION_TEST_PG_DSN names (testdb.RunDatabaseMain). The daemon has no in-memory mode:
-// what it does on a boot is what its store recorded, and a boot migrates Legion's schema into
-// whatever database it is given, so the run owns one rather than sharing the server's. A test
-// that sets LEGION_TEST_PG_DSN itself, to a server its own test needs, gets the value it set.
+// packageDSN is LEGION_TEST_PG_DSN as the test process was given it, read before any test runs.
+// It names the devbox or CI Postgres this package's template and every clone of it live on, and
+// tells a value a test set for itself from the one the run was started with.
+var packageDSN = os.Getenv("LEGION_TEST_PG_DSN")
+
+// testDSN is a database of this test's own, carrying every migration, cloned from the template
+// TestMain prepared and dropped when the test ends (testpg.Clone). The daemon has no in-memory
+// mode: what it does on a boot is what its store recorded, and a boot migrates whatever database
+// it is given, which for a clone is already migrated. One database per test rather than one per
+// run because most of what these tests write is unique across a whole database and carries no
+// project: a slot's index, an issue's key, a pull request's repository and branch, a processed
+// event's source and id, a consumer's position, the advisory lock a tree's lifecycle takes. Two
+// tests sharing a database collide on all of those.
+//
+// A test that sets LEGION_TEST_PG_DSN itself, to a server its own test needs, gets the value it
+// set: it is pointing at a Postgres this process has no template on.
 func testDSN(t *testing.T) string {
 	t.Helper()
 	dsn := os.Getenv("LEGION_TEST_PG_DSN")
 	if dsn == "" {
 		t.Skip(testdb.SkipMessage)
 	}
-	return testdb.RunDatabaseFor(dsn)
+	if dsn != packageDSN {
+		return dsn
+	}
+	return testpg.Clone(t, "legion_daemon_test")
 }
 
 // shortTempDir is a state directory short enough for the worker stream's unix socket: a socket

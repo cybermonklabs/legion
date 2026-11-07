@@ -8,6 +8,5 @@
 // internal/store cannot import this one back. The half of the fixture that needs no schema is
 // internal/testpg/testdb, which imports nothing of this module and so is open to every package,
 // internal/store among them: an empty database (testdb.Database), a file holding its DSN
-// (testdb.DSNFile), one database for a whole run (testdb.RunDatabaseMain, testdb.RunDatabaseFor),
-// and a database reached across a network's delay (testdb.Delayed).
+// (testdb.DSNFile), and a database reached across a network's delay (testdb.Delayed).
 package testpg

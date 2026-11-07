@@ -207,8 +207,9 @@ func outboxRows(t *testing.T, pool *pgxpool.Pool) int {
 }
 
 // isolatedOutboxPool is a pool on a database carrying every migration, cloned from the package's
-// template (testpg.ClonePool). The rigs' own stores share the package's run database instead
-// (testDSN, testdb.RunDatabaseFor): only the tests that need rows of their own come here.
+// template (testpg.ClonePool), for a test that reads the outbox table itself: its daemon is
+// pointed at this same database (cfg.PostgresDSN) rather than at the clone testDSN made, so the
+// rows the test counts are the rows that daemon wrote.
 func isolatedOutboxPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	return testpg.ClonePool(t, "legion_outbox_test")

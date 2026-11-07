@@ -6,11 +6,6 @@
 // Database is an empty database. A test that needs the daemon's schema takes internal/testpg's
 // Clone or CloneStore instead, which copy a template that package migrated once.
 //
-// A package whose tests migrate into the database their DSN names, rather than making one per
-// test, takes one database for the whole run instead: RunDatabaseMain from its TestMain, and
-// RunDatabaseFor wherever it reads the DSN. The two mechanisms compose, and a package that needs
-// both nests them (internal/daemon's TestMain).
-//
 // This package imports nothing of this module, and nothing added here may: migrating the template
 // needs internal/store, so internal/testpg imports it, and a test binary of internal/store that
 // imported internal/testpg back would be a cycle. Keeping the schema-free half apart is what lets
@@ -71,8 +66,7 @@ func Database(t testing.TB, prefix string) string {
 
 // create makes an empty database named <prefix>_<random> on the server dsn names, and answers its
 // URL and the function that drops it, which also closes the admin connection create opened. The
-// URL is dsn with its path replaced, so it keeps dsn's query. Database and RunDatabaseMain are
-// its two callers: one database per test, one per run.
+// URL is dsn with its path replaced, so it keeps dsn's query. Database is its one caller.
 func create(dsn, prefix string) (string, func() error, error) {
 	base, err := url.Parse(dsn)
 	if err != nil {
@@ -202,75 +196,6 @@ func RandomName(prefix string) (string, error) {
 func DatabaseURL(server url.URL, database string) string {
 	server.Path = "/" + database
 	return server.String()
-}
-
-// runServer is the server RunDatabaseMain made the run's database on, named by serverKey, and
-// runDatabase the URL of that database; both are empty until a RunDatabaseMain with
-// LEGION_TEST_PG_DSN set runs.
-var (
-	runServer   string
-	runDatabase string
-)
-
-// serverKey is the part of a DSN that names the server rather than a database on it, so two DSNs
-// that differ only in the database they name have one key. A DSN no URL parser reads is its own
-// key, which no parsed one equals.
-func serverKey(dsn string) string {
-	parsed, err := url.Parse(dsn)
-	if err != nil {
-		return dsn
-	}
-	parsed.Path, parsed.RawPath = "", ""
-	return parsed.String()
-}
-
-// RunDatabaseMain makes one database named <prefix>_<random> for the whole run on the server
-// LEGION_TEST_PG_DSN names, runs run, drops that database and returns run's code; a drop that
-// fails prints why and turns a passing run into exit 1. A package whose tests migrate into the
-// database their DSN names calls it from TestMain, where every test reads the run's database
-// through RunDatabaseFor, so two runs of the package on one server never write each other's rows
-// and neither writes the database that server serves. With LEGION_TEST_PG_DSN unset it makes
-// nothing and returns run(), so those tests skip as they do without a server.
-//
-// It is not internal/testpg's Main, which prepares the template Clone copies: the two are
-// different databases for different needs, and a package that wants both nests them, each under a
-// prefix of its own so a census of either name says which it counted:
-//
-//	os.Exit(testpg.Main("legion_daemon_test", func() int {
-//		return testdb.RunDatabaseMain("legion_daemon_run", m.Run)
-//	}))
-//
-// It takes run rather than *testing.M so that it wraps another TestMain helper.
-func RunDatabaseMain(prefix string, run func() int) int {
-	dsn := os.Getenv("LEGION_TEST_PG_DSN")
-	if dsn == "" {
-		return run()
-	}
-	database, drop, err := create(dsn, prefix)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "make the package's run database: %v\n", err)
-		return 1
-	}
-	runServer, runDatabase = serverKey(dsn), database
-	code := run()
-	if err := drop(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		if code == 0 {
-			code = 1
-		}
-	}
-	return code
-}
-
-// RunDatabaseFor is the URL of the database RunDatabaseMain made for this run when dsn names the
-// server that database is on, which is the same URL but for the path, and dsn itself otherwise: a
-// test that points LEGION_TEST_PG_DSN at a server of its own keeps what it set. Without a run
-// database — no RunDatabaseMain, or LEGION_TEST_PG_DSN unset — it is dsn.
-func RunDatabaseFor(dsn string) string {
-	if runDatabase == "" || serverKey(dsn) != runServer {
-		return dsn
-	}
-	return runDatabase
 }
 
 // DSNFile is a 0600 file under the test's temporary directory holding Database's URL, as the

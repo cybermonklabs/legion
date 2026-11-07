@@ -8,7 +8,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testbuild"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
-	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 )
 
 // TestMain takes out of the process every variable that could lead the tests' real git and jj to
@@ -16,19 +15,17 @@ import (
 // kept-decision property test reads: LEGION_KEPT_PROPERTY_SEED, which replays one run, and
 // LEGION_KEPT_PROPERTY_RUNS and LEGION_KEPT_PROPERTY_STEPS, its two counts. CI's pull-request
 // lane reduces the runs (ci.yaml) and leaves the steps at the test's own default; the guard keeps
-// all three, so a developer may set any of them by hand. It drops the migrated template
-// isolatedOutboxPool clones its databases from (testpg.Main), makes the one database this run's
-// tests write in (testdb.RunDatabaseMain), removes the directory the tests' Envoy binaries were
-// built into (testbuild.Main), and fails the run if a NATS server a test started is still
-// running after the last test (testnats.Main).
+// all three, so a developer may set any of them by hand. It migrates the template every test's
+// database is cloned from and drops it when the run ends (testpg.Main), removes the directory
+// the tests' Envoy binaries were built into (testbuild.Main), and fails the run if a NATS server
+// a test started is still running after the last test (testnats.Main).
 //
-// The run's database is legion_daemon_run_<random> on the server LEGION_TEST_PG_DSN names,
-// dropped when the run ends; testDSN hands it to every test, and a daemon migrates Legion's
-// schema into it, so two runs of this package on one server never write each other's rows, and
-// neither writes the database that server serves. It is named apart from the template's
-// legion_daemon_test_template_<random>, which carries the migrations isolatedOutboxPool clones:
-// a census of either name then says which of the two it counted. Each test still randomises its
-// project name, as the tests did when they all shared one database.
+// The template is legion_daemon_test_template_<random> on the server LEGION_TEST_PG_DSN names,
+// and a test's clone of it legion_daemon_test_<random>, dropped when that test ends (testDSN,
+// testpg.Clone). So two runs of this package on one server never write each other's rows, no
+// test writes another's, and neither writes the database that server serves. Each test still
+// randomises its project name, which is what told its rows apart while the package shared one
+// database.
 //
 // The guard runs for the test process alone. This binary is also the rig's role process, which its
 // launcher re-enters as TestIdleRigRoleProcess (idle_rig_pod_test.go) with the environment a role
@@ -49,8 +46,6 @@ func TestMain(m *testing.M) {
 	}
 	fixtureenv.MustGuard("LEGION_KEPT_PROPERTY_SEED", "LEGION_KEPT_PROPERTY_RUNS", "LEGION_KEPT_PROPERTY_STEPS")
 	os.Exit(testpg.Main("legion_daemon_test", func() int {
-		return testdb.RunDatabaseMain("legion_daemon_run", func() int {
-			return testbuild.Main(func() int { return testnats.Main(m) })
-		})
+		return testbuild.Main(func() int { return testnats.Main(m) })
 	}))
 }

@@ -335,8 +335,10 @@ type scratchDispatch struct {
 	output   *syncBuffer
 }
 
-// startScratchDispatchOn gives the server a scratch database of its own on the test DSN's
-// Postgres (testdb.Database) and starts the cmd/dispatch this process built.
+// startScratchDispatchOn gives the server an empty scratch database of its own on the test DSN's
+// Postgres (testdb.Database) and starts the cmd/dispatch this process built. The database stays
+// empty rather than being a clone of the package's template: Dispatch migrates its own schema
+// into it at startup, and the template this package migrates carries the daemon's.
 func startScratchDispatchOn(t *testing.T, options scratchDispatchOptions) *scratchDispatch {
 	t.Helper()
 	database := testdb.Database(t, "dispatch_scratch_test")
