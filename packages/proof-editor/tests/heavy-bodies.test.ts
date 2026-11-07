@@ -8,10 +8,13 @@
  *
  * Three things are asserted:
  *
- * 1. Cost. Every shape, at the longest body a caller may write, parses in the read-only engine and
- *    in the default mode in under five seconds. The bound is a regression lock with room for any
- *    runner, not a target: the lazy-line and bracket shapes take 10-20 s without the dependency
- *    patches, and about half a second with them.
+ * 1. What each shape parses to, and what it costs. Every shape, at the longest body a caller may
+ *    write, parses in the read-only engine and in the default mode to the text and the nesting
+ *    its row names, within `parseCpuBudgetMs` of CPU time, and at a cost that grows no faster
+ *    than the body does: a row reads the shape at its full size and at an eighth of it, in CPU
+ *    time rather than wall time (tests/cpu-time.ts). The one shape the default mode refuses is
+ *    read the same way and then asked for its refusal. Without the dependency patches the
+ *    lazy-line and bracket shapes cost 10-20 s, and about half a second with them.
  * 2. The nesting bound, at the boundaries the document service draws them at
  *    (`maxNesting`, packages/envoy/internal/dispatch/pmdoc/nesting.go: a quote, a list, a list
  *    item, a typed block and a footnote definition each count one). A list opener opens a list and
@@ -29,12 +32,16 @@ import remarkParse from "remark-parse";
 import { unified } from "unified";
 import { createHeadlessProof, type HeadlessProofEditor } from "../src/lib-headless.js";
 import { serverBlockSchema } from "./block-schema-fixture";
+import {
+  CpuTimedError,
+  expectCostGrowsLinearly,
+  fastestCpuTimeOf,
+  growthStep,
+  parseCpuBudgetMs,
+} from "./cpu-time";
 
 /** The longest comment, message or broadcast body a caller may write, in characters. */
 const bodyCap = 32_000;
-
-/** The most a parse of a body at that cap may take, on any runner. */
-const parseBudgetMs = 5_000;
 
 /**
  * How many blocks a document may open inside one another: `maxNesting` in
@@ -62,27 +69,104 @@ function nestedItems(depth: number): string {
 const nest49 = nestedItems(maxListNesting - 1);
 const nest100 = nestedItems(maxBlockNesting);
 
+/**
+ * A shape, as a reader is sent it and as a row measures it.
+ *
+ * `grow` builds the shape at a size of the dimension whose growth costs: the items of a list, the
+ * lines after a marker, the brackets of a run, the blank lines under a nesting. A row builds the
+ * shape at `full` and at an eighth of that size, so the two parses differ by their input and by
+ * nothing else. The nesting of the two nested shapes is held at its depth while their blank lines
+ * shrink, because what costs there is the blank lines times the blocks open above them; shrinking
+ * the whole body instead drops the blank lines and measures another shape.
+ */
+type HeavyShape = {
+  name: string;
+  /** The shape at `size` of its growing dimension. */
+  grow: (size: number) => string;
+  /** The size at which the body is the longest a caller may write. */
+  full: number;
+  /** What a parse of the full body produces, in a mode that reads it. */
+  expectDoc: (doc: ProseMirrorNode) => void;
+  /** What the default mode refuses the full body with, for the shape it refuses. */
+  refusedInDefaultMode?: RegExp;
+};
+
+/** The typed fence's opener, which its closers stop short by, so the body is twice the brackets. */
+const calloutLabel = ":::callout[";
+
 /** The shapes, each at the body cap, as a reader is sent them. */
-const shapes: { name: string; body: string }[] = [
-  { name: "a plain list of 8,000 items", body: "- x\n".repeat(8_000) },
-  { name: "a quote then lines carrying no marker", body: `> x\n${"x\n".repeat(15_998)}` },
-  { name: "a list item then lines carrying no marker", body: `- x\n${"x\n".repeat(15_998)}` },
+const shapes: HeavyShape[] = [
+  {
+    name: "a plain list of 8,000 items",
+    grow: (size) => "- x\n".repeat(size),
+    full: 8_000,
+    expectDoc: (doc) => {
+      expect(doc.textContent.length).toBe(8_000);
+      expect(depthOf(doc, "bullet_list")).toBe(1);
+    },
+  },
+  {
+    name: "a quote then lines carrying no marker",
+    grow: (size) => `> x\n${"x\n".repeat(size)}`,
+    full: 15_998,
+    expectDoc: (doc) => {
+      expect(doc.textContent.length).toBe(31_997);
+      expect(depthOf(doc, "blockquote")).toBe(1);
+    },
+  },
+  {
+    name: "a list item then lines carrying no marker",
+    grow: (size) => `- x\n${"x\n".repeat(size)}`,
+    full: 15_998,
+    expectDoc: (doc) => {
+      expect(doc.textContent.length).toBe(31_997);
+      expect(depthOf(doc, "bullet_list")).toBe(1);
+    },
+  },
   {
     name: "a run of 15,000 brackets and as many closers",
-    body: "[".repeat(15_000) + "]".repeat(15_000),
+    grow: (size) => "[".repeat(size) + "]".repeat(size),
+    full: 15_000,
+    expectDoc: (doc) => {
+      expect(doc.textContent.length).toBe(30_000);
+    },
   },
   {
     name: "49 items nested by indentation then blank lines",
-    body: nest49 + "\n".repeat(bodyCap - nest49.length),
+    grow: (size) => nest49 + "\n".repeat(size),
+    full: bodyCap - nest49.length,
+    expectDoc: (doc) => {
+      expect(doc.textContent).toBe("a".repeat(maxListNesting - 1));
+      expect(depthOf(doc, "bullet_list")).toBe(maxListNesting - 1);
+    },
   },
   {
     name: "100 items nested by indentation then blank lines",
-    body: nest100 + "\n".repeat(bodyCap - nest100.length),
+    grow: (size) => nest100 + "\n".repeat(size),
+    full: bodyCap - nest100.length,
+    expectDoc: (doc) => {
+      // The 50 items past the bound are the text of the innermost item the bound allows.
+      expect(doc.textContent.length).toBe(250);
+      expect(depthOf(doc, "bullet_list")).toBe(maxListNesting);
+    },
   },
-  { name: "a chain of 15,999 list markers on one line", body: `${"- ".repeat(15_999)}x` },
+  {
+    name: "a chain of 15,999 list markers on one line",
+    grow: (size) => `${"- ".repeat(size)}x`,
+    full: 15_999,
+    expectDoc: (doc) => {
+      expect(doc.textContent.length).toBe(31_899);
+      expect(depthOf(doc, "bullet_list")).toBe(maxListNesting);
+    },
+  },
   {
     name: "a typed fence whose label opens a run of brackets",
-    body: `:::callout[${"[".repeat(15_000)}${"]".repeat(14_989)}`,
+    grow: (size) => `${calloutLabel}${"[".repeat(size)}${"]".repeat(size - calloutLabel.length)}`,
+    full: 15_000,
+    expectDoc: (doc) => {
+      expect(doc.textContent.length).toBe(30_000);
+    },
+    refusedInDefaultMode: /line 1\b/,
   },
 ];
 
@@ -104,16 +188,19 @@ function defaultProof(): Promise<HeadlessProofEditor> {
   return editor;
 }
 
-/** How long `parse` takes, in milliseconds; a refusal it throws still counts its time. */
-function timed(parse: () => unknown): number {
-  const started = performance.now();
+/**
+ * The cost of a parse the mode refuses, with the refusal itself. `cpuTimeOf` gives a throw back
+ * as a `CpuTimedError` whose `cpuMs` is what the refused parse cost and whose `cause` is the
+ * refusal, so a row reads both from one measurement.
+ */
+function refusedCostOf(parse: () => unknown): CpuTimedError {
   try {
-    parse();
-  } catch {
-    // A shape the nesting bound refuses is refused in the default mode; what is measured is how
-    // long it takes to.
+    fastestCpuTimeOf(parse);
+  } catch (error) {
+    if (error instanceof CpuTimedError) return error;
+    throw error;
   }
-  return performance.now() - started;
+  throw new Error("the parse was expected to be refused and was not");
 }
 
 /** How many blocks of type `type` stand inside one another on `node`'s deepest path. */
@@ -125,18 +212,64 @@ function depthOf(node: ProseMirrorNode, type: string): number {
   return node.type.name === type ? deepest + 1 : deepest;
 }
 
+// The `300_000` each row below carries is a hang guard, not the bound on work: on bun 1.4.4 a
+// per-test limit cannot interrupt a synchronous body, and is reported once that body returns, so
+// what ends a hang is the `dispatch-ui` job's `timeout-minutes: 15` in .github/workflows/ci.yaml.
+// `parseCpuBudgetMs` is the bound on work.
 for (const shape of shapes) {
-  test(`the read-only engine parses ${shape.name} in under 5 s`, async () => {
+  const smallBody = shape.grow(Math.floor(shape.full / growthStep));
+  const fullBody = shape.grow(shape.full);
+  const refused = shape.refusedInDefaultMode;
+
+  test(`the read-only engine parses ${shape.name} at a cost proportional to its length`, async () => {
     const proof = await readOnlyProof();
-    const took = timed(() => proof.parseMarkdown(shape.body));
-    expect(took, `the parse took ${Math.round(took)} ms`).toBeLessThan(parseBudgetMs);
+    const smallCost = fastestCpuTimeOf(() => proof.parseMarkdown(smallBody));
+    let doc: ProseMirrorNode | undefined;
+    const fullCost = fastestCpuTimeOf(() => {
+      doc = proof.parseMarkdown(fullBody);
+    });
+    expect(fullCost, `the full size cost ${Math.round(fullCost)} ms of CPU time`).toBeLessThan(
+      parseCpuBudgetMs
+    );
+    expectCostGrowsLinearly(`the read-only engine's parse of ${shape.name}`, smallCost, fullCost);
+    if (doc === undefined) throw new Error("the measured parse produced no document");
+    shape.expectDoc(doc);
   }, 300_000);
 
-  test(`the default mode parses ${shape.name} in under 5 s`, async () => {
-    const proof = await defaultProof();
-    const took = timed(() => proof.parseMarkdown(shape.body));
-    expect(took, `the parse took ${Math.round(took)} ms`).toBeLessThan(parseBudgetMs);
-  }, 300_000);
+  if (refused === undefined) {
+    test(`the default mode parses ${shape.name} at a cost proportional to its length`, async () => {
+      const proof = await defaultProof();
+      const smallCost = fastestCpuTimeOf(() => proof.parseMarkdown(smallBody));
+      let doc: ProseMirrorNode | undefined;
+      const fullCost = fastestCpuTimeOf(() => {
+        doc = proof.parseMarkdown(fullBody);
+      });
+      expect(fullCost, `the full size cost ${Math.round(fullCost)} ms of CPU time`).toBeLessThan(
+        parseCpuBudgetMs
+      );
+      expectCostGrowsLinearly(`the default mode's parse of ${shape.name}`, smallCost, fullCost);
+      if (doc === undefined) throw new Error("the measured parse produced no document");
+      shape.expectDoc(doc);
+    }, 300_000);
+  } else {
+    test(`the default mode refuses ${shape.name} at a cost proportional to its length`, async () => {
+      const proof = await defaultProof();
+      const small = refusedCostOf(() => proof.parseMarkdown(smallBody));
+      const full = refusedCostOf(() => proof.parseMarkdown(fullBody));
+      expect(
+        full.cpuMs,
+        `the full size cost ${Math.round(full.cpuMs)} ms of CPU time`
+      ).toBeLessThan(parseCpuBudgetMs);
+      expectCostGrowsLinearly(
+        `the default mode's refusal of ${shape.name}`,
+        small.cpuMs,
+        full.cpuMs
+      );
+      const refusal = full.cause;
+      if (!(refusal instanceof Error)) throw refusal;
+      expect(refusal.message).toMatch(refused);
+    }, 300_000);
+  }
 }
 
 /** The two modes, which read a body's blocks the same way: only their directives differ. */
