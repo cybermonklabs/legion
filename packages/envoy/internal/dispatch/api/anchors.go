@@ -64,6 +64,16 @@ func (s *server) resolveAnchor(ctx context.Context, tx pgx.Tx, owner owner, inpu
 		if err != nil {
 			return nil, "", nil, err
 		}
+		// The quote branch joined this transaction's write to the document as it wrote its mark
+		// (MarkQuote); this one writes nothing into the document, so it joins the write here,
+		// before the version below takes the document's advisory lock. The write's join is what
+		// has every other process store its room of the document first, and a join made under
+		// that lock - by the comment's own margin record, written into this same transaction
+		// later (ProjectMark) - asks for that flush while holding the lock every other process's
+		// append waits on, which skips it (docs.JoinWrite).
+		if err := s.deps.Docs.JoinWrite(ctx, artifact.ID); err != nil {
+			return &anchor, artifact.Name, nil, err
+		}
 	}
 	anchor.Quote = anchored.Quote
 	if anchored.BlockID != "" {

@@ -1156,6 +1156,36 @@ func modelBlockPath(path pmdoc.BlockPath) model.BlockPath {
 	return out
 }
 
+// JoinWrite takes the calling transaction's write to artifactID (joinLiveWrite) and changes
+// nothing: it has every other process holding a room of the document store that room's updates
+// (flushOtherRooms), takes the document's owner row and then its writer slot, and leaves the
+// transaction's later document calls to find the write already open.
+//
+// It is the first step of the lock order for a transaction that reads the document under its
+// advisory lock before it writes: a comment or an ask anchored to a mark the document already
+// holds (api/anchors.go, resolveAnchor's mark_id branch), which verifies the mark and pins the
+// version its anchor names (VerifyMark, SnapshotVersion) and writes the comment's margin record
+// after that (ProjectMark). Without it that version's capture takes the advisory lock with no
+// write joined (captureLiveTextAndAuthors, lockedHead) and the margin write's own join then asks
+// for the flush while the transaction holds the lock every other process's append waits on, so
+// the flush is skipped and the other process's room is never stored (roomQueries.ask). The quote
+// branch needs none: MarkQuote joins the write before anything takes the lock.
+//
+// The write it opens is a write like any other - it waits for the transaction holding the slot,
+// refuses a failed room and a shutting-down document - and it records the owner row's state
+// (liveWrite.ownerClosed), which is what sends a comment's anchor on a closed issue down the cold
+// fork (closedIssueCommentMark).
+func (s *Service) JoinWrite(ctx context.Context, artifactID string) error {
+	if s.shuttingDown(artifactID) {
+		return ErrServiceUnavailable
+	}
+	if _, joined := txFromContext(ctx); !joined {
+		return errUnjoined
+	}
+	_, err := s.joinLiveWrite(ctx, ledgerFrom(ctx), artifactID)
+	return err
+}
+
 // SnapshotVersion returns the current immutable version, adding an unnamed
 // version only when the live text has diverged since the previous one. The version a comment's
 // anchor is pinned to under WithCommentMarks is taken on a closed issue's document too.
