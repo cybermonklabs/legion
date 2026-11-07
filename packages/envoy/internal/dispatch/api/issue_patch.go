@@ -438,14 +438,16 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		changed = true
 	}
 	if !changed {
-		advice := s.writeAdvice(
-			r.Context(), tx, "PATCH /api/v1/issues/{key}", key, actor, "", before.Status,
-		)
 		if err := ledger.Commit(r.Context()); err != nil {
 			s.writeHandlerError(w, r, err)
 			return
 		}
 		release()
+		// The issue-scoped advice runs here: after the commit, after the gates, on the pool
+		// (writeAdvice), so none of its queries holds the issue row this patch locked.
+		advice := s.writeAdvice(
+			r.Context(), "PATCH /api/v1/issues/{key}", key, actor, "", before.Status,
+		)
 		WriteJSON(w, http.StatusOK, withAdvice(before, advice))
 		return
 	}
@@ -576,9 +578,6 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			events = append(events, addedEvent)
 		}
 	}
-	advice := s.writeAdvice(
-		r.Context(), tx, "PATCH /api/v1/issues/{key}", key, actor, "", after.Status,
-	)
 	if closing {
 		// The close's last statement before its commit stamps closed_at again, at the moment it
 		// runs (clock_timestamp()), over the start of the transaction (now()) the update above
@@ -614,6 +613,12 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		s.sweepClosedIssueAsks(outlivingTheClient(r), key, withdrawn, actor)
 	}
 	release()
+	// The issue-scoped advice runs here: after the commit, after the gates, on the pool
+	// (writeAdvice), so none of its queries holds the rows this patch locked. It reports the
+	// status the patch wrote, read under those locks and passed in.
+	advice := s.writeAdvice(
+		r.Context(), "PATCH /api/v1/issues/{key}", key, actor, "", after.Status,
+	)
 	WriteJSON(w, http.StatusOK, withAdvice(after, advice))
 }
 

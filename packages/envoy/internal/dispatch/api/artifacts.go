@@ -733,12 +733,6 @@ func (s *server) storeArtifact(
 			r.Context(), tx, "POST /api/v1/issues/{key}/artifacts", artifactIssueKey(artifact), artifact.ID, version.Number,
 		)
 	}
-	var advice *writeAdvice
-	if target.IssueKey != nil && issueStatus != nil {
-		advice = s.writeAdvice(
-			r.Context(), tx, "POST /api/v1/issues/{key}/artifacts", *target.IssueKey, actor, "", *issueStatus,
-		)
-	}
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, r, err)
 		return
@@ -751,6 +745,14 @@ func (s *server) storeArtifact(
 	}
 	s.publish(published...)
 	release()
+	// The issue-scoped advice runs here: after the commit, after the gate, on the pool
+	// (writeAdvice), so none of its queries holds this write's locks.
+	var advice *writeAdvice
+	if target.IssueKey != nil && issueStatus != nil {
+		advice = s.writeAdvice(
+			r.Context(), "POST /api/v1/issues/{key}/artifacts", *target.IssueKey, actor, "", *issueStatus,
+		)
+	}
 	var blocks *documentBlocks
 	if kind == "doc" {
 		blocks = documentBlocksFor(documentReadBack, documentMarkdown)
@@ -1199,12 +1201,6 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 			r.Context(), tx, "POST /api/v1/artifacts/{id}/edits", artifactIssueKey(artifact), artifact.ID, written.Version.Number,
 		)
 	}
-	var advice *writeAdvice
-	if artifact.IssueKey != nil && status != nil {
-		advice = s.writeAdvice(
-			r.Context(), tx, "POST /api/v1/artifacts/{id}/edits", *artifact.IssueKey, actor, "", *status,
-		)
-	}
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, r, err)
 		return
@@ -1220,6 +1216,14 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	// The gate ends here, not at the commit: a writer let in between the two would publish its
 	// own events ahead of this edit's (storeArtifact releases its gates the same way).
 	release()
+	// The issue-scoped advice runs here: after the commit, after the gate, on the pool
+	// (writeAdvice), so none of its queries holds this edit's locks.
+	var advice *writeAdvice
+	if artifact.IssueKey != nil && status != nil {
+		advice = s.writeAdvice(
+			r.Context(), "POST /api/v1/artifacts/{id}/edits", *artifact.IssueKey, actor, "", *status,
+		)
+	}
 	unchanged := edit.Unchanged
 	if unchanged == nil {
 		unchanged = []int{}

@@ -433,9 +433,6 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	advice := s.writeAdvice(
-		r.Context(), tx, "POST /api/v1/issues", key, actor, "", issue.Status,
-	)
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, r, err)
 		return
@@ -445,6 +442,11 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// transaction is durable.
 	s.deps.Docs.ScheduleSettlement(artifactID)
 	s.publish(event)
+	// The issue-scoped advice runs here: after the commit, on the pool (writeAdvice), so none
+	// of its queries holds the issue row this create locked.
+	advice := s.writeAdvice(
+		r.Context(), "POST /api/v1/issues", key, actor, "", issue.Status,
+	)
 	if advice != nil && input.Spec != nil && strings.TrimSpace(*input.Spec) != "" {
 		advice.documentBlocks = documentBlocksFor(documentReadBack, markdown)
 	}
@@ -476,31 +478,33 @@ func (s *server) respondWithExistingExternalIssue(
 	project string,
 	actor model.Actor,
 ) {
-	adviceReadTx, err := s.begin(r.Context())
+	issueReadTx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	defer adviceReadTx.Rollback(r.Context())
+	defer issueReadTx.Rollback(r.Context())
 	var existingStatus string
-	if err := adviceReadTx.QueryRow(r.Context(), `
+	if err := issueReadTx.QueryRow(r.Context(), `
 		select status from issues where key = $1 for no key update
 	`, existingKey).Scan(&existingStatus); err != nil {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	existing, err := s.loadIssue(r.Context(), adviceReadTx, existingKey)
+	existing, err := s.loadIssue(r.Context(), issueReadTx, existingKey)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	advice := s.writeAdvice(
-		r.Context(), adviceReadTx, "POST /api/v1/issues", existingKey, actor, "", existingStatus,
-	)
-	if err := adviceReadTx.Commit(r.Context()); err != nil {
+	if err := issueReadTx.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, r, err)
 		return
 	}
+	// The advice runs once that read has ended, on the pool (writeAdvice): the status it
+	// reports is the one read above under the issue's row lock, as a create's is.
+	advice := s.writeAdvice(
+		r.Context(), "POST /api/v1/issues", existingKey, actor, "", existingStatus,
+	)
 	suggestions := s.relatedCheckNotRun(r.Context(), relatedInput{
 		project: project,
 		source:  suggestionSource{kind: "issue", issueKey: existingKey, actor: actor},

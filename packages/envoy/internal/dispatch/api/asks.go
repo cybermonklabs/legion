@@ -325,18 +325,22 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	}
 	ask.OpenedEventID = &event.ID
 	appended = append(appended, event)
-	var advice *writeAdvice
-	if owner.IssueKey != nil && status != nil {
-		advice = s.writeAdvice(
-			r.Context(), tx, "POST /api/v1/issues/{key}/asks", *owner.IssueKey, actor, rowID, *status,
-		)
-	}
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(appended...)
 	release()
+	// The issue-scoped advice runs here: after the commit, after the gate, on the pool
+	// (writeAdvice), so none of its queries holds this write's locks. The ask this request
+	// opened is excluded from the session's open asks by its row id, as it was inside the
+	// transaction.
+	var advice *writeAdvice
+	if owner.IssueKey != nil && status != nil {
+		advice = s.writeAdvice(
+			r.Context(), "POST /api/v1/issues/{key}/asks", *owner.IssueKey, actor, rowID, *status,
+		)
+	}
 	// The related-item check. An ask on an issue searches that issue's project and, normally, rides its check's
 	// result on the issue's own advice; one on an unlinked project document searches the
 	// document's and has no issue state to report, so its advice carries the result alone, as does

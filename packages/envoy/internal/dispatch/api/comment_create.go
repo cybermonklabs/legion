@@ -959,18 +959,20 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		return
 	}
 	events = append(events, event)
-	var advice *writeAdvice
-	if owner.IssueKey != nil && status != nil {
-		advice = s.writeAdvice(
-			r.Context(), tx, "POST /api/v1/issues/{key}/comments", *owner.IssueKey, actor, "", *status,
-		)
-	}
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(events...)
 	start.release()
+	// The issue-scoped advice runs here: after the commit, after the gate, on the pool
+	// (writeAdvice), so none of its queries holds this comment's locks.
+	var advice *writeAdvice
+	if owner.IssueKey != nil && status != nil {
+		advice = s.writeAdvice(
+			r.Context(), "POST /api/v1/issues/{key}/comments", *owner.IssueKey, actor, "", *status,
+		)
+	}
 	// Each mention's send outlives the request's connection, keeping its values and dropping its
 	// cancellation, as createStoredMessage's does: attempt 1 is committed above, and a client that
 	// gives up on the comment, or retries it under its key, must not leave that attempt pending

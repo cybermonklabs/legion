@@ -351,16 +351,18 @@ func (s *server) createStoredMessage(
 			return model.Message{}, nil, err
 		}
 	}
-	var advice *writeAdvice
-	if issueKey != nil {
-		advice = s.writeAdvice(
-			ctx, tx, "POST /api/v1/issues/{key}/messages", *issueKey, actor, "", status,
-		)
-	}
 	if err := tx.Commit(ctx); err != nil {
 		return model.Message{}, nil, err
 	}
 	s.publish(event)
+	// The issue-scoped advice runs here: after the commit, on the pool (writeAdvice), so none
+	// of its queries holds the issue row this message locked.
+	var advice *writeAdvice
+	if issueKey != nil {
+		advice = s.writeAdvice(
+			ctx, "POST /api/v1/issues/{key}/messages", *issueKey, actor, "", status,
+		)
+	}
 	if message.Target != nil {
 		// The send keeps the request's values (its transaction tracking) and drops its
 		// cancellation: a connection cut after the commit - a closed tab, a front door's pod

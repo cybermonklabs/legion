@@ -33,8 +33,8 @@ body: |-
   minutes for the work it does before its answer begins - reading its row and opening the file
   store - after which the answer's own bounds carry the file's bytes however long its reader
   takes; past either is `503 REQUEST_TIMEOUT`. A write has none and runs to completion
-  once admitted, and every transaction commits apart from its caller's cancellation, within 10
-  seconds. A request whose handler waited its pool's bound for a database connection is `503
+  once admitted, and a commit once begun runs apart from its caller's cancellation, within 10
+  seconds, though a write whose client has gone begins none. A request whose handler waited its pool's bound for a database connection is `503
   DATABASE_BUSY`, which now means exactly that: every pool, the document loads' and the leases'
   among them, answers a bound it ran out with one error of its own, where a deadline on a live
   request used to be read as a busy pool. A commit the database does not answer within its 10

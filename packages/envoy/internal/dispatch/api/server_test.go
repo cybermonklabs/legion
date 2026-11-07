@@ -145,6 +145,10 @@ type testServerOptions struct {
 	// dashboardEntry is the entry chunk of the dashboard build the server serves; empty is a
 	// server with no dashboard, as the Go test rigs are.
 	dashboardEntry string
+	// adviceQueryHook is the server's advice seam (server.adviceQueryHook): it runs before each
+	// advice query, on whatever that query runs on, with the query's name. Nil is production,
+	// which runs nothing.
+	adviceQueryHook func(context.Context, queryer, string) error
 }
 
 // testTakeoverWindow is the listener take-over window of a test server that sets none. A send to
@@ -304,6 +308,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	if options.agentWatchInterval != 0 {
 		served.agentWatchInterval = options.agentWatchInterval
 	}
+	served.adviceQueryHook = options.adviceQueryHook
 	// waitBackground, as production's shutdown calls it: every keyed handler and every delivery a
 	// handler detached from its request, then the sockets, the hub, the relay and the test hooks'
 	// listener. A broadcast's deliveries and a keyed handler outlive the client that started them,

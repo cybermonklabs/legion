@@ -80,15 +80,16 @@ var legionManagedStatusSQL = `
 		select 1 from chain c, unnest(c.labels) as label where lower(label) = '` + legionLabel + `'
 	)`
 
-// legionManagedStatus runs legionManagedStatusSQL inside the caller's transaction. That keeps the
-// issue's own row as the caller locked it, and nothing more: an ancestor's labels, and a reparent
-// above the issue, are read as they stand and are not held still by any lock the caller takes. The
-// answer is advisory in both callers, so a chain that moves under the walk costs a sentence of
-// guidance and never a write. Both claim routes (issue_claim.go) and a session's write advice
-// (write_advice.go) read it.
-func legionManagedStatus(ctx context.Context, tx pgx.Tx, key string) (bool, error) {
+// legionManagedStatus runs legionManagedStatusSQL over q: a claim's own savepoint inside its
+// transaction, which keeps the issue's own row as the claim locked it, or the request pool,
+// which a write's advice reads it on once that write has committed (writeAdvice). Nothing more
+// is held still either way: an ancestor's labels, and a reparent above the issue, are read as
+// they stand and are held by no lock the caller takes. The answer is advisory in both callers,
+// so a chain that moves under the walk costs a sentence of guidance and never a write. Both
+// claim routes (issue_claim.go) and a session's write advice (write_advice.go) read it.
+func legionManagedStatus(ctx context.Context, q queryer, key string) (bool, error) {
 	var managed bool
-	if err := tx.QueryRow(ctx, legionManagedStatusSQL, key).Scan(&managed); err != nil {
+	if err := q.QueryRow(ctx, legionManagedStatusSQL, key).Scan(&managed); err != nil {
 		return false, fmt.Errorf("resolve whether Legion manages the status of %s: %w", key, err)
 	}
 	return managed, nil

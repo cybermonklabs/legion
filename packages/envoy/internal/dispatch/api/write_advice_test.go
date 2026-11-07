@@ -12,8 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -934,12 +932,12 @@ func newFailingAdviceHandler(t *testing.T, query string, suggestionTimeout time.
 		deps:              deps,
 		lifetime:          t.Context(),
 		suggestionTimeout: suggestionTimeout,
-		adviceQueryHook: func(ctx context.Context, tx pgx.Tx, got string) error {
+		adviceQueryHook: func(ctx context.Context, q queryer, got string) error {
 			if got != query {
 				return nil
 			}
-			_, err := tx.Exec(ctx, "select pg_sleep(2)")
-			return err
+			var slept any
+			return q.QueryRow(ctx, "select pg_sleep(2)").Scan(&slept)
 		},
 	}
 	mux := http.NewServeMux()

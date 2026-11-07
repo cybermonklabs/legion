@@ -178,7 +178,18 @@ func collectEvent(ctx context.Context, event model.Event) {
 // outcome is unknown, so the rooms the transaction wrote are failed and reload the durable
 // document. That is why ctx's cancellation and deadline do not reach the commit (commit): the
 // publish that follows it already runs on a context of its own (publishLiveUpdate).
+//
+// A request that has already ended - its client gone, its own bound passed - starts no commit
+// at all (store.CommitRefusal). The refusal comes before commit, so nothing of this ledger has
+// run and no room is failed: the caller's deferred Discard and rollback end the transaction as
+// they end one any step before the commit failed, and the write is all-or-nothing as it always
+// was. Checked inside the commit instead, the same request would have recorded its settlement
+// credit, announced its appends and then failed every room it wrote, over a commit that was
+// never going to be read.
 func (l *Ledger) Commit(ctx context.Context) error {
+	if err := store.CommitRefusal(ctx); err != nil {
+		return err
+	}
 	if err := l.commit(ctx); err != nil {
 		return err
 	}

@@ -350,9 +350,12 @@ type server struct {
 	// shutdown for it (detached). Register sets it from its lifetime parameter and refuses a nil one, since nothing would
 	// ever end the work it bounds; a test passes its own t.Context(). A server a test builds
 	// directly has none unless the test sets it (directServer sets context.Background()).
-	lifetime        context.Context
-	routeIndex      []routeIndexEntry
-	adviceQueryHook func(context.Context, pgx.Tx, string) error
+	lifetime   context.Context
+	routeIndex []routeIndexEntry
+	// adviceQueryHook runs before each of a write's advice queries, on whatever that query runs
+	// on - the request pool for the issue-scoped advice, the write's transaction for the
+	// superseded-approval read - with the query's name. Nil outside tests.
+	adviceQueryHook func(context.Context, queryer, string) error
 	// suggestionTimeout overrides the allowance the related-item check runs under; zero, which
 	// every server the deployment builds leaves it, means relatedCheckAllowance. Only tests set it
 	// (newFailingAdviceHandler, and the check's bound tests), so a case's outcome is its own choice
@@ -1858,6 +1861,8 @@ func (s *server) publish(events ...model.Event) {
 	}
 }
 
+// begin opens the transaction of a request: every transaction an API handler opens comes from
+// here, so requestTx is what each of them commits and rolls back.
 func (s *server) begin(ctx context.Context) (pgx.Tx, error) {
 	if s.deps.Store == nil || s.deps.Store.Pool == nil {
 		return nil, errorf(http.StatusServiceUnavailable, "DATABASE_UNAVAILABLE", "database unavailable")
@@ -1866,7 +1871,34 @@ func (s *server) begin(ctx context.Context) (pgx.Tx, error) {
 	if err != nil {
 		return nil, fmt.Errorf("begin transaction: %w", err)
 	}
-	return tx, nil
+	return requestTx{Tx: tx}, nil
+}
+
+// requestTx is a request's transaction (server.begin): the pool's transaction, which rolls back
+// apart from its caller's cancellation already (store.RollbackContext) and commits apart from it
+// (store.CommitContext), with one rule of the request's own - no commit is started for a request
+// that has already ended.
+//
+// The commit itself must not be cut mid-way, since its outcome would then be unknown and every
+// room the transaction wrote would be failed; but a request whose client went away, or whose own
+// bound passed, before its commit began has nothing to protect. Started, that commit would hold
+// the rows it locked, its documents' writer gates and the event horizon for up to ten more
+// seconds over an answer nobody will read. Refused, the handler's deferred rollback ends the
+// transaction at once and writeHandlerError answers the request as the client-gone it is
+// (store.ErrRequestEnded).
+//
+// A document write commits through its ledger, which refuses the same request before it records
+// anything of its own (docs.Ledger.Commit): the check here is for the transactions a handler
+// commits itself.
+type requestTx struct {
+	pgx.Tx
+}
+
+func (tx requestTx) Commit(ctx context.Context) error {
+	if err := store.CommitRefusal(ctx); err != nil {
+		return err
+	}
+	return tx.Tx.Commit(ctx)
 }
 
 // readyPool is the pool a route reads through before it opens its transaction, with the

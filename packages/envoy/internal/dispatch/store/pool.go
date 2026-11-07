@@ -517,8 +517,9 @@ func WithoutBeforeCommit(ctx context.Context) context.Context {
 	return context.WithValue(ctx, beforeCommitKey{}, BeforeCommit(nil))
 }
 
-// trackedTx commits apart from its caller's cancellation (CommitContext), clears the caller's
-// mark however the transaction ends, and takes the caller's BeforeCommit step before it commits.
+// trackedTx commits apart from its caller's cancellation (CommitContext) and rolls back apart
+// from it too (RollbackContext), clears the caller's mark however the transaction ends, and
+// takes the caller's BeforeCommit step before it commits.
 // Callers commit and then run a deferred rollback; the release absorbs that second call. Either
 // part may be absent: a context the pool does not track has no mark, and one with no step commits
 // as it is.
@@ -543,8 +544,13 @@ func (t *trackedTx) Commit(ctx context.Context) error {
 	return commitTimedOut(ctx, t.Tx.Commit(ctx))
 }
 
+// Rollback ends the transaction on a context of its own (RollbackContext), so a caller whose
+// context is already cancelled - every write handler's deferred rollback after its client went
+// away - still sends the ROLLBACK and gets its connection back idle.
 func (t *trackedTx) Rollback(ctx context.Context) error {
 	defer t.end()
+	ctx, cancel := RollbackContext(ctx)
+	defer cancel()
 	return t.Tx.Rollback(ctx)
 }
 
@@ -600,6 +606,44 @@ func CommitContext(ctx context.Context) (context.Context, context.CancelFunc) {
 		bound = commitTimeout
 	}
 	return context.WithTimeoutCause(context.WithoutCancel(ctx), bound, ErrCommitTimeout)
+}
+
+// rollbackTimeout bounds a rollback RollbackContext has detached from its caller. A ROLLBACK
+// takes no lock and waits for nothing, so the only rollback that reaches this bound is one on a
+// connection the database has stopped answering on, which the bound then stops holding.
+const rollbackTimeout = 5 * time.Second
+
+// RollbackContext is the context a transaction rolls back on: ctx's values without its
+// cancellation or deadline, bounded at rollbackTimeout. pgconn refuses a statement on a context
+// that is already done before it writes anything to the socket, and pgx answers a rollback that
+// failed by killing the connection (pgx.dbTx.Rollback -> Conn.die), so a rollback on the
+// cancelled context of a request whose client went away sent no ROLLBACK at all: the transaction
+// ended by the pooled connection being destroyed and dialled again, exactly when the server is
+// busiest. On this context the ROLLBACK is sent, the transaction ends at once instead of when
+// the connection dies, and the connection goes back to the pool idle.
+func RollbackContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), rollbackTimeout)
+}
+
+// ErrRequestEnded is a commit never started, because the request that would have made it had
+// already ended - its client went away, or its own bound passed - and nothing it wrote is worth
+// the ten seconds CommitContext would give the commit, nor the locks and the event horizon that
+// commit holds while it runs. Nothing was committed, which a caller may rely on; the handler's
+// deferred rollback ends the transaction and api.writeHandlerError answers it as it answers
+// every request the server could not serve (admission.WriteUnserved): nothing written and a 499
+// line for a client that went away.
+var ErrRequestEnded = errors.New("the request ended before its commit began; nothing was committed")
+
+// CommitRefusal is the error a commit on ctx is refused with when ctx has already ended, and nil
+// while it is live. It is read where a commit begins and before CommitContext detaches it - the
+// transaction an API handler opened (api.server.begin) and the document ledger's commit
+// (docs.Ledger.Commit) - so a request already gone starts no commit, rather than holding its
+// rows, its documents' rooms and the event horizon for a commit nobody will read.
+func CommitRefusal(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("%w: %w", ErrRequestEnded, err)
+	}
+	return nil
 }
 
 // end clears the caller's mark, when the pool tracks one.
