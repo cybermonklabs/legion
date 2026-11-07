@@ -99,7 +99,8 @@ type BudgetsView struct {
 
 // DeliveryView is the claim's pending task (`supervise.Delivery`): DeliveredAt is the latest
 // acknowledgement of this task's prompt, cleared when that prompt is refused, and ConfirmedAt the
-// turn a send started; each absent until it happens.
+// turn a send started; each absent until it happens. SendFailures, LastSendFailureAt and
+// LastSendError stand beside them as the record of the sends that did not get that far.
 type DeliveryView struct {
 	ID   string `json:"id"`
 	Task string `json:"task"`
@@ -113,6 +114,19 @@ type DeliveryView struct {
 	// Interrupted is a task a process died in a turn of: it is sent behind the sentence saying so
 	// (`supervise.Delivery.Interrupted`). Absent for every other task.
 	Interrupted bool `json:"interrupted,omitempty"`
+	// SendFailures, LastSendFailureAt and LastSendError are how many sends of this task came
+	// back from their own send goroutine without reaching a turn, when the last of them failed
+	// and the error it failed with (`supervise.Delivery.SendFailures` and its two companions).
+	// They are a diagnosis record rather than a budget: the budget is the claim's
+	// `promptFailures` and `promptRetires`, which only a charged failure spends, while these
+	// count every send that failed there, charged or not — a send lost to the transport is
+	// charged nothing and retried for ever, and that is the stall this exists to name. A prompt
+	// the agent acknowledged and then refused is charged and read in the budget instead. A send
+	// that reaches a turn clears all three, so a pending task no send has failed for carries
+	// none of them on the wire.
+	SendFailures      int        `json:"sendFailures,omitempty"`
+	LastSendFailureAt *time.Time `json:"lastSendFailureAt,omitempty"`
+	LastSendError     string     `json:"lastSendError,omitempty"`
 }
 
 // OperatorClaims is the list route's answer, in token order, with what the daemon's last
@@ -214,6 +228,7 @@ func operatorView(c supervise.Claim) OperatorClaim {
 		view.Pending = &DeliveryView{
 			ID: p.ID, Task: p.Task, Phase: p.Phase, QueuedAt: p.QueuedAt,
 			DeliveredAt: instant(p.DeliveredAt), ConfirmedAt: instant(p.ConfirmedAt), Interrupted: p.Interrupted,
+			SendFailures: p.SendFailures, LastSendFailureAt: instant(p.LastSendFailureAt), LastSendError: p.LastSendError,
 		}
 	}
 	return view
@@ -462,7 +477,7 @@ func (s *server) retryClaim(w http.ResponseWriter, r *http.Request) {
 	}
 	recorded, err := s.recordedIssue(r.Context(), c.Issue)
 	if err != nil {
-		s.logFailure("api: read the issue of a failed phase worker to retry", "claim", token, "error", err)
+		s.logRequestFailure(r, err, "api: read the issue of a failed phase worker to retry", "claim", token)
 		writeJSON(w, http.StatusInternalServerError, errorBody(fmt.Sprintf("could not read %s's record: %v", c.Issue, err)))
 		return
 	}
@@ -473,7 +488,7 @@ func (s *server) retryClaim(w http.ResponseWriter, r *http.Request) {
 	result, err := intake.ApplyFact(r.Context(), s.pool, "api", requestFactID("operator/retry"),
 		intake.RetryOrEscalate{Issue: c.Issue, Decision: intake.RetryDecision}, s.handlers...)
 	if err != nil {
-		s.logFailure("api: apply the operator's retry of a held phase", "claim", token, "issue", c.Issue, "error", err)
+		s.logRequestFailure(r, err, "api: apply the operator's retry of a held phase", "claim", token, "issue", c.Issue)
 		writeJSON(w, http.StatusInternalServerError, errorBody(fmt.Sprintf("could not retry %s's held phase %s: %v", c.Issue, recorded.Hold.From, err)))
 		return
 	}
@@ -483,7 +498,7 @@ func (s *server) retryClaim(w http.ResponseWriter, r *http.Request) {
 	}
 	after, err := s.recordedIssue(r.Context(), c.Issue)
 	if err != nil {
-		s.logFailure("api: read the issue after the operator's retry of its held phase", "claim", token, "issue", c.Issue, "error", err)
+		s.logRequestFailure(r, err, "api: read the issue after the operator's retry of its held phase", "claim", token, "issue", c.Issue)
 		writeJSON(w, http.StatusInternalServerError, errorBody(fmt.Sprintf("could not read %s's record after the retry: %v", c.Issue, err)))
 		return
 	}
@@ -627,7 +642,7 @@ func treeOthers(claims []supervise.Claim, tree string, root claim.Token) []claim
 func (s *server) list(w http.ResponseWriter, r *http.Request) {
 	claims, err := s.supervisor.Claims(r.Context())
 	if err != nil {
-		s.log.Error("api: read the claims", "error", err)
+		s.logRequestFailure(r, err, "api: read the claims")
 		writeJSON(w, http.StatusInternalServerError, errorBody("the daemon could not read its claims"))
 		return
 	}
