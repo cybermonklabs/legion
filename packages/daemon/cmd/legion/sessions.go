@@ -315,9 +315,17 @@ func importSession(ctx context.Context, conn *pgx.Conn, file, treeVolume string)
 	return importedSession{Outcome: outcome, Summary: ompsessions.Summarize(content)}, nil
 }
 
-// readSessionFile reads one regular session file. When root names a mounted
-// legacy sessions directory, os.Root resolves source beneath its descriptor so
-// a path or symlink cannot escape between validation and the read.
+// readSessionFile reads one regular session file. When root names a mounted legacy sessions
+// directory, every component of source below root is opened with O_NOFOLLOW from the descriptor
+// of the one before it, so neither a path nor a symlink planted on the volume can leave root
+// between the validation and the read.
+//
+// os.Root is what this used to be, and it is not enough here: its promise holds on a kernel that
+// serves openat2's RESOLVE_BENEATH, and a Legion issue pod — which is where `legion sessions
+// import --tree-volume` runs — is gVisor, where it does not. Measured on this issue's pod,
+// Go 1.27.1: os.OpenRoot(root) followed by Open("dir/s.jsonl"), with `dir` a symlink to a
+// directory outside root, opened the file outside and read it. Opening each component ourselves
+// needs no kernel feature.
 func readSessionFile(source, root string) ([]byte, os.FileInfo, error) {
 	var (
 		opened *os.File
@@ -325,20 +333,14 @@ func readSessionFile(source, root string) ([]byte, os.FileInfo, error) {
 	)
 	if root == "" {
 		opened, err = os.OpenFile(source, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
-		if errors.Is(err, syscall.ELOOP) {
-			return nil, nil, errors.New("refuses a symbolic link")
-		}
 	} else {
-		volume, err := os.OpenRoot(root)
-		if err != nil {
-			return nil, nil, err
+		var relative string
+		if relative, err = filepath.Rel(root, source); err == nil {
+			opened, err = openBeneath(root, relative)
 		}
-		defer volume.Close()
-		relative, err := filepath.Rel(root, source)
-		if err != nil {
-			return nil, nil, err
-		}
-		opened, err = volume.Open(relative)
+	}
+	if errors.Is(err, syscall.ELOOP) {
+		return nil, nil, errors.New("refuses a symbolic link")
 	}
 	if err != nil {
 		return nil, nil, err
@@ -356,4 +358,48 @@ func readSessionFile(source, root string) ([]byte, os.FileInfo, error) {
 		return nil, nil, err
 	}
 	return content, info, nil
+}
+
+// openBeneath opens relative under root for reading, descending one component at a time with
+// O_NOFOLLOW, so a symlink anywhere on the way — a planted directory as much as the file itself
+// — is refused with ELOOP rather than followed. relative must stay under root: a component of
+// ".." is refused by name.
+//
+// No component is opened with O_DIRECTORY, and each one but the last is checked to be a
+// directory after it is open. POSIX has O_NOFOLLOW refuse a final component that is a symlink
+// whatever else is asked for, and Linux does; gVisor, which a Legion issue pod runs under, opens
+// the link's target when O_DIRECTORY is given beside it. Measured on this issue's pod: openat of
+// a symlink to a directory answers a descriptor with O_NOFOLLOW|O_DIRECTORY and ELOOP with
+// O_NOFOLLOW alone.
+func openBeneath(root, relative string) (*os.File, error) {
+	directory, err := os.OpenFile(root, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, err
+	}
+	parts := strings.Split(filepath.Clean(relative), string(filepath.Separator))
+	for index, part := range parts {
+		if part == ".." || part == "" || part == "." {
+			directory.Close()
+			return nil, fmt.Errorf("%s leaves the sessions directory", relative)
+		}
+		fd, err := syscall.Openat(int(directory.Fd()), part, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+		directory.Close()
+		if err != nil {
+			return nil, err
+		}
+		opened := os.NewFile(uintptr(fd), filepath.Join(root, filepath.Join(parts[:index+1]...)))
+		if index < len(parts)-1 {
+			info, err := opened.Stat()
+			if err != nil {
+				opened.Close()
+				return nil, err
+			}
+			if !info.IsDir() {
+				opened.Close()
+				return nil, fmt.Errorf("%s is not a directory", opened.Name())
+			}
+		}
+		directory = opened
+	}
+	return directory, nil
 }
