@@ -390,6 +390,8 @@ The Legion plugin ships these in `agents/`:
 
 - `thermonuclear-code-quality`
 
+- the architect's `design-outsider`
+
 - the planner's `plan-gap-analyst` and `plan-reviewer`
 
 It ships this with Legion's other skills in its `dist/skills`:
@@ -704,7 +706,8 @@ A whole-run rerun of `release.yaml`, or a `workflow_dispatch` of it while main's
 the job holds only `contents: read` and no secret, so its rerun writes nothing), and `publish` releases that tag again, each step safe to repeat:
 the image is rebuilt, `worker_image_release` moves the `<legion version>` tag to the rebuild's digest, and the release body's "Worker image" names that digest.
 `release-envoy-listener.yaml` needs no re-run when its `release_publish` finds, at "Confirm the version", that another run took the tag first:
-it publishes nothing and, when its commit still needs a release and no later run on main still running holds it, starts a new run on main itself, which decides the version again and re-stamps the binaries.
+it publishes nothing and, when its commit still needs a release and no later run on main still running holds it, starts a new run on main itself by `workflow_dispatch`, which decides the version again and re-stamps the binaries.
+That dispatched run is a concurrency group of its own, so no newer push to main replaces it while it waits; of the pushes waiting in the workflow's own per-ref group only the newest builds, and it holds the replaced commit's change.
 
 The build has no prerequisites outside this repository.
 After the first push there is one human action:
@@ -2084,6 +2087,23 @@ A `legion` of this release against a daemon of an earlier one, which serves no s
 
 What a contract bump never refreshes is the pod's own `legion` binary:
 the launcher, the shim and `workspace-init` keep running the generation they were started with, so a release that changes the launcher's or the shim's own wire to the daemon is a pod replacement, which the update round makes ("Pinning a release that drops what a running pod still uses" above), never something the contract relaunch fixes in place.
+
+A release that changes what a producer writes **into an envelope** is rolled in one order, which the contract number above does not cover:
+that number holds a process to the daemon's API, while an envelope is written by one process and read by another, and the two are pinned separately.
+**Roll the listener Deployment, then the plugin pair, then the Dispatch Deployment**, and expect the loss the middle step leaves.
+Each of the other orders was traced on INFRA-1225, which replaced the string `none` with the literal `false`:
+
+- **Plugins before the listener breaks sends.**
+  The new skills tell an agent to write the new value, and the listener of the previous image decodes the field as a `*string`, so it answers `400` and the message is never sent.
+
+- **Dispatch before the listener loses frames.**
+  An old listener's durable consumer cannot decode what a new Dispatch outbox published, so it drops the message rather than relaying it.
+
+- **Plugins last costs a replay window, and nothing else.**
+  A `@sjawhar/pi-envoy` from before the change declares the field as the three words it knew, and its replay reads a stored frame against that strict schema, so a frame carrying the new value fails the parse and is logged and settled as "not an Envoy envelope".
+  A session on such a pair keeps every live delivery, because its card renderer reads the field leniently and drops a value it does not know, and loses from its 72-hour replay window **every message the new value marks** — on INFRA-1225 the Dispatch deliveries that carry it, an answered ask, an approved artifact and a plain comment mention, and every agent message sent as wanting no reply, including one an un-rolled sender sent itself, since a rolled listener writes each of those to the bus in the new spelling too.
+
+That last loss is the one this order accepts, so the window between the listener and the plugin pair is the window to keep short.
 
 ### Configuration
 
@@ -4509,6 +4529,7 @@ The death is seen twice over: at once, when the pod's worker stream closes and t
 and, for a death the stream never reported, on the next resync tick, which probes every located, ready-confirmed worker claim with the rules above.
 Either judgement is a probe's, never the closed stream by itself — a daemon restart closes every stream while the agents run on — and when a probe says the process is gone the daemon sends the Envoy listener `DELETE /v1/sessions/<the session the claim registered>?if_not_registered_after=<the moment that probe judged, in unix milliseconds>`.
 That clean stop makes the listener read the session `gone` at once, rather than `unresponsive` until the gone horizon ends, so the role claim that session held is released at the role reaper's next pass instead of an hour later, and the issue claims it held become another agent's to take at once instead of 20 minutes after it last registered (dispatch://INFRA-392).
+The reaper frees that claim once nobody has answered for it inside the live window and its holder's session is gone, which holds for a claim naming the process that held it and one that names none alike (dispatch://INFRA-783, which left that rule as it was).
 The moment is a condition, not a label, because the very decision that asks for the stop goes on to relaunch the claim under the same session id:
 the listener deletes the registration only while it was last written at or before that moment, under the same compare-and-swap it deletes at a read revision with, so a stop that lands after the relaunch has registered is refused there — `200 {"deleted":false,"reason":…}`, which the daemon logs as the registration it kept — rather than taking a working session's registration away.
 The request is bounded at 5 seconds, so a stop the listener does not answer is abandoned rather than left in flight.
@@ -5212,7 +5233,7 @@ each issue's pod (every role of it alike) and the image probe's.
 
 - **Model roles.**
   Legion's shipped agents dispatch by role alias:
-  `oracle` and the planner's `plan-gap-analyst` as `@oracle`;
+  `oracle`, the planner's `plan-gap-analyst` and the architect's `design-outsider` as `@oracle`;
   both review agents and the planner's `plan-reviewer` as `@review`; and `deep-worker`, which writes the implementer's code, as `@deep`.
   The boot gate refuses, by agent, any whose role the operator's settings (`modelRoles`, or `task.agentModelOverrides`) leave unconfigured, or whose model's key does not work, because Oh My Pi's task tool would quietly run it on the parent session's model.
   The bundled agents Legion's prompts also dispatch use Oh My Pi's built-in roles: `scout` is `@smol` and `reviewer` is `@slow`.

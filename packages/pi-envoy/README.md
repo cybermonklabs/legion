@@ -32,15 +32,41 @@ soft: it names the session it continues, which is a fork's or branch's parent, o
 this process last held the role under. The listener moves the role off that predecessor only
 when the predecessor has no live registration, when its live registration carries this extension
 instance's own client instance id, or when either side carries no instance id. A predecessor
-another process still runs keeps the role, and the claim is refused naming that holder. A refused
-session keeps running and stays registered, without the role: it does not claim again at each
-heartbeat, and it takes the role on its next session event once the holder is gone. Each
-extension instance mints its client instance id when it starts and sends it on every registration
-and on the deregistration at shutdown, where the listener removes the registration only while it
-carries the same id or none. The queues, deadlines and shared role state behind all of this are
-`src/registration-state.ts`, beside the extension's other `src/` modules: a queued task acts
-through a handle that refuses every step past the task's deadline, or once its session is no
-longer the open session.
+another process still runs keeps the role, and the claim is refused naming that holder. A claim
+of a role already held under this session's own id is decided on the standing claim rather than
+on the registration: the listener grants it to the process that claim names, grants it once
+nobody renewed the claim inside its live window, and otherwise refuses it naming this very
+session. A session refused a role another live session holds keeps running and stays registered,
+without the role: it does not claim again at each heartbeat, and it takes the role on its next
+session event once the holder is gone. A refusal naming this session's own id is never recorded
+as one of those, since it is that other process's standing claim, which the listener grants the
+moment that process stops renewing it: nothing is said, and the next heartbeat claims again.
+Each healthy heartbeat also re-asserts a role this session already holds, and confirms it only
+when the lookup names this session and this process and reports no hand-back; a re-assertion the listener refuses naming
+this session's own id is that same standing claim, so the role stays held here, nothing is
+recorded, nothing is said, and the next heartbeat asks again, while a refusal naming a different
+session ends the role here. A lookup that answers `handed_back` is a role this process does not
+hold, however exactly it names this session and this process: a client built before a release
+stated its process hands a role's lane topic back under this session id without being able to
+free the claim, and the listener marks the claim rather than freeing it, after which no
+registration renews it. The pass that reads the mark claims the role again at once, and that
+grant writes a fresh record with no mark, so a hold marked this way is back before the role
+claim reaper could free it. Each extension instance mints its client instance id when it starts
+and sends it on every registration, on every claim and release, and on the deregistration at
+shutdown, where the listener removes the registration only while it carries the same id or none.
+A registration also renews every role claim this session holds that names this same instance,
+whatever topics it carries and unless the listener has marked that claim handed back;
+a release frees only the claims naming it, so a second process that resumed
+this session's id neither ends this one's role nor outlasts it. A hand-back the listener could
+not make — a release its own holder's renewal beat under each of its three conditional deletes,
+which fails the route rather than reporting a release it did not make — is sent again by the
+next heartbeat, so the role is not left standing while this process's registrations renew its
+claim. The transcript's `envoy-role-claim` entry names the session claimed for and this process
+too: a release another process wrote on the same transcript ends no role here, and a claim
+another process wrote is pressed only while this process holds none. The queues, deadlines and
+shared role state behind all of this are `src/registration-state.ts`, beside the extension's
+other `src/` modules: a queued task acts through a handle that refuses every step past the
+task's deadline, or once its session is no longer the open session.
 
 `envoy_list()` shows the union of the local subscriptions and the listener's persisted interest
 registry. Each reported interest identifies whether it is `live`, `registry`, or `both`, so
@@ -435,7 +461,7 @@ gated write only when it consumes one, so a write sent any other way is refused 
   owner-only and exclusively. It binds the exact argument vector the CLI receives and, behind a
   review or a deliberate pass (a rebuttal, a breaker trip), the digest of the arguments the dry
   run printed and the sha256 of each file the argv names, as the gate read it. A call no verdict
-  stands behind (a halt and another provider among them), and a `task` subagent's literal call,
+  stands behind (a halt and another account among them), and a `task` subagent's literal call,
   get a marker of the argument vector alone. Nothing of it is in the command the agent sees. A
   marker goes when its call ends, is refused or the session shuts down; a backgrounded call keeps
   its marker until
@@ -595,10 +621,33 @@ shows at its start.
 
 **The model.** Both checks ask the session's `askgate` model role (`modelRoles.askgate`). When that
 role is not set, they ask the `default` role. A model that answers with an error passes the request
-to the next model of that role's `retry.fallbackChains` chain, on the same provider. When neither
+to the next model of that role's `retry.fallbackChains` chain, on the gate model's own account.
+When neither
 role resolves, the gate refuses the write in both modes and names the two roles. A session whose
-main model is on another provider than the gate's model is not reviewed: its transcript stays on
-that provider.
+main model is billed to another account than the gate's model is not reviewed: its transcript
+stays on the account that paid for it.
+
+**The account.** The gate's rule is the billing account, not the vendor and not the provider id.
+One provider id is its own account. Two different provider ids are one account only where the
+machine says so, in omp's `askgate.sharedAccountProviders`: a list of provider ids that reach one
+account. A session whose provider and the gate model's provider are both in that list is
+reviewed, and so is a fallback model of the chain. Unset — what a machine that declares nothing
+leaves it — the list is empty and every comparison is the plain provider-id comparison this gate
+made before the setting existed. A list that names only one of two providers declares nothing
+about them, and so does a value that is not a list of strings, a list with one entry that is not
+a string included.
+
+**Where that list goes.** In an **operator** layer of omp's settings, and nowhere else: the
+global `config.yml` of the agent directory, a file named in `PI_CONFIG_FILES`, a `--config`
+overlay, or a runtime override. The gate reads it through `Settings.grantAuthority()`, the
+host's own operator view, which drops every project layer — so a repository's `.omp/config.yml`
+declares nothing, because the agent under review can write that file, and a declaration from
+there would be that agent choosing who may read its transcript. A host build whose settings
+offer no such view offers nothing safe to read, so there the list is empty whatever any layer
+holds. Which file of a machine ends up in those layers is that machine's launcher's business:
+omp reads the agent directory's own `config.yml` and whatever `PI_CONFIG_FILES` names, so a
+launcher that gives each profile its own overlay is how a profile billing another account
+declares — or declines to declare — for itself.
 
 **When a write posts unreviewed.** Each of these lets the write out, records an `advisor-gate`
 entry with its outcome, and hands the agent a note that says the write went out unreviewed and
@@ -610,7 +659,7 @@ why. The note reaches a headless session too:
 | `error` | the review failed: a model error, a handler exception, or a dry run that failed; a dry run that timed out twice, or once with no time left to run it again, gets a note that the machine was busy and that the agent should read back what the write posted |
 | `no-verdict` | the model answered with no verdict the gate could read |
 | `halted` | three calls in a row reached no verdict, and the gate is paused for the session |
-| `skipped` | the session's main model is on another provider than the gate's |
+| `skipped` | the session's main model is on a provider that does not bill the gate model's account |
 | `rebuttal` | the agent sent `--advisor-rebuttal <line>`, which is recorded and kept only as a shell comment, or `"advisor_rebuttal"`, which is recorded and removed |
 | `breaker` | the third attempt at one thing on one target, after the gate refused it twice there |
 | `unreadable` (warn mode) | a file the literal call names was missing or not a regular file when the gate ran |
