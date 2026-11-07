@@ -193,10 +193,11 @@ func newHarnessDeps(t *testing.T, relaunchable bool) *harness {
 		ctx: ctx,
 		deps: supervise.Deps{
 			Runtime: rt, Conns: conns, Store: tokens.Recording(st), Specs: fixedSpecs{}, Clock: stillClock{}, Log: quiet,
-			Limits: supervise.Limits{LaunchFailures: 3, PromptFailures: 3, PromptRetires: 2},
-			Timeouts: supervise.Timeouts{
-				Boot: time.Minute, RegistrationIntervals: 3, RPC: 5 * time.Second, Probe: 30 * time.Second, Stop: 10 * time.Second, LaunchBackoff: time.Millisecond,
-			},
+			Settings: supervise.FixedSettings(
+				supervise.Limits{LaunchFailures: 3, PromptFailures: 3, PromptRetires: 2},
+				supervise.Timeouts{
+					Boot: time.Minute, RegistrationIntervals: 3, RPC: 5 * time.Second, Probe: 30 * time.Second, Stop: 10 * time.Second, LaunchBackoff: time.Millisecond,
+				}),
 			PluginContract:     DaemonAPIVersion,
 			PluginRelaunchable: relaunchable,
 			// The daemon's own wiring: a tree a workflow issue backs does not close here.
@@ -227,7 +228,7 @@ func newHarnessDeps(t *testing.T, relaunchable bool) *harness {
 		podUpdateRounds:    rounds,
 	}
 	server := NewServer("127.0.0.1", 8437, Options{
-		Supervisor: sup, BootTokens: tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: st, Log: quiet,
+		Supervisor: sup, BootTokens: tokens, Project: testProject, Settings: operatorSettings(), Controller: st, Log: quiet,
 		Pool: st.Pool(), Record: record.NewStore(), Releaser: rt, Trees: st, ReleaseRecords: st, ClaimActivity: st,
 		PluginRelaunchable: relaunchable,
 		ClaimReady:         func(c supervise.Claim) { *readied = append(*readied, c) },
@@ -240,6 +241,12 @@ func newHarnessDeps(t *testing.T, relaunchable bool) *harness {
 	})
 	h.handler = server.Handler
 	return h
+}
+
+// operatorSettings is what a test's server holds when the operator bearer is the whole of its
+// configuration (Options.Settings).
+func operatorSettings() *LiveSettings {
+	return NewLiveSettings(HeldSettings{OperatorToken: testOperatorToken})
 }
 
 // request sends one request through the server's own handler. A nil body sends none; a string is

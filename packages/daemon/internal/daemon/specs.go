@@ -43,12 +43,16 @@ type specs struct {
 	// leaves it out, and such a specs launches nothing with memory.
 	memoryGroup func(ctx context.Context, tree string) (bool, error)
 	// designGate is the project's design gate policy (gates.design), which a tree's root architect
-	// is told after its addressing (DesignGateFragment).
+	// is told after its addressing (DesignGateFragment). A change of the gate builds these specs
+	// again (config.HolderLaunchSpecs, on the row's Also), so the next architect started is told
+	// the policy the daemon decides by and not the one it booted on.
 	designGate config.DesignGate
 	// slackChannels is the project's slack_channels, which the controller is told after the design
-	// gate policy (SlackChannelsFragment); its LEGION_SLACK_CHANNELS is the runtime's to set.
+	// gate policy (SlackChannelsFragment); its LEGION_SLACK_CHANNELS is the runtime's to set. A
+	// change of the `projects` block builds these specs again, as it builds the runtime.
 	slackChannels []string
-	// mergeRules is the project's merge policy, which a merger is told after its addressing.
+	// mergeRules is the project's merge policy, which a merger is told after its addressing, from
+	// the same block and built again with it.
 	mergeRules config.MergeRules
 	// commitIssueTrailerRepos is the project's commit_issue_trailer_repos, the repositories whose
 	// commits a pane stamps with its issue key (runtime.SpawnSpec.IssueTrailer); nil for a

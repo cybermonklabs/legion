@@ -36,6 +36,7 @@ import (
 // the design gate first opens. That is the spec's own condition, and the boot's catch-up reads
 // the roots this pass can move (the daemon's catchesUp) by that same predicate.
 func (e *Engine) ReconcileAwaiting(ctx context.Context, tx pgx.Tx, project string, issues []record.Issue, held func(string) bool) ([]string, bool, error) {
+	e = e.decision()
 	changed, err := e.answerOpenGates(ctx, tx, project, issues, held)
 	if err != nil {
 		return nil, false, err
@@ -453,6 +454,7 @@ func (e *Engine) tellInPlace(ctx context.Context, tx pgx.Tx, root record.Issue, 
 // line and starts at its own slot (record.Waiting's LineFirstPhase), in the same admission pass
 // that resumed this root.
 func (e *Engine) ResumeAwaitedRoot(ctx context.Context, tx pgx.Tx, root record.Issue, waiting record.Awaiting) error {
+	e = e.decision()
 	gate, err := e.store.Gate(ctx, tx, root.Key)
 	if err != nil {
 		return err

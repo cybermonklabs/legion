@@ -51,8 +51,8 @@ func releaseHarness(t *testing.T, open bool) (*harness, *statusRecorder) {
 	// that confuses them reads an empty mirror here.
 	h.handler = NewServer("127.0.0.1", 8437, Options{
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, DispatchProject: testDispatchProject,
-		OperatorToken: testOperatorToken,
-		Controller:    h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: records,
+		Settings:   operatorSettings(),
+		Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: records,
 		Handlers: releaseHandlers(), Dispatch: statuses,
 	}).Handler
 	h.recordIssue(record.Issue{Key: releaseRoot, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: releaseRoot,
@@ -459,7 +459,7 @@ func TestWaveReleaseStandsWhenTheRecordDoesNotTakeALandedWrite(t *testing.T) {
 	statuses.issues[child] = backlogChild(child)
 	h.handler = NewServer("127.0.0.1", 8437, Options{
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, DispatchProject: testDispatchProject,
-		OperatorToken: testOperatorToken, Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: record.NewStore(),
+		Settings: operatorSettings(), Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: record.NewStore(),
 		Handlers: releaseHandlers(), Dispatch: statuses,
 		PrepareRepository: func(context.Context, intake.DispatchIssue) (intake.DispatchIssue, error) {
 			return intake.DispatchIssue{}, errors.New("GitHub did not answer the default branch read")

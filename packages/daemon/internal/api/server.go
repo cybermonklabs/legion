@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -64,19 +65,32 @@ type Options struct {
 	// the token is the lowercase of a key that must start uppercase.
 	Project         string
 	DispatchProject string
-	// OperatorToken is the bearer every operator route compares against; empty admits no one.
-	OperatorToken string
+	// Settings is the configuration the server holds, behind the pointer every request reads
+	// through: the operator bearer, the design gate, the repository equivalence, the projects'
+	// merge rules and the settings route's own admission rule. It is the one way a caller states
+	// them. A caller whose settings never change hands NewLiveSettings(HeldSettings{…}) and
+	// leaves it at that; the daemon swaps its own when one of them changes (LiveSettings.Store),
+	// so the change takes effect without rebinding the listening socket or dropping a request.
+	// Nil holds the zero value, which admits no operator bearer.
+	Settings *LiveSettings
+	// ApplySettings is how `PUT /legion/v1/operator/settings` changes a setting: the daemon's one
+	// settings holder and the store of what the route changed (internal/settings' Keeper.Route).
+	// Nil, which every caller but the daemon means, answers that route 503.
+	ApplySettings ApplySettings
 	// Controller is the project's controller record, which the controller secret route mints,
 	// the claim registration route registers a session on, and the grants route authenticates
 	// the registered session against.
 	Controller ControllerStore
-	// DesignGate is the project's `gates.design`, which the controller secret route answers.
-	DesignGate config.DesignGate
-	// ControllerLaunched is the daemon launching the project's controller itself (`controller:
-	// daemon`): one controller runs per project, so the controller secret route refuses the operator
-	// and a registration registers the controller only from a launch of the controller's claim.
-	// Unset (`controller: operator`), only the operator's capability registers it.
-	ControllerLaunched bool
+	// ControllerLaunched is whether the daemon launches the project's controller itself
+	// (`controller: daemon`), read at every request that needs it: one controller runs per
+	// project, so the controller secret route refuses the operator and a registration registers
+	// the controller only from a launch of the controller's claim. Nil, and a daemon under
+	// `controller: operator`, answers false, and only the operator's capability registers it.
+	//
+	// It is read rather than stated because `controller` is a setting that changes under a
+	// running daemon: the keeper's holder answers what the daemon does now (internal/daemon's
+	// keeperHolder), so a change of the mode moves this answer with it.
+	ControllerLaunched func() bool
 	// PluginRelaunchable is supervise.Deps.PluginRelaunchable as the API sees it: whether this
 	// daemon can relaunch a stale process onto a plugin at all. False is Kubernetes's degraded
 	// mode, where a stale registration is recorded and the process is left running: nothing here
@@ -118,10 +132,6 @@ type Options struct {
 	// (daemon's repositories.Accepted): the controller's gh bundle holds a read-only token per
 	// owner of them, each narrowed to that owner's repositories (appauth.ControllerCredential).
 	GitHubRepositories func() []ghrepo.Repository
-	// RepositoryRenames is the deployment's repository equivalence
-	// (config.Config.RepositoryRenames): the controller's gh bundle holds one entry for a
-	// configured rename's two owners (appauth.ControllerCredential). The zero value configures none.
-	RepositoryRenames ghrepo.Renames
 	// Serving is the repository GitHub holds a recorded one under now, which every GitHub call
 	// this server makes is minted for and addressed to (serving): the daemon's one rule
 	// (daemon's repositories.serving, which the Sandbox runtime's own token source is handed
@@ -148,8 +158,6 @@ type Options struct {
 	// handoff file and READY's checks under; empty, in production, is https://api.github.com, and a
 	// test points it at a stand-in.
 	GitHubAPI string
-	// MergeRules is the merge policy an issue's project configures. Nil has no special policy.
-	MergeRules func(project string) config.MergeRules
 	// Grants mints and redeems the daemon-local one-command credential handles.
 	Grants   *credential.Grants
 	Pool     *pgxpool.Pool
@@ -231,6 +239,62 @@ type ClaimActivityStore interface {
 	PutClaimActivity(ctx context.Context, token claim.Token, activity claim.SessionActivity) (bool, error)
 }
 
+// HeldSettings is the configuration the API server holds: everything it reads from legion.yaml
+// and nothing else, in one value, so a settings change swaps one pointer rather than reaching
+// into a server that is answering requests. It is not the state's settings report (Settings),
+// which is every setting the daemon runs on.
+type HeldSettings struct {
+	// OperatorToken is the bearer every operator route compares against (`operator_token_file`);
+	// empty admits no one.
+	OperatorToken string
+	// DesignGate is the project's `gates.design`, which the controller secret route answers.
+	DesignGate config.DesignGate
+	// RepositoryRenames is the deployment's repository equivalence (`repository_renames`): the
+	// rule that says which owner's installation holds a repository recorded under the name a
+	// transfer moved it away from, which the controller's gh bundle reads
+	// (appauth.ControllerCredential). The zero value configures none.
+	RepositoryRenames ghrepo.Renames
+	// MergeRules is the merge policy an issue's project configures. Nil has no special policy.
+	MergeRules func(project string) config.MergeRules
+	// SettingsRoute is the settings route's projected-token arm: the verifier of the cluster
+	// issuer and audience `settings_route` names, and the ServiceAccounts it admits. The zero
+	// value leaves that route to the operator bearer alone.
+	SettingsRoute SettingsRouteAuth
+}
+
+// LiveSettings is HeldSettings behind the pointer every request reads through. The holder hashes
+// the operator bearer once per Store, never per request, so a swap costs a request nothing.
+type LiveSettings struct {
+	current atomic.Pointer[settledSettings]
+}
+
+// settledSettings is one HeldSettings with the operator bearer already hashed.
+type settledSettings struct {
+	HeldSettings
+	operatorSet  bool
+	operatorHash [sha256.Size]byte
+}
+
+// NewLiveSettings holds s, which Store replaces.
+func NewLiveSettings(s HeldSettings) *LiveSettings {
+	live := &LiveSettings{}
+	live.Store(s)
+	return live
+}
+
+// Store replaces the settings every later request reads. A request already in a route keeps the
+// ones it began on: it read the pointer once.
+func (l *LiveSettings) Store(s HeldSettings) {
+	next := &settledSettings{HeldSettings: s}
+	if s.OperatorToken != "" {
+		next.operatorSet, next.operatorHash = true, sha256.Sum256([]byte(s.OperatorToken))
+	}
+	l.current.Store(next)
+}
+
+// load is the settings this request reads.
+func (l *LiveSettings) load() *settledSettings { return l.current.Load() }
+
 type server struct {
 	state             StateSource
 	stateTransactions StateTransactions
@@ -243,12 +307,14 @@ type server struct {
 	// project and dispatchProject are Options.Project and Options.DispatchProject.
 	project         string
 	dispatchProject string
-	operatorSet     bool
-	operatorHash    [sha256.Size]byte
-	controller      ControllerStore
-	designGate      config.DesignGate
-	// controllerLaunched is Options.ControllerLaunched.
-	controllerLaunched bool
+	// settings is everything the server reads from legion.yaml, behind a pointer every request
+	// reads through (Options.Settings): the daemon swaps them when one of them changes, so the
+	// server answers the new value without rebinding its socket or dropping a request.
+	settings   *LiveSettings
+	controller ControllerStore
+	// controllerLaunched is Options.ControllerLaunched, read at every request that needs it and
+	// never nil here: NewServer fills a caller's nil with the daemon that launches no controller.
+	controllerLaunched func() bool
 	// pluginRelaunchable is Options.PluginRelaunchable, noPluginInstall Options.NoPluginInstall.
 	pluginRelaunchable bool
 	noPluginInstall    func(c supervise.Claim) bool
@@ -257,20 +323,14 @@ type server struct {
 	controllerMu       sync.Mutex
 	tokens             appauth.Tokens
 	githubRepositories func() []ghrepo.Repository
-	// renames is the deployment's repository equivalence (Options.RepositoryRenames): the rule
-	// that says which owner's installation holds a repository recorded under the name a transfer
-	// moved it away from, which the controller's gh bundle reads (appauth.ControllerCredential).
-	// The zero value configures none.
-	renames ghrepo.Renames
 	// serving is Options.Serving, the daemon's one rule for the repository GitHub holds a
 	// recorded one under now, never nil here: NewServer serves a recorded repository under its
 	// own name where the caller hands none.
-	serving    func(recorded ghrepo.Repository) ghrepo.Repository
-	githubAPI  string
-	mergeRules func(project string) config.MergeRules
-	grants     *credential.Grants
-	releaser   store.TreeReleaser
-	trees      TreeLifecycles
+	serving   func(recorded ghrepo.Repository) ghrepo.Repository
+	githubAPI string
+	grants    *credential.Grants
+	releaser  store.TreeReleaser
+	trees     TreeLifecycles
 	// memory, coin and now are Options.Memory, Options.MemoryCoin and Options.Now: what the
 	// spawn's own draw of a tree it opens for the first time reads (drawMemory).
 	memory     config.Memory
@@ -291,6 +351,9 @@ type server struct {
 	capabilityReported func(ctx context.Context, c supervise.Claim, report capabilities.Report)
 	releaseRecordStore ReleaseRecordStore
 	claimActivity      ClaimActivityStore
+	// applySettings is Options.ApplySettings, the settings route's one way into the daemon's
+	// settings holder.
+	applySettings ApplySettings
 	// stopping and drained are Options.Stopping and Options.Drained, decisions Options.Decisions.
 	stopping  context.Context
 	drained   context.Context
@@ -324,16 +387,15 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		project:            opts.Project,
 		dispatchProject:    opts.DispatchProject,
 		controller:         opts.Controller,
-		designGate:         opts.DesignGate,
+		settings:           opts.Settings,
+		applySettings:      opts.ApplySettings,
 		controllerLaunched: opts.ControllerLaunched,
 		pluginRelaunchable: opts.PluginRelaunchable,
 		noPluginInstall:    opts.NoPluginInstall,
 		tokens:             opts.Tokens,
 		githubRepositories: opts.GitHubRepositories,
-		renames:            opts.RepositoryRenames,
 		serving:            serving,
 		githubAPI:          opts.GitHubAPI,
-		mergeRules:         opts.MergeRules,
 		releaser:           opts.Releaser,
 		trees:              opts.Trees,
 		memory:             opts.Memory,
@@ -358,8 +420,11 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		drained:            opts.Drained,
 		decisions:          opts.Decisions,
 	}
-	if opts.OperatorToken != "" {
-		s.operatorSet, s.operatorHash = true, sha256.Sum256([]byte(opts.OperatorToken))
+	if s.settings == nil {
+		s.settings = NewLiveSettings(HeldSettings{})
+	}
+	if s.controllerLaunched == nil {
+		s.controllerLaunched = func() bool { return false }
 	}
 	if s.coin == nil {
 		s.coin = memorygroup.CryptoCoin
@@ -421,6 +486,10 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/retry", s.operator(s.retryClaim))
 	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/forget-session", s.operator(s.forgetSession))
 	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/close", s.operator(s.closeTree))
+	// The settings route authenticates its caller itself (settingsChange): the operator bearer,
+	// or a projected ServiceAccount token this deployment names, which is how Dispatch calls it
+	// without holding a copy of the operator token.
+	mux.HandleFunc("PUT /legion/v1/operator/settings", s.settingsChange)
 
 	// The catch-all answers every unrouted request, including a known path asked for with the
 	// wrong method: "no route" is the whole story the plugin, the operator's CLI, or a proof
@@ -434,6 +503,30 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		Handler:           mux,
 		ReadHeaderTimeout: readHeaderTimeout,
 	}
+}
+
+// designGate, renames and mergeRulesOf are the settings this request reads: the one place each is
+// read from, so the daemon's swap of them (LiveSettings.Store) reaches every route.
+func (s *server) designGate() config.DesignGate { return s.settings.load().DesignGate }
+
+func (s *server) renames() ghrepo.Renames { return s.settings.load().RepositoryRenames }
+
+// mergeRulesOf is the merge policy project configures, the zero policy when none is configured.
+func (s *server) mergeRulesOf(project string) config.MergeRules {
+	rules := s.settings.load().MergeRules
+	if rules == nil {
+		return config.MergeRules{}
+	}
+	return rules(project)
+}
+
+// operatorBearer is whether a request's Authorization header carries the operator's bearer:
+// given is what followed "Bearer ", and carried whether the header had that prefix at all. The
+// two hashes are compared in constant time, so neither the token nor its length leaks through
+// the comparison, and a daemon holding no operator token admits nobody.
+func (s *server) operatorBearer(given string, carried bool) bool {
+	current := s.settings.load()
+	return current.operatorSet && carried && secureBearerEqual(current.operatorHash, given)
 }
 
 // decision is the context a route runs a decision of token's claim on. It outlives the request,
@@ -566,17 +659,24 @@ func (s *server) stateRoute(w http.ResponseWriter, r *http.Request) {
 // memoryContract, the contract that added the issues' memory group, is served it without those
 // three fields (withoutMemory); a caller below treeContract, the contract that named the live
 // trees beside the issues holding a slot, is served it without `admission.trees` and without the
-// issues' `tree` (withoutTrees); and a caller below wakesWaitingContract, the contract that added
-// the wakes the pacing holds, is served it without `wakesWaiting` (withoutWakesWaiting). The four
-// compose: each is applied when the state carries something of its own, so a caller below all of
-// them — a pod below supervise.PodUpdateContract — is served a body carrying none of the eight
-// keys, each of them absent rather than empty, since a strict reader before the contract that
-// added a key refuses it whether or not it names anything. Every later reader takes all eight as
-// optional — `packages/contracts/src/legion-api.ts` marks `admission.trees` and `wakesWaiting`
-// optional for exactly these bodies — so the body this serves a pod whose claims cannot be read,
-// which may be a pod at this contract, is the one every reader from 45 on takes. Any other caller
-// — a pod at this contract whose claims were read, the operator's `legion state`, a tmux pane —
-// is served the state as this contract writes it.
+// issues' `tree` (withoutTrees); a caller below wakesWaitingContract, the contract that added the
+// wakes the pacing holds, is served it without `wakesWaiting` (withoutWakesWaiting); and a caller
+// below settingSourcesContract is served it without the three that contract added
+// (withoutSettingSources). The five compose: each is applied when the state carries something of
+// its own, so a caller below all of them — a pod below supervise.PodUpdateContract — is served a
+// body carrying none of the eleven keys, each of them absent rather than empty, since a strict
+// reader before the contract that added a key refuses it whether or not it names anything. Every
+// later reader takes all eleven as optional — `packages/contracts/src/legion-api.ts` marks
+// `admission.trees` and `wakesWaiting` optional for exactly these bodies — so the body this serves
+// a pod whose claims cannot be read, which may be a pod at this contract, is the one every reader
+// from 45 on takes. Any other caller — a pod at this contract whose claims were read, the
+// operator's `legion state`, a tmux pane — is served the state as this contract writes it.
+//
+// The claims are read for every request from a pod, because two of these contracts write
+// something of their own on every state: the admission block writes `trees` on every body, and
+// `settingSources` is written for every settable path, `commit` for every daemon and
+// `requiresChecks` for every recorded pull request. Before them the read was skipped for a state
+// carrying no update round and no memory draw, which was most of them.
 func (s *server) stateFor(r *http.Request, state State) State {
 	// A daemon that does not know its callers' pods serves every caller the state as it is, and
 	// scans nothing for it: under runtime tmux that is every request of every pane and of
@@ -601,9 +701,9 @@ func (s *server) stateFor(r *http.Request, state State) State {
 	// before it is still being replaced — costs no scan of the issues.
 	claims, err := s.supervisor.Claims(r.Context())
 	if err != nil {
-		s.log.Warn("api: the claims of the pod that asked for the state could not be read; it is served the state without the update round, memory, tree and waiting-wake fields, which every plugin contract since 45 reads",
+		s.log.Warn("api: the claims of the pod that asked for the state could not be read; it is served the state without the update round, memory, tree, waiting-wake and setting-source fields, which every plugin contract since 45 reads",
 			"pod", pod, "error", err)
-		return withoutWakesWaiting(withoutTrees(withoutMemory(withoutUpdateRounds(state))))
+		return withoutSettingSources(withoutWakesWaiting(withoutTrees(withoutMemory(withoutUpdateRounds(state)))))
 	}
 	contract := podContract(claims, pod)
 	if contract == 0 {
@@ -620,6 +720,9 @@ func (s *server) stateFor(r *http.Request, state State) State {
 	}
 	if contract < wakesWaitingContract && carriesWakesWaiting(state) {
 		state = withoutWakesWaiting(state)
+	}
+	if contract < settingSourcesContract {
+		state = withoutSettingSources(state)
 	}
 	return state
 }
@@ -639,6 +742,13 @@ const treeContract = 51
 // 53): a plugin before it reads the state with a strict schema that knows no such key and refuses
 // the whole body for it.
 const wakesWaitingContract = 53
+
+// settingSourcesContract is the daemon contract that added `settingSources`, the `daemon` block's
+// `commit` and each pull request's `requiresChecks` to the state, the entry of that number in
+// version.go: a plugin before it reads the state with a strict schema that knows none of the
+// three — every schema of `packages/contracts/src/legion-api.ts` was strict until INFRA-1048 —
+// and refuses the whole body for one of them.
+const settingSourcesContract = 55
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {
@@ -766,6 +876,29 @@ func withoutTrees(state State) State {
 // state's own, so the state the source answered is left as it was.
 func withoutWakesWaiting(state State) State {
 	state.WakesWaiting, state.wakesWaitingHidden = nil, true
+	return state
+}
+
+// withoutSettingSources is state as a plugin below settingSourcesContract reads it:
+// `settingSources`, the `daemon` block's `commit` and each pull request's `requiresChecks` are
+// left off the wire. The three are cleared rather than zeroed: each is a value this contract
+// writes whatever it holds — an empty object, an unreleased build's empty commit, a base that
+// requires no check — so each is nillable, and only the nil keeps it off the wire (`omitzero`,
+// api.State's three fields). The issue map is copied, so the state the source answered is left
+// as it was.
+func withoutSettingSources(state State) State {
+	state.SettingSources = nil
+	state.Daemon.Commit = nil
+	issues := make(map[string]Issue, len(state.Issues))
+	for key, issue := range state.Issues {
+		if issue.PullRequest != nil {
+			pullRequest := *issue.PullRequest
+			pullRequest.RequiresChecks = nil
+			issue.PullRequest = &pullRequest
+		}
+		issues[key] = issue
+	}
+	state.Issues = issues
 	return state
 }
 

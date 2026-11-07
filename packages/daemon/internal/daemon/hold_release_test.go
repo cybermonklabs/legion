@@ -76,7 +76,7 @@ func TestPollHoldReleaseClosesAHeldRootOnAQuietStreamWithinABound(t *testing.T) 
 	w := &workflowRuntime{
 		pool: pool, admission: admission, handlers: []intake.Handler{engine, admission},
 		dispatchProject: "CAPTURE", bootID: "test-boot", log: log,
-		holdPollInterval: 20 * time.Millisecond, consumers: consumers,
+		holdPollInterval: 20 * time.Millisecond, nats: heldConsumers(consumers),
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -373,7 +373,7 @@ func TestReconcileHoldsAKeyTheBootListingShowsOutOfTheWorkflowStatusWindow(t *te
 		dispatch: &filteringDispatch{summaries: []dispatch.IssueSummary{
 			{Key: "LEGION-EDGE", ResolvedRepo: "sjawhar/legion", Title: "edge", Status: "backlog", Rank: "A", HandedOver: true, LastSeq: 2},
 		}},
-		dispatchProject: "CAPTURE", bootID: "test-boot", log: log, consumers: consumers,
+		dispatchProject: "CAPTURE", bootID: "test-boot", log: log, nats: heldConsumers(consumers),
 	}
 	if err := w.reconcile(context.Background()); err != nil {
 		t.Fatalf("reconcile: %v", err)
@@ -435,7 +435,7 @@ func TestReconcileOnThePilotsShapeAdmitsOnlyTheLabeledTodoRootQuickly(t *testing
 			{Key: "CAPTURE-1", ResolvedRepo: "sjawhar/legion", Title: "todo root", Status: "todo", Rank: "A", HandedOver: true},
 			{Key: "CAPTURE-2", ResolvedRepo: "sjawhar/legion", Title: "backlog root", Status: "backlog", Rank: "B", HandedOver: true},
 		}},
-		dispatchProject: "CAPTURE", consumers: consumers, bootID: "pilot-boot", log: log,
+		dispatchProject: "CAPTURE", nats: heldConsumers(consumers), bootID: "pilot-boot", log: log,
 		holdPollInterval: 10 * time.Millisecond,
 	}
 
@@ -792,7 +792,7 @@ func TestAHeldRootKeepsItsPlaceOnTheRuntimeUntilItsOwnReleaseAdmitsIt(t *testing
 	w := &workflowRuntime{
 		pool: pool, admission: admission, handlers: []intake.Handler{engine, admission},
 		dispatchProject: "CAPTURE", bootID: "test-boot", log: log,
-		holdPollInterval: 20 * time.Millisecond, consumers: consumers,
+		holdPollInterval: 20 * time.Millisecond, nats: heldConsumers(consumers),
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

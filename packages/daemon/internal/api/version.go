@@ -650,4 +650,31 @@ package api
 // branch takes the number above them all, as the collision note says. main held 53 at the
 // forward merge that renumbered this entry, d43e0fe9bbb1; read main's own number again at the
 // next merge rather than from this line.)
-const DaemonAPIVersion = 54
+//
+// 55: INFRA-1077 -- three fields of `GET /legion/v1/state`, each required by the reader this
+// commit ships (`packages/contracts/src/legion-api.ts` mirrors all three), so a plugin built
+// from here refuses a state an older daemon sends. The `daemon` block names the commit the
+// daemon was built from (`commit`, the release build's own revision, empty in a build that is
+// not a release), so a reader can tell which release runs. Each pull request says whether its
+// base branch requires a check (`requiresChecks`, from the daemon's record of that branch's
+// required status checks and workflows), which is what a reader waiting on CI reads beside
+// `checksVerdict`. And a `settingSources` block beside `settings` says where each setting came
+// from — the file the daemon read or the settings route, with who asked and when — keyed by the
+// dotted `legion.yaml` path the daemon's class table writes, every settable path included, the
+// ones `settings` withholds among them, so a rotated credential is visible without the
+// credential. `settings` itself is untouched, and stays the loose object it was. `GET
+// /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a contract
+// below 55 is served the state without all three (api's stateFor, withoutSettingSources), as a
+// caller below 53 is served it without the waiting wakes, one below 51 without the admission
+// trees, one below 49 without the memory group and one below 46 without the claim views' update
+// rounds: every schema of `packages/contracts/src/legion-api.ts` was strict until INFRA-1048, so
+// such a plugin refuses a whole state for one key it does not know. (This branch took 47 while
+// main's idle release and memory group were unmerged; main landed them as 48 and 49, so this
+// branch took 50; main then landed INFRA-980's admission cap at 51, without these shapes, so
+// this branch took 52; main then landed INFRA-1307's commit trailer at 52, again without these
+// shapes, so this branch took 53; main then landed INFRA-976's wake pacing at 53, again without
+// these shapes, so this branch took 54; main then landed INFRA-809's production checks at 54,
+// again without these shapes, so this branch takes the number above it, as the collision note
+// says. main held 54 at the forward merge that renumbered this entry, fe85b8289aab; read main's
+// own number again at the next merge rather than from this line.)
+const DaemonAPIVersion = 55
