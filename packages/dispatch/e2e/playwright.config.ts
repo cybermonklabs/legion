@@ -24,9 +24,16 @@ import { plainHttpHost, plainHttpOrigin } from "./plain-http-origin";
 const plainHttpSpecs = /plain-http-(origin|proxy)\.e2e\.ts/;
 // The `iphone`, `webkit` and `firefox` projects run only the rows tagged `@phone`, `@webkit` and
 // `@firefox`, written at the end of the test's title. Which tests take `@phone` is in
-// `packages/dispatch/AGENTS.md`, "Phone acceptance"; each engine tag names a row that exercises
-// one engine behaviour the comment above those projects lists, and a comment above the row names
-// which; a row that only repeats an assertion Chromium already made carries no tag. An untagged
+// `packages/dispatch/AGENTS.md`, "Phone acceptance"; an engine tag names a row for one of two
+// reasons, and a comment above the row says which. Either the row exercises one engine behaviour
+// the comment above those projects lists - the usual reason - or every measured failure of that
+// row was in that engine, so the row is kept where its cause lives: a row green only on an engine
+// its defect was never seen on proves nothing about that defect. Two rows carry a tag for the
+// second reason today, each named in `packages/dispatch/AGENTS.md`: `keyed-writes.e2e.ts`'s ask
+// answer whose answer is lost (two timeouts in 213 CI runs, both in WebKit) and
+// `keyboard-agents-picker.e2e.ts`'s row back after the reader left mid-send (six failures on six
+// branches, every one in WebKit). A row that only repeats an assertion Chromium already made, and
+// whose failures are not an engine's, carries no tag. An untagged
 // test drops out with no failure. The pattern is anchored so a tag matches only as a whole
 // whitespace-separated token, never inside a longer one such as `@phones`, `x@phone`,
 // `@webkit-iphone` or `@firefox-alone`.
@@ -169,38 +176,50 @@ if (process.env[laneCountVariable] === undefined && workerCount() > 1) {
 const expectTimeout = 15_000;
 
 // The per-test budget, measured rather than inherited. Playwright's own default is 30 s, chosen
-// when this suite ran one row at a time; it now runs four lanes on a four-core runner, and the
-// slowest row this budget governs finished 144 ms under that default. Read from the report.json
-// artifact of 201 ci.yaml runs between 2026-11-05T08:51:42Z and 2026-11-05T20:27:47Z (78
-// merge_group, 119 pull_request, 4 push).
+// when this suite ran one row at a time; it now runs four lanes on a four-core runner. Read from
+// the report.json artifact of 201 ci.yaml runs between 2026-11-05T08:56:19Z and
+// 2026-11-05T20:32:13Z (78 merge_group, 119 pull_request, 4 push), at base b7866f96d7fe.
 //
 // The population is the one this number governs, and the filter is the point of it: the results
-// that passed, in that window, on rows of the spec files this tree has whose tests set no
-// timeout of their own. A file is out of the filter if it calls `test.setTimeout`,
-// `testInfo.setTimeout` or `test.slow()` - `test.slow` triples the per-test timeout to 180 s,
-// which is why `threads-order.e2e.ts` is not governed by this budget - and the files that do are
-// this tree's own list rather than the window's, so their number moves whenever the base moves.
-// Derive it rather than read it here:
+// that passed, in that window, on rows of the spec files this tree has that ran under the
+// inherited budget rather than one of their own. The filter is per row, not per file, because
+// 29 of the tree's 32 `test.setTimeout`/`test.slow()` calls sit inside a single row: a file is
+// not out of the population, a row is, and the other rows of `keyed-writes`, `live-socket`,
+// `phone`, `refetch-budget`, `claim-refilling`, `composer-body-cap`, `machine-login` and
+// `threads-order` are governed by this budget whatever their one slow neighbour asks for. Only
+// `prefix-links`, `reference-cards` and `reference-titles` set a timeout for every row they hold.
 //
-//   grep -lE 'test\.setTimeout|testInfo\.setTimeout|test\.slow\(\)' e2e/*.e2e.ts
+// Derive it from the measurement rather than from the sources: a report carries, per row, the
+// timeout that row ran under, so a result taken at its project's own timeout is one this budget
+// governed, and the filter cannot age. A source-level filter cannot be written as one line - a
+// call inside a row's body is the row's and a call at module scope is the file's, which is an AST
+// question, and `--list` reads module scope only, so it misses all 29.
 //
-// and the window's own results are left out the same way when their spec file is not one this
-// tree has, which is other branches' rows. Two counts of files used to stand in this comment and
-// each aged at a base move, the second time through a `test.slow()` a reader's eye skipped; the
-// command above cannot age.
+//   jq -r '(.config.projects|map({key:.name,value:.timeout})|from_entries) as $c
+//     | [..|objects|select(has("specs"))|.specs[]][] | . as $s | $s.tests[]
+//     | select(.timeout == $c[.projectName]) | .results[] | select(.status=="passed")
+//     | [($s.file|sub(".*/";"")), .projectName, .duration] | @tsv' <report.json…>
 //
-// Over that population, read at the base this branch merged forward (`main` at b7866f96d7fe):
-// 300,533 results, median 2,509 ms, 95th percentile 6,788 ms, 99th 10,030 ms, maximum 29,856 ms
-// (deep-links.e2e.ts's "emitted document item hrefs select and scroll their anchored quote" in
-// WebKit). The 99.9th percentile is about 15.6 s, and no figure for it is quoted here because
-// two readers of the same population measure it 4 ms apart by their percentile convention. Over
-// the whole of what this tree has, rows with their own timeout included, the maximum is
-// 126,560 ms, and the 21 results above this budget are all in three rows of
+// then keep the rows of files `ls e2e/*.e2e.ts` lists, which drops the window's results of files
+// this tree does not have - 1,560 of them in 12 files, other branches' rows. Compare `passed`
+// results alone: a skipped row reports the static timeout, never the one its body would have set.
+//
+// Over that population: 320,101 results, median 2,543 ms, 95th percentile 6,773 ms, 99th
+// 9,886 ms, 99.9th about 15,097 ms (15,056 by floor, 15,101 by nearest rank), maximum 29,856 ms,
+// in deep-links.e2e.ts's "emitted document item hrefs select and scroll their anchored thread" on
+// WebKit. Over the whole of what this tree has, rows with their own timeout included, the
+// maximum is 126,560 ms, and the 21 results above this budget are all in three rows of
 // agent-list-refilling.e2e.ts, whose rows ask for 150 s to 300 s themselves.
 //
-// The budget is twice the governed maximum, so a healthy row has as long again as the slowest
-// one ever took, and a row that hangs still fails inside a minute: 3.8 times that population's
-// 99.9th percentile and 24 times its median, and no governed result of the window reaches it.
+// The budget is twice the governed maximum (2.01), so a healthy row has as long again as the
+// slowest one ever took, and a row that hangs still fails inside a minute: 4.0 times that
+// population's 99.9th percentile and 24 times its median, and no governed result of the window
+// reaches it. One thing the window cannot show, and this comment will not claim: every governed
+// row in it ran under Playwright's 30 s default, so no governed result could exceed 30 s, and 27
+// of them hit that deadline and timed out - 19 in pictures.e2e.ts, 5 in deep-links.e2e.ts, 2 in
+// keyed-writes.e2e.ts and one in the very row that set the maximum. The 29,856 ms maximum is the
+// slowest result that survived the cap rather than the slowest a row would take, which is an
+// argument for this budget rather than a measurement of where a row settles.
 // It lengthens no row's work; a row that needs it has already lost whatever it was waiting for.
 // Raise it only from a measurement of the same shape, over the same population.
 const testTimeout = 60_000;

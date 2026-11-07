@@ -910,17 +910,19 @@ const (
 	idleRigStuckWait = 30 * time.Second
 )
 
-// idleRigPoll is how often a wait of the rig asks its condition. It is the rig's own tick rather
+// idleRigPoll is how often a wait of the rig asks its condition: the rig's own 250 ms tick rather
 // than testwait's ten milliseconds, because a condition here is a listing of the daemon's claims
-// over its API and not a read of a variable: asked twenty times a second, the waiting test takes
-// the runner from the daemon whose work it is waiting for.
+// over its API and not a read of a variable. Asked a hundred times a second, as testwait's pace
+// would ask it, the waiting test takes the runner from the daemon whose work it is waiting for;
+// four times a second it does not.
 const idleRigPoll = idleRigTick
 
 // idleRigDeadline is when a wait of this rig gives up: within from now, or the test binary's own
 // deadline less the margin above when that is sooner, which is the clamp testwait.Eventually
-// makes (internal/testwait). A run with a deadline shorter than the span — the package's own
-// `-timeout`, or a row's share of it — fails the wait rather than the binary, and a run with no
-// deadline at all (`go test -timeout 0`) fails it at the span itself.
+// makes (internal/testwait). A run whose remaining deadline is shorter than the span — a package
+// `-timeout` smaller than it, or a run far enough in that less than the span is left — fails the
+// wait rather than the binary, and a run with no deadline at all (`go test -timeout 0`) fails it
+// at the span itself.
 func idleRigDeadline(t *testing.T, within time.Duration) time.Time {
 	t.Helper()
 	deadline := time.Now().Add(within)

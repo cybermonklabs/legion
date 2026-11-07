@@ -70,8 +70,10 @@ export function replayed(page: Page, method: string, path: string): Promise<Resp
 }
 
 /** How long each turn of `runClockUntil` waits in real time, and how far it runs the page's own
- *  clock while a write is out. One number read in both places: that is what makes the crawling
- *  pace real speed rather than near it, and a change to one is a change to both. */
+ *  clock while a write is out. One number read in both places, so a change to one is a change to
+ *  both: each turn runs the clock at most this far and then waits this long, and `runFor` takes
+ *  real time of its own, so the page's clock never outruns the wall clock - it crawls a little
+ *  behind it rather than at it, which is the pace this row needs. */
 const REAL_STEP_MS = 100;
 
 /** Runs `page`'s own clock forward in `stepMs` pieces, `REAL_STEP_MS` of real time apart,

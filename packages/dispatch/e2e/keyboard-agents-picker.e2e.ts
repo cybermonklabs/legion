@@ -905,14 +905,14 @@ test.describe("agents page", () => {
   // A message on its way holds the picker and Reply of the row that sent it, and its draft, until
   // the server answers. A reader who leaves the page mid-send and comes back finds the row holding
   // the same send - the draft, the picker and Reply held - and its answer lands there.
-  // @webkit: a send held open across two in-app navigations, which each engine drives from the
-  // keyboard and through its own router at its own pace. Every one of this row's six measured
-  // failures - one run on each of six branches - was in WebKit, where the `g i` chord's second
-  // key landed after the keymap had dropped the chord and the reader never left the page; the
+  // @webkit under the second of the two reasons for an engine tag (`e2e/playwright.config.ts`,
+  // the comment above `tagged`): not a WebKit behaviour of its own - a send held open across two
+  // in-app navigations is the same in every engine - but the engine this row's own failures were
+  // in, every one of six, one run on each of six branches, where the `g i` chord's second key
+  // landed after the keymap had dropped the chord and the reader never left the page; the
   // sidebar's links carry no such deadline (`openFromSidebar`, `e2e/editor.ts`). The tag is what
-  // keeps the row on that engine now that the projects select rows by tag rather than by file
-  // (`webkitTagged`, `e2e/playwright.config.ts`); without it the row would run only where its
-  // defect was never seen.
+  // keeps the row there now that the projects select rows by tag rather than by file
+  // (`webkitTagged`); without it the row would run only where its defect was never seen.
   test("a row back after the reader left mid-send holds the send it left, which then lands there @webkit", async ({
     browser,
   }) => {

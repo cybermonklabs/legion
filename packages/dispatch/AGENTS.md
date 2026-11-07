@@ -2068,9 +2068,14 @@ its arrows and type-ahead rows, each committed by Enter and driven through `page
 step commit at once in an engine that moved to the queued task, so it runs here and in `firefox` as well as in
 Chromium. Its rows that step and then leave the select by Tab, Shift+Tab or a click run in the same engines,
 since each engine takes focus out of a select its own way, and they assert that the select, the toggle and the
-send still name one issue. Its row back after the reader left mid-send carries `@webkit` alone, for a
-reason of its own: the send it holds across two in-app navigations is the same in every engine, but each
-of that row's six measured failures was in WebKit, so it is kept on the engine they were seen on. Its
+send still name one issue. Its row back after the reader left mid-send carries `@webkit` alone
+under the second of the config's two reasons for an engine tag (`e2e/playwright.config.ts`, the
+comment above `tagged`): the send it holds across two in-app navigations is the same in every
+engine, so the row exercises no WebKit behaviour, but each of its six measured failures - one run
+on each of six branches - was in WebKit, so the row is kept where its cause lives. `e2e/keyed-writes.e2e.ts`'s
+ask answer whose answer is lost carries it for the same reason, its two timeouts in 213 CI runs
+both having been in WebKit. Those two are the whole of that class today; every other engine tag in
+this directory names a behaviour. Its
 other rows on a message in flight (the picker and Reply held, no sent text back in the
 composer, and a refusal shown beside the draft that was sent) and on an issue closed after its pick (still named,
 marked closed) carry no engine tag and run in Chromium alone: the config's clause names only the rows that step a
