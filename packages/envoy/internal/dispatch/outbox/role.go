@@ -143,9 +143,12 @@ func resolveRole(ctx context.Context, deps Deps, role string) (roles.Resolution,
 //     mention at all (unpinnedRoleMentions, resolveUnpinnedRoleMentions); the copies bound for
 //     that session's own topic ask the same question of it (destinations.leftToMention), so
 //     while such an attempt is live the two roads to one host hold together. Past its lease
-//     neither waits: this forward goes under whatever key the comment's settled mentions name,
-//     and the session's own copy is kept as a fallback row whose key the pass that publishes it
-//     reads from the attempts then (publishFallbackCopies).
+//     the session's own copy is kept as a fallback row whose key the pass that publishes it
+//     reads from the attempts then (publishFallbackCopies), and this forward goes under
+//     whatever key the comment's settled mentions name, or waits on where no one key stands
+//     for the mention - the comment whose unpinned attempts target two or more roles - there
+//     being no key to carry and no row that keeps the owner's order to a role's holder
+//     (unpinnedRoleMentions.keyFor, mentionHolds.waitsForAnUnnamedMention).
 //
 // A destination that waits keeps its place in the event's list, marked waiting
 // (destination.waiting): it makes no send this read and holds its key against the owner's later
@@ -167,8 +170,12 @@ func resolveRole(ctx context.Context, deps Deps, role string) (roles.Resolution,
 // The wait is the attempt's own lease and nothing longer (model.DeliveryClaimLapse): past it the
 // attempt reads resumed or abandoned rather than live, no mention is live any more, and the copy
 // goes with whatever settledKeys holds then - a partial map, or an empty one. That edge is
-// deliberate. Nothing waits for a destination the event already reached: that copy was kept
-// or forwarded under an earlier read and this one sends nothing.
+// deliberate. One wait outlives that lease: a forward held for an attempt that names no session
+// yet and that no one key stands for waits until that attempt settles or is abandoned, a resend
+// still owed being a send that may yet be pinned to this holder and no settled key standing in
+// for it (mentionHolds.waitsForAnUnnamedMention). Nothing waits for a destination the event
+// already reached: that copy was kept or forwarded under an earlier read and this one sends
+// nothing.
 func resolveRoleHolders(ctx context.Context, deps Deps, events []*batchEvent, resolved map[string]roleResolution) {
 	if resolved == nil {
 		resolved = map[string]roleResolution{}
@@ -270,10 +277,16 @@ func resolveRoles(ctx context.Context, deps Deps, names []string) map[string]rol
 // own key: nothing of the comment says that mention is on its way to one of them, and the 1 s
 // p99 delivery target of INFRA-514 outranks the double that a sender which does pin it there
 // costs. Past that attempt's lease the hold is every copy's again: the attempt's state is then
-// every session's (unpinnedRoleMentions.resendingUnnamed), each copy is held as a
-// comment_fallback_copies row as a named holder's is, and the pass that publishes it reads the
-// attempts as they stand then, so no copy of the comment goes out under the event's own key
-// while a send of that mention is still owed.
+// every session's (unpinnedRoleMentions.resendingUnnamed), each copy bound for a session's own
+// topic is held as a comment_fallback_copies row as a named holder's is, and the pass that
+// publishes it reads the attempts as they stand then, so no copy of the comment goes out under
+// the event's own key while a send of that mention is still owed. A role route's forward is the
+// one copy that waits in the event's list instead, where no one key stands for the mention
+// (mentionHolds.waitsForAnUnnamedMention): nothing else delivers a role copy, so no row keeps
+// the owner's order to a role's holder. That pass holds such a row for a live one as
+// well, whichever session the row is bound for: a row is read by a sweep and not by the
+// comment's response, so the p99 that narrows the live hold above reaches it nowhere
+// (decideFallbackCopy).
 //
 // That the live hold is those copies rather than every copy of the comment is what the
 // measurement of the wider rule showed: holding every session's copy made each of them wait
@@ -316,7 +329,11 @@ func resolveRoles(ctx context.Context, deps Deps, names []string) map[string]rol
 // One key serves one mention, so a comment whose unpinned attempts target two or more roles
 // keys no copy: each mention carries a target of its own, a copy under either key stands
 // beside the other, and the copies the unnamed hold covers, and the forwards that would carry a
-// key, wait as they did before the key (mentionHolds.waitsForAnUnnamedMention).
+// key, wait instead (mentionHolds.waitsForAnUnnamedMention). Such a forward waits on past that
+// attempt's lease, for as long as a resend of it is owed: that send may yet be pinned to this
+// holder, no key can stand in for two mentions, and a row would cost the owner's order to a
+// role's holder what it saves the comment's response, nothing else delivering a role copy
+// (roleCopyWaitsForAMention, TestAForwardWaitsForTwoUnnamedMentionsPastTheirLease).
 func resolveUnpinnedRoleMentions(ctx context.Context, deps Deps, read ...mentionDeliveries) map[string]roleResolution {
 	var names []string
 	seen := map[string]struct{}{}
@@ -370,12 +387,16 @@ func resolveUnpinnedRoleMentions(ctx context.Context, deps Deps, read ...mention
 // is backed off for the holder rather than waited out for a mention. What each wait is for, and
 // what bounds it, is on resolveRoleHolders.
 //
-// A forward waits for one mention more: a live attempt of the comment that names no session yet
-// and whose role this read could name no holder for, while no one key stands for that mention,
+// A forward waits for one mention more: an attempt of the comment that names no session yet and
+// whose role this read could name no holder for, while a send of it is still owed - live, or
+// past the lease the outbox waits a send out for - and no one key stands for that mention,
 // which is the comment whose unpinned attempts target two or more roles
-// (mentionHolds.waitsForAnUnnamedMention). Such a mention may be pinned to this very holder, and
-// where one key does stand for it the forward carries that key and goes in this pass instead of
-// waiting (unpinnedRoleMentions.keyFor, roleFallbackKey).
+// (mentionHolds.waitsForAnUnnamedMention). Such a mention may be pinned to this very holder,
+// and where one key does stand for it the forward carries that key and goes in this pass
+// instead of waiting (unpinnedRoleMentions.keyFor, roleFallbackKey). That is the one wait here
+// the attempt's lease does not bound: past it the forward waits on until the attempt settles or
+// is abandoned, a row being no place for this copy, which nothing else delivers in the owner's
+// order (destination.waiting, planChains).
 func roleCopyWaitsForAMention(event *batchEvent, dest destination) bool {
 	if _, reached := event.delivered[dest.subject]; reached {
 		return false
@@ -412,8 +433,9 @@ func roleCopyWaitsForAMention(event *batchEvent, dest destination) bool {
 // What it costs that holder, if the mention is pinned to it, is the mention's mode: the comment
 // arrives as this copy rather than as a steer. The holder this read can name is not keyed this
 // way and waits for its mention instead, mode and all (roleCopyWaitsForAMention), and a comment
-// whose unpinned attempts target two or more roles keys no copy, one key serving one mention
-// (unpinnedRoleMentions.keyFor).
+// whose unpinned attempts target two or more roles keys no copy, one key serving one mention:
+// its forward waits for those mentions instead, for as long as a send of one is owed
+// (unpinnedRoleMentions.keyFor, mentionHolds.waitsForAnUnnamedMention).
 //
 // It is the rule a session route's copy follows (destinations.addSession), applied to the
 // session the role resolved to rather than to the one a route names: a mention's send can land

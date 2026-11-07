@@ -26,7 +26,8 @@ body: |-
     send carries at that session, so whichever of the two reaches its host second is dropped
     there and the session is shown the comment once, as a copy rather than as that mention's
     steer; a comment whose unanswered role mentions name two or more roles keys no copy, one key
-    standing for one mention, and those copies wait as a named holder's do.
+    standing for one mention, and those copies wait as a named holder's do, while such a mention
+    is live and past that minute alike.
     One session can still be shown such a comment twice: one that was sent a copy that hold does
     not cover and that the mention's sender then pins the mention to, which sees the copy under
     the event's own key and the mention's own steer under the mention's key. The minute bounds
@@ -34,15 +35,21 @@ body: |-
     attempt is live, and the mention beside it lands whenever its send does, which may be long
     after.
     Past that minute no copy of the comment goes out under the event's own key while a send of
-    its mention is still owed: every copy that mention would decide, the holder's and a thread
-    session's alike, is recorded like any other copy a mention still to be sent held back, and
-    published only if that mention's send then failed, under the key that send went under, so a
-    session whose mention lands after the minute is shown the comment once rather than under the
-    event's own key beside it.
+    its mention is still owed: every copy that mention would decide which the outbox does send
+    to a session's own topic, the holder's and a thread session's alike, is recorded like any
+    other copy a mention still to be sent held back, and published only if that mention's send
+    then failed, under the key that send went under, so a session whose mention lands after the
+    minute is shown the comment once rather than under the event's own key beside it; a recorded
+    copy waits for a live mention of that comment as well, which costs the comment's response
+    nothing because a sweep reads it. A role route's forward that carries no key for such a
+    mention is the one copy no record would protect, since a copy under the event's own key is
+    one no key drops at its holder's host, so it waits in the event's list until that mention
+    settles or no sender holds it, past the minute as well; the event itself is published to its
+    issue in that pass, so nobody watching the issue waits for it.
     The comment's own event waits on a
-    mention for at most a minute after the comment committed, however long the recipient's lane is
-    held and whether or not a Retry overtook the attempt: past that the outbox records the copy it
-    skipped (migration `20261101180039`,
+    mention for at most a minute after the comment committed, that one forward aside, however
+    long the recipient's lane is held and whether or not a Retry overtook the attempt: past that
+    the outbox records the copy it skipped (migration `20261101180039`,
     `comment_fallback_copies`), publishes the event to every other destination, and publishes that
     copy to its one destination only if every send of that mention - the sweep's resend, the
     queued send the lane comes to, a Retry that overtook it - failed; a copy whose publish fails is

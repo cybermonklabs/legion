@@ -160,10 +160,14 @@ func (d mentionDeliveries) anyLive() bool {
 // carry the row's key under contracts.RoleForwardDedupePrefix, a key that host never claimed,
 // while a mention of the same comment is on its way to that session - so the host is shown the
 // comment twice, once for the copy and once for the mention that lands after it. The wait is
-// narrow on purpose: a holder no mention of the comment can reach takes the copy at once, one the
-// comment's single unpinned mention may yet be pinned to takes it under that mention's own key
-// (roleFallbackKey), and the wait is the attempt's own lease and no longer, past which the
-// forward goes with whatever has settled.
+// narrow in what it holds: a holder no mention of the comment can reach takes the copy at once,
+// and one the comment's single unpinned mention may yet be pinned to takes it under that
+// mention's own key (roleFallbackKey). What bounds it is the attempt and not the copy: a
+// mention of the holder's own, and an unpinned attempt one key stands for, are waited out for
+// that attempt's lease and no longer, while an unpinned attempt no key stands for is waited out
+// until it settles - past its lease the row this pass reads is held by its own key's state
+// before it asks this at all (mentionHolds.state), and a batch's forward by this rule
+// (roleCopyWaitsForAMention).
 //
 // A batch's own forward of a role route waits on the same rule, asked of the states its role
 // destination carries rather than of this reading (destination.mentionStates,
@@ -278,19 +282,24 @@ func (o mentionOutcomes) state(key string) mentionState {
 // holder the resolution could not name at all - no claim stands for one there, or its claim
 // could not be read - came to: one such attempt whose send is live, and one past the lease the
 // outbox waits a send out for. A live one is read by the copies bound for the sessions the
-// owner's own work names and by a role route's forward, and holds them where they are
-// (liveUnnamed, destinations.addWorkingSession, mentionHolds.waitsForAnUnnamedMention); one
-// past that lease is read by every copy of the comment, as a named holder's state is, and
-// holds it as a fallback row (resendingUnnamed, mentionHolds.state). Neither is a state of its
-// own: mentionFailed, the state of a key with no attempt at all, is what a reading whose every
-// role resolved decides with.
+// owner's own work names, by every fallback row bound for a session's own topic, and by a role
+// route's forward, and holds them where they are (liveUnnamed, destinations.addWorkingSession,
+// decideFallbackCopy, mentionHolds.waitsForAnUnnamedMention); one past that lease is read by
+// every copy of the comment, as a named holder's state is, and holds it as a fallback row -
+// every copy but a role route's forward that no one key stands for, which waits on in the
+// event's list for the send still owed, as it does while that send is live (resendingUnnamed,
+// mentionHolds.state, mentionHolds.waitsForAnUnnamedMention). Neither is a state of its own:
+// mentionFailed, the state of a key with no attempt at all, is what a reading whose every role
+// resolved decides with.
 //
 // Only an attempt whose send is still coming is recorded (mentionSending, mentionResending): a
 // live one, whose copies wait for it as a live pinned attempt's copies do, and one past the
 // lease the outbox waits a send out for, whose copies are kept as comment_fallback_copies rows
 // and published by the pass that reads the comment's attempts as they stand when it publishes
-// them (destinations.leftTo, publishFallbackCopies). An attempt that settled names the session
-// it reached itself, so no role is needed to say whose copies it decides.
+// them, a role route's forward that no one key stands for excepted, which waits on in the
+// event's list (destinations.leftTo, publishFallbackCopies,
+// mentionHolds.waitsForAnUnnamedMention). An attempt that settled names the session it reached
+// itself, so no role is needed to say whose copies it decides.
 //
 // The resolution is a guess at the session the sender is about to pin, and the two are made by
 // different readers a round trip apart - the outbox reads the role bucket itself, the sender
@@ -302,7 +311,10 @@ func (o mentionOutcomes) state(key string) mentionState {
 // The wait a live attempt puts on a copy is that attempt's own lease and nothing longer
 // (model.MentionLiveSQL, model.DeliveryClaimLapse): past it the attempt reads resumed or
 // abandoned rather than live, and the copy is the fallback row's or the event's own, never a
-// wait of the event's.
+// wait of the event's. The one copy that waits on past that lease is a role route's forward no
+// one key stands for: one key cannot be minted for two mentions, and no row keeps the owner's
+// order to a role's holder, so it waits in the event's list until that attempt settles or is
+// abandoned (mentionHolds.waitsForAnUnnamedMention, roleCopyWaitsForAMention).
 type unpinnedRoleMentions struct {
 	roles   map[string]unpinnedRole
 	holders map[string]mentionState
@@ -379,12 +391,16 @@ func (u *unpinnedRoleMentions) state(sessionID string) mentionState {
 
 // liveUnnamed reports whether an attempt of the comment that names no session yet, whose role
 // this read could name no holder for, is live. Nothing here says which session it is on its way
-// to, so what waits for it is the copies bound for the sessions the owner's own work names -
-// the session its route names and the session that claims it, where the measurement found the
-// duplicate it costs (destinations.addWorkingSession, resolveUnpinnedRoleMentions) - and a role
-// route's forward, while no one key stands for that mention
-// (mentionHolds.waitsForAnUnnamedMention). Every other copy goes in the pass that reads it,
-// under the event's own key.
+// to, so what waits for it in the pass that reads the event is the copies bound for the
+// sessions the owner's own work names - the session its route names and the session that
+// claims it, where the measurement found the duplicate it costs
+// (destinations.addWorkingSession, resolveUnpinnedRoleMentions) - and a role route's forward,
+// while no one key stands for that mention (mentionHolds.waitsForAnUnnamedMention). Every other
+// copy goes in that pass, under the event's own key.
+//
+// A copy already held as a comment_fallback_copies row waits for it whichever session the row
+// is bound for (decideFallbackCopy): the row is read by a sweep and not by the comment's
+// response, so the p99 that narrows the hold above reaches it nowhere.
 func (u *unpinnedRoleMentions) liveUnnamed() bool {
 	return u != nil && u.unnamedLive
 }
@@ -392,12 +408,19 @@ func (u *unpinnedRoleMentions) liveUnnamed() bool {
 // resendingUnnamed is mentionResending when an attempt of the comment that names no session
 // yet, and whose role this read could name no holder for, is past the lease the outbox waits a
 // send out for, and mentionFailed, which decides nothing, when none is. Every copy of the
-// comment reads it, whoever it is bound for (mentionHolds.state): past that lease the copy is
-// no wait of the event's but a comment_fallback_copies row, which costs the session nothing
-// the event waits for, and the pass that reads that row reads the attempts as they stand then,
-// by when the sender has pinned the session it resolved (destinations.leftTo,
-// publishFallbackCopies). A copy published under the event's own key while that send is still
-// owed is the one such an attempt lands beside (TestR18UnnamedFallbackRowWaitsForResend).
+// comment bound for a session's own topic reads it, whoever that session is
+// (mentionHolds.state): past that lease the copy is no wait of the event's but a
+// comment_fallback_copies row, which costs the session nothing the event waits for, and the
+// pass that reads that row reads the attempts as they stand then, by when the sender has
+// pinned the session it resolved (destinations.leftTo, publishFallbackCopies); where that pass
+// finds another such attempt live, a row bound for a session's own topic waits for it too, as
+// the claimant's copy did before the lease (decideFallbackCopy). A role route's forward reads
+// it in the pass that reads the event and waits there while no one key stands for that
+// mention, no row keeping the owner's order to a role's holder
+// (mentionHolds.waitsForAnUnnamedMention, roleCopyWaitsForAMention). A copy published under
+// the event's own key while that send is still owed is the one such an attempt lands beside
+// (TestAFallbackRowWaitsWhileItsUnnamedMentionIsOwedAResend,
+// TestAForwardWaitsForTwoUnnamedMentionsPastTheirLease).
 func (u *unpinnedRoleMentions) resendingUnnamed() mentionState {
 	if u == nil || !u.unnamedResending {
 		return mentionFailed
@@ -422,8 +445,8 @@ func (u *unpinnedRoleMentions) resendingUnnamed() mentionState {
 // It is "" for a comment with no unpinned attempt still to be sent and for one whose unpinned
 // attempts target two or more roles, live or past the lease alike: one key cannot serve two
 // mentions, since each carries a target of its own, and a copy keyed by one of them would stand
-// beside the other. Those copies wait as they did before this key
-// (mentionHolds.waitsForAnUnnamedMention).
+// beside the other. Those copies wait instead, for as long as a send of one of those attempts
+// is owed, live or past that lease (mentionHolds.waitsForAnUnnamedMention).
 func (u *unpinnedRoleMentions) keyFor(sessionID string) string {
 	if u == nil || len(u.roles) != 1 || sessionID == "" {
 		return ""
@@ -447,13 +470,15 @@ func (u *unpinnedRoleMentions) keyFor(sessionID string) string {
 // The hold such an attempt puts on a session while its send is live is the one its role
 // resolved to and no other (unpinnedRoleMentions.state). What a role this read could name no
 // holder for holds back while its send is live is a second question, asked by the copies of the
-// sessions the owner's own work names alone (liveUnnamed, destinations.addWorkingSession) and
-// by a role route's forward while no one key stands for that mention
-// (waitsForAnUnnamedMention); where one does, the forward carries it and goes at once
-// (unpinnedRoleMentions.keyFor, roleFallbackKey). Past that attempt's lease the two questions
-// are one again: the attempt's state is every session's
+// sessions the owner's own work names (liveUnnamed, destinations.addWorkingSession), by every
+// fallback row bound for a session's own topic (decideFallbackCopy), and by a role route's
+// forward while no one key stands for that mention (waitsForAnUnnamedMention); where one does,
+// the forward carries it and goes at once (unpinnedRoleMentions.keyFor, roleFallbackKey). Past
+// that attempt's lease the two questions are one again: the attempt's state is every session's
 // (unpinnedRoleMentions.resendingUnnamed), as a named holder's is, and the copy it decides is a
-// fallback row rather than a wait of the event's.
+// fallback row rather than a wait of the event's - every copy but that same forward, which no
+// key stands in for and no row keeps the owner's order for, and which waits on in the list
+// (waitsForAnUnnamedMention, roleCopyWaitsForAMention).
 //
 // A target's keys carry no such hold (mentionDeliveries.of): a target names a key, not a
 // session, and the copy it decides is the route's own topic (suppressesCurrentRoute).
@@ -471,9 +496,11 @@ type mentionHolds struct {
 // mention, and the copy the other decides is the resumed send's - and a key whose own attempts
 // failed, or that has none at all, reads whatever the attempt that may yet be pinned to it
 // reads: live and resolved to this very session, so its copy waits; past the lease, whether the
-// attempt names this session or no session at all, so its copy is held as a fallback row and
-// the pass that publishes it reads the comment's attempts again (destinations.leftTo,
-// publishFallbackCopies).
+// attempt names this session or no session at all, so its copy bound for that session's own
+// topic is held as a fallback row and the pass that publishes it reads the comment's attempts
+// again (destinations.leftTo, publishFallbackCopies). A role route's forward to that session
+// reads named rather than this and waits in the event's list instead, no row keeping the
+// owner's order to a role's holder (waitsForAnUnnamedMention, roleCopyWaitsForAMention).
 //
 // An abandoned key held back this way is not settled while it waits (destinations.leftTo): the
 // settle is the outbox's only once no send is coming, and an attempt that may yet be pinned to
@@ -500,23 +527,43 @@ func (h mentionHolds) named(key string) mentionState {
 }
 
 // liveUnnamed reports whether an attempt of the comment that names no session yet, whose role
-// this read could name no holder for, is live (unpinnedRoleMentions.liveUnnamed). The copies
-// bound for a session the owner's own work names read it beside their own key's state; every
-// other copy reads that attempt only once it is past its lease, through state.
+// this read could name no holder for, is live (unpinnedRoleMentions.liveUnnamed). In the pass
+// that reads the event the copies bound for a session the owner's own work names read it beside
+// their own key's state, and every other copy reads that attempt only once it is past its
+// lease, through state; in the pass that reads a comment_fallback_copies row every row bound
+// for a session's own topic reads it, that row waiting at no cost to the comment's response
+// (decideFallbackCopy).
 func (h mentionHolds) liveUnnamed() bool {
 	return h.unpinned.liveUnnamed()
 }
 
 // waitsForAnUnnamedMention reports whether a copy of the comment bound for key's session, which
 // its own attempts leave to this event, waits for an attempt that names no session yet and whose
-// role this read could name no holder for: one is live, and no one key stands for it, which is
-// the comment whose unpinned attempts target two or more roles (unpinnedRoleMentions.keyFor).
-// With one target the copy carries that mention's own key and goes in this pass instead
-// (roleFallbackKey), and the copies bound for a session the owner's own work names wait
-// whichever it is, no key of theirs being the mention's (destinations.addWorkingSession,
-// destinations.leftTo).
+// role this read could name no holder for: a send of one is still owed - live, or past the lease
+// the outbox waits a send out for - and no one key stands for it, which is the comment whose
+// unpinned attempts target two or more roles (unpinnedRoleMentions.liveUnnamed,
+// unpinnedRoleMentions.resendingUnnamed, unpinnedRoleMentions.keyFor). With one target the copy
+// carries that mention's own key and goes in this pass instead (roleFallbackKey), and the copies
+// bound for a session the owner's own work names wait for a live one whichever it is, no key of
+// theirs being the mention's (destinations.addWorkingSession, destinations.leftTo).
+//
+// The copy that asks it is a role route's forward (roleCopyWaitsForAMention), and it is the one
+// copy of the comment that waits in the event's list past that lease rather than being held as
+// a comment_fallback_copies row: nothing else delivers a role copy - a keep waits for the
+// role's next claim and a forward is the holder's one copy - so a copy taken out of the list
+// would let the owner's later events reach that holder first (destination.waiting, planChains).
+// What the wait costs is the re-read mentionPendingDelay sets and no copy of the comment: every
+// other destination of the event is reached in this pass, and the holder's own copy is no
+// sooner for a row, the pass that reads one waiting on that same owed send (state,
+// decideFallbackCopy, TestAForwardWaitsForTwoUnnamedMentionsPastTheirLease).
+//
+// A fallback row bound for a session's own topic waits on the same ground and asks liveUnnamed
+// alone, the copy it publishes carrying the event's own key or its own key's failed mention and
+// never the unnamed mention's: past that lease the row waits on its key's own state instead
+// (state, decideFallbackCopy).
 func (h mentionHolds) waitsForAnUnnamedMention(key string) bool {
-	return h.liveUnnamed() && h.unpinned.keyFor(key) == ""
+	owed := h.liveUnnamed() || h.unpinned.resendingUnnamed() == mentionResending
+	return owed && h.unpinned.keyFor(key) == ""
 }
 
 // live reports whether a mention of the comment bound for key's session is still being sent
@@ -525,8 +572,9 @@ func (h mentionHolds) waitsForAnUnnamedMention(key string) bool {
 // unpinned attempt of the comment resolved to it is mentionFailed and never live, as is one
 // whose attempts are past the lease the outbox waits a send out for. It reads the mentions
 // bound for that key alone (named): an attempt past its lease that names no session is a send
-// coming to some session, which holds every copy as a fallback row (state), and not a mention
-// on its way to this one.
+// coming to some session, which holds every copy bound for a session's own topic as a fallback
+// row and a role route's forward in the event's list (state, waitsForAnUnnamedMention), and not
+// a mention on its way to this one.
 func (h mentionHolds) live(key string) bool {
 	return h.named(key) == mentionSending
 }
@@ -636,7 +684,9 @@ func (d *destinations) workingSessionHold(sessionID string) copyHold {
 // this very session. Past that attempt's lease it decides no copy by itself: its state is then
 // every session's (unpinnedRoleMentions.resendingUnnamed), so the copy read here - this one and
 // a thread session's alike - is held as a fallback row exactly as a named holder's is, and the
-// pass that publishes it reads the attempts as they stand then.
+// pass that publishes it reads the attempts as they stand then and holds the row while an
+// attempt that names no session yet is live again, whichever session the row is bound for
+// (decideFallbackCopy).
 //
 // A copy left to the mention is the one copy of the comment keyed by its own session, and the
 // one copy left out of the event's destinations while it waits: the mention delivers the comment
@@ -909,6 +959,16 @@ type fallbackCopy struct {
 	claim       time.Time
 }
 
+// ofASessionsOwnTopic reports whether the row's destination is the own topic of the session its
+// key names, which every copy the batch held back for a session is: its route's, its
+// claimant's, a thread author's, a follower's (destinations.leftTo, destinations.addSession).
+// A row keyed by a session whose destination is a role topic is not one of them - that is a
+// role route a mention of the session the route resolved to suppressed, and what its forward
+// waits for is asked of the holder it reaches (suppressesCurrentRoute, roleCopyWaitsForAMention).
+func (c fallbackCopy) ofASessionsOwnTopic() bool {
+	return c.kind == sessionMentions && c.destination == contracts.AgentSubject(c.key)
+}
+
 // fallbackEvent is the comment.created event a fallback copy is the envelope of, and the slug of
 // its artifact (envelope).
 type fallbackEvent struct {
@@ -1000,7 +1060,9 @@ func failedFallbackCopy(held fallbackCopy) fallbackRecord {
 // for mentionPendingDelay, so the pass of every wake does not read it again; an abandoned attempt
 // is settled failed first (mentionComment.settleAbandoned, which a sender's claim of it runs after
 // or before under the owner lock) and the row decided again; and when no attempt was sent and none
-// is pending, the comment.created event's envelope is published to the row's destination alone,
+// is pending - and, for a row bound for a session's own topic, no attempt of the comment that
+// names no session yet is live (decideFallbackCopy) - the comment.created event's envelope is
+// published to the row's destination alone,
 // carrying the dedupe key of the failed attempt's send (mentionDeliveries.fallbackKeys for a
 // session, targetFallbackKeys for a target), and the row is marked published. A row whose
 // destination is a role topic is not published there - the stream captures no role subject - but
@@ -1278,6 +1340,25 @@ func (s fallbackSend) send(ctx context.Context, deps Deps, sender bus.Sender, ha
 // the comment once rather than again under a key its host never claimed. A keep stays under the
 // row's own key, the id every writer of that role's kept lane holds the copy under
 // (bus.KeptMsgID), and carries the map instead.
+//
+// A row bound for the own topic of the session its key names waits while an attempt of the
+// comment that names no session yet, and whose role this read could name no holder for, is
+// live (fallbackCopy.ofASessionsOwnTopic, mentionHolds.liveUnnamed). Nothing says which session
+// such an attempt is on its way to, and its sender can pin it to this very one - the session
+// that claims the issue, whose copy such a row often is, among them - while the copy this pass
+// publishes carries the event's own key or its key's own failed mention and never that
+// mention's, so the two would stand beside each other at that host. The key's own state says
+// nothing of it: a session no attempt of the comment names reads mentionFailed, which is what
+// the row's key reads as soon as the lapsed attempt that made the row has settled. The wait is
+// that attempt's own lease and no longer: past it the attempt reads mentionResending, which is
+// every key's state and which this pass waits on already (unpinnedRoleMentions.resendingUnnamed,
+// mentionHolds.state), and then it settles and the row is decided by what it settled to. A row
+// held for a session the comment's own thread names waits the same way, the row saying no more
+// of its destination than the session it is bound for: it is read by this sweep and not by the
+// comment's response, so the p99 that narrows the batch's own hold to the sessions the owner's
+// work names reaches it nowhere (destinations.addWorkingSession, resolveUnpinnedRoleMentions).
+// What doubles still is a session this read named as a role's holder and the sender pinned
+// another mention to, the residual resolveUnpinnedRoleMentions holds.
 func decideFallbackCopy(
 	ctx context.Context, deps Deps, held fallbackCopy, event fallbackEvent,
 ) (fallbackDecision, fallbackSend, error) {
@@ -1301,6 +1382,12 @@ func decideFallbackCopy(
 	case mentionSent:
 		return fallbackSettles, fallbackSend{}, nil
 	case mentionResending, mentionSending:
+		return fallbackWaits, fallbackSend{}, nil
+	}
+	if held.ofASessionsOwnTopic() && holds.liveUnnamed() {
+		// An attempt of the comment that names no session yet, and whose role this read could
+		// name no holder for, is live; nothing here says whose copy it delivers, and this is a
+		// session it may yet be pinned to. The row waits, bounded by that attempt's own lease.
 		return fallbackWaits, fallbackSend{}, nil
 	}
 	item, err := envelope(event.event, event.slug)

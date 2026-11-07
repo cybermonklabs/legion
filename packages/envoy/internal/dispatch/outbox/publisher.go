@@ -967,10 +967,15 @@ func (d *destinations) addSession(sessionID, label, id string) {
 // document's author - go in this pass under the event's own key, nothing of the comment saying
 // that mention is on its way to one of them, and the delivery target they would miss by waiting
 // outranks the double a sender that does pin it there costs. Past that attempt's lease the
-// division ends: its state is every session's, and every copy of the comment is the fallback
-// row's, as a named holder's is (unpinnedRoleMentions.resendingUnnamed, destinations.leftTo),
-// so none goes out under the event's own key while a send of that mention is still owed
-// (resolveUnpinnedRoleMentions, whose doc holds the residual this leaves and its measurements).
+// division ends: its state is every session's, and every copy of the comment bound for a
+// session's own topic is the fallback row's, as a named holder's is
+// (unpinnedRoleMentions.resendingUnnamed, destinations.leftTo), while a role route's forward
+// that carries no key for that mention waits on in the event's list instead, no row of it
+// being a copy any key drops at its holder's host (mentionHolds.waitsForAnUnnamedMention),
+// so none goes out under the event's own key while a send of that mention is still owed, and
+// the pass that reads a row of a session's own topic holds it for a live one too, at no cost
+// to the comment's response (decideFallbackCopy, resolveUnpinnedRoleMentions, whose doc holds
+// the residual this leaves and its measurements).
 func (d *destinations) addWorkingSession(sessionID, label, id string) {
 	hold := d.workingSessionHold(sessionID)
 	if hold == copyLeftToTheMention {
