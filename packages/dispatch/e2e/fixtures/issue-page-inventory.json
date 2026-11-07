@@ -2582,6 +2582,10 @@
     "tab \"Spec\"": "tab \"Spec\" | menuitem \"Spec\"",
     "tab \"Plan\"": "tab \"Plan\" | menuitem \"Plan\"",
     "tab \"Decisions\"": "tab \"Decisions\" | menuitem \"Decisions\"",
-    "tab \"Tree\"": "tab \"Tree\" | menuitem \"Tree\""
+    "tab \"Tree\"": "tab \"Tree\" | menuitem \"Tree\"",
+    "link \"Inbox Needs you 1\"": "link \"Inbox 1\"",
+    "link \"Replies\"": "link \"Inbox 1\" | link \"Inbox\"",
+    "button \"Open inbox, needs you 1\"": "button \"Peek at the inbox without leaving this page\" | link \"Inbox 1\"",
+    "button \"Open inbox\"": "button \"Peek at the inbox without leaving this page\" | link \"Inbox\""
   }
 }
