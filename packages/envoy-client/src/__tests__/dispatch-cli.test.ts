@@ -689,7 +689,7 @@ describe("the dispatch CLI", () => {
       ["handoff-write", "DSP-1", "--phase", "plan", "--body-file", "-", "--dry-run"],
     ]) {
       const { code, stdout } = await run(argv, omp, "[1, 2]\n");
-      expect(code).toBe(1);
+      expect(code).toBe(2);
       expect(stdout.split("\n")[0]).toBe("dispatch handoff-write was not called: 1 problem");
       expect(stdout).toContain("body is not one JSON object");
     }
@@ -717,9 +717,20 @@ describe("the dispatch CLI", () => {
 
   test("an unknown flag is refused in command syntax, with an example", async () => {
     const { code, stdout } = await run(["message", "--issue", "X", "--isue", "Y"], omp);
-    expect(code).toBe(1);
+    expect(code).toBe(2);
     expect(stdout.split("\n")[0]).toBe("dispatch message was not called: 1 problem");
     expect(stdout).toContain("- Example: dispatch message");
+    expect(requests).toEqual([]);
+  });
+
+  // `skill://dispatch` says "Exit 1 is a refusal, 2 a usage error", so a call Dispatch never saw
+  // because an argument is missing exits 2: a script reading the code alone tells it from a write
+  // Dispatch refused (a near copy, an AskGate block), which exits 1.
+  test("a command missing a required argument is a usage error, exit 2", async () => {
+    const { code, stdout } = await run(["issue", "--project", "DSP"], omp);
+    expect(code).toBe(2);
+    expect(stdout.split("\n")[0]).toBe("dispatch issue was not called: 1 problem");
+    expect(stdout).toContain("title");
     expect(requests).toEqual([]);
   });
 
@@ -743,7 +754,7 @@ describe("the dispatch CLI", () => {
       "- reason goes only with status done: it is the note posted on the issue as it closes, and status in_progress closes nothing. Drop reason, or set status done to close the issue.";
     for (const call of [[...argv, "--dry-run"], argv]) {
       const { code, stdout } = await run(call, omp);
-      expect(code, call.join(" ")).toBe(1);
+      expect(code, call.join(" ")).toBe(2);
       expect(stdout.split("\n").slice(0, 2)).toEqual([
         "dispatch issue-update was not called: 1 problem",
         rule,
@@ -789,7 +800,7 @@ describe("the dispatch CLI", () => {
     const argv = ["artifact", "--issue", "DSP-1", "--name", "rows.jsonl", "--content-file", "-"];
     for (const call of [[...argv, "--dry-run"], argv]) {
       const { code, stdout } = await run(call, omp, '{"row_id": 1}\n{"row_id": 2}\n');
-      expect(code, call.join(" ")).toBe(1);
+      expect(code, call.join(" ")).toBe(2);
       expect(stdout.split("\n").slice(0, 2)).toEqual([
         "dispatch artifact was not called: 1 problem",
         `- content is stored as a Markdown document, which rewrites other text (a JSONL file's lines come back joined into one paragraph), and "rows.jsonl" is not a Markdown name. Upload the file under the same name with path (--path <file>), which stores a file whose path does not end in .md or .markdown as its bytes, unchanged; content takes a name ending in .md or .markdown or with no extension.`,
@@ -848,7 +859,7 @@ describe("the dispatch CLI", () => {
     for (const { argv, env } of cases) {
       const call = await run(argv, { ...omp, ...env });
       const dry = await run([...argv, "--dry-run"], { ...omp, ...env });
-      expect(call.code, argv.join(" ")).toBe(1);
+      expect(call.code, argv.join(" ")).toBe(2);
       expect(call.stdout, argv.join(" ")).toStartWith("dispatch ");
       expect(dry, argv.join(" ")).toEqual(call);
     }
@@ -886,7 +897,7 @@ describe("the dispatch CLI", () => {
       ["issue-update", "--issue", "DSP-1", "--status", "in_progress", "--reason", "x", "--dry-run"],
       off
     );
-    expect(refused.code).toBe(1);
+    expect(refused.code).toBe(2);
     expect(refused.stdout).toStartWith(
       "dispatch issue-update was not called: 1 problem\n- reason goes only with status done"
     );
@@ -1187,7 +1198,7 @@ describe("the dispatch CLI", () => {
       ];
       for (const [flags, problem] of cases) {
         const { code, stdout } = await run(["read", ...flags], omp);
-        expect(code, flags.join(" ")).toBe(1);
+        expect(code, flags.join(" ")).toBe(2);
         expect(stdout, flags.join(" ")).toContain(`\n- ${problem}\n`);
       }
       expect(requests).toEqual([]);
@@ -1200,7 +1211,7 @@ describe("the dispatch CLI", () => {
         ["read", "--ref", "dispatch://DSP-4/log", "--artifact", "spec", "--events", "5"],
         omp
       );
-      expect(code).toBe(1);
+      expect(code).toBe(2);
       expect(stdout).toContain("drop --artifact to read the ref");
       expect(stdout).not.toContain("drop --events");
       expect(requests).toEqual([]);
@@ -1414,7 +1425,7 @@ describe("the dispatch CLI", () => {
         ["doc-read", "--issue", "DSP-2", "--blocks", "--version", "2"],
         omp
       );
-      expect(code).toBe(1);
+      expect(code).toBe(2);
       expect(stdout).toContain(
         "- blocks lists the live document, the one dispatch doc-edit changes; name no version"
       );
@@ -1454,7 +1465,7 @@ describe("the dispatch CLI", () => {
 
   test("dispatch search refuses a project that is not a key in the server's wording, sending nothing", async () => {
     const { code, stdout } = await run(["search", "--query", "ok", "--project", "lower"], omp);
-    expect(code).toBe(1);
+    expect(code).toBe(2);
     expect(stdout).toContain(`project is not a project key: ${PROJECT_KEY_RULE}`);
     expect(requests).toEqual([]);
   });
@@ -1504,7 +1515,10 @@ describe("the dispatch entry as its own process", () => {
     return { code, stdout, stderr };
   }
 
-  test("exits 1 on a .jsonl name under --content-file, naming --path, and sends nothing", async () => {
+  // Exit 2, not 1: an argument this CLI refuses before it calls Dispatch is a usage error, and 1
+  // is a write Dispatch refused (`skill://dispatch`, "Exit 1 is a refusal, 2 a usage error"). The
+  // browser row this replaced asserted 1 until cybermonklabs/legion#2781 made the codes distinct.
+  test("exits 2 on a .jsonl name under --content-file, naming --path, and sends nothing", async () => {
     writeFileSync(join(stateDir, "rows.jsonl"), rows);
 
     const { code, stdout, stderr } = await spawnDispatch([
@@ -1517,7 +1531,7 @@ describe("the dispatch entry as its own process", () => {
       "rows.jsonl",
     ]);
 
-    expect({ code, stderr }, stdout).toEqual({ code: 1, stderr: "" });
+    expect({ code, stderr }, stdout).toEqual({ code: 2, stderr: "" });
     expect(stdout).toContain('"rows.jsonl" is not a Markdown name');
     expect(stdout).toContain("--path <file>");
     expect(requests).toEqual([]);
@@ -1973,6 +1987,57 @@ describe("the dispatch CLI's subscription note", () => {
     ]);
   });
 
+  // `skill://dispatch` promises exit 1 for a refusal, and a create the near-copy gate stops made
+  // nothing: a caller that reads the status must not be told an issue was filed.
+  test("a create the near-copy gate refuses exits 1, and a create it lets through exits 0", async () => {
+    const candidates = [
+      {
+        key: "DSP-9",
+        title: "Nightly export retries for ever",
+        status: "in_progress",
+        snippet: "<mark>Nightly</mark> export",
+        shared_terms: 4,
+        href: "/issues/DSP-9",
+      },
+    ];
+    const creating = (refuse: boolean) =>
+      (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const { pathname } = new URL(String(input));
+        if (pathname === "/api/v1/projects/DSP/architecture-sources") {
+          return Response.json({ sources: [] });
+        }
+        if (pathname === "/api/v1/issues" && init?.method === "POST") {
+          return refuse
+            ? Response.json(
+                { code: "POSSIBLE_DUPLICATE", error: "possible duplicate of DSP-9", candidates },
+                { status: 409 }
+              )
+            : Response.json(
+                {
+                  key: "DSP-10",
+                  title: "Nightly export retries for ever",
+                  project: "DSP",
+                  components: { mode: "inherit", ids: [], unknown: [], reason: null },
+                },
+                { status: 201 }
+              );
+        }
+        return fetch(input, init);
+      }) as typeof fetch;
+    const create = ["issue", "--project", "DSP", "--title", "Nightly export retries for ever"];
+
+    const refused = await run(create, omp, "", creating(true));
+    expect(refused.code).toBe(1);
+    expect(refused.stdout).toContain(
+      'Not created: "Nightly export retries for ever" is a near copy of an open issue.'
+    );
+    expect(refused.stdout).toContain("DSP-9 [in_progress] Nightly export retries for ever");
+
+    const made = await run(create, omp, "", creating(false));
+    expect(made.code).toBe(0);
+    expect(made.stdout).toContain("Created DSP-10");
+  });
+
   test("a read asks no listener", async () => {
     interests = listed([]);
     const { code } = await run(["projects"], withListener);
@@ -1991,14 +2056,14 @@ describe("cliRefusals", () => {
     { line: stdout.split("\n")[0], command },
   ];
 
-  test("an argument check's refusal names its command, in the call and in its dry run (exit 1)", async () => {
+  test("an argument check's refusal names its command, in the call and in its dry run (exit 2)", async () => {
     for (const argv of [
       ["message", "--issue", "DSP-1", "--isue", "X"],
       ["issue-update", "--status", "done"],
       ["issue-update", "--status", "done", "--dry-run"],
     ]) {
       const { code, stdout } = await run(argv, omp);
-      expect(code, argv.join(" ")).toBe(1);
+      expect(code, argv.join(" ")).toBe(2);
       expect(cliRefusals(stdout), argv.join(" ")).toEqual(refusal(stdout, argv[0] ?? ""));
     }
     expect(requests).toEqual([]);
