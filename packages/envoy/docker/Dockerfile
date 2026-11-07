@@ -1,13 +1,20 @@
 # Build context is the repo root (bun workspace + Go module in packages/envoy).
 
-# Dispatch SPA build + Go contract codegen. Both come from the bun workspace,
-# so they share one stage keyed off the root lockfile.
+# Dispatch SPA build + Go contract codegen.
+# Both come from the bun workspace, so they share one stage, which sits on the bun-deps install
+# below, keyed off the root lockfile.
+#
+# bun-deps holds that install and nothing else: the lockfile, the patches and the workspace
+# manifests, inputs that move far less often than the sources the stage after it copies.
+# .github/workflows/ci-caches.yaml's envoy-listener-deps job builds this target and go-deps on a
+# push to the default branch, so the envoy-smoke build reads both from the layer cache instead of
+# installing and downloading again.
 # Bun is pinned to the version the repo locks, like packages/daemon/docker/worker.Dockerfile:
 # bundler output differs across Bun releases, so a published SPA must not be built by whatever
 # 1.x is newest that day. The web stage runs the copy of that Bun, named by digest;
 # .github/scripts/check-bun-version.sh holds that row's upstream tag to .bun-version.
 # ghcr.io/cybermonklabs/legion/ci, the copy of oven/bun:1.4.4 (.github/ci-images.yaml)
-FROM ghcr.io/cybermonklabs/legion/ci@sha256:1d22548f177f4ff38e0c15baa3c2c46c6c2060ba2d1bc573bb4720b407548f1d AS web
+FROM ghcr.io/cybermonklabs/legion/ci@sha256:1d22548f177f4ff38e0c15baa3c2c46c6c2060ba2d1bc573bb4720b407548f1d AS bun-deps
 
 WORKDIR /repo
 
@@ -26,9 +33,6 @@ RUN set -eu; \
       exit 1; \
     fi
 
-RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ \
-    && rm -rf /var/lib/apt/lists/*
-
 COPY package.json bun.lock ./
 COPY patches patches
 COPY packages/contracts/package.json packages/contracts/package.json
@@ -42,19 +46,39 @@ COPY packages/dispatch/package.json packages/dispatch/package.json
 COPY packages/proof-editor/package.json packages/proof-editor/package.json
 COPY packages/envoy/internal/dispatch/pmdoc/gen/package.json packages/envoy/internal/dispatch/pmdoc/gen/package.json
 COPY docs/site/package.json docs/site/package.json
-RUN bun install --frozen-lockfile
+# Four of the twelve packages the lockfile resolves, because the SPA build and the contract
+# codegen in the stage below read no more: packages/dispatch, packages/contracts,
+# packages/proof-editor, and the root workspace, whose spdx-expression-parse and
+# spdx-license-list are what scripts/third-party-notices.ts imports (that script is imported by
+# packages/dispatch/web/vite.config.ts). Every manifest is still copied above: the lockfile
+# resolves against all of them.
+# Each pattern begins with ./ because Bun reads a pattern without one as a package name, and
+# these packages are named @sjawhar/dispatch, @legion/contracts and @legion/proof-editor.
+# --frozen-lockfile stays immediately after install:
+# .github/scripts/check-bun-workspace-manifests.sh matches `bun install --frozen-lockfile`, and a
+# flag written between the two takes this install out of that check's sight, silently.
+RUN bun install --frozen-lockfile --filter './' --filter './packages/dispatch' --filter './packages/contracts' --filter './packages/proof-editor'
+
+FROM bun-deps AS web
 
 COPY packages/contracts packages/contracts
 COPY packages/dispatch packages/dispatch
 COPY packages/proof-editor packages/proof-editor
 # The SPA build writes dist/THIRD_PARTY_NOTICES.txt with this (packages/dispatch/web/vite.config.ts).
 COPY scripts/third-party-notices.ts scripts/third-party-notices.ts
-RUN cd packages/contracts && bun run gen:go
-RUN cd packages/dispatch && bun run build:web
+WORKDIR /repo/packages/contracts
+RUN bun run gen:go
+WORKDIR /repo/packages/dispatch
+RUN bun run build:web
 
+# go-deps holds the go-licenses build and the module download, inputs that move only when
+# packages/envoy/go.mod or go.sum does.
+# .github/workflows/ci-caches.yaml's envoy-listener-deps job builds this target and bun-deps on a
+# push to the default branch, so the envoy-smoke build reads both from the layer cache instead of
+# installing and downloading again.
 # Go version must match go.mod.
 # ghcr.io/cybermonklabs/legion/ci, the copy of golang:1.27.3-alpine (.github/ci-images.yaml)
-FROM ghcr.io/cybermonklabs/legion/ci@sha256:d200d2dd76b03a99b52651fd1325aff7dcd35422c35c01bac56571b0507f3deb AS build
+FROM ghcr.io/cybermonklabs/legion/ci@sha256:d200d2dd76b03a99b52651fd1325aff7dcd35422c35c01bac56571b0507f3deb AS go-deps
 
 WORKDIR /src
 
@@ -71,6 +95,8 @@ COPY scripts/go-third-party-notices.sh scripts/assemble-third-party-notices.sh /
 RUN go-third-party-notices.sh --install
 COPY packages/envoy/go.mod packages/envoy/go.sum ./
 RUN go mod download
+
+FROM go-deps AS build
 
 COPY packages/envoy/cmd ./cmd
 COPY packages/envoy/internal ./internal
