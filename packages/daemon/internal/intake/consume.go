@@ -49,10 +49,10 @@ const HandlerLimitCeiling = time.Hour
 
 // WindowsPerLimit is how many acknowledgement windows HandlerLimitFor gives one fact's handling:
 // one for each bounded read a fact may make (boundedReadsPerFact) and one more for the part
-// nothing bounds. It is exported because the operator's sentence for the limit says what this
-// window alone would derive, which is this many of it (daemon.IntakeHandlerLimitLine), and a
-// copy of the number written there by hand would go on printing the old one at every boot after
-// a read was added here, with every test still passing.
+// nothing bounds. It is exported because the floor's sentence for the limit says what this window
+// alone would derive, which is this many of it (daemon.IntakeHandlerLimitLine). A copy of the
+// number written there by hand would go on printing the old one at every boot after a read was
+// added here, once the limit rows that the change fails had been brought up to date.
 const WindowsPerLimit = boundedReadsPerFact + 1
 
 // HandlerLimitFor is the limit a caller that sets no HandlerLimit gets for a given AckWait:

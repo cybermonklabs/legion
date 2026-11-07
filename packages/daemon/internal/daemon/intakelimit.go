@@ -12,9 +12,10 @@ import (
 // IntakeHandlerLimitLine is the operator's sentence for the intake handler limit the daemon runs
 // with: how long one fact's handling may run before it is cut, which of the two decided that —
 // the window (`worker_rpc_timeout_seconds`, which intake takes as its AckWait) or intake's
-// ten-minute floor — the reads that window bounds either way, and what is left for the part
-// nothing bounds. derived is HandlerLimitFor's second answer: true only when the window lifted
-// the limit above that floor.
+// ten-minute floor — the reads that window bounds either way, and then, for a limit the window
+// derived, what is left for the part nothing bounds, or, for the floor's limit, what the window
+// alone would derive. derived is HandlerLimitFor's second answer: true only when the window
+// lifted the limit above that floor.
 //
 // Unlike ProbeBudgetLine, which answers "" when nothing is derived, this returns the sentence for
 // every configuration, because the boot writes it at every boot (logIntakeHandlerLimit) — a
