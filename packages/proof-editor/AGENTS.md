@@ -268,10 +268,13 @@ both `lib/` and `dev/lib/`, because Vite resolves the `development` export condi
 | `mdast-util-from-markdown@2.0.3` | `lib/index.js`'s `prepareList`, which spliced each list item's enter and its exit into the whole event array and so moved everything after them once per item. It now records where each one goes and `compile` rebuilds the events once, the sort being stable so an inner item's exit stays before an outer item's |
 
 `tests/heavy-bodies.test.ts` and `tests/nested-directive.test.ts` are what holds these patches in
-place. Each row parses its shape twice, at the longest body a caller may write and at an eighth of
+place. Each row reads its shape at two sizes, the longest body a caller may write and an eighth of
 that length, and asserts three things: the document the parse returns, that the full size costs
 less than `parseCpuBudgetMs` of CPU time, and that the full size's cost grew no faster than the
-body did. The three constants and the measurement itself are in `tests/cpu-time.ts`.
+body did. Each size is read more than once and the least reading kept, and one reading repeats the
+parse until its window lasts 50 clock steps, so a cheap shape is parsed many times over at each
+size and only a shape whose one parse outlasts a window is parsed once a reading. The three
+constants and the measurement itself are in `tests/cpu-time.ts`.
 
 The rows read CPU time rather than wall time, because wall time counts every moment the scheduler
 leaves the process off a core. On the two-CPU pod these were measured on, the read-only parse of

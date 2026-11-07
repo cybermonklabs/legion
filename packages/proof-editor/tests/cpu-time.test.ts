@@ -58,7 +58,7 @@ test("at a two-fold step the same quadratic cost wrongly passes", () => {
   // rather than take the claim on faith. A quadratic grows `step * step` and the bound is
   // `slack * step`, so the growth clears the bound only while the step is greater than the slack.
   // At a step of 2 and this file's slack of 4 the growth is 4 against a bound of 8, so the check
-  // reads a quadratic cost as linear whatever slack it is given above 2.
+  // reads a quadratic cost as linear at any slack of 2 or above.
   const full = quadraticCost(smallSize * twoFoldStep);
   expect(costGrewTooFast(quadraticCost(smallSize), full, twoFoldStep, linearSlack)).toBe(false);
 });

@@ -32,13 +32,7 @@ import remarkParse from "remark-parse";
 import { unified } from "unified";
 import { createHeadlessProof, type HeadlessProofEditor } from "../src/lib-headless.js";
 import { serverBlockSchema } from "./block-schema-fixture";
-import {
-  expectCostGrowsLinearly,
-  fastestCpuTimeOf,
-  growthStep,
-  parseCpuBudgetMs,
-  refusedCostOf,
-} from "./cpu-time";
+import { growthStep, parsedWithinCostBounds, refusalWithinCostBounds } from "./cpu-time";
 
 /** The longest comment, message or broadcast body a caller may write, in characters. */
 const bodyCap = 32_000;
@@ -208,50 +202,35 @@ for (const shape of shapes) {
 
   test(`the read-only engine parses ${shape.name} at a cost proportional to its length`, async () => {
     const proof = await readOnlyProof();
-    const smallCost = fastestCpuTimeOf(() => proof.parseMarkdown(smallBody));
-    let doc: ProseMirrorNode | undefined;
-    const fullCost = fastestCpuTimeOf(() => {
-      doc = proof.parseMarkdown(fullBody);
-    });
-    expect(fullCost, `the full size cost ${Math.round(fullCost)} ms of CPU time`).toBeLessThan(
-      parseCpuBudgetMs
+    const doc = parsedWithinCostBounds(
+      `the read-only engine's parse of ${shape.name}`,
+      (body) => proof.parseMarkdown(body),
+      smallBody,
+      fullBody
     );
-    expectCostGrowsLinearly(`the read-only engine's parse of ${shape.name}`, smallCost, fullCost);
-    if (doc === undefined) throw new Error("the measured parse produced no document");
     shape.expectDoc(doc);
   }, 300_000);
 
   if (refused === undefined) {
     test(`the default mode parses ${shape.name} at a cost proportional to its length`, async () => {
       const proof = await defaultProof();
-      const smallCost = fastestCpuTimeOf(() => proof.parseMarkdown(smallBody));
-      let doc: ProseMirrorNode | undefined;
-      const fullCost = fastestCpuTimeOf(() => {
-        doc = proof.parseMarkdown(fullBody);
-      });
-      expect(fullCost, `the full size cost ${Math.round(fullCost)} ms of CPU time`).toBeLessThan(
-        parseCpuBudgetMs
+      const doc = parsedWithinCostBounds(
+        `the default mode's parse of ${shape.name}`,
+        (body) => proof.parseMarkdown(body),
+        smallBody,
+        fullBody
       );
-      expectCostGrowsLinearly(`the default mode's parse of ${shape.name}`, smallCost, fullCost);
-      if (doc === undefined) throw new Error("the measured parse produced no document");
       shape.expectDoc(doc);
     }, 300_000);
   } else {
     test(`the default mode refuses ${shape.name} at a cost proportional to its length`, async () => {
       const proof = await defaultProof();
-      const small = refusedCostOf(() => proof.parseMarkdown(smallBody));
-      const full = refusedCostOf(() => proof.parseMarkdown(fullBody));
-      expect(
-        full.cpuMs,
-        `the full size cost ${Math.round(full.cpuMs)} ms of CPU time`
-      ).toBeLessThan(parseCpuBudgetMs);
-      expectCostGrowsLinearly(
+      const refusal = refusalWithinCostBounds(
         `the default mode's refusal of ${shape.name}`,
-        small.cpuMs,
-        full.cpuMs
+        (body) => proof.parseMarkdown(body),
+        smallBody,
+        fullBody
       );
-      const refusal = full.cause;
-      if (!(refusal instanceof Error)) throw refusal;
       expect(refusal.message).toMatch(refused);
     }, 300_000);
   }

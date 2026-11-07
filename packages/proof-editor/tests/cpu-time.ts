@@ -23,8 +23,8 @@ import process from "node:process";
  *
  * With `linearSlack` the check's bound is 32. The highest healthy ratio measured in this pod is
  * 14.46, and a cost growing with the square of its input reads about 64 at this step, so a healthy
- * parse and a quadratic one fall on opposite sides of the bound. See
- * `packages/envoy/internal/cputest`, which this module ports.
+ * parse and a quadratic one fall on opposite sides of the bound. `growthStep` in
+ * `packages/envoy/internal/dispatch/pmdoc/linear_test.go`, which this one mirrors, is 8 as well.
  */
 export const growthStep = 8;
 
@@ -50,7 +50,7 @@ export const linearSlack = 4;
  * `timeout-minutes`, never by this number. Both readings were taken with `cpuTimeOf` below, the
  * port of `packages/envoy/internal/cputest`.
  */
-export const parseCpuBudgetMs = 12_000;
+const parseCpuBudgetMs = 12_000;
 
 // What these three constants do not catch (INFRA-1629):
 //
@@ -80,7 +80,11 @@ const clockStepSamples = 5;
  */
 const windowSteps = 50;
 
-/** How many readings `fastestCpuTimeOf` takes when its caller names no count. */
+/**
+ * How many readings `fastestCpuTimeOf` keeps the least of. Two, where the `sampleCount` it
+ * mirrors in `linear_test.go` is 3: a reading here is already a whole window of runs, and a third
+ * would add that window to each of the two sides every row measures.
+ */
 const defaultSamples = 2;
 
 /** This process's total CPU time since it started, user and system, in milliseconds. */
@@ -98,7 +102,7 @@ let clockStepMs = 0;
  * and kept. A Linux kernel moves the clock in steps far under a millisecond; gVisor moves it in
  * 10 ms steps, so there a call shorter than 10 ms reads as 0 or as 10 ms.
  */
-export function cpuClockStepMs(): number {
+function cpuClockStepMs(): number {
   if (clockStepMs === 0) clockStepMs = measureCpuClockStepMs();
   return clockStepMs;
 }
@@ -119,7 +123,7 @@ function measureCpuClockStepMs(): number {
  * rather than swallowing it, so a row can assert the cost of a parse that refuses its input and
  * then assert the refusal itself.
  */
-export class CpuTimedError extends Error {
+class CpuTimedError extends Error {
   /** The CPU time one run cost: the window the runs filled, divided by those runs. */
   readonly cpuMs: number;
 
@@ -149,7 +153,7 @@ export class CpuTimedError extends Error {
  * a growth check. A throw from a window too short to keep is kept as well, so a work that throws
  * once and returns on every later run reaches its caller as a throw, never as a plain reading.
  */
-export function cpuTimeOf(work: () => unknown): number {
+function cpuTimeOf(work: () => unknown): number {
   const want = windowSteps * cpuClockStepMs();
   let threw = false;
   let thrown: unknown;
@@ -181,18 +185,26 @@ export function cpuTimeOf(work: () => unknown): number {
 }
 
 /**
- * The least of `samples` readings of `cpuTimeOf`.
+ * The least of `defaultSamples` readings of `cpuTimeOf`.
  *
  * Both sides of a growth check take the same number of samples. Sampling the small side more often
  * than the large one biases the baseline low under bursty load and inflates the ratio, which is the
  * defect `linear_test.go`'s own `sampleCount` comment records from its third round. A work that
  * throws is sampled as many times as any other, and raises a `CpuTimedError` carrying the least of
  * those readings and the throw of the last sample.
+ *
+ * A reading already past `parseCpuBudgetMs` is not read again: a second reading cannot bring it
+ * under the budget, and taking one doubles the cost of the failure these rows exist to catch. With
+ * the nesting bound of src/block-nesting.ts neutralised, `a chain of 15,999 list markers on one
+ * line` costs 205,220 ms of CPU time read-only, so a second reading of it would carry that row
+ * past its own 300,000 ms hang guard and report a timeout where the budget should report a clean
+ * failure. Every reading under the budget, which is every healthy row, is read as many times as
+ * before, so the symmetry above is untouched.
  */
-export function fastestCpuTimeOf(work: () => unknown, samples = defaultSamples): number {
+function fastestCpuTimeOf(work: () => unknown): number {
   let best = Number.POSITIVE_INFINITY;
   let thrown: CpuTimedError | undefined;
-  for (let sample = 0; sample < samples; sample++) {
+  for (let sample = 0; sample < defaultSamples; sample++) {
     try {
       const took = cpuTimeOf(work);
       if (took < best) best = took;
@@ -201,6 +213,7 @@ export function fastestCpuTimeOf(work: () => unknown, samples = defaultSamples):
       if (error.cpuMs < best) best = error.cpuMs;
       thrown = error;
     }
+    if (best > parseCpuBudgetMs) break;
   }
   if (thrown !== undefined) throw new CpuTimedError(best, thrown.cause);
   return best;
@@ -214,7 +227,7 @@ export function fastestCpuTimeOf(work: () => unknown, samples = defaultSamples):
  * It throws when the parse it was given returned rather than being refused, so a row that means
  * to measure a refusal cannot read a plain reading as one.
  */
-export function refusedCostOf(parse: () => unknown): CpuTimedError {
+function refusedCostOf(parse: () => unknown): CpuTimedError {
   try {
     fastestCpuTimeOf(parse);
   } catch (error) {
@@ -249,7 +262,63 @@ export function expectCostGrowsLinearly(name: string, small: number, full: numbe
   const bound = linearSlack * growthStep;
   const ratio = full / small;
   const reading = `${Math.round(full)} ms at the full size against ${Math.round(small)} ms`;
-  const grew = `at an eighth of it, ${ratio.toFixed(1)} times for an input ${growthStep} times`;
+  // The small side's share of the full size, read from `growthStep` so that the sentence cannot
+  // contradict the step it reports.
+  const fraction = `1/${growthStep}`;
+  const grew = `at ${fraction} of it, ${ratio.toFixed(1)} times for an input ${growthStep} times`;
   const message = `${name} cost ${reading} ${grew} larger (at most ${bound} times)`;
   expect(costGrewTooFast(small, full), message).toBe(false);
+}
+
+/**
+ * What a parse produced at the full size, once that parse has been read at both sizes and found
+ * to cost less than `parseCpuBudgetMs` and to grow no faster than its input did at `growthStep`.
+ *
+ * `parse` is given the body to read, so the two sizes go through one closure and differ by their
+ * input and by nothing else; `name` is what the growth check calls the parse in its message. The
+ * row asserts what it reads on the document this returns, which is the one the full size's
+ * measured parse produced.
+ */
+export function parsedWithinCostBounds<T>(
+  name: string,
+  parse: (body: string) => T,
+  smallBody: string,
+  fullBody: string
+): T {
+  const smallCost = fastestCpuTimeOf(() => parse(smallBody));
+  let parsed: T | undefined;
+  const fullCost = fastestCpuTimeOf(() => {
+    parsed = parse(fullBody);
+  });
+  expect(fullCost, `the full size cost ${Math.round(fullCost)} ms of CPU time`).toBeLessThan(
+    parseCpuBudgetMs
+  );
+  expectCostGrowsLinearly(name, smallCost, fullCost);
+  if (parsed === undefined) throw new Error("the measured parse produced no document");
+  return parsed;
+}
+
+/**
+ * The refusal a parse raised at the full size, once that refusal has been read at both sizes and
+ * found to cost less than `parseCpuBudgetMs` and to grow no faster than its input did at
+ * `growthStep`. `refusedCostOf` fails the row where a parse returned rather than being refused.
+ *
+ * A cause that is not an `Error` is thrown on as it is, so such a throw reaches the runner with
+ * its own stack rather than as a message that matched nothing.
+ */
+export function refusalWithinCostBounds(
+  name: string,
+  parse: (body: string) => unknown,
+  smallBody: string,
+  fullBody: string
+): Error {
+  const small = refusedCostOf(() => parse(smallBody));
+  const full = refusedCostOf(() => parse(fullBody));
+  expect(full.cpuMs, `the full size cost ${Math.round(full.cpuMs)} ms of CPU time`).toBeLessThan(
+    parseCpuBudgetMs
+  );
+  expectCostGrowsLinearly(name, small.cpuMs, full.cpuMs);
+  const refusal = full.cause;
+  if (!(refusal instanceof Error)) throw refusal;
+  return refusal;
 }

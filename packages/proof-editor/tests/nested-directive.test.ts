@@ -15,13 +15,7 @@ import { readFileSync } from "node:fs";
 import type { Node as ProseMirrorNode } from "@milkdown/kit/prose/model";
 import type { BlockSchema } from "../src/block-schema.js";
 import { createHeadlessProof } from "../src/lib-headless.js";
-import {
-  expectCostGrowsLinearly,
-  fastestCpuTimeOf,
-  growthStep,
-  parseCpuBudgetMs,
-  refusedCostOf,
-} from "./cpu-time";
+import { growthStep, parsedWithinCostBounds, refusalWithinCostBounds } from "./cpu-time";
 
 /** The document service's own block schema: its callout takes `block+`, so callouts nest. */
 const serverBlockSchema: BlockSchema = JSON.parse(
@@ -191,29 +185,23 @@ for (const body of bodies) {
 
   test(`read-only parses ${body.name} at a cost proportional to its length`, async () => {
     const proof = await readOnlyProof();
-    const smallCost = fastestCpuTimeOf(() => proof.parseMarkdown(smallInput));
-    let doc: ProseMirrorNode | undefined;
-    const fullCost = fastestCpuTimeOf(() => {
-      doc = proof.parseMarkdown(fullInput);
-    });
-    expect(fullCost, `the full size cost ${Math.round(fullCost)} ms of CPU time`).toBeLessThan(
-      parseCpuBudgetMs
+    const doc = parsedWithinCostBounds(
+      `the read-only engine's parse of ${body.name}`,
+      (input) => proof.parseMarkdown(input),
+      smallInput,
+      fullInput
     );
-    expectCostGrowsLinearly(`the read-only engine's parse of ${body.name}`, smallCost, fullCost);
-    if (doc === undefined) throw new Error("the measured parse produced no document");
     body.expectDoc(doc);
   }, 300_000);
 
   test(`the default mode refuses ${body.name} at a cost proportional to its length`, async () => {
     const proof = await defaultProof();
-    const small = refusedCostOf(() => proof.parseMarkdown(smallInput));
-    const full = refusedCostOf(() => proof.parseMarkdown(fullInput));
-    expect(full.cpuMs, `the full size cost ${Math.round(full.cpuMs)} ms of CPU time`).toBeLessThan(
-      parseCpuBudgetMs
+    const refusal = refusalWithinCostBounds(
+      `the default mode's refusal of ${body.name}`,
+      (input) => proof.parseMarkdown(input),
+      smallInput,
+      fullInput
     );
-    expectCostGrowsLinearly(`the default mode's refusal of ${body.name}`, small.cpuMs, full.cpuMs);
-    const refusal = full.cause;
-    if (!(refusal instanceof Error)) throw refusal;
     expect(refusal.message).toMatch(body.refusedInDefaultMode);
   }, 300_000);
 }
