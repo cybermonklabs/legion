@@ -37,6 +37,14 @@ name: CI caches
 # one script, .github/scripts/apt-archive-cache-key.sh, so the save's key cannot drift from the
 # restore's.
 #
+# Two more entries are no Go family and no actions/cache entry either: the BuildKit layer caches
+# of packages/envoy/docker/Dockerfile's two dependency stages, under the scopes
+# envoy-listener-bun-deps and envoy-listener-go-deps, which the envoy-listener-deps job below
+# fills for the listener build of ci.yaml's envoy-smoke job. They carry no key of their own,
+# since BuildKit looks an entry up itself, by the layer it wants rather than by a key a step
+# computes, so there is nothing to look up first and no save step to write: the job builds both
+# targets on every push, and BuildKit re-exports what it imported wherever nothing changed.
+#
 # go-docs is not here: docs-pages.yaml saves it on this same push, from the build job it shares
 # with ci.yaml's docs job. The Bun cache is not here either: .github/actions/setup-bun reads and
 # writes it on main, and five workflows that run there call it.
@@ -58,8 +66,12 @@ concurrency:
   group: ci-caches-${{ github.ref }}
   cancel-in-progress: false
 
-# Reading the tree and the caches is all this workflow does: the cache scope needs no token scope
-# of its own, and nothing here reports a check or writes an artifact.
+# Reading the tree and the caches is nearly all this workflow does: an actions/cache scope needs
+# no token scope of its own, and nothing here reports a check or writes an artifact. The one
+# exception is the envoy-listener-deps job below, which carries a permissions block of its own
+# naming `actions: read` beside `contents: read`: its builds reach the layer cache through the
+# Actions cache API, with the token docker/build-push-action hands to BuildKit, and that read is
+# a token scope.
 permissions:
   contents: read
 
@@ -410,3 +422,100 @@ jobs:
         with:
           path: ~/apt-archives
           key: ${{ steps.apt-debs-key.outputs.key }}
+
+  # The two dependency stages of packages/envoy/docker/Dockerfile: bun-deps, which ends at the
+  # filtered Bun install, and go-deps, which ends at `go mod download`. Each is built here and
+  # exported as a BuildKit layer cache, bun-deps under the scope envoy-listener-bun-deps and
+  # go-deps under envoy-listener-go-deps. .github/workflows/ci.yaml's envoy-smoke job reads both
+  # of those scopes when it builds the listener image its smoke test runs, so the two scope
+  # strings written here and the two written there are a pair that must match, character for
+  # character. Nothing fails when one of them drifts from the other: a scope no run has written
+  # is a miss, and every envoy-smoke run then installs and downloads again, as it did before this
+  # job existed.
+  #
+  # ubuntu-24.04 is the runner that reading job runs on, and neither build below names
+  # `platforms:`, so each builds for its runner's own platform and the entry a run reads was
+  # written on the same one.
+  envoy-listener-deps:
+    runs-on: ubuntu-24.04
+    # The arithmetic of a cold run, the run that has nothing to import: the two base-image pulls,
+    # the filtered Bun install (about 58 s at the ratio measured for this change), the
+    # go-licenses install (33.2 s measured) and the module download (11.8 s measured), and the
+    # two cache exports. 20 min is that sum with a slow runner's margin, and it is the same bound
+    # the apt-debs job above carries.
+    timeout-minutes: 20
+    # A job-level permissions block REPLACES the workflow's rather than adding to it, so
+    # `contents: read` is named again here: a job that named `actions: read` alone could not
+    # check the tree out. `actions: read` is here because docker/build-push-action hands its
+    # token to BuildKit for the Actions cache API, which is what reads and writes the scopes
+    # below - the scope .github/workflows/ci.yaml already grants at its top level (lines
+    # 112-115), which is why its envoy-smoke job needs no block of its own.
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The builder both builds below run on. Its docker-container driver is what can read or
+      # write a type=gha cache at all: Docker's own driver keeps no BuildKit cache a run can
+      # export or import. The same two rows the envoy-smoke job's builder carries.
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          # provenance-add-gha (true by default on this driver) stages $GITHUB_EVENT_PATH's full
+          # JSON into any provenance predicate a build on this builder computes; neither build
+          # below asks for an attestation, and false here is what keeps the event payload out of
+          # a predicate in the first place. image= is the driver's own default BuildKit image:
+          # ghcr.io/cybermonklabs/legion/ci, the copy of moby/buildkit:buildx-stable-1
+          # (.github/ci-images.yaml).
+          driver-opts: |
+            provenance-add-gha=false
+            image=ghcr.io/cybermonklabs/legion/ci@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
+
+      # The two builds below export a layer cache and nothing else: `outputs: type=cacheonly` is
+      # what says so, and a build with neither `push`, `load` nor `outputs` discards its result
+      # with a warning. Each step reads its own scope as well as writing it, so a push whose
+      # inputs are unchanged re-exports the blobs it imported rather than building the stage
+      # again. mode=min exports the target stage's own layers rather than every intermediate's,
+      # which is what .github/workflows/worker-image.yaml lines 234-250 record for this same
+      # cache pool and its repository-wide limit. ignore-error=true: the cache only saves time,
+      # so a failed export never fails this job. The ref test sits inside cache-to's value and in
+      # no `if:` on the job or the step, for two reasons at once: an entry saved on another ref
+      # lands in a scope no other branch's run can read, which is the reason this workflow's
+      # header gives for running on a push at all, and
+      # .github/scripts/check-image-trigger-paths.sh refuses a gate that holds `github.ref ==
+      # 'refs/heads/main'`, while this exact expression is the one its own fixture green-lights.
+      # BUILDX_METADATA_PROVENANCE and DOCKER_BUILD_SUMMARY keep the action's own copy of the
+      # provenance predicate out of the job log and out of a build summary page, as the
+      # envoy-smoke job's build of this same Dockerfile does.
+      - name: Fill the layer cache of the listener image's Bun dependency stage
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        env:
+          BUILDX_METADATA_PROVENANCE: disabled
+          DOCKER_BUILD_SUMMARY: "false"
+        with:
+          context: .
+          file: packages/envoy/docker/Dockerfile
+          target: bun-deps
+          outputs: type=cacheonly
+          provenance: false
+          cache-from: type=gha,scope=envoy-listener-bun-deps
+          cache-to: ${{ github.ref == 'refs/heads/main' && 'type=gha,mode=min,scope=envoy-listener-bun-deps,ignore-error=true' || '' }}
+
+      # The second stage, under its own scope. It is built in a step of its own rather than as
+      # one build's by-product: go-deps sits on a base image of its own and on no part of
+      # bun-deps, so the two stages share no layer to export together.
+      - name: Fill the layer cache of the listener image's Go dependency stage
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        env:
+          BUILDX_METADATA_PROVENANCE: disabled
+          DOCKER_BUILD_SUMMARY: "false"
+        with:
+          context: .
+          file: packages/envoy/docker/Dockerfile
+          target: go-deps
+          outputs: type=cacheonly
+          provenance: false
+          cache-from: type=gha,scope=envoy-listener-go-deps
+          cache-to: ${{ github.ref == 'refs/heads/main' && 'type=gha,mode=min,scope=envoy-listener-go-deps,ignore-error=true' || '' }}
