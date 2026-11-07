@@ -48,10 +48,17 @@ func seedMentionDelivery(t *testing.T, database *store.Store, commentID, session
 // sessionID is the session the attempt names, "" for none: an unanswered mention's attempt names
 // none until its sender resolves it. outcome is the attempt's state - "sent", "failed", or
 // "pending" for a send its sender claimed just now - or "resumed" for a pending attempt whose
-// sender's claim lapsed two minutes ago (its sender died with the send in flight; the API's
+// sender's claim lapsed half a lease ago (its sender died with the send in flight; the API's
 // delivery sweep resends it), "queued" for a pending attempt created just now that no sender has
 // claimed yet, and "backlogged" or "abandoned" for one created past model.MentionSweepWindow ago
 // that no sender ever claimed, which the delivery sweep will never send. "" records no attempt.
+//
+// A resumed attempt is staged past the lease the outbox waits a send out for
+// (model.MentionResumedSQL) and within unnamedForwardBound, the bound a role route's forward
+// waits an unnamed mention out for: that is the state these tests name, and a fixture sitting
+// on the bound itself would read one side of it or the other by how long the test took to get
+// there. The past-bound case is staged by the one test that pins it (agedUnnamedAttempts,
+// TestAForwardPastItsBoundIsHeldAsARowAndStopsHoldingTheHoldersLaterEvents).
 func seedDelivery(t *testing.T, database *store.Store, commentID, target, sessionID, outcome string) {
 	t.Helper()
 	if outcome == "" {
@@ -60,7 +67,7 @@ func seedDelivery(t *testing.T, database *store.Store, commentID, target, sessio
 	state, age, claimed := outcome, time.Duration(0), true
 	switch outcome {
 	case "resumed":
-		state, age = "pending", 2*time.Minute
+		state, age = "pending", model.DeliveryClaimLapse+model.DeliveryClaimLapse/2
 	case "queued":
 		state, claimed = "pending", false
 	case "backlogged", "abandoned":

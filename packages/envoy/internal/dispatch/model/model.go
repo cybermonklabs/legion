@@ -1822,10 +1822,13 @@ var MentionSweepWindowInterval = fmt.Sprintf("interval '%d seconds'", int64(Ment
 // attempt out for before it sends it (OwedMentionAttemptSQL): resumed on the attempt's own age,
 // abandoned on the age of the claim on it (DeliveryClaimFreeSQL, the same lease the sweep takes
 // an attempt by), and live on neither holding. So the outbox cannot come to a different answer
-// from the sweep about who owes an attempt, and holds a session's copy back for no longer than
-// that lease: every pending attempt past it is resumed or abandoned, and none of them live,
-// whoever holds it and whether or not a later attempt overtook it. Which process acts on an
-// attempt in each state, and what becomes of the mentioned session's copy of the comment
+// from the sweep about who owes an attempt, and every pending attempt past that lease is resumed
+// or abandoned, with none of them live, whoever holds it and whether or not a later attempt
+// overtook it. A mentioned session's own copy is held back for no longer than that lease; the one
+// copy held past it is a role route's forward that carries no key for an attempt naming no
+// session yet, whose own bound is unnamedForwardBound in internal/dispatch/outbox, two of these
+// leases, past which that copy is a comment_fallback_copies row rather than a wait. Which process
+// acts on an attempt in each state, and what becomes of the mentioned session's copy of the comment
 // meanwhile, is described once, on publishFallbackCopies in internal/dispatch/outbox.
 
 // DeliveryClaimFreeSQL is true of a delivery attempt no sender holds: never claimed, or claimed

@@ -467,9 +467,14 @@ func loadDocumentSessionAuthors(ctx context.Context, db queryer, ids []string) (
 // (model.MentionSessionSQL) and by its target, and reports of each group the mode the comment
 // recorded on that mention, whether an attempt was sent, is past the lease a send is waited out
 // for (model.MentionResumedSQL), is live (model.MentionLiveSQL), is abandoned
-// (model.MentionAbandonedSQL), and whether any attempt of it failed or is abandoned
+// (model.MentionAbandonedSQL), whether any attempt of it failed or is abandoned
 // (mentionDeliveries.fallbackKeys; that flag and the sent one together say whether the group has
-// settled at all, which is what mentionDeliveries.settledKeys holds a key for). What mode those
+// settled at all, which is what mentionDeliveries.settledKeys holds a key for), and whether an
+// attempt of it still owed a send was created more than the bound a role route's forward waits
+// an unnamed mention out for ago (unnamedForwardBound, unpinnedRoleMentions.record). That last
+// one is read of every group and carried by the unpinned ones alone: the attempts of a session
+// the reading can name decide their copies by their state, and the state of one past this bound
+// is mentionResending whichever side of it the attempt is. What mode those
 // attempts went in does not matter: every attempt of one mention sends under the mention's own
 // key (model.CommentMentionIdempotencyKey),
 // so the mode comes from comment_mentions - one row per (comment, target), which is what makes
@@ -489,7 +494,9 @@ var mentionDeliveryQuery = `
 	       bool_or(d.state = 'pending' and ` + model.MentionResumedSQL("d") + `),
 	       bool_or(d.state = 'pending' and ` + model.MentionLiveSQL("d") + `),
 	       bool_or(d.state = 'pending' and ` + model.MentionAbandonedSQL("d") + `),
-	       bool_or(d.state = 'failed' or (d.state = 'pending' and ` + model.MentionAbandonedSQL("d") + `))
+	       bool_or(d.state = 'failed' or (d.state = 'pending' and ` + model.MentionAbandonedSQL("d") + `)),
+	       bool_or(d.state = 'pending' and ` + model.MentionResumedSQL("d") +
+	` and d.created_at < now() - ` + unnamedForwardBoundInterval + `)
 	from comment_deliveries d
 	left join comment_mentions m on m.comment_id = d.comment_id and m.target = d.target
 	where d.comment_id = any($1::text[]::uuid[])
@@ -565,19 +572,22 @@ func loadMentionDeliveries(ctx context.Context, db queryer, ids []string, found 
 	}
 	var commentID, target, mode string
 	var sessionID *string
-	var sent, resending, sending, abandoned, failedSend bool
+	var sent, resending, sending, abandoned, failedSend, pastForwardBound bool
 	chosen := map[string]*fallbackChoice{}
 	_, err = pgx.ForEachRow(rows,
-		[]any{&commentID, &sessionID, &target, &mode, &sent, &resending, &sending, &abandoned, &failedSend},
+		[]any{&commentID, &sessionID, &target, &mode, &sent, &resending, &sending, &abandoned, &failedSend,
+			&pastForwardBound},
 		func() error {
 			deliveries := of(commentID)
 			state := mentionStateOf(sent, resending, sending, abandoned)
 			if sessionID == nil && (state == mentionSending || state == mentionResending) {
 				// An attempt of this target names no session and its send is still coming:
-				// only the role's holder says whose copies it decides, and the mention's own
+				// only the role's holder says whose copies it decides, the mention's own
 				// idempotency key says what any copy of this comment it may yet be pinned to
-				// goes under (unpinnedRoleMentions, unpinnedRoleMentions.keyFor).
-				deliveries.unpinned.record(commentID, target, mode, state)
+				// goes under, and the attempt's age says whether a role route's forward waits
+				// that send out or is held as a row instead (unpinnedRoleMentions,
+				// unpinnedRoleMentions.keyFor, unnamedForwardBound).
+				deliveries.unpinned.record(commentID, target, mode, state, pastForwardBound)
 			}
 			if sessionID != nil {
 				deliveries.sessions.record(*sessionID, state)

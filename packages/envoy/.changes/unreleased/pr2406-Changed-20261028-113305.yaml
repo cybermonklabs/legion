@@ -46,6 +46,21 @@ body: |-
     one no key drops at its holder's host, so it waits in the event's list until that mention
     settles or no sender holds it, past the minute as well; the event itself is published to its
     issue in that pass, so nobody watching the issue waits for it.
+    That one wait is bounded at 2 minutes from the attempt's creation, two of the one-minute
+    claim leases above (`model.DeliveryClaimLapse`), because nothing in the attempt ends it: a
+    sender that is alive writes the claim again every 20 seconds, a third of that lease
+    (`mentionClaimRefresh`), so its attempt stays pending for as long as that process lives, and
+    an unanswered `role:<role>` is a queue of its own among the 8 that send at once
+    (`mentionSendLanes`), each send on it bounded by the 5-second listener window
+    (`defaultTimeout`) with up to 4096 sends queued behind it (`maxQueuedMentionSends`) - so one
+    comment could hold that holder back for hours, and nothing else of the issue reached it
+    meanwhile. At 2 minutes the copy is recorded like every other copy held back, against the
+    role's own topic and that holder, rather than published under the event's own key: the event
+    is published then, later events of the issue reach that holder again, and the recorded copy
+    is sent only once no send of the mention is owed and under that holder's own mention's key
+    where it has one, so the holder is still shown the comment once. The price is the order of
+    that one comment against that one holder's later events of the issue, which may now reach it
+    first.
     The comment's own event waits on a
     mention for at most a minute after the comment committed, that one forward aside, however
     long the recipient's lane is held and whether or not a Retry overtook the attempt: past that

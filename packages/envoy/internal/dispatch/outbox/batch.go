@@ -277,6 +277,14 @@ func readRows(ctx context.Context, deps Deps, inFlight []string) (pending []pend
 // this read and holds its key against the owner's later events instead, the way an event that is
 // not due holds a key it has not reached, and against no copy of its own event (planChains), and
 // the event is marked mentionPending so that it is read again.
+//
+// heldAsARow is the end of that wait for the one copy whose wait has no bound of its own: a
+// role route's forward held for an attempt of the comment that names no session yet and that
+// no one key stands for, once that attempt is unnamedForwardBound old
+// (holdsTheForwardAsARow). The copy is a comment_fallback_copies row of the role's topic from
+// then on, so this destination sends nothing, is recorded reached by nothing, and holds no
+// later event of the owner back: the row is the fallback pass's to publish, in that pass's own
+// time rather than in the owner's order (planChains, publishFallbackCopies).
 type destination struct {
 	subject       string
 	label         string
@@ -288,6 +296,7 @@ type destination struct {
 	mentionStates mentionHolds
 	liveMention   bool
 	waiting       bool
+	heldAsARow    bool
 	forward       *roleForward
 }
 
@@ -497,6 +506,12 @@ type chain struct {
 // nothing but this copy delivers the comment here, so a later event let past it would overtake
 // the comment at that session.
 //
+// A copy a comment_fallback_copies row has taken over (destination.heldAsARow) is the other
+// side of that: it goes on no chain, sends nothing and holds nothing, the row being another
+// pass's to publish. One copy is left that way, a role route's forward past the bound it waits
+// an unnamed mention out for, and the owner's order to that holder is what it costs
+// (holdsTheForwardAsARow, unnamedForwardBound).
+//
 // A mentioned session's own copy, which the mention rule leaves out of the list entirely, is the
 // other case and holds nothing back: the mention itself delivers that comment to that very
 // session, which is what an attempt naming the session says and what an unpinned attempt the
@@ -512,8 +527,10 @@ type chain struct {
 // carrying itself would settle on an outcome settleEvent has not written, whose zero state
 // holdBack reads as released - no delay, and no mentionPendingDelay clamp, which applies to a
 // blocked outcome alone - so the batch would stop with that event released and read it again at
-// once, until the mention's attempt ran out its lease and the copy the wait exists to stop was
-// published after all (TestAWaitingCopyHoldsNoCopyOfItsOwnEvent).
+// once, until that wait ended - the attempt settling or being abandoned, its lease running out,
+// or, for an attempt that names no session yet and that no one key stands for, reaching the
+// bound past which the forward is a row instead (unnamedForwardBound) - and the copy the wait
+// exists to stop was published after all (TestAWaitingCopyHoldsNoCopyOfItsOwnEvent).
 //
 // A role route that counts as reached with nothing to send (roleForward.skip) goes on no chain: a
 // due event's is reached at once, and a not-due event's holds nothing back, since nothing of it is
@@ -544,6 +561,12 @@ func planChains(events []*batchEvent) []*chain {
 		}
 		for _, dest := range event.destinationsOf {
 			if _, ok := event.delivered[dest.subject]; ok {
+				continue
+			}
+			if dest.heldAsARow {
+				// A comment_fallback_copies row owns this copy now: nothing of this event is
+				// owed to that key, so it sends nothing here and holds nothing back
+				// (holdsTheForwardAsARow).
 				continue
 			}
 			if dest.forward != nil && dest.forward.skip != "" {

@@ -34,6 +34,13 @@ import (
 // that same owed resend (mentionHolds.state, decideFallbackCopy), while a copy taken out of the
 // event's list would let the owner's later events bound for this holder overtake the comment,
 // nothing else delivering a role copy (destination.waiting, planChains).
+//
+// What holds here is the wait within its bound: both attempts are past their lease and younger
+// than unnamedForwardBound, which is what seedDelivery's resumed attempt is staged at. Past
+// that bound the copy is held as a row of the role's own topic after all, since nothing in an
+// attempt whose sender is alive ever ends this wait, and the owner's order to that one holder
+// is its price (holdsTheForwardAsARow,
+// TestAForwardPastItsBoundIsHeldAsARowAndStopsHoldingTheHoldersLaterEvents).
 func TestAForwardWaitsForTwoUnnamedMentionsPastTheirLease(t *testing.T) {
 	const routed = "routed-to-a-session-either-mention-may-name"
 	const first = "mentioned-first-whose-attempt-is-past-its-lease"

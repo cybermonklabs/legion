@@ -975,7 +975,10 @@ func (d *destinations) addSession(sessionID, label, id string) {
 // so none goes out under the event's own key while a send of that mention is still owed, and
 // the pass that reads a row of a session's own topic holds it for a live one too, at no cost
 // to the comment's response (decideFallbackCopy, resolveUnpinnedRoleMentions, whose doc holds
-// the residual this leaves and its measurements).
+// the residual this leaves and its measurements). That forward's wait ends at
+// unnamedForwardBound, two leases from the attempt's creation: past it the copy is held as a
+// row of the role's own topic, so the holder's later events flow again and the comment reaches
+// it once, by that row (holdsTheForwardAsARow, unnamedForwardBound).
 func (d *destinations) addWorkingSession(sessionID, label, id string) {
 	hold := d.workingSessionHold(sessionID)
 	if hold == copyLeftToTheMention {
