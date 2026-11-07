@@ -24,14 +24,17 @@ import (
 // its read cannot find ("pullRequest", "repository", or empty when it finds the pull request), the
 // pull request's state, head and merge state, whether its base requires a merge queue, whether the
 // repository allows auto-merge, whether its auto-merge is enabled and whether it has a merge-queue
-// entry, its timeline of arms and removals as GraphQL's viewer (viewer, the implement App's bot
-// when empty) reads it, and every mutation sent. requeue is GitHub enqueueing again a pull request
-// it dequeues while its auto-merge is still enabled; failDisable answers the disable with an error,
-// stuckArm answers it as done while leaving auto-merge enabled, refuseSubmit answers an enable or
-// merge with GitHub's refusal, refuseType is that GraphQL error's type, movedOnRefuse is the head a
-// push moves the pull request to as GitHub refuses it, and submitStatus answers an enable or merge
-// with that HTTP status instead. updated is the pull request's updatedAt as its JSON value, GitHub's
-// last change to it: updatedAt by default, `null` for an answer that carries none.
+// entry, that entry's state and the commit the queue built it on (queueState, queueBase: QUEUED at
+// the base branch's tip when empty), the branch the pull request merges into and that branch's tip
+// (baseName, baseTip: baseBranch at baseTip when empty), its timeline of arms and removals as
+// GraphQL's viewer (viewer, the implement App's bot when empty) reads it, and every mutation sent.
+// requeue is GitHub enqueueing again a pull request it dequeues while its auto-merge is still
+// enabled; failDisable answers the disable with an error, stuckArm answers it as done while
+// leaving auto-merge enabled, refuseSubmit answers an enable or merge with GitHub's refusal,
+// refuseType is that GraphQL error's type, movedOnRefuse is the head a push moves the pull request
+// to as GitHub refuses it, and submitStatus answers an enable or merge with that HTTP status
+// instead. updated is the pull request's updatedAt as its JSON value, GitHub's last change to it:
+// updatedAt by default, `null` for an answer that carries none.
 // limitAfterRefusal answers every read after a refused enable or merge with GitHub's RATE_LIMITED
 // and a Retry-After of 180 seconds. timelineReads counts the timeline's reads. contextPages is each
 // further page of the merge queue commit's checks by the cursor it follows, pageReads counts their
@@ -45,6 +48,8 @@ type github struct {
 	updated                        string
 	queueRequired, autoMergeOK     bool
 	armed, queued                  bool
+	queueState, queueBase          string
+	baseName, baseTip              string
 	requeue, failDisable, stuckArm bool
 	refuseSubmit, refuseType       string
 	movedOnRefuse                  string
@@ -58,11 +63,14 @@ type github struct {
 	mutations                      []string
 }
 
-// updatedAt is the fake pull request's default last change on GitHub, and absent is how the fake
-// records an input the mutation it serves does not pass.
+// updatedAt is the fake pull request's default last change on GitHub, baseBranch and baseOid are
+// the branch it merges into and the commit that branch is at, and absent is how the fake records
+// an input the mutation it serves does not pass.
 const (
-	updatedAt = "2026-10-16T05:00:00Z"
-	absent    = "<absent>"
+	updatedAt  = "2026-10-16T05:00:00Z"
+	baseBranch = "main"
+	baseOid    = "a2679f2e"
+	absent     = "<absent>"
 )
 
 // submitted is the enable or merge the fake records for #42 at head. Both inputs of the squash
@@ -74,11 +82,38 @@ func submitted(verb string) string {
 
 // operationHeader is the start of a GraphQL document's operation signature: the operation's name
 // and the "(" that opens the variables it declares. variableName is every $name a document names,
-// in that signature or in the selection set after it.
+// in that signature or in the selection set after it. fieldArguments is one innermost argument
+// list a field passes, and word is every word of a selection set, each field it selects among
+// them once the argument lists are gone.
 var (
 	operationHeader = regexp.MustCompile(`^\s*(?:query|mutation)\s+(\w+)\s*\(`)
 	variableName    = regexp.MustCompile(`\$\w+`)
+	fieldArguments  = regexp.MustCompile(`\([^()]*\)`)
+	word            = regexp.MustCompile(`\w+`)
 )
+
+// operationBody takes document apart: the operation's name ("the operation" where it names none),
+// the variables its signature declares, and the selection set after that signature.
+func operationBody(document string) (string, []string, string) {
+	header := operationHeader.FindStringSubmatchIndex(document)
+	if header == nil {
+		return "the operation", nil, document
+	}
+	name := document[header[2]:header[3]]
+	depth := 0
+	for i := header[1] - 1; i < len(document); i++ {
+		switch document[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		}
+		if depth == 0 {
+			return name, variableName.FindAllString(document[header[1]:i], -1), document[i+1:]
+		}
+	}
+	return name, nil, document
+}
 
 // refusedVariables is GitHub's validation message for the first variable document declares and
 // never uses, or uses and never declares, and "" when every variable it names is both. GraphQL's
@@ -86,24 +121,7 @@ var (
 // and "All Variable Uses Defined" rules, sections 5.8.4 and 5.8.3), so a mutation that loses an
 // input while its declaration stands merges nothing.
 func refusedVariables(document string) string {
-	name, body := "the operation", document
-	var declared []string
-	if header := operationHeader.FindStringSubmatchIndex(document); header != nil {
-		name = document[header[2]:header[3]]
-		depth := 0
-		for i := header[1] - 1; i < len(document); i++ {
-			switch document[i] {
-			case '(':
-				depth++
-			case ')':
-				depth--
-			}
-			if depth == 0 {
-				declared, body = variableName.FindAllString(document[header[1]:i], -1), document[i+1:]
-				break
-			}
-		}
-	}
+	name, declared, body := operationBody(document)
 	used := variableName.FindAllString(body, -1)
 	for _, variable := range declared {
 		if !slices.Contains(used, variable) {
@@ -116,6 +134,62 @@ func refusedVariables(document string) string {
 		}
 	}
 	return ""
+}
+
+// selectedFields is every field name document's selection set names: its words, without the
+// operation's signature and without the arguments its fields pass.
+func selectedFields(document string) map[string]bool {
+	_, _, body := operationBody(document)
+	for {
+		stripped := fieldArguments.ReplaceAllString(body, "")
+		if stripped == body {
+			break
+		}
+		body = stripped
+	}
+	fields := make(map[string]bool)
+	for _, field := range word.FindAllString(body, -1) {
+		fields[field] = true
+	}
+	return fields
+}
+
+// unselectedFields names every field answer carries that document does not select, and "" where
+// it carries none. GitHub answers the fields a document asks for and no others, so an answer the
+// fake writes by hand with a field the document never selected proves nothing about what the
+// package decodes of GitHub: it is the fake's answer and the document drifting apart.
+func unselectedFields(document, answer string) string {
+	var carried struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(answer), &carried); err != nil {
+		return fmt.Sprintf("it is no JSON at all: %v", err)
+	}
+	selected := selectedFields(document)
+	var unselected []string
+	var walk func(value any)
+	walk = func(value any) {
+		switch value := value.(type) {
+		case map[string]any:
+			for field, under := range value {
+				if !selected[field] {
+					unselected = append(unselected, field)
+				}
+				walk(under)
+			}
+		case []any:
+			for _, under := range value {
+				walk(under)
+			}
+		}
+	}
+	walk(carried.Data)
+	if len(unselected) == 0 {
+		return ""
+	}
+	slices.Sort(unselected)
+	name, _, _ := operationBody(document)
+	return fmt.Sprintf("it carries %s, which %s does not select", strings.Join(slices.Compact(unselected), ", "), name)
 }
 
 func (g *github) serve(t *testing.T) string {
@@ -228,7 +302,14 @@ func (g *github) serve(t *testing.T) string {
 				autoMerge = `{"enabledAt":"2026-10-11T12:00:00Z"}`
 			}
 			if g.queued {
-				entry = `{"enqueuedAt":"2026-10-11T12:05:00Z"}`
+				queueState, queueBase := g.queueState, g.queueBase
+				if queueState == "" {
+					queueState = "QUEUED"
+				}
+				if queueBase == "" {
+					queueBase = baseOid
+				}
+				entry = fmt.Sprintf(`{"enqueuedAt":"2026-10-11T12:05:00Z","state":%q,"baseCommit":{"oid":%q}}`, queueState, queueBase)
 			}
 			state, mergeState, updated := g.state, g.mergeState, g.updated
 			if state == "" {
@@ -240,8 +321,22 @@ func (g *github) serve(t *testing.T) string {
 			if updated == "" {
 				updated = strconv.Quote(updatedAt)
 			}
-			_, _ = fmt.Fprintf(w, `{"data":{"repository":{"autoMergeAllowed":%t,"pullRequest":{"id":"PR_42","state":%q,"headRefOid":%q,"mergeStateStatus":%q,"updatedAt":%s,"isMergeQueueEnabled":%t,"autoMergeRequest":%s,"mergeQueueEntry":%s}}}}`,
-				g.autoMergeOK, state, g.head, mergeState, updated, g.queueRequired, autoMerge, entry)
+			baseName, baseTip := g.baseName, g.baseTip
+			if baseName == "" {
+				baseName = baseBranch
+			}
+			if baseTip == "" {
+				baseTip = baseOid
+			}
+			answer := fmt.Sprintf(`{"data":{"repository":{"autoMergeAllowed":%t,"pullRequest":{"id":"PR_42","state":%q,"headRefOid":%q,"mergeStateStatus":%q,"updatedAt":%s,"isMergeQueueEnabled":%t,"autoMergeRequest":%s,"mergeQueueEntry":%s,"baseRef":{"name":%q,"target":{"oid":%q}}}}}}`,
+				g.autoMergeOK, state, g.head, mergeState, updated, g.queueRequired, autoMerge, entry, baseName, baseTip)
+			// GitHub answers the fields a document selects and no others, so a field this
+			// hand-written answer carries that read never selected is a decode no GitHub would
+			// ever feed: the answer and the document have drifted apart.
+			if drifted := unselectedFields(read, answer); drifted != "" {
+				t.Errorf("the fake's answer to the read is one GitHub would never give: %s", drifted)
+			}
+			_, _ = w.Write([]byte(answer))
 		}
 	}))
 	t.Cleanup(server.Close)
@@ -277,6 +372,38 @@ func TestTheFakeRefusesAGraphQLDocumentGitHubsValidatorWouldRefuse(t *testing.T)
 			defer g.mu.Unlock()
 			if len(g.mutations) != 0 {
 				t.Fatalf("the fake recorded %v, want no mutation for a document GitHub refuses", g.mutations)
+			}
+		})
+	}
+}
+
+// The fake answers the read with a hand-written JSON literal, and nothing but this check holds
+// that literal to the document the package sends: GitHub answers the fields a document selects
+// and no others, so a field the fake answers that read never selects is a decode nothing on
+// GitHub feeds. The fake's read branch runs unselectedFields over every answer it writes, so the
+// answer and the document cannot drift apart as the read grows.
+func TestTheFakeRefusesAnAnswerTheReadDocumentDoesNotSelect(t *testing.T) {
+	// answered is the fake's own answer to the read, with extra, a further field of the
+	// merge-queue entry, where it is given.
+	answered := func(extra string) string {
+		return `{"data":{"repository":{"autoMergeAllowed":true,"pullRequest":{"id":"PR_42","state":"OPEN","headRefOid":"head",` +
+			`"mergeStateStatus":"BLOCKED","updatedAt":"` + updatedAt + `","isMergeQueueEnabled":true,"autoMergeRequest":null,` +
+			`"mergeQueueEntry":{"enqueuedAt":"2026-10-11T12:05:00Z","state":"QUEUED","baseCommit":{"oid":"` + baseOid + `"}` + extra + `},` +
+			`"baseRef":{"name":"` + baseBranch + `","target":{"oid":"` + baseOid + `"}}}}}}`
+	}
+	for _, tc := range []struct{ name, answer, want string }{
+		{name: "the answer the fake writes", answer: answered("")},
+		{name: "a field of the merge-queue entry the read does not select", answer: answered(`,"position":3`), want: "position"},
+		{name: "a field of the pull request the read does not select", answer: `{"data":{"repository":{"pullRequest":{"id":"PR_42","mergeable":"MERGEABLE"}}}}`, want: "mergeable"},
+		{name: "a field of the base branch the read does not select", answer: `{"data":{"repository":{"pullRequest":{"baseRef":{"name":"main","prefix":"refs/heads/"}}}}}`, want: "prefix"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			message := unselectedFields(read, tc.answer)
+			switch {
+			case tc.want == "" && message != "":
+				t.Fatalf("the fake's own answer to the read is refused: %s", message)
+			case tc.want != "" && !strings.Contains(message, tc.want):
+				t.Fatalf("an answer carrying %s is answered %q, want it refused for that field", tc.want, message)
 			}
 		})
 	}
@@ -731,6 +858,41 @@ func TestSubmitWaitsOnAStandingArmWithoutReadingTheTimeline(t *testing.T) {
 	defer g.mu.Unlock()
 	if g.timelineReads != 0 || len(g.mutations) != 0 {
 		t.Fatalf("timeline reads %d and mutations %v while READY's head stands queued, want none", g.timelineReads, g.mutations)
+	}
+}
+
+// An Armed wait carries what the read it came from found: the merge-queue entry's state and the
+// commit the queue built its merge on, and the branch the pull request merges into with that
+// branch's tip. The arm GitHub has just accepted carries no entry, since the read before the
+// mutation found none; the next run reads the entry GitHub made of it.
+func TestAnArmedWaitCarriesTheMergeQueueEntryAndBaseOfItsRead(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		g    *github
+		// seen is the row having seen READY's head armed or queued before this run.
+		seen bool
+		want Armed
+	}{
+		{name: "a pull request the merge queue has an entry for", seen: true,
+			g:    &github{head: "head", mergeState: "BLOCKED", queueRequired: true, queued: true, queueState: "AWAITING_CHECKS", queueBase: "queue-base", baseName: "release", baseTip: "release-tip"},
+			want: Armed{QueueState: "AWAITING_CHECKS", QueueBase: "queue-base", BaseName: "release", BaseTip: "release-tip"}},
+		{name: "an arm GitHub has just accepted",
+			g:    &github{head: "head", mergeState: "BLOCKED", autoMergeOK: true},
+			want: Armed{BaseName: baseBranch, BaseTip: baseOid}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := githubrest.Client{Token: "token", API: githubrest.GraphQLAPI(tc.g.serve(t))}
+			_, err := Submit(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, "head", tc.seen, keeping("head"))
+			var armed *Armed
+			if !errors.As(err, &armed) {
+				t.Fatalf("Submit = %v, want an Armed wait", err)
+			}
+			want := tc.want
+			want.Number, want.Repo, want.Head = 42, ghrepo.MustParse("acme/widgets"), "head"
+			if *armed != want {
+				t.Fatalf("Armed = %+v, want %+v", *armed, want)
+			}
+		})
 	}
 }
 

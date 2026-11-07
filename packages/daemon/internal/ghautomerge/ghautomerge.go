@@ -33,7 +33,8 @@ const read = `query PullRequestAutoMerge($owner: String!, $name: String!, $numbe
     autoMergeAllowed
     pullRequest(number: $number) {
       id state headRefOid mergeStateStatus updatedAt isMergeQueueEnabled
-      autoMergeRequest { enabledAt } mergeQueueEntry { enqueuedAt }
+      autoMergeRequest { enabledAt } mergeQueueEntry { enqueuedAt state baseCommit { oid } }
+      baseRef { name target { oid } }
     }
   }
 }`
@@ -189,7 +190,7 @@ func Submit(ctx context.Context, github githubrest.Client, repo ghrepo.Repositor
 	case !pull.openAt(head):
 		return "", &Lagging{Number: number, Head: head, State: pull.State, GitHubHead: pull.HeadRefOid, Since: pull.UpdatedAt}
 	case pull.armed():
-		return "", &Armed{Number: number, Repo: repo, Head: head}
+		return "", pull.armedWait(repo, number, head)
 	case armed:
 		if err := removal(ctx, github, repo, number, head); err != nil {
 			return "", err
@@ -205,7 +206,10 @@ func Submit(ctx context.Context, github githubrest.Client, repo ghrepo.Repositor
 	case sent == nil && chosen.merges:
 		return Merged, nil
 	case sent == nil:
-		return "", &Armed{Number: number, Repo: repo, Head: head}
+		// pull is the read before the mutation, where nothing was armed, so it carries no
+		// merge-queue entry at all: the entry's state and base commit stay empty rather than
+		// invented, and the next run reads the entry GitHub has made of this arm.
+		return "", pull.armedWait(repo, number, head)
 	}
 	failed := fmt.Errorf("%s pull request #%d of %s at READY's head %s: %w", chosen.action, number, repo, head, sent)
 	var refusal *githubrest.GraphQLError
@@ -317,6 +321,18 @@ type Armed struct {
 	Number int
 	Repo   ghrepo.Repository
 	Head   string
+	// QueueState is the state GitHub's merge queue has the entry in (QUEUED, AWAITING_CHECKS,
+	// MERGEABLE, UNMERGEABLE, LOCKED), and is empty where the read found no entry: an auto-merge
+	// arm alone, or an entry GitHub made after the read.
+	QueueState string
+	// QueueBase is the commit the merge queue built the entry's merge on, and is empty where the
+	// read found no entry or the queue had built nothing for it yet.
+	QueueBase string
+	// BaseName is the branch the pull request merges into, as the same read named it.
+	BaseName string
+	// BaseTip is the commit that branch was at in the same read, which the queue moves on as it
+	// merges what stands before the entry.
+	BaseTip string
 }
 
 func (a *Armed) Error() string {
@@ -469,21 +485,62 @@ type repository struct {
 }
 
 // pullRequest is what Disarm and Submit read of a pull request: its node id, state, head, merge
-// state, GitHub's last change to it, whether its base requires a merge queue, and whether
-// auto-merge is enabled and it sits in a merge queue. Nothing of the squash commit's message is
-// read, since Submit passes none; the enable and merge mutations above say what decides it.
+// state, GitHub's last change to it, whether its base requires a merge queue, whether auto-merge
+// is enabled and what entry it has in the merge queue, and the branch it merges into with that
+// branch's tip. Nothing of the squash commit's message is read, since Submit passes none; the
+// enable and merge mutations above say what decides it.
 type pullRequest struct {
-	ID                  string    `json:"id"`
-	State               string    `json:"state"`
-	HeadRefOid          string    `json:"headRefOid"`
-	MergeStateStatus    string    `json:"mergeStateStatus"`
-	UpdatedAt           time.Time `json:"updatedAt"`
-	IsMergeQueueEnabled bool      `json:"isMergeQueueEnabled"`
-	AutoMergeRequest    *struct{} `json:"autoMergeRequest"`
-	MergeQueueEntry     *struct{} `json:"mergeQueueEntry"`
+	ID                  string           `json:"id"`
+	State               string           `json:"state"`
+	HeadRefOid          string           `json:"headRefOid"`
+	MergeStateStatus    string           `json:"mergeStateStatus"`
+	UpdatedAt           time.Time        `json:"updatedAt"`
+	IsMergeQueueEnabled bool             `json:"isMergeQueueEnabled"`
+	AutoMergeRequest    *struct{}        `json:"autoMergeRequest"`
+	MergeQueueEntry     *mergeQueueEntry `json:"mergeQueueEntry"`
+	// BaseRef is the branch the pull request merges into, nil where GitHub has none for it (a base
+	// branch someone deleted), with Target the commit that branch is at, nil the same way.
+	BaseRef *struct {
+		Name   string `json:"name"`
+		Target *struct {
+			Oid string `json:"oid"`
+		} `json:"target"`
+	} `json:"baseRef"`
+}
+
+// mergeQueueEntry is the pull request's place in its base's merge queue: when GitHub enqueued it,
+// the state the queue has it in (QUEUED, AWAITING_CHECKS, MERGEABLE, UNMERGEABLE, LOCKED), and the
+// commit the queue built its merge on, nil until the queue has built one. An entry at all says the
+// pull request is queued, whatever its state, which is what armed answers.
+type mergeQueueEntry struct {
+	EnqueuedAt time.Time `json:"enqueuedAt"`
+	State      string    `json:"state"`
+	BaseCommit *struct {
+		Oid string `json:"oid"`
+	} `json:"baseCommit"`
 }
 
 func (p *pullRequest) armed() bool { return p.AutoMergeRequest != nil || p.MergeQueueEntry != nil }
+
+// armedWait is the wait for GitHub's own merge of the pull request at head, from this one read:
+// the merge-queue entry's state and base commit where the read found an entry, and the base
+// branch's name and tip where it found a base branch.
+func (p *pullRequest) armedWait(repo ghrepo.Repository, number int, head string) *Armed {
+	armed := &Armed{Number: number, Repo: repo, Head: head}
+	if entry := p.MergeQueueEntry; entry != nil {
+		armed.QueueState = entry.State
+		if entry.BaseCommit != nil {
+			armed.QueueBase = entry.BaseCommit.Oid
+		}
+	}
+	if base := p.BaseRef; base != nil {
+		armed.BaseName = base.Name
+		if base.Target != nil {
+			armed.BaseTip = base.Target.Oid
+		}
+	}
+	return armed
+}
 
 // kept says whether the pull request's head is head, the READY head an arm is legitimate for.
 func (p *pullRequest) kept(head string) bool { return head != "" && p.HeadRefOid == head }
