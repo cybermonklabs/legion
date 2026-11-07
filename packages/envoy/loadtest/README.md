@@ -82,6 +82,7 @@ same step before and after its change, and compares the two rows.
 | `refs-sample-2026-10-27.json` | The reference seed's input: for each of 160 production issues sampled on 2026-10-27, the version count of every member of its references answer. 160 arrays of numbers, no issue key and no name. |
 | `routes-2026-10-26-1719Z.txt` | The default route mix |
 | `routes-spec-loop-2026-11-03.txt` | The spec loop's route mix: the seven routes of its driver's reads (Route mix, below) |
+| `routes-spec-loop-sensitivity-2026-11-07.txt` | That mix with its two meaning searches served by the proposal's own comment listing, for INFRA-988's report (The sensitivity mix, below) |
 | `stack.sh` | The local stack: `setup`, `start`, `seed`, `reset` (and `reset --replay`), `stop`, `status`, `build-info`, `loadgen`, `replay-seed-patch-check`, `replay-seed`, which seeds the LINUX replay, runs `replay-check-seed` and dumps the database only when it passed, and the replay's `replay-manifest`, `replay-get` and `replay-prepare` |
 | `replay.sh` | The LINUX replay's `stack.sh` commands, sourced by it: `replay-seed-patch-check`, `replay-seed`, `replay-manifest`, `replay-get`, `replay-prepare` and the `reset --replay` that resets from a prepared template |
 | `run-step.sh` | The one command for a named step |
@@ -1089,6 +1090,30 @@ and its route, when the step has no `-loop-seed`, and again when no proposal of 
 holds the record that placeholder needs: a read of an empty id is no read. `{artifact_id}`, which
 a plain `seed.json` run fills from its issue, is held to the same rule under a loop seed: it
 needs a part document.
+
+#### The sensitivity mix
+
+`routes-spec-loop-sensitivity-2026-11-07.txt` is that same mix with its two meaning-search reads
+served by the cheapest existing route that returns the same threads.
+It measures one thing, for [INFRA-988](dispatch://INFRA-988)'s report, and is no part of the spec
+loop's own load: what the loop costs when the requirement queries by target and by status are
+served by a route that exists.
+Those two queries have no route of their own in Dispatch, so the loop's own mix stands them in
+with `GET /api/v1/search`, and one meaning search was measured on a 500,000-comment deployment at
+about 230 ms of database CPU and 0.75 GB of shared-buffer touches, two HNSW walks over a 10 GB
+index, which at 98.5 requests/s offers 6 to 7.5 of an 8-vCPU instance from those two rows alone.
+
+The stand-in is the proposal's own comment listing, which the driver already reads.
+The 13.7 of the by-target query and the 13.6 of the by-status query are added to that listing's
+21, giving one row of 48.3: `routes.go` refuses two rows with one caller and one path, so the two
+queries are folded into the row rather than carried beside it, and a reader of a step's route
+table sees one 48.3 row where the mix means three reads.
+Every other row and the total of 99 are the spec loop's.
+
+Its limit, which any report of a run on it states: the listing answers a different question.
+It returns the thread of a proposal the caller already names, where the loop's two queries ask
+which threads match a target or a status.
+No existing route answers those, which is what a run on this mix is for.
 
 ### The dashboard stream
 

@@ -1,0 +1,36 @@
+# The sensitivity mix of dispatch://INFRA-988's R12 answer: the spec loop's mix
+# (routes-spec-loop-2026-11-03.txt) with its two meaning-search reads served by the cheapest
+# existing route that returns the same threads.
+#
+# Why: 27.3% of the loop's reads are the requirement queries by target and by status, which have
+# no route of their own in Dispatch, so the plan's D1 stands them in with GET /api/v1/search.
+# Measured on this deployment, one meaning search costs about 230 ms of database CPU and touches
+# 0.75 GB of shared buffers (two HNSW walks over a 10 GB index), so at 1x's 98.5 requests/s those
+# two rows alone offer 6 to 7.5 of the instance's 8 vCPUs. This mix measures what the loop costs
+# when those two queries are served by a route that exists.
+#
+# The stand-in is the proposal's own comment listing, which the loop's driver already reads. Its
+# limit, which R12 states: it answers a different question. It returns the thread of a proposal
+# the caller already names, where the loop's two queries ask which threads match a target or a
+# status. No existing route answers those, which is what the measurement is for.
+#
+# Weights: the 13.7 of the by-target query and the 13.6 of the by-status query move onto the
+# part-document listing, which the loop already reads at 21, giving one row of 48.3. The parser
+# refuses two rows of one caller and path (routes.go:140), so it is one row rather than two.
+# Every other row and the file's total of 99 are the spec loop's mix exactly. The by-owner query
+# (13.7) is unchanged: it already reads the issue's own comment listing.
+#
+# Format, callers, identities and placeholders: routes-spec-loop-2026-11-03.txt.
+
+# The requirement queries (41): by owner as before; by target and by status served by the
+# proposal's own comment listing in place of GET /api/v1/search.
+13.7 loop agent GET /api/v1/issues/{key}/comments
+
+# The review reads (34): a review page, and the index that lists a proposal's pages.
+24 loop agent GET /api/v1/artifacts/{review_page_artifact_id}/text
+10 loop agent GET /api/v1/artifacts/{review_index_artifact_id}/text
+
+# The document reads (24), with the 27.3 of the two replaced queries added to the first: the
+# requirement file of one part document, and the part document itself by its file name.
+48.3 loop agent GET /api/v1/issues/{key}/comments?artifact={part_artifact_id}
+3 loop agent GET /api/v1/issues/{key}/artifacts/{part_slug}/text
