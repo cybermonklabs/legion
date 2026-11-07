@@ -1,6 +1,9 @@
-// Package harness holds what every experiment of the Temporal evaluation needs: the
-// command line each one is given, a client dialled against the server under test, a
-// wait for that server's namespace, and the printing the write-up quotes.
+// Package harness holds what every experiment of the evaluation needs: the command
+// line each one is given, a client dialled against the server under test, a wait for
+// that server's namespace, and the printing the write-up quotes.
+//
+// Experiments 1 to 6 measure Temporal and take its address; experiments 7 to 9 measure
+// DBOS, which is a library rather than a server, and take a PostgreSQL URL instead.
 //
 // Every experiment prints its measured numbers as plain `name: value` lines and then
 // exactly one verdict line, `experiment N: PASS` or `experiment N: FAIL`.
@@ -11,6 +14,8 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"go.temporal.io/api/workflowservice/v1"
@@ -21,7 +26,7 @@ import (
 // Config is the command line of cmd/experiments, shared by every experiment. An
 // experiment reads only the fields its own run needs.
 type Config struct {
-	// Experiment is the number given to -experiment, 1..6.
+	// Experiment is the number given to -experiment, 1..9.
 	Experiment int
 	// Address is the server's gRPC host:port.
 	Address string
@@ -37,6 +42,14 @@ type Config struct {
 	// RepoRoot is the root of the Legion repository, whose own code experiment 1
 	// measures. Empty means "find it by walking up from the working directory".
 	RepoRoot string
+	// PostgresDSN is the URL of the PostgreSQL that experiments 7, 8 and 9 measure
+	// DBOS against, which is the only state those three need: DBOS keeps its workflow
+	// state in the application's own database.
+	PostgresDSN string
+	// DBOSWorker is the absolute path of the built cmd/dbosworker binary, which
+	// experiments 7, 8 and 9 start as a second process. Empty means "the dbosworker
+	// next to the running binary".
+	DBOSWorker string
 }
 
 // WorkDir is the scratch directory the experiment may write in: what -work-dir named,
@@ -51,6 +64,41 @@ func WorkDir(cfg Config) (string, error) {
 		return "", fmt.Errorf("-work-dir: %w", err)
 	}
 	return dir, nil
+}
+
+// RequirePostgresDSN refuses a DBOS experiment that was given no database. The DBOS
+// experiments measure a library that keeps its state in PostgreSQL, so without one
+// there is nothing at all to measure.
+func RequirePostgresDSN(cfg Config) error {
+	if strings.TrimSpace(cfg.PostgresDSN) == "" {
+		return fmt.Errorf("experiment %d measures DBOS, which keeps its workflow state in PostgreSQL: pass -postgres-dsn, or set LEGION_TEST_PG_DSN, to a PostgreSQL URL this process may create a database in", cfg.Experiment)
+	}
+	return nil
+}
+
+// DBOSWorker is the cmd/dbosworker binary the DBOS experiments start as a second
+// process: what -dbos-worker named, or the dbosworker beside the running binary, which
+// is where a runner that builds both of them puts it.
+func DBOSWorker(cfg Config) (string, error) {
+	path := cfg.DBOSWorker
+	if path == "" {
+		self, err := os.Executable()
+		if err != nil {
+			return "", fmt.Errorf("-dbos-worker is empty and this binary's own path is unknown: %w", err)
+		}
+		path = filepath.Join(filepath.Dir(self), "dbosworker")
+	}
+	if !filepath.IsAbs(path) {
+		return "", fmt.Errorf("-dbos-worker %q must be an absolute path", path)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", fmt.Errorf("-dbos-worker: %w (build it with: go build -o %s ./cmd/dbosworker)", err, path)
+	}
+	if info.IsDir() || info.Mode()&0o111 == 0 {
+		return "", fmt.Errorf("-dbos-worker %q is not an executable file", path)
+	}
+	return path, nil
 }
 
 // Logger is the SDK logger the experiments give their clients and workers: warnings and
