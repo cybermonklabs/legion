@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
@@ -1227,6 +1228,61 @@ func TestEveryOperatorAnswerAboutOneClaimCarriesItsStoredStep(t *testing.T) {
 			got.Step.StartedAt == nil || !got.Step.StartedAt.Equal(*want.StartedAt) {
 			t.Fatalf("%s answered step %+v, want the record the store holds, %+v", action, got.Step, want)
 		}
+	}
+}
+
+// A step read the store refuses leaves the answer without the record, and never falls back on
+// the machine's own copy of it. That copy is the record as the machine was built with it — at
+// this daemon's boot, for every claim it re-adopted — so serving it here would print the call a
+// worker was in hours ago as the call it is in now, on the very command an operator runs to ask
+// whether that worker is still moving. No record is what the listing already shows for a claim
+// in no open call, and what `legion claims` prints as `-`.
+//
+// The request itself still succeeds: the suspension has already been decided and written, and a
+// 500 over the record beside it would read to an operator as a suspend that did not happen. The
+// failed read is a Warn naming the claim and the error.
+func TestAnOperatorAnswerWhoseStepReadFailsCarriesNoRecordRatherThanTheMachinesCopy(t *testing.T) {
+	h := newHarness(t)
+	logs := &bytes.Buffer{}
+	h.handler = NewServer("127.0.0.1", 8437, Options{
+		Steps:      config.DesignGateRootIssues.Steps(),
+		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: h.store,
+		Log: slog.New(slog.NewJSONHandler(logs, nil)), Pool: h.store.Pool(), Record: record.NewStore(), Releaser: h.runtime, Trees: h.store,
+	}).Handler
+	h.operator(http.MethodPost, "/legion/v1/operator/claims", spawnBody())
+	h.registered(h.bootToken(architectToken), "ses_architect")
+	began := time.Date(2026, 9, 22, 11, 0, 0, 0, time.UTC)
+	booted := supervise.StepRecord{At: began.Add(time.Minute), TurnStartedAt: began, Tool: "bash",
+		CallID: "toolu_turn3_1", ArgsBytes: 128, ArgsHash: "9f2b7c0d1e3a4b5c", StartedAt: began.Add(time.Minute)}
+	if known, err := h.store.PutClaimStep(h.ctx, architectToken, booted); err != nil || !known {
+		t.Fatalf("put the step the machine is built with = %t, %v", known, err)
+	}
+	// The machine re-adopted with that record held: its own copy is the one the fallback served.
+	m := h.supervisor.restart(t, architectToken)
+	if held := m.Claim().Step; held.CallID != booted.CallID {
+		t.Fatalf("the machine's own copy of the record = %+v, want the call it was built with: this case is about an answer that must not serve it", held)
+	}
+	refusal := errors.New("read the claim's step record: connection refused")
+	h.supervisor.refuseStep(refusal)
+
+	recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(architectToken)+"/suspend", nil)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("suspend = %d, want 200: the suspension has landed and a failed read of the record beside it must not fail the request; body %s",
+			recorder.Code, recorder.Body)
+	}
+	var got OperatorClaim
+	decodeInto(t, recorder, &got)
+	if got.Step != nil {
+		t.Fatalf("the answered step = %+v, want none: the store refused the read and the machine's own copy is the boot-time one", got.Step)
+	}
+	if got.State != string(supervise.StateSuspended) {
+		t.Fatalf("the answered state = %q, want the suspension the request made", got.State)
+	}
+	logged := logs.String()
+	if !strings.Contains(logged, `"level":"WARN"`) || !strings.Contains(logged, `"claim":"`+string(architectToken)+`"`) ||
+		!strings.Contains(logged, `"error":"`+refusal.Error()+`"`) {
+		t.Fatalf("logs %s do not carry one Warn naming the claim and the read's error", logged)
 	}
 }
 

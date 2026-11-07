@@ -82,6 +82,9 @@ type testSupervisor struct {
 	mu       sync.Mutex
 	machines map[claim.Token]*supervise.Machine
 	prompts  map[claim.Token]string
+	// stepErr is what the step read answers instead of the store's record, for a test about a
+	// refused read (refuseStep); nil while the store answers.
+	stepErr error
 }
 
 func (s *testSupervisor) Machine(token claim.Token) (*supervise.Machine, bool) {
@@ -140,8 +143,25 @@ func (s *testSupervisor) Claims(ctx context.Context) ([]supervise.Claim, error) 
 	return s.store.Claims(ctx)
 }
 
+// Step is the narrow read behind every operator answer about one claim, the store's own
+// (store.Store.ClaimStep), unless a test has had the store refuse it (refuseStep).
 func (s *testSupervisor) Step(ctx context.Context, token claim.Token) (supervise.StepRecord, error) {
+	s.mu.Lock()
+	refused := s.stepErr
+	s.mu.Unlock()
+	if refused != nil {
+		return supervise.StepRecord{}, refused
+	}
 	return s.store.ClaimStep(ctx, token)
+}
+
+// refuseStep has every later read of one claim's step record fail with err, as a store that
+// refuses that narrow read does. The claims read the listing makes is a different read and is
+// left alone: a route about one claim makes this one and no other.
+func (s *testSupervisor) refuseStep(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stepErr = err
 }
 
 type harness struct {

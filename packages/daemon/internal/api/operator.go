@@ -254,18 +254,26 @@ func operatorView(c supervise.Claim, step supervise.StepRecord) OperatorClaim {
 // copy is the record as it stood when that machine was built — at this daemon's boot, for every
 // claim it re-adopted. These routes are the one surface a controller's record reaches and the
 // ones an operator runs on a worker that has stopped moving, so what they show has to be the
-// record the stall backstop reads, not a call hours old or none at all.
+// record the stall backstop reads rather than that snapshot, which is a call hours old, or none
+// at all, for every claim this daemon took up at boot.
 //
-// A read the store refuses answers the machine's copy and says so in the log: the request it
-// answers has already been decided and its claim already written, and a 500 over the record
-// beside it would read as a stop, a resume or a retry that did not happen.
+// A read the store refuses answers the record absent — the `-` the listing already shows for a
+// claim in no open call — and logs the failure at Warn naming the claim and the error.
+//
+// Not a 500: the action the request reports has already landed, its decision made and its claim
+// written, so failing the request over a read beside it would read as a stop, a resume or a retry
+// that did not happen. Not the machine's own copy either: that copy is the boot-time snapshot
+// these routes exist to stop serving, and printing a call hours old as the call a worker is in
+// now is worse than printing none, because an operator reading it would take a worker that has
+// stopped moving for one still at work. An absent record says what the daemon knows: it could
+// not read what that claim's agent last did.
 func (s *server) operatorAnswer(ctx context.Context, m *supervise.Machine) OperatorClaim {
 	c := m.Claim()
 	step, err := s.supervisor.Step(ctx, c.Token)
 	if err != nil {
-		s.logFailure("api: read the step record of an operator's claim; answering with the machine's own copy",
+		s.log.Warn("api: read the step record of an operator's claim; answering with no record",
 			"claim", c.Token, "error", err)
-		step = c.Step
+		step = supervise.StepRecord{}
 	}
 	return operatorView(c, step)
 }
