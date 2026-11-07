@@ -178,9 +178,12 @@ func (r *Runtime) refreshProvisioningToken(ctx context.Context, pod *corev1.Pod,
 // reaches. A pod the previous daemon created carries no repository in its Secret and needs
 // none, since its fetch argument names it, so its refresh keeps working and no live issue is
 // stopped. What such a pod lacks is the repository directories of a bundle built now, which a
-// pod's gh projection is fixed at and only a new pod can gain: that is the drift check's
-// business (movedGhDirs), which opens an update round whose workers push before the pod is
-// replaced.
+// pod's gh projection is fixed at and only a new pod carries. The drift check does not answer
+// that: movedGhDirs runs the directories the pod holds and the directories a bundle built now
+// would hold alike through ghOwnerDirs, which keeps the names holding no slash, so a
+// repository directory a pod lacks is no address of its own and opens no update round. An
+// owner directory the pod lacks is what opens one, and this refresh writes the tokens of the
+// directories the pod does project, whatever else a bundle built now would hold.
 //
 // The controller's is fetched by owner instead (Options.ControllerCredential), the one its
 // Secret records: it works no repository, so a bundle asked for by repository would take its
