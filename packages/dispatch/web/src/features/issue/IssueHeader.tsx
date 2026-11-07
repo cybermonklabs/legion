@@ -292,6 +292,12 @@ export function IssueHeader({
   const projects = useQuery({ ...projectsQuery(), enabled: issue.parent === null });
   const projectRow = projects.data?.find((candidate) => candidate.key === issue.project);
   const entries = gatedStepEntries(projectRow, issue);
+  // Which document a step reviews is `gated-steps.ts`'s to say, so the chip asks the drawn
+  // entries rather than the gate's words: a gate that names no step for the primary document
+  // leaves that document's own state and its two controls to the chip.
+  const stepHoldsPrimaryDocument = entries.some(
+    (entry) => entry.document?.id === issue.primary_artifact_id
+  );
   const showApprovalActions =
     documentArtifact?.approval !== undefined &&
     (documentArtifact.approval.state !== "draft" || approvalRequestOpen);
@@ -527,19 +533,20 @@ export function IssueHeader({
           {/* Progress is state about how far the work has got, like the status and the claim,
               so it sits in this wrapping row with them; the metadata rail below clips. */}
           <ProgressChips bar progress={issue.progress} />
-          {/* A root issue of a gated project reads its gate step by step, in the place the one
-              chip sat; every other issue - and any issue whose project is still unread - keeps
-              that chip for the primary document, unchanged. */}
-          {entries.length === 0 ? (
-            documentArtifact === undefined ? null : (
-              <ApprovalChip
-                artifact={documentArtifact}
-                layout="contents"
-                showActions={showApprovalActions}
-                variant="header"
-              />
-            )
-          ) : (
+          {/* A root issue of a gated project reads its gate step by step, after the chip's
+              place; the chip itself stays beside those steps whenever no step drawn reviews the
+              primary document, since otherwise an open request on that document could not be
+              answered on this page at all. Every other issue - and any issue whose project is
+              still unread - keeps that chip for the primary document alone, unchanged. */}
+          {documentArtifact === undefined || stepHoldsPrimaryDocument ? null : (
+            <ApprovalChip
+              artifact={documentArtifact}
+              layout="contents"
+              showActions={showApprovalActions}
+              variant="header"
+            />
+          )}
+          {entries.length === 0 ? null : (
             <ApprovalSteps entries={entries} primaryArtifactId={issue.primary_artifact_id} />
           )}
           {/* Whether the route reaches anyone is state about who is working this, like the

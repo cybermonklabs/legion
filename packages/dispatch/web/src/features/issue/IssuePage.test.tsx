@@ -1884,10 +1884,56 @@ test("IssuePage draws a gated root issue's steps where the header's one chip sat
     expect(within(steps).getByRole("button", { name: "Approve" })).not.toBeNull();
     // The two steps nobody has written say so, rather than borrowing the spec's state.
     expect(within(steps).getAllByText("Not requested").length).toBe(2);
-    // The steps replace the chip: the row draws one approval area, not both.
+    // The steps take the chip's place when one of them holds the primary document: the row
+    // draws one approval area, not both, so it carries one pair of controls.
     expect(
       within(stateActions).queryAllByRole("button", { name: "Awaiting approval" }).length
     ).toBe(1);
+    expect(within(stateActions).queryAllByRole("button", { name: "Approve" }).length).toBe(1);
+  } finally {
+    view.unmount();
+    listProjects.mockRestore();
+    restore();
+  }
+});
+
+test("IssuePage keeps the primary document's chip when no gated step reviews it", async () => {
+  const restore = stubIssuePage({
+    ...issue,
+    artifacts: [
+      {
+        ...issue.artifacts[0],
+        approval: { latest_version: 1, state: "awaiting" },
+      },
+    ],
+  });
+  // A deployment may gate the decisions and the Verification document and not the spec; the
+  // spec still has an approval to answer, and only the header's own chip can answer it.
+  const gated: Project = {
+    created_at: "2026-09-09T00:00:00Z",
+    gated_steps: ["decisions", "criteria"],
+    key: "CORE",
+    name: "Core",
+  };
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue([gated]);
+  const view = renderIssuePage("/issues/CORE-1/conversation");
+
+  try {
+    await screen.findByRole("heading", { level: 1, name: issue.title });
+    const stateActions = screen.getByTestId("issue-state-actions");
+    const steps = await within(stateActions).findByTestId("issue-approval-steps");
+    expect(
+      Array.from(steps.querySelectorAll("[data-approval-step]")).map((step) =>
+        step.getAttribute("data-approval-step")
+      )
+    ).toEqual(["decisions", "criteria"]);
+    // Neither step holds the primary document, so neither carries its state or its actions.
+    expect(within(steps).getAllByText("Not requested").length).toBe(2);
+    expect(within(steps).queryByRole("button", { name: "Awaiting approval" })).toBeNull();
+    // The primary document's own chip stays in the state row, with both of its controls.
+    expect(within(stateActions).getByRole("button", { name: "Awaiting approval" })).not.toBeNull();
+    expect(within(stateActions).getByRole("button", { name: "Approve" })).not.toBeNull();
+    expect(within(stateActions).getByRole("button", { name: "Request changes" })).not.toBeNull();
   } finally {
     view.unmount();
     listProjects.mockRestore();

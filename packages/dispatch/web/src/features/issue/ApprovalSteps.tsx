@@ -24,7 +24,8 @@ function StepState({
   return (
     // The chip is reached only for a document with an approval that is not a draft - the
     // header's own condition, kept whole - so the only thing left to decide here is whether
-    // this is the issue's primary document, where the actions have always sat.
+    // this is the issue's primary document, where the actions have always sat. A gate that
+    // names no step for that document reaches none of this: the header's own chip carries it.
     <ApprovalChip
       artifact={document}
       layout="contents"
@@ -66,8 +67,10 @@ function StepReason({ entry }: { entry: StepEntry }): ReactNode {
 /**
  * The design gate's steps in a root issue's header: one line per gated step, in the order the
  * deployment publishes them, each naming the document that step reviews and where that document
- * stands. It replaces the header's one chip, which spoke for the primary document alone and left
- * a reader guessing which of three documents the gate was waiting on.
+ * stands. It takes the place of the header's one chip, which spoke for the primary document
+ * alone and left a reader guessing which of three documents the gate was waiting on. The chip
+ * is drawn beside this list when no step here reviews the primary document, so that document's
+ * state and its two controls never leave the header, whatever the gate names.
  *
  * The caller decides which steps there are (`gatedStepEntries`); this draws them.
  */
