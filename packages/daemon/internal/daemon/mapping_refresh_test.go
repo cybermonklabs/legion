@@ -744,6 +744,23 @@ func quickInstallReads(t *testing.T) {
 	t.Cleanup(func() { installReadRetry = retry })
 }
 
+// refresherAtRest waits for refreshOnMappingChange to have nothing left to read of its own: no
+// repository awaiting an installation read, and none left to recover. Those two lists are the
+// whole of what arms its recheck, so a refresher that finds both empty parks on the next mapping
+// change and reads GitHub, Dispatch and the record no further — which is what a test asks for
+// before it reads a count that must not move again.
+//
+// What a test must never ask for is a multiple of installReadRetry: that is the production
+// backoff, 30 s doubling to ten minutes, and it is milliseconds here only because
+// quickInstallReads made it so. Waiting out ten of its caps buys the same confidence this does,
+// at the cost of the wait and of a test one edit away from running for a hundred minutes.
+func refresherAtRest(t *testing.T, w *workflowRuntime) {
+	t.Helper()
+	testwait.Eventually(t, "the refresher with nothing left to read of its own", func() bool {
+		return len(w.repositories.awaitingRead()) == 0 && len(w.recoveringReasons()) == 0
+	})
+}
+
 // served is whether w serves repo now.
 func served(w *workflowRuntime, repo string) bool {
 	_, refusal, _, _ := w.repositories.lookup(repo)
@@ -839,7 +856,7 @@ func TestARepositoryWhoseInstallationReadFailedIsServedOnceARetryReadsIt(t *test
 	installs.setFailing(nil, "review acme/widgets")
 	testwait.Eventually(t, "acme/widgets read again", func() bool { return len(w.repositories.awaitingRead()) == 0 })
 	reads := installs.reads("review acme/widgets")
-	time.Sleep(10 * installReadRetry.Max)
+	refresherAtRest(t, w)
 	if got := installs.reads("review acme/widgets"); got != reads {
 		t.Fatalf("acme/widgets read %d times more once GitHub answered, want the reads again to stop", got-reads)
 	}
@@ -865,7 +882,7 @@ func TestANotInstalledRepositoryStaysLeftOutWithNoReadAgain(t *testing.T) {
 		t.Fatalf("acme/widgets refusal = %q (left out %v), want the App it lacks", refusal, leftOut)
 	}
 	reads := installs.reads("review acme/widgets")
-	time.Sleep(10 * installReadRetry.Max)
+	refresherAtRest(t, w)
 	if got := installs.reads("review acme/widgets"); got != reads {
 		t.Fatalf("acme/widgets read %d times more with only its 404 left, want no read again", got-reads)
 	}
@@ -1260,7 +1277,7 @@ func TestARepositoryUnreadAtBootIsRecoveredOnceServed(t *testing.T) {
 	}
 	listings, reads := client.listingCount(), installs.reads("implement zeta/tools")
 	facts := rowCount(t, w, "select count(*) from processed_events")
-	time.Sleep(10 * installReadRetry.Max)
+	refresherAtRest(t, w)
 	if got := client.listingCount(); got != listings {
 		t.Fatalf("Dispatch listed %d times more once recovered, want none", got-listings)
 	}
@@ -1386,7 +1403,7 @@ func TestARecoveryWhoseListingFailsIsTriedAgain(t *testing.T) {
 	if recordedIssue(t, w, key) == nil {
 		t.Fatalf("%s not admitted by the recovery's second listing", key)
 	}
-	time.Sleep(10 * installReadRetry.Max)
+	refresherAtRest(t, w)
 	if got := client.listingCount(); got != 2 {
 		t.Fatalf("Dispatch listed %d times, want two: the failed listing and the one that recovered", got)
 	}
@@ -1576,7 +1593,7 @@ func TestARecoveryTellsTheArchitectOfTheChildrenItDidNotRecord(t *testing.T) {
 		!strings.Contains(notices[0], c+" (its parent "+p+" is not recorded: release "+p+" first, then "+c+")") || strings.Contains(notices[0], e) {
 		t.Fatalf("notices to %s's architect after the recovery = %q, want one naming %s and %s, not %s", tree, notices, c, p, e)
 	}
-	time.Sleep(10 * installReadRetry.Max)
+	refresherAtRest(t, w)
 	if got := treeNotices(t, w, tree)[before:]; len(got) != 1 {
 		t.Fatalf("notices after the recovery = %d, want the one only", len(got))
 	}
@@ -1606,7 +1623,7 @@ func TestARecoveryTellsNothingOnceAChildUnderALaggingTodoParentIsRecorded(t *tes
 			t.Fatalf("%s = %+v once zeta/tools is recovered, want it recorded in %s's tree", key, got, tree)
 		}
 	}
-	time.Sleep(10 * installReadRetry.Max)
+	refresherAtRest(t, w)
 	if got := treeNotices(t, w, tree)[before:]; len(got) != 0 {
 		t.Fatalf("notices after the recovery = %q, want none: nothing is left unrecorded", got)
 	}

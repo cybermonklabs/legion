@@ -109,10 +109,14 @@ type workflowRuntime struct {
 	// means the production defaults. A test shortens both to bound how long the warning takes to
 	// observe.
 	holdWarnAfter, holdWarnEvery time.Duration
-	// reconnectPollInterval and reconnectWarnEvery bound reconnectWatchdog's ticker and how often
+	// reconnectPollInterval and reconnectWarnEvery bound reconnectWatchdog's poll and how often
 	// it logs while NATS has not reconnected: zero means the production defaults. A test
-	// shortens both to bound how long the warning takes to observe.
+	// shortens both to bound how long the warning takes to observe. reconnectClock is the time
+	// the watchdog polls and measures downtime on, the wall clock when nil; a test holds it still
+	// (heldClock) and fires each poll itself, so the warns land where it fires them rather than
+	// after a real warnEvery.
 	reconnectPollInterval, reconnectWarnEvery time.Duration
+	reconnectClock                            supervise.Clock
 	// githubAPI is the GitHub REST root the workflow calls: watchRequiredChecks reads under it, and
 	// the outbox's issue_branch rows create branches under it. Empty, in production, is
 	// https://api.github.com, and a test points it at a stand-in.
@@ -1227,7 +1231,7 @@ func (w *workflowRuntime) pollHoldReleaseWith(ctx context.Context, reader positi
 	}
 }
 
-// defaultReconnectPollInterval is reconnectWatchdog's ticker period.
+// defaultReconnectPollInterval is how long reconnectWatchdog waits between polls.
 const defaultReconnectPollInterval = 10 * time.Second
 
 // defaultReconnectWarnEvery bounds how often reconnectWatchdog logs while NATS has not
@@ -1271,28 +1275,37 @@ func (w *workflowRuntime) reconnectWatchdogWith(ctx context.Context, conn connSt
 	if warnEvery <= 0 {
 		warnEvery = defaultReconnectWarnEvery
 	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	// Each poll is armed on the clock rather than taken from a ticker, as the outbox's own loops
+	// are (outbox.Run): the wait and the downtime then come from the same clock, which a test can
+	// hold still, and a poll that logs is never one the next tick is already due behind.
+	clock := supervise.Clock(supervise.RealClock{})
+	if w.reconnectClock != nil {
+		clock = w.reconnectClock
+	}
+	poll := make(chan struct{}, 1)
 	var disconnectedSince, warnedAt time.Time
 	for {
+		tick := clock.AfterFunc(interval, func() { nudge(poll) })
 		select {
 		case <-ctx.Done():
+			tick.Stop()
 			return
-		case <-ticker.C:
+		case <-poll:
 		}
+		now := clock.Now()
 		if conn.IsConnected() {
 			disconnectedSince, warnedAt = time.Time{}, time.Time{}
 			continue
 		}
 		if disconnectedSince.IsZero() {
-			disconnectedSince = time.Now()
+			disconnectedSince = now
 		}
-		downtime := time.Since(disconnectedSince)
-		if downtime < warnEvery || (!warnedAt.IsZero() && time.Since(warnedAt) < warnEvery) {
+		downtime := now.Sub(disconnectedSince)
+		if downtime < warnEvery || (!warnedAt.IsZero() && now.Sub(warnedAt) < warnEvery) {
 			continue
 		}
 		w.log.Warn("NATS has not reconnected", "downtime", downtime.Round(time.Second).String(), "error", conn.LastError())
-		warnedAt = time.Now()
+		warnedAt = now
 	}
 }
 

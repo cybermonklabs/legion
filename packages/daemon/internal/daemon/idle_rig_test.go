@@ -35,6 +35,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
@@ -228,7 +229,7 @@ func (r *idleWakeRig) awaitListenerReady() {
 	}()
 	restarted := false
 	began := time.Now()
-	idleRigEventually(r.t, 90*time.Second, "the daemon reading the Envoy listener's ready report", func() bool {
+	testwait.EventuallyWithin(r.t, 90*time.Second, "the daemon reading the Envoy listener's ready report", func() bool {
 		var found bool
 		if err := r.pool.QueryRow(context.Background(),
 			"select exists(select 1 from listener_reports where project = $1)", r.project).Scan(&found); err != nil {
@@ -655,7 +656,7 @@ func (r *idleWakeRig) launch(issue idleRigIssue) {
 	}()
 	token := r.token(issue)
 	var nudged time.Time
-	idleRigEventually(r.t, 150*time.Second, "the pod of "+issue.key+" running its role, registered and ready", func() bool {
+	testwait.EventuallyWithin(r.t, 150*time.Second, "the pod of "+issue.key+" running its role, registered and ready", func() bool {
 		state := r.api.claim(token)
 		if idleRigWorking(state.State) && r.agents.role(issue.key, string(issue.role)).Registered > 0 {
 			return true
@@ -745,7 +746,7 @@ func (r *idleWakeRig) awaitReleased(issues ...idleRigIssue) {
 		}
 	}()
 	var quieted time.Time
-	idleRigEventually(r.t, 240*time.Second, "every pod of the rig released", func() bool {
+	testwait.EventuallyWithin(r.t, 240*time.Second, "every pod of the rig released", func() bool {
 		// The pods are back-dated rather than waited out: the idle rule reads the claim rows and
 		// nothing else (pods.IdleView), so those rows are the clock it is measured against.
 		if time.Since(quieted) > 2*time.Second {
@@ -768,7 +769,7 @@ func (r *idleWakeRig) awaitReleased(issues ...idleRigIssue) {
 func (r *idleWakeRig) awaitResumed(issue idleRigIssue, registrations int) {
 	r.t.Helper()
 	token := r.token(issue)
-	idleRigEventually(r.t, 150*time.Second, "the pod of "+issue.key+" back with its role registered again", func() bool {
+	testwait.EventuallyWithin(r.t, 150*time.Second, "the pod of "+issue.key+" back with its role registered again", func() bool {
 		return r.agents.role(issue.key, string(issue.role)).Registered >= registrations &&
 			idleRigWorking(r.api.claim(token).State)
 	})
@@ -849,23 +850,4 @@ func (r *idleWakeRig) logged(msg string, attributes map[string]string) int {
 		}
 	}
 	return count
-}
-
-// idleRigEventually waits for condition within the given time, failing with what it waited for
-// and the launchers' own log, which is where a pod that never came back says why. It is
-// testwait.Eventually with a deadline of its own: a release waits out the daemon's idle tick,
-// which is a minute, so the package helper's one-minute cap is too short here.
-func idleRigEventually(t *testing.T, within time.Duration, what string, condition func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(within)
-	if testDeadline, ok := t.Deadline(); ok && testDeadline.Add(-5*time.Second).Before(deadline) {
-		deadline = testDeadline.Add(-5 * time.Second)
-	}
-	for time.Now().Before(deadline) {
-		if condition() {
-			return
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for %s", what)
 }

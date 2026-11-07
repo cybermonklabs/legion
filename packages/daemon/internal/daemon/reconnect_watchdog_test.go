@@ -39,6 +39,43 @@ func (c *fakeConnStatus) set(connected bool, err error) {
 	c.connected, c.err = connected, err
 }
 
+// runWatchdog starts the watchdog on a clock the test holds still (heldClock) and waits for it to
+// arm its first poll, so the test's first fire has one to fire. The returned stop ends the
+// watchdog and waits for it to return, and runs at cleanup too.
+func runWatchdog(t *testing.T, w *workflowRuntime, conn connStatus, clock *heldClock) func() {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { w.reconnectWatchdogWith(ctx, conn); close(done) }()
+	stop := func() {
+		cancel()
+		<-done
+	}
+	t.Cleanup(stop)
+	testwait.Eventually(t, "the watchdog arms its first poll", func() bool {
+		live, _ := clock.armed(w.reconnectPollInterval)
+		return live == 1
+	})
+	return stop
+}
+
+// takePoll fires the one poll the watchdog waits on and waits for it to arm the next, which it
+// does only once that poll has been taken: a check that the watchdog said nothing is then about a
+// poll that ran rather than one that had not happened yet. The poll interval and the warnEvery
+// each test below sets name the timers rather than cost it anything — the clock is held, so the
+// test fires each poll and moves the downtime itself.
+func takePoll(t *testing.T, w *workflowRuntime, clock *heldClock) {
+	t.Helper()
+	_, before := clock.armed(w.reconnectPollInterval)
+	if fired := clock.fire(w.reconnectPollInterval); fired != 1 {
+		t.Fatalf("poll timers fired = %d, want the one the watchdog armed", fired)
+	}
+	testwait.Eventually(t, "the watchdog takes its poll and arms the next", func() bool {
+		live, total := clock.armed(w.reconnectPollInterval)
+		return live == 1 && total == before+1
+	})
+}
+
 // A NATS reconnect that keeps failing a non-auth handshake — a server that accepts the TCP
 // connection but never completes the protocol handshake, say — retries forever under
 // natsauth.ReconnectForever behind one "NATS connection lost" line, stuck in RECONNECTING, since
@@ -51,22 +88,30 @@ func TestReconnectWatchdogWarnsWhileDisconnectedNotWhileConnected(t *testing.T) 
 	logBuf := &syncBuffer{}
 	log := slog.New(slog.NewTextHandler(logBuf, nil))
 	conn := &fakeConnStatus{connected: true}
-	w := &workflowRuntime{log: log, reconnectPollInterval: 5 * time.Millisecond, reconnectWarnEvery: 20 * time.Millisecond}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { w.reconnectWatchdogWith(ctx, conn); close(done) }()
+	clock := &heldClock{at: time.Now()}
+	w := &workflowRuntime{log: log, reconnectPollInterval: 5 * time.Millisecond, reconnectWarnEvery: 20 * time.Millisecond, reconnectClock: clock}
+	stop := runWatchdog(t, w, conn, clock)
 
-	time.Sleep(40 * time.Millisecond)
+	// Eight polls spanning twice warnEvery, every one of them on a connection that is up: a
+	// watchdog that warned while connected had every chance to here.
+	for range 8 {
+		clock.advance(w.reconnectWarnEvery / 4)
+		takePoll(t, w, clock)
+	}
 	if strings.Contains(logBuf.String(), "NATS has not reconnected") {
 		t.Fatal("the watchdog warned while connected")
 	}
 
 	conn.set(false, errors.New("nats: protocol exception, INFO not received"))
+	// The poll that finds the connection down starts its downtime; the warn waits for that
+	// downtime to reach warnEvery, which the next poll is taken at.
+	takePoll(t, w, clock)
+	clock.advance(w.reconnectWarnEvery)
+	takePoll(t, w, clock)
 	testwait.Eventually(t, "the watchdog warns while disconnected", func() bool {
 		return strings.Contains(logBuf.String(), "NATS has not reconnected")
 	})
-	cancel()
-	<-done
+	stop()
 
 	msg := logBuf.String()
 	if !strings.Contains(msg, "downtime=") {
@@ -89,27 +134,35 @@ func TestReconnectWatchdogResetsAfterReconnecting(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(logBuf, nil))
 	conn := &fakeConnStatus{connected: false, err: errors.New("first outage")}
 	warnEvery := 1200 * time.Millisecond
-	w := &workflowRuntime{log: log, reconnectPollInterval: 5 * time.Millisecond, reconnectWarnEvery: warnEvery}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { w.reconnectWatchdogWith(ctx, conn); close(done) }()
+	clock := &heldClock{at: time.Now()}
+	w := &workflowRuntime{log: log, reconnectPollInterval: 5 * time.Millisecond, reconnectWarnEvery: warnEvery, reconnectClock: clock}
+	stop := runWatchdog(t, w, conn, clock)
 
+	takePoll(t, w, clock)
+	clock.advance(warnEvery)
+	takePoll(t, w, clock)
 	testwait.Eventually(t, "the watchdog warns about the first outage", func() bool {
 		return strings.Contains(logBuf.String(), "first outage")
 	})
 	conn.set(true, nil)
-	time.Sleep(3 * warnEvery / 2)
+	clock.advance(3 * warnEvery / 2)
+	takePoll(t, w, clock)
 	logBuf.Reset()
 	conn.set(false, errors.New("second outage"))
 
 	// With a broken reset, disconnectedSince and warnedAt would still be the first outage's —
-	// already more than warnEvery stale by now — so the very next poll tick would warn. A quarter
-	// of warnEvery is many poll ticks (poll interval is 5ms here), long enough to catch that.
-	time.Sleep(warnEvery / 4)
+	// already more than warnEvery stale by now — so the very next poll would warn. The poll that
+	// finds the connection down again is taken here, and another a quarter of warnEvery after it,
+	// and neither may say anything.
+	takePoll(t, w, clock)
+	clock.advance(warnEvery / 4)
+	takePoll(t, w, clock)
 	if strings.Contains(logBuf.String(), "second outage") {
 		t.Fatalf("warned about the second outage before its own fresh warnEvery elapsed (the reset is broken): %q", logBuf.String())
 	}
 
+	clock.advance(warnEvery)
+	takePoll(t, w, clock)
 	testwait.Eventually(t, "the watchdog warns about the second outage once its own warnEvery elapses", func() bool {
 		return strings.Contains(logBuf.String(), "second outage")
 	})
@@ -128,8 +181,7 @@ func TestReconnectWatchdogResetsAfterReconnecting(t *testing.T) {
 	if downtime >= 2*warnEvery {
 		t.Fatalf("second outage's downtime = %v, want close to warnEvery (%v), not cumulative since the first outage began", downtime, warnEvery)
 	}
-	cancel()
-	<-done
+	stop()
 }
 
 var reconnectDowntimeRe = regexp.MustCompile(`downtime=(\S+)`)
@@ -145,22 +197,27 @@ func TestReconnectWatchdogWarnsOnlyOnceDowntimeReachesWarnEvery(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(logBuf, nil))
 	conn := &fakeConnStatus{connected: true}
 	warnEvery := 1200 * time.Millisecond
-	w := &workflowRuntime{log: log, reconnectPollInterval: 50 * time.Millisecond, reconnectWarnEvery: warnEvery}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { w.reconnectWatchdogWith(ctx, conn); close(done) }()
+	clock := &heldClock{at: time.Now()}
+	w := &workflowRuntime{log: log, reconnectPollInterval: 50 * time.Millisecond, reconnectWarnEvery: warnEvery, reconnectClock: clock}
+	stop := runWatchdog(t, w, conn, clock)
 
 	conn.set(false, errors.New("handshake failure"))
-	time.Sleep(warnEvery / 2)
+	// The poll that first finds the connection down, and another half a warnEvery into the
+	// outage: the first warn waits for the downtime itself to reach warnEvery, so neither of them
+	// may say anything.
+	takePoll(t, w, clock)
+	clock.advance(warnEvery / 2)
+	takePoll(t, w, clock)
 	if strings.Contains(logBuf.String(), "NATS has not reconnected") {
 		t.Fatalf("warned before downtime reached warnEvery: %q", logBuf.String())
 	}
 
+	clock.advance(warnEvery)
+	takePoll(t, w, clock)
 	testwait.Eventually(t, "the watchdog warns once downtime reaches warnEvery", func() bool {
 		return strings.Contains(logBuf.String(), "NATS has not reconnected")
 	})
-	cancel()
-	<-done
+	stop()
 
 	msg := logBuf.String()
 	match := reconnectDowntimeRe.FindStringSubmatch(msg)

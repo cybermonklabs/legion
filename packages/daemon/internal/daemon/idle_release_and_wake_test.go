@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -169,18 +170,18 @@ func TestIdleReleaseAndWake(t *testing.T) {
 		})
 		idleRigKept(t, status, body, idleRigRoleUnclaimed)
 		rig.awaitResumed(issue, 2)
-		idleRigEventually(t, 60*time.Second, "the resume of "+issue.key+" recorded", func() bool {
+		testwait.EventuallyWithin(t, 60*time.Second, "the resume of "+issue.key+" recorded", func() bool {
 			return len(rig.resumesOf(issue)) == 1
 		})
 		// The clock the stuck pass reads is the wake's own recorded moment against the daemon's
 		// now (warnStuckResumes), so the test moves the wake ten minutes into the past. The role
 		// process acknowledged its task and started no turn, so no first turn was ever stamped.
 		rig.ageResume(issue, 11*time.Minute)
-		idleRigEventually(t, 90*time.Second, "the warning about the resume with no first turn", func() bool {
+		testwait.EventuallyWithin(t, 90*time.Second, "the warning about the resume with no first turn", func() bool {
 			return rig.logged("wake: a released pod's resume has had no first turn since its wake",
 				map[string]string{"issue": issue.key, "role": string(issue.role)}) == 1
 		})
-		idleRigEventually(t, 30*time.Second, "the stuck resume on the record", func() bool {
+		testwait.EventuallyWithin(t, 30*time.Second, "the stuck resume on the record", func() bool {
 			for _, resume := range rig.resumesOf(issue) {
 				if resume.Stuck {
 					return true
@@ -234,7 +235,7 @@ func TestIdleReleaseAndWake(t *testing.T) {
 		// The resume is the claim's; the task reaches its agent once the replacement pod is up and
 		// the delivery's own retry has found it, which is a few seconds later. Either wake may be
 		// the one that took it, so this waits for the task rather than for one wake's wording.
-		idleRigEventually(t, 60*time.Second, "the task the wake gave "+issue.key+"'s woken role", func() bool {
+		testwait.EventuallyWithin(t, 60*time.Second, "the task the wake gave "+issue.key+"'s woken role", func() bool {
 			return len(rig.newPrompts(issue)) > 0
 		})
 		prompts := rig.newPrompts(issue)
@@ -470,7 +471,7 @@ func idleRigRetrySend(t *testing.T, rig *idleWakeRig, issue idleRigIssue, messag
 // session exactly once, and stays at one.
 func idleRigDeliveredOnce(t *testing.T, rig *idleWakeRig, issue idleRigIssue, message string) {
 	t.Helper()
-	idleRigEventually(t, 60*time.Second, "the message reaching the woken session of "+issue.key, func() bool {
+	testwait.EventuallyWithin(t, 60*time.Second, "the message reaching the woken session of "+issue.key, func() bool {
 		return idleRigCount(rig.agents.messages(issue.key, string(issue.role)), message) >= 1
 	})
 	idleRigSettle(t, 6*time.Second, func() {
@@ -481,24 +482,30 @@ func idleRigDeliveredOnce(t *testing.T, rig *idleWakeRig, issue idleRigIssue, me
 	})
 }
 
-// idleRigUntil is idleRigEventually at a sender's pace: a second between attempts, so a retry
-// loop that is itself a wake does not send a hundred of them a second.
+// idleRigSenderPace is how long a sender whose message the listener refused waits before it tries
+// again, and the whole reason this wait is not the package's own poll: an attempt here is a
+// publish or a send, and each one the listener refuses is itself a wake, so a hundred attempts a
+// second would be a hundred wakes a second.
+const idleRigSenderPace = time.Second
+
+// idleRigUntil is testwait's wait at that pace: within is its leash, longer than the package's
+// minute because what makes each attempt succeed is a pod coming back.
 func idleRigUntil(t *testing.T, within time.Duration, what string, attempt func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(within)
-	for time.Now().Before(deadline) {
-		if attempt() {
-			return
+	var tried time.Time
+	testwait.EventuallyWithin(t, within, what, func() bool {
+		if !tried.IsZero() && time.Since(tried) < idleRigSenderPace {
+			return false
 		}
-		time.Sleep(time.Second)
-	}
-	t.Fatalf("timed out waiting for %s", what)
+		tried = time.Now()
+		return attempt()
+	})
 }
 
 // awaitTask waits until the issue's woken role has been given a task carrying want.
 func (r *idleWakeRig) awaitTask(issue idleRigIssue, want string) {
 	r.t.Helper()
-	idleRigEventually(r.t, 60*time.Second, "the woken role of "+issue.key+" given its wake's task", func() bool {
+	testwait.EventuallyWithin(r.t, 60*time.Second, "the woken role of "+issue.key+" given its wake's task", func() bool {
 		return idleRigCount(r.newPrompts(issue), want) >= 1
 	})
 }

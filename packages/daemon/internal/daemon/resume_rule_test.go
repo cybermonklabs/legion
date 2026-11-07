@@ -132,8 +132,12 @@ func TestTheLingersSuspensionWaitsForTheArchitectsTurnToEnd(t *testing.T) {
 	root := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Done, Generation: 1, Status: "done", LingerUntil: &until}
 	putOutboxIssue(t, pool, records, root)
 	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
-	// Real timers, so the held suspension's stop timeout runs as it does in a daemon.
-	sup.deps.Clock = supervise.RealClock{}
+	// The machines' clock is held, and the stop timeout is a wait no other timer of this test is
+	// armed for, so firing it fires a held suspension's deadline and nothing else — and the
+	// daemon's own suspension of a lingering tree arms none, which is the point below.
+	const stopTimeout = 7 * time.Second
+	clock := &heldClock{at: time.Now().UTC()}
+	sup.deps.Clock, sup.deps.Timeouts.Stop = clock, stopTimeout
 	architect := launchedClaim(t, sup, root.Key, root.Key, claim.RoleArchitect)
 	machine, _ := sup.Machine(architect)
 	ctx := context.Background()
@@ -148,7 +152,13 @@ func TestTheLingersSuspensionWaitsForTheArchitectsTurnToEnd(t *testing.T) {
 	if err := runner.RunOnce(ctx); err != nil {
 		t.Fatalf("run the linger's suspend: %v", err)
 	}
-	time.Sleep(3 * sup.deps.Timeouts.Stop)
+	// Three stop timeouts into the turn, with every timer armed for one fired: the suspension
+	// waits for the turn, bounded by the linger's expiry rather than by a timeout, so there is
+	// nothing armed to fire and the architect is left in its turn.
+	clock.advance(3 * stopTimeout)
+	if fired := clock.fire(stopTimeout); fired != 0 {
+		t.Fatalf("firing the stop timeout ran %d timers, want none: the linger's suspension waits for the turn to end", fired)
+	}
 	if got := machine.Claim().State; got != supervise.StateWorking || len(rt.CallsOf("Suspend")) != 0 {
 		t.Fatalf("three stop timeouts into the turn the architect is %s after %d suspensions, want its turn still running",
 			got, len(rt.CallsOf("Suspend")))

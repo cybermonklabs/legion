@@ -595,9 +595,9 @@ func TestAFailedWebhookAppCheckIsNamedAndTheRepositoryKeepsBeingServed(t *testin
 	if waiting := w.repositories.awaitingRead(); len(waiting) != 0 {
 		t.Fatalf("awaiting a read again = %q, want none: a failed webhook App check asks for none", waiting)
 	}
-	// The refresher reads again within installReadRetry.Max of a failed installation read; ten
-	// of them pass with no read.
-	time.Sleep(10 * installReadRetry.Max)
+	// Nothing waits on a read, so the refresher reads nothing of its own and the one check the
+	// mapping load made is the only one there will be.
+	refresherAtRest(t, w)
 	if got := standIn.checks("acme/widgets"); got != 1 {
 		t.Fatalf("Dispatch was asked the webhook App check of acme/widgets %d times, want once", got)
 	}

@@ -22,12 +22,13 @@ func Eventually(t *testing.T, what string, condition func() bool) {
 	EventuallyWithin(t, time.Minute, what, condition)
 }
 
-// EventuallyWithin is Eventually on a longer leash, for a condition that is many facts rather
-// than one: a wave of forty claims settles forty rows through the daemon's own pacing, and on a
-// machine running the rest of this package beside it that is legitimately slower than a minute,
-// where one delivery is not. A test takes this only where the count is what makes it slow, and
-// names that count in what; everything else takes Eventually, whose minute is the package's
-// standard and whose expiry is a real failure.
+// EventuallyWithin is Eventually on a longer leash, for a condition a minute is the wrong bound
+// for. Two kinds take it, and a test that takes it names which in what: a condition that is many
+// facts rather than one, where a wave of forty claims settles forty rows through the daemon's own
+// pacing and a machine running the rest of this package beside it is legitimately slower than a
+// minute; and a condition another process reaches on its own clock, where the idle rig waits for
+// a pod to come back. Everything else takes Eventually, whose minute is the package's standard
+// and whose expiry is a real failure.
 //
 // The bound is still cut to the test binary's own deadline less a second, so a `-timeout`
 // smaller than it still reports the wait rather than the binary's panic.
