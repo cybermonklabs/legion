@@ -623,12 +623,16 @@ type SearchResponse struct {
 // identity (embed.Embedder.Identity), Place ("bedrock", "azure", or "dev" for the local
 // harness's own embedder, which no deployment runs) and Model are read from it; all three are
 // null when no embedder is configured, and then nothing is current.
+//
+// Kinds and Total cover what the index holds; NotIndexed names what it does not, so a reader
+// can tell a kind that is covered and complete from one nothing indexes at all.
 type SearchCoverage struct {
-	Identity *string              `json:"identity"`
-	Place    *string              `json:"place"`
-	Model    *string              `json:"model"`
-	Total    SearchCoverageCounts `json:"total"`
-	Kinds    SearchCoverageKinds  `json:"kinds"`
+	Identity   *string                    `json:"identity"`
+	Place      *string                    `json:"place"`
+	Model      *string                    `json:"model"`
+	Total      SearchCoverageCounts       `json:"total"`
+	Kinds      SearchCoverageKinds        `json:"kinds"`
+	NotIndexed []SearchCoverageNotIndexed `json:"not_indexed"`
 }
 
 // SearchCoverageKinds is SearchCoverage's counts for each kind meaning search ranks: the issue,
@@ -641,6 +645,18 @@ type SearchCoverageKinds struct {
 	CommentBlock  SearchCoverageCounts `json:"comment_block"`
 	MessageBlock  SearchCoverageCounts `json:"message_block"`
 	AskPart       SearchCoverageCounts `json:"ask_part"`
+}
+
+// SearchCoverageNotIndexed is one kind of node neither search leg holds a row of: Kind names it
+// and Items is how many of it the database holds, counted from the table that holds it. It is a
+// list of its own rather than a kind of SearchCoverageKinds on purpose: a kind with no row of
+// its own would read there as items 0, current 0, lacking 0, which is what a covered kind with
+// nothing left to embed reads as, and the two mean opposite things. A row here carries no
+// current, lacking or failed, because none of those is defined for a kind nothing indexes, and
+// its Items is in no total: Total sums the covered kinds alone.
+type SearchCoverageNotIndexed struct {
+	Kind  string `json:"kind"`
+	Items int64  `json:"items"`
 }
 
 // SearchCoverageCounts splits Items, the searchable items of a kind (or of all of them), into

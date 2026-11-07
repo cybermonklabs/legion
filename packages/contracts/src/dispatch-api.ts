@@ -2507,17 +2507,33 @@ export interface SearchCoverageKinds {
   readonly ask_part: SearchCoverageCounts;
 }
 
+/** One kind of node neither leg of search holds a row of, in `SearchCoverage`'s `not_indexed`:
+ * `kind` names it and `items` is how many of it the database holds, counted from the table that
+ * holds it. It is a list of its own rather than a member of `SearchCoverageKinds` on purpose: a
+ * kind with no row of its own would read there as `items` 0, `current` 0, `lacking` 0, which is
+ * what a covered kind with nothing left to embed reads as, and the two mean opposite things. A
+ * row here carries no `current`, `lacking` or `failed`, none of which is defined for a kind
+ * nothing indexes, and its `items` is in no total. Mirrors `model.SearchCoverageNotIndexed`. */
+export interface SearchCoverageNotIndexed {
+  readonly kind: string;
+  readonly items: number;
+}
+
 /** `GET /api/v1/search/coverage`: how much of what meaning search ranks has a current vector from
  * the configured embedder (INFRA-393). `identity` is the value `embeddings.model` records and
  * search compares, `place` and `model` are read from it; all three are null when no embedder is
  * configured, and then nothing is current. `dev` is the local harness's own embedder, which no
- * deployment runs. Mirrors `model.SearchCoverage`. */
+ * deployment runs. `total` and `kinds` cover what the index holds; `not_indexed` names what it
+ * does not - a component, a session, a document version, a result and a handoff - so a reader
+ * can tell a kind that is covered and complete from one nothing indexes at all. Mirrors
+ * `model.SearchCoverage`. */
 export interface SearchCoverage {
   readonly identity: string | null;
   readonly place: "bedrock" | "azure" | "dev" | null;
   readonly model: string | null;
   readonly total: SearchCoverageCounts;
   readonly kinds: SearchCoverageKinds;
+  readonly not_indexed: readonly SearchCoverageNotIndexed[];
 }
 
 /** `GET /api/v1/limits`: the bounds the Dispatch server holds a write to, each from the constant

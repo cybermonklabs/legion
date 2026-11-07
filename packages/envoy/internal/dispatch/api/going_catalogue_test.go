@@ -56,6 +56,8 @@ var goingMutatingRoutesWithNoTool = []string{
 	"POST /api/v1/issues/{key}/artifacts/{slug}/versions",
 	"POST /api/v1/machine-logins/{id}/revoke",
 	"POST /api/v1/me/agent-tokens",
+	"POST /api/v1/me/inbox/dismiss",
+	"POST /api/v1/me/inbox/read",
 	"POST /api/v1/messages/{id}/deliveries",
 	"POST /api/v1/messages/{id}/deliveries/{attempt}/accept",
 	"POST /api/v1/projects/{key}/architecture-source/sync",
@@ -70,6 +72,7 @@ var goingMutatingRoutesWithNoTool = []string{
 	"PUT /api/v1/me/threads/{id}/read",
 	"PUT /api/v1/projects/{key}/architecture-sources/{owner}/{repo}",
 	"PUT /api/v1/projects/{key}/default-assignee",
+	"PUT /api/v1/projects/{key}/gated-steps",
 	"PUT /api/v1/settings/delivery",
 	"PUT /api/v1/settings/repo-projects/{owner}/{repo}",
 }
