@@ -167,7 +167,7 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 		tell = !classify.DesignGateChangesTold(gate, gate.LatestVersion, fact.ChangesReason, fact.ChangesRequestedMark)
 		gate = classify.RecordChangesTold(gate, gate.LatestVersion, fact.ChangesReason, fact.ChangesRequestedMark)
 	}
-	if err := e.store.PutGate(ctx, tx, gate); err != nil {
+	if err := e.putGateTold(ctx, tx, gate, gate.LatestVersion); err != nil {
 		return intake.Result{}, err
 	}
 	e.logOnCommit(ctx, "workflow: design gate registered", "issue", issue.Key, "artifact", fact.ArtifactID, "step", step,
@@ -525,7 +525,7 @@ func (e *Engine) gateAboveDispatch(ctx context.Context, tx pgx.Tx, fact intake.G
 	if ungated {
 		reset = classify.ApplyDesignGateEvent(reset, classify.DesignGateApproved, fact.Read.Version, record.EventMark{})
 	}
-	if err := e.store.PutGate(ctx, tx, reset); err != nil {
+	if err := e.putGateTold(ctx, tx, reset, reset.LatestVersion); err != nil {
 		return intake.Result{}, err
 	}
 	if !ungated && fact.Read.Kind != intake.DispatchArtifactVersion {
@@ -819,23 +819,6 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 	kind := classify.DesignGateEventKind(fact.Kind)
 	updated := classify.ApplyDesignGateEvent(gate, kind, fact.Version, fact.Mark)
 	isOpen := classify.DesignGateOpen(updated)
-	// Whether the tree's work moves is a question about every gated step, not about the one row
-	// this event names (dispatch://INFRA-714/spec R5, under the steps INFRA-1272 gates). The
-	// merger's start is held while any required step holds the work (the outbox's
-	// designGateClosed, classify.StandingGate), and the merger merges on the message below, so a
-	// message saying the gate opened while another step is still under review would merge a head
-	// whose design nobody has approved. Both readings are kept because they answer different
-	// questions: this row's own open/closed decides the architect's per-step notice and what the
-	// log line says of the event, and the standing of every gated step decides who is told that
-	// the tree's work may move.
-	stood, err := e.standingOpen(ctx, tx, key, gate, gate)
-	if err != nil {
-		return err
-	}
-	stands, err := e.standingOpen(ctx, tx, key, gate, updated)
-	if err != nil {
-		return err
-	}
 	switch {
 	case isOpen != wasOpen:
 		verb := "closed"
@@ -859,16 +842,11 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 	if fact.Kind == intake.DispatchArtifactChangesRequested && placeable {
 		updated = classify.RecordChangesTold(updated, fact.Version, fact.Reason, fact.Mark)
 	}
-	if err := e.store.PutGate(ctx, tx, updated); err != nil {
+	if err := e.putGateTold(ctx, tx, updated, fact.Version); err != nil {
 		return err
 	}
 	if tell {
 		if err := e.tellChangesOnce(ctx, tx, gate.Step, fact, true); err != nil {
-			return err
-		}
-	}
-	if stands != stood {
-		if err := e.tellGateMoved(ctx, tx, key, fact, updated, stands); err != nil {
 			return err
 		}
 	}
@@ -923,8 +901,8 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 // telling, and secondary to it. Aborting here would roll the gate's own move back for a name the
 // daemon could not spell - a tree whose root key is not an issue key is one such - which would
 // leave the gate closed under workers the message existed to warn.
-func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, fact intake.DispatchArtifact,
-	moved record.DesignGate, open bool) error {
+func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step record.DesignStep,
+	document string, version int, open bool) error {
 	root, err := e.store.Issue(ctx, tx, key)
 	if err != nil || root == nil {
 		return err
@@ -948,7 +926,7 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, fact 
 	recipients = append(recipients, roleRecipient{issue: root.Tree, role: claim.RoleArchitect, row: root.Tree})
 	told, err := e.addressRoles(root.Project, recipients,
 		e.logUnnamable(ctx, "workflow: the design gate moved and this holder could not be named, so it is not told",
-			"tree", root.Tree, "step", string(moved.Step), "version", fact.Version, "open", open))
+			"tree", root.Tree, "step", string(step), "version", version, "open", open))
 	if err != nil {
 		return err
 	}
@@ -959,11 +937,11 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, fact 
 	if open {
 		body = fmt.Sprintf("The design gate of %s opened: a person approved version %d of its %s document (%s), "+
 			"and every step the deployment gates now stands open, so the design you are working to is the approved one. "+
-			"A merge the closed gate held is released.", root.Tree, fact.Version, moved.Step, fact.ArtifactID)
+			"A merge the closed gate held is released.", root.Tree, version, step, document)
 	} else {
 		body = fmt.Sprintf("The design gate of %s closed: version %d of its %s document (%s) is with its reviewer, "+
 			"so the design you are working to may change. Your phase goes on; the merge waits until every gated step "+
-			"stands open again.", root.Tree, fact.Version, moved.Step, fact.ArtifactID)
+			"stands open again.", root.Tree, version, step, document)
 	}
 	for _, to := range told {
 		if err := e.enqueue(ctx, tx, to.issue, record.RoleMessage{Role: string(to.token), Body: body}); err != nil {
@@ -971,28 +949,63 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, fact 
 		}
 	}
 	e.logOnCommit(ctx, "workflow: the design gate moved and every phase holder of the tree is told", "issue", key, "tree", root.Tree,
-		"step", string(moved.Step), "version", fact.Version, "open", open, "told", len(told))
+		"step", string(step), "version", version, "open", open, "told", len(told))
 	return nil
 }
 
-// standingOpen is whether every step the deployment gates stands open for key's tree, reading the
-// root's rows with this event's own row put in place of the one the store holds (of, which is the
-// row before the event or the row after it). It is the question the merger's start hold asks
-// (the outbox's designGateClosed over classify.StandingGate), asked here so the message a member
-// is sent says the same thing the hold does: a deployment that gates nothing stands open, and a
-// required step with no row of its own holds the work as an unregistered step always has
-// (classify.DesignGatesOpen).
-func (e *Engine) standingOpen(ctx context.Context, tx pgx.Tx, key string, held, of record.DesignGate) (bool, error) {
-	rows, err := e.store.GatesOf(ctx, tx, key)
+// putGateTold writes gate's row and, when that write moves the standing gate of its tree, tells
+// every phase holder of the tree (tellGateMoved). It is the one way a gate row that can move the
+// standing gate is written, so that no path writes one silently: the artifact event's own apply
+// (applyArtifact), the registration (gateRegistered) and the reset of a gate recorded above the
+// version Dispatch holds (gateAboveDispatch) all go through it, and the gate seed reaches it
+// through the last two, since what the seed reads is applied as one of those facts (the outbox's
+// seedGate). A registration alone can take the standing gate either way — it writes a row at a new
+// version, which closes it, or carries the approval its read found, which opens it — and before
+// this helper only the artifact path told anyone, so a merger could be left merging under a
+// document nobody had approved, or waiting for an opening it was never told of
+// (dispatch://INFRA-714/spec R5).
+//
+// Two writes of a gate row stay outside it, each because its tree has nobody to tell: the record
+// of a person's approval on a parked root (recordHandover), whose roles are suspended and whose
+// decision goes to the controller instead, and the carry of a gate onto a re-admitted orphan
+// (admit's own write), which is a tree that has not started. The clearing of a told changes
+// request (untellUnresumedChanges) writes a row that cannot move the standing gate at all, since
+// that record is no part of whether a gate is open.
+//
+// version and the row's own document are what the message names, so a reader is sent to the
+// document that moved rather than to the spec.
+func (e *Engine) putGateTold(ctx context.Context, tx pgx.Tx, gate record.DesignGate, version int) error {
+	step := gate.Step
+	if step == "" {
+		step = record.DesignStepSpec
+	}
+	gates, err := e.store.GatesOf(ctx, tx, gate.Issue)
 	if err != nil {
-		return false, err
+		return err
 	}
-	gates := make(map[record.DesignStep]record.DesignGate, len(rows)+1)
-	for step, row := range rows {
-		gates[step] = row
+	stood := e.standingGateOpen(gates)
+	if err := e.store.PutGate(ctx, tx, gate); err != nil {
+		return err
 	}
-	gates[held.Step] = of
-	return classify.DesignGatesOpen(e.cfg.Steps, gates), nil
+	gates[step] = gate
+	stands := e.standingGateOpen(gates)
+	if stands == stood {
+		return nil
+	}
+	return e.tellGateMoved(ctx, tx, gate.Issue, step, gate.ArtifactID, version, stands)
+}
+
+// standingGateOpen is whether the tree's work stands released under gates, the rows an issue
+// holds by step: no step the deployment gates is closed with a row of its own
+// (classify.StandingGate). It is the one predicate the message and the merger's start hold both
+// read — the hold asks it as the outbox's designGateClosed — so a member is never told the gate
+// opened while the hold still holds its merger, nor left untold when the hold lets it go. A step
+// the deployment gates that nothing has registered holds the tree's work (FirstClosedStep) but
+// names no document, so nobody can be asked about it and nothing can be said of it: it is why the
+// message reads StandingGate rather than DesignGatesOpen, and the one difference between them.
+func (e *Engine) standingGateOpen(gates map[record.DesignStep]record.DesignGate) bool {
+	_, held := classify.StandingGate(e.cfg.Steps, gates)
+	return !held
 }
 
 // tellChangesOnce tells fact's changes request to its issue's architect once, by a notice or by the

@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -74,8 +76,7 @@ func TestAGateEventThatMovesNothingTellsNobody(t *testing.T) {
 // under the steps INFRA-1272 gates).
 func TestTheGateMessageIsOfEveryGatedStepAndNotTheOneTheEventNames(t *testing.T) {
 	pool := migratedPool(t)
-	seedIssue(t, pool, record.Issue{Key: gatedRoot, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
-		Tree: gatedRoot, Project: "LEGION", Title: "root", Phase: phase.Merging, Generation: 4, Status: "retro", Rank: "U"})
+	seedMergingRoot(t, pool)
 	seedGate(t, pool, record.DesignGate{Issue: gatedRoot, Step: record.DesignStepCriteria, ArtifactID: criteriaDoc,
 		LatestVersion: 1, ApprovedVersion: new(1)})
 	seedGate(t, pool, record.DesignGate{Issue: gatedRoot, Step: record.DesignStepSpec, ArtifactID: "artifact-208",
@@ -104,6 +105,90 @@ func TestTheGateMessageIsOfEveryGatedStepAndNotTheOneTheEventNames(t *testing.T)
 		{Role: treeRoleToken(t, gatedRoot, claim.RoleMerger), Body: gateMovedBody(record.DesignStepSpec, "artifact-208", 4, true)},
 		{Role: treeRoleToken(t, gatedRoot, claim.RoleArchitect), Body: gateMovedBody(record.DesignStepSpec, "artifact-208", 4, true)},
 	})
+}
+
+// The message and the merger's start hold ask one question, so they read one predicate
+// (classify.StandingGate, the outbox's designGateClosed). A step the deployment gates that
+// nothing has registered names no document, so the hold passes it over; a message decided over a
+// predicate that let such a step hold the work would say nothing at all while the hold moved,
+// which is what a step list that grew left behind (dispatch://INFRA-714/spec R5).
+func TestAnUnregisteredGatedStepLeavesTheMessageAndTheHoldAgreed(t *testing.T) {
+	pool := migratedPool(t)
+	seedMergingRoot(t, pool)
+	// The criteria step is gated and registered by nothing; the spec step is approved, so the
+	// merger's hold lets it go and the tree's work stands released.
+	seedGate(t, pool, record.DesignGate{Issue: gatedRoot, Step: record.DesignStepSpec, ArtifactID: "artifact-208",
+		LatestVersion: 3, ApprovedVersion: new(3)})
+	seedSlot(t, pool, record.Slot{Issue: gatedRoot, Index: 0, AdmittedAt: time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)})
+	engine := stepsEngine(twoSteps(), nil)
+
+	applyMirrored(t, pool, engine, "spec-4", intake.DispatchArtifact{
+		Key: gatedRoot, ArtifactID: "artifact-208", Kind: intake.DispatchArtifactVersion, Version: 4})
+
+	closed := gateMovedBody(record.DesignStepSpec, "artifact-208", 4, false)
+	assertRoleMessages(t, pool, gatedRoot, []record.RoleMessage{
+		{Role: treeRoleToken(t, gatedRoot, claim.RoleMerger), Body: closed},
+		{Role: treeRoleToken(t, gatedRoot, claim.RoleArchitect), Body: closed},
+	})
+}
+
+// A registration writes a gate row as much as an artifact event does, and under more than one
+// gated step it can close the standing gate by itself: the architect registers its spec anew at a
+// version nobody has approved. The merger merges on the message, so a registration that told
+// nobody left it merging under a document that is with its reviewer.
+func TestARegistrationThatClosesTheStandingGateTellsTheMerger(t *testing.T) {
+	pool := migratedPool(t)
+	seedMergingRoot(t, pool)
+	seedGate(t, pool, record.DesignGate{Issue: gatedRoot, Step: record.DesignStepCriteria, ArtifactID: criteriaDoc,
+		LatestVersion: 1, ApprovedVersion: new(1)})
+	seedGate(t, pool, record.DesignGate{Issue: gatedRoot, Step: record.DesignStepSpec, ArtifactID: "artifact-208",
+		LatestVersion: 3, ApprovedVersion: new(3)})
+	seedSlot(t, pool, record.Slot{Issue: gatedRoot, Index: 0, AdmittedAt: time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)})
+	engine := stepsEngine(twoSteps(), nil)
+
+	applyMirrored(t, pool, engine, "register-spec-4", intake.GateRegistered{Issue: gatedRoot, Step: record.DesignStepSpec,
+		ArtifactID: "artifact-208", Version: 4, DispatchVersion: 4, Since: record.EventMark{Seq: 11}})
+
+	closed := gateMovedBody(record.DesignStepSpec, "artifact-208", 4, false)
+	assertRoleMessages(t, pool, gatedRoot, []record.RoleMessage{
+		{Role: treeRoleToken(t, gatedRoot, claim.RoleMerger), Body: closed},
+		{Role: treeRoleToken(t, gatedRoot, claim.RoleArchitect), Body: closed},
+	})
+}
+
+// The other half of the same hole: a registration whose read of Dispatch carries the person's
+// approval opens the standing gate, and a merger told the gate closed waits for the message that
+// says it opened again. Without it that merger waits for a message no event will send, since the
+// approval the registration carries moves no gate afterwards.
+func TestARegistrationThatOpensTheStandingGateTellsTheMerger(t *testing.T) {
+	pool := migratedPool(t)
+	seedMergingRoot(t, pool)
+	seedGate(t, pool, record.DesignGate{Issue: gatedRoot, Step: record.DesignStepCriteria, ArtifactID: criteriaDoc,
+		LatestVersion: 1, ApprovedVersion: new(1)})
+	// The spec step stands at a version with its reviewer, so the merger's hold holds it.
+	seedGate(t, pool, record.DesignGate{Issue: gatedRoot, Step: record.DesignStepSpec, ArtifactID: "artifact-208",
+		LatestVersion: 4})
+	seedSlot(t, pool, record.Slot{Issue: gatedRoot, Index: 0, AdmittedAt: time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)})
+	engine := stepsEngine(twoSteps(), nil)
+
+	applyMirrored(t, pool, engine, "register-approved-4", intake.GateRegistered{Issue: gatedRoot, Step: record.DesignStepSpec,
+		ArtifactID: "artifact-208", Version: 4, DispatchVersion: 4, ApprovedVersion: 4,
+		ApprovedMark: record.EventMark{Seq: 12}, Since: record.EventMark{Seq: 13}})
+
+	opened := gateMovedBody(record.DesignStepSpec, "artifact-208", 4, true)
+	assertRoleMessages(t, pool, gatedRoot, []record.RoleMessage{
+		{Role: treeRoleToken(t, gatedRoot, claim.RoleMerger), Body: opened},
+		{Role: treeRoleToken(t, gatedRoot, claim.RoleArchitect), Body: opened},
+	})
+}
+
+// seedMergingRoot records the gated tree's root in merging, where its merger holds the phase the
+// design gate holds: the one phase a gate that moves under a running worker can let merge a head
+// whose design nobody approved.
+func seedMergingRoot(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	seedIssue(t, pool, record.Issue{Key: gatedRoot, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+		Tree: gatedRoot, Project: "LEGION", Title: "root", Phase: phase.Merging, Generation: 4, Status: "retro", Rank: "U"})
 }
 
 // gateMovedBody is the whole message a role is sent for one move of LEGION-208's design gate

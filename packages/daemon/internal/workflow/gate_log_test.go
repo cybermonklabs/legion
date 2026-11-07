@@ -43,8 +43,15 @@ func TestTheDesignGateLogsItsRegistrationAndEachOpenOrClose(t *testing.T) {
 		fact intake.Fact
 		want []string
 	}{
+		// The registration writes the first row of the one gated step, which takes the tree's work
+		// from released to held: a registration moves the standing gate as an artifact event does,
+		// and every write of a row that can is told (putGateTold). The telling comes before the
+		// log line of the registration itself, since the row is written first.
 		{"registration", intake.GateRegistered{Issue: "LEGION-1", ArtifactID: "art-1", Version: 2},
-			[]string{`msg="workflow: design gate registered" issue=LEGION-1 artifact=art-1 step=spec version=2 open=false changes_requested=false gated_steps=[spec]`}},
+			[]string{
+				`msg="workflow: the design gate moved and every phase holder of the tree is told" issue=LEGION-1 tree=LEGION-1 step=spec version=2 open=false told=1`,
+				`msg="workflow: design gate registered" issue=LEGION-1 artifact=art-1 step=spec version=2 open=false changes_requested=false gated_steps=[spec]`,
+			}},
 		{"changes requested on the closed gate", intake.DispatchArtifact{Key: "LEGION-1", ArtifactID: "art-1", Kind: intake.DispatchArtifactChangesRequested, Version: 2, Reason: "tighten it"},
 			[]string{`msg="workflow: design gate changes requested" issue=LEGION-1 artifact=art-1 version=2`}},
 		{"a new version", intake.DispatchArtifact{Key: "LEGION-1", ArtifactID: "art-1", Kind: intake.DispatchArtifactVersion, Version: 3},
