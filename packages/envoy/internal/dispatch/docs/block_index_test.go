@@ -2069,9 +2069,15 @@ func TestAnItemWrittenBeforeThisChangeGetsWindowsFromOnePass(t *testing.T) {
 			t.Fatalf("%s %s holds no window after its own index", kind, owner)
 		}
 	}
-	// Every window row as a build before this change left it: none.
+	// Every window row as a build before this change left it: none. An item's state row carries
+	// the marker with it (refs.ItemsOwedWindows), which the migration that added that marker set
+	// once for every item whose windows were already missing, so the two go together here as
+	// they do there; a document's owedness is still read from its state.
 	if _, err := database.Pool.Exec(ctx, `
-		delete from embeddings where kind in ('document_block', 'comment_block', 'message_block', 'ask_part')
+		delete from embeddings where kind in ('document_block', 'comment_block', 'message_block', 'ask_part');
+		update comment_block_state set windows_owed_at = now();
+		update message_block_state set windows_owed_at = now();
+		update ask_block_state set windows_owed_at = now();
 	`); err != nil {
 		t.Fatalf("delete the windows: %v", err)
 	}
@@ -2103,13 +2109,13 @@ func TestAnItemWrittenBeforeThisChangeGetsWindowsFromOnePass(t *testing.T) {
 }
 
 // An edit a build without the window path makes during the deploy re-indexes an item's blocks
-// and writes no window, and the migrations have dropped the trigger that would have noticed.
-// The windows left behind hold the old text and cover blocks the item may no longer have, and
-// the tick would delete the whole-text row standing behind them. The drift arm therefore lists
-// an owner whose blocks moved on from the state its windows were written from, not only one
-// holding no window at all, and one tick rewrites them. Skipping the window path is how that
-// older build is driven here: the item is re-indexed with the stamp of its windows put back as
-// it was, which is the row the arm reads.
+// and writes no window. The windows left behind hold the old text and cover blocks the item may
+// no longer have, and the tick would delete the whole-text row standing behind them. What the
+// drift arm reads of such an item is the marker the trigger set on the write of its text, which
+// that older build's index cannot clear because it does not name the column
+// (refs.ItemsOwedWindows), and one tick rewrites its windows. Skipping the window path is how
+// that older build is driven here: the item is re-indexed, and then its marker and the stamp of
+// its windows are put back as that build leaves them.
 func TestABuildThatWritesNoWindowLeavesWindowsTheTickRewrites(t *testing.T) {
 	database, service := blockIndexService(t)
 	ctx := context.Background()
@@ -2143,6 +2149,11 @@ func TestABuildThatWritesNoWindowLeavesWindowsTheTickRewrites(t *testing.T) {
 		update embedding_window_states set block_state = $2 where kind = 'comment_block' and owner_key = $1
 	`, owner, stamped); err != nil {
 		t.Fatalf("put the comment's window stamp back as the older build leaves it: %v", err)
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		update comment_block_state set windows_owed_at = now() where comment_id = $1::uuid
+	`, comment); err != nil {
+		t.Fatalf("leave the comment owed its windows as the older build leaves it: %v", err)
 	}
 	if _, err := database.Pool.Exec(ctx, `
 		update embeddings set text_snapshot = $2, content_hash = encode(sha256(convert_to($2, 'UTF8')), 'hex')

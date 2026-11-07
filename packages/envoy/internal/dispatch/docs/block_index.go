@@ -395,8 +395,9 @@ func (s *Service) windowOwners() []windowOwner {
 // Each owner is windowed as its own indexer windows it, and nothing else is written: a document
 // is read as the server serves it and windowed under its owner row (windowDocument), an item is
 // read as the blocks routes read it and windowed under its own row (windowItem). Either way the
-// write stamps the state the owner's blocks are in, so an owner this arm has served is no
-// longer listed.
+// write stamps the state the owner's blocks are in, and for an item it clears the marker this
+// arm reads (comment_block_state, message_block_state and ask_block_state's windows_owed_at),
+// so an owner this arm has served is no longer listed.
 func (s *Service) windowDrift(ctx context.Context, cursors map[string]string, tick *BlockIndexTick) (bool, error) {
 	owners := s.windowOwners()
 	next := make(map[string]string, len(owners))

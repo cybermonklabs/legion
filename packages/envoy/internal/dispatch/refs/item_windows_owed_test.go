@@ -16,12 +16,16 @@ import (
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
-// itemsOwedWindowsTwoNotExists is the statement ItemsOwedWindows sent before INFRA-988: the same
-// question asked as two correlated `not exists` probes under an `or`, which the planner can only
-// run as two subplans, once per row of the kind's state table. It is kept here as the oracle the
-// rewrite is held equal to (TestItemsOwedWindowsAnswersWhatTheTwoNotExistsShapeAnswered) and as
-// the negative control of the plan test (TestItemsOwedWindowsReadsEachSideOnce), which is the
-// shape measured at 13.7 s and 1,023,190 index searches over 511,595 comment state rows.
+// The two shapes ItemsOwedWindows had before it read a marker of its own, kept here as the
+// oracles the marker read is held equal to
+// (TestItemsOwedWindowsAnswersWhatTheShapesBeforeTheMarkerAnswered) and as the negative control
+// of the plan test (TestItemsOwedWindowsReadsThePartialIndex). Both decide owedness from state,
+// so both read every row of the kind's state table, which is what the marker is here to stop.
+//
+// itemsOwedWindowsTwoNotExists is the first of them: the question as two correlated `not
+// exists` probes under an `or`, which the planner can only run as two subplans, once per row of
+// the state table. It is the shape measured at 13.7 s and 1,023,190 index searches over 511,595
+// comment state rows (INFRA-988).
 func itemsOwedWindowsTwoNotExists(kind ItemKind, tables itemTables) string {
 	return `
 		select s.` + tables.item + `::text from ` + tables.state + ` s
@@ -41,16 +45,56 @@ func itemsOwedWindowsTwoNotExists(kind ItemKind, tables itemTables) string {
 	`
 }
 
+// itemsOwedWindowsAntiJoins is the second: the same predicate written so that each side is
+// read once, which is where the read stood in the working copy before the marker. It is the
+// shape measured at 2.92 s a pass with 472 MB of temporary files written, and it is the plan
+// test's control, because a read that decides owedness from state has to walk the state table
+// however it is written.
+func itemsOwedWindowsAntiJoins(kind ItemKind, tables itemTables) string {
+	ownerKey := `'` + string(kind) + `/' || s.` + tables.item + `::text`
+	return `
+		with owed as materialized (
+			select s.` + tables.item + ` as id
+			from ` + tables.state + ` s
+			left join embedding_window_states w
+			       on w.kind = '` + kind.WindowKind() + `'
+			      and w.owner_key = ` + ownerKey + `
+			      and w.block_state = ` + itemBlockState + `
+			left join (
+				select split_part(e.id, '#', 1) as owner_key from embeddings e
+				where e.kind = '` + kind.WindowKind() + `' and e.kind in ` + windowKinds + `
+				group by 1
+			) e on e.owner_key = ` + ownerKey + `
+			where s.` + tables.item + ` > $1::uuid
+			  and exists (
+				select 1 from ` + tables.blocks + ` b
+				where b.` + tables.item + ` = s.` + tables.item + ` and b.position is not null
+			  )
+			  and (w.owner_key is null or e.owner_key is null)
+		)
+		select id::text from owed order by id limit $2
+	`
+}
+
 // windowState is one state an item's windows can be in, as the fixture writes it: whether the
 // item holds a current block, what its state row's body_sha256 says, what the stamp of the state
-// its windows were written from says (none: no row at all) and whether it holds a window row.
+// its windows were written from says (none: no row at all), whether it holds a window row, and
+// whether its state row carries the window arm's marker (windows_owed_at).
 // owed is whether ItemsOwedWindows must list it.
+//
+// The marker is what the read asks now, and the stamp and the window row are what the two
+// shapes before it asked, so a state whose marker disagrees with them is a state the fixture
+// must not be able to write: the marker is set wherever the blocks move (the trigger) and
+// cleared only where the windows are written. Each state below therefore carries the marker the
+// item would really hold in it, and the equivalence test reads all three questions over the
+// same rows.
 type windowState struct {
 	name    string
 	block   blockRow
 	sum     *string
 	stamp   *string
 	window  bool
+	marker  bool
 	owed    bool
 	comment string
 }
@@ -74,22 +118,69 @@ const (
 )
 
 // windowStates is every state the window arm has to tell apart, each one written by the fixture
-// for every kind ItemsOwedWindows serves. The four the rewrite has to answer for are the first
-// four; the rest are the rows an `or` rewritten wrong starts listing.
+// for every kind ItemsOwedWindows serves: the states the marker itself can be in, then the
+// states the readings before it told apart, which the marker must answer for the same way.
 var windowStates = []windowState{{
-	name:    "windows stand for the blocks",
+	name:    "windowed, and the marker cleared",
 	block:   currentBlock,
 	sum:     new(indexedSum),
 	stamp:   new(indexedSum),
 	window:  true,
+	marker:  false,
 	owed:    false,
-	comment: "the stamp is the state the blocks are in and a window stands under the owner key",
+	comment: "the write that made these windows cleared the marker in the same statement",
+}, {
+	name:    "marked, and not yet windowed",
+	block:   currentBlock,
+	sum:     new(indexedSum),
+	stamp:   nil,
+	window:  false,
+	marker:  true,
+	owed:    true,
+	comment: "the trigger marked the write of the text, and no window has been written since",
+}, {
+	name:    "marked by a change of the item's blocks",
+	block:   currentBlock,
+	sum:     new(otherSum),
+	stamp:   new(indexedSum),
+	window:  true,
+	marker:  true,
+	owed:    true,
+	comment: "the blocks moved on from the state the windows standing now were written from",
+}, {
+	name:    "marked, and its window row removed",
+	block:   currentBlock,
+	sum:     new(indexedSum),
+	stamp:   new(indexedSum),
+	window:  false,
+	marker:  true,
+	owed:    true,
+	comment: "whoever removes a window row marks its owner, since the stamp still stands",
+}, {
+	name:    "marked, and the index holds no block yet",
+	block:   noBlock,
+	sum:     nil,
+	stamp:   nil,
+	window:  false,
+	marker:  true,
+	owed:    false,
+	comment: "an older build's write marks both arms at once; the block arm owns this item",
+}, {
+	name:    "marked, and its only block was removed",
+	block:   removedBlock,
+	sum:     new(indexedSum),
+	stamp:   nil,
+	window:  false,
+	marker:  true,
+	owed:    false,
+	comment: "no current block, so the index holds no block these windows could stand for",
 }, {
 	name:    "no stamp",
 	block:   currentBlock,
 	sum:     new(indexedSum),
 	stamp:   nil,
 	window:  true,
+	marker:  true,
 	owed:    true,
 	comment: "windows written before the stamps existed say nothing about the blocks they cover",
 }, {
@@ -98,22 +189,16 @@ var windowStates = []windowState{{
 	sum:     new(indexedSum),
 	stamp:   new(otherSum),
 	window:  true,
+	marker:  true,
 	owed:    true,
 	comment: "a build without windows re-indexed the item, so its windows are of the old text",
-}, {
-	name:    "no window row",
-	block:   currentBlock,
-	sum:     new(indexedSum),
-	stamp:   new(indexedSum),
-	window:  false,
-	owed:    true,
-	comment: "the stamp stands but the window row is gone, so the windows are written again",
 }, {
 	name:    "no sum, and the stamp reads the empty sum",
 	block:   currentBlock,
 	sum:     nil,
 	stamp:   new(""),
 	window:  true,
+	marker:  false,
 	owed:    false,
 	comment: "a state row with no sum stamps and compares as '' (itemBlockState's coalesce)",
 }, {
@@ -122,6 +207,7 @@ var windowStates = []windowState{{
 	sum:     nil,
 	stamp:   new(indexedSum),
 	window:  true,
+	marker:  true,
 	owed:    true,
 	comment: "the same coalesce the other way: '' is not the sum the windows were written from",
 }, {
@@ -130,14 +216,16 @@ var windowStates = []windowState{{
 	sum:     new(indexedSum),
 	stamp:   nil,
 	window:  false,
+	marker:  false,
 	owed:    false,
-	comment: "no current block, so the index holds no block these windows could stand for",
+	comment: "no current block, and the write that removed it wrote the windows it left",
 }, {
 	name:    "no block at all",
 	block:   noBlock,
 	sum:     new(indexedSum),
 	stamp:   nil,
 	window:  false,
+	marker:  false,
 	owed:    false,
 	comment: "an item the block index has not reached is owed an index, not windows",
 }}
@@ -232,7 +320,8 @@ func newOwedWindowFixture(t *testing.T) owedWindowFixture {
 }
 
 // writeWindowItem writes one item of kind in state: the item, its block row, the state row its
-// kind's trigger made (settled to state.sum, as an index that cleared owed_at leaves it), the
+// kind's trigger made (settled to state.sum and to the marker the state carries, as an index
+// that cleared owed_at and a write of the windows that cleared windows_owed_at leave it), the
 // stamp of the state its windows were written from, and one window row.
 func writeWindowItem(t *testing.T, tx pgx.Tx, kind ItemKind, writer itemWriter, state windowState) string {
 	t.Helper()
@@ -252,8 +341,13 @@ func writeWindowItem(t *testing.T, tx pgx.Tx, kind ItemKind, writer itemWriter, 
 		execFixture(t, tx, "write the removed block of the "+string(kind), writer.insertBlock, id, nil)
 	case noBlock:
 	}
+	marker := "null"
+	if state.marker {
+		marker = "now()"
+	}
 	execFixture(t, tx, "settle the block state of the "+string(kind),
-		`update `+tables.state+` set body_sha256 = $2, owed_at = null where `+tables.item+` = $1::uuid`, id, state.sum)
+		`update `+tables.state+` set body_sha256 = $2, owed_at = null, windows_owed_at = `+marker+
+			` where `+tables.item+` = $1::uuid`, id, state.sum)
 	if state.stamp != nil {
 		execFixture(t, tx, "stamp the windows of the "+string(kind),
 			`insert into embedding_window_states (kind, owner_key, block_state) values ($1, $2, $3)`,
@@ -283,7 +377,8 @@ func (f owedWindowFixture) owedIDs(kind ItemKind) []string {
 // Every item whose windows do not stand for its blocks is listed, and every item whose windows
 // do stand for them is not: the stamp missing, the stamp standing at another state and the
 // window row gone are each owed, and an item whose only block a revision removed, one the block
-// index has not reached, and one whose null sum the stamp reads as ” are each not.
+// index has not reached, and one whose null sum the stamp reads as the empty string are each
+// not.
 func TestItemsOwedWindowsListsTheItemsWhoseWindowsDoNotStandForTheirBlocks(t *testing.T) {
 	fixture := newOwedWindowFixture(t)
 	ctx := context.Background()
@@ -340,12 +435,12 @@ func TestItemsOwedWindowsPagesTheOwedItemsByID(t *testing.T) {
 	}
 }
 
-// The rewrite answers what the two `not exists` clauses under their `or` answered, over every
-// state of the fixture and from every cursor the window arm can hold: each id of the fixture is
-// taken as `after` in turn, at three limits, and the two statements are read side by side. A
-// rewritten predicate is where an `or` goes wrong, so the two texts are compared rather than the
-// new one being compared to what this test thinks the answer is.
-func TestItemsOwedWindowsAnswersWhatTheTwoNotExistsShapeAnswered(t *testing.T) {
+// The marker read answers what both shapes before it answered, over every state of the fixture
+// and from every cursor the window arm can hold: each id of the fixture is taken as `after` in
+// turn, at three limits, and the three statements are read side by side. Reading a marker
+// instead of state is where such a change goes wrong, so the answers are compared against the
+// texts of the readings this replaced rather than against what this test thinks the answer is.
+func TestItemsOwedWindowsAnswersWhatTheShapesBeforeTheMarkerAnswered(t *testing.T) {
 	fixture := newOwedWindowFixture(t)
 	ctx := context.Background()
 	for _, kind := range []ItemKind{ItemComment, ItemMessage, ItemAsk} {
@@ -353,7 +448,10 @@ func TestItemsOwedWindowsAnswersWhatTheTwoNotExistsShapeAnswered(t *testing.T) {
 		if err != nil {
 			t.Fatalf("tables of %s: %v", kind, err)
 		}
-		oracle := itemsOwedWindowsTwoNotExists(kind, tables)
+		oracles := map[string]string{
+			"two-not-exists": itemsOwedWindowsTwoNotExists(kind, tables),
+			"anti-join":      itemsOwedWindowsAntiJoins(kind, tables),
+		}
 		cursors := []string{""}
 		for _, item := range fixture.items[kind] {
 			cursors = append(cursors, item.id)
@@ -364,17 +462,19 @@ func TestItemsOwedWindowsAnswersWhatTheTwoNotExistsShapeAnswered(t *testing.T) {
 				if err != nil {
 					t.Fatalf("list the %ss owed windows after %q: %v", kind, after, err)
 				}
-				rows, err := fixture.database.Pool.Query(ctx, oracle, uuidAfter(after), limit)
-				if err != nil {
-					t.Fatalf("read the two-not-exists shape over %ss after %q: %v", kind, after, err)
-				}
-				want, err := pgx.CollectRows(rows, pgx.RowTo[string])
-				if err != nil {
-					t.Fatalf("read the two-not-exists shape over %ss after %q: %v", kind, after, err)
-				}
-				if !slices.Equal(listed, want) {
-					t.Errorf("the %ss owed windows after %q, %d at a time, are %v, where the shape this replaced answers %v:\n%s",
-						kind, after, limit, listed, want, fixture.describe(kind, listed))
+				for shape, oracle := range oracles {
+					rows, err := fixture.database.Pool.Query(ctx, oracle, uuidAfter(after), limit)
+					if err != nil {
+						t.Fatalf("read the %s shape over %ss after %q: %v", shape, kind, after, err)
+					}
+					want, err := pgx.CollectRows(rows, pgx.RowTo[string])
+					if err != nil {
+						t.Fatalf("read the %s shape over %ss after %q: %v", shape, kind, after, err)
+					}
+					if !slices.Equal(listed, want) {
+						t.Errorf("the %ss owed windows after %q, %d at a time, are %v, where the %s shape this replaced answers %v:\n%s",
+							kind, after, limit, listed, shape, want, fixture.describe(kind, listed))
+					}
 				}
 			}
 		}
@@ -383,14 +483,20 @@ func TestItemsOwedWindowsAnswersWhatTheTwoNotExistsShapeAnswered(t *testing.T) {
 
 // windowPlanSettings is what the plans below are read under. Sequential scans are off, as every
 // plan test of this package reads its plan, so each side the statement reads is named by the
-// index it is read through rather than by a scan of the whole table; hash and merge joins are
-// left on, because joining each side once is what this statement is for.
+// index it is read through rather than by a scan of the whole table.
 var windowPlanSettings = []string{"set local enable_seqscan = off"}
 
-// The statement reads each side once, through the indexes that already serve it, where the shape
-// it replaced probed two of them once per row of the state table. The negative control is that
-// shape itself: the same fixture, the same check, and it fails on the loops its subplans run.
-func TestItemsOwedWindowsReadsEachSideOnce(t *testing.T) {
+// The listing reads the owed rows through the kind's partial index on windows_owed_at and
+// touches nothing else of the deployment's size: one scan of the state table, through that
+// index, running once, and no scan at all of the stamps or of the window rows, which is what
+// the marker bought. The blocks are probed for the rows that index answered, not for every row
+// of the state table.
+//
+// The control is the shape before the marker, read the same way over the same rows: it decides
+// owedness from state, so its plan reads the state table through some other index and reads
+// both the stamps and the window rows. A test whose control did not do that would be proving
+// nothing about the index this one is for.
+func TestItemsOwedWindowsReadsThePartialIndex(t *testing.T) {
 	fixture := newOwedWindowFixture(t)
 	ctx := context.Background()
 	connection, err := fixture.database.Pool.Acquire(ctx)
@@ -398,37 +504,103 @@ func TestItemsOwedWindowsReadsEachSideOnce(t *testing.T) {
 		t.Fatalf("acquire a connection for the plans: %v", err)
 	}
 	defer connection.Release()
-	firstKeys := explaintest.NewIndexKeys(fixture.database.Pool)
+	keys := explaintest.NewIndexKeys(fixture.database.Pool)
 
 	for _, kind := range []ItemKind{ItemComment, ItemMessage, ItemAsk} {
 		tables, err := kind.tables()
 		if err != nil {
 			t.Fatalf("tables of %s: %v", kind, err)
 		}
-		plan := analyzedPlan(t, connection, itemsOwedWindowsQuery(kind, tables), uuidAfter(""), blockIndexWindowBatchForPlans)
-		if repeated := nodesRunMoreThanOnce(t, plan); len(repeated) > 0 {
-			t.Errorf("the %ss owed windows read %s more than once, so a side is probed per row rather than read once:\n%s",
-				kind, strings.Join(repeated, ", "), plan)
+		subject := fmt.Sprintf("the %ss owed windows", kind)
+		owedIndex := tables.state + "_windows_owed"
+		plan := analyzedPlan(t, connection, itemsOwedWindowsQuery(tables), uuidAfter(""), blockIndexWindowBatch)
+		scans := planScans(t, plan)
+		if under := namesUnderASubplan(scans); len(under) > 0 {
+			t.Errorf("%s read %s under a subplan, so a side is probed per row:\n%s",
+				subject, strings.Join(under, ", "), plan)
 		}
-		for _, index := range []string{"embedding_window_states_pkey", "embeddings_window_owner"} {
-			firstKeys.RequireIndexKeyed(t, plan, index,
-				fmt.Sprintf("the %ss owed windows", kind), explaintest.CondOptional)
+		state := readOnce(t, scans, plan, subject, tables.state)
+		// The one index the read searches on the state table is the partial one: a bitmap scan
+		// names it on its index node and the relation on its heap node, so the index is read
+		// from the plan's index scans rather than from the scan of the relation.
+		keys.RequireIndexKeyed(t, plan, owedIndex, subject, explaintest.CondRequired)
+		for _, other := range []string{tables.state + "_pkey", tables.state + "_owed"} {
+			if slices.ContainsFunc(explaintest.IndexScans(t, plan), func(scan explaintest.IndexScan) bool {
+				return scan.Index == other
+			}) {
+				t.Errorf("%s searched %s, want %s, the partial index over the marked rows:\n%s",
+					subject, other, owedIndex, plan)
+			}
+		}
+		for _, relation := range []string{"embedding_window_states", "embeddings"} {
+			for _, scan := range scans {
+				if scan.relation == relation {
+					t.Errorf("%s read %s, which the marker is here to stop it reading:\n%s", subject, relation, plan)
+				}
+			}
+		}
+		for _, scan := range scans {
+			if scan.relation == tables.blocks && scan.loops > state.rows {
+				t.Errorf("%s probe %s %.0f times for %.0f rows of %s, want at most one probe per marked row:\n%s",
+					subject, scan.relation, scan.loops, state.rows, tables.state, plan)
+			}
 		}
 
-		// The negative control: the shape this replaced, read the same way. Its subplans run
-		// once per row of the state table, which is the cost INFRA-988 measured, so the check
-		// above must name them. A rewrite that kept the old shape would pass the check above
-		// only if this one stops holding.
-		oracle := analyzedPlan(t, connection, itemsOwedWindowsTwoNotExists(kind, tables), uuidAfter(""), blockIndexWindowBatchForPlans)
-		if repeated := nodesRunMoreThanOnce(t, oracle); len(repeated) == 0 {
-			t.Errorf("the two-not-exists shape over %ss runs every node once, so this test's control proves nothing:\n%s", kind, oracle)
+		// The control: the shape before the marker, over the same rows.
+		control := analyzedPlan(t, connection, itemsOwedWindowsAntiJoins(kind, tables), uuidAfter(""), blockIndexWindowBatch)
+		controlScans := planScans(t, control)
+		if slices.ContainsFunc(explaintest.IndexScans(t, control), func(scan explaintest.IndexScan) bool {
+			return scan.Index == owedIndex
+		}) {
+			t.Errorf("the shape before the marker searched %s over %ss, so this test's control proves nothing:\n%s",
+				owedIndex, kind, control)
+		}
+		for _, relation := range []string{"embedding_window_states", "embeddings"} {
+			if !slices.ContainsFunc(controlScans, func(scan planScan) bool { return scan.relation == relation }) {
+				t.Errorf("the shape before the marker read no %s over %ss, so this test's control proves nothing:\n%s",
+					relation, kind, control)
+			}
 		}
 	}
 }
 
-// blockIndexWindowBatchForPlans is the batch the window arm asks for (docs.blockIndexWindowBatch),
-// the limit the plans below are read at.
-const blockIndexWindowBatchForPlans = 200
+// blockIndexWindowBatch is the batch the window arm asks each kind for
+// (docs.blockIndexWindowBatch), the limit the plans are read at.
+const blockIndexWindowBatch = 200
+
+// readOnce is the one scan of plan that reads relation, which must run once: a relation read
+// twice, or read once per row of something else, is a side this statement would be paying for
+// per row. It fails the test and answers a zero scan when the plan reads relation any other
+// number of times.
+func readOnce(t *testing.T, scans []planScan, plan json.RawMessage, subject, relation string) planScan {
+	t.Helper()
+	var found []planScan
+	for _, scan := range scans {
+		if scan.relation == relation {
+			found = append(found, scan)
+		}
+	}
+	if len(found) != 1 {
+		t.Errorf("%s read %s with %d scans, want one:\n%s", subject, relation, len(found), plan)
+		return planScan{}
+	}
+	if found[0].loops != 1 {
+		t.Errorf("%s read %s %.0f times, want once:\n%s", subject, relation, found[0].loops, plan)
+	}
+	return found[0]
+}
+
+// namesUnderASubplan names every scan of a plan that runs under a subplan: the shape of a
+// question asked per row of the scan driving it.
+func namesUnderASubplan(scans []planScan) []string {
+	var names []string
+	for _, scan := range scans {
+		if scan.subplan != "" {
+			names = append(names, fmt.Sprintf("%s under %s", scan.relation, scan.subplan))
+		}
+	}
+	return names
+}
 
 // analyzedPlan is the plan Postgres ran for statement, with what each node actually did: the
 // loops of a node are what tells a side read once from one probed per row, and no plan without
@@ -453,45 +625,63 @@ func analyzedPlan(t *testing.T, connection *pgxpool.Conn, statement string, args
 	return explaintest.OnePlan(t, raw)
 }
 
-// loopNode is what nodesRunMoreThanOnce reads of one node of an `EXPLAIN (ANALYZE, FORMAT JSON)`
-// plan: what it is, the relation and index it names, how many times it ran, and its children.
-type loopNode struct {
+// planNode is what the checks above read of one node of an `EXPLAIN (ANALYZE, FORMAT JSON)`
+// plan: what it is, the relation and index it names, the subplan it belongs to, how many times
+// it ran, how many rows it answered each time, and its children.
+type planNode struct {
 	NodeType    string          `json:"Node Type"`
 	Relation    string          `json:"Relation Name"`
 	Index       string          `json:"Index Name"`
+	Subplan     string          `json:"Subplan Name"`
+	Parent      string          `json:"Parent Relationship"`
 	ActualLoops float64         `json:"Actual Loops"`
+	ActualRows  float64         `json:"Actual Rows"`
 	Plans       json.RawMessage `json:"Plans"`
 }
 
-// nodesRunMoreThanOnce names every node of plan that ran more than once: a correlated subplan, or
-// the inner side of a nested loop, which is a side read once per row of the side driving it. A
-// statement written to read each side once holds none.
-func nodesRunMoreThanOnce(t *testing.T, plan json.RawMessage) []string {
+// planScan is one node of an analyzed plan that reads a relation: which relation, through which
+// index, under which subplan (empty: none), how many times it ran and how many rows it answered.
+type planScan struct {
+	relation, index, subplan string
+	loops, rows              float64
+}
+
+// planScans is every scan of a relation in plan, at any depth, each carrying the subplan it is
+// under: a node whose parent relationship is SubPlan starts one, and every node below it is in
+// it, since a plan under a subplan runs as often as the subplan does.
+func planScans(t *testing.T, plan json.RawMessage) []planScan {
 	t.Helper()
-	var node loopNode
+	return scansUnder(t, plan, "")
+}
+
+func scansUnder(t *testing.T, plan json.RawMessage, subplan string) []planScan {
+	t.Helper()
+	var node planNode
 	if err := json.Unmarshal(plan, &node); err != nil {
 		t.Fatalf("read a plan node: %v\n%s", err, plan)
 	}
-	var repeated []string
-	if node.ActualLoops > 1 {
-		name := node.NodeType
-		if node.Relation != "" {
-			name += " on " + node.Relation
+	if node.Parent == "SubPlan" {
+		subplan = node.Subplan
+		if subplan == "" {
+			subplan = node.NodeType
 		}
-		if node.Index != "" {
-			name += " using " + node.Index
-		}
-		repeated = append(repeated, fmt.Sprintf("%s (%.0f loops)", name, node.ActualLoops))
+	}
+	var scans []planScan
+	if node.Relation != "" {
+		scans = append(scans, planScan{
+			relation: node.Relation, index: node.Index, subplan: subplan,
+			loops: node.ActualLoops, rows: node.ActualRows,
+		})
 	}
 	if len(node.Plans) == 0 {
-		return repeated
+		return scans
 	}
 	var children []json.RawMessage
 	if err := json.Unmarshal(node.Plans, &children); err != nil {
 		t.Fatalf("read a plan node's children: %v\n%s", err, node.Plans)
 	}
 	for _, child := range children {
-		repeated = append(repeated, nodesRunMoreThanOnce(t, child)...)
+		scans = append(scans, scansUnder(t, child, subplan)...)
 	}
-	return repeated
+	return scans
 }

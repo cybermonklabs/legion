@@ -440,31 +440,40 @@ const itemBlockState = `coalesce(s.body_sha256, '')`
 
 // indexedItemState is the query that records the item indexed from the text whose sum is
 // bodySum, at revision with next as the next block number for a kind that counts revisions, and
-// settles its owed_at. It returns the sum it has just written, which the write of the windows
-// stamps beside them (writeWindows), rather than leaving that write to read the row back: a
-// read of the row in the same statement would see it as it stood before this update.
+// settles its owed_at and its windows_owed_at. It returns the sum it has just written, which the
+// write of the windows stamps beside them (writeWindows), rather than leaving that write to read
+// the row back: a read of the row in the same statement would see it as it stood before this
+// update.
+//
+// It clears both markers because it is the state query of the statement that writes the windows:
+// the block index it records and the windows that stand for those blocks are written together,
+// so the two markers are settled together (ItemsOwedWindows).
 func indexedItemState(tables itemTables, itemID string, revision, next int, bodySum string) blockState {
 	if tables.revisions() {
 		return blockState{
-			query: `update ` + tables.state + ` s set revision = $6, next_block = $7, body_sha256 = $8, owed_at = null
+			query: `update ` + tables.state + ` s set revision = $6, next_block = $7, body_sha256 = $8,
+			               owed_at = null, windows_owed_at = null
 			        where s.` + tables.item + ` = $5::uuid returning ` + itemBlockState + ` as block_state`,
 			args: []any{itemID, revision, next, bodySum},
 		}
 	}
 	return blockState{
-		query: `update ` + tables.state + ` s set body_sha256 = $6, owed_at = null
+		query: `update ` + tables.state + ` s set body_sha256 = $6, owed_at = null, windows_owed_at = null
 		        where s.` + tables.item + ` = $5::uuid returning ` + itemBlockState + ` as block_state`,
 		args: []any{itemID, bodySum},
 	}
 }
 
-// storedItemState is the query that reads the state the item's state row already holds, for a
-// write of its windows that settles no such row of its own: the block-index tick's window arm,
-// which windows an item whose block index already stands (WriteItemWindows).
+// storedItemState is the query that settles the window arm's marker alone, keeping the state the
+// item's state row already holds, for a write of its windows that records no block index of its
+// own: the block-index tick's window arm, which windows an item whose block index already stands
+// (WriteItemWindows). It is an update rather than a read so that clearing windows_owed_at and
+// writing the windows it stands for are one statement, which is the whole of that marker's rule
+// (ItemsOwedWindows).
 func storedItemState(tables itemTables, itemID string) blockState {
 	return blockState{
-		query: `select ` + itemBlockState + ` as block_state
-		          from ` + tables.state + ` s where s.` + tables.item + ` = $5::uuid`,
+		query: `update ` + tables.state + ` s set windows_owed_at = null
+		        where s.` + tables.item + ` = $5::uuid returning ` + itemBlockState + ` as block_state`,
 		args: []any{itemID},
 	}
 }
@@ -944,35 +953,41 @@ func markItemBlocksOwed(ctx context.Context, tx pgx.Tx, kind ItemKind, tables it
 // blocks the index holds and whose windows do not stand for those blocks, in id order past
 // after (empty: from the start), for the block-index tick's window arm. An item written before
 // meaning search moved to windows has blocks and no window, and so has one whose write failed
-// between the two.
-// One a build without this change re-indexed during the deploy is the harder case: it keeps the
-// windows of its old text, so holding a window says nothing. The read therefore asks both
-// whether the state its windows were written from (embedding_window_states, migration
-// 20261104010400) is the state its blocks are in now, and whether it holds a window at all, so
-// a window row lost by any other route is written again too. The read walks the kind's state
-// table, one row per indexed item, and probes the blocks, the stamps and the windows through
-// their keys.
+// between the two. One a build without this change re-indexed during the deploy is the harder
+// case: it keeps the windows of its old text, so holding a window says nothing.
+//
+// The read is of the kind's own marker, windows_owed_at (migration 20261107194001), which is
+// the question written down rather than asked of state:
+//
+//   - the trigger on every write of the text an item's blocks are split from sets it, beside
+//     the block index's owed_at (item_blocks_owe). It is set in the trigger so that the
+//     release before this one marks the item too: that release writes the text, indexes the
+//     blocks and clears owed_at without naming this column, which is the rolling-deploy case,
+//     and it cannot clear a marker it does not know.
+//   - rebuild-refs sets it with owed_at (RebuildAll), and migration 20261107203841 set it
+//     once for every item whose windows were already stale when the column arrived, which no
+//     later write would have marked.
+//   - the statement that writes an item's windows clears it, beside the stamp of the state
+//     those windows were written from (writeWindows, indexedItemState, storedItemState), so
+//     the clear and the windows cannot come apart. That statement's own `dropped` is the only
+//     delete of a window row in the server; a route that removes one otherwise marks its owner
+//     here, or this read will not see it.
+//
+// owed_at is no answer to this question: it marks the items owed a block index, which is
+// nearly the complement of the items whose windows do not stand for the blocks the index
+// already holds, so reading it would hand this arm the block arm's backlog and leave a drifted
+// item unwindowed for ever.
+//
+// The semi-join on the blocks table stays (itemsOwedWindowsQuery): an item an older build
+// wrote is marked for both arms at once and holds no block yet, and windows under no block are
+// not this arm's to write — the block arm indexes it whole, windows included. It is one probe
+// per marked row, not one per row of the state table.
 func ItemsOwedWindows(ctx context.Context, q Queryer, kind ItemKind, after string, limit int) ([]string, error) {
 	tables, err := kind.tables()
 	if err != nil {
 		return nil, err
 	}
-	rows, err := q.Query(ctx, `
-		select s.`+tables.item+`::text from `+tables.state+` s
-		where s.`+tables.item+` > $1::uuid
-		  and exists (
-			select 1 from `+tables.blocks+` b where b.`+tables.item+` = s.`+tables.item+` and b.position is not null
-		  )
-		  and (not exists (
-			select 1 from embedding_window_states w
-			where w.kind = '`+kind.WindowKind()+`' and w.owner_key = '`+string(kind)+`/' || s.`+tables.item+`::text
-			  and w.block_state = `+itemBlockState+`
-		  ) or not exists (
-			select 1 from embeddings e
-			where e.kind = '`+kind.WindowKind()+`' and split_part(e.id, '#', 1) = '`+string(kind)+`/' || s.`+tables.item+`::text
-		  ))
-		order by s.`+tables.item+` limit $2
-	`, uuidAfter(after), limit)
+	rows, err := q.Query(ctx, itemsOwedWindowsQuery(tables), uuidAfter(after), limit)
 	if err != nil {
 		return nil, fmt.Errorf("list the %ss whose windows do not stand for their blocks: %w", kind, err)
 	}
@@ -981,4 +996,31 @@ func ItemsOwedWindows(ctx context.Context, q Queryer, kind ItemKind, after strin
 		return nil, fmt.Errorf("list the %ss whose windows do not stand for their blocks: %w", kind, err)
 	}
 	return items, nil
+}
+
+// itemsOwedWindowsQuery is the statement ItemsOwedWindows sends for the kind whose tables are
+// tables: $1 is the id its batch starts after and $2 the most ids it answers. The tests read
+// the statement from here rather than from a copy of it (item_windows_owed_test.go).
+//
+// The driving rows are the marked rows of the kind's state table, read through its partial
+// index on windows_owed_at, whose key is the item's id: the index holds the owed rows alone,
+// in the order the batch pages by, so the keyset cursor and the limit are both the index's own
+// and the read costs what the arm has to do rather than what the deployment has stored.
+//
+// The two readings this replaced both walked the whole state table to decide owedness from
+// state: the two correlated `not exists` probes under an `or`, 13.7 s a pass over the
+// load-test deployment's 511,595 comment state rows for an answer of no rows, and the same
+// predicate as anti-joins, 2.92 s a pass with 472 MB of temporary files written (INFRA-988).
+func itemsOwedWindowsQuery(tables itemTables) string {
+	return `
+		select s.` + tables.item + `::text
+		from ` + tables.state + ` s
+		where s.windows_owed_at is not null
+		  and s.` + tables.item + ` > $1::uuid
+		  and exists (
+			select 1 from ` + tables.blocks + ` b
+			where b.` + tables.item + ` = s.` + tables.item + ` and b.position is not null
+		  )
+		order by s.` + tables.item + ` limit $2
+	`
 }
