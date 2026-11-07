@@ -8,6 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
+import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 // Two runs of one batch, started at the same time as the batch's xargs starts them:
@@ -24,6 +25,10 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 // Each run must get a database of its own, a server of its own and a DISPATCH_URL of its own, and
 // must stop its server when it ends.
 setDefaultTimeout(120_000);
+
+// Every row here runs the rig through python3, which puts it in a process group of its own
+// (`runRig` below says why it must). Read once, so one warning names python3 for the whole file.
+const withoutPython = skipWithout("python3");
 
 const root = path.resolve(import.meta.dir, "../../../..");
 const scratch = temporaryDirectory("skill-scenarios-isolation", { real: true });
@@ -211,6 +216,56 @@ const env = {
   SKILL_SCENARIOS_ASKGATE_CASE: "facts",
 };
 
+/** The parent between the test and the rig: it puts the rig in a process group of its own
+ * (posix_spawnp with POSIX_SPAWN_SETPGROUP, which is setpgid in the child between fork and exec),
+ * waits for it, and reports its status as a shell does. `-I` keeps a caller's PYTHON* variables
+ * out of it; the rig's name is resolved on PATH, as posix_spawnp does, so it is the `bash` the
+ * rest of the run uses. */
+const setpgid = [
+  "import os, sys",
+  "pid = os.posix_spawnp(sys.argv[1], sys.argv[1:], os.environ, setpgroup=0)",
+  "status = os.waitpid(pid, 0)[1]",
+  "sys.exit(128 + os.WTERMSIG(status) if os.WIFSIGNALED(status) else os.WEXITSTATUS(status))",
+].join("\n");
+
+/** Runs the rig, in a process group of its own, and returns its exit status and its stderr.
+ *
+ * The rig stops its own tree before it exits (stop_tree, scripts/e2e/lib/rig.sh), and a process
+ * group that is orphaned — one no member's parent watches from another group of the same session —
+ * has the kernel send SIGHUP and SIGCONT to every member the moment it is orphaned with a stopped
+ * member in it. Where a Legion worker runs this suite each shell command is a session leader, so
+ * bun's own group is orphaned: a rig sharing it hangs the test runner up, and `bun test` dies of
+ * that SIGHUP (status 129) before printing any totals. Bun.spawn leaves its child in bun's own
+ * group, so the rig needs a parent that moves it out of it.
+ *
+ * A session of its own is the wrong tool: a setsid child leads its session, so the one parent
+ * outside its group is in another session, which the orphan test does not count, and the group is
+ * orphaned from the start — the rig hangs itself up with the first stop of its own teardown. What
+ * it needs is a group of its own inside bun's session, under a parent that stays in bun's group:
+ * that parent is the connection outside the group which keeps it from being orphaned in turn.
+ *
+ * A POSIX shell reaches setpgid only through job control, and a job-control shell writes its job
+ * table's notices on its stderr, which is the rig's: on bash 5.2.21, the ubuntu-24.04 runner's of
+ * ci.yaml's pi-legion job, `set -m; "$@" & wait "$!"` leaves `[1]+  Done` and the job's command
+ * there (bash 5.2.37 prints none, so that wrapper passed on a devbox and failed on the runner). So
+ * no shell stands between the test and the rig: python3's posix_spawnp sets the group and nothing
+ * else, has no job table to report from on any bash, and redirects none of the rig's stderr away,
+ * so a complaint of the wrapper's own still reaches this test. python3 is on PATH on that runner
+ * (ci.yaml's lint job runs .github/scripts/check-action-pins.sh, which runs python3, on the same
+ * ubuntu-24.04 image, with no setup-python step) and in a Legion worker pod
+ * (packages/daemon/docker/worker.Dockerfile installs python3 in its runtime-base stage and checks
+ * it, `python3 --version`, in the runtime image's toolchain step). The rig's own shell runs with
+ * job control off, as it always has. */
+async function runRig(args: string[], vars: Record<string, string> = {}) {
+  const child = Bun.spawn(["python3", "-I", "-c", setpgid, "bash", rig, ...args], {
+    env: { ...env, ...vars },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+  return { code, stderr };
+}
+
 /** What the two runs reported, and each server one of them started: both read by the hook below,
  *  which stages the checkout and then runs the two rigs. */
 let runs: { n: number; code: number; stderr: string; dir: string }[] = [];
@@ -225,18 +280,16 @@ const lines = (file: string) =>
     : [];
 
 beforeAll(async () => {
+  // Nothing is staged and no rig is started where the rows do not run: python3 starts every one
+  // of them, and this hook would throw on a host that does not have it.
+  if (withoutPython) return;
   // A staging may queue another, so the queue is drained until it is empty.
   for (let stage = stagings.shift(); stage !== undefined; stage = stagings.shift()) stage();
   mkdirSync(env.HOME);
   start = String(Math.floor(Date.now() / 1000));
   runs = await Promise.all(
     [1, 2].map(async (n) => {
-      const child = Bun.spawn(["bash", rig, "run", "askgate", "on", String(n), String(n), start], {
-        env,
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-      const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+      const { code, stderr } = await runRig(["run", "askgate", "on", String(n), String(n), start]);
       return { n, code, stderr, dir: path.join(work, "runs", `askgate-facts-on-${n}`) };
     })
   );
@@ -246,11 +299,11 @@ beforeAll(async () => {
   });
 });
 
-test("both runs finish", () => {
+test.skipIf(withoutPython)("both runs finish", () => {
   for (const { code, stderr } of runs) expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
 });
 
-test("each run makes a database of its own in the batch's Postgres", () => {
+test.skipIf(withoutPython)("each run makes a database of its own in the batch's Postgres", () => {
   const made = lines(path.join(stub, "docker.log")).filter((line) =>
     line.includes("CREATE DATABASE")
   );
@@ -261,45 +314,51 @@ test("each run makes a database of its own in the batch's Postgres", () => {
   ]);
 });
 
-test("each run starts a Dispatch server of its own, on its own database and port", () => {
-  expect(servers.map((server) => server.database).sort()).toEqual([
-    "run_askgate_facts_on_1",
-    "run_askgate_facts_on_2",
-  ]);
-  expect(new Set(servers.map((server) => server.port)).size).toBe(2);
-});
-
-test("each run's agent, seeds and capture reach the run's own Dispatch and no other", () => {
-  const seeds = lines(path.join(stub, "seeds.log")).map((line) => JSON.parse(line));
-  const urls = new Set<string>();
-  for (const { n, dir } of runs) {
-    const database = `run_askgate_facts_on_${n}`;
-    const server = servers.find((s) => s.database === database);
-    const url = `http://127.0.0.1:${server?.port}`;
-    urls.add(url);
-    expect(JSON.parse(readFileSync(path.join(dir, "dispatch.json"), "utf8"))).toEqual({
-      postgres: "stub-postgres",
-      database,
-      port: server?.port,
-      url,
-    });
-    expect(lines(path.join(dir, "pane.env"))).toContain(`DISPATCH_URL=${url}`);
-    expect(lines(path.join(dir, "agent-env.txt"))).toContain(`DISPATCH_URL=${url}`);
-    // The run's world, its fixture and its capture, each through that server to that database.
-    expect(seeds.filter((seed) => seed.database === database)).toEqual(
-      ["project", "askgate", "capture-askgate"].map((command) => ({
-        command,
-        port: server?.port,
-        database,
-      }))
-    );
+test.skipIf(withoutPython)(
+  "each run starts a Dispatch server of its own, on its own database and port",
+  () => {
+    expect(servers.map((server) => server.database).sort()).toEqual([
+      "run_askgate_facts_on_1",
+      "run_askgate_facts_on_2",
+    ]);
+    expect(new Set(servers.map((server) => server.port)).size).toBe(2);
   }
-  expect(urls.size).toBe(2);
-});
+);
+
+test.skipIf(withoutPython)(
+  "each run's agent, seeds and capture reach the run's own Dispatch and no other",
+  () => {
+    const seeds = lines(path.join(stub, "seeds.log")).map((line) => JSON.parse(line));
+    const urls = new Set<string>();
+    for (const { n, dir } of runs) {
+      const database = `run_askgate_facts_on_${n}`;
+      const server = servers.find((s) => s.database === database);
+      const url = `http://127.0.0.1:${server?.port}`;
+      urls.add(url);
+      expect(JSON.parse(readFileSync(path.join(dir, "dispatch.json"), "utf8"))).toEqual({
+        postgres: "stub-postgres",
+        database,
+        port: server?.port,
+        url,
+      });
+      expect(lines(path.join(dir, "pane.env"))).toContain(`DISPATCH_URL=${url}`);
+      expect(lines(path.join(dir, "agent-env.txt"))).toContain(`DISPATCH_URL=${url}`);
+      // The run's world, its fixture and its capture, each through that server to that database.
+      expect(seeds.filter((seed) => seed.database === database)).toEqual(
+        ["project", "askgate", "capture-askgate"].map((command) => ({
+          command,
+          port: server?.port,
+          database,
+        }))
+      );
+    }
+    expect(urls.size).toBe(2);
+  }
+);
 
 // The run's exit handler kills its server's whole tree before the run exits, so a server's pid is
 // gone or a zombie by the time its run has ended.
-test("each run stops its Dispatch server when it ends", () => {
+test.skipIf(withoutPython)("each run stops its Dispatch server when it ends", () => {
   expect(servers.length).toBe(2);
   const running = servers.filter(
     ({ pid }) =>
@@ -311,35 +370,33 @@ test("each run stops its Dispatch server when it ends", () => {
 
 // AskGate's review would time out under Oh My Pi's default handler limit, so a run whose profile
 // leaves the limit there scores the timeout rather than the rule: the rig refuses it, starting nothing.
-test("a run on a profile whose settings leave the handler limit at its default is refused, naming the key", async () => {
-  const child = Bun.spawn(["bash", rig, "run", "askgate", "stale", "1", "3", start], {
-    env,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
-  expect(code).toBe(1);
-  expect(stderr).toContain("extensionHandlers.toolCallTimeoutMs to 120000 or more");
-  expect(existsSync(path.join(work, "runs", "askgate-facts-stale-1"))).toBe(false);
-  expect(lines(path.join(stub, "docker.log")).join("\n")).not.toContain("stale");
-});
+test.skipIf(withoutPython)(
+  "a run on a profile whose settings leave the handler limit at its default is refused, naming the key",
+  async () => {
+    const { code, stderr } = await runRig(["run", "askgate", "stale", "1", "3", start]);
+    expect(code).toBe(1);
+    expect(stderr).toContain("extensionHandlers.toolCallTimeoutMs to 120000 or more");
+    expect(existsSync(path.join(work, "runs", "askgate-facts-stale-1"))).toBe(false);
+    expect(lines(path.join(stub, "docker.log")).join("\n")).not.toContain("stale");
+  }
+);
 
 // The link case's ask states the reindex time from a file, for AskGate's content 9 (an unsourced
 // claim about what we run today): the run's working directory must hold that file, with the line
 // the prompt quotes.
-test("a link run's working directory holds the crontab its prompt cites, with the line it quotes", async () => {
-  const child = Bun.spawn(["bash", rig, "run", "askgate", "on", "1", "4", start], {
-    env: { ...env, SKILL_SCENARIOS_ASKGATE_CASE: "link" },
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
-  expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
-  const dir = path.join(work, "runs", "askgate-link-on-1");
-  const prompt = readFileSync(path.join(dir, "prompt.txt"), "utf8");
-  const quoted = /export-host\.crontab runs .*\(its line (\d+): `([^`]+)`\)/.exec(prompt);
-  const [, line = "", text = ""] = quoted ?? [];
-  expect(quoted).not.toBeNull();
-  const crontab = lines(path.join(dir, "cwd", "export-host.crontab"));
-  expect(crontab[Number(line) - 1]).toBe(text);
-});
+test.skipIf(withoutPython)(
+  "a link run's working directory holds the crontab its prompt cites, with the line it quotes",
+  async () => {
+    const { code, stderr } = await runRig(["run", "askgate", "on", "1", "4", start], {
+      SKILL_SCENARIOS_ASKGATE_CASE: "link",
+    });
+    expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+    const dir = path.join(work, "runs", "askgate-link-on-1");
+    const prompt = readFileSync(path.join(dir, "prompt.txt"), "utf8");
+    const quoted = /export-host\.crontab runs .*\(its line (\d+): `([^`]+)`\)/.exec(prompt);
+    const [, line = "", text = ""] = quoted ?? [];
+    expect(quoted).not.toBeNull();
+    const crontab = lines(path.join(dir, "cwd", "export-host.crontab"));
+    expect(crontab[Number(line) - 1]).toBe(text);
+  }
+);
