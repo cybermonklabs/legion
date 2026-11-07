@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The fault rig of ci.yaml's download-retry and download-retry-images jobs: it starts
 # .github/scripts/ci-fault-proxy.py in front of one step, reads the proxy's log after that step,
-# and prints and checks what the retry did (dispatch://INFRA-1545, T7). Four verbs:
+# and prints and checks what the retry did (dispatch://INFRA-1545, T7). Five verbs:
 #
 #   start <name> --mode <recover|stall> [--hosts <csv>] [--recover-after <s>] [--bind <address>]
 #       Starts a proxy of its own for the step that follows, waits for its port, and writes
@@ -30,11 +30,44 @@
 #       these images are built for real, through that action, and their triggers are what
 #       check-image-trigger-paths.sh proves.
 #
+#   probe <name>
+#       Two requests through that proxy, made before the site's own fetch and printed as the
+#       pair they read: one to a host the fault names, which must be refused, and one to a host
+#       off that list, which must be answered. Each is checked twice over — what the client read
+#       (the HTTP status and the seconds it took) and whether the proxy logged a line for it at
+#       all — and the verb fails the step, naming which of the two readings was wrong, when the
+#       pair reads the other way round.
+#
+#       It exists because a bypass passes a fault drive in about no time while proving nothing.
+#       A pod of this build carries `NO_PROXY=*` and `no_proxy=*`, which every client honouring
+#       either one reads as "no host goes through the proxy": the site then fetches from the
+#       real host, succeeds, and the report sees a step that never met the fault. The probe is
+#       made the way the site makes its own fetch, with http_proxy and https_proxy and nothing
+#       else, so whatever bypasses the site bypasses the probe — and a bypassed request leaves
+#       no line in the proxy's log, which is the reading that catches it whatever caused it.
+#       Both jobs clear the bypass for every step of the job (ci.yaml, "Clear the proxy bypass
+#       this runner image may carry"); this verb is what proves the clearing worked, per site.
+#
+#       The faulted target is the first host of that proxy's own `--hosts`, so the probe reads
+#       the fault the site will meet and not some other one. The unfaulted target is that same
+#       host under the reserved `.invalid` suffix (RFC 2606): it is derived from `--hosts`
+#       rather than named anew, it can never match the fault's list — `github.com.invalid`
+#       neither equals `github.com` nor ends in `.github.com` — nobody owns it, and no resolver
+#       answers for it, so only the proxy can answer it. Through the proxy it reads HTTP 502
+#       (the proxy's own answer, having failed to resolve it), and through a bypass it reads
+#       nothing at all. A proxy started with an empty `--hosts` faults every host, so it has no
+#       unfaulted host to read: there the verb says so and the faulted reading stands alone.
+#
+#       The probe's own two requests are the proxy's first lines, and `report` leaves them out
+#       of the site's counts: the state file carries the line count they reached.
+#
 #   clear
-#       Kills any proxy still running and refuses the job if a proxy variable is in its
-#       environment: the rig writes none to $GITHUB_ENV, so the steps after it — the ci-ok
+#       Kills any proxy still running and refuses the job if a proxy variable carries a value in
+#       its environment: the rig writes none to $GITHUB_ENV, so the steps after it — the ci-ok
 #       report and the upload inside it — must see none. The one verb that names no proxy,
-#       because it is about all of them.
+#       because it is about all of them. An emptied `no_proxy=` is not a proxy: it is how both
+#       jobs clear the bypass above, so it is printed as accounted for rather than refused, and
+#       the refusal is held to a variable that carries a value.
 #
 # What `report` checks, which is what each of the three modes claims:
 #   recover  the step succeeded, the proxy refused at least one attempt (so the fault was in the
@@ -54,6 +87,9 @@
 #            notice. A request to a host outside --hosts is passed on and counted, since an
 #            install reads the npm registry whatever this proves.
 #
+# `report` refuses a site no `probe` ran for, whatever the mode: the pair a probe read is half
+# the evidence a fault drive is read by, so a site that recorded none has none.
+#
 # Every path it writes goes under $RUNNER_TEMP (or $TMPDIR off a runner), and each name's state
 # lives in a file of its own, so two sites in one job never read each other's proxy.
 #
@@ -70,6 +106,19 @@ state_dir="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/download-retry"
 # from packages/daemon/internal/capabilities, which that command runs, and the `build` verb
 # below says why a fault over them proves nothing and breaks the probe.
 TRUST_PROBE_HOSTS="example.com,.example.com,we-have-a-problem.com,.we-have-a-problem.com"
+
+# The probe's own bound, in seconds, for each of its two requests. A refusal under --mode
+# recover or --mode fail is an immediate 504 and a pass is an immediate 502, so this bound is
+# only ever spent under --mode stall, where spending it whole is the reading: a stalled request
+# ends with no answer at all after the client's own bound, where a bypassed one is answered in
+# about no time. Both requests are bounded, so a probe costs at most 2 x this, and that is the
+# term each site's --budget in ci.yaml carries for it.
+PROBE_BOUND=10
+
+# RFC 2606's reserved suffix, which the probe hangs on a faulted host to make its unfaulted one.
+# Nobody owns a name under it and no resolver answers for one, so only the proxy can answer a
+# request for it, and a request that was not made through the proxy reads as nothing at all.
+RESERVED_SUFFIX=".invalid"
 
 die() {
   echo "::error::download-retry: $*" >&2
@@ -145,6 +194,7 @@ start() {
   {
     echo "name=$name"
     echo "mode=$mode"
+    echo "hosts=$hosts"
     echo "log=$log"
     echo "pid=$pid"
     echo "started=$started"
@@ -158,6 +208,144 @@ start() {
     } >> "$GITHUB_OUTPUT"
   fi
   echo "download-retry: the $name fault proxy is http://$bind:$port (--mode $mode, faulting ${hosts:-every host})"
+}
+
+# One request through the proxy, made the way the site makes its own fetch: the two variables
+# the site's `env:` carries and nothing else, so whatever would carry the site past the fault
+# carries this request past it too. Printed as `<status> <seconds>`, with a status of 000 where
+# nothing answered at all. Its failure is the reading rather than a fault, so its error is
+# silenced and its status consumed: the shape check-download-retry.sh reads as a probe, which is
+# what keeps a reading of the fault out of every budget that runs this script.
+through_proxy() {
+  local proxy=$1 url=$2 reading
+  reading=$(http_proxy="$proxy" https_proxy="$proxy" curl -sS --max-time "$PROBE_BOUND" \
+    -o /dev/null -w '%{http_code} %{time_total}' "$url" 2>/dev/null || true)
+  printf '%s\n' "${reading:-000 0}"
+}
+
+# One reading, in the words a person reading the run counts it in.
+what_it_read() {
+  if [ "$1" = 000 ]; then
+    printf 'no answer at all, after %ss\n' "$2"
+  else
+    printf 'HTTP %s, after %ss\n' "$1" "$2"
+  fi
+}
+
+# Whether a request spent its whole bound, which under --mode stall is the refusal itself: the
+# proxy accepts the connection and sends nothing, so the client ends at its own bound. A
+# bypassed request is answered in about no time, and the seconds are what tell the two apart.
+spent_its_bound() {
+  awk -v spent="$1" -v bound="$PROBE_BOUND" 'BEGIN { exit !(spent >= bound - 1) }'
+}
+
+# The line the proxy wrote for the request just made, or nothing where it wrote none. The log is
+# `start`'s stamping loop, a line at a time, so a line lands a moment after the answer it belongs
+# to and is waited for rather than missed; a request that never reached the proxy leaves none
+# however long this waits, which is the reading that catches a bypass whatever caused it.
+proxy_line_after() {
+  local log=$1 skip=$2 waited=0 line=""
+  while [ -z "$line" ] && [ "$waited" -lt 50 ]; do
+    line=$(awk -v skip="$skip" 'NR > skip { print; exit }' "$log")
+    [ -n "$line" ] || sleep 0.1
+    waited=$((waited + 1))
+  done
+  printf '%s\n' "$line"
+}
+
+probe() {
+  local name=$1
+  shift
+  [ "$#" -eq 0 ] || die "probe: takes the proxy's name and nothing else"
+  local file
+  file=$(state_file "$name")
+  [ -f "$file" ] || die "probe: no proxy named $name was started"
+  local mode hosts log proxy
+  # shellcheck disable=SC1090 # the file this verb's own `start` wrote, seven name=value lines
+  . "$file"
+
+  local faulted control
+  if [ -n "$hosts" ]; then
+    faulted=${hosts%%,*}
+    faulted=${faulted#.}
+    control="$faulted$RESERVED_SUFFIX"
+  else
+    # This proxy names no host, so it faults every one of them and has no unfaulted host left to
+    # read. A name nobody owns is as faulted here as any other, and it is one no bypass can
+    # answer for, since no resolver answers for it.
+    faulted="every-host$RESERVED_SUFFIX"
+    control=""
+  fi
+
+  echo "download-retry: the probe through the $name proxy, before the site (--mode $mode)"
+  local problems=0
+  probe_wrong() {
+    echo "::error::download-retry: the probe before $name: $*" >&2
+    problems=$((problems + 1))
+  }
+  local before reading code seconds line pair
+
+  before=$(wc -l < "$log")
+  reading=$(through_proxy "$proxy" "http://$faulted/")
+  code=${reading%% *}
+  seconds=${reading##* }
+  line=$(proxy_line_after "$log" "$before")
+  pair="the faulted host $faulted read $(what_it_read "$code" "$seconds")"
+  echo "  $pair"
+  echo "  the proxy's own line for it: ${line:-none at all}"
+  if [ "$mode" = stall ]; then
+    if [ "$code" != 000 ] || ! spent_its_bound "$seconds"; then
+      probe_wrong "the faulted reading was wrong. This proxy accepts a connection for $faulted" \
+        "and then sends nothing, so the request must end at its own ${PROBE_BOUND}s bound with no" \
+        "answer; it read $(what_it_read "$code" "$seconds"). A faulted host that answers is the" \
+        "proxy bypassed, which is what this probe is for: read no_proxy and NO_PROXY in this" \
+        "job's environment, since either one set to a star sends every host past the proxy."
+    fi
+  elif [ "$code" != 504 ]; then
+    probe_wrong "the faulted reading was wrong. This proxy answers HTTP 504 for $faulted, so the" \
+      "request must be refused with one; it read $(what_it_read "$code" "$seconds"). A faulted" \
+      "host that answers is the proxy bypassed, which is what this probe is for: read no_proxy" \
+      "and NO_PROXY in this job's environment, since either one set to a star sends every host" \
+      "past the proxy."
+  fi
+  if [ -z "$line" ]; then
+    probe_wrong "the faulted reading was wrong: the proxy logged no line for the request to" \
+      "$faulted, so that request was never made through it at all."
+  fi
+
+  if [ -n "$control" ]; then
+    before=$(wc -l < "$log")
+    reading=$(through_proxy "$proxy" "http://$control/")
+    code=${reading%% *}
+    seconds=${reading##* }
+    line=$(proxy_line_after "$log" "$before")
+    pair="$pair, and the unfaulted host $control read $(what_it_read "$code" "$seconds")"
+    echo "  the unfaulted host $control read $(what_it_read "$code" "$seconds")"
+    echo "  the proxy's own line for it: ${line:-none at all}"
+    if [ "$code" = 000 ] || [ "$code" = 504 ]; then
+      probe_wrong "the unfaulted reading was wrong. $control is off this proxy's --hosts, so the" \
+        "proxy must answer it — HTTP 502, the answer it gives for a name nothing resolves —" \
+        "rather than fault it; it read $(what_it_read "$code" "$seconds"). Nothing answering at" \
+        "all is the request going nowhere near the proxy, and a 504 is the fault reaching a host" \
+        "it was never given."
+    fi
+    if [ -z "$line" ]; then
+      probe_wrong "the unfaulted reading was wrong: the proxy logged no line for the request to" \
+        "$control, so that request was never made through it at all."
+    fi
+  else
+    pair="$pair; this fault names no host, so every host is faulted and it has none to read unfaulted"
+    echo "  no unfaulted host to read: this proxy's --hosts is empty, so it faults every host"
+  fi
+
+  [ "$problems" -eq 0 ] || exit 1
+  echo "  the pair reads as it must, so this site's fetch meets the fault rather than the host"
+  # What `report` prints beside its result, and the count of the log lines these two requests
+  # left, which are the proxy's first and belong to no site.
+  {
+    printf 'probe_lines=%s\n' "$(wc -l < "$log")"
+    printf "probe_pair='%s'\n" "$pair"
+  } >> "$file"
 }
 
 report() {
@@ -176,31 +364,48 @@ report() {
   local file
   file=$(state_file "$name")
   [ -f "$file" ] || die "report: no proxy named $name was started"
-  local mode log pid started
-  # shellcheck disable=SC1090 # the file this verb's own `start` wrote, five name=value lines
+  local mode log pid started probe_pair probe_lines
+  # shellcheck disable=SC1090 # the file this verb's own `start` and `probe` wrote, name=value lines
   . "$file"
+  [ -n "${probe_pair:-}" ] ||
+    die "report: no probe ran before $name's site, so this result would carry no reading of its own. Every fault drive records the pair a probe read through the proxy before the site (dispatch://INFRA-1545, the Verification document's proxy clauses): run \`download-retry-proof.sh probe $name\` in the step that starts the proxy."
   local now elapsed
   now=$(date +%s)
   elapsed=$((now - started))
 
-  local faults passes fault_count first last
+  # The probe's own two requests are the proxy's first lines and belong to no site, so they are
+  # left out of everything below: they would count as an attempt this site never made, and under
+  # --mode fail — where the promise is that the proxy refused nothing — the probe's own refusal
+  # would be read as the site fetching from a host the tree is supposed to carry.
+  local site_log="$log.site"
+  awk -v skip="${probe_lines:-0}" 'NR > skip' "$log" > "$site_log"
+
+  local faults passes fault_count first last fault_line pass_line
   # One line per request the proxy refused or stalled, as offsets from the step's start, and the
   # same for the ones it passed on. An attempt may open more than one connection — a package
   # manager fetches in parallel — so these are requests, not attempts; the count below is held
   # to at least one per attempt, and the offsets are what a reader counts the attempts by.
   faults=$(awk -v t="$started" '$3 == "504" || $3 == "stall" { n++; if (n <= 40) printf "+%ds ", $1 - t }
-                                END { if (n > 40) printf "and %d more", n - 40 }' "$log")
-  passes=$(awk '$3 == "pass"' "$log" | wc -l)
-  fault_count=$(awk '$3 == "504" || $3 == "stall"' "$log" | wc -l)
-  first=$(awk -v t="$started" '$3 == "504" || $3 == "stall" { print $1 - t; exit }' "$log")
-  last=$(awk -v t="$started" '$3 == "504" || $3 == "stall" { v = $1 - t } END { if (v != "") print v }' "$log")
+                                END { if (n > 40) printf "and %d more", n - 40 }' "$site_log")
+  passes=$(awk '$3 == "pass"' "$site_log" | wc -l)
+  fault_count=$(awk '$3 == "504" || $3 == "stall"' "$site_log" | wc -l)
+  first=$(awk -v t="$started" '$3 == "504" || $3 == "stall" { print $1 - t; exit }' "$site_log")
+  last=$(awk -v t="$started" '$3 == "504" || $3 == "stall" { v = $1 - t } END { if (v != "") print v }' "$site_log")
+  # The proxy's own words for this site's request, which a count cannot say: which host it was
+  # asked for, and whether the 504 it injected answered a CONNECT or a plain request, since a
+  # client retries the two differently.
+  fault_line=$(awk '$3 == "504" || $3 == "stall" { print; exit }' "$site_log")
+  pass_line=$(awk '$3 == "pass" || $3 == "502" { print; exit }' "$site_log")
 
   echo "download-retry: $what, under --mode $mode"
   echo "  the step's own outcome: $outcome"
+  echo "  the probe before this site read: $probe_pair"
   echo "  the proxy was reached $fault_count time(s) while it faulted, at ${faults:-no offset at all}"
   if [ -n "$first" ] && [ -n "$last" ]; then
     echo "  the first of those was $first s into the step and the last $last s, $((last - first)) s apart"
   fi
+  echo "  the proxy's own line for the first request it faulted: ${fault_line:-none at all, it faulted no request of this site}"
+  echo "  the proxy's own line for the first request it answered itself: ${pass_line:-none at all, it answered no request of this site itself}"
   echo "  requests the proxy passed on: $passes"
   echo "  it ran ${elapsed}s from the proxy's start, against a budget of ${budget}s and a floor of ${floor}s for its $attempts attempt(s)"
 
@@ -277,27 +482,42 @@ build() {
 # The rig writes no proxy variable to $GITHUB_ENV, so none of them reaches the steps after it —
 # the ci-ok report and the upload inside it. This is where that is checked rather than assumed,
 # and where a proxy a `report` could not stop is stopped.
+#
+# What both jobs do write to $GITHUB_ENV is an emptied `no_proxy=` and `NO_PROXY=`, which is how
+# they clear the bypass a runner image may carry for every step of the job. An emptied one is no
+# proxy and routes nothing: it is the absence of a bypass list, which is what a client with no
+# such variable at all reads. So the refusal below is held to a variable that carries a value,
+# and an emptied one is printed as what it is. Reading the two the same way would leave this
+# check with one of two faults: it would refuse every job that cleared its bypass, or — were the
+# pattern loosened to let any no_proxy through — it would go blind to a `no_proxy=registry.
+# npmjs.org` that quietly sent the report's own upload around the proxy.
 clear() {
   [ "$#" -eq 0 ] || die "clear: takes no argument"
   pkill -f ci-fault-proxy.py || true
-  local left
-  left=$(env | grep -Ei '^(http_proxy|https_proxy|all_proxy|no_proxy)=' || true)
-  if [ -n "$left" ]; then
-    echo "::error::the job's environment carries a proxy the ci-ok report would use: $left"
+  local set_to_something emptied
+  set_to_something=$(env | grep -Ei '^(http_proxy|https_proxy|all_proxy|no_proxy)=.' || true)
+  emptied=$(env | grep -Ei '^(http_proxy|https_proxy|all_proxy|no_proxy)=$' | sort | tr '\n' ' ' || true)
+  if [ -n "$set_to_something" ]; then
+    # Two different faults share one refusal, so the message names the kind rather than calling
+    # both a proxy: an `http_proxy` left behind routes the ci-ok report through a proxy that is
+    # gone, and a `no_proxy` left behind routes it past one that is still there. Either is a
+    # variable this job wrote and did not take back.
+    echo "::error::the job's environment still carries a proxy variable the ci-ok report would read — an http, https or all proxy it would route through, or a no_proxy it would route past: $set_to_something"
     exit 1
   fi
-  echo "no proxy variable is in this job's environment"
+  echo "no proxy variable carries a value in this job's environment${emptied:+, and these are emptied: $emptied}"
 }
 
 verb=${1:-}
 # Every verb but `clear` names the proxy it is about; `clear` is about all of them.
 [ "$verb" = clear ] || [ "$#" -ge 2 ] ||
-  die "usage: $(basename "$0") <start|report|build> <name> [options], or <clear>"
+  die "usage: $(basename "$0") <start|probe|report|build> <name> [options], or <clear>"
 shift
 case $verb in
   start) start "$@" ;;
+  probe) probe "$@" ;;
   report) report "$@" ;;
   build) build "$@" ;;
   clear) clear "$@" ;;
-  *) die "unknown verb '$verb'; it takes start, report, build or clear" ;;
+  *) die "unknown verb '$verb'; it takes start, probe, report, build or clear" ;;
 esac
