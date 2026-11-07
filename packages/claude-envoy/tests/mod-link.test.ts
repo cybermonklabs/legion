@@ -518,7 +518,8 @@ test("a card no mod answered is written once, by its resend, when the mod finall
   expect(requests.map((request) => request.call)).toEqual(["session.message"])
   const asked = requests[0]
   if (asked === undefined) throw new Error("the resend was handed over as no request")
-  // The id the mod writes once by, carried on both copies (`../hooks/mod.ts`, `writeOnce`).
+  // The id the mod writes once by, carried on both copies (`../hooks/mod-writer.ts`,
+  // `writeOnce`).
   expect((asked.args as { eventId?: string }).eventId).toBe("evt-1")
   await call(link.socketPath, "POST", MOD_ROUTE_RESULTS, {
     results: [wrote(asked, "prompt-row-1")],

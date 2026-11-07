@@ -70,7 +70,7 @@ export interface ModLink {
    *  (INFRA-1026 review, round eleven, repro `R-A`). What the session did with a message is the
    *  row the mod answers with, and a request the mod never answered is one its caller leaves
    *  unanswered too: Envoy sends the frame again, and the mod writes the message once
-   *  (`../hooks/mod.ts`, `writeOnce`). */
+   *  (`../hooks/mod-writer.ts`, `writeOnce`). */
   readonly request: <N extends ModCallName>(
     call: N,
     args: ModCallArguments[N],

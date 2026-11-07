@@ -257,8 +257,16 @@ export function createUserTurnRouter(options: UserTurnRouterOptions): UserTurnRo
     })
 
   /** The person's message, as the session's own: a row of the turn running, or the prompt of a
-   *  new one. Throws when the session could not take it, so the frame is sent again. */
-  const inject = async (delivery: DispatchDelivery, turn: AcceptedUserTurn): Promise<void> => {
+   *  new one. Throws when the session could not take it, so the frame is sent again - which is
+   *  why `eventId`, the frame's own Envoy event id, goes with it: the mod writes one event id
+   *  once, so the copy Envoy sends next, which arrives as a card because this attempt is spent,
+   *  is answered with the row this write left and the person's words reach the model one time
+   *  (`./mod-session`, `../hooks/mod-writer.ts`, `writeOnce`). */
+  const inject = async (
+    delivery: DispatchDelivery,
+    turn: AcceptedUserTurn,
+    eventId: string | undefined,
+  ): Promise<void> => {
     const pictures = await withDeliveredPictures(
       turn.body,
       pictureAddresses(turn.body),
@@ -273,6 +281,7 @@ export function createUserTurnRouter(options: UserTurnRouterOptions): UserTurnRo
     if (!inPane) {
       const row = await session.deliver({
         content: blocks,
+        ...(eventId === undefined ? {} : { eventId }),
         // The prompt at a row the turn never read carries both: the person's own words, and
         // which Dispatch message they are (`unreadRowPrompt`, `./mod-session`).
         messageId: turn.messageId,
@@ -446,7 +455,9 @@ export function createUserTurnRouter(options: UserTurnRouterOptions): UserTurnRo
         })
         return true
       }
-      await inject(delivery, turn)
+      // The frame's own Envoy event id, which is what makes the person's write and the card
+      // its resend becomes one write (`inject`).
+      await inject(delivery, turn, rendered.envelope?.event_id)
       return true
     },
     observe(event) {

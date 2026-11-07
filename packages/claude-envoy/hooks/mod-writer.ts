@@ -1,0 +1,522 @@
+/**
+ * What a message Envoy hands this session becomes, and what points the model at it.
+ *
+ * The mod's other half is transport: a socket, a queue of events and a poll loop (`./mod.ts`,
+ * `createLink`). This half is the rule those two carry between them, and it lives here because
+ * it is the rule three review rounds have been about (INFRA-1026 review, rounds nine to
+ * eleven): a message is a row of the turn running or the prompt of a new turn, a row no request
+ * read is quoted by one prompt when the turn ends, and a write is made once however many times
+ * Envoy sends the event. Deciding it needs the turn's events and this plugin's writes in one
+ * order, which is the mod and nowhere else.
+ *
+ * It reaches the session through four closures the transport half passes in — the host, the
+ * event queue, the clock and the session id — and holds everything else itself.
+ */
+import type {
+  PromptSubmitArgs,
+  PromptSubmitResult,
+  SessionAppendArgs,
+  SessionAppendResult,
+} from "claude-code"
+import {
+  MOD_PLUGIN_NAME,
+  type ModCallArguments,
+  type ModCallResults,
+  type ModContentBlock,
+  type ModEvent,
+  type ModUnreadMessage,
+  unreadRowPrompt,
+} from "./mod-protocol"
+
+/**
+ * How long the writer waits for the row Claude Code writes for a prompt it submitted.
+ *
+ * The row is there before the call answers: in all six `$.prompt.submit` calls recorded on
+ * 2.1.310 the prompt's own `prompt`-door row landed 15 ms to 26 ms before the call resolved
+ * (`/legion/scratch/tmp/infra-1026-spike/logs/mod2.jsonl:144-145`,
+ * `logs/mod3-q2-310.jsonl:51-52,86-87`, `logs/mod3-q1q3q5.jsonl:236-239`). So this is a guard
+ * on a wait that is normally over before it starts, at about eighty times the largest gap.
+ */
+const PROMPT_ROW_MS = 2_000
+
+/**
+ * How long a prompt the engine took has to start its turn before the writer stops holding the
+ * rows handed over meanwhile for it.
+ *
+ * `turn.start` followed the submit's resolution by 8 ms to 11 ms in the same six submits, so a
+ * prompt that has started no turn by now starts none: its rows are pointed at rather than left
+ * waiting for a `turn.complete` that never comes (INFRA-1026 review, round three, repro
+ * `R-C`).
+ */
+const TURN_START_MS = 2_000
+
+/**
+ * The most Envoy events the writer remembers the row of, in `$.store`.
+ *
+ * Each record is a key of some seventy bytes and a small object, so the whole of it is about
+ * 30 KiB, against the 4 MiB of compact JSON `set` refuses past. The store is one file for every
+ * session under one `CLAUDE_CONFIG_DIR`, so this bound is shared by all of them, and the
+ * eviction pass (`remember`) drops the oldest record whichever session wrote it. The bound is
+ * what keeps that store off the wall and off the cost of a big store: measured on 2.1.310, a
+ * 3.9 MiB store cost `get` 7–20 ms, `set` 44 ms and `keys()` up to 16 ms, against about 1 ms
+ * each on an empty one (`/legion/scratch/tmp/infra-1026-store/README.md`).
+ */
+const CARD_RECORD_MAX = 256
+
+/** What every key of that record starts with, so the eviction pass reads this plugin's own keys
+ *  and leaves anything else it may store alone. */
+const CARD_KEY_PREFIX = "message:"
+
+/**
+ * What the writer calls on the session: the two writes a message can be, and this plugin's own
+ * store. The transport half holds the rest of `$` and builds each of these as a closure of its
+ * own, since `$` may not leave the hook it was given to (`./mod.ts`, `ModHost`).
+ */
+export interface WriterHost {
+  readonly append: (args: SessionAppendArgs) => Promise<SessionAppendResult>
+  readonly submit: (args: PromptSubmitArgs) => Promise<PromptSubmitResult>
+  /** `$.store.get(key)`: this plugin's own key-value store, kept between sessions. */
+  readonly storeGet: (key: string) => Promise<unknown>
+  readonly storeSet: (key: string, value: unknown) => Promise<void>
+  readonly storeDelete: (key: string) => Promise<void>
+  /** `$.store.keys()`, in insertion order (measured on 2.1.310). */
+  readonly storeKeys: () => Promise<string[]>
+}
+
+/** One row this mod wrote into a turn, watched until a request reads it or the turn ends. */
+interface WatchedRow {
+  /** The turn the row was stored into, and undefined for a row stored while the prompt that
+   *  starts that turn was still in flight: the turn adopts it when it reports itself. */
+  turnId?: string
+  /**
+   * The requests this session had made when the row was stored: one made after it is the
+   * request that read it.
+   *
+   * Counted once the append has resolved rather than before it: a request that went out while
+   * the row was being stored cannot be proven to carry it, and a row quoted though the model
+   * had read it costs a repetition, where a row counted as read that never was costs the
+   * message (INFRA-1026 review, repro `R-B`).
+   */
+  readonly requests: number
+  readonly message: ModUnreadMessage
+}
+
+/** One prompt this mod submitted whose row has not arrived: the text the row carries, what the
+ *  row is to the server, and what is woken by it. */
+interface AwaitedRow {
+  readonly text: string
+  readonly wrote: "message" | "pointer"
+  readonly seen: (uuid: string) => void
+}
+
+/**
+ * What became of one prompt this mod handed the engine (`submitPrompt`): the engine took it and
+ * the mod saw the row Claude Code wrote for it, the engine took it and no row arrived within
+ * `PROMPT_ROW_MS`, or the engine dropped it and the prompt is in no session.
+ *
+ * The second arm is the one a caller must not read as the third: the message is in the session
+ * there, so a caller that answers it as a refusal writes the message again and tells a person
+ * their session dropped words it took (INFRA-1026 review).
+ */
+type SubmittedPrompt =
+  | { readonly took: true; readonly uuid?: string }
+  | { readonly took: false; readonly drop: string }
+
+/** What this mod recorded one Envoy event's write as, in `$.store`. Values round-trip as
+ *  `JSON.parse(JSON.stringify(value))` (measured on 2.1.310), so this is plain JSON data. The
+ *  second shape is the one write that has no row to record: the prompt the engine took whose
+ *  row the mod did not see (`submitPrompt`). The write happened, so it is recorded and the
+ *  resend answers from the record rather than writing the message a second time. */
+type RecordedWrite =
+  | { readonly uuid: string; readonly as: "row" | "prompt" }
+  | { readonly uuid?: undefined; readonly as: "prompt" }
+
+/** `value` as this mod recorded a write, or undefined where it is anything else: the store is
+ *  this plugin's own, and a value it did not write is no record of one. */
+function recordedWrite(value: unknown): RecordedWrite | undefined {
+  if (typeof value !== "object" || value === null) return undefined
+  if (!("as" in value)) return undefined
+  const { as } = value
+  if (as !== "row" && as !== "prompt") return undefined
+  const uuid = "uuid" in value ? value.uuid : undefined
+  if (uuid === undefined) return as === "prompt" ? { as } : undefined
+  return typeof uuid === "string" ? { uuid, as } : undefined
+}
+
+/** What the transport half gives the writer: the session, the event queue, the clock and the id
+ *  the store's keys are scoped by. */
+export interface MessageWriterOptions {
+  /** The session now, or undefined before `session.start` and after the link gave up. */
+  readonly engine: () => WriterHost | undefined
+  /** Queue one event for the server; never throws (`./mod.ts`, `send`). */
+  readonly send: (event: ModEvent) => void
+  /** Wait, through the host's own clock, and never throw (`./mod.ts`, `sleep`). */
+  readonly sleep: (ms: number) => Promise<void>
+  /** The id the session answers to now, which a `/clear` moves. */
+  readonly sessionId: () => string | undefined
+}
+
+/** The writes and the turn's own events, as the hooks drive them through the link. */
+export interface MessageWriter {
+  /** Write one message into the session as the session stands now: a row of the turn running,
+   *  or the prompt of a new turn. */
+  readonly writeMessage: (
+    args: ModCallArguments["session.message"],
+  ) => Promise<ModCallResults["session.message"]>
+  /** Write the message of `eventId` once, however many times Envoy sends it. */
+  readonly writeOnce: (
+    eventId: string,
+    args: ModCallArguments["session.message"],
+  ) => Promise<ModCallResults["session.message"]>
+  /** A turn started: it reads every row stored for it, including the ones stored while the
+   *  prompt that started it was still in flight. */
+  readonly turnStarted: (turnId: string) => void
+  /** A turn ended: every row of this mod's that no request of it read is carried by one prompt
+   *  of its own (`unreadRowPrompt`). */
+  readonly turnEnded: (turnId: string) => void
+  /** A request of the turn is going out: a row stored before this moment is in this request,
+   *  and one stored after it is in none. */
+  readonly stepRequested: () => void
+  /** One row of the `prompt` door, claimed for the prompt of this mod's it is the row of, and
+   *  stamped with what that prompt wrote; undefined for a person's own prompt. */
+  readonly claimRow: (
+    uuid: string,
+    content: readonly ModContentBlock[],
+  ) => "message" | "pointer" | undefined
+}
+
+/** The writer for one session: all of it closure state, as the link it belongs to is. */
+export function createMessageWriter(options: MessageWriterOptions): MessageWriter {
+  const { send, sleep } = options
+  /** The turn running now, as `turn.start` and `turn.complete` report it. Read in the same tick
+   *  as the write that follows it, which is what makes "a row of this turn, or the prompt of a
+   *  new one" a decision and not a guess (INFRA-1026 review, round eleven). */
+  let turn: string | undefined
+  /**
+   * True from the moment this mod hands the engine a prompt until the turn that prompt starts
+   * has reported itself, or until the mod gives up on one (`TURN_START_MS`).
+   *
+   * A message handed over meanwhile is a row of that turn rather than a second prompt: the
+   * engine takes one prompt at a time, so a second would sit behind this turn, and the row the
+   * turn is about to read says the same thing sooner.
+   */
+  let prompting = false
+  /** Bumped whenever a turn starts or this mod stops waiting for one, so the guard armed for
+   *  one prompt never fires against a later one. */
+  let promptEpoch = 0
+  /** How many requests this session has made, counted at the top of every `turn.step`. */
+  let requests = 0
+  /** The rows this mod wrote that no request has read, by the uuid Claude Code stored each
+   *  under. A row leaves it when its turn ends, which is also when the prompt pointing at it
+   *  goes out, so this holds the rows of the turn running and nothing else. */
+  const watched = new Map<string, WatchedRow>()
+  /** The prompts this mod submitted whose row has not arrived, oldest first. Each entry is
+   *  dropped by the wait that put it there, so nothing else bounds this. */
+  const awaitedRows: AwaitedRow[] = []
+  /** The write running for each Envoy event id, so a copy of that event which arrives while the
+   *  first is still running waits for it and then finds what it recorded (`writeOnce`). */
+  const writing = new Map<string, Promise<void>>()
+
+  /** The session, or the reason there is none to write into: the link clears it when it gives
+   *  up, and a call the server makes after that answers the throw. */
+  const engineNow = (): WriterHost => {
+    const engine = options.engine()
+    if (engine === undefined) throw new Error("the session is gone")
+    return engine
+  }
+
+  /** The key `$.store` holds one Envoy event's write under: this session's id with the event
+   *  id. A `/clear` moves the id, and the conversation it moves to is one the card is not in,
+   *  so its key is a key of its own. */
+  const recordKey = (eventId: string): string =>
+    `${CARD_KEY_PREFIX}${options.sessionId() ?? ""}:${eventId}`
+
+  /** Record what `eventId`'s message was written as, and drop the oldest records past
+   *  `CARD_RECORD_MAX`. `keys()` answers in insertion order, so the oldest are the first of
+   *  them (the issue's store spike). A store that refuses the write leaves no record and the
+   *  message stands: a later copy of that event would then be written a second time, which is
+   *  the one case this rule misses and the one the crash case already covers
+   *  (`docs/site/src/content/docs/dispatch/envoy.md`). */
+  const remember = async (
+    engine: WriterHost,
+    eventId: string,
+    write: RecordedWrite,
+  ): Promise<void> => {
+    try {
+      await engine.storeSet(recordKey(eventId), write)
+      const keys = (await engine.storeKeys()).filter((key) => key.startsWith(CARD_KEY_PREFIX))
+      for (const old of keys.slice(0, keys.length - CARD_RECORD_MAX)) {
+        await engine.storeDelete(old)
+      }
+    } catch {
+      // The record is a saving, not the write itself; a store that refuses it costs nothing
+      // here and there is nowhere in a session to report it to.
+    }
+  }
+
+  /** Wait for the row Claude Code writes for the prompt carrying `text`, and stamp that row
+   *  `wrote` for the server. Registered before the submit goes out, because the row reaches
+   *  this mod's own `session.append` hook before the call resolves (`PROMPT_ROW_MS`). */
+  const awaitRow = (
+    text: string,
+    wrote: "message" | "pointer",
+  ): { readonly uuid: () => Promise<string | undefined>; readonly drop: () => void } => {
+    const settle = Promise.withResolvers<string | undefined>()
+    const waiting: AwaitedRow = { text, wrote, seen: settle.resolve }
+    awaitedRows.push(waiting)
+    const drop = (): void => {
+      const at = awaitedRows.indexOf(waiting)
+      if (at !== -1) awaitedRows.splice(at, 1)
+    }
+    return {
+      drop,
+      uuid: async (): Promise<string | undefined> => {
+        try {
+          return await Promise.race([settle.promise, sleep(PROMPT_ROW_MS).then(() => undefined)])
+        } finally {
+          drop()
+        }
+      },
+    }
+  }
+
+  /** One row of the `prompt` door, claimed for the prompt of this mod's it is the row of, if
+   *  any: the oldest whose text this row carries, since Claude Code writes its own framing in
+   *  front of a submit that named no `asUser`. Every other prompt row is a person's own. */
+  const claimRow = (
+    uuid: string,
+    content: readonly ModContentBlock[],
+  ): AwaitedRow["wrote"] | undefined => {
+    const text = content
+      .map((block) => (typeof block["text"] === "string" ? block["text"] : ""))
+      .join("\n")
+    const at = awaitedRows.findIndex((waiting) => text.includes(waiting.text))
+    const waiting = awaitedRows[at]
+    if (waiting === undefined) return undefined
+    awaitedRows.splice(at, 1)
+    waiting.seen(uuid)
+    return waiting.wrote
+  }
+
+  /**
+   * Take out of the watch every row `leaves` names, and point the model at the messages of
+   * those no request read, with the one prompt that quotes them all (`unreadRowPrompt`).
+   *
+   * The three moments a row leaves the watch pass their own `leaves` and share everything
+   * else: the turn that ends, the prompt that started no turn, and the one row whose turn
+   * ended while it was being stored. A row that leaves having been stored since this session's
+   * last request is a row nothing read — in the last two moments every row that leaves is such
+   * a row, since no request can have gone out meanwhile: a step belongs to a turn, and in both
+   * there is no turn.
+   */
+  const pointAtUnread = (leaves: (uuid: string, row: WatchedRow) => boolean): void => {
+    const unread: ModUnreadMessage[] = []
+    for (const [uuid, row] of watched) {
+      if (!leaves(uuid, row)) continue
+      watched.delete(uuid)
+      if (row.requests === requests) unread.push(row.message)
+    }
+    if (unread.length > 0) pointAt(unread)
+  }
+
+  /** Stop waiting for the turn a prompt was to start: it started none, so every row handed over
+   *  while it was in flight is read by nothing and the model is pointed at it. A submit the
+   *  engine dropped, one it refused, and one whose turn never came all end here (INFRA-1026
+   *  review, repro `R-C`). */
+  const stopPrompting = (): void => {
+    prompting = false
+    promptEpoch += 1
+    pointAtUnread((_, row) => row.turnId === undefined)
+  }
+
+  /** Give the prompt the engine has just taken `TURN_START_MS` to start its turn. */
+  const guardTurnStart = (): void => {
+    const epoch = promptEpoch
+    void (async () => {
+      await sleep(TURN_START_MS)
+      if (promptEpoch === epoch && prompting) stopPrompting()
+    })()
+  }
+
+  /**
+   * Hand the engine one prompt and answer with what became of it.
+   *
+   * `$.prompt.submit` resolves once the engine has taken the prompt, not at the end of the turn
+   * it starts: in all six calls recorded on 2.1.310 the prompt's own row landed 15 ms to 26 ms
+   * before the call resolved and `turn.start` 8 ms to 11 ms after it, and the long resolutions
+   * — 8.5 s, 11.2 s and 12.4 s — are the wait for a turn that was already running, which ended
+   * just before (`/legion/scratch/tmp/infra-1026-spike/logs/mod2.jsonl:136-147`,
+   * `logs/mod3-q2-310.jsonl:72-89`, `logs/mod3-q1q3q5.jsonl:163-179`). So the row is there by
+   * the time this answers, and what the caller waits for is the prompt entering, never a turn.
+   *
+   * A prompt the engine took whose row `claimRow` did not match within `PROMPT_ROW_MS` is
+   * `{ took: true }` with no uuid, never a drop: the engine has the prompt either way, and the
+   * two answered alike had the caller treat a message the session holds as one it refused
+   * (INFRA-1026 review).
+   */
+  const submitPrompt = async (
+    engine: WriterHost,
+    text: string,
+    asUser: boolean,
+    wrote: "message" | "pointer",
+  ): Promise<SubmittedPrompt> => {
+    // Set before the call and in the same tick as the check that chose this branch: a message
+    // handed over from here on is a row of the turn this prompt starts.
+    prompting = true
+    const row = awaitRow(text, wrote)
+    let answer: PromptSubmitResult
+    try {
+      answer = await engine.submit({ text, ...(asUser ? { asUser: true as const } : {}) })
+    } catch (error) {
+      row.drop()
+      stopPrompting()
+      throw error
+    }
+    if (answer.drop !== undefined) {
+      row.drop()
+      stopPrompting()
+      return { took: false, drop: answer.drop }
+    }
+    guardTurnStart()
+    const uuid = await row.uuid()
+    return uuid === undefined ? { took: true } : { took: true, uuid }
+  }
+
+  /** Submit the one prompt that points the model at `unread`, quoting each message in full
+   *  (`unreadRowPrompt`). Its own row is stamped `pointer`, so the live view draws nothing of
+   *  it: it quotes rows that view has already drawn. */
+  const pointAt = (unread: readonly ModUnreadMessage[]): void => {
+    const engine = options.engine()
+    if (engine === undefined) return
+    void submitPrompt(engine, unreadRowPrompt(unread), false, "pointer").catch(() => undefined)
+  }
+
+  /** Write one message into the session as the session stands now: a row of the turn running,
+   *  or the prompt of a new turn. */
+  const writeMessage = async (
+    args: ModCallArguments["session.message"],
+  ): Promise<ModCallResults["session.message"]> => {
+    const engine = engineNow()
+    if (turn === undefined && !prompting) {
+      // Nothing is running: an appended row would be read at the turn's next request, and an
+      // idle session makes none, so the message is the prompt itself and nothing else is
+      // stored for it — a row beside a prompt quoting it put the one message in front of the
+      // model twice (INFRA-1026, handoff v6).
+      const sent = await submitPrompt(
+        engine,
+        args.message.text,
+        args.message.kind === "person",
+        "message",
+      )
+      if (!sent.took) return { deny: sent.drop, as: "prompt" }
+      // Taken, whether or not its row arrived. A prompt whose row went unseen is written all
+      // the same — answered as a refusal, the Envoy event was recorded nowhere and its resend
+      // submitted the message a second time, and a person was told on Dispatch that their
+      // session had dropped a prompt it took (INFRA-1026 review).
+      return sent.uuid === undefined ? { as: "prompt" } : { uuid: sent.uuid, as: "prompt" }
+    }
+    const started = turn
+    const answer = await engine.append({ message: { type: "user", content: args.content } })
+    if (answer.deny !== undefined) return { deny: answer.deny, as: "row" }
+    // Claude Code does not re-enter this mod's own `session.append` hook for a row this mod
+    // appended, so the row reaches the server's mapper nowhere else and a card delivered into
+    // a running turn was drawn nowhere at all (INFRA-1026, handoff v6). Measured in the issue's
+    // spike: two `$.session.append` calls resolved
+    // `{message: {type: "user", role: "user", isMeta: true, content}, uuid}` and neither uuid
+    // ever arrived at a `session.append` hook
+    // (`/legion/scratch/tmp/infra-1026-spike/logs/mod3-q1q3q5.jsonl:36,64`). So the mod reports
+    // the row itself, out of what the call answered (`SessionAppendResult`,
+    // `./claude-mod.d.ts`).
+    //
+    // The door and the origin are the engine's to set and the result carries neither: a
+    // plugin's own append comes in by `note`, under the calling plugin. `wrote` is what the
+    // server reads it by, and it is on the event rather than on this call's answer because the
+    // two cross (`./mod-protocol`, `ModEvent`).
+    send({
+      kind: "append",
+      uuid: answer.uuid,
+      door: "note",
+      origin: { kind: "plugin", name: MOD_PLUGIN_NAME },
+      message: answer.message,
+      wrote: "message",
+    })
+    watched.set(answer.uuid, {
+      message: args.message,
+      requests,
+      ...(turn === undefined ? {} : { turnId: turn }),
+    })
+    // The turn ended while the row was being stored, with no other starting: no request will
+    // read it, so the model is pointed at it now rather than at a `turn.complete` that has been
+    // and gone.
+    if (started !== undefined && turn === undefined && !prompting) {
+      pointAtUnread((uuid) => uuid === answer.uuid)
+    }
+    return { uuid: answer.uuid, as: "row" }
+  }
+
+  /**
+   * Write the message of `eventId` once, however many times Envoy sends it.
+   *
+   * The store has no compare-and-set: two `get`s of an unset key both answered undefined, 0 ms
+   * and 2 s apart, in one session and across two (`/legion/scratch/tmp/infra-1026-store`). So a
+   * copy that arrives while the first write is still running waits for it here, inside the one
+   * process, and reads the record that write left; a copy that arrives after this process is
+   * gone — the engine restarted, `claude --resume <id>` — finds that record in the store, which
+   * `set` had written to disk before it resolved and which survived a `kill -9` taken at that
+   * moment (same spike).
+   */
+  const writeOnce = (
+    eventId: string,
+    args: ModCallArguments["session.message"],
+  ): Promise<ModCallResults["session.message"]> => {
+    const settle = Promise.withResolvers<ModCallResults["session.message"]>()
+    const behind = writing.get(eventId)
+    const run = (behind === undefined ? Promise.resolve() : behind.catch(() => undefined)).then(
+      async () => {
+        let written: ModCallResults["session.message"]
+        try {
+          const engine = engineNow()
+          const recorded = recordedWrite(
+            await engine.storeGet(recordKey(eventId)).catch(() => undefined),
+          )
+          // A store that refuses the read answers nothing, so the message is written again:
+          // at-least-once is this path's rule, and a message lost is the failure that matters.
+          written = recorded ?? (await writeMessage(args))
+          if (recorded === undefined && written.deny === undefined) {
+            // The write is the record: a prompt the engine took whose row went unseen records
+            // itself without one, which is what keeps the resend from writing it again.
+            await remember(engine, eventId, written)
+          }
+        } catch (error) {
+          settle.reject(error)
+          return
+        }
+        settle.resolve(written)
+      },
+    )
+    writing.set(eventId, run)
+    void run.finally(() => {
+      if (writing.get(eventId) === run) writing.delete(eventId)
+    })
+    return settle.promise
+  }
+
+  return {
+    writeMessage,
+    writeOnce,
+    turnStarted: (turnId: string): void => {
+      turn = turnId
+      prompting = false
+      promptEpoch += 1
+      for (const row of watched.values()) row.turnId ??= turnId
+    },
+    turnEnded: (turnId: string): void => {
+      if (turn === turnId) turn = undefined
+      pointAtUnread((_, row) => row.turnId === turnId)
+    },
+    stepRequested: (): void => {
+      requests += 1
+    },
+    claimRow,
+  }
+}

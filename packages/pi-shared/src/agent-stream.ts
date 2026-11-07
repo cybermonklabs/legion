@@ -9,6 +9,7 @@ import {
   type AgentStreamSettings,
   type AgentStreamSettingsReported,
   type AgentStreamSettingsUnreported,
+  blockPlaceholder,
   capAgentStreamText,
   isTypableCommandName,
 } from "@legion/contracts";
@@ -189,7 +190,7 @@ function contentText(content: unknown): string {
     if (typeof raw !== "object" || raw === null) continue;
     const part = raw as HostPart;
     if (typeof part.text === "string") pieces.push(part.text);
-    else if (typeof part.type === "string") pieces.push(`[${part.type}]`);
+    else if (typeof part.type === "string") pieces.push(blockPlaceholder(part.type));
   }
   return pieces.join("\n");
 }
@@ -236,8 +237,9 @@ function conversationParts(content: unknown): AgentStreamPart[] {
       });
     } else if (typeof part.type === "string") {
       // An image, or any part kind this build does not know: named, never dropped silently,
-      // and never carrying its bytes.
-      parts.push({ text: `[${part.type}]`, type: "text" });
+      // and never carrying its bytes. The spelling is the shared one, which the Agents page's
+      // guard on what a streamed row may say reads too (`PICTURE_PLACEHOLDER`, INFRA-1026).
+      parts.push({ text: blockPlaceholder(part.type), type: "text" });
     }
   }
   return parts;

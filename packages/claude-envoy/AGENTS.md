@@ -293,7 +293,9 @@ above says how to run it).
   Code re-emits the delivery (`--replay-user-messages`).
 - Write every message into a terminal session through the one call `hooks/mod.ts` serves,
   whether a person sent it or Envoy delivered it: `session.message` hands the mod the message,
-  and the mod decides what it becomes — the prompt of a new turn while nothing is running
+  and the mod decides what it becomes (`hooks/mod-writer.ts`, which holds these rules while
+  `hooks/mod.ts` holds the socket, the event queue and the hooks) — the prompt of a new turn
+  while nothing is running
   (`$.prompt.submit`), a row of the turn running (`$.session.append`), and one prompt of its own
   quoting such a row in full when the turn ends without a request having read it
   (`unreadRowPrompt`, `hooks/mod-protocol.ts`). The mod decides because the mod is the one
@@ -322,9 +324,17 @@ above says how to run it).
   *dropped* reaches them as a reply on Dispatch (`failed`): their own words were refused, and
   Dispatch is where they are waiting.
 - Make the mod's write idempotent by the Envoy event id, since the server is at-least-once.
-  Every card request carries its `eventId`; before it appends or submits, the mod looks that id
-  up in `$.store` and answers a copy it already wrote with the recorded row, writing nothing
-  (`writeOnce`, `hooks/mod.ts`). The store has no compare-and-set — two `get`s of an unset key
+  Every request for a frame of Envoy's carries its `eventId` — a card and a person's own
+  message alike (`show` and `deliver`, `src/mod-session.ts`), since a person's message whose
+  answer is late is sent again and arrives as a card, the accept having spent its Dispatch
+  attempt, so the two writes are one write or the model reads their words twice. Before it
+  appends or submits, the mod looks that id up in `$.store` and answers a copy it already
+  wrote with the recorded row, writing nothing (`writeOnce`, `hooks/mod-writer.ts`). Every write
+  is recorded, the one that has no row to record included: a prompt the engine took whose row
+  the mod did not see within `PROMPT_ROW_MS` is in the session, and answered as a drop instead it
+  was recorded nowhere, so its resend submitted the message a second time and a person's own
+  message had Dispatch tell them their session dropped a prompt it took (INFRA-1026 review).
+  The store has no compare-and-set — two `get`s of an unset key
   both answered undefined, 0 ms and 2 s apart, in one session and across two
   (`/legion/scratch/tmp/infra-1026-store`) — so the mod chains the look-up and the write per
   event id, which holds inside the one process, and the store covers what crosses a restart:
@@ -332,9 +342,26 @@ above says how to run it).
   directory read it back after a `kill -9` taken at that moment. Keep the record capped and
   evicted (`CARD_RECORD_MAX`, `keys()` in insertion order): every call parses the whole file,
   so at 3.9 MiB a `get` cost 7–20 ms and a `set` 44 ms against about 1 ms on an empty store, and
-  `set` refuses past 4 MiB outright. Only this process ending between the write and the record
-  can still show a card twice, the crash case
-  `docs/site/src/content/docs/dispatch/envoy.md` states.
+  `set` refuses past 4 MiB outright. Two things can still show a card twice: this process
+  ending between the write and the record, the crash case
+  `docs/site/src/content/docs/dispatch/envoy.md` states, and a store that refuses the `set`,
+  which leaves the write standing with no record of it (`remember`, where a refusal costs
+  nothing a session could report to).
+- Nothing of a subagent is the session's turn. Every hook whose event carries `agentId`
+  returns `next(e)` first when it is set and does nothing else (`ofSubagent`, `hooks/mod.ts`):
+  the three turn hooks and `session.append`, which is the registration that keeps a subagent's
+  rows out of the live view. Measured on 2.1.310
+  (`/legion/scratch/tmp/infra-1026-turn`), a subagent's `turn.start`, `turn.step`,
+  `turn.complete`, `tool.call`, `tool.check`, `prompt.attachment`, `session.receive` and
+  `session.append` on every door carry `agentId` while the main loop's carry no such key at
+  all, a foreground subagent's whole turn opens and closes inside the main turn between two of
+  its steps, and a background subagent's turn can still be open after the main turn completed.
+  Counted as the main turn's, that turn's `turn.complete` cleared the turn a message joins, its
+  steps raised the request count a row's unread check reads, and its rows and steps reached the
+  live view as the main conversation's, which the spec puts out of scope ("their work shows as
+  the parent's tool call"). The rule is the key and never a turn this mod watched start: when
+  the plugin itself spawns a subagent, that loop's `turn.start` and `turn.step` never reach the
+  spawning plugin and only its `turn.complete` does.
 - Report from the mod every row the mod itself appends: Claude Code does not re-enter a mod's
   own `session.append` hook for such a row (measured in the issue's spike —
   `logs/mod3-q1q3q5.jsonl:36,64`, two calls whose uuids no hook ever carried), so a card

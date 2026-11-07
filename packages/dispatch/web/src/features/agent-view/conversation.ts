@@ -10,6 +10,7 @@ import {
   type AgentStreamToolResult,
   comparableLines,
   isTypableCommandName,
+  PICTURE_PLACEHOLDER,
   pictureSyntax,
   trimmedLines,
 } from "@legion/contracts";
@@ -386,23 +387,6 @@ export function sessionSettingsView(
   };
 }
 
-/**
- * The part the stream writes for a picture a person's message carried. `conversationParts`
- * (`@legion/pi-shared/agent-stream`) writes `[${part.type}]` for a block it renders no other
- * way, and what a person's message reaches the session as is text blocks and image blocks
- * alone (`ContentBlock` in `@legion/pi-shared/pi-types`), so `[image]` is the only one of
- * these the publisher writes for such a message.
- *
- * A person writes a bracketed word too - `[ack]`, `[done]`, `[LGTM]` - and the bus is open to
- * any client, so no other bracketed word reads as the stream naming a block: a row that put
- * `[approved-by-me]` after the text of a body that embeds a picture would otherwise hide the
- * person's stored copy and show that word under their name. Even this literal reads as the
- * stream's only where it follows every line of the person's own body and a picture that body
- * embeds is left to account for it (`turnSaysBody`), which is where the publisher writes one,
- * one part per block and after the person's text.
- */
-const PICTURE_PLACEHOLDER = "[image]";
-
 /** One streamed user message a person's Dispatch message became: the Dispatch message it says it
  *  delivered, and what the session sent, its text parts joined in the order they arrived. */
 export interface DispatchTurn {
@@ -473,8 +457,13 @@ function rowLines(text: string, spare: Map<string, number>): string[] | undefine
  * line be the picture placeholder instead, at most as many of those as the body embeds
  * pictures. The bus is open to any client, so a streamed row is a claim: the only placeholder
  * the publisher writes for a person's own message is the one an image block becomes, one per
- * picture and after the person's text (`PICTURE_PLACEHOLDER`), so a row that puts a bracketed
- * word of its own anywhere, or the placeholder before the person's lines or more often than
+ * picture and after the person's text — `PICTURE_PLACEHOLDER`, the one spelling the publisher
+ * writes and this guard reads, held in `@legion/contracts` because two copies of it drifting
+ * would have this guard refuse every honest picture row with no error anywhere (INFRA-1026
+ * review). What a person's message reaches the session as is text blocks and image blocks
+ * alone (`ContentBlock` in `@legion/pi-shared/pi-types`), so a row that puts a bracketed
+ * word of its own anywhere — `[approved-by-me]` after the text of a body that embeds a
+ * picture — or the placeholder before the person's lines or more often than
  * the body has pictures, says words the person never wrote and hides nothing. A message
  * carrying a picture, which reaches the session as the person's text and the picture beside
  * it, says its body still: the `[image]` is the stream's, the markdown the body held is no

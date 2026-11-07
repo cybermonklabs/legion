@@ -254,6 +254,7 @@ import {
   operandPath,
   uploadIsDocument,
 } from "@legion/envoy-client/askgate-marker";
+import { PICTURE_PLACEHOLDER } from "@legion/contracts";
 import type { DispatchSession } from "../../src/dispatch-session";
 import requestTemplate from "./askgate-request.md" with { type: "text" };
 import systemTemplate from "./askgate-system.md" with { type: "text" };
@@ -1915,7 +1916,7 @@ function textOf(content: unknown): string {
     if (typeof part === "string") parts.push(part);
     else if (isRecord(part) && part.type === "text" && typeof part.text === "string")
       parts.push(part.text);
-    else if (isRecord(part) && part.type === "image") parts.push("[image]");
+    else if (isRecord(part) && part.type === "image") parts.push(PICTURE_PLACEHOLDER);
   }
   return parts.join("\n");
 }

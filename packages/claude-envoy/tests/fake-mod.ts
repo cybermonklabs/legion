@@ -97,7 +97,7 @@ export async function startFakeMod(
         if (own !== undefined) return await own(request.args)
         // What the real mod does with a session that has no turn running: the message is the
         // prompt, Claude Code writes its row before the submit resolves, and the mod answers
-        // the server with that row (`../hooks/mod.ts`, `writeMessage`).
+        // the server with that row (`../hooks/mod-writer.ts`, `writeMessage`).
         const row = promptRow(request.args)
         await send(row)
         return { uuid: row.uuid, as: "prompt" }

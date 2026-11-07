@@ -272,7 +272,8 @@ test("a card Envoy sends again is handed over again, under the one event id", as
 // SIGSTOPped Claude Code, one that polls for nothing, one that is gone — leaves the frame
 // unanswered, so Envoy sends the card again and this server writes it to the session again. The
 // message is never lost to keep it from arriving twice, and what keeps it from arriving twice is
-// the mod's record of its Envoy event id (`../hooks/mod.ts`, `writeOnce`), not a record here.
+// the mod's record of its Envoy event id (`../hooks/mod-writer.ts`, `writeOnce`), not a record
+// here.
 test("a card the mod never answered is written again when Envoy resends it", async () => {
   const nats = new FakeNats()
   const written: string[] = []
@@ -377,6 +378,33 @@ test("retains only the latest fifty inbound envelope summaries", async () => {
     from: "ses_sender",
     summary: "message 1",
   })
+})
+
+// A frame with no `event_id` names no event, so the inbox cannot read one as a copy of another:
+// two of them are two messages, and both are written to the session (INFRA-1026 review). The
+// rule before this one keyed every such frame by the word the entry shows — `unknown` — so the
+// inbox named the first and silently dropped the rest while the session read all of them.
+test("every frame with no event id is listed, since none of them names a copy", async () => {
+  const notifier = new FakeNotifier()
+  const delivery = createChannelDelivery({
+    identity: new SessionIdentity("ses_claude", "/tmp"),
+    notifier,
+    configFile: sessionConfigFile("claude", process.env),
+  })
+  const unnamed = (summary: string): string =>
+    JSON.stringify({
+      source: "agent",
+      source_session: "ses_sender",
+      issued_at: 0,
+      payload_summary: summary,
+    })
+
+  expect(await delivery.enqueue({ subject: directSubject, raw: unnamed("the first") })).toBe(true)
+  expect(await delivery.enqueue({ subject: directSubject, raw: unnamed("the second") })).toBe(true)
+
+  // Written twice, so listed twice: the inbox says what the session was handed.
+  expect(notifier.notifications).toHaveLength(2)
+  expect(delivery.inbox().map(({ summary }) => summary)).toEqual(["the second", "the first"])
 })
 
 test("registers no delivery mode for a session whose channel Claude Code did not load", async () => {

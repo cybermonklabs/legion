@@ -90,7 +90,6 @@ import { name as packageName, version as packageVersion } from "../package.json"
   type: "json",
 }
 import { type AgentStreamRunner, startAgentStream } from "./agent-stream-runner"
-import { rememberBounded } from "./bounded-set"
 import {
   type ChannelForwarder,
   type ChannelForwarderConnection,
@@ -500,8 +499,6 @@ export function createChannelDelivery(input: {
   readonly router?: () => UserTurnRouter | undefined
 }): ChannelDeliveryPath {
   const inbox: ChannelInboxEntry[] = []
-  /** The Envoy events the inbox already names, newest last and bounded by its own limit. */
-  const listed = new Set<string>()
   let tail = Promise.resolve()
 
   /** Runs `work` behind everything queued before it, keeping the frames in order. */
@@ -522,15 +519,20 @@ export function createChannelDelivery(input: {
   /** Lists a rendered frame in the inbox, naming one Envoy event once: the server is
    *  at-least-once, so the copy Envoy sends after an unanswered frame is written to the session
    *  again — where the mod's record keeps it from reaching the engine twice (`./mod-session`) —
-   *  and a person reading the inbox is owed the message, not the attempts. */
+   *  and a person reading the inbox is owed the message, not the attempts.
+   *
+   *  A frame with no `event_id` names no event, so it is always listed: two such frames are two
+   *  messages. A record that keyed them all by the word the entry shows instead — `unknown` —
+   *  listed the first and dropped every later one, while the session was written all of them
+   *  (INFRA-1026 review). The inbox is its own record now: a frame is skipped only where its
+   *  real id is already in it, which takes the insertions and the bound that record took. */
   const list = (rendered: RenderInboundResult): void => {
     const envelope = rendered.envelope
     if (envelope === undefined) return
-    const eventId = envelope.event_id ?? "unknown"
-    if (listed.has(eventId)) return
-    rememberBounded(listed, eventId, CHANNEL_INBOX_LIMIT)
+    const eventId = envelope.event_id
+    if (eventId !== undefined && inbox.some((entry) => entry.event_id === eventId)) return
     inbox.unshift({
-      event_id: eventId,
+      event_id: eventId ?? "unknown",
       at: inboundTimestamp(envelope.issued_at),
       from: envelope.source_session ?? envelope.source,
       summary: envelope.payload_summary ?? "unknown",
@@ -606,7 +608,7 @@ export function createChannelDelivery(input: {
         // `write` would wait on a tail this call is itself the end of. A write that failed
         // throws, so the frame goes unanswered and Envoy sends the event again; the mod writes
         // the message of one event id once, however many copies of it arrive
-        // (`../hooks/mod.ts`, `writeOnce`), so the resend costs the model nothing and the
+        // (`../hooks/mod-writer.ts`, `writeOnce`), so the resend costs the model nothing and the
         // listener's copy is the only one that can still reach it.
         await input.notifier.notification(notification(rendered, rendered.content))
         list(rendered)

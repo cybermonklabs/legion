@@ -1,11 +1,12 @@
 /**
- * Eight rules every TypeScript reader and writer of Dispatch text shares, so no copy drifts: the
+ * Nine rules every TypeScript reader and writer of Dispatch text shares, so no copy drifts: the
  * session id an agent's conversation is addressed by, whether an id is written short, how many
  * UTF-8 bytes a string holds, the most bytes a reference's target id may hold, the caption a
- * picture line carries, the syntax that line is written in, which uploads are pictures, and the
- * lines a person's message is compared by when a session says it delivered it. The Go server
- * holds the same session-id rule (`text.IsSessionID`), short-id rule (`text.IsIDPrefix`) and
- * target bound (`text.MaxTargetBytes`), all pinned against the TypeScript readers by
+ * picture line carries, the syntax that line is written in, the text a streamed row carries for
+ * a block it renders no other way, which uploads are pictures, and the lines a person's message
+ * is compared by when a session says it delivered it. The Go server holds the same session-id
+ * rule (`text.IsSessionID`), short-id rule (`text.IsIDPrefix`) and target bound
+ * (`text.MaxTargetBytes`), all pinned against the TypeScript readers by
  * `DISPATCH_TEXT_REFERENCES`, and classifies an upload as a picture by the same four types, read
  * from its bytes.
  */
@@ -124,6 +125,24 @@ const PICTURE_SYNTAX = String.raw`!\[${PICTURE_CAPTION}\]\((${PICTURE_ADDRESS})$
 export function pictureSyntax(): RegExp {
   return new RegExp(PICTURE_SYNTAX, "g");
 }
+
+/**
+ * The text a streamed row carries for a content block it renders no other way: the block's own
+ * type in brackets. `conversationParts` (`@legion/pi-shared/agent-stream`) writes it for every
+ * block that is neither text, thinking nor a tool call, which is how a picture reaches a reader
+ * that carries no bytes.
+ */
+export function blockPlaceholder(type: string): string {
+  return `[${type}]`;
+}
+
+/**
+ * The text an image block becomes in a streamed row. The writer and the Agents page's guard on
+ * what a streamed row may say of a person's message read this one spelling: written apart, the
+ * guard refused every honest picture row the moment the writer changed and the message showed
+ * twice, with no error anywhere (INFRA-1026 review).
+ */
+export const PICTURE_PLACEHOLDER = blockPlaceholder("image");
 
 /**
  * The lines a text is read as: each line trimmed, and the empty ones dropped. The line step of

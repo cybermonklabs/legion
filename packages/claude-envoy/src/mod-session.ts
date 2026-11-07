@@ -49,7 +49,7 @@ import type { ModLink } from "./mod-link"
  * store costs a little more under load (a `get` of 114 ms and a `set` of 175 ms were seen,
  * `/legion/scratch/tmp/infra-1026-store`). Thirty seconds covers all of that; past it the frame
  * is left unanswered, Envoy sends it again, and the mod's record of the event id is what keeps
- * the one message from being written twice (`../hooks/mod.ts`, `writeOnce`).
+ * the one message from being written twice (`../hooks/mod-writer.ts`, `writeOnce`).
  */
 const SHOW_TIMEOUT_MS = 30_000
 
@@ -170,7 +170,7 @@ export interface ModSession {
    * gone — answers nothing, so this rejects when `showMs` is up, the frame goes unanswered, and
    * Envoy sends the card again (check k7's SIGSTOP, message, SIGKILL and `claude --resume <id>`
    * clause). That resend is written once: the mod records the row each `eventId` became and
-   * answers a copy of that event from the record, writing nothing (`../hooks/mod.ts`,
+   * answers a copy of that event from the record, writing nothing (`../hooks/mod-writer.ts`,
    * `writeOnce`). A card with no `eventId` — a notice this server writes for itself — is
    * written as it comes.
    */
@@ -190,12 +190,23 @@ export interface ModSession {
    * it by its text. A prompt the session dropped reaches the caller through `failed`, since the
    * person is owed a reply on Dispatch for a message their session refused; anything else that
    * went wrong rejects, leaving the frame for Envoy to send again.
+   *
+   * It carries the frame's Envoy event id exactly as a card does, and for the same reason: when
+   * the mod's answer is late this rejects, the frame goes unanswered and Envoy sends it again,
+   * and the resend arrives as a *card* — the Dispatch attempt is spent, so the accept refuses
+   * it (`./user-turn-router`, `acceptUserTurn`). Without the id the two writes are two records
+   * and the model reads the person's words twice, once as their own prompt and once as a card;
+   * with it the resend finds the row this write left and nothing is written again
+   * (`../hooks/mod-writer.ts`, `writeOnce`).
    */
   deliver(input: {
     readonly text: string
     /** The Dispatch message the text is, which the prompt at an unread row names. */
     readonly messageId: string
     readonly content: readonly ModContentBlock[]
+    /** The Envoy event this message is, which the mod's write is idempotent by; absent only for
+     *  a message that reached this session as no frame of Envoy's. */
+    readonly eventId?: string
     readonly failed?: (error: unknown) => void
   }): Promise<string | undefined>
   /** Run one slash command and answer what it printed, which is the empty string where it
@@ -370,7 +381,7 @@ export function modSession(options: ModSessionOptions): ModSession {
    *
    * What the mod does with it — a row of the turn running, or the prompt of a new turn, and the
    * one prompt that points the model at a row no request read — is the mod's own
-   * (`../hooks/mod.ts`, `writeMessage`). What this file needs back is the row, which is the
+   * (`../hooks/mod-writer.ts`, `writeMessage`). What this file needs back is the row, which is the
    * proof the session has the message, and `as`, which says which write wrote that row.
    */
   const written = async (
@@ -409,14 +420,15 @@ export function modSession(options: ModSessionOptions): ModSession {
       const answer = await written({ kind: "card", text }, content, eventId)
       if (answer.deny !== undefined) throw new Error(`the session refused the card: ${answer.deny}`)
     },
-    async deliver({ text, messageId, content, failed }) {
+    async deliver({ text, messageId, content, eventId, failed }) {
       let answer: ModCallResults["session.message"]
       try {
-        answer = await written({ kind: "person", messageId, text }, content, undefined)
+        answer = await written({ kind: "person", messageId, text }, content, eventId)
       } catch (error) {
         // The mod answered nothing: the frame stays unanswered and Envoy sends it again, which
         // the Dispatch attempt this message was accepted under turns into a card
-        // (`./user-turn-router`, `acceptUserTurn`).
+        // (`./user-turn-router`, `acceptUserTurn`) — written once, because that card carries
+        // the event id this write carried.
         warn(`a message from Dispatch did not enter this session — ${messageFor(error)}`)
         throw error
       }

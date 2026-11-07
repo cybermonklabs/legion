@@ -10,7 +10,7 @@ import { join } from "node:path"
 import { type DispatchDelivery, renderInbound } from "@legion/envoy-client/delivery"
 import type { DispatchClient } from "@legion/envoy-client/dispatch-http"
 import type { ModCallArguments, ModCallName, ModCallResults, ModEvent } from "../hooks/mod-protocol"
-import { modSession } from "../src/mod-session"
+import { type ModSession, modSession } from "../src/mod-session"
 import {
   commandPrintedNothing,
   createUserTurnRouter,
@@ -113,6 +113,9 @@ function fakeMod(answers: { [N in ModCallName]?: Answer<N> } = {}): FakeMod {
 
 interface Harness {
   readonly router: UserTurnRouter
+  /** The Claude Code session under the router: the card path writes through it too, as this
+   *  server's notifier does (`createChannelDelivery`, `../src/envoy-channel-server.ts`). */
+  readonly session: ModSession
   readonly state: UserTurnState
   readonly stateFile: string
   readonly directory: string
@@ -202,6 +205,7 @@ async function harness(input: {
     order,
     replies,
     router,
+    session,
     state,
     stateFile,
   }
@@ -253,10 +257,12 @@ test("a Send becomes the person's own message only once Dispatch has accepted th
 
     expect(took).toBe(true)
     expect(session.accepts).toEqual([{ id: MESSAGE, attempt: 1 }])
-    // The body Dispatch stored, as the person's own words, never the frame's own text.
+    // The body Dispatch stored, as the person's own words, never the frame's own text, under
+    // the Envoy event id the frame carries.
     expect(mod.madeOf("session.message")).toEqual([
       {
         content: [{ type: "text", text: "ship it" }],
+        eventId: "evt-send",
         message: { kind: "person", messageId: MESSAGE, text: "ship it" },
       },
     ])
@@ -385,18 +391,79 @@ test("the body goes to the mod as the person's own message, and its row is recor
   try {
     expect(await session.router.route(frame(personSends("look at this")))).toBe(true)
 
-    // One call, carrying the person's own words and the Dispatch message they are: what that
-    // becomes in the session — a row of the turn running, or the prompt of a new turn — and
-    // what points the model at a row no request read are the mod's (`../hooks/mod.ts`).
+    // One call, carrying the person's own words, the Dispatch message they are and the Envoy
+    // event the frame is: what that becomes in the session — a row of the turn running, or the
+    // prompt of a new turn — and what points the model at a row no request read are the mod's
+    // (`../hooks/mod.ts`).
     expect(mod.madeOf("session.message")).toEqual([
       {
         content: [{ type: "text", text: "look at this" }],
+        eventId: "evt-send",
         message: { kind: "person", messageId: MESSAGE, text: "look at this" },
       },
     ])
     // The row the mod answered with is recorded as that Dispatch message, which is what tags it
     // on the live view.
     expect(session.state.messageOf("row-1")).toBe(MESSAGE)
+  } finally {
+    await rm(session.directory, { recursive: true, force: true })
+  }
+})
+
+// The reviewer's "one time" (INFRA-1026 review, round twelve): the mod's answer is late, so the
+// frame is left unanswered and Envoy sends it again — and the resend is a *card*, because the
+// accept refuses an attempt this session has already handled. Both writes carry the frame's own
+// Envoy event id, so the mod writes the person's words once and answers the card with the row
+// that write left. Without the id on the person's write the model reads their words twice, once
+// as their own prompt and once as a card.
+test("a person's message whose answer was late is one write with the card its resend becomes", async () => {
+  const written: ModCallArguments["session.message"][] = []
+  /** The rows the mod recorded, by Envoy event id: its own rule, which `writeOnce` holds
+   *  (`../hooks/mod-writer.ts`, driven against the real `$` in `./mod.test.ts`). */
+  const rows = new Map<string, ModCallResults["session.message"]>()
+  let late = true
+  const link: FakeModLink = {
+    connected: () => true,
+    request<N extends ModCallName>(call: N, args: ModCallArguments[N]): Promise<ModCallResults[N]> {
+      if (call !== "session.message") {
+        return Promise.reject(new Error(`the message path made an unexpected mod call: ${call}`))
+      }
+      const message = args as ModCallArguments["session.message"]
+      const recorded = message.eventId === undefined ? undefined : rows.get(message.eventId)
+      // A copy of an event id the mod has written is answered with the recorded row, and
+      // nothing is written for it.
+      if (recorded !== undefined) return Promise.resolve(recorded) as Promise<ModCallResults[N]>
+      written.push(message)
+      const row = { as: "row", uuid: `row-${written.length}` } as const
+      if (message.eventId !== undefined) rows.set(message.eventId, row)
+      if (!late) return Promise.resolve(row) as Promise<ModCallResults[N]>
+      // The write landed, its answer did not: the caller's own bound ends the wait, as the
+      // link's does (`../src/mod-link.ts`, `request`).
+      late = false
+      return Promise.reject(new Error("the mod did not answer session.message within 30000 ms"))
+    },
+  }
+  const session = await harness({ link, accept: () => accepted("ship it") })
+  try {
+    const sent = frame(personSends("ship it", { eventId: "evt-late" }))
+
+    await expect(session.router.route(sent)).rejects.toThrow("did not answer")
+    // Envoy sends the frame again. The attempt is spent, so the accept refuses it and this
+    // server writes the frame as the card it now is, under the one event id
+    // (`createChannelDelivery`, `../src/envoy-channel-server.ts`).
+    expect(await session.router.route(sent)).toBe(false)
+    const eventId = sent.envelope?.event_id
+    await session.session.show({
+      content: [{ text: sent.content, type: "text" }],
+      text: sent.content,
+      ...(eventId === undefined ? {} : { eventId }),
+    })
+
+    // One write, which the card read back: `show` resolved, so the frame is answered and
+    // Envoy stops sending it.
+    expect(written).toHaveLength(1)
+    expect(written[0]?.eventId).toBe("evt-late")
+    expect(written[0]?.message).toEqual({ kind: "person", messageId: MESSAGE, text: "ship it" })
   } finally {
     await rm(session.directory, { recursive: true, force: true })
   }

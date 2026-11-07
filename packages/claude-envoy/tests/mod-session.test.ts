@@ -65,7 +65,8 @@ function driven(answer?: Answer, showMs = 100) {
 
 // The card is one message to the mod, carrying its Envoy event id: that id is what the mod's
 // write is idempotent by, so the copy Envoy sends after an unanswered frame is written once
-// (`../hooks/mod.ts`, `writeOnce`). What the card becomes in the session is the mod's to decide.
+// (`../hooks/mod-writer.ts`, `writeOnce`). What the card becomes in the session is the mod's to
+// decide.
 test("a card is handed to the mod as one message, under its own Envoy event id", async () => {
   const mod = driven(() => ({ as: "prompt", uuid: "prompt-row-1" }))
 
@@ -155,19 +156,23 @@ test("the rows the mod stamped are claimed by their uuids", () => {
   expect(mod.session.runsUnreadPrompt("row-card")).toBe(false)
 })
 
-// A person's message takes the same one call. What differs is the answer: the row of an append
-// is that Dispatch message's row, which the router records, while the row of a prompt is the
-// prompt's own and the router recognises it by its text.
+// A person's message takes the same one call, under the same Envoy event id: when this answer
+// is late the frame goes unanswered and Envoy sends it again as a card, which must be the one
+// write (`../hooks/mod-writer.ts`, `writeOnce`). What differs is the answer: the row of an
+// append is that Dispatch message's row, which the router records, while the row of a prompt is
+// the prompt's own and the router recognises it by its text.
 test("a person's message answers with the row an append wrote, and with none for a prompt", async () => {
   const stored = driven(() => ({ as: "row", uuid: "row-person" }))
-  const delivered = { content: BLOCKS, messageId: MESSAGE, text: "ship it" }
+  const delivered = { content: BLOCKS, eventId: EVENT, messageId: MESSAGE, text: "ship it" }
 
   expect(await stored.session.deliver(delivered)).toBe("row-person")
-  expect(stored.written[0]?.message).toEqual({
-    kind: "person",
-    messageId: MESSAGE,
-    text: "ship it",
-  })
+  expect(stored.written).toEqual([
+    {
+      content: BLOCKS,
+      eventId: EVENT,
+      message: { kind: "person", messageId: MESSAGE, text: "ship it" },
+    },
+  ])
 
   const prompted = driven(() => ({ as: "prompt", uuid: "prompt-row-1" }))
   expect(await prompted.session.deliver(delivered)).toBeUndefined()
