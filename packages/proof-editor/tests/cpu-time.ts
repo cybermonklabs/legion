@@ -31,13 +31,12 @@ export const growthStep = 8;
 /**
  * How many times past the size step a cost may grow and still read as linear.
  *
- * The slack pays for the measurement's own error: each of the two readings is wrong by up to
- * 4 per cent (see `windowSteps`) before the machine's noise, and the highest healthy ratio
- * measured in this pod is 14.46 against a bound of 32. The slack must stay below `growthStep`, or
- * the arithmetic stops discriminating: at a slack of 8 the bound would be 64, which a quadratic's
- * 64 only equals rather than passes. `linearSlack` in
- * `packages/envoy/internal/dispatch/pmdoc/linear_test.go` is 3 at the same step; this pod's own
- * throughput moves by tens of per cent between windows, which is what the fourth covers.
+ * The slack pays for the measurement's own error and the machine's noise; the block below the
+ * three constants holds those figures. The slack must stay below `growthStep`, or the arithmetic
+ * stops discriminating: at a slack of 8 the bound would be 64, which a quadratic's 64 only equals
+ * rather than passes. `linearSlack` in `packages/envoy/internal/dispatch/pmdoc/linear_test.go` is
+ * 3 at the same step; this pod's own throughput moves by tens of per cent between windows, which
+ * is what the fourth covers.
  */
 export const linearSlack = 4;
 
@@ -52,6 +51,17 @@ export const linearSlack = 4;
  * port of `packages/envoy/internal/cputest`.
  */
 export const parseCpuBudgetMs = 12_000;
+
+// What these three constants do not catch (INFRA-1629):
+//
+// - A parse 3 times slower than today and still linear passes both the budget and the growth
+//   check: 3 times the worst healthy reading is 10,710 ms, inside the budget, and a constant
+//   factor leaves a ratio where it was.
+// - A quadratic parse of a shape no row holds is caught by nothing here. The shapes the rows do
+//   hold are the ones in tests/heavy-bodies.test.ts and tests/nested-directive.test.ts.
+// - The slack is not a tight bound. The growth check reads two measurements, each wrong by up to
+//   4 per cent from the clock (see `windowSteps`) before the machine's own noise, and the slack
+//   of 4 is the room the healthy ratio of 14.46 above needs, against the bound of 32.
 
 /**
  * How many changes of the CPU clock `cpuClockStepMs` waits for. A sample that also counts another
@@ -234,9 +244,6 @@ export function costGrewTooFast(
  * Fails when `full`, the cost at the full size, grew more than `linearSlack` times faster than the
  * input did at `growthStep`. It reports what `costGrewTooFast` decided, as `growsLinearly` in
  * `linear_test.go` reports `growthVerdict`'s. Both costs are in milliseconds.
- *
- * It does not catch a parse that is 3 times slower and still linear, and it reads two measurements
- * each wrong by up to 4 per cent before the machine's own noise, which is what the slack pays for.
  */
 export function expectCostGrowsLinearly(name: string, small: number, full: number): void {
   const bound = linearSlack * growthStep;

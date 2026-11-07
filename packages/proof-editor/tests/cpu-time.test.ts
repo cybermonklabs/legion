@@ -18,7 +18,12 @@ import { costGrewTooFast, expectCostGrowsLinearly, growthStep, linearSlack } fro
 /** The small side of a step. `costGrewTooFast` reads the two costs as a ratio, not as bytes. */
 const smallSize = 1;
 
-/** The step the rows this check replaced used, which `growthStep` of 8 replaced. */
+/**
+ * The step rounds 1 and 2 of `linear_test.go`'s own history used, which that file's `growthStep`
+ * doc comment records as a step that discriminates at no slack. The rows in
+ * tests/heavy-bodies.test.ts and tests/nested-directive.test.ts had no growth check before
+ * INFRA-1629 and so no step: each measured one size once against a wall-clock constant.
+ */
 const twoFoldStep = 2;
 
 /** A cost that grows as its input does: what a healthy parse costs. */
