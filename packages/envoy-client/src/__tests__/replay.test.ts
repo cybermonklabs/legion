@@ -1642,6 +1642,11 @@ describe("the ledger", () => {
     expect(resumed.delivered({ ...refused, event_id: "evt-retry" })).toBe(false);
   });
 
+  // The 30 s limit is a hang guard, not a budget: the row records one frame more than
+  // REPLAY_LEDGER_LIMIT, the boundary it exists to prove, and bun's unwritten 5,000 ms per-test
+  // default is a limit on that work rather than on a hang. Measured in a 2-CPU pod: 1.00 s idle;
+  // under 16 busy loops (8 x nproc), 2.90 s at most in a whole-suite run and 2.87 s with this file
+  // alone. It fires only if a record stops returning.
   test("past its limit the ledger forgets the oldest entry first", async () => {
     const { engine } = setup();
     const frames = Array.from({ length: REPLAY_LEDGER_LIMIT + 1 }, (_, index) => ({
@@ -1652,7 +1657,7 @@ describe("the ledger", () => {
     expect(engine.delivered(frames[0] as { event_id: string })).toBe(false);
     expect(engine.delivered(frames[1] as { event_id: string })).toBe(true);
     expect(engine.delivered(frames.at(-1) as { event_id: string })).toBe(true);
-  });
+  }, 30_000);
 
   test("a restore drops entries past 72 hours but keeps a state of any age", async () => {
     const { clock, stream, host, engine } = setup();

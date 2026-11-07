@@ -80,11 +80,11 @@ describe("no text an agent reads names a native Dispatch tool", () => {
     }
   });
 
-  // The suite's 30 s default (test/default-timeout.ts) is this row's hang guard: bun's own
-  // unwritten 5,000 ms default was a limit on refusing every required field of every tool spec in
-  // turn rather than on a hang. Measured in a 2-CPU pod: 0.14 s idle; under 16 busy loops
-  // (8 x nproc), 2.72 s at most in a whole-suite run and 2.88 s with this file alone. It fires
-  // only if a refusal never settles.
+  // The 30 s limit is a hang guard, not a budget: the row refuses every required field of every
+  // tool spec in turn, and bun's unwritten 5,000 ms per-test default is a limit on that work
+  // rather than on a hang. Measured in a 2-CPU pod: 0.14 s idle; under 16 busy loops (8 x nproc),
+  // 2.72 s at most in a whole-suite run and 2.88 s with this file alone. It fires only if a
+  // refusal never settles.
   test("every refusal of a spec's example with one required field removed", async () => {
     let refusals = 0;
     for (const spec of dispatchToolSpecs) {
@@ -109,7 +109,7 @@ describe("no text an agent reads names a native Dispatch tool", () => {
       }
     }
     expect(refusals).toBeGreaterThan(20);
-  });
+  }, 30_000);
 
   test("the follow notice, for an issue and for a project document", () => {
     for (const details of [

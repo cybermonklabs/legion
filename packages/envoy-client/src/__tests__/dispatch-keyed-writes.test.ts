@@ -1198,10 +1198,10 @@ describe("DispatchClient's uploads on a real connection", () => {
   // the bound to spare. The body stays at 24 MiB, and the steps sit in its first half, because what
   // the client counts as progress is the connection taking its bytes: a body the socket buffers
   // swallow whole leaves the client silent for every pause that follows, and measured in this pod a
-  // 4 MiB body was swallowed whole and cut off 3 runs of 3 under that load. The suite's 30 s
-  // default (test/default-timeout.ts) is this row's hang guard: it fires only if the server's
-  // resume or the client's stream never comes. Measured in that pod: 1.99 s idle; under those 16
-  // loops, 5.02 s at most in a whole-suite run and 3.09 s with this file alone.
+  // 4 MiB body was swallowed whole and cut off 3 runs of 3 under that load. The 30 s limit is a
+  // hang guard, not a budget: it fires only if the server's resume or the client's stream never
+  // comes. Measured in that pod: 1.99 s idle; under those 16 loops, 5.02 s at most in a
+  // whole-suite run and 3.09 s with this file alone.
   test("an upload going out for longer than silenceMs lands in one attempt", async () => {
     const silenceMs = 1_500;
     const dispatch = await dispatchOn([{ pauses: 4, pauseMs: 450 }]);
@@ -1211,7 +1211,7 @@ describe("DispatchClient's uploads on a real connection", () => {
     expect(performance.now() - started).toBeGreaterThan(silenceMs);
     expect(dispatch.writes).toHaveLength(1);
     expect(dispatch.writes[0]?.received).toBe(dispatch.writes[0]?.length as number);
-  });
+  }, 30_000);
 
   // The claim is that an upload its connection stops taking is cut off and sent again under its key,
   // not that exactly two attempts do it: a second attempt a busy machine also stalls is cut off too,
@@ -1220,9 +1220,9 @@ describe("DispatchClient's uploads on a real connection", () => {
   // the one key - and not the count, which is the machine's answer rather than the client's. The
   // body is 2 MiB, just over `STREAMED_BODY_MIN`, so the attempt that lands is short, and the
   // silence bound is 1,000 ms so a stall of the machine's own does not cut a healthy attempt. The
-  // suite's 30 s default (test/default-timeout.ts) is this row's hang guard: it fires only if the
-  // resend never lands. Measured in a 2-CPU pod: 2.03 s idle; under 16 busy loops (8 x nproc),
-  // 3.19 s at most in a whole-suite run and 2.40 s with this file alone.
+  // 30 s limit is a hang guard, not a budget: it fires only if the resend never lands. Measured in
+  // a 2-CPU pod: 2.03 s idle; under 16 busy loops (8 x nproc), 3.19 s at most in a whole-suite run
+  // and 2.40 s with this file alone.
   test("an upload its connection stops taking is cut off and sent again under its key", async () => {
     const silenceMs = 1_000;
     const dispatch = await dispatchOn(["stall", "full"]);
@@ -1238,5 +1238,5 @@ describe("DispatchClient's uploads on a real connection", () => {
     expect(landed.received).toBe(landed.length);
     expect(first.key).toMatch(IDEMPOTENCY_KEY_PATTERN);
     for (const write of writes) expect(write.key).toBe(first.key as string);
-  });
+  }, 30_000);
 });

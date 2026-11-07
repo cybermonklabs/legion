@@ -433,11 +433,16 @@ describe("postSlackReply", () => {
     }
   });
 
+  // The 30 s limit is a hang guard, not a budget: the row stands a fake Slack and a broker
+  // environment up once per refusal code, four times over, and bun's unwritten 5,000 ms per-test
+  // default is a limit on that work rather than on a hang. Measured in a 2-CPU pod: 1.34 s idle;
+  // under 16 busy loops (8 x nproc), 4.02 s at most in a whole-suite run and 2.84 s with this file
+  // alone. It fires only if a post never answers.
   test("a Slack error code it knows comes back as Slack spelled it", async () => {
     for (const code of ["channel_not_found", "is_archived", "ratelimited", "invalid_auth"]) {
       const slack = fakeSlack({ ok: false, error: code });
       const { env } = brokerEnvironment("granted", slack.url);
       expect(await outcome(env)).toBe(`Slack refused chat.postMessage: ${code}`);
     }
-  });
+  }, 30_000);
 });

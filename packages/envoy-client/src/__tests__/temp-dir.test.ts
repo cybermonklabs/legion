@@ -61,6 +61,11 @@ describe("temporaryDirectory", () => {
     // A file's mode is a property of its inode, which a hard link shares: a `chmod` on the copy
     // inside the tree is a chmod on the one outside it. The outside file is made with `mkdtemp`
     // in the child, so the helper is never told to remove it.
+    //
+    // The 30 s limit is a hang guard, not a budget: the row runs a child process of its own, and
+    // bun's unwritten 5,000 ms per-test default is a limit on that work rather than on a hang.
+    // Measured in a 2-CPU pod: 0.11 s idle; under 16 busy loops (8 x nproc), 2.92 s at most in a
+    // whole-suite run and 0.69 s with this file alone. It fires only if the child never exits.
     const { code, stdout } = await inItsOwnProcess(
       `import { chmodSync, linkSync, mkdtempSync, writeFileSync } from "node:fs";
        import { tmpdir } from "node:os";
@@ -87,7 +92,7 @@ describe("temporaryDirectory", () => {
     } finally {
       rmSync(outside, { force: true, recursive: true });
     }
-  });
+  }, 30_000);
 
   test("never reaches through a symlink to a tree it did not make", async () => {
     // The target is made with `mkdtemp` in the child, so the helper is never told to remove it:

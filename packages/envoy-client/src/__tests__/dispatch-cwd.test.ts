@@ -332,6 +332,11 @@ describe("defaultExec", () => {
     expect(await call).toMatchObject({ stdout: "ok\n" });
   });
 
+  // The 30 s limit is a hang guard, not a budget: the row waits for a real child to die, which it
+  // can do only once the abort's SIGKILL reaches it, and bun's unwritten 5,000 ms per-test default
+  // is a limit on that wait rather than on a hang. Under 16 busy loops (8 x nproc) in a 2-CPU pod
+  // it timed out at 5,000.89 ms, 1 whole-suite run of 20, where it costs 0.14 s idle and, under
+  // those loops, 0.31 s with this file alone. It fires only if the child never dies.
   it("kills a child that ignores SIGTERM when its signal aborts", async () => {
     const dir = temporaryDirectory("dispatch-cwd-");
     try {
@@ -355,5 +360,5 @@ describe("defaultExec", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 });

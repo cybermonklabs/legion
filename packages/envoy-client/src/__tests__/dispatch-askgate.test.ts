@@ -734,11 +734,11 @@ describe("AskGate at the dispatch CLI", () => {
 
 describe("AskGate at the dispatch entry, across processes", () => {
   const ENTRY = join(import.meta.dir, "..", "..", "bin", "dispatch.ts");
-  // The suite's 30 s default (test/default-timeout.ts) is this row's hang guard: bun's own
-  // unwritten 5,000 ms default was a limit on the two child processes it spawns, each starting the
-  // dispatch entry, rather than on a hang. Under 16 busy loops (8 x nproc) in a 2-CPU pod it
-  // timed out, 3 runs of 3, at 5,104 to 5,202 ms with this file alone. Measured there: 0.71 s idle
-  // in a whole-suite run and 3.00 s with this file alone; under those loops, 8.78 s at most in a
+  // The 30 s limit is a hang guard, not a budget: the row spawns two child processes that each
+  // start the dispatch entry, and bun's unwritten 5,000 ms per-test default is a limit on that
+  // work rather than on a hang. Under 16 busy loops (8 x nproc) in a 2-CPU pod it timed out,
+  // 3 runs of 3, at 5,104 to 5,202 ms with this file alone. Measured there: 0.71 s idle in a
+  // whole-suite run and 3.00 s with this file alone; under those loops, 8.78 s at most in a
   // whole-suite run and 5.20 s with this file alone. It fires only if a child never exits.
   test("one marker and two concurrent calls of its argv: exactly one posts", async () => {
     writeRecord();
@@ -763,7 +763,7 @@ describe("AskGate at the dispatch entry, across processes", () => {
     expect(results.find((r) => r.code === 1)?.stdout).toStartWith(REFUSAL);
     expect(messagePosts()).toHaveLength(1);
     expect(readdirSync(markers())).toEqual([]);
-  });
+  }, 30_000);
 
   // Every form AskGate's gate does not read, run as an agent would run it: each reaches the CLI as
   // the session, finds the live record and no marker, and is refused before any request. With no
