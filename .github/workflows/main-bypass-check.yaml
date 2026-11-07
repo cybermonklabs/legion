@@ -136,9 +136,12 @@ jobs:
             # the group is `ci-<sha>` and `cancel-in-progress` is false, so the second run
             # queues behind the first rather than running beside it or cancelling it. The cost
             # is therefore the same tree tested twice in sequence, and never a run that was
-            # about to pass being cancelled. No run at all is the outcome this workflow was
-            # written to prevent, so a repeat whose worst case is a queued duplicate is the
-            # cheaper side. This is why a write is retried here where dispatch://INFRA-1544
+            # about to pass being cancelled. The case has two branches and no third, so the
+            # retry is harmless in both: if the first dispatch landed, the retry queues behind
+            # it and costs a second run of the same tree; if it did not land, which is the
+            # failure this backstop exists for, the retry is the only run there is. It either
+            # costs a run or supplies the one that was missing. This is why a write is retried
+            # here where dispatch://INFRA-1544
             # excepts a mutation from its own ring: that non-goal is about a call whose repeat
             # is not safe, and this call's repeat is benign while its failure mode is the
             # absence the backstop exists to prevent. The loop is over the acts the decision
