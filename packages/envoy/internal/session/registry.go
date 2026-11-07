@@ -50,6 +50,12 @@ type SessionEntry struct {
 	// whose plugin predates this field (subscribeBody had no "host"), and HostOrMachine falls
 	// back to MachineID so every display caller sees a populated value.
 	Host string `json:"host,omitempty"`
+	// TmuxPlace is where the session's process sits in tmux, as its own client read it and sent
+	// it with this registration. Nil for a session that is in no pane — one started outside
+	// tmux, or one whose tmux server has gone — and for a session whose plugin predates the
+	// field. A registration that carries no place clears one a previous registration stored,
+	// since the entry is built fresh from each body (cmd/listener's sessionEntryFromSubscribe).
+	TmuxPlace *TmuxPlace `json:"tmux_place,omitempty"`
 	// Delivery is DeliveryConsumer when the session registered for consumer delivery and the
 	// listener it registered through holds its session consumer (bus.SessionConsumers): the
 	// session's stored messages reach it from that consumer, relayed by the listener that owns it,
@@ -112,6 +118,27 @@ func decodeSessionEntry(data []byte) (SessionEntry, error) {
 // decoded with.
 func encodeSessionEntry(entry SessionEntry) ([]byte, error) {
 	return store.EncodeKeeping(entry, entry.unknown)
+}
+
+// TmuxPlace is a session's pane and the window and tmux session holding it, in the wire names
+// every side of the hop shares (packages/envoy-client's readTmuxPlace reports it,
+// packages/contracts' TmuxPlace declares it). No delivery reads it: it is what lets Dispatch draw
+// a machine's tmux layout and say which pane runs which session. A session outside tmux is a nil
+// TmuxPlace on the entry, never a place with empty members: every place names a whole pane.
+type TmuxPlace struct {
+	Socket      string `json:"socket"`
+	ServerPID   string `json:"server_pid"`
+	SessionName string `json:"session_name"`
+	WindowID    string `json:"window_id"`
+	WindowIndex int    `json:"window_index"`
+	WindowName  string `json:"window_name"`
+	PaneID      string `json:"pane_id"`
+	PaneIndex   int    `json:"pane_index"`
+	// Layout is tmux's window_layout string, which draws how the window is split. Empty when the
+	// client dropped it: a window split finely enough grows a layout past what a registration
+	// carries, and the other nine members are sent without it rather than the place being lost.
+	Layout string `json:"layout,omitempty"`
+	Zoomed bool   `json:"zoomed"`
 }
 
 // DeliveryConsumer is SessionEntry.Delivery for a session whose stored messages its session consumer
@@ -786,15 +813,38 @@ func (r *SessionRegistry) PutWithin(ctx context.Context, sessionID string, entry
 // listener wrote since, not on its own stale copy. base is the registration change applies to when
 // the bucket holds none (the caller's earlier read, which an expiry or a delete has overtaken), so the
 // write registers the session again.
+//
+// Several processes can run under one session id, and each of them amending this one registration
+// at the same moment is what write's compare-and-set refuses: a caller that loses every attempt
+// lost them to writes of its own session, each as fresh as the one it was making. So the conflict
+// is reported only while the change this call was to make is still unmade. Where the registration
+// those writes left already carries it - applying change to the stored entry would write the entry
+// back unchanged - the amendment stands and the caller is answered as it would have been had its
+// own write landed. The stamp is not weighed there: the writer that won set it later than this
+// call would have, so the registration is no staler for this call having written nothing. A
+// conflict that left anything else unmade is the failure it was, and so is a read that cannot say.
 func (r *SessionRegistry) Amend(ctx context.Context, sessionID string, base SessionEntry, change func(*SessionEntry)) error {
-	return r.write(ctx, sessionID, func(cur SessionEntry, found bool, now int64) SessionEntry {
+	amend := func(cur SessionEntry, found bool, now int64) SessionEntry {
 		next := base
 		if found {
 			next = cur
 		}
 		change(&next)
 		return stampClaim(cur, found, next, now)
-	})
+	}
+	err := r.write(ctx, sessionID, amend)
+	if !errors.Is(err, ErrWriteConflict) {
+		return err
+	}
+	kv, epoch := r.watcher.Handle()
+	cur, _, found, readErr := r.readStored(ctx, kv, epoch, sessionID)
+	if readErr != nil || !found {
+		return err
+	}
+	if reflect.DeepEqual(amend(cur, found, cur.UpdatedAt), cur) {
+		return nil
+	}
+	return err
 }
 
 // write writes sessionID's registration by compare-and-set on its KV revision, so a write another

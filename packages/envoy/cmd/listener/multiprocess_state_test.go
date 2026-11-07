@@ -41,12 +41,24 @@ func (p *mpPod) swallowNextAck(t *testing.T) (swallowed func()) {
 	}
 }
 
-// setRole claims role for sessionID through the pod and requires a 200.
+// setRole claims role for sessionID through the pod, naming no process, and requires a 200.
 func (p *mpPod) setRole(t *testing.T, sessionID, role string) {
 	t.Helper()
-	answer := p.call(http.MethodPost, "/v1/roles/set", fmt.Sprintf(`{"session_id":%q,"role":%q}`, sessionID, role))
+	p.setRoleAs(t, sessionID, role, "")
+}
+
+// setRoleAs claims role for sessionID through the pod as the client instance given, which the
+// claim records as the process that holds the role (store.RoleClaim.ClientInstanceID), and
+// requires a 200. An empty instance is left off the body, as a client that has none sends it.
+func (p *mpPod) setRoleAs(t *testing.T, sessionID, role, clientInstanceID string) {
+	t.Helper()
+	body := fmt.Sprintf(`{"session_id":%q,"role":%q`, sessionID, role)
+	if clientInstanceID != "" {
+		body += fmt.Sprintf(`,"client_instance_id":%q`, clientInstanceID)
+	}
+	answer := p.call(http.MethodPost, "/v1/roles/set", body+"}")
 	if answer.status != http.StatusOK {
-		t.Fatalf("claim %s for %s through %s: status %d %s %v", role, sessionID, p.instance, answer.status, answer.body, answer.err)
+		t.Fatalf("claim %s for %s as process %q through %s: status %d %s %v", role, sessionID, clientInstanceID, p.instance, answer.status, answer.body, answer.err)
 	}
 }
 
@@ -362,13 +374,17 @@ func TestTwoPodsWritesOnThePodWhoseCacheTrailsKeepTheNewerWrite(t *testing.T) {
 
 // A role claim whose holder is gone is answered alike by every pod, whenever each started: the
 // active pod has served for a while when the claim is made and its holder's session then ends,
-// and a standby starts after. Each answers the same holder, the same last_seen and the same
-// `claim_released: false`, and the claim itself stands: a lookup releases nothing whatever its
-// holder's state, and only the role claim reaper, on the pod holding the lease, takes one away.
-// Before INFRA-557 the lookup released the claim and each pod counted its grace from its own
-// start, so the pod that started after the claim retained it while the other released it; the
-// grace that reaper now holds a restored claim for is the machine's own service start
-// (internal/store's grace_test.go).
+// and a standby starts after. Each answers the same holder, the same process holding the claim,
+// the same last_seen and the same `claim_released: false`, and the claim itself stands: a lookup
+// releases nothing whatever its holder's state, and only the role claim reaper, on the pod
+// holding the lease, takes one away.
+//
+// The holder's process (`client_instance_id`) is the claim record's own, which lives in the
+// shared role bucket, so the pod that never took the claim answers it as the pod that did: no
+// pod answers a process out of its own memory. Before INFRA-557 the lookup released the claim
+// and each pod counted its grace from its own start, so the pod that started after the claim
+// retained it while the other released it; the grace that reaper now holds a restored claim for
+// is the machine's own service start (internal/store's grace_test.go).
 func TestTwoPodsAnswerARoleWhoseHolderLapsedAlike(t *testing.T) {
 	uri := mpNATS(t)
 	binary := cmdtest.Build(t, "envoy-listener")
@@ -377,8 +393,9 @@ func TestTwoPodsAnswerARoleWhoseHolderLapsedAlike(t *testing.T) {
 	mpWaitActive(t, a, 30*time.Second)
 	time.Sleep(2 * time.Second) // the machine serves for a while before the claim
 	const holder = "ses_mp_grace_holder"
-	a.subscribe(t, fmt.Sprintf(`{"session_id":%q,"topics":[],"self_subscribed":true}`, holder))
-	a.setRole(t, holder, "mp-grace")
+	const holdingProcess = "inst-mp-grace-holder"
+	a.subscribe(t, fmt.Sprintf(`{"session_id":%q,"topics":[],"self_subscribed":true,"client_instance_id":%q}`, holder, holdingProcess))
+	a.setRoleAs(t, holder, "mp-grace", holdingProcess)
 	if answer := a.call(http.MethodDelete, "/v1/sessions/"+holder, ""); answer.status != http.StatusOK {
 		t.Fatalf("end %s's session through %s: %d %s %v", holder, a.instance, answer.status, answer.body, answer.err)
 	}
@@ -387,12 +404,16 @@ func TestTwoPodsAnswerARoleWhoseHolderLapsedAlike(t *testing.T) {
 
 	onA := a.lapsedRole(t, "mp-grace")
 	onB := b.lapsedRole(t, "mp-grace")
-	requireSameLapsedAnswer(t, a, b, onA, onB, "holder", "holder_state", "claim_released", "last_seen")
+	requireSameLapsedAnswer(t, a, b, onA, onB, "holder", "holder_state", "claim_released", "last_seen", "client_instance_id")
+	if onA["client_instance_id"] != holdingProcess {
+		t.Fatalf("%s answers client_instance_id %v, want the process the claim names, %s: the holder's process is the claim record's and not the answering pod's: %v",
+			a.instance, onA["client_instance_id"], holdingProcess, onA)
+	}
 	if onA["claim_released"] != false {
 		t.Fatalf("%s released a claim on a lookup: %v", a.instance, onA)
 	}
-	if claim := publisher.stored(t, bus.RoleClaimBucket, "mp-grace"); claim["holder_session_id"] != holder {
-		t.Fatalf("the role bucket holds %v after both pods looked mp-grace up; want %s's claim", claim, holder)
+	if claim := publisher.stored(t, bus.RoleClaimBucket, "mp-grace"); claim["holder_session_id"] != holder || claim["client_instance_id"] != holdingProcess {
+		t.Fatalf("the role bucket holds %v after both pods looked mp-grace up; want %s's claim of process %s", claim, holder, holdingProcess)
 	}
 }
 
