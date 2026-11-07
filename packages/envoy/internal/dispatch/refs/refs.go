@@ -457,6 +457,9 @@ func MergeChanges(first, second model.ReferenceChanges) model.ReferenceChanges {
 	return merged
 }
 
+// resolveIssueTargets is which of keys names an issue: one whose row is stored, and one whose
+// row the reading transaction has queued and not written yet (Pending), which a new issue's
+// spec writing its own key bare names.
 func resolveIssueTargets(ctx context.Context, q Queryer, keys []string) (map[string]struct{}, error) {
 	found := map[string]struct{}{}
 	if len(keys) == 0 {
@@ -474,7 +477,17 @@ func resolveIssueTargets(ctx context.Context, q Queryer, keys []string) (map[str
 		}
 		found[key] = struct{}{}
 	}
-	return found, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if pending := pendingOf(ctx); pending != nil {
+		for _, key := range keys {
+			if _, stored := found[key]; !stored && pending.PendingIssue(key) {
+				found[key] = struct{}{}
+			}
+		}
+	}
+	return found, nil
 }
 
 // resolveAskTargets skips a citation that is not a uuid rather than casting the column to text:
@@ -516,7 +529,10 @@ func resolveAskTargets(ctx context.Context, q Queryer, ids []string) (map[string
 // resolveArtifactTargets resolves cited artifacts by the ref_key `refs` stores for them, the
 // address GET /api/v1/references?to= resolves too, into the entry a Referenced by panel is
 // matched by: the artifact's uuid (its node id in that read) and its dispatch:// address (the
-// reference the dashboard opens the panel on, refs.ArtifactRef). Keyed by ref_key.
+// reference the dashboard opens the panel on, refs.ArtifactRef). Keyed by ref_key. A document
+// whose artifacts row the reading transaction has queued and not written yet is resolved from
+// what that insert writes (Pending): a new issue's spec citing its own address names a row
+// this transaction has only queued.
 func resolveArtifactTargets(ctx context.Context, q Queryer, refKeys []string) (map[string]model.ChangedReference, error) {
 	found := map[string]model.ChangedReference{}
 	if len(refKeys) == 0 {
@@ -544,7 +560,20 @@ func resolveArtifactTargets(ctx context.Context, q Queryer, refKeys []string) (m
 			Ref:  ArtifactRef(issueKey, project, session, slug, kind, primary),
 		}
 	}
-	return found, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if pending := pendingOf(ctx); pending != nil {
+		for _, refKey := range refKeys {
+			if _, stored := found[refKey]; stored {
+				continue
+			}
+			if id, ref, queued := pending.PendingArtifact(refKey); queued {
+				found[refKey] = model.ChangedReference{Kind: "artifact", ID: id, Ref: ref}
+			}
+		}
+	}
+	return found, nil
 }
 
 // ReferencedBy lists Dispatch items and artifacts that mention an artifact reference key or one

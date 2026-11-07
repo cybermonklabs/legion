@@ -405,12 +405,14 @@ func (s *server) queueNewArtifact(
 	}
 	// The document work that follows runs before the insert below, so the address that insert
 	// gives the row - its key, the issue holding it, none for a project's or a session's
-	// document, and its name - is recorded for the reads of this transaction that need it: a
-	// block pointer of a new document is held to the document's key and its issue, and the
-	// windows of its blocks embed its name (docs.addressOfDocument, docs.documentTitle). The
-	// issue already has its row, so the address names no pending parent (refs.DocumentAddress).
+	// document, its own dispatch:// address and its name - is recorded for the reads of this
+	// transaction that need it: a block pointer of a new document is held to the document's key
+	// and its issue, the windows of its blocks embed its name (docs.addressOfDocument,
+	// docs.documentTitle), and text this transaction indexes that cites the new document
+	// resolves to that row (refs.Pending). The issue already has its row, so the address names
+	// no pending parent (refs.DocumentAddress).
 	ledger.RegisterPendingArtifact(artifact.ID, refs.DocumentAddress{
-		RefKey: artifact.RefKey, IssueKey: deref(target.IssueKey), Name: name,
+		RefKey: artifact.RefKey, IssueKey: deref(target.IssueKey), Ref: artifactReference(artifact), Name: name,
 	})
 	return artifact, queueExec(ledger, `
 		insert into artifacts (id, issue_key, project_key, session_id, slug, name, kind, is_primary, role, created_by, created_at)

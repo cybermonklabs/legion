@@ -525,18 +525,27 @@ func refuseBlockPointers(ctx context.Context, tx pgx.Tx, artifactID string, tree
 // addressOfDocument is where document artifactID sits and what it is called
 // (refs.DocumentAddress): the address this transaction recorded for an artifacts row it is
 // creating (Ledger.RegisterPendingArtifact), else the stored row's, read from its ref_key,
-// issue_key and name columns. A stored row's address carries no pending parent: a transaction
-// that is not creating the document creates no issue for it either.
+// issue_key and name columns and from the columns its own dispatch:// address is spelled from
+// (refs.ArtifactRef). A stored row's address carries no pending parent: a transaction that is
+// not creating the document creates no issue for it either.
 func addressOfDocument(ctx context.Context, tx pgx.Tx, artifactID string) (refs.DocumentAddress, error) {
 	if address, pending := pendingArtifact(ctx, artifactID); pending {
 		return address, nil
 	}
 	var address refs.DocumentAddress
+	var issueKey, session *string
+	var project, slug, kind string
+	var primary bool
 	if err := tx.QueryRow(ctx, `
-		select coalesce(ref_key, ''), coalesce(issue_key, ''), name from artifacts where id = $1
-	`, artifactID).Scan(&address.RefKey, &address.IssueKey, &address.Name); err != nil {
+		select coalesce(ref_key, ''), issue_key, name, coalesce(project_key, ''), session_id, slug, kind, is_primary
+		from artifacts where id = $1
+	`, artifactID).Scan(&address.RefKey, &issueKey, &address.Name, &project, &session, &slug, &kind, &primary); err != nil {
 		return refs.DocumentAddress{}, fmt.Errorf("read the address of document %s: %w", artifactID, err)
 	}
+	if issueKey != nil {
+		address.IssueKey = *issueKey
+	}
+	address.Ref = refs.ArtifactRef(issueKey, project, session, slug, kind, primary)
 	return address, nil
 }
 

@@ -309,13 +309,28 @@ func ScopeSources(ctx context.Context, q Queryer, doc string) ([]Target, error) 
 // settlement wrote into it as copied_from. A block with neither (not settled yet) is absent. It
 // reads the latest version's directive lines (sourceText), never parsing the document, and takes
 // no lock.
+//
+// The map is the document's as the reading transaction leaves it: the version and the block asks
+// it has queued and not written yet are read from what those statements write (Pending), since
+// no read of the tables answers for them. A `#id` naming a block of the very version being
+// written, or one whose ask the same transaction opens - settlement makes the ask of every new
+// question block of an edit in one transaction - resolves to the ask it will name once the write
+// phase has run.
 func QuestionMap(ctx context.Context, q Queryer, doc string) (map[string]text.Ref, error) {
-	markdown, _, found, err := sourceText(ctx, q, "artifact", doc)
-	if err != nil {
-		return nil, fmt.Errorf("read the latest version of document %s: %w", doc, err)
+	pending := pendingOf(ctx)
+	markdown, queued := "", false
+	if pending != nil {
+		markdown, queued = pending.PendingMarkdown(doc)
 	}
-	if !found {
-		return nil, nil
+	if !queued {
+		stored, _, found, err := sourceText(ctx, q, "artifact", doc)
+		if err != nil {
+			return nil, fmt.Errorf("read the latest version of document %s: %w", doc, err)
+		}
+		if !found {
+			return nil, nil
+		}
+		markdown = stored
 	}
 	blocks := questionBlocks(markdown)
 	if len(blocks) == 0 {
@@ -325,11 +340,31 @@ func QuestionMap(ctx context.Context, q Queryer, doc string) (map[string]text.Re
 	for index, block := range blocks {
 		ids[index] = block.id
 	}
+	queuedBlocks, queuedAsks, queuedIssues := []string{}, []string{}, []*string{}
+	if pending != nil {
+		for _, ask := range pending.PendingBlockAsks(doc) {
+			queuedBlocks = append(queuedBlocks, ask.BlockID)
+			queuedAsks = append(queuedAsks, ask.ID)
+			queuedIssues = append(queuedIssues, ask.IssueKey)
+		}
+	}
+	// The queued rows are unioned into the one read, so a block's ask is read as the same three
+	// columns and answered as the same reference whether its row is stored or queued
+	// (scanQuestions); a block the transaction has queued a write of is read from that write
+	// alone, which is the row as it will stand.
 	questions, err := scanQuestions(q.Query(ctx, `
-		select k.block_id, k.id::text, k.issue_key, a.project_key, a.slug
-		from asks k join artifacts a on a.id = k.block_artifact_id
-		where k.block_artifact_id = $1 and k.block_id = any($2::text[])
-	`, doc, ids))
+		with queued (block_id, id, issue_key) as (
+			select * from unnest($3::text[], $4::uuid[], $5::text[])
+		)
+		select b.block_id, b.id::text, b.issue_key, a.project_key, a.slug
+		from (
+			select k.block_id, k.id, k.issue_key from asks k
+			where k.block_artifact_id = $1 and k.block_id = any($2::text[])
+			  and k.block_id not in (select block_id from queued)
+			union all
+			select q.block_id, q.id, q.issue_key from queued q where q.block_id = any($2::text[])
+		) b join artifacts a on a.id = $1
+	`, doc, ids, queuedBlocks, queuedAsks, queuedIssues))
 	if err != nil {
 		return nil, fmt.Errorf("read the questions of document %s: %w", doc, err)
 	}

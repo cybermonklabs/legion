@@ -172,3 +172,26 @@ func TestANewAskBlocksQuestionReferenceResolvesAgainstItsOwnDocument(t *testing.
 		t.Fatalf("the new ask block's `#q1` edges to %s = %d, want 1", question, edges)
 	}
 }
+
+// Settlement opens the ask of every new question block of one edit in one transaction, each
+// insert queued and no read of the asks table answering for it. A `#q2` written in the question
+// of a block that same edit declares still names the ask of that block, because the question
+// map is the document's as the transaction leaves it (refs.QuestionMap).
+func TestQuestionReferencesToABlockOfTheSameEditResolve(t *testing.T) {
+	handler, database := blockAskHandler(t)
+	issue := createInteractionIssue(t, handler, "TEST", "Two question blocks in one edit", "Context\n")
+	written := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{
+		"actor": sessionActor(),
+		"ops": []map[string]string{{"op": "insert", "after": "end", "markdown": "" +
+			":::ask{#q2}\nWhich way?\n:::\n\nSettled by #q2.\n\n:::ask{#q3}\nDoes #q2 settle this?\n:::\n"}},
+	})
+	if written.Code != http.StatusOK {
+		t.Fatalf("write the two ask blocks: status=%d body=%s", written.Code, written.Body.String())
+	}
+	awaitIndexedAskBlock(t, handler, issue.PrimaryArtifactID, "q3", "Does #q2 settle this?")
+	question := blockAskID(t, handler, issue.Key, "q2")
+	citing := blockAskID(t, handler, issue.Key, "q3")
+	if edges := questionEdges(t, database, "ask", citing, question); edges != 1 {
+		t.Fatalf("the second new ask block's `#q2` edges to %s = %d, want 1", question, edges)
+	}
+}
