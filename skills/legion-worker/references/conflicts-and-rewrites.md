@@ -105,9 +105,11 @@ commits. That role does this:
    hold: `$base` carries the quote characters jj's revset parser needs, and `gh` would read them
    as part of the branch name. Recover the plain name through a variable rather than type it,
    since the name is untrusted text either way: `plain=$(printf %s "$base" | jq -r .)`, then
-   `cd "$TMPDIR" && gh pr create --base "$plain" --head legion/<KEY> --repo <owner>/<repo> …`. The
-   `--head` and the directory with no `.git` above it are what `gh pr create --repo` needs; from
-   inside the workspace it answers `failed to run git: fatal: not a git repository`.
+   `cd "$TMPDIR" && gh pr create --base "$plain" --head legion/<KEY> --repo <owner>/<repo> …`.
+   `--head legion/<KEY>` is what `gh pr create --repo` needs: a jj workspace's git HEAD is
+   detached, so gh can read no current branch from it and answers
+   `failed to run git: not on any branch`. The directory does not matter. `cd "$TMPDIR"` only
+   keeps the command clear of the workspace.
 7. **Merge a conflict forward with that base**, never with the repository's default branch. The
    recipe in *Reintegrating the base* above reads `baseRefName`, so it already names the base the
    pull request takes, and it needs no change.

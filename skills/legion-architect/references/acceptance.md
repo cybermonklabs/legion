@@ -45,7 +45,9 @@ legion({ op: "sign_off", issue: "LEGION-40" })
 - `handoff_complete` from you in `accepting` is refused `ACCEPTANCE_IS_SIGN_OFF`. CI red at the head
   in `accepting` returns the issue to `implementing` by the daemon's table.
 - No `after_merge` result is asked here: the production check records it after the close, where
-  the project's `production_check` opens one.
+  the project's `production_check` opens one. An issue whose base is not its repository's
+  default branch has none to ask for at all: its `after_merge` result cannot be current until
+  that base merges to the default branch, so read each of its checks at its own head.
 - A finding ask on the issue holds the acceptance: one a worker sent you, or one `dispatch read`
   lists under `Open asks:` whose question opens `Finding from ` or `Clear defect from `
   (`skill://legion-worker/references/findings.md`, "When no controller takes it"). Follow each

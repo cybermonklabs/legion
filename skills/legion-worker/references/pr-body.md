@@ -118,11 +118,14 @@ you can run is reported under *When no surface reaches the changed path* below, 
 
 **A result is current** while its commit is still the head of an open pull request of the check's
 issue, or the final head of a merged one, and the check's words have not changed since; an
-`after_merge` or `default_branch` result is current at a commit the default branch carries. A push
-makes every result at the old head older, with no Dispatch write of anyone's, so each check is
-recorded again at the new head. `dispatch results --issue <issue>` prints each check with its
-latest result and whether that result is current, and `dispatch read --issue <issue>` names each
-requirement of the spec no check serves.
+`after_merge` or `default_branch` result is current at a commit the default branch carries. An
+issue whose base is not its repository's default branch has no current `after_merge` or
+`default_branch` result until that base merges to the default branch, so it carries its
+evidence in `before_merge` checks, read at its own head. A push makes every result at the old
+head older, with no Dispatch write of anyone's, so each check is recorded again at the new
+head. `dispatch results --issue <issue>` prints each check with its latest result and whether
+that result is current, and `dispatch read --issue <issue>` names each requirement of the spec no
+check serves.
 
 **An issue is proved by its own checks.** Its approval is gated by the `before_merge` checks of
 its own Verification document, read at its own head, so a child's pull request never makes a
