@@ -1426,6 +1426,16 @@ a picture's `error`, a `drop` or a paste of files, a pointer gesture that carrie
 control that is already disabled — the site keeps `fireEvent` behind a one-line
 `biome-ignore lint/style/noRestrictedImports` comment on the import stating the file's reasons,
 with a one-line reason at the site itself.
+That reason is required of each site, and `.github/scripts/check-fireevent-reasons.sh` is what
+requires it: Biome's rule reads imports, so a file that already carries the ignore line absorbs any
+number of new `fireEvent` calls with nothing to report, which is what a forward merge of the default
+branch brings — no conflict, no lint error, no type error.
+That check reads every `fireEvent` call under `packages/dispatch/web/src` and refuses one with no
+comment in the five lines above it; `ci.yaml`'s lint job runs it.
+It buys one thing, that no call is added silently, and it does not judge the reason: any comment
+satisfies it, so whether user-event really has no form for that interaction is a reviewer's to say.
+Its window is five lines rather than the line above, because a site's reason often sits above the
+`act(` or `await` wrapper the call needs.
 Under a held clock (`jest.useFakeTimers()`) the user comes from `__tests__/user.ts`'s
 `userOnFakeClock()`, created after the clock is installed: user-event waits through `setTimeout`,
 and a plain `userEvent.setup()` never finishes an interaction there.
