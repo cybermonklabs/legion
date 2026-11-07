@@ -49,7 +49,7 @@ func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	lastSeq, createdAt, err := s.issueEventSequence(r.Context(), r.PathValue("key"))
+	lastSeq, createdAt, issueHeld, err := s.issueEventSequence(r.Context(), r.PathValue("key"))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -78,7 +78,7 @@ func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.writeListAnswer(w, key, encoded)
+	s.writeListAnswer(w, key, encoded, issueHeld)
 }
 
 // eventFeedETag hashes what one page of an issue's activity feed is made of: the issue whose feed
@@ -110,22 +110,24 @@ func eventFeedETag(lastSeq int, createdAt time.Time, options eventListOptions, t
 }
 
 // issueEventSequence is the newest event sequence of the issue key names and the created_at that
-// tells that issue from the next one to take its key, both zero for a key no issue holds, whose
-// feed is the empty page readEvents answers rather than a refusal. Every append to the issue
-// advances the column in the append's own transaction (events/broker.go), and nothing moves the
-// stamp, so this one statement is the whole of what the feed's validator reads.
-func (s *server) issueEventSequence(ctx context.Context, key string) (int, time.Time, error) {
+// tells that issue from the next one to take its key, with whether any issue holds that key at
+// all. A key no issue holds reads zero for both, and its feed is the empty page readEvents
+// answers rather than a refusal; the server keeps that page under no key, since the key is the
+// path the caller spelled (writeListAnswer). Every append to the issue advances the column in
+// the append's own transaction (events/broker.go), and nothing moves the stamp, so this one
+// statement is the whole of what the feed's validator reads.
+func (s *server) issueEventSequence(ctx context.Context, key string) (int, time.Time, bool, error) {
 	var lastSeq int
 	var createdAt time.Time
 	err := s.deps.Store.Pool.QueryRow(ctx,
 		`select last_seq, created_at from issues where key = $1`, key).Scan(&lastSeq, &createdAt)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, time.Time{}, nil
+		return 0, time.Time{}, false, nil
 	}
 	if err != nil {
-		return 0, time.Time{}, fmt.Errorf("read the issue's event sequence: %w", err)
+		return 0, time.Time{}, false, fmt.Errorf("read the issue's event sequence: %w", err)
 	}
-	return lastSeq, createdAt, nil
+	return lastSeq, createdAt, true, nil
 }
 
 func parseEventListOptions(r *http.Request) (eventListOptions, error) {

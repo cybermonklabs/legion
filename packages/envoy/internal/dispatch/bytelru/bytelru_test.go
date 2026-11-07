@@ -76,3 +76,62 @@ func TestPuttingAKeyTwiceCountsItOnce(t *testing.T) {
 		t.Errorf("one key put twice left %d entries", cache.order.Len())
 	}
 }
+
+// An entry is charged the size its caller gives it rather than the length of its value, and what
+// it is charged is what the cache counts, what it evicts by and what it gives back. This is the
+// cache a list answer of three bytes kept under a key of a megabyte goes in (api/list_answers.go):
+// counted by its value alone, a flood of them would fill the process's memory under a cache that
+// believed it held nothing.
+func TestTheCacheChargesAnEntryTheSizeItIsGiven(t *testing.T) {
+	const limit int64 = 64 << 10
+	const charged = limit / 8
+	cache := New[string, []byte](limit)
+	for i := range 32 {
+		cache.PutSize(fmt.Sprintf("entry-%d", i), []byte("[]"), charged)
+		if held := cache.Held(); held > limit {
+			t.Fatalf("after %d entries of %d charged bytes the cache counts %d, over its %d limit",
+				i+1, charged, held, limit)
+		}
+		var counted int64
+		for element := cache.order.Front(); element != nil; element = element.Next() {
+			counted += element.Value.(*entry[string, []byte]).size
+		}
+		if counted != cache.held || len(cache.items) != cache.order.Len() {
+			t.Fatalf("after %d entries the list is charged %d, the cache counts %d, and the map holds %d keys against %d entries",
+				i+1, counted, cache.held, len(cache.items), cache.order.Len())
+		}
+	}
+	if entries := cache.order.Len(); int64(entries) > limit/charged {
+		t.Errorf("the cache holds %d entries charged %d bytes each under a %d limit", entries, charged, limit)
+	}
+	if _, held := cache.Get("entry-0"); held {
+		t.Error("the first entry was kept though 32 entries charged an eighth of the limit followed it")
+	}
+	if value, held := cache.Get("entry-31"); !held || string(value) != "[]" {
+		t.Errorf("the newest entry reads %q held=%t, want the value it was kept with", value, held)
+	}
+}
+
+// An entry charged more than the whole cache is never kept, however short its value, and nothing
+// already held is dropped for it.
+func TestTheCacheKeepsNoEntryChargedMoreThanItself(t *testing.T) {
+	cache := New[string, []byte](64)
+	cache.Put("kept", make([]byte, 32))
+	cache.PutSize("enormous", []byte("[]"), 65)
+	if _, held := cache.Get("enormous"); held {
+		t.Error("an entry charged more than the whole cache was kept")
+	}
+	if _, held := cache.Get("kept"); !held {
+		t.Error("an entry charged more than the whole cache emptied it")
+	}
+}
+
+// A charge under the value's own bytes is read as those bytes: the limit bounds the values the
+// cache holds whatever a caller counts.
+func TestTheCacheChargesAtLeastTheValuesOwnBytes(t *testing.T) {
+	cache := New[string, []byte](64)
+	cache.PutSize("understated", make([]byte, 32), 1)
+	if held := cache.Held(); held != 32 {
+		t.Errorf("a 32-byte value charged 1 byte counts %d, want its own 32", held)
+	}
+}

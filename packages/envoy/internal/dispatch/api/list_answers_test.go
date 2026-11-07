@@ -498,3 +498,102 @@ func TestANewIssueUnderARecycledKeyIsNeverAnsweredTheOldIssuesFeed(t *testing.T)
 			holding.Body.Len(), after.Body.Len())
 	}
 }
+
+// setListBuildIdentityForTest stands this process at the build identity, the way a deploy of
+// another build does, until the function it answers puts back the one it found.
+func setListBuildIdentityForTest(identity string) (restore func()) {
+	previous := listBuildIdentity.Swap(&identity)
+	return func() { listBuildIdentity.Store(previous) }
+}
+
+// Two builds never share a list validator, however alike the data under them. A deploy can
+// change what these lists carry without moving the display parser version - a new field, a
+// shaper that fills one it filled wrongly - and the browser revalidates with the body it holds,
+// so an ETag that named only the data would answer every open tab 304 against the build before
+// this one, and the two builds of a rolling deploy would give one validator for two answers.
+func TestTwoBuildsNeverShareAListValidator(t *testing.T) {
+	handler := newTestHandler(t)
+	_, comments, feed := listTargets(t, handler, "BUILDL", 2)
+	for _, list := range []struct{ name, target string }{
+		{"the comment list", comments},
+		{"the activity feed", feed},
+	} {
+		t.Run(list.name, func(t *testing.T) {
+			first := listRead(t, handler, list.target, listReadOptions{trees: true})
+			before := listETagOf(t, first, "GET "+list.target)
+
+			restore := setListBuildIdentityForTest("vcs.revision=" + strings.Repeat("b", 40) + "\n")
+			defer restore()
+			answered := listRead(t, handler, list.target, listReadOptions{trees: true, etag: before})
+			what := "GET " + list.target + " from the build after it"
+			if got := listETagOf(t, answered, what); got == before {
+				t.Errorf("%s answers the ETag %s the build before it gave", what, before)
+			}
+			if !bytes.Equal(answered.Body.Bytes(), first.Body.Bytes()) {
+				t.Errorf("%s answers %d bytes, want the %d of the same data the build before it answered",
+					what, answered.Body.Len(), first.Body.Len())
+			}
+		})
+	}
+}
+
+// A kept answer is charged what the entry really holds: the whole buffer handed over, the bytes
+// of the key's own strings and a fixed cost for the entry. The owner in that key is the path the
+// caller spelled, which it chooses and can make as long as it likes, so an answer of a few bytes
+// under a key of a megabyte costs the megabyte and a bounded number of them evicts. Charged the
+// answer's length alone, 64 MiB of bound would hold 22 million such entries and the keys alone
+// would fill the pod.
+func TestAKeptListAnswerIsChargedTheKeyAndTheBufferItHolds(t *testing.T) {
+	cache := newListAnswerCache()
+	const ownerBytes = 1 << 20
+	body := make(listAnswerBytes, 3, 4096)
+	key := listAnswerKey{route: eventFeedRoute, owner: strings.Repeat("k", ownerBytes), etag: `"a validator"`}
+
+	cache.keep(key, body)
+	want := int64(cap(body)+ownerBytes+len(key.route)+len(key.etag)) + listAnswerEntryBytes
+	if held := cache.Held(); held != want {
+		t.Fatalf("a %d-byte answer under a %d-byte key is charged %d bytes, want the %d the entry holds",
+			len(body), ownerBytes, held, want)
+	}
+
+	// Enough of them to pass the bound: the first is evicted rather than kept beside the rest,
+	// and what the cache counts never passes what it promises to hold.
+	for i := range int(listAnswerCacheBytes/want) + 1 {
+		next := key
+		next.owner = fmt.Sprintf("%s-%d", key.owner, i)
+		cache.keep(next, body)
+		if held := cache.Held(); held > listAnswerCacheBytes {
+			t.Fatalf("after %d answers under keys of %d bytes the cache is charged %d, over its %d bound",
+				i+2, ownerBytes, held, int64(listAnswerCacheBytes))
+		}
+	}
+	if _, held := cache.Get(key); held {
+		t.Error("the first answer was kept though the keys that followed it passed the cache's whole bound")
+	}
+}
+
+// A list of an owner no row holds is answered the empty list, as both routes have always
+// answered one, and nothing of it is kept. The key would be the owner exactly as the request
+// spelled it, so a signed-in caller asking for one made-up key after another - each as long as a
+// URL may be - would otherwise fill this cache with empty lists under keys of its own choosing.
+func TestAListOfAnOwnerNoRowHoldsKeepsNothing(t *testing.T) {
+	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{})
+	missing := "NOSUCH-" + strings.Repeat("k", 4096)
+	for _, list := range []struct{ name, target string }{
+		{"the comment list", "/api/v1/issues/" + missing + "/comments"},
+		{"the activity feed", "/api/v1/issues/" + missing + "/events"},
+	} {
+		t.Run(list.name, func(t *testing.T) {
+			before := served.listAnswers.Held()
+			answered := listRead(t, handler, list.target, listReadOptions{trees: true})
+			listETagOf(t, answered, "GET "+list.target)
+			if body := strings.TrimSpace(answered.Body.String()); body != "[]" {
+				t.Fatalf("GET %s answers %q, want the empty list this case is about", list.target, body)
+			}
+			if held := served.listAnswers.Held(); held != before {
+				t.Errorf("GET %s left the cache charged %d bytes, want the %d it held before: nothing of an owner with no row is kept",
+					list.target, held, before)
+			}
+		})
+	}
+}

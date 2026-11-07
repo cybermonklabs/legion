@@ -2,14 +2,14 @@ package api
 
 import (
 	"bytes"
-	"compress/gzip"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"hash"
-	"io"
 	"log/slog"
 	"net/http"
+	"runtime/debug"
+	"strings"
 	"sync/atomic"
 
 	"github.com/sjawhar/envoy/internal/dispatch/bytelru"
@@ -42,8 +42,16 @@ import (
 // thousand issues at the size the trees make them, which is every list a deployment's readers
 // touch in a working day; it is the bound the display trees of the same process are held to
 // (pmdoc.DisplayCacheBytes), a bound a server carries beside its pools rather than a target to
-// fill. The bound is on the kept bytes alone (bytelru).
+// fill. The bound is on what each entry really holds, which this file counts for every entry it
+// keeps (listAnswerEntrySize).
 const listAnswerCacheBytes = 64 << 20
+
+// listAnswerEntryBytes is what one entry costs beyond the answer's buffer and the bytes of the
+// key's own strings: the map's slot, the list's element, the entry and the key inside it, and the
+// four string headers among them. It is a round number above what those come to on a 64-bit
+// build, because the figure it keeps honest is the memory a flood of tiny answers under keys a
+// caller chooses takes, and that flood is all entry and no answer.
+const listAnswerEntryBytes = 256
 
 // The two lists kept here, each named by its route, so one issue's comment list and its activity
 // feed never share an entry.
@@ -54,11 +62,16 @@ const (
 
 // listAnswerKey is everything that decides one list answer's bytes. The ETag carries what the
 // answer is made of - for the feed the issue's event sequence and the paging query, for the
-// comment list the answer's own bytes - and, for both, the trees variant and the display parser
-// version (listETag), so a deploy that reads markdown differently and a caller that changes its
-// header both land on keys of their own. Beside it the key names the route and its owner, which
-// the ETag of neither list carries, and the content coding the caller takes, which decides
-// whether the entry holds the compressed form or the plain one.
+// comment list the answer's own bytes - and, for both, the trees variant, the display parser
+// version and the build (listETag), so a deploy of any kind and a caller that changes its header
+// both land on keys of their own. Beside it the key names the route and its owner, which the
+// ETag of neither list carries, and the content coding the caller takes, which decides whether
+// the entry holds the compressed form or the plain one.
+//
+// The owner is the owner exactly as the request spelled it, which a signed-in caller chooses and
+// which is as long as it likes to make it, so the bytes of the key are charged to the entry that
+// holds it (listAnswerEntrySize) and an answer for an owner no row holds is never kept at all
+// (writeListAnswer).
 type listAnswerKey struct {
 	route string
 	owner string
@@ -97,13 +110,24 @@ func (c *listAnswerCache) answer(w http.ResponseWriter, key listAnswerKey) bool 
 	return true
 }
 
-// keep puts the bytes of one answer under its key. The value is never written to again: a key
-// carries the answer's ETag, so an entry under it holds the one answer that hashed to it.
+// keep puts the bytes of one answer under its key, charged what the whole entry holds. The value
+// is never written to again: a key carries the answer's ETag, so an entry under it holds the one
+// answer that hashed to it.
 func (c *listAnswerCache) keep(key listAnswerKey, body listAnswerBytes) {
 	if c == nil {
 		return
 	}
-	c.Put(key, body)
+	c.PutSize(key, body, listAnswerEntrySize(key, body))
+}
+
+// listAnswerEntrySize is what one kept answer costs this process: the whole backing array of the
+// buffer handed over, not the part of it the answer fills - encodeListAnswer and gzipListAnswer
+// both hand over a bytes.Buffer's array, which doubles its way up and ends half spare as often as
+// not - the bytes of the key's own strings, and the entry itself. Charging the length of the
+// answer alone would let a caller keep three-byte lists under keys of a megabyte until the
+// process died, with the cache counting kilobytes.
+func listAnswerEntrySize(key listAnswerKey, body listAnswerBytes) int64 {
+	return int64(cap(body)) + int64(len(key.route)+len(key.owner)+len(key.etag)) + listAnswerEntryBytes
 }
 
 // answered is how many answers this cache has written since the process started.
@@ -129,7 +153,13 @@ func writeListAnswerBytes(w http.ResponseWriter, gzipped bool, body listAnswerBy
 
 // writeListAnswer writes encoded as the answer under key and keeps what it wrote. The caller has
 // already compared the ETag, so what arrives here is an answer that goes out whole.
-func (s *server) writeListAnswer(w http.ResponseWriter, key listAnswerKey, encoded listAnswerBytes) {
+//
+// ownerHeld is what the validator's read found: whether any row answers the owner the request
+// named. An owner nothing holds is answered the empty list rather than a refusal, as both routes
+// have always done, and that answer is kept under no key - the owner is the path the caller
+// spelled, so a signed-in caller asking for one made-up owner after another would otherwise fill
+// this cache with empty lists under keys of its own choosing.
+func (s *server) writeListAnswer(w http.ResponseWriter, key listAnswerKey, encoded listAnswerBytes, ownerHeld bool) {
 	body, gzipped := encoded, false
 	if key.gzip && len(encoded) >= compressibleMinimum {
 		compressed, err := gzipListAnswer(encoded)
@@ -142,7 +172,7 @@ func (s *server) writeListAnswer(w http.ResponseWriter, key listAnswerKey, encod
 			body, gzipped = compressed, true
 		}
 	}
-	if gzipped == key.gzip {
+	if ownerHeld && gzipped == key.gzip {
 		// The bytes carry the coding the key names, so a reader of this entry can be told what it
 		// is being sent from the key alone. An answer under compressibleMinimum is left plain for
 		// a caller that takes gzip (compressAnswers leaves it plain too) and is kept under no
@@ -164,25 +194,15 @@ func encodeListAnswer(body any) (listAnswerBytes, error) {
 }
 
 // gzipListAnswer is encoded compressed as the compression layer would have compressed it on its
-// way out: the same encoding, the same level and the same pool of compressors (compressAnswers),
-// so the kept bytes are the bytes that layer would have sent.
+// way out: the same encoding, the same level and the same pool of compressors, which is that
+// layer's own (acquireGzip), so the kept bytes are the bytes that layer would have sent.
 func gzipListAnswer(encoded listAnswerBytes) (listAnswerBytes, error) {
 	var compressed bytes.Buffer
 	// These answers compress by a factor of ten or more, so a buffer that starts near the result
 	// allocates once instead of doubling its way up from nothing.
 	compressed.Grow(len(encoded)/8 + 64)
-	writer, pooled := gzipWriters.Get().(*gzip.Writer)
-	if pooled {
-		writer.Reset(&compressed)
-	} else {
-		// gzip.BestSpeed, the level the compression layer writes at, which its own comment weighs.
-		// The level is a constant, so NewWriterLevel cannot refuse it.
-		writer, _ = gzip.NewWriterLevel(&compressed, gzip.BestSpeed)
-	}
-	defer func() {
-		writer.Reset(io.Discard)
-		gzipWriters.Put(writer)
-	}()
+	writer := acquireGzip(&compressed)
+	defer releaseGzip(writer)
 	if _, err := writer.Write(encoded); err != nil {
 		return nil, fmt.Errorf("compress the list answer: %w", err)
 	}
@@ -204,16 +224,60 @@ func listAnswerKeyFor(r *http.Request, route, owner, etag string) listAnswerKey 
 	}
 }
 
-// listETag closes a list's hash with the two lines both lists' ETags carry and answers the
+// listETag closes a list's hash with the three lines both lists' ETags carry and answers the
 // validator itself, in referencesETag's form. The trees variant is in the hash rather than left
 // to `Vary: Dispatch-Trees` alone, so a caller that gains or drops the header can never match an
 // ETag given for the other reading however a cache between it and Dispatch behaves - a list of
 // nothing answers the same bytes either way, and would otherwise share one. The parser version
 // is in it for the same reason across a deploy: a build that reads markdown differently answers
 // different trees, and every validator the build before it gave is then another reading's.
+//
+// The build identity is in it because the parser version moves for a change to what a tree holds
+// and for nothing else, while a deploy can change what these lists carry in a dozen other ways:
+// a new field, a shaper that fills one it filled wrongly, a fix to the trees hung on a reply
+// block. The browser revalidates with the body it holds (web/src/api/client.ts sets no cache
+// mode), so without it every open tab would be answered 304 against the build before this one
+// and keep the old body until the issue's next write, and the two builds of a rolling deploy
+// would give one validator for two different answers - which the dashboard's own page already
+// avoids by naming its build in its ETag (routes.pageTag).
 func listETag(hash hash.Hash, trees bool) string {
-	_, _ = fmt.Fprintf(hash, "trees=%t\nparser=%d\n", trees, pmdoc.DisplayTreeVersionNow())
+	_, _ = fmt.Fprintf(hash, "trees=%t\nparser=%d\nbuild=%q\n",
+		trees, pmdoc.DisplayTreeVersionNow(), *listBuildIdentity.Load())
 	return `"` + hex.EncodeToString(hash.Sum(nil)) + `"`
+}
+
+// listBuildIdentity is the build identity listETag hashes. It is read through a pointer because
+// a test stands this process at another build to watch both validators move, as it stands it at
+// another display parser version (setListBuildIdentityForTest); no server writes it, so one runs
+// its whole life at the identity of the binary it is.
+var listBuildIdentity = func() *atomic.Pointer[string] {
+	identity := &atomic.Pointer[string]{}
+	built := buildIdentity()
+	identity.Store(&built)
+	return identity
+}()
+
+// buildIdentity names the build this binary is, from what the Go toolchain recorded in it: the
+// revision of the checkout it was built from and whether that checkout was modified, and the
+// -ldflags it was given, which is where the deployed image stamps the commit it builds
+// (docker/Dockerfile passes its LEGION_COMMIT argument through `-X main.buildCommit`, and the
+// release workflow reads the same setting back out with `go version -m`). A build that recorded
+// none of them - `go test`'s binary, a build with -buildvcs=false and no flags - names itself
+// the empty identity, which is one identity for every such build and is why a deploy is what
+// this is for rather than a cache key anything depends on being unique.
+func buildIdentity() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return ""
+	}
+	var identity strings.Builder
+	for _, setting := range info.Settings {
+		switch setting.Key {
+		case "vcs.revision", "vcs.modified", "-ldflags":
+			_, _ = fmt.Fprintf(&identity, "%s=%s\n", setting.Key, setting.Value)
+		}
+	}
+	return identity.String()
 }
 
 // answerNotModified answers a request whose If-None-Match names etag, and reports whether it did.

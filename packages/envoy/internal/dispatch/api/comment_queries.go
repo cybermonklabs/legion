@@ -55,7 +55,7 @@ func (s *server) listComments(w http.ResponseWriter, r *http.Request) {
 // name is the owner as the request spells it: the key the kept answer is filed under beside its
 // ETag, and the subject the display tree read is logged against.
 func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner owner, artifactFilter, name string) {
-	watermark, lastSeq, err := s.commentListWatermark(r.Context(), owner)
+	watermark, lastSeq, ownerHeld, err := s.commentListWatermark(r.Context(), owner)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -82,36 +82,41 @@ func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.writeListAnswer(w, key, encoded)
+	s.writeListAnswer(w, key, encoded, ownerHeld)
 }
 
-// commentListWatermark is the pair a comment list's validator is built on, read in one statement:
-// the list's own watermark, and the newest event sequence of the owner holding it. Each reads 0
-// where no row answers - an owner nothing has written carries no counter, and a key no issue
-// holds answers the empty list rather than a refusal, as this route has always done - so a list
-// that has never been written and one whose owner does not exist are one case here, as they are
-// in the answer.
-func (s *server) commentListWatermark(ctx context.Context, owner owner) (int64, int64, error) {
+// commentListWatermark is the pair a comment list's validator is built on, read in one statement
+// with whether the owner holding it is there at all: the list's own watermark, and the newest
+// event sequence of its owner. Each counter reads 0 where no row answers - an owner nothing has
+// written carries no counter, and a key no issue holds answers the empty list rather than a
+// refusal, as this route has always done - so a list that has never been written and one whose
+// owner does not exist are one case in the answer, as they have always been. They are two cases
+// for the server's own keeping: the empty list of an owner no row holds is kept under no key,
+// since that key is the path the caller spelled (writeListAnswer).
+func (s *server) commentListWatermark(ctx context.Context, owner owner) (int64, int64, bool, error) {
 	var query, value string
 	switch {
 	case owner.IssueKey != nil:
 		query, value = `
 			select coalesce((select seq from comment_watermarks where issue_key = $1), 0),
-			       coalesce((select last_seq from issues where key = $1), 0)
+			       coalesce((select last_seq from issues where key = $1), 0),
+			       exists(select 1 from issues where key = $1)
 		`, *owner.IssueKey
 	case owner.ArtifactID != nil:
 		query, value = `
 			select coalesce((select seq from comment_watermarks where artifact_id = $1), 0),
-			       coalesce((select max(seq) from events where artifact_id = $1), 0)
+			       coalesce((select max(seq) from events where artifact_id = $1), 0),
+			       exists(select 1 from artifacts where id = $1)
 		`, *owner.ArtifactID
 	default:
-		return 0, 0, errorf(http.StatusBadRequest, "OWNER_INVALID", "owner requires exactly one issue or artifact")
+		return 0, 0, false, errorf(http.StatusBadRequest, "OWNER_INVALID", "owner requires exactly one issue or artifact")
 	}
 	var watermark, lastSeq int64
-	if err := s.deps.Store.Pool.QueryRow(ctx, query, value).Scan(&watermark, &lastSeq); err != nil {
-		return 0, 0, fmt.Errorf("read the comment list's watermark: %w", err)
+	var ownerHeld bool
+	if err := s.deps.Store.Pool.QueryRow(ctx, query, value).Scan(&watermark, &lastSeq, &ownerHeld); err != nil {
+		return 0, 0, false, fmt.Errorf("read the comment list's watermark: %w", err)
 	}
-	return watermark, lastSeq, nil
+	return watermark, lastSeq, ownerHeld, nil
 }
 
 // commentListETag is a comment list answer's validator: the list it is of, the watermark every
