@@ -762,7 +762,7 @@ func (m *sessionRelays) storedFilter(ctx context.Context, sessionID string) ([]s
 // itself leaves it. A restart whose answer did not come back is settled here too, since it may
 // have created the consumer on the filter it carried (restart, consumerCallAnswered).
 func (m *sessionRelays) settleFilter(ctx context.Context, sessionID string, wrote uint64) {
-	fenceFilterWrite(ctx, m.registry, sessionID, func(attempt int) (uint64, bool) {
+	fenceFilterWrite(ctx, m.logger, m.registry, sessionID, func(attempt int) (uint64, bool) {
 		if attempt == 0 {
 			return wrote, true // the restart's own write, made or possibly made
 		}

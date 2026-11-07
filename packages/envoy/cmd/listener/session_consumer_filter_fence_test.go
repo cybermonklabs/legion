@@ -9,11 +9,20 @@ package main
 // a delete's restore, an unsubscribe's refollow and a relay restart - are fenced on the row they
 // were built from (fenceFilterWrite), and each case below holds one of them open over a
 // registration on another listener and then publishes on the topic that registration added.
+//
+// The last two cases hold a confirm open over such a registration in every pass rather than in
+// one: the fence writes again from the newest row until the row stops moving, and a row that
+// never stops outruns its passes, which it reports at WARN and leaves to the session's next
+// heartbeat.
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -235,6 +244,111 @@ func TestARepairWhoseConsumerCallAnsweredNothingTriesAgainOverTheRowThatMoved(t 
 	requireConsumerFilters(t, rig, sessionID, kept, added)
 	rig.store(t, "notifications.dispatch.issue.LOSTANSWERADD.comment")
 	rig.awaitPending(t, sessionID, 1)
+}
+
+// A fence whose row stops moving ends on the newest row, however many of its passes the
+// registrations on another listener outran. The hook below stores a row and sets the consumer's
+// filter from it in every pass but the last, as a registration answered on another listener
+// does, so each of this listener's writes carries the row the pass before it read; the last pass
+// plans from a row nothing replaces, writes it, and reads the same revision back, which is where
+// the loop ends (fenceFilterWrite, filterFenceAttempts).
+func TestAFenceWhoseRowStopsMovingEndsOnTheNewestRow(t *testing.T) {
+	a := newSessionConsumerRig(t)
+	b := newSessionConsumerRig(t)
+	const sessionID = "ses_fence_converges"
+	const kept = "notifications.dispatch.issue.FENCEPASSKEPT.>"
+	a.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept))
+
+	topics, moves := []string{kept}, 0
+	a.deps.consumers.afterRepairPlan = func() {
+		if moves == filterFenceAttempts-1 {
+			return
+		}
+		moves++
+		topics = append(topics, fmt.Sprintf("notifications.dispatch.issue.FENCEPASS%d.>", moves))
+		b.subscribe(t, consumerRegistration(sessionID, "epoch-1", topics...))
+	}
+	// The heartbeat whose confirm those registrations outrun, pass after pass.
+	a.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept))
+	a.deps.consumers.afterRepairPlan = nil
+
+	if moves != filterFenceAttempts-1 {
+		t.Fatalf("the row moved under %d of the repair's passes, want %d, one short of the fence's own", moves, filterFenceAttempts-1)
+	}
+	requireConsumerFilters(t, a, sessionID, topics...)
+	if logs := a.harness.logs.String(); strings.Contains(logs, fenceExhaustionLine) {
+		t.Errorf("a fence that ended on the newest row must report nothing left behind:\n%s", logs)
+	}
+	b.store(t, "notifications.dispatch.issue.FENCEPASS"+strconv.Itoa(moves)+".comment")
+	b.awaitPending(t, sessionID, 1)
+}
+
+// A fence out of passes names the session and both revisions at WARN, and the session's next
+// heartbeat is what sets the filter it left. The hook below stores a row and sets the consumer's
+// filter from it in every pass, so every write this listener makes is outrun and the loop ends
+// holding the row of its last plan, one row behind the bucket: that window is what the line
+// reports, and what the heartbeat after it closes (fenceFilterWrite).
+func TestAFenceOutOfPassesNamesBothRevisionsAndLeavesTheFilterToTheNextHeartbeat(t *testing.T) {
+	a := newSessionConsumerRig(t)
+	b := newSessionConsumerRig(t)
+	const sessionID = "ses_fence_exhausted"
+	const kept = "notifications.dispatch.issue.FENCEOUTKEPT.>"
+	a.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept))
+
+	topics, passes := []string{kept}, 0
+	a.deps.consumers.afterRepairPlan = func() {
+		passes++
+		topics = append(topics, fmt.Sprintf("notifications.dispatch.issue.FENCEOUT%d.>", passes))
+		b.subscribe(t, consumerRegistration(sessionID, "epoch-1", topics...))
+	}
+	a.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept))
+	a.deps.consumers.afterRepairPlan = nil
+
+	if passes != filterFenceAttempts {
+		t.Fatalf("the repair made %d passes, want the %d the fence allows", passes, filterFenceAttempts)
+	}
+	// The row of the last pass's plan, which is the one before the row that outran its write.
+	requireConsumerFilters(t, a, sessionID, topics[:len(topics)-1]...)
+	wrote, newest := requireFenceExhaustionLogged(t, a, sessionID)
+	if newest <= wrote {
+		t.Errorf("the line names revision %d written and %d newest, want a newest above it", wrote, newest)
+	}
+
+	// The next heartbeat, which writes the session's row and the filter of it.
+	a.subscribe(t, consumerRegistration(sessionID, "epoch-1", topics...))
+	requireConsumerFilters(t, a, sessionID, topics...)
+	b.store(t, "notifications.dispatch.issue.FENCEOUT"+strconv.Itoa(passes)+".comment")
+	b.awaitPending(t, sessionID, 1)
+}
+
+// fenceExhaustionLine is what a fenced filter write logs when it ends on a filter older than the
+// row the bucket holds (fenceFilterWrite).
+const fenceExhaustionLine = "session consumer filter left on an older interest row than the bucket holds; the session's next heartbeat sets it"
+
+// requireFenceExhaustionLogged fails the test unless the listener logged that line for sessionID,
+// and answers the two revisions it names: the one the filter standing was built from, and the one
+// the bucket answered after it.
+func requireFenceExhaustionLogged(t *testing.T, rig *sessionConsumerRig, sessionID string) (uint64, uint64) {
+	t.Helper()
+	logs := rig.harness.logs.String()
+	for line := range strings.SplitSeq(logs, "\n") {
+		if !strings.Contains(line, `"msg":"`+fenceExhaustionLine+`"`) {
+			continue
+		}
+		var reported struct {
+			SessionID string `json:"session_id"`
+			Wrote     uint64 `json:"wrote_revision"`
+			Newest    uint64 `json:"newest_revision"`
+		}
+		if err := json.Unmarshal([]byte(line), &reported); err != nil {
+			t.Fatalf("decode the listener's line %s: %v", line, err)
+		}
+		if reported.SessionID == sessionID {
+			return reported.Wrote, reported.Newest
+		}
+	}
+	t.Fatalf("the fence left %s on an older row and logged nothing:\n%s", sessionID, logs)
+	return 0, 0
 }
 
 // requireConsumerFilters fails the test unless sessionID's consumer filters on its agent subject
