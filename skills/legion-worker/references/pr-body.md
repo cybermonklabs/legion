@@ -60,6 +60,8 @@ event (`skill://envoy`, *Wait for CI or a merge*: subscribe, then end the turn) 
 sleep loop; a red at the code is fixed, which the reviewer asks for anyway, since it reads the
 head's checks on GitHub before it approves; and a red only GitHub can settle is GitHub's, which
 holds the merge for it under the base branch's own rules.
+A merge-group run is never re-run: the implementer finishes its round instead, and the pull request
+is tested again when it is queued again.
 
 A pull-request body edit re-runs a check that judges the body at once, on the head as it is. While
 the pull request conflicts with its base (GitHub shows it `CONFLICTING`), no workflow triggered
