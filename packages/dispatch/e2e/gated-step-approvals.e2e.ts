@@ -378,3 +378,41 @@ test("a deployment that gates the decisions and the Verification document, but n
     await alice.close();
   }
 });
+
+// A request covering the spec and the Verification document gives the chip the longest label
+// the header can draw, and a gate that names no step for the primary document puts that chip
+// beside the step lines. The iPhone 13's own 390 px layout is the narrowest width any project
+// draws this header at before the widths below are set. @phone
+test("a gate with no step for the primary document, and the longest awaiting label, fits every width @phone", async ({
+  browser,
+}) => {
+  await createProject({ key: "GATEWIDE", name: "Chip beside steps" });
+  await setGatedSteps("GATEWIDE", ["decisions", "criteria"]);
+  const issue = await createIssue({
+    project: "GATEWIDE",
+    spec: "The plan.",
+    title: "The gate names no step for the primary document",
+  });
+  await createIssueArtifact(issue.key, {
+    content: "# Verification\n\nOne check.\n",
+    name: "verification.md",
+  });
+  await requestApproval(issue.primary_artifact_id, { include_verification: true }, session);
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.goto(`/issues/${issue.key}`);
+    const actions = stateActions(page);
+    await expect(actions.getByRole("button", { exact: true, name: "Approve" })).toBeVisible();
+    await expect(approvalSteps(page).locator("[data-approval-step]")).toHaveCount(2);
+    for (const width of [null, 320, 1440]) {
+      if (width !== null) {
+        await page.setViewportSize({ height: 844, width });
+      }
+      await assertPageFits(page);
+    }
+  } finally {
+    await alice.close();
+  }
+});
