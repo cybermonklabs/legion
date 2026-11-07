@@ -29,8 +29,8 @@ import (
 // what the limit relies on is exactly that watch: every step of handleMessage taking the context
 // it is given and giving up on it. A step that ignores it keeps the message in the daemon's hands
 // for as long as it runs, and the `an intake handler outran its limit and was cut` warning and
-// the nak both wait for it, though the acknowledgement window has made the message redeliverable
-// one window after the limit by then.
+// the nak both wait for it. What brings the message back afterwards is ConsumerSpec.HandlerLimit's
+// own account, which this file does not retell.
 //
 // The row is worth having because nothing else in the tree says so, and the tree reads the other
 // way round without it. A reader of consumeMessage can take "a handler that hangs is cut at that
@@ -44,10 +44,9 @@ import (
 // hundred milliseconds, as the neighbouring row's is (ackprogress_test.go:601), so the whole row
 // costs a couple of seconds; the sleep is five times it, so the gap this row measures between
 // the deadline and the handler's return is seconds rather than the milliseconds a loaded
-// machine's scheduling can add. The limit is twice the acknowledgement window consumerSpec sets,
-// so that window expires once while the keeper still reports the message in progress and once
-// more after the keeper stops at the deadline, which is what makes the message redeliverable
-// while the step is still sleeping.
+// machine's scheduling can add. What makes the message redeliverable while that sleep runs is
+// the sleep outlasting the limit by more than one acknowledgement window (1.6 s against 200 ms),
+// not the limit's ratio to the window.
 const (
 	cutHandlerLimit = 400 * time.Millisecond
 	ignoredSleep    = 5 * cutHandlerLimit
@@ -65,10 +64,10 @@ const cutHandlerLine = "an intake handler outran its limit and was cut"
 // has to report the deadline it was given, when its sleep returned, and what the daemon had
 // written about the message by that moment.
 //
-// Only the first delivery sleeps. The window made the message redeliverable one window after the
-// limit stopped the keeper, and JetStream hands it over at this consumer's next pull, once the
-// first delivery returns; that second delivery is how the row sees it come back, and a second
-// sleep would only hold it in the daemon for another limit.
+// Only the first delivery sleeps: that second delivery is how the row sees the message come
+// back, and a second sleep would only hold it in the daemon for another limit. Which of the nak
+// and the expired window brings it is ConsumerSpec.HandlerLimit's account and the race the
+// comment at the end of the row records.
 type ignoredContextStep struct {
 	sleep time.Duration
 	logs  *lockedBuffer
@@ -137,7 +136,7 @@ func (s *ignoredContextStep) firstReturn() (deadline time.Time, hadDeadline bool
 // while that step is still sleeping, and at the moment the step returns the daemon has written
 // neither the cut warning nor the nak: both follow the handler rather than the deadline, because
 // consumeMessage waits for handleMessage to return. Once it has returned both are there, and the
-// delivery the expired window had made due reaches the step at this consumer's next pull.
+// message comes back to the step, by whichever path ConsumerSpec.HandlerLimit's account gives.
 //
 // The times the row compares are the ones the handling itself recorded — the deadline the handler
 // was handed and the instant its sleep returned — rather than a sleep in the test body. A row
@@ -209,8 +208,8 @@ func TestTheCutEndsAHandlerOnceItsStepHonoursTheCancelledContext(t *testing.T) {
 	// after the first returned cannot fail: this consumer works one message at a time
 	// (jetstream.PullMaxMessages(1) in consumeConsumer), so no second delivery can reach the
 	// step before the first returns. Which of the two things that bring it back actually did —
-	// the acknowledgement window, whose expiry during the sleep is what this file's mechanism
-	// turns on, or the nak that follows the cut — is a race nothing here settles: the window's
+	// the acknowledgement window, which the sleep outlasts, or the nak that follows the cut — is
+	// a race nothing here settles: the window's
 	// redelivery is marked while the step sleeps, but with no pull request outstanding it is
 	// handed over only at the client's next pull, which races the nak the same return sends.
 	// Measured in this pod with NakDelay at 3 s: the second delivery reached the step 21-28 ms

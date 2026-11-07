@@ -49,12 +49,13 @@ func intakeHandlerLimitLine(cfg config.Config) (line string, aboveCeiling, deriv
 	reads := fmt.Sprintf("worker_rpc_timeout_seconds (%d) bounds each read a review makes — whether its pull request is recorded, its truncated body and its author's repository permission",
 		int(cfg.WorkerRPCTimeout.Seconds()))
 	if !derived {
-		// Four windows is intake's derivation, one for each of the three reads just named and one
-		// for the part nothing bounds; here they come to no more than the floor, which is why the
-		// floor is the limit. Naming the total is what keeps the line honest at the default
-		// window, where it would otherwise read as a limit the window earned.
-		return fmt.Sprintf("intake: one fact's handling is cut after %ds, intake's ten-minute floor and not this window: %s — and four of those windows come to %ds, which the floor covers, so the rest of the limit is left for the part nothing bounds, the fact's transaction and its wait on the apply lock",
-			int(limit.Seconds()), reads, 4*int(cfg.WorkerRPCTimeout.Seconds())), aboveCeiling, derived
+		// The count and the total come from intake.WindowsPerLimit, the derivation's own number,
+		// so a read added to a fact moves this sentence with it. Naming the total is what keeps
+		// the line honest at the default window, where it would otherwise read as a limit the
+		// window earned: here those windows come to no more than the floor, which is why the
+		// floor is the limit.
+		return fmt.Sprintf("intake: one fact's handling is cut after %ds, intake's ten-minute floor and not this window: %s — and %d windows of it come to %ds, which the floor covers, so the rest of the limit is left for the part nothing bounds, the fact's transaction and its wait on the apply lock",
+			int(limit.Seconds()), reads, intake.WindowsPerLimit, intake.WindowsPerLimit*int(cfg.WorkerRPCTimeout.Seconds())), aboveCeiling, derived
 	}
 	above := ""
 	if aboveCeiling {

@@ -975,19 +975,21 @@ notice comes once per handoff commit, from whichever pass finds it first.
 - **`an intake handler outran its limit and was cut`** (a warning with `consumer`, `event_id`,
   `fact` and `limit`). One message's handling ran past `limit`, the handler limit
   `worker_rpc_timeout_seconds` derives for this deployment, so the daemon cancelled the
-  handling's context and naked the message: nothing of that event was applied. Intake reports a
-  message in progress only while its handler runs, so one acknowledgement window after the
-  limit the message becomes redeliverable again, whatever the step does, and nothing is sent
-  yet: this consumer asks for one message at a time and has none outstanding while the handler
-  runs, so the server holds it, `num_redelivered` stays 0 and the `delivered` count does not
-  move; JetStream hands it over, and that count goes up by one, when the handler returns and
-  the consumer pulls again — a step that ignored the cancelled context holds that pull for the
-  whole of its own run. This warning and the nak are written at that return, with a line
-  between them under the same `event_id` that names the step that was running, with the error
-  `context deadline exceeded`, and this warning is the one that names the cut. Every step is a
-  `pgx` call or a Dispatch or GitHub read that gives up on a cancelled context, so that wait is
-  short, and each read is cut on its own at the acknowledgement window, so a handling that
-  reaches the limit is most often waiting on the database. One Postgres advisory lock is what
+  handling's context and naked the message: nothing of that event was applied. Intake reports
+  the message in progress only until the limit, and the handler returns once the step that is
+  running honours the cancelled context, which every step does at once today; only then is
+  this warning written and the message naked. This consumer asks for one message at a time and
+  has none outstanding while the handler runs, so the event is sent again, and its `delivered`
+  count goes up by one, no sooner than that return: one nak delay (a second) after the nak, or
+  at the consumer's next pull where the step held the handler past about one acknowledgement
+  window after the limit, whichever the server takes first. A step that ignored the cancelled
+  context would hold the message, and this warning, for the whole of its own run. Between this
+  warning and the nak the daemon writes one more line under the same `event_id`, naming the
+  step that was running, with the error `context deadline exceeded`; this warning is the one
+  that names the cut. Every step is a `pgx` call or a Dispatch or GitHub read that gives up on
+  a cancelled context, so the wait for the return is short, and each read is cut on its own at
+  the acknowledgement window, so a handling that reaches the limit is most often waiting on the
+  database. One Postgres advisory lock is what
   it most often waits on,
   `pg_advisory_xact_lock(hashtext('legion.apply_fact'))`, which every fact takes for the length of
   its transaction and the daemon's other lifecycle writes take too, so the holder is as often one
@@ -1007,13 +1009,14 @@ notice comes once per handoff commit, from whichever pass finds it first.
   The first row is the holder, the rest are waiting on it, and `xact_start` says how long it has
   held. The next delivery of the same event takes the same path and is cut the same way.
 
-  The limit this deployment runs with is in the daemon's log at every boot (`intake: one fact's
-  handling is cut after <n>s: worker_rpc_timeout_seconds …`, at warn when the limit is above an
-  hour, where the cut comes too late to return a wedged handler's message while an operator is
-  still looking), and `legion start --check-config` prints the same sentence when the window
-  derives a limit above the ten-minute floor: one acknowledgement window for each of a review's
-  three bounded reads and one more for the fact's transaction and its wait on the apply lock,
-  never below ten minutes, so `worker_rpc_timeout_seconds` is the key that changes it.
+  The limit this deployment runs with is in the daemon's log at every boot, in a line beginning
+  `intake: one fact's handling is cut after <n>s`, at warn when the limit is above an hour,
+  where the cut comes too late to return a wedged handler's message while an operator is still
+  looking. At the ten-minute floor that line names the floor as what decided the limit; above
+  it, `legion start --check-config` prints the same sentence, which an operator can read before
+  a rollout. The limit is one acknowledgement window for each of a review's three bounded reads
+  and one more for the fact's transaction and its wait on the apply lock, never below ten
+  minutes, so `worker_rpc_timeout_seconds` is the key that changes it.
 - **`an intake fact outlived its acknowledgement window and was held in progress while it ran`**
   (an info line with `consumer`, `event_id`, `delivered` and `took`). The handling took longer
   than the consumer's acknowledgement window (`worker_rpc_timeout_seconds`), and intake held the

@@ -45,6 +45,15 @@ const boundedReadsPerFact = 3
 // is exported.
 const HandlerLimitCeiling = time.Hour
 
+// WindowsPerLimit is how many acknowledgement windows HandlerLimitFor gives one fact's handling:
+// one for each bounded read a fact may make (boundedReadsPerFact) and one more for the part
+// nothing bounds. It is exported because the operator's sentence for the limit names the count
+// and the total it comes to (daemon.IntakeHandlerLimitLine), and a copy of the number written
+// there by hand would go on printing the old count at every boot after a read was added here,
+// with every test still passing — the drift between a relation and its prose that
+// dispatch://INFRA-1574 exists to remove.
+const WindowsPerLimit = boundedReadsPerFact + 1
+
 // HandlerLimitFor is the limit a caller that sets no HandlerLimit gets for a given AckWait:
 // (boundedReadsPerFact + 1) * ackWait, floored at defaultHandlerLimit — derived true only when
 // the window lifted the limit above that floor. The first term, boundedReadsPerFact * ackWait, is
@@ -64,7 +73,7 @@ const HandlerLimitCeiling = time.Hour
 // ackWait of zero or less, which normalizedSpec has defaulted away before it asks, derives a
 // bound at or below zero and so yields the floor too.
 func HandlerLimitFor(ackWait time.Duration) (limit time.Duration, derived bool) {
-	bound := (boundedReadsPerFact + 1) * ackWait
+	bound := WindowsPerLimit * ackWait
 	return max(bound, defaultHandlerLimit), bound > defaultHandlerLimit
 }
 
@@ -88,14 +97,18 @@ type ConsumerSpec struct {
 	// bounds, ApplyFact's advisory-lock wait and its transaction, and never answers below
 	// defaultHandlerLimit. Production sets none, so the daemon's worker_rpc_timeout_seconds,
 	// which it passes as AckWait, decides it; tests set a short one. There is no legion.yaml key
-	// for it. The cut cancels the handling's context, and keepInProgress runs under that same
-	// context, so once the limit passes intake stops reporting the message in progress and one
-	// AckWait later the message is redeliverable again, whatever the step does. Nothing is sent
-	// then: this consumer asks for one message at a time and has none outstanding while the
-	// handler runs, so JetStream hands the message over, raising its delivery count, only when
-	// the running step honours the cancelled context, the handler returns — which every step
-	// today, a pgx call or a bounded HTTP read, does — and the consumer pulls again, which is
-	// also when consumeMessage writes the cut warning and the nak.
+	// for it. The cut cancels the handling's context, and keepInProgress runs on that context,
+	// so intake stops reporting the message in progress at the limit. The handler returns once
+	// its running step honours the cancelled context, which every step today, a pgx call or a
+	// bounded HTTP read, does at once. Only then does consumeMessage write the cut warning and
+	// nak the message with NakDelay. This consumer asks for one message at a time and has none
+	// outstanding while the handler runs, so JetStream sends the message again, and its
+	// delivered count rises, no sooner than that return: one NakDelay after the nak, or at the
+	// consumer's next pull when the step held the handler past about one AckWait after the
+	// limit and the window made the message redeliverable first, whichever the server takes
+	// first. A step that ignored its context would hold the message, and the warning, for the
+	// whole of its own run. This comment is where that mechanism is written; the rows that
+	// exercise it point here rather than retelling it.
 	HandlerLimit time.Duration
 	Logger       *slog.Logger
 	// Now is the clock Consumers reads when it records a consumer opened or a message handled,
