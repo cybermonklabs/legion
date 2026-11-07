@@ -955,7 +955,6 @@ GATES = [
         (ENVOY_CLIENT_SRC, "imported by packages/envoy-client/bin/dispatch.ts, which cli-reply-answers.e2e.ts:7 runs"),
         (f"{ENVOY}/internal/dispatch/pmdoc/schema/blocks.json", "packages/dispatch/web/src/__tests__/setup.ts:7, features/refs/markdown-engine.test.ts:3, e2e/engine-reading.ts:13"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts:44, which the browser rows of the seven markdown parity families it holds import; the web unit tests that read the same table run in dispatch-ui, which declares it too"),
-        (f"{ENVOY}/internal/dispatch/pmdoc/heavybodies/testdata/shared-bodies.json", "e2e/heavy-bodies.ts holds the bodies heavy-bodies.e2e.ts draws in this job, and that table pins them; the test that reads the table, e2e/__tests__/heavy-bodies-digests.test.ts:44-50, runs in dispatch-ui, which declares it too"),
         (f"{ENVOY}/internal/tests3/seaweedfs.go", f"{at('dispatch', 'Pull the file store image')} names it to the action, and "
          f"{at('dispatch', 'Start an S3-compatible server for uploaded files')} reads const Image; "
          f"{at('dispatch', 'Wait for the S3-compatible server')} waits for the container it started"),

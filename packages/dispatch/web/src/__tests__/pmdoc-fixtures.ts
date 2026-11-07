@@ -9,8 +9,8 @@
  *
  * `bun run check` in `packages/envoy/internal/dispatch/pmdoc/gen` is what keeps the table current:
  * it regenerates from the corpus and fails where the checked-in files differ, and CI runs it
- * (`ci.yaml`, the `envoy-go` job's "Check pmdoc fixtures are up to date"). A shape a test needs is
- * a new corpus file and a regenerated table, never a copy of its markdown in a test file.
+ * (`ci.yaml`, the `envoy-go-checks` job's "Check pmdoc fixtures are up to date"). A shape a test
+ * needs is a new corpus file and a regenerated table, never a copy of its markdown in a test file.
  *
  * The table is 3.7 MB, so it is read and parsed once for the test process and selected by name.
  * The same cross-package read as `web/src/__tests__/setup.ts`'s and
