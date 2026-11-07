@@ -635,13 +635,14 @@ func TestAStoppedIntakeStaysStoppedAcrossAReconnectAndSubscribesAgain(t *testing
 	}
 }
 
-// A stop after the client replaced its connection drains the subscription the client bound again
-// on the new connection, which is the one delivering, rather than the handle subscribe returned,
-// which the closed connection took with it. The durable loses its subscriber as the stop begins, so
-// a message published while a handler still runs is not handed to the stopping process, which would
-// hand it back and be handed it again; the stop logs no failed drain, and the next process to bind
-// the durable handles the message.
-func TestAStopAfterTheConnectionWasReplacedDrainsTheRestoredSubscription(t *testing.T) {
+// A stop after the client replaced its connection drains the subscription the intake bound again
+// itself on the new connection: the connection event gave the subscription the client had
+// restored up, and the bind poll took the durable afresh under its lease, so the handle the
+// intake holds is its own and live rather than the one the closed connection took with it. The
+// durable loses its subscriber as the stop begins, so a message published while a handler still
+// runs is not handed to the stopping process, which would hand it back and be handed it again;
+// the stop logs no failed drain, and the next process to bind the durable handles the message.
+func TestAStopAfterAReplacedConnectionDrainsTheSubscriptionTheIntakeBoundAgain(t *testing.T) {
 	logs := captureLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
@@ -658,24 +659,32 @@ func TestAStopAfterTheConnectionWasReplacedDrainsTheRestoredSubscription(t *test
 	intake := newIntake(natsClient, pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool))
 	stop := runIntake(t, intake)
 	awaitBoundDurable(t, natsClient)
+	// Read before the close, so the wait below can tell the delivery the intake binds afterwards
+	// from the one the closed connection carried.
+	intake.mu.Lock()
+	replaced := intake.delivering
+	intake.mu.Unlock()
 
-	// The client dials a connection to replace the closed one and binds its registration there: a
-	// handle of its own, not the one subscribe returned.
+	// The client dials a connection to replace the closed one and binds its registration there.
 	natsClient.Conn.Close()
 	select {
 	case <-hooked:
 	case <-time.After(30 * time.Second):
 		t.Fatal("the client's reconnect hooks never ran")
 	}
-	waitFor(t, 20*time.Second, func() bool { return natsClient.SubOK() && deliveryConsumerInfo(t, natsClient).PushBound }, func() string {
-		return "the client never bound the intake's subscription again on its new connection"
+	// The intake gives that restored subscription up on its connection event and binds the durable
+	// again under its lease, so what it holds is a delivery of its own: a different object from the
+	// one before the close, whose handle is live and whose durable the server reports bound. Until
+	// all three hold, the stop below would be draining something other than what this row measures.
+	var delivery *intakeDelivery
+	waitFor(t, 30*time.Second, func() bool {
+		intake.mu.Lock()
+		delivery = intake.delivering
+		intake.mu.Unlock()
+		return delivery != replaced && delivery.sub.IsValid() && deliveryConsumerInfo(t, natsClient).PushBound
+	}, func() string {
+		return "the intake never gave the subscription the client restored up and bound the delivery durable again on its new connection"
 	})
-	intake.mu.Lock()
-	delivery := intake.delivering
-	intake.mu.Unlock()
-	if delivery.sub.IsValid() {
-		t.Fatal("the handle subscribe returned is still valid on the replaced connection; the test proves nothing")
-	}
 
 	publishPullRequestEnvelope(t, natsClient, "acme", "widgets", 1, mergedPullRequest(1))
 	held.awaitEntered(t)

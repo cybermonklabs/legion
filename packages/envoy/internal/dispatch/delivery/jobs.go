@@ -119,28 +119,64 @@ func newJobIntake(natsClient *bus.Client, pool *store.Pool, leases duty.Leases, 
 // made again every durableBindInterval, for the life of the process: a standby that outlives its
 // holder takes the durable over seconds later. A bind under way as ctx ends ends by the stop
 // deadline armed then (stopContext, bindDurableConsumer), as the delivery intake's does.
+//
+// It binds only while its client has a connection, and gives the subscription up at a connection
+// event, for the delivery intake's reasons (Intake.Run): a bind with no connection spends the
+// client's whole JetStream request timeout on a ConsumerInfo nothing answers, and a subscription
+// left in place over an outage comes back -- re-sent by nats.go inside its own reconnect, or
+// bound again by the client on a replacement connection -- beside the process that took the
+// durable over meanwhile, so both would deliver every job event of it (INFRA-1551). The give-up
+// needs no budget of the delivery intake's kind: this intake acknowledges each message on receipt
+// (deliver), so it has nothing in flight to hand back and nothing to wait for.
 func (j *JobIntake) Run(ctx context.Context) {
 	j.ctx = ctx
 	defer j.stopPending()
 	stopping, release := stopContext(ctx)
 	defer release()
-	var sub *natsgo.Subscription
 	binds := time.NewTicker(durableBindInterval)
 	defer binds.Stop()
-	for sub == nil {
-		bound, outcome := j.bind(ctx, stopping)
-		if outcome == bindBound {
-			sub = bound
-			break
+	for {
+		// Taken before the connection's state is read, as ConnectionChanged's own contract asks,
+		// so an event during the bind is not missed.
+		connection := j.nats.ConnectionChanged()
+		var poll <-chan time.Time
+		if j.nats.Connected() {
+			sub, outcome := j.bind(ctx, stopping)
+			if outcome == bindBound {
+				// Nothing polls while this process holds the durable; a give-up starts the ticker
+				// again, at the cost of one early poll when a tick was already in the channel.
+				binds.Stop()
+				select {
+				case <-ctx.Done():
+					j.giveUp(sub)
+					return
+				case <-connection:
+					slog.Info(intakeConnectionChangedMessage, "name", bus.DispatchJobDurable)
+					j.giveUp(sub)
+					binds.Reset(durableBindInterval)
+					continue
+				}
+			}
+			poll = binds.C
 		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-binds.C:
+		case <-connection:
+		case <-poll:
 		}
 	}
-	defer func() { _ = sub.Unsubscribe() }()
-	<-ctx.Done()
+}
+
+// giveUp ends this process's job subscription through the client, which is what gives up the
+// registration the client keeps of it (bus.Client.DrainSubscription): a bare Unsubscribe would
+// leave a registration the next reconnect binds again, on a durable this process gave up, and
+// sub is itself stale once the client has replaced its connection. The same undo bind hands
+// bindDurableConsumer, for the same reason.
+func (j *JobIntake) giveUp(sub *natsgo.Subscription) {
+	if _, err := j.nats.DrainSubscription(sub); err != nil {
+		slog.Error("dispatch delivery: drain the job intake's subscription", "name", bus.DispatchJobDurable, "error", err)
+	}
 }
 
 // jobConsumerConfig is the durable's policy: deliveryConsumerConfig's shape with this consumer's
@@ -162,9 +198,8 @@ func jobConsumerConfig() natsgo.ConsumerConfig {
 // reconciliation and standby line on this intake's own bindThrottle. stopping is Run's stop
 // deadline (bindDurableConsumer).
 //
-// The undo it hands back drains the subscription through the client, which is what gives up the
-// registration the client keeps of it (bus.Client.DrainSubscription): a bare Unsubscribe would
-// leave a registration the next reconnect binds again, on a durable this process gave up.
+// The undo it hands back is giveUp, and not a bare Unsubscribe, for giveUp's reason: a bind the
+// server never confirms must leave the client holding no registration of it.
 func (j *JobIntake) bind(ctx, stopping context.Context) (*natsgo.Subscription, bindOutcome) {
 	wanted := jobConsumerConfig()
 	return bindDurableConsumer(ctx, stopping, j.nats, j.leases, j.throttle, wanted, func() (*natsgo.Subscription, func(), error) {
@@ -172,11 +207,7 @@ func (j *JobIntake) bind(ctx, stopping context.Context) (*natsgo.Subscription, b
 		if err != nil {
 			return nil, nil, err
 		}
-		return sub, func() {
-			if _, err := j.nats.DrainSubscription(sub); err != nil {
-				slog.Error("dispatch delivery: drain the job intake's subscription", "name", wanted.Durable, "error", err)
-			}
-		}, nil
+		return sub, func() { j.giveUp(sub) }, nil
 	})
 }
 
