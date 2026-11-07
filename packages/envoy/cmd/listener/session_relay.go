@@ -205,6 +205,49 @@ type sessionRelays struct {
 	nextToken atomic.Uint64
 }
 
+// relayCancelReason is why the loop cancelled a run. The run's own goroutine reads it once it has
+// returned, so the line it writes then names the reason, and a person reading that line needs no
+// source to hand. It is an unsigned integer over named constants rather than an atomic.Value over
+// a string type because this file already names its small sets that way (relayEvent,
+// relayOutcome), the store and the load allocate nothing, and the zero value is a constant of the
+// set, where an atomic.Value nothing has stored loads nil.
+type relayCancelReason uint32
+
+const (
+	// relayCancelUnknown: nothing recorded a reason. Every cancellation records one, except where
+	// the run returns before the loop that cancelled it reaches its entry; the word keeps the log
+	// field readable rather than empty.
+	relayCancelUnknown relayCancelReason = iota
+	// relayCancelNotOurs: the session is no longer this listener's to relay, because it registered
+	// again through another listener, its entry left consumer delivery, or this task lost its
+	// machine's durable binding.
+	relayCancelNotOurs
+	// relayCancelNewEpoch: the session registered with a new epoch, so a run starting at the ack
+	// floor replaced this one.
+	relayCancelNewEpoch
+	// relayCancelListenerStopping: this listener is stopping, so every relay stops with it.
+	relayCancelListenerStopping
+	// relayCancelBindingLost: this task lost its machine's durable binding, so it relays nothing
+	// until it holds the binding again.
+	relayCancelBindingLost
+)
+
+// String is the word the log line carries for the reason.
+func (r relayCancelReason) String() string {
+	switch r {
+	case relayCancelNotOurs:
+		return "session_not_ours"
+	case relayCancelNewEpoch:
+		return "new_epoch"
+	case relayCancelListenerStopping:
+		return "listener_stopping"
+	case relayCancelBindingLost:
+		return "binding_lost"
+	default:
+		return "unknown"
+	}
+}
+
 // relayRun is one start of a session's relay: it runs until it is stopped or replaced. A run whose
 // session stops answering pauses (relayPaused) and goes on probing it.
 type relayRun struct {
@@ -212,6 +255,10 @@ type relayRun struct {
 	cancel    context.CancelFunc
 	// done is closed once the run's goroutine has returned.
 	done chan struct{}
+	// cancelReason is why the loop cancelled the run, a relayCancelReason. The loop stores it
+	// before it cancels the run and the run's own goroutine loads it after it has returned, so
+	// the two goroutines reach it through an atomic: a plain field here is a data race.
+	cancelReason atomic.Uint32
 	// restartedAt is the mark (sessionDelivery.mark) the run's last successful restart at the ack
 	// floor took before it read the session's topics and consumer, 0 before the first one
 	// (relayRun.restartedBefore).
@@ -240,6 +287,32 @@ type relayRun struct {
 	// loop for that run. A registration heard while the run was returning is never lost.
 	exitMu  sync.Mutex
 	exiting bool
+}
+
+// cancelFor cancels the run, recording why before the cancellation: the run's own goroutine reads
+// the reason once it has returned, so it must already be there when the run notices it is over.
+func (r *relayRun) cancelFor(reason relayCancelReason) {
+	r.cancelReason.Store(uint32(reason))
+	r.cancel()
+}
+
+// cancelledFor is why the loop cancelled the run, relayCancelUnknown when nothing recorded one.
+func (r *relayRun) cancelledFor() relayCancelReason {
+	return relayCancelReason(r.cancelReason.Load())
+}
+
+// cancelledFor is why run was cancelled, as the line a stopped run writes names it. A stop
+// cancels the whole set's context before the loop reaches stopAll (sessionRelays.stop), so a run
+// that returned in between carries no reason of its own; the set's own context is what says, in
+// that case, that the listener is stopping.
+func (m *sessionRelays) cancelledFor(run *relayRun) relayCancelReason {
+	if reason := run.cancelledFor(); reason != relayCancelUnknown {
+		return reason
+	}
+	if m.ctx.Err() != nil {
+		return relayCancelListenerStopping
+	}
+	return relayCancelUnknown
 }
 
 // wake has a paused run, or one waiting to retry, restart at once: the session registered. A wake
@@ -455,7 +528,7 @@ func (m *sessionRelays) loop() {
 	for {
 		select {
 		case <-m.ctx.Done():
-			m.stopAll()
+			m.stopAll(relayCancelListenerStopping)
 			return
 		case <-prune.C:
 			// Each lapse it finds is a change, which onChange hears.
@@ -475,7 +548,7 @@ func (m *sessionRelays) loop() {
 		m.eventsMu.Unlock()
 		if ownershipChanged {
 			if !m.owned.Load() {
-				m.stopAll()
+				m.stopAll(relayCancelBindingLost)
 				continue
 			}
 			entries, err := m.sessions.List()
@@ -509,7 +582,7 @@ func (m *sessionRelays) apply(sessionID string, notice relayNotice) {
 	run := m.relays[sessionID]
 	if !m.wanted(sessionID) {
 		if run != nil {
-			run.cancel()
+			run.cancelFor(relayCancelNotOurs)
 			delete(m.relays, sessionID)
 		}
 		return
@@ -522,7 +595,7 @@ func (m *sessionRelays) apply(sessionID string, notice relayNotice) {
 			m.start(sessionID, run.done)
 		}
 	case event&relayRestart != 0 && run.restartedBefore(notice.heard):
-		run.cancel()
+		run.cancelFor(relayCancelNewEpoch)
 		m.start(sessionID, run.done)
 	case event&relayResume != 0:
 		if !run.wake() {
@@ -532,10 +605,12 @@ func (m *sessionRelays) apply(sessionID string, notice relayNotice) {
 	}
 }
 
-// stopAll stops every relay.
-func (m *sessionRelays) stopAll() {
+// stopAll stops every relay, each cancelled for reason: the listener is stopping, or the machine's
+// durable binding went. Each caller names its own, so the line a stopped run writes says which
+// happened.
+func (m *sessionRelays) stopAll(reason relayCancelReason) {
 	for sessionID, run := range m.relays {
-		run.cancel()
+		run.cancelFor(reason)
 		delete(m.relays, sessionID)
 	}
 }
@@ -771,9 +846,23 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 		// Every frame the run published was read from the pull's queue before anything still in
 		// it, so the frames carry the lower stream sequences: naking them before the queue is
 		// naking in stream-sequence order, which is what has the server redeliver the session's
-		// messages in stream order.
-		m.release(run)
-		pull.Release()
+		// messages in stream order. The two calls stand apart so that order is the statements'
+		// rather than an expression's evaluation order.
+		returned := m.release(run)
+		returned += pull.Release()
+		// The run writes this line itself rather than the loop that cancelled it: only once the
+		// run's goroutine has given the messages back is it true that this listener relays the
+		// session no more, so a reader, and a test waiting for the hand-over, can order on it.
+		// One line per stopped run, so a listener that stops writes one for each session it was
+		// relaying.
+		m.logger.Info("session relay stopped; it gave the server back the messages it held, so the listener taking the session over is delivered them at once",
+			slog.String("session_id", sessionID),
+			// The logger stamps every line with the machine id of the process it runs in; this
+			// field is the relay set's own, which a test rig names apart from its logger, and a
+			// second machine_id key in one record would leave a reader to guess which won.
+			slog.String("relay_machine_id", m.machineID),
+			slog.String("reason", m.cancelledFor(run).String()),
+			slog.Int("returned", returned))
 	}()
 	if start.StreamID == "" {
 		m.logger.Warn("session relay could not read the stream's identity; retrying", slog.String("session_id", sessionID), slog.String("error", bus.ErrNoStreamID.Error()))
