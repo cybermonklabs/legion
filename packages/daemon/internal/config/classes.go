@@ -279,7 +279,15 @@ var Classes = []Row{
 	{Field: "Gates.Design", Path: "gates.design", Class: ClassDecision, Holder: HolderAPIServer, Also: []string{HolderLaunchSpecs, HolderGatedSteps}},
 
 	// Held by a client, a listener or a connection.
-	{Field: "Config.WorkerRPCTimeout", Path: "worker_rpc_timeout_seconds", Class: ClassRebuild, Holder: HolderWorkerStream},
+	// The worker stream holds it as the bound on every hello and every request, and intake
+	// holds it twice over: it is the AckWait the durable consumers are opened with, and the
+	// limit one fact's handling is cut at is derived from that window as they open
+	// (intake.HandlerLimitFor, read in intake's normalizedSpec) and never read again. So the
+	// consumers are named beside the stream, and a route change of this key reopens them on the
+	// window it settled; left off, the route would answer `rebuilt` while intake went on
+	// cutting a handler at the limit it booted with.
+	{Field: "Config.WorkerRPCTimeout", Path: "worker_rpc_timeout_seconds", Class: ClassRebuild, Holder: HolderWorkerStream,
+		Also: []string{HolderNATS}},
 	// Also supervise.Timeouts.Stop, read per decision; the runtime holds the stop grace it passes
 	// each shim, so the stricter class is the runtime's rebuild.
 	{Field: "Config.WorkerStopTimeout", Path: "worker_stop_timeout_seconds", Class: ClassRebuild, Holder: HolderRuntime},

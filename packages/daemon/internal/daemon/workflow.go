@@ -510,6 +510,7 @@ func engineConfig(cfg *config.Config, reviewAppLogin string) workflow.Config {
 // refused `context canceled` while the settings route answered the caller `rebuilt`.
 func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, rebuild *rebuilder, lookup func(string) (string, bool)) error {
 	w.log.Info("legion workflow boot stage", "stage", "intake")
+	logIntakeHandlerLimit(ctx, w.log, cfg)
 	heard, err := w.heardAtBoot(ctx)
 	if err != nil {
 		return err

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -119,9 +120,14 @@ func TestAnAdmissionCapChangedThroughTheRouteIsReadByTheNextDecision(t *testing.
 	}
 }
 
-// A rebuild-class change rebuilds exactly the holder its row names and nothing else, and the
+// A rebuild-class change rebuilds exactly the holders its row names and nothing else, and the
 // worker stream's own rebuild keeps every connection: a shim connected before the change is
 // still connected after it, and its claim is still the one the daemon serves (acceptance A5).
+//
+// `worker_rpc_timeout_seconds` names two: the worker stream, the holder the operator is told
+// was rebuilt, and the intake consumers on its row's Also, which take the window as their
+// acknowledgement window and derive one fact's handler limit from it as they open
+// (config.Classes).
 func TestARebuildClassChangeRebuildsOnlyItsHolderAndKeepsTheWorkerConnected(t *testing.T) {
 	live := liveSettings(t)
 	rt := fake.NewRuntime()
@@ -141,7 +147,15 @@ func TestARebuildClassChangeRebuildsOnlyItsHolderAndKeepsTheWorkerConnected(t *t
 		t.Fatalf("the apply reported %+v, want one worker-stream rebuild", applied)
 	}
 	awaitLog(t, logs, `"holder":"worker-stream"`, 5*time.Second, "the worker stream's settings were not rebuilt")
-	for _, other := range []string{"nats", "dispatch-client", "envoy-publisher", "github-apps", "api-server", "controller-keeper", "runtime", "launch-specs"} {
+	row, known := config.ClassOf("worker_rpc_timeout_seconds")
+	if !known || !slices.Contains(row.Also, config.HolderNATS) {
+		t.Fatalf("the worker_rpc_timeout_seconds row is %+v, want the intake consumers named beside the worker stream", row)
+	}
+	// Every holder the row does not name. This daemon runs without NATS, so the consumers are
+	// registered nowhere and the rebuilder only logs that the change named a holder it did not
+	// build; TestAChangedWorkerRPCTimeoutReopensTheIntakeConsumers is where that rebuild is
+	// proved against a server.
+	for _, other := range []string{"dispatch-client", "envoy-publisher", "github-apps", "api-server", "controller-keeper", "runtime", "launch-specs"} {
 		if strings.Contains(logs.String(), `"holder":"`+other+`"`) {
 			t.Fatalf("the worker stream's change rebuilt %s too:\n%s", other, logs)
 		}

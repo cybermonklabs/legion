@@ -64,7 +64,7 @@ parent's check: a child's pull request never makes a parent check's result curre
 that carries part of a parent's requirement proves it with a check on the child's own
 Verification document whose `serves` names that requirement. Nothing in the tree builds on the parent's own merge, because that
 merge comes last: a child that waits for it waits forever, so work another child builds on is a
-first-wave child of its own. While the approved head does not carry those merges, or the result of
+child of its own, in a repository of its own or with a deploy of its own. While the approved head does not carry those merges, or the result of
 a check in another repository is older than the close of a child it needs, leave
 the issue in `accepting` until each of those children has closed (`child-closed`) or been parked
 for good (`child-status`). Move a parked child's criterion to other work first; never downgrade
@@ -204,7 +204,10 @@ child that never started is handed over too, carrying no run, whatever held it a
 waits in the line for a slot and for any unfinished blocker, and its architect starts as a fresh
 root and registers its own spec. Only a child that finished, was parked or was never released
 stays. The child stays its own tree; reopening the old root does not take it back. Park a child
-with `park_child` before then when its work should stop with the root.
+with `park_child` before then when its work should stop with the root. A root that is parked
+rather than closed hands over only a child at `awaiting_merge` whose pull request is still open,
+since the daemon re-admits no parked root and only that child's own new READY arms the merge the
+park disarmed; park that child too when its merge should wait with the root.
 
 If you are that child's architect:
 

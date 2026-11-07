@@ -107,6 +107,82 @@ func TestAChangedNatsSeedRebuildsTheNatsClient(t *testing.T) {
 	}
 }
 
+// `worker_rpc_timeout_seconds` is the acknowledgement window the durable consumers are opened
+// with, and intake derives the limit one fact's handling is cut at from that window as it opens
+// them (intake.HandlerLimitFor, read in intake's normalizedSpec): the limit is settled at the
+// open and never read again. So the key's row names the NATS holder beside the worker stream
+// (config.Classes, Also), and a route change of it reopens the consumers on the window the
+// change settled. Without that row the route would answer the caller `rebuilt` — the worker
+// stream's own — while intake went on cutting a handler at the limit it booted with.
+func TestAChangedWorkerRPCTimeoutReopensTheIntakeConsumers(t *testing.T) {
+	url := testnats.URL(t)
+	probe, err := nats.Connect(url, nats.Timeout(5*time.Second))
+	if err != nil {
+		t.Fatalf("connect to the test NATS server: %v", err)
+	}
+	t.Cleanup(probe.Close)
+	js, err := jetstream.New(probe)
+	if err != nil {
+		t.Fatalf("open JetStream: %v", err)
+	}
+	testnats.CreateStream(t, js, jetstream.StreamConfig{Name: "ENVOY_NOTIFICATIONS", Subjects: []string{"notifications.>"}})
+	logs := &syncBuffer{}
+	w := grantWorkflow(t, logs)
+	live := liveSettings(t, "nats_urls: ["+url+"]")
+	heard, err := w.heardAtBoot(t.Context())
+	if err != nil {
+		t.Fatalf("read the repositories this project hears about: %v", err)
+	}
+	// The boot's own context, cancelled the moment the open returns, as readinessAttempt gives
+	// it: the holder's rebuild makes one of its own (natsHolder.rebuild).
+	booting, bootOver := context.WithTimeout(t.Context(), bootTimeout)
+	var windows []time.Duration
+	open := func(ctx context.Context, c config.Config) (*nats.Conn, *intake.Consumers, error) {
+		windows = append(windows, c.WorkerRPCTimeout)
+		return openNATS(ctx, w, c, func(string) (string, bool) { return "", false }, intake.ConsumerSpec{
+			Project: c.Project, Repositories: heard, AckWait: c.WorkerRPCTimeout, NakDelay: time.Second, Logger: w.log,
+		})
+	}
+	conn, consumers, err := open(booting, *live.Snapshot())
+	if err != nil {
+		t.Fatalf("open the workflow's NATS: %v", err)
+	}
+	rebuild := newRebuilder(w.log, config.Settled(*live.Snapshot()))
+	live.OnChange(rebuild.observe)
+	w.nats = newNATSHolder(conn, consumers, w.log, open, &w.mappingMu, w.natsHandover)
+	bootOver()
+	rebuild.register(w.nats)
+	t.Cleanup(w.stop)
+	before := w.nats.connection()
+
+	// A window wide enough to lift the limit off intake's ten-minute floor: a change that left
+	// the floor deciding would prove nothing about the limit the reopened consumers run with.
+	const raised = 10 * time.Minute
+	if _, derived := intake.HandlerLimitFor(raised); !derived {
+		t.Fatalf("a %s window derives no limit above intake's floor; this test proves nothing", raised)
+	}
+	applied := apply(t, live, map[string]any{"worker_rpc_timeout_seconds": int(raised.Seconds())})
+
+	if len(applied) != 1 || applied[0].Holder != config.HolderWorkerStream || applied[0].Outcome != config.OutcomeRebuilt {
+		t.Fatalf("the apply reported %+v, want the one rebuilt change the operator is told the worker stream holds", applied)
+	}
+	if len(windows) != 2 || windows[1] != raised {
+		t.Fatalf("the holder opened its consumers for %v, want the second on the window the change settled", windows)
+	}
+	if after := w.nats.connection(); after == before {
+		t.Fatal("the changed window left the daemon on the connection it had, want its consumers reopened")
+	}
+	if w.nats.intake() == nil {
+		t.Fatal("the reopened client carries no durable consumers")
+	}
+	booted, _ := intake.HandlerLimitFor(windows[0])
+	limit, derived := intake.HandlerLimitFor(windows[1])
+	if !derived || limit == booted {
+		t.Fatalf("the reopened consumers cut a fact's handling at %s, what the boot's %s window already derived; the change reached no handler limit",
+			limit, windows[0])
+	}
+}
+
 // A NATS rebuild hears every repository the daemon hears now, not the set it booted on. The
 // repositories GitHub intake hears move while the daemon runs — a mapping read replaces them on
 // the consumers themselves (refreshMapping's SetRepositories) and names no setting, so nothing

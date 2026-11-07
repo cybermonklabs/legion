@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
+	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -114,7 +116,10 @@ type Options struct {
 	// Stopping is done once the daemon's stop begins, before the stop closes the worker stream
 	// connections no route holds (RouteDecisions): an operator's request that would change a claim
 	// is refused from then on (stopped), and a route whose decision fails logs it at Info
-	// (logFailure), since the stop is what cut it short. Nil is never.
+	// (logFailure), since the stop is what cut it short. A route reading on the request's own
+	// context reports through logRequestFailure instead, which answers to the request's own ending
+	// first and reaches this for every other failure: while the request is live, and once it has
+	// ended when the call failed with something that is not that ending. Nil is never.
 	Stopping context.Context
 	// Drained is done once the daemon's stop has drained the API, or the drain ran out, and ends
 	// every decision a route asked of a machine (decision). A decision in flight at the stop's
@@ -597,6 +602,25 @@ func (s *server) logFailure(msg string, args ...any) {
 	s.log.Error(msg, args...)
 }
 
+// logRequestFailure logs the failure of a call a route made on the request's own context: at Error
+// while the request is live, and at Warn once the request's own context has ended and the call
+// failed with that very error. Warn, because the daemon cannot tell a client that merely went away
+// from its own sickness arriving as that same cancellation - a full connection pool, a hung
+// connect and a held fact lock all reach a route as the request's context ending - so the line is
+// not an error for an operator to act on, and not something to hide at the quietest level either:
+// Warn leaves it where a reader can filter it on their own terms. The daemon's own stop is the
+// other way such a call is cut short, and logFailure owns that branch.
+func (s *server) logRequestFailure(r *http.Request, err error, msg string, args ...any) {
+	args = append(args, "error", err)
+	// The request's own error, not any context error: an inner deadline that passes as the client
+	// hangs up is the daemon's own, and stays an error however the request itself ended.
+	if ended := r.Context().Err(); ended != nil && errors.Is(err, ended) {
+		s.log.Warn(msg, args...)
+		return
+	}
+	s.logFailure(msg, args...)
+}
+
 // stopped answers 503 and reports true once the daemon's stop has begun (Options.Stopping): an
 // operator's request that would change a claim is refused then, rather than decided without the
 // claim's worker stream connection, which the stop closes for every claim no route holds. The
@@ -625,7 +649,7 @@ func (s *server) stateRoute(w http.ResponseWriter, r *http.Request) {
 		IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly,
 	})
 	if err != nil {
-		s.log.Error("api: begin state transaction failed", "error", err)
+		s.logRequestFailure(r, err, "api: begin state transaction failed")
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "state unavailable"})
 		return
 	}
@@ -633,12 +657,12 @@ func (s *server) stateRoute(w http.ResponseWriter, r *http.Request) {
 
 	state, claims, err := s.state.State(r.Context(), tx)
 	if err != nil {
-		s.log.Error("api: state source failed", "error", err)
+		s.logRequestFailure(r, err, "api: state source failed")
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "state unavailable"})
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.log.Error("api: commit state transaction failed", "error", err)
+		s.logRequestFailure(r, err, "api: commit state transaction failed")
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "state unavailable"})
 		return
 	}
@@ -666,12 +690,16 @@ func (s *server) stateRoute(w http.ResponseWriter, r *http.Request) {
 // issues' `tree` (withoutTrees); a caller below wakesWaitingContract, the contract that added
 // the wakes the pacing holds, is served it without `wakesWaiting` (withoutWakesWaiting); a
 // caller below gatedStepsContract, the contract that added the issues' gated steps, is served it
-// without that field (withoutGatedSteps); and a caller below settingSourcesContract is served it
-// without the three that contract added (withoutSettingSources). The six compose: each is
-// applied when the state carries something of its own, so a caller below all of them — a pod
-// below supervise.PodUpdateContract — is served a body carrying none of the twelve keys, each of
-// them absent rather than empty, since a strict reader before the contract that added a key
-// refuses it whether or not it names anything. Every later reader takes all twelve as optional —
+// without that field (withoutGatedSteps); a caller below retiredStrandedContract, the contract
+// that let a stranded claim's state be `retired`, is served the report of claims nothing will
+// wake without its retired entries (withoutRetiredStranded); and a caller below
+// settingSourcesContract is served it without the three that contract added
+// (withoutSettingSources). The seven compose: each is applied when the state carries something
+// of its own, so a caller below all of them — a pod below supervise.PodUpdateContract — is
+// served a body carrying none of the twelve keys, each of them absent rather than empty, since
+// a strict reader before the contract that added a key refuses it whether or not it names
+// anything, and with no retired entry under `strandedClaims`. Every later reader takes all
+// twelve keys as optional and all three states —
 // `packages/contracts/src/legion-api.ts` marks `admission.trees`, `wakesWaiting` and the issues'
 // `gatedSteps` optional for exactly these bodies. Any other caller — a pod at this contract, the
 // operator's `legion state`, a tmux pane — is served the state as this contract writes it.
@@ -722,6 +750,9 @@ func (s *server) stateFor(r *http.Request, state State, claims []supervise.Claim
 	if contract < gatedStepsContract && carriesGatedSteps(state) {
 		state = withoutGatedSteps(state)
 	}
+	if contract < retiredStrandedContract && carriesRetiredStranded(state) {
+		state = withoutRetiredStranded(state)
+	}
 	if contract < settingSourcesContract {
 		state = withoutSettingSources(state)
 	}
@@ -749,12 +780,18 @@ const wakesWaitingContract = 53
 // `gatedSteps` and refuses the whole body for it.
 const gatedStepsContract = 55
 
+// retiredStrandedContract is the daemon contract whose entry in version.go added `retired` to the
+// states a stranded claim may be in (version.go's 56): a plugin before it reads
+// `strandedClaims[].state` with a strict enum of two values, `suspended` and `failed`, and refuses
+// the whole body for a third.
+const retiredStrandedContract = 56
+
 // settingSourcesContract is the daemon contract that added `settingSources`, the `daemon` block's
 // `commit` and each pull request's `requiresChecks` to the state, the entry of that number in
 // version.go: a plugin before it reads the state with a strict schema that knows none of the
 // three — every schema of `packages/contracts/src/legion-api.ts` was strict until INFRA-1048 —
 // and refuses the whole body for one of them.
-const settingSourcesContract = 56
+const settingSourcesContract = 57
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {
@@ -787,9 +824,9 @@ func carriesMemory(state State) bool {
 // block writes that key on every body, empty rather than null (Admission.MarshalJSON), and the
 // strict reader before the contract refuses the empty key as surely as one naming a tree. So this
 // is true of every state the route writes; it is asked beside carriesUpdateRounds, carriesMemory,
-// carriesWakesWaiting and carriesGatedSteps all the same, because stateFor puts the same question
-// to the five and because a later contract that stops writing `trees` on every body answers it
-// here.
+// carriesWakesWaiting, carriesGatedSteps and carriesRetiredStranded all the same, because
+// stateFor puts the same question to the six and because a later contract that stops writing
+// `trees` on every body answers it here.
 func carriesTrees(State) bool { return true }
 
 // carriesWakesWaiting is whether state carries the key wakesWaitingContract added: `wakesWaiting`,
@@ -797,9 +834,9 @@ func carriesTrees(State) bool { return true }
 // writes it on every body, empty rather than null (State.MarshalJSON), and the strict reader
 // before the contract refuses the empty key as surely as one naming a wake. So this is true of
 // every state the route writes; it is asked beside carriesUpdateRounds, carriesMemory,
-// carriesTrees and carriesGatedSteps all the same, because stateFor puts the same question to
-// the five and because a later contract that stops writing `wakesWaiting` on every body answers
-// it here.
+// carriesTrees, carriesGatedSteps and carriesRetiredStranded all the same, because stateFor puts
+// the same question to the six and because a later contract that stops writing `wakesWaiting` on
+// every body answers it here.
 func carriesWakesWaiting(State) bool { return true }
 
 // carriesGatedSteps is whether any issue of state carries the deployment's gated steps.
@@ -823,6 +860,14 @@ func withoutGatedSteps(state State) State {
 	}
 	state.Issues = issues
 	return state
+}
+
+// carriesRetiredStranded is whether any claim of state's report of claims nothing will wake is
+// retired, the state retiredStrandedContract added.
+func carriesRetiredStranded(state State) bool {
+	return slices.ContainsFunc(state.StrandedClaims, func(c StrandedClaim) bool {
+		return c.State == string(supervise.StateRetired)
+	})
 }
 
 // podContract is the lowest plugin contract a claim whose process runs in pod records, and 0 when
@@ -907,6 +952,25 @@ func withoutTrees(state State) State {
 // state's own, so the state the source answered is left as it was.
 func withoutWakesWaiting(state State) State {
 	state.WakesWaiting, state.wakesWaitingHidden = nil, true
+	return state
+}
+
+// withoutRetiredStranded is state whose report of claims nothing will wake names no retired claim,
+// the one state retiredStrandedContract added; nothing else of that contract is on this route, the
+// operator claim view's three delivery fields being served where no plugin reads. The entry is
+// dropped rather than rewritten, since its state is the claim's own and no older value stands for
+// it, and a reader before the contract refuses the whole body for one of them. The slice is
+// copied, so the state the source answered is left as it was, and it stays non-nil when every
+// entry goes: `strandedClaims` is never null on the wire (state.go's normalisation).
+func withoutRetiredStranded(state State) State {
+	stranded := make([]StrandedClaim, 0, len(state.StrandedClaims))
+	for _, c := range state.StrandedClaims {
+		if c.State == string(supervise.StateRetired) {
+			continue
+		}
+		stranded = append(stranded, c)
+	}
+	state.StrandedClaims = stranded
 	return state
 }
 
