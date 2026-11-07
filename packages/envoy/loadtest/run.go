@@ -99,6 +99,7 @@ type runConfig struct {
 	// boxBusyBefore is the box's busy fraction read before Dispatch started (run-step.sh reads it
 	// with `loadgen box-busy` before its reset); negative means collectMeta reads it itself.
 	boxBusyBefore float64
+	editors       editorConfig
 	// args are the run's flags as meta.json records them: the normalized flag list, the token
 	// values redacted and the URL passwords removed (recordedArgs).
 	args []string
@@ -159,6 +160,9 @@ func runLoad(args []string) error {
 	buildCommit := fs.String("build-commit", "", "commit Dispatch was built from, for meta.json")
 	buildDirty := fs.Bool("build-dirty", false, "the build's tree had uncommitted changes, for meta.json")
 	boxBusyBefore := fs.Float64("box-busy-before", -1, "the box's busy fraction read before Dispatch started (loadgen box-busy); default: read it now")
+	editors := fs.Int("editors", 0, "browser editors on document websockets (0: none)")
+	editorRate := fs.Float64("editor-rate", 2, "updates per second per editor")
+	editorDocs := fs.Int("editor-docs", 10, "documents the editors share: the first N seeded specs in key order")
 	copyMetaPath := fs.String("copy-meta", "", "JSON object file that describes the copy a foreign run measures, recorded verbatim in meta.json under copy")
 	delivery := fs.String("session-delivery", envOr("LOADTEST_SESSION_DELIVERY", sessionDeliveryCore), "how the sessions take their messages: core (their core subscriptions) or consumer (the listener's relay of their consumers); default $LOADTEST_SESSION_DELIVERY, else core")
 	source := fs.String("source", sourceRequests, "request source: "+sourceRequests+" (the route mix) or "+sourceReplay+" (a replay bundle's logged writes, replay_plan.go)")
@@ -270,6 +274,12 @@ func runLoad(args []string) error {
 		return fmt.Errorf("-session-delivery must be %s or %s, not %q", sessionDeliveryCore, sessionDeliveryConsumer, *delivery)
 	case *boxBusyBefore > 1 || !finite(*boxBusyBefore):
 		return fmt.Errorf("-box-busy-before must be a fraction between 0 and 1")
+	case *editors < 0:
+		return fmt.Errorf("-editors must be 0 or more")
+	case *editorRate <= 0 || !finite(*editorRate):
+		return fmt.Errorf("-editor-rate must be more than 0")
+	case *editorDocs < 1:
+		return fmt.Errorf("-editor-docs must be at least 1")
 	}
 	loopFlags := loopSessionFlags{unitStarts: *unitStarts, unitLife: *unitLife, listeners: *loopListeners,
 		driverTopics: *driverTopics, deadline: *receiptDeadline}
@@ -342,6 +352,9 @@ func runLoad(args []string) error {
 			sf = loop.seedFile()
 		}
 	}
+	if *editors > 0 && *editorDocs > len(sf.Issues) {
+		return fmt.Errorf("-editor-docs %d is more than the seed's %d specs", *editorDocs, len(sf.Issues))
+	}
 	if *live < 0 {
 		*live = max(1, int(math.Round(*requests/30)))
 	}
@@ -362,8 +375,12 @@ func runLoad(args []string) error {
 		human: *human, live: *live, rngSeed: *rngSeed, natsConns: *natsConns, heapSamples: *heapSamples, sessionDelivery: *delivery,
 		unitStarts: *unitStarts, unitLife: *unitLife, loopListeners: loopEndpoints,
 		driverTopics: *driverTopics, receiptDeadline: *receiptDeadline,
-		buildCommit: *buildCommit, buildDirty: *buildDirty, boxBusyBefore: *boxBusyBefore, args: recordedArgs(fs),
-		copyMeta: copyMeta, replay: rs,
+		buildCommit: *buildCommit, buildDirty: *buildDirty, boxBusyBefore: *boxBusyBefore,
+		// Fewer editors than documents edit only as many documents as there are editors.
+		editors:  editorConfig{editors: *editors, rate: *editorRate, docs: min(*editorDocs, max(*editors, 1))},
+		args:     recordedArgs(fs),
+		copyMeta: copyMeta,
+		replay:   rs,
 	}, sf)
 }
 
@@ -479,6 +496,11 @@ type summaryConfig struct {
 	GraceS        float64 `json:"grace_s"`
 	RNGSeed       uint64  `json:"rng_seed"`
 	NATSConns     int     `json:"nats_conns"`
+	// Editors, EditorRate and EditorDocs are the editors workload's flags; EditorDocs is the
+	// documents it edited, at most Editors.
+	Editors    int     `json:"editors"`
+	EditorRate float64 `json:"editor_rate"`
+	EditorDocs int     `json:"editor_docs"`
 	// SessionDelivery is the delivery the sessions asked for (-session-delivery): core or
 	// consumer. sessions.delivery says how many got consumer delivery.
 	SessionDelivery string `json:"session_delivery"`
@@ -519,6 +541,10 @@ type summary struct {
 	LoopSessions *loopSessionsSummary `json:"loop_sessions,omitempty"`
 	Live         liveSummary          `json:"live"`
 	LiveBytes    int64                `json:"live_bytes"`
+	// Editors is nil in a step without editors, and in a summary.json older than them; Rooms is
+	// nil in a summary.json older than it.
+	Editors *editorsSummary `json:"editors"`
+	Rooms   *roomsSummary   `json:"rooms"`
 	// StackExits are the stack processes that exited during the step; such a step fails and its
 	// row does not measure the load.
 	StackExits []stackExit `json:"stack_exits,omitempty"`
@@ -599,8 +625,9 @@ func execute(cfg runConfig, sf seedFile) error {
 	defer logf.Close()
 	lg := log.New(io.MultiWriter(os.Stderr, logf), "", log.LstdFlags|log.Lmicroseconds)
 	nonce := newMarkerNonce()
-	lg.Printf("config: step=%s source=%s sessions=%d events=%g/s requests=%g/s event-mix=%s route-mix=%s warmup=%s duration=%s grace=%s human=%.2f live=%d rng-seed=%d session-delivery=%s heap-samples=%t marker-nonce=%s",
-		cfg.name, cfg.sourceName(), cfg.sessions, cfg.events, cfg.requests, cfg.mix.Name, cfg.routes.Source, cfg.warmup, cfg.duration, cfg.grace, cfg.human, cfg.live, cfg.rngSeed, cfg.sessionDelivery, cfg.heapSamples, formatNonce(nonce))
+	lg.Printf("config: step=%s source=%s sessions=%d events=%g/s requests=%g/s event-mix=%s route-mix=%s warmup=%s duration=%s grace=%s human=%.2f live=%d rng-seed=%d editors=%d editor-rate=%g editor-docs=%d session-delivery=%s heap-samples=%t marker-nonce=%s",
+		cfg.name, cfg.sourceName(), cfg.sessions, cfg.events, cfg.requests, cfg.mix.Name, cfg.routes.Source, cfg.warmup, cfg.duration, cfg.grace, cfg.human, cfg.live, cfg.rngSeed,
+		cfg.editors.editors, cfg.editors.rate, cfg.editors.docs, cfg.sessionDelivery, cfg.heapSamples, formatNonce(nonce))
 	if cfg.loop != nil {
 		lg.Printf("loop seed %s: %d proposals of project %s, plan %s", cfg.loopSeedPath, len(cfg.loop.Proposals), cfg.loop.Project, cfg.loop.PlanID)
 	}
@@ -663,6 +690,7 @@ func execute(cfg runConfig, sf seedFile) error {
 		}
 		generators = append(generators, done)
 	}
+	ed := st.startEditors(ctx)
 	pr := st.startProbes(ctx, ns.pulls)
 	var unitsDone <-chan struct{}
 	if lp != nil {
@@ -677,10 +705,16 @@ func execute(cfg runConfig, sf seedFile) error {
 		// until their life runs out or the step's context ends (loopSessions.stop).
 		<-unitsDone
 	}
+	if ed != nil {
+		ed.waitSchedules()
+	}
 	lg.Printf("generators done at %s; grace %s", time.Since(st.start).Round(time.Second), cfg.grace)
 	time.Sleep(cfg.grace)
 	pr.wait()
 	cancel()
+	if ed != nil {
+		ed.wait()
+	}
 	pr.waitSampler()
 	ns.close()
 	ns.envelopes.write(cfg.out, lg)
@@ -691,7 +725,7 @@ func execute(cfg runConfig, sf seedFile) error {
 		lp.stop()
 	}
 
-	sum := st.buildSummary(ns, lp, reg, live, pr)
+	sum := st.buildSummary(ns, lp, reg, live, ed, pr)
 	writeJSONFile(filepath.Join(cfg.out, "summary.json"), sum, 0o644, lg)
 	end := readPGClock(context.Background(), cfg.ep.pg)
 	logPGClock(lg, "end", end)
@@ -705,8 +739,12 @@ func execute(cfg runConfig, sf seedFile) error {
 	if sum.Events.commitsUnread() {
 		committed = "committed and receipts not read"
 	}
-	lg.Printf("step %s done: events offered %d %s, requests sent %d (%.1f/s of %g)",
-		cfg.name, sum.Events.Offered, committed, sum.Requests.Sent, sum.Requests.SentPerS, cfg.requests)
+	editorsSent := 0
+	if sum.Editors != nil {
+		editorsSent = sum.Editors.Sent
+	}
+	lg.Printf("step %s done: events offered %d %s, requests sent %d (%.1f/s of %g), editor updates sent %d",
+		cfg.name, sum.Events.Offered, committed, sum.Requests.Sent, sum.Requests.SentPerS, cfg.requests, editorsSent)
 	if err := stepFailure(sum); err != nil {
 		lg.Print(err)
 		return err
@@ -720,6 +758,10 @@ type step struct {
 	cfg   runConfig
 	lg    *log.Logger
 	nonce int64
+	// sf is the seed the step was given, which the editors workload reads for the specs it types
+	// into (editorWorkload). Under both populations it is production's own seed.json, the one
+	// -seed names; each population's own seed is on its population.
+	sf seedFile
 	// pops is the step's load: one population under one seed, and two - production's own from
 	// seed.json, then the spec loop's from the loop seed - under both. Every population shares
 	// the step's sessions, window and marker counter, and is counted apart in summary.json.
@@ -819,7 +861,7 @@ func newStep(cfg runConfig, sf seedFile, lg *log.Logger, nonce int64) *step {
 	if cfg.replay != nil {
 		return newReplayStep(cfg, lg, nonce)
 	}
-	st := &step{cfg: cfg, lg: lg, nonce: nonce, ids: make([]string, cfg.sessions)}
+	st := &step{cfg: cfg, sf: sf, lg: lg, nonce: nonce, ids: make([]string, cfg.sessions)}
 	for i := range st.ids {
 		st.ids[i] = sessionID(i)
 	}
@@ -1038,21 +1080,26 @@ func (st *step) requestPath(p *population, r *rand.Rand) (*route, string) {
 	return rt, rt.render(p.sf.Issues[r.IntN(p.active)], p.sf.Projects[r.IntN(len(p.sf.Projects))])
 }
 
-// probes are the 5 s sampler, the lock probe (20 ms), the ungranted-lock sampler (1 s), the
-// transaction-id probe and the profiles.
+// probes are the 5 s sampler, the lock probe (1 s), the ungranted-lock sampler (1 s), the
+// transaction-id probe, the profiles, the rooms' window readings and, in a step with editors, the
+// room sampler (100 ms).
 type probes struct {
 	smp      *sampler
 	smpDone  chan struct{} // closed when the sampler, which runs until ctx ends, has returned
 	lp       *lockProbe
 	ls       *lockSampler
 	xidsPerS *float64
-	xidErr   error          // why xidsPerS is nil
-	wg       sync.WaitGroup // every probe but the sampler
+	xidErr   error // why xidsPerS is nil
+	// roomsStart and roomsEnd are the rooms' counters at the window's start and end (readWindow);
+	// rs is nil in a step without editors.
+	roomsStart, roomsEnd windowReading
+	rs                   *roomSampler
+	wg                   sync.WaitGroup // every probe but the sampler
 }
 
-// startProbes starts the probes. The two lock samplers run from 20 s into the window to its end.
-// The sampler reads pulls' counts at each sample, when pulls is not nil, and Dispatch's heap
-// every 15 s under -heap-samples.
+// startProbes starts the probes. The two lock samplers run from 20 s into the window to its end,
+// the room sampler from the window's start to its end. The sampler reads pulls' counts at each
+// sample, when pulls is not nil, and Dispatch's heap every 15 s under -heap-samples.
 func (st *step) startProbes(ctx context.Context, pulls *pullSpy) *probes {
 	p := &probes{smp: newSampler(st.cfg.ep), smpDone: make(chan struct{}), lp: &lockProbe{}, ls: &lockSampler{}}
 	p.smp.pulls = pulls
@@ -1070,6 +1117,20 @@ func (st *step) startProbes(ctx context.Context, pulls *pullSpy) *probes {
 	p.wg.Go(func() { p.ls.loop(ctx, pg, lockFrom, st.winEnd, st.lg) })
 	p.wg.Go(func() { p.xidsPerS, p.xidErr = xidRate(ctx, pg, st.winStart, st.winEnd, st.lg) })
 	p.wg.Go(func() { st.profile(ctx) })
+	p.wg.Go(func() {
+		if !sleepUntil(ctx, st.winStart) {
+			return
+		}
+		p.roomsStart = readWindow(ctx, st.cfg.ep)
+		if !sleepUntil(ctx, st.winEnd) {
+			return
+		}
+		p.roomsEnd = readWindow(ctx, st.cfg.ep)
+	})
+	if st.cfg.editors.editors > 0 {
+		p.rs = &roomSampler{}
+		p.wg.Go(func() { p.rs.loop(ctx, pg, st.winStart, st.winEnd, st.lg) })
+	}
 	return p
 }
 
@@ -1112,12 +1173,13 @@ func (st *step) profile(ctx context.Context) {
 // buildSummary joins what the phases recorded into summary.json, and writes samples.json. It
 // reads the run's commit rows and names the ungranted locks' relations, so it runs after the
 // load, and it reads the loop sessions' windows, so it runs after they have all stopped
-// (loopSessions.stop). lp is nil for a step that ran the flat population alone.
+// (loopSessions.stop). lp is nil for a step that ran the flat population alone, and ed is nil in
+// a step without editors.
 //
 // The step's events and requests count both populations together, which is what the pass rule
 // reads (curves.go); a step that drove both also carries each population's own counts and
 // latencies under populations, joined from that population's writes alone.
-func (st *step) buildSummary(ns *natsSessions, lp *loopSessions, reg *registrar, live *liveSockets, pr *probes) summary {
+func (st *step) buildSummary(ns *natsSessions, lp *loopSessions, reg *registrar, live *liveSockets, ed *editorWorkload, pr *probes) summary {
 	cfg := st.cfg
 	ws, reqs, dropped := st.sent()
 	frames := live.frames.snapshot()
@@ -1154,6 +1216,7 @@ func (st *step) buildSummary(ns *natsSessions, lp *loopSessions, reg *registrar,
 			LoopSeed: cfg.loopSeedPath, LoopPlanID: cfg.loopPlanID(),
 			LoopFactor: cfg.loopFactor, GeneratorRole: cfg.generatorRole,
 			DurationS: durS, GraceS: cfg.grace.Seconds(), RNGSeed: cfg.rngSeed, NATSConns: cfg.natsConns,
+			Editors: cfg.editors.editors, EditorRate: cfg.editors.rate, EditorDocs: cfg.editors.docs,
 			SessionDelivery: cfg.sessionDelivery, MarkerNonce: formatNonce(st.nonce), Source: cfg.sourceName(),
 		},
 		Events:   join.join(),
@@ -1185,6 +1248,12 @@ func (st *step) buildSummary(ns *natsSessions, lp *loopSessions, reg *registrar,
 		sum.Events.CommitsError = commitsErr.Error()
 		st.lg.Printf("commits: %v", commitsErr)
 	}
+	editorsSent := 0
+	if ed != nil {
+		sum.Editors = ed.summary(durS)
+		editorsSent = sum.Editors.Sent
+	}
+	sum.Rooms = summarizeRooms(pr.roomsStart, pr.roomsEnd, pr.rs, editorsSent)
 	ss := pr.smp.all()
 	writeJSONFile(filepath.Join(cfg.out, "samples.json"), ss, 0o644, st.lg)
 	sum.Resources = summarizeResources(ss, sum.Events.Committed+sum.Requests.Sent, durS)

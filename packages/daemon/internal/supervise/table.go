@@ -114,6 +114,10 @@ const (
 	// lifecycle check failed with no cleanup reserved, or a launch whose write failed. The claim waits
 	// launching with no process until it fires.
 	TimerRelaunch TimerKind = "relaunch"
+	// TimerWake is the turn the wake pacing gave a launch it held back (reserveWake): the launch
+	// runs when it fires (wakeNow). A claim with no process of its own waits launching with none
+	// until then; one whose process still runs waits exactly as the wake found it.
+	TimerWake TimerKind = "wake"
 )
 
 // Timer is a timer the machine armed, firing.
@@ -269,7 +273,15 @@ type PodUpdateReask struct {
 }
 
 // RequestSpawn launches a queued claim.
-type RequestSpawn struct{ Claim claim.Token }
+type RequestSpawn struct {
+	Claim claim.Token
+	// Exempt is the caller saying this launch is not one the wake pacing may hold (reserveWake):
+	// the daemon's operator API, whose spawn a person is waiting on, and no other caller.
+	// The zero value is paced, so a caller that has not thought about it is paced: a flood of
+	// launches is the fault the pacing exists to fix, and a wake let through by default would
+	// put it back one caller at a time.
+	Exempt bool
+}
 
 // RequestRegister is the agent's registration, already authenticated by its boot token: the
 // session it became, the transcript it persists, and the hash of the secret it is being issued.
@@ -394,6 +406,10 @@ type RequestDeliver struct {
 	// of no assignment — an operator's own, a resume, a production check's look — names none, and
 	// leaves the assignment the claim is serving alone.
 	Assignment string
+	// CheckLook is the look of a closed issue's production check this task is of, from the start
+	// row that queued it (record.SuperviseRequest.CheckLook and CheckOpenedAt). A phase task, an
+	// operator's own and a resume name none, and leave the look the claim is serving alone.
+	CheckLook CheckLook
 	// Row is the outbox row the task comes from (a workflow start), 0 for a task of no row (an
 	// operator's own, the controller's start message). A row the claim already queued a task from
 	// (Claim.DeliveredRows) queues nothing: its task was given once.
@@ -464,6 +480,7 @@ const (
 	onProbeTimer    eventKind = timerPrefix + eventKind(TimerProbe)
 	onSuspendTimer  eventKind = timerPrefix + eventKind(TimerSuspend)
 	onRelaunchTimer eventKind = timerPrefix + eventKind(TimerRelaunch)
+	onWakeTimer     eventKind = timerPrefix + eventKind(TimerWake)
 	onSpawn         eventKind = "request_spawn"
 	onRegister      eventKind = "request_register"
 	onReady         eventKind = "request_ready"
@@ -728,6 +745,14 @@ func fillTable(t *builder) {
 	t.ignore(onRelaunchTimer, "no relaunch is waiting", StateQueued, StateLaunchUncertain, StateShimConnected, StateRegistered,
 		StateReady, StateWorking, StateIdle, StateSuspended, StateFailed, StateRetired)
 
+	// The turn the wake pacing gave a launch it held back. A claim with no process of its own
+	// waits launching; one whose process still runs waits in the state the wake found it, which
+	// is every other live state.
+	t.row(onWakeTimer, "the wake the pacing held runs its launch now, or a suspension held meanwhile ends it instead", wakeNow,
+		[]ClaimState{StateLaunching, StateFailed, StateSuspended}, live...)
+	t.ignore(onWakeTimer, "no wake is waiting: a paced wake of a claim with no process is written launching before it waits, and a suspension, a failure, a retirement and an undecided pane each leave the claim without one",
+		processless...)
+
 	// A re-adopted claim found still speaking another plugin contract, at boot or at a later sweep.
 	t.row(onStalePlugin, "the process speaks another plugin contract: relaunch it onto the current one", refreshStalePlugin,
 		[]ClaimState{StateLaunching, StateFailed}, StateRegistered, StateReady, StateWorking, StateIdle)
@@ -800,8 +825,8 @@ func fillTable(t *builder) {
 		StateRegistered, StateReady, StateIdle)
 	t.row(onSuspend, "hold the suspension for the turn's end: stopping the agent now would cut its turn off", holdSuspension,
 		nil, StateWorking)
-	t.row(onSuspend, "a suspension of a rule-resuming launch is held until the agent is ready", holdSuspendUntilReady,
-		nil, StateLaunching, StateShimConnected)
+	t.row(onSuspend, "a suspension of a rule-resuming launch is held until the agent is ready, unless its paced wake waits over no process: that one is suspended here",
+		holdSuspendUntilReady, []ClaimState{StateSuspended}, StateLaunching, StateShimConnected)
 	t.row(onSuspend, "already suspended: an operator's suspend takes the suspension over", suspendedAgain, nil, StateSuspended)
 	t.ignore(onSuspend, notRegistered,
 		StateQueued, StateLaunchUncertain)
@@ -1221,15 +1246,19 @@ func turnStarted(m *Machine, ctx context.Context, ev Event) error {
 	// process was already in. Every other start is one this daemon read (Machine.unseenTurn).
 	m.unseenTurn = own && start.DeliveryID == "" && m.send == nil && !awaiting
 	m.takeBackSignal(own && !m.unseenTurn)
-	persist := m.persist
+	// The write is the confirmation where this start is the pending delivery's turn, and the
+	// claim alone where it is a foreign one; the delivery is named in the start's line for the
+	// same reason, so both are decided in the one place that asks the question.
+	persist, task := m.persist, ""
 	if own {
-		persist = m.confirm
+		persist, task = m.confirm, p.ID
 	}
-	if err := persist(ctx); err != nil {
-		return err
-	}
-	m.durableState(StateWorking)
-	return nil
+	// The start is logged before the write, never after it: the decision this line exists for is
+	// a turn start whose claim write failed, and a line written after the write would leave
+	// exactly that decision silent again. The delivery is named only where this start is that
+	// delivery's turn; a foreign turn is no task's and carries none.
+	m.startTurn(task)
+	return m.durableWrite(ctx, StateWorking, persist)
 }
 
 // takeBackSignal takes back this claim's answer to its open round when the turn starting is not
@@ -1317,8 +1346,38 @@ func (m *Machine) takeBackSignal(ownTask bool) {
 // there would wait for an event nobody is going to post. A relaunch that did run leaves the claim
 // launching, which sendPending hands nothing (delivery.go), so the send costs that case nothing.
 //
+// The turn's end is logged here (turnEndedLine), and this is the only exit from working that
+// writes that line. The line names what this turn's own start line named (startTurn, endTurn),
+// because no reading of the claim can answer what the ending turn was: the window this same
+// function's resultPending branch leaves is one where the claim holds a task confirmed — its
+// turn ended before Oh My Pi said which turn the prompt's was, so settle retired nothing and the
+// task is still in the worker's hands — while the turn now ending is a turn of the agent's own,
+// which started naming no delivery. Every other way out of a turn writes a line of its own
+// instead, which is what a reader who found a start and no end looks for:
+//
+//   - a death of the process (died): "supervise: process died";
+//   - a held suspension whose deadline runs out (suspendAtTimeout): "supervise: the agent's turn
+//     has not ended; suspending it mid-turn";
+//   - a failure of the claim (fail): "supervise: claim failed";
+//   - a retirement (retire), which writes no line of its own: the agent's own exit says
+//     "supervise: the agent reported its exit" before it, and a stop or the workflow's close of
+//     the issue or the tree retires the claim with no line at all;
+//   - a stale-plugin relaunch of a claim whose turn is not waited out (relaunchStale):
+//     "supervise: the process speaks another plugin contract; relaunching it onto the current
+//     plugin" — one that is waited out says "supervise: the process speaks another plugin
+//     contract; its relaunch waits for the agent's turn to end" and comes back through here;
+//   - the end of an update round (endPodUpdate): "supervise: the update round is over for this
+//     claim" — a plugin round whose claim is in a turn does not end at all, and says "supervise:
+//     this claim's plugin round is not ready to end; its process is left as it is and the next
+//     sweep posts the end again".
+//
+// Widening the turn line to every one of those exits is not this change: each of them already
+// says in its own words what became of the turn, and the pair of turn lines is the turn the
+// worker ran.
+//
 // answerByTurnEnd runs first of all, before the marks it reads are cleared (askFirst, unseenTurn).
 func turnEnded(m *Machine, ctx context.Context, _ Event) error {
+	m.endTurn()
 	m.answerByTurnEnd()
 	m.askFirst, m.unseenTurn = false, false
 	if m.held != nil {
@@ -1547,7 +1606,7 @@ func noTurn(m *Machine, ctx context.Context, _ Event) error {
 	return m.promptFailed(ctx, fmt.Sprintf("acknowledged, and no turn started within %s", m.deps.Timeouts.RPC), taskRead)
 }
 
-func spawn(m *Machine, ctx context.Context, _ Event) error { return m.revive(ctx) }
+func spawn(m *Machine, ctx context.Context, ev Event) error { return m.revive(ctx, exemptWake(ev)) }
 
 // register records the session the agent became. The boot intervals end
 // with the registration, but not the deadline: it is armed again at its base bound, and only the
@@ -1608,10 +1667,9 @@ func ready(m *Machine, ctx context.Context, _ Event) error {
 // finishReady persists the current claim before publishing ready or delivering work. reready may
 // reach it while the claim is idle or working, so it must not rewrite the state to ready.
 func finishReady(m *Machine, ctx context.Context) error {
-	if err := m.persist(ctx); err != nil {
+	if err := m.durableWrite(ctx, StateReady, m.persist); err != nil {
 		return err
 	}
-	m.durableState(StateReady)
 	return m.sendPending(ctx)
 }
 
@@ -1626,7 +1684,7 @@ func reready(m *Machine, ctx context.Context, _ Event) error {
 	return finishReady(m, ctx)
 }
 
-func resume(m *Machine, ctx context.Context, _ Event) error { return m.revive(ctx) }
+func resume(m *Machine, ctx context.Context, ev Event) error { return m.revive(ctx, exemptWake(ev)) }
 
 // resumeByRule is the daemon's own resume of a suspended claim (RequestRuleResume): the same
 // session relaunched, as the operator's resume relaunches it, unless an operator suspended the
@@ -1641,15 +1699,16 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 		return nil
 	}
 	m.log.Info("supervise: resuming by rule", "rule", rule, "suspendedBy", m.claim.SuspendedBy)
-	return m.revive(ctx)
+	return m.revive(ctx, exemptWake(ev))
 }
 
 // retry is a failed or retired claim given another run: its budgets start over, and its session,
 // when it has one, is relaunched after the process the claim last ran is gone. A pending delivery
-// the claim kept goes once the agent is ready.
-func retry(m *Machine, ctx context.Context, _ Event) error {
+// the claim kept goes once the agent is ready. Its event is the workflow's retry or the
+// operator's own (operatorRetry), and the pacing reads each its own way (exemptWake).
+func retry(m *Machine, ctx context.Context, ev Event) error {
 	m.claim.Budgets = Budgets{}
-	return m.revive(ctx)
+	return m.revive(ctx, exemptWake(ev))
 }
 
 // operatorRetry is the operator's retry of a failed claim: retry, for an architect, whether its
@@ -1836,6 +1895,15 @@ func deliverNow(m *Machine, ctx context.Context, ev Event) error {
 // suspended it: an operator's suspension answers ErrHeldByOperator, queuing
 // nothing, and its start waits for the operator's resume. The operator's own delivery resumes the
 // claim whoever suspended it.
+//
+// Which of the two it is decides the pacing too, and the id is what says which (RequestDeliver.ID,
+// which the API's deliver route leaves empty). The workflow's own task is a wake of the daemon's
+// own and waits its turn like every other (reserveWake): the task waits on the claim until the
+// launch it waits for runs. The operator's task never waits — a person is waiting on it, as they
+// are on the resume and the retry the same route sends (exemptWake) — so it launches where it
+// arrives and takes nothing from the rate. A wake the pacing already holds over the claim is
+// dropped before this row is reached, so the claim this decides is the claim the gate found
+// (dropsWaitingWake, dropWakeFor).
 func deliverResuming(m *Machine, ctx context.Context, ev Event) error {
 	d := ev.(RequestDeliver)
 	if d.ID != "" && !m.claim.RuleMayResume() {
@@ -1844,7 +1912,7 @@ func deliverResuming(m *Machine, ctx context.Context, ev Event) error {
 	if err := m.queue(ctx, d); err != nil {
 		return err
 	}
-	return m.revive(ctx)
+	return m.revive(ctx, d.ID == "")
 }
 
 // exit is the agent reporting its own end. A worker's or sub-architect's claim ends with it and is
@@ -2075,7 +2143,8 @@ func (m *Machine) askForUpdate(ctx context.Context, open PodUpdateOpen, now time
 				"round", open.Round)
 			return nil
 		}
-		return m.revive(ctx)
+		// The round's ask is a wake of the daemon's own, paced like every other (reserveWake).
+		return m.revive(ctx, false)
 	}
 	return m.sendPending(ctx)
 }
@@ -2173,10 +2242,19 @@ func (m *Machine) takeSlotForUpdate(ctx context.Context, launching bool) error {
 // was opened over, and the sweep reads the round of every claim.
 //
 // A claim's own plugin round ends with the relaunch it was opened for: the worker has pushed its
-// work and answered, so the process is replaced now, through the path the stale-plugin lane used
-// to take at once (replaceProcess). PluginRelaunchFor records the contract this relaunch is made
-// for, as refreshPlugin records it, so a registration that still differs afterwards is charged
-// rather than relaunched again for free (staleRegistration).
+// work and answered, so the process is replaced now, through the path the stale-plugin lane
+// takes outside a round (relaunchMarked). That relaunch marks the claim where its launch starts
+// the replacement, as relaunchStale's does (launchNow), so a registration that still differs
+// after it has run is charged rather than relaunched again for free, and one that arrives while
+// it still waits its turn in the wake pacing is neither (staleRegistration).
+//
+// This end raises its relaunch over a claim whose own launch may already be waiting its turn —
+// the stale-plugin lane relaunches an answered round's claim from a stale registration too
+// (relaunchStale) — and that second launch replaces the waiting wake and takes a token of its
+// own (reserveWake). What it replaces is a launch that was going to do exactly what this one
+// does, and neither has marked the claim, so nothing of the first is lost but its token; the
+// round is cleared here, so the sweep's next end post for this claim decides nothing and no
+// third launch follows.
 //
 // A plugin round ends for nothing while its worker is in a turn, or while its answer is not
 // standing. That end keeps the claim's process and its pod, so what decides it is the claim as
@@ -2199,14 +2277,12 @@ func (m *Machine) takeSlotForUpdate(ctx context.Context, launching bool) error {
 //
 // The relaunch this end makes is the one relaunchStale makes, so it takes that path's own guard
 // before it changes anything: the launch can be refused — a tree lifecycle cleanup already
-// reserved, a moved epoch, a transient store error — and a refusal after the task was dropped,
-// the round cleared and PluginRelaunchFor marked would throw away the worker's answer and the
-// round for a refusal that is nobody's fault. The next StalePlugin post would ask it to push
-// again, and the next stale registration would read the mark as a relaunch that happened and
-// charge the claim toward failed (staleRegistration). So checkLaunch runs first, where no
-// suspension is already held (the case replaceProcess would launch rather than end in a
-// suspension, as relaunchStale reads it), and the round is left exactly as the post found it for
-// the next sweep to end again.
+// reserved, a moved epoch, a transient store error — and a refusal after the task was dropped
+// and the round cleared would throw away the worker's answer and the round for a refusal that is
+// nobody's fault, leaving the next StalePlugin post to ask it to push again. So checkLaunch runs
+// first, where no suspension is already held (the case replaceProcess would launch rather than
+// end in a suspension, as relaunchStale reads it), and the round is left exactly as the post
+// found it for the next sweep to end again.
 func endPodUpdate(m *Machine, ctx context.Context, ev Event) error {
 	ended := ev.(PodUpdateEnded)
 	if m.claim.UpdateRound == "" {
@@ -2248,8 +2324,7 @@ func endPodUpdate(m *Machine, ctx context.Context, ev Event) error {
 		return nil
 	}
 	m.clearUpdate()
-	m.claim.PluginRelaunchFor = m.deps.PluginContract
-	return m.replaceProcess(ctx, "the process on another plugin contract is replaced now that its worker has pushed its work", ordinaryEnd)
+	return m.relaunchMarked(ctx, "the process on another plugin contract is replaced now that its worker has pushed its work")
 }
 
 // leaveRound is the round going from this claim with no process this machine replaces: the ask
