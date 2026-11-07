@@ -44,7 +44,8 @@ issue with one child per repository, each child's own `--repo` fixed when the da
 Every pane and pod holds a write token, minted from the role's GitHub App, for its own issue's
 repository alone, and read-only tokens for every other repository the project maps. Its gh bundle
 holds one directory per owner, one more per owner a configured rename moved a repository away
-from, and an `<owner>/<repo>` directory for each other repository served by the issue's recorded
+from while the project serves the name it moved to, and an `<owner>/<repo>` directory for each
+other repository served by the issue's recorded
 owner and by the owner whose installation serves the issue's repository. The write token stands in
 two of those directories, the recorded owner's and the serving owner's, which are one directory
 unless a rename moved the issue's repository, and every other directory is read-only, an

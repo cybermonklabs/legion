@@ -96,8 +96,9 @@ jj of 0.38 or later — the jj bound it refuses to boot below (`resolveTools`, n
 `LEGION_JJ_PATH`, its own override for the jj it runs) — and the real `gh` (`LEGION_GH_PATH`, or the
 first `gh` on its `PATH`, refused when that is a script), which every pane is told as `LEGION_GH_PATH`. A pane's GitHub identity is
 a set of files that binary reads, one directory per GitHub owner of the project, one more per owner
-a configured rename moved a repository away from, and an `<owner>/<repo>` directory for each other
-repository the issue's recorded owner and the owner serving the issue's repository serve: the
+a configured rename moved a repository away from while the project serves the name it moved to,
+and an `<owner>/<repo>` directory for each other repository the issue's recorded owner and the
+owner serving the issue's repository serve: the
 daemon writes gh's own `hosts.yml` (an App installation token, user `x-access-token`) and
 `config.yml` under `<state_dir>/secrets/<claim>-gh/<dir>` (0700, files 0600) when it opens the
 pane — in two directories, the issue's recorded owner's and the one named for the owner whose
