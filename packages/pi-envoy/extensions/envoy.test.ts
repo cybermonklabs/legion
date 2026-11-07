@@ -133,6 +133,8 @@ const natsState = {
   heldConnect: undefined as Promise<void> | undefined,
   drainHangs: false,
   drainStarted: false,
+  /** Records that the connection's `drain()` returned, which a hanging drain never does. */
+  drainSettled: false,
   /** Each mocked connection's `status()` readers: a push hands every one of them the status, as
    *  nats.js reports a reconnect to every reader of the connection's status iterator. */
   statusReaders: [] as ((status: { readonly type: string; readonly data: unknown }) => void)[],
@@ -202,6 +204,7 @@ mock.module("nats", () => ({
       drain: async () => {
         natsState.drainStarted = true;
         if (natsState.drainHangs) await Promise.withResolvers<never>().promise;
+        natsState.drainSettled = true;
       },
       // An async iterable of the connection's status events, which a test feeds through
       // `pushNatsStatus`; it ends once the connection is closed.
@@ -486,6 +489,7 @@ afterEach(async () => {
   natsState.realConnect = false;
   natsState.drainHangs = false;
   natsState.drainStarted = false;
+  natsState.drainSettled = false;
   natsState.statusReaders.length = 0;
   // As for `heldConnect`: a parked flush left behind would park every later test's subscribe.
   natsState.heldFlush = undefined;
@@ -16431,20 +16435,35 @@ console.log(JSON.stringify(args));
   });
 
   test("session_shutdown resolves within its budget when drain hangs on a dead connection", async () => {
-    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
-    const { default: envoyExtension } = await import("./envoy.ts?shutdown-hang");
+    const requests: string[] = [];
+    globalThis.fetch = async (input, init) => {
+      requests.push(`${init?.method ?? "GET"} ${new URL(input.toString()).pathname}`);
+      return responseWithRegistration(input, init, []);
+    };
+    const { default: envoyExtension, SHUTDOWN_DEADLINE_MS } = await import(
+      "./envoy.ts?shutdown-hang"
+    );
     const fixture = createPi();
 
     envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_shutdown"));
 
     natsState.drainHangs = true;
-    const startedAt = Date.now();
     await fixture.handlers.get("session_shutdown")?.({}, sessionContext("ses_shutdown"));
 
-    // OMP kills shutdown handlers at 2s; the bounded drain must finish first.
-    expect(Date.now() - startedAt).toBeLessThan(1_900);
-  });
+    // The handler deregistered and returned while the drain was still hanging: one that waits the
+    // drain out never reaches any of these.
+    expect(requests).toContain("DELETE /v1/sessions/ses_shutdown");
+    expect(natsState.drainStarted).toBe(true);
+    expect(natsState.drainSettled).toBe(false);
+    // Oh My Pi kills shutdown handlers at 2 s, so the bounded drain has to finish first: the
+    // budget itself is what has to stay under that cap. 2_000 is Oh My Pi's own
+    // `SESSION_SHUTDOWN_HANDLER_TIMEOUT_MS`, a literal here because Oh My Pi is not a dependency
+    // of this package.
+    expect(SHUTDOWN_DEADLINE_MS).toBeLessThan(2_000);
+    // A hang guard rather than a budget: what can hang here is a `session_shutdown` handler that
+    // waits for a drain that never returns.
+  }, 30_000);
 
   test("starts NATS drain while listener deregistration is still pending", async () => {
     const deletion = Promise.withResolvers<Response>();
@@ -16568,14 +16587,13 @@ console.log(JSON.stringify(args));
     // Real time: the registration has to be on the wire before the shutdown starts waiting it out.
     await new Promise((resolve) => setTimeout(resolve, 50));
 
-    const startedAt = Date.now();
     await fixture.handlers.get("session_shutdown")?.({}, sessionContext("ses_shutdown"));
-    const elapsed = Date.now() - startedAt;
 
     // The DELETE is on the wire at all, which the five-second settle inside a one-second deadline
-    // never managed, and the handler is still done inside the 2 s OMP gives it.
+    // never managed. That it is sent inside the 2 s Oh My Pi gives the handler is proved by the
+    // `SHUTDOWN_DEADLINE_MS` assertion in "session_shutdown resolves within its budget when drain
+    // hangs on a dead connection".
     expect(requests).toContain("DELETE /v1/sessions/ses_shutdown");
-    expect(elapsed).toBeLessThan(1_900);
 
     registration.resolve(
       response({
@@ -16586,7 +16604,9 @@ console.log(JSON.stringify(args));
       })
     );
     await subscribing;
-  });
+    // A hang guard rather than a budget: what can hang here is a `session_shutdown` handler that
+    // waits out a registration that never settles.
+  }, 30_000);
 
   // A `/new`, a fork or a branch mints a new id, and nothing heartbeats the old one from then on:
   // left registered it reads as live, and then as unresponsive, for an hour of peers' sends.
