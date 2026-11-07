@@ -545,10 +545,12 @@ func TestIntakeDrainsABacklogPublishedBeforeItBinds(t *testing.T) {
 }
 
 // TestASecondProcessStandsByForADurableAnotherHolds: two envoy-dispatch processes serve one NATS
-// and one Postgres, and one of them delivers from the durable: the one holding its hold. The
-// second is a standby, not a failure: it logs nothing at ERROR, says which process holds the
-// durable, never binds it while the first holds it, and takes it over once the first stops --
-// which is how a stopped or dead process's delivery work is picked up.
+// and one Postgres, and one of them delivers from the durable: the one holding its hold. What
+// admits one of them is Postgres -- the durable's hold, and the consumer lease its take-over
+// runs under (intakeHoldName, consumerLease) -- and not NATS. The second is a standby, not a
+// failure: it logs nothing at ERROR, says which process holds the durable, never binds it while
+// the first holds it, and takes it over once the first stops -- which is how a stopped or dead
+// process's delivery work is picked up.
 func TestASecondProcessStandsByForADurableAnotherHolds(t *testing.T) {
 	logs := captureLogs(t)
 	pool, ctx := deliveryTestPool(t)
