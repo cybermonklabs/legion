@@ -717,7 +717,7 @@ What the two processes share, and what each keeps to itself:
   one whose NATS stays down for three seconds, or whose failed sends meet a connection that does not answer a probe, releases the hold too.
   One that finds its hold lost releases it as well, which stops its renewal and deletes the row only while the row still names it.
   One that is alive but whose renewal is not confirmed within four seconds of the last one that was stops publishing at that moment, and no standby may take the name while its row stands: until its release, right after the line that ends the turn, deletes the row, or until the row lapses two seconds later when that release cannot reach the database first;
-  the line that ends the turn carries `stopped`, the moment it stopped, which is not the moment the line was written.
+  the line that ends the turn carries `stopped`, the moment it stopped, which is not the moment the line was written, and the line that begins it (`took the publisher hold`) carries `started`, read before the process began publishing.
   A holder sends nothing once its hold's deadline has passed, a send already waiting for a connection included (`bus.Client.WindowUntil`), so one that freezes and resumes publishes nothing beside the new holder.
   Each owner's events (an issue's, a document's or a project's) keep their order per destination:
   an event goes to a session's subject, or to the owner's topic family, only after every earlier unpublished event of its owner bound there has reached it.
