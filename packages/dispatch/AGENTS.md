@@ -1302,7 +1302,9 @@ five minutes and keeps it spent while they are not, and checks offline (it stays
 event (it stays until `pageshow`, then recovers), and another origin's `/assets/` script failing on
 a rendered page (it stays, budget unspent).
 Dispatch sends no Content-Security-Policy with the application shell; one would have to allow that script by its hash.
-The one route that sends a policy is `GET /api/v1/artifacts/{id}/versions/{number}/page`, the `view` block's page route, whose `sandbox allow-scripts; default-src 'none'; …` puts an agent-written page in an opaque origin and stops every request it could make (`packages/envoy/internal/dispatch/api/artifact_files.go`, `pageContentSecurityPolicy`).
+Two routes send a policy.
+`GET /api/v1/artifacts/{id}/versions/{number}/page`, the `view` block's page route, sends `sandbox allow-scripts; default-src 'none'; …`, which puts an agent-written page in an opaque origin and stops its `fetch`, form and resource requests (`pageContentSecurityPolicy` in `packages/envoy/internal/dispatch/api/artifact_files.go`).
+Every file version's download, `GET /api/v1/artifacts/{id}/versions/{number}`, sends `sandbox; default-src 'none'` and answers a type a browser draws as a document as `application/octet-stream`, so no download draws on Dispatch's own origin (`downloadContentSecurityPolicy` and `downloadContentType` in the same file).
 The server
 makes the browser revalidate every page and keep every hashed asset
 (`packages/envoy/cmd/dispatch/AGENTS.md`, "Routes"), so no cached page from an older build asks

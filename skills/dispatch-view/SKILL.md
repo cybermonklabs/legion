@@ -92,9 +92,11 @@ with a `MessagePort`, and every data message comes over that port and over nothi
   sees the line "this page sent no ready message in 10 seconds".
 - That one answer is `dispatch-view:port`, and it carries the page's `MessagePort` in
   `event.ports[0]`. Keep it: it is the only way data reaches the page. A transferred port belongs
-  to the document that took it, so a page that moves its frame leaves the port behind with its
-  own document, and the document that replaces it is given none — that is how Dispatch sends a
-  page that moved away nothing more.
+  to the document that took it, so a page that moves its frame after it took the port leaves the
+  port behind with its own document, and the document that replaces it is given none. Dispatch
+  answers the first `ready` from the frame, whichever document in the frame posts it, so a page
+  that moves its frame before its own `ready` hands the port to the document it moved to. This
+  stops a page that moves by mistake; it does not stop a page that means to pass its data on.
 - Dispatch posts `dispatch-view:data` on that port after the handover, and again, with every
   file, after any data file gets a new version. Dispatch posts to one frame at most once in 2
   seconds, sends only the newest version of each file, and never posts an older version after a

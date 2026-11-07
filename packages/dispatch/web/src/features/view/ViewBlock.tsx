@@ -277,8 +277,11 @@ export function ViewBlock({ slot }: { slot: ViewBlockSlot }): ReactNode {
     /** The channel every data message of this frame goes over: one end of a `MessageChannel`
      *  whose other end was transferred to the page with the answer to its first `ready`. A
      *  transferred port belongs to the document that received it, so a page that moves its
-     *  frame away takes the port out of the world with its own document and the replacement
-     *  has nothing to receive on (dispatch://INFRA-682, R5). */
+     *  frame away after it took the port takes the port out of the world with its own document,
+     *  and the replacement has nothing to receive on (dispatch://INFRA-682, R5). A page that
+     *  moves before its own `ready` is not held by this: the parent cannot tell the two
+     *  documents apart, since both have the opaque origin and the frame's address is unreadable,
+     *  so whichever posts the first `ready` gets the port. */
     let port: MessagePort | undefined;
     /** Whether a send is reading its files now, and whether anything changed while it read.
      *  One send runs at a time, so a read of an older version can never be posted after a
@@ -466,10 +469,11 @@ export function ViewBlock({ slot }: { slot: ViewBlockSlot }): ReactNode {
         }
         ready = true;
         window.clearTimeout(readyTimer);
-        // The one channel this document gets, with the first answer to its first `ready`. Only
-        // the first is answered, so a document that replaced this one and posts a `ready` of
-        // its own is given no port (dispatch://INFRA-682, R5). The page's origin is opaque, so
-        // there is no origin to name but any.
+        // The one channel this frame gets, with the answer to its first `ready`. Only the first
+        // is answered, so a document that replaces the one that took the port and posts a
+        // `ready` of its own is given none (dispatch://INFRA-682, R5); see `port` above for the
+        // case this does not hold. The page's origin is opaque, so there is no origin to name
+        // but any.
         const channel = new MessageChannel();
         port = channel.port1;
         frame.contentWindow?.postMessage({ type: "dispatch-view:port" }, "*", [channel.port2]);
