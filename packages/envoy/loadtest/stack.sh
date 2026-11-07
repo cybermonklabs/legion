@@ -385,7 +385,7 @@ port_holder() {
 # check_port NAME PORT_KEY: refuse a port another process holds, naming it when this PID namespace
 # can see it, and saying that it cannot when it cannot. A port this namespace cannot see is most
 # often another Legion role of the pod whose LOADTEST_ROOT hashed into this root's block of ports
-# (common.sh: a block out of 200, so about 1 pair of roots in 200 collides), and then all 8 ports
+# (common.sh: a block out of 200, so about 1 pair of roots in 200 collides), and then all 9 ports
 # are the same, so the refusal names the block and both remedies. It says that only of a port this
 # root's block still sets: a port stack.json recorded under another block, or one a LOADTEST_*_PORT
 # overrides, is held by whoever holds it, which this root's block says nothing about.
@@ -399,7 +399,7 @@ check_port() {
   block=$(port_block "$LOADTEST_ROOT")
   [ "$p" = "$(default_port "$key" "$block")" ] ||
     die "port $p ($key, for $name) is already in use, and no process of this PID namespace holds it: another Legion role of this pod, or another PID namespace, may hold it, in the network namespace they share. This port is not the default of this root's port block $block (stack.json records it, or ${PORT_VAR[$key]} sets it). Stop whatever holds it and rerun stack.sh start, or set ${PORT_VAR[$key]} to a port no one holds and rerun stack.sh setup with it set, then stack.sh start (start reads the ports stack.json records, so a port variable takes effect only through setup)"
-  die "port $p ($key, for $name) is already in use, and no process of this PID namespace holds it: another Legion role of this pod, or another PID namespace, may hold it, in the network namespace they share. This root is in port block $block of $PORT_BLOCKS (the block is the hash of $LOADTEST_ROOT modulo $PORT_BLOCKS), and a second root in block $block holds these same 8 ports. Stop that stack from the role that started it and rerun stack.sh start; or set the LOADTEST_*_PORT variables (${PORT_VAR[$key]} for this one) to ports no one holds and rerun stack.sh setup with them set, then stack.sh start (start reads the ports stack.json records, so a port variable takes effect only through setup); or move this stack to another LOADTEST_ROOT, which picks another block with probability $((PORT_BLOCKS - 1))/$PORT_BLOCKS, and run stack.sh setup and stack.sh start there"
+  die "port $p ($key, for $name) is already in use, and no process of this PID namespace holds it: another Legion role of this pod, or another PID namespace, may hold it, in the network namespace they share. This root is in port block $block of $PORT_BLOCKS (the block is the hash of $LOADTEST_ROOT modulo $PORT_BLOCKS), and a second root in block $block holds these same 9 ports. Stop that stack from the role that started it and rerun stack.sh start; or set the LOADTEST_*_PORT variables (${PORT_VAR[$key]} for this one) to ports no one holds and rerun stack.sh setup with them set, then stack.sh start (start reads the ports stack.json records, so a port variable takes effect only through setup); or move this stack to another LOADTEST_ROOT, which picks another block with probability $((PORT_BLOCKS - 1))/$PORT_BLOCKS, and run stack.sh setup and stack.sh start there"
 }
 
 ports_of() {

@@ -14,7 +14,7 @@
 # exports them as LOADTEST_SRC and LOADTEST_ROOT.
 #
 # stack_ports ROOT: the stack's ports for ROOT, "KEY PORT" a line. The defaults follow the root's
-# physical path (port_block, default_port): a root always gets the same block of 8 ports, and two
+# physical path (port_block, default_port): a root always gets the same block of 9 ports, and two
 # roots get two blocks out of 200, so they share every port about 1 pair of roots in 200 (the block
 # is a hash modulo 200, not a per-root reservation). Each LOADTEST_*_PORT (PORT_VAR) overrides its
 # own port. So two Legion roles of one pod, each with its own LOADTEST_ROOT, almost always run a
