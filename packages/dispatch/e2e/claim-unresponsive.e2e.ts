@@ -120,7 +120,9 @@ test("an unresponsive holder keeps its claim: the issue page says unresponsive s
     const stalled = page.getByTestId("issue-claim-unresponsive");
     await expect(stalled).toBeVisible();
     await expect(page.getByTestId("issue-claim-lapsed")).toHaveCount(0);
-    await expect(chip).toHaveAttribute("title", /missed its heartbeats without ending/);
+    // The issue page raises no tooltip at all (dispatch://INFRA-1196 R21): what the chip's
+    // `title` says on a List row or a Board card is drawn here, in the words below.
+    await expect(chip).not.toHaveAttribute("title", /./);
     // R5's wording: the state, and the heartbeat the silence is dated from.
     await expect(stalled).toContainText("unresponsive since");
     await expectInstant(
@@ -185,7 +187,7 @@ test("an unresponsive holder past its takeable moment reads takeable now, is lis
     await expect(stalled).toContainText("unresponsive since");
     await expect(stalled.getByTestId("issue-claim-takeable")).toHaveText(", takeable now");
     await expect(page.getByTestId("issue-claim-lapsed")).toHaveCount(0);
-    await expect(chip).toHaveAttribute("title", /another agent may take it now/);
+    await expect(chip).not.toHaveAttribute("title", /./);
     await expect(chip.locator(`[data-agent-name="${holder.session_id}"]`)).toHaveAttribute(
       "data-agent-state",
       "unresponsive"
@@ -268,7 +270,8 @@ test("a route to an unresponsive session, and to a role it holds, reads holder_u
       const marker = page.getByTestId("issue-route-unresponsive");
       await expect(marker).toBeVisible();
       await expect(marker).toContainText("Unresponsive, still reached");
-      await expect(marker).toHaveAttribute("title", /waits until it answers/);
+      // The explanation is the marker's own text on a page that raises no tooltip (R21).
+      await expect(marker).toContainText("waits until it answers");
       // Neither of the other two answers: the route is not unreachable, and it is not unjudged.
       await expect(page.getByTestId("issue-route-unreachable")).toHaveCount(0);
       await expect(page.getByTestId("issue-route-unknown")).toHaveCount(0);

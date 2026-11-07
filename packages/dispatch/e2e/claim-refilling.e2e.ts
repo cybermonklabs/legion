@@ -49,21 +49,24 @@ test("a refilling agent list never lapses a session's claim on the chip or in th
     const page = await alice.newPage();
     await page.goto(`/issues/${key}`);
     const chip = page.getByTestId("issue-claim");
-    await expect(chip).toHaveAttribute("title", /Claimed /);
-    await expect(chip).not.toHaveAttribute("title", /no longer running/);
+    // The issue page raises no tooltip at all (dispatch://INFRA-1196 R21), so every mark the
+    // chip makes is read where it is drawn, and "not running" is a mark rather than a phrase
+    // inside a `title`.
+    await expect(chip).toContainText("Claimed by");
+    await expect(page.getByTestId("issue-claim-lapsed")).toHaveCount(0);
 
     await setListsState("refilling");
     await page.reload();
-    await expect(page.getByTestId("issue-header").getByTestId("agent-list-refilling")).toHaveText(
-      REFILLING,
-      { timeout: REFILL_TIMEOUT }
-    );
-    await expect(chip).toHaveAttribute(
-      "title",
-      /Couldn't check whether that session is still running: The agent list is refilling\. Try again in a moment\.$/,
-      { timeout: REFILL_TIMEOUT }
-    );
-    await expect(chip).not.toHaveAttribute("title", /no longer running/);
+    // The issue's subscribers are in the page's own panel now, under People (R12).
+    await expect(
+      page.locator('[data-margin-section="people"]').getByTestId("agent-list-refilling")
+    ).toHaveText(REFILLING, { timeout: REFILL_TIMEOUT });
+    // And the chip says the list could not be read, rather than pass the claim off as held:
+    // the words `uncheckedNote` puts in a tooltip where a host raises one.
+    await expect(page.getByTestId("issue-claim-unchecked")).toHaveText("running state unknown", {
+      timeout: REFILL_TIMEOUT,
+    });
+    await expect(page.getByTestId("issue-claim-lapsed")).toHaveCount(0);
 
     await page.goto("/projects/CORE/issues?unclaimed=1");
     await expect(page.getByTestId("unclaimed-unchecked")).toHaveText(
@@ -85,7 +88,9 @@ test("a complete agent list without the holder lapses its claim on the chip and 
   try {
     const page = await alice.newPage();
     await page.goto(`/issues/${key}`);
-    await expect(page.getByTestId("issue-claim")).toHaveAttribute("title", /no longer running/);
+    // Drawn, not hovered: the issue page raises no tooltip (R21).
+    await expect(page.getByTestId("issue-claim-lapsed")).toHaveText("not running");
+    await expect(page.getByTestId("issue-claim-unchecked")).toHaveCount(0);
     await page.goto("/projects/CORE/issues?unclaimed=1");
     await expect(page.locator("[data-issue-row]").filter({ hasText: key })).toHaveCount(1);
     await expect(page.getByTestId("unclaimed-unchecked")).toHaveCount(0);

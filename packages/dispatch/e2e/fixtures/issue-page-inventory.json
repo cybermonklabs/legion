@@ -2586,6 +2586,7 @@
     "link \"Inbox Needs you 1\"": "link \"Inbox 1\"",
     "link \"Replies\"": "link \"Inbox 1\" | link \"Inbox\"",
     "button \"Open inbox, needs you 1\"": "button \"Peek at the inbox without leaving this page\" | link \"Inbox 1\"",
-    "button \"Open inbox\"": "button \"Peek at the inbox without leaving this page\" | link \"Inbox\""
+    "button \"Open inbox\"": "button \"Peek at the inbox without leaving this page\" | link \"Inbox\"",
+    "link \"#11 acme/issue-layout\"": "link \"#11 acme/issue-layout\" | link \"#11 acme/issue-layout (GitHub details are unavailable for this repository)\""
   }
 }
