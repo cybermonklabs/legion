@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -808,6 +809,83 @@ func TestReleaseReturnsTheMessagesThePullHoldsUnread(t *testing.T) {
 	}
 	released := waitForAckPending(t, consumers, session, 0)
 	t.Logf("once the next pull has acked both, the consumer has NumWaiting %d (that pull's own request) and NumAckPending %d", released.NumWaiting, released.NumAckPending)
+}
+
+// waitForQueued waits for pull to hold want messages its caller has not read, which is the state
+// Release gives them back from. The server reporting them delivered is a moment ahead of it: the
+// pull's inbox subscription queues each message when nats.go hands it over.
+func waitForQueued(t *testing.T, pull *SessionPull, want int) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		pull.mu.Lock()
+		held := len(pull.queue)
+		pull.mu.Unlock()
+		if held == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the pull holds %d messages unread, want %d", held, want)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// A hand-over that could not reach the server at all says so, rather than reporting a whole
+// hand-over while every message it held went out with the connection. On a connection that is
+// closed the drain of the pull's inbox subscription fails, and nats.go throws away what it had
+// buffered there unread; the naks of what the pull itself holds fail with it. Both halves are
+// named: Detach reports the drain, and Release reports that drain together with the naks and
+// counts nothing returned, so the caller's hand-over line cannot claim messages reached the
+// server that never left the process.
+func TestAHandOverOnAClosedConnectionReportsTheDrainAndTheNaksThatFailed(t *testing.T) {
+	owner, consumers := sessionConsumersOnStream(t)
+	ctx := context.Background()
+	const session = "ses_closed"
+	agent := contracts.AgentSubject(session)
+	if _, err := consumers.Ensure(ctx, session, []string{agent}, 0); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	for i := range 3 {
+		publishStored(t, owner, agent, strconv.Itoa(i))
+	}
+	// A connection of this row's own, on the test's account: closing it ends no other row's
+	// pull and no cleanup of the connection sessionConsumersOnStream hands out.
+	mine, err := ConnectSessionConsumers([]string{testnats.URL(t)})
+	if err != nil {
+		t.Fatalf("connect a session consumers connection of this row's own: %v", err)
+	}
+	t.Cleanup(mine.Close)
+	pull, err := mine.Pull(ctx, session)
+	if err != nil {
+		t.Fatalf("pull %s: %v", session, err)
+	}
+	// The first Next sends the pull request, which asks for a whole batch, and reads the first
+	// of the three messages the server delivers for it; the other two are queued in the pull,
+	// which is what Release has to return.
+	next(t, pull)
+	waitForQueued(t, pull, 2)
+	mine.Close()
+
+	detachErr := pull.Detach()
+	if detachErr == nil {
+		t.Fatal("Detach on a closed connection reported nothing, while nats.go threw away every message the pull's inbox held unread")
+	}
+	if !strings.Contains(detachErr.Error(), "could not be drained") {
+		t.Fatalf("Detach reported %q, want it naming the drain that failed", detachErr)
+	}
+	returned, err := pull.Release()
+	if returned != 0 {
+		t.Fatalf("Release returned %d messages on a closed connection, want none: no nak of it reached the server", returned)
+	}
+	if err == nil {
+		t.Fatal("Release on a closed connection reported nothing, so its caller would log a whole hand-over")
+	}
+	if !strings.Contains(err.Error(), "could not be drained") || !strings.Contains(err.Error(), "could not return 2 of the messages it held") {
+		t.Fatalf("Release reported %q, want it naming both the drain that failed and the two naks that failed", err)
+	}
+	t.Logf("Detach reported: %v", detachErr)
+	t.Logf("Release reported: %v", err)
 }
 
 // A session the stream holds no consumer for: its info, a restart of it and a pull of it all

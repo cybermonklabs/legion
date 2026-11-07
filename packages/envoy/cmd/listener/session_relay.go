@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"maps"
 	"slices"
@@ -994,25 +993,11 @@ func (m *sessionRelays) release(run *relayRun) (int, error) {
 	// message the session naked and the relay sent again. No nak is sent under framesMu: it is a
 	// publish, and the lock answers every session's replies.
 	slices.SortFunc(dropped, func(a, b *relayFrame) int { return a.sentAt.Compare(b.sentAt) })
-	returned, failed := 0, 0
-	var firstErr error
+	held := make([]bus.SessionAcker, 0, len(dropped))
 	for _, frame := range dropped {
-		if err := frame.acker.NakWithDelay(0); err != nil {
-			failed++
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
-		}
-		returned++
+		held = append(held, frame.acker)
 	}
-	if failed > 0 {
-		// A nak fails because the connection is closed or its reconnect buffer is full, which is
-		// the shutdown burst where every relay releases at once, so the failures of one run are
-		// one error naming the first of them rather than up to MaxAckPending copies of it.
-		return returned, fmt.Errorf("could not return %d of the session's frames to the server; the first failed with: %w", failed, firstErr)
-	}
-	return returned, nil
+	return bus.ReturnMessages("the relay of session "+run.sessionID, held)
 }
 
 // onReply hears a session's reply to a frame: received marks the frame answered, progress restarts

@@ -288,7 +288,17 @@ func (p *SessionPull) Detach() error {
 		// unread, which is what Release returns. A drain hands those messages to receive, which
 		// queues them.
 		if err := p.sub.Drain(); err != nil {
+			// The subscription is stopped all the same, since nothing else can end it, and the
+			// failure is the caller's to hear rather than the silence it used to get: the
+			// caller is about to nak the messages of this consumer it holds elsewhere in the
+			// belief that no interest of this pull's is left to take them, while the messages
+			// nats.go had buffered unread went out with the drain -- they reach neither Release
+			// nor the server, so the consumer delivers them again only once their ack wait has
+			// passed. The poll below would end at once anyway, on a subscription already
+			// invalid, and report nothing of this.
 			p.Stop()
+			p.detachErr = fmt.Errorf("bus: the inbox subscription of the pull of consumer %q could not be drained, so the messages nats.go held unread are lost: %w", p.name, err)
+			return
 		}
 		for deadline := time.Now().Add(sessionPullDrainWait); p.sub.IsValid() && time.Now().Before(deadline); {
 			time.Sleep(sessionPullDrainPoll)
@@ -318,15 +328,34 @@ func (p *SessionPull) Release() (int, error) {
 	queue := p.queue
 	p.queue = nil
 	p.mu.Unlock()
-	returned, failed := 0, 0
-	var firstErr error
+	held := make([]SessionAcker, 0, len(queue))
 	for _, msg := range queue {
 		if status, _ := pullStatus(msg); status != "" {
 			// A pull request's status (408, 409, 503) carries no ack subject: there is nothing to
 			// return to the server.
 			continue
 		}
-		if err := msg.NakWithDelay(0); err != nil {
+		held = append(held, sessionAck{msg})
+	}
+	returned, nakErr := ReturnMessages(fmt.Sprintf("the pull of consumer %q", p.name), held)
+	return returned, errors.Join(detachErr, nakErr)
+}
+
+// ReturnMessages naks every one of ackers with no delay, so the server delivers those messages
+// again at once rather than once the consumer's ack wait (SessionConsumerAckWait) has passed, and
+// reports how many of them it returned. Every message is tried whatever the others did. whose is
+// the phrase the error names the holder of the messages by -- a consumer's pull, a session's
+// relay -- so that the two halves of one hand-over read apart in a log; the error carries the
+// package's own prefix itself, so no caller spells it.
+//
+// The naks of one hand-over fail together, since the connection is closed or its reconnect buffer
+// is full, so a failure is one error naming how many failed and the first of their errors rather
+// than up to SessionConsumerMaxAckPending copies of that one error.
+func ReturnMessages(whose string, ackers []SessionAcker) (int, error) {
+	returned, failed := 0, 0
+	var firstErr error
+	for _, acker := range ackers {
+		if err := acker.NakWithDelay(0); err != nil {
 			failed++
 			if firstErr == nil {
 				firstErr = err
@@ -335,12 +364,8 @@ func (p *SessionPull) Release() (int, error) {
 		}
 		returned++
 	}
-	var nakErr error
 	if failed > 0 {
-		// The naks of one pull fail together -- the connection is closed, or its reconnect
-		// buffer is full -- so they are one error naming the first of them rather than a list of
-		// up to MaxAckPending copies of it.
-		nakErr = fmt.Errorf("bus: the pull of consumer %q could not return %d of the messages it held; the first failed with: %w", p.name, failed, firstErr)
+		return returned, fmt.Errorf("bus: %s could not return %d of the messages it held; the first failed with: %w", whose, failed, firstErr)
 	}
-	return returned, errors.Join(detachErr, nakErr)
+	return returned, nil
 }
