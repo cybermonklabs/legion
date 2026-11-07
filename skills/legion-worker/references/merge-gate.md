@@ -140,7 +140,9 @@ it there until that answer comes clean.
   the architect as a gap the tester and the reviewer named and neither refused, so the
   architect's acceptance is the only gate on it: the acceptance comment names that gap and
   decides there, accepting the issue or sending it back with the checks the architect writes,
-  which closes no design gate while dispatch://INFRA-175 has not shipped. The architect also
+  which closes the root's `criteria` step where the deployment gates that step, since that step
+  records the root's Verification document and each new version of a step's document closes it;
+  a child's Verification document is gated by nothing. The architect also
   reads the reviewer's own prose commits here, with the rest of the evidence, and that read is no
   new round. It does not
   accept while the issue holds a finding ask no controller has taken (`findings.md`, "When no

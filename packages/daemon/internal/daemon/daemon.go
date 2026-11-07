@@ -1294,7 +1294,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 			stateDir: cfg.StateDir, project: p.project, instructions: p.instructions, secrets: p.secrets, prompts: p.prompts,
 			identity: p.identity, repository: p.repository,
 			repositories: func() api.RepositoriesView { return p.repositories.view(nil) },
-			designGate:   cfg.Gates.Design, slackChannels: cfg.Projects[cfg.Project].SlackChannels,
+			designSteps:  cfg.Gates.Steps(), slackChannels: cfg.Projects[cfg.Project].SlackChannels,
 			runtimeName: cfg.Runtime.Name, plugins: p.plugins,
 			commitIssueTrailerRepos: cfg.Projects[cfg.Project].CommitIssueTrailerRepos, same: p.repositories.same,
 			backend: cfg.BackendFor, hostWorkspaces: !rt.ProvisionsWorkspaces(), ensureWorkspace: p.ensureWorkspace,
@@ -1864,6 +1864,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 			wakes:        s.waitingWakes,
 			repositories: p.repositories,
 			caches:       repositoryCachesOf(s.runtime),
+			gatedSteps:   cfg.Gates.Steps(),
 			settings:     api.SettingsOf(cfg),
 		},
 		StateTransactions:  st,
@@ -1876,7 +1877,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		DispatchProject:    cfg.Project,
 		OperatorToken:      p.operatorToken,
 		Controller:         st,
-		DesignGate:         cfg.Gates.Design,
+		Steps:              cfg.Gates.Steps(),
 		ControllerLaunched: keeper != nil,
 		PluginRelaunchable: p.pluginRelaunchable,
 		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },
@@ -1929,7 +1930,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		}
 		report, cancel := context.WithTimeout(serving, strandedReportTimeout)
 		defer cancel()
-		reportStranded(report, st, projectRecords{Store: record.NewStore(), project: cfg.Project}, cfg.Project, p.project, s.log)
+		reportStranded(report, st, projectRecords{Store: record.NewStore(), project: cfg.Project}, cfg.Project, p.project, cfg.Gates.Steps(), s.log)
 		if p.strandedReported != nil {
 			p.strandedReported()
 		}
@@ -2002,6 +2003,9 @@ type source struct {
 	// caches is the Kubernetes runtime's repository caches with their last health reads
 	// (sandbox.Runtime.RepositoryCaches); nil under a runtime that keeps none.
 	caches func() []sandbox.CacheStatus
+	// gatedSteps are the design-gate steps the deployment gates (config.Gates.Steps), which every
+	// root of the state answers its own state of; the empty list gates none.
+	gatedSteps []record.DesignStep
 	// settings is the resolved configuration as the state shows it, built once here: Load reads
 	// legion.yaml once and an edit to it restarts the daemon, so once-at-boot is live.
 	settings api.Settings
@@ -2122,33 +2126,36 @@ func (s projectRecords) wakeOnCommit(ctx context.Context, row record.OutboxRow) 
 	s.wake(row.Issue, row.Kind)
 }
 
-func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, error) {
+// State is the project's state through tx, and the project's claims it read through tx to build
+// it (api.StateSource): the route reads the caller's plugin contract from those claims, so the
+// body and the contract it is cut to come from one snapshot.
+func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.Claim, error) {
 	version, err := s.store.SchemaVersionTx(ctx, tx)
 	if err != nil {
-		return api.State{}, err
+		return api.State{}, nil, err
 	}
 	boots, firstBootAt, err := s.store.BootsTx(ctx, tx, s.project)
 	if err != nil {
-		return api.State{}, err
+		return api.State{}, nil, err
 	}
 	claims, err := s.store.ClaimsTx(ctx, tx)
 	if err != nil {
-		return api.State{}, err
+		return api.State{}, nil, err
 	}
 	claims = ofProject(claims, s.projectToken)
 	records := projectRecords{Store: s.records, project: s.project}
 	now := time.Now().UTC()
-	state, err := projection.Project(ctx, tx, records, s.project, claims, s.reports(), now)
+	state, err := projection.Project(ctx, tx, records, s.project, s.gatedSteps, claims, s.reports(), now)
 	if err != nil {
-		return api.State{}, err
+		return api.State{}, nil, err
 	}
 	resumes, err := strandedReleaseWakes(ctx, s.store, s.projectToken, claims, now)
 	if err != nil {
-		return api.State{}, err
+		return api.State{}, nil, err
 	}
-	stranded, err := workflow.Stranded(ctx, tx, records, s.project, claims, resumes, now)
+	stranded, err := workflow.Stranded(ctx, tx, records, s.project, s.gatedSteps, claims, resumes, now)
 	if err != nil {
-		return api.State{}, err
+		return api.State{}, nil, err
 	}
 	state.StrandedClaims = api.StrandedClaimsOf(stranded)
 	// A wake waits in one of two places, and the state names both as one list (api.WakesWaitingOf):
@@ -2157,7 +2164,7 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, error) {
 	// outbox row, read here in the snapshot every other durable fact of this state is read from.
 	paced, err := pacedCatchUps(ctx, tx, records, s.projectToken, s.project, now)
 	if err != nil {
-		return api.State{}, err
+		return api.State{}, nil, err
 	}
 	var held []supervise.WaitingWake
 	if s.wakes != nil {
@@ -2175,7 +2182,7 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, error) {
 	state.Admission.Cap = s.admissionCap
 	controller, _, err := s.store.ControllerTx(ctx, tx, s.projectToken)
 	if err != nil {
-		return api.State{}, err
+		return api.State{}, nil, err
 	}
 	state.ControllerLocator = api.ControllerLocatorOf(s.runtime, controller)
 	if s.secretsLogin != nil {
@@ -2189,7 +2196,7 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, error) {
 		}
 		state.Repositories = s.repositories.view(caches)
 	}
-	return state, nil
+	return state, claims, nil
 }
 
 // adoptIdentity is the supervisor's identity for a working copy's adoption (supervise.Deps.Identity)

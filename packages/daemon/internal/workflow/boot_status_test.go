@@ -135,7 +135,7 @@ func waitingNow(t *testing.T, pool *pgxpool.Pool) []string {
 		if err != nil {
 			return err
 		}
-		facts, err := record.ReadLineFacts(t.Context(), tx, store, "LEGION", issues)
+		facts, err := record.ReadLineFacts(t.Context(), tx, store, "LEGION", issues, config.DesignGateRootIssues.Steps())
 		if err != nil {
 			return err
 		}

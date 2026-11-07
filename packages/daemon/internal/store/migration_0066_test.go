@@ -42,12 +42,13 @@ func TestTheOutboxTakesThePhaseEndedKindWith0066(t *testing.T) {
 		"dispatch_status", "dispatch_message", "notice", "controller_notice", "supervise", "gate_seed",
 		"linger_close", "workspace_remove", "issue_branch", "issue_suspend", "check_wake",
 		"check_look", "check_bound", "role_message", "phase_ended", "issue_bundle", "issue_release",
+		"gated_steps_publish",
 	} {
 		if err := queue(kind); err != nil {
 			t.Fatalf("queue a %s row after 0066: %v", kind, err)
 		}
 	}
-	t.Logf("after the migrations the outbox takes all seventeen kinds the schema ends with, phase_ended among them")
+	t.Logf("after the migrations the outbox takes all eighteen kinds the schema ends with, phase_ended among them")
 	if err := queue("quiesce"); err == nil || !strings.Contains(err.Error(), "outbox_kind_check") {
 		t.Fatalf("queueing a row of a kind that is none = %v, want the constraint to refuse it", err)
 	}

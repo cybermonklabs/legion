@@ -30,7 +30,7 @@ func mergingEngine() *Engine {
 // mergingEngineAt is mergingEngine with its clock at now.
 func mergingEngineAt(now time.Time) *Engine {
 	return New(record.NewStore(), Config{
-		Project: "LEGION", DesignGate: config.DesignGateRootIssues, Linger: time.Hour, ReviewAppLogin: testReviewApp, Repositories: testRepositories,
+		Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, ReviewAppLogin: testReviewApp, Repositories: testRepositories,
 		// The project opens its production check with the tester, the role a project that names
 		// no production_check gets (INFRA-809); an engine with no role opens no check at all.
 		ProductionCheckRole: claim.RoleTester,

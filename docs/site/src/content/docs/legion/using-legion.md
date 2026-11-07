@@ -84,8 +84,11 @@ options and a recommendation, and it reaches your Inbox.
    asks again.
 
 No code is written until you approve. The approval is for that version of the spec: if the spec
-changes afterwards, you are asked again. (A deployment can turn the design gate off with `gates.design: off`; then
-the work starts as soon as the spec is written, and nobody is asked.)
+changes afterwards, you are asked again. (`gates.design` says which documents of the root issue a
+person approves: by default the spec alone, and a deployment can add the issue's decisions
+document or its Verification document, each approved the same way. A deployment that sets
+`gates.design: []` turns the design gate off; then the work starts as soon as the spec is written,
+and nobody is asked.)
 
 If a phase gets stuck, or the architect hits something only a person can decide, it asks you the
 same way: a question in your Inbox that says what is blocked, the options, and what it recommends.

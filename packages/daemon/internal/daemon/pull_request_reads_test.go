@@ -19,6 +19,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/classify"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -513,7 +514,7 @@ func (g *activityGitHub) serve(t *testing.T) *httptest.Server {
 // workflow boot always does.
 func reviewAppRuntime(pool *pgxpool.Pool, api string, log *slog.Logger) *workflowRuntime {
 	w := readRuntime(pool, api, log)
-	w.engine = workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories,
+	w.engine = workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(),
 		ReviewAppLogin: reviewAppLogin, ProductionCheckRole: claim.RoleTester, ReadMergeState: w.queueMergeState}, log)
 	w.handlers, w.reviewAppLogin = []intake.Handler{w.engine}, reviewAppLogin
 	return w

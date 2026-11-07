@@ -30,6 +30,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 )
 
 // shared is this test process's one template database and the clone drops still in flight. Main
@@ -51,7 +52,8 @@ var shared struct {
 }
 
 // Clone is the URL of a database carrying every migration, cloned from this process's template and
-// dropped at the test's end. Without LEGION_TEST_PG_DSN the test is skipped, as Database's is.
+// dropped at the test's end. Without LEGION_TEST_PG_DSN the test is skipped, as testdb.Database's
+// is.
 func Clone(t testing.TB, prefix string) string {
 	t.Helper()
 	if !shared.main {
@@ -59,13 +61,13 @@ func Clone(t testing.TB, prefix string) string {
 	}
 	dsn := os.Getenv("LEGION_TEST_PG_DSN")
 	if dsn == "" {
-		t.Skip(SkipMessage)
+		t.Skip(testdb.SkipMessage)
 	}
 	shared.once.Do(func() { shared.err = prepare(dsn) })
 	if shared.err != nil {
 		t.Fatal(shared.err)
 	}
-	name, err := randomName(prefix)
+	name, err := testdb.RandomName(prefix)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +75,7 @@ func Clone(t testing.TB, prefix string) string {
 		t.Fatalf("clone %s from the template: %v", name, err)
 	}
 	t.Cleanup(func() { dropInBackground(name) })
-	return databaseURL(shared.server, name)
+	return testdb.DatabaseURL(shared.server, name)
 }
 
 // CloneStore is Clone opened, its pool closed when the test ends — before the clone is dropped,
@@ -160,7 +162,7 @@ func dropInBackground(name string) {
 		// autovacuum worker, which attaches to a database a test has just filled. Every Legion
 		// pod shares one server whose test login holds neither privilege, so without the wait
 		// this drop fails the package (dispatch://INFRA-714 round six).
-		if err := Drop(context.Background(), shared.admin, name); err != nil {
+		if err := testdb.Drop(context.Background(), shared.admin, name); err != nil {
 			shared.dropMu.Lock()
 			shared.dropFails = append(shared.dropFails, fmt.Sprintf("drop the cloned database %s: %v", name, err))
 			shared.dropMu.Unlock()
@@ -178,7 +180,7 @@ func prepare(dsn string) error {
 	}
 	shared.server = *base
 	ctx := context.Background()
-	config, err := pgxpool.ParseConfig(databaseURL(shared.server, "postgres"))
+	config, err := pgxpool.ParseConfig(testdb.DatabaseURL(shared.server, "postgres"))
 	if err != nil {
 		return fmt.Errorf("parse the admin database URL: %w", err)
 	}
@@ -192,7 +194,7 @@ func prepare(dsn string) error {
 	shared.admin = admin
 
 	started := time.Now()
-	name, err := randomName(shared.prefix + "_template")
+	name, err := testdb.RandomName(shared.prefix + "_template")
 	if err != nil {
 		return err
 	}
@@ -201,7 +203,7 @@ func prepare(dsn string) error {
 		return fmt.Errorf("create the template database: %w", err)
 	}
 	shared.template = name
-	st, err := store.Open(ctx, databaseURL(shared.server, name))
+	st, err := store.Open(ctx, testdb.DatabaseURL(shared.server, name))
 	if err != nil {
 		return fmt.Errorf("open the template database: %w", err)
 	}
@@ -217,9 +219,4 @@ func prepare(dsn string) error {
 		return fmt.Errorf("close the template database to connections: %w", err)
 	}
 	return nil
-}
-
-func databaseURL(server url.URL, database string) string {
-	server.Path = "/" + database
-	return server.String()
 }

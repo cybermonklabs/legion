@@ -17,7 +17,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/classify"
-	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghbranch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -81,10 +80,11 @@ type outbox struct {
 	// is shared, and another project's rows are another daemon's.
 	dispatchProject string
 	stateDir        string
-	// designGate is the project's design gate policy (gates.design), which a catch-up this runner
-	// writes states and whose kept approval pair a start task names (workflow.QueueCatchUp). A
-	// test that builds the runner by hand leaves it zero, which reads as the shipped policy.
-	designGate config.DesignGate
+	// gatedSteps are the design-gate steps the project gates (gates.design), which a catch-up
+	// this runner writes states and whose kept approval pair a start task names
+	// (workflow.QueueCatchUp). A test that builds the runner by hand leaves it nil, which
+	// newOutbox reads as the shipped list, the one step spec.
+	gatedSteps []record.DesignStep
 	log        *slog.Logger
 	// backstop is how long after a release its one open phase's worker is woken whatever else
 	// happens (config.IdleReleaseConfig.Backstop, `backstop_minutes`); zero where the deployment
@@ -161,13 +161,13 @@ type outboxTrees interface {
 	ArmPodBackstop(ctx context.Context, backstop store.PodWakeBackstop) error
 }
 
-func newOutbox(pool *pgxpool.Pool, records record.Store, client dispatch.Client, publisher notify.Publisher, supervisor *supervisor, trees outboxTrees, tokens appauth.Tokens, handlers []intake.Handler, designGate config.DesignGate, project, dispatchProject, stateDir, githubAPI string, repositories *repositories, tools map[string]string, log *slog.Logger) *outbox {
+func newOutbox(pool *pgxpool.Pool, records record.Store, client dispatch.Client, publisher notify.Publisher, supervisor *supervisor, trees outboxTrees, tokens appauth.Tokens, handlers []intake.Handler, gatedSteps []record.DesignStep, project, dispatchProject, stateDir, githubAPI string, repositories *repositories, tools map[string]string, log *slog.Logger) *outbox {
 	if log == nil {
 		log = slog.Default()
 	}
 	return &outbox{
 		pool: pool, records: records, dispatch: client, notices: publisher, supervisor: supervisor, trees: trees, tokens: tokens,
-		handlers: handlers, designGate: designGate,
+		handlers: handlers, gatedSteps: gatedSteps,
 		project: project, dispatchProject: dispatchProject, stateDir: stateDir, githubAPI: githubAPI, repositories: repositories,
 		log: log, now: time.Now, clock: supervise.RealClock{},
 		// WarmCodegraphIndexInBackground runs here, never in provisionWorkspace: every outbox
@@ -602,6 +602,8 @@ func (r *outbox) execute(ctx context.Context, row record.OutboxRow) error {
 		return r.removeWorkspace(ctx, row, value)
 	case record.RoleMessage:
 		return r.roleMessage(ctx, row, value)
+	case record.GatedStepsPublish:
+		return r.publishGatedSteps(ctx, value)
 	case record.IssueBranch:
 		return r.issueBranch(ctx, row, value)
 	case record.CheckWakeDue:
@@ -1020,6 +1022,23 @@ func (r *outbox) statusStillWanted(ctx context.Context, row record.OutboxRow, pa
 	return true, nil
 }
 
+// publishGatedSteps writes the deployment's design-gate steps onto the project's Dispatch row.
+// The row's own issue is that project key, and the payload names it too, so the write addresses
+// the project the boot that queued it served however the row is read back.
+//
+// A Dispatch that has not got the route yet answers 404, and nothing here treats that as final:
+// the kind is no permanent refusal, so the lane's backoff holds the row until the server has the
+// route, which is what lets the daemon and Dispatch deploy in either order.
+func (r *outbox) publishGatedSteps(ctx context.Context, payload record.GatedStepsPublish) error {
+	if r.dispatch == nil {
+		return errors.New("gated steps executor has no Dispatch client")
+	}
+	if err := r.dispatch.PutGatedSteps(ctx, payload.Project, record.StepNames(payload.Steps)); err != nil {
+		return fmt.Errorf("publish the gated steps of %s: %w", payload.Project, err)
+	}
+	return nil
+}
+
 // consumeHandover applies the hand-over to the record once Dispatch shows it: the row's hand-over
 // write just set it, or Dispatch already showed the todo and label (which a write would make no
 // event for). It does not wait for the write's event: a restart between the write and that event's
@@ -1413,7 +1432,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// without acting and records no start, so the close's suspend still applies. Re-admission
 		// starts the member again (admit's startMidPhaseChildren). A check start is the one start
 		// a lingering tree runs: a look of a closed issue's production check, which resumes the
-		// implementer the linger suspended.
+		// role that check records (record.ProductionCheck.Role) the linger suspended.
 		if payload.CheckLook == 0 {
 			root, err := r.root(ctx, issue)
 			if err != nil {
@@ -1507,7 +1526,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		case supervise.StateSuspended:
 			// The role owns the issue's phase this start is for: the rule resumes it, unless an
 			// operator suspended it meanwhile, when the task's delivery below waits instead. A check
-			// start resumes the implementer the close or the linger suspended, in a Sandbox the
+			// start resumes the role the check records the close or the linger suspended, in a Sandbox the
 			// resume relaunches (runtime/sandbox's relaunch).
 			reason := fmt.Sprintf("start row %d of %s (phase %q)", row.ID, issue.Key, payload.Phase)
 			if payload.CheckLook > 0 {
@@ -1553,7 +1572,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// released and spawned again, after this start, so the row's task goes in its place. A check
 		// start names no phase, so it is never one of these: each look's task is delivered, its row
 		// id its delivery's, and a delivery with no phase is held by nothing (supervise's
-		// phaseHolds), so the task reaches the implementer whatever the issue's phase.
+		// phaseHolds), so the task reaches the role the check records whatever the issue's phase.
 		held, gave := machine.Claim(), false
 		ranNothing := state == supervise.StateFailed || state == supervise.StateRetired
 		if (payload.ResumeTask || ranNothing) && keepsStartTask(held, payload) {
@@ -2209,13 +2228,13 @@ func (r *outbox) seedGate(ctx context.Context, row record.OutboxRow, payload rec
 		return nil
 	}
 	if approval.LatestVersion < payload.Version {
-		id := fmt.Sprintf("gate-above:%s:%d:%s:%d:%s:%d:%d", row.Issue, payload.Generation, payload.ArtifactID, payload.Version, fact.Kind, fact.Version, fact.Mark.ID())
+		id := fmt.Sprintf("gate-above:%s:%d:%s:%s:%d:%s:%d:%d", row.Issue, payload.Generation, payload.Step, payload.ArtifactID, payload.Version, fact.Kind, fact.Version, fact.Mark.ID())
 		if _, err := intake.ApplyFact(ctx, r.pool, "outbox", id, intake.GateAboveDispatch{Generation: payload.Generation, Above: payload.Version, Read: fact}, r.handlers...); err != nil {
 			return fmt.Errorf("reset the gate of %s to the version Dispatch holds: %w", row.Issue, err)
 		}
 		return nil
 	}
-	id := fmt.Sprintf("gate-seed:%s:%d:%s:%s:%d:%d", row.Issue, payload.Generation, payload.ArtifactID, fact.Kind, fact.Version, fact.Mark.ID())
+	id := fmt.Sprintf("gate-seed:%s:%d:%s:%s:%s:%d:%d", row.Issue, payload.Generation, payload.Step, payload.ArtifactID, fact.Kind, fact.Version, fact.Mark.ID())
 	// A version fact carries no mark, so its id also says whether the read showed the request with
 	// the agent: a later seed of the same version that finds it moved there is another fact, not a
 	// duplicate of one that answered nothing.
@@ -2241,19 +2260,22 @@ func (r *outbox) linger(ctx context.Context, row record.OutboxRow, payload recor
 
 // designGateClosed says whether the design gate of the issue's tree is closed, which holds the
 // merger's start (supervise): the gate is the tree root's, so every member of the tree reads the
-// same one, and a tree with no gate recorded — nothing registered one, or the project's design
-// gate is off, which registers it approved — holds nothing. It is read just before the row acts,
-// as every other fence of a row is.
+// same rows, and it is closed when a step the deployment gates holds a row no approval has opened
+// (classify.StandingGate, the first such step in the configured order). A tree with no row for a
+// step — nothing registered one, or the project's design gate is off, which registers it
+// approved — holds nothing on that step: nobody can be waiting on a document the record does not
+// know. It is read just before the row acts, as every other fence of a row is.
 func (r *outbox) designGateClosed(ctx context.Context, issue record.Issue) (bool, error) {
-	var gate *record.DesignGate
+	var gates map[record.DesignStep]record.DesignGate
 	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
 		var err error
-		gate, err = r.records.Gate(ctx, tx, issue.Tree)
+		gates, err = r.records.GatesOf(ctx, tx, issue.Tree)
 		return err
 	}); err != nil {
 		return false, fmt.Errorf("read the design gate of %s: %w", issue.Tree, err)
 	}
-	return gate != nil && !classify.DesignGateOpen(*gate), nil
+	_, closed := classify.StandingGate(r.gatedSteps, gates)
+	return closed, nil
 }
 
 // mergerWaitsForTheDesignGate is the one role fence a start carries: the merger merges nothing

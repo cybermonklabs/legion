@@ -12,7 +12,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -30,8 +29,11 @@ type Config struct {
 	// Project once where it is built (store.Store.PodRecordsOf), so this configuration carries
 	// one spelling of the project and a wake can file no row under another. Nil, as in every
 	// engine built without the pod tables, wakes nothing and records no listener report.
-	Pods           Pods
-	DesignGate     config.DesignGate
+	Pods Pods
+	// Steps are the design-gate steps the deployment gates (config.Gates.Steps), in the order a
+	// root's architect takes them. Every hold the gate puts on a tree's work reads the whole list
+	// (classify.DesignGatesOpen), and the empty list gates no step, which is `gates.design: off`.
+	Steps          []record.DesignStep
 	ReviewRoundCap int
 	Linger         time.Duration
 	// ProductionCheckBound is how long a closed issue's production check waits for its deploy
@@ -93,10 +95,9 @@ type Engine struct {
 
 var _ intake.Handler = (*Engine)(nil)
 
-// New constructs a workflow engine, taking the shipped design gate, review round cap, production
-// check bound and clock for every one of them a caller omits.
+// New constructs a workflow engine, taking the shipped review round cap, production check bound
+// and clock for every one of them a caller omits.
 func New(store record.Store, cfg Config, log *slog.Logger) *Engine {
-	cfg.DesignGate = cfg.DesignGate.OrDefault()
 	if cfg.ReviewRoundCap <= 0 {
 		cfg.ReviewRoundCap = 3
 	}
@@ -330,7 +331,7 @@ func (e *Engine) sessionStatusWrite(ctx context.Context, tx pgx.Tx, issue record
 		// lifecycle still stands open: where no tree runs, an outside session's write is a person's
 		// move, which is the whole of the question.
 		waiting := claim.IsTreeRoot(issue.Key, issue.Tree) && issue.AwaitingPerson() && !issue.Lingers()
-		if admitted, err := record.TreeRunning(ctx, e.store, tx, issue); err != nil || !admitted && !waiting {
+		if admitted, err := record.TreeRunning(ctx, e.store, tx, issue, e.cfg.Steps); err != nil || !admitted && !waiting {
 			return false, err
 		}
 	}
@@ -414,7 +415,7 @@ func (e *Engine) recordChildUnderLiveTree(ctx context.Context, tx pgx.Tx, fact i
 	if err != nil || root == nil {
 		return intake.Result{}, err
 	}
-	live, err := record.TreeLive(ctx, e.store, tx, *root)
+	live, err := record.TreeLive(ctx, e.store, tx, *root, e.cfg.Steps)
 	if err != nil || !live {
 		return intake.Result{}, err
 	}
@@ -472,7 +473,7 @@ func (e *Engine) ReenterChild(ctx context.Context, tx pgx.Tx, child record.Issue
 	if err != nil || root == nil {
 		return err
 	}
-	live, err := record.TreeLive(ctx, e.store, tx, *root)
+	live, err := record.TreeLive(ctx, e.store, tx, *root, e.cfg.Steps)
 	if err != nil || !live {
 		return err
 	}

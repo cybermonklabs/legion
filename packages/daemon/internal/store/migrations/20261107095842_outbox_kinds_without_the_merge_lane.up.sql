@@ -12,7 +12,8 @@
 --
 -- This migration is the last word of both, as 20261105081500 was of the two before it: it names
 -- the kinds the merged daemon writes and nothing else — this release's seventeen, with
--- `check_wake` for the compare INFRA-809 retired. It is safe on a database ending at either
+-- `check_wake` for the compare INFRA-809 retired and `gated_steps_publish`, which INFRA-1272
+-- added after both of them. It is safe on a database ending at either
 -- earlier version, and on one that already carries a constraint of this name from any of them,
 -- because it drops the constraint if it exists before adding it. No row is deleted: a row of a
 -- retired kind exists in no database, both releases having stopped writing them before this.
@@ -20,4 +21,5 @@ alter table outbox drop constraint if exists outbox_kind_check;
 alter table outbox add constraint outbox_kind_check check (kind in (
   'dispatch_status', 'dispatch_message', 'notice', 'controller_notice', 'supervise', 'gate_seed',
   'linger_close', 'workspace_remove', 'issue_branch', 'issue_suspend', 'check_wake',
-  'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release'));
+  'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release',
+  'gated_steps_publish'));

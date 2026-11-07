@@ -18,6 +18,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -54,7 +55,7 @@ func TestPollHoldReleaseClosesAHeldRootOnAQuietStreamWithinABound(t *testing.T) 
 		t.Fatalf("OpenConsumers: %v", err)
 	}
 
-	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories}, log)
+	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, log)
 	admission := admit.New(record.NewStore(), engine, 1, "CAPTURE", log)
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
 		return record.NewStore().PutIssue(context.Background(), tx, record.Issue{
@@ -95,7 +96,7 @@ func TestPollHoldReleaseClosesAHeldRootOnAQuietStreamWithinABound(t *testing.T) 
 func TestPollHoldReleaseRetriesAFailedPositionRead(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories}, log)
+	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, log)
 	admission := admit.New(record.NewStore(), engine, 1, "CAPTURE", log)
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
 		return record.NewStore().PutIssue(context.Background(), tx, record.Issue{
@@ -140,7 +141,7 @@ func TestPollHoldReleaseRetriesAFailedPositionRead(t *testing.T) {
 func TestPollHoldReleaseReleasesASecondHoldTheSamePositionReaches(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories}, log)
+	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, log)
 	admission := admit.New(record.NewStore(), engine, 1, "CAPTURE", log)
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
 		return record.NewStore().PutIssue(context.Background(), tx, record.Issue{
@@ -187,7 +188,7 @@ func TestPollHoldReleaseReleasesASecondHoldTheSamePositionReaches(t *testing.T) 
 func TestPollHoldReleaseRetriesAFailedApplyOfAnUnchangedPosition(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories}, log)
+	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, log)
 	admission := admit.New(record.NewStore(), engine, 1, "CAPTURE", log)
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
 		return record.NewStore().PutIssue(context.Background(), tx, record.Issue{
@@ -282,6 +283,7 @@ func (d *pilotDispatch) ListRepoProjects(context.Context) ([]dispatch.RepoProjec
 	return nil, nil
 }
 func (d *pilotDispatch) WebhookAppInstalled(context.Context, string) (bool, error) { return true, nil }
+func (d *pilotDispatch) PutGatedSteps(context.Context, string, []string) error     { return nil }
 
 // filteringDispatch honors the statuses argument exactly as the real HTTPClient does: only
 // summaries whose status is in the requested set, or every summary when the caller asks for none.
@@ -337,6 +339,9 @@ func (d *filteringDispatch) ListRepoProjects(context.Context) ([]dispatch.RepoPr
 func (d *filteringDispatch) WebhookAppInstalled(context.Context, string) (bool, error) {
 	return true, nil
 }
+func (d *filteringDispatch) PutGatedSteps(context.Context, string, []string) error {
+	return nil
+}
 
 // reconcile's boot listing read only todo through retro, so a root moved to
 // backlog while the daemon was down fell out of the window entirely — nothing held its key. The
@@ -372,7 +377,7 @@ func TestReconcileHoldsAKeyTheBootListingShowsOutOfTheWorkflowStatusWindow(t *te
 		t.Fatalf("publish LEGION-EDGE's own pending event: %v", err)
 	}
 
-	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories}, log)
+	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, log)
 	admission := admit.New(record.NewStore(), engine, 1, "CAPTURE", log)
 	w := &workflowRuntime{
 		pool: pool, records: record.NewStore(), admission: admission, engine: engine, handlers: []intake.Handler{engine, admission}, repositories: newRepositories("CAPTURE", ghrepo.Renames{}),
@@ -433,7 +438,7 @@ func TestReconcileOnThePilotsShapeAdmitsOnlyTheLabeledTodoRootQuickly(t *testing
 		t.Fatalf("OpenConsumers: %v", err)
 	}
 
-	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories}, log)
+	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, log)
 	admission := admit.New(record.NewStore(), engine, 1, "CAPTURE", log)
 	w := &workflowRuntime{
 		pool: pool, records: record.NewStore(), admission: admission, engine: engine, handlers: []intake.Handler{engine, admission}, repositories: newRepositories("CAPTURE", ghrepo.Renames{}),
@@ -496,7 +501,7 @@ func TestPollHoldReleaseWarnsWhenAHoldPersistsPastItsBound(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	var logBuf syncBuffer
 	log := slog.New(slog.NewTextHandler(&logBuf, nil))
-	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories}, log)
+	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, log)
 	admission := admit.New(record.NewStore(), engine, 1, "CAPTURE", log)
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
 		return record.NewStore().PutIssue(context.Background(), tx, record.Issue{
@@ -552,7 +557,7 @@ func TestPollHoldReleaseWarnsWhenAHoldPersistsPastItsBound(t *testing.T) {
 func TestANewerLabeledEventInTheWindowBetweenReleasesCommitAndItsCommitHookIsRecordedThenPromoted(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories}, log)
+	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, log)
 	admission := admit.New(record.NewStore(), engine, 1, "CAPTURE", log)
 
 	reconcileAdmission(t, pool, admission, []dispatch.IssueSummary{
@@ -646,7 +651,7 @@ func TestANewerLabeledEventInTheWindowBetweenReleasesCommitAndItsCommitHookIsRec
 func TestPollHoldReleaseRetriesAFailedClosingPass(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories}, log)
+	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, log)
 	admission := admit.New(record.NewStore(), engine, 1, "CAPTURE", log)
 
 	reconcileAdmission(t, pool, admission, []dispatch.IssueSummary{
@@ -757,7 +762,7 @@ func TestAHeldRootKeepsItsPlaceOnTheRuntimeUntilItsOwnReleaseAdmitsIt(t *testing
 		t.Fatalf("OpenConsumers: %v", err)
 	}
 
-	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories}, log)
+	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, log)
 	admission := admit.New(record.NewStore(), engine, 1, "CAPTURE", log)
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
 		for _, seed := range []struct{ key, rank string }{{"LEGION-HELD", "A"}, {"LEGION-NEXT", "B"}} {

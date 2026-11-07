@@ -47,7 +47,7 @@ func TestGateRegistrationWithDesignGateOffStartsPlanningAndSeedsApprovalRead(t *
 
 	engine := New(store, Config{
 		Project:        "LEGION",
-		DesignGate:     config.DesignGateOff,
+		Steps:          config.DesignGateOff.Steps(),
 		ReviewRoundCap: 3,
 		Linger:         time.Hour,
 		Clock:          func() time.Time { return time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC) },
@@ -258,7 +258,7 @@ func TestCapturedArtifactVersionAndApprovalFlowThroughConsume(t *testing.T) {
 	pool := migratedPool(t)
 	ctx := context.Background()
 	seedIssue(t, pool, record.Issue{Key: "CAPTURE-4", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "CAPTURE-4", Project: "CAPTURE", Title: "captured gate", Phase: phase.Admitted, Generation: 1, Status: "in_progress", Rank: "U"})
-	engine := New(record.NewStore(), Config{Project: "CAPTURE", ReviewRoundCap: 3, Linger: time.Hour, Repositories: testRepositories, Clock: func() time.Time { return time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC) }}, nil)
+	engine := New(record.NewStore(), Config{Project: "CAPTURE", Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: 3, Linger: time.Hour, Repositories: testRepositories, Clock: func() time.Time { return time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC) }}, nil)
 	if _, err := intake.ApplyFact(ctx, pool, "api", "register-captured-gate", intake.GateRegistered{Issue: "CAPTURE-4", ArtifactID: "0544d460-0931-4374-b20b-790408519edd", Version: 1}, engine, admissionStub{}); err != nil {
 		t.Fatalf("register gate: %v", err)
 	}
@@ -433,7 +433,7 @@ func TestTheCloseLingersOnceAndExpiryStopsTreeAndRemovesEveryWorkspace(t *testin
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-209", Role: claim.RoleImplementer, Claim: "child-implementer"})
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head", Failing: []string{}})
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-209", Repo: "sjawhar/legion", Number: 43, Branch: "legion/LEGION-209", HeadSHA: "head-43", Failing: []string{}})
-	engine := New(record.NewStore(), Config{Project: "LEGION", Linger: time.Hour, ProductionCheckRole: claim.RoleTester, Repositories: testRepositories, Clock: func() time.Time { return now }}, nil)
+	engine := New(record.NewStore(), Config{Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, ProductionCheckRole: claim.RoleTester, Repositories: testRepositories, Clock: func() time.Time { return now }}, nil)
 
 	merged := intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge"}
 	if _, err := intake.ApplyFact(ctx, pool, "github", "merged", merged, engine, admissionStub{}); err != nil {
@@ -841,7 +841,7 @@ const testReviewApp = "legion-reviewer[bot]"
 // logging to log (the default logger when nil).
 func testEngine(policy config.DesignGate, log *slog.Logger) *Engine {
 	return New(record.NewStore(), Config{
-		Project: "LEGION", DesignGate: policy, ReviewRoundCap: 3, Linger: time.Hour, ProductionCheckRole: claim.RoleTester, ReviewAppLogin: testReviewApp, Repositories: testRepositories,
+		Project: "LEGION", Steps: policy.Steps(), ReviewRoundCap: 3, Linger: time.Hour, ProductionCheckRole: claim.RoleTester, ReviewAppLogin: testReviewApp, Repositories: testRepositories,
 		Clock: func() time.Time { return time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC) },
 	}, log)
 }
@@ -880,8 +880,8 @@ func gateState(t *testing.T, pool *pgxpool.Pool, issue string) record.DesignGate
 	t.Helper()
 	var gate *record.DesignGate
 	seedRecord(t, pool, func(tx pgx.Tx) error {
-		var err error
-		gate, err = record.NewStore().Gate(t.Context(), tx, issue)
+		gates, err := record.NewStore().GatesOf(t.Context(), tx, issue)
+		gate = record.SpecGate(gates)
 		return err
 	})
 	if gate == nil {

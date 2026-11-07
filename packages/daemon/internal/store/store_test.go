@@ -14,11 +14,11 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
+	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 )
 
 // testDSN is the devbox and CI Postgres the store tests run against. Without it
@@ -27,8 +27,9 @@ import (
 // These tests name no internal/testpg helper, and the file imports that package nowhere: testpg
 // imports this one, to migrate the template its Clone copies, so an import of it here would be a
 // cycle in this package's test binary. internal/testpg's own skip message holds the pinned
-// Postgres image to start, and dropTestDatabase below is this file's own copy of testpg.Drop,
-// which that cycle is why it cannot call.
+// Postgres image to start, and testdb.Drop, which waits an autovacuum worker out, is the one
+// copy of that wait: internal/testpg/testdb imports nothing of this module, so this package's own
+// tests can take it where they cannot take internal/testpg.
 func testDSN(t *testing.T) string {
 	t.Helper()
 	dsn := os.Getenv("LEGION_TEST_PG_DSN")
@@ -36,34 +37,6 @@ func testDSN(t *testing.T) string {
 		t.Skip("LEGION_TEST_PG_DSN is unset, so there is no Postgres to test against: start one and set it as internal/testpg's own skip message says, which holds the whole recipe and the image to run.")
 	}
 	return dsn
-}
-
-// dropTestDatabase is testpg.Drop for the one package that cannot import testpg (the cycle
-// testDSN's comment names): a forced drop terminates every other session of the database, which
-// PostgreSQL refuses to a login that is neither superuser nor a member of pg_signal_backend as
-// soon as one session belongs to another role — an autovacuum worker, which attaches to a
-// database a test has just filled. The refusal is waited out for 30 seconds; any other error is
-// the caller's at once.
-func dropTestDatabase(ctx context.Context, admin *pgxpool.Pool, name string) error {
-	deadline := time.Now().Add(30 * time.Second)
-	for attempt := 0; ; attempt++ {
-		_, err := admin.Exec(ctx, "drop database "+name+" with (force)")
-		if err == nil {
-			return nil
-		}
-		var pgErr *pgconn.PgError
-		if !errors.As(err, &pgErr) || pgErr.Code != "42501" {
-			return err
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("%w (still refused after %d attempts over 30s: a session of another role, an autovacuum worker, holds the database and this login may not terminate it)", err, attempt+1)
-		}
-		select {
-		case <-ctx.Done():
-			return errors.Join(err, ctx.Err())
-		case <-time.After(250 * time.Millisecond):
-		}
-	}
 }
 
 // emptyStore opens a store on a database of its own, so "an empty database" in a
@@ -90,7 +63,7 @@ func emptyStore(t *testing.T) *Store {
 		t.Fatalf("create %s: %v", name, err)
 	}
 	t.Cleanup(func() {
-		if err := dropTestDatabase(context.Background(), admin, name); err != nil {
+		if err := testdb.Drop(context.Background(), admin, name); err != nil {
 			t.Errorf("drop %s: %v", name, err)
 		}
 	})
@@ -802,6 +775,14 @@ func TestTheOutboxCheckAdmitsEveryKindWhicheverOrderTheMigrationsRan(t *testing.
 			}
 			if _, err := store.Migrate(ctx); err != nil {
 				t.Fatalf("migrate: %v", err)
+			}
+			// The seeded rows have done their work — the upgrade validated every rewritten CHECK
+			// over them — and they go before the final insert, because one kind holds a unique
+			// index of its own: gated_steps_publish is one row per project
+			// (20261106041346_gated_steps_publish), so a second row of it would be refused for
+			// that index rather than for the kind this case is asking about.
+			if _, err := store.pool.Exec(ctx, "delete from outbox"); err != nil {
+				t.Fatalf("clear the seeded rows: %v", err)
 			}
 			for _, kind := range kinds {
 				if _, err := store.pool.Exec(ctx, insert, string(kind)); err != nil {

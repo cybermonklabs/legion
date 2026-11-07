@@ -213,8 +213,8 @@ func outboxRows(t *testing.T, pool *pgxpool.Pool) int {
 }
 
 // isolatedOutboxPool is a pool on a database carrying every migration, cloned from the package's
-// template (testpg.ClonePool). The rigs' own stores share the server's database instead
-// (testDSN): only the tests that need rows of their own come here.
+// template (testpg.ClonePool). The rigs' own stores share the package's run database instead
+// (testDSN, testdb.RunDatabaseFor): only the tests that need rows of their own come here.
 func isolatedOutboxPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	return testpg.ClonePool(t, "legion_outbox_test")
@@ -281,6 +281,9 @@ func (d *blockingDispatch) ListRepoProjects(context.Context) ([]dispatch.RepoPro
 }
 func (d *blockingDispatch) WebhookAppInstalled(context.Context, string) (bool, error) {
 	return true, nil
+}
+func (d *blockingDispatch) PutGatedSteps(context.Context, string, []string) error {
+	return nil
 }
 func (d *blockingDispatch) count() int {
 	d.mu.Lock()
@@ -459,6 +462,9 @@ func (d *refusingDispatch) ListRepoProjects(context.Context) ([]dispatch.RepoPro
 func (d *refusingDispatch) WebhookAppInstalled(context.Context, string) (bool, error) {
 	return true, nil
 }
+func (d *refusingDispatch) PutGatedSteps(context.Context, string, []string) error {
+	return nil
+}
 
 // boardDispatch is one issue's Dispatch board: it fails the first failures writes, then applies.
 type boardDispatch struct {
@@ -503,6 +509,7 @@ func (d *boardDispatch) ListRepoProjects(context.Context) ([]dispatch.RepoProjec
 	return nil, nil
 }
 func (d *boardDispatch) WebhookAppInstalled(context.Context, string) (bool, error) { return true, nil }
+func (d *boardDispatch) PutGatedSteps(context.Context, string, []string) error     { return nil }
 
 // A person's handover row (dispatch://LEGION-755) is the one status row that brings its issue
 // into the workflow rather than moving one along inside it: a todo observed at the `triage` a
