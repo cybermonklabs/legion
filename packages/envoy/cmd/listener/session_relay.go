@@ -836,15 +836,13 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 		}
 		// The pull is detached before anything is naked. A cancelled pull still has a pull
 		// request standing at the server, so a nak sent while that pull is subscribed can be
-		// delivered straight back into the pull this run is giving up, where nothing reads it
-		// and it is lost again until its ack wait passes; detached, the pull has no interest
-		// left and the frames reach the session's next owner. The reviewer measured the other
-		// order at 62cc8055, over ten runs holding 200 frames with the next owner's pull already
-		// open: six delivered messages out of stream order and four delivered one of them a
-		// third time (TestSessionConsumerRelayLosingItsSessionReturnsEveryMessageItHoldsInStreamOrder
-		// holds the fix). This call discards the detach's own error rather than dropping it:
-		// Detach answers every caller the one result, and the Release below joins that same
-		// result into what is reported.
+		// delivered straight back into the pull this run is giving up; its drain queues the
+		// message and the Release below naks it again, so the next owner gets it once more, as a
+		// further delivery and behind messages of higher sequences. Detached, the pull has no
+		// interest left and the frames reach the session's next owner, in the order they are
+		// naked. TestSessionConsumerRelayLosingItsSessionReturnsEveryMessageItHoldsInStreamOrder
+		// holds that order. The detach's error is not read here: Release calls Detach again,
+		// which answers the same result, and joins it into the error it returns.
 		_ = pull.Detach()
 		// Every frame the run published was read from the pull's queue before anything still in
 		// it, so the frames are naked first and the queue after, each in the order it was sent or

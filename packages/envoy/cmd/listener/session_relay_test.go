@@ -702,11 +702,10 @@ func TestSessionConsumerRelayLosingItsSessionReturnsTheMessageItHolds(t *testing
 //
 // What the row holds is the order of the hand-over: the cancelled run detaches its pull before it
 // naks the frames it published. Naking them while that pull was still subscribed delivered some
-// of them straight back into the pull being given up, where nothing read them and they were lost
-// again; the reviewer measured that at 62cc8055, over ten runs of this shape, as six runs in
-// which the messages came back out of stream order and four in which one arrived as a third
-// delivery. The row above, which holds one message, cannot show it: the message the server
-// happens to deliver first is the only one there is.
+// of them straight back into the pull being given up, which naked them again, so they reached the
+// next owner as a third delivery and out of stream order; with the detach removed, ten runs of ten
+// of this row fail that way. The row above, which holds one message, cannot show it:
+// the message the server happens to deliver first is the only one there is.
 func TestSessionConsumerRelayLosingItsSessionReturnsEveryMessageItHoldsInStreamOrder(t *testing.T) {
 	// The receipt wait is longer than the row, so the relay cannot pause, and so forget the
 	// frames it holds, before the row takes the session away.
@@ -759,7 +758,7 @@ func TestSessionConsumerRelayLosingItsSessionReturnsEveryMessageItHoldsInStreamO
 				len(back), held, err, bus.SessionConsumerAckWait)
 		}
 		if msg.Delivered != 2 {
-			t.Fatalf("seq %d came back as delivery %d, want its second: a third delivery is the relay naking it into the pull it was giving up, which lost it and left the server to deliver it once more",
+			t.Fatalf("seq %d came back as delivery %d, want its second: a third delivery is the relay naking it into the pull it was giving up, whose release naked it once more",
 				msg.StreamSeq, msg.Delivered)
 		}
 		if seen[msg.StreamSeq] {

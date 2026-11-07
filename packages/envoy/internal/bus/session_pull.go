@@ -91,9 +91,7 @@ type SessionPull struct {
 	// detachOnce runs the drain of the inbox subscription once and detachErr holds what it ended
 	// with, so that Detach can be called twice -- by a caller that detaches before it naks
 	// messages it holds elsewhere, and by the Release that follows -- and the second call
-	// answers the first's result. A second nats.go drain of an already drained subscription is
-	// an error of its own, which is what makes repeating the drain wrong rather than merely
-	// wasteful.
+	// answers the first's result without draining or waiting again.
 	detachOnce sync.Once
 	detachErr  error
 
@@ -279,9 +277,9 @@ func (p *SessionPull) Stop() { _ = p.sub.Unsubscribe() }
 // deliver on the pull request still standing for this pull finds no interest and drops that
 // request. A caller that holds messages of this pull's consumer elsewhere -- a relay holding
 // frames it published -- detaches first, so that naking those does not deliver them straight back
-// into the pull it is giving up, where nothing reads them and they are lost until their ack wait
-// passes. Release detaches by itself, so a caller that only returns what the pull holds needs
-// this not at all.
+// into the pull it is giving up, from where they reach the next owner only once Release naks them
+// again, as a further delivery and out of stream order. Release detaches by itself, so a caller
+// that only returns what the pull holds needs this not at all.
 //
 // It is idempotent: the drain runs once and every call answers its result.
 func (p *SessionPull) Detach() error {
