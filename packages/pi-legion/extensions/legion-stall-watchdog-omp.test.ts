@@ -38,9 +38,10 @@ import {
 // `ctx.abort()` and the turn it does or does not end, and the last step is this process exiting
 // with the status the daemon reads as a death.
 //
-// LEGION_TEST_OMP names the binary, as in legion-phase-stall-omp.test.ts: a run without one skips,
-// except on GitHub Actions, where a skip would hide the only run of the check on the host that
-// ships it (GITHUB_ACTIONS, not CI: agent harnesses on the devbox export CI=true).
+// LEGION_TEST_OMP names the binary and LEGION_TEST_NATS_URL the server the pane's Envoy
+// registration opens its relay subject on, as in legion-phase-stall-omp.test.ts: a run without
+// both skips, except on GitHub Actions, where a skip would hide the only run of the check on the
+// host that ships it (GITHUB_ACTIONS, not CI: agent harnesses on the devbox export CI=true).
 //
 // **What was measured here on 2026-11-07, against `/opt/omp/bin/omp` (`omp/18.16.0`) in
 // `--mode rpc`**, and what each case below is built on:

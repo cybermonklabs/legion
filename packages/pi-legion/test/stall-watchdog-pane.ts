@@ -10,10 +10,10 @@ import {
   type Block,
   type Cleanup,
   call,
+  deliveryFor,
   messageStream,
   ompRoot,
   type Request,
-  refusingNats,
   serveStandin,
   spawnRpc,
   writeStandinProfile,
@@ -28,13 +28,15 @@ import {
 import { stallExitsFile } from "../src/stall-exits";
 
 const omp = process.env.LEGION_TEST_OMP;
+const natsUrl = process.env.LEGION_TEST_NATS_URL;
 const onActions = process.env.GITHUB_ACTIONS === "true";
-export const skip = omp === undefined && !onActions;
+export const skip = (omp === undefined || natsUrl === undefined) && !onActions;
 
-/** The binary the case runs against; throws on GitHub Actions without it. */
-function setup(): string {
+/** The binary and the NATS server the case runs against; throws on GitHub Actions without them. */
+function setup(): { readonly binary: string; readonly nats: string } {
   if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset on GitHub Actions");
-  return omp;
+  if (natsUrl === undefined) throw new Error("LEGION_TEST_NATS_URL is unset on GitHub Actions");
+  return { binary: omp, nats: natsUrl };
 }
 
 const PROJECT = "watch";
@@ -252,7 +254,8 @@ export interface AgentEndSeen {
  * (`pi.sendMessage(…, { deliverAs: "steer", triggerTurn: false })` in
  * `packages/pi-envoy/extensions/envoy.ts`), so what lands on the running turn is what a message
  * from this worker's architect lands as. Nothing of the plugin is replaced: this extension only
- * does what the listener's delivery would have done had this case run a NATS of its own.
+ * does what a delivery on this session's own consumer would have done, which this case's
+ * stand-in listener relays none of.
  *
  * It also writes down what each run end hands an extension, which is how a case shows that the
  * entry's close at either end is a choice: the host does tell them apart, and the watch reads
@@ -333,13 +336,15 @@ export interface StallPane {
  * Starts one Legion phase-worker pane on the real Oh My Pi: pi-envoy's extension and this
  * package's, the role's `LEGION_*` environment against a stand-in that is the model gateway, the
  * daemon's claim, grant, state and activity routes and the Envoy listener, and the three stall
- * numbers set low. Nothing here takes a NATS delivery, so the Envoy extension is given an address
- * that refuses every connection (`refusingNats`). A side request — the run-end self-check, a
- * routing hint — is answered at once with one word, since none of them is a turn; a turn of the
- * pane's own conversation is answered from `reply`.
+ * numbers set low. The pane takes no NATS delivery of its own and is given a real server all the
+ * same (`LEGION_TEST_NATS_URL`): a session receives only what its own consumer holds
+ * (INFRA-771), so one that can open no relay subject is answered no consumer, every registration
+ * of its fails, and its claim boot ends the session rather than running on deaf. A side request —
+ * the run-end self-check, a routing hint — is answered at once with one word, since none of them
+ * is a turn; a turn of the pane's own conversation is answered from `reply`.
  */
 export async function startPane(options: PaneOptions): Promise<StallPane> {
-  const binary = setup();
+  const { binary, nats } = setup();
   const registered: Record<string, unknown> = JSON.parse(
     await readFile(
       path.resolve(import.meta.dir, "../../contracts/fixtures/daemon-api/register.json"),
@@ -416,12 +421,16 @@ export async function startPane(options: PaneOptions): Promise<StallPane> {
         trace_id: `trace-${key}`,
       });
     }
-    // The Envoy listener: registration, the role claim, and any read answer with an interest.
+    // The Envoy listener: registration, the role claim, and any read answer with an interest. A
+    // registration is answered a consumer on the session's own relay subject, the one path a
+    // message reaches a session by (INFRA-771); an answer without one leaves the pane deaf and
+    // its claim boot fails.
     return Response.json({
       session_id: typeof body.session_id === "string" ? body.session_id : "",
       machine_id: `${PROJECT}-machine`,
       dir: workspace,
       topics: [],
+      ...deliveryFor(url.pathname, body, `ses_${PROJECT}`),
     });
   });
   await writeStandinProfile(home, base);
@@ -457,7 +466,7 @@ export async function startPane(options: PaneOptions): Promise<StallPane> {
       env: {
         TMPDIR: temporary,
         ENVOY_URL: base,
-        ENVOY_NATS_URL: refusingNats(cleanup),
+        ENVOY_NATS_URL: nats,
         LEGION_DAEMON_URL: base,
         LEGION_ROLE: ROLE,
         LEGION_TREE: TREE,
