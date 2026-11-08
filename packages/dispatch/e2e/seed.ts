@@ -12,7 +12,15 @@ import { sql } from "./psql";
 // must not delete what both processes published when they started. The registry of live server
 // processes (server_processes, migration 0135) stays off it too: a process registers once, at
 // boot, and GET /api/v1/dashboard/builds reads the builds the live ones serve from it.
+//
+// `embeddings` is the other way round: no foreign key reaches it either, and it is named below
+// because of that. Its rows outlive every scenario, the embedder's coverage pass re-reads all of
+// them on each tick, and a database reused across sessions accumulates them without limit - 86,902
+// rows on one development pod, against which the pass reported `items=86540 … lacking=39049`. The
+// meaning-search row of `two-builds.multiprocess.e2e.ts` waits 120 s on a 30 s block-index tick and
+// starved behind that backlog, failing for a reason it cannot report (dispatch://INFRA-341).
 const tables = [
+  "embeddings",
   "agent_tokens",
   "repo_projects",
   "architecture_sources",
