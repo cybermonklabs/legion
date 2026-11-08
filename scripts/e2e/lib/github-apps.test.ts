@@ -2,7 +2,7 @@
 // they write for lib/app-logins.ts, check_github_apps over it, and the token files the sandbox
 // proof's refresher mints under bridge, each driven under a stage script's shell options against
 // the stand-in GitHub of stand-in-github-fixtures.ts.
-import { describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, test } from "bun:test";
 import {
   copyFileSync,
   existsSync,
@@ -18,7 +18,9 @@ import { join } from "node:path";
 import { appTokenSources } from "./app-logins";
 import { holdsNoToken, release, standInGitHub, tokenOf } from "./stand-in-github-fixtures";
 
-const { url: standIn, seen, dir } = standInGitHub("github-apps-test.");
+const { url: standIn, seen, dir } = standInGitHub("github-apps-test");
+// The home every child of this file runs under, so none of them reads the caller's.
+const home = join(dir, "home");
 
 // lib/github-apps.sh as a stage proof uses it: sourced under the stage scripts' shell options with
 // their check helpers, the inputs in the environment, and `then` run after. The seams are bun,
@@ -29,14 +31,19 @@ const { url: standIn, seen, dir } = standInGitHub("github-apps-test.");
 // FAIL_MINT, releases nothing when EMPTY_MINT is set, and streams stdout when OVERSIZED_MINT is set.
 const store = join(dir, "store");
 const fakeBin = join(dir, "bin");
-mkdirSync(store);
-mkdirSync(fakeBin);
-writeFileSync(join(store, "IMPLEMENT_APP"), release({ sjawhar: tokenOf(101) }));
-writeFileSync(join(store, "REVIEW_APP"), release({ sjawhar: tokenOf(202) }));
-writeFileSync(join(store, "OTHER_APP"), release({ sjawhar: tokenOf(404) }));
-writeFileSync(
-  join(fakeBin, "agent-secrets"),
-  `#!/bin/sh
+// Every directory and stand-in this file's children read, staged before the first row: `dir` is
+// reserved at module scope and made by the hook that reservation registered, so a run that
+// selects no row of this file stages nothing and leaves nothing behind.
+beforeAll(() => {
+  mkdirSync(home);
+  mkdirSync(store);
+  mkdirSync(fakeBin);
+  writeFileSync(join(store, "IMPLEMENT_APP"), release({ sjawhar: tokenOf(101) }));
+  writeFileSync(join(store, "REVIEW_APP"), release({ sjawhar: tokenOf(202) }));
+  writeFileSync(join(store, "OTHER_APP"), release({ sjawhar: tokenOf(404) }));
+  writeFileSync(
+    join(fakeBin, "agent-secrets"),
+    `#!/bin/sh
 printf '%s\\n' "$*" >>"\${ARGV_LOG:-/dev/null}"
 name=$1
 shift
@@ -56,8 +63,9 @@ value=$(cat "\${STORE:-${store}}/$name") || exit 9
 export "$name=$value"
 exec "$@"
 `,
-  { mode: 0o755 }
-);
+    { mode: 0o755 }
+  );
+});
 const appInputs = {
   LEGION_E2E_IMPLEMENT_APP_ID: "101",
   LEGION_E2E_IMPLEMENT_APP_SECRET: "IMPLEMENT_APP",
@@ -70,22 +78,14 @@ const busyboxSh = Bun.which("busybox") === null ? ["sh"] : ["busybox", "sh"];
 
 async function githubApps(inputs: Record<string, string | undefined>, then: string) {
   const work = mkdtempSync(join(dir, "apps."));
-  const ambient = { ...process.env };
-  // A devbox shell may export this deployment's own credential variables; left in, `compgen -e`
-  // would strip them and hide whether the lib's own default entries do, so the child inherits none
-  // and only a case's own inputs put one back.
-  for (const name of Object.keys(ambient)) {
-    if (
-      name.includes("PRIVATE_KEY") ||
-      name.startsWith("LEGION_E2E_") ||
-      name.startsWith("LEGION_GITHUB_")
-    ) {
-      delete ambient[name];
-    }
-  }
+  // The child gets PATH with the stand-in first, a home of the test's own, the two seams and the
+  // case's own inputs, never the caller's whole environment. A devbox shell exports this
+  // deployment's own credential variables, and one of those left in would be swept up by the
+  // lib's own `compgen -e` strip list and hide whether the lib's default entries are swept: the
+  // child starts with no App secret of any kind, and only a case's inputs put one back.
   const env: Record<string, string | undefined> = {
-    ...ambient,
     PATH: `${fakeBin}:${process.env.PATH}`,
+    HOME: home,
     LIB: join(import.meta.dir, "github-apps.sh"),
     work,
     API: standIn,

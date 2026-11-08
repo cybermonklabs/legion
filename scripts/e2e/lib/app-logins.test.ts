@@ -1,5 +1,14 @@
-import { describe, expect, test } from "bun:test";
-import { constants, copyFileSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { beforeAll, describe, expect, test } from "bun:test";
+import {
+  constants,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { appTokenSources } from "./app-logins";
 import { holdsNoToken, release, standInGitHub, tokenOf } from "./stand-in-github-fixtures";
@@ -8,17 +17,26 @@ import { holdsNoToken, release, standInGitHub, tokenOf } from "./stand-in-github
 // stand-in-github-fixtures.ts, which answers GraphQL's viewer and GET /apps/<slug> under an
 // installation token of one of its Apps and refuses every other request, the JWT routes
 // (GET /app, the installation routes) among them.
-const { url: standIn, seen, dir } = standInGitHub("app-logins-test.");
+const { url: standIn, seen, dir } = standInGitHub("app-logins-test");
 const script = join(import.meta.dir, "app-logins.ts");
+// The home every child of this file runs under, so none of them reads the caller's.
+const home = join(dir, "home");
 
 // A GitHub that never answers: the port of a server stopped before any run.
 const closed = Bun.serve({ port: 0, fetch: () => new Response() });
 const unreachable = `http://127.0.0.1:${closed.port}/`;
 await closed.stop(true);
 
-for (const id of [101, 202, 303, 404]) {
-  writeFileSync(join(dir, `release-${id}.json`), release({ sjawhar: tokenOf(id) }));
-}
+const releaseIDs = [101, 202, 303, 404];
+// The home and the releases this file's children read, staged before the first row: `dir` is
+// reserved where `standInGitHub` was called and made by the hook that reservation registered, so
+// a run that selects no row of this file stages nothing and leaves nothing behind.
+beforeAll(() => {
+  mkdirSync(home);
+  for (const id of releaseIDs) {
+    writeFileSync(join(dir, `release-${id}.json`), release({ sjawhar: tokenOf(id) }));
+  }
+});
 
 let configs = 0;
 function config(implement: string, review: string): string {
@@ -32,12 +50,13 @@ function config(implement: string, review: string): string {
 const app = (id: string, command = `cat ${join(dir, `release-${id}.json`)}`) =>
   `    app_id: "${id}"\n    token_command: ${JSON.stringify(command)}`;
 
-// The run is asynchronous: the stand-in GitHub answers from this test's own event loop. `env` is
-// added to this test's own environment. The helper is given stdin, so a token command that
-// inherited it would read `stdin-leak` where the closed-stdin case expects nothing.
+// The run is asynchronous: the stand-in GitHub answers from this test's own event loop. The child
+// gets PATH, a home of the test's own and `env`, never the caller's whole environment. The helper
+// is given stdin, so a token command that inherited it would read `stdin-leak` where the
+// closed-stdin case expects nothing.
 async function run(path: string, env: Record<string, string> = {}, api = standIn) {
   const child = Bun.spawn(["bun", script, path, api], {
-    env: { ...process.env, ...env },
+    env: { PATH: process.env.PATH ?? "", HOME: home, ...env },
     stdin: new Blob(["stdin-leak"]),
     stdout: "pipe",
     stderr: "pipe",
@@ -66,7 +85,13 @@ bun() { command bun "$@" "$API"; }
 read_app_logins
 ${then}`;
   const child = Bun.spawn(["bash", "-c", shell], {
-    env: { ...process.env, LIB: join(import.meta.dir, "workflow.sh"), work, API: api },
+    env: {
+      PATH: process.env.PATH ?? "",
+      HOME: home,
+      LIB: join(import.meta.dir, "workflow.sh"),
+      work,
+      API: api,
+    },
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -80,6 +105,25 @@ ${then}`;
 
 // A failure names the App it could not read by its role and app id, on one line of stderr.
 const namesApp = (role: string, id: string) => new RegExp(`\\b${role} App\\b.*\\bapp_id ${id}\\b`);
+
+/**
+ * Ends the process whose pid the file holds, and answers whether that process was still running.
+ * A command that escapes its caller's session outlives the run that started it, so the test that
+ * starts one has it write its pid down and ends it here.
+ */
+function endRecordedProcess(pidFile: string): boolean {
+  if (!existsSync(pidFile)) return false;
+  const pid = Number.parseInt(readFileSync(pidFile, "utf8").trim(), 10);
+  rmSync(pidFile, { force: true });
+  if (!Number.isInteger(pid) || pid <= 1) return false;
+  try {
+    process.kill(pid, "SIGKILL");
+    return true;
+  } catch {
+    // Already gone: nothing to end.
+    return false;
+  }
+}
 
 describe("app-logins.ts", () => {
   // The token command the two rows below both run, and the failure line the helper ends on when
@@ -96,10 +140,15 @@ describe("app-logins.ts", () => {
     expect(last.slice(-40)).toBe(failure.slice(-40));
   };
   /** What one shell group prints when its own stdout and stderr meet a reader that sleeps
-   * `stall` seconds before it reads a byte: `body`'s output, in the order the group wrote it. */
+   * `stall` seconds before it reads a byte: `body`'s output, in the order the group wrote it. The
+   * group gets PATH and a home of the test's own, as every other child of this file does. */
   const behindReader = async (body: string, stall: number) => {
     const shell = `{\n${body}\n} 2>&1 | { sleep ${stall}; cat; }`;
-    const child = Bun.spawn(["bash", "-c", shell], { stdout: "pipe", stderr: "pipe" });
+    const child = Bun.spawn(["bash", "-c", shell], {
+      env: { PATH: process.env.PATH ?? "", HOME: home },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
     const [printed] = await Promise.all([new Response(child.stdout).text(), child.exited]);
     return printed;
   };
@@ -210,6 +259,7 @@ describe("app-logins.ts", () => {
   test("a caller that stopped reading stderr still gets the logins and exit 0", async () => {
     const relayed = `printf 'relayed\\n' >&2; cat ${join(dir, "release-101.json")}`;
     const child = Bun.spawn(["bun", script, config(app("101", relayed), app("202")), standIn], {
+      env: { PATH: process.env.PATH ?? "", HOME: home },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -248,31 +298,56 @@ describe("app-logins.ts", () => {
   }, 30_000);
 
   test("a token command whose escaped descendant holds its output open fails within the drain bound", async () => {
-    const escaped = "setsid sleep 60 >&2 & exit 0";
+    // The descendant leaves the token command's session, so nothing app-logins does ends it: it
+    // records the pid it ends up with — `sh` prints its own, then becomes the `sleep` through
+    // `exec` — and this test ends it once the run it must outlive is over.
+    const pidFile = join(dir, "escaped.pid");
+    const escaped = `setsid sh -c 'echo $$ >${pidFile}; exec sleep 60' >&2 & exit 0`;
     const started = Date.now();
-    const { code, stderr } = await run(config(app("101", escaped), app("202")));
-    expect(code).toBe(1);
-    expect(stderr).toContain("still held its output open");
-    expect(Date.now() - started).toBeLessThan(30_000);
+    let wasRunning = false;
+    try {
+      const { code, stderr } = await run(config(app("101", escaped), app("202")));
+      expect(code).toBe(1);
+      expect(stderr).toContain("still held its output open");
+      expect(Date.now() - started).toBeLessThan(30_000);
+    } finally {
+      wasRunning = endRecordedProcess(pidFile);
+    }
+    // The descendant held the output open for the whole drain: a descendant that ended before the
+    // run did would leave the row proving nothing.
+    expect(wasRunning).toBe(true);
   }, 30_000);
 
   // The same shape with a descendant that prints while it holds the pipes open: its output is
   // not the command's progress and must not push the bound out, which the silent row above
   // cannot catch.
   test("a token command whose escaped descendant writes while it holds its output open fails within the drain bound too", async () => {
-    // The descendant counts its writes rather than looping for ever, so that it ends itself as
-    // the silent row's `sleep 60` does: `setsid` puts it outside every process group the helper
-    // kills, and the helper's own exit does not stop it (measured: it was still writing into the
-    // socket `Bun.spawn` gave the command ten seconds later). Thirty seconds is six times the
-    // bound it must not push out.
+    // The descendant is a loop, so it cannot become its payload through `exec` as the silent
+    // row's does: the `sh` that prints `$$` is the `sh` that then runs the loop, and the pid
+    // therefore names the writer itself. Killing it ends the writing and leaves the `sleep` of
+    // the iteration it stood in, which holds the inherited stderr for the rest of its second and
+    // then exits. `setsid` puts the loop outside every process group the helper kills, and the
+    // helper's own exit does not stop it (measured: it was still writing into the socket
+    // `Bun.spawn` gave the command ten seconds later). It counts its writes rather than looping
+    // for ever, so a run that never reaches the `finally` still ends it, as the silent row's
+    // `sleep 60` ends itself; thirty seconds is six times the bound it must not push out.
+    const pidFile = join(dir, "escaped-writing.pid");
     const escaped =
-      "setsid sh -c 'i=0; while [ $i -lt 30 ]; do printf x >&2; sleep 1; i=$((i + 1)); done'" +
-      " >&2 & exit 3";
+      `setsid sh -c 'echo $$ >${pidFile}; i=0; while [ $i -lt 30 ]; do printf x >&2; sleep 1;` +
+      " i=$((i + 1)); done' >&2 & exit 3";
     const started = Date.now();
-    const { code, stderr } = await run(config(app("101", escaped), app("202")));
-    expect(code).toBe(1);
-    expect(stderr).toContain("still held its output open");
-    expect(Date.now() - started).toBeLessThan(20_000);
+    let wasRunning = false;
+    try {
+      const { code, stderr } = await run(config(app("101", escaped), app("202")));
+      expect(code).toBe(1);
+      expect(stderr).toContain("still held its output open");
+      expect(Date.now() - started).toBeLessThan(20_000);
+    } finally {
+      wasRunning = endRecordedProcess(pidFile);
+    }
+    // The descendant wrote for the whole drain: one that ended before the run did would leave the
+    // row proving nothing.
+    expect(wasRunning).toBe(true);
   }, 25_000);
 
   // The drain bound must not count this process's own blocked writes, which the relay's
@@ -315,22 +390,36 @@ describe("app-logins.ts", () => {
   test("a reader that falls behind before the exit does not buy an escaped descendant a second stall", async () => {
     // A bound of its own: the row holds a reader for eight seconds on purpose and then waits out
     // the five the drain gives the descendant, with room for the twenty-one this row refuses.
-    const escaped = "printf 'a%0300000d\\n' 0 >&2; sleep 3; setsid sh -c 'sleep 40' >&2 & exit 3";
+    // The descendant leaves the token command's session, so nothing app-logins does ends it: it
+    // records the pid it ends up with — `sh` prints its own, then becomes the `sleep` through
+    // `exec` — and this row ends it once the run it must outlive is over.
+    const pidFile = join(dir, "escaped-before-exit.pid");
+    const escaped =
+      `printf 'a%0300000d\\n' 0 >&2; sleep 3; setsid sh -c 'echo $$ >${pidFile}; exec sleep 40'` +
+      " >&2 & exit 3";
     const path = config(app("101", escaped), app("202"));
     const started = Date.now();
-    const printed = await behindReader(
-      `  bun "${script}" --roles implement "${path}" "${standIn}" >/dev/null
+    let wasRunning = false;
+    try {
+      const printed = await behindReader(
+        `  bun "${script}" --roles implement "${path}" "${standIn}" >/dev/null
   echo "exit=$?"`,
-      8
-    );
-    const elapsed = Date.now() - started;
-    expect(printed).toContain("still held its output open");
-    expect(printed.split("\n")).toContain("exit=1");
-    // Thirteen seconds is the stall the exit waits out plus the five the drain bound gives;
-    // twenty-one is that stall counted a second time, as a bound measured from the spawn counts
-    // it. The window takes the first and refuses the second.
-    expect(elapsed, `${elapsed} ms`).toBeGreaterThan(11_000);
-    expect(elapsed, `${elapsed} ms`).toBeLessThan(17_000);
+        8
+      );
+      const elapsed = Date.now() - started;
+      expect(printed).toContain("still held its output open");
+      expect(printed.split("\n")).toContain("exit=1");
+      // Thirteen seconds is the stall the exit waits out plus the five the drain bound gives;
+      // twenty-one is that stall counted a second time, as a bound measured from the spawn counts
+      // it. The window takes the first and refuses the second.
+      expect(elapsed, `${elapsed} ms`).toBeGreaterThan(11_000);
+      expect(elapsed, `${elapsed} ms`).toBeLessThan(17_000);
+    } finally {
+      wasRunning = endRecordedProcess(pidFile);
+    }
+    // The descendant held the pipes open past the exit: one that ended before the run did would
+    // leave the row proving nothing.
+    expect(wasRunning).toBe(true);
   }, 30_000);
 
   test("output that is no release, an expired token, or no installation is refused without quoting it", async () => {
