@@ -77,12 +77,27 @@
 #       this repository, so the rig holds a binary to a row the way every action does.
 #       It refuses the job where the version is not the one .bun-version pins or the binary is
 #       not that row's bytes, and it is what the arm64 job's two halves are read by.
+#       It ends with the bunx reading `installed-bunx` makes, since every call of it is taken
+#       after an install.
 #       `--expect-refused <host>` adds the reading that says which source served those bytes:
 #       the fault proxy must have refused a request to that host, after the probe marked its
 #       log, with the 504 that sent the install to its second source. Neither the version nor
 #       the digest can say it, since a row's two sources serve one binary by design and read
 #       the same whichever answered, and no later step can read the `ci-tools:` line the
 #       install wrote, since a composite action writes it to the job's log.
+#
+#   installed-bunx
+#       The bunx on this job's PATH, read beside the bun on it: that a bunx is there at all,
+#       that `bunx --version` answers the version .bun-version pins, and that it runs the same
+#       bytes as that bun, which an install already held to its row's digest.
+#       Bun's npm package holds the binary alone, so a Bun that second source served leaves no
+#       bunx behind and .github/actions/setup-bun links one again; an install that left none
+#       answers every version reading of `bun` and fails at the first `bunx` of a later job,
+#       which is ci.yaml's lint, test, ci-caches and docs-site jobs and
+#       .github/workflows/dispatch-browser.yaml.
+#       `installed-bun` ends with the same reading, so the arm64 job takes it from there; the
+#       x64 job, which reads its four faulted head installs tool by tool with `version-answers`,
+#       runs this verb.
 #
 #   corrupt [row…]
 #       Writes the control file the origin reads, with those rows or with none, and prints what
@@ -643,6 +658,9 @@ version_answers() {
 # and its npm package are one binary by design and read the same whichever answered. The fault
 # proxy's own log can: a 504 for that host, logged after the probe marked the log, is the
 # refusal that sent this install to its second source.
+#
+# The bunx beside that bun is read as well, by the function the `installed-bunx` verb is made
+# of: the digest above holds the bun alone, and the pair is what a later step runs.
 installed_bun() {
   [ "$#" -ge 1 ] ||
     die "installed-bun takes the row this runner's bun must be, and this call gave none"
@@ -676,6 +694,11 @@ installed_bun() {
   fi
   ci_tools_verify "$row" "$bun" "the bun on this $(uname -m) runner's PATH" ||
     problems=$((problems + 1))
+  # The name the install must have left beside that bun, read by `bunx_reading` below, which is
+  # also the whole of the `installed-bunx` verb: every call of this verb is taken after an
+  # install, and an install that left no runnable bunx is what that reading exists to catch.
+  bunx_reading "$bun" "$pinned" ||
+    problems=$((problems + 1))
   if [ -n "$refused" ]; then
     local probed refusals
     [ -f "$fault_state" ] ||
@@ -704,6 +727,75 @@ installed_bun() {
   fi
   [ "$problems" -eq 0 ] || exit 1
   echo "  the bun on this runner is the $row row's pinned binary"
+}
+
+# ---------------------------------------------------------------- installed-bunx
+
+# bunx_reading <bun> <pinned>: the bunx on this job's PATH, read beside that bun and against the
+# version .bun-version pins, which is the reading an install of Bun is held to after the digest
+# one.
+# Bun's npm package holds the binary alone, so a Bun its second source served arrives with no
+# bunx beside it and .github/actions/setup-bun links one again after the fetch; an install that
+# left none is a job whose every reading of bun passes and whose first bunx fails, which is the
+# lint, test, ci-caches and docs-site jobs of .github/workflows/ci.yaml and the merge-reports
+# step of .github/workflows/dispatch-browser.yaml — during the very outage this proof exists to
+# survive.
+# A version alone would catch neither half of it: a bunx that is not there answers no version
+# at all rather than a wrong one, and a bunx that resolves to some other Bun answers one of its
+# own, so this reads three things — that a bunx is on this job's PATH, that it answers
+# the pinned version, and that it runs the same bytes as the bun beside it, which an install
+# already held to its row's digest.
+# The two are compared by their bytes and never by their names: a bunx is a symbolic link to
+# the bun beside it, so the two paths differ by design, and sha256sum follows a link, which
+# makes each of these readings the bytes that name runs rather than the name itself.
+# A bunx that is a copy of that bun, or a link to it from somewhere else, reads as the same
+# bytes and passes, which is the statement this reading makes.
+# It prints what it read and returns non-zero rather than refusing the job itself, because both
+# of its callers have readings of their own to finish first.
+bunx_reading() {
+  [ "$#" -eq 2 ] ||
+    die "bunx_reading takes the bun this job holds and the version .bun-version pins, and this call gave $#"
+  local bun=$1 pinned=$2 bunx printed bun_bytes bunx_bytes problems=0
+  # A bunx whose link target is gone is not executable, so `command -v` finds nothing for it,
+  # which is the reading this branch makes: a name no later step can run is a name that is not
+  # there.
+  bunx=$(command -v bunx) || bunx=""
+  if [ -z "$bunx" ]; then
+    echo "::error::ci-tools-proof: no bunx is on this job's PATH, and the bun at $bun is, so this install left the binary with no runnable bunx beside it: every version reading of that bun passes, and the first bunx a later step runs finds nothing." >&2
+    return 1
+  fi
+  printed=$("$bunx" --version) || printed="nothing, since it did not run"
+  bunx_bytes=$(sha256sum -- "$bunx" | cut -d ' ' -f 1) || bunx_bytes="nothing this run could read"
+  bun_bytes=$(sha256sum -- "$bun" | cut -d ' ' -f 1) || bun_bytes="nothing this run could read"
+  echo "  bunx --version answers $printed, and .bun-version pins $pinned"
+  echo "  command -v bunx gives $bunx, which resolves to $(readlink -f -- "$bunx")"
+  echo "  that bunx runs sha256 $bunx_bytes, and the bun at $bun runs $bun_bytes"
+  if [ "$printed" != "$pinned" ]; then
+    echo "::error::ci-tools-proof: the bunx at $bunx answers $printed, and .bun-version pins $pinned, so every later step that runs bunx runs another Bun than the one this repository locks." >&2
+    problems=$((problems + 1))
+  fi
+  if [ "$bunx_bytes" != "$bun_bytes" ]; then
+    echo "::error::ci-tools-proof: the bunx at $bunx runs sha256 $bunx_bytes and the bun at $bun runs $bun_bytes, so this job's bunx is not the binary a row's digest was read against: that digest reading holds the bun alone, and a bunx resolving to anything else is a Bun nothing here answers for." >&2
+    problems=$((problems + 1))
+  fi
+  [ "$problems" -eq 0 ] || return 1
+  echo "  the bunx beside that bun runs its bytes and answers the version it is pinned to"
+}
+
+# installed_bunx: the reading above for a job that names no row here. The `tool-fallback` job
+# reads its four head installs under the fault tool by tool with `version-answers`, each one's
+# digest having been held by the action that installed it, so the reading left for the Bun of
+# that list is the name beside it; `installed-bun`, which the arm64 job reads its two halves
+# with, ends with the same call.
+installed_bunx() {
+  [ "$#" -eq 0 ] || die "installed-bunx takes no argument, and this call gave $#"
+  local bun pinned
+  bun=$(command -v bun) || bun=""
+  [ -n "$bun" ] ||
+    die "installed-bunx: no bun is on this job's PATH, so this job installed none to read a bunx beside"
+  pinned=$(tr -d '[:space:]' < "$root/.bun-version")
+  note "the bunx beside the bun this $(uname -m) runner holds"
+  bunx_reading "$bun" "$pinned" || exit 1
 }
 
 # ---------------------------------------------------------------- corrupt
@@ -928,7 +1020,7 @@ report() {
 
 verb=${1:-}
 [ "$#" -ge 1 ] ||
-  die "usage: $(basename "$0") <origin-start|stage|start-fault|stop-fault|probe|version-answers|installed-bun|corrupt|flip-last-byte|payload-path|seed-mise-jj|report> [argument…]"
+  die "usage: $(basename "$0") <origin-start|stage|start-fault|stop-fault|probe|version-answers|installed-bun|installed-bunx|corrupt|flip-last-byte|payload-path|seed-mise-jj|report> [argument…]"
 shift
 case $verb in
   origin-start) origin_start "$@" ;;
@@ -938,10 +1030,11 @@ case $verb in
   probe) probe "$@" ;;
   version-answers) version_answers "$@" ;;
   installed-bun) installed_bun "$@" ;;
+  installed-bunx) installed_bunx "$@" ;;
   corrupt) corrupt "$@" ;;
   flip-last-byte) flip_last_byte "$@" ;;
   payload-path) payload_path "$@" ;;
   seed-mise-jj) seed_mise_jj "$@" ;;
   report) report "$@" ;;
-  *) die "'$verb' is no verb of this rig (origin-start, stage, start-fault, stop-fault, probe, version-answers, installed-bun, corrupt, flip-last-byte, payload-path, seed-mise-jj, report)" ;;
+  *) die "'$verb' is no verb of this rig (origin-start, stage, start-fault, stop-fault, probe, version-answers, installed-bun, installed-bunx, corrupt, flip-last-byte, payload-path, seed-mise-jj, report)" ;;
 esac

@@ -2444,8 +2444,19 @@ jobs:
           "$proof" version-answers changie "$(changie --version)" || wrong="$wrong changie"
           "$proof" version-answers jj "$(jj --version)" || wrong="$wrong jj"
           "$proof" version-answers bun-linux-x64 "$(bun --version)" || wrong="$wrong bun-linux-x64"
+          # The name that Bun install must have left beside the bun those four lines end with.
+          # It is a reading of its own and not a fifth version-answers line because what can be
+          # missing here is the name rather than the version: npm serves the binary alone, so a
+          # faulted install that left no bunx behind answers every reading above and fails at
+          # the first bunx a later job runs. The verb prints which of the three things it reads
+          # — the name, the version, the bytes — was wrong, so this keeps its own word and does
+          # not join the list below, whose sentence is about versions.
+          bunx=read
+          "$proof" installed-bunx || bunx=refused
           if [ -n "$wrong" ]; then
             echo "::error::$wrong answered a version its row does not pin, so the source that served it served something else" >&2
+          fi
+          if [ -n "$wrong" ] || [ "$bunx" = refused ]; then
             exit 1
           fi
 
