@@ -77,7 +77,7 @@ func TestAHeldCopyWaitsForALiveUnnamedMentionBesideALapsedOne(t *testing.T) {
 		t.Fatalf("fail the resend of the mention of %s: %v", lapsed, err)
 	}
 
-	publishFallbackCopies(ctx, rig.deps(), unfenced{})
+	publishFallbackCopies(ctx, rig.deps(), unfenced{}, holdingProcess(t, rig.database))
 	time.Sleep(time.Second)
 	if got := claimant.received(); len(got) != 0 {
 		t.Fatalf("the fallback pass sent %s %v while the live unnamed mention, which its sender can pin to this very claimant, is still being sent: the mention would land beside the copy under %s",
@@ -104,7 +104,7 @@ func TestAHeldCopyWaitsForALiveUnnamedMentionBesideALapsedOne(t *testing.T) {
 		t.Fatalf("pass the held copy's wait: %v", err)
 	}
 
-	publishFallbackCopies(ctx, rig.deps(), unfenced{})
+	publishFallbackCopies(ctx, rig.deps(), unfenced{}, holdingProcess(t, rig.database))
 	waitFor(t, 10*time.Second, "the copy both mentions' failure owes", func() bool { return len(claimant.received()) > 0 })
 	want := []string{fmt.Sprintf("dispatch-%d", comment.ID)}
 	if got := keysOf(claimant.received()); !slices.Equal(got, want) {

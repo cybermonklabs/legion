@@ -371,8 +371,11 @@ func (o *Outbox) publish(ctx context.Context, hold *duty.Hold) holdEnd {
 // while a batch is still sending. Each scan is followed by the fallback pass over the copies the
 // outbox held back for a mention it waits no longer on (publishFallbackCopies), which runs under
 // the same hold and after the scan rather than beside it, so that a copy the scan has just held
-// back is read by the pass that follows and not by the one it is held back in. A pass whose
-// claim filled its batch leaves the holder due again, as a full batch does, and one whose claim
+// back is read by the pass that follows and not by the one it is held back in. The pass is
+// fenced by that hold as the scan's batches are, on this process's instance, which it is given:
+// it claims nothing once the hold's deadline has passed, and records what it came to only while
+// the hold is still this process's (publishFallbackCopies). A pass whose claim filled its batch
+// leaves the holder due again, as a full batch does, and one whose claim
 // failed is a failed scan's back-off, so rows it never reached are not left waiting on an
 // unrelated event's insert and a claim that keeps failing does not spin. It returns why it
 // stopped: ctx ended, the hold was lost or its deadline had passed when a scan was to start a
@@ -405,7 +408,7 @@ func (o *Outbox) serve(ctx context.Context, hold *duty.Hold) holdEnd {
 				case end.natsLost:
 					return natsLost
 				}
-				fullPass, failedPass := publishFallbackCopies(ctx, o.deps, hold)
+				fullPass, failedPass := publishFallbackCopies(ctx, o.deps, hold, o.instance)
 				if ctx.Err() != nil {
 					return stopping
 				}

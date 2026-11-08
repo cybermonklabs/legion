@@ -153,7 +153,7 @@ func TestAForwardPastItsBoundIsHeldAsARowAndStopsHoldingTheHoldersLaterEvents(t 
 	// The row waits for the send the forward was waiting for, which is what keeps the double
 	// closed: a copy published here would stand beside a mention a send may yet pin to this
 	// holder (decideFallbackCopy, mentionHolds.state).
-	publishFallbackCopies(ctx, rig.deps(), unfenced{})
+	publishFallbackCopies(ctx, rig.deps(), unfenced{}, holdingProcess(t, rig.database))
 	if row := readHeldCopy(t, rig.database, commentID, roleTopic); row.settled || row.published || row.attempts != 0 {
 		t.Fatalf("the role row is settled %v, published %v and attempts %d while a send of the comment's unnamed mentions is still owed, want it waiting with none counted: the row waits for that send as every other copy of the comment does",
 			row.settled, row.published, row.attempts)
@@ -177,7 +177,7 @@ func TestAForwardPastItsBoundIsHeldAsARowAndStopsHoldingTheHoldersLaterEvents(t 
 		t.Fatalf("make the role row due: %v", err)
 	}
 
-	publishFallbackCopies(ctx, rig.deps(), unfenced{})
+	publishFallbackCopies(ctx, rig.deps(), unfenced{}, holdingProcess(t, rig.database))
 
 	waitFor(t, 10*time.Second, "the comment's copy the row owes the holder", func() bool { return len(recv.received()) > 1 })
 	time.Sleep(time.Second)

@@ -89,7 +89,7 @@ func TestAThreadAuthorsCopyWaitsForAnUnnamedMentionPastItsLease(t *testing.T) {
 
 	// The pass that reads that row waits on it: the resend is still owed, and whichever session
 	// it pins is a session this read cannot name (mentionHolds.state).
-	publishFallbackCopies(ctx, rig.deps(), unfenced{})
+	publishFallbackCopies(ctx, rig.deps(), unfenced{}, holdingProcess(t, rig.database))
 	time.Sleep(time.Second)
 	if got := wrote.received(); len(got) != 0 {
 		t.Fatalf("the fallback pass sent %s %v while the resend of the mention of %s is still owed: the resend can pin this very author, and that send lands under %q, which this copy does not claim",
@@ -116,7 +116,7 @@ func TestAThreadAuthorsCopyWaitsForAnUnnamedMentionPastItsLease(t *testing.T) {
 		t.Fatalf("pass the held copy's wait: %v", err)
 	}
 
-	publishFallbackCopies(ctx, rig.deps(), unfenced{})
+	publishFallbackCopies(ctx, rig.deps(), unfenced{}, holdingProcess(t, rig.database))
 	waitFor(t, 10*time.Second, "the copy the mention's failure owes the thread author", func() bool { return len(wrote.received()) > 0 })
 	want := []string{eventKey}
 	if got := keysOf(wrote.received()); !slices.Equal(got, want) {

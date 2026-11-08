@@ -849,7 +849,7 @@ func TestAFallbackPassWhoseClaimFailedBacksTheHolderOff(t *testing.T) {
 	held, release := store.HoldsConnection(store.WithTransactionTracking(context.Background()))
 	defer release()
 
-	full, failed := publishFallbackCopies(held, deps, unfenced{})
+	full, failed := publishFallbackCopies(held, deps, unfenced{}, outbox.instance)
 
 	if full || !failed {
 		t.Fatalf("a pass whose claim failed reports full=%v failed=%v, want a failure and no full claim", full, failed)

@@ -59,7 +59,7 @@ func TestAFallbackRowWaitsWhileItsUnnamedMentionIsOwedAResend(t *testing.T) {
 
 	// The fallback pass, with the attempt still unpinned and owed a resend, and the role still
 	// unnamed by the outbox.
-	publishFallbackCopies(ctx, rig.deps(), unfenced{})
+	publishFallbackCopies(ctx, rig.deps(), unfenced{}, holdingProcess(t, rig.database))
 	time.Sleep(time.Second)
 	row = readHeldCopy(t, rig.database, commentID, contracts.AgentSubject(holder))
 	got := claimant.received()

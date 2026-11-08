@@ -942,7 +942,7 @@ func TestAHeldCopyOfARoleRouteReachesTheRolesHolder(t *testing.T) {
 		deps := withHeldRoles(Deps{Store: database, Publisher: publisher, Broker: events.NewBroker()})
 		commentID := seedHeldRoleFallbackCopy(ctx, t, deps, role)
 
-		publishFallbackCopies(ctx, deps, unfenced{})
+		publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
 
 		held := readHeldCopy(t, database, commentID, roleTopic)
 		if !held.published || !held.settled || held.attempts != 0 {
@@ -974,7 +974,7 @@ func TestAHeldCopyOfARoleRouteReachesTheRolesHolder(t *testing.T) {
 			RoleClaims: unclaimedRoles, Sessions: unclaimedRoles}
 		commentID := seedHeldRoleFallbackCopy(ctx, t, deps, role)
 
-		publishFallbackCopies(ctx, deps, unfenced{})
+		publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
 
 		held := readHeldCopy(t, database, commentID, roleTopic)
 		if !held.settled || !held.published || held.attempts != 0 {
@@ -1020,7 +1020,7 @@ func TestAFallbackPassForwardsARoleCopyToItsOwnMentionedHolderUnderTheMentionsKe
 	deps := rig.deps()
 	commentID := seedHeldRoleFallbackCopy(ctx, t, deps, role)
 
-	publishFallbackCopies(ctx, deps, unfenced{})
+	publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
 
 	held := readHeldCopy(t, rig.database, commentID, contracts.RoleTopicPrefix+role)
 	if !held.published || !held.settled || held.attempts != 0 {
@@ -1071,7 +1071,7 @@ func TestAKeptFallbackCopyHandedToItsOwnMentionedHolderCarriesTheMentionsKey(t *
 		claimed <- rig.claimUnder(role, holder, session.SessionEntry{SelfSubscribed: true})
 	})
 
-	publishFallbackCopies(ctx, rig.publisherOn(publisher), unfenced{})
+	publishFallbackCopies(ctx, rig.publisherOn(publisher), unfenced{}, holdingProcess(t, rig.database))
 
 	if err := <-claimed; err != nil {
 		t.Fatalf("the claim made under the keep: %v", err)
@@ -2058,7 +2058,7 @@ func TestAFallbackRoleCopyReachingASecondMentionedHolderCarriesItsOwnMentionsKey
 		deps := rig.deps()
 		commentID := seedHeldRoleFallbackCopyMentioningTwo(ctx, t, deps, role, first, second, "failed")
 
-		publishFallbackCopies(ctx, deps, unfenced{})
+		publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
 
 		held := readHeldCopy(t, rig.database, commentID, roleTopic)
 		if !held.published || !held.settled || held.attempts != 0 {
@@ -2094,7 +2094,7 @@ func TestAFallbackRoleCopyReachingASecondMentionedHolderCarriesItsOwnMentionsKey
 			claimed <- rig.claimUnder(role, second, session.SessionEntry{SelfSubscribed: true})
 		})
 
-		publishFallbackCopies(ctx, rig.publisherOn(publisher), unfenced{})
+		publishFallbackCopies(ctx, rig.publisherOn(publisher), unfenced{}, holdingProcess(t, rig.database))
 
 		if err := <-claimed; err != nil {
 			t.Fatalf("the claim made under the keep: %v", err)
@@ -2170,7 +2170,7 @@ func TestAFallbackCopyKeptForARoleWaitsForTheCommentsLiveMentions(t *testing.T) 
 		database, publisher, deps, commentID := keptFor(ctx, t, "pending")
 
 		before := time.Now()
-		publishFallbackCopies(ctx, deps, unfenced{})
+		publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
 		after := time.Now()
 
 		if kept := publisher.keeps(); len(kept) > 0 {
@@ -2201,7 +2201,7 @@ func TestAFallbackCopyKeptForARoleWaitsForTheCommentsLiveMentions(t *testing.T) 
 			t.Fatalf("pass the held copy's wait: %v", err)
 		}
 
-		publishFallbackCopies(ctx, deps, unfenced{})
+		publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
 
 		if settled := readHeldCopy(t, database, commentID, roleTopic); !settled.settled || !settled.published ||
 			settled.attempts != 0 {
@@ -2224,7 +2224,7 @@ func TestAFallbackCopyKeptForARoleWaitsForTheCommentsLiveMentions(t *testing.T) 
 		ctx := store.WithTransactionTracking(context.Background())
 		database, publisher, deps, commentID := keptFor(ctx, t, "resumed")
 
-		publishFallbackCopies(ctx, deps, unfenced{})
+		publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
 
 		row := readHeldCopy(t, database, commentID, roleTopic)
 		kept := publisher.keeps()
@@ -2288,7 +2288,7 @@ func TestAFallbackCopyForwardedToALiveHolderWaitsForThatHoldersOwnMention(t *tes
 		rig, recv, deps, commentID := heldFor(ctx, t, "pending")
 
 		before := time.Now()
-		publishFallbackCopies(ctx, deps, unfenced{})
+		publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
 		after := time.Now()
 
 		if forwards := recv.received(); len(forwards) > 0 {
@@ -2319,7 +2319,7 @@ func TestAFallbackCopyForwardedToALiveHolderWaitsForThatHoldersOwnMention(t *tes
 			t.Fatalf("pass the held copy's wait: %v", err)
 		}
 
-		publishFallbackCopies(ctx, deps, unfenced{})
+		publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
 
 		if settled := readHeldCopy(t, rig.database, commentID, roleTopic); !settled.settled ||
 			!settled.published || settled.attempts != 0 {
@@ -2341,7 +2341,7 @@ func TestAFallbackCopyForwardedToALiveHolderWaitsForThatHoldersOwnMention(t *tes
 		ctx := store.WithTransactionTracking(context.Background())
 		rig, recv, deps, commentID := heldFor(ctx, t, "resumed")
 
-		publishFallbackCopies(ctx, deps, unfenced{})
+		publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
 
 		row := readHeldCopy(t, rig.database, commentID, roleTopic)
 		forwards := recv.received()
@@ -2422,7 +2422,7 @@ func TestAFallbackCopyWhoseRoleHolderIsNotReachedStaysPendingUnderItsHolder(t *t
 		commentID := seedHeldRoleFallbackCopy(ctx, t, deps, role)
 
 		before := time.Now()
-		publishFallbackCopies(ctx, deps, unfenced{})
+		publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
 		after := time.Now()
 
 		heldPendingCopy(t, rig, registry, &logged, commentID, roleTopic, "has not heartbeated", before, after)
@@ -2450,7 +2450,7 @@ func TestAFallbackCopyWhoseRoleHolderIsNotReachedStaysPendingUnderItsHolder(t *t
 		unreadable.RoleClaims = unreadableRoleClaims{}
 
 		before := time.Now()
-		publishFallbackCopies(ctx, unreadable, unfenced{})
+		publishFallbackCopies(ctx, unreadable, unfenced{}, holdingProcess(t, rig.database))
 		after := time.Now()
 
 		heldPendingCopy(t, rig, registry, &logged, commentID, roleTopic, "resolve the role's holder", before, after)
