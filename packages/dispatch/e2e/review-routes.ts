@@ -455,8 +455,8 @@ export const shotRoutes: readonly ReviewedRoute[] = reviewed.filter((route) =>
  *  looked, and whether the seeded reply has arrived by the moment of capture is a race with the
  *  live socket: one container run shot "Jump to latest" and the next "Jump to latest - 1 new",
  *  which moved the card above it and differed by 15,776 pixels. Waiting for the pill would be
- *  waiting for that race to go one way. The desktop row of the same page is shot and is steady,
- *  because that layout draws no such pill. */
+ *  waiting for that race to go one way. The desktop row of the same page is not shot either: a
+ *  turn arriving over the live socket changes its height there (its entry above says so). */
 export const phoneShotNames: readonly string[] = ["inbox", "issue-spec"];
 
 /** Waits until `route`'s page has settled, which is more than drawn.

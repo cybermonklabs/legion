@@ -26,13 +26,14 @@
  *
  *  - The clock. `/` and `/agents` draw relative times ("2 minutes ago") that move with the gap
  *    between the seed and the shot, and `<EarlierApproval>` draws the seeded day's own date.
- *    Nothing in this suite freezes a clock for a whole page - `page.clock.install()` is used by
- *    rows that drive time themselves, and here it would only trade a moving delta for a fixed
- *    fake `now` measured against a `created_at` the seed still writes at wall-clock time. Every
- *    one of those labels is a `<time>` element (`web/src/features/refs/Timestamp.tsx`,
- *    `web/src/features/inbox/Inbox.tsx`, `web/src/features/inbox/EarlierApproval.tsx`), so they
- *    are masked. The cost is that the text of a timestamp is in no baseline; its place, its size
- *    and the layout around it still are.
+ *    Nothing else in this suite freezes a clock for a whole page; `page.clock.install()` is used
+ *    by rows that drive time themselves. Here each row installs it a minute after the moment
+ *    `e2e/visual-seed.ts` wrote the corpus (`seededAt`), so every relative label reads the same
+ *    gap on every run - a fixed literal would drift against a corpus written at wall-clock time.
+ *    The `<time>` elements (`web/src/features/refs/Timestamp.tsx`, `web/src/features/inbox/
+ *    Inbox.tsx`, `web/src/features/inbox/EarlierApproval.tsx`) are masked as well. The cost is
+ *    that the text of a timestamp is in no baseline; its place, its size and the layout around
+ *    it still are.
  *  - Animations. `toHaveScreenshot` disables CSS animations, CSS transitions and Web Animations
  *    by default (`animations: "disabled"`), so no option is passed for them.
  *  - The 150 ms colour ease. `web/src/styles.css:51-57` transitions `color`, `background-color`
@@ -148,9 +149,10 @@ for (const route of shotRoutes) {
           // Nothing else is masked, and the Decisions panel is why that matters. It prints the
           // id of the spec block a decision shaped until the reference graph answers, and a
           // mask over that id did NOT settle it: a uuid is a fixed count of characters and not
-          // a fixed width, so the painted rectangle moved with the glyphs. That row waits for
-          // the block's own words instead (`e2e/review-routes.ts`). A mask is the last resort
-          // here and not the first, because it hides only a difference whose box holds still.
+          // a fixed width, so the painted rectangle moved with the glyphs. That page is scanned
+          // and not shot now, since one block it draws has no words to wait for
+          // (`e2e/review-routes.ts`). A mask is the last resort here and not the first, because
+          // it hides only a difference whose box holds still.
           //
           // Each of these was found by reading a diff image of a container run against the run
           // before it, not by widening the bound until the rows passed.

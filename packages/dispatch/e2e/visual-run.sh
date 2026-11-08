@@ -83,10 +83,11 @@ seed_in_container=/tmp/dispatch-visual-seed.json
 bun e2e/visual-seed.ts "$seed_json"
 
 # Every harness variable the container needs. `-e NAME` with no value forwards the host's, and
-# forwards nothing when the host has none, so a listener added to e2e/harness-ports.ts later is
-# carried by the prefix sweep without an edit here. DISPATCH_E2E_VISUAL_SEED is the exception:
-# it names a path inside the container, so a host value for it is dropped and the container's is
-# set below.
+# forwards nothing when the host has none, so a listener added to e2e/harness-ports.ts later
+# under a `DISPATCH_E2E_` name is carried by the prefix sweep without an edit here; one added
+# under any other name is not, and goes in the list below. DISPATCH_E2E_VISUAL_SEED is the
+# exception to the sweep: it names a path inside the container, so a host value for it is
+# dropped and the container's is set below.
 forward=""
 for name in $(env | sed -n 's/^\(DISPATCH_E2E_[A-Za-z0-9_]*\)=.*/\1/p'); do
   if [ "$name" != DISPATCH_E2E_VISUAL_SEED ]; then
