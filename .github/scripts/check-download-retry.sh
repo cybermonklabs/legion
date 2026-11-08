@@ -71,13 +71,25 @@
 # belongs to the command it is fed to, and runs_heredoc reads that command off the line the
 # operator sits on, so the body of a `bash` heredoc is shell the step runs and the calls in it
 # are the step's own, while `cat`, a redirect into a file, `jq` and a `python3` heredoc take
-# their body as data, where a path is a path something prints rather than runs. What the command
-# word does not say, this check does not read: a consumer written as a variable (a heredoc fed
-# to `"$shell"`), a shell behind a program reduce_words does not strip (an `ssh host bash`, and
-# a wrapper written as a path, where a bare `env bash` is read as the shell it runs and
-# `/usr/bin/env bash` is not), and an interpreter whose script argument hides behind a long
-# option taking a value all read as data, so a call written in one of those bodies reaches no
-# step's budget. And a script outside
+# their body as data, where a path written in it is a path something prints rather than runs,
+# and a body read as data is blanked before any rule reads the step (without_heredocs).
+# What the command word does not say, this check does not read: a consumer
+# written as a variable (a heredoc fed to `"$shell"`), a shell behind a program reduce_words
+# does not strip (an `ssh host bash`, and a wrapper written as a path, where a bare `env bash`
+# is read as the shell it runs and `/usr/bin/env bash` is not), and an interpreter whose script
+# argument hides behind a long option taking a value all read as data, so a call written in one
+# of those bodies reaches no step's budget. Four shapes of that reading are worth naming,
+# because each is a fetch the step really runs and this check really passes, measured in
+# scratch trees by review round 3 of dispatch://INFRA-1545 and in none of this tree: a body fed
+# to `cat` and piped into a shell, where the consumer word is `cat` and the pipeline is what
+# runs it; a shell given an option whose value stands where its script would, such as a `bash
+# -O extglob`, which leaves the body data to this check and shell to the runner; an unquoted
+# body whose text holds a command substitution of a script path, which the step's own shell
+# expands before the consumer ever reads it, so the call is the step's own whatever the
+# consumer is, and a path in such a body is no path merely printed — that reading holds for a
+# quoted body alone; and an interpreter whose command sits in the value of a `-c` written after
+# another option, such as a `bash -o pipefail -c`, where the reading stops at the option's
+# value and the fetch inside names no site at all. And a script outside
 # .github/scripts/ is not read at all, since that one directory is
 # the whole set: a `run:` that calls the repository's own scripts/<name>.sh or a
 # packages/<package>/scripts/<name>.sh — ci.yaml and the release workflows each hold such calls
@@ -232,16 +244,23 @@
 #      measured duration plus the arithmetic of its slowest retried step — read here as the
 #      half a check can make, which is the arithmetic and not the measurement.
 #
-#      How many times a step runs one call: every multiplier counts, not the innermost one.
+#      How many times a step runs one call, and what this check can see of it. Rule 8
+#      multiplies a call by the loops and the function calls it resolves, which are the three
+#      kinds listed next; where a loop it did read writes no count it refuses the site rather
+#      than guessing; and every shape it reads as neither a loop nor a call leaves the call
+#      counted once. It is no shell parser, so the list of what it counts once, below the
+#      three, is as much this rule as the list of what it multiplies.
 #
 #        * each loop around the call, and each loop around that loop. A call in a three-pass
 #          loop inside a two-pass loop runs six times, and reading the inner loop alone would
 #          count two of those six.
-#        * each call of the function the call sits in, and the loops around those calls. The
-#          required `pr-title` check is the instance: check-pr-text.sh's page read sits in
-#          read_list's `while :`, and the `for ((i = 0; i < ${#lists[@]}; i += 2))` under it
-#          runs read_list once for each of three lists, so that one written call is three
-#          ladders and the script makes five rather than three.
+#        * each call of the function the call sits in, and the loops around those calls. A
+#          page read written once in a function that a seven-pass loop calls is seven ladders
+#          and not one. check-pr-text.sh reads like that instance and is not it: its page read
+#          sits in read_list's `while :`, a loop this check cannot count, so the fold stops
+#          there and never reaches the `for ((i = 0; i < ${#lists[@]}; i += 2))` that runs
+#          read_list once per list. The three lists are carried by hand instead, in that
+#          script's DeclaredArithmetic entry below, which writes the 3 x in its own sum.
 #        * the loop a step wraps around the script it runs. The script's whole arithmetic is
 #          the step's once per pass, as a call written in the `run:` would be.
 #
@@ -268,24 +287,49 @@
 #      at least one call of itself, whatever the run finds for it to do, and a figure under
 #      that floor is refused naming the site and the floor.
 #
-#      The other kind of entry is a RaisedPasses, and its job is the opposite one. Where this
-#      check did read a loop's count, a reader who knows the body runs more often than the
-#      loop says writes the larger number, and the budgets reaching that loop are held to it.
-#      It may only raise. A figure at or below the computed count is refused by name, because
-#      it buys nothing and hides the next edit of that loop — the one that would have raised
-#      the count — behind a number nobody rereads; and it stands in for no count at all, so a
-#      RaisedPasses over a loop this check could not read is refused as the wrong kind of
-#      entry, naming the DeclaredArithmetic that would answer.
+#      WHAT IT COUNTS ONCE, which is the other half of this rule and the half a reader is owed
+#      plainly. A shape this check reads as neither a loop nor a call of a function is no
+#      refusal: the call is counted once, the budget is judged against that one figure, and a
+#      step whose real cost is several ladders passes. Each shape below is a step at
+#      `timeout-minutes: 6` around a 300 s call that this check passes in a scratch tree, and
+#      none of them is in this tree: review round 3 of dispatch://INFRA-1545 read every step
+#      and every script of it with this check's own parser and found no instance.
 #
-#      A step whose budget reaches a site with neither a count this check resolved nor a
-#      DeclaredArithmetic entry is refused in place of being judged, and the refusal names the
-#      file, the line and the verb, the loop line it could not read, and which kind of entry
-#      answers it. That refusal is the default: this check derives no budget from a count it
-#      never made, because a budget written for one pass of a loop that makes four is a step
-#      the runner cuts in the middle of the retry the budget exists to allow. This rule has
-#      been wrong here three times, each fix teaching the reading one more loop shape while
-#      leaving the default on pass; the default is refusal now, and a declaration carries its
-#      own arithmetic or it is not one.
+#        * two loops written on one line: a loop is keyed by the line it sits on, so the
+#          second overwrites the first and the call is multiplied by one of the two.
+#        * a loop or a function call this check finds only where it is the first word of its
+#          command: a fetch written as the condition of an `if` inside the loop, a fetch
+#          behind an assignment prefix such as `GH_HOST=x`, and a one-line
+#          `for x in a b c; do fetch; done` whose fetch sits in a function.
+#        * a loop written inside an `if`, and a function written in the `function name { … }`
+#          form, neither of which this check reads as what it is.
+#        * a function that calls itself, and one whose calls this check cannot find: counted
+#          once, because a reading that cannot see the second call cannot price it.
+#        * a script run through another program rather than by its own path, such as an
+#          `xargs -n1 .github/scripts/x.sh`.
+#        * a `for` whose list is an array this check cannot write out as words: one built from
+#          `($var)`, one from a brace expansion, one `mapfile` fills, one an element
+#          assignment extends.
+#        * one script that two of a step's paths reach, counted once, because the `seen` set
+#          is shared across a step's scripts. That set exists to stop a cycle, and this is the
+#          same mechanism read from the other side.
+#
+#      One shape goes the other way and over-counts: a script call and a loop written on one
+#      line are read as the loop holding the call, which buys a budget a margin it does not
+#      need and refuses nothing that is right.
+#
+#      None of this asks for a wider reading. A parser that learns some of those shapes and
+#      stays silent on the rest is this same defect one layer in and harder to see, where a
+#      list a reader can check is worth what it says and no more.
+#
+#      A step whose budget reaches a loop this check read but whose passes are not written,
+#      and for which no DeclaredArithmetic entry writes the seconds, is refused in place of
+#      being judged, and the refusal names the file, the line and the verb, the loop line it
+#      could not read, and what answers it. That refusal is the default for the loops this
+#      check reads, and for those alone. This rule has been wrong here three times, each fix
+#      teaching the reading one more loop shape while leaving the default on pass; a loop read
+#      with no count is refused now, and a declaration carries its own arithmetic or it is not
+#      one.
 #
 #      An entry matching no such site fails this check, as a stale exception does, so a
 #      declaration cannot outlive its loop; and an entry whose file, step and verb match sites
@@ -536,11 +580,11 @@ LADDER_FLOOR = 120
 # and then for all forthcoming retries it doubles the waiting time until it reaches 10 minutes".
 CURL_FIRST_WAIT = 1
 CURL_WAIT_CEILING = 600
-# Rule 8's arithmetic, the worst case of one retried call. The helper sleeps 10, 20, 40 and 80
-# seconds between its five attempts; curl, making `RETRY_FLOOR + 1` attempts itself, waits
-# 1, 2, 4, 8, 16, 32 and 64 seconds between its own.
+# Rule 8's arithmetic, the worst case of one retried call of the shared helper: it sleeps 10,
+# 20, 40 and 80 seconds between its five attempts. What curl waits between its own attempts is
+# no constant of this file, because `--retry-delay` and `--retry-max-time` each rewrite those
+# waits; curl_ladder reads them off the call and computes the ladder from there.
 HELPER_WAIT = 150
-CURL_WAIT = 127
 # What a job allows a step when the job writes no `timeout-minutes` of its own, read off
 # GitHub's own documentation ("Workflow syntax for GitHub Actions", `jobs.<job_id>.timeout-
 # minutes`): six hours. Rule 8 holds a step's arithmetic under its job's budget as well as
@@ -1426,55 +1470,23 @@ def one_call(site: Site) -> int:
     return 0
 
 
-def raising(site: Site) -> "RaisedPasses | None":
-    """The declaration that raises a pass count for this site, where one is written."""
-    return next((entry for entry in DECLARED_LOOPS
-                 if isinstance(entry, RaisedPasses) and entry.covers(site)), None)
-
-
 def declared_arithmetic(site: Site) -> "DeclaredArithmetic | None":
     """The declaration that carries this site's own arithmetic, where one is written."""
-    return next((entry for entry in DECLARED_LOOPS
-                 if isinstance(entry, DeclaredArithmetic) and entry.covers(site)), None)
+    return next((entry for entry in DECLARED_LOOPS if entry.covers(site)), None)
 
 
-def passes_at(loops: Loops, line: int, site: Site | None) -> int | None:
-    """The passes the loop at `line` makes: the count this check reads off the loop itself,
-    raised where a RaisedPasses entry covers the site whose budget reaches it. A declaration
-    stands in for no count: where the loop writes none this answers None, and the site is
-    refused below or answered in seconds by a DeclaredArithmetic entry instead. An entry is
-    bound to the loop it covers, and a second loop under the same entry is refused below
-    rather than counted."""
-    passes = loops.passes.get(line)
-    if site is None:
-        return passes
-    entry = raising(site)
-    if entry is None:
-        return passes
-    if passes is None:
-        # A raising declaration over a loop this check never counted: the entry is in the
-        # wrong place, and the site is left uncounted rather than given this entry's number.
-        entry.unmade.add(line)
-        return None
-    entry.used += 1
-    entry.loops.add(line)
-    if entry.passes <= passes:
-        entry.lowered[line] = passes
-        return passes
-    return entry.passes
-
-
-def around(loops: Loops, lines: list[int], site: Site | None) -> tuple[int | None, int,
-                                                                      int | None]:
+def around(loops: Loops, lines: list[int]) -> tuple[int | None, int, int | None]:
     """Folding a cost at one position outwards through the loops around it: how many times they
     run it, what they sleep between their passes, and the loop whose passes could not be read
     where there is one. Each loop multiplies what is inside it and adds its own waits —
     `passes * inside + (passes - 1) * sleep` — so a call in a loop inside a loop is multiplied
-    by both."""
+    by both. A loop whose count this check never made stops the fold rather than taking a
+    figure from somewhere else: that site is refused below, or answered in seconds by a
+    DeclaredArithmetic entry, because a pass count nobody read is a pass count nobody checks."""
     factor = 1
     wait = 0
     for line in reversed(lines):
-        passes = passes_at(loops, line, site)
+        passes = loops.passes.get(line)
         if passes is None:
             return None, 0, line
         wait = passes * wait + max(passes - 1, 0) * loops.sleep.get(line, 0)
@@ -1482,15 +1494,14 @@ def around(loops: Loops, lines: list[int], site: Site | None) -> tuple[int | Non
     return factor, wait, None
 
 
-def times_run(loops: Loops, line: int, site: Site | None, stack: list[int] | None = None,
+def times_run(loops: Loops, line: int, stack: list[int] | None = None,
               seen: frozenset[str] = frozenset()) -> tuple[int | None, int, int | None]:
     """How many times a body runs what is written at `line`, what the loops around it sleep, and
     the loop that stopped the reading where one did. The loops around the line are the first
     half; the second is the function holding it, which runs once for each of its own calls, each
     of those multiplied the same way again. `seen` stops a function that reaches itself, which
     the shell would run until something failed and which must not hang this check."""
-    factor, wait, blocked = around(loops, loops.enclosing(line) if stack is None else stack,
-                                   site)
+    factor, wait, blocked = around(loops, loops.enclosing(line) if stack is None else stack)
     if factor is None:
         return None, 0, blocked
     holder = loops.function_of(line)
@@ -1502,7 +1513,7 @@ def times_run(loops: Loops, line: int, site: Site | None, stack: list[int] | Non
     outer = 0
     outer_wait = 0
     for call in calls:
-        times, waited, blocked = times_run(loops, call, site, None, seen | {holder})
+        times, waited, blocked = times_run(loops, call, None, seen | {holder})
         if times is None:
             return None, 0, blocked
         outer += times
@@ -1594,7 +1605,7 @@ def calls_of(text: str, first_line: int, loops: Loops) -> dict[str, Call]:
     found: dict[str, Call] = {}
     for path, lines in scripts_called(text, first_line).items():
         for line in lines:
-            factor, wait, blocked = times_run(loops, line, None)
+            factor, wait, blocked = times_run(loops, line)
             call = Call(line, factor, wait, blocked)
             found[path] = call if path not in found else found[path].beside(call)
     return found
@@ -1640,22 +1651,17 @@ def sites_of(path: str, body: str, first_line: int, step: str,
         for site in found:
             site.piped = False
     found = unpacks_dropped(found)
+    # A site whose loops write no count leaves whatever step runs it without a figure here:
+    # arithmetic_of asks the DeclaredArithmetic entries for its seconds, and uncounted_of below
+    # hands the step's budget the ones no entry answers.
     for site in found:
-        # A RaisedPasses entry is the other place a pass count can be written, and it is read
-        # only for a call that has a figure a budget would carry. A site whose loops write no
-        # count leaves whatever step runs it without one here: arithmetic_of asks the
-        # DeclaredArithmetic entries for its seconds, and uncounted_of below hands the step's
-        # budget the ones no entry answers. A Dockerfile is outside this reading, as it is
-        # outside rule 8: no step's budget holds its RUN lines.
-        declaring = site if one_call(site) and site.path not in DOCKERFILES else None
-        site.factor, site.wait, site.blocked = times_run(loops, site.line, declaring,
-                                                         site.loops)
+        site.factor, site.wait, site.blocked = times_run(loops, site.line, site.loops)
     return found, loops
 
 
 def uncounted_of(found: list[Site]) -> list[Uncounted]:
     """The sites of one body this check can put no figure on: a retried call inside a loop
-    whose passes it can neither read nor find raised, and for which no DeclaredArithmetic
+    whose passes it cannot read, and for which no DeclaredArithmetic
     entry writes the seconds either. A step whose budget reaches one of these is refused in
     the loop's place, and a loop no budget reaches costs nobody anything and is left alone —
     rule 2 is what reads a loop wherever it sits."""
@@ -1803,23 +1809,34 @@ EXEMPTIONS = [
 # ------------------------------------ what a reader declares where this check's reading stops
 
 
-class Declaration:
+class DeclaredArithmetic:
     """One figure a reader writes down where rule 8's own reading of a loop stops, matched to a
-    site by the file, the step and the verb it names. Two kinds answer two different questions
-    and neither does the other's job: a pass count this check read can be raised, and a site
-    whose pass count it never made is answered in seconds rather than in passes. An entry
-    matching nothing fails this check, as a stale exception does, so a declaration cannot
-    outlive what it was written for; and an entry two loops of one file match fails as well,
-    because it writes one figure and the second loop would take it without anybody writing it
-    one."""
+    site by the file, the step and the verb it names. It answers for a site whose pass count
+    this check cannot resolve — a `while read` over a list the run makes, a `while :` over the
+    pages of a route — and it answers in seconds rather than in passes, because a loop this
+    check could not read is a loop nobody has priced, and a pass number written over it is an
+    excuse rather than a declaration. It writes the seconds that site contributes to the budget
+    of the step holding it, and `why` writes that figure out as a sum, so a reader checks the
+    arithmetic rather than taking the number on trust. This check uses it in place of the
+    arithmetic it could not compute.
 
-    def __init__(self, path: str, step: str | None, verb: str, why: str) -> None:
+    An entry matching nothing fails this check, as a stale exception does, so a declaration
+    cannot outlive what it was written for; an entry two loops of one file match fails as well,
+    because it writes one figure and the second loop would take it without anybody writing it
+    one; and a figure below one call of the site is refused with that floor, because a site
+    costs at least one call of itself, whatever the run finds for it to do."""
+
+    def __init__(self, path: str, step: str | None, verb: str, seconds: int, why: str) -> None:
         self.path = path
         self.step = step
         self.verb = verb
+        self.seconds = seconds
         self.why = why
         self.used = 0
         self.loops: set[int] = set()
+        # The sites whose one call costs more than this entry's whole figure, each with that
+        # floor. Each of them is this entry refused by name.
+        self.below: dict[int, int] = {}
 
     def covers(self, site: Site) -> bool:
         return (
@@ -1832,57 +1849,20 @@ class Declaration:
         """How a refusal names this entry."""
         return self.path + (f" step '{self.step}'" if self.step else "") + f" `{self.verb}`"
 
-
-class RaisedPasses(Declaration):
-    """A declaration that raises a pass count this check did read: the loop writes `for x in 1
-    2 3` and a reader knows the body runs five times. Raising is the whole of what it does. A
-    figure at or below the count this check computed buys nothing and hides the next edit of
-    that loop, the one that would have raised it, so it is refused by name; and it stands in
-    for no count at all, because a loop this check could not read is a loop nobody has priced,
-    and a pass number written there is an excuse rather than a declaration."""
-
-    def __init__(self, path: str, step: str | None, verb: str, passes: int, why: str) -> None:
-        super().__init__(path, step, verb, why)
-        self.passes = passes
-        # The loops it was read for that write no count of their own, and the loops whose own
-        # count is at or above what it writes. Each of them is this entry refused by name.
-        self.unmade: set[int] = set()
-        self.lowered: dict[int, int] = {}
-
-    def figure(self) -> str:
-        return f"{self.passes} pass{'' if self.passes == 1 else 'es'}"
-
-
-class DeclaredArithmetic(Declaration):
-    """A declaration that carries its own arithmetic for a site whose pass count this check
-    cannot resolve — a `while read` over a list the run makes, a `while :` over the pages of a
-    route. It writes the seconds that site contributes to the budget of the step holding it,
-    and `why` writes that figure out as a sum, so a reader checks the arithmetic rather than
-    taking the number on trust. This check uses it in place of the arithmetic it could not
-    compute. A figure below one call of the site is refused with that floor: a site costs at
-    least one call of itself, whatever the run finds for it to do."""
-
-    def __init__(self, path: str, step: str | None, verb: str, seconds: int, why: str) -> None:
-        super().__init__(path, step, verb, why)
-        self.seconds = seconds
-        # The sites whose one call costs more than this entry's whole figure, each with that
-        # floor. Each of them is this entry refused by name.
-        self.below: dict[int, int] = {}
-
     def figure(self) -> str:
         return f"{self.seconds} s"
 
 
-# Every entry below is a DeclaredArithmetic, because every loop in this tree that rule 8 cannot
-# read is one whose passes are as many as the run finds work: a `while read` over a list the run
-# wrote, a `while :` over the pages of a route. Each one's figure is the passes its own prose
-# argues for at one call of that site, and the sum is written out beside it so that a reader
-# checks it rather than takes it. What every entry of one pass says, each in its own words: the
-# loop runs the call once for each thing the run found to do, the budget is written for the one
-# the common run finds, and a run where every pass exhausts its five attempts is not the
-# transient fault a retry exists to survive but an outage of the host, which ci.yaml's Budgets
-# note leaves to the job's own ceiling rather than to the step's.
-DECLARED_LOOPS: list[Declaration] = [
+# Every loop in this tree that rule 8 cannot read is one whose passes are as many as the run
+# finds work: a `while read` over a list the run wrote, a `while :` over the pages of a route.
+# Each one's figure is the passes its own prose argues for at one call of that site, and the sum
+# is written out beside it so that a reader checks it rather than takes it. What every entry of
+# one pass says, each in its own words: the loop runs the call once for each thing the run found
+# to do, the budget is written for the one the common run finds, and a run where every pass
+# exhausts its five attempts is not the transient fault a retry exists to survive but an outage
+# of the host, which ci.yaml's Budgets note leaves to the job's own ceiling rather than to the
+# step's.
+DECLARED_LOOPS: list[DeclaredArithmetic] = [
     DeclaredArithmetic(".github/workflows/ci.yaml",
                        "Force-cancel the runs of the groups the queue removed", "gh api", 300,
                        "one force-cancel per group the queue removed, and the budget is "
@@ -1936,7 +1916,8 @@ DECLARED_LOOPS: list[Declaration] = [
                        "the digest read that confirms the copy above it, once per row copied: "
                        "1 x (5 x 60 + 150) = 450 s"),
     DeclaredArithmetic(".github/scripts/mirror-ci-images.sh", None, "crane config", 900,
-                       "the Go check of one row, once per row that file holds. The read sits "
+                       "the Go check of one row, once per tagged library/golang row, of which "
+                       ".github/ci-images.yaml holds one. The read sits "
                        "in image_go(), which check_go() calls, and the loop runs check_go once "
                        "for the row the package already holds and once for the row it is about "
                        "to copy — two written calls of which a pass runs one, so the figure is "
@@ -2483,27 +2464,39 @@ for budget in budgets:
             f"`{item.what}` at {item.path}:{item.line}, inside the loop at line {item.loop}"
             for item in blocking
         )
-        # A script's own arithmetic is what one run of it costs, read here rather than when the
-        # call was found: the scripts are read after the steps that run them.
-        one = blocking[0].one
-        if one is None:
-            one = script_arithmetic(blocking[0].what, set()) or 0
+        # The figure and the advice are written for the first of them, which is the step's own
+        # uncounted site wherever it has one: uncounted_of's verb sites come before
+        # blocked_calls's scripts. A retried call carries what one call of it costs; a script
+        # carries None, and what one run of it costs is read here rather than when the call was
+        # found, because the scripts are read after the steps that run them. The two take
+        # different advice, because a declaration names a site by the verb it retries and a
+        # script call writes a path where that verb would be.
+        script_call = blocking[0].one is None
+        one = (script_arithmetic(blocking[0].what, set()) or 0 if script_call
+               else blocking[0].one)
+        waiting = ("One run of that script takes" if script_call
+                   else "One call there takes")
+        instead = (
+            "take the call out of the loop, or write the loop inside that script, where the "
+            "call it retries is a site a declaration can name. No entry of DECLARED_LOOPS "
+            "answers this one: an entry matches a site by its file, its step and the verb it "
+            "retries, and a call of a script writes a path where that verb would be, so an "
+            "entry pointed at it matches no retried call and fails this check in its own "
+            "right."
+            if script_call else
+            "where the passes are as many as the run finds work, declare that site in "
+            "DECLARED_LOOPS in .github/scripts/check-download-retry.sh: a DeclaredArithmetic "
+            "entry there writes the seconds the site contributes to this budget and the sum "
+            "they come from.")
         problem(budget.path, budget.line,
                 f"step '{budget.step}' {carries} and this "
                 "check can put no figure on it: it runs a retried call inside a loop whose "
-                f"passes it cannot read — {named}. One call there takes "
+                f"passes it cannot read — {named}. {waiting} "
                 f"{one} s to exhaust its attempts and the step waits for "
                 "that once per pass, so a budget written for one pass is a step the runner "
                 "cuts in the middle of the retry it exists to allow. Write the count where "
                 "this check reads it — a `for x in 1 2 3 4 5 6 7`, a `for x in "
-                "$(seq 1 7)`, or a `for ((i = 0; i < 7; i++))` — or, where the passes are as "
-                "many as the run finds work, "
-                "declare that site in DECLARED_LOOPS in "
-                ".github/scripts/check-download-retry.sh: a DeclaredArithmetic entry there "
-                "writes the seconds the site contributes to this budget and the sum they come "
-                "from. A pass count answers nothing here, because this check made none: a "
-                "RaisedPasses entry raises a count it did read and stands in for no count it "
-                "did not.")
+                f"$(seq 1 7)`, or a `for ((i = 0; i < 7; i++))` — or {instead}")
         continue
     if cost is None or not cost:
         continue
@@ -2577,27 +2570,7 @@ for entry in DECLARED_LOOPS:
                 "check reads it off the loop, or give the two loops steps or verbs that tell "
                 f"them apart. This entry said {entry.figure()}, because {entry.why}.")
         continue
-    if isinstance(entry, RaisedPasses) and entry.unmade:
-        problem(SELF, 1,
-                f"the raised pass count for {entry.names()} covers the loop at line "
-                + ", ".join(str(line) for line in sorted(entry.unmade))
-                + ", whose passes this check never counted. A raised count raises a count "
-                "this check made; it stands in for none. What a site in an unreadable loop "
-                "needs is a DeclaredArithmetic entry, which writes the seconds that site "
-                f"contributes to its step's budget and the sum they come from. This entry "
-                f"said {entry.figure()}, because {entry.why}.")
-        continue
-    if isinstance(entry, RaisedPasses) and entry.lowered:
-        line, counted = sorted(entry.lowered.items())[0]
-        problem(SELF, 1,
-                f"the raised pass count for {entry.names()} writes {entry.figure()} over the "
-                f"loop at line {line}, which this check reads as {counted}. A raised count "
-                "raises: a figure at or below the one this check computed buys nothing, and "
-                "it hides the next edit of that loop — the one that would have raised the "
-                "count — behind a number nobody rereads. Drop this entry, or write a figure "
-                f"above {counted}. It said {entry.figure()}, because {entry.why}.")
-        continue
-    if isinstance(entry, DeclaredArithmetic) and entry.below:
+    if entry.below:
         line, floor = sorted(entry.below.items())[0]
         problem(SELF, 1,
                 f"the declared arithmetic for {entry.names()} writes {entry.figure()}, and "

@@ -270,10 +270,10 @@ run_check() {
 }
 
 # declare_entry <root> <one DECLARED_LOOPS entry, in Python>: replaces the check this fixture
-# links with a copy of it carrying that entry at the end of its DECLARED_LOOPS table. The two
-# kinds of declaration are proved this way because the tree's own table holds only the entries
-# the tree needs, and a RaisedPasses over a fixture's loop is an entry no real file carries.
-# The copy is the same file otherwise, so every other rule reads the fixture as it always does.
+# links with a copy of it carrying that entry at the end of its DECLARED_LOOPS table. A
+# declaration is proved this way because the tree's own table holds only the entries the tree
+# needs, and none of them covers a loop a fixture writes. The copy is the same file otherwise,
+# so every other rule reads the fixture as it always does.
 declare_entry() {
   local root=$1 entry=$2 copy="$root/.github/scripts/check-download-retry.sh"
   rm "$copy"
@@ -1231,90 +1231,6 @@ check "exits 1" "$(is "$status" 1)"
 check "names the declaration and what it no longer covers" \
   "$(contains "$out" 'the declared loop for .github/scripts/mirror-ci-images.sh .crane copy. matches no retried call')"
 check "says what the declaration was for" "$(contains "$out" 'written for 1650 s')"
-
-# A declaration raises a count this check made; it stands in for none, and it never lowers one.
-# The fixture below writes a three-pass loop, which this check reads, so each entry injected
-# over it proves one half of that rule.
-echo "case: a raised pass count holds the budget to the larger figure"
-root=$(fixture raised-passes)
-declare_entry "$root" '    RaisedPasses(".github/workflows/case.yaml",
-                 "Read each page of the route", "gh api", 5,
-                 "the route serves five pages to a pull request this size"),'
-cat > "$root/.github/workflows/case.yaml" <<'YAML'
-name: Case
-on: [push]
-jobs:
-  build:
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Read each page of the route
-        timeout-minutes: 25
-        run: |
-          . .github/scripts/ci-retry.sh
-          for page in 1 2 3; do
-            retry_fetch "page $page" 30 -- gh api "repos/$GITHUB_REPOSITORY/issues?page=$page"
-          done
-YAML
-run_check "$root"
-check "exits 1" "$(is "$status" 1)"
-check "counts the five passes the declaration raised it to" \
-  "$(contains "$out" 'retries take 1500 s to exhaust')"
-
-echo "case: a raised pass count at the count this check read is refused"
-root=$(fixture raised-passes-equal)
-declare_entry "$root" '    RaisedPasses(".github/workflows/case.yaml",
-                 "Read each page of the route", "gh api", 3,
-                 "the route serves three pages to a pull request this size"),'
-cat > "$root/.github/workflows/case.yaml" <<'YAML'
-name: Case
-on: [push]
-jobs:
-  build:
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Read each page of the route
-        timeout-minutes: 25
-        run: |
-          . .github/scripts/ci-retry.sh
-          for page in 1 2 3; do
-            retry_fetch "page $page" 30 -- gh api "repos/$GITHUB_REPOSITORY/issues?page=$page"
-          done
-YAML
-run_check "$root"
-check "exits 1" "$(is "$status" 1)"
-check "names the entry, its figure and the count it did not raise" \
-  "$(contains "$out" 'writes 3 passes over the loop at line 10, which this check reads as 3')"
-check "says a raised count raises" "$(contains "$out" 'A raised count raises')"
-
-echo "case: a raised pass count over a loop this check never counted is refused"
-root=$(fixture raised-passes-unmade)
-declare_entry "$root" '    RaisedPasses(".github/workflows/case.yaml",
-                 "Cancel every run the decision named", "gh api", 4,
-                 "the decision names four runs at most"),'
-cat > "$root/.github/workflows/case.yaml" <<'YAML'
-name: Case
-on: [push]
-jobs:
-  build:
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Cancel every run the decision named
-        timeout-minutes: 30
-        run: |
-          . .github/scripts/ci-retry.sh
-          while read -r id; do
-            retry_fetch "the cancel of run $id" 30 -- \
-              gh api --silent --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$id/cancel"
-          done <<<"$ids"
-YAML
-run_check "$root"
-check "exits 1" "$(is "$status" 1)"
-check "names the loop whose passes it never counted" \
-  "$(contains "$out" 'covers the loop at line 10, whose passes this check never counted')"
-check "names the kind of entry that answers" \
-  "$(contains "$out" 'needs is a DeclaredArithmetic entry')"
-check "refuses the site for want of a figure as well" \
-  "$(contains "$out" 'can put no figure on it')"
 
 # A site whose passes this check cannot resolve is answered in seconds, not in passes, and the
 # figure stands for the whole of what that site contributes to its step.

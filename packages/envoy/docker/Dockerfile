@@ -71,8 +71,9 @@ COPY docs/site/package.json docs/site/package.json
 # source (oven-sh/bun#4290), and the stage would then need python3, make and g++ for a module
 # the image never ships, which packages/proof-editor reaches through proof-sdk and nothing
 # copies out of this stage.
-# The one fetch of this layer, and the largest in the file: Bun reads every dependency the root
-# lockfile pins from the npm registry, tens of megabytes of tarballs, so an attempt gets 600 s.
+# The one fetch of this layer, and the largest in the file: Bun reads from the npm registry every
+# dependency the root lockfile pins for the four workspaces the filters above name, tens of
+# megabytes of tarballs, so an attempt gets 600 s.
 RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
   [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
   sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; } \
@@ -182,9 +183,14 @@ FROM ghcr.io/cybermonklabs/legion/ci@sha256:99c0b25c46d0214d5a2091092e7908907dca
 
 LABEL org.opencontainers.image.source=https://github.com/cybermonklabs/legion
 
-# The two apt fetches retry on the bounds the web stage's RUN sets, 120 s for the index and 300 s
-# for the package set, and the index read carries that RUN's error-mode option; groupadd,
-# useradd, mkdir and chown fetch nothing and stay bare.
+# This file's only apt fetches, and the only RUN of this stage that fetches at all. Five attempts,
+# the fifth starting 150 s after the first, each attempt under a bound of its own: 120 s for the
+# index read, a few megabytes from the Debian mirror, and 300 s for the package set, the two
+# bounds every apt call of this repository's images carries. The index read carries
+# `-o APT::Update::Error-Mode=any`, which makes a failed index read fail the command instead of
+# warning and exiting 0: without it the retry has nothing to retry
+# (.github/scripts/check-download-retry.sh's rule 5). groupadd, useradd, mkdir and chown fetch
+# nothing and stay bare.
 RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
   [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
   sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; } \
