@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/store"
 )
 
 // keptHandover is one forward a drain of a kept lane made: the session it reached and the dedupe
@@ -368,12 +369,14 @@ func TestAHandoverResolvesTheHolderOfAWalkAfterThePauseBeforeIt(t *testing.T) {
 		return errors.New("the forward this listener's first walk of the lane ended on")
 	})
 	// The holder releases the role inside that pause, which is where a handover that had resolved
-	// its holder before the pause could not see it.
+	// its holder before the pause could not see it. Its claim names no process, so the release
+	// is the forced one DELETE /v1/interests/<session_id> makes
+	// (store.RoleReleaseAuthority.Force).
 	go func() {
 		defer close(released)
 		<-failed
 		time.Sleep(roleKeepDrainRetryPause / 2)
-		if err := harness.registry.Remove(ctx, holder, []string{contracts.RoleTopicPrefix + role}); err != nil {
+		if _, err := harness.registry.Remove(ctx, holder, []string{contracts.RoleTopicPrefix + role}, store.RoleReleaseAuthority{Force: true}); err != nil {
 			t.Errorf("release %s's claim of %s: %v", holder, role, err)
 		}
 	}()
@@ -687,7 +690,7 @@ func claimRoleBeyondTheSessionCache(t *testing.T, harness listenerDeliveryHarnes
 }
 
 // A resolution of the role's holder that did not answer is a bus that missed a read, not a role
-// nobody holds: resolveRoleHolder answers a role no claim names with roleHolderUnclaimed and no
+// nobody holds: roles.ResolveHolder answers a role no claim names with roles.Unclaimed and no
 // error at all. A claim's handover, whose role was claimed a moment ago, used to end on the first
 // such failure all the same - at Debug, reporting nothing - and the copies it left behind waited
 // for the five-minute sweep, whose own handover could end the same way, until they aged past

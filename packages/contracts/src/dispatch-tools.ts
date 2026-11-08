@@ -196,7 +196,7 @@ const commentValidation: NonNullable<DispatchToolSpec["validation"]> = {
 const ISSUE_UPDATE_FIELDS_RULE =
   "Issue update requires at least one field besides issue: status, title, labels, priority, external_links, route, parent, blocked_by, components, repo, before, or after.";
 const ISSUE_UPDATE_DONE_RULE =
-  "status done requires reason, a non-empty note saying why the issue is closing, posted on the issue before it closes because a closed issue refuses messages, comments, and artifacts";
+  "status done requires reason, a non-empty note saying why the issue is closing, posted on the issue before it closes so the close carries its note";
 const ISSUE_UPDATE_REASON_RULE = "reason goes only with status done";
 const ISSUE_UPDATE_RULE = `${ISSUE_UPDATE_FIELDS_RULE} ${ISSUE_UPDATE_DONE_RULE}; ${ISSUE_UPDATE_REASON_RULE}.`;
 
@@ -333,13 +333,13 @@ const SPEC_WRITING_POINTER = "Write a spec as skill://dispatch-writing-specs say
  * The `images` argument of the three tools that write text a person reads: local picture files,
  * each uploaded to `owner` and shown inline in the text as one appended
  * `![<file name>](dispatch://<owner>/artifact/<slug>@v<N>)` line. The lines count toward the
- * text's `cap`, so a call they would carry over it is refused before anything is uploaded.
+ * bound Dispatch holds the text to, which Dispatch names when it refuses a longer text.
  */
-function imagesArgument<E extends SchemaNode<E>>(z: SchemaApi<E>, owner: string, cap: string): E {
+function imagesArgument<E extends SchemaNode<E>>(z: SchemaApi<E>, owner: string): E {
   return z
     .array(z.string({ min: 1 }), { min: 1 })
     .describe(
-      `Optional local picture files to show inline: PNG, JPEG, GIF or WebP (by their bytes, not their name), each at most 25 MiB. Each is uploaded to ${owner} and appended after a blank line as one ![<file name>](dispatch://…@vN) line, in this order; those lines count toward ${cap}.`
+      `Optional local picture files to show inline: PNG, JPEG, GIF or WebP (by their bytes, not their name), each at most 25 MiB. Each is uploaded to ${owner} and appended after a blank line as one ![<file name>](dispatch://…@vN) line, in this order; those lines count toward the bound Dispatch holds the text to, which it names in its refusal.`
     )
     .optional();
 }
@@ -348,23 +348,42 @@ function imagesArgument<E extends SchemaNode<E>>(z: SchemaApi<E>, owner: string,
 export const ASK_URGENCIES = ["low", "med", "high", "blocking"] as const;
 
 /**
- * Longest ask question the Dispatch server accepts, in UTF-16 code units. Generated into Go as
- * `contracts.AskQuestionMax`, which the server enforces on an ask's question and from which it
- * derives the room an approval request's summary has. A question names its concrete case, and
- * 800 was too short for that: capped asks crowded the limit while uncapped ask blocks ran past it.
+ * Longest one block of a comment, comment edit, message, broadcast or ask part may be, in UTF-16
+ * code units as the Dispatch server counts them. Generated into Go as
+ * `contracts.DispatchBlockUnits`, which the server enforces and names in its refusal, and which
+ * it publishes through `GET /api/v1/limits`, the route `dispatch limits` prints.
  */
-export const ASK_QUESTION_MAX = 2000;
+export const DISPATCH_BLOCK_UNITS = 32000;
 
 /**
- * Longest comment, comment edit, message and broadcast body the Dispatch server accepts, in
- * UTF-16 code units. Generated into Go as `contracts.DispatchBodyMax`, which the server enforces,
- * and as `dispatch.MessageBodyLimit` for the Legion daemon, whose `record.MessagePostLimit`
- * subtracts its outbox marker from it. Never raise it past `maxInputChars` in
- * `packages/envoy/internal/dispatch/embed/embed.go`, the length at which a comment or message
- * body is embedded: past it a body's tail is dropped from search by meaning with no error, and
- * `.github/scripts/check-body-embed-limit.sh` fails the build.
+ * Most blocks one body may hold: a body splits into paragraphs, lists, quotes, tables and code
+ * blocks, and the Dispatch server refuses one holding more. Generated into Go as
+ * `contracts.DispatchItemBlocks`, which the server enforces and names in its refusal, and which
+ * it publishes through `GET /api/v1/limits`, the route `dispatch limits` prints.
  */
-export const DISPATCH_BODY_MAX = 32000;
+export const DISPATCH_ITEM_BLOCKS = 32768;
+
+/**
+ * Longest body an event carries whole, in UTF-16 code units, and the bound the Dispatch server
+ * holds an ask's question and its options to together. Generated into Go as
+ * `contracts.DispatchEventBodyMax`, which the server enforces and names in its refusal, and
+ * which it publishes through `GET /api/v1/limits`, the route `dispatch limits` prints.
+ */
+export const DISPATCH_EVENT_BODY_MAX = 32000;
+
+/** What a tool that writes a body says about the two bounds the server holds it to, written once
+ *  so every such tool says it the same way. */
+const BODY_BLOCK_RULE =
+  `Each block (a paragraph, list, quote, table or code block) holds at most ${DISPATCH_BLOCK_UNITS} ` +
+  `characters and a body at most ${DISPATCH_ITEM_BLOCKS} blocks; Dispatch refuses a longer one and ` +
+  "names it, and `dispatch limits` prints the bounds.";
+
+/** What dispatch_ask and dispatch_edit_ask say about the bound on a question. It carries no
+ *  number: the server owns the bound and `dispatch limits` prints it. */
+const ASK_BOUND_RULE =
+  "Dispatch bounds an ask's question and its options together, refuses a longer one and names " +
+  "the bound, and `dispatch limits` prints it. An ask is short and asks one thing; its reasoning " +
+  "goes in the document, not in the question.";
 
 /**
  * Longest phase handoff body the Dispatch server accepts on
@@ -396,23 +415,21 @@ function isJsonObjectText(text: string): boolean {
   }
 }
 
-/** The refusal of the first rule a handoff call breaks, or undefined when it keeps them: the phase
- *  slug, then (on a write) the body's byte cap and its being one JSON object. */
+/** The refusal of the first rule a handoff call breaks, or undefined when it keeps them: the
+ *  phase slug, then (on a write) the body's being one JSON object. No length is among them: the
+ *  server owns every bound and names what passed it, so a body over
+ *  `DISPATCH_HANDOFF_BODY_MAX` bytes is refused there, with `413 CAP_EXCEEDED`, and not here. */
 function handoffProblem(value: unknown): string | undefined {
   const { phase, body } = value as { readonly phase?: unknown; readonly body?: unknown };
   if (typeof phase === "string" && !HANDOFF_PHASE_PATTERN.test(phase)) return HANDOFF_PHASE_RULE;
   if (typeof body !== "string") return undefined;
-  const bytes = new TextEncoder().encode(body).length;
-  if (bytes > DISPATCH_HANDOFF_BODY_MAX) {
-    return `body is ${bytes - DISPATCH_HANDOFF_BODY_MAX} bytes over the ${DISPATCH_HANDOFF_BODY_MAX}-byte limit (${bytes}/${DISPATCH_HANDOFF_BODY_MAX})`;
-  }
   if (!isJsonObjectText(body)) {
     return 'body is not one JSON object: a handoff body is a JSON object such as {"schemaVersion":1}';
   }
   return undefined;
 }
 
-const HANDOFF_RULE = `${HANDOFF_PHASE_RULE}; the body is one JSON object of at most ${DISPATCH_HANDOFF_BODY_MAX} bytes.`;
+const HANDOFF_RULE = `${HANDOFF_PHASE_RULE}; the body is one JSON object.`;
 
 const handoffValidation: NonNullable<DispatchToolSpec["validation"]> = {
   check: (value) => handoffProblem(value) === undefined,
@@ -474,8 +491,19 @@ export function isIssueStatus(value: string): value is IssueStatus {
   return (ISSUE_STATUSES as readonly string[]).includes(value);
 }
 
-/** Whether an issue's route reaches a running session (`model.RouteLive` and siblings). */
-export const ISSUE_ROUTE_STATUSES = ["live", "no_holder", "unknown"] as const;
+/**
+ * Whether an issue's route reaches a running session (`model.RouteLive` and siblings).
+ * `holder_unresponsive` is a route whose session - the routed session, or the role's holder -
+ * has missed its heartbeats without ending: the route still reaches it, since the listener
+ * stores its messages, so it is told apart from `no_holder` rather than folded into it
+ * (dispatch://INFRA-392).
+ */
+export const ISSUE_ROUTE_STATUSES = [
+  "live",
+  "holder_unresponsive",
+  "no_holder",
+  "unknown",
+] as const;
 
 /** Document edit operations the Dispatch server applies. */
 export const DOC_EDIT_OPS = [
@@ -571,10 +599,13 @@ export const dispatchToolSpecs = [
       "keeps every earlier link; an empty external_links removes every link instead. components " +
       "replaces the issue's own attachment. Closing an issue " +
       "(status done) requires reason, the note that says why: it is posted on the issue as a " +
-      "message, then the issue closes, because a closed issue refuses messages, comments, and " +
-      "artifacts; reason goes only with status done. Closing an issue withdraws every open ask " +
+      "message, then the issue closes, so the close carries its note; closing an issue that is " +
+      "already closed is refused (ISSUE_CLOSED) before anything is posted. Reason goes only " +
+      "with status done. Closing an issue withdraws every open ask " +
       "it holds (resolution kind withdrawn, naming the closer), and reopening it brings exactly " +
-      "those asks back. A closed issue takes only a board move " +
+      "those asks back. " +
+      "A closed issue still takes messages and comments, though not asks or artifacts; of this " +
+      "tool's fields it takes only a board move " +
       "(before, after), components, " +
       "a reopening status (any status but done), and an external_links write that adds no new " +
       "link (so a link can move to the issue that replaced it); everything else, priority " +
@@ -589,9 +620,9 @@ export const dispatchToolSpecs = [
       issue: z.string().describe(ISSUE_REFERENCE),
       status: z.enum(ISSUE_STATUSES).describe("New lifecycle status.").optional(),
       reason: z
-        .string({ max: DISPATCH_BODY_MAX })
+        .string()
         .describe(
-          `Required with status done, and only with it: why the issue is closing, at most ${DISPATCH_BODY_MAX} characters. Posted on the issue as a message before it closes.`
+          `Required with status done, and only with it: why the issue is closing. Posted on the issue as a message before it closes. ${BODY_BLOCK_RULE}`
         )
         .optional(),
       title: z
@@ -738,8 +769,8 @@ export const dispatchToolSpecs = [
       "when your work halts on the answer, and keep working on everything else. " +
       "Anchor a to-do about a document passage, thread reply_to/reply_to_ask, or cite a dispatch:// " +
       `reference — it must be answerable from its own text and anchor alone, never "see above". ` +
-      `A quote anchor is pinned to its block. Question is at most ${ASK_QUESTION_MAX} characters, ` +
-      `the lines images appends included, and has at most 8 options. ${RELATED_CHECK_RESULT} ` +
+      `A quote anchor is pinned to its block. ${ASK_BOUND_RULE} The lines images appends count ` +
+      `toward that bound, and an ask has at most 8 options. ${RELATED_CHECK_RESULT} ` +
       `An ask among the related items says whether it is answered, by whom and with which options. ${OWNER_REFERENCE}`,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE).optional(),
@@ -751,9 +782,7 @@ export const dispatchToolSpecs = [
           "Optional dispatch:// reference (issue, document, block, message, or ask); appended to the question and rendered as a link."
         )
         .optional(),
-      question: z
-        .string({ max: ASK_QUESTION_MAX })
-        .describe(`${ASK_QUESTION_CONTRACT} At most ${ASK_QUESTION_MAX} characters.`),
+      question: z.string().describe(`${ASK_QUESTION_CONTRACT} ${ASK_BOUND_RULE}`),
       options: z
         .array(
           z.object({
@@ -777,11 +806,7 @@ export const dispatchToolSpecs = [
         })
         .describe("Optional document location for the question.")
         .optional(),
-      images: imagesArgument(
-        z,
-        "the issue (or the project document's project)",
-        `the ${ASK_QUESTION_MAX}-character question limit`
-      ),
+      images: imagesArgument(z, "the issue (or the project document's project)"),
     }),
     validation: documentOwnerValidation(true),
   },
@@ -826,11 +851,9 @@ export const dispatchToolSpecs = [
           "Ask id (uuid); an 8+ hex prefix unique among this session's own open asks works too."
         ),
       question: z
-        .string({ max: ASK_QUESTION_MAX })
+        .string()
         .optional()
-        .describe(
-          `${ASK_QUESTION_CONTRACT} Replaces the ask's question; at most ${ASK_QUESTION_MAX} characters.`
-        ),
+        .describe(`${ASK_QUESTION_CONTRACT} Replaces the ask's question. ${ASK_BOUND_RULE}`),
       options: z
         .array(
           z.object({
@@ -937,7 +960,7 @@ export const dispatchToolSpecs = [
     description:
       "Add review feedback to an issue or project document quote, or reply to a question asked with dispatch ask. " +
       "Do not use it for an exact replacement; use " +
-      `dispatch suggest instead. A quote anchor is pinned to its block. A reply under an open ask asks for clarification, not an answer: answer it with reply_to_ask, or reword the ask with dispatch edit-ask, rather than opening a second ask. Body is at most ${DISPATCH_BODY_MAX} characters, the lines images appends included. ${OWNER_REFERENCE}`,
+      `dispatch suggest instead. A quote anchor is pinned to its block. A reply under an open ask asks for clarification, not an answer: answer it with reply_to_ask, or reword the ask with dispatch edit-ask, rather than opening a second ask. ${BODY_BLOCK_RULE} The lines images appends count toward it. ${OWNER_REFERENCE}`,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE).optional(),
       project: z.string().describe("Project key owning the document.").optional(),
@@ -951,9 +974,7 @@ export const dispatchToolSpecs = [
         .number({ int: true, min: 0 })
         .describe("Optional zero-based occurrence of quote.")
         .optional(),
-      body: z
-        .string({ max: DISPATCH_BODY_MAX })
-        .describe(`Review comment, at most ${DISPATCH_BODY_MAX} characters.`),
+      body: z.string().describe(`Review comment. ${BODY_BLOCK_RULE}`),
       reply_to: z
         .string()
         .describe(
@@ -983,11 +1004,7 @@ export const dispatchToolSpecs = [
             "request-approval hands it back at the current version."
         )
         .optional(),
-      images: imagesArgument(
-        z,
-        "the issue (or the project document's project)",
-        `the ${DISPATCH_BODY_MAX}-character body limit`
-      ),
+      images: imagesArgument(z, "the issue (or the project document's project)"),
     }),
     validation: commentValidation,
   },
@@ -1001,7 +1018,7 @@ export const dispatchToolSpecs = [
     },
     description:
       "Propose an exact replacement for quoted document text. Do not use it for general feedback; use " +
-      `dispatch comment instead. Optional explanation is at most ${DISPATCH_BODY_MAX} characters. ${OWNER_REFERENCE}`,
+      `dispatch comment instead. ${BODY_BLOCK_RULE} ${OWNER_REFERENCE}`,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE).optional(),
       project: z.string().describe("Project key owning the document.").optional(),
@@ -1018,10 +1035,7 @@ export const dispatchToolSpecs = [
         .describe(
           "Replacement text; a CR LF or a lone carriage return in it is written as a line feed."
         ),
-      body: z
-        .string({ max: DISPATCH_BODY_MAX })
-        .describe(`Optional rationale, at most ${DISPATCH_BODY_MAX} characters.`)
-        .optional(),
+      body: z.string().describe(`Optional rationale. ${BODY_BLOCK_RULE}`).optional(),
       occurrence: z
         .number({ int: true, min: 0 })
         .describe("Optional zero-based occurrence of quote.")
@@ -1040,10 +1054,11 @@ export const dispatchToolSpecs = [
       "in_reply_to and no issue; the reply lands in that conversation. Another call with the same in_reply_to and new text posts a follow-up, " +
       "threaded under this session's first reply; the same text again posts nothing. dispatch read --message <id> reads " +
       "that conversation back. " +
-      "Every other message names its issue; keep --issue whenever the frame you answer gave one. A BTW, Aside or Steer " +
-      "frame carries a reply_with command: answer with it, on that issue. On Oh My Pi an Agents-page Send or Aside " +
+      "Every other message names its issue; keep --issue whenever the frame you answer gave one. A frame reading expects_reply: optional or " +
+      "required carries a reply_with command: answer with it, on that issue. One reading false carries none and asks for no answer; where " +
+      "you answer one anyway, its card names what to answer. On Oh My Pi an Agents-page Send or Aside " +
       "arrives as a user message: answer in the conversation, with no dispatch message. " +
-      `Body is at most ${DISPATCH_BODY_MAX} characters, the lines images appends included. ${ISSUE_REFERENCE}`,
+      `${BODY_BLOCK_RULE} The lines images appends count toward it. ${ISSUE_REFERENCE}`,
     arguments: (z) => ({
       issue: z
         .string()
@@ -1051,9 +1066,7 @@ export const dispatchToolSpecs = [
           `${ISSUE_REFERENCE} Omit it only when in_reply_to answers a human's direct message to this session.`
         )
         .optional(),
-      body: z
-        .string({ max: DISPATCH_BODY_MAX })
-        .describe(`Update text, at most ${DISPATCH_BODY_MAX} characters.`),
+      body: z.string().describe(`Update text. ${BODY_BLOCK_RULE}`),
       in_reply_to: z
         .string()
         .describe(
@@ -1068,8 +1081,7 @@ export const dispatchToolSpecs = [
         .optional(),
       images: imagesArgument(
         z,
-        "the issue (a reply to a direct message: your own conversation, dispatch://agent/<your session id>)",
-        `the ${DISPATCH_BODY_MAX}-character body limit`
+        "the issue (a reply to a direct message: your own conversation, dispatch://agent/<your session id>)"
       ),
     }),
     validation: messageValidation,
@@ -1343,7 +1355,11 @@ export const dispatchToolSpecs = [
       "(dispatch://KEY/artifact/verification-md#b-<id>); 409 CHECK_AMBIGUOUS names them, and an " +
       "id no Verification document of the issue or of an issue above it holds is 400 " +
       "UNKNOWN_CHECK. A pass counting any failed, skipped or excluded case contradicts itself " +
-      "and is 400 RESULT_CONTRADICTS. The result is recorded against the check's own issue, so " +
+      "and is 400 RESULT_CONTRADICTS. Dispatch asks GitHub whether the repository of the " +
+      "check's issue holds the commit: one it does not hold is 400 RESULT_COMMIT_UNKNOWN, " +
+      "naming the commit and that owner/repo, so record the result after the commit is pushed. " +
+      "A repository Dispatch cannot read records the result as before. " +
+      "The result is recorded against the check's own issue, so " +
       "a child's run of a parent's check appears under that check. A closed issue takes a " +
       "result only for a check whose when is after_merge or default_branch — the production " +
       "check after the merge — and refuses every other one with 409 ISSUE_CLOSED, as it refuses " +
@@ -1460,6 +1476,7 @@ export const dispatchToolSpecs = [
       "`Coverage: the spec marks no requirements`. Nothing is refused for a gap. " +
       `An issue read, and its dispatch://KEY/log, lists the issue's last ${DEFAULT_ISSUE_READ_EVENTS} events, oldest first; ` +
       "--events N lists the last N, and --all-events every one. " +
+      "A comment reply chain names the comment each nested reply answers as `Answers: <comment id>`. " +
       "Every read ends with `Referenced by:` (what cites or hangs off this node, each with its dispatch:// address, " +
       "an excerpt, and when) and `Links:` (what it cites), so tracing provenance is one call. " +
       "A block read prints `Block:`, `Type:` for a block of a document, `Document:`, every attribute a typed block carries " +
@@ -1569,8 +1586,10 @@ export const dispatchToolSpecs = [
       "the same question. Use it to check a draft before filing it. It searches by meaning and by " +
       "the text's rarest words, and says how it searched; when meaning search cannot run it " +
       "searches by keywords only and says why. When it could not search at all it says why and " +
-      "names the dispatch search to run instead. exclude_issue leaves that issue's own items out, " +
-      "as a check on that issue's own write does; keywords_only skips meaning search.",
+      "names the dispatch search to run instead. exclude_issues leaves each named issue's own " +
+      "items out of the results, at most 50 of them, so a draft under a parent can leave out " +
+      "that parent and its children without changing how rare the text's words are; " +
+      "keywords_only skips meaning search.",
     arguments: (z) => ({
       project: z.string().describe("Project key to search within, such as CORE."),
       title: z
@@ -1581,9 +1600,11 @@ export const dispatchToolSpecs = [
         .string()
         .describe("Optional text to check, such as a draft spec or a question.")
         .optional(),
-      exclude_issue: z
-        .string()
-        .describe("Optional issue key in the project whose own items are left out.")
+      exclude_issues: z
+        .array(z.string())
+        .describe(
+          "Optional issue keys in the project whose own items are left out of the results; at most 50."
+        )
         .optional(),
       keywords_only: z
         .boolean()
@@ -1644,8 +1665,10 @@ export const dispatchToolSpecs = [
         .enum(ISSUE_ROUTE_STATUSES)
         .describe(
           "Optional: only open issues whose route is in this state. live: a running session holds " +
-            "the role or is the routed session. no_holder: nobody running holds the role, or the " +
-            "session is not running, right now. unknown: the Envoy listener did not answer."
+            "the role or is the routed session. holder_unresponsive: that session has missed its " +
+            "heartbeats without ending, so the route still reaches it and its messages wait. " +
+            "no_holder: nobody running holds the role, or the session is gone, right now. " +
+            "unknown: the Envoy listener did not answer."
         )
         .optional(),
       limit: z
@@ -1773,6 +1796,14 @@ export const dispatchToolSpecs = [
     strict: true,
   },
   {
+    name: "dispatch_limits",
+    example: {},
+    description:
+      "The bounds this Dispatch server holds a write to, read from the server itself: how long one block of a body may be and how many blocks a body may hold, how many options an ask may have and how long an ask's question and options are together, how long a body an event carries whole may be, and how many bytes a request, a document and a handoff body may hold. Dispatch refuses a text over a bound and names the block or the field it passed; no tool and no command cuts or refuses your text before the server reads it, so these numbers are what decides whether a write is taken.",
+    arguments: () => ({}),
+    strict: true,
+  },
+  {
     name: "dispatch_handoff_write",
     example: {
       issue: "DSP-1",
@@ -1831,9 +1862,13 @@ export const dispatchToolSpecs = [
       "List what the Inbox of the person you act for shows, read with your own credential. " +
       "Each heading carries its count, then its rows: Needs you (their open asks waiting on a " +
       "person and not inside a snooze, plus the credential requests they may decide), Waiting on " +
-      "agents, Later (the asks they snoozed) and Credential requests. An ask's line names its " +
+      "agents, Later (the asks they snoozed), Unread threads (the threads they wrote in that " +
+      "somebody else has written in since, and the messages they sent an agent session that it " +
+      "answered) and Credential requests. An ask's line names its " +
       "issue key or document slug, its priority, its kind, the first 80 characters of the " +
-      "question and its dispatch:// reference; a credential request's line names its kind, its " +
+      "question and its dispatch:// reference; a thread's line names its issue key, document " +
+      "slug or session, its kind, the first 80 characters of its subject, who wrote the newest " +
+      "reply, how long ago and where to read it; a credential request's line names its kind, its " +
       "identifiers, when it was requested, the sessions it names and the page where it is " +
       "decided. It needs a credential holding the person scope, and one without it is refused " +
       "403 OAUTH_SCOPE_REQUIRED, naming the scope. This is the person's Dispatch Inbox, and not " +

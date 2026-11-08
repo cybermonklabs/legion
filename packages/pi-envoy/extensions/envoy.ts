@@ -46,6 +46,7 @@ import {
   readArrivals,
   renderInbound,
   senderLabel,
+  wholeCarriedBody,
 } from "@legion/envoy-client/delivery";
 import { commandName } from "@legion/envoy-client/dispatch-command";
 import {
@@ -53,10 +54,12 @@ import {
   activeDispatchSettings,
   dispatchSettings,
 } from "@legion/envoy-client/dispatch-config";
+import { defaultExec } from "@legion/envoy-client/dispatch-cwd";
 import {
   dispatchFirstSkillFile,
   readDispatchFirstContext,
 } from "@legion/envoy-client/dispatch-first";
+import { DispatchServiceError } from "@legion/envoy-client/dispatch-http";
 import { forgetShownPictures, shownPictures } from "@legion/envoy-client/dispatch-picture-tools";
 import { pictureAddresses } from "@legion/envoy-client/dispatch-pictures";
 import {
@@ -70,7 +73,13 @@ import {
 } from "@legion/envoy-client/dispatch-session-state";
 import { subscriptionRemovedTopics } from "@legion/envoy-client/dispatch-subscribe";
 import { askgateSetting, readEnvoyConfig } from "@legion/envoy-client/envoy-config";
-import { MIN_PASS_DEADLINE_MS } from "@legion/envoy-client/envoy-settings";
+import {
+  DEFAULT_TMUX_PLACE_CACHE_MS,
+  heartbeatRetryDelayMs,
+  MIN_PASS_DEADLINE_MS,
+  REGISTRATION_SETTLE_MS,
+  SHUTDOWN_SETTLE_MS,
+} from "@legion/envoy-client/envoy-settings";
 import { messageFor } from "@legion/envoy-client/errors";
 import { machineID } from "@legion/envoy-client/machine";
 import { natsConnectionOptions } from "@legion/envoy-client/nats-connection";
@@ -101,6 +110,8 @@ import {
   sessionSettings,
 } from "@legion/envoy-client/session-settings";
 import { postSlackReply } from "@legion/envoy-client/slack-post";
+import { readTmuxPlace, type TmuxPlace } from "@legion/envoy-client/tmux-place";
+import { createTmuxPlaceCache } from "@legion/envoy-client/tmux-place-cache";
 import {
   EnvoyToolOperation,
   envoyToolSpecs,
@@ -114,6 +125,8 @@ import {
 import {
   createEnvoyClient,
   expandSubscriptionTopics,
+  holderStateOf,
+  mayActOnRoleRecord,
   mergeInterestSources,
   type SubscribeResult,
 } from "@legion/envoy-client/transport";
@@ -162,7 +175,7 @@ import {
   modelReference,
 } from "../src/agent-stream";
 import { CardAges } from "../src/card-age";
-import { CardWake } from "../src/card-wake";
+import { CardWake, type EnvoyCardMarker } from "../src/card-wake";
 import { transcriptPictures, withDeliveredPictures } from "../src/delivery-pictures";
 import { withDispatchFirst } from "../src/dispatch-first";
 import { sessionDispatchClient } from "../src/dispatch-session";
@@ -198,7 +211,7 @@ import { ServerClock } from "../src/server-clock";
 import { type CarriedAnswers, withSessionAnswers } from "../src/session-answers-context";
 import { sideTurn } from "../src/side-turn";
 import { TypedPictures } from "../src/typed-pictures";
-import { type CardDelivery, UnwrittenFrames, unwrittenCardKeys } from "../src/unwritten-frames";
+import { type CardDelivery, UnwrittenFrames } from "../src/unwritten-frames";
 import { type AskGateRegistration, registerAskGate } from "./askgate/askgate";
 import {
   ADVISOR_GATE_ENTRY_TYPE,
@@ -269,6 +282,9 @@ const codec = StringCodec();
 const NATS_RETRY_INTERVAL_MS = 15_000;
 /** How long a delivery waits for the pictures it embeds before it goes out as text alone. */
 const DELIVERY_PICTURES_TIMEOUT_MS = 20_000;
+/** How long a delivery waits on the whole body of an item an event carried only in part before
+ *  it goes out with that part and the note saying so. */
+const WHOLE_BODY_TIMEOUT_MS = 10_000;
 /** The most BTW event ids an instance remembers, so a failure notice naming one stays inert. */
 const BTW_EVENTS_LIMIT = 1_000;
 /** The line a replayed BTW's notice ends with: it runs nothing and asks for nothing. */
@@ -300,9 +316,13 @@ const ClaimIdentitySchema = DedupeIdentitySchema.extend({
 });
 
 /**
- * Transcript entry recording the role this session holds. Successful claims
- * write `{ role }`; legacy `{ role: null }` release records remain authoritative
- * when a resumed session decides whether to reclaim.
+ * Transcript entry recording the role this session holds. A successful claim writes
+ * `{ role, session_id, client_instance_id }`: the role, the session it was claimed for and the
+ * process that claimed it, since one transcript can be read by two processes at once (a
+ * continuation resuming a live session's id) and only the process that wrote a record acts on
+ * it while it holds a role. A `{ role: null }` release record, and any record from a build
+ * before the two fields existed, names no process and is read as this process's own, exactly as
+ * it was read then.
  */
 const ROLE_CLAIM_ENTRY = "envoy-role-claim";
 
@@ -485,7 +505,14 @@ function isLegionManagedEntry(entry: unknown): entry is LegionManagedEntry {
 interface RoleClaimEntry {
   readonly type: "custom";
   readonly customType: typeof ROLE_CLAIM_ENTRY;
-  readonly data: { readonly role: string | null };
+  readonly data: {
+    readonly role: string | null;
+    /** The session the claim was made for; absent on a record a build before it wrote. */
+    readonly session_id?: string;
+    /** The client instance that wrote the record: one Oh My Pi Envoy extension instance, the
+     *  same id its registrations carry. Absent on a record a build before it wrote. */
+    readonly client_instance_id?: string;
+  };
 }
 
 // A claim refused, or handed back, because the session it was decided for was no longer open:
@@ -514,7 +541,15 @@ function isRoleClaimEntry(entry: unknown): entry is RoleClaimEntry {
   if (!("customType" in entry) || entry.customType !== ROLE_CLAIM_ENTRY) return false;
   if (!("data" in entry) || typeof entry.data !== "object" || entry.data === null) return false;
   if (!("role" in entry.data)) return false;
-  return entry.data.role === null || typeof entry.data.role === "string";
+  if (!(entry.data.role === null || typeof entry.data.role === "string")) return false;
+  // Both are absent on a record written before they existed, and a record that carries either as
+  // something other than a string names neither session nor process: it records nothing this
+  // process can read, so it is no claim record at all.
+  if ("session_id" in entry.data && typeof entry.data.session_id !== "string") return false;
+  if ("client_instance_id" in entry.data && typeof entry.data.client_instance_id !== "string") {
+    return false;
+  }
+  return true;
 }
 
 function resolveSkillsDirectory(): string {
@@ -912,6 +947,19 @@ export default function envoyExtension(pi: PiApi): void {
       typedPictures.dropOtherSessions(sessionID);
       // What the session left was handed and has not written is no longer waited on.
       unwritten.releaseOtherSessions(sessionID);
+      // A `/new`, a fork or a branch mints a new id, and nothing heartbeats the one it left from
+      // here on. Left in the registry that id reads as live for the live window and as
+      // unresponsive for the gone horizon after it, so peers go on sending to a session that no
+      // longer exists (dispatch://INFRA-392). The DELETE goes out behind that id's own
+      // registration (`deregisterSession`) and off this chain: no session event waits on it.
+      if (previousSessionID !== "") {
+        void deregisterSession(previousSessionID).catch((error: unknown) => {
+          logger.warn("envoy: the session this process left could not be deregistered", {
+            sessionID: previousSessionID,
+            detail: messageFor(error),
+          });
+        });
+      }
     }
   };
 
@@ -1118,6 +1166,9 @@ export default function envoyExtension(pi: PiApi): void {
   // on the message it writes, beside the wake's card marker. An `inert` card is a steer that starts
   // no turn on an idle host; a turn streaming when it is handed takes it and runs another model
   // turn for it, so `UnwrittenFrames` hands an inert card only to a settled host (`hostSettled`).
+  // It carries `details` of its own all the same, the hand-over state `inert`, so a reading of the
+  // stored transcripts says which state held every waiting card; it carries no `envoyCard`, since
+  // the wake tracks no inert card and an id there would name nothing.
   // Every other card goes as the wake says (`CardWake.deliveryFor`): an aside with `triggerTurn`,
   // never a steer, so no card waits in the steering queue a person's typed message uses; the wake
   // records a startup card, which goes as a follow-up, before the host has it.
@@ -1127,14 +1178,13 @@ export default function envoyExtension(pi: PiApi): void {
     identity: DedupeIdentity | undefined
   ): void => {
     const known = identity === undefined ? {} : replayLedgerIdentity(identity);
-    const frame = unwrittenCardKeys(known).length === 0 ? undefined : { ...known };
     if (deliverAs === "inert") {
       pi.sendMessage(
         {
           customType: "envoy-message",
           content,
           display: true,
-          ...(frame === undefined ? {} : { details: frame }),
+          details: { ...known, handOver: "inert" } satisfies Pick<EnvoyCardMarker, "handOver">,
         },
         { deliverAs: "steer", triggerTurn: false }
       );
@@ -1145,7 +1195,7 @@ export default function envoyExtension(pi: PiApi): void {
       activeSessionContext
     );
     pi.sendMessage(
-      { customType: "envoy-message", content, display: true, details: { ...frame, ...details } },
+      { customType: "envoy-message", content, display: true, details: { ...known, ...details } },
       options
     );
   };
@@ -1309,7 +1359,20 @@ export default function envoyExtension(pi: PiApi): void {
         // A `/model` or `/effort` has run by now: the viewer's header shows its result before the
         // reply that names it reaches the page.
         refreshAgentStreamSettings(sessionID);
-        if (reply !== undefined) await postDispatchReply(delivery, { body: reply }, replySessionID);
+        if (reply === undefined) return;
+        try {
+          await postDispatchReply(delivery, { body: reply }, replySessionID);
+        } catch (error) {
+          // Nothing cuts the reply here, so a reply Dispatch refuses - one holding a block longer
+          // than it takes - would leave the person who typed the command with no answer at all.
+          // Dispatch's own words say why, and they are short enough to post in its place.
+          if (!(error instanceof DispatchServiceError) || !error.fromDispatch) throw error;
+          await postDispatchReply(
+            delivery,
+            { body: `Your command ran, and Dispatch refused its output: ${error.message}` },
+            replySessionID
+          );
+        }
       })
       .catch((error: unknown) => {
         logger.warn("envoy: the reply to a person's typed input did not reach Dispatch", {
@@ -1391,7 +1454,7 @@ export default function envoyExtension(pi: PiApi): void {
     receivedAt: number,
     relayed?: ConsumerFrame
   ): Promise<void> => {
-    const rendered = renderInbound(raw, sessionID, subject);
+    let rendered = renderInbound(raw, sessionID, subject);
     // Acknowledge first. The listener waits two seconds for this receipt: its
     // publish route, which forwards a role message or an ad-hoc topic's copy
     // here, forwards again until a receipt arrives within its four-second window
@@ -1481,6 +1544,20 @@ export default function envoyExtension(pi: PiApi): void {
     if (identity !== undefined && replay?.delivered(identity) === true) {
       claim.settle();
       return;
+    }
+    // A body is bounded block by block, so one event can carry its first part alone, and an
+    // event the bus refused carries none of it (`cutItem`). The agent is prompted with the
+    // whole body the comment or message route answers, read through this session's own
+    // Dispatch; with no Dispatch configured, or a read that fails, it keeps what the event
+    // carried and the note that says so. This runs after the receipt and after every drop
+    // above, so no acknowledgement waits on it and no frame nobody sees costs a read.
+    if (rendered.cutItem !== undefined) {
+      const dispatch = timedDispatchClient(WHOLE_BODY_TIMEOUT_MS);
+      const body =
+        dispatch === undefined
+          ? undefined
+          : await wholeCarriedBody(dispatch, rendered.cutItem, sessionID);
+      if (body !== undefined) rendered = renderInbound(raw, sessionID, subject, body);
     }
     const envelope = rendered.envelope;
     if (envelope !== undefined) noteInbox(envelope);
@@ -2579,14 +2656,21 @@ export default function envoyExtension(pi: PiApi): void {
     deadlineMs: passDeadlineMs,
     notify: (message, level) => activeSessionContext?.ui.notify(message, level),
     log: logger,
-    appendRoleClaimEntry: (role) => {
+    appendRoleClaimEntry: ({ role, sessionID: claimedFor, clientInstanceID }) => {
       // The transcript is the one thing `omp --resume` guarantees, so it is the durable record
       // of the claim: the listener reaps a dead session's interest row 15 minutes after the
       // row's last write and releases the role claim separately, one session TTL after
       // heartbeats stop (a role claim is not an interest: see `ReapRoleClaims` in
       // packages/envoy/internal/store/kv.go), and this process's memory dies with it. A session
-      // that holds a role heartbeats from here on, whichever claim took it.
-      pi.appendEntry(ROLE_CLAIM_ENTRY, { role });
+      // that holds a role heartbeats from here on, whichever claim took it. The record names the
+      // session the claim was made for and this process, so a second process reading the same
+      // transcript — a continuation that resumed a live session's id — tells its own records
+      // from this one's.
+      pi.appendEntry(ROLE_CLAIM_ENTRY, {
+        role,
+        session_id: claimedFor,
+        client_instance_id: clientInstanceID,
+      });
       if (activeSessionContext !== undefined) ensureHeartbeat(activeSessionContext);
     },
     dial: dialNats,
@@ -2614,6 +2698,83 @@ export default function envoyExtension(pi: PiApi): void {
     return false;
   };
 
+  /**
+   * The registrations on the wire, by the session each registers. A `DELETE /v1/sessions/<id>`
+   * that overtakes one is undone when it lands: the listener writes the record again, and a
+   * session this process no longer heartbeats reads as live for the whole live window and as
+   * unresponsive for the gone horizon after it, so peers wait an hour on a pane that has gone
+   * (dispatch://INFRA-392). Every deregistration waits its session's registration out first.
+   */
+  const registrationsInFlight = new Map<string, Promise<void>>();
+
+  /** Records `registering` as the registration of `id` on the wire, for a deregistration of that
+   *  session to wait out, and answers it unchanged. Every registration this process makes passes
+   *  through here: a pass's, through its handle, and the one outside any queue. */
+  const trackRegistration = <T>(id: string, registering: Promise<T>): Promise<T> => {
+    if (id === "") return registering;
+    // Tracked as a settled-either-way promise, so a deregistration waits for the call to leave
+    // the wire without taking on its rejection.
+    const settled = registering.then(
+      () => undefined,
+      () => undefined
+    );
+    registrationsInFlight.set(id, settled);
+    void settled.then(() => {
+      if (registrationsInFlight.get(id) === settled) registrationsInFlight.delete(id);
+    });
+    return registering;
+  };
+
+  /** The whole of what the `session_shutdown` handler gives its deregistration and its drain. Oh
+   *  My Pi abandons a shutdown handler after 2 s (`SESSION_SHUTDOWN_HANDLER_TIMEOUT_MS`), and the
+   *  second this leaves is for the synchronous work ahead of the race and for the host. The
+   *  shared `SHUTDOWN_SETTLE_MS` is what that path spends waiting on a registration still on the
+   *  wire: `REGISTRATION_SETTLE_MS` is five times this whole deadline, so a registration slower
+   *  than a second would mean no DELETE was sent at all and the record outlived this process by
+   *  the gone horizon, where a DELETE that races a slow registration only may lose. The quarter
+   *  of a second it spends instead leaves 750 ms here (1.75 s of the host's 2 s) for the DELETE
+   *  to reach the wire. */
+  const SHUTDOWN_DEADLINE_MS = 1_000;
+
+  /** Deregisters a session this process has stopped heartbeating — its own at shutdown, the one
+   *  it left at a `/new`, a fork or a branch — once that session's registration has settled or
+   *  `settleMs` have passed. The DELETE carries this client instance's id
+   *  (`registrationState.deregister`), so it removes only a record this instance's registration
+   *  wrote. */
+  const deregisterSession = async (
+    id: string,
+    settleMs: number = REGISTRATION_SETTLE_MS
+  ): Promise<void> => {
+    if (id === "" || active === undefined) return;
+    const registering = registrationsInFlight.get(id);
+    if (registering !== undefined) {
+      const waited = Promise.withResolvers<void>();
+      const timer = setTimeout(waited.resolve, settleMs);
+      try {
+        await Promise.race([registering, waited.promise]);
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    await registrationState.deregister(id);
+  };
+
+  // Where this session's pane sits in tmux, so Dispatch can draw the machine's layout from what
+  // the sessions themselves report. The reading runs between registrations, never inside one: a
+  // registration takes what the cache holds in the turn it is built (`sendRegistration`), so a
+  // tmux server driving a wall of panes delays no registration and leaves none in flight behind
+  // a slow call. The cache reads once a `tmuxPlaceCacheMs` — on a timer of its own between the
+  // heartbeats, which are three lifetimes apart — rather than once a registration, so a shared
+  // server is asked once a lifetime by each of its sessions and the place a registration carries
+  // is a lifetime old rather than a heartbeat old. A session shutting down stops that timer and
+  // stops the reading already away from writing anything (`createTmuxPlaceCache`).
+  const tmuxPlaces = createTmuxPlaceCache({
+    read: () => readTmuxPlace(process.env, defaultExec),
+    lifetimeMs: () => active?.settings.tmuxPlaceCacheMs ?? DEFAULT_TMUX_PLACE_CACHE_MS,
+    onFailure: (error) =>
+      logger.debug("envoy: the tmux place reading failed", { error: messageFor(error) }),
+  });
+
   // What this session registers with the listener, read afresh at every registration. The
   // listener delivers nothing to a self-subscribed session (it takes its topics over its own
   // NATS subscriptions), so the registered topics serve recovery on resume; a role-bound subject
@@ -2622,7 +2783,10 @@ export default function envoyExtension(pi: PiApi): void {
   // While the session's relay subject is open, the registration asks for consumer delivery
   // (`delivery`: the relay's epoch and resume point), the relay taking the topics it carries as
   // followed first; its answer says whether the listener relays them.
-  const registrationInput = (asking: Relay | undefined): RegistrationInput => {
+  const registrationInput = (
+    asking: Relay | undefined,
+    place: TmuxPlace | undefined
+  ): RegistrationInput => {
     const own = agentSubject(sessionID);
     const topics = [
       ...new Set([
@@ -2650,6 +2814,7 @@ export default function envoyExtension(pi: PiApi): void {
       selfSubscribed: true,
       plugin: { name: packageName, version: packageVersion },
       ...(asking === undefined ? {} : { delivery: asking.delivery.registration() }),
+      ...(place === undefined ? {} : { place }),
     };
   };
 
@@ -2657,9 +2822,15 @@ export default function envoyExtension(pi: PiApi): void {
   // queue, a queued task's own fenced `handle.register` inside one. While this session's relay
   // subject is open the registration asks for consumer delivery, and the answer decides whether
   // the listener relays the topics it carried (`takeDeliveryAnswer`).
-  const sendRegistration = (
+  const sendRegistration = async (
     send: (input: RegistrationInput) => Promise<SubscribeResult>
   ): Promise<SubscribeResult> => {
+    // Taken in the turn this call starts, with no await ahead of it, so the whole body is built
+    // and posted without a tmux call in between: the session the deregistration at shutdown
+    // waits out is the one that reaches the wire, and no registration can resume behind the
+    // DELETE (dispatch://INFRA-392). The cache answers the last reading, none while it has had
+    // none, and starts the reading the registration after this one carries.
+    const place = tmuxPlaces.place();
     const registeringFor = sessionID;
     // While a sweep still owes the session's own inbox from the stream's oldest message (its start
     // could not be read when it registered with NATS down, `ReplayEngine.startPending`), the
@@ -2671,18 +2842,19 @@ export default function envoyExtension(pi: PiApi): void {
       replay?.startPending() !== true
         ? relay
         : undefined;
-    const input = registrationInput(asking);
-    return send(input).then((result) => {
-      takeDeliveryAnswer(registeringFor, input.topics, asking, result);
-      return result;
-    });
+    const input = registrationInput(asking, place);
+    const result = await send(input);
+    takeDeliveryAnswer(registeringFor, input.topics, asking, result);
+    return result;
   };
 
   // Registers the session outside any queue, carrying this instance's client instance id: a
   // registration moves the session's `last_seen` at the listener even when its answer is lost, so
   // the module first takes back every hold this process abandoned under that session, and times
-  // the answer on the one clock the heartbeat's stall test reads.
-  const registerSession = () => sendRegistration(registrationState.refreshRegistration);
+  // the answer on the one clock the heartbeat's stall test reads. It is recorded as on the wire
+  // for its session, so a deregistration of that session waits it out.
+  const registerSession = () =>
+    trackRegistration(sessionID, sendRegistration(registrationState.refreshRegistration));
 
   const ensureHeartbeat = (context: SessionContext): void => {
     if (heartbeatRegistered) return;
@@ -2702,6 +2874,9 @@ export default function envoyExtension(pi: PiApi): void {
     // whose role read errors, or whose pass the host overtook, still owes the regain.
     let registrationFailed = false;
     let healing = false;
+    // Whether the one extra call a failed tick buys is already owed. Armed by a failed interval
+    // tick, spent by the call it schedules, and cleared by any pass that settles.
+    let retryArmed = false;
     // The pane hears about a stall as it hears about a registry outage, and for the same reason:
     // the session is at risk of being reaped by the listener while the pane runs on.
     const noteStall = (detail: string): void => {
@@ -2716,7 +2891,10 @@ export default function envoyExtension(pi: PiApi): void {
         "warning"
       );
     };
-    context.setInterval(() => {
+    const tick = (fromRetry: boolean): void => {
+      // A shutting-down session is about to be deregistered: a tick past that point would put a
+      // registration back on the wire behind the DELETE and leave the record standing.
+      if (shuttingDown) return;
       // Sessions can be created lazily after session_start (a fresh TUI has no session yet); until
       // the host mints an id there is nothing to register.
       if (context.sessionManager.getSessionId() === "") return;
@@ -2750,6 +2928,10 @@ export default function envoyExtension(pi: PiApi): void {
         if (decided) registrationFailed = false;
         heartbeatOutageNotified = false;
         stallNotified = false;
+        // Back to the plain interval, and a pending extra call is dropped with it: the
+        // registration it would refresh is fresh now, and a listener that is still slow is owed
+        // nothing.
+        retryArmed = false;
       };
       void reconcile(context, { heartbeat: true, afterOutage })
         .then(settled, (error: unknown) => {
@@ -2771,17 +2953,43 @@ export default function envoyExtension(pi: PiApi): void {
           throw error instanceof RegistrationError ? error.cause : error;
         })
         .catch((error) => {
+          // The extra call this failure buys, armed only from an interval tick: a retry that
+          // fails is followed by the next tick, not by a second retry, so a listener that keeps
+          // refusing sees one extra call per interval and no more.
+          const retryIn = fromRetry ? undefined : armRetry();
           if (heartbeatOutageNotified) return;
           heartbeatOutageNotified = true;
+          const retrying =
+            retryIn === undefined
+              ? "retrying at the next heartbeat"
+              : `retrying once in ${Math.round(retryIn / 1000)} s, then every heartbeat`;
           context.ui.notify(
-            `envoy: registry heartbeat failed (${messageFor(error)}); retrying every heartbeat`,
+            `envoy: registry heartbeat failed (${messageFor(error)}); ${retrying}`,
             "warning"
           );
         })
         .finally(() => {
           healing = false;
         });
-    }, requireEnvoy().settings.heartbeatMs);
+    };
+    /** Schedules the extra call a failed heartbeat buys and answers how far out it is, or
+     *  nothing when one is already owed. The delay is the shared draw
+     *  (`heartbeatRetryDelayMs`), the one claude-envoy's channel server retries on too, so the
+     *  panes a slow listener failed together come back spread rather than in one burst. The
+     *  timer is the host's, so it is cleared with the session. */
+    const armRetry = (): number | undefined => {
+      if (retryArmed) return undefined;
+      retryArmed = true;
+      const delayMs = heartbeatRetryDelayMs();
+      context.setTimeout(() => {
+        // A pass settled while the delay ran: the registration is fresh and the call is dropped.
+        if (!retryArmed) return;
+        retryArmed = false;
+        tick(true);
+      }, delayMs);
+      return delayMs;
+    };
+    context.setInterval(() => tick(false), requireEnvoy().settings.heartbeatMs);
     heartbeatRegistered = true;
   };
 
@@ -2827,21 +3035,37 @@ export default function envoyExtension(pi: PiApi): void {
     }
   };
 
-  const transcriptClaimedRole = (branch: readonly unknown[]): string | null | undefined => {
-    // The last claim entry wins: a claim followed by a release is no claim.
-    let role: string | null | undefined;
-    for (const entry of branch) {
-      if (!isRoleClaimEntry(entry)) continue;
-      role = entry.data.role;
-    }
-    return role;
+  // The newest role claim entry on `branch`, whatever process wrote it: the last one wins, since
+  // a claim followed by a release is no claim.
+  const transcriptRoleRecord = (branch: readonly unknown[]): RoleClaimEntry["data"] | undefined =>
+    branch.findLast(isRoleClaimEntry)?.data;
+
+  // What that record asks of this process: the role it claims, `null` for a release, and
+  // `undefined` where this process acts on no record at all — which `mayActOnRoleRecord`, the
+  // one rule both clients read, decides from the writer the record names. Two processes can
+  // read one transcript, a continuation resuming a live session's id, which is how a copy's
+  // release ended the live process's role for hours (dispatch://INFRA-783): a release another
+  // instance wrote ends nothing here while this process holds a role, and a claim it wrote is
+  // pressed only when there is no role to lose, where the listener decides the claim on the two
+  // processes rather than this side guessing.
+  const recordedRole = (branch: readonly unknown[]): string | null | undefined => {
+    const record = transcriptRoleRecord(branch);
+    if (record === undefined) return undefined;
+    return mayActOnRoleRecord(
+      record.client_instance_id,
+      registrationState.clientInstanceID,
+      registrationState.heldRole() !== undefined
+    )
+      ? record.role
+      : undefined;
   };
 
   // The role the host session `id` should hold:
-  //  - The role its own branch records: the transcript entry written at claim time is the durable
-  //    record (it survives `omp --resume` after the listener has reaped a dead session's rows),
-  //    and a recorded release is final. A fork's branch is a copy of its parent's, so it records
-  //    its parent's role; a `/new` records none; a resume or branch records its own.
+  //  - The role its own branch records, where that record is this process's to act on
+  //    (`recordedRole`): the transcript entry written at claim time is the durable record (it
+  //    survives `omp --resume` after the listener has reaped a dead session's rows), and a
+  //    recorded release is final. A fork's branch is a copy of its parent's, so it records its
+  //    parent's role; a `/new` records none; a resume or branch records its own.
   //  - Otherwise the role this process holds, when its hold is under `id` or a session `id`
   //    continues (a tree navigation to before the claim, or a fork from before it).
   //  - Otherwise, once when a pass establishes a resumed or switched session (`readRows`), the
@@ -2862,7 +3086,7 @@ export default function envoyExtension(pi: PiApi): void {
     readRows: boolean
   ): Promise<string | undefined> => {
     const want = (role: string) => (registrationState.refusalFor(id) === role ? undefined : role);
-    const recorded = transcriptClaimedRole(branch);
+    const recorded = recordedRole(branch);
     if (recorded === null) return undefined;
     if (recorded !== undefined) return want(recorded);
     const held = registrationState.heldRole();
@@ -3046,7 +3270,7 @@ export default function envoyExtension(pi: PiApi): void {
     // Every session subscribes to its own agent subject, so every session is registered;
     // envoy_send treats an unregistered id as dead. The listener rejects a claim from a session it
     // does not currently know, so this comes before the role.
-    const registration = await sendRegistration(handle.register).then(
+    const registration = await trackRegistration(host, sendRegistration(handle.register)).then(
       () => undefined,
       (error: unknown) => ({ error })
     );
@@ -3111,6 +3335,10 @@ export default function envoyExtension(pi: PiApi): void {
     // session, which has none.
     const settled = registrationState.roleSettledSession();
     const readRows = settled !== host && (branch.length > 0 || settled !== "");
+    // A refusal this session carries stands until a session event lands on it. The one refusal
+    // that is never recorded is a claim the listener refused because this very session id holds
+    // the role under another process, which it grants as soon as that process stops renewing
+    // it: nothing latches it, so the pass below claims again.
     const desired = await desiredRole(handle, host, branch, readRows);
     const unheard = lastHeard !== host;
     const held = registrationState.heldRole();
@@ -3391,9 +3619,11 @@ export default function envoyExtension(pi: PiApi): void {
     if (sessionID !== host) restoreLocalSessionState(context);
     // Ends at once a role the host session's own records rule out, so the new session never
     // takes the old role's notices while an earlier pass finishes; the pass hands the hold back.
+    // Only a record this process acts on ends anything (`recordedRole`): a release another
+    // process wrote on this transcript ends no role this one holds.
     registrationState.endUnwantedRole(
       host,
-      transcriptClaimedRole(context.sessionManager.getBranch?.() ?? []),
+      recordedRole(context.sessionManager.getBranch?.() ?? []),
       continuedBy(host)
     );
     // With inbound messages off the session opens no agent subject; a heartbeat's pass, when a
@@ -3448,6 +3678,10 @@ export default function envoyExtension(pi: PiApi): void {
 
   pi.on("session_shutdown", async (_event, context) => {
     shuttingDown = true;
+    // A reading still away answers nobody from here on: the DELETE below is what the session
+    // leaves behind, and a place written after it would be a registration the heartbeat has
+    // stopped refreshing (dispatch://INFRA-392).
+    tmuxPlaces.shutDown();
     cardWake.cancel();
     if (publishedInterface !== undefined) {
       const bound = publishedInterface.roleClaim.instances.indexOf(claimInstance);
@@ -3479,12 +3713,19 @@ export default function envoyExtension(pi: PiApi): void {
       closeStore(askgateOwner.store);
     }
     const deadline = Promise.withResolvers<void>();
-    const timer = setTimeout(deadline.resolve, 1_000);
+    const timer = setTimeout(deadline.resolve, SHUTDOWN_DEADLINE_MS);
     try {
-      const deregistration =
-        sessionID === "" || active === undefined
-          ? Promise.resolve()
-          : registrationState.deregister(sessionID).catch(() => undefined);
+      // The heartbeat has stopped (`shuttingDown`), so no new registration starts; one already on
+      // the wire is waited out before the DELETE, or it would land behind it and leave the session
+      // registered with nobody heartbeating it. That wait takes `SHUTDOWN_SETTLE_MS` here rather
+      // than the whole of `REGISTRATION_SETTLE_MS`, which is longer than the deadline
+      // below: the DELETE has to be on the wire before the host abandons this handler, since a
+      // record left behind outlives the process by the gone horizon. The drain runs beside the
+      // wait: it needs no listener call, and both share that deadline, which is what the host's
+      // own limit on a shutdown handler leaves them.
+      const deregistration = deregisterSession(sessionID, SHUTDOWN_SETTLE_MS).catch(
+        () => undefined
+      );
       const draining = connection?.drain().catch(() => undefined) ?? Promise.resolve();
       await Promise.race([
         Promise.allSettled([deregistration, draining]).then(() => undefined),
@@ -4177,6 +4418,7 @@ export default function envoyExtension(pi: PiApi): void {
           return toolSuccess(sendConfirmationText(result), {
             event_id: result.envelope.event_id,
             recipient: result.recipient,
+            recipient_state: result.recipientState,
             confirmed: result.confirmed,
           });
         }
@@ -4198,11 +4440,12 @@ export default function envoyExtension(pi: PiApi): void {
           // role lane, which its holder does not subscribe to, actually goes undelivered: a
           // subagent's source is its parent, so a publish to a role that parent holds is
           // accepted, answers with that holder, and reaches nobody. Only the role case is
-          // visible here (a plain topic's subscribers are not in the answer); AGENTS.md and the
+          // visible here: a plain topic's subscribers that took the message are not in the answer,
+          // while the ones it was only stored for are named under `unresponsive`. AGENTS.md and the
           // envoy skill carry the general rule. A direct envoy_send is unaffected: the
           // agent-subject lane has no such skip.
           // A kept answer reached no session at all, so the echo rule cannot apply to it: the
-          // holder it names is the lapsed claim's session, which never received the message.
+          // holder it names is the session the resolution read, which never received the message.
           const undelivered =
             result.kept !== true && source !== "" && result.holder === source && inSubagent;
           const published = publishConfirmationText(result);
@@ -4214,6 +4457,10 @@ export default function envoyExtension(pi: PiApi): void {
               event_id: result.envelope.event_id,
               topic,
               ...(result.holder === undefined ? {} : { holder: result.holder }),
+              ...(result.holderState === undefined ? {} : { holder_state: result.holderState }),
+              // Named only when the listener named one, so an answer where every recipient took
+              // the message reads exactly as it did.
+              ...(result.unresponsive.length === 0 ? {} : { unresponsive: result.unresponsive }),
               ...(result.kept === undefined ? {} : { kept: result.kept }),
               ...(result.keptReason === undefined ? {} : { kept_reason: result.keptReason }),
               ...(undelivered ? { undelivered_echo: true } : {}),
@@ -4263,7 +4510,10 @@ export default function envoyExtension(pi: PiApi): void {
         }
         case EnvoyToolOperation.getRole: {
           const role = await client.getRole(stringFor(parameters, "role"));
-          return toolSuccess(JSON.stringify(role, null, 2), role);
+          // A listener that names only one of the two states still shows the model one answer:
+          // what state the holder is in, and when it was last seen.
+          const held = { ...role, holder_state: holderStateOf(role) };
+          return toolSuccess(JSON.stringify(held, null, 2), held);
         }
         case EnvoyToolOperation.whoami: {
           const inSubagent = await isSubagent(context);
@@ -4304,10 +4554,17 @@ export default function envoyExtension(pi: PiApi): void {
           const machine = optionalStringFor(parameters, "machine");
           const directory = optionalStringFor(parameters, "dir");
           const title = optionalStringFor(parameters, "title");
-          const sessions = await client.listSessions({ directory, title });
+          // The stalled sessions are asked for by name: a peer that missed its heartbeats is
+          // still running, and a list that leaves it out is read as the peer having died.
+          const sessions = await client.listSessions({
+            directory,
+            title,
+            include: "unresponsive",
+          });
           const result = sessionsOnMachine(sessions, machine);
           return toolSuccess(JSON.stringify(result, null, 2), {
             count: result.length,
+            unresponsive: result.filter((session) => session.state === "unresponsive").length,
             machine,
             dir: directory,
             title,

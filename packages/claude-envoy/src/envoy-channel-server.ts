@@ -25,6 +25,11 @@ import {
 import { sessionDirectory as dispatchSessionDirectory } from "@legion/envoy-client/dispatch-session-directory"
 import { writeSessionTitle } from "@legion/envoy-client/dispatch-session-state"
 import { subscriptionRemovedTopics } from "@legion/envoy-client/dispatch-subscribe"
+import {
+  heartbeatRetryDelayMs,
+  REGISTRATION_SETTLE_MS,
+  SHUTDOWN_SETTLE_MS,
+} from "@legion/envoy-client/envoy-settings"
 import { messageFor } from "@legion/envoy-client/errors"
 import { machineID } from "@legion/envoy-client/machine"
 import { natsConnectionOptions } from "@legion/envoy-client/nats-connection"
@@ -65,8 +70,11 @@ import {
   EnvoyApiError,
   type EnvoyClient,
   expandSubscriptionTopics,
+  holderStateOf,
+  mayActOnRoleRecord,
   mergeInterestSources,
   newClientInstanceID,
+  roleHeldBy,
   type SubscribeResult,
 } from "@legion/envoy-client/transport"
 import { createLegionDaemonClient } from "@legion/pi-shared/daemon-client"
@@ -292,6 +300,17 @@ export interface ChannelSessionOptions {
   readonly configFile: SessionConfigFile
   /** How long a handoff waits for NATS to confirm the new direct subject before it retries. */
   readonly handoffFlushTimeoutMs?: number
+  /** How long a deregistration waits for a registration already on the wire (default
+   *  `REGISTRATION_SETTLE_MS`), past which the DELETE goes out anyway. The shutdown path spends
+   *  at most `SHUTDOWN_SETTLE_MS` of it, over both of its waits. */
+  readonly registrationSettleMs?: number
+  /**
+   * Schedules the one extra registration a failed heartbeat makes, at the delay it is handed
+   * (the shared draw, `heartbeatRetryDelayMs`), and answers how to drop it; `setTimeout` on this
+   * process's clock unless a test passes its own, so a test reads the delay the session drew and
+   * runs the call without waiting it out.
+   */
+  readonly scheduleRetry?: (run: () => void, delayMs: number) => () => void
   /**
    * `${CLAUDE_PLUGIN_DATA}`: role state per session id, the per-process handoff files, and the
    * replay state per session id.
@@ -459,7 +478,9 @@ export function createChannelDelivery(input: {
           dedupe_key: envelope?.dedupe_key,
           urgency: envelope?.urgency,
           from_session: envelope?.source_session,
-          expects_reply: envelope?.expects_reply,
+          // One vocabulary for the inbox: the inbound schema reads a frame old enough to carry
+          // the string "none" as `false`, and the metadata carries that one spelling.
+          expects_reply: envelope?.expects_reply?.toString(),
           in_reply_to: envelope?.in_reply_to,
         }),
       },
@@ -590,6 +611,48 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     const result = registryWrites.then(() => write())
     registryWrites = result.catch(() => undefined)
     return result
+  }
+
+  /**
+   * The registration this process has on the wire, if any, settled either way. A
+   * `DELETE /v1/sessions/<id>` that overtakes one is undone when it lands: the listener writes the
+   * record again, and a session nothing heartbeats stays registered — live for the live window,
+   * then unresponsive for the gone horizon — so peers keep sending to a server that has stopped
+   * (dispatch://INFRA-392). Every deregistration waits it out first.
+   */
+  let registrationInFlight: Promise<void> | undefined
+
+  /** How long a deregistration waits for that registration, and for the writes the chain still
+   *  holds. A listener call can take a timeout and a retry to fail, so the default is the whole
+   *  of one attempt; past it the DELETE goes out anyway, since one never sent always leaves the
+   *  record behind where one that races a slow registration only may. */
+  const settleMs = options.registrationSettleMs ?? REGISTRATION_SETTLE_MS
+
+  /** The shutdown path's whole settling budget, over both its waits (`SHUTDOWN_SETTLE_MS`). A
+   *  test that shortens `settleMs` shortens this with it. */
+  const shutdownSettleMs = Math.min(settleMs, SHUTDOWN_SETTLE_MS)
+
+  /** Resolves when `settling` settles, or when `ms` have passed. */
+  const settledOrGivenUp = async (settling: Promise<unknown>, ms = settleMs): Promise<void> => {
+    const { promise, resolve } = Promise.withResolvers<void>()
+    const timer = setTimeout(resolve, ms)
+    try {
+      await Promise.race([settling.catch(() => undefined), promise])
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  /** Deregisters a session this server has stopped heartbeating: its own at shutdown, and the
+   *  pre-`/clear` id a handoff leaves behind, once that session's registration has settled or
+   *  `settleFor` has passed. The DELETE carries this process's client instance id, so the
+   *  listener removes only a record this instance's registration wrote. */
+  const deregister = async (sessionID: string, settleFor = settleMs): Promise<void> => {
+    if (registrationInFlight !== undefined) await settledOrGivenUp(registrationInFlight, settleFor)
+    await options.client.unregisterSession({
+      sessionID,
+      clientInstanceID: options.clientInstanceID,
+    })
   }
 
   // The live path's claims, which a replay sweep reads to leave a frame being delivered alone.
@@ -970,8 +1033,15 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     if (relay?.sessionID === identity.id) relay.delivery.setFollowed(registeredTopics())
     return {
       dropping,
+      // The release names this process, so the listener frees the role claim of this process
+      // alone where one of these topics is a role's: a second process that resumed this session
+      // id keeps the role it holds.
       unsubscribing: serialized(() =>
-        options.client.unsubscribe({ sessionID: identity.id, topics }),
+        options.client.unsubscribe({
+          sessionID: identity.id,
+          topics,
+          clientInstanceID: options.clientInstanceID,
+        }),
       ),
     }
   }
@@ -1022,7 +1092,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     const topics = registeredTopics()
     const asking = relay?.sessionID === identity.id ? relay : undefined
     asking?.delivery.setFollowed(topics)
-    const result = await options.client.subscribe({
+    const registering = options.client.subscribe({
       sessionID,
       directory: identity.directory,
       topics,
@@ -1035,8 +1105,40 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       plugin: { name: packageName, version: options.pluginVersion },
       ...(asking === undefined ? {} : { delivery: asking.delivery.registration() }),
     })
+    // Held as a promise that settles either way, so a deregistration waits for the call to leave
+    // the wire without taking on its rejection.
+    const settled = registering.then(
+      () => undefined,
+      () => undefined,
+    )
+    registrationInFlight = settled
+    void settled.then(() => {
+      if (registrationInFlight === settled) registrationInFlight = undefined
+    })
+    const result = await registering
     takeDeliveryAnswer(sessionID, topics, asking, result)
   }
+
+  /**
+   * Writes `file` as this session's role record, naming this process as its writer, so a second
+   * `claude` reading the same state directory — one that resumed this session id — tells its own
+   * record from this one's. The destination is the caller's, because `restoreRole` resolves it
+   * before it removes the predecessor's file while the record's `session_id` is read after.
+   */
+  const writeRoleRecord = (file: string, role: string): Promise<void> =>
+    writePersistedRole(file, {
+      session_id: identity.id,
+      role,
+      client_instance_id: options.clientInstanceID,
+    })
+
+  /**
+   * The id whose role record is still to be taken back, read by `transferRole` on every
+   * heartbeat: a handoff has moved away from it, a restore of it failed, or a restore of it was
+   * refused by a standing claim under this session's own id. Written by each caller of
+   * `restoreRole` from what that call answered, and by `adoptHandoff` for the id it left.
+   */
+  let roleTransferFrom: string | undefined
 
   /**
    * Take back the role persisted for `previousSessionID` (this id on `--resume`,
@@ -1045,30 +1147,64 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
    * carries this process's own client instance id, or when either side carries none; a
    * predecessor still live under another client instance keeps the role.
    *
-   * Which is why a refusal naming the predecessor itself keeps the record: it belongs to that
-   * live holder, another process sharing this state directory, and deleting it would cost that
-   * process its only way back to the role. A refusal naming any other session says the
+   * Answers `"pending"` when the role is still to be taken back from that id and only time
+   * decides it, `"settled"` when nothing more is to be asked of that record. The caller keeps
+   * the retry: a restore writes none of its own.
+   *
+   * A record another process wrote is pressed only while this process holds no role
+   * (`mayActOnRoleRecord`, the one rule both clients read). One state directory is read by two
+   * processes whenever a second `claude` resumes a live session's id, and a record is keyed by
+   * session id alone, so the record found here can be the other process's claim rather than a
+   * predecessor of this one's (dispatch://INFRA-783). With no role of its own this process has
+   * nothing to lose by asking, and the listener decides between the two; holding one, it leaves
+   * that record where its writer can still use it. A record written before the writer was named
+   * is nobody's in particular and is pressed as it always was.
+   *
+   * A refusal naming this session's own id is the standing claim of the process this one
+   * replaced — the `claude` that `--resume` continues, or the channel server this one restarted
+   * — which renewed that claim at its last heartbeat and so still stands inside the listener's
+   * live window. The listener grants it the moment nobody has answered for it inside that
+   * window, so that refusal is the `"pending"` answer and every heartbeat asks again until it
+   * is granted: one claim at boot and no more would cost this process its role for the life of
+   * the process, on every `--resume` and every restart inside the window. The record stays
+   * where it is, because the pending claim is read back out of it.
+   *
+   * Which is why a refusal naming the predecessor itself keeps the record too: it belongs to
+   * that live holder, another process sharing this state directory, and deleting it would cost
+   * that process its only way back to the role. A refusal naming any other session says the
    * predecessor demonstrably no longer holds it, so its record goes — the one path that removes
    * a role record by hand.
    */
-  const restoreRole = async (previousSessionID = identity.id): Promise<void> => {
+  const restoreRole = async (previousSessionID: string): Promise<"settled" | "pending"> => {
     const previousFile = roleStateFile(options.stateDirectory, previousSessionID)
     const persisted = await readPersistedRole(previousFile)
-    if (persisted === undefined) return
+    if (persisted === undefined) return "settled"
+    if (
+      !mayActOnRoleRecord(
+        persisted.client_instance_id,
+        options.clientInstanceID,
+        heldRole !== undefined,
+      )
+    ) {
+      return "settled"
+    }
     const claim = await options.client.setRole({
       sessionID: identity.id,
       role: persisted.role,
       soft: true,
       previousSessionID: persisted.session_id,
+      clientInstanceID: options.clientInstanceID,
     })
     if (!claim.claimed) {
+      if (claim.holder === identity.id) return "pending"
       if (claim.holder !== persisted.session_id) await rm(previousFile, { force: true })
-      return
+      return "settled"
     }
     heldRole = persisted.role
     const currentFile = roleStateFile(options.stateDirectory, identity.id)
     if (previousFile !== currentFile) await rm(previousFile, { force: true })
-    await writePersistedRole(currentFile, { session_id: identity.id, role: persisted.role })
+    await writeRoleRecord(currentFile, persisted.role)
+    return "settled"
   }
 
   let regained: RoleRegainHook | undefined
@@ -1115,15 +1251,29 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     }
   }
 
-  /** `afterOutage`: the last tick's registration failed, so a holder the listener still names
-   * may have been answered "no holder" meanwhile. */
+  /**
+   * Re-establishes this session as the live holder of the role it holds, on every heartbeat.
+   * `afterOutage`: the last tick's registration failed, so a holder the listener still names may
+   * have been answered "no holder" meanwhile.
+   *
+   * The lookup confirms the role only when it names this session *and* this process
+   * (`roleHeldBy`, the one rule both clients read): a claim standing under this very session id
+   * that another process made is not this one's to renew, and reading it as confirmation is how
+   * a lane kept heartbeating while a continuation's claim held the role and then lapsed
+   * (dispatch://INFRA-783). Anything else is claimed again, soft.
+   *
+   * A refusal naming a different session ends the role here: that session holds it, and this
+   * one's record is the only thing that would claim otherwise, so it goes. A refusal naming this
+   * session is the standing claim of another process under this id, which the listener grants
+   * the moment that process stops renewing it; the role and its record stay, and the next
+   * heartbeat asks again. The record's mtime is refreshed as it is on a confirmed holder, so the
+   * age sweep never expires a record this process is still pressing a claim for.
+   */
   const reassertRole = async (afterOutage: boolean): Promise<void> => {
     if (heldRole === undefined) return
     const role = heldRole
-    const holder = await options.client
-      .getRole(role)
-      .then((info) => info.holder, undefinedOnNotFound)
-    if (holder === identity.id) {
+    const holding = await options.client.getRole(role).catch(undefinedOnNotFound)
+    if (roleHeldBy(holding, identity.id, options.clientInstanceID)) {
       await refreshRoleRecord()
       if (afterOutage) fireRegained(role, "reregistered")
       return
@@ -1132,40 +1282,41 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       sessionID: identity.id,
       role,
       soft: true,
+      clientInstanceID: options.clientInstanceID,
     })
     if (!result.claimed) {
-      heldRole = undefined
-      await rm(roleStateFile(options.stateDirectory, identity.id), { force: true })
+      if (result.holder !== identity.id) {
+        heldRole = undefined
+        await rm(roleStateFile(options.stateDirectory, identity.id), { force: true })
+        return
+      }
+      await refreshRoleRecord()
       return
     }
     fireRegained(role, "reclaimed")
   }
 
-  /**
-   * The id a handoff moved away from, until its role has been taken back; a
-   * handoff whose registration failed leaves it for the next heartbeat.
-   */
-  let roleTransferFrom: string | undefined
   /** Whether a failure to take back the queued role has been reported since the last success. */
   let roleTransferFailureReported = false
   /**
    * Best-effort, unlike `syncRegisteredInterests` behind it on the heartbeat. A failed transfer
-   * keeps its own retry, `roleTransferFrom`, which clears only once `restoreRole` resolves; a
-   * throw would add nothing to that and would end the tick before the interests reconciliation,
-   * on every tick for as long as the failure lasts — a resumed session would never adopt its
-   * subscriptions and a registry-side unsubscribe that failed would never be cleared. The
-   * session works without its role meanwhile; it does not work without its interests, whose read
-   * has no queue of its own and needs the failed tick, its report and its retry.
+   * keeps its own retry, `roleTransferFrom`, which this clears only once `restoreRole` answers
+   * that the record is settled; a throw would add nothing to that and would end the tick
+   * before the interests reconciliation, on every tick for as long as the failure lasts — a
+   * resumed session would never adopt its subscriptions and a registry-side unsubscribe that
+   * failed would never be cleared. The session works without its role meanwhile; it does not
+   * work without its interests, whose read has no queue of its own and needs the failed tick,
+   * its report and its retry.
    */
   const transferRole = async (): Promise<void> => {
     const from = roleTransferFrom
     if (from === undefined) return
     try {
-      await restoreRole(from)
-      roleTransferFrom = undefined
+      roleTransferFrom = (await restoreRole(from)) === "pending" ? from : undefined
       roleTransferFailureReported = false
     } catch (error) {
-      // Said once per failure run: every heartbeat retries it.
+      // `roleTransferFrom` is untouched, so the next heartbeat asks again.
+      // Said once per failure run.
       if (!roleTransferFailureReported) {
         roleTransferFailureReported = true
         process.stderr.write(
@@ -1204,10 +1355,10 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
         options.handoffFlushTimeoutMs ?? HANDOFF_FLUSH_TIMEOUT_MS,
         "flushing NATS",
       )
-      await options.client.unregisterSession({
-        sessionID: previous,
-        clientInstanceID: options.clientInstanceID,
-      })
+      // The old id's own registration first: one still on the wire writes the record back after
+      // this DELETE, and the id Claude Code has left stays registered with nothing heartbeating
+      // it.
+      await deregister(previous)
     } catch (error) {
       // The session stays on the old id until a later tick retries, so the new
       // subject leaves the topic list; otherwise the next registration would
@@ -1318,14 +1469,17 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
         topic !== directSubject && !topic.startsWith(ROLE_TOPIC_PREFIX) && !followed.has(topic),
     )
     if (drifted.length === 0) return
-    await options.client.unsubscribe({ sessionID: identity.id, topics: drifted })
+    await options.client.unsubscribe({
+      sessionID: identity.id,
+      topics: drifted,
+      clientInstanceID: options.clientInstanceID,
+    })
   }
 
   // One tick at a time, and at most one pending behind it. `serialized` already
   // orders the registry writes across ticks; what these two flags buy is
   // coalescing — a tick requested while one runs (a handoff file written
-  // mid-tick) runs once, straight after — and the single immediate retry a
-  // failed tick asks for below.
+  // mid-tick) runs once, straight after.
   let heartbeatInFlight = false
   let heartbeatRequested = false
   let outageReported = false
@@ -1333,7 +1487,25 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
   // "no holder" for a session whose registry entry lapsed, and only that warrants a
   // `"reregistered"` regain. Cleared once a whole tick has succeeded.
   let registrationFailed = false
-  const heartbeat = async (): Promise<void> => {
+  // Whether the one extra call a failed tick buys is already owed, and how to drop it: armed by
+  // a failed interval tick, spent by the call it schedules, and cleared by a tick that succeeds
+  // or by shutdown.
+  let retryArmed = false
+  let dropRetry: (() => void) | undefined
+  const scheduleRetry: NonNullable<ChannelSessionOptions["scheduleRetry"]> =
+    options.scheduleRetry ??
+    ((run, delayMs) => {
+      const timer = setTimeout(run, delayMs)
+      return () => {
+        clearTimeout(timer)
+      }
+    })
+  const clearRetry = (): void => {
+    retryArmed = false
+    dropRetry?.()
+    dropRetry = undefined
+  }
+  const heartbeat = async (fromRetry = false): Promise<void> => {
     if (shuttingDown || heartbeatInFlight) return
     heartbeatInFlight = true
     try {
@@ -1351,18 +1523,26 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       })
       registrationFailed = false
       outageReported = false
+      // Back to the plain interval, and a pending extra call goes with it: the registration it
+      // would refresh is fresh now, and a listener that is still slow is owed nothing.
+      clearRetry()
     } catch (error) {
+      // The extra call this failure buys, armed only from an interval tick: a retry that fails
+      // is followed by the next tick, not by a second retry, so a listener that keeps refusing
+      // sees one extra call per interval and no more. A handoff that unregistered the old id and
+      // then failed to register the new one leaves the session unreachable under both until that
+      // call, which is why it does not wait the whole interval out; the delay is drawn per
+      // session, so a listener that failed many of them is not met by all of them at once.
+      const retryIn = fromRetry ? undefined : armRetry()
       if (outageReported) return
       outageReported = true
+      const retrying =
+        retryIn === undefined
+          ? "retrying at the next heartbeat"
+          : `retrying once in ${Math.round(retryIn / 1000)} s, then every heartbeat`
       process.stderr.write(
-        `envoy-channel: registry heartbeat failed (${messageFor(error)}); retrying every heartbeat\n`,
+        `envoy-channel: registry heartbeat failed (${messageFor(error)}); ${retrying}\n`,
       )
-      // A handoff that unregistered the old id and then failed to register the new
-      // one leaves the session unreachable under both until the next attempt: one
-      // immediate retry, not the full heartbeat interval, closes that window. Bounded
-      // to once per outage: a further failure here hits the `outageReported` guard
-      // above before ever reaching this line.
-      requestHeartbeat()
     } finally {
       heartbeatInFlight = false
       // Every tick also sweeps the stream, so a missed trigger is caught up, and a listener that
@@ -1373,6 +1553,23 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
         void heartbeat()
       }
     }
+  }
+  /** Schedules the extra call a failed heartbeat buys and answers how far out it is, or nothing
+   *  when one is already owed. The delay is the shared draw (`heartbeatRetryDelayMs`), the one
+   *  pi-envoy's pane plugin retries on too, so the sessions a slow listener failed together come
+   *  back spread rather than in one burst. */
+  const armRetry = (): number | undefined => {
+    if (retryArmed || shuttingDown) return undefined
+    retryArmed = true
+    const delayMs = heartbeatRetryDelayMs()
+    dropRetry = scheduleRetry(() => {
+      // A tick settled while the delay ran: the registration is fresh and the call is dropped.
+      if (!retryArmed) return
+      retryArmed = false
+      dropRetry = undefined
+      void heartbeat(true)
+    }, delayMs)
+    return delayMs
   }
   const requestHeartbeat = (): void => {
     if (heartbeatInFlight) heartbeatRequested = true
@@ -1411,22 +1608,31 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     // failure but one: a listener answer that is not JSON or misses the schema, an unreadable
     // role file, any transient error. The one is a role file whose bytes cannot be parsed, which
     // only `readPersistedRole` can tell apart: no later read of the same bytes succeeds, so it is
-    // not queued, and it costs this session its role and nothing more.
-    await restoreRole().catch((error: unknown) => {
+    // not queued, and it costs this session its role and nothing more. A claim the listener
+    // refused naming this very session is queued the same way, on the `"pending"` the restore
+    // answers: the process this one resumed renewed that claim at its last heartbeat, and the
+    // role comes back from the standing claim itself rather than from the reaper, which never
+    // frees it while this process keeps that session alive. The listener grants it to a process
+    // that keeps asking once that renewal is older than the live window
+    // (`roleOwnSessionVerdict`), so the role is back one live window after that renewal, plus
+    // up to the one heartbeat tick it takes this process to ask again.
+    try {
+      roleTransferFrom = (await restoreRole(identity.id)) === "pending" ? identity.id : undefined
+    } catch (error) {
       if (error instanceof UnparseableRoleRecordError) {
         process.stderr.write(
           `envoy-channel: ${messageFor(error)}; the session starts without a role\n`,
         )
-        return
+      } else {
+        roleTransferFrom = identity.id
+        // This is the first failure of the run `transferRole` reports, so it says nothing more
+        // until the retry has succeeded once.
+        roleTransferFailureReported = true
+        process.stderr.write(
+          `envoy-channel: could not restore the role (${messageFor(error)}); the next heartbeat retries\n`,
+        )
       }
-      roleTransferFrom = identity.id
-      // This is the first failure of the run `transferRole` reports, so it says nothing more
-      // until the retry has succeeded once.
-      roleTransferFailureReported = true
-      process.stderr.write(
-        `envoy-channel: could not restore the role (${messageFor(error)}); the next heartbeat retries\n`,
-      )
-    })
+    }
   })
   // The first sweep, once the listener knows what the session follows: what was stored while it
   // was away (a resume included), or, for a new session, its cursors' start at the stream's end.
@@ -1460,8 +1666,8 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
   // `watchFile` also calls the listener, with every stat field zeroed, when the file
   // is missing as polling begins and when it is removed. A missing file names no id
   // to adopt, and the request below already covers startup: a tick there would be a
-  // second one for the same moment, and in an outage one more attempt than the
-  // bounded retry allows.
+  // second one for the same moment, and in an outage one more attempt than the one
+  // extra call a failed tick buys.
   const handoffFileChanged = (current: Stats): void => {
     if (current.ino !== 0) requestHeartbeat()
   }
@@ -1523,25 +1729,29 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     },
     async rememberRole(role) {
       heldRole = role
-      await writePersistedRole(roleStateFile(options.stateDirectory, identity.id), {
-        session_id: identity.id,
-        role,
-      })
+      await writeRoleRecord(roleStateFile(options.stateDirectory, identity.id), role)
     },
     async shutdown() {
       if (shuttingDown) return
       shuttingDown = true
       clearInterval(heartbeatTimer)
+      // The extra call a failed tick scheduled goes too: nothing may register behind the DELETE,
+      // and a timer still pending would hold this process open for the whole of its delay.
+      clearRetry()
       if (handoffFile !== undefined) unwatchFile(handoffFile, handoffFileChanged)
       // The relay's unanswered frames `nak`, so the listener sends them to whoever resumes.
       closeRelay()
       await forwarder.close()
-      await serialized(() =>
-        options.client.unregisterSession({
-          sessionID: identity.id,
-          clientInstanceID: options.clientInstanceID,
-        }),
-      ).catch((error: unknown) => {
+      // The heartbeat is stopped and `follow` refuses while shutting down, so no registration
+      // starts from here. What the chain still holds is waited out — a registration it runs after
+      // the DELETE would write the record back — and so is one already on the wire, both bounded,
+      // and on this path bounded together by `shutdownSettleMs`: a write this listener has
+      // stalled on must not keep the deregistration off the wire entirely, since a record left
+      // behind outlives this process by the whole gone horizon, and the process is not given the
+      // two full waits before it is killed.
+      const settleBy = Date.now() + shutdownSettleMs
+      await settledOrGivenUp(registryWrites, shutdownSettleMs)
+      await deregister(identity.id, Math.max(0, settleBy - Date.now())).catch((error: unknown) => {
         process.stderr.write(
           `envoy-channel: session deregistration failed — ${messageFor(error)}\n`,
         )
@@ -1560,6 +1770,9 @@ export interface ChannelToolRuntime {
   readonly identity: SessionIdentity
   readonly client: EnvoyClient
   readonly session: ChannelSession
+  /** The process the tools act as: the id every registration and every claim of this channel
+   *  server carries (`ChannelSessionOptions.clientInstanceID`). */
+  readonly clientInstanceID: string
 }
 export async function executeEnvoyTool(
   runtime: ChannelToolRuntime,
@@ -1584,6 +1797,7 @@ export async function executeEnvoyTool(
         message: sendConfirmationText(result),
         event_id: result.envelope.event_id,
         recipient: result.recipient,
+        recipient_state: result.recipientState,
         confirmed: result.confirmed,
       }
     }
@@ -1596,9 +1810,20 @@ export async function executeEnvoyTool(
         message: args.message,
         ...toMessageMetadata(args),
       })
-      // A kept answer is a success: the listener holds the message for the role's next holder.
-      // The line says so, in the words the Oh My Pi plugin uses (`publishConfirmationText`).
-      return { message: publishConfirmationText(result), ...result }
+      // The answer the model reads, its line first. A topic send whose subscriber stopped
+      // answering was accepted and stored for that session, and this result is the one place
+      // the model is told so; a kept answer is a success of its own, which the line says in the
+      // words the Oh My Pi plugin uses (`publishConfirmationText`).
+      return {
+        message: publishConfirmationText(result),
+        event_id: result.envelope.event_id,
+        topic: result.envelope.topic,
+        ...(result.holder === undefined ? {} : { holder: result.holder }),
+        ...(result.holderState === undefined ? {} : { holder_state: result.holderState }),
+        unresponsive: result.unresponsive,
+        ...(result.kept === undefined ? {} : { kept: result.kept }),
+        ...(result.keptReason === undefined ? {} : { kept_reason: result.keptReason }),
+      }
     }
     case EnvoyToolOperation.subscribe: {
       const args = parseArguments(spec, input)
@@ -1624,22 +1849,35 @@ export async function executeEnvoyTool(
       return { session_id: identity.id, machine_id: machineID(), dir: identity.directory }
     case EnvoyToolOperation.listSessions: {
       const args = parseArguments(spec, input)
+      // The stalled sessions are asked for by name: a peer that missed its heartbeats is still
+      // running, and a list that leaves it out is read as the peer having died.
       const sessions = await runtime.client.listSessions({
         ...(args.dir === undefined ? {} : { directory: args.dir }),
         ...(args.title === undefined ? {} : { title: args.title }),
+        include: "unresponsive",
       })
       return sessionsOnMachine(sessions, args.machine)
     }
     case EnvoyToolOperation.setRole: {
       const args = parseArguments(spec, input)
-      const result = await runtime.client.setRole({ sessionID: identity.id, role: args.role })
+      // The claim names this process, as every claim this server makes does: the listener
+      // records it as the role's holder, so a second process on this session id cannot be
+      // mistaken for the one holding the role.
+      const result = await runtime.client.setRole({
+        sessionID: identity.id,
+        role: args.role,
+        clientInstanceID: runtime.clientInstanceID,
+      })
       if (!result.claimed) throw new Error(`role ${args.role} is held by ${result.holder}`)
       await runtime.session.rememberRole(args.role)
       return result.interest
     }
     case EnvoyToolOperation.getRole: {
       const args = parseArguments(spec, input)
-      return runtime.client.getRole(args.role)
+      const role = await runtime.client.getRole(args.role)
+      // A listener that names only one of the two states still shows the model one answer: what
+      // state the holder is in, and when it was last seen.
+      return { ...role, holder_state: holderStateOf(role) }
     }
     case EnvoyToolOperation.inbox:
       parseArguments(spec, input)
@@ -1947,13 +2185,14 @@ export async function runEnvoyChannelServer(): Promise<void> {
         ...(configuredValue(overrideSessionId) === undefined ? { handoffPid: process.ppid } : {}),
       })
     }
-    runtime = { identity, client, session }
+    runtime = { identity, client, session, clientInstanceID }
     if (pane !== undefined && daemon !== undefined && !stopping) {
       claim = startLegionClaim({
         pane,
         sessionID: identity.id,
         daemon,
         client,
+        clientInstanceID,
         session,
         signal: booting.signal,
         log: logLegion,

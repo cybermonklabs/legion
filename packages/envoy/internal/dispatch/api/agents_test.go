@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -95,6 +96,101 @@ func TestAgentsFallsBackToMachineIDWhenListenerReportsNoHost(t *testing.T) {
 	rows := decodeBody[[]map[string]any](t, response)
 	if rows[0]["host"] != "example-listener" {
 		t.Fatalf("host = %v, want the machine_id fallback", rows[0]["host"])
+	}
+}
+
+// tmuxPlaceWire is the ten-member place object, written once on this side of the wire. The same
+// literal is parsed through the Agent contract in packages/contracts/src/dispatch-api.test.ts
+// ("carries a session's whole tmux place"), so the two sides can only agree on these names: a
+// member renamed, added or dropped in Go alone fails the key-set assertion below, and one
+// renamed in TypeScript alone fails that file's typecheck. Keep the two literals identical.
+const tmuxPlaceWire = `{` +
+	`"socket":"/tmp/tmux-1000/default",` +
+	`"server_pid":"4242",` +
+	`"session_name":"legion",` +
+	`"window_id":"@7",` +
+	`"window_index":3,` +
+	`"window_name":"infra-883",` +
+	`"pane_id":"%12",` +
+	`"pane_index":1,` +
+	`"layout":"a1b2,180x44,0,0,7",` +
+	`"zoomed":true` +
+	`}`
+
+// GET /api/v1/agents carries a session's tmux place from the listener untouched, member for
+// member and name for name: the pages that draw a machine's panes read these names and nothing
+// else, so a key answered under another name draws nothing and raises no error anywhere.
+func TestAgentsTmuxPlaceIsAnsweredMemberForMember(t *testing.T) {
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`[{"session_id":"a","title":"planner","machine_id":"example-listener","last_seen":100,"tmux_place":` + tmuxPlaceWire + `}]`))
+	}))
+	defer listener.Close()
+
+	response := dispatchRequest(t, agentsHandler(t, listener.URL), http.MethodGet, "/api/v1/agents", nil, "alice")
+	if response.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", response.Code, response.Body.String())
+	}
+	rows := decodeBody[[]map[string]any](t, response)
+	answered, named := rows[0]["tmux_place"].(map[string]any)
+	if !named {
+		t.Fatalf("row = %v, want a tmux_place object", rows[0])
+	}
+	var sent map[string]any
+	if err := json.Unmarshal([]byte(tmuxPlaceWire), &sent); err != nil {
+		t.Fatalf("decode the place the listener sent: %v", err)
+	}
+	if !reflect.DeepEqual(answered, sent) {
+		t.Fatalf("tmux_place = %v, want the listener's place unchanged: %v", answered, sent)
+	}
+}
+
+// A session in no pane - one in Kubernetes, or any process started outside tmux - must be
+// answered with no tmux_place key at all, so a cluster that runs no tmux pays no bytes per row
+// and a reader never takes an empty place for a pane.
+func TestAgentsTmuxPlaceIsAbsentForASessionOutsideTmux(t *testing.T) {
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`[{"session_id":"a","title":"planner","machine_id":"example-listener","host":"example-host-a","last_seen":100}]`))
+	}))
+	defer listener.Close()
+
+	response := dispatchRequest(t, agentsHandler(t, listener.URL), http.MethodGet, "/api/v1/agents", nil, "alice")
+	if response.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", response.Code, response.Body.String())
+	}
+	rows := decodeBody[[]map[string]any](t, response)
+	if _, named := rows[0]["tmux_place"]; named {
+		t.Fatalf("row = %v, want no tmux_place key for a session outside tmux", rows[0])
+	}
+}
+
+// A listener that predates the field names no place for any session, and its rows must be
+// answered exactly as they are today: no tmux_place key, and every other field untouched.
+func TestAgentsTmuxPlaceFromAListenerThatPredatesTheFieldChangesNothing(t *testing.T) {
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`[{"session_id":"a","title":"planner","dir":"/w/planner","machine_id":"example-listener","roles":["planner"],"capabilities":["btw"],"last_seen":100,"state":"live"}]`))
+	}))
+	defer listener.Close()
+
+	response := dispatchRequest(t, agentsHandler(t, listener.URL), http.MethodGet, "/api/v1/agents", nil, "alice")
+	if response.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", response.Code, response.Body.String())
+	}
+	rows := decodeBody[[]map[string]any](t, response)
+	want := map[string]any{
+		"session_id":    "a",
+		"title":         "planner",
+		"dir":           "/w/planner",
+		"machine_id":    "example-listener",
+		"host":          "example-listener",
+		"roles":         []any{"planner"},
+		"capabilities":  []any{"btw"},
+		"last_seen":     float64(100),
+		"state":         "live",
+		"open_asks":     float64(0),
+		"last_activity": nil,
+	}
+	if !reflect.DeepEqual(rows[0], want) {
+		t.Fatalf("row = %v, want the answer this release already gives: %v", rows[0], want)
 	}
 }
 
@@ -417,5 +513,61 @@ func TestAnAgentsListDuringAShutdownDrainListsAHealthyListenersSessions(t *testi
 		if got := agentIDs(t, mux); !reflect.DeepEqual(got, []string{"ses-live"}) {
 			t.Fatalf("agents list %d during the drain = %v, want the listener's [ses-live]", read, got)
 		}
+	}
+}
+
+// answerListRefilling writes the listener's refusal of a list it cannot serve (cmd/listener
+// writeListRefilling), with the given Retry-After ("" sends none).
+func answerListRefilling(w http.ResponseWriter, retryAfter string) {
+	if retryAfter != "" {
+		w.Header().Set("Retry-After", retryAfter)
+	}
+	WriteJSON(w, http.StatusServiceUnavailable, map[string]string{
+		"error": "envoy: the agent list is refilling; try again in a moment", "code": "refilling",
+	})
+}
+
+// requireEnvoyRefilling requires Dispatch's refilling answer: 503 with the given Retry-After and
+// exactly the ENVOY_REFILLING body.
+func requireEnvoyRefilling(t *testing.T, response *httptest.ResponseRecorder, retryAfter string) {
+	t.Helper()
+	want := map[string]string{"code": "ENVOY_REFILLING", "error": "The agent list is refilling. Try again in a moment."}
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%s, want 503 ENVOY_REFILLING", response.Code, response.Body.String())
+	}
+	if got := decodeBody[map[string]string](t, response); !reflect.DeepEqual(got, want) {
+		t.Fatalf("body = %v, want %v", got, want)
+	}
+	if got := response.Header().Get("Retry-After"); got != retryAfter {
+		t.Fatalf("Retry-After = %q, want %q", got, retryAfter)
+	}
+}
+
+// A listener refilling its list answered the read, and said the list will be back: the Agents
+// read says so with its own code and the listener's Retry-After (5, the listener's own, when it
+// sent none), never an empty list. Any other 503 is still the listener being unavailable.
+//
+// Each case takes a database of its own, because the listener's answer is stored for every
+// server process to read (route_roster) and the two cases run different listeners: sharing one
+// database would serve the second case the first one's stored silence, with its Retry-After.
+func TestAgentsReportsARefillingListenerAsRefilling(t *testing.T) {
+	for retryAfter, want := range map[string]string{"7": "7", "": "5"} {
+		database := storetest.Open(t)
+		listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			answerListRefilling(w, retryAfter)
+		}))
+		t.Cleanup(listener.Close)
+		response := dispatchRequest(t, agentsHandlerWithStore(t, listener.URL, database), http.MethodGet, "/api/v1/agents", nil, "alice")
+		requireEnvoyRefilling(t, response, want)
+	}
+
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "1")
+		WriteJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "service starting", "code": "starting"})
+	}))
+	t.Cleanup(plain.Close)
+	response := dispatchRequest(t, agentsHandlerWithStore(t, plain.URL, storetest.Open(t)), http.MethodGet, "/api/v1/agents", nil, "alice")
+	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), `"code":"ENVOY_UNAVAILABLE"`) {
+		t.Fatalf("a 503 without the refilling code: status %d: %s, want ENVOY_UNAVAILABLE", response.Code, response.Body.String())
 	}
 }

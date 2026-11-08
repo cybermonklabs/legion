@@ -1,3 +1,4 @@
+import { decodeBlockId, isIdPrefix } from "@legion/contracts";
 import { queryOptions, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   type ReactNode,
@@ -8,8 +9,8 @@ import {
   useRef,
   useState,
 } from "react";
-import { Link, useNavigate } from "react-router-dom";
-
+import { createPortal } from "react-dom";
+import { Link, useLocation } from "react-router-dom";
 import {
   api,
   isArtifactNotFound,
@@ -40,24 +41,25 @@ import {
 import { useMargin } from "../margin/margin-context";
 import type { MarginOwner } from "../margin/useMarginItems";
 import { blockFragment } from "../refs/block-reference";
-import { fetchReferencePath, needsSpecSlug, watchPicturePath } from "../refs/reference-target";
+import { watchPicturePath } from "../refs/reference-target";
 import {
   buildDispatchReference,
   buildIssuePath,
   buildProjectPath,
-  buildReferencePath,
   documentRoute,
-  parseNodeReference,
 } from "../refs/routes";
+import { textSourceOf, uniquePrefixMatch } from "../refs/text-references";
 import { importWhenOnline } from "../shell/DeploymentResilience";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { AskBlockCard } from "./AskBlockCard";
+import type { AnchoredBlockHost } from "./ask-block";
 import { ChangeView } from "./ChangeView";
 import type { ConnectionState, DocumentConnection } from "./connection";
 import { colorForLogin } from "./connection";
-import type { EditorHandle } from "./editor";
+import { DocumentReferences, useReferenceClick } from "./document-references";
+import type { EditorHandle, EditorOptions } from "./editor";
 import { bindRemoteMarks } from "./editor";
 import type { Highlight } from "./highlight";
 import {
@@ -70,13 +72,26 @@ import {
 import { NameVersionDialog } from "./NameVersionDialog";
 import type { PendingState } from "./pending-sync";
 import { createPendingWaiter } from "./pending-waiter";
-import { refocusAfterDiagrams } from "./refocus-after-diagrams";
+import { quoteAnchor } from "./quote-anchor";
+import { refocusWhenSettled } from "./refocus-when-settled";
 import { FRAGMENT_NAME } from "./roots";
 import { DocumentRuntime } from "./runtime";
 import { loadBlockSchema } from "./schema";
 import { readLineText, useSpecMarks } from "./spec-marks";
 import type { AskBlockHost } from "./typed-block-drawing";
 import { VersionView } from "./VersionView";
+
+/** The one block of `root` whose id starts with `prefix`, or undefined where none does or two
+ *  or more do (`uniquePrefixMatch`). The editor's own rendered blocks are the answer, the same
+ *  `[data-block-id]` elements `focusBlock` looks a whole id up in, so a block link written short
+ *  costs no read; a block the editor draws twice carries its id twice, which is that one block. */
+function wholeBlockId(root: HTMLElement, prefix: string): string | undefined {
+  const ids: string[] = [];
+  for (const element of root.querySelectorAll<HTMLElement>("[data-block-id]")) {
+    ids.push(element.getAttribute("data-block-id") ?? "");
+  }
+  return uniquePrefixMatch(ids, prefix);
+}
 
 const CONTROL_CHARACTERS = /\p{Cc}/gu;
 
@@ -113,6 +128,26 @@ function admissionBlock(error: unknown): AdmissionBlock {
  * refusal is normally followed by the repair message, never by an endless reconnect. */
 const SCHEMA_REFUSAL_DELAYS_MS = [0, 1_000, 2_000, 4_000, 8_000] as const;
 
+/** What the live editor lets the reader do. A closed issue's document takes comments by quote (the
+ * bar's Comment alone): the server admits every socket on a closed issue read-only, so its
+ * admission cannot say whether this editor's schema is outdated too. On an open issue a read-only
+ * admission means it is, and the document takes nothing until a reload, since this editor's
+ * reading of it may not be the server's. A reading column (`page` false) takes neither edits nor
+ * comments: a reader who clicks into the text beside a list is only reading. */
+function editorAccess(
+  page: boolean,
+  isClosed: boolean,
+  schemaReadOnly: boolean
+): NonNullable<EditorOptions["access"]> {
+  if (!page) {
+    return "read";
+  }
+  if (isClosed) {
+    return "comment";
+  }
+  return schemaReadOnly ? "read" : "edit";
+}
+
 /** The document chrome reports its state upward so an issue can place its controls in the active
  * Spec tab row. Project document pages retain their artifact-header toolbar. */
 export interface DocumentToolbar {
@@ -125,6 +160,18 @@ export interface DocumentToolbar {
 }
 
 export interface ProofDocumentProps {
+  /** A thread drawn inside the document column, directly below the block it is anchored to, and
+   *  the document mark whose quote is highlighted while it is shown: what the Inbox's reading
+   *  pane does with the comment thread it selected (`surface="pane"`). The thread reaches the
+   *  block through a node view's slot, never injected DOM (`installTypedBlocks`), so it is drawn
+   *  only once the editor has drawn that block; a `blockId` the document does not hold draws
+   *  nothing, which is what the pane falls back from. Changing the block reopens the editor, so a
+   *  host that follows a selection settles it first, as the pane does. */
+  anchoredThread?: {
+    readonly blockId: string;
+    readonly children: ReactNode;
+    readonly markId: string | null;
+  };
   artifact: Artifact;
   highlight: Highlight | undefined;
   highlightTerm?: string;
@@ -185,17 +232,8 @@ function setSearchHighlights(root: HTMLElement, query: string): void {
   CSS.highlights.set("dispatch-search", new Highlight(...ranges));
 }
 
-/** A rendered link mark's `dispatch://` target, if any. `@legion/proof-editor`'s Markdown
- * serializer sanitizes a `dispatch://` href to `""` (Milkdown's link sanitizer only allows
- * http/https/mailto/tel/ftp — a document strangers can edit should never render an
- * attacker-chosen non-http scheme as a clickable href) and tags the anchor with
- * `data-dispatch-href` carrying the original target instead. */
-function dispatchHrefOf(anchor: Element): string | null {
-  const href = anchor.getAttribute("data-dispatch-href") ?? anchor.getAttribute("href");
-  return href?.startsWith("dispatch://") ? href : null;
-}
-
 export function ProofDocument({
+  anchoredThread,
   artifact,
   highlight,
   highlightTerm = "",
@@ -212,12 +250,27 @@ export function ProofDocument({
 }: ProofDocumentProps): ReactNode {
   const root = useRef<HTMLDivElement>(null);
   const editorRef = useRef<EditorHandle | undefined>(undefined);
+  // The handle this document's references are drawn through, beside the ref the callbacks reach
+  // it by: the titles are a render of their own, so the surface that draws them re-renders with
+  // the editor it draws into.
+  const [editorHandle, setEditorHandle] = useState<EditorHandle | undefined>(undefined);
   // The dispose of the latest focus's re-run after the diagrams draw (`focusInEditor`).
   const disposeRefocusRef = useRef<(() => void) | undefined>(undefined);
+  /** The live editor's connection, for a reopened issue's re-admission (`readmit`). */
+  const connectionRef = useRef<DocumentConnection | undefined>(undefined);
   const isClosedRef = useRef(isClosed);
+  /** Whether the issue was closed when the access effect last ran, so it sees a reopen. */
+  const wasClosedRef = useRef(isClosed);
   const schemaReadOnlyRef = useRef(false);
   const userRef = useRef(user);
   const highlightTermRef = useRef(highlightTerm);
+  // The thread the host draws below one block, and the mark it highlights: both are read through
+  // refs by the editor's own effects, so a host that re-renders rebuilds nothing.
+  const [anchoredHost, setAnchoredHost] = useState<AnchoredBlockHost | undefined>(undefined);
+  const anchoredBlockId = anchoredThread?.blockId;
+  const activeMarkId = anchoredThread?.markId ?? undefined;
+  const activeMarkIdRef = useRef(activeMarkId);
+  activeMarkIdRef.current = activeMarkId;
   const [connection, setConnection] = useState<ConnectionState>("connecting");
   const [pending, setPending] = useState<PendingState | undefined>(undefined);
   // Whoever waits for this browser's edits of this document to reach the server
@@ -228,21 +281,14 @@ export function ProofDocument({
   const pendingWaiter = useMemo(() => createPendingWaiter(), []);
   const [loadError, setLoadError] = useState<string | undefined>(undefined);
   const [schemaReadOnly, setSchemaReadOnly] = useState(false);
-  // Whether the issue was closed when the current admission came. The server admits a socket
-  // read-only for a closed issue as it does for a schema it does not serve, and a reload cannot
-  // make a closed issue's document editable, so the page names a reload only for a read-only
-  // admission that came while the issue was open, while the issue is open and the socket is
-  // connected. The admission and the connection decide the line, not the close or the reopen: each
-  // drops the socket only on the server process that served it, and where it does, the
-  // reconnect's admission decides again.
-  const [closedAdmission, setClosedAdmission] = useState(false);
+  /** Why the closed document's last Comment opened no composer, for the reader. */
+  const [quoteRefusal, setQuoteRefusal] = useState<string | undefined>(undefined);
   const [openDecisionIndex, setOpenDecisionIndex] = useState(0);
   const {
     blockSchema: runtimeBlockSchema,
     createEditor,
     loadTransport,
   } = useContext(DocumentRuntime);
-  const navigate = useNavigate();
   const margin = useMargin();
   const { blockPlacements } = margin;
   // The editor effect and its callbacks reach the margin's latest functions through this ref
@@ -251,6 +297,13 @@ export function ProofDocument({
   marginRef.current = margin;
   highlightTermRef.current = highlightTerm;
   const queryClient = useQueryClient();
+  // Where a `#id` in this document's text resolves: this document, whose question blocks
+  // declare the asks it names (`refs.ScopeOf` of a document version is the document).
+  const textSource = useMemo(() => textSourceOf("artifact", artifact.id), [artifact.id]);
+  const followReference = useReferenceClick();
+  // The address's fragment as the dashboard's own navigation leaves it: a click on a link to a
+  // block of this document changes it in place, firing no event of the browser's own.
+  const { hash: routedHash } = useLocation();
   const documentRef = buildDispatchReference(documentRoute(artifact));
   const blockSchemaQuery = useQuery({
     queryFn: loadBlockSchema,
@@ -271,6 +324,20 @@ export function ProofDocument({
   const [admission, setAdmission] = useState<AdmissionBlock | undefined>(undefined);
   // Set while an admission is blocked: admits again, once the next read of the text succeeds.
   const readmitRef = useRef<(() => void) | undefined>(undefined);
+  /** Has this document admitted again, the one way in: a blocked admission has no connection to
+   *  readmit, so it re-reads the text and connects (`readmitRef`, set only while it is blocked);
+   *  a live one closes its socket, which the provider reconnects, and the server decides that
+   *  socket's admission afresh - which is what a reopened issue needs, since the admission of the
+   *  socket it has is the closed issue's. The new admission reaches `onAdmission` and the pending
+   *  sync alike, so the rows the read-only admission kept are restored and sent. */
+  const readmit = useCallback(() => {
+    const blocked = readmitRef.current;
+    if (blocked !== undefined) {
+      blocked();
+      return;
+    }
+    connectionRef.current?.readmit();
+  }, []);
   // A reading column offers no repair and no rebuild: it is not the document's page, and a
   // reader beside a list of questions has not come to mend a document. A blocked admission is
   // reported upward instead (`onUnavailable`), and the host - the Inbox's pane - falls back to
@@ -420,22 +487,92 @@ export function ProofDocument({
     [artifact.id, pendingWaiter]
   );
   // Every focus in the live editor - a block link, the margin's mark and block focus, a reader's
-  // click to a block - runs `focus` now and `refocus` once more after the page's mermaid diagrams
-  // have drawn (`refocusAfterDiagrams`), since a diagram that draws above the target pushes it
-  // down. One re-run waits at a time: a newer focus drops an older one's, and so does the editor
-  // unbinding.
+  // click to a block - runs `focus` now and `refocus` once more after the drawing around its
+  // target has settled (`refocusWhenSettled`): the page's mermaid diagrams, and this editor's own
+  // blocks, whose hosted cards and pictures draw after it opened and push a target below them
+  // down. The editor's drawn root is what grows, so it is what is watched. One re-run waits at a
+  // time: a newer focus drops an older one's, and so does the editor unbinding.
   const focusInEditor = useCallback((focus: () => void, refocus: () => void = focus) => {
     disposeRefocusRef.current?.();
     focus();
-    disposeRefocusRef.current = refocusAfterDiagrams(refocus);
+    disposeRefocusRef.current = refocusWhenSettled(refocus, editorRef.current?.view.dom);
   }, []);
+  // The fragment the block focus last followed, which the focus of a short id rewrites to the
+  // whole block's: an address this document wrote itself is no change for it to follow again.
+  const followedHashRef = useRef<string | undefined>(undefined);
+  // The block the address names, focused in `handle`: a `#b-` hash names a block of the
+  // document the reader is on, written whole or short, and an id written short names the one
+  // block of this document it starts. A hash naming no block of it focuses nothing.
+  const followBlockHash = useCallback(
+    (handle: EditorHandle) => {
+      const blockLink = window.location.hash;
+      if (!blockLink.startsWith("#b-") || blockLink === followedHashRef.current) {
+        return;
+      }
+      followedHashRef.current = blockLink;
+      const linkedBlockId = decodeBlockId(blockLink.slice(3));
+      if (linkedBlockId === undefined) {
+        return;
+      }
+      // The hash the address holds: the one the reader followed until a short id resolves, the
+      // whole block's from then on.
+      let linkHash = blockLink;
+      const focusLinked = () => {
+        // An id written short names the one block of this document it starts; a whole id is
+        // the block's own, with nothing to resolve and no read to make.
+        const whole = isIdPrefix(linkedBlockId)
+          ? wholeBlockId(handle.view.dom, linkedBlockId)
+          : linkedBlockId;
+        if (whole === undefined) {
+          return;
+        }
+        if (whole !== linkedBlockId) {
+          // The address carries the whole id from here on, so one copied off the page names
+          // the block outright; replacing it leaves no history entry behind, as the rewrite
+          // of an item address does.
+          linkHash = blockFragment(whole);
+          followedHashRef.current = linkHash;
+          window.history.replaceState(null, "", linkHash);
+        }
+        handle.focusBlock(whole);
+      };
+      // The re-run lands only while the hash still names this block.
+      focusInEditor(focusLinked, () => {
+        if (window.location.hash === linkHash) focusLinked();
+      });
+    },
+    [focusInEditor]
+  );
+  // A `#id` names a question of the text's own document, so a reader who follows one from the
+  // margin, or any other `#b-` link of the document already open, stays on this page: the
+  // editor is bound already and binds no second time. The focus follows the address instead -
+  // the dashboard's own navigation, which changes the hash with no event of its own
+  // (`routedHash`), and an assignment to `location.hash`, which fires one.
+  useEffect(() => {
+    if (!page) {
+      return;
+    }
+    const follow = () => {
+      const handle = editorRef.current;
+      if (handle !== undefined) {
+        followBlockHash(handle);
+      }
+    };
+    // A fragment the dashboard navigated to is a change with no event of its own; the address
+    // the browser holds is what `follow` then reads.
+    if (routedHash !== "") {
+      follow();
+    }
+    window.addEventListener("hashchange", follow);
+    return () => window.removeEventListener("hashchange", follow);
+  }, [followBlockHash, page, routedHash]);
   // Google Docs' chord for the selection bar's Comment button, on the button's own path. It is
-  // offered while this editor has focus, holds a selection and takes edits, which is when the bar
-  // offers Comment; anywhere else - a comment composer, an ask card's field, a read-only or
-  // historical document - the chord does nothing. `inEditable` because the editor is where it is
-  // pressed. A document is its own scope, since the issue page and a project's document page both
-  // render one. A pane pushes no scope and registers no binding: the scope stack belongs to the
-  // page the reader is on, and a pane's editor takes no edits, so it would never offer Comment.
+  // offered while this editor has focus, holds a selection and takes edits; anywhere else - a
+  // comment composer, an ask card's field, a read-only or historical document, which cannot hold
+  // focus - the chord does nothing. `inEditable` because the editor is where it is pressed. A
+  // document is its own scope, since the issue page and a project's document page both render
+  // one. A pane pushes no scope and registers no binding: the scope stack belongs to the page the
+  // reader is on, and a pane's editor takes no edits, so it would never offer Comment.
   useKeymapScope(page ? "document" : null);
   useKeymap(
     "document",
@@ -520,7 +657,6 @@ export function ProofDocument({
     setAdmission(undefined);
     schemaReadOnlyRef.current = false;
     setSchemaReadOnly(false);
-    setClosedAdmission(isClosedRef.current);
     // A transport or editor chunk that fails while online (after `DeploymentResilience` has
     // spent its reload) would otherwise leave the document "connecting" forever. Once failed,
     // the live provider's later status events must not repaint the dot over the alert.
@@ -540,6 +676,10 @@ export function ProofDocument({
       if (editorRef.current === editor) {
         editorRef.current = undefined;
       }
+      if (connectionRef.current === document) {
+        connectionRef.current = undefined;
+      }
+      setEditorHandle((current) => (current === editor ? undefined : current));
       disposeEditorBindings = undefined;
       editor = undefined;
       document = undefined;
@@ -548,22 +688,19 @@ export function ProofDocument({
     // as it is this effect's editor. It returns what undoes it. The typed-block node views are
     // installed by `createEditor`, with the editor library they are written against.
     const bindEditor = (handle: EditorHandle, connection: DocumentConnection) => {
+      // The quote the host highlights is drawn as soon as the editor is there, whether the host
+      // named its mark before this editor or while it was being built.
+      handle.setActiveMarks(activeMarkIdRef.current === undefined ? [] : [activeMarkIdRef.current]);
       handle.setBlockMarks(blockMarksRef.current);
       // False once this editor unbinds, so a focus a frame late never reaches a destroyed editor
       // or leaves a re-run behind for it.
       let bound = true;
-      const blockLink = window.location.hash;
       // The hash names a block of the page the reader is on, never one of a document beside its
-      // list, so a pane never follows it.
-      if (page && blockLink.startsWith("#b-")) {
-        const linkedBlockId = decodeURIComponent(blockLink.slice(3));
-        // The re-run lands only while the hash still names this block.
-        focusInEditor(
-          () => handle.focusBlock(linkedBlockId),
-          () => {
-            if (window.location.hash === blockLink) handle.focusBlock(linkedBlockId);
-          }
-        );
+      // list, so a pane never follows it. A newly bound editor follows the address whatever the
+      // editor before it followed: its blocks are drawn again, and the reader is at the link.
+      if (page) {
+        followedHashRef.current = undefined;
+        followBlockHash(handle);
       }
       // `CSS.highlights["dispatch-search"]` and the margin's open document are one apiece for the
       // whole page; a pane writes neither.
@@ -691,8 +828,7 @@ export function ProofDocument({
             onAdmission: (readOnly) => {
               schemaReadOnlyRef.current = readOnly;
               setSchemaReadOnly(readOnly);
-              setClosedAdmission(isClosedRef.current);
-              editor?.setReadOnly(!page || isClosedRef.current || readOnly);
+              editor?.setAccess(editorAccess(page, isClosedRef.current, readOnly));
             },
             onOutsideSchema: () => {
               if (!mounted) {
@@ -755,6 +891,26 @@ export function ProofDocument({
                         },
                         kind: composerKindFor(action.kind),
                       });
+                    case "quote-comment": {
+                      // A closed issue's document takes no mark: the comment names its text by
+                      // quote, and the server writes its mark where the reader selected. The bar
+                      // offers Comment only for a selection that holds text; should this reading
+                      // of it still find none, the reader is told why no composer opened.
+                      const doc = editor?.view.state.doc;
+                      const anchor =
+                        doc === undefined ? undefined : quoteAnchor(doc, action.from, action.to);
+                      if (anchor === undefined) {
+                        setQuoteRefusal(
+                          "This selection holds no text to quote. Select text to comment on it."
+                        );
+                        return;
+                      }
+                      setQuoteRefusal(undefined);
+                      return marginRef.current.composeForMark({
+                        anchor: { artifact: artifact.id, ...anchor },
+                        kind: "comment",
+                      });
+                    }
                     default:
                       throw new Error(
                         `Dispatch renders mark threads in the margin; popover action ${action.kind} cannot fire`
@@ -763,15 +919,22 @@ export function ProofDocument({
                 },
                 onMarkClick: (markId) => marginRef.current.focusItemForMark(markId),
                 onMarkHover: (markId) => marginRef.current.hoverItemForMark(markId),
-                // A pane takes no edits: a reader who clicks into the text from a list never
-                // changes the document they are reading.
-                readOnly: !page || isClosedRef.current || schemaReadOnlyRef.current,
+                // A pane takes no edits and no comments: a reader who clicks into the text from a
+                // list never changes the document they are reading.
+                access: editorAccess(page, isClosedRef.current, schemaReadOnlyRef.current),
                 user: {
                   color: colorForLogin(userRef.current.login),
                   name: userRef.current.login,
                 },
                 blockSchema,
                 watchPicture: (route, onPicture) => watchPicturePath(queryClient, route, onPicture),
+                // The block the pane's thread hangs under: the node view it names publishes the
+                // host slot this page portals the thread into. A document's own page anchors no
+                // thread and passes none.
+                anchoredBlock:
+                  anchoredBlockId === undefined
+                    ? undefined
+                    : { blockId: anchoredBlockId, onHostChange: setAnchoredHost },
                 // The open document's own reference, never a version's: a pointer names a block
                 // of the document by it, so the editor refuses one to a block of a type the
                 // pointer's attribute does not allow.
@@ -787,12 +950,14 @@ export function ProofDocument({
                   }
                   editor = handle;
                   editorRef.current = handle;
+                  setEditorHandle(handle);
                   disposeEditorBindings = bindEditor(handle, connection);
                 })
                 .catch(reportLoadFailure);
             },
           });
           document = connection;
+          connectionRef.current = connection;
         })
         .catch(reportLoadFailure);
     };
@@ -805,11 +970,13 @@ export function ProofDocument({
       teardown();
     };
   }, [
+    anchoredBlockId,
     artifact.id,
     blockSchema,
     createEditor,
     documentRef,
     focusInEditor,
+    followBlockHash,
     loadTransport,
     page,
     pendingWaiter,
@@ -827,9 +994,28 @@ export function ProofDocument({
     }
   }, [textReadAt]);
 
+  // The server admits every socket on a closed issue's document read-only, and decides a socket's
+  // admission once, as it connects. A reopened issue's document takes edits again, so the page has
+  // its connection admitted again: until the new admission (`onAdmission`) replaces the closed
+  // one's, the socket is still read-only, and so is the editor. The reopen closes the issue's
+  // rooms itself, which readmits every browser on them, but only on the process that served the
+  // PATCH (`SetIssueClosed`); this covers the two sockets that close never reaches: one whose
+  // room another process holds, and one whose room the close could not close, each of which
+  // keeps the read-only admission it was given.
   useEffect(() => {
-    editorRef.current?.setReadOnly(!page || isClosed || schemaReadOnlyRef.current);
-  }, [isClosed, page]);
+    setQuoteRefusal(undefined);
+    editorRef.current?.setAccess(editorAccess(page, isClosed, schemaReadOnlyRef.current));
+    if (wasClosedRef.current && !isClosed) {
+      readmit();
+    }
+    wasClosedRef.current = isClosed;
+  }, [isClosed, page, readmit]);
+
+  // The quote the host asked for, highlighted without changing the document; naming no mark
+  // clears whatever the last one highlighted.
+  useEffect(() => {
+    editorRef.current?.setActiveMarks(activeMarkId === undefined ? [] : [activeMarkId]);
+  }, [activeMarkId]);
 
   useEffect(() => {
     const editor = editorRef.current;
@@ -854,6 +1040,7 @@ export function ProofDocument({
         <LandedWithoutAnswer what={`The version “${nameVersion.unanswered.variables}”`} />
       )}
       {isClosed ? <p>This issue is closed. Its document is read-only.</p> : null}
+      {quoteRefusal === undefined ? null : <p role="status">{quoteRefusal}</p>}
       {repairError === undefined ? null : (
         <div className="space-y-3" role="alert">
           <p className={dangerText}>{repairError.message}</p>
@@ -895,8 +1082,15 @@ export function ProofDocument({
           ) : null}
         </div>
       )}
-      {blockSchemaQuery.isError ||
-      (schemaReadOnly && !isClosed && !closedAdmission && connection === "connected") ? (
+      {/* The server admits a socket read-only for a closed issue as it does for a schema version
+          it does not serve, so the admission alone cannot say whether a reload would help. The
+          close state the page holds now decides: while the issue is open, a reload opens a new
+          socket the server admits on the issue as it stands, so a reload makes the document
+          editable again. A closed issue shows its own line above instead, and a socket that is
+          not connected shows nothing: its reconnect's admission decides. A block schema that
+          could not load leaves the page no editor to bind at all, and only a reload fixes that
+          too. */}
+      {blockSchemaQuery.isError || (schemaReadOnly && !isClosed && connection === "connected") ? (
         <p>Reload to edit.</p>
       ) : null}
       {/* The Open-decisions navigator walks the page's own document; a pane leaves it to the
@@ -964,36 +1158,13 @@ export function ProofDocument({
         className="dispatch-doc relative"
         data-read-only={isClosed || schemaReadOnly}
         hidden={version !== undefined || repairError !== undefined || rebuildError !== undefined}
-        onClick={(event) => {
-          // A modifier click (open in new tab/window) or a drag-selection that happens to end
-          // on the link should reach the browser/editor's own handling, not steal the click.
-          const modified = event.ctrlKey || event.metaKey || event.shiftKey || event.altKey;
-          if (event.button !== 0 || modified) {
-            return;
-          }
-          const selection = window.getSelection();
-          if (selection !== null && !selection.isCollapsed) {
-            return;
-          }
-          const anchor = (event.target as HTMLElement).closest<HTMLAnchorElement>("a");
-          // The link's target is a node its author named, and opening it is a read, so it is read
-          // as a node's reference, whatever the length of its name.
-          const href = anchor === null ? null : dispatchHrefOf(anchor);
-          const route = href === null ? undefined : parseNodeReference(href);
-          if (route === undefined) {
-            return;
-          }
-          event.preventDefault();
-          // A block of a spec pinned to a version opens that version under the spec's slug, which
-          // only the issue names; every other reference's path is known at once.
-          if (needsSpecSlug(route)) {
-            void fetchReferencePath(queryClient, route).then((path) => navigate(path));
-            return;
-          }
-          navigate(buildReferencePath(route));
-        }}
+        onClick={followReference}
       >
         <div ref={root} />
+        {anchoredThread === undefined || anchoredHost === undefined
+          ? null
+          : createPortal(anchoredThread.children, anchoredHost.slot, String(anchoredHost.key))}
+        <DocumentReferences editor={editorHandle} source={textSource} />
         {askBlockHosts.map((host) => {
           const blockId = String(host.node.attrs.blockId);
           return (

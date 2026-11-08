@@ -17,15 +17,17 @@ import { ReplyButton } from "./ReplyButton";
 /** The current live capabilities behind a stored delivery target - a bare session, or a role
  *  re-resolved to whoever holds it now, since a role's holder can change between a recorded
  *  attempt and a retry rendered from it. `undefined` means unknown (no live registration),
- *  which every caller treats as permissive rather than as a reason to disable a control. Every
- *  retry control must resolve through this from the delivery's own stored target - never from
- *  the attempt's recorded session, and never from an enclosing agent/session context, both of
- *  which can go stale after a role hands off. */
+ *  which every caller treats as permissive rather than as a reason to disable a control. So does
+ *  an `agents` roster of `undefined`, which a caller passes while its read of the agent list is
+ *  not current (`useAgents`): a refilling or unreachable list says nothing about what a session
+ *  takes. Every retry control must resolve through this from the delivery's own stored target -
+ *  never from the attempt's recorded session, and never from an enclosing agent/session
+ *  context, both of which can go stale after a role hands off. */
 export function capabilitiesForTarget(
   target: string | null | undefined,
-  agents: readonly Agent[]
+  agents: readonly Agent[] | undefined
 ): readonly string[] | undefined {
-  if (target === null || target === undefined) return undefined;
+  if (target === null || target === undefined || agents === undefined) return undefined;
   if (target.startsWith("session:")) {
     return agents.find((agent) => `session:${agent.session_id}` === target)?.capabilities;
   }
@@ -262,7 +264,6 @@ interface TargetedMessageCardProps {
   readonly current?: boolean;
   readonly deliveries: readonly TargetedMessageAttempt[];
   readonly header: ReactNode;
-  readonly isClosed: boolean;
   readonly onReply?: () => void;
   readonly onRetry?: (delivery: MessageDeliveryMode) => void;
   /** Holds the Reply button while the composer it would address is busy with a send. */
@@ -286,7 +287,6 @@ export function TargetedMessageCard({
   current = false,
   deliveries,
   header,
-  isClosed,
   onReply,
   onRetry,
   register,
@@ -297,8 +297,7 @@ export function TargetedMessageCard({
   turnID,
 }: TargetedMessageCardProps): ReactNode {
   // Narrowed once, so the render below needs no second test of the same condition.
-  const retry =
-    answeredBy === undefined && !isClosed && !takenAsUserTurn(deliveries) ? onRetry : undefined;
+  const retry = answeredBy === undefined && !takenAsUserTurn(deliveries) ? onRetry : undefined;
   return (
     <li
       aria-current={current ? "true" : undefined}
@@ -309,7 +308,7 @@ export function TargetedMessageCard({
       <div className="flex gap-3">
         {header}
         <div className="min-w-0 flex-1">{body}</div>
-        {onReply === undefined || isClosed ? null : (
+        {onReply === undefined ? null : (
           <ReplyButton className="self-start" disabled={replyDisabled} onClick={onReply} />
         )}
       </div>

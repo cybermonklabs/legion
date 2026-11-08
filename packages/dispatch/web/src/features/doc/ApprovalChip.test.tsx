@@ -101,6 +101,32 @@ test("a stale approval's label and title carry both the approved and latest vers
   }
 });
 
+// The longest label the chip draws is wider than a phone, and the pill answers that by wrapping
+// rather than by hiding any of it: the button carries the whole label as its own text, and no
+// `title` stands in for words a reader would otherwise not see (a tooltip is no reading on a
+// phone, as the step reason line below the list says too).
+test("the longest awaiting label is the chip's whole text, with no title standing in for it", () => {
+  const view = renderChip(
+    artifact({
+      documents: [
+        { artifact_id: "artifact-1", name: "spec.md", requested_version: 1, version: 1 },
+        { artifact_id: "artifact-2", name: "verification.md", requested_version: 1, version: 1 },
+      ],
+      latest_version: 1,
+      state: "awaiting",
+    }),
+    "header"
+  );
+  try {
+    const label = "Awaiting approval of spec.md v1 and verification.md v1";
+    const chip = screen.getByRole("button", { name: label });
+    expect(chip.textContent).toBe(label);
+    expect(chip.title).toBe("");
+  } finally {
+    view.unmount();
+  }
+});
+
 test("the header hides Approve for a current approval but offers Request changes", () => {
   const view = renderChip(artifact({ latest_version: 3, state: "approved", version: 3 }), "header");
   try {
@@ -125,6 +151,8 @@ test("clicking Approve posts an approved review and refreshes the issue and inbo
     actor: { id: "alice", kind: "user" },
     artifact_id: "artifact-1",
     ask_id: null,
+    content_sha256: null,
+    content_sha256_source: null,
     created_at: "2026-09-11T00:00:00Z",
     id: "review-1",
     reason: null,
@@ -151,6 +179,8 @@ test("Request changes requires a reason before it can submit, then posts it", as
     actor: { id: "alice", kind: "user" },
     artifact_id: "artifact-1",
     ask_id: null,
+    content_sha256: null,
+    content_sha256_source: null,
     created_at: "2026-09-11T00:00:00Z",
     id: "review-1",
     reason: "Needs another pass",
@@ -179,6 +209,30 @@ test("Request changes requires a reason before it can submit, then posts it", as
       },
       keyedAttempt
     );
+  } finally {
+    createArtifactReview.mockRestore();
+    view.unmount();
+  }
+});
+
+// A reason Dispatch refuses for its length is refused the same way every time, and the server's
+// words name the block and the bound: the dialog shows them in place of wording of its own.
+test("a refused reason shows the server's message", async () => {
+  const refusal =
+    "reason block 1 (paragraph) is 1 characters over the 32000-character block limit (32001/32000)";
+  const createArtifactReview = spyOn(api, "createArtifactReview").mockRejectedValue(
+    new ApiError(400, { code: "CAP_EXCEEDED", error: refusal })
+  );
+  const view = renderChip(artifact({ latest_version: 3, state: "awaiting" }), "header");
+  try {
+    fireEvent.click(screen.getByRole("button", { name: "Request changes" }));
+    const dialog = screen.getByRole("dialog", { name: "Request changes" });
+    fireEvent.change(within(dialog).getByLabelText("Reason"), {
+      target: { value: "x".repeat(32_001) },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Request changes" }));
+
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toBe(refusal));
   } finally {
     createArtifactReview.mockRestore();
     view.unmount();
@@ -230,6 +284,8 @@ test("clicking the chip opens a popover listing every review", async () => {
       actor: { id: "alice", kind: "user" },
       artifact_id: "artifact-1",
       ask_id: null,
+      content_sha256: null,
+      content_sha256_source: null,
       created_at: "2026-09-10T00:00:00Z",
       id: "review-1",
       reason: null,
@@ -240,6 +296,8 @@ test("clicking the chip opens a popover listing every review", async () => {
       actor: { id: "bob", kind: "user" },
       artifact_id: "artifact-1",
       ask_id: null,
+      content_sha256: null,
+      content_sha256_source: null,
       created_at: "2026-09-11T00:00:00Z",
       id: "review-2",
       reason: "Please tighten the intro.",
@@ -273,6 +331,8 @@ test("a review the server records tells the host, once, that the document was re
     actor: { id: "alice", kind: "user" },
     artifact_id: "artifact-1",
     ask_id: null,
+    content_sha256: null,
+    content_sha256_source: null,
     created_at: "2026-09-11T00:00:00Z",
     id: "review-1",
     reason: null,

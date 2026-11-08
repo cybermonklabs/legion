@@ -10,6 +10,10 @@ import { AuthGate } from "../app";
 const issue: IssueDetails = {
   route_status: null,
   route_holder: null,
+  route_status_reason: null,
+  holder_state: null,
+  last_seen: null,
+  takeable_at: null,
   artifacts: [
     {
       created_at: "2026-09-10T00:00:00Z",
@@ -85,7 +89,8 @@ function renderShellAt(width: number, inbox: InboxRow[] = [], unreadThreads = 0)
   setViewport(width);
   api.whoAmI = async () => ({ event_head: "0", kind: "user", login: "alice" });
   api.listMyReplies = async (query) => ({
-    limit: query.limit,
+    as_of: "2026-10-12T00:00:00Z",
+    limit: query.limit ?? 0,
     offset: 0,
     rows: [],
     total: unreadThreads,
@@ -97,6 +102,7 @@ function renderShellAt(width: number, inbox: InboxRow[] = [], unreadThreads = 0)
       resolved_repo: null,
       route_status: null,
       route_holder: null,
+      route_status_reason: null,
       key: issue.key,
       open_asks: 0,
       progress: { tasks: null, children: null },
@@ -199,6 +205,7 @@ test("compact top bar shows only asks waiting on the viewer", async () => {
         route: null,
         route_status: null,
         route_holder: null,
+        route_status_reason: null,
       },
       priority: null,
       snoozed_until: null,
@@ -229,6 +236,7 @@ test("compact top bar shows only asks waiting on the viewer", async () => {
         route: null,
         route_status: null,
         route_holder: null,
+        route_status_reason: null,
       },
       priority: null,
       snoozed_until: null,
@@ -239,24 +247,26 @@ test("compact top bar shows only asks waiting on the viewer", async () => {
     },
   ]);
 
-  expect(await screen.findByText("Needs you 1")).not.toBeNull();
+  // One number now: the asks waiting on the reader and the threads they have not read.
+  expect(await screen.findByText("Inbox 1")).not.toBeNull();
 });
 
-test("the compact header links Replies N to the Replies page, beside the Agents replies badge", async () => {
+test("the compact header's one Inbox link counts the unread threads too and opens the Inbox", async () => {
   api.getMyAgentState = async () => ({ planner: { unread_replies: 1 } });
   renderShellAt(800, [], 2);
 
-  const replies = await screen.findByRole("link", { name: "Replies 2" });
-  expect(replies.getAttribute("href")).toBe("/replies");
+  const inbox = await screen.findByRole("link", { name: "Inbox 2" });
+  expect(inbox.getAttribute("href")).toBe("/");
   const agents = screen.getByRole("link", { name: "New reply 1" });
-  expect(replies.previousElementSibling).toBe(agents);
+  expect(inbox.nextElementSibling).toBe(agents);
 });
 
-test("the compact header shows no Replies link while nothing is unread", async () => {
+test("the compact header's Inbox link is plain while nothing waits and nothing is unread", async () => {
   renderShellAt(800, [], 0);
 
   await waitFor(() =>
     expect(screen.queryByRole("button", { name: "Open navigation" })).not.toBeNull()
   );
+  expect(screen.getByRole("link", { name: "Inbox" }).getAttribute("href")).toBe("/");
   expect(screen.queryByRole("link", { name: /^Replies/ })).toBeNull();
 });

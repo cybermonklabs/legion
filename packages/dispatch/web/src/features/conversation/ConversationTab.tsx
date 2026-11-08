@@ -53,10 +53,14 @@ import { CopyRefButton } from "../refs/CopyRefButton";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { buildIssuePath, documentItemPath, sessionOfAddress } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
-import { useMarkThreadRead } from "../replies/useMarkThreadRead";
+import { textSourceOf } from "../refs/text-references";
+import { Unfurl } from "../refs/Unfurl";
 import { PHONE_VIEWPORT_QUERY, useDialog, useMediaQuery } from "../shell/useDialog";
 import { type DwellRef, useDwell } from "../shell/useDwell";
 import { ViewportAnchor } from "../shell/ViewportAnchor";
+import { threadLayout } from "../threads/thread-layout";
+import { useThreadOrder } from "../threads/thread-order";
+import { useMarkThreadRead } from "../threads/useMarkThreadRead";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { useSendMarkOnce } from "../writes/useSendMarkOnce";
 import { Avatar } from "./Avatar";
@@ -174,11 +178,10 @@ function replyTargetFor(
 
 /** A reply in a thread as the Conversation renders it: the quoted parent links to that turn,
  *  a delivered reply (a human's follow-up on a targeted thread) shows its attempt and keeps the
- *  retry row while unanswered, and every reply can be replied to while the issue is open. */
+ *  retry row while unanswered, and every reply can be replied to, on a closed issue too. */
 function ConversationReply({
   agents,
   currentReplyId,
-  isClosed,
   issueKey,
   markRef,
   onReply,
@@ -186,11 +189,10 @@ function ConversationReply({
   replyDisabled,
   root,
 }: {
-  agents: readonly Agent[];
+  agents: readonly Agent[] | undefined;
   currentReplyId: string | undefined;
-  isClosed: boolean;
   issueKey: string;
-  /** The Replies page's read mark, on the thread's newest reply. */
+  /** The shared thread read mark (`useMarkThreadRead`), on the thread's newest reply. */
   markRef?: DwellRef;
   onReply: (target: ReplyTarget) => void;
   reply: Message;
@@ -217,7 +219,12 @@ function ConversationReply({
       actions={<CopyRefButton route={{ id: reply.id, key: issueKey, kind: "message" }} />}
       at={reply.created_at}
       author={reply.author}
-      body={<MarkdownBody markdown={reply.body} />}
+      body={
+        <>
+          <MarkdownBody markdown={reply.body} source={textSourceOf("message", reply.id)} />
+          <Unfurl body={reply.body} source={textSourceOf("message", reply.id)} />
+        </>
+      }
       current={reply.id === currentReplyId}
       markRef={markRef}
       delivery={
@@ -226,19 +233,17 @@ function ConversationReply({
           : {
               answeredBy: answer?.author,
               attempts: deliveryAttempts(reply.deliveries, targetName),
-              retry: isClosed
-                ? undefined
-                : {
-                    canAside: capabilities?.includes("aside") !== false,
-                    canBtw: capabilities?.includes("btw") !== false,
-                    canSteer: capabilities?.includes("steer") !== false,
-                    onRetry: retry.mutate,
-                    retrying: retry.isPending,
-                  },
+              retry: {
+                canAside: capabilities?.includes("aside") !== false,
+                canBtw: capabilities?.includes("btw") !== false,
+                canSteer: capabilities?.includes("steer") !== false,
+                onRetry: retry.mutate,
+                retrying: retry.isPending,
+              },
               targetName,
             }
       }
-      onReply={isClosed ? undefined : () => onReply(replyTargetFor(reply, root, issueKey))}
+      onReply={() => onReply(replyTargetFor(reply, root, issueKey))}
       quote={{
         author: parent?.author,
         block: reply.reply_block,
@@ -257,21 +262,19 @@ function ConversationReply({
 function Thread({
   agents,
   currentReplyId,
-  isClosed,
   issueKey,
   onReply,
   replyDisabled,
   root,
 }: {
-  agents: readonly Agent[];
+  agents: readonly Agent[] | undefined;
   currentReplyId: string | undefined;
-  isClosed: boolean;
   issueKey: string;
   onReply: (target: ReplyTarget) => void;
   replyDisabled: boolean;
   root: MessageConversation;
 }): ReactNode {
-  // The Replies page's read mark: the thread is read once its newest reply has been on screen.
+  // The shared thread read mark: the thread is read once its newest reply has been on screen.
   // It watches that reply's own element, so a thread taller than the screen still clears.
   const newest = root.replies.at(-1);
   const markRef = useMarkThreadRead({
@@ -279,15 +282,18 @@ function Thread({
     newestShownAt: newest?.created_at,
     owner: { issue: issueKey },
     threadId: root.root.id,
-  });
+  }).ref;
+  // A thread in the Conversation folds nothing: the reader's order alone places its replies
+  // (`features/threads/thread-layout.ts`).
+  const [threadOrder] = useThreadOrder();
+  const { shown } = threadLayout({ collapse: false, order: threadOrder, replies: root.replies });
   if (root.replies.length === 0) return null;
   return (
     <ThreadReplies>
-      {root.replies.map((reply) => (
+      {shown.map((reply) => (
         <ConversationReply
           agents={agents}
           currentReplyId={currentReplyId}
-          isClosed={isClosed}
           issueKey={issueKey}
           key={reply.id}
           markRef={reply === newest ? markRef : undefined}
@@ -309,7 +315,7 @@ function MessageTurn({
   agents,
   current,
   currentReplyId,
-  isClosed,
+
   issueKey,
   item,
   onPin,
@@ -318,10 +324,10 @@ function MessageTurn({
   register,
   replyDisabled,
 }: {
-  agents: readonly Agent[];
+  agents: readonly Agent[] | undefined;
   current: boolean;
   currentReplyId: string | undefined;
-  isClosed: boolean;
+
   issueKey: string;
   item: Extract<Conversation, { kind: "message" }>;
   onPin: () => void;
@@ -346,23 +352,21 @@ function MessageTurn({
             <Timestamp at={item.root.created_at} />
             {item.unread ? <UnreadMark /> : null}
           </p>
-          <MarkdownBody markdown={item.root.body} />
+          <MarkdownBody markdown={item.root.body} source={textSourceOf("message", item.root.id)} />
+          <Unfurl body={item.root.body} source={textSourceOf("message", item.root.id)} />
         </div>
         <TurnActions>
           <CopyRefButton route={{ id: item.root.id, key: issueKey, kind: "message" }} />
-          {isClosed ? null : (
-            <ReplyButton
-              disabled={replyDisabled}
-              onClick={() => onReply(replyTargetFor(item.root, item, issueKey))}
-            />
-          )}
+          <ReplyButton
+            disabled={replyDisabled}
+            onClick={() => onReply(replyTargetFor(item.root, item, issueKey))}
+          />
           <TurnPin onPin={onPin} pinned={pinned} />
         </TurnActions>
       </div>
       <Thread
         agents={agents}
         currentReplyId={currentReplyId}
-        isClosed={isClosed}
         issueKey={issueKey}
         onReply={onReply}
         replyDisabled={replyDisabled}
@@ -518,13 +522,11 @@ function commentReplyTarget(
 function CommentDeliveryList({
   agents,
   deliveries,
-  disabled,
   onRetry,
   retrying,
 }: {
-  agents: readonly Agent[];
+  agents: readonly Agent[] | undefined;
   deliveries: readonly CommentDeliveryAttempt[];
-  disabled: boolean;
   onRetry: (delivery: CommentDeliveryAttempt) => void;
   retrying: boolean;
 }): ReactNode {
@@ -545,11 +547,11 @@ function CommentDeliveryList({
         };
         // The same rule the targeted-message card applies: a mention's Retry re-sends its own
         // mode under its own key, so it is offered only while `isSafeRetry` holds, and the
-        // guidance beside it names that Retry or a new comment, so a closed issue, which takes
-        // neither, says nothing about one.
+        // guidance beside it names that Retry or a new comment, both of which a closed issue
+        // takes too.
         const safeRetry = isSafeRetry(outcome);
         const canRetry = capabilities === undefined || capabilities.includes(delivery.delivery);
-        const guidance = disabled ? undefined : failureGuidance(outcome, "mention");
+        const guidance = failureGuidance(outcome, "mention");
         const recipient = targetPart(delivery.target);
         return (
           <li
@@ -564,7 +566,7 @@ function CommentDeliveryList({
                 : ` · ${guidance === undefined ? delivery.error : withGuidance(delivery.error, guidance)}`}
               {delivery.error === null && guidance !== undefined ? ` · ${guidance}` : ""}
             </span>
-            {disabled || !canRetry || !safeRetry ? null : (
+            {!canRetry || !safeRetry ? null : (
               <button
                 className={`min-h-8 font-medium ${linkText}`}
                 disabled={retrying}
@@ -574,7 +576,7 @@ function CommentDeliveryList({
                 Retry
               </button>
             )}
-            {disabled || canRetry ? null : (
+            {canRetry ? null : (
               <span className={textMutedOnSurface}>
                 <AgentParts
                   parts={[recipient, ` no longer supports ${MODE_LABELS[delivery.delivery]}.`]}
@@ -598,6 +600,7 @@ function CommentTurn({
   expanded,
   forceExpanded = false,
   hideReplyComposer = false,
+  hideUnreadMark = false,
   isClosed,
   isPhone = false,
   issueKey,
@@ -616,7 +619,9 @@ function CommentTurn({
   viewerLogin,
 }: {
   actionFailure: CommentActionFailure | undefined;
-  agents: readonly Agent[];
+  /** The roster delivery capabilities are judged against; `undefined` while the agent list's
+   *  read is not current, when every capability is unknown (`capabilitiesForTarget`). */
+  agents: readonly Agent[] | undefined;
   issueArtifacts: ConversationTabProps["issueArtifacts"];
   composerClassName?: string;
   current: boolean;
@@ -627,6 +632,13 @@ function CommentTurn({
   expanded: boolean;
   forceExpanded?: boolean;
   hideReplyComposer?: boolean;
+  /** Drops the card's `New` mark. The phone thread dialog sets it: the reader has the
+   *  conversation open and is reading it, so the badge says nothing above the card they are in,
+   *  and a card that never draws one cannot move the thread's rows when it goes. The mark is
+   *  written from that same card a second after it is on screen, and the `lastReadSeq` it moves
+   *  is in the `unreadBoundary` read's key, so the read re-enters `isPending`, `unreadFrom` goes
+   *  undefined and every `New` unmounts - under whatever the reader is pressing in the thread. */
+  hideUnreadMark?: boolean;
   isClosed: boolean;
   isPhone?: boolean;
   issueKey: string;
@@ -720,7 +732,7 @@ function CommentTurn({
       data-turn={item.id}
       ref={register}
     >
-      {item.unread ? (
+      {item.unread && !hideUnreadMark ? (
         <div className="mb-1 flex justify-end">
           <UnreadMark />
         </div>
@@ -750,7 +762,6 @@ function CommentTurn({
           <CommentDeliveryList
             agents={agents}
             deliveries={deliveriesFor(comment.id)}
-            disabled={isClosed}
             onRetry={(delivery) => retryGuard.guard(() => retry.mutate(delivery))}
             retrying={retry.isPending}
           />
@@ -779,16 +790,14 @@ function CommentTurn({
           </button>
         )}
         <CopyRefButton route={{ id: item.root.id, key: issueKey, kind: "comment" }} />
-        {isClosed ? null : (
-          <ReplyButton
-            disabled={replyDisabled}
-            onClick={() => {
-              if (onReply(commentReplyTarget(item.root, agentText, issueKey)) && !isPhone) {
-                setExpanded(true);
-              }
-            }}
-          />
-        )}
+        <ReplyButton
+          disabled={replyDisabled}
+          onClick={() => {
+            if (onReply(commentReplyTarget(item.root, agentText, issueKey)) && !isPhone) {
+              setExpanded(true);
+            }
+          }}
+        />
         <TurnPin onPin={onPin} pinned={pinned} />
       </div>
     </li>
@@ -799,17 +808,15 @@ function TargetedMessageTurn({
   agents,
   current,
   currentReplyId,
-  isClosed,
   issueKey,
   item,
   onReply,
   register,
   replyDisabled,
 }: {
-  agents: readonly Agent[];
+  agents: readonly Agent[] | undefined;
   current: boolean;
   currentReplyId: string | undefined;
-  isClosed: boolean;
   issueKey: string;
   item: Extract<Conversation, { kind: "targeted-message" }>;
   onReply: (target: ReplyTarget) => void;
@@ -839,7 +846,8 @@ function TargetedMessageTurn({
             <CopyRefButton route={{ id: item.root.id, key: issueKey, kind: "message" }} />
             {item.unread ? <UnreadMark /> : null}
           </p>
-          <MarkdownBody markdown={item.root.body} />
+          <MarkdownBody markdown={item.root.body} source={textSourceOf("message", item.root.id)} />
+          <Unfurl body={item.root.body} source={textSourceOf("message", item.root.id)} />
         </>
       }
       canAside={capabilities?.includes("aside") !== false}
@@ -848,7 +856,6 @@ function TargetedMessageTurn({
       current={current}
       deliveries={deliveryAttempts(item.root.deliveries, targetName)}
       header={<Avatar actor={asker} />}
-      isClosed={isClosed}
       onReply={() => onReply(replyTargetFor(item.root, item, issueKey))}
       onRetry={retry.mutate}
       register={register}
@@ -859,7 +866,6 @@ function TargetedMessageTurn({
         <Thread
           agents={agents}
           currentReplyId={currentReplyId}
-          isClosed={isClosed}
           issueKey={issueKey}
           onReply={onReply}
           replyDisabled={replyDisabled}
@@ -1057,7 +1063,10 @@ export function ConversationTab({
     onFirstPlacement,
     ownSendCount,
   });
-  const { agents } = useAgents(visible);
+  const { agents: listedAgents, current: agentsCurrent } = useAgents(visible);
+  // Delivery capabilities come only from a current list: one that is refilling or unreachable
+  // leaves every mode unknown, never "not supported".
+  const agents = agentsCurrent ? listedAgents : undefined;
   const scrolledToFocus = useRef<string | undefined>(undefined);
 
   useEffect(() => {
@@ -1115,14 +1124,37 @@ export function ConversationTab({
   // it, kept across a reload and never shown; one Dispatch refuses is sent again once the stored
   // mark changes. It names its issue, so an answer that lands after the reader moved on is put
   // where it belongs.
+  // A thread opened full-screen on a phone covers the list and renders it `inert` and
+  // `aria-hidden` (below), so the card behind it is nothing the reader can see: the list's own
+  // copy of the newest card gives up the ref while a thread is open. A thread showing the
+  // newest conversation is that conversation read, though, so the dialog's `CommentTurn`
+  // carries the ref there (below) and the mark is written from the card the reader has on
+  // screen. A comment link lands straight in that thread on a phone, and `usePhoneThread` adds
+  // no history entry, so without that the browser's back and the drawer would leave the issue
+  // unread for a reader who had just read its newest conversation in the thread.
+  // A thread over any older conversation holds the mark until its own Back gives the list back:
+  // the newest conversation is behind the thread, unread, and marking the issue read would also
+  // move `lastReadSeq` under the reader - that value is in the `unreadBoundary` key above, so
+  // the read re-entering `isPending` unmounts every `New` the list still draws and reflows it by
+  // a row, under the list the reader is given back. The exits that write no mark for
+  // such a thread are the ones that never give the list back: the browser's back and the
+  // drawer. A dwell already counting when an older thread opens is cancelled rather than
+  // completed, since `useDwell` drops its timers as `enabled` goes false.
   const newestId = conversations[0]?.id;
+  // The thread the reader has open is the newest conversation itself, the one card the mark is
+  // written from, so the dwell runs in the thread rather than waiting for Back.
+  const phoneThreadIsNewest = phoneThread !== undefined && phoneThread.id === newestId;
   const [readThrough, setReadThrough] = useState<{
     readonly issueKey: string;
     readonly seq: number;
   }>();
   const read = readThrough?.issueKey === issueKey ? readThrough : undefined;
   const registerNewest = useDwell({
-    enabled: visible && newestId !== undefined && headSeq > 0,
+    enabled:
+      visible &&
+      (phoneThread === undefined || phoneThreadIsNewest) &&
+      newestId !== undefined &&
+      headSeq > 0,
     onDwell: () => setReadThrough({ issueKey, seq: headSeq }),
     resetKey: `${issueKey} ${newestId ?? ""} ${headSeq}`,
     shouldDwell: () => headSeq > Math.max(lastReadSeq, read?.seq ?? 0),
@@ -1166,10 +1198,10 @@ export function ConversationTab({
       label="Conversation"
     >
       {/* Mounted, and hidden, while a phone thread covers it: its draft, a send it has out, that
-          send's refusal and its reply are all still there on Back. Mounted on a closed issue too,
-          where it shows only a send of its own still out or its refusal (`closed`), so an issue
-          closed and reopened under a send leaves that send's composer where it was. `contents`,
-          so the composer's own box stays the one that sticks. */}
+          send's refusal and its reply are all still there on Back. A closed issue takes comments
+          and message replies, so it shows and sends there as on an open one (`closed` hides only
+          the kinds a closed issue refuses). `contents`, so the composer's own box stays the one
+          that sticks. */}
       <div className="contents" hidden={phoneThread !== undefined}>
         <MentionComposer
           closed={isClosed}
@@ -1209,26 +1241,33 @@ export function ConversationTab({
           ))}
         </fieldset>
       </div>
-      {/* The pill takes an edge the docked composer leaves free, so it never covers the
-          composer's controls. Below `sm` the composer sits at the foot of the screen and grows
-          upward (a refusal's Retry or Discard draft with it), so the pill takes the top: it sits
-          where the cards begin, and sticks at the top of the screen once they scroll under it, so
-          it never rises over what is above them - the issue's header, its tabs and the filter.
-          Its box has no height, and `-mb-3` takes back the section's gap, so it moves nothing. From
-          `sm` the composer sticks to the top and the pill floats at the foot. A thread opened
-          full-screen covers the Conversation the pill acts on, and its own composer sits at the
-          foot, so the pill waits for Back. */}
+      {/* The pill floats at an edge the docked composer leaves free, so it covers none of the
+          composer's controls; below `sm` that edge is the right edge of the content column
+          itself rather than a margin outside it, which is why a card under the pill is covered
+          at all. Below `sm` the composer sits at the foot of the screen and grows upward (a
+          refusal's Retry or Discard draft with it), and the shell's status corner - the
+          pending-writes indicator and the connection pill (`app.tsx`) - floats above that
+          composer in the same corner, wider than the pill and over it. So the pill rides above
+          whatever the corner publishes in `--foot-status-inset`
+          (`web/src/hooks/useFootInset.ts`), falling back to the composer's own
+          `--foot-composer-inset` while the corner shows nothing and that property is unset, and
+          never below the phone's bottom bar; from `sm` the composer sticks to the top and the
+          pill keeps the foot it has there. The list scrolls behind the pill as it scrolls
+          behind any floating control, so a card crossing that foot band passes under it: while
+          the card is there the pill covers its Accept and Reject, as it covers its Reply and
+          Pin. That cover lasts no longer than the passage - scrolling the card on clears it,
+          and so does the pill's own tap, which jumps to the latest and takes the pill off the
+          screen. A thread opened full-screen covers the Conversation the pill acts on, and its
+          own composer sits at the foot, so the pill waits for Back. */}
       {visible && phoneThread === undefined && !follow.atTop && shown.length > 0 ? (
-        <div className="sticky top-4 z-20 -mb-3 flex h-0 items-start justify-center sm:contents">
-          <button
-            className={`min-h-11 rounded-full px-4 text-sm font-semibold whitespace-nowrap shadow-lg sm:fixed sm:right-6 sm:bottom-36 sm:z-20 xl:bottom-24 ${primaryButtonBg} ${primaryButtonHoverBg}`}
-            data-testid="jump-to-latest"
-            onClick={follow.jumpToLatest}
-            type="button"
-          >
-            Jump to latest{unreadCount === 0 ? "" : ` · ${unreadCount} new`}
-          </button>
-        </div>
+        <button
+          className={`fixed right-6 bottom-[max(5rem,calc(var(--foot-status-inset,var(--foot-composer-inset,0px))_+_1rem))] z-20 min-h-11 rounded-full px-4 text-sm font-semibold whitespace-nowrap shadow-lg sm:bottom-36 xl:bottom-24 ${primaryButtonBg} ${primaryButtonHoverBg}`}
+          data-testid="jump-to-latest"
+          onClick={follow.jumpToLatest}
+          type="button"
+        >
+          Jump to latest{unreadCount === 0 ? "" : ` · ${unreadCount} new`}
+        </button>
       ) : null}
       <ol
         aria-hidden={phoneThread === undefined ? undefined : true}
@@ -1240,7 +1279,10 @@ export function ConversationTab({
           const current = item.id === focus?.id;
           const currentReplyId = current ? focus?.replyId : undefined;
           const pinned = isPinnedConversation(issueState.dismissed, item.id);
-          const register = item.id === newestId ? registerNewest : undefined;
+          // A thread covering the list hides its copy of the newest card, so that copy gives
+          // up the mark's ref while one is open; the thread's own card carries it below.
+          const register =
+            item.id === newestId && phoneThread === undefined ? registerNewest : undefined;
 
           if (item.kind === "targeted-message") {
             return (
@@ -1248,7 +1290,6 @@ export function ConversationTab({
                 agents={agents}
                 current={current}
                 currentReplyId={currentReplyId}
-                isClosed={isClosed}
                 issueKey={issueKey}
                 item={item}
                 key={item.id}
@@ -1265,7 +1306,6 @@ export function ConversationTab({
                 issueKey={issueKey}
                 current={current}
                 currentReplyId={currentReplyId}
-                isClosed={isClosed}
                 item={item}
                 key={item.id}
                 onPin={() => pinConversation(item.id)}
@@ -1396,6 +1436,7 @@ export function ConversationTab({
                 expanded={openThreads.has(phoneThread.root.id)}
                 forceExpanded
                 hideReplyComposer={phoneReplyTargetsThread}
+                hideUnreadMark
                 isClosed={isClosed}
                 issueKey={issueKey}
                 item={phoneThread}
@@ -1408,6 +1449,7 @@ export function ConversationTab({
                 onPin={() => pinConversation(phoneThread.id)}
                 onReply={phone.beginReply}
                 pinned={isPinnedConversation(issueState.dismissed, phoneThread.id)}
+                register={phoneThreadIsNewest ? registerNewest : undefined}
                 replyDisabled={composerSending}
                 sendKey={sendKey}
                 setExpanded={(open) => setThreadOpen(phoneThread.root.id, open)}

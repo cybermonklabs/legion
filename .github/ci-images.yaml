@@ -23,8 +23,9 @@
 #
 # To add an image: add its row and push. ci.yaml's ci-images job copies the rows the package
 # does not hold yet, and then reads the package, which is the half of the gate that answers for
-# it. That job is the one copy path, and it runs on a pull request, on a merge group and on a
-# push to main. The gate refuses a consumer that names anything but a digest this file holds.
+# it. That job is the one copy path, and it runs on every event ci.yaml runs on: a pull request,
+# a merge group and a dispatch. The gate refuses a consumer that names anything but a digest this
+# file holds.
 #
 # To move an image to a new version, push two commits. The first adds the new version's row and
 # leaves every consumer on the row it has, so the ci-images job of that run copies the new
@@ -86,9 +87,9 @@ images:
   # The Go build stage of the Envoy listener image, the held-port wrapper and the worker image.
   # Its upstream tag carries worker.Dockerfile's ARG GO_VERSION, and check-ci-images.sh refuses
   # a file where no row carries that version.
-  - upstream: docker.io/library/golang:1.27.1-alpine
-    tag: golang-1.27.1-alpine-8a5910f3
-    digest: sha256:8a5910f31396cd4d89662f56c68b3ae31d374308270a1c3bd96672ee5ed43414
+  - upstream: docker.io/library/golang:1.27.3-alpine
+    tag: golang-1.27.3-alpine-d200d2dd
+    digest: sha256:d200d2dd76b03a99b52651fd1325aff7dcd35422c35c01bac56571b0507f3deb
 
   # The Envoy listener image's runtime stage and the worker image's tools stage.
   - upstream: docker.io/library/debian:bookworm-slim

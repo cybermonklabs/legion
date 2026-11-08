@@ -1,6 +1,6 @@
 import { expect, type Page, test } from "@playwright/test";
 
-import { createComment, createIssue, createProject, patchIssue } from "./api";
+import { createComment, createIssue, createProject, listComments, patchIssue } from "./api";
 import {
   barAction,
   composer,
@@ -53,9 +53,8 @@ function refusal(page: Page, issueKey: string, status: number) {
 // the send's success would close it as saved, and a refusal's Retry would post to the newer mark.
 // It is refused instead, the editor takes back the mark it wrote, and the margin brings the open
 // composer back on screen saying why.
-// SLOW(>=2s): one live document's connect plus two selection-bar cycles on a desktop and a phone
-// layout; no timer is waited on.
-test("a newer bar Comment while a margin send is out leaves the composer on the send's own mark @phone", async ({
+// SLOW(>=2s): one live document's connect plus two selection-bar cycles; no timer is waited on.
+test("a newer bar Comment while a margin send is out leaves the composer on the send's own mark", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -68,7 +67,7 @@ test("a newer bar Comment while a margin send is out leaves the composer on the 
     const refuse = await refusePosts(page, `**/api/v1/issues/${issue.key}/comments`);
     await sendFromBar(page, "quick", "About quick");
 
-    await setSheet(page, test.info().project.name, false);
+    await setSheet(page, "chromium", false);
     await selectEditorText(page, "fox");
     await barAction(page, "Comment");
     const marks = documentEditor(page).locator('span[data-proof="comment"][data-id]');
@@ -96,7 +95,7 @@ test("a newer bar Comment while a margin send is out leaves the composer on the 
 // of its own, which the earlier send's answer neither closes nor settles.
 // SLOW(>=2s): two live documents - the send is left on the first and the composer opened on the
 // second, each waiting for its own collaboration connect.
-test("a bar Comment on another document while a margin send is out opens its own composer @phone", async ({
+test("a bar Comment on another document while a margin send is out opens its own composer", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -115,7 +114,7 @@ test("a bar Comment on another document while a margin send is out opens its own
       page.getByTestId("issue-header").getByRole("heading", { level: 1, name: "Opened next" })
     ).toBeVisible();
     await expect(connectedDot(page)).toHaveText("connected");
-    await setSheet(page, test.info().project.name, false);
+    await setSheet(page, "chromium", false);
     await selectEditorText(page, "brown");
     await barAction(page, "Comment");
     const form = composer(page);
@@ -141,7 +140,7 @@ test("a bar Comment on another document while a margin send is out opens its own
 // Leaving a document while a margin send is out takes the composer off screen and keeps it, with
 // the send: a refusal while the reader is away hands the draft back there, and coming back to the
 // document finds the draft, the refusal and a Retry that still sends to the send's own mark.
-test("leaving a document while a margin send is out keeps its draft and refusal for the return @phone", async ({
+test("leaving a document while a margin send is out keeps its draft and refusal for the return", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -150,7 +149,6 @@ test("leaving a document while a margin send is out keeps its draft and refusal 
 
   try {
     const page = await alice.newPage();
-    const project = test.info().project.name;
     await openSpec(page, issue.key, spec);
     const comments = `**/api/v1/issues/${issue.key}/comments`;
     const refuse = await refusePosts(page, comments);
@@ -171,7 +169,7 @@ test("leaving a document while a margin send is out keeps its draft and refusal 
         .getByRole("heading", { level: 1, name: "Left with a send out" })
     ).toBeVisible();
     await expect(connectedDot(page)).toHaveText("connected");
-    await setSheet(page, project, true);
+    await setSheet(page, "chromium", true);
     const form = composer(page);
     await expect(form.getByText(WRITE_REFUSED_TEXT)).toBeVisible();
     await expect(form.getByLabel("Comment")).toHaveValue("Kept for the return");
@@ -323,12 +321,9 @@ test("on a phone, a margin thread opened while the margin's send is out keeps th
   }
 });
 
-// The issue closing under a margin send leaves the composer and the mark the send names. It stays
-// until the send answers, and shows its refusal with the draft, and a way to drop it, as a closed
-// issue's composers do.
-test("a margin send out when its issue closes keeps the draft and shows the refusal", async ({
-  browser,
-}) => {
+// The issue closing under a margin send leaves the composer and the mark the send names, and a
+// closed issue takes a comment anchored to its document, so the send posts.
+test("a margin comment out when its issue closes posts", async ({ browser }) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", spec, title: "Margin closed mid-send" });
   const alice = await asUser(browser, "alice");
@@ -344,14 +339,54 @@ test("a margin send out when its issue closes keeps the draft and shows the refu
     const form = composer(page);
     await expect(form.getByLabel("Comment")).toHaveValue("Before the close");
 
+    const posted = answeredPost(page, `/api/v1/issues/${issue.key}/comments`, 201);
+    send.release();
+    await posted;
+    await expect(composer(page)).toHaveCount(0);
+    const comments = await listComments(issue.key);
+    expect(comments.map((comment) => [comment.body, comment.anchor?.quote])).toEqual([
+      ["Before the close", "brown"],
+    ]);
+  } finally {
+    await alice.close();
+  }
+});
+
+// A suggestion is a proposed edit, which a closed issue refuses: one out when its issue closes
+// keeps its draft and shows the refusal, with no Retry, which would be refused again, and a way
+// to drop it, as a closed issue's composers do for a kind it refuses.
+test("a margin suggestion out when its issue closes keeps the draft and shows the refusal", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", spec, title: "Suggestion closed mid-send" });
+  const alice = await asUser(browser, "alice");
+
+  try {
+    const page = await alice.newPage();
+    await openSpec(page, issue.key, spec);
+    const send = await holdPosts(page, `**/api/v1/issues/${issue.key}/comments`);
+    await selectEditorText(page, "brown");
+    await barAction(page, "Suggest");
+    const form = composer(page);
+    await expect(form.locator("blockquote")).toHaveText("brown");
+    await form.getByLabel("Replacement").fill("red");
+    await form.getByRole("button", { exact: true, name: "Send" }).click();
+    await expect(form.getByLabel("Replacement")).toBeDisabled();
+
+    await patchIssue(issue.key, { status: "done" }, { login: "bob" });
+    await expect(page.getByRole("button", { name: "Reopen" })).toBeVisible();
+    await expect(form.getByLabel("Replacement")).toHaveValue("red");
+
     const refused = refusal(page, issue.key, 409);
     send.release();
     await refused;
     await expect(form.getByText("Couldn't send — issue is closed")).toBeVisible();
-    await expect(form.getByLabel("Comment")).toHaveValue("Before the close");
+    await expect(form.getByLabel("Replacement")).toHaveValue("red");
     await expect(form.getByRole("button", { name: "Retry" })).toHaveCount(0);
     await form.getByRole("button", { name: "Discard draft" }).click();
     await expect(composer(page)).toHaveCount(0);
+    expect(await listComments(issue.key)).toEqual([]);
   } finally {
     await alice.close();
   }

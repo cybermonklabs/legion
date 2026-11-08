@@ -1,6 +1,7 @@
 package redeliver
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/kvwatch"
@@ -126,43 +128,31 @@ func sortOpenRecords(open []openRecord) {
 // holds, and pays three days of records for it. The index's back-fill reads it too
 // (backfillIndex).
 //
-// nats.go ends a watch three ways and only one of them is a complete read -- the watch that
-// delivered its nil end marker -- so this drains it through the one place that tells them apart
-// (kvwatch.DrainExistingKeys). A scan an idle timer ended is an error here and not a bucket with
-// nothing more in it, which would under-report the open deliveries and say nothing.
+// The jetstream watcher ends a scan two ways and only one of them is a complete read -- the watch
+// that delivered its nil end marker -- so this reads it through the one place that tells them
+// apart (kvwatch.ScanExistingKeys). A scan its idle timer ended is an error here and not a bucket
+// with nothing more in it, which would under-report the open deliveries and say nothing.
 func (s *Sweeper) scanOpenRecords(listed map[string][]githubapp.Delivery) ([]openRecord, error) {
-	watcher, err := s.state.Watch(recordPrefix+"*", nats.IgnoreDeletes())
-	if err != nil {
-		return nil, fmt.Errorf("list the redelivery records: %w", err)
-	}
 	var open []openRecord
-	var failed error
-	if _, err := kvwatch.DrainExistingKeys(watcher, "webhook redelivery records", s.Logger, func(entry nats.KeyValueEntry) {
-		if failed != nil {
-			return
-		}
-		guid := strings.TrimPrefix(entry.Key(), recordPrefix)
+	if _, err := kvwatch.ScanExistingKeys(context.Background(), s.state, recordPrefix+"*", "webhook redelivery records", kvwatch.ScanIdleTimeout, s.Logger, func(entry kvwatch.Entry) error {
+		guid := strings.TrimPrefix(entry.Key, recordPrefix)
 		if _, seen := listed[guid]; seen {
-			return
+			return nil
 		}
 		var current record
-		if err := json.Unmarshal(entry.Value(), &current); err != nil {
-			failed = fmt.Errorf("decode the redelivery record of %s: %w", guid, err)
-			return
+		if err := json.Unmarshal(entry.Value, &current); err != nil {
+			return fmt.Errorf("decode the redelivery record of %s: %w", guid, err)
 		}
 		if !current.open() {
-			return
+			return nil
 		}
 		if current.Delivery.GUID != guid {
-			failed = fmt.Errorf("the redelivery record of %s names delivery %q", guid, current.Delivery.GUID)
-			return
+			return fmt.Errorf("the redelivery record of %s names delivery %q", guid, current.Delivery.GUID)
 		}
-		open = append(open, openRecord{guid: guid, record: current, revision: entry.Revision()})
-	}); err != nil {
-		return nil, err
-	}
-	if failed != nil {
-		return nil, failed
+		open = append(open, openRecord{guid: guid, record: current, revision: entry.Revision})
+		return nil
+	}, jetstream.IgnoreDeletes()); err != nil {
+		return nil, fmt.Errorf("list the redelivery records: %w", err)
 	}
 	sortOpenRecords(open)
 	return open, nil
@@ -186,7 +176,7 @@ func readState[T any](kv bus.KeyValue, key, what string) (T, uint64, error) {
 }
 
 // writeState writes value's JSON at key only over revision (absent when zero), so a lost race is
-// a conflict (isConflict), and returns the new revision.
+// a conflict (bus.IsCASConflict), and returns the new revision.
 func writeState(kv bus.KeyValue, key string, value any, revision uint64) (uint64, error) {
 	data, err := json.Marshal(value)
 	if err != nil {
@@ -202,7 +192,7 @@ func writeState(kv bus.KeyValue, key string, value any, revision uint64) (uint64
 // after: the one place the bucket is opened. A sweep it fails for opens nothing, so the next one
 // calls Open again.
 func (s *Sweeper) openState() error {
-	if s.state.KeyValue != nil {
+	if s.state.Opened() {
 		return nil
 	}
 	state, err := s.Open()
@@ -222,7 +212,7 @@ func (s *Sweeper) readCursor() (cursorRecord, uint64, error) {
 // writeCursor records the sweep's start, marked as this build's (cursorRecord). A lost race means
 // another sweeper wrote a cursor at the same moment; either value serves.
 func (s *Sweeper) writeCursor(at time.Time, revision uint64) {
-	if _, err := writeState(s.state, cursorKey, cursorRecord{At: at, Indexed: true}, revision); err != nil && !isConflict(err) {
+	if _, err := writeState(s.state, cursorKey, cursorRecord{At: at, Indexed: true}, revision); err != nil && !bus.IsCASConflict(err) {
 		s.Logger.Warn("webhook redelivery cursor not written", "error", err)
 	}
 }
@@ -244,13 +234,9 @@ func (s *Sweeper) putRecord(guid string, next record, revision uint64) (uint64, 
 	switch {
 	case err == nil:
 		return written, true, nil
-	case isConflict(err):
+	case bus.IsCASConflict(err):
 		return 0, false, nil
 	default:
 		return 0, false, err
 	}
-}
-
-func isConflict(err error) bool {
-	return errors.Is(err, nats.ErrKeyExists) || strings.Contains(err.Error(), "wrong last sequence")
 }

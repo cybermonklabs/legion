@@ -170,6 +170,8 @@ interface BindOptions {
   dryRun?: DryRunner;
   /** The gate role's fallback chain after its first model, as the entry resolves it; none unless a test says otherwise. */
   fallbacks?: Array<{ provider: string; id: string }>;
+  /** `askgate.sharedAccountProviders` as the entry reads it; none unless a test says otherwise. */
+  sharedAccounts?: string[];
   /** The session's entries, read on each call: an `experiments` entry whose askgate_block arm is off (warn) unless a test says otherwise. */
   entries?: readonly unknown[] | (() => readonly unknown[]);
   /** Whether the session has a UI, which a notice needs; true unless a test says otherwise. */
@@ -311,6 +313,7 @@ function bind(opts: BindOptions = {}): BoundGate {
       fallbackRoles.push(role);
       return opts.fallbacks ?? [];
     },
+    sharedAccountProviders: () => opts.sharedAccounts ?? [],
     configFile: CONFIG_FILE,
     contextMessages: () => (opts.context ?? (() => [fx.user("Post the comment.")]))(),
     handlerCeilingMs: () => opts.ceiling ?? 120_000,
@@ -932,8 +935,8 @@ describe("untrusted text (security)", () => {
     expect(context).toMatch(/… \[elided \d+ bytes\]/);
   });
   test("a revise reason holding a full-length rewritten question in non-ASCII text arrives whole", async () => {
-    // 2,000 UTF-16 units (ASK_QUESTION_MAX) of three-byte characters is 6,000 bytes, and the reason
-    // names its failure and quotes the words on top: the recommendation at its end must survive.
+    // 2,000 three-byte characters is 6,000 UTF-8 bytes, and the reason names its failure and
+    // quotes the words on top: the recommendation at its end must survive.
     const reason = `failure 13 (content): "Hi! I hope this finds you well." is a preamble. Send: ${"€".repeat(2_000)} I recommend A.`;
     const g = bind({ complete: reviseWith(reason) });
     const context = (await g.device("t1", "dispatch_comment", COMMENT))?.additionalContext ?? "";
@@ -3402,21 +3405,18 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
       });
       await skipped.bash("s", ASK);
       // The halt is three of the gate's own deadlines in a row, so nothing else of the call may
-      // race that deadline. The real dry run is a process, and it races half of these 20 ms: on a
-      // busy machine it loses, and the call is an `error` rather than a `timeout`. This dry run
-      // answers at once, with what the stub's own prints, and the model call runs until the
-      // deadline aborts it, so the deadline is the only clock the outcome reads.
+      // race that deadline. A real `dispatch … --dry-run` is a Bun process, and the reads get
+      // READ_SHARE (half) of the deadline: on a busy machine the spawn loses that race, the call
+      // is an `error`, whose effect is `none`, and three of those never halt the gate. This dry
+      // run answers at once with what the stub would have printed, and the clock never moves, so
+      // the reads spend none of the deadline however busy the machine is. Nothing the outcome
+      // reads is measured against the wall clock: the review never answers (untilAborted), so the
+      // call's own stop is the only thing that can settle it.
       const halted = bind({
-        // The three calls that trip the breaker must time out in their review. A STUB row runs the
-        // real `dispatch … --dry-run` stub above, a Bun process, and the dry run gets READ_SHARE
-        // (half) of this deadline: at 20 ms that was 9 ms, and starting Bun took 16-60 ms
-        // (median 32) on an idle two-CPU box, so the call ended "error: dispatch ask --dry-run did
-        // not finish within 9 ms" instead of timing out in its review. Half of this covers that
-        // start many times over, and the review, which never answers (untilAborted), still times
-        // out on the rest.
-        env: { ...STUB, OMP_ASKGATE_TIMEOUT_MS: "2000" },
+        env: { ...STUB, OMP_ASKGATE_TIMEOUT_MS: "20" },
         cwd: work,
         complete: untilAborted,
+        now: () => 1_000_000,
         dryRun: async () => ({
           exitCode: 0,
           stdout: JSON.stringify({ issue: "X-1", question: QUESTION }, null, 2),
@@ -3438,8 +3438,8 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
         [{ argv: argvDigest(ASK_ARGV), args: null, files: [], outcome: "skipped" }],
         [{ argv: argvDigest(ASK_ARGV), args: null, files: [], outcome: "halted" }],
       ]);
-      // Three calls wait out the review deadline above, so the row's own bound is the sum of them
-      // with room to spare, not bun test's 5 s default.
+      // The row's own bound is a hang guard, the file's convention: its work is three 20 ms
+      // deadlines, far below this.
     }, 30_000);
 
     test("a rebuttal binds the dry run's arguments, its flag gone from the argv", async () => {
@@ -4979,7 +4979,7 @@ describe("data routing", () => {
     });
     const result = await g.device("t1", "dispatch_comment", COMMENT);
     expect(result?.block).toBeUndefined();
-    expect(result?.additionalContext).toContain("on another provider than the gate's");
+    expect(result?.additionalContext).toContain("does not bill the gate model's account");
     expect(g.calls).toHaveLength(0);
     expect(g.entries).toMatchObject([
       { decision: "allow", outcome: "skipped", reason: "primary on openai-codex" },
@@ -4990,6 +4990,88 @@ describe("data routing", () => {
     await g.device("t1", "dispatch_comment", COMMENT);
     expect(g.calls).toHaveLength(0);
     expect(g.entries).toMatchObject([{ outcome: "skipped", reason: "primary on no model" }]);
+  });
+  // The gate's rule is the account, not the provider id: on a machine whose direct Anthropic
+  // login and whose gateway bill one account, a session on either must be reviewed by the gate
+  // model on the other, and nothing may change where no one declares such a pair.
+  const GATEWAY = { provider: "model-gateway", id: "claude-fable-5-1" };
+  const DIRECT = { provider: "anthropic", id: "claude-opus-5" };
+  test("a session on a provider the machine declares to share the gate model's account is reviewed", async () => {
+    const g = bind({
+      roles: { askgate: GATEWAY },
+      primary: DIRECT,
+      sharedAccounts: ["anthropic", "model-gateway"],
+    });
+    const result = await g.device("t1", "dispatch_comment", COMMENT);
+    expect(result?.block).toBeUndefined();
+    expect(g.calls.map((call) => call.model)).toEqual([GATEWAY]);
+    expect(g.entries).toMatchObject([
+      { decision: "allow", outcome: "verdict", model: "model-gateway/claude-fable-5-1" },
+    ]);
+  });
+  test("a declaration that names only one of the two providers decides nothing", async () => {
+    const g = bind({
+      roles: { askgate: GATEWAY },
+      primary: DIRECT,
+      sharedAccounts: ["model-gateway"],
+    });
+    await g.device("t1", "dispatch_comment", COMMENT);
+    expect(g.calls).toHaveLength(0);
+    expect(g.entries).toMatchObject([{ outcome: "skipped", reason: "primary on anthropic" }]);
+  });
+  test("with the declaration absent, a session on the gate model's own provider is reviewed as before", async () => {
+    const g = bind({ roles: { askgate: GATEWAY }, primary: GATEWAY });
+    await g.device("t1", "dispatch_comment", COMMENT);
+    expect(g.calls.map((call) => call.model)).toEqual([GATEWAY]);
+  });
+  test("a fallback is asked on the declared account and never off it", async () => {
+    const asked: string[] = [];
+    const g = bind({
+      roles: { askgate: GATEWAY },
+      primary: DIRECT,
+      sharedAccounts: ["anthropic", "model-gateway"],
+      // The foreign model sits BETWEEN the two of the account, so a chain that stopped at the
+      // first answer could not hide a filter that let it through.
+      fallbacks: [{ provider: "openai", id: "gpt-5.5" }, DIRECT],
+      complete: async (req) => {
+        const model = req.model as GateModel;
+        asked.push(`${model.provider}/${model.id}`);
+        return model.provider === "model-gateway"
+          ? { text: "", error: "503 from the provider" }
+          : { text: '{"decision":"allow"}' };
+      },
+    });
+    await g.device("t1", "dispatch_comment", COMMENT);
+    expect(asked).toEqual(["model-gateway/claude-fable-5-1", "anthropic/claude-opus-5"]);
+  });
+  // The regression a declaration must never cause: a profile that bills another account keeps
+  // its own gate model and is never reviewed by, or failed over to, the declared account's.
+  test("a profile on its own account is reviewed by its own gate model while another account's pair is declared", async () => {
+    const PBC = { provider: "pbc-gateway", id: "claude-fable-5-1" };
+    const asked: string[] = [];
+    const g = bind({
+      roles: { askgate: PBC },
+      primary: { provider: "pbc-gateway", id: "claude-opus-5-5" },
+      sharedAccounts: ["anthropic", "model-gateway"],
+      fallbacks: [GATEWAY, DIRECT],
+      complete: async (req) => {
+        const model = req.model as GateModel;
+        asked.push(`${model.provider}/${model.id}`);
+        return { text: "", error: "503 from the provider" };
+      },
+    });
+    await g.device("t1", "dispatch_comment", COMMENT);
+    expect(asked).toEqual(["pbc-gateway/claude-fable-5-1"]);
+  });
+  test("a session on another account is skipped while a declaration that does not name it stands", async () => {
+    const g = bind({
+      roles: { askgate: GATEWAY },
+      primary: { provider: "pbc-gateway", id: "claude-opus-5-5" },
+      sharedAccounts: ["anthropic", "model-gateway"],
+    });
+    await g.device("t1", "dispatch_comment", COMMENT);
+    expect(g.calls).toHaveLength(0);
+    expect(g.entries).toMatchObject([{ outcome: "skipped", reason: "primary on pbc-gateway" }]);
   });
 });
 
@@ -5163,9 +5245,25 @@ describe("askgate.ts, the entry", () => {
   mock.module("@oh-my-pi/pi-coding-agent/session/session-context", () => ({
     buildSessionContext: () => ({ messages: [fx.user("Post it.")] }),
   }));
-  mock.module("@oh-my-pi/pi-coding-agent/config/settings", () => ({
-    settings: { getModelRole: (role: string) => modelRoles[role] },
-  }));
+  /** `askgate.sharedAccountProviders` in the operator's own layers; unset until a test writes it. */
+  let sharedAccountSetting: unknown;
+  /** The same key in a repository's settings file, which the agent under review can write. */
+  let projectSharedAccountSetting: unknown;
+  /** The operator's layers alone, as `Settings.grantAuthority()` gives them. */
+  const operatorSettings = {
+    getModelRole: (role: string) => modelRoles[role],
+    sharedAccounts: () => sharedAccountSetting,
+  };
+  /** The merged settings, the project layer over the operator's, as every other read sees them. */
+  const mergedSettings = {
+    getModelRole: (role: string) => modelRoles[role],
+    sharedAccounts: () =>
+      projectSharedAccountSetting === undefined
+        ? sharedAccountSetting
+        : projectSharedAccountSetting,
+    grantAuthority: () => operatorSettings,
+  };
+  mock.module("@oh-my-pi/pi-coding-agent/config/settings", () => ({ settings: mergedSettings }));
   /** extensionHandlers.toolCallTimeoutMs as the stubbed settings answer it. */
   let toolCallCeilingMs = 120_000;
   mock.module("@oh-my-pi/pi-coding-agent/extensibility/settings", () => ({
@@ -5179,6 +5277,29 @@ describe("askgate.ts, the entry", () => {
   }));
   mock.module("@oh-my-pi/pi-coding-agent/config/model-settings", () => ({
     cfgDisabledProviders: { get: () => [] },
+  }));
+  /** What the two stubbed settings instances below answer the gate's own setting with. */
+  interface StubSettings {
+    sharedAccounts?: () => unknown;
+  }
+  /** omp's settings registry, as the host's: one handle per id, and `register` refuses a repeat. */
+  const registeredSettings = new Map<string, { get(settings: StubSettings): unknown }>();
+  mock.module("@oh-my-pi/pi-coding-agent/config/registry", () => ({
+    register: (definition: { id: string; default: unknown }) => {
+      if (registeredSettings.has(definition.id))
+        throw new Error(`Setting "${definition.id}" is registered twice`);
+      // The host's handle reads whichever settings instance it is given, which is how the gate's
+      // read through `grantAuthority()` can differ from a read of the merged settings.
+      const handle = {
+        get: (settings: StubSettings) => {
+          const value = settings.sharedAccounts?.();
+          return value === undefined ? definition.default : value;
+        },
+      };
+      registeredSettings.set(definition.id, handle);
+      return handle;
+    },
+    lookup: (id: string) => registeredSettings.get(id),
   }));
   mock.module("@oh-my-pi/pi-coding-agent/config/model-resolver", () => ({
     resolveModelOverride: ([raw]: string[]) => ({ model: stubModel(raw) }),
@@ -5206,6 +5327,8 @@ describe("askgate.ts, the entry", () => {
     throwAfterAttempts = false;
     notFound.clear();
     modelFallback = true;
+    sharedAccountSetting = undefined;
+    projectSharedAccountSetting = undefined;
     for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
     Object.assign(process.env, saved);
     for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
@@ -5229,6 +5352,8 @@ describe("askgate.ts, the entry", () => {
       text?: string;
       entries?: readonly unknown[];
       roles?: { askgate?: GateModel; default?: GateModel };
+      /** The session's own model; the gate role's MODEL unless a test says otherwise. */
+      primary?: GateModel;
     } = {}
   ) {
     delete process.env.OMP_ASKGATE;
@@ -5260,7 +5385,7 @@ describe("askgate.ts, the entry", () => {
         resolve: (spec: string) =>
           spec === "@askgate" ? roles.askgate : spec === "@default" ? roles.default : undefined,
       },
-      model: MODEL,
+      model: opts.primary ?? MODEL,
       modelRegistry: { resolver: () => "resolved-key" },
       sessionManager: {
         getEntries: () => opts.entries ?? [experimentsEntry(false)],
@@ -5274,8 +5399,74 @@ describe("askgate.ts, the entry", () => {
       { type: "tool_call", toolName: "dispatch_comment", toolCallId: "t1", input: COMMENT },
       ctx
     );
-    return { result, entries, warnings };
+    // `again` runs ANOTHER call through the binding this one made, so a test can change a
+    // setting and see whether the live gate reads it or the value it bound with.
+    const again = (toolCallId: string) =>
+      handlers.get("tool_call")?.(
+        { type: "tool_call", toolName: "dispatch_comment", toolCallId, input: COMMENT },
+        ctx
+      );
+    return { result, entries, warnings, again };
   }
+  // The one setting the entry declares on omp's registry. A machine writes it in its own config
+  // layer, so the entry must read today's value at the call rather than the one it bound with.
+  const DEVBOX_GATE = { provider: "model-gateway", id: "claude-fable-5-1" };
+  const DEVBOX_PRIMARY = { provider: "anthropic", id: "claude-opus-5" };
+  test("a session reviewed only because omp's config declares the two providers one account", async () => {
+    const unset = await gateOnce({}, { roles: { askgate: DEVBOX_GATE }, primary: DEVBOX_PRIMARY });
+    expect(unset.entries).toMatchObject([{ outcome: "skipped", reason: "primary on anthropic" }]);
+    sharedAccountSetting = ["anthropic", "model-gateway"];
+    const declared = await gateOnce(
+      {},
+      { roles: { askgate: DEVBOX_GATE }, primary: DEVBOX_PRIMARY }
+    );
+    expect(declared.entries).toMatchObject([{ decision: "allow", outcome: "verdict" }]);
+  });
+  test("one bound gate reads the declaration again at each call, not the value it bound with", async () => {
+    const bound = await gateOnce({}, { roles: { askgate: DEVBOX_GATE }, primary: DEVBOX_PRIMARY });
+    expect(bound.entries).toMatchObject([{ outcome: "skipped", reason: "primary on anthropic" }]);
+    // No new binding: the same handler, after the machine's config changed under it.
+    sharedAccountSetting = ["anthropic", "model-gateway"];
+    await bound.again("t2");
+    expect(bound.entries[1]).toMatchObject({ decision: "allow", outcome: "verdict" });
+  });
+  // A host build that offers no operator-only view offers nothing safe to read: the merged
+  // settings carry the repository's own layer, which the agent under review can write.
+  test("a host with no grant authority declares nothing, whatever the merged settings hold", async () => {
+    const authority = mergedSettings.grantAuthority;
+    try {
+      Reflect.deleteProperty(mergedSettings, "grantAuthority");
+      sharedAccountSetting = ["anthropic", "model-gateway"];
+      const none = await gateOnce({}, { roles: { askgate: DEVBOX_GATE }, primary: DEVBOX_PRIMARY });
+      expect(none.entries).toMatchObject([{ outcome: "skipped", reason: "primary on anthropic" }]);
+    } finally {
+      mergedSettings.grantAuthority = authority;
+    }
+  });
+  test("a value that is not a list of provider ids declares nothing, a list with a non-string in it too", async () => {
+    sharedAccountSetting = "anthropic,model-gateway";
+    const text = await gateOnce({}, { roles: { askgate: DEVBOX_GATE }, primary: DEVBOX_PRIMARY });
+    expect(text.entries).toMatchObject([{ outcome: "skipped" }]);
+    sharedAccountSetting = ["anthropic", "model-gateway", 42];
+    const mixed = await gateOnce({}, { roles: { askgate: DEVBOX_GATE }, primary: DEVBOX_PRIMARY });
+    expect(mixed.entries).toMatchObject([{ outcome: "skipped" }]);
+  });
+  // A repository's own settings file is writable by the agent under review, so a declaration
+  // there must not be able to send that agent's transcript to another account's model.
+  test("a declaration in a repository's settings, which the agent can write, decides nothing", async () => {
+    projectSharedAccountSetting = ["anthropic", "model-gateway"];
+    const project = await gateOnce(
+      {},
+      { roles: { askgate: DEVBOX_GATE }, primary: DEVBOX_PRIMARY }
+    );
+    expect(project.entries).toMatchObject([{ outcome: "skipped", reason: "primary on anthropic" }]);
+  });
+  test("a second bind in one process reuses the registered setting instead of failing on it", async () => {
+    sharedAccountSetting = ["anthropic", "model-gateway"];
+    await gateOnce({}, { roles: { askgate: DEVBOX_GATE }, primary: DEVBOX_PRIMARY });
+    const again = await gateOnce({}, { roles: { askgate: DEVBOX_GATE }, primary: DEVBOX_PRIMARY });
+    expect(again.entries).toMatchObject([{ decision: "allow", outcome: "verdict" }]);
+  });
   test("with OMP_ASKGATE unset, a session whose experiments entry has the askgate_block arm on blocks a revise, and one with it off warns", async () => {
     const blocked = await gateOnce({}, { entries: [experimentsEntry(true)], text: REVISE });
     expect(blocked.result?.block).toBe(true);

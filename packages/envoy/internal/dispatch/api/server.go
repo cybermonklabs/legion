@@ -85,6 +85,11 @@ type Deps struct {
 	// embedder, and search answers keyword-only on every request, always setting
 	// SearchResponse.Degraded.
 	Embedder embed.Embedder
+	// Answerer answers one question from what Dispatch holds (INFRA-1279), for the three going
+	// routes; nil means the deployment configured no model, where a run is still recorded and
+	// its stream carries the error frame contracts.GoingErrorNoModelConfigured, and the
+	// capability route says no model is configured.
+	Answerer Answerer
 	Envoy    *envoy.Client
 	Events   *events.Broker
 	// GitHub calls the GitHub App API for architecture-source access checks and the web app's
@@ -174,6 +179,9 @@ type DepsInput struct {
 	Docs         docs.API
 	// Embedder embeds a search request's query for meaning search (LEGION-549); nil turns it off.
 	Embedder embed.Embedder
+	// Answerer answers a going request's question (INFRA-1279); nil means no model is
+	// configured. See Deps.Answerer; cmd/dispatch builds it (newAnswerer).
+	Answerer Answerer
 	Events   *events.Broker
 
 	// App is the loaded GitHub App credentials (nil when unconfigured);
@@ -265,6 +273,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		ServerURL:              strings.TrimSuffix(input.ServerURL, "/"),
 		Docs:                   input.Docs,
 		Embedder:               input.Embedder,
+		Answerer:               input.Answerer,
 		Envoy:                  envoyClient,
 		Events:                 input.Events,
 		GitHub:                 github,
@@ -328,6 +337,11 @@ type server struct {
 	// (newFailingAdviceHandler, and the check's bound tests), so a case's outcome is its own choice
 	// rather than its machine's speed.
 	suggestionTimeout time.Duration
+	// duplicateBound overrides the bound the near-copy gate's read runs under; zero, which every
+	// server the deployment builds leaves it, means duplicateGateTimeout. Only a test sets it
+	// (the forced create whose check does not answer), so a case's outcome is its own choice
+	// rather than its machine's speed.
+	duplicateBound time.Duration
 	// broadcastResolveBudget overrides the budget a broadcast's recipient resolution runs under;
 	// zero, which every server the deployment builds leaves it, means broadcastResolveTimeout.
 	// Only a test sets it, so a budget that ends before every selected session is read is the
@@ -417,6 +431,13 @@ type server struct {
 	// on every result.recorded does not spend one GET /repos/{owner}/{repo} apiece. The policy
 	// is delivery's; the server holds the one cache the process shares.
 	defaultBranches delivery.DefaultBranches
+	// commitPulls is the moment before which the results read will not read GitHub again for the
+	// pull requests of a commit it could answer for no other way (delivery.CommitPullReads,
+	// currencyReader.readThroughHead), held across requests so one commit costs at most one such
+	// read per delivery.CommitPullReadStaleAfter however often the tab refetches, and one per
+	// delivery.CommitPullSettledFor once GitHub has put that pull request's head elsewhere. The
+	// policy is delivery's; the server holds the one cache the process shares.
+	commitPulls delivery.CommitPullReads
 }
 
 // warnedProductionRun keys server.warnedUnmatchedRuns: one deploy run under one configured set of
@@ -625,6 +646,11 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 			handler = s.writeNeedsASignedInPerson(handler)
 			handler = s.refuseChangedLogin(handler)
 		}
+		// Outside the two scope checks and outside the GET test, so it runs before them and
+		// before every handler, on a read as on a write: the whole id it resolves a path
+		// prefix into is the value the project check resolves and the value the handler
+		// addresses its row by, one value for both (resolveIDPrefixes, project_scope.go).
+		handler = s.resolveIDPrefixes(route, handler)
 		handler = s.refuseUnstorableParameters(route.Pattern, handler)
 		if len(route.OAuthScopes) > 0 {
 			// Ahead of the keyed layer and the project and session checks, so the row's own
@@ -1382,7 +1408,8 @@ func (s *server) requireCallerScope(w http.ResponseWriter, r *http.Request, scop
 }
 
 // capExceededError names how far a text field is over its cap so one trim lands:
-// "<field> is N characters over the M-character limit (L/M)". Lengths are UTF-16 units (len16).
+// "<field> is N characters over the M-character limit (L/M)". Lengths are UTF-16 units
+// (itemblocks.Units16).
 func capExceededError(field string, length, limit int) *apiError {
 	return errorf(http.StatusBadRequest, "CAP_EXCEEDED",
 		"%s is %d characters over the %d-character limit (%d/%d)", field, length-limit, limit, length, limit)
@@ -1394,35 +1421,55 @@ func countExceededError(code, field string, count, limit int) *apiError {
 		"%s is %d over the %d-item limit (%d/%d)", field, count-limit, limit, count, limit)
 }
 
+// blockBoundError is what a route answers an itemblocks.Check with: nil where the body passed
+// both bounds, else the refusal the typed error words (itemblocks.CapExceeded names the block,
+// itemblocks.CountExceeded the count), with the status and code every cap refusal carries.
+// Every route that bounds a body calls this one helper, so a route added later cannot word the
+// same refusal differently.
+func blockBoundError(err error) *apiError {
+	if err == nil {
+		return nil
+	}
+	return errorf(http.StatusBadRequest, "CAP_EXCEEDED", "%s", err)
+}
+
 func capExceeded(w http.ResponseWriter, field string, length, limit int) {
 	err := capExceededError(field, length, limit)
 	writeError(w, err.code, err.status, err.message)
 }
 
-// requireUUIDPath rejects a non-uuid `{id}` path value with 400 <KIND>_ID_INPUT before it
-// reaches a uuid column (where pgx would surface it as a 500). kind is "ask", "comment", or "message".
+// requireUUIDPath rejects a `{id}` path value that is no id with 400 <KIND>_ID_INPUT before it
+// reaches a uuid column (where pgx would surface it as a 500). kind is "ask", "comment", or
+// "message".
+//
+// The value it reads is the one the prefix layer left (resolveIDPrefixes): an id written as a
+// unique prefix is already the whole id by the time this runs, and what reaches here is an id
+// nothing carries or a value that is no id at all. So the refusal states the rule a caller can
+// act on - a whole uuid, or a prefix of it long enough to name one item - rather than telling
+// them to write the whole id, which is no longer what the route needs.
+//
+// A value uuid.Parse reads in one of its other spellings reaches here already rewritten to the
+// canonical one: the prefix layer canonicalizes the {id} of every route that takes one
+// (canonicalizeUUIDPath), so this parse only decides whether the value is an id at all.
 func requireUUIDPath(w http.ResponseWriter, r *http.Request, kind string) bool {
-	id := r.PathValue("id")
-	if _, err := uuid.Parse(id); err != nil {
-		if kind == "ask" {
-			writeError(w, "ASK_ID_INPUT", http.StatusBadRequest, "ask IDs are UUIDs; use the full ask ID")
-		} else {
-			writeError(w, strings.ToUpper(kind)+"_ID_INPUT", http.StatusBadRequest, kind+" id must be a full uuid")
-		}
+	if _, err := uuid.Parse(r.PathValue("id")); err != nil {
+		writeError(w, strings.ToUpper(kind)+"_ID_INPUT", http.StatusBadRequest, idPathProblem(kind))
 		return false
 	}
 	return true
 }
 
-func len16(value string) int {
-	length := 0
-	for _, rune := range value {
-		length++
-		if rune > 0xffff {
-			length++
-		}
+// idPathProblem is how a route refuses a path id that names nothing, worded once so every route
+// that reads one says the same thing. An ask's, a comment's and a message's id is resolved from
+// a prefix before a handler sees it (idRoutes), so their rule is a whole uuid or a prefix of one
+// long enough to name a single item. A handoff's and a thread's is not, so theirs is the whole
+// uuid it has always been.
+func idPathProblem(kind string) string {
+	switch kind {
+	case "ask", "comment", "message":
+		return kind + " id must be a whole uuid or a unique prefix of 8 characters or more"
 	}
-	return length
+	return kind + " id must be a full uuid"
 }
 
 const maxJSONRequestBytes int64 = 1 << 20
@@ -1518,26 +1565,59 @@ func (s *server) readyPool() (*store.Pool, error) {
 	return s.deps.Store.Pool, nil
 }
 
-// requireOpenIssue locks an issue row and returns its lifecycle status, rejecting mutations
-// after completion without a second issue query.
-func (s *server) requireOpenIssue(ctx context.Context, tx pgx.Tx, key string) (string, error) {
-	return issueOpenStatus(ctx, tx, key, ownerRowLock)
+// lockIssue locks an issue row and returns its lifecycle status, closed or not. It is the
+// lock requireOpenOwnerStatus takes, without the closed refusal, for the writes a closed issue
+// still takes: a message, its deliveries and the agent's reply to one.
+func (s *server) lockIssue(ctx context.Context, tx pgx.Tx, key string) (string, error) {
+	status, _, err := issueStatus(ctx, tx, key, ownerRowLock)
+	return status, err
 }
 
-// issueOpenStatus is that same read and refusal made through q under lock, so the check a
-// comment makes from the pool before its transaction opens refuses exactly what the locked
-// check will.
-func issueOpenStatus(ctx context.Context, q queryer, key, lock string) (string, error) {
+// issueStatus reads an issue's lifecycle status, and whether it is open, through q under
+// lock. It refuses nothing: each write that a closed issue refuses decides that from open.
+func issueStatus(ctx context.Context, q queryer, key, lock string) (string, bool, error) {
 	var status string
 	var open bool
 	if err := q.QueryRow(ctx, `
 		select status, closed_at is null from issues where key = $1`+lock, key).Scan(&status, &open); err != nil {
-		return "", err
+		return "", false, err
 	}
-	if !open {
-		return "", errorf(http.StatusConflict, "ISSUE_CLOSED", "issue is closed")
+	return status, open, nil
+}
+
+// closedWrite says, of one write that takes the owner's lock through ownerStatus, whether a
+// closed issue takes it. A closed issue still takes a comment that is not a suggestion, a
+// message, their deliveries and an agent's reply to one (takenWhenClosed); every other write that
+// asks here -- an ask, a suggestion, an upload, a document edit and a named version (before the
+// document service is called), a handoff, a review, an action on an existing comment -- is
+// refusedWhenClosed. The writes that read the issue row for themselves never reach this and
+// refuse on their own: a claim (issue_claim.go), a PATCH outside a closed issue's allow-list
+// (issue_patch.go), a check result, which a closed issue takes for an after_merge or
+// default_branch check (results.go), and a document rebuild with supplied markdown
+// (artifact_rebuild.go), which the document service refuses with docs.ErrIssueClosed
+// (docs/rebuild.go; writeHandlerError turns it into the same 409 ISSUE_CLOSED).
+type closedWrite bool
+
+const (
+	takenWhenClosed   closedWrite = false
+	refusedWhenClosed closedWrite = true
+)
+
+// errIssueClosed is the refusal of a write that a closed issue does not take.
+var errIssueClosed error = errorf(http.StatusConflict, "ISSUE_CLOSED", "issue is closed")
+
+// refuseClosed is the one place the writes that take the owner's lock through ownerStatus refuse
+// a closed owner: the locked checks (requireOpenOwnerStatus, lockCommentOwner, lockedComment) and
+// the pooled pre-check a comment with mentions and an upload make before their transaction opens
+// (refuseOwnerBeforeResolving) all decide here. It is not every closed-issue refusal the API
+// makes: closedWrite names the writes that decide for themselves. open is what the owner's row
+// read (ownerStatus, issueStatus): an issue is open until it closed, and a project document
+// always is.
+func refuseClosed(open bool, write closedWrite) error {
+	if write == refusedWhenClosed && !open {
+		return errIssueClosed
 	}
-	return status, nil
+	return nil
 }
 
 // A version event is built by docs.ArtifactVersionEventPayload wherever it is appended; a

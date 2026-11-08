@@ -14,7 +14,8 @@ import type { ComposerAnchor, ComposerKind, ComposerOwner } from "../conversatio
 import { MentionComposer } from "../conversation/MentionComposer";
 import type { SaveCommentEdit } from "../conversation/send-request";
 import { AskCard } from "../inbox/AskCard";
-import { isBareReferenceBody, Unfurl } from "../refs/Unfurl";
+import { textSourceOf } from "../refs/text-references";
+import { Unfurl } from "../refs/Unfurl";
 import { DecisionList } from "./DecisionCard";
 import { marginComposeSendKey, useMargin } from "./margin-context";
 import { ThreadList } from "./ThreadList";
@@ -80,10 +81,12 @@ interface CommentsTabProps {
 /** The composer on the open document. `MarginSheet` keeps it mounted, hidden, under the Pinned
  *  tab, a phone margin thread and the rail the margin collapses to, so an unsent draft stays with
  *  it; a send it has out, and that send's refusal, are the held-send store's, so they stay with
- *  the document whatever unmounts the composer. On a closed issue it shows only that send or its
- *  refusal. While a newer selection-bar action waits on its send, it says so. It takes focus the
- *  first time it is on screen: a compose mounts it before the margin has opened the compact sheet,
- *  left its rail or the Pinned tab for it, and a field out of sight takes no focus. */
+ *  the document whatever unmounts the composer. On a closed issue a comment compose - one the
+ *  selection bar opened by quote, since the closed document takes no mark - shows and sends; a
+ *  suggestion or ask compose shows only its send or its refusal. While a newer selection-bar
+ *  action waits on its send, it says so. It takes focus the first time it is on screen: a compose
+ *  mounts it before the margin has opened the compact sheet, left its rail or the Pinned tab for
+ *  it, and a field out of sight takes no focus. */
 export function MarginComposerSlot({
   composer,
   hidden,
@@ -164,7 +167,7 @@ export function MarginAskCard({
         owner={owner.kind === "document" ? owner : undefined}
         variant="compact"
       />
-      {isBareReferenceBody(ask.question) ? <Unfurl body={ask.question} /> : null}
+      <Unfurl body={ask.question} source={textSourceOf("ask", ask.id)} />
     </div>
   );
 }

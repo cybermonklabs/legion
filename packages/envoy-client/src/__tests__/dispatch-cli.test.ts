@@ -1,9 +1,9 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ArtifactBlock } from "@legion/contracts";
-import { DISPATCH_BODY_MAX, IDEMPOTENCY_KEY_HEADER, PROJECT_KEY_RULE } from "@legion/contracts";
+import { DISPATCH_BLOCK_UNITS, IDEMPOTENCY_KEY_HEADER, PROJECT_KEY_RULE } from "@legion/contracts";
+import { removeTemporaryDirectories, temporaryDirectory } from "../../test/temp-dir";
 import { cliRefusals, fitOutput, runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
 import { forgetKeyedLayerMemory, KEYED_LAYER_MEMORY_MS } from "../dispatch-http";
@@ -22,6 +22,16 @@ let triage = false;
 let replyLength = 1;
 const LONG_THREAD = "11111111-1111-4111-8111-111111111111";
 const human = { kind: "human", id: "h" };
+
+/** How the Dispatch server refuses a one-paragraph body over the per-block bound, worded as
+ *  `itemblocks.CapExceeded` words it. The fake server below answers it, and the command prints
+ *  it as it came. */
+function blockCapRefusal(units: number): string {
+  return (
+    `body block 1 (paragraph) is ${units - DISPATCH_BLOCK_UNITS} characters over the ` +
+    `${DISPATCH_BLOCK_UNITS}-character block limit (${units}/${DISPATCH_BLOCK_UNITS})`
+  );
+}
 
 /** The Envoy listener's answer for session ses-1's subscriptions. */
 let interests: () => Response = () => Response.json({ error: "unset" }, { status: 500 });
@@ -237,6 +247,21 @@ const server = Bun.serve({
         },
       });
     }
+    if (pathname === "/api/v1/issues/DSP-1/comments" && request.method === "POST") {
+      // The bodies posted here are each one paragraph, so the body's only block is the body.
+      const units = (body.body as string).length;
+      if (units > DISPATCH_BLOCK_UNITS) {
+        return Response.json(
+          { code: "CAP_EXCEEDED", error: blockCapRefusal(units) },
+          { status: 400 }
+        );
+      }
+      return Response.json({
+        id: "comment-1",
+        issue_key: "DSP-1",
+        advice: { issue_status: "in_progress", session_writes_since_human: 0, your_open_asks: [] },
+      });
+    }
     if (pathname === "/api/v1/issues/DSP-3" && request.method === "GET") {
       return Response.json(olderServerIssue);
     }
@@ -386,6 +411,7 @@ const server = Bun.serve({
 });
 
 afterAll(() => server.stop(true));
+afterAll(removeTemporaryDirectories);
 
 let stateDir = "";
 beforeEach(() => {
@@ -396,7 +422,7 @@ beforeEach(() => {
   eventLog = { last: 40, served: 40, queries: [] };
   handoffs.length = 0;
   interests = () => Response.json({ error: "unset" }, { status: 500 });
-  stateDir = mkdtempSync(join(tmpdir(), "dispatch-cli-"));
+  stateDir = temporaryDirectory("dispatch-cli-");
   // Each run is its own process in production: nothing the library remembers carries over.
   resetAdviceMemory();
   forgetKeyedLayerMemory();
@@ -583,7 +609,7 @@ describe("the dispatch CLI", () => {
       ["handoff-write", "DSP-1", "--phase", "plan", "--body-file", "-", "--dry-run"],
     ]) {
       const { code, stdout } = await run(argv, omp, "[1, 2]\n");
-      expect(code).toBe(1);
+      expect(code).toBe(2);
       expect(stdout.split("\n")[0]).toBe("dispatch handoff-write was not called: 1 problem");
       expect(stdout).toContain("body is not one JSON object");
     }
@@ -611,9 +637,20 @@ describe("the dispatch CLI", () => {
 
   test("an unknown flag is refused in command syntax, with an example", async () => {
     const { code, stdout } = await run(["message", "--issue", "X", "--isue", "Y"], omp);
-    expect(code).toBe(1);
+    expect(code).toBe(2);
     expect(stdout.split("\n")[0]).toBe("dispatch message was not called: 1 problem");
     expect(stdout).toContain("- Example: dispatch message");
+    expect(requests).toEqual([]);
+  });
+
+  // `skill://dispatch` says "Exit 1 is a refusal, 2 a usage error", so a call Dispatch never saw
+  // because an argument is missing exits 2: a script reading the code alone tells it from a write
+  // Dispatch refused (a near copy, an AskGate block), which exits 1.
+  test("a command missing a required argument is a usage error, exit 2", async () => {
+    const { code, stdout } = await run(["issue", "--project", "DSP"], omp);
+    expect(code).toBe(2);
+    expect(stdout.split("\n")[0]).toBe("dispatch issue was not called: 1 problem");
+    expect(stdout).toContain("title");
     expect(requests).toEqual([]);
   });
 
@@ -630,14 +667,14 @@ describe("the dispatch CLI", () => {
 
   // --reason is the close's note: a reopen (or any update but a close) that carries one is
   // refused by the argument check, in a dry run as in the call, naming that rule, before any
-  // request; never by a closed issue's refusal of the note it would have posted.
+  // request, so no stray note is ever posted.
   test("--reason without --status done is refused by the argument check, dry run included", async () => {
     const argv = ["issue-update", "--issue", "DSP-1", "--status", "in_progress", "--reason", "x"];
     const rule =
       "- reason goes only with status done: it is the note posted on the issue as it closes, and status in_progress closes nothing. Drop reason, or set status done to close the issue.";
     for (const call of [[...argv, "--dry-run"], argv]) {
       const { code, stdout } = await run(call, omp);
-      expect(code, call.join(" ")).toBe(1);
+      expect(code, call.join(" ")).toBe(2);
       expect(stdout.split("\n").slice(0, 2)).toEqual([
         "dispatch issue-update was not called: 1 problem",
         rule,
@@ -646,16 +683,34 @@ describe("the dispatch CLI", () => {
     expect(requests).toEqual([]);
   });
 
-  test("--dry-run refuses a body over the cap the call would refuse", async () => {
+  // No length check stands between the body and Dispatch: the whole text is posted, and what the
+  // person reads is the server's refusal, printed as it came.
+  test("a body with a block over the server's bound is posted and refused in the server's words", async () => {
+    const body = "x".repeat(DISPATCH_BLOCK_UNITS + 1);
+
+    const { code, stdout } = await run(
+      ["comment", "--issue", "DSP-1", "--body-file", "-"],
+      omp,
+      body
+    );
+
+    expect(code).toBe(1);
+    expect(stdout.trim()).toBe(blockCapRefusal(DISPATCH_BLOCK_UNITS + 1));
+    const posted = requests.find((request) => request.path === "/api/v1/issues/DSP-1/comments");
+    expect(posted?.body).toMatchObject({ body });
+  });
+
+  test("a dry run of the same body prints the arguments and posts nothing", async () => {
+    const body = "x".repeat(DISPATCH_BLOCK_UNITS + 1);
+
     const { code, stdout } = await run(
       ["comment", "--dry-run", "--issue", "DSP-1", "--body-file", "-"],
       omp,
-      "x".repeat(DISPATCH_BODY_MAX + 1)
+      body
     );
-    expect(code).toBe(1);
-    expect(stdout).toContain(
-      `- --body is 1 characters over the ${DISPATCH_BODY_MAX}-character limit (${DISPATCH_BODY_MAX + 1}/${DISPATCH_BODY_MAX})`
-    );
+
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout)).toEqual({ issue: "DSP-1", body });
     expect(requests).toEqual([]);
   });
 
@@ -665,7 +720,7 @@ describe("the dispatch CLI", () => {
     const argv = ["artifact", "--issue", "DSP-1", "--name", "rows.jsonl", "--content-file", "-"];
     for (const call of [[...argv, "--dry-run"], argv]) {
       const { code, stdout } = await run(call, omp, '{"row_id": 1}\n{"row_id": 2}\n');
-      expect(code, call.join(" ")).toBe(1);
+      expect(code, call.join(" ")).toBe(2);
       expect(stdout.split("\n").slice(0, 2)).toEqual([
         "dispatch artifact was not called: 1 problem",
         `- content is stored as a Markdown document, which rewrites other text (a JSONL file's lines come back joined into one paragraph), and "rows.jsonl" is not a Markdown name. Upload the file under the same name with path (--path <file>), which stores a file whose path does not end in .md or .markdown as its bytes, unchanged; content takes a name ending in .md or .markdown or with no extension.`,
@@ -687,7 +742,7 @@ describe("the dispatch CLI", () => {
     for (const { argv, env } of cases) {
       const call = await run(argv, { ...omp, ...env });
       const dry = await run([...argv, "--dry-run"], { ...omp, ...env });
-      expect(call.code, argv.join(" ")).toBe(1);
+      expect(call.code, argv.join(" ")).toBe(2);
       expect(call.stdout, argv.join(" ")).toStartWith("dispatch ");
       expect(dry, argv.join(" ")).toEqual(call);
     }
@@ -725,7 +780,7 @@ describe("the dispatch CLI", () => {
       ["issue-update", "--issue", "DSP-1", "--status", "in_progress", "--reason", "x", "--dry-run"],
       off
     );
-    expect(refused.code).toBe(1);
+    expect(refused.code).toBe(2);
     expect(refused.stdout).toStartWith(
       "dispatch issue-update was not called: 1 problem\n- reason goes only with status done"
     );
@@ -1026,7 +1081,7 @@ describe("the dispatch CLI", () => {
       ];
       for (const [flags, problem] of cases) {
         const { code, stdout } = await run(["read", ...flags], omp);
-        expect(code, flags.join(" ")).toBe(1);
+        expect(code, flags.join(" ")).toBe(2);
         expect(stdout, flags.join(" ")).toContain(`\n- ${problem}\n`);
       }
       expect(requests).toEqual([]);
@@ -1039,7 +1094,7 @@ describe("the dispatch CLI", () => {
         ["read", "--ref", "dispatch://DSP-4/log", "--artifact", "spec", "--events", "5"],
         omp
       );
-      expect(code).toBe(1);
+      expect(code).toBe(2);
       expect(stdout).toContain("drop --artifact to read the ref");
       expect(stdout).not.toContain("drop --events");
       expect(requests).toEqual([]);
@@ -1238,7 +1293,7 @@ describe("the dispatch CLI", () => {
         ["doc-read", "--issue", "DSP-2", "--blocks", "--version", "2"],
         omp
       );
-      expect(code).toBe(1);
+      expect(code).toBe(2);
       expect(stdout).toContain(
         "- blocks lists the live document, the one dispatch doc-edit changes; name no version"
       );
@@ -1278,7 +1333,7 @@ describe("the dispatch CLI", () => {
 
   test("dispatch search refuses a project that is not a key in the server's wording, sending nothing", async () => {
     const { code, stdout } = await run(["search", "--query", "ok", "--project", "lower"], omp);
-    expect(code).toBe(1);
+    expect(code).toBe(2);
     expect(stdout).toContain(`project is not a project key: ${PROJECT_KEY_RULE}`);
     expect(requests).toEqual([]);
   });
@@ -1314,7 +1369,7 @@ describe("the dispatch CLI's envoy.json", () => {
 
   /** A directory whose envoy.json is not JSON, so a command that reads it exits 2. */
   function brokenConfigDirectory(): string {
-    const dir = mkdtempSync(join(tmpdir(), "dispatch-cli-broken-"));
+    const dir = temporaryDirectory("dispatch-cli-broken-");
     writeFileSync(join(dir, "envoy.json"), "{not json");
     return dir;
   }
@@ -1650,7 +1705,7 @@ describe("the dispatch CLI's subscription note", () => {
     ] as const) {
       interests = answer;
       requests.length = 0;
-      stateDir = mkdtempSync(join(tmpdir(), "dispatch-cli-"));
+      stateDir = temporaryDirectory("dispatch-cli-");
       nextProcess("ses-1");
       const { code, stdout } = await run(ask, withListener);
       expect(code).toBe(0);
@@ -1723,6 +1778,57 @@ describe("the dispatch CLI's subscription note", () => {
     ]);
   });
 
+  // `skill://dispatch` promises exit 1 for a refusal, and a create the near-copy gate stops made
+  // nothing: a caller that reads the status must not be told an issue was filed.
+  test("a create the near-copy gate refuses exits 1, and a create it lets through exits 0", async () => {
+    const candidates = [
+      {
+        key: "DSP-9",
+        title: "Nightly export retries for ever",
+        status: "in_progress",
+        snippet: "<mark>Nightly</mark> export",
+        shared_terms: 4,
+        href: "/issues/DSP-9",
+      },
+    ];
+    const creating = (refuse: boolean) =>
+      (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const { pathname } = new URL(String(input));
+        if (pathname === "/api/v1/projects/DSP/architecture-sources") {
+          return Response.json({ sources: [] });
+        }
+        if (pathname === "/api/v1/issues" && init?.method === "POST") {
+          return refuse
+            ? Response.json(
+                { code: "POSSIBLE_DUPLICATE", error: "possible duplicate of DSP-9", candidates },
+                { status: 409 }
+              )
+            : Response.json(
+                {
+                  key: "DSP-10",
+                  title: "Nightly export retries for ever",
+                  project: "DSP",
+                  components: { mode: "inherit", ids: [], unknown: [], reason: null },
+                },
+                { status: 201 }
+              );
+        }
+        return fetch(input, init);
+      }) as typeof fetch;
+    const create = ["issue", "--project", "DSP", "--title", "Nightly export retries for ever"];
+
+    const refused = await run(create, omp, "", creating(true));
+    expect(refused.code).toBe(1);
+    expect(refused.stdout).toContain(
+      'Not created: "Nightly export retries for ever" is a near copy of an open issue.'
+    );
+    expect(refused.stdout).toContain("DSP-9 [in_progress] Nightly export retries for ever");
+
+    const made = await run(create, omp, "", creating(false));
+    expect(made.code).toBe(0);
+    expect(made.stdout).toContain("Created DSP-10");
+  });
+
   test("a read asks no listener", async () => {
     interests = listed([]);
     const { code } = await run(["projects"], withListener);
@@ -1741,14 +1847,14 @@ describe("cliRefusals", () => {
     { line: stdout.split("\n")[0], command },
   ];
 
-  test("an argument check's refusal names its command, in the call and in its dry run (exit 1)", async () => {
+  test("an argument check's refusal names its command, in the call and in its dry run (exit 2)", async () => {
     for (const argv of [
       ["message", "--issue", "DSP-1", "--isue", "X"],
       ["issue-update", "--status", "done"],
       ["issue-update", "--status", "done", "--dry-run"],
     ]) {
       const { code, stdout } = await run(argv, omp);
-      expect(code, argv.join(" ")).toBe(1);
+      expect(code, argv.join(" ")).toBe(2);
       expect(cliRefusals(stdout), argv.join(" ")).toEqual(refusal(stdout, argv[0] ?? ""));
     }
     expect(requests).toEqual([]);
@@ -1801,7 +1907,7 @@ describe("cliRefusals", () => {
     expect(unreadable.code).toBe(2);
     expect(cliRefusals(unreadable.stdout)).toEqual(refusal(unreadable.stdout, null));
 
-    stateDir = mkdtempSync(join(tmpdir(), "dispatch-cli-"));
+    stateDir = temporaryDirectory("dispatch-cli-");
     writeFileSync(join(stateDir, "sessions"), "a file where the directory goes");
     const unlisted = await run(["projects"], omp);
     expect(unlisted.code).toBe(2);
@@ -1816,14 +1922,14 @@ describe("cliRefusals", () => {
     expect(warned.stderr).toStartWith("dispatch: warning: ");
     expect(cliRefusals(`${warned.stderr}${warned.stdout}`)).toEqual([]);
 
-    stateDir = mkdtempSync(join(tmpdir(), "dispatch-cli-"));
+    stateDir = temporaryDirectory("dispatch-cli-");
     mkdirSync(join(stateDir, "sessions", "ses-1", "results.jsonl"), { recursive: true });
     const unrecorded = await run(["message", "--issue", "DSP-1", "--body", "x"], omp);
     expect(unrecorded.code).toBe(0);
     expect(unrecorded.stdout).toContain("\ndispatch: Dispatch took the call, but this session's");
     expect(cliRefusals(unrecorded.stdout)).toEqual([]);
 
-    stateDir = mkdtempSync(join(tmpdir(), "dispatch-cli-"));
+    stateDir = temporaryDirectory("dispatch-cli-");
     mkdirSync(join(stateDir, ".config", "legion"), { recursive: true });
     writeFileSync(
       join(stateDir, ".config", "legion", "envoy.json"),
@@ -1873,7 +1979,7 @@ describe("cliRefusals", () => {
       ],
     ];
     for (const [name, argv, env, tool] of cases) {
-      stateDir = mkdtempSync(join(tmpdir(), "dispatch-cli-"));
+      stateDir = temporaryDirectory("dispatch-cli-");
       const { code, stdout } = await run(argv, env);
       expect(code, name).toBeGreaterThan(0);
       const logged = ledger("ses-1");
@@ -1894,7 +2000,7 @@ describe("cliRefusals", () => {
     expect(code).toBe(2);
     expect(existsSync(join(stateDir, "sessions"))).toBe(false);
 
-    stateDir = mkdtempSync(join(tmpdir(), "dispatch-cli-"));
+    stateDir = temporaryDirectory("dispatch-cli-");
     await run(["doc-edit", "--help"], omp);
     await run(["message", "--issue", "DSP-1", "--body", "hi", "--dry-run"], omp);
     expect(existsSync(join(stateDir, "sessions", "ses-1", "results.jsonl"))).toBe(false);
