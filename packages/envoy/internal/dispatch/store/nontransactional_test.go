@@ -201,7 +201,7 @@ func TestMigrateRecordsTheVersionAfterATimedOutConcurrentBuild(t *testing.T) {
 	out := logs.String()
 	for _, want := range []string{
 		"migration=0002_things_kind.up.sql", "attempt=1", "the runner tries it again",
-		"dropping the INVALID index a failed concurrent build left",
+		"dropping an INVALID index of this migration's own name",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("logs lack %q:\n%s", want, out)
@@ -259,7 +259,7 @@ func TestWindowOwnerMigrationDropsAnInvalidLeftoverAndRebuilds(t *testing.T) {
 }
 
 // bootRaces is how many times TestTwoBootsAtOnceOverAnInvalidLeftoverNeverDeadlock runs the race,
-// each on a database of its own and all of them side by side.
+// each on a database of its own, one race after another.
 //
 // One run proves little. The two boots take the key for one migration after another, and most
 // runs end with them level at the concurrent index - both waiting for the same key, which is safe
@@ -268,9 +268,11 @@ func TestWindowOwnerMigrationDropsAnInvalidLeftoverAndRebuilds(t *testing.T) {
 // earlier migration's transaction when the first starts its CONCURRENTLY statement, and which run
 // that is, is up to the order Postgres wakes waiters in. Measured on PostgreSQL 18.6 with
 // applyMigrationOnce's wait made blocking again: one run in three, one in eight and one in
-// sixteen caught it with the runs one after another, and three of sixteen with the runs side by
-// side, which is also what makes twenty of them take half a minute rather than forty seconds.
-// Twenty runs at that rate catch the deadlock in better than nineteen cases out of twenty.
+// sixteen caught it, so twenty runs catch it in better than nine cases out of ten.
+//
+// The races run one at a time on purpose. Forty pools and twenty migration sets at once are a
+// load of their own on a server the rest of this package shares, and the migration tests beside
+// this one measure lock waits against a five-second bound.
 const bootRaces = 20
 
 // Two Dispatch processes booting at once over the INVALID leftover INFRA-1973 reports. One of
@@ -291,7 +293,6 @@ func TestTwoBootsAtOnceOverAnInvalidLeftoverNeverDeadlock(t *testing.T) {
 	t.Cleanup(func() { t.Logf("%d boot races took %s", bootRaces, time.Since(started).Round(time.Millisecond)) })
 	for attempt := 1; attempt <= bootRaces; attempt++ {
 		t.Run(fmt.Sprintf("boot-race-%d", attempt), func(t *testing.T) {
-			t.Parallel()
 			ctx := context.Background()
 			first := openEmptyTestStore(t)
 			migrateThrough(t, first, 20261102233625)
