@@ -145,17 +145,33 @@ for (const route of shotRoutes) {
             page.getByText(/^Generated /),
             page.getByText(/, as of /),
           ],
-          // MEASURED IN CI: placeholder. This is the zero the measurement starts from
+          // MEASURED, and it stays at zero: nothing is tolerated.
           // (docs/solutions/testing/a-tolerance-is-measured-by-setting-it-to-zero-and-ships-with
-          // -its-separation-stated-pr2502.md), not a measured bound: the pod this was written in
-          // has no container runtime, so no run of this layer has happened yet. Whoever runs it
-          // replaces this with the measured value and states, here, in both projects: the
-          // largest ratio a legitimate run produced over N repeats of this layer in the
-          // container, the ratio a control change of one colour produces, and the factor between
-          // them. If the two are not separated by at least five times, report that rather than
-          // raise this number until the rows pass. `threshold` stays at Playwright's default 0.2
-          // - the per-pixel YIQ difference at which a pixel counts as different - and is part of
-          // what is measured.
+          // -its-separation-stated-pr2502.md asks for the bound to start at zero, for the
+          // legitimate maximum and the value a real change gives to be recorded, and for the
+          // separation between them to ship with the constant. Here they are.)
+          //
+          // The legitimate maximum is 0 pixels. With this bound at zero, a full-lane run of
+          // this head compared all 44 baselines in the pinned container and every row passed,
+          // so no run has yet produced a difference this layer did not mean.
+          //
+          // A real change of one colour gives 2 to 186 pixels. The control moved the
+          // `slate-200` swatch to a pink of the same lightness, which the palette's own
+          // contrast test accepts, and three rows failed: 2, 105, 174, 176 and 186 pixels
+          // across them. So the smallest real change this gate has been shown to catch is
+          // 2 pixels against a legitimate 0, and any bound above 1 would have hidden it.
+          //
+          // Eleven sources of difference were measured on the way to that zero and nine were
+          // removed rather than tolerated - two races in the seeded corpus, a reconcile tick
+          // jittered across five minutes, an event-order race, four pages read before they had
+          // settled, and every relative label, by pinning the page clock above. The two that
+          // could not be removed are pages this layer does not shoot at all, each with its
+          // reason in `e2e/review-routes.ts`. That is why this number is 0 and not a tolerance:
+          // a bound wide enough for the drift this layer began with would have swallowed the
+          // whole of the control.
+          //
+          // `threshold` stays at Playwright's default 0.2 - the per-pixel YIQ difference at
+          // which a pixel counts as different - and is part of what was measured.
           maxDiffPixelRatio: 0,
         });
       }

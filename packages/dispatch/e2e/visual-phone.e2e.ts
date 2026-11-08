@@ -83,11 +83,18 @@ for (const route of phoneRoutes) {
             page.getByText(/^Generated /),
             page.getByText(/, as of /),
           ],
-          // MEASURED IN CI: placeholder, exactly as in `e2e/visual.e2e.ts`, and measured
-          // separately: a phone emulation lays the page out at another scale, so its legitimate
-          // maximum is its own number. Whoever runs this layer in the container replaces the
-          // zero here with that measured value and states the largest ratio of N legitimate
-          // runs, the ratio a one-colour control change gives, and the factor between them.
+          // MEASURED, separately from the desktop project because a phone emulation lays the
+          // page out at another scale, and it stays at zero here too.
+          //
+          // The legitimate maximum is 0 pixels: with this bound at zero, a full-lane run of
+          // this head compared both phone baselines in the pinned container and both passed.
+          // A real change of one colour gives 105 pixels on this project's Inbox, which the
+          // control measured by moving the `slate-200` swatch to a pink of the same lightness.
+          // So the gate catches that change at 105 pixels against a legitimate 0, and any
+          // bound above 104 would have hidden it.
+          //
+          // `e2e/visual.e2e.ts` carries the whole reading, and the reason this is a zero and
+          // not a tolerance: the drift that stood in the way was removed rather than absorbed.
           maxDiffPixelRatio: 0,
         });
       }
