@@ -38,10 +38,16 @@ func newSessionsImportRig(t *testing.T, claims []map[string]string) *sessionsImp
 	return r
 }
 
+// onVolume is where the recorded session file sits on the tree volume, the place the rig writes
+// it and the place every refusal of the walk names.
+func (r *sessionsImportRig) onVolume(sessionFile string) string {
+	return filepath.Join(r.volume, "sessions", strings.TrimPrefix(sessionFile, agentSessions+"/"))
+}
+
 // write puts content at the recorded session file's place on the tree volume.
 func (r *sessionsImportRig) write(sessionFile, content string) {
 	r.t.Helper()
-	onVolume := filepath.Join(r.volume, "sessions", strings.TrimPrefix(sessionFile, agentSessions+"/"))
+	onVolume := r.onVolume(sessionFile)
 	if err := os.MkdirAll(filepath.Dir(onVolume), 0o700); err != nil {
 		r.t.Fatal(err)
 	}
@@ -56,6 +62,17 @@ func (r *sessionsImportRig) run(extra ...string) (int, string, string) {
 	args := append([]string{"legion", "sessions", "import", "--dsn-file", r.dsnFile, "--claims", r.claims, "--tree-volume", r.volume}, extra...)
 	code := run(context.Background(), args, &out, &errb)
 	return code, out.String(), errb.String()
+}
+
+// refuses imports LEGION-1's claims and reads the whole line printed for the one it could not
+// copy. The whole line, because "read the session file" prefixes every refusal the walk prints,
+// so a shorter assertion never says which refusal this is.
+func (r *sessionsImportRig) refuses(want string, extra ...string) {
+	r.t.Helper()
+	code, out, _ := r.run(append([]string{"--tree", "LEGION-1"}, extra...)...)
+	if code != 1 || !strings.Contains(out, want) {
+		r.t.Fatalf("import = %d, stdout\n%s\nwant exit 1 and the line %q", code, out, want)
+	}
 }
 
 // held is the session the table holds at path, as Oh My Pi reads it.
@@ -100,8 +117,7 @@ func TestSessionsImportCopiesEachClaimsSessionOnceAndReportsPerClaim(t *testing.
 	for _, want := range []string{
 		"legion-legion-legion-1-architect copied " + architect + " (31 bytes, sha256 ",
 		"legion-legion-legion-1-planner recorded no session: nothing to copy\n",
-		"legion-legion-legion-1-reviewer failed " + lost + ": read the session file: " +
-			filepath.Join(r.volume, "sessions", "--legion-workspaces-sjawhar-legion-legion-1--", "2026-10-08T14-00-00-000Z_0003.jsonl") + ": no such file or directory\n",
+		"legion-legion-legion-1-reviewer failed " + lost + ": read the session file: " + r.onVolume(lost) + ": no such file or directory\n",
 		"legion-legion-legion-1-tester copied " + tester + " (50 bytes, sha256 ",
 		"legion-legion-legion-1-reviewer missing " + lost + ": the session table holds no such session (tree LEGION-1)\n",
 		"legion-legion-legion-2-architect missing " + other + ": the session table holds no such session (tree LEGION-2)\n",
@@ -239,7 +255,7 @@ func TestSessionsImportRefusesSymlinkedSessionFiles(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newSessionsImportRig(t, []map[string]string{tc.claim})
-			onVolume := filepath.Join(r.volume, "sessions", directory, name)
+			onVolume := r.onVolume(recorded)
 			if err := os.MkdirAll(filepath.Dir(onVolume), 0o700); err != nil {
 				t.Fatal(err)
 			}
@@ -247,14 +263,7 @@ func TestSessionsImportRefusesSymlinkedSessionFiles(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			code, out, _ := r.run("--tree", "LEGION-1")
-
-			// The whole line, because a loose assertion on "read the session file" held for the
-			// "path escapes from parent" wording this walk replaced as well as for its own.
-			want := token + " failed " + recorded + ": read the session file: " + onVolume + " is a symbolic link\n"
-			if code != 1 || !strings.Contains(out, want) {
-				t.Fatalf("import = %d, stdout\n%s\nwant exit 1 and the line %q", code, out, want)
-			}
+			r.refuses(token + " failed " + recorded + ": read the session file: " + onVolume + " is a symbolic link\n")
 			if _, found := r.held(recorded); found {
 				t.Fatal("the table contains the symlink target")
 			}
@@ -315,12 +324,7 @@ func TestSessionsImportRefusesSymlinkedSessionDirectory(t *testing.T) {
 						t.Fatal(err)
 					}
 
-					code, out, _ := r.run("--tree", "LEGION-1")
-
-					want := token + " failed " + recorded + ": read the session file: " + link + " is a symbolic link\n"
-					if code != 1 || !strings.Contains(out, want) {
-						t.Fatalf("import = %d, stdout\n%s\nwant exit 1 and the line %q", code, out, want)
-					}
+					r.refuses(token + " failed " + recorded + ": read the session file: " + link + " is a symbolic link\n")
 					if _, found := r.held(recorded); found {
 						t.Fatal("the table contains the symlink-directory target")
 					}
@@ -343,13 +347,6 @@ func TestSessionsImportRefusesPathsTheWalkCannotDescend(t *testing.T) {
 	claim := func(recorded string) []map[string]string {
 		return []map[string]string{{"token": token, "tree": "LEGION-1", "sessionFile": recorded}}
 	}
-	refuses := func(t *testing.T, r *sessionsImportRig, want string, extra ...string) {
-		t.Helper()
-		code, out, _ := r.run(append([]string{"--tree", "LEGION-1"}, extra...)...)
-		if code != 1 || !strings.Contains(out, want) {
-			t.Fatalf("import = %d, stdout\n%s\nwant exit 1 and the line %q", code, out, want)
-		}
-	}
 
 	t.Run("an intermediate directory the volume does not hold", func(t *testing.T) {
 		recorded := agentSessions + "/gone/" + name
@@ -357,8 +354,8 @@ func TestSessionsImportRefusesPathsTheWalkCannotDescend(t *testing.T) {
 		if err := os.MkdirAll(filepath.Join(r.volume, "sessions"), 0o700); err != nil {
 			t.Fatal(err)
 		}
-		refuses(t, r, token+" failed "+recorded+": read the session file: "+
-			filepath.Join(r.volume, "sessions", "gone")+" is not on the tree volume\n")
+		r.refuses(token + " failed " + recorded + ": read the session file: " +
+			filepath.Join(r.volume, "sessions", "gone") + " is not on the tree volume\n")
 	})
 
 	t.Run("an intermediate component that is a regular file", func(t *testing.T) {
@@ -373,8 +370,8 @@ func TestSessionsImportRefusesPathsTheWalkCannotDescend(t *testing.T) {
 		// Under this kernel the open of a regular file with the walk's flags succeeds, so this
 		// refusal can come only from the kind read off the handle just opened, which is why the
 		// walk fstats each component it opened rather than reading the name a second time.
-		refuses(t, r, token+" failed "+recorded+": read the session file: "+
-			filepath.Join(r.volume, "sessions", "a-file")+" is not a directory\n")
+		r.refuses(token + " failed " + recorded + ": read the session file: " +
+			filepath.Join(r.volume, "sessions", "a-file") + " is not a directory\n")
 	})
 
 	t.Run("a path naming the sessions directory itself", func(t *testing.T) {
@@ -382,8 +379,8 @@ func TestSessionsImportRefusesPathsTheWalkCannotDescend(t *testing.T) {
 		r := newSessionsImportRig(t, claim(recorded))
 		// The volume holds no sessions directory at all: this refusal comes before the root's
 		// own open, and a missing root would be refused in other words.
-		refuses(t, r, token+" failed "+recorded+": read the session file: "+
-			filepath.Join(r.volume, "sessions")+" is the sessions directory itself, not a session file\n")
+		r.refuses(token + " failed " + recorded + ": read the session file: " +
+			filepath.Join(r.volume, "sessions") + " is the sessions directory itself, not a session file\n")
 	})
 
 	t.Run("a path above the sessions directory", func(t *testing.T) {
@@ -392,8 +389,8 @@ func TestSessionsImportRefusesPathsTheWalkCannotDescend(t *testing.T) {
 		// sandbox.SessionOnVolume passes this on, as filepath.Clean("..") is ".." and its guard
 		// tests for a "../" prefix alone, so the walk is what refuses it, as the relative path
 		// "..", again before the root is opened: this volume too holds no sessions directory.
-		refuses(t, r, token+" failed "+recorded+": read the session file: "+
-			r.volume+" is not under the sessions directory "+filepath.Join(r.volume, "sessions")+"\n")
+		r.refuses(token + " failed " + recorded + ": read the session file: " +
+			r.volume + " is not under the sessions directory " + filepath.Join(r.volume, "sessions") + "\n")
 	})
 
 	t.Run("a sessions directory that cannot be opened", func(t *testing.T) {
@@ -402,7 +399,7 @@ func TestSessionsImportRefusesPathsTheWalkCannotDescend(t *testing.T) {
 		missing := filepath.Join(t.TempDir(), "no-such-volume")
 		// The rig appends a caller's arguments after its own --tree-volume and flag keeps the
 		// last value of a repeated flag, so this runs against a volume that does not exist.
-		refuses(t, r, token+" failed "+recorded+": read the session file: the sessions directory "+
+		r.refuses(token+" failed "+recorded+": read the session file: the sessions directory "+
 			filepath.Join(missing, "sessions")+" cannot be opened: no such file or directory\n",
 			"--tree-volume", missing)
 	})

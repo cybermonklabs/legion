@@ -337,9 +337,9 @@ func openSessionFileBeneath(root, relative string) (*os.File, error) {
 	if err != nil {
 		return nil, fmt.Errorf("the sessions directory %s cannot be opened: %w", root, err)
 	}
-	// relative is filepath.Rel's output and IsLocal has refused an absolute, empty, ..-bearing or
-	// non-local path, so splitting on the separator yields the components themselves.
-	components := strings.Split(relative, "/")
+	// relative is filepath.Rel's output, which is clean, and IsLocal has refused an absolute, an
+	// empty and an escaping one, so splitting on the separator yields the components themselves.
+	components := strings.Split(relative, string(filepath.Separator))
 	walked := root
 	for _, name := range components[:len(components)-1] {
 		walked = filepath.Join(walked, name)
