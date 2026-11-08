@@ -189,7 +189,7 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   pending-writes indicator and the connection pill - publishes its own reach the same way, into
   `--foot-status-inset`, so `Jump to latest` rides above the whole corner rather than under it;
   an empty corner has no box, publishes nothing, and leaves that property unset.
-- `web/src/features/writes/` is the page's one write path: every write the page makes - a composer's send, a broadcast, a pin, a read mark and every other write - is one write of one store (`write-store.ts`, `Writes`, one per app beside its `QueryClient`, above the router, so leaving the page that made a write never drops it) with one lifecycle (`queued` behind an earlier write to its target, `sending`, `late` past `SEND_DEADLINE_MS` with Stop trying, `refused`, then Retry or Discard, and `resume` after a reload) and one storage format. Each write names its kind (`defineWriteKind`; `kinds.ts` loads every kind with the shell, so a reload finds any kept write's kind: `composerSend` in `conversation/held-sends.ts`, `broadcastSend` in `agents/broadcast-queue.ts`, `pinWrite` in `issue/pin-write.ts`, and `plainWrite`), where it shows (`presentation`: `composer`, the composers' inline held state; `indicator`, the shell's `PendingWritesIndicator`; or `quiet`, a read mark, never shown and let go five minutes after its press unconfirmed), and its `target`: writes to one target go out in press order (a session's sends on `session:<id>`; every write to an issue - the header's fields, board moves and component saves - on `issue:<KEY>`; its pins on `pin:<KEY>`; the Conversation's read mark on `read:issue:<KEY>`; broadcasts on `broadcast`), a later one waiting only behind an earlier one still being tried, and a refused or stopped one no longer holding the line (its Retry joins at the back). A write is kept from its press: one queued behind another is kept as the request its press names (`WriteSpec.request`) and its place in the line, so nothing of its attempt runs until its turn comes and a reload resumes the line in press order, each write once. Every write on a line of a kind made again from its request (one with no `resume`, `plainWrite`) is made from that request alone - its attempt is `api.send(request)` - and names it through its client method's own builder (`issuePatchRequest`, `agentMessageRequest`, `askSnoozeRequest`, `threadReadRequest`, `issueStateRequest`, `agentStateRequest` in `api/client.ts`, each a `WriteRequest<T>` naming the answer it gives; `useKeyedWrite` takes `target` and `request` for a line write, and no `write`, and `useSendMarkOnce` takes its `request` alone); the store refuses one that names none at once (a `TypeError`: a page bug). `OneRequestPerWriteError` guards a write whose attempt makes its own request (a composer's send, a broadcast, a pin) across its attempts. A write waiting its turn that was never sent (`Write.sent` false, kept as `KeptWrite.sent`) reads `Waiting to send` with Discard - in the indicator, as the live view's and an Agents row's pending turn (`HeldSend` `waiting`), and on the broadcast strip as `Queued: to N agents` - and Discard refuses its press with `WriteDiscardedError` (`Discarded before it was sent.`); one that went out before and waits to go again reads `Sending…` and is not the reader's to discard. `keyed-write.ts` holds the loop (`writeUnderKey`): each attempt is cut off after `KEYED_SEND_ATTEMPT_MS` (15 s) of silence - no piece of its body sent, no piece of its answer received (`api/client.ts`; an upload goes through `XMLHttpRequest`, whose upload progress every engine reports) - and one that ends without Dispatch's verdict (a `NetworkError`, a `RequestTimeoutError`, a non-JSON 2xx's `UnreadableAnswerError`, a `401`, which Dispatch never stores and which also has the store read whoami again, or what `retriesUnderKey` in `@legion/contracts` names: a 5xx, 408, 429 or `409 KEY_IN_FLIGHT`) is made again under the same key after 1 s, 2 s, 4 s … up to 30 s, or after Dispatch's `Retry-After`. Dispatch's `503 DATABASE_BUSY` and `503 REQUEST_TIMEOUT` carry a `Retry-After` it means (dispatch://INFRA-592), so a write they answer waits exactly that out, as a `429` with one does (`busyRetryAfterMs`), and its backoff stays where it was; any other `503`, a gateway's among them, names no wait the page can trust and keeps the backoff. A read so answered waits that `Retry-After` out too, as it does any refusal's, in place of the query client's `QUERY_RETRY_DELAY_MS` (`queryRetryDelay` in `api/query-client.ts`, `main.tsx`). The backoff doubles only after a wait that used it (a `KEY_IN_FLIGHT` or `Retry-After` wait leaves it as it was), and it starts over, its wait woken early but never before 1 s, only when the page learns Dispatch can be reached again on the write's own route (`api/reachability.ts`, which keeps each write route - its method and path, `routeOf` - a request failed at the connection or went silent on, and forgets it as that route answers; a read's route is kept by nothing, since no read waits to learn it can be reached again): the browser's `online`; the live socket opening after a loss that was not a rotation; or an answer below 500 on the write's own route after a request there failed at the connection or went silent. Another route's answer says nothing of this one - a `GET` of the same path included, which every live event on an issue refetches, so it never resets a failing `PATCH` of that issue - and an answer while the route was reachable all along - this route's 5xx - resets nothing, so a route that keeps answering 503, or one a proxy keeps dropping while the rest of Dispatch answers, backs off 1, 2, 4, 8, 16, 30, 30 s. Any other error refuses the write at once. Every attempt sends `Dispatch-Login`, the login stamped at the press and never restamped. `useKeyedWrite` is what a surface that is not a composer calls: each `mutate` is one press under a key of its own, resolving with Dispatch's answer or `null` for a landing without one, rejecting with its refusal or `SendStoppedError`, so the surface keeps its optimistic state until then and rolls it back on anything but a landing; a `mutate` of variables a stopped press was made with (compared by value) is that press again under its key. No write is made outside the store: every `POST`, `PATCH`, `PUT` and `DELETE` method of `api/client.ts` takes the press's `WriteBounds` as a required argument and `send` has one signature, so a bare write fails `tsc`. `write-storage.ts` keeps each unconfirmed write in `sessionStorage` as one `dispatch.write:<key>` entry (format 1: every kept shape a type guard, `WRITE_METHODS` the one method list, so a kept `PUT` or `DELETE` resumes too), and `kept-files.ts` keeps an upload's bytes in IndexedDB under its key, with the file's name and type, its login and a one-day age, until the write lands or is discarded, and makes the `File` again when it reads them, so a reload resumes the upload with its file; the bytes rather than the `File` because WebKit's IndexedDB stores no `File`, and a row of the older shape, which held one, is still read. `PendingWritesIndicator` is the shell's `region[aria-label="Pending changes"]`, absent while nothing is pending: its status line counts what is out (`Saving 2 changes…`, and once one is past its deadline and being tried again `Dispatch has not confirmed 2 changes — still trying`), and it names each write the reader can act on or should see - one held while the person's sign-out in another tab is out (`Write.signingOutElsewhere`), `<label> — Waiting for a sign-out in another tab`, with Discard if it was never sent and no Stop trying; one waiting its turn, `Waiting to send` with Discard; an upload whose body is still going up on its first try, `<label> — Uploading… N%` (`Write.uploaded`, from the upload's progress through `WriteBounds.progress`), which never reads still trying until an attempt of it has failed (`Write.retried`); a late one with **Stop trying**; a refused one as `Not saved: <label> — <why>` with **Retry** and **Discard**.
+- `web/src/features/writes/` is the page's one write path: every write the page makes - a composer's send, a broadcast, a pin, a read mark and every other write - is one write of one store (`write-store.ts`, `Writes`, one per app beside its `QueryClient`, above the router, so leaving the page that made a write never drops it) with one lifecycle (`queued` behind an earlier write to its target, `sending`, `late` past `SEND_DEADLINE_MS` with Stop trying, `refused`, then Retry or Discard, and `resume` after a reload) and one storage format. Each write names its kind (`defineWriteKind`; `kinds.ts` loads every kind with the shell, so a reload finds any kept write's kind: `composerSend` in `conversation/held-sends.ts`, `broadcastSend` in `agents/broadcast-queue.ts`, `pinWrite` in `issue/pin-write.ts`, and `plainWrite`), where it shows (`presentation`: `composer`, the composers' inline held state; `indicator`, the shell's `PendingWritesIndicator`; or `quiet`, a read mark, never shown and let go five minutes after its press unconfirmed), and its `target`: writes to one target go out in press order (a session's sends on `session:<id>`; every write to an issue - the header's fields, board moves and component saves - on `issue:<KEY>`; its pins on `pin:<KEY>`; the Conversation's read mark on `read:issue:<KEY>`; broadcasts on `broadcast`), a later one waiting only behind an earlier one still being tried, and a refused or stopped one no longer holding the line (its Retry joins at the back). A write is kept from its press: one queued behind another is kept as the request its press names (`WriteSpec.request`) and its place in the line, so nothing of its attempt runs until its turn comes and a reload resumes the line in press order, each write once. An upload is the one write kept later than its press: its record names the key its file is kept under, so the store keeps nothing of it, and sends nothing, until `kept-files.ts` answers that the file is in IndexedDB under that key - at the press and again at a Retry that moves it to a new key, where the write stands refused under its old key with its old file until the move answers - and where that answer is "not kept" (no IndexedDB, an open the browser refused) it keeps no record of that upload at all, since a record naming a file that is not there is one a reload drops with nothing shown and nothing sent; the upload still goes out, and leaving the page is still confirmed while it is out (`WriteStorage.keepNothing`). Every write on a line of a kind made again from its request (one with no `resume`, `plainWrite`) is made from that request alone - its attempt is `api.send(request)` - and names it through its client method's own builder (`issuePatchRequest`, `agentMessageRequest`, `askSnoozeRequest`, `threadReadRequest`, `issueStateRequest`, `agentStateRequest` in `api/client.ts`, each a `WriteRequest<T>` naming the answer it gives; `useKeyedWrite` takes `target` and `request` for a line write, and no `write`, and `useSendMarkOnce` takes its `request` alone); the store refuses one that names none at once (a `TypeError`: a page bug). `OneRequestPerWriteError` guards a write whose attempt makes its own request (a composer's send, a broadcast, a pin) across its attempts. A write waiting its turn that was never sent (`Write.sent` false, kept as `KeptWrite.sent`) reads `Waiting to send` with Discard - in the indicator, as the live view's and an Agents row's pending turn (`HeldSend` `waiting`), and on the broadcast strip as `Queued: to N agents` - and Discard refuses its press with `WriteDiscardedError` (`Discarded before it was sent.`); one that went out before and waits to go again reads `Sending…` and is not the reader's to discard. `keyed-write.ts` holds the loop (`writeUnderKey`): each attempt is cut off after `KEYED_SEND_ATTEMPT_MS` (15 s) of silence - no piece of its body sent, no piece of its answer received (`api/client.ts`; an upload goes through `XMLHttpRequest`, whose upload progress every engine reports) - and one that ends without Dispatch's verdict (a `NetworkError`, a `RequestTimeoutError`, a non-JSON 2xx's `UnreadableAnswerError`, a `401`, which Dispatch never stores and which also has the store read whoami again, or what `retriesUnderKey` in `@legion/contracts` names: a 5xx, 408, 429 or `409 KEY_IN_FLIGHT`) is made again under the same key after 1 s, 2 s, 4 s … up to 30 s, or after Dispatch's `Retry-After`. Dispatch's `503 DATABASE_BUSY` and `503 REQUEST_TIMEOUT` carry a `Retry-After` it means (dispatch://INFRA-592), so a write they answer waits exactly that out, as a `429` with one does (`busyRetryAfterMs`), and its backoff stays where it was; any other `503`, a gateway's among them, names no wait the page can trust and keeps the backoff. A read so answered waits that `Retry-After` out too, as it does any refusal's, in place of the query client's `QUERY_RETRY_DELAY_MS` (`queryRetryDelay` in `api/query-client.ts`, `main.tsx`). The backoff doubles only after a wait that used it (a `KEY_IN_FLIGHT` or `Retry-After` wait leaves it as it was), and it starts over, its wait woken early but never before 1 s, only when the page learns Dispatch can be reached again on the write's own route (`api/reachability.ts`, which keeps each write route - its method and path, `routeOf` - a request failed at the connection or went silent on, and forgets it as that route answers; a read's route is kept by nothing, since no read waits to learn it can be reached again): the browser's `online`; the live socket opening after a loss that was not a rotation; or an answer below 500 on the write's own route after a request there failed at the connection or went silent. Another route's answer says nothing of this one - a `GET` of the same path included, which every live event on an issue refetches, so it never resets a failing `PATCH` of that issue - and an answer while the route was reachable all along - this route's 5xx - resets nothing, so a route that keeps answering 503, or one a proxy keeps dropping while the rest of Dispatch answers, backs off 1, 2, 4, 8, 16, 30, 30 s. Any other error refuses the write at once. Every attempt sends `Dispatch-Login`, the login stamped at the press and never restamped. `useKeyedWrite` is what a surface that is not a composer calls: each `mutate` is one press under a key of its own, resolving with Dispatch's answer or `null` for a landing without one, rejecting with its refusal or `SendStoppedError`, so the surface keeps its optimistic state until then and rolls it back on anything but a landing; a `mutate` of variables a stopped press was made with (compared by value) is that press again under its key. No write is made outside the store: every `POST`, `PATCH`, `PUT` and `DELETE` method of `api/client.ts` takes the press's `WriteBounds` as a required argument and `send` has one signature, so a bare write fails `tsc`. `write-storage.ts` keeps each unconfirmed write in `sessionStorage` as one `dispatch.write:<key>` entry (format 1: every kept shape a type guard, `WRITE_METHODS` the one method list, so a kept `PUT` or `DELETE` resumes too), and `kept-files.ts` keeps an upload's bytes in IndexedDB under its key, with the file's name and type, its login and a one-day age, until the write lands or is discarded, and makes the `File` again when it reads them, so a reload resumes the upload with its file; the bytes rather than the `File` because WebKit's IndexedDB stores no `File`, and a row of the older shape, which held one, is still read. `PendingWritesIndicator` is the shell's `region[aria-label="Pending changes"]`, absent while nothing is pending: its status line counts what is out (`Saving 2 changes…`, and once one is past its deadline and being tried again `Dispatch has not confirmed 2 changes — still trying`), and it names each write the reader can act on or should see - one held while the person's sign-out in another tab is out (`Write.signingOutElsewhere`), `<label> — Waiting for a sign-out in another tab`, with Discard if it was never sent and no Stop trying; one waiting its turn, `Waiting to send` with Discard; an upload whose body is still going up on its first try, `<label> — Uploading… N%` (`Write.uploaded`, from the upload's progress through `WriteBounds.progress`), which never reads still trying until an attempt of it has failed (`Write.retried`); a late one with **Stop trying**; a refused one as `Not saved: <label> — <why>` with **Retry** and **Discard**.
   Each entry also holds what its key has already carried (`KeptWrite.carried`, written from the
   store's own record of every key, `Writes` `#carried`): a write re-pressed under the key of the
   one it replaces - a composer's Retry, `supersede` - is kept with nothing sent and no request of
@@ -278,9 +278,24 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   the session has accepted the attempt with Dispatch, so the live view shows it from the stream,
   where the session took it. When the stream tags it with its Dispatch id (`dispatchTurns` in
   `features/agent-view/conversation.ts`), the view hides Dispatch's stored copy only when the
-  streamed text equals it, and still names its author when that is not the viewer. A turn the
-  stream missed shows twice, as the streamed message and stored copy; so does a prompt template or
-  file command whose streamed message is its expansion rather than the stored `/name …`.
+  streamed row says what the person wrote (`turnSaysBody`: each of the row's lines is the body's
+  next line, the body's side read by the rule it shares with the Claude Code plugin
+  (`comparableLines` in `@legion/contracts`, the pictures taken out, each line trimmed, the
+  empty ones dropped) and the row's side the body's own pictures spent once against what the
+  row carries and what is left trimmed the same way, never stripped of pictures again
+  (`rowLines`, since taking a picture out joins the text on either side of it and that join may
+  write picture markdown neither side held before); only after every one of the body's lines is
+  matched may the row add a bracketed word naming a block it did not render, such as a
+  picture's `[image]`, at most one per picture the body embeds; a bracketed word of the row's
+  own, before those lines or past that count, leaves the stored copy showing. The bus is open
+  to any client, so a picture the row carries counts only where the body wrote that very
+  markdown, caption and address alike, and only as often as the body wrote it, since the row is
+  drawn as markdown under the person's name and a picture of the row's own would otherwise show
+  there with their stored copy hidden), and still names its author when that is
+  not the viewer.
+  A turn the stream missed shows twice, as the streamed message and stored copy;
+  so does a prompt template or file command whose streamed message is its expansion rather than
+  the stored `/name …`.
   `packages/pi-envoy/AGENTS.md` says which turns the session leaves untagged. The live view's
   composer offers the modes the session advertises in `MODE_ORDER` (Send, Aside, BTW), so it opens
   on Send wherever the session takes a steer and on Aside otherwise. In Send or Aside, the
@@ -290,8 +305,8 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   rows last, caps it at 50, and writes a picked item as `/name `. On `/agents`, only an attempt
   whose `accepted_as` is `user_turn` reads `Delivered to <session>'s conversation` with no retry
   row, even after a later `failed` (`takenAsUserTurn` in
-  `features/conversation/TargetedMessageCard.tsx`); every other attempt, a Claude Code session's
-  or an older plugin's included, keeps today's states. The page refreshes on `message.accepted`.
+  `features/conversation/TargetedMessageCard.tsx`); every other attempt, an older plugin's
+  included, keeps today's states. The page refreshes on `message.accepted`.
   A pick in the live view's header (INFRA-195, `SessionSettings.tsx`) is the person's own Send of
   `/model <id>` or `/effort <level>`: always `steer`, whatever the composer's mode, since a BTW is
   no user turn, with the id exactly as the session's `settings` frame listed it (the select clips a
@@ -307,7 +322,7 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   BTW only when its session takes it.
 - A message with no `/aside ` or `/btw ` command that answers no thread goes in `plainDelivery`
   (`features/conversation/delivery.ts`): Send when every live session it addresses that takes any
-  mode advertises Send, else Aside when every one advertises Aside (a Claude Code session), else
+  mode advertises Send, else Aside when every one advertises Aside, else
   Send, which the composer warns about; BTW is never picked for the reader. An agent card's reply
   (`exchangeDelivery` in `AgentsPage.tsx`) falls back the same way for a session that takes
   neither Send nor BTW. The composer computes it from the
@@ -318,7 +333,7 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
 - A broadcast's mode is null in `useBroadcastComposition` until the sender picks one; the page
   then sends in `broadcastDelivery` (`features/conversation/delivery.ts`) of the selected live
   sessions: BTW, else Aside when every selected session that takes any mode takes Aside and one
-  refuses BTW (a Claude Code session), and the composer says "Sending as Aside: … does not
+  refuses BTW, and the composer says "Sending as Aside: … does not
   advertise BTW.". The server still never switches a mode it is sent.
 - The Agents broadcast page renders recipients in the order the server returns them: the send's
   tick order after exclusions.
@@ -1371,8 +1386,7 @@ patches keep a pasted table's rows.
 type that row holds, since the default body cell doesn't fit Milkdown's header row and the fix
 would repeat forever. A hunk in `patches/@milkdown%2Fpreset-gfm@7.22.1.patch` makes preset-gfm's
 table paste rule count a pasted table's columns in its widest row, where upstream counts the last
-row and drops a table whose last row is empty. `e2e/read-back.ts` reads a stored document back through Go
-and through the headless engine (`e2e/engine-reading.ts`, run with bun). Each patch applies to one
+row and drops a table whose last row is empty. Each patch applies to one
 installed version, and bun ignores a `patchedDependencies` entry for a version that isn't installed
 without a word. So raising `@milkdown/plugin-clipboard` or `@milkdown/preset-gfm` means carrying its
 patch to the new version, and so does a lockfile change that moves prosemirror-tables, a transitive
@@ -1380,6 +1394,16 @@ dependency that `@milkdown/prose` asks for as `^1.8.1`. The rows catch each one:
 `ask-blocks.e2e.ts` and `editor-paste.e2e.ts` fail without the clipboard patch, the four
 `editor-paste.e2e.ts` rows for a table whose first row is empty time out without the
 prosemirror-tables patch, and the four for an empty last row fail without the preset-gfm hunk.
+
+`e2e/read-back.ts` reads a stored document back through Go and through the headless engine
+(`e2e/engine-reading.ts`, run with bun). Its `engineParagraphs` answers what a reader sees of each
+paragraph, which is `readDocument`'s own field: whitespace collapsed to one space and trimmed. What
+a `<br>` and a `hardbreak` each contribute to that text is
+`packages/proof-editor/src/document-reading.ts:15-16`; what that does to a reading is the stored
+reading of `pmdoc/testdata/corpus/softbreak.md`, which reads `two spaces aloneare` where two spaces
+end the line and `a backslash keeps` where a tab stands before the backslash. So a row holding Go's
+spelling of a body against the engine's, where the whitespace between its words is the point, reads
+the stored bytes or `engineTables` instead.
 
 `ask` is the host-rendered decision type. A live document's open block decisions appear in one compact, cycling `#b-<blockId>` navigation link beneath the tab row. There is one ask component on every surface: a decision block *hosts* the Inbox's `AskCard` (compact variant, `frame="block"`) for its indexed ask row, so answering, **Ask back** (a clarification posted as a reply on the ask — `createComment` on an issue document's ask, `createArtifactComment` on a project document's — which leaves the decision open), the newest-first two-reply preview and **Show N more replies** control over the exchange, the question-shaped-answer prompt, the `ASK_EDITED` reload, the answered and resolved records (`AskCompletionCard`), and the retryable save error all behave exactly as they do in the Inbox, and a reply or answer made in either place shows in the other. An ask block marked `invalid`, or one with a missing question or option label, renders its raw content as a malformed decision without a card until the block text is repaired. The editor library supplies its schema-aware Insert and Turn into block-menu entries; Dispatch passes the server schema rather than duplicating those commands.
 
@@ -1621,7 +1645,50 @@ pod at a fresh Chromium context (0.25 s), the cold parse of the dashboard bundle
 that context cannot cache (0.40 s) and the dashboard's boot reads before its
 first draw (0.80 s).
 
-A third keeps an Inbox assertion from measuring the wrong mechanism: a test that expects a row to leave the Inbox list releases focus AND the pointer from it first, because `ViewportAnchor` and `heldRow` keep the row the reader's hand is on rendered wherever the list has moved it. Blurring alone is not enough - `.check()` and `.click()` leave the mouse over the row.
+A row that drives no browser does not belong in this suite: it takes no page
+fixture, it runs in one project because every other would repeat it, and it
+makes the browser run wait for work no browser does. Its home is the layer that
+owns the claim — a bun test under `e2e/__tests__/` for a harness module of this
+directory (`e2e/__tests__/round-robin-proxy.test.ts` is the shape to follow: it
+spawns the module with `Bun.spawn`, waits for its listening line, drives it
+against stub upstreams and kills it in `afterAll`), that package's own tests for
+a command, and a Go test for a claim about the server (INFRA-1404). Two rows
+still in this suite take no page fixture: `e2e/cli-reply-answers.e2e.ts:10`,
+which drives the CLI, and `e2e/two-builds.multiprocess.e2e.ts:723`, which waits
+out the two-build block index's window. Both sit outside the ten rows
+INFRA-1404 moved and are tracked as dispatch://INFRA-1554, so they are
+exceptions on record rather than the shape to copy.
+
+The markdown shapes the parity rows read live in
+`packages/envoy/internal/dispatch/pmdoc/testdata/corpus/`, and all three suites
+read them from there rather than copying one: the Go reader's tests through
+`testdata/fixtures.json`, the web unit tests and the surviving browser rows of
+the seven families whose shapes it holds through
+`web/src/__tests__/pmdoc-fixtures.ts`. A new shape is a corpus file and
+`bun run gen` in `pmdoc/gen`, never a markdown string in a spec. Each family
+keeps one browser row. Where the family's markdown is stored as a document it
+is the row that reads that document back in a browser, because the spec editor
+draws Go's reading (already pinned by `fixtures.json`) and a comment parses
+through the headless engine (which a web unit test runs); for the seven
+families whose shapes the corpus holds that row reads through the live editor,
+five of them from a past version. `e2e/unknown-directive.e2e.ts` is the eighth:
+no document holds its bodies, so its one row reads the Conversation instead.
+
+Two files keep markdown of their own, each for a reason the table cannot meet.
+`packages/envoy/internal/dispatch/pmdoc/writer_spelling_test.go` spells its rows
+itself - corpus blocks among them, and the bodies two deleted browser rows wrote -
+because what it asserts is the bytes Go stores for a shape, which the table does
+not carry: `fixtures.json`'s `rendered_by_milkdown` is the browser engine's
+re-serialization of its own parse (a backslash escape) where Go stores a
+character reference, and `pmdoc/render_test.go`'s
+`TestRenderMatchesMilkdownForFixtures` compares the two only through `plain()`,
+which strips both. `e2e/unknown-directive.e2e.ts` keeps bodies of its own
+because each carries a container the block schema does not know, and the
+generator's writing parse refuses such a document outright, as the document
+service does; a Conversation body is drawn by the read-only engine instead, so
+no corpus file can hold them.
+
+One more rule keeps an Inbox assertion from measuring the wrong mechanism: a test that expects a row to leave the Inbox list releases focus AND the pointer from it first, because `ViewportAnchor` and `heldRow` keep the row the reader's hand is on rendered wherever the list has moved it. Blurring alone is not enough - `.check()` and `.click()` leave the mouse over the row.
 
 Two rules keep an assertion honest. First, name the state the fixture puts the system in and ask whether the
 assertion would still pass with the change reverted; if it would, the fixture satisfies it for another reason
@@ -1953,7 +2020,8 @@ reads a port and `e2e/psql.ts` its database. `refuseLaneConflicts` holds the
 refusals a run of more than one lane makes, so the message names the variable
 and says which thing one lane owns. `withoutHarnessPort` is the other side of
 that lookup: a spec that starts a second listener of its own and wants the OS to
-choose its port (`e2e/fake-envoy.e2e.ts`, `e2e/plain-http-proxy.e2e.ts`) must
+choose its port (`e2e/__tests__/fake-envoy.test.ts`,
+`e2e/__tests__/plain-http-proxy.test.ts`, `e2e/plain-http-proxy.e2e.ts`) must
 clear the port under both names, since dropping the plain one alone still leaves
 the lane's own, and the child would die on `EADDRINUSE` before it printed its
 listening line.
@@ -2183,7 +2251,17 @@ Its retried-upload row carries the kept-file question with it in every one of th
 upload the page keeps across a reload is resumed only where the engine gives the kept row back
 from IndexedDB (`web/src/features/writes/kept-files.ts`, which keeps the file's bytes with its
 name and type and makes the `File` again on the way out, since WebKit's IndexedDB stores no
-`File` at all), and `Writes.#resume` drops a kept upload without a word where it does not.
+`File` at all). The page writes no record of an upload until that row is committed, and none at
+all where the browser kept nothing, so no record names a file that is not there; what
+`Writes.#resume` still drops without a word is a record whose row IndexedDB evicted after it was
+committed, or that `keepOnly` swept a day later. The row delays the engine's own open of that
+database a second (`page.addInitScript` on `dispatch-kept-files` alone) so that both windows the
+product closes - the one at the press and the one at the Retry - are held open in every run,
+rather than a 3.3 ms race the suite meets at random - once in the five `merge_group` runs of the
+afternoon the row arrived. The row counts only the opens whose `success` handler the hook caught
+and called a second late, and asserts that count at its end, after every step whose timing it
+depends on, since a hook that silently stopped delaying - another database name, or a page that
+listens for `success` another way - would leave the row passing with the product reverted.
 CI installs WebKit beside Chromium for them (`bun run e2e:install` does the same locally).
 
 The `webkit` and `firefox` projects run six rows of `e2e/deep-links.e2e.ts`, tagged for two
@@ -2259,11 +2337,10 @@ above do.
 
 The `chromium-alone`, `firefox-alone` and `webkit-alone` projects run the rows whose claim is a
 wall-clock time, with the machine to themselves. `chromium-alone` runs
-`e2e/heavy-document-writes.e2e.ts` (a document write of each heavy body answers in under a
-second), `e2e/heavy-bodies.e2e.ts` and `e2e/nested-directive.e2e.ts` (a card draws without
+`e2e/heavy-bodies.e2e.ts` and `e2e/nested-directive.e2e.ts` (a card draws without
 holding the main thread for a second, both through `e2e/main-thread-hold.ts`); `firefox-alone`
 and `webkit-alone` run `e2e/heavy-bodies.e2e.ts`, which ran in those engines before, for the
-reasons given under `webkit` and `firefox` above. No project above them runs those three files,
+reasons given under `webkit` and `firefox` above. No project above them runs those two files,
 so each row runs once. Each of the three names every project before it in `dependencies`, so
 Playwright starts them only once the rest of the run has finished and runs them one after
 another, and each sets `workers: 1`, which caps that project's own workers while the run's own

@@ -596,12 +596,12 @@ jobs:
         #
         # No file store on this machine, and no DISPATCH_E2E_FILE_STORE_* names: every spec these
         # legs run is a clock spec, and no clock spec uploads or downloads anything.
-        # chromium-alone runs all three (`clockSpecs`: heavy-bodies, heavy-document-writes and
-        # nested-directive, named at e2e/playwright.config.ts:201 and taken by that project at
-        # :382), firefox-alone and webkit-alone run
-        # heavy-bodies alone (:390, :402). And e2e/run.ts:126-130 makes no lane bucket at one
-        # worker. A container serving nothing would be charged to the very reading these rows
-        # exist for. A clock spec that later uploads fails here by name rather than quietly.
+        # chromium-alone runs both (`clockSpecs`: heavy-bodies and nested-directive, named at
+        # e2e/playwright.config.ts:200 and taken by that project at :389), firefox-alone and
+        # webkit-alone run heavy-bodies alone (:397, :409). And e2e/run.ts:126-130 makes no lane
+        # bucket at one worker. A container serving nothing would be charged to the very reading
+        # these rows exist for. A clock spec that later uploads fails here by name rather than
+        # quietly.
         #
         # The memory and CPU sampler both this job and the shard job run is
         # .github/scripts/dispatch-browser-samples.sh: MemAvailable and where the CPU goes,
