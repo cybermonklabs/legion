@@ -398,11 +398,12 @@ func resolveUnpinnedRoleMentions(ctx context.Context, deps Deps, read ...mention
 			default:
 				continue
 			}
-			// A role route's forward waits such a send out while the attempt it is owed on is
+			// A role route's forward waits such a send out while one role it is owed on is
 			// within the bound of that wait, and is held as a row of the role's own topic once
 			// every one of them is past it (unnamedForwardBound,
-			// mentionHolds.waitsForAnUnnamedMention, holdsTheForwardAsARow). A live attempt is
-			// always within the bound, the bound being two of the lease that bounds live.
+			// mentionHolds.waitsForAnUnnamedMention, holdsTheForwardAsARow). A role is past the
+			// bound once any one of its attempts this read names is, even beside a younger live
+			// Retry, whose send the row then waits for (unpinnedRoleMentions.record).
 			if !unpinned.pastBound {
 				deliveries.unpinned.unnamedWithinBound = true
 			}

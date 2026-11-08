@@ -494,13 +494,16 @@ func (u *unpinnedRoleMentions) owedWithinTheForwardsBound() bool {
 	return u != nil && u.unnamedWithinBound
 }
 
-// owedPastTheForwardsBound reports whether such a send is owed and every attempt it is owed on
-// was created more than unnamedForwardBound ago. That is the forward's wait run out: the copy
-// is held as a comment_fallback_copies row of the role's own topic instead, so that the event
-// settles and the holder's later events flow, and the row is published only once no send of
-// that mention is owed (holdsTheForwardAsARow, resendingUnnamed, decideFallbackCopy). A
-// reading with one such attempt still within the bound answers false and the forward waits on:
-// that send is the one a key could yet be minted for, and the bound is each attempt's own.
+// owedPastTheForwardsBound reports whether such a send is owed and every role it is owed on is
+// past unnamedForwardBound, a role being past it once any one attempt of it that this read
+// names was created more than unnamedForwardBound ago (unpinnedRoleMentions.record). That is
+// the forward's wait run out: the copy is held as a comment_fallback_copies row of the role's
+// own topic instead, so that the event settles and the holder's later events flow, and the row
+// is published only once no send of that mention is owed (holdsTheForwardAsARow,
+// resendingUnnamed, decideFallbackCopy). A reading with one such role still within the bound
+// answers false and the forward waits on. A Retry younger than the bound beside an older
+// attempt of the same role does not keep the forward waiting: the role reads past the bound,
+// and the row it becomes still waits for that Retry's send.
 func (u *unpinnedRoleMentions) owedPastTheForwardsBound() bool {
 	return u != nil && u.unnamedResending && !u.unnamedWithinBound
 }
@@ -635,10 +638,12 @@ func (h mentionHolds) liveUnnamed() bool {
 // a comment_fallback_copies row: nothing else delivers a role copy - a keep waits for the
 // role's next claim and a forward is the holder's one copy - so a copy taken out of the list
 // would let the owner's later events reach that holder first (destination.waiting, planChains).
-// What the wait costs while it holds is the re-read mentionPendingDelay sets and no copy of the
-// comment: every other destination of the event is reached in this pass, and the holder's own
-// copy is no sooner for a row, the pass that reads one waiting on that same owed send (state,
-// decideFallbackCopy, TestAForwardWaitsForTwoUnnamedMentionsPastTheirLease).
+// What the wait costs while it holds is the re-read mentionPendingDelay sets, and the holder's
+// later events of the issue, which the waiting forward holds behind its key for up to
+// unnamedForwardBound - the cost that bound exists to cap (planChains). Every other destination
+// of the event is reached in this pass, and the holder's own copy is no sooner for a row, the
+// pass that reads one waiting on that same owed send (state, decideFallbackCopy,
+// TestAForwardWaitsForTwoUnnamedMentionsPastTheirLease).
 //
 // The bound is what ends it, since nothing else does: a sender that is alive holds its attempt
 // pending for as long as its lane is held, so the wait would otherwise run as long as that

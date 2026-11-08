@@ -44,8 +44,8 @@ body: |-
     nothing because a sweep reads it. A role route's forward that carries no key for such a
     mention is the one copy no record would protect, since a copy under the event's own key is
     one no key drops at its holder's host, so it waits in the event's list until that mention
-    settles or no sender holds it, past the minute as well; the event itself is published to its
-    issue in that pass, so nobody watching the issue waits for it.
+    settles, is abandoned, or reaches the bound below, past the minute as well; the event itself
+    is published to its issue in that pass, so nobody watching the issue waits for it.
     That one wait is bounded at 2 minutes from the attempt's creation, two of the one-minute
     claim leases above (`model.DeliveryClaimLapse`), because nothing in the attempt ends it: a
     sender that is alive writes the claim again every 20 seconds, a third of that lease
