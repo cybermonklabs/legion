@@ -43,9 +43,19 @@ cat > "$work/bin/gh" <<GH
 # for the calls after those. A case whose attempts are refused for different reasons writes
 # \`stderr.<n>\` for the n-th call, counting from 0, and that file answers in place of
 # \`stderr\` for that call alone.
+#
+# A case that writes \`kill-wrapper.<n>\` stages, for that call, a wrapper killed during the
+# attempt: the stand-in kills its own grandparent, which is the script's \`bash -c\` wrapper -
+# its parent is the \`timeout\` the wrapper runs it under - so that attempt's redirection has
+# made \`stderr.<n>\` and nothing writes \`status.<n>\`. That is the one input describe_attempt's
+# fourth branch exists for, and nothing else in this file reaches it.
 set -euo pipefail
 calls=\$(find "$work/calls" -maxdepth 1 -type f | wc -l)
 printf '%s\n' "\$*" > "$work/calls/call.\$calls"
+if [ -f "$work/kill-wrapper.\$calls" ]; then
+  kill -9 "\$(awk '{print \$4}' "/proc/\$PPID/stat")" 2>/dev/null || true
+  exit 1
+fi
 if [ "\$((calls + 1))" -le "\$(cat "$work/refuse")" ]; then
   if [ -f "$work/stderr.\$calls" ]; then
     cat "$work/stderr.\$calls" >&2
@@ -129,10 +139,11 @@ happy_page() {
 # also puts the ladder's wait back to 0, so a case that does not ask for one waits not at all
 # and the three that do set `retry_seconds` themselves after calling it. Any per-call `stderr.<n>`
 # an earlier case wrote goes with it, so one case's faults never answer another's call, and so
-# do the stand-in `timeout`'s per-call `stub-timeout.<n>` files and its own call log.
+# do the stand-in `timeout`'s per-call `stub-timeout.<n>` files and its own call log, and the
+# stand-in gh's per-call `kill-wrapper.<n>` files.
 fixture() {
   rm -rf "$work/calls" "$work/out.json" "$work/timeout-calls"
-  rm -f "$work"/stderr.* "$work"/stub-timeout.*
+  rm -f "$work"/stderr.* "$work"/stub-timeout.* "$work"/kill-wrapper.*
   mkdir -p "$work/calls" "$work/timeout-calls"
   printf '%s\n' "${1:-0}" > "$work/refuse"
   printf '%s\n' "${2:-HTTP 502}" > "$work/stderr"
@@ -347,6 +358,40 @@ check "and not handing that attempt the status only the earlier two were answere
 check "while those two are named with it, each with its own attempt number" \
   "$(contains "$(error_line)" \
     'where attempt 1 answered HTTP 502 and attempt 2 answered HTTP 502')"
+
+echo "case: an attempt whose wrapper was killed leaves neither status nor stderr to read"
+# describe_attempt's fourth branch, the one shape the other cases cannot reach: an attempt
+# that left no exit status at all. The wrapper writes `status.<n>` after gh returns, so no
+# stand-in gh can keep it from being written by answering differently - it has to not return.
+# The stand-in kills the wrapper instead, which is the thing the branch exists for: the
+# redirection has made `stderr.<n>` and nothing has written `status.<n>`.
+#
+# Round 5 left this branch with no case, on the ground that a lock it could not make fail
+# would be the third empty lock of this suite. It can be made to fail: with the branch
+# removed, so that the third branch prints the empty status it holds, this case reads
+# `exited , printing no HTTP status` and three of its assertions go red.
+#
+# The attempt is still counted, because the wrapper counts it before it runs gh, so the line
+# says three attempts and names the two that answered.
+fixture 3 "HTTP 502"
+touch "$work/kill-wrapper.2"
+drive jobs "$work/out.json"
+check "fails the step" "$(is "$status" 1)"
+check "writes no out-file" "$(is "$(wrote_out_file)" no)"
+check "tried three times" "$(is "$(calls)" 3)"
+check "prints exactly one ::error:: line" "$(is "$(errors)" 1)"
+check "says the deciding attempt left neither of the two" \
+  "$(contains "$(error_line)" \
+    'attempt 3, which decided the failure, ended with neither an exit status nor an HTTP status')"
+check "and names no exit status for it, there being none to name" \
+  "$(is "$(contains "$(error_line)" 'decided the failure, exited')" false)"
+check "nor hands it a status an earlier attempt was answered" \
+  "$(is "$(contains "$(error_line)" 'decided the failure, answered HTTP 502')" false)"
+check "while the two that were answered are named, each with its own attempt number" \
+  "$(contains "$(error_line)" \
+    'where attempt 1 answered HTTP 502 and attempt 2 answered HTTP 502')"
+check "and the attempt the wrapper never finished is still counted" \
+  "$(contains "$(error_line)" 'the ladder made 3 attempts')"
 
 echo "case: refused once, answered on the second attempt"
 fixture 1
