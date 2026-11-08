@@ -11,12 +11,19 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { appTokenSources } from "./app-logins";
-import { holdsNoToken, release, standInGitHub, tokenOf } from "./stand-in-github-fixtures";
+import {
+  appPrivateKey,
+  holdsNoToken,
+  release,
+  standInGitHub,
+  tokenOf,
+} from "./stand-in-github-fixtures";
 
 // lib/app-logins.ts run as the stage proofs run it, against the stand-in GitHub of
 // stand-in-github-fixtures.ts, which answers GraphQL's viewer and GET /apps/<slug> under an
-// installation token of one of its Apps and refuses every other request, the JWT routes
-// (GET /app, the installation routes) among them.
+// installation token of one of its Apps, and the two App-JWT routes a key-configured App is
+// proved through to a request signed with that App's own key; it refuses every other request,
+// GET /app among them.
 const { url: standIn, seen, dir } = standInGitHub("app-logins-test");
 const script = join(import.meta.dir, "app-logins.ts");
 // The home every child of this file runs under, so none of them reads the caller's.
@@ -28,13 +35,18 @@ const unreachable = `http://127.0.0.1:${closed.port}/`;
 await closed.stop(true);
 
 const releaseIDs = [101, 202, 303, 404];
-// The home and the releases this file's children read, staged before the first row: `dir` is
-// reserved where `standInGitHub` was called and made by the hook that reservation registered, so
-// a run that selects no row of this file stages nothing and leaves nothing behind.
+// The stand-in Apps whose own key a row puts behind a private_key_command.
+const keyIDs = [101, 202, 404];
+// The home, the releases and the keys this file's children read, staged before the first row:
+// `dir` is reserved where `standInGitHub` was called and made by the hook that reservation
+// registered, so a run that selects no row of this file stages nothing and leaves nothing behind.
 beforeAll(() => {
   mkdirSync(home);
   for (const id of releaseIDs) {
     writeFileSync(join(dir, `release-${id}.json`), release({ sjawhar: tokenOf(id) }));
+  }
+  for (const id of keyIDs) {
+    writeFileSync(join(dir, `key-${id}.pem`), appPrivateKey(id), { mode: 0o600 });
   }
 });
 
@@ -49,6 +61,26 @@ function config(implement: string, review: string): string {
 }
 const app = (id: string, command = `cat ${join(dir, `release-${id}.json`)}`) =>
   `    app_id: "${id}"\n    token_command: ${JSON.stringify(command)}`;
+/** The `github_apps` entry of an App proved from its key: its id and a private_key_command that
+ * reads that App's PEM out of a file of this test's own, the `cat --` shape
+ * lib/github-apps.sh writes under --token-dir. */
+const keyApp = (id: string, command = `cat -- ${join(dir, `key-${id}.pem`)}`) =>
+  `    app_id: "${id}"\n    private_key_command: ${JSON.stringify(command)}`;
+/** The first part of every App JWT the key path signs, `{"alg":"RS256","typ":"JWT"}` in
+ * base64url. */
+const jwtHeader = Buffer.from('{"alg":"RS256","typ":"JWT"}', "utf8").toString("base64url");
+/** Asserts that TEXT quotes no stand-in App's private key and no App JWT, as `holdsNoToken`
+ * asserts it quotes no token: the key's base64 body lines are 64 characters apiece of a key this
+ * run generated, which nothing else here could print. */
+const holdsNoKey = (text: string) => {
+  expect(text).not.toContain("BEGIN PRIVATE KEY");
+  expect(text).not.toContain(jwtHeader);
+  for (const id of keyIDs) {
+    for (const pem of appPrivateKey(id).split("\n")) {
+      if (pem.length >= 40 && pem[0] !== "-") expect(text).not.toContain(pem);
+    }
+  }
+};
 
 // The run is asynchronous: the stand-in GitHub answers from this test's own event loop. The child
 // gets PATH, a home of the test's own and `env`, never the caller's whole environment. The helper
@@ -498,13 +530,98 @@ describe("app-logins.ts", () => {
     }
   });
 
-  test("an App configured with no token_command is refused by name", () => {
+  // The key path, which lib/github-apps.sh writes for the review role: the App's own key behind
+  // a private_key_command, out of which this mints the App's installation token and then proves
+  // exactly what the token path proves.
+  test("an App proved from its key prints its bot login, its two JWT routes asked before the viewer", async () => {
+    seen.length = 0;
+    const { code, stdout, stderr } = await run(config(app("101"), keyApp("202")));
+    expect(stderr).toBe("");
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout)).toEqual({
+      implement: "example-implement[bot]",
+      review: "example-review[bot]",
+    });
+    // The token path's two reads, then the key path's four: the App JWT lists the App's
+    // installations and mints that installation's token, each asked once for that role, and the
+    // viewer and GET /apps/<slug> follow under the token it minted.
+    expect(seen).toEqual([
+      "POST /graphql",
+      "GET /apps/example-implement",
+      "GET /app/installations",
+      "POST /app/installations/2020/access_tokens",
+      "POST /graphql",
+      "GET /apps/example-review",
+    ]);
+    holdsNoToken(stdout);
+    holdsNoKey(stdout);
+  });
+
+  test("an App whose GET /apps/<slug> answers another id is refused from its key too, naming both ids", async () => {
+    const { code, stdout, stderr } = await run(config(app("101"), keyApp("404")));
+    expect(code).toBe(1);
+    expect(stdout).toBe("");
+    expect(stderr).toMatch(namesApp("review", "404"));
+    expect(stderr).toContain("answered App id 405, want 404");
+    // The field the credential was read from is the one the message names.
+    expect(stderr).toContain(
+      "github_apps.review.private_key_command's key minted another App's token"
+    );
+    holdsNoToken(stderr);
+    holdsNoKey(stderr);
+  });
+
+  test("an App without its role's write permission is refused from its key", async () => {
+    // The two Apps swapped, the review role on the implement App's key: GitHub answers that
+    // App's id, and checks: read.
+    const { code, stdout, stderr } = await run(config(app("202"), keyApp("101")));
+    expect(code).toBe(1);
+    expect(stdout).toBe("");
+    expect(stderr).toMatch(namesApp("review", "101"));
+    expect(stderr).toContain('answered permissions.checks "read", want write');
+    holdsNoToken(stderr);
+    holdsNoKey(stderr);
+  });
+
+  test("a key command that fails is named by its field, exit code and stderr, its key never quoted", async () => {
+    // It prints the key on stdout before it fails, so the row says what becomes of that too.
+    const failing = `cat -- ${join(dir, "key-202.pem")}; echo 'the key command refused' >&2; exit 5`;
+    const { code, stderr } = await run(config(app("101"), keyApp("202", failing)));
+    expect(code).toBe(1);
+    expect(stderr).toBe(
+      "the key command refused\napp-logins: the review App (app_id 202): github_apps.review.private_key_command failed (exit 5): the key command refused"
+    );
+    holdsNoToken(stderr);
+    holdsNoKey(stderr);
+  });
+
+  test("a key command that prints nothing is refused", async () => {
+    const { code, stderr } = await run(config(app("101"), keyApp("202", "true")));
+    expect(code).toBe(1);
+    expect(stderr).toBe(
+      "app-logins: the review App (app_id 202): github_apps.review.private_key_command produced empty output"
+    );
+    holdsNoToken(stderr);
+    holdsNoKey(stderr);
+  });
+
+  test("an App configured with neither credential field is refused by name, as is a config with no github_apps", () => {
     expect(() =>
       appTokenSources(
-        'github_apps:\n  implement: { app_id: "1", private_key_command: "true" }\n  review: { app_id: "2", token_command: "true" }\n'
+        'github_apps:\n  implement: { app_id: "1" }\n  review: { app_id: "2", token_command: "true" }\n'
       )
-    ).toThrow("github_apps.implement names its credential without a token_command");
+    ).toThrow(
+      "github_apps.implement names its credential without a token_command or a private_key_command"
+    );
     expect(() => appTokenSources("project: ACME\n")).toThrow("the config has no github_apps");
+  });
+
+  test("an App configured with both credential fields is refused by name", () => {
+    expect(() =>
+      appTokenSources(
+        'github_apps:\n  implement: { app_id: "1", token_command: "true", private_key_command: "true" }\n  review: { app_id: "2", token_command: "true" }\n'
+      )
+    ).toThrow("github_apps.implement names both a token_command and a private_key_command");
   });
 });
 

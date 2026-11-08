@@ -116,6 +116,11 @@ test.skipIf(skip)(
         TMPDIR: scratch,
         LEGION_E2E_MODEL_ROUTE: "key-file",
         LEGION_E2E_ANTHROPIC_KEY_FILE: keyFile,
+        // The review App's key command, which prerequisites requires and has no default for
+        // (lib/github-apps.sh). Without it the run is refused at that input check, before it
+        // reaches an App credential at all, and this row would pass while proving nothing. The
+        // command itself is never run here: the stand-in `bun` answers the proof above it.
+        LEGION_E2E_REVIEW_APP_KEY_COMMAND: "printf 'this row never runs the key command'",
       },
       stdout: "pipe",
       stderr: "pipe",

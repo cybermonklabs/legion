@@ -16,7 +16,13 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { appTokenSources } from "./app-logins";
-import { holdsNoToken, release, standInGitHub, tokenOf } from "./stand-in-github-fixtures";
+import {
+  appPrivateKey,
+  holdsNoToken,
+  release,
+  standInGitHub,
+  tokenOf,
+} from "./stand-in-github-fixtures";
 
 const { url: standIn, seen, dir } = standInGitHub("github-apps-test");
 // The home every child of this file runs under, so none of them reads the caller's.
@@ -34,6 +40,21 @@ const home = join(dir, "home");
 // stdout when OVERSIZED_MINT is set.
 const store = join(dir, "store");
 const fakeBin = join(dir, "bin");
+// The review App's own private key, the one the stand-in GitHub verifies an App JWT against. The
+// rig drives it as a deployment does — through a command that prints it, never through a variable
+// or an argument holding it — and the base64 body lines of that key are this file's sentinel:
+// 64 characters apiece of an RSA key this run generated, which no other fixture here could print.
+// holdsNoKey looks for them, and for the armor line, wherever the key must not be.
+const reviewKey = appPrivateKey(202);
+const reviewKeyFile = join(dir, "review-key.pem");
+const keySentinel = reviewKey.split("\n").filter((pem) => pem.length >= 40 && pem[0] !== "-");
+const holdsNoKey = (text: string) => {
+  expect(text).not.toContain("BEGIN PRIVATE KEY");
+  for (const pem of keySentinel) expect(text).not.toContain(pem);
+};
+// The key command the rig gives the review role, which has no broker secret to name: a `cat` of
+// the file above, the shape write_github_apps --token-dir writes and an operator's own has.
+const reviewKeyCommand = `cat -- ${reviewKeyFile}`;
 // Every directory and stand-in this file's children read, staged before the first row: `dir` is
 // reserved at module scope and made by the hook that reservation registered, so a run that
 // selects no row of this file stages nothing and leaves nothing behind.
@@ -42,8 +63,10 @@ beforeAll(() => {
   mkdirSync(store);
   mkdirSync(fakeBin);
   writeFileSync(join(store, "IMPLEMENT_APP"), release({ sjawhar: tokenOf(101) }));
-  writeFileSync(join(store, "REVIEW_APP"), release({ sjawhar: tokenOf(202) }));
   writeFileSync(join(store, "OTHER_APP"), release({ sjawhar: tokenOf(404) }));
+  // The review App's key, behind the key command below: the file an operator's own command would
+  // read, written where every child of this file can read it.
+  writeFileSync(reviewKeyFile, reviewKey, { mode: 0o600 });
   writeFileSync(
     join(fakeBin, "agent-secrets"),
     `#!/bin/sh
@@ -61,9 +84,9 @@ if [ -n "\${FAIL_MINT:-}" ]; then
   case "$owner/$ro" in $FAIL_MINT) echo "grant for $name denied" >&2; exit 3 ;; esac
 fi
 if [ -n "\${UNKNOWN_SECRETS:-}" ]; then
-  case " \$UNKNOWN_SECRETS " in
+  case " $UNKNOWN_SECRETS " in
     *" $name "*)
-      [ -z "\${UNKNOWN_PREFACE:-}" ] || echo "\$UNKNOWN_PREFACE" >&2
+      [ -z "\${UNKNOWN_PREFACE:-}" ] || echo "$UNKNOWN_PREFACE" >&2
       echo "agent-secrets: no agent secret has this name (UNKNOWN_SECRET); asked the broker AGENT_SECRETS_URL names" >&2
       exit 1 ;;
   esac
@@ -81,7 +104,7 @@ const appInputs = {
   LEGION_E2E_IMPLEMENT_APP_ID: "101",
   LEGION_E2E_IMPLEMENT_APP_SECRET: "IMPLEMENT_APP",
   LEGION_E2E_REVIEW_APP_ID: "202",
-  LEGION_E2E_REVIEW_APP_SECRET: "REVIEW_APP",
+  LEGION_E2E_REVIEW_APP_KEY_COMMAND: reviewKeyCommand,
 };
 // The sh the bridge daemon's container runs a token command with is busybox's; where the host has
 // none, the host's POSIX sh stands in for it.
@@ -132,33 +155,40 @@ echo "logins $github_app_logins"`;
   test("the default pair is the lib's documented one, and an input left unset takes it", async () => {
     seen.length = 0;
     const { code, stdout, stderr, work } = await githubApps(
-      { LEGION_E2E_REVIEW_APP_ID: "202", LEGION_E2E_REVIEW_APP_SECRET: "REVIEW_APP" },
+      { LEGION_E2E_REVIEW_APP_ID: "202", LEGION_E2E_REVIEW_APP_KEY_COMMAND: reviewKeyCommand },
       `require_app_inputs implement review
 write_github_apps implement review
-echo "defaults $default_implement_app_id $default_implement_app_secret $default_review_app_id $default_review_app_secret"`
+echo "defaults $default_implement_app_id $default_implement_app_secret $default_review_app_id"`
     );
     expect(stderr).toBe("");
     expect(code).toBe(0);
-    expect(line(stdout, "defaults ")).toBe(
-      "5341240 LEGION_IMPLEMENT_APP 5341243 LEGION_REVIEW_APP"
-    );
+    // The review App has no default credential of its own: its key command is required and
+    // default_review_app_secret is gone. The three below are read outside this file — the
+    // implement pair out of the lib's text by packages/daemon/internal/api/real_github_test.go,
+    // all three by scripts/e2e/README.md — so each is pinned here.
+    expect(line(stdout, "defaults ")).toBe("5341240 LEGION_IMPLEMENT_APP 5341243");
     const sources = appTokenSources(readFileSync(join(work, "github-apps.yaml"), "utf8"));
     expect(sources.implement).toEqual({
       appId: "5341240",
-      tokenCommand: tokenCommand("LEGION_IMPLEMENT_APP"),
+      source: "token_command",
+      command: tokenCommand("LEGION_IMPLEMENT_APP"),
     });
-    expect(sources.review).toEqual({ appId: "202", tokenCommand: tokenCommand("REVIEW_APP") });
+    expect(sources.review).toEqual({
+      appId: "202",
+      source: "private_key_command",
+      command: reviewKeyCommand,
+    });
     // The default pair is never asked of GitHub by this test: check_github_apps did not run.
     expect(seen).toEqual([]);
   });
 
   test("an input set to an empty value is refused, not read as a choice of the default", async () => {
     const { code, stderr } = await githubApps(
-      { ...appInputs, LEGION_E2E_REVIEW_APP_SECRET: "" },
+      { ...appInputs, LEGION_E2E_IMPLEMENT_APP_SECRET: "" },
       proveBoth
     );
     expect(code).toBe(1);
-    expect(stderr).toContain("LEGION_E2E_REVIEW_APP_SECRET must be");
+    expect(stderr).toContain("LEGION_E2E_IMPLEMENT_APP_SECRET must be");
   });
 
   test("write_github_apps refuses a role require_app_inputs did not read, and writes nothing", async () => {
@@ -176,15 +206,17 @@ echo "wrote the block"`
     expect(existsSync(join(work, "github-apps.yaml"))).toBe(false);
   });
 
-  test("app_key_unsets strips each role's secret, this deployment's own two, and every PRIVATE_KEY variable", async () => {
+  test("app_key_unsets strips the implement secret, the lib's default name, the two retired review names and every PRIVATE_KEY variable", async () => {
     // Each name is exported first, so the strip list has something to remove: without it the
-    // child would print them all.
+    // child would print them all. The three exported after the call are the lib's own literal
+    // entries: its `compgen -e` sweep never saw them, so only the literals can strip them, and a
+    // stale export of either retired review name reaches no process the run starts.
     const { code, stdout, stderr } = await githubApps(
       { ...appInputs, SOME_OTHER_APP_PRIVATE_KEY_B64: "irrelevant" },
-      `export IMPLEMENT_APP=x REVIEW_APP=x
+      `export IMPLEMENT_APP=x
 require_app_inputs implement review
-export "$default_implement_app_secret=x" "$default_review_app_secret=x"
-names="IMPLEMENT_APP|REVIEW_APP|SOME_OTHER_APP_PRIVATE_KEY_B64|$default_implement_app_secret|$default_review_app_secret"
+export "$default_implement_app_secret=x" LEGION_REVIEW_APP=x GH_REVIEW_APP_PRIVATE_KEY_B64=x
+names="IMPLEMENT_APP|SOME_OTHER_APP_PRIVATE_KEY_B64|$default_implement_app_secret|LEGION_REVIEW_APP|GH_REVIEW_APP_PRIVATE_KEY_B64"
 echo "set $(env | grep -c -E "^($names)=")"
 env "\${app_key_unsets[@]}" sh -c "echo \\"left \\$(env | grep -c -E '^($names)=' || true)\\""`
     );
@@ -194,12 +226,11 @@ env "\${app_key_unsets[@]}" sh -c "echo \\"left \\$(env | grep -c -E '^($names)=
     expect(stdout).toContain("left 0");
   });
 
-  test("an id that is not a number, a secret name unsafe in a shell, or one App for both is refused", async () => {
+  test("an id that is not a number, a secret name unsafe in a shell, or one App id for both is refused", async () => {
     const cases: [Record<string, string>, string][] = [
       [{ LEGION_E2E_IMPLEMENT_APP_ID: "12a" }, "LEGION_E2E_IMPLEMENT_APP_ID must be"],
-      [{ LEGION_E2E_REVIEW_APP_SECRET: "APP;true" }, "LEGION_E2E_REVIEW_APP_SECRET must be"],
+      [{ LEGION_E2E_IMPLEMENT_APP_SECRET: "APP;true" }, "LEGION_E2E_IMPLEMENT_APP_SECRET must be"],
       [{ LEGION_E2E_REVIEW_APP_ID: "101" }, "are both 101: the workflow needs two Apps"],
-      [{ LEGION_E2E_REVIEW_APP_SECRET: "IMPLEMENT_APP" }, "are both IMPLEMENT_APP"],
     ];
     for (const [inputs, want] of cases) {
       const { code, stderr, work } = await githubApps({ ...appInputs, ...inputs }, proveBoth);
@@ -220,6 +251,58 @@ env "\${app_key_unsets[@]}" sh -c "echo \\"left \\$(env | grep -c -E '^($names)=
       expect(stderr).toContain(`${name} must be`);
       expect(stderr).not.toContain(value.slice(0, 13));
     }
+  });
+
+  test("the review App's key command is required, and an unset, empty or blank one is refused by name", async () => {
+    for (const value of [undefined, "", "   "]) {
+      const { code, stdout, stderr, work } = await githubApps(
+        { ...appInputs, LEGION_E2E_REVIEW_APP_KEY_COMMAND: value },
+        proveBoth
+      );
+      expect(code).toBe(1);
+      expect(stderr).toContain(
+        "LEGION_E2E_REVIEW_APP_KEY_COMMAND must be set to shell text that prints the review App's PEM private key on stdout"
+      );
+      // The refusal says what to set and prints nothing an operator pasted.
+      expect(stderr).toContain("its value is not printed");
+      expect(stdout).not.toContain("logins");
+      expect(existsSync(join(work, "github-apps.yaml"))).toBe(false);
+    }
+  });
+
+  test("a run that still exports the retired review secret is refused by name, key command or not", async () => {
+    // The retired input named a broker secret for the review App, which that App no longer has:
+    // a run that still sets it is told so rather than quietly reading the key command instead.
+    for (const inputs of [
+      { LEGION_E2E_REVIEW_APP_SECRET: "REVIEW_APP" },
+      { LEGION_E2E_REVIEW_APP_SECRET: "REVIEW_APP", LEGION_E2E_REVIEW_APP_KEY_COMMAND: undefined },
+    ]) {
+      const { code, stdout, stderr, work } = await githubApps(
+        { ...appInputs, ...inputs },
+        proveBoth
+      );
+      expect(code).toBe(1);
+      expect(stderr).toContain(
+        "LEGION_E2E_REVIEW_APP_SECRET is retired: the review App's credential is its key, not a secrets broker release"
+      );
+      expect(stderr).toContain("LEGION_E2E_REVIEW_APP_KEY_COMMAND");
+      expect(stdout).not.toContain("logins");
+      expect(existsSync(join(work, "github-apps.yaml"))).toBe(false);
+    }
+  });
+
+  test("a key command that is the key itself is refused by name, with no part of the key printed", async () => {
+    const { code, stdout, stderr, work } = await githubApps(
+      { ...appInputs, LEGION_E2E_REVIEW_APP_KEY_COMMAND: reviewKey },
+      proveBoth
+    );
+    expect(code).toBe(1);
+    expect(stderr).toContain(
+      "LEGION_E2E_REVIEW_APP_KEY_COMMAND must name a command that prints the review App's private key, not the key itself"
+    );
+    expect(stdout).not.toContain("logins");
+    expect(existsSync(join(work, "github-apps.yaml"))).toBe(false);
+    holdsNoKey(stdout + stderr);
   });
 
   test("app_token_command prints the broker client's command, its owner, repository and read-only words left to the daemon's sh", async () => {
@@ -279,7 +362,7 @@ printf 'command %s\\n' "$(app_token_command "$implement_app_secret")"`
     }
   });
 
-  test("matching Apps pass through their token commands, and the block written is the daemon's", async () => {
+  test("matching Apps pass through their own credential commands, and the block written is the daemon's", async () => {
     const { code, stdout, stderr, work } = await githubApps(appInputs, proveBoth);
     expect(stderr).toBe("");
     expect(code).toBe(0);
@@ -287,15 +370,25 @@ printf 'command %s\\n' "$(app_token_command "$implement_app_secret")"`
       implement: "example-implement[bot]",
       review: "example-review[bot]",
     });
+    // One credential field a role, and the whole text of the block: the implement App's token
+    // command, the review App's key command verbatim, and neither role carrying both.
     expect(readFileSync(join(work, "github-apps.yaml"), "utf8")).toBe(
-      `github_apps:\n  implement:\n    app_id: "101"\n    token_command: ${JSON.stringify(tokenCommand("IMPLEMENT_APP"))}\n  review:\n    app_id: "202"\n    token_command: ${JSON.stringify(tokenCommand("REVIEW_APP"))}\n`
+      `github_apps:\n  implement:\n    app_id: "101"\n    token_command: ${JSON.stringify(tokenCommand("IMPLEMENT_APP"))}\n  review:\n    app_id: "202"\n    private_key_command: ${JSON.stringify(reviewKeyCommand)}\n`
     );
+    const sources = appTokenSources(readFileSync(join(work, "github-apps.yaml"), "utf8"));
+    expect(sources.implement?.source).toBe("token_command");
+    expect(sources.review?.source).toBe("private_key_command");
     holdsNoToken(stdout);
+    holdsNoKey(stdout);
   });
 
   test("a secret that releases another App's tokens fails the check, naming both ids and no token", async () => {
     const { code, stdout, stderr } = await githubApps(
-      { ...appInputs, LEGION_E2E_REVIEW_APP_ID: "404", LEGION_E2E_REVIEW_APP_SECRET: "OTHER_APP" },
+      {
+        ...appInputs,
+        LEGION_E2E_IMPLEMENT_APP_ID: "404",
+        LEGION_E2E_IMPLEMENT_APP_SECRET: "OTHER_APP",
+      },
       proveBoth
     );
     expect(code).toBe(1);
@@ -305,17 +398,18 @@ printf 'command %s\\n' "$(app_token_command "$implement_app_secret")"`
     holdsNoToken(stderr);
   });
 
-  // A deployment whose broker holds no credential for a role (the review App's secret deleted)
-  // must set that role's input: app-logins.ts reads the broker's own refusal out of the run it
-  // already makes and names the role and the input, rather than its generic reason alone. It
-  // reads it out of the whole of the command's stderr, so a refusal the client prints under a
-  // line of its own is named the same way.
+  // A deployment whose broker holds no credential for the implement App (its secret deleted) must
+  // set that role's input: app-logins.ts reads the broker's own refusal out of the run it already
+  // makes and names the role and the input, rather than its generic reason alone. It reads it out
+  // of the whole of the command's stderr, so a refusal the client prints under a line of its own
+  // is named the same way. The implement App is the only role this can happen to: the review
+  // App's credential is its key, which the broker is never asked for.
   const refusal =
-    /^app-logins: the review App \(app_id 202\): the secrets broker serves no github-app secret under the name github_apps\.review\.token_command gives \(UNKNOWN_SECRET\): set LEGION_E2E_REVIEW_APP_SECRET to the name of a github-app secret this deployment's broker holds for that App$/m;
+    /^app-logins: the implement App \(app_id 101\): the secrets broker serves no github-app secret under the name github_apps\.implement\.token_command gives \(UNKNOWN_SECRET\): set LEGION_E2E_IMPLEMENT_APP_SECRET to the name of a github-app secret this deployment's broker holds for that App$/m;
 
   test("a secret the broker does not serve fails the check, naming the role and the input", async () => {
     const { code, stdout, stderr } = await githubApps(
-      { ...appInputs, UNKNOWN_SECRETS: "REVIEW_APP" },
+      { ...appInputs, UNKNOWN_SECRETS: "IMPLEMENT_APP" },
       proveBoth
     );
     expect(code).toBe(1);
@@ -327,9 +421,9 @@ printf 'command %s\\n' "$(app_token_command "$implement_app_secret")"`
   });
 
   test("a broker refusal below the first line of the command's stderr names the role and the input too", async () => {
-    const preface = "agent-secrets: asking the broker AGENT_SECRETS_URL names for REVIEW_APP";
+    const preface = "agent-secrets: asking the broker AGENT_SECRETS_URL names for IMPLEMENT_APP";
     const { code, stdout, stderr } = await githubApps(
-      { ...appInputs, UNKNOWN_SECRETS: "REVIEW_APP", UNKNOWN_PREFACE: preface },
+      { ...appInputs, UNKNOWN_SECRETS: "IMPLEMENT_APP", UNKNOWN_PREFACE: preface },
       proveBoth
     );
     expect(code).toBe(1);
@@ -355,10 +449,10 @@ echo "logins $github_app_logins"`
     expect(stdout).toContain('logins {"implement":"example-implement[bot]"}');
   });
 
-  // The refresher as the sandbox proof runs it under bridge: each role's releases minted here, into
-  // owner-only files of a directory the caller names, and the block's token commands then read
-  // those files alone.
-  test("mint_app_tokens writes each release to an owner-only file atomically, one a role, owner and flag", async () => {
+  // The refresher as the sandbox proof runs it under bridge: the releases of the one role whose
+  // tokens come from the broker minted here, into owner-only files of a directory the caller
+  // names, and the block's token commands then read those files alone.
+  test("mint_app_tokens writes each release to an owner-only file atomically, one an owner and flag", async () => {
     const tokenDir = mkdtempSync(join(dir, "tokens."));
     const argvLog = join(dir, "argv-mint");
     rmSync(argvLog, { force: true });
@@ -378,34 +472,88 @@ echo minted`
       "sjawhar.json",
       "sjawhar.read.json",
     ];
-    for (const [role, secret] of [
-      ["implement", "IMPLEMENT_APP"],
-      ["review", "REVIEW_APP"],
-    ] as const) {
-      expect(statSync(join(tokenDir, role)).mode & 0o777).toBe(0o700);
-      // No temporary file is left beside them.
-      expect(readdirSync(join(tokenDir, role)).sort()).toEqual(files);
-      for (const file of files) {
-        const path = join(tokenDir, role, file);
-        expect(statSync(path).mode & 0o777).toBe(0o600);
-        expect(readFileSync(path, "utf8")).toBe(readFileSync(join(store, secret), "utf8"));
-      }
+    expect(statSync(join(tokenDir, "implement")).mode & 0o777).toBe(0o700);
+    // No temporary file is left beside them.
+    expect(readdirSync(join(tokenDir, "implement")).sort()).toEqual(files);
+    for (const file of files) {
+      const path = join(tokenDir, "implement", file);
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+      expect(readFileSync(path, "utf8")).toBe(readFileSync(join(store, "IMPLEMENT_APP"), "utf8"));
     }
     const flags = "--ttl 12h --reason=legion-live-proof-github-app-token";
     const asked = readFileSync(argvLog, "utf8")
       .trim()
       .split("\n")
       .map((argv) => argv.replace(/ -- sh -c .*$/, ""));
-    expect(asked).toEqual(
-      ["IMPLEMENT_APP", "REVIEW_APP"].flatMap((secret) => [
-        `${secret} ${flags}`,
-        `${secret} ${flags} --github-owner sjawhar`,
-        `${secret} ${flags} --github-owner sjawhar --github-read-only`,
-        `${secret} ${flags} --github-owner acme-org`,
-        `${secret} ${flags} --github-owner acme-org --github-read-only`,
-      ])
-    );
+    expect(asked).toEqual([
+      `IMPLEMENT_APP ${flags}`,
+      `IMPLEMENT_APP ${flags} --github-owner sjawhar`,
+      `IMPLEMENT_APP ${flags} --github-owner sjawhar --github-read-only`,
+      `IMPLEMENT_APP ${flags} --github-owner acme-org`,
+      `IMPLEMENT_APP ${flags} --github-owner acme-org --github-read-only`,
+    ]);
     holdsNoToken(stdout + stderr);
+  });
+
+  test("mint_app_tokens writes the review App's key once to an owner-only file of its own, and asks the broker for the implement role alone", async () => {
+    const tokenDir = mkdtempSync(join(dir, "tokens."));
+    const argvLog = join(dir, "argv-key-mint");
+    rmSync(argvLog, { force: true });
+    const { code, stdout, stderr } = await githubApps(
+      { ...appInputs, TOKEN_DIR: tokenDir, ARGV_LOG: argvLog },
+      `require_app_inputs implement review
+mint_app_tokens "$TOKEN_DIR" sjawhar
+echo minted`
+    );
+    expect(stderr).toBe("");
+    expect(code).toBe(0);
+    expect(stdout).toContain("minted");
+    // One file, the key, owner-only in an owner-only directory, and no temporary file beside it.
+    expect(readdirSync(join(tokenDir, "review"))).toEqual(["key.pem"]);
+    expect(statSync(join(tokenDir, "review")).mode & 0o777).toBe(0o700);
+    expect(statSync(join(tokenDir, "review", "key.pem")).mode & 0o777).toBe(0o600);
+    // What the key command printed, byte for byte.
+    expect(readFileSync(join(tokenDir, "review", "key.pem"), "utf8")).toBe(reviewKey);
+    // The broker was asked for the implement App's releases and for nothing else: the review
+    // App's credential never passes through it.
+    const asked = readFileSync(argvLog, "utf8").trim().split("\n");
+    expect([...new Set(asked.map((argv) => argv.split(" ")[0]))]).toEqual(["IMPLEMENT_APP"]);
+    holdsNoKey(stdout + stderr);
+    holdsNoToken(stdout + stderr);
+  });
+
+  test("a key command that fails, or prints nothing, fails the run naming the review App and the file", async () => {
+    // The failing command prints the key on stdout before it fails, so the row also says what
+    // becomes of that: no file, and no byte of it in any message.
+    const cases: [string, RegExp, string][] = [
+      [
+        `cat -- ${reviewKeyFile}; echo 'the key command refused' >&2; exit 4`,
+        /^FAIL prerequisites: the review App \(App 202, LEGION_E2E_REVIEW_APP_KEY_COMMAND\) gave no private key for .*\/review\/key\.pem: the key command exited 4 \(124 is its 35-minute timeout\); no key is printed$/m,
+        "the key command refused",
+      ],
+      [
+        "true",
+        /^FAIL prerequisites: the review App \(App 202, LEGION_E2E_REVIEW_APP_KEY_COMMAND\) gave no private key for .*\/review\/key\.pem: the key command printed nothing$/m,
+        "",
+      ],
+    ];
+    for (const [command, named, relayed] of cases) {
+      const tokenDir = mkdtempSync(join(dir, "tokens."));
+      const { code, stdout, stderr } = await githubApps(
+        { ...appInputs, TOKEN_DIR: tokenDir, LEGION_E2E_REVIEW_APP_KEY_COMMAND: command },
+        `require_app_inputs implement review
+mint_app_tokens "$TOKEN_DIR" sjawhar
+echo minted`
+      );
+      expect(code).toBe(1);
+      expect(stdout).not.toContain("minted");
+      expect(stderr).toMatch(named);
+      // The command's own stderr reaches the run's, where an operator reads what went wrong.
+      if (relayed !== "") expect(stderr).toContain(relayed);
+      expect(readdirSync(join(tokenDir, "review"))).toEqual([]);
+      holdsNoKey(stdout + stderr);
+      holdsNoToken(stdout + stderr);
+    }
   });
 
   test("a mint that fails fails the run naming the App, leaves no file of it and keeps the last good release", async () => {
@@ -482,16 +630,18 @@ mint_app_tokens "$TOKEN_DIR" sjawhar`
     holdsNoToken(stdout + stderr);
   });
 
-  test("the refresher mints the files again on its period and stops when told", async () => {
+  test("the refresher mints the releases again on its period, never the key, and stops when told", async () => {
     const tokenDir = mkdtempSync(join(dir, "tokens."));
     const refreshStore = mkdtempSync(join(dir, "store."));
-    for (const secret of ["IMPLEMENT_APP", "REVIEW_APP"]) {
-      copyFileSync(join(store, secret), join(refreshStore, secret));
-    }
+    // The one secret the refresher may ask for: a round that asked for any other would print a
+    // refresh failure on stderr, which this row refuses.
+    copyFileSync(join(store, "IMPLEMENT_APP"), join(refreshStore, "IMPLEMENT_APP"));
     const { code, stdout, stderr } = await githubApps(
       { ...appInputs, TOKEN_DIR: tokenDir, STORE: refreshStore },
       `require_app_inputs implement review
 mint_app_tokens "$TOKEN_DIR" sjawhar
+key=$TOKEN_DIR/review/key.pem
+echo "key before $(stat -c '%i %s %Y' -- "$key")"
 app_token_refresh_seconds=1
 start_app_token_refresher "$TOKEN_DIR"
 printf '%s' '${release({ sjawhar: "ghs_rotated" })}' >"$STORE/IMPLEMENT_APP"
@@ -502,7 +652,8 @@ done
 pid=$app_token_refresher
 stop_app_token_refresher
 kill -0 "$pid" 2>/dev/null && echo "still running" || echo "stopped"
-echo "read $(cat "$TOKEN_DIR/implement/sjawhar.read.json")"`
+echo "read $(cat "$TOKEN_DIR/implement/sjawhar.read.json")"
+echo "key after $(stat -c '%i %s %Y' -- "$key")"`
     );
     expect(stderr).toBe("");
     expect(code).toBe(0);
@@ -513,14 +664,22 @@ echo "read $(cat "$TOKEN_DIR/implement/sjawhar.read.json")"`
       "sjawhar.json",
       "sjawhar.read.json",
     ]);
+    // The key file the refresher left alone: a private key does not expire, and that App has no
+    // broker secret to ask for. A mint of it would have renamed a temporary file over this one,
+    // so the inode says it was never minted again.
+    expect(line(stdout, "key after ")).toBe(line(stdout, "key before "));
+    expect(readdirSync(join(tokenDir, "review"))).toEqual(["key.pem"]);
+    expect(readFileSync(join(tokenDir, "review", "key.pem"), "utf8")).toBe(reviewKey);
   });
 
-  test("write_github_apps --token-dir writes commands that read the file of the owner and flag asked, in busybox sh", async () => {
+  test("write_github_apps --token-dir writes commands that read the file of the owner and flag asked, and the key file, in busybox sh", async () => {
     const tokenDir = mkdtempSync(join(dir, "tokens."));
     mkdirSync(join(tokenDir, "implement"));
     for (const file of ["_all", "sjawhar", "sjawhar.read"]) {
       writeFileSync(join(tokenDir, "implement", `${file}.json`), `file ${file}`);
     }
+    mkdirSync(join(tokenDir, "review"), { mode: 0o700 });
+    writeFileSync(join(tokenDir, "review", "key.pem"), reviewKey, { mode: 0o600 });
     const { code, stderr, work } = await githubApps(
       { ...appInputs, TOKEN_DIR: tokenDir },
       `require_app_inputs implement review
@@ -530,8 +689,14 @@ write_github_apps --token-dir "$TOKEN_DIR" implement review`
     expect(code).toBe(0);
     const sources = appTokenSources(readFileSync(join(work, "github-apps.yaml"), "utf8"));
     expect(sources.implement?.appId).toBe("101");
-    expect(sources.review?.tokenCommand).toContain(`'${tokenDir}/review/'`);
-    const command = sources.implement?.tokenCommand ?? "";
+    expect(sources.implement?.source).toBe("token_command");
+    // The review App's key command reads the key file mint_app_tokens wrote, and nothing else.
+    expect(sources.review).toEqual({
+      appId: "202",
+      source: "private_key_command",
+      command: `cat -- '${tokenDir}/review/key.pem'`,
+    });
+    const command = sources.implement?.command ?? "";
     for (const [daemonEnv, want] of [
       [{ LEGION_GITHUB_OWNER: "", LEGION_GITHUB_READ_ONLY: "" }, "file _all"],
       [{ LEGION_GITHUB_OWNER: "SJawhar", LEGION_GITHUB_READ_ONLY: "" }, "file sjawhar"],
@@ -546,6 +711,14 @@ write_github_apps --token-dir "$TOKEN_DIR" implement review`
       expect(ran.exitCode).toBe(0);
       expect(ran.stdout.toString()).toBe(want);
     }
+    const key = Bun.spawnSync([...busyboxSh, "-c", sources.review?.command ?? ""], {
+      env: { PATH: process.env.PATH },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(key.stderr.toString()).toBe("");
+    expect(key.exitCode).toBe(0);
+    expect(key.stdout.toString()).toBe(reviewKey);
     // An owner the file layout could not name reads no file outside the directory.
     const outside = Bun.spawnSync([...busyboxSh, "-c", command], {
       env: { PATH: process.env.PATH, LEGION_GITHUB_OWNER: "../review/x" },
@@ -575,6 +748,56 @@ echo "logins $github_app_logins"`
       implement: "example-implement[bot]",
       review: "example-review[bot]",
     });
+  });
+
+  // What this issue is for: the review App's key reaches the one file the daemon's container
+  // reads it from, and nothing else of the run — no shell variable, no child's environment, no
+  // argv the broker client was given, no message — and the run's own teardown takes that file
+  // with it.
+  test("the key reaches its file alone, and the run's teardown leaves neither it nor its directory", async () => {
+    const tokenDir = mkdtempSync(join(dir, "tokens."));
+    const argvLog = join(dir, "argv-key-leak");
+    rmSync(argvLog, { force: true });
+    const { code, stdout, stderr } = await githubApps(
+      { ...appInputs, TOKEN_DIR: tokenDir, ARGV_LOG: argvLog, KEY_FILE: reviewKeyFile },
+      `require_app_inputs implement review
+mint_app_tokens "$TOKEN_DIR" sjawhar
+write_github_apps --token-dir "$TOKEN_DIR" implement review
+check_github_apps implement review
+echo "logins $github_app_logins"
+# Every variable and function this shell holds, and the environment a child of it would take,
+# written where the grep below reads them.
+set >"$work/shell-variables"
+env >"$work/child-environment"
+echo "key file mode $(stat -c %a -- "$TOKEN_DIR/review/key.pem")"
+cmp -s -- "$TOKEN_DIR/review/key.pem" "$KEY_FILE" && echo "the key file holds the key"
+# Every file of the run's work and token directories holding any line of the key, by name alone.
+grep -r -l -F -f "$KEY_FILE" -- "$work" "$TOKEN_DIR" |
+  sed "s|^$TOKEN_DIR|TOKEN_DIR|; s|^|holds the key: |"
+# The teardown the sandbox proof runs over this directory (claude-backend-sandbox.sh's
+# remove_app_tokens): the refresher stopped, then the directory removed, the key with it.
+stop_app_token_refresher
+rm -rf -- "$TOKEN_DIR"
+[ -e "$TOKEN_DIR" ] && echo "the App credential files remain" ||
+  echo "the key file and its directory are gone"`
+    );
+    expect(stderr).toBe("");
+    expect(code).toBe(0);
+    expect(JSON.parse(line(stdout, "logins "))).toEqual({
+      implement: "example-implement[bot]",
+      review: "example-review[bot]",
+    });
+    expect(line(stdout, "key file mode ")).toBe("600");
+    expect(stdout).toContain("the key file holds the key");
+    expect(stdout.split("\n").filter((l) => l.startsWith("holds the key: "))).toEqual([
+      "holds the key: TOKEN_DIR/review/key.pem",
+    ]);
+    expect(stdout).toContain("the key file and its directory are gone");
+    expect(existsSync(tokenDir)).toBe(false);
+    holdsNoKey(stdout);
+    holdsNoKey(stderr);
+    holdsNoKey(readFileSync(argvLog, "utf8"));
+    holdsNoToken(stdout + stderr);
   });
 
   test("a token directory the token commands could not carry in their shell text is refused, and nothing is written", async () => {

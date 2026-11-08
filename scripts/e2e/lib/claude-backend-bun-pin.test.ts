@@ -162,6 +162,11 @@ test.skipIf(skip)(
         TMPDIR: scratch,
         LEGION_E2E_MODEL_ROUTE: "key-file",
         LEGION_E2E_ANTHROPIC_KEY_FILE: keyFile,
+        // The review App's key command, which prerequisites requires and has no default for
+        // (lib/github-apps.sh), and which this row never runs: the input checks come before the
+        // pin check (claude-backend-tmux.sh, "After write_github_apps"), so a run that set none
+        // would be refused for the missing input and never reach the pin this row is about.
+        LEGION_E2E_REVIEW_APP_KEY_COMMAND: "printf 'this row never runs the key command'",
       },
       stdout: "pipe",
       stderr: "pipe",
