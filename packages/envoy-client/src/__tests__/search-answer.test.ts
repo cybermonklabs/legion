@@ -279,6 +279,21 @@ describe("searchAnswer: where an ask hit stands", () => {
     ]);
   });
 
+  // A Dispatch newer than this client can answer with a state the union does not hold, and the
+  // cast is how this test reaches that arm: every state the union holds is covered above. Before
+  // the arm existed the switch returned `undefined` here and the caller's spread threw, so the
+  // whole search answer was lost over one unknown word; the assertion is that the rest of the
+  // answer survives and the unknown state goes on its own line as it came.
+  test("an ask hit in a state newer than this client keeps the rest of the answer", () => {
+    const newerState = { state: "escalated", resolution: undefined } as unknown as SearchAsk;
+
+    expect(searchText(askHit(newerState))).toEqual([
+      askHeader,
+      askLine,
+      '  Answer state "escalated" is newer than this client; open the link to read the ask.',
+    ]);
+  });
+
   test("a hit of any other kind gains no line", () => {
     expect(searchText(hit)).toEqual([
       askHeader,

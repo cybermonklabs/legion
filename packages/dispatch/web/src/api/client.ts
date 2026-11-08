@@ -1058,7 +1058,7 @@ export class DispatchApiClient {
     return this.read("/api/v1/issues/{key}/summary", { key });
   }
 
-  patchIssue(key: string, input: Body<"/api/v1/issues/{key}", "patch">, bounds: WriteBounds) {
+  async patchIssue(key: string, input: Body<"/api/v1/issues/{key}", "patch">, bounds: WriteBounds) {
     return this.send(issuePatchRequest(key, input), bounds);
   }
 
@@ -1099,7 +1099,7 @@ export class DispatchApiClient {
 
   /** `PUT /api/v1/me/asks/{id}/snooze`: fold this inbox row away for the caller until
    *  `snoozedUntil` (RFC3339). Needs the `person` scope, like the inbox itself. */
-  snoozeAsk(id: string, snoozedUntil: string, bounds: WriteBounds) {
+  async snoozeAsk(id: string, snoozedUntil: string, bounds: WriteBounds) {
     return this.send(askSnoozeRequest(id, snoozedUntil), bounds);
   }
 
@@ -1253,7 +1253,7 @@ export class DispatchApiClient {
   }
 
   /** A person's message to one session. */
-  createAgentMessage(
+  async createAgentMessage(
     sessionID: string,
     input: Body<"/api/v1/agents/{session_id}/messages", "post">,
     bounds: WriteBounds
@@ -1545,7 +1545,7 @@ export class DispatchApiClient {
     return this.read("/api/v1/me/state", {});
   }
 
-  putIssueState(
+  async putIssueState(
     key: string,
     input: Body<"/api/v1/me/issues/{key}/state", "put">,
     bounds: WriteBounds
@@ -1557,7 +1557,7 @@ export class DispatchApiClient {
     return this.read("/api/v1/me/agents/state", {});
   }
 
-  putAgentState(
+  async putAgentState(
     sessionID: string,
     input: Body<"/api/v1/me/agents/{session_id}/state", "put">,
     bounds: WriteBounds

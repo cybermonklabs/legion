@@ -75,6 +75,16 @@ export function askStateLines(ask: SearchAsk | undefined): string[] {
       return ask.answer === undefined
         ? [`  Closed with no answer: ${closed}`]
         : [`  Closed after an answer: ${closed}`, ...answerLines("Last answer", ask.answer)];
+    default: {
+      // A Dispatch newer than this client can answer with a state this union does not hold. The
+      // state goes on the line as it came, so one unknown word costs its own line rather than
+      // the whole search answer; `never` keeps the switch exhaustive, so a state added to the
+      // union stops the type checker here.
+      const unreportedState: never = ask.state;
+      return [
+        `  Answer state "${String(unreportedState)}" is newer than this client; open the link to read the ask.`,
+      ];
+    }
   }
 }
 
