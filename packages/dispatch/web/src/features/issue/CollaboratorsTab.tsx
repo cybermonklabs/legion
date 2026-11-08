@@ -5,7 +5,7 @@ import type { ReactNode } from "react";
 import { issueCollaboratorsQuery } from "../../api/queries";
 import type {
   IssueCollaboratorAgent,
-  IssueCollaboratorLegion,
+  IssueCollaboratorLegionAgent,
   IssueCollaboratorPerson,
   IssueCollaborators,
 } from "../../api/types";
@@ -22,8 +22,6 @@ import {
 import { AgentName } from "../refs/AgentName";
 import { Timestamp } from "../refs/Timestamp";
 
-type LegionAgent = IssueCollaboratorAgent & { readonly legion: IssueCollaboratorLegion };
-
 /** The tab's three sections, in the order the reader meets them. Each holds the server's own
  *  order, which the contract states: the registry's agents first, by role in workflow order and
  *  then newest first, then the rest newest first, and people newest first. */
@@ -31,7 +29,7 @@ export interface CollaboratorSections {
   /** Legion agents by role in workflow order (`LEGION_ROLES`), each role's newest first. */
   readonly legion: readonly {
     readonly role: LegionRole;
-    readonly agents: readonly LegionAgent[];
+    readonly agents: readonly IssueCollaboratorLegionAgent[];
   }[];
   /** Every other agent session, the most recently active first. */
   readonly others: readonly IssueCollaboratorAgent[];
@@ -43,7 +41,7 @@ export function collaboratorSections(collaborators: IssueCollaborators): Collabo
   /** Whether this row is held by a role this build knows, which is what puts it in a Legion
    *  section: a row with no Legion record, and one naming a role `LEGION_ROLES` does not hold,
    *  both belong to `others`. */
-  const known = (agent: IssueCollaboratorAgent): agent is LegionAgent =>
+  const known = (agent: IssueCollaboratorAgent): agent is IssueCollaboratorLegionAgent =>
     agent.legion !== null && isLegionRole(agent.legion.role);
   const legion = collaborators.agents.filter(known);
   return {

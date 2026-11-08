@@ -2708,8 +2708,9 @@ jobs:
       # run 42303677853 at 5636a301, where both of its cases failed with "The requested module
       # '@legion/contracts/dispatch-tools' does not provide an export named
       # 'DISPATCH_BLOCK_UNITS'" and passed again once contracts was built
-      # (dispatch-browser.yaml's shard, alone and multiprocess jobs carry the same step for the
-      # same reason).
+      # (dispatch-browser.yaml's shard, alone and multiprocess jobs need contracts built for the
+      # same reason and carry no step for it: packages/dispatch/e2e/run.ts's buildContracts
+      # builds them at the start of every run of the suite).
       - name: Build contracts for the suites that spawn Playwright
         run: bun run build
         working-directory: packages/contracts

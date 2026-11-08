@@ -3,10 +3,10 @@ import { once } from "node:events";
 import { request as httpRequest } from "node:http";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { roleToken } from "@legion/contracts";
+import type { LegionRole } from "@legion/contracts";
 import { expect, test } from "@playwright/test";
 
-import type { FakeInterest, FakeLegionAgent, FakeSession } from "./agents";
+import { type FakeInterest, type FakeSession, legionAgentEntry } from "./agents";
 import { withoutHarnessPort } from "./harness-ports";
 
 // The fake Envoy is the harness's own fixture, so these rows start a second one on a port of its
@@ -104,22 +104,14 @@ function putFixture(origin: string, path: string, body: unknown): Promise<Respon
 }
 
 /** One registry entry as the daemon writes it, under a Legion project token of the e2e's own. */
-function entry(
-  session: string,
-  issue: string,
-  role: FakeLegionAgent["role"],
-  startedAt: string
-): FakeLegionAgent {
-  return {
-    harness: "omp",
+function entry(session: string, issue: string, role: LegionRole, startedAt: string) {
+  return legionAgentEntry({
     issue,
-    legion_project: "e2elegion",
+    legionProject: "e2elegion",
     role,
-    role_token: roleToken("e2elegion", issue, role),
-    session_id: session,
-    started_at: startedAt,
-    title: `Legion ${role} · ${issue}`,
-  };
+    sessionId: session,
+    startedAt,
+  });
 }
 
 // The registry reads answer from the seeded entries as the listener's do: an issue's sessions by

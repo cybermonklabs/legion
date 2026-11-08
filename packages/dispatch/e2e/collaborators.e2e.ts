@@ -2,7 +2,7 @@ import { type LegionRole, roleToken } from "@legion/contracts";
 import { expect, type Locator, test } from "@playwright/test";
 
 import {
-  type FakeLegionAgent,
+  legionAgentEntry,
   setLegionAgents,
   setLegionRegistryState,
   setLiveSessions,
@@ -57,16 +57,14 @@ async function seed(): Promise<Fixture> {
   await patchIssue(issueKey, { status: "done" }, { login: "bob" });
 
   const token = (role: LegionRole) => roleToken(LEGION_PROJECT, issueKey, role);
-  const entry = (sessionId: string, role: LegionRole, startedAt: string): FakeLegionAgent => ({
-    harness: "omp",
-    issue: issueKey,
-    legion_project: LEGION_PROJECT,
-    role,
-    role_token: token(role),
-    session_id: sessionId,
-    started_at: startedAt,
-    title: `Legion ${role} · ${issueKey}`,
-  });
+  const entry = (sessionId: string, role: LegionRole, startedAt: string) =>
+    legionAgentEntry({
+      issue: issueKey,
+      legionProject: LEGION_PROJECT,
+      role,
+      sessionId,
+      startedAt,
+    });
   await setLiveSessions([
     {
       capabilities: ["aside", "btw", "steer"],

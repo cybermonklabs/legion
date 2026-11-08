@@ -1,4 +1,4 @@
-import { DELIVERY_CAPABILITIES, type LegionRole } from "@legion/contracts";
+import { DELIVERY_CAPABILITIES, type LegionRole, roleToken } from "@legion/contracts";
 import { expect, type Locator, type Page } from "@playwright/test";
 
 import type { BroadcastCreated, CreateBroadcastInput, TmuxPlace } from "../web/src/api/types";
@@ -143,6 +143,35 @@ export interface FakeLegionAgent {
   harness: "omp" | "claude";
   started_at: string;
   recorded_at?: string;
+}
+
+/** One registry entry as the daemon writes it: `omp` harness, the role's own token under the
+ *  Legion project, and the title the daemon stamps. A spec that seeds the registry builds its
+ *  rows here so the `role_token` a read is checked against is always the one the daemon would
+ *  have written for that project, issue and role. */
+export function legionAgentEntry({
+  issue,
+  legionProject,
+  role,
+  sessionId,
+  startedAt,
+}: {
+  issue: string;
+  legionProject: string;
+  role: LegionRole;
+  sessionId: string;
+  startedAt: string;
+}): FakeLegionAgent {
+  return {
+    harness: "omp",
+    issue,
+    legion_project: legionProject,
+    role,
+    role_token: roleToken(legionProject, issue, role),
+    session_id: sessionId,
+    started_at: startedAt,
+    title: `Legion ${role} · ${issue}`,
+  };
 }
 
 /** Replaces the fake listener's Legion agent registry, which the three registry reads answer from

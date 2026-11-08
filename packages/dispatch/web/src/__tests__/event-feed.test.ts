@@ -48,6 +48,7 @@ const READS = {
     key: ["references", "to", "dispatch://CORE-9/ask/ask-9"],
   },
   asks: { key: ["asks", "CORE-1"] },
+  collaborators: { key: ["issue", "CORE-1", "collaborators"] },
   comment: { key: commentQuery("comment-1").queryKey },
   // Block b2 of CORE-1's comment-1, read by a link to it and, pinned to the comment's revision 1,
   // by another link.
@@ -555,14 +556,14 @@ const rules: Record<string, Rule> = {
     refreshes: ["parent", "parentPanel"],
     spares: ["issuePanel", "detail"],
   },
-  "a claim refreshes the issue and its project list only": {
+  "a claim refreshes the issue, its collaborators and its project list only": {
     event: event("issue.claimed", {
       claim: { actor: { id: "planner", kind: "session" }, at: "2026-10-26T00:00:00Z" },
       key: "CORE-1",
       reason: "claimed",
       status: "in_progress",
     }),
-    refreshes: ["detail", "log", "projectList"],
+    refreshes: ["collaborators", "detail", "log", "projectList"],
     spares: ["summary", "pinned", "inbox", "referencePicker", "projects", "replies", "userState"],
   },
   "a person's edit notice refreshes the issue's log only, since each edit's version refreshed the rest":

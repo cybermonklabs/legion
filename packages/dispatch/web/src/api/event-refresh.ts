@@ -862,9 +862,10 @@ function ownerTargets(event: Event, viewer: string | undefined): RefreshTarget[]
     event.type === "issue.released" ||
     event.type === "issue.deployed"
   ) {
-    // A claim changes only who holds the issue: its detail, its log, and the project lists that
-    // render the claim. No rollup, ask count or component attachment moves with it. A deploy is a
-    // line in the issue's log and nothing the lists or rollups read.
+    // A claim changes who holds the issue, and its holder is a collaborator from then on: the
+    // detail, the log, the project lists that render the claim, and the collaborators the
+    // branch above named. No rollup, ask count or component attachment moves with it. A deploy
+    // is a line in the issue's log and nothing the lists or rollups read.
     return targets;
   }
   if (event.type === "artifact.human_edited") {

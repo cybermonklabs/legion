@@ -28,7 +28,7 @@ import type {
   AskOption,
   AskUrgency,
   IssueCollaboratorAgent,
-  IssueCollaboratorLegion,
+  IssueCollaboratorLegionAgent,
 } from "../../api/types";
 import { Chip } from "../../components/Chip";
 import { AgentListRefilling, QueryError } from "../../components/QueryError";
@@ -238,9 +238,7 @@ export function stoppedRoleOptions(
 ): MentionOption[] {
   const held = new Set(live.flatMap((agent) => agent.roles));
   const running = new Set(live.map((agent) => agent.session_id));
-  const offered = (
-    agent: IssueCollaboratorAgent
-  ): agent is IssueCollaboratorAgent & { readonly legion: IssueCollaboratorLegion } =>
+  const offered = (agent: IssueCollaboratorAgent): agent is IssueCollaboratorLegionAgent =>
     agent.legion !== null &&
     agent.legion.replaced_by === null &&
     !held.has(agent.legion.role_token) &&
