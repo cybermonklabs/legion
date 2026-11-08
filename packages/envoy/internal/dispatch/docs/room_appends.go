@@ -367,7 +367,10 @@ func (p *PgVersioned) appendRoomTx(ctx context.Context, room string, flush *Room
 	updates = updates[:admitted]
 	taking = taking[:min(admitted, len(taking))]
 	first = persistence.Version(head + 1)
-	plan, err := p.appendWrites(ctx, room, head, updates, owes)
+	// No transaction: this batch commits on its own connection, not in a caller's transaction,
+	// so the helpers that queue the author statements record no ledger overlay for it
+	// (queuePendingAuthors, queueAskAuthors, queueFor).
+	plan, err := p.appendWrites(ctx, nil, room, head, updates, owes)
 	if err != nil {
 		return 0, err
 	}

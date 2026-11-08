@@ -80,19 +80,22 @@ func (p *PgVersioned) appendUpdatesTx(ctx context.Context, tx pgx.Tx, room strin
 	if err != nil {
 		return 0, 0, err
 	}
-	if read.pruneCeiling != nil && pending == nil {
-		ceiling, recovering, err := p.recoverPruneTx(ctx, tx, room)
-		if err != nil {
-			return 0, 0, err
+	if pending == nil {
+		var recovered *int64
+		if read.pruneCeiling != nil {
+			ceiling, recovering, err := p.recoverPruneTx(ctx, tx, room)
+			if err != nil {
+				return 0, 0, err
+			}
+			recovered = ceilingOf(ceiling, recovering)
+			// The recovery's deletes go on the transaction's write phase, so the gate is read
+			// again under the ceiling they leave rather than over rows they have not taken out
+			// yet.
+			if read, err = readAppendGate(ctx, tx, room, recovered); err != nil {
+				return 0, 0, err
+			}
 		}
-		// The recovery's deletes go on the transaction's write phase, so the gate is read again
-		// under the ceiling they leave rather than over rows they have not taken out yet.
-		if read, err = readAppendGate(ctx, tx, room, ceilingOf(ceiling, recovering)); err != nil {
-			return 0, 0, err
-		}
-		pending = recordPendingRoom(ctx, tx, room, read.latest, ceilingOf(ceiling, recovering))
-	} else if pending == nil {
-		pending = recordPendingRoom(ctx, tx, room, read.latest, nil)
+		pending = recordPendingRoom(ctx, tx, room, read.latest, recovered)
 	}
 	read = read.after(pending)
 	through, gated := appendingThrough(ctx, room, flush)
@@ -112,26 +115,18 @@ func (p *PgVersioned) appendUpdatesTx(ctx context.Context, tx pgx.Tx, room strin
 	// path leaves them (appendRoomTx). A flush left short this way is failed by its caller, which
 	// rolls this prefix back with it (Service.flushThrough).
 	updates = updates[:admitted]
-	plan, err := p.appendWrites(ctx, room, head, updates, true)
+	plan, err := p.appendWrites(ctx, tx, room, head, updates, true)
 	if err != nil {
 		return 0, 0, err
 	}
-	if err := write(ctx, tx, func(b *store.WriteBatch) error {
-		for _, statement := range plan.statements {
-			statement.queueWrite(b)
-		}
-		return nil
-	}); err != nil {
+	if err := plan.send(ctx, tx); err != nil {
 		return 0, 0, err
 	}
-	// A queued statement writes nothing until the write phase runs, so what it will leave is
-	// recorded for the reads of this transaction that follow it: the rows the pending-author
-	// upsert adds (transactionPendingAuthors, as upsertPendingAuthors records its own), and the
-	// history the queue leaves (pendingRoom), so a later append of the same document in the same
-	// transaction goes after this one and a read of the head takes it from there.
-	if ledger := queueFor(ctx, tx); ledger != nil && len(plan.authors) > 0 {
-		ledger.queuedAuthors(room, plan.authors)
-	}
+	// A queued statement writes nothing until the write phase runs, so the history its queue
+	// leaves is recorded for the reads of this transaction that follow it (pendingRoom): a later
+	// append of the same document in the same transaction goes after this one, and a read of the
+	// head takes it from there. What the pending-author and ask-block-author statements will
+	// leave is recorded by the helpers that queued them (queuePendingAuthors, queueAskAuthors).
 	if pending != nil {
 		pending.head = int64(plan.last)
 		pending.appended += int64(len(updates))
@@ -194,14 +189,44 @@ const appendUpdatesJoinedStatement = `
 	)
 	insert into doc_compaction_owed (artifact_id) select $1::uuid where $5 on conflict do nothing`
 
-// appendPlan is what one append transaction writes: statements, in the order it runs them; last,
-// the version the last of its updates takes; and authors, the pending authors its upsert records,
-// which a transaction that queues its writes holds in memory for its own later reads
-// (Ledger.queuedAuthors), since the table holds none of them until the write phase runs.
+// appendPlan is what one write owes: statements, in the order the transaction runs them, and
+// last, the version the last of its updates takes (0 for a write that appends none). A caller
+// puts them on its transaction's write phase (send), or queues them into a batch it commits
+// itself (appendRoomTx, writeStatement.queue).
+//
+// A writer with one statement to make gathers it here too, so that statement is queued by the
+// same helper the append queues it through and cannot be queued without what the helper records
+// beside it (queueAskAuthors, queuePendingAuthors): it sends a plan of one.
 type appendPlan struct {
 	statements []writeStatement
 	last       persistence.Version
-	authors    []pendingAuthor
+}
+
+// queue adds one statement to the plan, with what to say when it fails.
+func (p *appendPlan) queue(what, sql string, args ...any) {
+	p.add(writeStatement{sql: sql, args: args, what: what})
+}
+
+// add adds a statement a builder made (pendingAuthorsStatement, updateOwedStatement).
+func (p *appendPlan) add(statement writeStatement) {
+	p.statements = append(p.statements, statement)
+}
+
+// send puts every statement of the plan on the transaction's write phase, in the order it queued
+// them, so a failure is reported as its own statement's: where the transaction queues its writes
+// they join its one pipelined batch, and where it does not they are a batch of their own, one
+// round trip (write, store.RunWrite). A plan with nothing in it writes nothing: a step of no
+// statements would still cost the round trip a write of its own takes.
+func (p *appendPlan) send(ctx context.Context, tx pgx.Tx) error {
+	if len(p.statements) == 0 {
+		return nil
+	}
+	return write(ctx, tx, func(b *store.WriteBatch) error {
+		for _, statement := range p.statements {
+			statement.queueWrite(b)
+		}
+		return nil
+	})
 }
 
 // appendWrites is every write of an append transaction whose gate passed at head, in the order the
@@ -226,7 +251,7 @@ type appendPlan struct {
 // write, so a route that goes on to append an event (an upload, issue creation) holds it before
 // its event, as an answer marking this document a copy owed does (owedCopiesOf);
 // Ledger.Commit's later recordLatestEditSource then waits on nothing.
-func (p *PgVersioned) appendWrites(ctx context.Context, room string, head int64, updates []BrowserUpdate, owes bool) (appendPlan, error) {
+func (p *PgVersioned) appendWrites(ctx context.Context, tx pgx.Tx, room string, head int64, updates []BrowserUpdate, owes bool) (appendPlan, error) {
 	if len(updates) == 0 {
 		return appendPlan{}, errors.New("append document updates: no update to append")
 	}
@@ -287,27 +312,17 @@ func (p *PgVersioned) appendWrites(ctx context.Context, room string, head int64,
 	if err != nil {
 		return appendPlan{}, err
 	}
-	plan.statements = append(plan.statements, owedStatement)
-	if len(authors) > 0 {
-		upsert, err := pendingAuthorsStatement(room, authors)
-		if err != nil {
-			return appendPlan{}, err
-		}
-		plan.statements = append(plan.statements, upsert)
-		plan.authors = authors
+	plan.add(owedStatement)
+	// The pending authors and the authors of the ask blocks this run's renders first showed go
+	// through the one helper per table that queues the statement and records what it will leave
+	// on the ledger (queuePendingAuthors, queueAskAuthors), so no writer can do one without the
+	// other. The ask blocks are recorded with the updates whether or not their credit was
+	// consumed: a version lists authors, not ask blocks.
+	if err := queuePendingAuthors(ctx, tx, &plan, room, authors); err != nil {
+		return appendPlan{}, err
 	}
-	if len(askAuthors) > 0 {
-		askArgs, err := askAuthorsArgs(room, askAuthors)
-		if err != nil {
-			return appendPlan{}, err
-		}
-		if askArgs != nil {
-			plan.statements = append(plan.statements, writeStatement{
-				sql:  askAuthorsStatement,
-				args: askArgs,
-				what: "record the document's ask block authors",
-			})
-		}
+	if err := queueAskAuthors(ctx, tx, &plan, room, askAuthors); err != nil {
+		return appendPlan{}, err
 	}
 	return plan, nil
 }

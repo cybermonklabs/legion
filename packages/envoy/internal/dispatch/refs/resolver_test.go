@@ -147,7 +147,8 @@ func TestMentionsStoreTheWholeIdOfAShortReferenceAndTheKeysThatExist(t *testing.
 	} {
 		source := resolverSource(index + 1)
 		insertPrefixComment(t, tx, source, "ACME-1", test.body)
-		if _, err := ReplaceCounted(ctx, tx, NewReader(ctx, tx, "comment", source, resolverServer), test.body); err != nil {
+		located := NewReader(ctx, tx, "comment", source, resolverServer).Mentions(test.body)
+		if _, err := replaceRefs(ctx, tx, "comment", source, text.Refs(located), nil); err != nil {
 			t.Fatalf("index %s: %v", test.name, err)
 		}
 		if got := storedRefs(t, tx, "comment", source); !reflect.DeepEqual(got, test.want) {
@@ -223,7 +224,8 @@ func TestMentionsStoreTheWholeIdOfAProjectDocumentsShortReference(t *testing.T) 
 	} {
 		source := resolverSource(index + 100)
 		insertPrefixComment(t, tx, source, "ACME-1", test.body)
-		if _, err := ReplaceCounted(ctx, tx, NewReader(ctx, tx, "comment", source, resolverServer), test.body); err != nil {
+		located := NewReader(ctx, tx, "comment", source, resolverServer).Mentions(test.body)
+		if _, err := replaceRefs(ctx, tx, "comment", source, text.Refs(located), nil); err != nil {
 			t.Fatalf("index %s: %v", test.name, err)
 		}
 		if got := storedRefs(t, tx, "comment", source); !reflect.DeepEqual(got, test.want) {
@@ -292,7 +294,8 @@ func TestQuestionReferencesResolveAgainstTheTextsOwnDocument(t *testing.T) {
 		if test.source != anchored {
 			insertPrefixComment(t, tx, test.source, "ACME-1", test.body)
 		}
-		if _, err := ReplaceCounted(ctx, tx, NewReader(ctx, tx, "comment", test.source, resolverServer), test.body); err != nil {
+		located := NewReader(ctx, tx, "comment", test.source, resolverServer).Mentions(test.body)
+		if _, err := replaceRefs(ctx, tx, "comment", test.source, text.Refs(located), nil); err != nil {
 			t.Fatalf("index %s: %v", test.name, err)
 		}
 		if got := storedRefs(t, tx, "comment", test.source); !reflect.DeepEqual(got, test.want) {

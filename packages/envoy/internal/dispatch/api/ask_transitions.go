@@ -419,7 +419,7 @@ func (s *server) closeAskTx(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger,
 	// wrote is queued before the event, so the ask's Replies rows are read by the event's insert,
 	// after it.
 	at := refs.AskPartsAt(ask)
-	changes, err := s.queueAskParts(ctx, ledger, ask, at, model.ReferenceChanges{})
+	changes, err := s.queueAskParts(ctx, ledger, ask, nil, at, model.ReferenceChanges{})
 	if err != nil {
 		return model.Ask{}, nil, err
 	}

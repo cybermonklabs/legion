@@ -73,11 +73,12 @@ func (s *server) queueLoggedEvent(ledger *docs.Ledger, event model.Event, logins
 	})
 }
 
-// queueReferences is replaceReferences split in two: it plans the reconciliation of
-// fromKind/fromID's references with body (planReferences), here, and queues the delete and insert
-// that write it.
-func (s *server) queueReferences(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, fromKind, fromID, body string) (model.ReferenceChanges, error) {
-	replacement, changes, err := s.planReferences(ctx, tx, fromKind, fromID, body)
+// queueReferences reconciles fromKind/fromID's references in the route's two phases: it plans
+// the reconciliation with body (planReferences), here, and queues the delete and insert
+// that write it. document is the one the source's `#id`s resolve against for a source whose row
+// this transaction has queued, nil for one already stored (refs.NewReaderInScope).
+func (s *server) queueReferences(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, fromKind, fromID, body string, document *string) (model.ReferenceChanges, error) {
+	replacement, changes, err := s.planReferences(ctx, tx, fromKind, fromID, body, document)
 	if err != nil {
 		return model.ReferenceChanges{}, err
 	}
@@ -96,24 +97,49 @@ func (s *server) queueEditedReferences(ctx context.Context, tx pgx.Tx, ledger *d
 	return changes, queueReplacement(ledger, replacement)
 }
 
+// pendingItem is what the route writing a comment or an issue message hands over for an item
+// whose insert this transaction has only queued: the two things a read of that row would
+// answer and cannot yet. windowContext is what the windows of the item's blocks embed them
+// under, read from the issue the item is written on (refs.IssueWindowContext); document is the
+// one the item's `#id`s resolve against (refs.PendingScope).
+type pendingItem struct {
+	windowContext string
+	document      string
+}
+
 // queueItemReferences is refs.ReplaceCountedItem split in two, for a comment or an issue message
 // this transaction writes at `at`: it plans the index of the item's blocks and the mentions each
 // holds (refs.PlanItemIndex) and the reconciliation of the item's own references, resolves the
 // counted targets both move, and queues the index's statements and the reconciliation's, in that
 // order, in tx's write phase. A direct message (cites false) writes no mention, so its blocks
 // hold none either: its blocks alone are indexed, and it moves nothing. The transaction has only
-// queued the item's insert, so the context its blocks' windows embed them under is read from the
-// issue it writes the item on (refs.IssueWindowContext) and handed over with it.
-func (s *server) queueItemReferences(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, kind refs.ItemKind, itemID, body string, issueKey *string, at time.Time, cites bool) (model.ReferenceChanges, error) {
-	windowContext, err := refs.IssueWindowContext(ctx, tx, issueKey)
+// queued the item's insert, so what no read of that row can answer - the context its blocks'
+// windows embed them under and the document its `#id`s resolve against - is read from the fields
+// source says the row will hold and handed over with it (pendingItem).
+func (s *server) queueItemReferences(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, kind refs.ItemKind, itemID, body string, source refs.PendingSource, at time.Time, cites bool) (model.ReferenceChanges, error) {
+	pending, err := s.pendingItemOf(ctx, tx, string(kind), source)
 	if err != nil {
 		return model.ReferenceChanges{}, err
 	}
-	changes, write, err := s.planItemWrite(ctx, tx, kind, itemID, body, &windowContext, at, cites, nil, nil)
+	changes, write, err := s.planItemWrite(ctx, tx, kind, itemID, body, pending, at, cites, nil, nil)
 	if err != nil {
 		return model.ReferenceChanges{}, err
 	}
 	return changes, ledger.Queue(write)
+}
+
+// pendingItemOf is what a route hands over for an item of kind kind whose insert it has queued,
+// over the fields source says that row will hold.
+func (s *server) pendingItemOf(ctx context.Context, tx pgx.Tx, kind string, source refs.PendingSource) (*pendingItem, error) {
+	windowContext, err := refs.IssueWindowContext(ctx, tx, source.IssueKey)
+	if err != nil {
+		return nil, err
+	}
+	document, err := refs.PendingScope(ctx, tx, kind, source)
+	if err != nil {
+		return nil, err
+	}
+	return &pendingItem{windowContext: windowContext, document: document}, nil
 }
 
 // queueEditedItemReferences is queueItemReferences for an edit of a comment from previous to
@@ -137,16 +163,17 @@ func (s *server) queueEditedItemReferences(ctx context.Context, tx pgx.Tx, ledge
 // both, for the route to queue where it makes the write: on its ledger (queueItemReferences), or
 // on the batch of a transaction that runs its write phase itself (createStoredMessage).
 //
-// windowContext is what the windows of the item's blocks embed them under, for a transaction
-// whose insert of the item is queued, so the index's own read of the row carries none; nil for
-// a write of an item already stored, whose context that read carries
-// (refs.ItemIndex.WithWindowContext).
+// pending is what the route hands over for an item whose insert this transaction has queued, so
+// that no read of the item's own row can answer it: the context its blocks' windows embed them
+// under (refs.ItemIndex.WithWindowContext) and the document its `#id`s resolve against
+// (refs.NewReaderInScope). It is nil for a write of an item already stored, which the index's
+// read and ScopeOf answer both of for themselves.
 func (s *server) planItemWrite(
 	ctx context.Context,
 	tx pgx.Tx,
 	kind refs.ItemKind,
 	itemID, body string,
-	windowContext *string,
+	pending *pendingItem,
 	at time.Time,
 	cites bool,
 	carried *refs.CarriedEdit,
@@ -156,8 +183,10 @@ func (s *server) planItemWrite(
 	if err != nil {
 		return model.ReferenceChanges{}, nil, err
 	}
-	if windowContext != nil {
-		index = index.WithWindowContext(*windowContext)
+	var document *string
+	if pending != nil {
+		index = index.WithWindowContext(pending.windowContext)
+		document = &pending.document
 	}
 	if edited != nil {
 		// The update that sets edited_at is queued, so the read above does not show it.
@@ -165,7 +194,7 @@ func (s *server) planItemWrite(
 	}
 	var located []text.Located
 	if cites {
-		located = refs.NewReader(ctx, tx, string(kind), itemID, s.deps.ServerURL).Mentions(body)
+		located = refs.NewReaderInScope(ctx, tx, string(kind), itemID, s.deps.ServerURL, document).Mentions(body)
 	}
 	indexing, err := refs.PlanItemIndex(index, kind, itemID, body, at, located, carried)
 	if err != nil {
@@ -202,10 +231,12 @@ func queueReplacement(ledger *docs.Ledger, replacement refs.Replacement) error {
 
 // planReferences is the read half of a reconciliation: the reconciliation of fromKind/fromID's
 // references with body, read with the whole grammar through a reader of that source's own
-// (refs.NewReader), planned against the edges the source holds, and the counted targets it
-// moves, for the caller to queue (Replacement.Queue) in its write phase.
-func (s *server) planReferences(ctx context.Context, tx pgx.Tx, fromKind, fromID, body string) (refs.Replacement, model.ReferenceChanges, error) {
-	located := refs.NewReader(ctx, tx, fromKind, fromID, s.deps.ServerURL).Mentions(body)
+// (refs.NewReaderInScope), planned against the edges the source holds, and the counted targets
+// it moves, for the caller to queue (Replacement.Queue) in its write phase. document is the one
+// the source's `#id`s resolve against for a source whose row this transaction has queued, nil
+// for one already stored.
+func (s *server) planReferences(ctx context.Context, tx pgx.Tx, fromKind, fromID, body string, document *string) (refs.Replacement, model.ReferenceChanges, error) {
+	located := refs.NewReaderInScope(ctx, tx, fromKind, fromID, s.deps.ServerURL, document).Mentions(body)
 	return planFoundReferences(ctx, tx, fromKind, fromID, text.Refs(located), nil)
 }
 

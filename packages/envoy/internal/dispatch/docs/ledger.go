@@ -97,8 +97,11 @@ type Ledger struct {
 	sealed bool
 	batch  *store.WriteBatch
 	// artifacts is the address of each artifacts row this transaction creates and has not
-	// written yet, by artifact id (RegisterPendingArtifact).
+	// written yet, by artifact id (RegisterPendingArtifact), and issues the key of each issues
+	// row it creates and has not written yet (RegisterPendingIssue): the two rows a write
+	// indexing its own new issue's spec cites before either exists (refs.Pending).
 	artifacts map[string]refs.DocumentAddress
+	issues    map[string]struct{}
 	// rooms holds, per document whose stored history this transaction has queued a write to, the
 	// state its queued writes leave it in (pendingRoom).
 	rooms map[string]*pendingRoom
@@ -139,15 +142,17 @@ type Ledger struct {
 	// of, by block id, as they will stand (recordAskBlock, loadAskBlocks).
 	askBlocks map[string]map[string]model.Ask
 	// owedAuthors holds, per document, the pending authors this transaction has queued writes of
-	// (upsertPendingAuthors), by actorKey: the appends it makes for a room credit the browser
-	// edits they store, and doc_pending_authors holds none of those rows until the write phase
-	// has run, so the versions this transaction writes read them from here as well as from the
-	// table (transactionPendingAuthors).
+	// (queuePendingAuthors, which every writer of doc_pending_authors' insert queues through),
+	// by actorKey: the appends it makes for a room credit the browser edits they store, and
+	// doc_pending_authors holds none of those rows until the write phase has run, so the
+	// versions this transaction writes read them from here as well as from the table
+	// (transactionPendingAuthors).
 	owedAuthors map[string]map[string]model.Actor
 	// askAuthors holds, per document, the durable ask block authors this transaction has queued
-	// writes of (recordAskAuthors), by block id: doc_ask_block_authors holds none of those rows
-	// until the write phase has run, so what this transaction reads of them it reads from here
-	// as well as from the table (transactionRecordedAskAuthors).
+	// writes of (queueAskAuthors, which every writer of doc_ask_block_authors' insert queues
+	// through), by block id: doc_ask_block_authors holds none of those rows until the write
+	// phase has run, so what this transaction reads of them it reads from here as well as from
+	// the table (transactionRecordedAskAuthors).
 	askAuthors map[string]map[string]model.Actor
 }
 
@@ -386,11 +391,11 @@ func (l *Ledger) queuedVersion(artifactID string, pending pendingVersion) {
 }
 
 // queuedAuthors records authors as pending authors of artifactID this transaction has queued the
-// write of (upsertPendingAuthors): until its write phase has run, doc_pending_authors holds no
-// row of theirs, and the versions this transaction writes read them from here instead
-// (transactionPendingAuthors). A queued delete of them (deleteCapturedPendingAuthors) is queued
-// after the insert, so it takes the rows back out in the write phase; nothing of this transaction
-// reads R between the two.
+// write of: until its write phase has run, doc_pending_authors holds no row of theirs, and the
+// versions this transaction writes read them from here instead (transactionPendingAuthors). Its
+// one caller is queuePendingAuthors, which queues that write, so every queue of it is here. A
+// queued delete of them (deleteCapturedPendingAuthors) is queued after the insert, so it takes
+// the rows back out in the write phase; nothing of this transaction reads R between the two.
 func (l *Ledger) queuedAuthors(artifactID string, authors []pendingAuthor) {
 	if l.owedAuthors == nil {
 		l.owedAuthors = make(map[string]map[string]model.Actor, 1)
@@ -406,12 +411,13 @@ func (l *Ledger) queuedAuthors(artifactID string, authors []pendingAuthor) {
 }
 
 // queuedAskAuthors records authors, by block id, as durable ask block authors of artifactID this
-// transaction has queued the write of (recordAskAuthors): until its write phase has run,
-// doc_ask_block_authors holds no row of theirs, and the reads this transaction makes of them take
-// them from here as well as from the table (transactionRecordedAskAuthors). The insert keeps the
-// author a row already recorded has (askAuthorsStatement), so a row the table holds wins over one
-// recorded here, and so does the first entry recorded for a block. A settlement's queued delete of
-// them (deleteSettledAskAuthors) is queued after the insert, so it takes the rows back out in the
+// transaction has queued the write of: until its write phase has run, doc_ask_block_authors
+// holds no row of theirs, and the reads this transaction makes of them take them from here as
+// well as from the table (transactionRecordedAskAuthors). Its one caller is queueAskAuthors,
+// which queues that write, so every queue of it is here. The insert keeps the author a row
+// already recorded has (askAuthorsStatement), so a row the table holds wins over one recorded
+// here, and so does the first entry recorded for a block. A settlement's queued delete of them
+// (deleteSettledAskAuthors) is queued after the insert, so it takes the rows back out in the
 // write phase; nothing of this transaction reads them between the two.
 func (l *Ledger) queuedAskAuthors(artifactID string, authors map[string]model.Actor) {
 	if l.askAuthors == nil {
@@ -537,6 +543,76 @@ func (l *Ledger) RegisterPendingArtifact(artifactID string, address refs.Documen
 	l.artifacts[artifactID] = address
 }
 
+// RegisterPendingIssue records key as an issues row this transaction creates and has not written
+// yet: its insert is queued with the transaction's other writes, while the text the same
+// transaction indexes - the spec it seeds for that issue - can name the issue being created, and
+// no read of this transaction answers for the row (PendingIssue).
+func (l *Ledger) RegisterPendingIssue(key string) {
+	if l.issues == nil {
+		l.issues = make(map[string]struct{}, 1)
+	}
+	l.issues[key] = struct{}{}
+}
+
+// The ledger is the refs.Pending of the transaction whose writes it queues: every context
+// carrying it carries that too (withLedger), so a reference read made anywhere in the
+// transaction answers for the rows it has queued as it does for the stored ones. Each answer
+// below is the overlay the write that queued the row recorded it in, so a row is registered
+// once and read here.
+
+// PendingIssue reports whether this transaction writes the issues row of key
+// (RegisterPendingIssue).
+func (l *Ledger) PendingIssue(key string) bool {
+	if l == nil {
+		return false
+	}
+	_, pending := l.issues[key]
+	return pending
+}
+
+// PendingArtifact is the uuid and the dispatch:// address of the artifacts row of reference key
+// refKey this transaction writes (RegisterPendingArtifact, refs.DocumentAddress.Ref).
+func (l *Ledger) PendingArtifact(refKey string) (string, string, bool) {
+	if l == nil {
+		return "", "", false
+	}
+	for id, address := range l.artifacts {
+		if address.RefKey == refKey {
+			return id, address.Ref, true
+		}
+	}
+	return "", "", false
+}
+
+// PendingMarkdown is the markdown of the version of artifactID this transaction has queued and
+// not written yet (queuedVersion), the latest version of that document as the transaction
+// leaves it, which latestVersion answers with too.
+func (l *Ledger) PendingMarkdown(artifactID string) (string, bool) {
+	if l == nil || l.sealed {
+		return "", false
+	}
+	pending, queued := l.latest[artifactID]
+	return pending.markdown, queued
+}
+
+// PendingBlockAsks is every question block's ask of artifactID this transaction has queued a
+// write of, as the row will stand (recordAskBlock, which loadAskBlocks reads too), in the shape
+// the question map reads them by (refs.PendingBlockAsk).
+func (l *Ledger) PendingBlockAsks(artifactID string) []refs.PendingBlockAsk {
+	if l == nil {
+		return nil
+	}
+	asks := l.askBlocks[artifactID]
+	if len(asks) == 0 {
+		return nil
+	}
+	pending := make([]refs.PendingBlockAsk, 0, len(asks))
+	for blockID, ask := range asks {
+		pending = append(pending, refs.PendingBlockAsk{BlockID: blockID, ID: ask.ID, IssueKey: ask.IssueKey})
+	}
+	return pending
+}
+
 // QueueAskParts queues the index of an ask's parts for a route that writes the ask itself,
 // outside the document service: it plans the parts the ask holds at `at`, against what this
 // transaction's own queued writes of the same ask leave (planAskPartsCounted), queues the
@@ -546,10 +622,15 @@ func (l *Ledger) RegisterPendingArtifact(artifactID string, address refs.Documen
 // have to follow that write in the batch. The plan runs on this ledger whatever context the
 // caller holds, as QueueVersion does, and it refuses a ledger no caller joined and a sealed one
 // (ErrQueueSealed).
+//
+// document is the one the parts' `#id`s resolve against for an ask whose insert the route has
+// queued, which no read of that row can answer yet (refs.PendingAskScope); nil for an ask
+// already stored, whose row the reader reads for itself (refs.ScopeOf).
 func (l *Ledger) QueueAskParts(
 	ctx context.Context,
 	ask model.Ask,
 	serverURL string,
+	document *string,
 	at time.Time,
 	beside model.ReferenceChanges,
 ) (model.ReferenceChanges, error) {
@@ -560,8 +641,9 @@ func (l *Ledger) QueueAskParts(
 		return model.ReferenceChanges{}, ErrQueueSealed
 	}
 	// The parts are the only text of the ask this call holds, so the reader is its own: a route
-	// that reconciles the question too builds one and reconciles through it (refs.NewReader).
-	reader := refs.NewReader(ctx, l.writer, "ask", ask.ID, serverURL)
+	// that reconciles the question too builds one and reconciles through it
+	// (refs.NewReaderInScope).
+	reader := refs.NewReaderInScope(ctx, l.writer, "ask", ask.ID, serverURL, document)
 	changes, parts, err := planAskPartsCounted(withLedger(ctx, l), l.writer, reader, ask, at, beside)
 	if err != nil {
 		return model.ReferenceChanges{}, err
@@ -707,8 +789,11 @@ func (l *Ledger) inTransaction() bool {
 	return l != nil && (l.tx != nil || l.ownTx)
 }
 
+// withLedger marks ctx with the ledger the writes made under it queue on, and with the rows that
+// ledger has queued (refs.Pending), so every reference read made in the transaction resolves a
+// row it creates as it will stand once the write phase has run.
 func withLedger(ctx context.Context, ledger *Ledger) context.Context {
-	return context.WithValue(ctx, ledgerContextKey{}, ledger)
+	return refs.WithPending(context.WithValue(ctx, ledgerContextKey{}, ledger), ledger)
 }
 
 func ledgerFrom(ctx context.Context) *Ledger {

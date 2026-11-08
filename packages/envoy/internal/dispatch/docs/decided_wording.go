@@ -249,14 +249,14 @@ func (s *Service) restoreDocumentDecidedWordings(ctx context.Context, tx pgx.Tx,
 
 // restoreWordings gives the decided asks ids names, or every decided ask when ids is nil, their
 // decided wording back, and indexes each restored ask again, as every write of an ask's question
-// and options does: its own references (planAskReferences, refs.ReplaceCounted's read half) and
-// its parts (planAskPartIndex), the parts read from the plan's row - the restored wording with
-// the answer the decision left on it. The parts are planned against what this transaction's own
-// queued writes of the same ask leave, so a settlement that restores a wording and then settles
-// the block reads the rows this plan queued. They are indexed at the time this restoration
-// writes them, the change they record, and not at the time of the edit it undoes, which the
-// restore leaves on the row (edited_at). No event carries the change, as none does for
-// refs.RebuildAll's, so nothing counts what the restoration moved. Which asks it restores, their
+// and options does: its own references (planAskReferences) and its parts (planAskPartIndex), the
+// parts read from the plan's row - the restored wording with the answer the decision left on it.
+// The parts are planned against what this transaction's own queued writes of the same ask leave,
+// so a settlement that restores a wording and then settles the block reads the rows this plan
+// queued. They are indexed at the time this restoration writes them, the change they record, and
+// not at the time of the edit it undoes, which the restore leaves on the row (edited_at). No
+// event carries the change, as none does for refs.RebuildAll's, so nothing counts what the
+// restoration moved. Which asks it restores, their
 // references and their parts are read and planned where it is called (decidedWordingPlan); the
 // restoration, the references and the parts go through write, queued in that order, so an ask's
 // parts are written after the update whose wording they hold. The restoration names the planned

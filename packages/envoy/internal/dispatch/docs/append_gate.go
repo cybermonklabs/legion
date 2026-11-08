@@ -118,8 +118,8 @@ type appendGateRead struct {
 // history leave it (pendingRoom): the head is the one its queued appends and its rebuild's seed
 // give, and a queued rebuild deleted every row this read saw, so nothing at or below a room's
 // cursor remains - oldest 0, which historyIntact reads as no row of this room's left. A nil
-// pending - a transaction that queues no write, or one whose first write of this document this
-// is - leaves the read as it was read.
+// pending is a transaction whose writes are not queued, which has nothing pending
+// (recordPendingRoom): the read is left as it was read.
 func (read appendGateRead) after(pending *pendingRoom) appendGateRead {
 	if pending == nil {
 		return read

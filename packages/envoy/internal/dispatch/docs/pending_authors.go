@@ -464,29 +464,6 @@ func pendingAuthorsAt(authors map[string]model.Actor, version persistence.Versio
 	return pendingAuthorsOf(authors, func(string) persistence.Version { return version })
 }
 
-// upsertPendingAuthors writes authors to R in tx, which holds the document's advisory lock, in
-// one statement (pendingAuthorsStatement). It goes through write, so a transaction whose writes
-// are queued runs it in its write phase; deletePendingAuthors, deleteHeldPendingAuthors and
-// markSettlementPending do the same.
-func upsertPendingAuthors(ctx context.Context, tx pgx.Tx, room string, authors []pendingAuthor) error {
-	if len(authors) == 0 {
-		return nil
-	}
-	statement, err := pendingAuthorsStatement(room, authors)
-	if err != nil {
-		return err
-	}
-	if err := statement.write(ctx, tx); err != nil {
-		return err
-	}
-	// A queued statement writes nothing until the write phase runs, so the rows it will add are
-	// recorded for the reads of this transaction that follow it (transactionPendingAuthors).
-	if ledger := queueFor(ctx, tx); ledger != nil {
-		ledger.queuedAuthors(room, authors)
-	}
-	return nil
-}
-
 // pendingAuthorsStatement is the one statement that writes authors, at least one, to R, each as
 // recorded by its own update: an append transaction's authors at every credited update's own
 // version, or a transaction's upsertPendingAuthors. An author keeps one row per update that
@@ -528,6 +505,40 @@ func pendingAuthorsStatement(room string, authors []pendingAuthor) (writeStateme
 		args: []any{room, kinds, ids, encoded, versions},
 		what: "record the document's pending authors",
 	}, nil
+}
+
+// queuePendingAuthors queues pendingAuthorsStatement for authors on plan, and records the rows it
+// will add on the ledger that queues tx's writes (Ledger.queuedAuthors). It is the one place
+// doc_pending_authors' insert is queued - an update's append queues it among its own writes
+// (appendWrites), upsertPendingAuthors as a write of its own - and the one caller of the
+// builder, so no writer can queue the statement without recording the overlay the transaction's
+// own reads of R consult (transactionPendingAuthors). It queues nothing where the authors name
+// nobody, which leaves no row for a read to miss either.
+func queuePendingAuthors(ctx context.Context, tx pgx.Tx, plan *appendPlan, room string, authors []pendingAuthor) error {
+	if len(authors) == 0 {
+		return nil
+	}
+	statement, err := pendingAuthorsStatement(room, authors)
+	if err != nil {
+		return err
+	}
+	plan.add(statement)
+	if ledger := queueFor(ctx, tx); ledger != nil {
+		ledger.queuedAuthors(room, authors)
+	}
+	return nil
+}
+
+// upsertPendingAuthors writes authors to R in tx, which holds the document's advisory lock, in
+// one statement (queuePendingAuthors, pendingAuthorsStatement). It goes through write, so a
+// transaction whose writes are queued runs it in its write phase; deletePendingAuthors,
+// deleteHeldPendingAuthors and markSettlementPending do the same.
+func upsertPendingAuthors(ctx context.Context, tx pgx.Tx, room string, authors []pendingAuthor) error {
+	var plan appendPlan
+	if err := queuePendingAuthors(ctx, tx, &plan, room, authors); err != nil {
+		return err
+	}
+	return plan.send(ctx, tx)
 }
 
 // transactionPendingAuthors is R for room as tx sees it: the rows the table holds, and the rows

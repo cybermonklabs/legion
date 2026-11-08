@@ -306,8 +306,8 @@ const askAuthorsStatement = `
 	on conflict (artifact_id, block_id_key(block_id)) do nothing`
 
 // askAuthorsArgs is askAuthorsStatement's arguments for authors, keyed by block id, and nil when
-// none of them can name a durable row (storableAskBlockID). An append queues the statement with
-// them among its own writes (appendUpdateTxClass), which go in one round trip.
+// none of them can name a durable row (storableAskBlockID). Its one caller is queueAskAuthors,
+// which every queue of the statement goes through.
 func askAuthorsArgs(room string, authors map[string]model.Actor) ([]any, error) {
 	blocks := make([]string, 0, len(authors))
 	encoded := make([]string, 0, len(authors))
@@ -328,28 +328,44 @@ func askAuthorsArgs(room string, authors map[string]model.Actor) ([]any, error) 
 	return []any{room, blocks, encoded}, nil
 }
 
-// recordAskAuthors records authors, keyed by block id, in tx, keeping the author an earlier
-// registration of a block already recorded. It goes through write, so a transaction whose writes
-// are queued runs it in its write phase and reads the rows it will add from its ledger until then
-// (Ledger.queuedAskAuthors, transactionRecordedAskAuthors).
-func recordAskAuthors(ctx context.Context, tx pgx.Tx, room string, authors map[string]model.Actor) error {
+// queueAskAuthors queues askAuthorsStatement for authors, keyed by block id, on plan, and
+// records the rows it will add on the ledger that queues tx's writes (Ledger.queuedAskAuthors).
+// It is the one place doc_ask_block_authors' insert is queued - an update's append queues it
+// among its own writes (appendWrites), recordAskAuthors as a write of its own - so no writer can
+// queue the statement without recording the overlay the transaction's own reads of the table
+// consult (transactionRecordedAskAuthors). It queues nothing where no author can name a durable
+// row (askAuthorsArgs), which leaves no row for a read to miss either.
+func queueAskAuthors(ctx context.Context, tx pgx.Tx, plan *appendPlan, room string, authors map[string]model.Actor) error {
 	args, err := askAuthorsArgs(room, authors)
 	if err != nil || args == nil {
 		return err
 	}
-	if err := writeExec(ctx, tx, "record the document's ask block authors", askAuthorsStatement, args...); err != nil {
+	plan.queue("record the document's ask block authors", askAuthorsStatement, args...)
+	ledger := queueFor(ctx, tx)
+	if ledger == nil {
+		return nil
+	}
+	queued := make(map[string]model.Actor, len(authors))
+	for block, actor := range authors {
+		if storableAskBlockID(block) {
+			queued[block] = actor
+		}
+	}
+	ledger.queuedAskAuthors(room, queued)
+	return nil
+}
+
+// recordAskAuthors records authors, keyed by block id, in tx, keeping the author an earlier
+// registration of a block already recorded: queueAskAuthors as one write of its own. It goes
+// through write, so a transaction whose writes are queued runs it in its write phase and reads
+// the rows it will add from its ledger until then (Ledger.queuedAskAuthors,
+// transactionRecordedAskAuthors).
+func recordAskAuthors(ctx context.Context, tx pgx.Tx, room string, authors map[string]model.Actor) error {
+	var plan appendPlan
+	if err := queueAskAuthors(ctx, tx, &plan, room, authors); err != nil {
 		return err
 	}
-	if ledger := queueFor(ctx, tx); ledger != nil {
-		queued := make(map[string]model.Actor, len(authors))
-		for block, actor := range authors {
-			if storableAskBlockID(block) {
-				queued[block] = actor
-			}
-		}
-		ledger.queuedAskAuthors(room, queued)
-	}
-	return nil
+	return plan.send(ctx, tx)
 }
 
 // recordStampedAskAuthors records, in tx, the transaction that stores a stamp, the author of each

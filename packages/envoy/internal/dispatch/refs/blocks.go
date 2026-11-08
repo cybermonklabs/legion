@@ -832,16 +832,22 @@ func BlockChanges(ctx context.Context, q Queryer, artifactID string) (map[string
 
 // DocumentAddress is where a document sits and what it is called: the reference key its blocks'
 // node ids are built from, the issue holding it, the parent of an issue this transaction creates
-// too, and the title the windows of its blocks embed. A write hands the address over rather than
-// a read of it taking those from the artifacts row, because a transaction creating the document
-// has only queued that row: its own reads cannot see it, while the caller knows what the queued
-// insert will write. It is what a read of the document's address answers before and after the
-// write phase has run (docs.addressOfDocument).
+// too, the dispatch:// address a citation of the document reports, and the title the windows of
+// its blocks embed. A write hands the address over rather than a read of it taking those from
+// the artifacts row, because a transaction creating the document has only queued that row: its
+// own reads cannot see it, while the caller knows what the queued insert will write. It is what
+// a read of the document's address answers before and after the write phase has run
+// (docs.addressOfDocument), and what a citation of the document resolves to meanwhile
+// (Pending.PendingArtifact).
 type DocumentAddress struct {
 	// RefKey is the document's reference key, its owner's key and its slug (migration 0071).
 	RefKey string
 	// IssueKey is the issue the document belongs to, "" for a project's or a session's document.
 	IssueKey string
+	// Ref is the document's own dispatch:// address, as ArtifactRef spells it from the row the
+	// insert writes: the reference a Referenced by panel is opened on, which an event naming
+	// the document as a changed target carries (model.ChangedReference.Ref).
+	Ref string
 	// Name is the document's title, which the windows of its blocks embed (PlanBlocks).
 	Name string
 	// PendingParent is the parent of IssueKey when this transaction creates that issue's row

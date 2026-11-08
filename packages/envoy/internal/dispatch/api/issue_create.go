@@ -320,16 +320,23 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
 	defer ledger.Discard()
-	// The spec's artifacts row is written below, after the document work, so the address that
-	// row is given is recorded for the reads of this transaction that need it: the key its
-	// insert names - the issue's key and the 'spec' slug - the issue itself, whose own row this
-	// transaction writes in the same phase, which is why the parent goes with it, and the name
-	// it writes (refs.DocumentAddress). A block pointer of the seeded spec is held to that
-	// address, and the windows of its blocks embed that name (docs.addressOfDocument,
-	// docs.documentTitle). parentKey is "" for a root issue, the null parent_key the insert
-	// below writes.
+	// The issue's row and its spec's artifacts row are both written below, after the document
+	// work, so what they will hold is recorded for the reads of this transaction that need it.
+	// The address is the key the spec's insert names - the issue's key and the 'spec' slug -
+	// the issue itself, whose own row this transaction writes in the same phase, which is why
+	// the parent goes with it, the spec's own dispatch:// address, and the name it writes
+	// (refs.DocumentAddress). A block pointer of the seeded spec is held to that address, the
+	// windows of its blocks embed that name (docs.addressOfDocument, docs.documentTitle), and a
+	// spec citing the issue it opens, by key or at that address, resolves to the two rows
+	// (refs.Pending). parentKey is "" for a root issue, the null parent_key the insert below
+	// writes.
+	ledger.RegisterPendingIssue(key)
 	ledger.RegisterPendingArtifact(artifactID, refs.DocumentAddress{
-		RefKey: key + "/spec", IssueKey: key, Name: specArtifactName, PendingParent: parentKey,
+		RefKey:        key + "/spec",
+		IssueKey:      key,
+		Ref:           refs.ArtifactRef(&key, input.Project, nil, "spec", "doc", true),
+		Name:          specArtifactName,
+		PendingParent: parentKey,
 	})
 	markdown, err = s.deps.Docs.SeedText(documentCtx, artifactID, markdown, actor)
 	if err != nil {

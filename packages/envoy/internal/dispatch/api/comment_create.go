@@ -873,7 +873,14 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 			return
 		}
 	}
-	referenceChanges, err := s.queueItemReferences(r.Context(), tx, ledger, refs.ItemComment, comment.ID, comment.Body, owner.IssueKey, comment.CreatedAt, true)
+	// The comment's row is queued above, so the fields that row will hold are handed over: they
+	// name the document its `#id`s resolve against and the issue its blocks' windows embed them
+	// under, neither of which a read of the row can answer yet.
+	pending := refs.PendingSource{IssueKey: owner.IssueKey, ArtifactID: owner.ArtifactID, ReplyTo: input.ReplyTo, AskID: input.AskID}
+	if anchor != nil {
+		pending.AnchorArtifactID = &anchor.ArtifactID
+	}
+	referenceChanges, err := s.queueItemReferences(r.Context(), tx, ledger, refs.ItemComment, comment.ID, comment.Body, pending, comment.CreatedAt, true)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

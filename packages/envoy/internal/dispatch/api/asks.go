@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -266,9 +267,16 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 			return
 		}
 	}
-	// The question is read with the whole grammar (refs.Reader.Mentions), so the bare keys,
-	// `#id`s and short ids it writes are stored as its edges.
-	askChanges, err := s.queueReferences(r.Context(), tx, ledger, "ask", ask.ID, ask.Question)
+	// The question and the parts are read with the whole grammar (refs.Reader.Mentions), so the
+	// bare keys, `#id`s and short ids they write are stored as the ask's edges. The row's insert
+	// is queued above, so the document those `#id`s resolve against is read from the fields it
+	// will hold (refs.PendingAskScope) and handed to both readers.
+	document, err := refs.PendingAskScope(r.Context(), tx, ask)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	askChanges, err := s.queueReferences(r.Context(), tx, ledger, "ask", ask.ID, ask.Question, &document)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -276,7 +284,7 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	// The ask's parts, beside the ask's own references: the row's insert is queued above, so the
 	// index's statements follow it and its state row comes after the row they name, and the event
 	// below names what both moved.
-	askChanges, err = s.queueAskParts(r.Context(), ledger, ask, ask.CreatedAt, askChanges)
+	askChanges, err = s.queueAskParts(r.Context(), ledger, ask, &document, ask.CreatedAt, askChanges)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -536,7 +544,7 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 	// The edit writes the question and the options, so it is a revision of the ask's parts: plan
 	// them at the edited_at the queued update writes, which the row above carries already, queue
 	// the index after that update, and name what they moved beside the rest.
-	askChanges, err = s.queueAskParts(documentCtx, ledger, ask, editedAt, askChanges)
+	askChanges, err = s.queueAskParts(documentCtx, ledger, ask, nil, editedAt, askChanges)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

@@ -122,10 +122,10 @@ func countedApprovalRequest(t *testing.T, handler http.Handler, artifactID strin
 	return response
 }
 
-// One approval request on a document with no request open costs twenty-one round trips, counted
+// One approval request on a document with no request open costs twenty-two round trips, counted
 // as the issue read's are (roundTrips): one for each statement it runs on its own and one for
 // each batch, whatever that batch holds. The first eight read the coverage the answer reports,
-// before the request's transaction opens (approvalCoverage); the thirteen after them are the
+// before the request's transaction opens (approvalCoverage); the fourteen after them are the
 // transaction itself, and all but two of those are reads: this route's writes are queued and
 // sent as one batch before the commit, which is what holds its transaction id to its database
 // work (INFRA-636). In the order it sends them:
@@ -155,22 +155,24 @@ func countedApprovalRequest(t *testing.T, handler http.Handler, artifactID strin
 //     (docs.OpenApprovalAskForDocuments);
 //  16. the new ask's id and the transaction's time (select gen_random_uuid()::text, now());
 //  17. the latest approved review the request carries (docs.LatestApprovedReview);
-//  18. the question's references as they stand, which the replacement is planned against
+//  18. the scope the question's `#id` references resolve against, read over the ask row this
+//     transaction will write rather than over a row (refs.PendingAskScope);
+//  19. the question's references as they stand, which the replacement is planned against
 //     (queueReferences, through refs.PlanReplace);
-//  19. the ask's block state, read for its parts' plan (refs.PlanAskParts, through
+//  20. the ask's block state, read for its parts' plan (refs.PlanAskParts, through
 //     refs.ReadItemIndex);
-//  20. a batch of 15: the whole write phase, sent back to back - the ask row, its block state
+//  21. a batch of 15: the whole write phase, sent back to back - the ask row, its block state
 //     and the part rows of its question and options, the author's follow, the references and
 //     the row the ask owes the grammar's re-index queue, deleted with them
 //     (refs.Replacement.Queue, INFRA-869), the ask.opened event with its payload and the
 //     issue's last_seq, the reference stamps, and the approval as the request leaves it;
-//  21. commit.
+//  22. commit.
 //
-// The transaction takes its transaction id at the first statement of 20 and gives it up at 21;
+// The transaction takes its transaction id at the first statement of 21 and gives it up at 22;
 // the per-route window test measures that window, and this test bounds what the route sends
 // around it. The one-phase route sent thirty-four, its write statements each a round trip of
 // its own between the reads.
-func TestApprovalRequestsCostTwentyOneRoundTrips(t *testing.T) {
+func TestApprovalRequestsCostTwentyTwoRoundTrips(t *testing.T) {
 	database := storetest.Open(t)
 	counter := &roundTrips{}
 	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
@@ -191,7 +193,7 @@ func TestApprovalRequestsCostTwentyOneRoundTrips(t *testing.T) {
 	if response.Code != http.StatusCreated {
 		t.Fatalf("request approval: status=%d body=%s", response.Code, response.Body.String())
 	}
-	const want = 21
+	const want = 22
 	if len(counted) != want {
 		t.Fatalf("the approval request made %d round trips, want %d:\n%s",
 			len(counted), want, strings.Join(roundTripLines(counted), "\n"))

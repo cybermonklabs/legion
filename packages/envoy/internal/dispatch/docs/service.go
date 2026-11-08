@@ -2940,9 +2940,9 @@ func (s *Service) backfillBlockIDs(ctx context.Context, artifactID string) Block
 		return abandon(fmt.Errorf("append identity update: %w", err))
 	}
 	// Before the commit, in the transaction that stores the stamp: the authors it carried are
-	// recorded with it, queued on the same ledger as the append above (storeCtx), so they are
-	// written in the write phase after it, where the statements running them one at a time wrote
-	// them.
+	// recorded with it. The backfill's ledger sets no writer, so nothing queues this write: it
+	// runs at once on this transaction, a batch of its own (write, store.RunWrite), after the
+	// append above.
 	if err := recordStampedAskAuthors(storeCtx, tx, artifactID, renamed, carried); err != nil {
 		return abandon(err)
 	}
