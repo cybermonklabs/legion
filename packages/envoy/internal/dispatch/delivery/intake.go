@@ -1054,13 +1054,17 @@ const headWriteRedeliverAfter = 10 * time.Second
 // write. Too many, and four envelopes hold the consumer's whole in-flight window for longer
 // than the thing that catches every other failure up. At thirty deliveries and a ten-second
 // delay, one envelope's hand-backs are 29 × 10 s = 4 min 50 s of wall clock, plus what each
-// refused attempt itself spends, which is milliseconds for a write Postgres refuses outright.
-// So the window is held for about five minutes at the worst — the reconcile's own period,
-// which is already the longest any other failure of this intake waits — and a database away
-// for anything up to that still gets the head row written.
+// refused attempt itself spends. A write Postgres refuses outright spends milliseconds, so
+// the window is held for about five minutes — the reconcile's own period, which is already
+// the longest any other failure of this intake waits. A database that hangs rather than
+// refusing spends up to intakeMessageTimeout on each attempt instead, which is a minute, so
+// thirty of them hold the window for about 35 minutes. That is the worst, and the cap is what
+// bounds it: without one the window is held for ever. A database away for anything up to its
+// own case's span still gets the head row written.
 //
 // A var so a test can shrink it, as intakeMessageTimeout and intakeMaxAckPending are vars for
-// the same reason: thirty deliveries of one envelope is five minutes no test should spend.
+// the same reason: thirty deliveries of one envelope is minutes of wall clock no test should
+// spend.
 var headWriteMaxDeliveries uint64 = 30
 
 // headWriteDeliveriesSpent reports how many times the server has delivered msg and whether
