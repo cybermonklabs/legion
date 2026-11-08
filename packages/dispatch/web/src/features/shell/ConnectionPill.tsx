@@ -8,29 +8,23 @@ import {
   calloutWarningBorder,
   statusConnecting,
 } from "../../theme/classes";
-import { AfterTheFirstBatch } from "../doc/AfterTheFirstBatch";
 
 /**
  * Whether the page's live updates are reaching it, in the shell's status corner.
  *
- * It says nothing while the socket is up, which is every second of a load that goes well, and
- * what it would say is nothing a reader who opened a document is waiting for - so on a document
- * address it is drawn after the editor's first batch, along with the rest of the shell's own
- * parts (dispatch://INFRA-341 R11, `features/doc/AfterTheFirstBatch.tsx`). It stands in a corner
- * fixed over the page and takes no space in it, so nothing moves whenever it arrives, and its
- * space is what it draws itself until the socket has something to report: nothing.
+ * It says nothing while the socket is up, which is every second of a load that goes well. What
+ * it says when the socket is down is not the page's chrome: it is the reason what the reader
+ * is looking at may already be out of date, and it carries the reload that is their way out of
+ * it. So it waits for no editor, where the rest of the shell's own parts are drawn after the
+ * editor's first batch (dispatch://INFRA-341 R11, `features/doc/AfterTheFirstBatch.tsx`). A
+ * hold over it would run longest on exactly the load whose socket is gone, and the pill stands
+ * in a corner that keeps no box, so there would be nothing there for a reader to press to ask
+ * for it. It costs the load one subscription to a state the shell already holds and draws
+ * nothing at all while the socket is up.
  *
  * Its own component, so the state it watches re-renders this pill rather than the whole shell.
  */
 export function ConnectionPill(): ReactNode {
-  return (
-    <AfterTheFirstBatch space={null}>
-      <WhatTheSocketSays />
-    </AfterTheFirstBatch>
-  );
-}
-
-function WhatTheSocketSays(): ReactNode {
   const connection = useLiveSocketPill();
   // A socket Dispatch refuses carries no status the page can read, so nothing here is terminal:
   // once reconnecting has gone on for two minutes it offers a reload, and the page keeps trying

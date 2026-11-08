@@ -12,23 +12,30 @@ import {
 import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 
 import { ApiError } from "../../api/client";
-import type { Artifact, IssuePriority } from "../../api/types";
+import type { Artifact, IssueDetails, IssuePriority } from "../../api/types";
 import { chunkComponent } from "../../components/chunk-component";
 import { QueryError } from "../../components/QueryError";
 import { tabButtonId } from "../../components/Tabs";
 import {
+  borderDefault,
+  calloutWarningBg,
+  calloutWarningText,
   dangerText,
   linkHoverText,
   linkText,
+  statusPill,
+  statusPillDot,
   textMutedOnCanvas,
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { ArtifactRoutePanel } from "../artifacts/ArtifactRoutePanel";
 import { ChromeAfterTheFirstBatch } from "../doc/AfterTheFirstBatch";
+import { ApprovalChip } from "../doc/ApprovalChip";
 import { ConnectionDot } from "../doc/ConnectionDot";
 import type { DocumentToolbar } from "../doc/ProofDocument";
 import { outsideAskCard } from "../inbox/ask-card";
+import { statusText } from "../project/board-model";
 import {
   buildReferencePath,
   documentRoute,
@@ -165,6 +172,50 @@ function ItemLandingFailure({
         <QueryError message={`Couldn't load this ${noun.toLowerCase()}.`} onRetry={landing.retry} />
       </div>
     </section>
+  );
+}
+
+/**
+ * What the issue's header tells a reader without being asked: that the issue is closed, where
+ * its work stands, and what a review of its spec has decided. It stands in the box the header
+ * keeps until the editor's first batch (`issue-page-skeleton.tsx`, dispatch://INFRA-341 R11).
+ *
+ * Every word of it is the issue and its primary document, both of which the page has read
+ * before it draws anything, so none of it is one of the reads the hold moved, and the header
+ * says the same three things when it lands. The controls that stand beside them there - Reopen,
+ * the status pick, Approve and Request changes - are not here: a press on this box is how a
+ * reader asks for a control, and it hands them the header itself.
+ */
+function WhatTheHeaderWouldSay({
+  artifact,
+  issue,
+}: {
+  artifact: Artifact;
+  issue: IssueDetails;
+}): ReactNode {
+  return (
+    <>
+      {issue.closed_at === null ? null : (
+        <span
+          className={`rounded-lg px-3 py-1.5 text-sm ${calloutWarningBg} ${calloutWarningText}`}
+        >
+          This issue is closed.
+        </span>
+      )}
+      {/* The status pill at the size the header's own pick stands at, so the pick landing in
+          its place moves nothing beside it. */}
+      <span
+        className={`flex min-h-11 shrink-0 items-center gap-2 rounded-full border px-2 text-sm font-semibold uppercase tracking-wide sm:px-3 md:min-h-8 xl:px-2 ${borderDefault} ${statusPill.bg} ${statusPill.text}`}
+      >
+        <span
+          aria-hidden="true"
+          className={`hidden h-2 w-2 rounded-full sm:block ${statusPillDot}`}
+        />
+        <span className="sr-only">Status</span>
+        {statusText(issue.status)}
+      </span>
+      <ApprovalChip artifact={artifact} showActions={false} variant="header" />
+    </>
   );
 }
 
@@ -501,8 +552,24 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
 
   return (
     <section>
-      <ChromeAfterTheFirstBatch space={<IssueHeaderSkeleton />}>
-        <Suspense fallback={<IssueHeaderSkeleton />}>
+      {/* What the header says about this issue stands in the header's own box until the header
+          lands, and in its box again while the header's chunk arrives: a reader is told the
+          issue is closed, where its work stands and what a review of its spec decided, without
+          having to press for it (`WhatTheHeaderWouldSay`). */}
+      <ChromeAfterTheFirstBatch
+        space={
+          <IssueHeaderSkeleton
+            state={<WhatTheHeaderWouldSay artifact={primaryArtifact} issue={issue.data} />}
+          />
+        }
+      >
+        <Suspense
+          fallback={
+            <IssueHeaderSkeleton
+              state={<WhatTheHeaderWouldSay artifact={primaryArtifact} issue={issue.data} />}
+            />
+          }
+        >
           <IssueHeader
             documentArtifact={primaryArtifact}
             isClosed={isClosed}
@@ -513,9 +580,10 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
         </Suspense>
       </ChromeAfterTheFirstBatch>
       {/* The open document's connection dot stands in the strip's space until the strip itself
-          lands. A reader whose edits are in this browser alone is told so while the document is
-          still connecting, which is exactly when no first batch comes to draw the strip
-          (`issue-page-skeleton.tsx`, `features/doc/first-batch.ts`). */}
+          lands, and in the box again while the strip's chunk arrives. A reader whose edits are
+          in this browser alone is told so while the document is still connecting, which is
+          exactly when no first batch comes to draw the strip (`issue-page-skeleton.tsx`,
+          `features/doc/first-batch.ts`). */}
       <ChromeAfterTheFirstBatch
         space={
           <IssueTabsSkeleton
@@ -527,7 +595,20 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
           />
         }
       >
-        <Suspense fallback={<IssueTabsSkeleton />}>
+        <Suspense
+          fallback={
+            <IssueTabsSkeleton
+              trailing={
+                activeTab === "spec" && specToolbar !== undefined ? (
+                  <ConnectionDot
+                    connection={specToolbar.connection}
+                    pending={specToolbar.pending}
+                  />
+                ) : undefined
+              }
+            />
+          }
+        >
           <IssueTabs
             activeTab={activeTab}
             artifactCount={issue.data.artifacts.length}

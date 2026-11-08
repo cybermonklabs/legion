@@ -24,8 +24,14 @@ import {
  *
  * Here rather than in `app.tsx` because both draw them: `app.tsx` is the entry chunk, which may
  * hold nothing a route draws, and these two boxes are all of the page that belongs there.
+ *
+ * `state` is the one thing in the header's box that is not a placeholder: what the header
+ * would tell the reader about this issue without being asked - that it is closed, where its
+ * work stands, and what a review of its spec has decided (`IssuePage.tsx`). A reader presses
+ * the box for a control and has the header then, which is no use to one who was never told
+ * there was anything to press for, so the notices stand in it and the controls wait.
  */
-export function IssueHeaderSkeleton(): ReactNode {
+export function IssueHeaderSkeleton({ state }: { state?: ReactNode }): ReactNode {
   return (
     <header className={`mb-6 border-b pb-6 ${borderDefault}`} data-testid="issue-header-box">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -49,6 +55,9 @@ export function IssueHeaderSkeleton(): ReactNode {
           className={`inline-block h-7 w-2/3 animate-pulse rounded align-middle ${skeletonBg}`}
         />
       </h1>
+      {state === undefined ? null : (
+        <div className="mt-2 flex flex-wrap items-center gap-2">{state}</div>
+      )}
     </header>
   );
 }

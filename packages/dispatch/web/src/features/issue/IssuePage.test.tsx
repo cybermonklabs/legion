@@ -19,6 +19,7 @@ import type {
   Subscriber,
   UserIssueState,
 } from "../../api/types";
+import { theFirstBatchIsAwaited } from "../doc/first-batch";
 import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
 import { KeymapProvider } from "../shell/KeymapProvider";
@@ -2370,6 +2371,55 @@ test("IssuePage shows its not-found view for an id prefix that names nothing", a
     view.unmount();
     getComment.mockRestore();
     getReferences.mockRestore();
+    restore();
+  }
+});
+
+// The issue's header is drawn after the editor's first batch, and what it tells a reader
+// without being asked is not (dispatch://INFRA-341 R11, `issue-page-skeleton.tsx`): a press on
+// the box is how a reader reaches for a control, and nothing presses for one who was never
+// told there was anything to reach for.
+test("IssuePage's header box says a closed issue is closed, where it stands and what its spec's review decided", async () => {
+  const restore = stubIssuePage({
+    ...issue,
+    artifacts: [
+      {
+        ...issue.artifacts[0],
+        approval: { latest_version: 2, state: "changes_requested", version: 2 },
+      },
+    ],
+    closed_at: "2026-09-10T00:00:00Z",
+    status: "done",
+  });
+  // Armed before anything renders, as an address that opens a document arms it
+  // (`openDocumentEarly`): a part that reads the hold on its first render is held by it. The
+  // address is a tab whose panel is not the document, so nothing here builds an editor and
+  // ends the hold - the issue's own address holds its chrome exactly the same way.
+  theFirstBatchIsAwaited(true);
+  const view = renderIssuePage("/issues/CORE-1/children");
+
+  try {
+    const box = await screen.findByTestId("issue-header-box");
+    // The header itself is held, with its controls: no status pick, no Reopen, no review.
+    expect(screen.queryByTestId("issue-header")).toBeNull();
+    expect(screen.queryByRole("combobox", { name: "Status" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Reopen issue" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Request changes" })).toBeNull();
+    // What the header would have told the reader stands in its box meanwhile.
+    expect(within(box).getByText("This issue is closed.")).toBeTruthy();
+    expect(within(box).getByText("Done")).toBeTruthy();
+    expect(within(box).getByRole("button", { name: "Changes requested" })).toBeTruthy();
+
+    // And the header says the same three things when the batch lets it through, once each.
+    act(() => theFirstBatchIsAwaited(false));
+    const header = await screen.findByTestId("issue-header");
+    expect(within(header).getByText("This issue is closed.")).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "Changes requested" })).toHaveLength(1);
+    // And its controls are there with it: the status is a pick again.
+    expect(await screen.findByRole("combobox", { name: "Status" })).toBeTruthy();
+  } finally {
+    theFirstBatchIsAwaited(false);
+    view.unmount();
     restore();
   }
 });

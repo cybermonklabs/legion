@@ -109,7 +109,16 @@ export function ArtifactHeader({
           the words the reader has today before the document's own toolbar reaches it. How much
           taller the rest makes it - an approval chip, a project link, a name over two lines,
           the toolbar's own buttons - is that artifact's versions and reviews laid out, so no
-          placeholder can be its size and the page re-places the reader under it instead. */}
+          placeholder can be its size and the page re-places the reader under it instead.
+
+          Two things stand in that space rather than waiting: the connection dot, which is how
+          this page says the document is not connected and holds edits this browser has not
+          sent, and the approval state, which is what a review of this document has already
+          decided. A reader presses the box for a control they want and gets the chrome then;
+          nothing presses for a reader who was never told, so what the box keeps is a notice
+          and never a control. Both are read from the artifact and the document surface this
+          page already has, so neither is a read the hold moved. The chip's own Approve and
+          Request changes arrive with the chrome, a press away, as the toolbar's buttons do. */}
       <ChromeAfterTheFirstBatch
         space={
           <header
@@ -118,7 +127,12 @@ export function ArtifactHeader({
             <h2 className={`min-w-0 break-words text-lg font-semibold ${textPrimaryOnSurface}`}>
               {artifact.name}
             </h2>
-            <span aria-hidden="true" className="block min-h-11" />
+            <div className="flex min-h-11 flex-wrap items-center gap-3">
+              <ApprovalChip artifact={artifact} showActions={false} variant="header" />
+              {toolbar === undefined ? null : (
+                <ConnectionDot connection={toolbar.connection} pending={toolbar.pending} />
+              )}
+            </div>
           </header>
         }
       >
