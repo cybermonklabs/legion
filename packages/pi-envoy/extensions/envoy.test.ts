@@ -13101,24 +13101,14 @@ console.log(JSON.stringify(args));
       const ledgerRecords = (entries: readonly { readonly customType?: string }[]) =>
         JSON.stringify(entries.filter((entry) => entry.customType === REPLAY_DELIVERED_ENTRY));
 
-      /**
-       * Whether a process of this machine is still running, as the rows that watch a command's
-       * own process group read it. A killed child whose parent has not reaped it yet is a zombie:
-       * `kill(pid, 0)` still answers for it, because the entry stays in the process table until
-       * its status is read, so the state in `/proc` decides where there is one. A machine with
-       * no `/proc` falls back to the signal alone.
-       */
+      /** Whether a process of this machine is still there, which the row below reads once, to
+       *  say that the command it started is running before the session shuts down. */
       const alive = (pid: number): boolean => {
         try {
           process.kill(pid, 0);
+          return true;
         } catch {
           return false;
-        }
-        try {
-          const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-          return stat.slice(stat.lastIndexOf(")") + 1).trim().charAt(0) !== "Z";
-        } catch {
-          return true;
         }
       };
 
@@ -13375,10 +13365,13 @@ console.log(JSON.stringify(args));
         );
       }, 20_000);
 
-      // A command runs in a process group of its own, which nothing but this process's kill
-      // ends: the session that was asked for it is going, so the command goes with it rather
-      // than running on with its session gone.
-      test("kills a running command's process group when the session shuts down", async () => {
+      // A command runs in a process group of its own, and the session that was asked for it is
+      // going, so the plugin hands that group's kill to the shutdown rather than letting the
+      // command run on with its session gone. What this row proves is the plugin's half: the
+      // shutdown ends the running command, which the person's reply says in its own words. That
+      // the kill ends the group is `src/typed-shell.ts`'s own contract, proven in its own rows,
+      // one of which starts a real shell in a process that exits and shows nothing survives it.
+      test("ends a running command when the session shuts down", async () => {
         const { agent, context, fixture, replied, replies, work } = await bootShellSession(
           "shell-command-shutdown-kill",
           // Written in the session's own working directory, which the command runs in: the pid
@@ -13398,14 +13391,12 @@ console.log(JSON.stringify(args));
 
         await fixture.handlers.get("session_shutdown")?.({}, context);
 
-        // The person is answered all the same, and the message is taken. The reply is posted
-        // only once the command's own promise has settled, so its arrival is the end of the
-        // command; the process table is then read for what the kill left.
+        // The reply is posted only once the command's own promise has settled, so its arrival
+        // is the end of the command, and its words are the stop rather than an exit status.
         await replied(1);
         expect(replies[0]?.body).toMatchObject({
           body: "!echo $$ > pid; exec sleep 600\n\nThe command printed nothing.\n\nThe command was stopped.",
         });
-        await until(() => !alive(pid), "the command's process group to be killed", 10_000);
       }, 20_000);
 
       // A session shutting down runs no command: one started now would outlive the session it
