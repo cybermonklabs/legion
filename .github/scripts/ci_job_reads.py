@@ -1174,12 +1174,12 @@ SCRIPT_TEST_GATES = [
         ("scripts/sessions-import-pods.sh", "the script under test (scripts/sessions-import-pods.test.sh:11)"),
     ], lib=False),
     harness("check_ci_filters_test", "Test the CI filter check", f"{SCRIPTS}/check-ci-filters.test.sh", [
-        (f"{SCRIPTS}/check-ci-filters.sh", "the script under test, symlinked into every fixture (check-ci-filters.test.sh:69)"),
+        (f"{SCRIPTS}/check-ci-filters.sh", "the script under test, symlinked into every fixture (check-ci-filters.test.sh:71)"),
         (f"{SCRIPTS}/ci_filter_coverage.py", "the engine the fixtures link in beside it"),
         (f"{SCRIPTS}/ci_workflow_rules.py", "the rules the fixtures link in beside it"),
         (f"{SCRIPTS}/workflow_paths.py", "the path model the fixtures link in beside it"),
-        (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh:1945 imports this table to derive the plain step's -run lists"),
-        ("AGENTS.md", "check-ci-filters.test.sh:2134 holds the guide's slow-suite list to the jobs the full-ci label gates"),
+        (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh:1956 imports this table to derive the plain step's -run lists"),
+        ("AGENTS.md", "check-ci-filters.test.sh:2222 holds the guide's slow-suite list to the jobs the full-ci label gates"),
     ]),
     harness("check_ts_filters_test", "Test the TypeScript filter check", f"{SCRIPTS}/check-ts-filters.test.sh", [
         (f"{SCRIPTS}/check-ts-filters.sh", "the script under test, symlinked into every fixture (check-ts-filters.test.sh:41)"),
@@ -1826,6 +1826,13 @@ GATES = [
         (f"{ENVOY}/listenfd/**", "packages/envoy/docker/Dockerfile:79 COPY packages/envoy/listenfd ./listenfd"),
         (f"{ENVOY}/migrationid/**", "packages/envoy/docker/Dockerfile:86 COPY packages/envoy/migrationid ./migrationid"),
         (f"{ENVOY}/roleholder/**", "packages/envoy/docker/Dockerfile:88 COPY packages/envoy/roleholder ./roleholder"),
+        # The second image this job builds. Its context is that directory alone, test file and
+        # all, so the filter owes every file of it: check-image-trigger-paths.sh refuses a
+        # trigger that leaves one out, and rule 17 of check-ci-filters.sh would otherwise write
+        # the exclusion that leaves main_test.go out, no go command of this gate compiling it.
+        (f"{INFRA}/host/heldportwrapper/**", "packages/envoy/infra/host/heldportwrapper/Dockerfile:31 COPY "
+                                             "packages/envoy/infra/host/heldportwrapper ./host/heldportwrapper, "
+                                             "which :32 builds the held-port wrapper from"),
     ) + setup_go("envoy-smoke", f"{ENVOY}/go.mod")),
 
     gate("envoy_e2e_local", "envoy-e2e-local", runs=[
@@ -1895,6 +1902,13 @@ GATES = [
         (CACHE_WORKFLOW, "ci_workflow_rules.py holds its cache saves to ci.yaml's restores"),
         (".github/workflows/**", "ci_workflow_rules.check_one_merge_group_workflow reads every workflow of the "
                                  "directory, and a rule that refuses a new one has to run on the change that adds it"),
+        # Rule 17 computes each gate filter's generated block from two sets: the repository's Go
+        # test files and the ones each gate reads. A test file added or deleted anywhere changes
+        # what that rule writes, so the change that adds one has to start this job - otherwise
+        # ci.yaml goes stale on a pull request this check never ran on, and the next pull
+        # request that does start it goes red for a commit of its own that changed nothing here.
+        ("**/*_test.go", "rule 17 of check-ci-filters.sh writes each filter's exclusions out of the repository's Go "
+                         "test files, so one added or deleted changes this check's own answer"),
     ) + reads(*((path, f"check-ci-filters.sh holds its on.push.paths equal to the {name} filter (PUSH_WORKFLOWS)")
                 for name, path in PUSH_WORKFLOWS.items()))
       + setup_go("ci-filters", f"{DAEMON}/go.mod")),

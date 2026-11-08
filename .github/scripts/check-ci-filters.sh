@@ -9,7 +9,11 @@
 # What a job reads is, per gate (.github/scripts/ci_job_reads.py, GATES):
 #   * the closure of each go command the job runs, live: `go list -deps [-test] [-tags ...] [-race]`
 #     over the command's packages, in its directory, with its GOOS/GOARCH/CGO_ENABLED and -overlay.
-#     Each first-party package directory counts as `<dir>/*`; a test run adds its `testdata/**`;
+#     Each first-party package directory counts as `<dir>/*`, its `_test.go` files aside: those
+#     belong to the runs that compile them, so a test run adds the package's test build and its
+#     `testdata/**`, and a test file a build constraint keeps out of one listing - a
+#     `//go:build race` test, a tagged live one - is read by the run whose -race or -tags puts
+#     it in, and by no other. A directory holding a test file is therefore named file by file;
 #     every run adds each embedded file and, for a `<root>/...` pattern, every directory with .go
 #     files under root (the go command reads their build constraints);
 #   * what a test compiled into such a run does outside its package (RULES, keyed by source file
@@ -233,6 +237,34 @@
 #      how ./internal/record/ stayed in the fill after the lane dropped it. It fails naming the
 #      package, the job and both lists, and a ci-caches.yaml with no race build at all fails
 #      too, since the lane would then be filled by nobody.
+#  17. a gate's filter whose generated block is not exactly the `!` patterns that keep it off
+#      every Go test file it would select and its job does not read, naming the filter, the
+#      first pattern that differs and the command that writes the block; and a `!` pattern of
+#      such a filter outside that block that matches a Go test file, since which test files a
+#      filter excludes is this rule's to compute rather than anyone's to write. Rule 1 holds a
+#      filter to the files its job reads, which is coverage; this one holds it off the files its
+#      job does not, which is selection, and no other rule here can: rule 9's second direction
+#      refuses a pattern matching nothing the job reads, and the pattern that selects a test
+#      file - packages/envoy/internal/dispatch/api/*, packages/envoy/** - matches the sources
+#      the job does read, so it stands. What that costs is a full run of a job for a change no
+#      step of it compiles: a test file of a package whose tests the job never runs. The
+#      attribution is already here, since ci_filter_coverage.py gives a package's TestGoFiles,
+#      its XTestGoFiles, its test embeds and its testdata/** to a run that named that package in
+#      test mode alone, so the read set this rule subtracts is the one rule 1 holds the filter
+#      to. Two forms are written, the fewest of them that say it: `!<tree>/**/*_test.go` where
+#      no test file the job reads is anywhere under <tree>, and `!<path>` where one is, the walk
+#      taking the highest tree that may go whole, naming file by file the excluded files of a
+#      directory that holds a read one too, and reading directories and files in sorted order,
+#      so two runs over one tree write one text. They are generated because they are too many
+#      to keep by hand - 520 patterns over 19 of this file's filters today, 22 for
+#      daemon_go_tests and 137 for docs - and because none of them is a judgement: each follows
+#      from the read sets above. The block belongs to the filter whose list holds it and never
+#      to a group an anchor names, since two filters sharing an anchor need not run the same
+#      tests; a filter with nothing to exclude carries no block, and so does a filter no gate
+#      of this check computes a read set for (worker_image, whose test files
+#      check-image-trigger-paths.sh judges with the image's build context). The write mode
+#      writes the block into the on.push.paths of a PUSH_WORKFLOWS workflow as well, since
+#      rule 8 holds that list equal to its filter and a hand would have to copy it otherwise.
 #
 # A claimed go command is reduced only in its simple forms, never parsed further: one line of
 # `go test|vet|build`, or of `go -C <directory>` and one of those three, under a leading run of
@@ -290,11 +322,31 @@
 # hand: this check proves the filters cover them, not that they are complete, so a change that
 # makes a test read a new file through `..` or start a new go command adds it to ci_job_reads.py.
 #
+# THE TWO MODES. This check takes an optional mode argument. `check`, the default a bare call
+# takes, is every refusal above. `write` is the same run with rule 17's verdict replaced by its
+# remedy: it writes each gate filter's generated block into ci.yaml and refuses nothing of rule
+# 17, leaving every other refusal as it is, since the blocks it writes are computed from the
+# read sets the rest of this check builds and a run that cannot build them writes nothing worth
+# keeping. Only ci.yaml is written, and only inside those blocks. Any other word, or more than
+# one, fails naming both.
+#
 # Run from anywhere: .github/scripts/check-ci-filters.sh
+#                    .github/scripts/check-ci-filters.sh write
 # CI runs it in ci.yaml's ci-filters job, and its tests in ci.yaml's test job.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
+
+# A bare call checks: that is the contract the ci-filters job calls under, and a caller who says
+# nothing is asking for the verdict, never for a rewrite of ci.yaml.
+case "$#:${1:-}" in
+  0: | 1:check | 1:write) ;;
+  *)
+    echo "::error file=.github/scripts/check-ci-filters.sh::this check takes one optional mode: \`check\` (the default) refuses a generated block of ci.yaml that is not rule 17's, and \`write\` writes those blocks instead. Run \`.github/scripts/check-ci-filters.sh\` or \`.github/scripts/check-ci-filters.sh write\`." >&2
+    exit 1
+    ;;
+esac
+export CI_FILTERS_MODE="${1:-check}"
 
 # The engine (ci_filter_coverage.py), its data (ci_job_reads.py), the rules that read no filter
 # and no go command (ci_workflow_rules.py: rules 10 to 14 above, the workspace one

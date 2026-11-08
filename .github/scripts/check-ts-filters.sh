@@ -38,15 +38,19 @@
 # each pair and holds it to the filter; ci_job_reads.py declares each of them as a read, and
 # check-ci-filters.sh holds the filter to it.
 #
-# A file is held to the filter as workflow_paths.Filter reads it, over the filter's patterns with
-# its anchors flattened into the list that names them, which the engine of check-ci-filters.sh
-# reads out of the changes job (ci_filter_coverage.changes_filters) rather than this check
-# reading that step a second way. A covered filter with a `!` pattern is refused instead of read:
-# GitHub's `paths`, which Filter models, takes the last pattern that matches, while
-# dorny/paths-filter's `some-with-excludes` lets a `!` pattern exclude and its default `some`
-# makes one match every file outside it, so the three disagree about such a filter. ci.yaml's own
-# comment on the quantifier requires every filter but worker_image, which gates no job of this
-# table, to stay without one.
+# A file is held to the filter as workflow_paths.PathsFilter reads it, under the
+# predicate-quantifier the changes job declares that filter under, over the filter's patterns
+# with its anchors flattened into the list that names them - the patterns and the quantifier
+# both from the engine of check-ci-filters.sh (ci_filter_coverage.changes_filters) rather than
+# this check reading that step a second way. It read the patterns as GitHub's `paths` instead
+# until rule 17 of check-ci-filters.sh began writing into most filters the `!` patterns that
+# keep a job off the Go test files it does not read, and refused a covered filter that had one,
+# because GitHub's `paths` takes the last pattern that matches while dorny/paths-filter's
+# `some-with-excludes` lets a `!` pattern exclude and its default `some` makes one match every
+# file outside it. The one of the three that decides whether a job runs is the quantifier the
+# step names, so that is the one read here: a `!` pattern excluding a file of the program is
+# still this check's refusal, since the job would then not run on a change that breaks its
+# typecheck.
 #
 # Why ci.yaml's lint job and not ci-filters: the ci-filters job has no Bun and no node_modules -
 # its steps are the checkout, actions/setup-go, check-ci-filters.sh and the ci-ok report - so
@@ -110,19 +114,13 @@ def listed(project: str) -> list | None:
 
 
 document = yaml.safe_load((engine.REPO / engine.WORKFLOW).read_text())
-filters, _quantifiers = engine.changes_filters(document, problems)
+filters, quantifiers = engine.changes_filters(document, problems)
 
 for name, project, why in PROGRAMS:
     patterns = filters.get(name)
     if patterns is None:
         problems.append(f"::error file={TABLE}::{name} is no filter of the changes job, so the program "
                         f"{project} ({why}) is held to nothing")
-        continue
-    negated = [pattern for pattern in patterns if pattern.startswith("!")]
-    if negated:
-        problems.append(f"::error file={engine.WORKFLOW}::filter {name} has {', '.join(negated)}, a `!` pattern, "
-                        f"which GitHub's paths and dorny/paths-filter's two quantifiers read three ways; this "
-                        f"check reads none of them for a filter it covers")
         continue
     if not (engine.REPO / project).exists():
         problems.append(f"::error file={TABLE}::{project} ({why}) is no path of this repository, so filter {name} "
@@ -131,7 +129,7 @@ for name, project, why in PROGRAMS:
     files = listed(project)
     if files is None:
         continue
-    covers = wp.Filter(patterns).covers
+    covers = wp.PathsFilter(patterns, quantifiers[name]).covers
     uncovered = [path for path in files if not covers(path)]
     print(f"{project}: {len(files)} files, {len(uncovered)} uncovered (filter {name})")
     for path in uncovered[:engine.SHOWN]:

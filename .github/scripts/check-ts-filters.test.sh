@@ -3,7 +3,8 @@
 # that gate's filter, the files outside the repository and under node_modules dropped and a
 # relative path resolved against the repository root, with a program that cannot be listed, a
 # pair naming a filter the changes job does not define, a pair naming a path the repository does
-# not hold, and a covered filter with a `!` pattern each failing rather than passing silently.
+# not hold, and a `!` pattern of a covered filter read under the step's quantifier - refused when
+# it excludes a file of the program, passed over when it excludes files outside it.
 #
 # Each case builds a miniature repository under a temporary directory - a ci.yaml whose changes
 # job defines two filters through an anchor, a package and a library it compiles, and a
@@ -167,13 +168,24 @@ check "fails" "$(is "$status" 1)"
 check "names the path and the filter it leaves holding no program" \
   "$(contains "$out" '::error file=.github/scripts/ci_ts_programs.py::pkg/gone (app: Typecheck the app) is no path of this repository, so filter app is held to no program')"
 
-echo "case: a ! pattern in a covered filter"
+echo "case: a ! pattern excluding a file the program compiles"
 root=$(fixture negated-pattern)
 replace "$root/.github/workflows/ci.yaml" "              - 'pkg/app/**'" $'              - \'pkg/app/**\'\n              - \'!pkg/app/src/generated.ts\''
 run_check "$root"
 check "fails" "$(is "$status" 1)"
-check "names the pattern and the filter it is in" \
-  "$(contains "$out" '::error file=.github/workflows/ci.yaml::filter app has !pkg/app/src/generated.ts, a `!` pattern')"
-check "and reads the filter no further" "$(is "$(contains "$out" '^pkg/app: ')" false)"
+check "names the filter, the file and the program it came from" \
+  "$(contains "$out" '::error file=pkg/app/src/generated.ts::filter app does not select pkg/app/src/generated.ts, which the tsc program of pkg/app compiles (app: Typecheck the app)')"
+check "counts it" "$(contains "$out" '^pkg/app: 3 files, 1 uncovered (filter app)$')"
+
+# The patterns rule 17 of check-ci-filters.sh writes into most gate filters are of this shape,
+# and they are why this check reads a filter under the quantifier the step declares instead of
+# refusing one that has a `!` pattern at all.
+echo "case: a ! pattern excluding files the program does not compile"
+root=$(fixture negated-pattern-outside)
+replace "$root/.github/workflows/ci.yaml" "              - 'pkg/app/**'" $'              - \'pkg/app/**\'\n              - \'!pkg/app/**/*_test.go\''
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "holds every file of the program to the filter still" \
+  "$(contains "$out" '^pkg/app: 3 files, 0 uncovered (filter app)$')"
 
 summary "check-ts-filters.sh holds each Bun gate's filter to every file its tsc program compiles"

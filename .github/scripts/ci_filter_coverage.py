@@ -32,6 +32,9 @@ WORKFLOW = ".github/workflows/ci.yaml"
 CACHE_WORKFLOW = ".github/workflows/ci-caches.yaml"
 REPO = Path.cwd().resolve()
 SHOWN = 20  # uncovered files printed per gate
+# A Go test file, by name: what `go list` reports as a package's TestGoFiles or XTestGoFiles
+# under the build it was asked about, and what a build constraint keeps out of that listing.
+TEST_SUFFIX = "_test.go"
 
 
 @dataclass(frozen=True)
@@ -316,14 +319,24 @@ def test_build_files(listing: list) -> dict:
 
 def directory_reads(dir_rel: str, tests: set, why: str) -> list:
     """What a go command reads of a first-party package's directory: every file beside the
-    source - the non-Go ones, which no other read names, included - minus the files of that
-    package's test build, which only a run that compiles them reads. It is `<dir>/*` while the
-    package has no test file, and the names themselves once it has, since a glob cannot say
-    "every file but these"."""
-    if not tests:
+    source - the non-Go ones, which no other read names, included - minus the package's test
+    files, which only a run that compiles them reads. It is `<dir>/*` while the package has
+    none, and the names themselves once it has, since a glob cannot say "every file but these".
+
+    The files left out are the test build's, which go list reports as TestGoFiles and
+    XTestGoFiles, and every other `_test.go` file of the directory: one a build constraint keeps
+    out of this listing is a test file of some other run's build - a `//go:build race` test of a
+    package the race lane runs, a `natslive` one of the matrix - and go list reads its first
+    lines here only to find that constraint. Counting it as a read of this run would say a job
+    that compiles it nowhere must run on a change to it, which rule 17 could then not exclude:
+    the 97 test files under a build constraint here would hold their unconstrained siblings in
+    the gate filters that way, 4,566 generated patterns where there are now 520."""
+    names = sorted(os.listdir(REPO / dir_rel))
+    left_out = {name for name in names if name in tests or name.endswith(TEST_SUFFIX)}
+    if not left_out:
         return [Read(f"{dir_rel}/*", why)]
-    return [Read(f"{dir_rel}/{name}", why) for name in sorted(os.listdir(REPO / dir_rel))
-            if name not in tests and (REPO / dir_rel / name).is_file()]
+    return [Read(f"{dir_rel}/{name}", why) for name in names
+            if name not in left_out and (REPO / dir_rel / name).is_file()]
 
 
 def pattern_dirs(run_: Run, tests: dict) -> list:
@@ -1573,7 +1586,255 @@ class GateFiles:
     wheres: list = field(default_factory=list)
 
 
+# ---------------------------------------- rule 17: the test files a gate's filter must not select
+SCRIPT = ".github/scripts/check-ci-filters.sh"
+WRITE = f"{SCRIPT} write"
+# A generated block's first and last line, written at the indentation of the filter's own items.
+# The first names the command that writes it, so a reader of ci.yaml knows not to edit one by
+# hand; those two prefixes are how both modes find the block again.
+BEGIN = "# BEGIN generated"
+END = "# END generated"
+BLOCK_HEAD = (
+    f"{BEGIN} by `{WRITE}`: a change to a Go test file the job this filter gates does not read",
+    "# must not select it. An edit by hand is refused (rule 17 of that check), which writes these.",
+)
+
+
+def selected(patterns: list, expander: Expander) -> set:
+    """The files a `some-with-excludes` filter selects: a pattern without `!` matches it and no
+    `!` pattern does. Expanded through the Expander, whose answers every other rule here shares,
+    rather than a covers() call per file of the repository per filter."""
+    yes, no = set(), set()
+    for pattern in patterns:
+        (no if pattern.startswith("!") else yes).update(expander.expand(pattern.removeprefix("!")))
+    return yes - no
+
+
+def negation_patterns(excluded: set, read: set, tests: list) -> list:
+    """The `!` patterns that keep a filter off every file of `excluded` while excluding none of
+    `read`, in the two forms a reader can check by eye: `!<dir>/**/*_test.go`, where no file
+    `read` is anywhere under <dir>, and `!<path>`, where one is. The choice is the fewest of
+    those two forms the sets allow, and the same text on every run over one tree: the walk takes
+    the highest directory whose whole tree may go, names one by one the excluded files of a
+    directory that holds a read file too, and reads directories and files in sorted order.
+
+    `excluded` is the Go test files the filter selects and the gates on it do not read: a file
+    the filter does not select needs no pattern to keep it unselected, and writing one anyway
+    would fill every filter with the test files its patterns never reach. A tree pattern
+    excludes the files under it that are in neither set too, which is why a directory may take
+    one only when nothing `read` is under it, and which is what makes the block stable: a test
+    file added to a package the job does not read lands inside a pattern that is already there
+    or adds one line, and a source file added anywhere changes nothing here."""
+    if not excluded:
+        return []
+    kids: dict = defaultdict(set)  # directory -> the directories directly under it
+    here: dict = defaultdict(list)  # directory -> the test files directly in it
+    read_dirs, excluded_dirs = set(), set()  # the directories holding one, at any depth
+    for path in tests:
+        node = os.path.dirname(path)
+        here[node].append(path)
+        marks = [s for s, members in ((read_dirs, read), (excluded_dirs, excluded)) if path in members]
+        while True:
+            for mark in marks:
+                mark.add(node)
+            if not node:
+                break
+            parent = os.path.dirname(node)
+            kids[parent].add(node)
+            node = parent
+    out: list = []
+
+    def emit(node: str) -> None:
+        if node not in excluded_dirs:
+            return
+        if node not in read_dirs:
+            out.append(f"!{node}/**/*{TEST_SUFFIX}" if node else f"!**/*{TEST_SUFFIX}")
+            return
+        out.extend(f"!{path}" for path in sorted(here[node]) if path in excluded)
+        for kid in sorted(kids[node]):
+            emit(kid)
+
+    emit("")
+    return out
+
+
+@dataclass
+class Block:
+    """One pattern list in a workflow's text: where its generated block is and what it holds, or
+    where one would go. The write mode replaces exactly those lines, so the text is read here
+    rather than the parsed document, which keeps neither comments nor order."""
+
+    indent: str = ""  # the indentation of the list's items
+    after: int = -1  # the list's last item line outside a block: where a new block goes
+    begin: int = -1
+    end: int = -1
+    patterns: list = field(default_factory=list)
+
+
+FILTERS_KEY = re.compile(r"^(\s*)filters:\s*\|\s*$")
+PATHS_KEY = re.compile(r"^(\s*)paths:\s*$")
+FILTER_KEY = re.compile(r"^(\s*)([A-Za-z0-9_]+):\s*(?:&\S+\s*)?$")
+FILTER_ITEM = re.compile(r"^(\s*)-\s+(.*?)\s*$")
+
+
+def indent_of(line: str) -> int:
+    return len(line) - len(line.lstrip())
+
+
+def list_block(lines: list, body: range, block: Block) -> Block:
+    """`block` filled in from the lines of one pattern list: its items' indentation, its last
+    item outside a generated block, and the block's own two lines and patterns."""
+    for i in body:
+        line, text = lines[i], lines[i].strip()
+        if not text:
+            continue
+        item = FILTER_ITEM.match(line)
+        if item:
+            block.indent = item.group(1)
+            if block.begin >= 0 and block.end < 0:
+                block.patterns.append(yaml.safe_load(item.group(2)))
+            else:
+                block.after = i
+        elif text.startswith(BEGIN):
+            block.begin, block.indent = i, line[: indent_of(line)]
+        elif text.startswith(END):
+            block.end = i
+    return block
+
+
+def closed(blocks: dict, path: str, problems: list) -> dict:
+    """`blocks` with every list whose BEGIN line has no END line after it left as a list with no
+    block: the write mode would otherwise replace lines nobody meant it to."""
+    for name, block in blocks.items():
+        if block.begin >= 0 and block.end < block.begin:
+            problems.append(f"::error file={path}::{name} opens a generated block and never closes it with a "
+                            f"`{END}` line; run `{WRITE}`")
+            block.begin = -1
+    return blocks
+
+
+def filter_blocks(lines: list, problems: list) -> dict:
+    """Per key of the changes job's `filters: |` block - every gate filter and every group an
+    anchor names - where its list ends in ci.yaml's text and which of its lines are a generated
+    block."""
+    keys = [i for i, line in enumerate(lines) if FILTERS_KEY.match(line)]
+    if len(keys) != 1:
+        problems.append(f"::error file={WORKFLOW}::{len(keys)} `filters: |` blocks, where this check reads the one "
+                        f"the changes job's paths-filter step declares its filters in")
+        return {}
+    body = range(keys[0] + 1, len(lines))
+    outer = indent_of(lines[keys[0]])
+    stop = next((i for i in body if lines[i].strip() and indent_of(lines[i]) <= outer), len(lines))
+    inner = min((indent_of(lines[i]) for i in range(keys[0] + 1, stop) if lines[i].strip()), default=0)
+    starts = [i for i in range(keys[0] + 1, stop)
+              if FILTER_KEY.match(lines[i]) and indent_of(lines[i]) == inner]
+    blocks = {FILTER_KEY.match(lines[start]).group(2): list_block(lines, range(start + 1, end), Block())
+              for start, end in zip(starts, starts[1:] + [stop])}
+    return closed(blocks, WORKFLOW, problems)
+
+
+def push_paths_block(lines: list, name: str, path: str, problems: list) -> dict:
+    """The `on.push.paths` list of a PUSH_WORKFLOWS workflow, keyed by the filter rule 8 holds it
+    equal to: the write mode writes that filter's block here as well, since a generated pattern
+    the two lists do not share is rule 8's refusal and no hand's to cure."""
+    keys = [i for i, line in enumerate(lines) if PATHS_KEY.match(line)]
+    if len(keys) != 1:
+        problems.append(f"::error file={path}::{len(keys)} `paths:` lists, where this check writes filter {name}'s "
+                        f"generated block into the one on.push.paths")
+        return {}
+    body = range(keys[0] + 1, len(lines))
+    outer = indent_of(lines[keys[0]])
+    stop = next((i for i in body if lines[i].strip() and indent_of(lines[i]) <= outer), len(lines))
+    return closed({name: list_block(lines, range(keys[0] + 1, stop), Block())}, path, problems)
+
+
+def wanted_negations(filters: dict, quantifiers: dict, gate_files: dict, blocks: dict, expander: Expander,
+                     tests: list) -> dict:
+    """Per gate filter, the `!` patterns its list must hold: the ones that keep it off every Go
+    test file it selects and the gates on it do not read. What the filter selects is read from
+    its patterns without its own generated block, so two runs over one tree write one text;
+    every other `!` pattern of the list counts, since one of those narrows what is left to
+    exclude. A filter the changes job declares under `some` gets none: a `!` pattern there
+    matches every file outside it, which rule 6 refuses, and these patterns would then mean the
+    opposite of what they say."""
+    wanted = {}
+    for name in sorted(gate_files):
+        if quantifiers[name] != "some-with-excludes":
+            continue
+        generated = set(blocks[name].patterns) if name in blocks else set()
+        base = [p for p in filters[name] if p not in generated]
+        read = {f for f in gate_files[name].reads if f.endswith(TEST_SUFFIX)}
+        picked = {f for f in selected(base, expander) if f.endswith(TEST_SUFFIX)}
+        wanted[name] = negation_patterns(picked - read, read, tests)
+    return wanted
+
+
+def check_negations(blocks: dict, wanted: dict, filters: dict, expander: Expander, problems: list) -> list:
+    """Rule 17: the committed block of each gate filter must be exactly the patterns above, and
+    no `!` pattern outside a generated block may match a Go test file. The refusal names the
+    filter, the first pattern that differs and the command that writes the block. Returns the
+    report lines."""
+    for name in sorted(blocks):
+        if blocks[name].begin >= 0 and name not in wanted:
+            problems.append(f"::error file={WORKFLOW}::{name} has a generated block, and it is no filter of a gate "
+                            f"this check computes a read set for, so nothing says what belongs in it; delete the "
+                            f"block")
+    for name in sorted(wanted):
+        patterns, block = wanted[name], blocks.get(name, Block())
+        committed = block.patterns
+        for i in range(max(len(patterns), len(committed))):
+            if i < len(committed) and i < len(patterns) and committed[i] == patterns[i]:
+                continue
+            if i >= len(committed):
+                says = f"lacks '{patterns[i]}'"
+            elif i >= len(patterns):
+                says = f"has '{committed[i]}', which keeps it off no test file its job leaves unread"
+            else:
+                says = f"has '{committed[i]}' where '{patterns[i]}' belongs"
+            head = (f"filter {name}'s generated block" if block.begin >= 0
+                    else f"filter {name}, which has no generated block,")
+            problems.append(f"::error file={WORKFLOW}::{head} {says}: the `!` patterns that keep a "
+                            f"filter off the Go test files its job does not read are generated, so a change to what "
+                            f"the job reads rewrites them; run `{WRITE}`")
+            break
+        loose = [p for p in dict.fromkeys(filters[name])
+                 if p.startswith("!") and p not in set(committed)
+                 and any(f.endswith(TEST_SUFFIX) for f in expander.expand(p.removeprefix("!")))]
+        for pattern in loose:
+            problems.append(f"::error file={WORKFLOW}::filter {name} has {pattern} outside its generated block, and "
+                            f"it matches a Go test file: the test files a filter excludes are this rule's to write, "
+                            f"over the set its gates read, so move the exclusion there by running `{WRITE}`")
+    return [f"{WORKFLOW}: {sum(len(p) for p in wanted.values())} generated `!` patterns keep "
+            f"{sum(1 for p in wanted.values() if p)} of {len(wanted)} gate filters off the Go test files their jobs "
+            f"do not read"]
+
+
+def rewrite(path: str, lines: list, blocks: dict, wanted: dict) -> None:
+    """`path` written again with each list's generated block replaced by the patterns above, and
+    left alone when that changes nothing. A list with no pattern to write keeps no block, and
+    one with no block yet takes it after its last item, so the block belongs to the filter whose
+    list holds it and never to a group an anchor shares."""
+    out = list(lines)
+    for name in sorted(blocks, key=lambda n: -max(blocks[n].begin, blocks[n].after)):
+        block, patterns = blocks[name], wanted.get(name, [])
+        written = ([block.indent + line for line in BLOCK_HEAD]
+                   + [f"{block.indent}- '{pattern}'" for pattern in patterns]
+                   + [block.indent + END]) if patterns else []
+        if block.begin >= 0:
+            out[block.begin : block.end + 1] = written
+        elif written and block.after >= 0:
+            out[block.after + 1 : block.after + 1] = written
+    text = "".join(line + "\n" for line in out)
+    if text != (REPO / path).read_text():
+        (REPO / path).write_text(text)
+
+
 def main() -> int:
+    # The mode check-ci-filters.sh was called in: `check`, which refuses a generated block that
+    # is not what rule 17 computes, or `write`, which writes those blocks into ci.yaml instead.
+    # Every other rule runs in both, since the blocks are computed from the read sets the rest
+    # of this check builds.
+    mode = os.environ.get("CI_FILTERS_MODE", "check")
     problems: list = []
     # ci.yaml and every workflow its jobs call: a job that calls one keeps its gate, its id and
     # its if: here and holds its steps there, so the rules that read steps read the set.
@@ -1658,6 +1919,27 @@ def main() -> int:
     problems += session.problems
     report += check_push_workflows(data, filters, problems)
     report += check_tag_runs(documents, data, filters, quantifiers, selection, problems)
+    # Rule 17, last of the rules that read a filter: it needs the files each gate reads, which
+    # the loop above has just finished, and the text of ci.yaml, which it reads itself.
+    lines = (REPO / WORKFLOW).read_text().splitlines()
+    blocks = filter_blocks(lines, problems)
+    tests = [f for f in files if f.endswith(TEST_SUFFIX)]
+    wanted = wanted_negations(filters, quantifiers, gate_files, blocks, expander, tests)
+    if mode == "write":
+        rewrite(WORKFLOW, lines, blocks, wanted)
+        # Rule 8 holds a PUSH_WORKFLOWS workflow's on.push.paths equal to its filter, so the
+        # block goes into both lists or the next run of this check refuses the pair.
+        for name, path in data.PUSH_WORKFLOWS.items():
+            if name in wanted and (REPO / path).is_file():
+                pushed = (REPO / path).read_text().splitlines()
+                rewrite(path, pushed, push_paths_block(pushed, name, path, problems), wanted)
+        for name in sorted(wanted):
+            if wanted[name]:
+                report.append(f"filter {name}: {len(wanted[name])} generated `!` pattern(s)")
+        report.append(f"{WORKFLOW}: wrote {sum(len(p) for p in wanted.values())} generated `!` patterns over "
+                      f"{sum(1 for p in wanted.values() if p)} of {len(wanted)} gate filters")
+    else:
+        report += check_negations(blocks, wanted, filters, expander, problems)
     for line in report:
         print(line)
     problems = list(dict.fromkeys(problems))
