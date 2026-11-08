@@ -82,8 +82,8 @@ jobs:
     # then counts it as reading every Go file of the repository. DISPATCH_E2E_FILE_STORE_ENDPOINT
     # and DISPATCH_E2E_FILE_STORE_BUCKET are in that set and stay in the browser step's `env:`.
     #
-    # The budgets below, this one and the two on steps, are measured, on the two runs of this
-    # head: 42499402537, the pull-request lane, and 42499408504, the full lane. Four legs each,
+    # The budgets below, this one and the two on steps, are measured, on the two runs of
+    # 2abfb4a0: 42499402537, the pull-request lane, and 42499408504, the full lane. Four legs each,
     # in shard order, in seconds:
     #
     #   step                                     pull-request lane        full lane
@@ -95,16 +95,12 @@ jobs:
     # These readings are of the whole Playwright package list and of the apt archive cache the
     # two steps above the install restore, so every install here is a warm one: 20 to 27 s,
     # where the runs this table replaced read 19 to 627 s on a list that was shorter and a
-    # cache that did not exist (dispatch://INFRA-1506, cybermonklabs/legion#2888). The three
-    # cache steps are in the "every other step summed" row now, which the earlier table had to
-    # add an allowance for.
+    # cache that did not exist (run 42316487530's fourth leg for the 627 s;
+    # dispatch://INFRA-1506, cybermonklabs/legion#2888).
     #
     # The rule is in this file's head. The browser step's maximum is the full lane's 474 s, so
     # 474 x 1.15 = 545 s -> 10 min, which is the bound this issue's R1 asks of the longest
-    # shard's browser step. That maximum moved with the accessibility layer this change adds:
-    # it was 419 s, which derived 9 min, and the pull-request lane now reads 441 s against the
-    # same budget, so a reader comparing a later run compares with 474 and not with 419. The
-    # install step keeps its 22 minutes, which is
+    # shard's browser step. The install step keeps its 22 minutes, which is
     # .github/scripts/playwright-install.sh's retry arithmetic rather than a measured maximum,
     # for the reason that file's head gives.
     #
@@ -124,12 +120,15 @@ jobs:
     # with this job's other steps is over 15 min - and cancelled it with no named cause, where
     # the step's own bound fails it saying which phase ran out.
     #
-    # The three cache steps are measured now rather than allowed for: they are in the "every
-    # other step summed" row of the table above, where that row's maximum is 85 s. The earlier
-    # table predated them and carried 85 s plus a 7 s allowance for the restore instead.
+    # The three cache steps are measured rather than allowed for: they are in the "every other
+    # step summed" row of the table above.
     #
-    # So the job budget is the install step's 1320 s, the browser step's 600 s and 85 s of every
-    # other step summed: 2005 s -> 34 min.
+    # So the job budget is the install step's 1320 s, the browser step's 600 s and 85 s of
+    # every other step: 2005 s -> 34 min. That 85 s is the largest sum of the unbudgeted steps
+    # on any one leg, which is the reading of this file's head ("the measured maximum of every
+    # step without one") that this job takes. Taking each such step's own maximum across the
+    # eight legs instead gives 104 s and 2024 s, the same 34 min, so the two readings do not
+    # part here.
     #
     # The 114 MB cold draw is still a tail rather than a cost of the lane: it is paid once per
     # cache key, on the first run after a Playwright upgrade or an image roll, and it is the same
