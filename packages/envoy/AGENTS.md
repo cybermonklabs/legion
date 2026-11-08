@@ -869,6 +869,8 @@ The service closes a room, and its browsers reconnect, in these cases only:
 
 - its issue closes or reopens (`setRoomIssueOpen`, below);
 
+- the append gate refuses a browser's append because the document's issue is closed and this process has not heard of that close, which closes the room instance whose append it was (`closeRefusedAppendRoom`, below);
+
 - the room fails (`failRoom`), and its eviction closes it;
 
 - `Shutdown` closes a room that has an editor connected.
@@ -2882,30 +2884,35 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   nothing deletes a comment, ask, message, issue or document, so a row's thread exists, and a harness that empties those tables empties `user_threads` with them (`packages/dispatch/e2e/seed.ts`).
 
 - `GET /api/v1/me/replies?kind=&state=&limit=&offset=&cursor=&issue=|artifact=` (needs the `person` scope, `api/replies.go`) answers the Inbox's threads as `{rows, total, limit, offset, as_of, next_cursor}`, in the state's own order, ties by thread id descending.
-  It answers two kinds of row, as `?kind=` names them: `reply`, the default, a thread the caller wrote in - an ask's thread, a comment thread by its root, an issue message thread by its root - where somebody else has written since they last read it;
-  `agent`, one of the caller's one-off messages to an agent session (a BTW, a broadcast's copy, or a Send or an Aside the session did not take as a turn of its live conversation) holding a reply from that session;
-  `reply,agent`, both in one order.
-  Anything else is `400 INVALID_QUERY`.
-  The two kinds come from unrelated tables, so they are merged in Go rather than unioned in SQL, and the page is cut from the merged list.
-  A Reply read leaves out an open ask the Inbox already lists in Waiting on you, whose row there shows its reply:
-  that is an open ask on an open issue assigned to the caller alone (`myRepliesOwner`), so an open ask on a project document, on an unassigned issue or on another person's issue is a Reply row here.
-  A close withdraws its issue's open asks, so an open ask on a closed issue is one a close by an older release left during a roll;
-  its row stays, since the Inbox hides it.
-  `?state=` is `unread`, the default and the Inbox count's own read, which lists the rows somebody else has written in since the caller read them, newest reply first; `inbox`, every row in their Inbox, read or not, less what they have dismissed, newest reply first; or `dismissed`, what they dismissed out of it, newest dismissal first, 200 rows at a time from `?cursor=` (the `next_cursor` of the page before it, which a page that filled answers).
-  `limit` and `offset` under `dismissed`, and `cursor` under any other state, are each `400 INVALID_QUERY`, as `GET /api/v1/issues` refuses a cursor: answering one paging scheme's request with the other's page hands the caller rows it cannot tell from the ones it asked for.
-  The three states are three constants over one filter (`myRepliesUnread`, `myRepliesInbox` and `myRepliesDismissed`), and the cursor a fourth beside them, rather than bound parameters, since a parameter leaves the planner nothing to imply a partial index's predicate from and turns a cursor into a filter over every dismissed row of the caller's.
-  `total` is how many rows the state holds, except under `dismissed`, where it is the page the read answers: nothing counts that view, which pages from `next_cursor`, and counting every thread a person has ever dismissed was 8 s of the 9.4 s that read took at 110,000 of them (INFRA-450's a14).
-  A Reply page is read in two steps - the page's thread ids out of the state's own index, by an index-only scan in the state's order, then each row by its id - because one step over a table one login owns is cheaper for the planner as a scan of the whole table than as a walk of the index, and the pile is what it would then scan.
-  The Agent half reads one root at a time: each state's roots (the unread ones, the undismissed ones, or a page of the dismissal marks themselves) and then each root's own thread by `messages_in_reply_to`, so a Dismissed page costs the page; the Inbox's own two states answer their total with the page, since both read every root they hold to order it.
-  The Agent half's dismissal is cleared by a trigger of its own (`20261105093507`), as a Reply thread's is by `user_threads_record`: a session's reply newer than the mark deletes it, in the reply's own transaction, so "dismissed" on this half is a mark existing and nothing else, and `state=inbox`, the unread read and Mark all read leave a dismissed root out by that mark alone, without reading its thread.
-  Before it, each of those three asked every thread the person had ever dismissed whether a session had written in it since - one index read a thread, 66 ms of the Inbox read's 69 at 10,000 of them (INFRA-450's a14).
-  `kind: "reply"` for a comment or a message, `kind: "answer"` for an answer, whose `id` is the ask's, whose `author` is the answerer and whose `first_line` is the chosen options and the answer's text (`<selected> - <text>`, as the outbox's `payload_summary` renders it).
-  A row also carries its issue's `priority`, its owner's `project`, the caller's `read_through`, `unread`, `unread_count` (the writes in the thread they have not read), an Agent row's `unread_reply_ids` and `session`, and the document mark its root is anchored to.
-  A row's `ref` names the thread's root, never the reply, so an anchored root still redirects to its document.
-  `issue` and `artifact` together are `400 INVALID_QUERY`, and either leaves every Agent row out, since an Agent row has no issue and no document.
-  An absent `limit` is every row, which is what the Inbox reads - it sorts, groups, filters and counts over all of them - and a `limit` the caller names is 1-200, as `GET /api/v1/me/answers` reads it.
-  Every read runs in one read-only repeatable-read transaction and `as_of` is that snapshot's database time, which is what a mark-all passes back as its read mark:
-  two reads in two snapshots would leave a row committed between them marked read without ever having been shown.
+
+  - It answers two kinds of row, as `?kind=` names them: `reply`, the default, a thread the caller wrote in - an ask's thread, a comment thread by its root, an issue message thread by its root - where somebody else has written since they last read it;
+    `agent`, one of the caller's one-off messages to an agent session (a BTW, a broadcast's copy, or a Send or an Aside the session did not take as a turn of its live conversation) holding a reply from that session;
+    `reply,agent`, both in one order.
+    Anything else is `400 INVALID_QUERY`.
+    The two kinds come from unrelated tables, so they are merged in Go rather than unioned in SQL, and the page is cut from the merged list.
+
+  - A Reply read leaves out an open ask the Inbox already lists in Waiting on you, whose row there shows its reply:
+    that is an open ask on an open issue assigned to the caller alone (`myRepliesOwner`), so an open ask on a project document, on an unassigned issue or on another person's issue is a Reply row here.
+    A close withdraws its issue's open asks, so an open ask on a closed issue is one a close by an older release left during a roll;
+    its row stays, since the Inbox hides it.
+
+  - `?state=` is `unread`, the default and the Inbox count's own read, which lists the rows somebody else has written in since the caller read them, newest reply first; `inbox`, every row in their Inbox, read or not, less what they have dismissed, newest reply first; or `dismissed`, what they dismissed out of it, newest dismissal first, 200 rows at a time from `?cursor=` (the `next_cursor` of the page before it, which a page that filled answers).
+    `limit` and `offset` under `dismissed`, and `cursor` under any other state, are each `400 INVALID_QUERY`, as `GET /api/v1/issues` refuses a cursor: answering one paging scheme's request with the other's page hands the caller rows it cannot tell from the ones it asked for.
+    The three states are three constants over one filter (`myRepliesUnread`, `myRepliesInbox` and `myRepliesDismissed`), and the cursor a fourth beside them, rather than bound parameters, since a parameter leaves the planner nothing to imply a partial index's predicate from and turns a cursor into a filter over every dismissed row of the caller's.
+    `total` is how many rows the state holds, except under `dismissed`, where it is the page the read answers: nothing counts that view, which pages from `next_cursor`, and counting every thread a person has ever dismissed was 8 s of the 9.4 s that read took at 110,000 of them (INFRA-450's a14).
+    A Reply page is read in two steps - the page's thread ids out of the state's own index, by an index-only scan in the state's order, then each row by its id - because one step over a table one login owns is cheaper for the planner as a scan of the whole table than as a walk of the index, and the pile is what it would then scan.
+    The Agent half reads one root at a time: each state's roots (the unread ones, the undismissed ones, or a page of the dismissal marks themselves) and then each root's own thread by `messages_in_reply_to`, so a Dismissed page costs the page; the Inbox's own two states answer their total with the page, since both read every root they hold to order it.
+    The Agent half's dismissal is cleared by a trigger of its own (`20261105093507`), as a Reply thread's is by `user_threads_record`: a session's reply newer than the mark deletes it, in the reply's own transaction, so "dismissed" on this half is a mark existing and nothing else, and `state=inbox`, the unread read and Mark all read leave a dismissed root out by that mark alone, without reading its thread.
+    Before it, each of those three asked every thread the person had ever dismissed whether a session had written in it since - one index read a thread, 66 ms of the Inbox read's 69 at 10,000 of them (INFRA-450's a14).
+
+  - `kind: "reply"` for a comment or a message, `kind: "answer"` for an answer, whose `id` is the ask's, whose `author` is the answerer and whose `first_line` is the chosen options and the answer's text (`<selected> - <text>`, as the outbox's `payload_summary` renders it).
+    A row also carries its issue's `priority`, its owner's `project`, the caller's `read_through`, `unread`, `unread_count` (the writes in the thread they have not read), an Agent row's `unread_reply_ids` and `session`, and the document mark its root is anchored to.
+    A row's `ref` names the thread's root, never the reply, so an anchored root still redirects to its document.
+    `issue` and `artifact` together are `400 INVALID_QUERY`, and either leaves every Agent row out, since an Agent row has no issue and no document.
+    An absent `limit` is every row, which is what the Inbox reads - it sorts, groups, filters and counts over all of them - and a `limit` the caller names is 1-200, as `GET /api/v1/me/answers` reads it.
+    Every read runs in one read-only repeatable-read transaction and `as_of` is that snapshot's database time, which is what a mark-all passes back as its read mark:
+    two reads in two snapshots would leave a row committed between them marked read without ever having been shown.
+
   How the SPA shows and marks threads is `packages/dispatch/AGENTS.md`'s.
 
 - `PUT /api/v1/me/threads/{id}/read` `{read_through}` (needs the `person` scope, `api/replies.go`) stores `least(value, now())`, Postgres casting the caller's text so an answer's nanosecond time rounds as the trigger rounded it, and only moves forward, with `agentStateCutoffSkew`'s minute of allowance (`400 INVALID_STATE` past it);
@@ -3537,7 +3544,8 @@ that is the rule and not a transitional measure, and it is what lets Dispatch de
   Nothing has failed there, so the restore logs it at INFO, `envoy nats resubscribe left to the bind in flight` with the `subject`, and `envoy nats resubscribe failed` and `envoy nats recovery resubscribe failed` stay ERRORs for binds that failed.
   The listener's durable takes no part in this:
   the lease holder subscribes to the durable's deliver subject with a core subscription of its own and moves it onto the client's connection after a reconnect or a replacement (`durableReceiver.reconnected`), and a standby holds no subscription of the durable, so a NATS restart leaves it nothing to re-subscribe.
-  A disconnect runs the disconnect hooks (`bus.Client.AddDisconnectHook`, from nats.go's `DisconnectedErrCB`), and the listener's calls `Disconnected` on every cache, since nats.go keeps a watcher's subscription open through an outage and nothing else would say its copy stopped following the bucket.
+
+- A disconnect runs the disconnect hooks (`bus.Client.AddDisconnectHook`, from nats.go's `DisconnectedErrCB`), and the listener's calls `Disconnected` on every cache, since nats.go keeps a watcher's subscription open through an outage and nothing else would say its copy stopped following the bucket.
   While NATS is connected, the self-health monitor also rebuilds those watchers and, on the lease holder, a missing durable consumer when a probe finds a stopped watcher, a closed KV handle, a lost consumer, or a cache whose copy does not follow its bucket with no read under way to make it (`NeedsRead`, as when the reconnect hook's Rewatch failed while the old watcher survived).
   All four watchers share one lifecycle (`internal/kvwatch`), and the listener keeps its caches as one list (`listenerCaches`, which holds the CI cache only on a listener that mounts the GitHub webhook route;
   the interest registry's entry covers its interest and role claim watchers), which rewatch, self-health, `/healthz` and shutdown each loop over.
@@ -3753,14 +3761,16 @@ that is the rule and not a transitional measure, and it is what lets Dispatch de
   Until then the closed `/v1` gate answers `503 service starting`, except to the two list reads, `GET /v1/sessions` and `GET /v1/interests/`, which get the refilling answer their routes give while a copy cannot be served (`writeListRefilling`), so a caller reads one answer for "the list is not ready" whichever gives it.
   Every pod creates and updates session consumers for the registrations it answers, but relays none until it receives the machine's durable (`sessionRelays.setOwned`, set and cleared with the receive term):
   among the pods of one machine id, only the one receiving relays, and gaining the durable starts the relay of every consumer-delivery session its cache holds for its machine, each restarted at its ack floor.
-  Only the holder of the machine's delivery lease (`lease.listener-<machine id>` in the `envoy_listener` bucket) receives the durable;
+
+- Only the holder of the machine's delivery lease (`lease.listener-<machine id>` in the `envoy_listener` bucket) receives the durable;
   a standby takes over within about 2 to 3 s of a graceful stop, and waits for as long as the active pod runs without ever exiting for it (`cmd/listener/README.md`).
   After a hard stop the new holder settles:
   it subscribes at once and holds what it receives until the durable's `NumAckPending` is no more than what it holds, capped at one ack wait and a second (7 s) after it subscribed, then delivers in stream order, so it delivers about 5 to 6 s after the dead holder's last renewal when nothing was outstanding and about 12 to 13 s after it otherwise;
   a pod that takes a released record carrying `stale_binding` or `unsettled` settles too, and ends that hold at the hand-back delay and a second (3 s) only when the record carries `unsettled` without `ack_wait_owed` and without `stale_binding` - which makes its term a hand-back candidate - and the stopping pod's clean-hand-back mark for the revision it replaced is in the bucket (`handback.<durable>.<revision>`, `bus.ListenerHandBackPrefix`:
   the stopping pod writes it once its own release wrote that record, its term had no lost node's binding open, its linger read this pod receiving, the server confirmed its drain, and nothing of the term still held a message, and the hold reads it every settle poll rather than at the subscribe, since the mark lands after this pod is receiving), and at 7 s otherwise - no mark, a mark that cannot be read, a stop that fell short of any part of the hand-over, or a record carrying the debt or a stale binding (`ack_wait_owed` is the ack wait the releasing term still owed - every term that must settle owes one until its own settle hold ends, the mark-ended hold included, every release writes the debt as the term stands, and a release the lease's loop outlasts records it for the release that lands after the linger has let go).
   A message waiting out a NAK delay (a retry) stays outstanding and holds the hold to its cap, then arrives after it.
-  During a roll from a build before INFRA-557, the new lease holder (taking an absent record, or a released one with neither flag) finds the old task's `nats.Bind` binding on the durable and waits for it to end (`/healthz` 200 `degraded` with `role` `standby` and `receive` `waiting for another subscriber's push binding to end`), subscribing within a second of its end;
+
+- During a roll from a build before INFRA-557, the new lease holder (taking an absent record, or a released one with neither flag) finds the old task's `nats.Bind` binding on the durable and waits for it to end (`/healthz` 200 `degraded` with `role` `standby` and `receive` `waiting for another subscriber's push binding to end`), subscribing within a second of its end;
   past 135 s it logs `lease holder cannot deliver from the durable` at ERROR, again every five minutes, and never exits for it.
   `/healthz` answers 503 `starting` until the pod serves `/v1`, and 200 on the active pod and on every standby once it does.
   Each request a starting gate refuses logs `request refused while starting` with `gate` (`webhook` or `v1`), `method` and `path`, the listener's only record of a caller it turned away.

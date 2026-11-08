@@ -57,11 +57,12 @@ type KeyValue struct {
 	streams jetstream.JetStream
 }
 
-// RequestTimeout bounds a read through the jetstream handle whose caller holds no deadline of its
-// own: the STREAM.INFO that opens the handle, a read of the bucket's stream, a key's history. It is
-// the JetStream MaxWait the listener and Dispatch open their legacy handles with, so a read moved
-// off the legacy handle waits no longer than it did there, and no less, whatever MaxWait the legacy
-// handle carries.
+// RequestTimeout bounds one send of a read through the jetstream handle whose caller holds no
+// deadline of its own: the STREAM.INFO that opens the handle, a read of the bucket's stream, a
+// key's history. It is the JetStream MaxWait the listener and Dispatch open their legacy handles
+// with, so a read moved off the legacy handle waits no longer than it did there, and no less,
+// whatever MaxWait the legacy handle carries. A read a start sends again because the server left
+// it unanswered costs that bound once per send (sentAgain, wrapKeyValue for a start's caller).
 const RequestTimeout = 10 * time.Second
 
 // A create a clustered server answers is committed to the JetStream metadata group, not applied
@@ -134,6 +135,17 @@ func bucketMissing(err error) bool {
 // server answers that create "stream name already in use"), is waited for on the member answering
 // before the handle is opened on it (awaitBucketApplied), since a clustered create is answered
 // before every member has applied it.
+//
+// The handle open this function ends with is sent again when the server leaves it unanswered
+// (wrapKeyValue, sentAgain), on both of its paths: a bucket this start created and one it found
+// already there, which is the ordinary start, a restart of a deployment whose buckets exist.
+// EnsureKeyValue is how a program opens a bucket it needs before it can serve: the listener's
+// start, where losing that answer ends the program, and Dispatch's webhook redelivery sweep
+// (redeliver.OpenState), which logs the failure and tries again on its next pass. A caller that
+// waits on a budget of its own, such as a request or a watcher's repair, opens a bucket through
+// OpenKeyValue or WrapKeyValue instead, which send it once.
+//
+// The bucket's own lookup and create are sent once.
 func EnsureKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig) (KeyValue, error) {
 	kv, err := js.KeyValue(config.Bucket)
 	created := false
@@ -171,7 +183,7 @@ func EnsureKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyV
 	if err != nil {
 		return KeyValue{}, err
 	}
-	return wrapKeyValue(conn, kv, created)
+	return wrapKeyValue(conn, kv, created, startSendsAgain)
 }
 
 // raiseReplicas raises the stream of the existing bucket to replicas copies when it has fewer, and
@@ -350,28 +362,58 @@ func OpenKeyValue(conn *nats.Conn, js nats.JetStreamContext, bucket string) (Key
 
 // WrapKeyValue pairs kv, a legacy handle opened on conn, with the jetstream handle of the same
 // bucket on conn that its watches go through. Opening that handle is one STREAM.INFO, bounded by
-// RequestTimeout. The bucket is read as it is: a caller that holds a handle on it has had an
-// answer for it already. EnsureKeyValue's create path waits the member out instead
-// (wrapKeyValue).
+// RequestTimeout, and one send of it. The bucket is read as it is: a caller that holds a handle
+// on it has had an answer for it already. A start opens its handles through EnsureKeyValue
+// instead, which sends its handle open again (wrapKeyValue).
 func WrapKeyValue(conn *nats.Conn, kv nats.KeyValue) (KeyValue, error) {
-	return wrapKeyValue(conn, kv, false)
+	return wrapKeyValue(conn, kv, false, oneSend)
 }
 
-// wrapKeyValue is WrapKeyValue, with the STREAM.INFO that opens the jetstream handle taken again
-// until the member answering has applied the create of the bucket, when created says this start
-// has just created it
+// startSendsAgain and oneSend are wrapKeyValue's sendAgain, named at the call so the two readings
+// of an unanswered handle open are told apart where they are chosen: a program's start sends the
+// open again (sentAgain), and every other caller sends it once.
+const (
+	startSendsAgain = true
+	oneSend         = false
+)
+
+// wrapKeyValue is WrapKeyValue, with two things its callers choose.
+//
+// created says this start has just created the bucket, so the STREAM.INFO that opens the
+// jetstream handle is taken again until the member answering has applied that create
 // (awaitBucketApplied): the create's own answer came from the metadata group, and this read goes
-// to whichever member conn is on, which may not have applied it yet. Each read is bounded by
-// RequestTimeout as a lone read is, and every one of them together by bucketAppliedDeadline.
-func wrapKeyValue(conn *nats.Conn, kv nats.KeyValue, created bool) (KeyValue, error) {
+// to whichever member conn is on, which may not have applied it yet.
+//
+// sendAgain says the caller is EnsureKeyValue, so each send of that read is sent again when the
+// server leaves it unanswered (sentAgain), which a member whose meta leader is changing does. It
+// is the caller and not created that decides this: a start whose buckets are already there
+// creates nothing, which is every restart of a deployment, and it loses an answer exactly as the
+// start that creates them does.
+//
+// A bucket missing and a request unanswered are two different answers and are waited out
+// differently: the first is a member that has not applied the create and is read again until it
+// has, the second is a request that drew nothing and is sent again. So each send is bounded by
+// RequestTimeout, as a lone read is; a start's create path is bounded by bucketAppliedDeadline
+// plus one unanswered read's unansweredSends sends, since awaitBucketApplied reads its deadline
+// between reads and never cuts one already in flight; a start that found its bucket is bounded by
+// those sends alone; and any other caller is one send. One send is right there because such a
+// caller waits on a budget of its own: roles.Buckets.bucket, for one, opens a bucket again under
+// its own lock, on a request whose budget is two seconds, and a read that kept it waiting three
+// times as long would stop every role and session read of the process rather than save a start.
+func wrapKeyValue(conn *nats.Conn, kv nats.KeyValue, created, sendAgain bool) (KeyValue, error) {
 	js, err := jetstream.New(conn)
 	if err != nil {
 		return KeyValue{}, err
 	}
+	request := "KV_" + kv.Bucket() + " STREAM.INFO"
 	open := func() (jetstream.KeyValue, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), RequestTimeout)
 		defer cancel()
 		return js.KeyValue(ctx, kv.Bucket())
+	}
+	if sendAgain {
+		send := open
+		open = func() (jetstream.KeyValue, error) { return sentAgain(request, send) }
 	}
 	var watch jetstream.KeyValue
 	if created {

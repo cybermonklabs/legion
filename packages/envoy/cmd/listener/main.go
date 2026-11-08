@@ -1355,7 +1355,7 @@ func main() {
 	// broker access tokens on a bus that cannot open it refuses to start, naming the setting,
 	// rather than recording spent proofs where its own replicas cannot see them.
 	if err := brokerTokenAuth.open(client.Conn, cfg.NATSReplicas); err != nil {
-		log.Fatal(err)
+		log.Fatalf("open the spent-proof bucket for broker access tokens: %v", err)
 	}
 	consumer := bus.ListenerDurable(cfg.MachineID)
 	// The durable is checked here, before the cache warm-ups below (up to 30 s each), so a refused
