@@ -76,8 +76,11 @@ legion({ op: "sign_off", issue: "LEGION-40" })
 
 A parent's own pull request proves each of its checks, so sign off a parent with children only
 on an approved head carrying the merges of every child those checks need. Each needs a current
-passing result at that head, or, for one in another repository, at a commit that repository's
-default branch carries. A child records no result that proves a parent's check: a child's pull
+passing result at that head, or, for one in another repository, at a commit on the branch that
+issue's pull request merged into or on that repository's default branch — that default branch
+alone where Dispatch knows of no merge of the issue — and, for a `default_branch` check, on that
+default branch whatever branch the pull request merged into. A child records no result that
+proves a parent's check: a child's pull
 request never makes a parent check's result current, and a child carrying part of a parent's
 requirement proves it with a check on its own Verification document whose `serves` names that
 requirement. Nothing in the tree builds on the parent's own merge, which comes last: a child
@@ -96,11 +99,14 @@ Then, in one turn:
 2. `request_backward_move` to `implementing`, with the reason "Last round: merge the default
    branch your addressing line names into the branch, push, end your forward-merge comment with
    `parent's last round: full test round`, and complete." Never use a hard-coded `main`. The move
-   counts a review round.
+   counts a review round, or a conflict round, which `review_round_cap` leaves out, where the
+   record holds the head conflicting with its base.
 
 While the parent waits in `accepting`, a conflict on its head or a child's merge needs no move of
-its own: the last round's forward merge resolves them all, so spend no backward move per child;
-each counts toward `review_round_cap`.
+its own: the last round's forward merge resolves them all, so spend no backward move per child.
+A move for a child's merge counts toward `review_round_cap`, since the record holds no conflict on
+the head to leave it out; a move for a conflict the record does hold is left out, and still costs
+the implementer a forward merge the last round makes anyway.
 
 A criterion proven on a deployed system is proven after that child's deploy, as the repository's
 deploy skill says.

@@ -150,11 +150,14 @@ you can run is reported under *When no surface reaches the changed path* below, 
 
 **A result is current** while its commit is still the head of an open pull request of the check's
 issue, or the final head of a merged one, and the check's words have not changed since; an
-`after_merge` or `default_branch` result is current at a commit the default branch carries. A push
-makes every result at the old head older, with no Dispatch write of anyone's, so each check is
-recorded again at the new head. `dispatch results --issue <issue>` prints each check with its
-latest result and whether it is current; `dispatch read --issue <issue>` names each requirement
-of the spec no check serves.
+`after_merge` result is current at a commit the branch its own issue's pull request merged into
+carries, or the repository's default branch does — that default branch alone where Dispatch knows
+of no merge of that issue — and a `default_branch` result only at a commit the repository's
+default branch carries.
+A push makes every result at the old head older, with no Dispatch write of anyone's, so each
+check is recorded again at the new head. `dispatch results --issue <issue>` prints each check
+with its latest result and whether it is current; `dispatch read --issue <issue>` names each
+requirement of the spec no check serves.
 
 **A result goes stale at a new head whoever made the commit** — the implementer's push, the
 tester's — so the commits that move the
@@ -172,8 +175,9 @@ approves (`skill://legion-worker/references/merge-gate.md`).
 own Verification document, read at its own head, so a child's pull request never makes a root
 check's result current and a child never records the result that proves a root's check. A child
 carrying part of a root's requirement proves it with a check on its own Verification document
-whose `serves` names that requirement. A root's own checks are proven at its own head, or on the
-default branch for an `after_merge` check, in its last round.
+whose `serves` names that requirement. A root's own checks are proven at its own head, or, for
+an `after_merge` check, on the branch the root's pull request merged into or on the repository's
+default branch, in its last round.
 
 **An issue with no `before_merge` check is a named gap.** One with no Verification document, or
 with none holding a `before_merge` check, has no evidence of its own. The tester names the gap
