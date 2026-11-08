@@ -318,6 +318,49 @@ test("a runner that names another session, or no session, is left alone", () => 
   });
 });
 
+test("a second open call of the tool leaves the runner alone, where one call takes it", () => {
+  const runner = scanOf([
+    processOf({ pid: 100, ppid: 1 }),
+    processOf({
+      pid: 101,
+      command: "/usr/bin/python3 -u /tmp/omp-python-runner-a.py",
+      environment: { PI_SESSION_FILE: SESSION_FILE },
+    }),
+  ]);
+  // Nothing names the call and nothing started after it, so the runner rule is the one left.
+  const call = callOf({ startedAt: 1_793_000_000_001 });
+
+  // Two calls of `eval` open, which is what one call of a subagent's recorded among the
+  // worker's own would make of a session with a single stuck call of its own
+  // (`extensions/legion.test.ts`, "a subagent's `tool_call` is kept out of the worker's open
+  // calls"): neither call owns the runner, so the first rung ends nothing at all, and the
+  // phantom call never closes, so it ends nothing for the rest of the session either.
+  expect(
+    stallCallProcesses({
+      ...base,
+      call,
+      openCalls: [call, callOf({ toolCallId: "toolu_second" })],
+      scan: runner,
+    })
+  ).toEqual({ rule: "none", why: "2 calls of `eval` are open, so no runner is this call's" });
+
+  // A call of another tool is no second call of this one.
+  expect(
+    stallCallProcesses({
+      ...base,
+      call,
+      openCalls: [call, callOf({ toolCallId: "toolu_bash", toolName: "bash" })],
+      scan: runner,
+    })
+  ).toEqual({ rule: "tool-runner", pids: [101] });
+
+  // And with this call alone open, the rung has the runner it ends.
+  expect(stallCallProcesses({ ...base, call, openCalls: [call], scan: runner })).toEqual({
+    rule: "tool-runner",
+    pids: [101],
+  });
+});
+
 test("a tree that could not be read ends nothing", async () => {
   const found = stallCallProcesses({
     ...base,

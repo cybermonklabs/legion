@@ -6727,6 +6727,46 @@ describe("the stall watch the plugin's entry arms", () => {
     expect(ended.map((call) => call.toolCallId)).toEqual(["toolu_task"]);
   });
 
+  test("a subagent's `tool_call` is kept out of the worker's open calls, which the first rung counts", async () => {
+    shortLimits();
+    const ended: StallCall[] = [];
+    // The list this host is built with is the one the entry hands the first rung
+    // (`extensions/legion.ts:371`), which is where `src/stall-recovery.ts:152-158` counts the
+    // open calls of a tool: what is read here is what that rule would read.
+    let openCalls: () => readonly StallCall[] = () => {
+      throw new Error("the entry armed no watch, so it built no process host");
+    };
+    setLegionStallProcessesForTests((deps) => {
+      openCalls = deps.openCalls;
+      return fakeProcesses(ended);
+    });
+    const pane = await bootPane({ role: "implementer", sessionId: "ses_stall_open_calls" });
+    const subagent: SessionContext = { ...pane.context, agent: { kind: "sub" } };
+    const openIds = (): string[] => openCalls().map((call) => call.toolCallId);
+
+    await callStarts(pane);
+    expect(openIds()).toEqual([stuckCall.toolCallId]);
+
+    // The subagent makes a call of the same tool. `tool_call` is the one event that writes a
+    // call down from its arguments alone, before any clock of its own starts
+    // (`pi-shared/src/stall-watchdog.ts:681-687`), so it is the one that would put a call the
+    // worker never made among the worker's own.
+    const subagentCall = { toolName: "eval", toolCallId: "toolu_sub", input: { code: "1 + 1" } };
+    await hook(pane.handlers, "tool_call")(subagentCall, subagent);
+    expect(openIds()).toEqual([stuckCall.toolCallId]);
+
+    // And it would never leave: the two events that close a call are guarded in the same way, so
+    // a call written down there would be a second open `eval` for the rest of the session, and
+    // the rung that ends a stuck `eval`'s runner declines while two are open.
+    await hook(pane.handlers, "tool_execution_start")(subagentCall, subagent);
+    await hook(pane.handlers, "tool_execution_end")({ toolCallId: "toolu_sub" }, subagent);
+    await hook(pane.handlers, "tool_result")(
+      { toolName: "eval", toolCallId: "toolu_sub", input: {}, details: {}, isError: false },
+      subagent
+    );
+    expect(openIds()).toEqual([stuckCall.toolCallId]);
+  });
+
   test("no step runs while the host reports the session idle, and a call that ended before the sweep is left alone", async () => {
     shortLimits();
     const ended: StallCall[] = [];
@@ -6776,5 +6816,72 @@ describe("the stall watch the plugin's entry arms", () => {
 
     expect(records(pane.entries)).toEqual([]);
     expect(ended).toEqual([]);
+  });
+
+  /** A call of this session left open and overdue, so a sweep has a record to write and there
+   * is something to wait on: a bare tick returns before a sweep that writes has written, so it
+   * cannot tell a sweep that wrote nothing from one that has not written yet. */
+  const openCallWaitingToBeSwept = async (pane: ClaimPane): Promise<void> => {
+    const open = { toolName: "eval", toolCallId: "toolu_open", input: { code: CODE } };
+    await hook(pane.handlers, "tool_call")(open, pane.context);
+    await hook(pane.handlers, "tool_execution_start")(open, pane.context);
+    anHourPasses();
+  };
+
+  test("a turn that merely ended closes the calls it held open, so the next sweep judges none of them", async () => {
+    shortLimits();
+    const ended: StallCall[] = [];
+    setLegionStallProcessesForTests(() => fakeProcesses(ended));
+    const pane = await bootPane({
+      role: "implementer",
+      sessionId: "ses_stall_turn_stop",
+    });
+    await callStarts(pane);
+
+    // A turn that ended the ordinary way carries `stopReason: "stop"`, which the assistant
+    // message reads as nothing at all (`pi-shared/src/stall-watchdog.ts:703-709`), unlike the
+    // `aborted` of the case above: the end of the turn itself is all that closes this call.
+    await hook(pane.handlers, "turn_end")(
+      { message: { role: "assistant", stopReason: "stop" } },
+      pane.context
+    );
+    await openCallWaitingToBeSwept(pane);
+
+    const { value: written } = await loggedWarnings(() => sweeps(pane.intervals, pane.entries, 2));
+
+    // The call of the ended turn is judged by nothing, though it is an hour overdue: the sweep
+    // carries the open one alone, and its processes are the only ones the first rung ended.
+    expect(written.map((record) => [record.kind, record.toolCallId])).toEqual([
+      ["evidence", "toolu_open"],
+      ["step", "toolu_open"],
+    ]);
+    expect(ended.map((call) => call.toolCallId)).toEqual(["toolu_open"]);
+  });
+
+  test("a run that settled with no turn end of its own closes them at `agent_end`", async () => {
+    shortLimits();
+    const ended: StallCall[] = [];
+    setLegionStallProcessesForTests(() => fakeProcesses(ended));
+    const pane = await bootPane({
+      role: "implementer",
+      sessionId: "ses_stall_agent_end",
+    });
+    await callStarts(pane);
+
+    // No `turn_end` at all, and a last message that says the run settled: `agent_end` is the
+    // only thing here that closes this call.
+    await hook(pane.handlers, "agent_end")(
+      { messages: [{ role: "assistant", stopReason: "stop" }] },
+      pane.context
+    );
+    await openCallWaitingToBeSwept(pane);
+
+    const { value: written } = await loggedWarnings(() => sweeps(pane.intervals, pane.entries, 2));
+
+    expect(written.map((record) => [record.kind, record.toolCallId])).toEqual([
+      ["evidence", "toolu_open"],
+      ["step", "toolu_open"],
+    ]);
+    expect(ended.map((call) => call.toolCallId)).toEqual(["toolu_open"]);
   });
 });
