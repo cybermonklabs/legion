@@ -515,8 +515,8 @@ async function mintedInstallationToken(
  * no credential, a GitHub that never answered, an answer that is not 2xx, a viewer that is no
  * App's bot, one whose App id is not `source.appId` (naming both ids), and one without its
  * role's write permission. A token command the secrets broker refused outright, holding no
- * secret under the name it gave, also names the input that names that secret, since the fix is
- * there and not on GitHub. */
+ * secret under the name it gave, also names the input that gives that role's App its
+ * credential, since the fix is there and not on GitHub. */
 export async function appLogin(
   role: AppRole,
   source: AppCredentialSource,
@@ -541,15 +541,20 @@ export async function appLogin(
       );
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      // The command's whole stderr is in `reason`, wherever in it the broker's refusal landed,
-      // and the role is in hand here, so the one failure an input fixes can name that input.
-      // `role` is one of two literals, so the name formed is `LEGION_E2E_IMPLEMENT_APP_SECRET`
-      // or `LEGION_E2E_REVIEW_APP_SECRET`. Only the first of the two can be reached now: the
-      // branch is held to a token_command, and lib/github-apps.sh gives the review App a key
-      // command, which asks the broker nothing this names an input for.
       if (unknownSecretPattern.test(reason)) {
+        // The command's whole stderr is in `reason`, wherever in it the broker's refusal
+        // landed, and the role is in hand here, so the one failure an input fixes can name that
+        // input. The implement App is the only role whose credential is a broker secret's name,
+        // and lib/github-apps.sh's require_app_inputs refuses LEGION_E2E_REVIEW_APP_SECRET by
+        // name; so a review role carrying a token_command, which a hand-written
+        // github_apps.yaml can still have, is told what the review App does take instead of an
+        // input it would be refused for setting.
+        const fix =
+          role === "implement"
+            ? "set LEGION_E2E_IMPLEMENT_APP_SECRET to the name of a github-app secret this deployment's broker holds for that App"
+            : "the review App's credential is its own key rather than a broker secret, so set LEGION_E2E_REVIEW_APP_KEY_COMMAND to a command that prints that App's PEM private key and give the App the private_key_command that reads it";
         throw new Error(
-          `${app}: the secrets broker serves no github-app secret under the name ${field} gives (UNKNOWN_SECRET): set LEGION_E2E_${role.toUpperCase()}_APP_SECRET to the name of a github-app secret this deployment's broker holds for that App`
+          `${app}: the secrets broker serves no github-app secret under the name ${field} gives (UNKNOWN_SECRET): ${fix}`
         );
       }
       throw new Error(`${app}: ${reason}`);

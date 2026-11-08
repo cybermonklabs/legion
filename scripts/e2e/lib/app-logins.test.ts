@@ -10,7 +10,12 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { appCredentialSources } from "./app-logins";
+import {
+  type AppCredentialSource,
+  type AppRole,
+  appCredentialSources,
+  appLogin,
+} from "./app-logins";
 import {
   appPrivateKey,
   holdsNoKey,
@@ -25,7 +30,7 @@ import {
 // installation token of one of its Apps, and the two App-JWT routes a key-configured App is
 // proved through to a request signed with that App's own key; it refuses every other request,
 // GET /app among them.
-const { url: standIn, seen, dir } = standInGitHub("app-logins-test");
+const { url: standIn, seen, verified, dir } = standInGitHub("app-logins-test");
 const script = join(import.meta.dir, "app-logins.ts");
 // The home every child of this file runs under, so none of them reads the caller's.
 const home = join(dir, "home");
@@ -609,6 +614,75 @@ describe("app-logins.ts", () => {
     expect(stderr).toBe(
       "||/seed-file|kept-owner|kept-repo|1|app-logins: the review App (app_id 202): github_apps.review.private_key_command failed (exit 4): ||/seed-file|kept-owner|kept-repo|1|"
     );
+  });
+
+  // The clock the App JWT is signed from is read after the key command returns, not before it:
+  // a command may wait 35 minutes on a person where the JWT it signs lives nine, so a reading
+  // taken before a slow command would sign a JWT that expired while that command waited, and
+  // GitHub's 401 would stand in for the run's real cause. The row drives appLogin directly,
+  // since the clock is that function's parameter, and hands it a clock that runs twenty minutes
+  // behind until the key command has written its marker: a reading taken before the command is
+  // stale by those twenty minutes, and one taken after it is the real time. What it reads back
+  // is the `exp` of the JWT the stand-in verified, which the stand-in hands over in `verified`,
+  // so the assertion is about what that server accepted rather than about a JWT derived again
+  // here.
+  test("the App JWT is signed from a clock read after the key command, so a command that waits mints no expired JWT", async () => {
+    const marker = join(dir, "key-command-ran");
+    rmSync(marker, { force: true });
+    const staleBy = 20 * 60 * 1000;
+    // The marker is written before the key is printed, so every reading of this clock after the
+    // command returns sees it and every reading before the command runs does not.
+    const command = `touch -- ${marker}; cat -- ${join(dir, "key-202.pem")}`;
+    const source: AppCredentialSource = { appId: "202", kind: "private_key_command", command };
+    const now = () => new Date(existsSync(marker) ? Date.now() : Date.now() - staleBy);
+    verified.length = 0;
+    const login = await appLogin("review", source, standIn, now);
+    // Every answer the stand-in gave came before this instant, so a JWT still live now was live
+    // for each of them.
+    const answered = Date.now();
+    expect(login).toBe("example-review[bot]");
+    expect(existsSync(marker)).toBe(true);
+    // The one JWT, verified by both of the App-JWT routes the key path asks.
+    expect(verified.length).toBe(2);
+    for (const claims of verified) {
+      const expires = Number(claims.exp) * 1000;
+      const expired = Math.round((answered - expires) / 1000);
+      expect(
+        expires,
+        `the App JWT the stand-in verified carried exp ${claims.exp} with iat ${claims.iat}, which had expired ${expired} seconds before the stand-in answered: its clock was read ${staleBy / 60_000} minutes before the key command rather than after it`
+      ).toBeGreaterThan(answered);
+    }
+  });
+
+  // What `agent-secrets` prints when this deployment's broker holds no secret under the name it
+  // was given, the one failure of this helper whose fix is an input of the run rather than
+  // anything on GitHub.
+  const unknownSecret =
+    "echo 'agent-secrets: no agent secret has this name (UNKNOWN_SECRET)' >&2; exit 1";
+  /** The message appLogin ends on when `role`'s token command is refused that way. */
+  const refusalOf = async (role: AppRole, appId: string) => {
+    const source: AppCredentialSource = { appId, kind: "token_command", command: unknownSecret };
+    return await appLogin(role, source, standIn).then(
+      (login) => `appLogin answered ${login} where it had to refuse`,
+      (error: unknown) => (error instanceof Error ? error.message : String(error))
+    );
+  };
+
+  test("a broker that serves no secret for the implement App names the input that names that secret", async () => {
+    const message = await refusalOf("implement", "101");
+    expect(message).toContain("(UNKNOWN_SECRET)");
+    expect(message).toContain(
+      "set LEGION_E2E_IMPLEMENT_APP_SECRET to the name of a github-app secret"
+    );
+  });
+
+  test("the same refusal for a review token_command names the key command, never the input require_app_inputs refuses", async () => {
+    const message = await refusalOf("review", "202");
+    expect(message).toContain("(UNKNOWN_SECRET)");
+    expect(message).toContain("set LEGION_E2E_REVIEW_APP_KEY_COMMAND");
+    // lib/github-apps.sh's require_app_inputs refuses LEGION_E2E_REVIEW_APP_SECRET by name, so
+    // an operator told to set it would be refused for doing as this said.
+    expect(message).not.toContain("LEGION_E2E_REVIEW_APP_SECRET");
   });
 
   test("an App configured with neither credential field is refused by name, as is a config with no github_apps", () => {

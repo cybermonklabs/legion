@@ -102,15 +102,24 @@ function partOf(part: string): Record<string, unknown> | undefined {
   }
 }
 
-/** The stand-in App that signed `authorization`'s App JWT with its own key, or the sentence
- * saying why no App did. The check is GitHub's less the clock: `Bearer` and three dot-separated
- * base64url parts, RS256, an `iss` naming an App of this GitHub, and a signature over
- * `<header>.<payload>` that verifies under that App's public key. `exp` and `iat` go unread,
- * which the real GitHub reads, because a row that mints a JWT and then waits — on a key command
- * that sleeps, say — would go flaky against a stand-in that expired it, and no proof here is
- * about a JWT's lifetime. No refusal quotes the JWT or a part of it: this server's answers are
- * held to the rule the proofs are, that no message carries a credential. */
-function signerOf(authorization: string): StandInApp | string {
+/** What a verified App JWT carried: the App that signed it, and the claims its payload held, so
+ * a caller reads the claims this server accepted rather than deriving them again from a clock of
+ * its own. */
+export interface VerifiedAppJwt {
+  app: StandInApp;
+  claims: Record<string, unknown>;
+}
+
+/** The App JWT of `authorization` and the stand-in App that signed it with its own key, or the
+ * sentence saying why no App did. The check is GitHub's less the clock: `Bearer` and three
+ * dot-separated base64url parts, RS256, an `iss` naming an App of this GitHub, and a signature
+ * over `<header>.<payload>` that verifies under that App's public key. `exp` and `iat` are
+ * handed back unread, which the real GitHub reads, because a row that mints a JWT and then
+ * waits — on a key command that sleeps, say — would go flaky against a stand-in that expired it,
+ * and the one row that is about a JWT's lifetime reads them itself from `verified`. No refusal
+ * quotes the JWT or a part of it: this server's answers are held to the rule the proofs are,
+ * that no message carries a credential. */
+function signerOf(authorization: string): VerifiedAppJwt | string {
   const jwt = /^Bearer (\S+)$/.exec(authorization)?.[1];
   if (jwt === undefined) return "no App JWT: Authorization must be `Bearer <JWT>`";
   const parts = jwt.split(".");
@@ -139,7 +148,7 @@ function signerOf(authorization: string): StandInApp | string {
     signed = false;
   }
   if (!signed) return `the App JWT is not signed with app id ${app.id}'s own key`;
-  return app;
+  return { app, claims };
 }
 
 /** Asserts that TEXT quotes no stand-in App's token. */
@@ -182,6 +191,11 @@ export interface StandInGitHub {
   /** Each request the stand-in answered, as `<method> <path>`, in the order it took them. A row
    * that reads this empties it first, since the rows before it have written to it. */
   seen: string[];
+  /** The claims of each App JWT this server verified, in the order it took them: the payload it
+   * accepted, so the one row about a JWT's lifetime reads the `exp` the server was handed rather
+   * than deriving it again. The server itself reads no clock, here or anywhere. A row that reads
+   * this empties it first, as it empties `seen`. */
+  verified: Record<string, unknown>[];
   /** A temporary directory of the caller's own, reserved at the call and made by the `beforeAll`
    * the reservation registers, so nothing is at the path until that hook has run: a caller writes
    * into it from a test body, or from a hook of its own registered below its `standInGitHub`
@@ -201,6 +215,7 @@ export interface StandInGitHub {
 export function standInGitHub(prefix: string): StandInGitHub {
   const dir = temporaryDirectory(prefix);
   const seen: string[] = [];
+  const verified: Record<string, unknown>[] = [];
   const github = Bun.serve({
     port: 0,
     async fetch(request) {
@@ -213,19 +228,26 @@ export function standInGitHub(prefix: string): StandInGitHub {
       if (request.method === "GET" && path === "/app/installations") {
         const signer = signerOf(authorization);
         if (typeof signer === "string") return Response.json({ message: signer }, { status: 401 });
-        return Response.json([{ id: installationOf(signer.id), account: { login: accountLogin } }]);
+        verified.push(signer.claims);
+        return Response.json([
+          { id: installationOf(signer.app.id), account: { login: accountLogin } },
+        ]);
       }
       const minting = /^\/app\/installations\/(\d+)\/access_tokens$/.exec(path);
       if (request.method === "POST" && minting !== null) {
         const signer = signerOf(authorization);
         if (typeof signer === "string") return Response.json({ message: signer }, { status: 401 });
-        if (Number(minting[1]) !== installationOf(signer.id)) {
+        verified.push(signer.claims);
+        if (Number(minting[1]) !== installationOf(signer.app.id)) {
           return Response.json({ message: "Not Found" }, { status: 404 });
         }
         // The App's own installation token, the one `tokens` keys it by, answered with GitHub's
         // 201: every later request of the proof is then authorized exactly as the token path's
         // is, and `holdsNoToken` catches this token wherever a message prints it.
-        return Response.json({ token: tokenOf(signer.id), expires_at: expiry }, { status: 201 });
+        return Response.json(
+          { token: tokenOf(signer.app.id), expires_at: expiry },
+          { status: 201 }
+        );
       }
       const token = authorization.replace(/^token /, "");
       const app = tokens[token];
@@ -252,5 +274,5 @@ export function standInGitHub(prefix: string): StandInGitHub {
   afterAll(() => {
     github.stop(true);
   });
-  return { url: `http://127.0.0.1:${github.port}/`, seen, dir };
+  return { url: `http://127.0.0.1:${github.port}/`, seen, verified, dir };
 }
