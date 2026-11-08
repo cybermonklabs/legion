@@ -30314,6 +30314,91 @@
     "rendered_by_milkdown": "Callouts in list items, each holding an unclosed fence that ends in a blank line, before flow content the item does not hold.\n\n* x\n\n  :::callout{#uf1 kind=\"note\" title=\"T\"}\n  ```\n  code\n  ```\n  :::\n\nafter\n\n* x\n  :::callout{#uf2 kind=\"note\" title=\"T\"}\n  ```\n  code\n  ```\n  :::\n\n# Heading\n\n1. x\n   :::callout{#uf3 kind=\"note\" title=\"T\"}\n   ```\n   code\n   more\n\n   ```\n   :::\n\n***\n\n* x\n  :::callout{#uf4 kind=\"note\" title=\"T\"}\n  ```\n  code\n  ```\n  :::\n\n:::callout{#uf5 kind=\"note\" title=\"T\"}\nz\n:::\n\n* x\n  ::::callout{#uf6 kind=\"note\" title=\"O\"}\n  :::callout{#uf7 kind=\"note\" title=\"T\"}\n  ```\n  code\n  ```\n  :::\n  ::::\n\n```\nz\n```\n\n* x\n  :::callout{#uf8 kind=\"note\" title=\"T\"}\n  ```js\n  code\n  ```\n  :::\n\n| a |\n| - |\n| b |\n\n* a\n  * x\n\n    :::callout{#uf9 kind=\"note\" title=\"T\"}\n    ```\n    code\n    ```\n    :::\n  after\n\n* a\n  * x\n    :::callout{#uf10 kind=\"note\" title=\"T\"}\n    ```\n    code\n\n    ```\n    :::\n\nafter\n"
   },
   {
+    "name": "item-definition-callout-opening-with-a-blank-line",
+    "markdown": "ref[^n] here.\n\n- [^n]: :::callout{#c1 kind=\"note\" title=\"T\"}\n\n      :::\n",
+    "pm_json": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "paragraph",
+          "attrs": {
+            "blockId": "b-000001"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "ref"
+            },
+            {
+              "type": "footnote_reference",
+              "attrs": {
+                "label": "n"
+              }
+            },
+            {
+              "type": "text",
+              "text": " here."
+            }
+          ]
+        },
+        {
+          "type": "bullet_list",
+          "attrs": {
+            "spread": false,
+            "blockId": "b-000002"
+          },
+          "content": [
+            {
+              "type": "list_item",
+              "attrs": {
+                "label": "•",
+                "listType": "bullet",
+                "spread": true,
+                "checked": null,
+                "blockId": "b-000003"
+              },
+              "content": [
+                {
+                  "type": "paragraph",
+                  "attrs": {
+                    "blockId": "b-000004"
+                  }
+                },
+                {
+                  "type": "footnote_definition",
+                  "attrs": {
+                    "label": "n",
+                    "blockId": "b-000005"
+                  },
+                  "content": [
+                    {
+                      "type": "callout",
+                      "attrs": {
+                        "kind": "note",
+                        "title": "T",
+                        "blockId": "c1"
+                      },
+                      "content": [
+                        {
+                          "type": "paragraph",
+                          "attrs": {
+                            "blockId": "b-000006"
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "yjs_update_v1_b64": "ARsBAAcBC3Byb3NlbWlycm9yAwlwYXJhZ3JhcGgHAAEABgQAAQEDcmVmhwEBAxJmb290bm90ZV9yZWZlcmVuY2UoAAEFBWxhYmVsAXcBbocBBQYEAAEHBiBoZXJlLigAAQAHYmxvY2tJZAF3CGItMDAwMDAxhwEAAwtidWxsZXRfbGlzdAcAAQ8DCWxpc3RfaXRlbQcAARADCXBhcmFncmFwaCgAAREHYmxvY2tJZAF3CGItMDAwMDA0hwERAxNmb290bm90ZV9kZWZpbml0aW9uBwABEwMHY2FsbG91dAcAARQDCXBhcmFncmFwaCgAARUHYmxvY2tJZAF3CGItMDAwMDA2KAABFARraW5kAXcEbm90ZSgAARQFdGl0bGUBdwFUKAABFAdibG9ja0lkAXcCYzEoAAETBWxhYmVsAXcBbigAARMHYmxvY2tJZAF3CGItMDAwMDA1KAABEAVsYWJlbAF3A+KAoigAARAIbGlzdFR5cGUBdwZidWxsZXQoAAEQBnNwcmVhZAF4KAABEAdibG9ja0lkAXcIYi0wMDAwMDMoAAEPBnNwcmVhZAF5KAABDwdibG9ja0lkAXcIYi0wMDAwMDIA",
+    "rendered_by_milkdown": "ref[^n] here.\n\n*\n\n  [^n]: :::callout{#c1 kind=\"note\" title=\"T\"}\n\n      :::\n"
+  },
+  {
     "name": "item-fence-before-a-callout-after-blank-lines",
     "markdown": "An item's unclosed fence and two blank lines before a callout the item does not hold.\n\n- ~~~\n\n\n:::callout{#bf1 kind=\"note\" title=\"T\"}\n:::\n",
     "pm_json": {

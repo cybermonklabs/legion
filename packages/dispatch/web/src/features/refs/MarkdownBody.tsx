@@ -299,8 +299,11 @@ export function MarkdownBody({
    *  (`TextSource`); none for text of no record, which links no `#id`. */
   source?: TextSource;
   /** The reading Go made of this stored text, which the body draws rather than parsing the
-   *  markdown again. Absent only for the three texts Dispatch does not store: a live agent
-   *  turn, a GitHub body in a link preview, and a write the server has not stored yet. */
+   *  markdown again. Absent for the three texts Dispatch does not store - a live agent turn, a
+   *  GitHub body in a link preview, and a write the server has not stored yet - and for a stored
+   *  text whose answer came from a pod of the build before this one during a rolling deploy,
+   *  which is why `reference-target.ts` and `markdown-engine.ts` still reach the browser parser
+   *  for a stored text: that fallback is the two-builds case, not a defect. */
   tree?: DisplayTree;
   variant?: "block" | "inline";
 }): ReactNode {
