@@ -234,6 +234,14 @@ const legionSlotView = z.object({
   lentTo: issueKey.optional(),
 });
 
+/** `api.WaitingLineView` — where the issue stands in `admission.waiting`: `place`, 1 at the front
+ * of the line, and `length`, how long that list was at this read. It says where the issue stands,
+ * not what holds it, which `admission.blocked` names. */
+const legionWaitingLineView = z.object({
+  place: z.number().int().positive(),
+  length: z.number().int().positive(),
+});
+
 /** `api.CheckWakeView` — what woke a production check's latest look: `kind` names the cause
  * (`merge` for the look the close opens, `check wake` for one the checking agent's own `wake_at`
  * or the retry of a look nobody reported starts, and `bound` for the last look; a check whose
@@ -413,6 +421,10 @@ const legionIssue = z.object({
    * beside it, the `spec` step's row, which a reader that asks one question of one gate takes. */
   gatedSteps: z.array(legionGatedStepView).optional(),
   slot: legionSlotView.optional(),
+  /** Where the issue stands in `admission.waiting` (contract 56): present only for an issue that
+   * list names, so a slot holder and every other issue the line does not carry have none, and a
+   * daemon before contract 56 writes none at all, which is why a reader takes it as optional. */
+  waitingLine: legionWaitingLineView.optional(),
   waitingOn: legionWaitingOn.optional(),
   check: legionCheckView.optional(),
   /** The memory group of the issue's tree: `memory` for a tree whose roles run with the project's

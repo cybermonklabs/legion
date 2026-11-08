@@ -281,6 +281,20 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 	for i, issue := range waiting {
 		projected.Admission.Waiting[i] = issue.Key
 	}
+	// Each issue the line names carries its own place in it (contract 56), counted from 1 at the
+	// front, beside the length of the list it stands in. Nothing is filtered out: a member a
+	// Dispatch link blocks stands in the line and takes its place like every other member, and
+	// what holds it is `admission.blocked` beside this. An issue of another project is in no
+	// issue of this state's line, and a key the state lists no view for is skipped rather than
+	// given an empty one.
+	for i, key := range projected.Admission.Waiting {
+		view, listed := projected.Issues[key]
+		if !listed {
+			continue
+		}
+		view.WaitingLine = &api.WaitingLineView{Place: i + 1, Length: len(waiting)}
+		projected.Issues[key] = view
+	}
 	projected.Admission.Blocked = blockers.Blocked(rows, own, line, record.ChildWaitRows(facts.ChildWaits))
 	projected.PendingStatusWrites = make([]api.PendingStatusWrite, 0, len(pending))
 	for _, row := range pending {

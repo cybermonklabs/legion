@@ -571,16 +571,18 @@ func (s *server) stateRoute(w http.ResponseWriter, r *http.Request) {
 // three fields (withoutMemory); a caller below treeContract, the contract that named the live
 // trees beside the issues holding a slot, is served it without `admission.trees` and without the
 // issues' `tree` (withoutTrees); a caller below wakesWaitingContract, the contract that added
-// the wakes the pacing holds, is served it without `wakesWaiting` (withoutWakesWaiting); and a
+// the wakes the pacing holds, is served it without `wakesWaiting` (withoutWakesWaiting); a
 // caller below gatedStepsContract, the contract that added the issues' gated steps, is served it
-// without that field (withoutGatedSteps). The five compose: each is applied when the state
-// carries something of its own, so a caller below all of them — a pod below
-// supervise.PodUpdateContract — is served a body carrying none of the nine keys, each of them
-// absent rather than empty, since a strict reader before the contract that added a key refuses
-// it whether or not it names anything. Every later reader takes all nine as optional —
-// `packages/contracts/src/legion-api.ts` marks `admission.trees`, `wakesWaiting` and the issues'
-// `gatedSteps` optional for exactly these bodies. Any other caller — a pod at this contract, the
-// operator's `legion state`, a tmux pane — is served the state as this contract writes it.
+// without that field (withoutGatedSteps); and a caller below waitingLineContract, the contract
+// that added each waiting issue's place in the line, is served it without `waitingLine`
+// (withoutWaitingLine). The six compose: each is applied when the state carries something of its
+// own, so a caller below all of them — a pod below supervise.PodUpdateContract — is served a
+// body carrying none of the ten keys, each of them absent rather than empty, since a strict
+// reader before the contract that added a key refuses it whether or not it names anything. Every
+// later reader takes all ten as optional — `packages/contracts/src/legion-api.ts` marks
+// `admission.trees`, `wakesWaiting` and the issues' `gatedSteps` and `waitingLine` optional for
+// exactly these bodies. Any other caller — a pod at this contract, the operator's `legion state`,
+// a tmux pane — is served the state as this contract writes it.
 //
 // The claims are the snapshot's own because the body is: a claim and the state it was projected
 // into cannot come from two moments (store.ClaimsTx). A state whose claims the source could not
@@ -627,6 +629,9 @@ func (s *server) stateFor(r *http.Request, state State, claims []supervise.Claim
 	if contract < gatedStepsContract && carriesGatedSteps(state) {
 		state = withoutGatedSteps(state)
 	}
+	if contract < waitingLineContract && carriesWaitingLine(state) {
+		state = withoutWaitingLine(state)
+	}
 	return state
 }
 
@@ -650,6 +655,11 @@ const wakesWaitingContract = 53
 // (version.go's 55): a plugin before it reads the state with a strict schema that knows no
 // `gatedSteps` and refuses the whole body for it.
 const gatedStepsContract = 55
+
+// waitingLineContract is the daemon contract that added each waiting issue's place in the line to
+// the state (version.go's 56): a plugin before it reads the state with a strict schema that knows
+// no `waitingLine` and refuses the whole body for it.
+const waitingLineContract = 56
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {
@@ -682,9 +692,9 @@ func carriesMemory(state State) bool {
 // block writes that key on every body, empty rather than null (Admission.MarshalJSON), and the
 // strict reader before the contract refuses the empty key as surely as one naming a tree. So this
 // is true of every state the route writes; it is asked beside carriesUpdateRounds, carriesMemory,
-// carriesWakesWaiting and carriesGatedSteps all the same, because stateFor puts the same question
-// to the five and because a later contract that stops writing `trees` on every body answers it
-// here.
+// carriesWakesWaiting, carriesGatedSteps and carriesWaitingLine all the same, because stateFor
+// puts the same question to the six and because a later contract that stops writing `trees` on
+// every body answers it here.
 func carriesTrees(State) bool { return true }
 
 // carriesWakesWaiting is whether state carries the key wakesWaitingContract added: `wakesWaiting`,
@@ -692,9 +702,9 @@ func carriesTrees(State) bool { return true }
 // writes it on every body, empty rather than null (State.MarshalJSON), and the strict reader
 // before the contract refuses the empty key as surely as one naming a wake. So this is true of
 // every state the route writes; it is asked beside carriesUpdateRounds, carriesMemory,
-// carriesTrees and carriesGatedSteps all the same, because stateFor puts the same question to
-// the five and because a later contract that stops writing `wakesWaiting` on every body answers
-// it here.
+// carriesTrees, carriesGatedSteps and carriesWaitingLine all the same, because stateFor puts the
+// same question to the six and because a later contract that stops writing `wakesWaiting` on
+// every body answers it here.
 func carriesWakesWaiting(State) bool { return true }
 
 // carriesGatedSteps is whether any issue of state carries the deployment's gated steps.
@@ -714,6 +724,29 @@ func withoutGatedSteps(state State) State {
 	issues := make(map[string]Issue, len(state.Issues))
 	for key, issue := range state.Issues {
 		issue.GatedSteps = nil
+		issues[key] = issue
+	}
+	state.Issues = issues
+	return state
+}
+
+// carriesWaitingLine is whether any issue of state carries its place in the waiting line.
+func carriesWaitingLine(state State) bool {
+	for _, issue := range state.Issues {
+		if issue.WaitingLine != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// withoutWaitingLine is state with no issue carrying `waitingLine`, the field waitingLineContract
+// added to the state; nothing else of that contract is on the route. The issue map is copied, so
+// the state the source answered is left as it was.
+func withoutWaitingLine(state State) State {
+	issues := make(map[string]Issue, len(state.Issues))
+	for key, issue := range state.Issues {
+		issue.WaitingLine = nil
 		issues[key] = issue
 	}
 	state.Issues = issues

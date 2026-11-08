@@ -679,4 +679,19 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says. main held 54 at the forward merge that renumbered this entry, b5482068c554; read main's
 // own number again at the next merge rather than from this line.)
-const DaemonAPIVersion = 55
+//
+// 56: INFRA-1100 -- the issue record of `GET /legion/v1/state` gains `waitingLine`, where the
+// issue stands in `admission.waiting`: its `place`, 1 at the front of the line, and the `length`
+// of that list at this read (`api.WaitingLineView`). It is present only for an issue the list
+// names, so a slot holder and an issue the line does not carry have no such key, and the wire
+// carries no place for an issue that stands in no line. It says where the issue stands, not what
+// holds it: `admission.blocked` names what holds it, and a member a Dispatch link blocks stands
+// in the line and has its place like every other member.
+// `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
+// contract below 56 is served the issues without the field (api's stateFor, withoutWaitingLine),
+// as a caller below 55 is served them without the gated steps, one below 53 a body with no wakes
+// waiting, one below 51 the issues without the admission's trees and each issue's tree, one below
+// 49 without the memory draw and one below 46 without the claim views' update rounds; the six
+// compose, and every reader from 56 on takes the field as optional. A plugin at 55 reads the
+// state with a strict schema that knows no `waitingLine` and refuses the whole body for it.
+const DaemonAPIVersion = 56
