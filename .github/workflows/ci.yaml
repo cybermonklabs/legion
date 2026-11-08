@@ -1115,7 +1115,7 @@ jobs:
               # the block schema e2e/engine-reading.ts:13 reads. Measured with
               # ci_filter_coverage.changes_filters and workflow_paths.PathsFilter under both
               # quantifiers: this filter covers the table with the entry and without it, where
-              # dispatch-ui's own copy (:1179) covers it only with, that filter taking no anchor.
+              # dispatch-ui's own copy (:1183) covers it only with, that filter taking no anchor.
               - 'packages/envoy/internal/dispatch/pmdoc/testdata/fixtures.json'
               # The file store image: the pull step names its declaration to the pull-test-images
               # action, and the S3 step reads the same declaration for its docker run.
