@@ -1921,6 +1921,14 @@ func HoldsCapability(state ClaimState) bool {
 	}
 }
 
+// TookRole is whether a claim in state has an agent that took its Envoy role and said it can be
+// prompted: ready, working or idle. A registered claim has not yet: the daemon records the
+// registration before the agent's plugin claims the role, so a publish then still reaches the
+// session that held the role before.
+func TookRole(state ClaimState) bool {
+	return state == StateReady || state == StateWorking || state == StateIdle
+}
+
 func claimOf(ev Event) claim.Token {
 	switch ev := ev.(type) {
 	case RuntimeObservation:

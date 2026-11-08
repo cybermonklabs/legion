@@ -218,7 +218,25 @@ type Awaiting struct {
 	AnsweredAt     *time.Time
 	AnsweredBy     Answer
 	AnsweredDetail string
-	Since          EventMark
+	// SlotNoticeAt is when the daemon wrote this wait's architect the waiting-for-slot notice
+	// (workflow.WaitingForSlotNoticeKind), and nil until it did: an admission pass writes it for
+	// an answered wait whose root needs a slot the cap has none of, so that architect is told
+	// once that its root waits and that the daemon starts it again by itself. It records that the
+	// notice was written, never that an architect read it.
+	//
+	// The mark belongs to this wait and goes where the wait goes. Nothing clears it on its own.
+	// Six places outside the tests write Issue.Awaiting: admit.promoteHolds's resume,
+	// admit.readmit, workflow.beginLinger and workflow.leaveUnderOperator clear the wait whole,
+	// so the mark goes with the struct; workflow.itemLeft and workflow.leaveGateOff rewrite a
+	// wait in place and keep whatever the struct already holds. Those two are safe only because
+	// each is reached for an unanswered wait alone, and an unanswered wait carries no mark:
+	// itemLeft returns at once when root.Awaiting.AnsweredAt != nil, and leaveGateOff's caller
+	// answerOpenGates skips an answered wait before it reaches leaveGateOff. A change to either
+	// guard changes this invariant, and would carry one wait's mark into the next wait, whose
+	// architect would then never be told. The stored shape holds the same rule
+	// (issues_awaiting_shape): the mark stands only beside an answer.
+	SlotNoticeAt *time.Time
+	Since        EventMark
 }
 
 // Answer is the act that answered a root's wait, which the task resuming its architect names.
