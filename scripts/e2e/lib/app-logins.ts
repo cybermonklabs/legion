@@ -1,11 +1,11 @@
 // scripts/e2e/lib/app-logins.ts: the bot login of each Legion role App a legion.yaml configures,
-// as GitHub names it today, and the proof that each App's token command releases tokens of the App
-// id configured for it. GraphQL's viewer, under an installation token of the App, answers the
-// App's bot login, `<slug>[bot]`, and `GET /apps/<slug>` under the same token answers the App's id
-// and declared permissions: the identity the daemon reads at boot for each role it commits,
-// pushes and reviews as (packages/daemon/internal/appauth, tokenIdentity). A stage proof compares
-// GitHub's records with these instead of with a name of its own, so an App renamed on GitHub
-// changes what this prints and no script, and a name another App takes over later is never
+// as GitHub names it today, and the proof that the credential configured for each App belongs to
+// the App id configured with it. GraphQL's viewer, under an installation token of the App, answers
+// the App's bot login, `<slug>[bot]`, and `GET /apps/<slug>` under the same token answers the
+// App's id and declared permissions: the identity the daemon reads at boot for each role it
+// commits, pushes and reviews as (packages/daemon/internal/appauth, tokenIdentity). A stage proof
+// compares GitHub's records with these instead of with a name of its own, so an App renamed on
+// GitHub changes what this prints and no script, and a name another App takes over later is never
 // mistaken for Legion's. lib/github-apps.sh's check_github_apps runs it.
 //
 //   bun scripts/e2e/lib/app-logins.ts [--roles <role>[,<role>]] <legion.yaml> [<GitHub API URL>]
@@ -16,16 +16,28 @@
 //     configured app_id is refused, naming both ids, and so is an App without the write permission
 //     its role's work needs (roleWrites), which also refuses the two Apps swapped whole.
 //
-// Each App's tokens come from its `github_apps.<role>.token_command`, run as the daemon runs it
-// (internal/appauth, runTokenCommand): `sh -c`, stdin closed, the environment less the NATS seed
-// variables (internal/runtime, WithoutNATSSeeds) with LEGION_GITHUB_OWNER, LEGION_GITHUB_REPOS and
-// LEGION_GITHUB_READ_ONLY set empty (the release of every installation, narrowed to nothing, as
-// AppLogin asks), stdout read as the secrets broker's release, and stderr relayed and kept for a
-// failure's message alone.
-// A token stays in this process's memory: it is never printed, written to a file, or handed to
-// another process. An App configured with any other credential source is refused, since every
-// stage proof's file names a token command.
+// An App's credential is one of the two command fields, and exactly one of them, as the daemon
+// admits exactly one (internal/config, readGitHubApp):
+//   `token_command`, which lib/github-apps.sh writes for the implement role, is run as the daemon
+//     runs it (internal/appauth, runTokenCommand): `sh -c`, stdin closed, the environment less the
+//     NATS seed variables (internal/runtime, WithoutNATSSeeds) with LEGION_GITHUB_OWNER,
+//     LEGION_GITHUB_REPOS and LEGION_GITHUB_READ_ONLY set empty (the release of every
+//     installation, narrowed to nothing, as AppLogin asks), and its stdout read as the secrets
+//     broker's release, whose first installation token is the one proved.
+//   `private_key_command`, which lib/github-apps.sh writes for the review role so that the daemon
+//     mints and renews that App's tokens out of its key by itself, as a reviewer pod does, is run
+//     as the daemon runs that one (internal/config, executePrivateKeyCommand): the same `sh -c`
+//     with stdin closed and the NATS seed variables dropped, but none of those three variables
+//     touched, since the daemon sets none of them for a key command. Its trimmed stdout is the
+//     App's PEM, which signs an App JWT here, and that JWT mints the token that is proved.
+// Either command's stderr is relayed and kept for a failure's message alone. The key path proves
+// at least what the token path proves: the token it mints goes through the same viewer and
+// `GET /apps/<slug>` observations, so the App's bot login, its id and its role's write permission
+// are read from GitHub for a key-configured App exactly as they are for a token-configured one.
+// A credential stays in this process's memory: no token, no JWT and no byte of a key is printed,
+// written to a file, or handed to another process.
 
+import { createSign } from "node:crypto";
 import { writeSync } from "node:fs";
 
 /** The two App roles `github_apps` names (internal/appauth, Implement and Review). */
@@ -40,10 +52,17 @@ const appRoles: readonly AppRole[] = ["implement", "review"];
  * not an installation that has not accepted a permission the App has since asked for. */
 const roleWrites: Record<AppRole, string> = { implement: "contents", review: "checks" };
 
-/** One App of `github_apps`: its id and the command that prints its release of tokens. */
+/** The credential fields an App of `github_apps` may configure, in the order a message names
+ * them. */
+const appSources = ["token_command", "private_key_command"] as const;
+
+/** One App of `github_apps`: its id, which of the two credential fields configures it, and that
+ * field's command. The field's name travels with the command, so every message about the command
+ * names the field it was read from rather than the one this file happens to expect. */
 export interface AppTokenSource {
   readonly appId: string;
-  readonly tokenCommand: string;
+  readonly source: (typeof appSources)[number];
+  readonly command: string;
 }
 
 /** `value[key]` when `value` is an object that has `key`, else undefined: the one read of the
@@ -54,7 +73,7 @@ function member(value: unknown, key: string): unknown {
 }
 
 /** The Apps of `roles` that `github_apps` configures in the legion.yaml text `text`, or a throw
- * naming the key that is missing or not a command. */
+ * naming the role whose id is missing, or whose credential fields are neither one nor a command. */
 export function appTokenSources(
   text: string,
   roles: readonly AppRole[] = appRoles
@@ -66,16 +85,28 @@ export function appTokenSources(
   const source = (role: AppRole): AppTokenSource => {
     const app = member(apps, role);
     const appId = member(app, "app_id");
-    const command = member(app, "token_command");
     if (typeof appId !== "string" && typeof appId !== "number") {
       throw new Error(`github_apps.${role}.app_id is not set`);
     }
-    if (typeof command !== "string" || command === "") {
+    const configured = appSources.filter((field) => {
+      const command = member(app, field);
+      return typeof command === "string" && command !== "";
+    });
+    // Exactly one, which is what the daemon admits of an App too (internal/config,
+    // readGitHubApp): a role with neither field names no credential this can run, and a role
+    // with both leaves the credential the daemon would use to the order of a rule here.
+    if (configured.length === 0) {
       throw new Error(
-        `github_apps.${role} names its credential without a token_command, the one source this reads`
+        `github_apps.${role} names its credential without a token_command or a private_key_command, the two sources this reads`
       );
     }
-    return { appId: String(appId), tokenCommand: command };
+    if (configured.length > 1) {
+      throw new Error(
+        `github_apps.${role} names both a token_command and a private_key_command: an App configures exactly one credential source`
+      );
+    }
+    const field = configured[0];
+    return { appId: String(appId), source: field, command: member(app, field) as string };
   };
   return Object.fromEntries(roles.map((role) => [role, source(role)]));
 }
@@ -84,16 +115,18 @@ export function appTokenSources(
  * (internal/runtime, natsSeedVariables). */
 const natsSeedVariables = ["NATS_NKEY_SEED", "NATS_DAEMON_NKEY_SEED"];
 
-/** Runs one App's token_command as the daemon runs it for every installation and returns its
- * stdout. The command's stderr is passed through to this process's stderr as it is written, so an
- * operator sees what `agent-secrets` prints while it waits for a person's grant (the request's
- * id). A failure is named as the daemon names it: its field and exit code, then the command's
- * stderr when it wrote any; its stdout is never quoted. */
-/** The most a token command may print on either stream: a release of a few installations is a
- * few kilobytes, as the daemon bounds it (internal/appauth, releaseLimit). */
+/** Runs one App's credential command — the token_command the daemon runs for every installation,
+ * or the private_key_command it runs once to read a key — and returns its stdout. The command's
+ * stderr is passed through to this process's stderr as it is written, so an operator sees what
+ * `agent-secrets` prints while it waits for a person's grant (the request's id). A failure is
+ * named as the daemon names it: its field and exit code, then the command's stderr when it wrote
+ * any; its stdout is never quoted, since it is the credential. */
+/** The most a credential command may print on either stream: a release of a few installations,
+ * like a PEM, is a few kilobytes, as the daemon bounds a release (internal/appauth,
+ * releaseLimit). */
 const outputLimit = 1 << 20;
-/** How long one token command may run here: a review App's first grant waits on a person, and
- * `agent-secrets` waits 30 minutes for a decision by default. */
+/** How long one credential command may run here: a review App's first grant waits on a person,
+ * and `agent-secrets` waits 30 minutes for a decision by default. */
 const commandLimitMs = 35 * 60 * 1000;
 /** How long the command's output may go on after the command itself has exited, before the run
  * gives up on a descendant that is holding the pipes open. What it bounds is the time since the
@@ -166,12 +199,22 @@ function writeAll(fd: number, text: string): void {
   }
 }
 
-async function runTokenCommand(field: string, command: string): Promise<string> {
+async function runCredentialCommand(
+  field: string,
+  command: string,
+  source: AppTokenSource["source"]
+): Promise<string> {
   const env: Record<string, string | undefined> = { ...process.env };
   for (const name of natsSeedVariables) delete env[name];
-  env.LEGION_GITHUB_OWNER = "";
-  env.LEGION_GITHUB_REPOS = "";
-  env.LEGION_GITHUB_READ_ONLY = "";
+  // The daemon sets the three narrowing variables empty for a token command, which it runs for
+  // every installation, and sets none of them for a key command, which reads a key no
+  // installation narrows (internal/config, executePrivateKeyCommand). So a key command here sees
+  // whatever this process's environment holds under those names, as the daemon's would.
+  if (source === "token_command") {
+    env.LEGION_GITHUB_OWNER = "";
+    env.LEGION_GITHUB_REPOS = "";
+    env.LEGION_GITHUB_READ_ONLY = "";
+  }
   let child: Bun.Subprocess<"ignore", "pipe", "pipe">;
   try {
     // detached: the command leads a process group of its own, which a kill ends whole.
@@ -345,16 +388,24 @@ export function firstInstallationToken(output: string, field: string, now: Date)
   return member(member(installations, owners[0]), "token") as string;
 }
 
-/** One GitHub read under `token`: the parsed JSON body, or a throw naming `read`, GitHub's status
- * and the head of its body, never the token. */
-async function githubRead(read: string, url: string, token: string, init: RequestInit = {}) {
+/** One GitHub read under `credential`, sent in the scheme GitHub asks for it — `token` for an
+ * installation token, `Bearer` for an App JWT: the parsed JSON body, or a throw naming `read`,
+ * GitHub's status and the head of its body, never the credential, whichever of the two it is.
+ * An App JWT is a credential like a token, so GitHub's body is masked of it the same way. */
+async function githubRead(
+  read: string,
+  url: string,
+  credential: string,
+  init: RequestInit = {},
+  scheme: "token" | "Bearer" = "token"
+) {
   let response: Response;
   let body: string;
   try {
     response = await fetch(url, {
       ...init,
       headers: {
-        Authorization: `token ${token}`,
+        Authorization: `${scheme} ${credential}`,
         Accept: "application/vnd.github+json",
         "User-Agent": "legion-e2e",
         ...(init.body === undefined ? {} : { "Content-Type": "application/json" }),
@@ -365,7 +416,7 @@ async function githubRead(read: string, url: string, token: string, init: Reques
   } catch (error) {
     throw new Error(`${read} failed: ${error instanceof Error ? error.message : String(error)}`);
   }
-  const head = redactTokens(body.split(token).join("<token>")).slice(0, 300);
+  const head = redactTokens(body.split(credential).join("<credential>")).slice(0, 300);
   if (!response.ok) throw new Error(`${read} answered ${response.status}: ${head}`);
   try {
     return { answer: JSON.parse(body) as unknown, head };
@@ -374,14 +425,92 @@ async function githubRead(read: string, url: string, token: string, init: Reques
   }
 }
 
-/** The bot login GitHub gives the App `source` names: GraphQL's viewer under the first
- * installation token of the App's release, `<slug>[bot]`, whose `GET <api>/apps/<slug>` must
- * answer `source.appId` and its role's write permission (roleWrites). Every failure names the App
- * by its role and id: a command that fails or prints no release, a GitHub that never answered, an
- * answer that is not 2xx, a viewer that is no App's bot, one whose App id is not `source.appId`
- * (naming both ids), and one without its role's write permission. A command the secrets broker
- * refused outright, holding no secret under the name it gave, also names the input that names
- * that secret, since the fix is there and not on GitHub. */
+/** The App JWT the PEM `key` signs for the App `appId`, the credential GitHub takes on the two
+ * routes below: `{"alg":"RS256","typ":"JWT"}` over `{"iss":<app_id>,"iat":…,"exp":…}`, each part
+ * base64url. `iat` is a minute behind `now` so a GitHub whose clock trails this one still takes
+ * it, and `exp` is nine minutes past `iat`, inside the ten GitHub allows; `now` is the caller's
+ * clock, so a proof drives both. A key `createSign` refuses names the App and the field alone:
+ * the error it raises may quote what it tried to read, and no part of a key belongs in a
+ * message. */
+function appJwt(key: string, appId: string, now: Date, app: string, field: string): string {
+  const part = (value: object) => Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
+  const issued = Math.floor(now.getTime() / 1000) - 60;
+  const signed = `${part({ alg: "RS256", typ: "JWT" })}.${part({
+    iss: appId,
+    iat: issued,
+    exp: issued + 9 * 60,
+  })}`;
+  try {
+    return `${signed}.${createSign("RSA-SHA256").update(signed).sign(key, "base64url")}`;
+  } catch {
+    throw new Error(`${app}: ${field} printed no private key an App JWT can be signed with`);
+  }
+}
+
+/** The installation token the key-configured App `source` mints for itself, as the daemon does
+ * from the key its private_key_command prints: the command's trimmed stdout signs an App JWT,
+ * `GET <api>/app/installations` under that JWT names an installation of the App, and
+ * `POST <api>/app/installations/<id>/access_tokens` under it mints that installation's token.
+ * GitHub answers the mint `{"token":…,"expires_at":…}`, which is GitHub's own body and no broker
+ * release, so nothing here reads it as one. Minting a token at all, rather than reading the
+ * App's slug from `GET <api>/app` under the JWT, is deliberate: the token is what carries the
+ * viewer observation of appLogin, the one that refuses an App whose viewer is a person. Every
+ * refusal names the App by its role and id, and none quotes the key, the JWT or the token. */
+async function mintedInstallationToken(
+  source: AppTokenSource,
+  app: string,
+  field: string,
+  base: string,
+  now: Date
+): Promise<string> {
+  let key: string;
+  try {
+    key = (await runCredentialCommand(field, source.command, source.source)).trim();
+  } catch (error) {
+    throw new Error(`${app}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  // The key never leaves this scope: it signs below and is named in no message. Output that is
+  // empty is refused here rather than carried into a signature, as the daemon refuses it
+  // (internal/config, executePrivateKeyCommand).
+  if (key === "") throw new Error(`${app}: ${field} produced empty output`);
+  const jwt = appJwt(key, source.appId, now, app, field);
+  const read = `GET /app/installations as ${app}`;
+  const listed = await githubRead(read, `${base}/app/installations`, jwt, {}, "Bearer");
+  if (!Array.isArray(listed.answer)) {
+    throw new Error(`${read} answered no list of installations: ${listed.head}`);
+  }
+  if (listed.answer.length === 0) {
+    throw new Error(`${read} answered no installation: an App installed nowhere mints no token`);
+  }
+  const installation = member(listed.answer[0], "id");
+  if (typeof installation !== "number" && typeof installation !== "string") {
+    throw new Error(`${read} answered an installation with no id: ${listed.head}`);
+  }
+  const mint = `POST /app/installations/${installation}/access_tokens as ${app}`;
+  const minted = await githubRead(
+    mint,
+    `${base}/app/installations/${encodeURIComponent(String(installation))}/access_tokens`,
+    jwt,
+    { method: "POST" },
+    "Bearer"
+  );
+  const token = member(minted.answer, "token");
+  if (typeof token !== "string" || token === "") {
+    throw new Error(`${mint} answered no installation token: ${minted.head}`);
+  }
+  return token;
+}
+
+/** The bot login GitHub gives the App `source` names: GraphQL's viewer under an installation
+ * token of the App — the first of the release its token_command prints, or the one its
+ * private_key_command's key mints (mintedInstallationToken) — `<slug>[bot]`, whose
+ * `GET <api>/apps/<slug>` must answer `source.appId` and its role's write permission
+ * (roleWrites). Every failure names the App by its role and id: a command that fails or prints
+ * no credential, a GitHub that never answered, an answer that is not 2xx, a viewer that is no
+ * App's bot, one whose App id is not `source.appId` (naming both ids), and one without its
+ * role's write permission. A token command the secrets broker refused outright, holding no
+ * secret under the name it gave, also names the input that names that secret, since the fix is
+ * there and not on GitHub. */
 export async function appLogin(
   role: AppRole,
   source: AppTokenSource,
@@ -389,23 +518,36 @@ export async function appLogin(
   now: () => Date = () => new Date()
 ): Promise<string> {
   const app = `the ${role} App (app_id ${source.appId})`;
-  const field = `github_apps.${role}.token_command`;
+  const field = `github_apps.${role}.${source.source}`;
   const base = api.replace(/\/+$/, "");
+  /** How a message names where the token this proves came from, which is the field's doing
+   * either way: a token_command releases one, a private_key_command's key mints one. */
+  const gave = source.source === "token_command" ? `${field} released` : `${field}'s key minted`;
   let token: string;
-  try {
-    token = firstInstallationToken(await runTokenCommand(field, source.tokenCommand), field, now());
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    // The command's whole stderr is in `reason`, wherever in it the broker's refusal landed, and
-    // the role is in hand here, so the one failure an input fixes can name that input. `role` is
-    // one of two literals, so the name formed is `LEGION_E2E_IMPLEMENT_APP_SECRET` or
-    // `LEGION_E2E_REVIEW_APP_SECRET`, the two inputs lib/github-apps.sh reads and no other.
-    if (unknownSecretPattern.test(reason)) {
-      throw new Error(
-        `${app}: the secrets broker serves no github-app secret under the name ${field} gives (UNKNOWN_SECRET): set LEGION_E2E_${role.toUpperCase()}_APP_SECRET to the name of a github-app secret this deployment's broker holds for that App`
+  if (source.source === "private_key_command") {
+    token = await mintedInstallationToken(source, app, field, base, now());
+  } else {
+    try {
+      token = firstInstallationToken(
+        await runCredentialCommand(field, source.command, source.source),
+        field,
+        now()
       );
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      // The command's whole stderr is in `reason`, wherever in it the broker's refusal landed,
+      // and the role is in hand here, so the one failure an input fixes can name that input.
+      // `role` is one of two literals, so the name formed is `LEGION_E2E_IMPLEMENT_APP_SECRET`
+      // or `LEGION_E2E_REVIEW_APP_SECRET`. Only the first of the two can be reached now: the
+      // branch is held to a token_command, and lib/github-apps.sh gives the review App a key
+      // command, which asks the broker nothing this names an input for.
+      if (unknownSecretPattern.test(reason)) {
+        throw new Error(
+          `${app}: the secrets broker serves no github-app secret under the name ${field} gives (UNKNOWN_SECRET): set LEGION_E2E_${role.toUpperCase()}_APP_SECRET to the name of a github-app secret this deployment's broker holds for that App`
+        );
+      }
+      throw new Error(`${app}: ${reason}`);
     }
-    throw new Error(`${app}: ${reason}`);
   }
   const viewer = await githubRead(`GraphQL viewer as ${app}`, `${base}/graphql`, token, {
     method: "POST",
@@ -417,7 +559,7 @@ export async function appLogin(
   }
   const slug = login.endsWith("[bot]") ? login.slice(0, -"[bot]".length) : "";
   if (slug === "") {
-    throw new Error(`${app}: ${field} released a token that acts as ${login}, not an App's bot`);
+    throw new Error(`${app}: ${gave} a token that acts as ${login}, not an App's bot`);
   }
   const read = `GET /apps/${slug} as ${app}`;
   const { answer, head } = await githubRead(
@@ -431,7 +573,7 @@ export async function appLogin(
   }
   if (String(id) !== source.appId) {
     throw new Error(
-      `${read} answered App id ${id}, want ${source.appId}: the token command releases another App's tokens`
+      `${read} answered App id ${id}, want ${source.appId}: ${gave} another App's token`
     );
   }
   const permission = roleWrites[role];
