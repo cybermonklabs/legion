@@ -1,5 +1,5 @@
-// A word typed at the start of a block, in each state the editor's build passes through, read
-// back from the document the server stores.
+// A word typed at the start of a block, in each state the editor's build passes through and in
+// a block the reader has just made, read back from the document the server stores.
 //
 // The editor is built a batch of blocks at a time and the binding adopts what the batches made
 // (`packages/proof-editor/src/progressive-build.ts`, dispatch://INFRA-341 R11), so a reader's
@@ -10,12 +10,20 @@
 // time at the start of a block - the position a lost character was meant for - from a caret
 // placed once and never put back, which is what a reader relies on.
 //
-// Each row reads the markdown the server holds and nothing else. The failure these rows are for
-// showed the right word in the editor and the wrong one in the store: the build moved the
-// editor's own selection, ProseMirror wrote that selection over the reader's caret, and the
-// characters after it went in at an offset the reader never asked for - one of them behind
-// their own word, the rest at the end of the block the build had just finished
-// (`offline-edits.e2e.ts`'s read-only admission row, CI run 42485503469).
+// The fourth row is a block of the reader's own rather than a state of the build: the Enter
+// that makes a block and the word typed into it from there, which is where the browser itself
+// can leave their caret in front of the first character
+// (`packages/proof-editor/src/caret-after-typing.ts`).
+//
+// Each row reads the markdown the server holds and nothing else: the store is what the reader
+// loses. The build's own failure showed the right word in the editor and the wrong one there -
+// the build moved the editor's own selection, ProseMirror wrote that selection over the
+// reader's caret, and the characters after it went in at an offset the reader never asked for,
+// one of them behind their own word and the rest at the end of the block the build had just
+// finished (`offline-edits.e2e.ts`'s read-only admission row, CI run 42485503469). That row
+// failed again with the fix for it in, and this time the editor held the wrong word too, as
+// the run's own trace shows: `urvives a read-only admissions`, the caret the browser left in
+// the block the reader had just made, which is the fourth row's subject (CI run 42504071017).
 import { expect, test } from "@playwright/test";
 
 import { createIssue, createProject, getArtifactText } from "./api";
@@ -312,4 +320,96 @@ test.describe(() => {
       await alice.close();
     }
   });
+});
+
+/** The seeded document with a block of `word` after paragraph `index`, which is what pressing
+ *  Enter at the end of that paragraph and typing the word leaves behind. */
+function withABlockAfter(index: number, word: string): string {
+  return SPEC.replace(paragraph(index), `${paragraph(index)}\n\n${word}`);
+}
+
+/**
+ * Has the page press Enter at the end of the block holding `quote` and type `word` into the
+ * block that makes, the first character in the same task as the press and the rest a character
+ * a frame, from the caret the editor is left holding.
+ *
+ * The press and the first character are one task on purpose. An empty block is drawn with a
+ * placeholder break and the caret in it stands on the block rather than in any text, and
+ * Chromium decides what to do with both as it inserts the first character: given a frame in
+ * between it replaces the placeholder and leaves the caret after the character, and given none
+ * it inserts the text in front of the placeholder it keeps and leaves the caret where it was,
+ * in front of the character (`caret-after-typing.ts` in `@legion/proof-editor`). A reader hits
+ * that second case by typing straight on from the Enter on a machine with no frame to spare,
+ * which this row has the page do every time rather than wait for a run that happens to.
+ */
+async function theReaderMakesABlockAndTypes(
+  page: Parameters<typeof documentEditor>[0],
+  plan: { quote: string; word: string }
+): Promise<void> {
+  await page.evaluate((typing: { quote: string; word: string }) => {
+    const editor = document.querySelector<HTMLElement>(
+      '[role="textbox"][aria-label="Document editor"]'
+    );
+    if (editor === null) throw new Error("the page holds no editor");
+    const block = [...editor.querySelectorAll<HTMLElement>("p")].find(
+      (each) => each.textContent === typing.quote
+    );
+    const text = block?.firstChild ?? null;
+    if (text === null) throw new Error(`the editor holds no block ${JSON.stringify(typing.quote)}`);
+    editor.focus();
+    const range = document.createRange();
+    range.setStart(text, text.textContent?.length ?? 0);
+    range.collapse(true);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    document.dispatchEvent(new Event("selectionchange"));
+    editor.dispatchEvent(
+      new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Enter", keyCode: 13 })
+    );
+    document.execCommand("insertText", false, typing.word.slice(0, 1));
+    let typed = 1;
+    const step = () => {
+      if (typed >= typing.word.length) return;
+      document.execCommand("insertText", false, typing.word[typed] ?? "");
+      typed += 1;
+      requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }, plan);
+}
+
+// A block of the reader's own. Every row above types into a block the document already held;
+// this one has the reader make the block - the Enter that ends a paragraph and opens the next -
+// and type the word into it from there, which is the one place the editor takes a character the
+// browser can leave their caret in front of. The word is the whole of the block, so it is at its
+// start as surely as the words above are.
+//
+// The caret this row is about is Chromium's own, and no other engine the suite runs leaves one
+// like it.
+// SLOW(>=2s): a 120-block document, loaded and then typed into a character a frame.
+test("a word typed into a block the reader has just made is stored as typed", async ({
+  browser,
+  browserName,
+}) => {
+  test.skip(
+    browserName !== "chromium",
+    "the caret a browser leaves in a block it has just drawn is Chromium's own"
+  );
+  const issue = await makeIssue();
+  const alice = await asUser(browser, "alice");
+  const word = WORD.trim();
+  try {
+    const page = await alice.newPage();
+    await page.goto(`/issues/${issue.key}/spec`);
+    await expect(documentEditor(page)).toBeVisible({ timeout: BUILD_TIMEOUT_MS });
+
+    await theReaderMakesABlockAndTypes(page, { quote: paragraph(0), word });
+    await expect
+      .poll(() => documentEditor(page).textContent(), { ...PROBE, timeout: BUILD_TIMEOUT_MS })
+      .toContain(word.slice(1));
+    await theServerHolds(issue.primary_artifact_id, withABlockAfter(0, word));
+  } finally {
+    await alice.close();
+  }
 });

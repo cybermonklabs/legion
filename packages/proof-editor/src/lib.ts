@@ -98,6 +98,7 @@ import { registerPopoverHookInstance } from './dispatch-popover-hook';
 import { dispatchMarkEventsPlugin } from './dispatch-mark-events';
 import { remarkSoftBreakAsSpace } from './dispatch-soft-breaks';
 import { configureDispatchLinks } from './dispatch-links';
+import { caretAfterTypingPlugin } from './caret-after-typing';
 import { trailingNewlineInputPlugin } from './trailing-newline-input';
 import { recordMarkHistoryPlugin } from './record-mark-history';
 import {
@@ -567,6 +568,8 @@ async function theConstruction(
     .use(tableKeyboardPlugin)
     // Firefox puts text typed over a code block's last line before its newline
     .use(trailingNewlineInputPlugin)
+    // A character the reader typed leaves their caret after it, whatever the browser left
+    .use(caretAfterTypingPlugin)
     // The composer's own record-mark writes are never undo steps
     .use(recordMarkHistoryPlugin)
     .use(editorHighlightsPlugin)
