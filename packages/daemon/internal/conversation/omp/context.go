@@ -594,25 +594,22 @@ func hasDangling(blocks []block, paired map[string]bool) bool {
 // dropFailedTurns is buildSessionContext's last pass: an aborted or failed assistant turn is not
 // replayed, and the tool results answering its calls go with it.
 func dropFailedTurns(messages []llmMessage) []llmMessage {
-	for i := len(messages) - 1; i >= 0; i-- {
-		m := messages[i]
-		if m.role != "assistant" || (m.stopReason != "aborted" && m.stopReason != "error") {
-			continue
-		}
-		dropped := map[string]bool{}
-		for _, b := range m.blocks {
-			if b.Type == "toolCall" {
-				dropped[b.ID] = true
+	// The calls of the failed turns seen so far: a result answering one of them is dropped with
+	// the turn that asked it, and a result is only ever asked by a turn before it.
+	failed := map[string]bool{}
+	kept := make([]llmMessage, 0, len(messages))
+	for _, m := range messages {
+		switch {
+		case m.role == "assistant" && (m.stopReason == "aborted" || m.stopReason == "error"):
+			for _, b := range m.blocks {
+				if b.Type == "toolCall" {
+					failed[b.ID] = true
+				}
 			}
+		case m.role == "toolResult" && failed[m.toolCallID]:
+		default:
+			kept = append(kept, m)
 		}
-		rest := append([]llmMessage{}, messages[:i]...)
-		for _, later := range messages[i+1:] {
-			if later.role == "toolResult" && dropped[later.toolCallID] {
-				continue
-			}
-			rest = append(rest, later)
-		}
-		messages = rest
 	}
-	return messages
+	return kept
 }

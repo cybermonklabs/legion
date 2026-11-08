@@ -690,7 +690,6 @@ claims_cmd() {
 }
 claim_json() { claims_cmd list --json | jq -ce --arg token "$1" '.claims[] | select(.token == $token)'; }
 claim_is() { claim_json "$1" | jq -e "$2" >/dev/null; }
-claim_token_of() { printf 'legion-%s-%s-%s' "${project,,}" "${1,,}" "$2"; }
 
 # ---- Envoy -----------------------------------------------------------------------------------------
 envoy() { curl -sS --max-time 30 -H "@$work/envoy-auth-header" -H 'content-type: application/json' "$@"; }
@@ -770,7 +769,7 @@ write_prompt() {
 # records its token; with the workflow on, the issue's workspace is provisioned first.
 spawn_agent() {
   local name=$1 role=$2 tree=$3 issue=$4 task=$5 token
-  token=$(claim_token_of "$issue" "$role")
+  token=$(claim_token "$issue" "$role")
   provision_workspace "$issue"
   claims_cmd spawn --json --tree "$tree" --issue "$issue" --role "$role" --prompt-file "$(write_prompt "$role" "$issue")" \
     --task "$task" >/dev/null
@@ -887,8 +886,8 @@ TS
 produce_pre_change() {
   local token architect tree=${agent[$store:pre_change.tree]}
   write_legion_config "$work/base-$store.yaml" base
-  token=$(claim_token_of "${agent[$store:pre_change.issue]}" reviewer)
-  architect=$(claim_token_of "$tree" architect)
+  token=$(claim_token "${agent[$store:pre_change.issue]}" reviewer)
+  architect=$(claim_token "$tree" architect)
   write_claude_route "$token" "claude-$store"
   start_daemon "$work/base/legion" "$work/base-$store.yaml" "$evidence/logs/base-daemon-$store.log" "$base_home" "$base_profile" \
     "$base_plugin"
@@ -1404,7 +1403,7 @@ check_a2() {
 check_a3() {
   criterion A3 "a question on a closed issue's own thread, by a role mention of its stopped tester, is answered there" infra448 || return 0
   local issue=${agent[$store:tester.issue]} session=${agent[$store:tester.session]} collaborators token comment id reply='' control before
-  dispatch_human PATCH "issues/$issue" '{"status":"done"}' >/dev/null
+  set_status "$issue" "done"
   note "closed $issue: status $(dispatch_get "issues/$issue" | jq -r .status)"
   collaborators=$(dispatch_get "issues/$issue/collaborators")
   note "collaborators of $issue: registry $(jq -r .legion_registry <<<"$collaborators"); agents $(jq -c '[.agents[] | {session_id, legion: (.legion | if . then {role, role_token, replaced_by} else null end)}]' <<<"$collaborators")"
@@ -1550,7 +1549,7 @@ check_a6() {
   done
   note "recorded the running tree $root6 and its child $child6 in the daemon's issues table"
   start_daemon "$work/branch/legion" "$work/answers-$store.yaml" "$daemon_log" "$branch_home" "$branch_profile" "$branch_plugin"
-  architect=$(claim_token_of "$root6" architect)
+  architect=$(claim_token "$root6" architect)
   provision_workspace "$root6"
   claims_cmd spawn --json --tree "$root6" --issue "$root6" --role architect --prompt-file "$(write_prompt architect "$root6")" >/dev/null
   agent[$store:a6_architect.token]=$architect
@@ -2078,11 +2077,11 @@ check_a19() {
   head=$(jq -r .head <<<"$pr")
   github_writes+=("pr:$number:$branch")
   note "opened $repo pull request #$number from $branch at $head as the implement App"
-  token=$(claim_token_of "$issue" reviewer)
+  token=$(claim_token "$issue" reviewer)
   write_claude_route "$token" "claude-$store"
   provision_workspace "$issue"
   claims_cmd spawn --json --tree "$issue" --issue "$issue" --role architect --prompt-file "$(write_prompt architect "$issue")" >/dev/null
-  agent[$store:a19_architect.token]=$(claim_token_of "$issue" architect)
+  agent[$store:a19_architect.token]=$(claim_token "$issue" architect)
   spawn_agent reviewer reviewer "$issue" "$issue" \
     "Record this and keep it: you are the reviewer of pull request #$number on $repo, head $head. You reviewed it, found nothing to change, and completed your round. Reply with one sentence restating it. Run no tool."
   await_turn reviewer

@@ -398,6 +398,19 @@ var apiReviewCreate = regexp.MustCompile(`^repos/[^/]+/[^/]+/pulls/[^/]+/reviews
 // graphQLMutation finds a mutation operation in a GraphQL document.
 var graphQLMutation = regexp.MustCompile(`\bmutation\b`)
 
+// apiMethod is the HTTP method a gh api call makes: GET, POST once it passes any field, and the
+// last --method it names, upper-cased.
+func apiMethod(parsed parsedArgs) string {
+	method := "GET"
+	if len(parsed.given("field"))+len(parsed.given("raw-field")) > 0 {
+		method = "POST"
+	}
+	if given := parsed.given("method"); len(given) > 0 {
+		method = strings.ToUpper(given[len(given)-1].value)
+	}
+	return method
+}
+
 // apiWithFooter is withFooter's gh api: run the call's arguments, parsed as gh api reads them.
 func apiWithFooter(run []string, parsed parsedArgs, foot string) ([]string, string) {
 	if len(parsed.given("hostname")) > 0 {
@@ -423,13 +436,7 @@ func apiWithFooter(run []string, parsed parsedArgs, foot string) ([]string, stri
 			}
 		}
 	}
-	method := "GET"
-	if len(fields) > 0 {
-		method = "POST"
-	}
-	if given := parsed.given("method"); len(given) > 0 {
-		method = strings.ToUpper(given[len(given)-1].value)
-	}
+	method := apiMethod(parsed)
 	if method == "GET" || method == "HEAD" {
 		return run, ""
 	}

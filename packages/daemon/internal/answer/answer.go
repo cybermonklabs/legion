@@ -229,7 +229,6 @@ func (req Request) validate() error {
 // route is the provider a conversation's model is called through.
 type route struct {
 	provider config.AnswerProvider
-	api      string
 	// kind is the protocol agentloop speaks to that API.
 	kind agentloop.Kind
 	// model is the model's id at its provider ("claude-opus-5-5").
@@ -247,11 +246,11 @@ func routeOf(req Request) (route, Fault, string) {
 	if !ok || model == "" {
 		return route{}, NoProvider, fmt.Sprintf("the conversation's model %q names no provider", conv.Model)
 	}
-	r := route{provider: config.AnswerProvider(name), api: conv.API, model: model}
+	r := route{provider: config.AnswerProvider(name), model: model}
 	switch {
-	case r.provider == config.AnswerAnthropic && r.api == anthropicMessages:
+	case r.provider == config.AnswerAnthropic && conv.API == anthropicMessages:
 		r.kind = agentloop.AnthropicMessages
-	case r.provider == config.AnswerOpenAI && r.api == openaiResponses:
+	case r.provider == config.AnswerOpenAI && conv.API == openaiResponses:
 		r.kind = agentloop.OpenAIResponses
 	default:
 		return route{}, NoProvider, fmt.Sprintf("the loop calls no provider %s on API %q", name, conv.API)
@@ -343,7 +342,7 @@ func finish(reply *Reply, req Request, r route, result agentloop.Result, questio
 	reply.Kind, reply.Text, reply.Needs = form.kind, form.text, form.needs
 	reply.Append = conversation.Append{
 		QuestionID: req.Question.ID, Question: question,
-		Provider: string(r.provider), API: r.api, Model: r.model,
+		Provider: string(r.provider), API: string(r.kind), Model: r.model,
 	}
 	for _, step := range result.Steps {
 		reply.Append.Turns = append(reply.Append.Turns, turnOf(step, r.price))

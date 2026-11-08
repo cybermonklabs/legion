@@ -87,12 +87,6 @@ type Answer struct {
 	wrapper                               string
 }
 
-// Agent is the agent the answer's calls run as.
-func (a *Answer) Agent() Agent { return a.agent }
-
-// Question is the question the answer answers.
-func (a *Answer) Question() string { return a.question }
-
 // Open builds question's gh environment for agent once, before its first call: a fresh 0700
 // directory <state_dir>/answers/<question>/gh (whatever an earlier run of the same question left
 // there removed first) holding the agent's bundle (host.Credential for its role and its issue's

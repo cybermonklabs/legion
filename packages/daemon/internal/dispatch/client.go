@@ -410,11 +410,15 @@ func transportFailure(err error) error {
 	return &TransientError{Err: err}
 }
 
+// DaemonSessionPrefix opens the session the daemon writes Dispatch as, so a reader recognises the
+// daemon's own writes by it (DaemonSession).
+const DaemonSessionPrefix = "legion-daemon:"
+
 // DaemonSession is the session the daemon writes every Dispatch status and message of the issue key
 // under: legion-daemon:<PROJECT>, PROJECT being the key's.
 func DaemonSession(key string) string {
 	project, _, _ := strings.Cut(key, "-")
-	return "legion-daemon:" + project
+	return DaemonSessionPrefix + project
 }
 
 func daemonActor(key string) actor {

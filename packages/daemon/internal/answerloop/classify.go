@@ -44,9 +44,6 @@ const answerDedupePrefix = "legion-answer:"
 // outboxDedupePrefix marks the daemon's own notices (record.OutboxKey).
 const outboxDedupePrefix = "legion-outbox:"
 
-// daemonSessionPrefix is the session the daemon writes Dispatch as (dispatch.DaemonSession).
-const daemonSessionPrefix = "legion-daemon:"
-
 // Origin is a question as its hand-off carries it: where it came from and its identity, its text,
 // who asked and where (for the model, and for the controller when it is passed on), whether the
 // agent may reply it asks nothing, and what posting its answer needs.
@@ -134,7 +131,7 @@ func classifyDispatch(ctx context.Context, h intake.Handoff, conv store.AgentCon
 	switch {
 	case carriesLoopMark(event.Payload.Body):
 		return Verdict{Because: "the loop's own answer"}, nil
-	case strings.HasPrefix(event.Actor.ID, daemonSessionPrefix):
+	case strings.HasPrefix(event.Actor.ID, dispatch.DaemonSessionPrefix):
 		return Verdict{Because: "the daemon's own post"}, nil
 	}
 	ownAsk := func(askID string) (bool, error) {

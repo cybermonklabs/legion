@@ -369,8 +369,8 @@ func (l *Loop) Receive(ctx context.Context, h intake.Handoff, raw []byte) error 
 // newer one replaced included. A conversation of another project is none of this daemon's.
 func (l *Loop) conversationFor(ctx context.Context, h intake.Handoff) (store.AgentConversation, bool, error) {
 	var conv store.AgentConversation
-	if strings.HasPrefix(h.OriginalTopic, notify.RoleTopicPrefix) {
-		role, err := l.cfg.Store.RoleConversations(ctx, claim.Token(strings.TrimPrefix(h.OriginalTopic, notify.RoleTopicPrefix)))
+	if token, isRole := strings.CutPrefix(h.OriginalTopic, notify.RoleTopicPrefix); isRole {
+		role, err := l.cfg.Store.RoleConversations(ctx, claim.Token(token))
 		if err != nil {
 			return store.AgentConversation{}, false, err
 		}

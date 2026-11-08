@@ -221,10 +221,8 @@ func (m *Mirror) beat(ctx context.Context, now time.Time) {
 		UpdatedAt string `json:"updated_at"`
 	}{m.cfg.Answering, now.UTC().Format(registryTime)}
 	result := m.send(ctx, "PUT /v1/legion/projects/{project}", "/v1/legion/projects/"+url.PathEscape(m.cfg.Project), body)
-	if result == refused {
-		// The key is the listener's to refuse; the next minute's is a new write all the same.
-		result = sent
-	}
+	// The key is the listener's to refuse, and the next minute's is a new write all the same:
+	// schedule puts a refusal back on the heartbeat's own interval, as it does a send.
 	m.heartbeat.schedule(now, result, heartbeatEvery)
 }
 

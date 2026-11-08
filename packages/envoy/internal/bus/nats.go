@@ -1571,6 +1571,13 @@ func (c *Client) publishJetStreamOn(ctx context.Context, subject string, item co
 	if err != nil {
 		return false, err
 	}
+	return c.publishBytesOn(ctx, subject, data, msgID)
+}
+
+// publishBytesOn publishes data to subject on the notification stream within publishBound, under
+// Nats-Msg-Id msgID when it is not empty, and reports whether the stream's duplicate window
+// already held a message under that id. Its caller has checked the subject.
+func (c *Client) publishBytesOn(ctx context.Context, subject string, data []byte, msgID string) (bool, error) {
 	ctx, cancel := c.publishAcknowledgementClock.WithTimeout(ctx, publishBound)
 	defer cancel()
 	if err := c.ensureConnWithContext(ctx); err != nil {
@@ -1664,20 +1671,7 @@ func (c *Client) PublishRetained(ctx context.Context, subject string, data []byt
 	if !StreamCaptures(subject) {
 		return false, fmt.Errorf("the notification stream does not capture %q", subject)
 	}
-	ctx, cancel := c.publishAcknowledgementClock.WithTimeout(ctx, publishBound)
-	defer cancel()
-	if err := c.ensureConnWithContext(ctx); err != nil {
-		return false, err
-	}
-	options := []nats.PubOpt{nats.Context(ctx)}
-	if msgID != "" {
-		options = append(options, nats.MsgId(msgID))
-	}
-	ack, err := c.sendStored(ctx, subject, data, options...)
-	if err != nil {
-		return false, err
-	}
-	return ack.Duplicate, nil
+	return c.publishBytesOn(ctx, subject, data, msgID)
 }
 
 // cursorMoved names the server's refusal of a publish whose expected last sequence per subject did

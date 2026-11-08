@@ -120,13 +120,7 @@ func (a *Answer) placeOf(ctx context.Context, argv []string) (place, error) {
 			return place{}, errors.New("its gh api call names no endpoint")
 		}
 		endpoint := apiPath(parsed.positionals[1])
-		method := "GET"
-		if len(parsed.given("field"))+len(parsed.given("raw-field")) > 0 {
-			method = "POST"
-		}
-		if given := parsed.given("method"); len(given) > 0 {
-			method = strings.ToUpper(given[len(given)-1].value)
-		}
+		method := apiMethod(parsed)
 		for _, p := range apiPlaces {
 			if m := p.path.FindStringSubmatchIndex(endpoint); m != nil && p.method == method {
 				return place{endpoint: string(p.path.ExpandString(nil, p.read, endpoint, m)), list: p.list}, nil

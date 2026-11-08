@@ -238,7 +238,6 @@ func (d routedDecisions) Decide(ctx context.Context, decision answerloop.Decisio
 	// The pass is its own transaction, so it owns the commit hook the row's write registers.
 	scoped, committed := intake.WithCommitHooks(ctx)
 	if err := pgx.BeginFunc(scoped, d.outbox.pool, func(tx pgx.Tx) error {
-		to, relayed = "", false
 		fresh, err := d.outbox.records.MarkProcessed(scoped, tx, decisionPassedSource, decision.ID)
 		if err != nil || !fresh {
 			return err
