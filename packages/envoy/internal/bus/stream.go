@@ -849,9 +849,9 @@ const unansweredSends = 3
 // Any answer, the server's refusal included, is returned at once, so a refused create is sent
 // once. A refusal the server reports on the connection rather than in the request's answer
 // arrives here as an answer too, because each step of EnsureKeyValue reads the connection's
-// record of it before it hands this function a request's silence (refusedSend): a request the
-// connection's grant does not cover is sent once, and this function's own count applies to a
-// server that answers nothing.
+// record of it before it hands this function a request's silence (refusedSend): on a connection a
+// client owns, a request the grant does not cover is sent once, and this function's own count
+// applies to a server that answers nothing.
 //
 // A request that draws no answer never draws one later, because neither side sends it again:
 // nats.go publishes each JetStream request exactly once and waits (nats.go@v1.53.1

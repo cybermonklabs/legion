@@ -188,15 +188,25 @@ func (r *unansweredRelay) filter(server, client net.Conn) {
 // relayedJetStream is a connection through relay and the JetStream context a start is given,
 // opened with the MaxWait the listener and Dispatch open theirs with, so a request the relay drops
 // runs the caller's wait out exactly as it does in a program.
+//
+// The connection is a client's, as every production caller of EnsureKeyValue hands it one, so each
+// row runs the path that call takes in a program: clientOwning finds the client that owns the
+// connection, and the dropped request is sent again only because that client recorded no refusal
+// of it. The denied row holds the other half of that path, where the record names a refusal and
+// the send is not made again (TestADeniedBucketLookupIsNotSentAgain). A connection no client owns
+// returns refusedSend at its early exit, so a row on one would never reach the record at all.
 func relayedJetStream(t *testing.T, relay *unansweredRelay) (*nats.Conn, nats.JetStreamContext) {
 	t.Helper()
-	conn := testnats.Connect(t, relay.url)
-	t.Cleanup(conn.Close)
-	js, err := conn.JetStream(nats.MaxWait(RequestTimeout))
+	client, err := Connect([]string{relay.url})
+	if err != nil {
+		t.Fatalf("connect the client whose connection the start opens the bucket on: %v", err)
+	}
+	t.Cleanup(client.Close)
+	js, err := client.Conn.JetStream(nats.MaxWait(RequestTimeout))
 	if err != nil {
 		t.Fatalf("open JetStream through the relay: %v", err)
 	}
-	return conn, js
+	return client.Conn, js
 }
 
 // A start whose lookup of a bucket draws no answer sends it again and goes on, rather than ending
