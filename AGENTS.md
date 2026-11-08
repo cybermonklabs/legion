@@ -133,8 +133,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   the push that adds or changes any part of the build recipe is what builds the image and pushes it into the package, and a later push moves the row's `digest:` onto what that build pushed.
   The second push is what the gate asks for: its `package` mode refuses a row whose published image was built from another build recipe — `.github/docker` and the build workflow — than this tree's (its rule 10), so an edit to any of them is red until that build has run and the row has moved.
   A `built:` row's digest moving is read by hand too: rule 10 trusts a label its own run wrote.
-  `gh attestation verify oci://<the row's ref> --repo cybermonklabs/legion --format json` names GitHub's test merge commit of that push, whose second parent is the head the build read:
-  every file of `.github/docker` and `browser-image.yaml` there must be this tree's.
+  The three items after this one are that reading: the attestation, the head its certificate names, and the one `git diff` that compares the build's source with this tree.
   Moving a copy to a new version is two commits:
   the new version's row first, which that job copies while nothing pulls it yet, then the pin and every `FROM` onto it with the row they leave deleted
   — in one commit a consumer job, which waits on `changes` alone, can pull the new digest while that same run's copy is still landing it.
@@ -142,6 +141,60 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   `lint` runs its `tree` mode on every change, which refuses a reference to any other source and a Go `FROM` on a `library/golang` row that `ARG GO_VERSION` does not name, and the `ci-images` job runs its `package` mode, which reads ghcr.io.
   The devbox live proofs under `scripts/e2e/` and the deployment examples, which no CI job runs, keep Google's mirror `mirror.gcr.io`.
   CI jobs that run testcontainers set `TESTCONTAINERS_RYUK_DISABLED`, so its Ryuk image is never pulled
+
+- **Reading a `built:` row's digest move** starts at the attestation, whose certificate is the one part of the chain a workflow edit cannot write.
+  Rule 10 trusts a label the publishing run wrote, and on a pull request that run is the pull request's own copy of `browser-image.yaml`, which can stamp whatever hash it likes into whatever image it builds.
+  The procedure is written here and not in that workflow because this file is in no image's recipe hash:
+  correcting a word of it costs nothing, while the same correction there moves the hash, publishes another image and asks for the row to move again, so the dated run below may be refreshed freely.
+  A CI image's attestation names the branch whose run built it — `refs/pull/<n>/merge` for the pull-request run that pushes, `refs/heads/gh-readonly-queue/…` for a merge group, the dispatched ref for a `workflow_dispatch` — so the command names that run's ref, and `--cert-identity …@refs/heads/main` names an attestation this repository never makes:
+
+  ```bash
+  gh attestation verify oci://<the row's registry>@<the row's digest> \
+    --repo cybermonklabs/legion \
+    --cert-identity https://github.com/cybermonklabs/legion/.github/workflows/browser-image.yaml@refs/pull/<n>/merge \
+    --source-ref refs/pull/<n>/merge
+  ```
+
+  A reader substitutes two things and not one:
+  the digest `.github/ci-images.yaml` names when they read it, and the pull request number both `<n>`s carry.
+  That number is the pull request whose run published the digest being verified, which under the two-push order is the pull request under review:
+  the push that changes the recipe and the push that moves the row onto what it built are two pushes of one pull request.
+  That a CI image's attestation names a branch at all is acceptable here and nowhere else:
+  this image is a CI input, pinned by digest in a row of `.github/ci-images.yaml` that main must contain before any job runs it.
+
+- **The commit that certificate names is not the head under review.**
+  `sourceRepositoryDigest` is GitHub's own test merge commit of the push that published the image — what `refs/pull/<n>/merge` pointed at for that run, a commit on no branch whose message is `Merge <head> into <base>`.
+  Its second parent is the pull request's head, which is the commit the build checked out, and the row's `digest:` moves in a later push still, so a reader holding that commit to "the head whose review moved this row" rejects every correct move.
+  Worked through on the row that pinned `sha256:f77e9ae1…`, which the run of pull request 2938 published:
+
+  ```bash
+  gh attestation verify oci://ghcr.io/cybermonklabs/legion/ci@sha256:f77e9ae1c4a522c14bc6fb163e22c14797854e43e5acbf506484a5aef7a5f4fd \
+    --repo cybermonklabs/legion \
+    --cert-identity https://github.com/cybermonklabs/legion/.github/workflows/browser-image.yaml@refs/pull/2938/merge \
+    --source-ref refs/pull/2938/merge --format json \
+    | jq -r '.[0].verificationResult.signature.certificate | .sourceRepositoryRef, .sourceRepositoryDigest'
+  ```
+
+  printed `refs/pull/2938/merge` and `42352a056ea30bf578dac9e4a7a251973bdf10e8`, and
+
+  ```bash
+  gh api repos/cybermonklabs/legion/commits/42352a056ea30bf578dac9e4a7a251973bdf10e8 \
+    --jq '.commit.message, (.parents[].sha)'
+  ```
+
+  printed `Merge 1f240c0049b7bda0edc40891ffeb5307450262bf into 30f6270b5868f3561bb3bec4900c9cebde41f639`, then those two parents in that order:
+  the base first, the head the build read second.
+
+- **The comparison itself is one command**, run with that second parent in hand (`git fetch origin <it>` where the clone has not got the commit):
+  `git diff <that second parent> <the head under review> -- .github`, which must show nothing but the row's `digest:` move, the `container:` pins that move with it, and whatever this pull request is reviewed for.
+  It compares the source the build actually read with this tree, so it covers every file the build job reads or runs under `.github` — `.github/docker`, `browser-image.yaml`, `.github/scripts/ci_images.py` and `.github/actions/install-crane/**` among them — and every file it starts reading next.
+  Nothing shorter stands in for it, and no list of paths replaces it:
+  a list is a thing someone must remember to extend, and the diff is both wider and shorter than any list.
+  Recomputing the recipe hash at that head proves nothing, which is why nothing in the workflow does it:
+  that head's own run stamped the label from that head's own files with that head's own `.github/scripts/ci_images.py`, so `recipe_sha256` run there matches the label whatever the recipe there was.
+  A later push that restores this tree's recipe and moves the row onto the image the changed recipe built is refused by rule 10 on its own, the label that image carries being the changed recipe's hash.
+  A reviewer runs this by hand because no gate reads the attestation's own source commit:
+  building one was decided out, no attack having been seen, so this reading is the check.
 
 ## Commands
 

@@ -439,19 +439,12 @@ jobs:
   # SO THE ATTESTATION OF A CI IMAGE NAMES THE BRANCH WHOSE RUN BUILT IT, NOT main. The
   # certificate names this workflow and the ref the run carried — `refs/pull/<n>/merge` for the
   # pull-request run that pushes, `refs/heads/gh-readonly-queue/…` for a merge group, the
-  # dispatched ref for a workflow_dispatch — so the command that verifies the image a row pins
-  # is the one naming that run's ref:
-  #
-  #   gh attestation verify oci://<the row's registry>@<the row's digest> \
-  #     --repo cybermonklabs/legion \
-  #     --cert-identity https://github.com/cybermonklabs/legion/.github/workflows/browser-image.yaml@refs/pull/<n>/merge \
-  #     --source-ref refs/pull/<n>/merge
-  #
-  # The `--cert-identity …@refs/heads/main` and `--source-ref refs/heads/main` pair that stood
-  # here names an attestation this repository never makes, so it refused every one of them. That
-  # a CI image's attestation names a branch is acceptable HERE and nowhere else: this image is a
-  # CI input, pinned by digest in a row of .github/ci-images.yaml that main must contain before
-  # any job runs it.
+  # dispatched ref for a workflow_dispatch — so the `gh attestation verify` command that checks
+  # the image a row pins is the one naming that run's ref, which AGENTS.md writes out; the
+  # `…@refs/heads/main` pair that stood here names an attestation this repository never makes,
+  # so it refused every one of them. That a CI image's attestation names a branch is acceptable
+  # HERE and nowhere else: this image is a CI input, pinned by digest in a row of
+  # .github/ci-images.yaml that main must contain before any job runs it.
   #
   # WHAT THE GATES ON THAT ROW PROVE IS NARROWER THAN IT LOOKS. Rule 9 and rule 10 of
   # .github/scripts/check-ci-images.sh hold the row to an image the package serves whose
@@ -464,57 +457,17 @@ jobs:
   # certificate is the one part of this a workflow edit cannot write, so a reviewer who sees a
   # `built:` row's digest move reads it by hand.
   #
-  # WHAT THE CERTIFICATE NAMES IS NOT THE HEAD UNDER REVIEW. `sourceRepositoryDigest` is
-  # GitHub's own TEST MERGE COMMIT of the push that published the image — what
-  # `refs/pull/<n>/merge` pointed at for that run, a commit on no branch whose message is
-  # `Merge <head> into <base>`. Its SECOND PARENT is the pull request's head, which is the
-  # commit the build checked out (BUILT_SHA above, this job's `ref:`), and the row's `digest:`
-  # moves in a later push still, so a reviewer holding that commit to "the head whose review
-  # moved this row" rejects every correct move. Worked through below on the row that pinned
-  # sha256:f77e9ae1..., which the run of pull request 2938 published. A reviewer following it
-  # substitutes two things and not one: the digest .github/ci-images.yaml names when they
-  # read it, and the pull request number, which `--cert-identity …@refs/pull/2938/merge` and
-  # `--source-ref refs/pull/2938/merge` below are both pinned to. That number is the pull
-  # request whose run published the digest being verified, which under the two-push order is
-  # the pull request under review: the push that changes the recipe and the push that moves
-  # the row onto what it built are two pushes of one pull request. The example keeps its own
-  # digest and its own numbers on purpose: this file is part of the recipe the row's gate
-  # hashes, so editing it to name a newer row would move that hash, publish another image and
-  # ask for the row to move again, without end.
-  #
-  #   gh attestation verify oci://ghcr.io/cybermonklabs/legion/ci@sha256:f77e9ae1c4a522c14bc6fb163e22c14797854e43e5acbf506484a5aef7a5f4fd \
-  #     --repo cybermonklabs/legion \
-  #     --cert-identity https://github.com/cybermonklabs/legion/.github/workflows/browser-image.yaml@refs/pull/2938/merge \
-  #     --source-ref refs/pull/2938/merge --format json \
-  #     | jq -r '.[0].verificationResult.signature.certificate | .sourceRepositoryRef, .sourceRepositoryDigest'
-  #
-  # printed `refs/pull/2938/merge` and `42352a056ea30bf578dac9e4a7a251973bdf10e8`, and
-  #
-  #   gh api repos/cybermonklabs/legion/commits/42352a056ea30bf578dac9e4a7a251973bdf10e8 \
-  #     --jq '.commit.message, (.parents[].sha)'
-  #
-  # printed `Merge 1f240c0049b7bda0edc40891ffeb5307450262bf into
-  # 30f6270b5868f3561bb3bec4900c9cebde41f639`, then those two parents in that order: the base
-  # first, the head the build read second.
-  #
-  # AT THAT SECOND PARENT the reviewer compares the recipe FILE BY FILE: every file of
-  # .github/docker and this workflow, read at that commit with `gh api
-  # repos/cybermonklabs/legion/contents/<path>?ref=<head> -H 'Accept: application/vnd.github.raw'`
-  # (`…/contents/.github/docker?ref=<head> --jq '.[].path'` lists them), against the files this
-  # tree holds. Every one of them equal is what "the image this row pins was built from the
-  # recipe this tree holds" looks like, and nothing shorter stands in for it.
-  #
-  # IN PARTICULAR, RECOMPUTING THE RECIPE HASH AT THAT HEAD PROVES NOTHING, which is why no
-  # such step is written here. That head's own run stamped the label from that head's own
-  # files with that head's own .github/scripts/ci_images.py, so recipe_sha256 run there
-  # matches the label whatever the recipe there was — the very thing the label already
-  # asserts. A push carrying a changed recipe stamps and attests the hash of the changed
-  # recipe; a later push that restores this tree's recipe and moves the row onto that image
-  # leaves the hash agreeing with itself while the bytes in the package are the changed ones.
-  # Only the files themselves, read at that commit and compared with this tree's, tell the
-  # two apart. AGENTS.md's "Container images" item carries this same file-by-file check, and
-  # a gate that reads the attestation's source commit itself is a design decision for the
-  # architect, not something these two rules do today.
+  # THE READING ITSELF IS IN AGENTS.md, in the three items after its "Container images" item:
+  # the verify command and the pull request number it names, the test merge commit the
+  # certificate carries and the head at its second parent, and the one `git diff` of .github
+  # between that head and this tree, which covers every file the build job above reads or runs
+  # — this file, .github/docker, .github/scripts/ci_images.py and .github/actions/install-crane
+  # among them. It is written there and not here because this file is part of the recipe the
+  # row's gate hashes: correcting a word of a procedure written here moves that hash, publishes
+  # another image and asks for the row to move again, while the same correction in AGENTS.md
+  # costs nothing. A gate that reads the attestation's source commit itself, which is what
+  # would make that reading automatic, is a design decision for the architect, not something
+  # these two rules do today.
   #
   # AGENTS.md's rule that an image is accepted only at a revision main contains is about
   # the worker and Envoy images a deployment runs, which no pull request's run may publish.
