@@ -58,7 +58,7 @@ func TestARetryWhosePhaseRestartWasRefusedPrintsTheRefusalUnderTheClaim(t *testi
 	const implementerClaim = legionclaim.Token("legion-legion-legion-209-implementer")
 	retried := api.OperatorClaim{Token: implementerClaim, Tree: "LEGION-208", Issue: "LEGION-209",
 		Role: "implementer", Generation: 3, State: "launching", PluginContract: api.DaemonAPIVersion}
-	line := string(implementerClaim) + " implementer LEGION-209 launching 3 " + thisBinarysContract + " - -\n"
+	line := string(implementerClaim) + " implementer LEGION-209 launching 3 " + thisBinarysContract + " - - -\n"
 	refusal := "LEGION-209 is still held after the retry of its phase implementing, so nothing relaunched " +
 		string(implementerClaim) + ": its tree lingers, and a lingering tree's members stay where they stood"
 	for _, tc := range []struct {
