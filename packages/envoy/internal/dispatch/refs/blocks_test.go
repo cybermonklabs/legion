@@ -185,6 +185,47 @@ func TestAWindowRecordsTheBlocksItCovers(t *testing.T) {
 	}
 }
 
+// An item gone since the window arm listed it is no one's to window: WriteItemWindows answers
+// (false, nil) for it rather than an error. A comment's and a message's lock and window text
+// are one statement now (itemWindowText), so no row from that statement is the whole of what
+// says the item is gone, where it used to be no row from the lock; an ask still takes its lock
+// on its own and reads its parts after it.
+func TestWindowingAnItemThatIsGoneWritesNothing(t *testing.T) {
+	ctx := context.Background()
+	tx := windowFixture(t)
+	body := "The comment deleted below."
+	var comment string
+	if err := tx.QueryRow(ctx, `
+		insert into comments (issue_key, author, body) values ('WIND-1', '{"kind":"user","id":"alice"}', $1) returning id::text
+	`, body).Scan(&comment); err != nil {
+		t.Fatalf("insert the comment: %v", err)
+	}
+	if _, err := IndexItem(ctx, tx, ItemComment, comment, body, time.Now(), nil, nil); err != nil {
+		t.Fatalf("index the comment: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `delete from comments where id = $1::uuid`, comment); err != nil {
+		t.Fatalf("delete the comment: %v", err)
+	}
+	// A uuid no row of any of the three tables holds, which is the same case for a kind this
+	// test writes no row of.
+	never := "00000000-0000-0000-0000-0000000000ff"
+	for _, item := range []struct {
+		kind ItemKind
+		id   string
+		what string
+	}{
+		{ItemComment, comment, "a comment deleted after it was indexed"},
+		{ItemComment, never, "a comment that never existed"},
+		{ItemMessage, never, "a message that never existed"},
+		{ItemAsk, never, "an ask that never existed"},
+	} {
+		written, err := WriteItemWindows(ctx, tx, item.kind, item.id)
+		if written || err != nil {
+			t.Errorf("window %s = %v, %v; want (false, nil)", item.what, written, err)
+		}
+	}
+}
+
 // An edit rewrites the windows the edited block is in and leaves every other row untouched: a
 // reworded paragraph moves the hash of its own window alone, and an edited heading moves the
 // hash of every window of its section, since the heading is the context they embed.

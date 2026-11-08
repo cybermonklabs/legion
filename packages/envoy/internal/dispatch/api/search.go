@@ -396,16 +396,24 @@ func meaningStatementEnded(err error) bool {
 // (runMeaningSearch) and the related-item check's (relatedMeaningSearch) both start here, so
 // neither can read the index on other settings than the other, and neither can outlive the
 // bound.
+//
+// The settings go in one Exec, joined with "; ", rather than one Exec each: they carry no
+// argument, so pgx sends them over the simple protocol, which takes a statement list and drains
+// every result (pgx v5 conn.go's execSimpleProtocol), and every meaning search and every
+// related-item check pays one round trip of setup rather than one per setting. The join is made
+// here rather than at package init because a test reassigns searchMeaningScan to shorten the
+// bound (endMeaningStatementsAt), and a string built at init would not see it.
+//
+// A setting Postgres refuses fails the whole Exec, and the Go-side error no longer names which
+// of them failed; Postgres's own message still does, since it quotes the parameter it refused.
 func (s *server) beginMeaningScan(ctx context.Context) (pgx.Tx, error) {
 	tx, err := s.deps.Store.Pool.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
-	for _, setting := range searchMeaningScan {
-		if _, err := tx.Exec(ctx, setting); err != nil {
-			_ = tx.Rollback(context.WithoutCancel(ctx))
-			return nil, err
-		}
+	if _, err := tx.Exec(ctx, strings.Join(searchMeaningScan, "; ")); err != nil {
+		_ = tx.Rollback(context.WithoutCancel(ctx))
+		return nil, err
 	}
 	return tx, nil
 }

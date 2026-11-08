@@ -86,6 +86,44 @@ func TestMeaningScanAppliesTheServersBoundToItsTransaction(t *testing.T) {
 	}
 }
 
+// A setting the server refuses fails the whole scan's setup, and beginMeaningScan rolls the
+// transaction it opened back rather than handing the caller a half-set one or leaving the
+// connection it was opened on acquired for good. The settings are one Exec now, so a refused
+// entry fails the statement the sound ones were sent in, and the rollback is the only thing
+// that returns the connection: the pool's count of acquired connections is what reads it.
+//
+// The refused entry is a bad duration for statement_timeout, a parameter Postgres itself
+// defines: hnsw.ef_search is pgvector's, and a server that has not loaded the module reads it
+// as a placeholder and takes any text for it.
+//
+// It reads the error's text too. The Go side no longer names which setting failed, since there
+// is one Exec to name; Postgres's own message still does, and that is what the server logs.
+func TestMeaningScanRollsBackWhenASettingFails(t *testing.T) {
+	_, database, deps := newTestServer(t, testServerOptions{})
+	ctx := context.Background()
+	healthy := searchMeaningScan
+	searchMeaningScan = []string{searchMeaningStatementBound, `set local statement_timeout = 'not a duration'`}
+	t.Cleanup(func() { searchMeaningScan = healthy })
+
+	before := database.Pool.Stat().AcquiredConns()
+	tx, err := directServer(deps).beginMeaningScan(ctx)
+	if err == nil {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("begin the meaning scan over a setting the server refuses = no error, want the failure reported")
+	}
+	if tx != nil {
+		t.Fatalf("begin the meaning scan answered a transaction beside its error (%v), want none", err)
+	}
+	if got := database.Pool.Stat().AcquiredConns(); got != before {
+		t.Fatalf("the pool holds %d acquired connections after a failed meaning scan, want %d: the transaction a "+
+			"setting failed on is rolled back here, never left holding its connection", got, before)
+	}
+	if !strings.Contains(err.Error(), "statement_timeout") {
+		t.Fatalf("a refused setting answered %v, want Postgres's own message naming statement_timeout: the Go side "+
+			"no longer names which setting failed", err)
+	}
+}
+
 // The search route reports a meaning statement the server ended as the failure of this request it
 // is - 500 INTERNAL - and never as an answer. runSearch keeps its keyword-only answer for a query
 // whose embedding could not be had; papering a cut-off search over as a degraded result would

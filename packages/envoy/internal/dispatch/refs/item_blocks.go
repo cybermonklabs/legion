@@ -222,26 +222,6 @@ func IndexItem(
 	})
 }
 
-// itemIssueTitle is the title of the issue comment or message itemID stands on, the context its
-// blocks are embedded with (itemblocks.Windows), so a reader searching for what the issue is about
-// reaches the reply written under it. A comment on a document and an agent's direct message
-// stand on no issue and have no context: their blocks are embedded with their own text alone.
-func itemIssueTitle(ctx context.Context, tx pgx.Tx, kind ItemKind, itemID string) (string, error) {
-	tables, err := kind.tables()
-	if err != nil {
-		return "", err
-	}
-	var title string
-	if err := tx.QueryRow(ctx, `
-		select coalesce(i.title, '') from `+tables.items+` t
-		left join issues i on i.key = t.issue_key
-		where t.id = $1::uuid
-	`, itemID).Scan(&title); err != nil {
-		return "", fmt.Errorf("read the issue title of %s %s for its windows: %w", kind, itemID, err)
-	}
-	return title, nil
-}
-
 // itemBlockSource is one reading of an item's blocks, which indexItemBlocks writes: the blocks in
 // order, the sum of the text they were read from (the state row's body_sha256), how each takes
 // its id against the blocks the item holds, the maker each records (made_by, for a kind whose
@@ -848,12 +828,13 @@ func lockItem(ctx context.Context, tx pgx.Tx, kind ItemKind, tables itemTables, 
 // WriteItemWindows writes the windows of comment, message or ask itemID's blocks, and nothing
 // else, in the caller's transaction, for the block-index tick's window arm: it is to an item
 // what WriteDocumentWindows is to a document. It takes the item row `for no key update`, the
-// lock an edit of the item takes, reads the text the item's blocks were split from - its stored
-// body, or an ask's parts (AskParts) - pairs it with the item's current block rows, and writes
-// one set of windows under those ids, stamping the state the blocks are in beside them and
-// clearing the marker that listed it in the same statement (clearItemWindowsOwed,
-// writeWindows). It writes no block row and no reference: the index of this item's blocks
-// stands, and only its windows are missing.
+// lock an edit of the item takes, and reads under that lock the text the item's blocks were
+// split from - its stored body and its issue's title in that one statement, or an ask's parts
+// (AskParts) after a lock of its own (itemWindowText) - pairs it with the item's current block
+// rows, and writes one set of windows under those ids, stamping the state the blocks are in
+// beside them and clearing the marker that listed it in the same statement
+// (clearItemWindowsOwed, writeWindows). It writes no block row and no reference: the index of
+// this item's blocks stands, and only its windows are missing.
 //
 // It is the one writer of an item's windows. An index of the item's blocks records the blocks
 // and leaves the windows that stand for them to this arm (indexItemBlocks), so every set of
@@ -870,11 +851,7 @@ func WriteItemWindows(ctx context.Context, tx pgx.Tx, kind ItemKind, itemID stri
 	if err != nil {
 		return false, err
 	}
-	found, err := lockItem(ctx, tx, kind, tables, itemID)
-	if err != nil || !found {
-		return false, err
-	}
-	blocks, windowContext, found, err := itemWindowText(ctx, tx, kind, itemID)
+	blocks, windowContext, found, err := itemWindowText(ctx, tx, kind, tables, itemID)
 	if err != nil || !found {
 		return false, err
 	}
@@ -896,8 +873,9 @@ func WriteItemWindows(ctx context.Context, tx pgx.Tx, kind ItemKind, itemID stri
 	return true, nil
 }
 
-// itemWindowText is the blocks the item's stored text splits into, in order, and the context
-// they are embedded under, read as the item's own index reads the text (IndexItem,
+// itemWindowText takes item itemID's row `for no key update`, the lock an edit of it takes, and
+// reads under that lock the blocks the item's stored text splits into, in order, and the
+// context they are embedded under, read as the item's own index reads the text (IndexItem,
 // indexAskParts): a comment's or a message's body under its issue's title, so a reader
 // searching for what the issue is about reaches the reply written under it, and an ask's
 // parts under its question, which is what gives an option and an answer their meaning - "eu,
@@ -905,28 +883,38 @@ func WriteItemWindows(ctx context.Context, tx pgx.Tx, kind ItemKind, itemID stri
 // it answers. A comment on a document and an agent's direct message stand on no issue and
 // have no context: their blocks are embedded with their own text alone. found is false when
 // the item is gone.
-func itemWindowText(ctx context.Context, tx pgx.Tx, kind ItemKind, itemID string) ([]itemblocks.Block, string, bool, error) {
+//
+// A comment's and a message's lock and both texts are one statement rather than three reads of
+// the same row by the same key: this path runs once per comment, message and ask write now
+// that no write of the text writes its own windows, and the seed pays it per item. The lock is
+// `for no key update of t`, which names the items table alone - the issue reached through the
+// outer join is that join's nullable side, which no lock may name, and an item standing on no
+// issue has no issue row to lock; the title is read here, never written. An ask keeps its own
+// lock (lockItem) and reads its parts after it (askForParts), because askForParts has a second
+// caller holding no lock (reindexText).
+func itemWindowText(ctx context.Context, tx pgx.Tx, kind ItemKind, tables itemTables, itemID string) ([]itemblocks.Block, string, bool, error) {
 	if kind == ItemAsk {
+		found, err := lockItem(ctx, tx, kind, tables, itemID)
+		if err != nil || !found {
+			return nil, "", false, err
+		}
 		ask, _, found, err := askForParts(ctx, tx, itemID)
 		if err != nil || !found {
 			return nil, "", false, err
 		}
 		return AskParts(ask), ask.Question, true, nil
 	}
-	tables, err := kind.tables()
-	if err != nil {
-		return nil, "", false, err
-	}
-	var body string
-	switch err := tx.QueryRow(ctx, `select body from `+tables.items+` where id = $1::uuid`, itemID).Scan(&body); {
+	var body, title string
+	switch err := tx.QueryRow(ctx, `
+		select t.body, coalesce(i.title, '') from `+tables.items+` t
+		left join issues i on i.key = t.issue_key
+		where t.id = $1::uuid
+		for no key update of t
+	`, itemID).Scan(&body, &title); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return nil, "", false, nil
 	case err != nil:
-		return nil, "", false, fmt.Errorf("read the body of %s %s for its windows: %w", kind, itemID, err)
-	}
-	title, err := itemIssueTitle(ctx, tx, kind, itemID)
-	if err != nil {
-		return nil, "", false, err
+		return nil, "", false, fmt.Errorf("lock and read %s %s for its windows: %w", kind, itemID, err)
 	}
 	return itemblocks.Split(body), title, true, nil
 }
