@@ -195,10 +195,13 @@
 # more that a scope naming an experiment attributes to it, outside every exclusion the
 # coverage table lists, that the experiment's committed transcript does not measure
 # below its header; a citation whose path leaves the repository; a web address
-# with no read date beside it; an address answering 404 or 410, or one curl ends on an
-# exit other than a timeout and a connection nothing accepted; and a document with no
-# citation at all, because an empty set of citations is no evidence.
+# with no read date beside it; an address answering 404 or 410; an address whose host no
+# name server resolves; and a document with no citation at all, because an empty set of
+# citations is no evidence.
 # That last rule holds per document: each of the two must carry evidence of its own.
+# Every other answer an address gives, and every transport fault other than a host no
+# name server resolves, prints unreachable and does not fail the run, because a merge
+# must not wait on a third party's uptime.
 # A document that does not exist, or that Dispatch will not read, is refused by name
 # before any citation of either document is resolved.
 #
@@ -679,8 +682,24 @@ resolve_dispatch() {
 	fi
 }
 
+# The verdict a curl exit status earns, written as the verdict, a tab and the message
+# that says what happened. Exit 6 is the one transport failure this gate refuses: an
+# address whose host no name server resolves is a citation of nothing. Every other
+# transport fault is unreachable, because a merge must not wait on a third party's
+# uptime, and every message names the exit curl ended on, so a reader can tell a
+# timeout from a connection nothing accepted from any other fault.
+web_transport_verdict() {
+	local status=$1
+	case "$status" in
+	6) printf 'failed\tcurl cannot resolve the host of this address (curl exit 6)\n' ;;
+	28) printf 'unreachable\tthe address did not answer within %ss (curl exit 28)\n' "$web_timeout" ;;
+	7) printf 'unreachable\tnothing accepted the connection (curl exit 7)\n' ;;
+	*) printf 'unreachable\tcurl could not read the address (curl exit %s)\n' "$status" ;;
+	esac
+}
+
 resolve_web() {
-	local text=$1 url=$2 dated=$3 code status=0
+	local text=$1 url=$2 dated=$3 code status=0 verdict
 	if [[ "$dated" != yes ]]; then
 		# shellcheck disable=SC2016  # the backticks are markdown, not substitution
 		report failed web "$text" 'no read date beside it; write it as `<address> (read YYYY-MM-DD)`'
@@ -688,25 +707,11 @@ resolve_web() {
 	fi
 	code=$(curl --silent --location --max-time "$web_timeout" \
 		--output /dev/null --write-out '%{http_code}' -- "$url" 2>/dev/null) || status=$?
-	case "$status" in
-	0) ;;
-	28)
-		report unreachable web "$text" "the address did not answer within ${web_timeout}s (curl exit 28)"
+	if ((status != 0)); then
+		verdict=$(web_transport_verdict "$status")
+		report "${verdict%%$'\t'*}" web "$text" "${verdict#*$'\t'}"
 		return
-		;;
-	7)
-		report unreachable web "$text" 'nothing accepted the connection (curl exit 7)'
-		return
-		;;
-	6)
-		report failed web "$text" 'curl cannot resolve the host of this address (curl exit 6)'
-		return
-		;;
-	*)
-		report failed web "$text" "curl could not read the address (curl exit $status)"
-		return
-		;;
-	esac
+	fi
 	if [[ "$code" == 404 || "$code" == 410 ]]; then
 		report failed web "$text" "the address answers $code"
 	elif [[ "$code" =~ ^[23][0-9][0-9]$ ]]; then
@@ -1038,6 +1043,52 @@ EOF
 readonly experiments_named_fixture_resolved=8
 readonly experiments_named_fixture_failed=3
 
+# Every curl exit status the verdict rule is driven over, and the verdict each must
+# earn: a status, a tab and the verdict. Exit 6, the host no name server resolves, is
+# the one refusal; the timeout of 28, the connection nothing accepted of 7 and every
+# other transport fault alike are unreachable. 56, a transfer broken in the middle, is
+# the status three github.com addresses the plan cites ended on while GitHub was
+# faulting, which failed a merge gate this table now holds to unreachable; 35 is a TLS
+# handshake that did not finish, 52 an empty answer and 18 a transfer that stopped
+# short. The table is read with no address and no network: the rule is a function of
+# the exit status alone.
+readonly -a web_transport_cases=(
+	$'6\tfailed'
+	$'28\tunreachable'
+	$'7\tunreachable'
+	$'56\tunreachable'
+	$'35\tunreachable'
+	$'52\tunreachable'
+	$'18\tunreachable'
+)
+
+# Drives web_transport_verdict over that table, printing the verdict and the message of
+# each exit. Prints to standard error every exit that earned the wrong verdict and
+# every message that does not name the exit curl ended on.
+web_transport_verdicts_hold() {
+	local entry status want got verdict message wrong=0
+	for entry in "${web_transport_cases[@]}"; do
+		status=${entry%%$'\t'*}
+		want=${entry#*$'\t'}
+		got=$(web_transport_verdict "$status")
+		verdict=${got%%$'\t'*}
+		message=${got#*$'\t'}
+		printf '%-11s %-7s %-10s curl exit %s: %s\n' "$verdict" web transport "$status" "$message"
+		if [[ "$verdict" != "$want" ]]; then
+			printf 'self-test: curl exit %s must be %s and is %s: %s\n' \
+				"$status" "$want" "$verdict" "$message" >&2
+			wrong=$((wrong + 1))
+			continue
+		fi
+		if [[ "$message" != *"curl exit $status"* ]]; then
+			printf 'self-test: the %s message of curl exit %s does not name the exit: %s\n' \
+				"$verdict" "$status" "$message" >&2
+			wrong=$((wrong + 1))
+		fi
+	done
+	((wrong == 0))
+}
+
 self_test() {
 	local failures=0
 
@@ -1099,6 +1150,14 @@ self_test() {
 		printf 'self-test: experiment 21 and the figure its transcript measures resolved, the figure it never measured was refused, the six experiments of two plurals were each named, each resolved and each kept out of the figures of its scope, and experiment 25, which stands above every transcript committed here, was refused together with the 999999 that sentence attributes to it\n'
 	fi
 
+	printf '\nself-test, the verdict a curl exit earns, driven over a table of exit statuses with no address and no network: the host no name server resolves is the one transport failure this gate refuses, and every other transport fault is unreachable, so a third party'"'"'s bad minute cannot turn a merge red\n\n'
+	if web_transport_verdicts_hold; then
+		printf 'self-test: each of the %d curl exits of the table above earned its verdict and named itself in its message: exit 6, the host no name server resolves, refused, and the timeout of 28, the connection nothing accepted of 7 and every other transport fault, the 56 of a transfer broken in the middle among them, unreachable\n' \
+			"${#web_transport_cases[@]}"
+	else
+		failures=$((failures + 1))
+	fi
+
 	printf '\nself-test, the coverage table against the prose that states it: every line --coverage prints must stand in this script'"'"'s header and in the directory'"'"'s README, so neither account of what this gate does not read can be rewritten from memory and lose a line\n\n'
 	coverage_report
 	printf '\n'
@@ -1111,10 +1170,10 @@ self_test() {
 
 	printf '\n'
 	if ((failures > 0)); then
-		printf 'self-test: %d of 6 checks did not hold\n' "$failures" >&2
+		printf 'self-test: %d of 7 checks did not hold\n' "$failures" >&2
 		return 1
 	fi
-	printf 'self-test: every broken citation these fixtures hold was refused and every well-formed one resolved, which is what the fixtures prove and no more; --coverage lists the citation kinds and the figures no rule here reads at all\n'
+	printf 'self-test: every broken citation these fixtures hold was refused and every well-formed one resolved, and every curl exit of the transport table earned its verdict, the host no name server resolves alone being a refusal, which is what the fixtures prove and no more; --coverage lists the citation kinds and the figures no rule here reads at all\n'
 	return 0
 }
 
