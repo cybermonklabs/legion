@@ -216,11 +216,13 @@ const stallBackstopNotice = "worker-stalled"
 // running and goes on holding what it runs on, which is the half of this news its owner acts on.
 //
 // Those two derived clauses are the whole of what this notice says about the stalled process
-// and about the stalled turn. A row of stallBackstopEnds says nothing of either subject — not
-// even something true of it — and what holds every row to that is read from the notice itself
-// rather than from the rows: the daemon's own words are taken out of the rendered text, and
-// what is left, which is the row's own words and nothing else, must name neither subject
-// (stallRecordInWords, TestTheRowsOwnWordsSayNothingOfTheStalledProcessOrTheTurn).
+// and about the stalled turn. A row of stallBackstopEnds names neither subject, and what holds
+// every row to that is read from the notice itself rather than from the rows: the daemon's own
+// words are taken out of the rendered text, and what is left, which is the row's own words and
+// nothing else, must contain none of the names the test lists for either subject
+// (stallRecordInWords, TestTheRowsOwnWordsSayNothingOfTheStalledProcessOrTheTurn). That is a
+// list of names, so a row that speaks of a subject by pronoun, or by a name the list lacks,
+// passes it; the rows are reviewed constants, and the test's own comment states the gap.
 func stallBackstopRecord(c supervise.Claim, stop supervise.StallBackstopStop, silent time.Duration) string {
 	return stallRecordInWords(c, stop, silent, stallBackstopEnd(stop.End))
 }
@@ -404,12 +406,12 @@ const stallNothingCharged = "nothing was charged to the claim."
 // — the row says so and names what a person has to do, rather than promising a resume or a
 // retry that may never come.
 //
-// No row says anything at all of the stalled process or of the stalled turn — not that the
+// No row names the stalled process or the stalled turn — not to say the
 // process was stopped, however plainly its end let that process go, and not that the turn was
 // ended: the runtime can refuse a stop and the machine goes on anyway (supervise's endHeld,
 // stopPrevious), so both subjects belong to the clauses the daemon derives from the machine's
 // own record of the stop (stallTurnClause, stallStopClause, stallProcessFate). A row that names
-// either of them, to say anything whatever, is a row the property fails
+// either of them by a name the property lists is a row the property fails
 // (TestTheRowsOwnWordsSayNothingOfTheStalledProcessOrTheTurn), so each row below says what the
 // daemon did to the launch, the session, the claim or the task, and leaves those two subjects
 // to the daemon's own sentences.

@@ -130,23 +130,25 @@ bound it passed, when the turn began, and the last call the daemon saw, with its
 id, when it started and whether it ended — never a call's arguments, whose text the daemon keeps
 in no column. It says what the daemon did as well, which is not always a relaunch: where the
 daemon's wake pacing parked the replacement, the task was taken back and the launch that replaces
-the stalled process is queued, due at the moment the notice names, and that process runs on until
-the launch's turn, which may start nothing, or not the launch the park queued — a suspension
-waiting for the claim, a refused lifecycle recheck, the tree's close, a take-back the store
-refuses at the turn itself, a launch whose own write or start the daemon cannot make, and an
+the stalled process is queued, due at the moment the notice names; the daemon made no stop of
+that process and the claim records it still. The launch's turn may start nothing, or not the
+launch the park queued — a suspension waiting for the claim, a refused lifecycle recheck, the
+tree's close, a take-back the store refuses at the turn itself, a launch whose own write or start
+the daemon cannot make, and an
 operator's task that runs the launch early are among the things that can change it; where a
 suspension was already waiting for that turn, the suspension ran instead of a replacement and the
 claim is suspended with nothing queued for it, waiting on a resume; where the launch that replaces
 the process has not started, either its write was refused and the daemon retries it at its probe
-interval, or the daemon's own stop cut the launch short and the daemon's next start takes it up;
+interval, or the daemon's own shutdown cut the launch short and the daemon's next start takes it up;
 and where every try at that
 launch was refused, the claim has failed and nothing relaunches it. The notice says which, and no
 second notice follows it: where it names a parked launch, the `wakesWaiting` list of `read_state`
 is what says whether that launch is still waiting its turn.
 
-The notice says what became of the stalled process itself, for every end but the parked one: that
-it was stopped, or that the runtime did not confirm the stop, in which case that process may be
-running still and holding what it runs on.
+The notice says what became of the stalled process itself, for every end: that the daemon made no
+stop of it and the claim records it still, which is the parked end; that it was stopped; or that
+the runtime did not confirm the stop, in which case that process may be running still and holding
+what it runs on.
 A stop the runtime would not make is a finding to put to a person, with the notice in it, because
 the daemon stops that process again only at its next launch of that claim or at its next restart.
 

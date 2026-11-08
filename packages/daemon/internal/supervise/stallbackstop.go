@@ -96,10 +96,9 @@ type StallBackstopStop struct {
 // It tells once per end, because this is the only call that tells and the end is decided once,
 // where the machine makes it (endReached). A relaunch the pacing parked is told here and not
 // again at the wake's turn, and that turn tells nobody either, whatever it does: so the notice
-// of a parked relaunch names what the park itself settles — the launch queued, the stalled
-// process running until that launch's turn — and names a held suspension, a refused lifecycle
-// recheck and the tree's close as what can end the claim at that turn instead, rather than
-// promising the launch (wakeNow, runWake, the daemon's stallBackstopEnds).
+// of a parked relaunch names what the park itself settles — the launch queued, and no stop made
+// of the stalled process — and names what can change that at the launch's turn as an open list,
+// rather than promising the launch (wakeNow, runWake, the daemon's stallBackstopEnds).
 //
 // The record in that report is the request's, which is the store's own as the sweep read it: the
 // claim this machine holds carries the record as it stood when the machine was built, since a
