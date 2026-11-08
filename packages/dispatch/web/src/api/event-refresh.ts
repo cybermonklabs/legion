@@ -627,7 +627,8 @@ function changesQuestionMaps(event: Event): boolean {
 
 /**
  * Whether the event can change who the issue's collaborators are, the server's own list of what
- * makes one (`collaboratorEventReasons` in dispatch/api/issue_collaborators.go): a claim, a
+ * makes one (`collaboratorEventReasons` in
+ * packages/envoy/internal/dispatch/api/issue_collaborators.go): a claim, a
  * comment, a message, an ask, a document version, and an answer to any of them. An issue
  * document's events carry the issue's key, so the version here is that issue's.
  *
