@@ -187,6 +187,17 @@ func fenceFilterWrite(ctx context.Context, logger *logging.Logger, registry *sto
 // of a session's record takes its consumer with it anyway (deleteConsumer); a filter emptied to
 // the agent subject under a live session whose row a lagging copy has not got drops every topic
 // it follows until its next heartbeat.
+//
+// Of the two answers below wrote, only the 0 is one a test of this build can produce, and
+// TestAFenceWhoseBucketAnswersNoRowLeavesTheFilterItWroteOnALiveConsumer produces it by deleting
+// the row under a write, with the session's record and consumer left standing: against newest !=
+// wrote that case empties a live session's consumer to its agent subject. A copy answering a
+// revision between 1 and wrote takes a bucket of more than one replica and a read the queue
+// group hands to a copy that is behind, which nothing here chooses (bus.KeyValue.Get, which
+// records that no test of this build reads a lagging copy); a reader who wants to watch that
+// half fail needs a cluster (internal/testnats.StartCluster) with ENVOY_NATS_REPLICAS above 1
+// and a way to pin the read to a lagging member, or a bucket handle that answers the row at a
+// lower revision than the write it follows.
 func rowMovedUnder(newest, wrote uint64) bool { return newest > wrote }
 
 // storedTopics is the topics of sessionID's interest row as the bucket holds it now, with the KV

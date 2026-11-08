@@ -18,7 +18,9 @@ package main
 // fence finds nothing moved and corrects nothing. A row stored after that read is kept by the
 // fence alone: the read answered the row that registration replaced, so an older row's filter is
 // what lands, and only a pass planned from the newest row takes the consumer back. The refollow
-// and the relay restart have a case of each order.
+// and the relay restart have a case of each order, and a third whose fence can read the bucket
+// no further: a fence that reads it corrects a write built from the cache, so only a case
+// without one pins that write's own read to the bucket.
 //
 // The last two cases hold a confirm open over such a registration in every pass rather than in
 // one: the fence writes again from the newest row until the row stops moving, and a row that
@@ -28,6 +30,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -37,6 +40,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/store"
 )
 
@@ -177,6 +181,68 @@ func TestARefollowKeepsTheTopicARegistrationOnAnotherListenerAddedUnderItsRead(t
 	b.awaitPending(t, sessionID, 1)
 }
 
+// An unsubscribe's refollow keeps that topic even where the fence behind it can read the bucket
+// no further: what keeps it is the refollow's own read, which is of the bucket and never of this
+// listener's cache (storedTopics), so the filter it writes is the newest row's when it is made
+// and not one a corrective pass made right.
+//
+// The case above cannot say which of the two kept it. A refollow built from the cache writes the
+// filter of the row its own unsubscribe left and names that row's revision, and the fence
+// reading the bucket after the write finds the row moved and corrects both, leaving the same
+// consumer behind. So this case builds that same order - the unsubscribe held at the session's
+// lock, this listener's watch stopped, the registration on the other listener answered in that
+// window - and closes the connection this listener's registry reads the bucket through once the
+// refollow has read it. The fence then judges nothing and says so, and what stands on the
+// consumer, and what that line names as the revision written from, are the refollow's own read.
+func TestARefollowKeepsTheTopicStoredBeforeItsReadWhereTheFenceReadsNoFurther(t *testing.T) {
+	a := newSessionConsumerRig(t)
+	b := newSessionConsumerRig(t)
+	const sessionID = "ses_refollow_unjudged"
+	const kept = "notifications.dispatch.issue.REFOLLOWUNJUDGEDKEPT.>"
+	const dropped = "notifications.dispatch.issue.REFOLLOWUNJUDGEDDROP.>"
+	const added = "notifications.dispatch.issue.REFOLLOWUNJUDGEDADD.>"
+	a.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept, dropped))
+
+	unlock := a.deps.consumers.locks.lock(sessionID)
+	answered := postAsync(a, "/v1/interests/unsubscribe", `{"session_id":"`+sessionID+`","topics":["`+dropped+`"]}`)
+	awaitLockUsers(t, &a.deps.consumers.locks, sessionID, 2)
+	// From here this listener's watch delivers nothing: its cache holds the row its own
+	// unsubscribe wrote and no later one.
+	a.harness.registry.StopWatch()
+
+	b.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept, added))
+	requireFilters(t, b, sessionID, kept, added)
+	row, newest, err := b.harness.registry.RefreshAt(context.Background(), sessionID)
+	if err != nil || !slices.Contains(row.Topics, added) {
+		t.Fatalf("the bucket's row is %+v (%v), want %s among its topics: the registration above was answered 200 for it", row, err, added)
+	}
+
+	var once sync.Once
+	a.deps.consumers.afterStoredRowRead = func() {
+		// The connection this listener's registry reads the bucket through, closed between the
+		// refollow's read and the write built from it and no part of that write, which goes over
+		// the session-consumer connection: the fence's read is then the one that cannot be made
+		// (store.Registry.RefreshAt), so no pass of its own follows this one.
+		once.Do(a.harness.client.Close)
+	}
+	unlock()
+	if status := <-answered; status != http.StatusOK {
+		t.Fatalf("the unsubscribe answered %d, want 200", status)
+	}
+	a.deps.consumers.afterStoredRowRead = nil
+
+	wrote, failure := requireFenceReadFailureLogged(t, a, sessionID)
+	if failure == "" {
+		t.Errorf("the line names no failure, and a fence that judged nothing for another reason corrects writes this case cannot see")
+	}
+	if wrote != newest {
+		t.Errorf("the refollow wrote from revision %d, want the %d the bucket held when it read: a write built from this listener's cache carries the row its own unsubscribe left, and only the fence that read no further would take it back", wrote, newest)
+	}
+	requireFilters(t, b, sessionID, kept, added)
+	b.store(t, "notifications.dispatch.issue.REFOLLOWUNJUDGEDADD.comment")
+	b.awaitPending(t, sessionID, 1)
+}
+
 // A relay restart keeps the topic a registration on another listener added before the restart
 // read the session's topics. The restart rebuilds the filter from the stored row and recreates
 // the consumer on it (sessionRelays.restart, storedFilter), so it reads the bucket rather than
@@ -207,6 +273,56 @@ func TestARelayRestartKeepsTheTopicARegistrationOnAnotherListenerAddedUnderItsRe
 
 	requireFilters(t, b, sessionID, kept, added)
 	b.store(t, "notifications.dispatch.issue.RESTARTFENCEADD.comment")
+	b.awaitPending(t, sessionID, 1)
+}
+
+// A relay restart keeps that topic where the fence behind it can read the bucket no further
+// too, for the reason the refollow above keeps it: the filter the restart creates the consumer
+// on is built from the bucket (storedFilter), and the settle after it is a fence that corrects a
+// filter built from this listener's cache (settleFilter), so a case whose fence can read the
+// bucket is judging that fence rather than the restart's read. The connection the registry reads
+// through is closed once the restart has read the row, and the restart's own call is then the
+// only write of this loop's the consumer carries.
+func TestARelayRestartKeepsTheTopicStoredBeforeItsReadWhereTheFenceReadsNoFurther(t *testing.T) {
+	a := newRelayRigUnowned(t, relayPauseFirst, relayPauseMax)
+	b := newSessionConsumerRig(t)
+	const sessionID = "ses_restart_unjudged"
+	const kept = "notifications.dispatch.issue.RESTARTUNJUDGEDKEPT.>"
+	const added = "notifications.dispatch.issue.RESTARTUNJUDGEDADD.>"
+	a.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept))
+	a.harness.registry.StopWatch()
+
+	b.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept, added))
+	requireFilters(t, b, sessionID, kept, added)
+	row, newest, err := b.harness.registry.RefreshAt(context.Background(), sessionID)
+	if err != nil || !slices.Contains(row.Topics, added) {
+		t.Fatalf("the bucket's row is %+v (%v), want %s among its topics: the registration above was answered 200 for it", row, err, added)
+	}
+
+	var once sync.Once
+	a.deps.consumers.afterStoredRowRead = func() {
+		// The registry's connection, closed between the restart's read of the row and the
+		// consumer call built from it, which goes over the session-consumer connection.
+		once.Do(a.harness.client.Close)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), consumerFilterFenceWait)
+	defer cancel()
+	_, pull, outcome := a.relays.restart(ctx, &relayRun{sessionID: sessionID})
+	a.deps.consumers.afterStoredRowRead = nil
+	if pull == nil {
+		t.Fatalf("the restart of %s pulled nothing, outcome %v", sessionID, outcome)
+	}
+	pull.Stop()
+
+	wrote, failure := requireFenceReadFailureLogged(t, a.sessionConsumerRig, sessionID)
+	if failure == "" {
+		t.Errorf("the line names no failure, and a fence that judged nothing for another reason corrects writes this case cannot see")
+	}
+	if wrote != newest {
+		t.Errorf("the restart wrote from revision %d, want the %d the bucket held when it read: a filter built from this listener's cache carries the row that listener's own registration left, and only the settle that read no further would take it back", wrote, newest)
+	}
+	requireFilters(t, b, sessionID, kept, added)
+	b.store(t, "notifications.dispatch.issue.RESTARTUNJUDGEDADD.comment")
 	b.awaitPending(t, sessionID, 1)
 }
 
@@ -447,6 +563,49 @@ func TestACorrectivePassThatFindsTheConsumerAsTheRowAsksReportsNothingLeftBehind
 	}
 	b.store(t, "notifications.dispatch.issue.FENCEALREADYADD.comment")
 	b.awaitPending(t, sessionID, 1)
+}
+
+// A fence whose read of the bucket after a write answers no row for the session plans no pass
+// from that answer: the filter that write left stands, and the live session goes on receiving
+// the topics it names (rowMovedUnder). A pass planned from no row sets the consumer's filter to
+// the session's agent subject alone, and the bucket answers no row for two reasons this
+// listener cannot tell apart, which cost differently. The row was deleted, as this case builds
+// it: the filter standing names topics the session's plugin drops the frames of, and the delete
+// of the session's record takes the consumer with it anyway (refollow, deleteConsumer). Or a
+// copy behind the bucket's leader has not got the key yet, which takes a deployment of more
+// than one replica (bus.KeyValue.Get): emptying the filter there drops every topic a live
+// session follows until its next heartbeat, 90 s away.
+//
+// The hook below deletes the row between the refollow's read and its consumer call, as DELETE
+// /v1/interests/<session_id> deletes it before anything deletes the consumer. The session's
+// record and consumer stand throughout, which is the shape the lagging copy's answer has too,
+// and is why the loop ends on an answer below the revision it wrote rather than passing again.
+func TestAFenceWhoseBucketAnswersNoRowLeavesTheFilterItWroteOnALiveConsumer(t *testing.T) {
+	rig := newSessionConsumerRig(t)
+	const sessionID = "ses_fence_row_gone"
+	const kept = "notifications.dispatch.issue.FENCEROWGONEKEPT.>"
+	const dropped = "notifications.dispatch.issue.FENCEROWGONEDROP.>"
+	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept, dropped))
+
+	var once sync.Once
+	rig.deps.consumers.afterStoredRowRead = func() {
+		once.Do(func() {
+			// The delete DELETE /v1/interests/<session_id> makes of the whole row
+			// (store.RoleReleaseAuthority.Force), landing under the refollow's write.
+			if _, err := rig.harness.registry.Remove(context.Background(), sessionID, nil, store.RoleReleaseAuthority{Force: true}); err != nil {
+				t.Errorf("delete %s's interest row under the refollow's write: %v", sessionID, err)
+			}
+		})
+	}
+	rig.post(t, "/v1/interests/unsubscribe", `{"session_id":"`+sessionID+`","topics":["`+dropped+`"]}`)
+	rig.deps.consumers.afterStoredRowRead = nil
+
+	if _, _, err := rig.harness.registry.RefreshAt(context.Background(), sessionID); !errors.Is(err, nats.ErrKeyNotFound) {
+		t.Fatalf("the bucket answers %v for %s's row, want no row at all: the fence judged its write against a row the delete left", err, sessionID)
+	}
+	requireFilters(t, rig, sessionID, kept)
+	rig.store(t, "notifications.dispatch.issue.FENCEROWGONEKEPT.comment")
+	rig.awaitPending(t, sessionID, 1)
 }
 
 // A write that landed whose read of the bucket after it fails names the session, the revision

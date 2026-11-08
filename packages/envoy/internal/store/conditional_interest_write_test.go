@@ -97,3 +97,54 @@ func TestAnInterestWriteIsRefusedByARowStoredUnderTheRevisionItRead(t *testing.T
 		t.Fatalf("the bucket holds %v, want %v: the refused write stored nothing over the row that won the race", stored.Topics, want)
 	}
 }
+
+// A merging write whose row another writer stored between the read it was built from and the
+// write itself is refused by the bucket too, and what it stores is built again over the row that
+// won (UpsertWithin, writeRowAt): the topics that writer stored stand, and this write's own are
+// merged into them. Its one production caller is a role claim (SetRoleWithPrevious), whose write
+// without that compare-and-swap would store the row it read back whole - every topic a
+// registration on another listener was answered 200 for since, and every topic an unsubscribe
+// removed, gone from the record with nothing to put either back.
+//
+// A merging write answers a refusal by reading the bucket and merging again rather than by
+// handing the conflict to its caller, so nothing in what it answers tells a write the bucket
+// took at the first attempt from one it refused: the row the bucket holds afterwards is what
+// says the write was conditional at all.
+func TestAMergingInterestWriteIsBuiltAgainOverARowStoredUnderTheRevisionItRead(t *testing.T) {
+	conn, cleanup := connectNATS(t)
+	t.Cleanup(cleanup)
+	reg, kv := coldRegistry(t, conn)
+
+	const sessionID = "ses_interest_merge_cas"
+	const merging, won = "notifications.merging", "notifications.won"
+	putInterest(t, kv, Interest{SessionID: sessionID, MachineID: "m1", Topics: []string{"notifications.agent." + sessionID}})
+
+	racing := &racingInterestWrite{KeyValue: kv}
+	racing.beforeFirstWrite = func() {
+		putInterest(t, kv, Interest{SessionID: sessionID, MachineID: "m1", Topics: []string{won}})
+	}
+	handle, err := bus.WrapKeyValue(conn, racing)
+	if err != nil {
+		t.Fatalf("wrap the bucket the race goes through: %v", err)
+	}
+	reg.watcher = kvwatch.New("interest registry", handle, interestCache{reg})
+
+	row, err := reg.UpsertWithin(context.Background(), Interest{SessionID: sessionID, MachineID: "m1"}, []string{merging})
+	if racing.writes == 0 {
+		t.Fatal("the merging write never reached the bucket, so it never raced")
+	}
+	if err != nil {
+		t.Fatalf("the merging write answered %v, want the row it built again over the row that won", err)
+	}
+	want := []string{merging, won}
+	if !slices.Equal(row.Topics, want) {
+		t.Fatalf("the merging write answered the topics %v, want %v: the row that won the race carries %s", row.Topics, want, won)
+	}
+	stored, _, err := reg.RefreshAt(context.Background(), sessionID)
+	if err != nil {
+		t.Fatalf("read the row the merging write left: %v", err)
+	}
+	if !slices.Equal(stored.Topics, want) {
+		t.Fatalf("the bucket holds %v, want %v: a write the row moved under must be refused and built again over the row that won, not stored over it", stored.Topics, want)
+	}
+}
