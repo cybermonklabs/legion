@@ -2410,18 +2410,25 @@ a class literal in `web/src/theme/classes.ts` together with its paired swatch, o
 `slate-700` drops the offline pill below AA and reddens the unit step, and a control whose
 earlier step is red hides the reading it exists to take.
 
-Two more things that cost runs here, both measured rather than reasoned. **A control must move
-the colour's luma, not its hue.** `threshold` is `0.2`: Playwright counts a pixel as different
-only when its normalised YIQ distance from the baseline exceeds that, and that distance is
-dominated by luma. Three controls of this change compared clean over all 22 rows because each
-kept lightness constant to keep the contrast rows green - `slate-50` to `amber-50` is 0.0005,
-`slate-200` to `sky-200` is 0.0046, `slate-900` to `sky-900` is 0.017, against a threshold of
-0.2 - while `slate-50` to `slate-800` is 0.343 and counts. So the real sensitivity of this layer
-is the threshold and not `maxDiffPixelRatio: 0`: a re-colour that preserves luma is tolerated
-completely, at any area, however widely the token is drawn. Compute the distance before spending
-a run, and never read a clean comparison as proof that a token is absent from the baseline - the
-first reading of these three was exactly that mistake, and the DOM disproved it (`bg-slate-50`
-covers 921,600 px² of the inbox, and the shell computes to amber when amber is applied).
+Two more things that cost runs here, both measured rather than reasoned. **What bounds this
+layer is a count, not a per-pixel distance.** `threshold` is `0` and `maxDiffPixels` is `20`
+(`e2e/visual.e2e.ts`, where the whole reading is written down). Playwright's inherited
+`threshold: 0.2` is a cut at `35215 x 0.2² = 1408` on pixelmatch's YIQ distance, which tolerates
+every re-colour an 8-bit image can carry: three controls of this change compared clean over all
+22 rows for that reason alone, each having kept lightness constant to keep the contrast rows
+green - `slate-50` to `amber-50` is a normalised distance of 0.0005, `slate-200` to `sky-200`
+0.0046, `slate-900` to `sky-900` 0.017, all under 0.2 - while `slate-50` to `slate-800` is 0.343
+and counted. At `threshold: 0` all four count, and so does the smallest colour change an 8-bit
+rendering can hold: one step of red is a distance of 0.160, a normalised 0.0021. That is why no
+threshold can be the bound. Two clean container runs of one unchanged tree drift by 2 to 7
+pixels, each pixel one 8-bit step, a normalised 0.0038 - LARGER than the one-step change above -
+so a threshold that absorbs the drift blinds the layer to a real re-colour. Area separates them
+instead: 7 pixels of drift against the 451,448 that one step of red on the app shell's canvas
+reddens. So compute the distance before spending a run, read what the count means rather than
+the distance, and never read a clean comparison as proof that a token is absent from the
+baseline - the first reading of these three was exactly that mistake, and the DOM disproved it
+(`bg-slate-50` covers 921,600 px² of the inbox, and the shell computes to amber when amber is
+applied).
 **And the host cannot read these baselines at all** - they are the pinned container's rendering,
 which is what each spec's `SKIP_REASON` says, and the skip is defeated by setting
 `DISPATCH_E2E_VISUAL_SEED` on the host. A null run there, with no code change whatever, fails

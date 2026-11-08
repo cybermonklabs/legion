@@ -79,26 +79,36 @@ for (const route of phoneRoutes) {
         await expect.soft(page).toHaveScreenshot(`${route.name}-${colorScheme}.png`, {
           fullPage: true,
           // Everything that is not the same twice, as `e2e/visual.e2e.ts` masks it and for the
-          // reasons it gives there.
-          mask: [page.locator("time"), page.getByText(/^Generated /), page.getByText(/, as of /)],
+          // reasons it gives there. Neither phone page draws a generated-at stamp, so the
+          // header mask that file explains matches nothing here; it is written the same way so
+          // the two lists can be diffed.
+          mask: [
+            page.locator("time"),
+            page
+              .locator("header")
+              .filter({ has: page.getByText(/^Generated /) })
+              .last(),
+            page.getByText(/, as of /),
+          ],
           // MEASURED, separately from the desktop project because a phone emulation lays the
-          // page out at another scale, and it stays at zero here too.
+          // page out at another scale, and read the same way: `threshold` at zero, the
+          // legitimate maximum as a count.
           //
-          // The legitimate maximum is 0 pixels: with this bound at zero, a full-lane run of
-          // this head compared both phone baselines in the pinned container and both passed.
+          // Neither phone baseline drifted at all in the two clean container runs that set the
+          // desktop figure (42476315586 and 42476318547): 0 pixels, against the 2 to 7 the
+          // desktop pages gave. The bound is the desktop project's all the same, because the
+          // drift it absorbs is one 8-bit step of a renderer that draws both projects.
+          //
           // The 105 pixels that used to stand here were credited to a palette change and were
           // not one: that control commit also edited `web/src/features/refs/AgentName.tsx`, and
           // this project's Inbox is one of the three pages that draw an inline agent name, so
           // the figure measured a link's underline.
           //
-          // `e2e/visual.e2e.ts` carries the whole reading, including the thing that actually
-          // bounds both projects - `threshold: 0.2`, above which a pixel counts, a distance
-          // dominated by luma - and the reason this is a zero and not a tolerance: the drift
-          // that stood in the way was removed rather than absorbed.
-          // `threshold` zero as well, and for the reason `e2e/visual.e2e.ts` gives: the
-          // inherited 0.2 tolerated a per-pixel difference of 0.04 normalised everywhere.
+          // `e2e/visual.e2e.ts` carries the whole reading: why `threshold` cannot be the bound
+          // here (the drift and the smallest real colour change are the same magnitude, one
+          // 8-bit step), what a real change gives (451,448 pixels), and what 20 does not see.
           threshold: 0,
-          maxDiffPixelRatio: 0,
+          maxDiffPixels: 20,
         });
       }
     });

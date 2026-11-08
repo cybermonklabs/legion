@@ -131,9 +131,19 @@ for (const route of shotRoutes) {
           // the moment the page answered. A `<time>` carries the relative labels of the Inbox
           // and the Agents page, and the page's own clock is pinned above so each reads the
           // same; the Delivery and Pipeline pages write that moment as plain text instead
-          // ("Generated 11/8/2026, 2:27:03 AM", DeliveryPage.tsx and PipelinePage.tsx), and a
-          // measures card dates its claim the same way, so those two are masked by the words
-          // they begin with.
+          // ("Generated 11/8/2026, 2:27:03 AM · window 11/1/2026-11/8/2026",
+          // DeliveryPage.tsx and PipelinePage.tsx), and a measures card dates its claim the
+          // same way, in a 2-digit hour and minute whose width does not move.
+          //
+          // That stamp is masked by the `header` that HOLDS it rather than by its own box,
+          // which is the one thing a reader of this list has to know. A mask paints the
+          // element's own rectangle: the hour's digit count and the window's two dates move
+          // with the run and with the day, so the rectangle's right edge moved with them -
+          // 112 pixels on `delivery` and 128 on `pipeline`, in each of two clean container
+          // runs of one unchanged tree (runs 42476315586 and 42476318547). The header is a
+          // full-width row, so its box holds still. The cost is on those two pages alone:
+          // their heading, and Delivery's window control, are inside that rectangle and in no
+          // baseline. Every other page's heading is compared as before.
           //
           // Nothing else is masked, and the Decisions panel is why that matters. It prints the
           // id of the spec block a decision shaped until the reference graph answers, and a
@@ -144,53 +154,54 @@ for (const route of shotRoutes) {
           //
           // Each of these was found by reading a diff image of a container run against the run
           // before it, not by widening the bound until the rows passed.
-          mask: [page.locator("time"), page.getByText(/^Generated /), page.getByText(/, as of /)],
-          // MEASURED, and it stays at zero: nothing is tolerated.
+          mask: [
+            page.locator("time"),
+            page
+              .locator("header")
+              .filter({ has: page.getByText(/^Generated /) })
+              .last(),
+            page.getByText(/, as of /),
+          ],
+          // MEASURED, both numbers, by starting at zero.
           // (docs/solutions/testing/a-tolerance-is-measured-by-setting-it-to-zero-and-ships-with
           // -its-separation-stated-pr2502.md asks for the bound to start at zero, for the
           // legitimate maximum and the value a real change gives to be recorded, and for the
           // separation between them to ship with the constant. Here they are.)
           //
-          // The legitimate maximum is 0 pixels. With this bound at zero, a full-lane run of
-          // this head compared all 44 baselines in the pinned container and every row passed,
-          // so no run has yet produced a difference this layer did not mean.
+          // `threshold` STAYS AT ZERO, and it is the number that decides what this layer can
+          // see. pixelmatch counts a pixel as different when its YIQ distance,
+          // `0.5053*dy^2 + 0.299*di^2 + 0.1957*dq^2` over the two 8-bit triples, exceeds
+          // `35215 * threshold^2`. Playwright's inherited default of 0.2 is a cut at 1408,
+          // which tolerates every re-colour an 8-bit image can carry: that is why three
+          // controls of this layer compared clean over all 22 rows - `slate-50` to `amber-50`
+          // at 0.0005 of that cut, `slate-200` to `sky-200` at 0.0046, `slate-900` to
+          // `sky-900` at 0.017 - while the file claimed nothing was tolerated. The smallest
+          // colour change an 8-bit rendering can hold, one step of red, is a distance of
+          // 0.160, so any threshold above zero blinds this layer to it.
           //
-          // What a real change gives is recorded below, and the figure that used to stand here
-          // was misattributed: it came from a control commit that carried a second edit, to
-          // `web/src/features/refs/AgentName.tsx`, and the three rows that failed - `broadcast`,
-          // `issue-activity` and the phone Inbox - are the three pages that draw an inline agent
-          // name, while `settings`, `issue-spec` and the desktop Inbox, which draw the token the
-          // control moved, all passed. So 2 to 186 pixels measured a link's underline, not a
-          // palette change.
+          // So the legitimate maximum is a COUNT, and the bound below is one. Two clean
+          // container runs of one unchanged tree differ from their baselines on 8 of their 88
+          // comparisons, by 2 to 7 pixels, each pixel one 8-bit step in one channel: a
+          // distance of 0.4 to 0.5, the same magnitude as the smallest real colour change
+          // there is, so NO threshold separates this drift from a re-colour. Area separates
+          // them. The control measured for this head - `slate-50` to `#f7fafc`, one step of
+          // red on the app shell's canvas, nothing else changed - reddens the light shot of
+          // every page, 451,448 pixels on `inbox-light` alone
+          // (control/infra-1409-visual-light, run 42476321285). 20 against 451,448 is a
+          // separation of 22,572, and 20 is the measured 7 with room for three times it.
           //
-          // `threshold` is the thing that actually bounds this layer, and it matters more than
-          // the ratio below. A pixel counts as different only when its normalised YIQ distance
-          // from the baseline exceeds 0.2, and that distance is dominated by luma. Three
-          // controls of this layer compared clean over all 22 rows for exactly that reason, each
-          // having kept lightness constant so the contrast rows stayed green: `slate-50` to
-          // `amber-50` is 0.0005, `slate-200` to `sky-200` is 0.0046, `slate-900` to `sky-900`
-          // is 0.017. `slate-50` to `slate-800` is 0.343 and is caught. So this layer does not
-          // catch a re-colour that preserves luma, at any area, however widely the token is
-          // drawn - and a clean comparison is never on its own evidence that a token is absent
-          // from the baseline. `web/src/theme/palette.ts` is a further trap: a Swatch there
-          // feeds contrast arithmetic alone, so moving its numbers changes no pixel at all.
+          // What this layer therefore does not see: a colour change confined to fewer than 20
+          // pixels, which is a patch of about 4 by 4. It sees any change above that, down to
+          // one 8-bit step, because the per-pixel bound is zero.
           //
-          // Eleven sources of difference were measured on the way to that zero and nine were
-          // removed rather than tolerated - two races in the seeded corpus, a reconcile tick
-          // jittered across five minutes, an event-order race, four pages read before they had
-          // settled, and every relative label, by pinning the page clock above. The two that
-          // could not be removed are pages this layer does not shoot at all, each with its
-          // reason in `e2e/review-routes.ts`. That is why this number is 0 and not a tolerance:
-          // a bound wide enough for the drift this layer began with would have swallowed the
-          // whole of it.
-          // `threshold` is MEASURED the same way, by starting at zero. It was Playwright's
-          // inherited default of 0.2 until this head, which is a per-pixel YIQ distance of 0.04
-          // normalised (pixelmatch cuts at `35215 * threshold^2`): a re-colour under that is
-          // tolerated at every pixel it covers, so `slate-200` to a saturated pink at 0.0117 -
-          // a change no reader could miss - counted zero different pixels. With both numbers at
-          // zero the comparison is exact, which is what "nothing is tolerated" has to mean.
+          // Eleven sources of difference were measured on the way here and nine removed rather
+          // than tolerated - two races in the seeded corpus, a reconcile tick jittered across
+          // five minutes, an event-order race, four pages read before they had settled, and
+          // every relative label, by pinning the page clock above. The two that could not be
+          // removed are pages this layer does not shoot at all, each with its reason in
+          // `e2e/review-routes.ts`.
           threshold: 0,
-          maxDiffPixelRatio: 0,
+          maxDiffPixels: 20,
         });
       }
     });
