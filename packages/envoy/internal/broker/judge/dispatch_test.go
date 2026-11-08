@@ -9,13 +9,19 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/brokertoken"
 )
 
 // newDispatchClient is the judge's Dispatch pointed at the stand-in, with a token file holding
 // token.
 func newDispatchClient(t *testing.T, d *dispatchStandIn, token string) Dispatch {
 	t.Helper()
-	return Dispatch{BaseURL: d.server.URL, TokenFile: tokenFile(t, token), HTTP: d.server.Client()}
+	return Dispatch{
+		BaseURL: d.server.URL,
+		Account: brokertoken.NewAccountToken(tokenFile(t, token)),
+		HTTP:    d.server.Client(),
+	}
 }
 
 // TestIssueReadsTheIssueAndItsSpecWithTheProjectedToken: two GETs, each presenting the token as
@@ -49,14 +55,21 @@ func TestIssueReadsTheIssueAndItsSpecWithTheProjectedToken(t *testing.T) {
 }
 
 // TestIssueReadsTheTokenAgainForEveryCall: a token rotated under the broker is used by the next
-// call, with no restart, as secrets.AzureLogin's projected token is.
+// call, with no restart, as secrets.AzureLogin's projected token is. The reader's cache is
+// lapsed here (TTL zero, as brokertoken.AccountToken's own doc says such a test does), since a
+// broker's reader holds what it read for brokertoken.AccountTokenCacheTTL and the rotation this
+// proves is one a run meets 30 seconds later.
 func TestIssueReadsTheTokenAgainForEveryCall(t *testing.T) {
 	stand := newDispatch(t, "doing", testSpec)
 	path := filepath.Join(t.TempDir(), "dispatch-token")
 	if err := os.WriteFile(path, []byte("first-token\n"), 0o600); err != nil {
 		t.Fatalf("write the token file: %v", err)
 	}
-	dispatch := Dispatch{BaseURL: stand.server.URL, TokenFile: path, HTTP: stand.server.Client()}
+	dispatch := Dispatch{
+		BaseURL: stand.server.URL,
+		Account: &brokertoken.AccountToken{Path: path},
+		HTTP:    stand.server.Client(),
+	}
 	if _, err := dispatch.Issue(t.Context(), testIssue); err != nil {
 		t.Fatalf("the first read: %v", err)
 	}
@@ -139,7 +152,11 @@ func TestIssueRefusesAnUnreadableToken(t *testing.T) {
 			}
 		})
 	}
-	missing := Dispatch{BaseURL: stand.server.URL, TokenFile: filepath.Join(t.TempDir(), "absent"), HTTP: stand.server.Client()}
+	missing := Dispatch{
+		BaseURL: stand.server.URL,
+		Account: brokertoken.NewAccountToken(filepath.Join(t.TempDir(), "absent")),
+		HTTP:    stand.server.Client(),
+	}
 	if _, err := missing.Issue(t.Context(), testIssue); err == nil {
 		t.Error("Issue read an issue with no token file; want a refusal")
 	}

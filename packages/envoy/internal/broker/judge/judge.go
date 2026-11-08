@@ -29,9 +29,21 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/requests"
 )
 
-// runBudget is how long one run has, taken when the run starts (D9): the Dispatch read and the
-// 20-second model call, with room.
+// runBudget is how long one run has, taken when the run starts (D9): the Dispatch phase,
+// bounded at dispatchBound, and the model call, bounded at modelBound (model.go), with room.
 const runBudget = 30 * time.Second
+
+// dispatchBound is how long the whole Dispatch phase of one run has: both of Runner.issue's
+// GETs together. The three bounds sit together because they have to add up. A run that reaches
+// runBudget writes nothing at all — Runner.write returns on ctx.Err() — so a broker that paid
+// for two HTTP reads and a model call would record no request.judged row, which is the one
+// outcome the audit trail exists to prevent; dispatchBound and modelBound together are the 30
+// seconds runBudget gives them, and the run has the rest for its own transaction.
+//
+// cmd/broker's judgeDispatchTimeout is the per-call backstop under this and not the phase's
+// bound: http.Client.Timeout is per Do, and Issue makes two calls, so the client alone would
+// let the reads take twice as long as the arithmetic above allows.
+const dispatchBound = 10 * time.Second
 
 // maxJudgedLifetime is the longest signed lifetime the judge decides, whatever judge seconds a
 // rules entry allows: the bound of the class itself.
@@ -61,37 +73,6 @@ type check struct {
 	Check  string `json:"check"`
 	Passed bool   `json:"passed"`
 	Detail string `json:"detail,omitempty"`
-}
-
-// PendingRequest is one pending credential request as the hook hands it to the judge: what the
-// run reads of the request, and nothing else.
-//
-// It is declared here rather than taken from internal/broker/requests so that this package names
-// no concrete machine and that machine names no judge. A later task adds the same fields to
-// requests as requests.PendingRequest, and the Machine.Judge hook converts one to the other,
-// which is what keeps requests from importing this package. The cleaner seam, if the two types
-// ever drift, is for requests to export the type and for this package to take it: the import
-// would still run one way, since the hook is a func field the broker's main wires up and not a
-// call requests makes into the judge.
-type PendingRequest struct {
-	// RecordID is the credential-request record a decision is written against, and
-	// RequestID the request row it belongs to.
-	RecordID, RequestID string
-	// EnrollmentID is the enrollment that asked, which the policy is re-read for, and
-	// SessionID the Envoy session it recorded, empty for an enrollment that names none.
-	EnrollmentID, SessionID string
-	// Secrets are the names the request asks for. The judge decides a request for one.
-	Secrets []string
-	// LifetimeSeconds is the lifetime the requester signed, nil for a grant that lasts
-	// until the session ends. An unbounded grant is what the judge's seconds are there to
-	// bound, so the judge decides none.
-	LifetimeSeconds *int
-	// Reason is the requester's own signed reason, which names the Dispatch issue. It is
-	// part of the signed request, so it cannot change after the request was made.
-	Reason string
-	// Approver is the record's approver: the secret's owner, or record.AnyoneApprover for a
-	// shared one. The judge decides in that approver's place and names it in its log line.
-	Approver string
 }
 
 // Requests is what a run asks of the broker's request machine: the policy question it must ask
@@ -156,7 +137,7 @@ func New(ctx context.Context, o Options) *Runner {
 // waiting for a person while another request's model call ran, which is the wait the judge
 // exists to take away, and no load the broker has met needs one: a run is one HTTP read, one
 // model call and one short transaction.
-func (r *Runner) Consider(p PendingRequest) {
+func (r *Runner) Consider(p requests.PendingRequest) {
 	go func() {
 		ctx, cancel := context.WithTimeout(r.ctx, runBudget)
 		defer cancel()
@@ -165,13 +146,13 @@ func (r *Runner) Consider(p PendingRequest) {
 }
 
 // consider is one run, from the first check to the row it writes.
-func (r *Runner) consider(ctx context.Context, p PendingRequest) {
+func (r *Runner) consider(ctx context.Context, p requests.PendingRequest) {
 	if ctx.Err() != nil {
 		return
 	}
-	checks, data, passed := r.beforeTheModel(ctx, p)
+	checks, data := r.beforeTheModel(ctx, p)
 	row := verdictRow{checks: checks, verdict: Verdict{Word: Refer}}
-	if passed || r.opts.SkipChecks {
+	if firstFailure(checks) == nil || r.opts.SkipChecks {
 		row.asked = true
 		row.verdict, row.usage, row.raw, row.err = r.opts.Model.Ask(ctx, data)
 	}
@@ -182,15 +163,14 @@ func (r *Runner) consider(ctx context.Context, p PendingRequest) {
 // It stops at the first failure, so a request the rules do not let the judge decide costs no
 // Dispatch read and no model call. Under Options.SkipChecks it makes every check all the same,
 // recording each, so the negative control shows the model a request a check would have stopped.
-func (r *Runner) beforeTheModel(ctx context.Context, p PendingRequest) ([]check, Data, bool) {
+func (r *Runner) beforeTheModel(ctx context.Context, p requests.PendingRequest) ([]check, Data) {
 	var checks []check
-	passed := true
 	// add records one check and answers whether the run goes on: it stops at the first
 	// failure, unless the checks have been turned off as a bar.
 	add := func(name string, ok bool, detail string) bool {
 		c := check{Check: name, Passed: ok}
 		if !ok {
-			c.Detail, passed = detail, false
+			c.Detail = detail
 		}
 		checks = append(checks, c)
 		return ok || r.opts.SkipChecks
@@ -208,74 +188,92 @@ func (r *Runner) beforeTheModel(ctx context.Context, p PendingRequest) ([]check,
 	seconds, judged := r.opts.Rules.JudgeSeconds(name)
 	switch {
 	case len(p.Secrets) != 1:
-		if !add(checkRulesJudge, false, fmt.Sprintf("the request names %d secrets, and the judge decides a request for one", len(p.Secrets))) {
-			return checks, data, passed
+		if !add(checkRulesJudge, false, decidesOneSecret(len(p.Secrets))) {
+			return checks, data
 		}
 	case !judged:
-		if !add(checkRulesJudge, false, fmt.Sprintf("the airlock rules let the judge decide nothing for %s", name)) {
-			return checks, data, passed
+		if !add(checkRulesJudge, false, decidesNothingFor(name)) {
+			return checks, data
 		}
 	default:
 		add(checkRulesJudge, true, "")
 	}
 
 	if ok, detail := lifetimeAllowed(p, seconds, judged); !add(checkLifetime, ok, detail) {
-		return checks, data, passed
+		return checks, data
 	}
 
 	now, withheld, err := r.opts.Requests.JudgePolicy(ctx, p.EnrollmentID, name)
 	switch {
 	case err != nil:
 		if !add(checkPolicy, false, "the policy could not be re-read: "+err.Error()) {
-			return checks, data, passed
+			return checks, data
 		}
 	case now.Outcome != policy.Approval:
 		if !add(checkPolicy, false, fmt.Sprintf("the policy answers %s for %s now, not approval", now.Outcome, name)) {
-			return checks, data, passed
+			return checks, data
 		}
 	default:
 		add(checkPolicy, true, "")
 	}
 
 	if !add(checkWithheld, !withheld, fmt.Sprintf("%s is withheld from this session", name)) {
-		return checks, data, passed
+		return checks, data
 	}
 
 	ok, detail := r.issue(ctx, p, &data)
 	add(checkIssue, ok, detail)
-	return checks, data, passed
+	return checks, data
 }
 
 // lifetimeAllowed is the second check: the request names one secret, it signed a lifetime, and
 // that lifetime is within both bounds — the class's own 15 minutes and the seconds the rules
 // give the judge for that secret.
-func lifetimeAllowed(p PendingRequest, seconds uint32, judged bool) (bool, string) {
+func lifetimeAllowed(p requests.PendingRequest, seconds uint32, judged bool) (bool, string) {
 	switch {
 	case len(p.Secrets) != 1:
-		return false, fmt.Sprintf("the request names %d secrets, and the judge decides a request for one", len(p.Secrets))
+		return false, decidesOneSecret(len(p.Secrets))
 	case p.LifetimeSeconds == nil:
 		return false, "the request signed no lifetime, and the judge decides none that lasts as long as the session"
 	case time.Duration(*p.LifetimeSeconds)*time.Second > maxJudgedLifetime:
 		return false, fmt.Sprintf("the request asks for %d seconds, past the %s the judge decides", *p.LifetimeSeconds, maxJudgedLifetime)
 	case !judged:
-		return false, fmt.Sprintf("the airlock rules let the judge decide nothing for %s", p.Secrets[0])
-	case int64(*p.LifetimeSeconds) > int64(seconds):
+		return false, decidesNothingFor(p.Secrets[0])
+	case !record.JudgeAllowsLifetime(seconds, *p.LifetimeSeconds):
 		return false, fmt.Sprintf("the request asks for %d seconds of %s, past the %d the rules let the judge decide", *p.LifetimeSeconds, p.Secrets[0], seconds)
 	}
 	return true, ""
+}
+
+// decidesOneSecret and decidesNothingFor are the two sentences the first check and the second
+// both write. The two checks are deliberately made twice — under Options.SkipChecks the first
+// no longer stops the run, so the second meets a request the first refused — and what a reader
+// of the row sees for one request's two rows is spelled once.
+func decidesOneSecret(secrets int) string {
+	return fmt.Sprintf("the request names %d secrets, and the judge decides a request for one", secrets)
+}
+
+func decidesNothingFor(name string) string {
+	return fmt.Sprintf("the airlock rules let the judge decide nothing for %s", name)
 }
 
 // issue is the fifth check, and the only one that reads anything outside the broker: the signed
 // reason names a Dispatch issue key, and Dispatch shows that issue at a status that is not done.
 // What it read goes into data, so the model sees the issue the check passed on; a read that
 // failed still leaves the key there, which is what the negative control shows the model.
-func (r *Runner) issue(ctx context.Context, p PendingRequest, data *Data) (bool, string) {
+//
+// The two GETs share one dispatchBound between them, so the phase costs the run what runBudget
+// gave it however the reads go. They stay one after the other: a refused issue read means the
+// spec is never asked for.
+func (r *Runner) issue(ctx context.Context, p requests.PendingRequest, data *Data) (bool, string) {
 	key := record.IssueKeyInReason(p.Reason)
 	if key == "" {
 		return false, "the request's signed reason names no Dispatch issue"
 	}
 	data.Issue.Key = key
-	issue, err := r.opts.Dispatch.Issue(ctx, key)
+	readCtx, cancel := context.WithTimeout(ctx, dispatchBound)
+	defer cancel()
+	issue, err := r.opts.Dispatch.Issue(readCtx, key)
 	switch {
 	case errors.Is(err, ErrNoIssue):
 		return false, fmt.Sprintf("dispatch shows no issue %s", key)
@@ -347,7 +345,7 @@ func (v verdictRow) detail(modelID string) map[string]any {
 // write is the one place a run writes anything. An approve verdict goes through
 // ApplyJudgeDecision, which commits the approval and the row together; every other verdict, and
 // an approval the state machine refused, writes the row alone.
-func (r *Runner) write(ctx context.Context, p PendingRequest, row verdictRow) {
+func (r *Runner) write(ctx context.Context, p requests.PendingRequest, row verdictRow) {
 	if ctx.Err() != nil {
 		// The run's budget went, or the broker stopped serving, so nothing is written
 		// and the request stays as it was: pending, for the person who decides it
@@ -389,7 +387,7 @@ func (r *Runner) write(ctx context.Context, p PendingRequest, row verdictRow) {
 // logged is the one line a run that wrote a row leaves behind. It carries the model's own words
 // — the reason, and the raw answer where there was one — already clamped and filtered (D12), the
 // same strings the row holds and GET /v1/grant-log then serves.
-func (r *Runner) logged(p PendingRequest, row verdictRow) {
+func (r *Runner) logged(p requests.PendingRequest, row verdictRow) {
 	attrs := []any{
 		"record", p.RecordID, "request", p.RequestID, "session", p.SessionID,
 		"approver", p.Approver, "secrets", p.Secrets, "model", r.opts.Model.ID,

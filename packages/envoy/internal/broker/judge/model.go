@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/sjawhar/envoy/agentloop"
 	"github.com/sjawhar/envoy/internal/broker/airlock"
+	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/brokertoken"
 )
 
@@ -25,10 +25,10 @@ const (
 const modelBound = 20 * time.Second
 
 // maxReasonRunes and maxRawAnswer bound the two strings the model writes into the audit row
-// (D12): the reason, held to what record.validateReason allows a request's own reason, and the
-// unparsed answer, which is kept for a reader of the row rather than read by anything.
+// (D12): the reason, held to the bound record.validateReason holds a request's own reason to,
+// and the unparsed answer, which is kept for a reader of the row rather than read by anything.
 const (
-	maxReasonRunes = 400
+	maxReasonRunes = record.MaxReasonRunes
 	maxRawAnswer   = 2000
 )
 
@@ -173,15 +173,15 @@ func (m Model) Ask(ctx context.Context, data Data) (Verdict, agentloop.Usage, st
 }
 
 // sanitize is a string the model wrote as this package stores it (D12): the runes a request's
-// own reason may not carry are dropped — Cc, Cf, Cs, Co, Zl and Zp, which is every control
-// character, every format character, the bidi overrides and the zero-width ones among them,
-// surrogates, private use, and the line and paragraph separators — and what is left is cut to
-// limit runes. record.validateReason (record/record.go) refuses such a reason outright; the
-// judge has nobody to refuse to, since the string is already in hand and the row's whole point
-// is to say what the model answered, so it drops them and keeps the rest.
+// own reason may not carry are dropped — record.ReasonRefuses is the one list of them, every
+// control character, every format character, the bidi overrides and the zero-width ones among
+// them, surrogates, private use, and the line and paragraph separators — and what is left is
+// cut to limit runes. record.validateReason (record/record.go) refuses such a reason outright;
+// the judge has nobody to refuse to, since the string is already in hand and the row's whole
+// point is to say what the model answered, so it drops them and keeps the rest.
 func sanitize(s string, limit int) string {
 	cleaned := strings.Map(func(r rune) rune {
-		if unicode.In(r, unicode.Cc, unicode.Cf, unicode.Cs, unicode.Co, unicode.Zl, unicode.Zp) {
+		if record.ReasonRefuses(r) {
 			return -1
 		}
 		return r

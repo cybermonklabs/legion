@@ -28,22 +28,22 @@ func TestACheckThatFailsLeavesTheRequestPendingAndAsksTheModelNothing(t *testing
 		want          string
 		wantDetail    string
 		readsDispatch bool
-		request       func(*PendingRequest)
+		request       func(*requests.PendingRequest)
 		machine       func(*fakeRequests)
 		dispatch      func(*dispatchStandIn)
 	}{
 		{
 			name: "a secret whose entry has no judge", want: checkRulesJudge,
-			request: func(p *PendingRequest) { p.Secrets = []string{"NO_JUDGE_KEY"} },
+			request: func(p *requests.PendingRequest) { p.Secrets = []string{"NO_JUDGE_KEY"} },
 		},
 		{
 			name: "two secrets", want: checkRulesJudge,
-			request: func(p *PendingRequest) { p.Secrets = []string{testSecret, "NO_JUDGE_KEY"} },
+			request: func(p *requests.PendingRequest) { p.Secrets = []string{testSecret, "NO_JUDGE_KEY"} },
 		},
 		{
 			name: "a lifetime past the fifteen minutes of the class", want: checkLifetime,
 			wantDetail: "past the 15m0s the judge decides",
-			request:    func(p *PendingRequest) { p.LifetimeSeconds = new(3600) },
+			request:    func(p *requests.PendingRequest) { p.LifetimeSeconds = new(3600) },
 		},
 		{
 			// The one request this check holds back that the class's own bound would
@@ -53,14 +53,14 @@ func TestACheckThatFailsLeavesTheRequestPendingAndAsksTheModelNothing(t *testing
 			// says anyone may have of this secret without a person.
 			name: "a lifetime inside the class but past the entry's own judge", want: checkLifetime,
 			wantDetail: "past the 300 the rules let the judge decide",
-			request: func(p *PendingRequest) {
+			request: func(p *requests.PendingRequest) {
 				p.Secrets, p.LifetimeSeconds = []string{shortJudgeSecret}, new(600)
 			},
 		},
 		{
 			name: "no signed lifetime at all", want: checkLifetime,
 			wantDetail: "signed no lifetime",
-			request:    func(p *PendingRequest) { p.LifetimeSeconds = nil },
+			request:    func(p *requests.PendingRequest) { p.LifetimeSeconds = nil },
 		},
 		{
 			name: "the tag policy refusing the name now", want: checkPolicy,
@@ -74,7 +74,7 @@ func TestACheckThatFailsLeavesTheRequestPendingAndAsksTheModelNothing(t *testing
 		},
 		{
 			name: "a reason naming no issue", want: checkIssue,
-			request: func(p *PendingRequest) { p.Reason = "reading the broker's own tests" },
+			request: func(p *requests.PendingRequest) { p.Reason = "reading the broker's own tests" },
 		},
 		{
 			name: "an issue Dispatch does not hold", want: checkIssue, readsDispatch: true,

@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/requests"
+	"github.com/sjawhar/envoy/internal/brokertoken"
 )
 
 // testSecret is the one secret these tests ask for, testIssue the issue every signed reason
@@ -48,8 +49,8 @@ func testRules() airlock.Rules {
 
 // pending is a request inside the class the judge decides: one secret whose entry has a judge,
 // a signed lifetime of 15 minutes, and a reason naming an open issue.
-func pending() PendingRequest {
-	return PendingRequest{
+func pending() requests.PendingRequest {
+	return requests.PendingRequest{
 		RecordID: "record-1", RequestID: "request-1", EnrollmentID: "enrollment-1",
 		SessionID: "legion-1353", Secrets: []string{testSecret},
 		LifetimeSeconds: new(900), Reason: "Running the broker's own tests for " + testIssue,
@@ -324,7 +325,7 @@ func testOptions(t *testing.T, d *dispatchStandIn, m *modelStandIn, r *fakeReque
 	t.Helper()
 	return Options{
 		Rules:    testRules(),
-		Dispatch: Dispatch{BaseURL: d.server.URL, TokenFile: tokenFile(t, "projected-token"), HTTP: d.server.Client()},
+		Dispatch: Dispatch{BaseURL: d.server.URL, Account: brokertoken.NewAccountToken(tokenFile(t, "projected-token")), HTTP: d.server.Client()},
 		Model: Model{
 			ID: testModel,
 			Endpoint: agentloop.Endpoint{

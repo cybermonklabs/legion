@@ -53,7 +53,7 @@
 #        directory up for a person to look at a failure with. --help prints this usage.
 #        A usage error exits 2.
 #
-# Needs bash, curl, jq, go, openssl and psql. DEV_BROKER_POSTGRES_URL is passed to dev-airlock.sh
+# Needs bash, curl, jq, go and psql. DEV_BROKER_POSTGRES_URL is passed to dev-airlock.sh
 # as it is, so a pod with no container runtime names its test server there. k10b needs no stack
 # and takes seconds; every other check starts one stack (k10 starts two) and takes a few minutes.
 set -euo pipefail
@@ -122,7 +122,11 @@ STACK_LOG="$WORK_DIR/stack.log"
 STACK_PID=""
 EXTRA_BROKER_PIDS=()
 
-cleanup() {
+# kill_extra_brokers stops every broker this run started of its own, the ones start_extra_broker
+# left in EXTRA_BROKER_PIDS, and waits for each to go. Both the EXIT trap and stop_stack do it,
+# and they must do it the same way: a broker of this script's still holding a connection to the
+# stack's database keeps dev-airlock.sh's own cleanup from dropping it.
+kill_extra_brokers() {
 	local pid
 	for pid in "${EXTRA_BROKER_PIDS[@]+"${EXTRA_BROKER_PIDS[@]}"}"; do
 		if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
@@ -130,6 +134,10 @@ cleanup() {
 			wait "$pid" 2>/dev/null || true
 		fi
 	done
+}
+
+cleanup() {
+	kill_extra_brokers
 	if [ "$KEEP_STACK" = true ] && [ -n "$STACK_PID" ]; then
 		echo "judge-check: the stack is still up (dev-airlock.sh pid $STACK_PID, log $STACK_LOG);" >&2
 		echo "judge-check: stop it with kill $STACK_PID, which drops its databases" >&2
@@ -274,13 +282,7 @@ start_stack() {
 # dev-airlock.sh's own cleanup from dropping it, and the database is left behind on the server.
 stop_stack() {
 	if [ "$KEEP_STACK" = true ]; then return 0; fi
-	local pid
-	for pid in "${EXTRA_BROKER_PIDS[@]+"${EXTRA_BROKER_PIDS[@]}"}"; do
-		if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-			kill "$pid" 2>/dev/null || true
-			wait "$pid" 2>/dev/null || true
-		fi
-	done
+	kill_extra_brokers
 	EXTRA_BROKER_PIDS=()
 	if [ -n "$STACK_PID" ] && kill -0 "$STACK_PID" 2>/dev/null; then
 		echo "judge-check: stopping the stack..." >&2
@@ -430,10 +432,27 @@ await_granted() { # <request id> <seconds>
 	done
 }
 
-# request_state and request_decider are one request's state and the login or actor the broker
-# recorded as having decided it, as `agent-secrets status` prints them.
+# await_judged waits for one request's judged row the way await_granted waits for its state:
+# it polls judged_rows once a second until there is one or the bound passes, and then sleeps a
+# two-second settle window before it answers. The window is not padding - k10 expects exactly
+# one such row per decision, and returning the instant the first row appeared would stop
+# looking before a second one could be written, which would thin the check.
+await_judged() { # <request id> <seconds>
+	local id="$1" bound="$2" waited=0
+	while [ "$waited" -lt "$bound" ]; do
+		if [ "$(judged_rows "$id")" != 0 ]; then break; fi
+		sleep 1
+		waited=$((waited + 1))
+	done
+	sleep 2
+}
+
+# request_state, request_decider and request_grant are one request's state, the login or actor
+# the broker recorded as having decided it, and the grant its approval made, as
+# `agent-secrets status` prints them.
 request_state() { agent-secrets status "$1" --json 2>/dev/null | jq -r '.state // ""'; }
 request_decider() { agent-secrets status "$1" --json 2>/dev/null | jq -r '.decision.by // ""'; }
+request_grant() { agent-secrets status "$1" --json 2>/dev/null | jq -r '.grant_id // ""'; }
 
 # cancel_pending cancels every request of this session that is still pending, so one case's
 # leftover card cannot refuse the next case's request for the same name (ErrRequestPending).
@@ -447,7 +466,7 @@ cancel_pending() {
 # release releases a grant's values as the CLI does, leaving the grant's proxy password in
 # PROXY_PASSWORD and its placeholder in PLACEHOLDER. Neither ever reaches the output.
 release() { # <grant id> <name>
-	local url proof
+	local url proof RELEASE_JSON
 	url="$AGENT_SECRETS_URL/v1/grants/$1/values"
 	proof="$(agent-secrets sign --method POST --url "$url")"
 	RELEASE_JSON="$(curl -sS -X POST -H "Proof: $proof" "$url")"
@@ -460,8 +479,7 @@ release() { # <grant id> <name>
 proxy_for() { printf 'http://agent-secrets:%s@%s' "$1" "$2"; }
 
 # call_s makes one call to S through the proxy with the password and header value the caller
-# names, leaving the status in CALL_STATUS, the answer's body in CALL_BODY and everything curl
-# said in CALL_OUT.
+# names, leaving the status in CALL_STATUS and the answer's body in CALL_BODY.
 #
 # The status has to be read two ways, because the proxy refuses a call at two moments. A grant
 # the connection read refuses (revoked, expired, holding no name this session may have) is
@@ -470,6 +488,7 @@ proxy_for() { printf 'http://agent-secrets:%s@%s' "$1" "$2"; }
 # (the approval chain, the policy re-read) is refused inside the tunnel, as an ordinary
 # response with a body. So both are read, and a status this cannot name is reported whole.
 call_s() { # <proxy password> <header value>
+	local CALL_OUT
 	CALL_OUT="$(curl -sS -o "$WORK_DIR/call.out" -w 'http_code=%{http_code}' --noproxy '' \
 		--cacert "$AIRLOCK_CA_CERT_FILE" --proxy "$(proxy_for "$1" "$PROXY_ADDR")" \
 		-H "Authorization: Bearer $2" "$AIRLOCK_S_URL/ok" 2>&1 | tr '\n' ' ')"
@@ -552,7 +571,7 @@ account_post() { # <path> <body>
 # page signs its person in, and answers whether the broker made a session for it. The issuer
 # signs in whoever is queued at its loopback control route, so a second person needs no second
 # issuer.
-sign_in() { # <email>
+sign_in() { # <email> <label for this run's own directory>
 	local who="$1" d="$WORK_DIR/signin-$2"
 	mkdir -p "$d"
 	curl -sS -o /dev/null -X POST -H 'Content-Type: application/json' \
@@ -638,13 +657,12 @@ k10_case() { # <label> <ttl> <reason> <name>...
 	ask "$ttl" "$reason" "$@"
 	K10[${label}_exit]="$ASK_STATUS"
 	K10[${label}_state0]="$ASK_STATE"
-	K10[${label}_err]="$ASK_ERR"
-	K10[${label}_id]="$ASK_ID"
 	K10[${label}_lifetime]="$ASK_LIFETIME"
 	if [ -n "$ASK_ID" ]; then
-		# One run has 30 seconds of budget and this stack answers in milliseconds; 15 is more
-		# than enough for the row to be there and short enough to keep the check a few minutes.
-		sleep 15
+		# One run has 30 seconds of budget and this stack answers in milliseconds, so the row
+		# is there in a second or two; 15 is the bound the wait is given, past which the case
+		# reads whatever is there and the result block says so.
+		await_judged "$ASK_ID" 15
 		K10[${label}_state]="$(request_state "$ASK_ID")"
 		K10[${label}_rows]="$(judged_rows "$ASK_ID")"
 		K10[${label}_failed]="$(judged_failed_check "$ASK_ID")"
@@ -680,7 +698,7 @@ check_k10() {
 	local in_state="$AWAIT_STATE" in_seconds="$AWAIT_SECONDS"
 	local in_decider in_grant
 	in_decider="$(request_decider "$in_id")"
-	in_grant="$(agent-secrets status "$in_id" --json 2>/dev/null | jq -r '.grant_id // ""')"
+	in_grant="$(request_grant "$in_id")"
 	grant_lifetime="$(psql_stack -c "select round(extract(epoch from (expires_at - created_at)))::int from grants where id='$in_grant'")"
 	local in_rows in_summary in_asked
 	in_rows="$(judged_rows "$in_id")"
@@ -715,7 +733,6 @@ check_k10() {
 		esac
 		mark="$(records_count model)"
 		ask 15m "reach s.airlock.test for $open" "$AIRLOCK_JUDGED_SECRET"
-		K10[${label}_id]="$ASK_ID"
 		if [ "$answer" = stopped ]; then
 			# The broker stopped during the model call: the judge's run hangs off the
 			# broker's own serving lifetime, so what has to stop is the process that
@@ -734,7 +751,7 @@ check_k10() {
 			cancel_pending
 			continue
 		fi
-		sleep 35
+		await_judged "$ASK_ID" 35
 		K10[${label}_state]="$(request_state "$ASK_ID")"
 		K10[${label}_rows]="$(judged_rows "$ASK_ID")"
 		K10[${label}_asked]="$(($(records_count model) - mark))"
@@ -815,7 +832,7 @@ check_k10() {
 	local owned_id="$ASK_ID"
 	await_granted "$owned_id" 60
 	local owned_grant
-	owned_grant="$(agent-secrets status "$owned_id" --json 2>/dev/null | jq -r '.grant_id // ""')"
+	owned_grant="$(request_grant "$owned_id")"
 	release "$owned_grant" "$AIRLOCK_JUDGED_SECRET"
 	local before_pw="$PROXY_PASSWORD" before_ph="$PLACEHOLDER"
 	call_s "$before_pw" "$before_ph"
@@ -914,7 +931,7 @@ check_k10b() {
 # into Postgres by hand. It answers the grant in FORGED_GRANT and its placeholder in
 # FORGED_PLACEHOLDER.
 k10c_forge() { # <ttl> <reason> <name bound to S> <name>...
-	local ttl="$1" reason="$2" bound="$3"
+	local ttl="$1" reason="$2" bound_name="$3"
 	shift 3
 	ask "$ttl" "$reason" "$@"
 	if [ "$ASK_STATE" != pending ]; then
@@ -922,7 +939,7 @@ k10c_forge() { # <ttl> <reason> <name bound to S> <name>...
 		return 1
 	fi
 	sleep 10
-	forge_judged_approval "$ASK_ID" "$ASK_RECORD" "$bound"
+	forge_judged_approval "$ASK_ID" "$ASK_RECORD" "$bound_name"
 }
 
 declare -A K10C=()
@@ -977,7 +994,7 @@ check_k10c() {
 	ask 15m "reach s.airlock.test for $open" "$AIRLOCK_JUDGED_SECRET"
 	await_granted "$ASK_ID" 60
 	local judged_state="$AWAIT_STATE" judged_grant
-	judged_grant="$(agent-secrets status "$ASK_ID" --json 2>/dev/null | jq -r '.grant_id // ""')"
+	judged_grant="$(request_grant "$ASK_ID")"
 	release "$judged_grant" "$AIRLOCK_JUDGED_SECRET"
 	call_s "$PROXY_PASSWORD" "$PLACEHOLDER"
 	local own_status="$CALL_STATUS" own_header
@@ -1071,7 +1088,7 @@ check_k10d() {
 	mark="$(records_count model)"
 	ask 15m "reach s.airlock.test for $open" "$AIRLOCK_JUDGED_SECRET"
 	local long_id="$ASK_ID"
-	sleep 15
+	await_judged "$long_id" 15
 	local long_state long_asked long_failed long_rows long_summary
 	long_state="$(request_state "$long_id")"
 	long_asked="$(($(records_count model) - mark))"
@@ -1117,7 +1134,7 @@ check_k10d() {
 	mark="$(records_count model)"
 	ask 15m "reach s.airlock.test for $open" "$AIRLOCK_JUDGED_SECRET"
 	local skip_id="$ASK_ID"
-	sleep 15
+	await_judged "$skip_id" 15
 	local skip_state skip_asked
 	skip_state="$(request_state "$skip_id")"
 	skip_asked="$(($(records_count model) - mark))"
@@ -1167,7 +1184,7 @@ check_k10e() {
 	local main_id="$ASK_ID"
 	await_granted "$main_id" 60
 	local main_state="$AWAIT_STATE" main_grant
-	main_grant="$(agent-secrets status "$main_id" --json 2>/dev/null | jq -r '.grant_id // ""')"
+	main_grant="$(request_grant "$main_id")"
 	release "$main_grant" "$AIRLOCK_JUDGED_SECRET"
 	local main_pw="$PROXY_PASSWORD" main_ph="$PLACEHOLDER"
 	call_s "$main_pw" "$main_ph"
@@ -1178,7 +1195,7 @@ check_k10e() {
 	local control_req="$ASK_ID"
 	await_granted "$control_req" 60
 	local control_grant
-	control_grant="$(agent-secrets status "$control_req" --json 2>/dev/null | jq -r '.grant_id // ""')"
+	control_grant="$(request_grant "$control_req")"
 	release "$control_grant" "$AIRLOCK_JUDGED_SECRET"
 	local control_pw="$PROXY_PASSWORD" control_ph="$PLACEHOLDER"
 
@@ -1253,7 +1270,7 @@ check_k10f() {
 	local shared_id="$ASK_ID"
 	await_granted "$shared_id" 60
 	local shared_state="$AWAIT_STATE" shared_grant shared_decider
-	shared_grant="$(agent-secrets status "$shared_id" --json 2>/dev/null | jq -r '.grant_id // ""')"
+	shared_grant="$(request_grant "$shared_id")"
 	shared_decider="$(request_decider "$shared_id")"
 	release "$shared_grant" "$AIRLOCK_SHARED_SECRET"
 	local shared_pw="$PROXY_PASSWORD" shared_ph="$PLACEHOLDER"
@@ -1263,7 +1280,7 @@ check_k10f() {
 	local owned_id="$ASK_ID"
 	await_granted "$owned_id" 60
 	local owned_grant
-	owned_grant="$(agent-secrets status "$owned_id" --json 2>/dev/null | jq -r '.grant_id // ""')"
+	owned_grant="$(request_grant "$owned_id")"
 
 	local first_in second_in
 	sign_in "$first" first && first_in=yes || first_in=no

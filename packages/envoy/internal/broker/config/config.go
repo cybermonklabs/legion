@@ -289,7 +289,9 @@ type Config struct {
 	JudgeDispatchURL string
 	// BROKER_JUDGE_DISPATCH_TOKEN_FILE: the file holding the broker's own projected
 	// ServiceAccount token for the Dispatch at BROKER_JUDGE_DISPATCH_URL. Read when the judge
-	// calls Dispatch and not at boot, and read anew each time, so a rotation needs no restart.
+	// calls Dispatch and not at boot, through the reader every other projected token in this
+	// binary goes through (brokertoken.AccountToken), which reads the file again once what it
+	// last read is 30 seconds old, so a rotation reaches the judge without a restart.
 	// Required with the rest of JudgeSettings.
 	JudgeDispatchTokenFile string
 	// BROKER_JUDGE_TEST_SKIP_CHECKS: with it true, the judge's checks before the model are off,
@@ -1056,11 +1058,11 @@ func parseAirlockTestResolve(value string) (map[string]netip.Addr, error) {
 	return hosts, nil
 }
 
-// airlockTestSwitch reads one of the local stack's test-only switches, the airlock's two and
+// testOnlySwitch reads one of the local stack's test-only switches, the airlock's two and
 // the judge's one: unset is off, and anything strconv.ParseBool does not read is refused rather
 // than taken as off, since a misspelled value would otherwise turn a negative control into the
 // ordinary run it is meant to be compared against.
-func airlockTestSwitch(setting, value string) (bool, error) {
+func testOnlySwitch(setting, value string) (bool, error) {
 	text := strings.TrimSpace(value)
 	if text == "" {
 		return false, nil
@@ -1246,21 +1248,21 @@ func Load(getenv func(string) string) (Config, error) {
 	// whatever the rules file says, since the two minter bases are read with no airlock at all.
 	// cmd/broker refuses every one of them on a production start; what is refused here is a
 	// value the broker could not act on.
-	var airlockTestErr error
-	if cfg.AirlockTestDialAllow, airlockTestErr = parseAirlockTestDialAllow(getenv("BROKER_AIRLOCK_TEST_DIAL_ALLOW")); airlockTestErr != nil {
-		return Config{}, airlockTestErr
+	var testSwitchErr error
+	if cfg.AirlockTestDialAllow, testSwitchErr = parseAirlockTestDialAllow(getenv("BROKER_AIRLOCK_TEST_DIAL_ALLOW")); testSwitchErr != nil {
+		return Config{}, testSwitchErr
 	}
-	if cfg.AirlockTestResolve, airlockTestErr = parseAirlockTestResolve(getenv("BROKER_AIRLOCK_TEST_RESOLVE")); airlockTestErr != nil {
-		return Config{}, airlockTestErr
+	if cfg.AirlockTestResolve, testSwitchErr = parseAirlockTestResolve(getenv("BROKER_AIRLOCK_TEST_RESOLVE")); testSwitchErr != nil {
+		return Config{}, testSwitchErr
 	}
-	if cfg.AirlockTestKeepValues, airlockTestErr = airlockTestSwitch("BROKER_AIRLOCK_TEST_KEEP_VALUES", getenv("BROKER_AIRLOCK_TEST_KEEP_VALUES")); airlockTestErr != nil {
-		return Config{}, airlockTestErr
+	if cfg.AirlockTestKeepValues, testSwitchErr = testOnlySwitch("BROKER_AIRLOCK_TEST_KEEP_VALUES", getenv("BROKER_AIRLOCK_TEST_KEEP_VALUES")); testSwitchErr != nil {
+		return Config{}, testSwitchErr
 	}
-	if cfg.AirlockTestNoKind, airlockTestErr = airlockTestSwitch("BROKER_AIRLOCK_TEST_NO_KIND", getenv("BROKER_AIRLOCK_TEST_NO_KIND")); airlockTestErr != nil {
-		return Config{}, airlockTestErr
+	if cfg.AirlockTestNoKind, testSwitchErr = testOnlySwitch("BROKER_AIRLOCK_TEST_NO_KIND", getenv("BROKER_AIRLOCK_TEST_NO_KIND")); testSwitchErr != nil {
+		return Config{}, testSwitchErr
 	}
-	if cfg.JudgeTestSkipChecks, airlockTestErr = airlockTestSwitch("BROKER_JUDGE_TEST_SKIP_CHECKS", getenv("BROKER_JUDGE_TEST_SKIP_CHECKS")); airlockTestErr != nil {
-		return Config{}, airlockTestErr
+	if cfg.JudgeTestSkipChecks, testSwitchErr = testOnlySwitch("BROKER_JUDGE_TEST_SKIP_CHECKS", getenv("BROKER_JUDGE_TEST_SKIP_CHECKS")); testSwitchErr != nil {
+		return Config{}, testSwitchErr
 	}
 	if cfg.AzureLoginSecret != "" {
 		if _, err := policy.NameToSlug(cfg.AzureLoginSecret); err != nil {

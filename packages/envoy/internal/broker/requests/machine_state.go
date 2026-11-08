@@ -210,10 +210,10 @@ type Minter func(ctx context.Context, req secrets.MintRequest) (secrets.Minted, 
 // PendingRequest is one credential request Create has just written pending, as it hands it to
 // Machine.Judge: what the broker's model judge reads of a request, and nothing else.
 //
-// Its fields are judge.PendingRequest's, name for name and type for type, so the broker's main
-// converts one to the other in a single struct literal. The two types are kept apart on purpose:
-// the judge names no concrete machine, and this package names no judge (the hook is a func field
-// main wires, never a call this package makes into that one).
+// It is declared here, in the package that writes it, and the judge takes it as it stands
+// (judge.Runner.Consider): the import runs one way, since Machine.Judge is a func field the
+// broker's main wires up and never a call this package makes into that one, so the judge names
+// this machine's type and this package names no judge.
 type PendingRequest struct {
 	// RecordID is the credential-request record a decision is written against, and
 	// RequestID the request row it belongs to.
@@ -221,14 +221,16 @@ type PendingRequest struct {
 	// EnrollmentID is the enrollment that asked, which the policy is re-read for, and
 	// SessionID the Envoy session that enrollment recorded, empty for one that names none.
 	EnrollmentID, SessionID string
-	// Secrets are the names the request asks for, in the request's own name order.
+	// Secrets are the names the request asks for, in the request's own name order. The judge
+	// decides a request for one.
 	Secrets []string
 	// LifetimeSeconds is the lifetime the requester signed, nil for a grant that lasts
-	// until its session ends.
+	// until its session ends. An unbounded grant is what the judge's seconds are there to
+	// bound, so the judge decides none.
 	LifetimeSeconds *int
 	// Reason is the requester's own signed reason, which names the Dispatch issue, and
 	// Approver the record's approver: the secret's owner, or record.AnyoneApprover for a
-	// shared one.
+	// shared one. The judge decides in that approver's place and names it in its log line.
 	Reason, Approver string
 }
 
@@ -1227,16 +1229,17 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 	}
 	// obj is the record's embedded request object, verified once per attempt through
 	// verifyObject, by whichever of the two readers below comes first.
-	// now is reset to the record's own creation time: the request object's own iat/exp bound only
-	// how fresh it had to be when the broker first accepted it (up to 10 minutes), never how long
-	// the resulting decision window may stay open (PendingTTL, hours) — re-verifying it with the
-	// real current time would fail every decision made more than a few minutes after creation.
 	var obj record.RequestObject
 	objVerified := false
 	verifyObject := func() error {
 		if objVerified {
 			return nil
 		}
+		// now is reset to the record's own creation time: the request object's own iat/exp bound
+		// only how fresh it had to be when the broker first accepted it (up to 10 minutes), never
+		// how long the resulting decision window may stay open (PendingTTL, hours) — re-verifying
+		// it with the real current time would fail every decision made more than a few minutes
+		// after creation.
 		verified, err := record.VerifyRequestObject(parsed.Request, m.Audience, m.Skew, createdAt)
 		if err != nil {
 			return fmt.Errorf("%w: request object no longer verifies: %s", ErrGrantChainInvalid, err)
@@ -1261,11 +1264,10 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 			return Decision{}, false, fmt.Errorf("judge record %s: %w", recordID, err)
 		}
 	} else {
-		login, err := parsed.ApproverLogin(record.KindAgentSecret, "", who.login)
+		who.login, err = parsed.ApproverLogin(record.KindAgentSecret, "", who.login)
 		if err != nil {
 			return Decision{}, false, err
 		}
-		who.login = login
 	}
 	// One policy snapshot answers this decision: the default lifetime, the re-evaluation below,
 	// and each name's airlock fingerprint, which the request records as what it was decided

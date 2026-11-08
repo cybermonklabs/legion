@@ -367,7 +367,7 @@ for line in "${judge_lines[@]}"; do
   done
 done
 if [[ ! -s "$dispatch_token_file" ]]; then
-  echo "FAIL: the judge's Dispatch token file ($dispatch_token_file) is empty; the judge reads it on every call" >&2
+  echo "FAIL: the judge's Dispatch token file ($dispatch_token_file) is empty; the judge reads it at call time, never at boot" >&2
   exit 1
 fi
 printf 'PASS: every broker is given the model judge (model %s at %s, Dispatch %s, its token file, and the metadata server its own credential is minted at)\n' \

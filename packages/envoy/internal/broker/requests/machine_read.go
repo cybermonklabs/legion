@@ -494,7 +494,7 @@ func judgeStillDecides(rules airlock.Rules, name string, lifetime *int) error {
 		return fmt.Errorf("%w: %s was granted until its session ends, which the judge never decides", ErrGrantNotLive, name)
 	case !ok:
 		return fmt.Errorf("%w: the rules no longer let the judge decide %s", ErrGrantNotLive, name)
-	case int64(*lifetime) > int64(bound):
+	case !record.JudgeAllowsLifetime(bound, *lifetime):
 		return fmt.Errorf("%w: the rules now let the judge decide at most %d seconds of %s, short of this grant's %d", ErrGrantNotLive, bound, name, *lifetime)
 	}
 	return nil

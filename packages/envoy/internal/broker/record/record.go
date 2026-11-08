@@ -280,14 +280,26 @@ func validateDetails(details []AuthorizationDetail) error {
 	return nil
 }
 
-// validateReason enforces: at most 400 runes, none in Unicode categories Cc, Cf, Cs, Co, Zl, or Zp
-// (bidi overrides and zero-width characters are Cf).
+// MaxReasonRunes is the longest reason a request may sign, and ReasonRefuses the runes it may
+// not carry: Unicode categories Cc, Cf, Cs, Co, Zl and Zp (bidi overrides and zero-width
+// characters are Cf). Both are exported because the model judge holds what a model writes to
+// the same bound and the same categories (judge.sanitize, judge/model.go), which drops them
+// rather than refusing; one definition there and here keeps a reason a person reads in the
+// grant log and a reason a requester signed to one rule.
+const MaxReasonRunes = 400
+
+// ReasonRefuses reports whether r is a rune no reason may carry.
+func ReasonRefuses(r rune) bool {
+	return unicode.In(r, unicode.Cc, unicode.Cf, unicode.Cs, unicode.Co, unicode.Zl, unicode.Zp)
+}
+
+// validateReason enforces: at most MaxReasonRunes runes, none a rune ReasonRefuses.
 func validateReason(reason string) error {
-	if utf8.RuneCountInString(reason) > 400 {
-		return errors.New("reason is over 400 runes")
+	if utf8.RuneCountInString(reason) > MaxReasonRunes {
+		return fmt.Errorf("reason is over %d runes", MaxReasonRunes)
 	}
 	for _, r := range reason {
-		if unicode.In(r, unicode.Cc, unicode.Cf, unicode.Cs, unicode.Co, unicode.Zl, unicode.Zp) {
+		if ReasonRefuses(r) {
 			return errors.New("reason contains a refused rune category")
 		}
 	}
@@ -508,6 +520,23 @@ func MayDecide(kind, approver, service, login string) bool {
 // errors.Is(err, ErrNotJudgeable); one that must say why keeps the wrapped reason.
 var ErrNotJudgeable = errors.New("not a request the model judge may decide")
 
+// JudgeAllowsLifetime reports whether a signed lifetime in seconds is within the seconds the
+// airlock rules give the judge for one secret, which airlock.Rules.JudgeSeconds answers as
+// bound. It is the one comparison three callers make — the judge's own check before the model
+// (judge.lifetimeAllowed), MayJudge below, which holds a judged approval at decision time and
+// again on every release, and requests.judgeStillDecides, which re-reads the rules for a grant
+// already made — and it is written once here, so a judge that approves and a state machine
+// that then refuses cannot drift apart. Each caller keeps its own refusal wording, which is
+// what a person reads; only the comparison is shared.
+//
+// It lives in this package rather than beside JudgeSeconds in airlock because MayJudge must
+// reach it and this package must not import airlock; the other two callers already import
+// this one. Both sides are widened to int64, the bound being a uint32 and the lifetime an int,
+// so neither is ever cut to the other's range.
+func JudgeAllowsLifetime(bound uint32, lifetimeSeconds int) bool {
+	return int64(lifetimeSeconds) <= int64(bound)
+}
+
 // MayJudge reports whether the model judge may decide this record at all, before any model is
 // asked: the airlock rules' own bound on what a judge decides, read here so one rule answers for
 // every caller. All three must hold, and the error names which one did not.
@@ -534,7 +563,7 @@ func MayJudge(body Body, obj RequestObject, judgeSeconds func(secret string) (ui
 	if !ok {
 		return fmt.Errorf("%w: the rules let the judge decide nothing for %q", ErrNotJudgeable, name)
 	}
-	if int64(*body.LifetimeSeconds) > int64(bound) {
+	if !JudgeAllowsLifetime(bound, *body.LifetimeSeconds) {
 		return fmt.Errorf("%w: the record asks for %d seconds of %q, past the %d the rules let the judge decide", ErrNotJudgeable, *body.LifetimeSeconds, name, bound)
 	}
 	if IssueKeyInReason(obj.Reason) == "" {

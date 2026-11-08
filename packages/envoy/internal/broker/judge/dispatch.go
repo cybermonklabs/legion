@@ -8,8 +8,9 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
+
+	"github.com/sjawhar/envoy/internal/brokertoken"
 )
 
 // ErrNoIssue is Dispatch answering 404 for the key a request's reason named: the key has an
@@ -27,13 +28,19 @@ const maxDispatchAnswer = 1 << 20
 // Dispatch is the broker's read of Dispatch, and it is a read alone. Issue makes two GETs and
 // this type has no other method, no other verb and no body to send: nothing here writes an ask,
 // a comment, a label or a status, and nothing reads a person's own data. Both routes are authAny
-// (internal/dispatch/api/routes_table.go), and the projected ServiceAccount token in TokenFile
+// (internal/dispatch/api/routes_table.go), and the projected ServiceAccount token Account reads
 // authenticates as a service actor holding no scope, which reaches an issue and its documents
 // and nothing that belongs to a person.
 type Dispatch struct {
-	// BaseURL is the root Dispatch's /api/v1 paths hang off, and TokenFile the path of the
-	// broker's own projected ServiceAccount token for it.
-	BaseURL, TokenFile string
+	// BaseURL is the root Dispatch's /api/v1 paths hang off.
+	BaseURL string
+	// Account is the broker's own projected ServiceAccount token for Dispatch, read at call
+	// time rather than once at boot: the kubelet rewrites such a file in place, and a reader
+	// that caches for brokertoken.AccountTokenCacheTTL picks a rotation up within 30 seconds,
+	// so a rotated token reaches the judge with no restart. It is the interface rather than
+	// the reader so a test can stand in for it; cmd/broker wires
+	// brokertoken.NewAccountToken(BROKER_JUDGE_DISPATCH_TOKEN_FILE).
+	Account brokertoken.Account
 	// HTTP is the client both calls are made with; a nil client is http.DefaultClient.
 	HTTP *http.Client
 }
@@ -55,11 +62,11 @@ type Issue struct {
 // whether the issue is open decides nothing. The spec document need not be: a 404, and an answer
 // that is no document, leave HasSpec false and are no error at all.
 //
-// Both calls carry the token read from TokenFile at call time — read anew for each Issue, as
-// secrets.AzureLogin reads the broker's Azure projection on each release, so a rotated token
-// reaches the judge without a restart.
+// Both calls carry the token Account reads, which is asked for before the first of them: a
+// deployment whose token cannot be read makes no call at all, and a token file that holds
+// nothing is that same refusal and never an empty bearer for Dispatch to turn down.
 func (d Dispatch) Issue(ctx context.Context, key string) (Issue, error) {
-	token, err := d.token()
+	token, err := d.Account.Read()
 	if err != nil {
 		return Issue{}, err
 	}
@@ -131,18 +138,4 @@ func (d Dispatch) get(ctx context.Context, endpoint, token string, into any) (in
 		return answer.StatusCode, fmt.Errorf("dispatch's answer could not be read: %w", err)
 	}
 	return answer.StatusCode, nil
-}
-
-// token is the bearer both calls present: the projected ServiceAccount token in TokenFile, read
-// for each Issue. The error names what failed and never the token's own bytes.
-func (d Dispatch) token() (string, error) {
-	data, err := os.ReadFile(d.TokenFile)
-	if err != nil {
-		return "", fmt.Errorf("read the broker's Dispatch token file: %w", err)
-	}
-	token := strings.TrimSpace(string(data))
-	if token == "" {
-		return "", errors.New("the broker's Dispatch token file is empty")
-	}
-	return token, nil
 }

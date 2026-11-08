@@ -58,6 +58,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/broker/store"
 	"github.com/sjawhar/envoy/internal/broker/wake"
+	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/redact"
 )
@@ -1048,25 +1049,18 @@ func wireJudge(ctx context.Context, cfg config.Config, rules airlock.Rules, m *r
 	runner := judge.New(ctx, judge.Options{
 		Rules: rules,
 		Dispatch: judge.Dispatch{
-			BaseURL:   cfg.JudgeDispatchURL,
-			TokenFile: cfg.JudgeDispatchTokenFile,
-			HTTP:      &http.Client{Timeout: judgeDispatchTimeout},
+			BaseURL: cfg.JudgeDispatchURL,
+			Account: brokertoken.NewAccountToken(cfg.JudgeDispatchTokenFile),
+			HTTP:    &http.Client{Timeout: judgeDispatchTimeout},
 		},
 		Model:      judge.NewModel(cfg.JudgeModelURL, cfg.JudgeModel, cfg.JudgeModelProtocol, cfg.JudgeModelAudience),
 		Requests:   m,
 		SkipChecks: cfg.JudgeTestSkipChecks,
 	})
-	// The hook the state machine calls for each request it writes pending. The two types hold
-	// the same fields for this one conversion, which is what keeps requests from importing the
-	// judge; Consider returns at once, so nothing of a run is on the requester's path.
-	m.Judge = func(p requests.PendingRequest) {
-		runner.Consider(judge.PendingRequest{
-			RecordID: p.RecordID, RequestID: p.RequestID,
-			EnrollmentID: p.EnrollmentID, SessionID: p.SessionID,
-			Secrets: p.Secrets, LifetimeSeconds: p.LifetimeSeconds,
-			Reason: p.Reason, Approver: p.Approver,
-		})
-	}
+	// The hook the state machine calls for each request it writes pending: the judge takes the
+	// machine's own type, so this is the method and nothing else. Consider returns at once, so
+	// nothing of a run is on the requester's path.
+	m.Judge = runner.Consider
 	slog.Info("model judge", "state", "on", "model", cfg.JudgeModel, "protocol", cfg.JudgeModelProtocol,
 		"dispatch", cfg.JudgeDispatchURL, "skip_checks", cfg.JudgeTestSkipChecks)
 }

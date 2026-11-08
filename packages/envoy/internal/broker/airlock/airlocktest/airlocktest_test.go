@@ -32,6 +32,7 @@ import (
 	"github.com/sjawhar/envoy/agentloop"
 	"github.com/sjawhar/envoy/internal/broker/judge"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
+	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/googleidentity"
 )
@@ -411,7 +412,7 @@ func TestTheDispatchStandAnswersTheIssueReadsItsReaderMakes(t *testing.T) {
 	if err := os.WriteFile(tokenFile, []byte("the-stand-in-dispatch-token\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	reader := judge.Dispatch{BaseURL: service.URL(), TokenFile: tokenFile}
+	reader := judge.Dispatch{BaseURL: service.URL(), Account: brokertoken.NewAccountToken(tokenFile)}
 
 	issue, err := reader.Issue(t.Context(), "INFRA-1353")
 	if err != nil {
