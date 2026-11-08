@@ -152,8 +152,8 @@ test("the settings control changes the admission cap of a daemon @legion", async
 // about the path. The verdict is the shape a real failure has, the daemon's own
 // `worker_rpc_timeout_seconds`: `holder` is the row's named holder, while the holder that kept
 // the old value is named inside `failed`, which the daemon writes as `<holder>: <error>`
-// (internal/daemon/holders.go). So the row proves the other half too — the text names what the
-// daemon's text names, never the row's holder.
+// (internal/daemon/rebuilder.go's observe). So the row proves the other half too — the text
+// names what the daemon's text names, never the row's holder.
 test("the panel shows a failed verdict as a failure and keeps the new value @legion", async ({
   browser,
 }) => {

@@ -51,7 +51,7 @@ export function describeSettingSource(source: LegionSettingSource | undefined): 
  *  failed, and a row reaches more than one (`config.Row.Also` — `worker_rpc_timeout_seconds` is
  *  the worker stream's and NATS's, `repository_renames` four things'). The one that failed is
  *  named inside `failed`, which the daemon writes as `<holder>: <error>`
- *  (`internal/daemon/holders.go`), so the text carries it once and correctly. */
+ *  (`internal/daemon/rebuilder.go`'s `observe`), so the text carries it once and correctly. */
 export function describeVerdict(verdict: LegionSettingVerdict): {
   readonly failure: boolean;
   readonly text: string;
