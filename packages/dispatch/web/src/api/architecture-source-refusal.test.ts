@@ -35,7 +35,9 @@ test("every architecture-source write rejects a repository it refuses rather tha
   const bounds = { key: "press-1" };
 
   const settled = {
-    deleteArchitectureSource: await settledAs(() => api.deleteArchitectureSource("ACME", "", bounds)),
+    deleteArchitectureSource: await settledAs(() =>
+      api.deleteArchitectureSource("ACME", "", bounds)
+    ),
     putArchitectureSource: await settledAs(() =>
       api.putArchitectureSource("ACME", "", { branch: "main" }, bounds)
     ),
