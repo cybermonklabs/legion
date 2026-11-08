@@ -739,8 +739,9 @@ func (s *e2eServer) awaitStatus(t *testing.T, name string, status int, code stri
 	}
 }
 
-// awaitPendingFor fails t unless GET /v1/pending?approver=<person> lists recordID.
-func (s *e2eServer) awaitPendingFor(t *testing.T, person, recordID string) {
+// pendingListsFor answers whether GET /v1/pending?approver=<person> lists recordID, with the
+// body it read.
+func (s *e2eServer) pendingListsFor(t *testing.T, person, recordID string) (bool, []byte) {
 	t.Helper()
 	status, body := s.ui(t, http.MethodGet, "/v1/pending?approver="+person, nil)
 	if status != http.StatusOK {
@@ -750,26 +751,26 @@ func (s *e2eServer) awaitPendingFor(t *testing.T, person, recordID string) {
 		Pending []wirePendingEntry `json:"pending"`
 	}](t, body).Pending {
 		if p.RecordID == recordID {
-			return
+			return true, body
 		}
 	}
-	t.Fatalf("GET /v1/pending?approver=%s = %s, want record %s listed", person, body, recordID)
+	return false, body
+}
+
+// awaitPendingFor fails t unless GET /v1/pending?approver=<person> lists recordID.
+func (s *e2eServer) awaitPendingFor(t *testing.T, person, recordID string) {
+	t.Helper()
+	if listed, body := s.pendingListsFor(t, person, recordID); !listed {
+		t.Fatalf("GET /v1/pending?approver=%s = %s, want record %s listed", person, body, recordID)
+	}
 }
 
 // refutePendingFor fails t if GET /v1/pending?approver=<person> lists recordID: the card is on
 // that person's page when it must not be.
 func (s *e2eServer) refutePendingFor(t *testing.T, person, recordID string) {
 	t.Helper()
-	status, body := s.ui(t, http.MethodGet, "/v1/pending?approver="+person, nil)
-	if status != http.StatusOK {
-		t.Fatalf("GET /v1/pending?approver=%s = %d: %s", person, status, body)
-	}
-	for _, p := range decode[struct {
-		Pending []wirePendingEntry `json:"pending"`
-	}](t, body).Pending {
-		if p.RecordID == recordID {
-			t.Fatalf("GET /v1/pending?approver=%s lists record %s, want it on no page but its owner's", person, recordID)
-		}
+	if listed, _ := s.pendingListsFor(t, person, recordID); listed {
+		t.Fatalf("GET /v1/pending?approver=%s lists record %s, want it on no page but its owner's", person, recordID)
 	}
 }
 

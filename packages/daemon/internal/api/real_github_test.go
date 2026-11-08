@@ -56,19 +56,17 @@ func TestRealGitHubCredentialSurface(t *testing.T) {
 
 	// The implement App's lease, rendered as the role's gh files, is whose login the real gh
 	// reports. The review App is not minted here: realGitHubApps reads the implement role alone.
-	dirs := map[appauth.AppRole]string{}
-	for _, role := range []appauth.AppRole{appauth.Implement} {
-		lease, err := tokens.Token(h.ctx, role, ghrepo.MustParse("sjawhar/legion-smoke"))
-		if err != nil {
-			t.Fatalf("mint the %s App's lease: %v", role, err)
-		}
-		dirs[role] = writeRealGhFiles(t, lease.Token)
-		viewer := runRealGh(t, gh, dirs[role], "api", "graphql", "-f", "query={viewer{login}}", "--jq", ".data.viewer.login")
-		if viewer.code != 0 || strings.TrimSpace(viewer.stdout) != lease.Identity.Name {
-			t.Fatalf("%s App viewer login through gh = %q (exit %d, stderr %q), want %q", role, viewer.stdout, viewer.code, viewer.stderr, lease.Identity.Name)
-		}
-		t.Logf("%s App GraphQL login through gh: %s", role, strings.TrimSpace(viewer.stdout))
+	role := appauth.Implement
+	lease, err := tokens.Token(h.ctx, role, ghrepo.MustParse("sjawhar/legion-smoke"))
+	if err != nil {
+		t.Fatalf("mint the %s App's lease: %v", role, err)
 	}
+	dir := writeRealGhFiles(t, lease.Token)
+	viewer := runRealGh(t, gh, dir, "api", "graphql", "-f", "query={viewer{login}}", "--jq", ".data.viewer.login")
+	if viewer.code != 0 || strings.TrimSpace(viewer.stdout) != lease.Identity.Name {
+		t.Fatalf("%s App viewer login through gh = %q (exit %d, stderr %q), want %q", role, viewer.stdout, viewer.code, viewer.stderr, lease.Identity.Name)
+	}
+	t.Logf("%s App GraphQL login through gh: %s", role, strings.TrimSpace(viewer.stdout))
 
 	// The negative control: a GH_CONFIG_DIR with no gh files authenticates nobody.
 	denied := runRealGh(t, gh, t.TempDir(), "api", "graphql", "-f", "query={viewer{login}}")
@@ -81,7 +79,7 @@ func TestRealGitHubCredentialSurface(t *testing.T) {
 	clone := exec.Command("git", "-c", "credential.helper=", "-c", "credential.helper=!gh auth git-credential",
 		"clone", "https://github.com/sjawhar/legion-smoke", filepath.Join(scratch, "legion-smoke"))
 	clone.Dir = scratch
-	clone.Env = realCLIEnvironment(gh, dirs[appauth.Implement], t.TempDir())
+	clone.Env = realCLIEnvironment(gh, dir, t.TempDir())
 	output, err := clone.CombinedOutput()
 	if err != nil {
 		t.Fatalf("clone through gh auth git-credential: %v: %s", err, strings.TrimSpace(string(output)))
@@ -126,30 +124,29 @@ func runGitHubAppsLib(lib string, environ []string, script string, args ...strin
 	return stdout, strings.TrimSpace(errOut.String()), err
 }
 
-// liveProofApp resolves the implement App by running githubAppsLib's own require_app_inputs and
-// app_token_command in an environment of environ, so the gated proofs here take the lib's
-// default, its input checks and its token command, and no second copy of any of them exists to
-// drift. It asks for the implement role alone: the review App's secret is human tier, so naming
-// it would put a person's approval in front of every run. A refusal returns the lib's message,
-// which names the input and never its value.
-func liveProofApps(environ []string) (implement liveProofApp, err error) {
-	return liveProofAppsFrom(githubAppsLib, environ)
+// liveProofImplementApp resolves the implement App by running githubAppsLib's own
+// require_app_inputs and app_token_command in an environment of environ, so the gated proofs here
+// take the lib's default, its input checks and its token command, and no second copy of any of
+// them exists to drift. It asks for the implement role alone: the review App's secret is human
+// tier, so naming it would put a person's approval in front of every run. A refusal returns the
+// lib's message, which names the input and never its value.
+func liveProofImplementApp(environ []string) (implement liveProofApp, err error) {
+	return liveProofImplementAppFrom(githubAppsLib, environ)
 }
 
-// liveProofAppsFrom is liveProofApps reading the lib at lib. It refuses anything but exactly three
-// fields, each non-empty and on one line, and a token command that failed. Stray output on a line
-// of its own is refused with them; stray output with no line break joins a field, which the
-// gated path's check then refuses, since no secret mints for that id.
-func liveProofAppsFrom(lib string, environ []string) (implement liveProofApp, err error) {
+// liveProofImplementAppFrom is liveProofImplementApp reading the lib at lib. It refuses anything
+// but exactly three fields, each non-empty and on one line, and a token command that failed.
+// Stray output on a line of its own is refused with them; stray output with no line break joins a
+// field, which the gated path's check then refuses, since no secret mints for that id.
+func liveProofImplementAppFrom(lib string, environ []string) (implement liveProofApp, err error) {
 	const script = `set -euo pipefail
 fail() { printf '%s\n' "$*" >&2; exit 1; }
 source "$1"
 require_app_inputs implement
-for role in implement; do
-  id=${role}_app_id secret=${role}_app_secret
-  command=$(app_token_command "${!secret}")
-  printf '%s\0%s\0%s\0' "${!id}" "${!secret}" "$command"
-done`
+role=implement
+id=${role}_app_id secret=${role}_app_secret
+command=$(app_token_command "${!secret}")
+printf '%s\0%s\0%s\0' "${!id}" "${!secret}" "$command"`
 	stdout, stderr, runErr := runGitHubAppsLib(lib, environ, script)
 	if runErr != nil {
 		return liveProofApp{}, fmt.Errorf("%s refused the App inputs (%v): %s", lib, runErr, stderr)
@@ -173,16 +170,10 @@ done`
 // its role needs, `contents`, which the review App does not hold. It returns the lib's notes, and
 // on a refusal the lib's reason, which names the App by role and id and never a token.
 func proveLiveProofApps(environ []string, work string, apps config.GitHubApps) (notes string, err error) {
-	block := "github_apps:\n"
-	for _, role := range []struct {
-		name string
-		app  config.GitHubApp
-	}{{"implement", apps.Implement}} {
-		// A JSON string is a YAML double-quoted scalar, as the lib's own write_github_apps quotes it.
-		id, _ := json.Marshal(role.app.AppID)
-		command, _ := json.Marshal(role.app.TokenCommand)
-		block += fmt.Sprintf("  %s:\n    app_id: %s\n    token_command: %s\n", role.name, id, command)
-	}
+	// A JSON string is a YAML double-quoted scalar, as the lib's own write_github_apps quotes it.
+	id, _ := json.Marshal(apps.Implement.AppID)
+	command, _ := json.Marshal(apps.Implement.TokenCommand)
+	block := "github_apps:\n" + fmt.Sprintf("  implement:\n    app_id: %s\n    token_command: %s\n", id, command)
 	if err := os.WriteFile(filepath.Join(work, "github-apps.yaml"), []byte(block), 0o600); err != nil {
 		return "", err
 	}
@@ -201,7 +192,7 @@ check_github_apps implement`
 
 // realGitHubApps is Legion's implement App: the lib's default, another deployment's through the
 // same two implement inputs the stage proofs read, the App's id and the secrets broker
-// github-app secret whose release the token command prints, as liveProofApps reads them from the
+// github-app secret whose release the token command prints, as liveProofImplementApp reads them from the
 // lib, and the block it returns proved against GitHub before a proof acts as it. The review App
 // is left out: its secret is human tier, and the proofs here act as the implement App alone. The
 // daemon runs the token command itself (appauth's token mode), so no key is resolved here.
@@ -222,7 +213,7 @@ func realGitHubApps(t *testing.T) config.GitHubApps {
 	// scripts/e2e/lib/github-apps.sh reads the two LEGION_E2E_IMPLEMENT_APP_* inputs, which the
 	// package's guard keeps (main_test.go) and Isolated drops, so an Isolated environment here
 	// would silently fall the lib back to its default App and prove an App no proof then acts as.
-	implement, err := liveProofApps(os.Environ())
+	implement, err := liveProofImplementApp(os.Environ())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,11 +228,11 @@ func realGitHubApps(t *testing.T) config.GitHubApps {
 	return apps
 }
 
-// TestLiveProofAppsReadTheLib proves liveProofApps, ungated: with no input set it answers exactly
+// TestLiveProofAppsReadTheLib proves liveProofImplementApp, ungated: with no input set it answers exactly
 // the implement App the lib's default_implement_app_* assignments hold, each set input replaces
 // its value, and a malformed or empty input is refused naming the input and never its value.
 // What it asserts of the lib's defaults is the implement pair alone. The lib still holds the
-// review pair as well, because six shell scripts read both roles, but liveProofApps no longer
+// review pair as well, because six shell scripts read both roles, but liveProofImplementApp no longer
 // names the review role, so the lib's review defaults are no longer this proof's business;
 // scripts/e2e/lib/app-logins.test.ts proves them.
 func TestLiveProofAppsReadTheLib(t *testing.T) {
@@ -270,7 +261,7 @@ func TestLiveProofAppsReadTheLib(t *testing.T) {
 		t.Fatalf("%s assigns %d of the two default_implement_app_* values, want both: %v", githubAppsLib, len(defaults), defaults)
 	}
 
-	implement, err := liveProofApps(with())
+	implement, err := liveProofImplementApp(with())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,7 +273,7 @@ func TestLiveProofAppsReadTheLib(t *testing.T) {
 		t.Errorf("the implement App's token command reads %q, want `agent-secrets %s --ttl 12h --reason=… -- …`", implement.tokenCommand, implement.secret)
 	}
 
-	implement, err = liveProofApps(with(
+	implement, err = liveProofImplementApp(with(
 		"LEGION_E2E_IMPLEMENT_APP_ID=101", "LEGION_E2E_IMPLEMENT_APP_SECRET=EXAMPLE_IMPLEMENT_APP",
 	))
 	if err != nil {
@@ -302,35 +293,34 @@ func TestLiveProofAppsReadTheLib(t *testing.T) {
 		t.Fatal(err)
 	}
 	release := `{"installations":{"acme":{"installation_id":1,"token":"ghs_stub","expires_at":"2026-11-03T13:00:00Z"}}}`
-	for role, app := range map[string]liveProofApp{"implement": implement} {
-		secret := "EXAMPLE_" + strings.ToUpper(role) + "_APP"
-		for _, ask := range []struct {
-			owner, repos, readOnly, args string
-		}{
-			{"", "", "", secret + " --ttl 12h --reason=legion-live-proof-github-app-token -- sh -c printf %s \"$" + secret + "\""},
-			{"acme", "", "", secret + " --ttl 12h --reason=legion-live-proof-github-app-token --github-owner acme -- sh -c printf %s \"$" + secret + "\""},
-			{"acme", "legion", "", secret + " --ttl 12h --reason=legion-live-proof-github-app-token --github-owner acme --github-repo legion -- sh -c printf %s \"$" + secret + "\""},
-			{"acme", "legion nats-server", "1", secret + " --ttl 12h --reason=legion-live-proof-github-app-token --github-owner acme --github-repo legion --github-repo nats-server --github-read-only -- sh -c printf %s \"$" + secret + "\""},
-			{"acme", "", "1", secret + " --ttl 12h --reason=legion-live-proof-github-app-token --github-owner acme --github-read-only -- sh -c printf %s \"$" + secret + "\""},
-		} {
-			args := filepath.Join(t.TempDir(), "args")
-			run := exec.Command("sh", "-c", app.tokenCommand)
-			run.Env = append(with(), "PATH="+stub+string(os.PathListSeparator)+os.Getenv("PATH"), "STUB_VALUE="+release, "STUB_ARGS="+args,
-				"LEGION_GITHUB_OWNER="+ask.owner, "LEGION_GITHUB_REPOS="+ask.repos, "LEGION_GITHUB_READ_ONLY="+ask.readOnly)
-			got, err := run.Output()
-			if err != nil || string(got) != release {
-				t.Errorf("the %s App's token command for owner %q repositories %q read-only %q printed %q (err %v), want the release", role, ask.owner, ask.repos, ask.readOnly, got, err)
-			}
-			if seen, _ := os.ReadFile(args); strings.TrimSpace(string(seen)) != ask.args {
-				t.Errorf("the %s App's token command for owner %q repositories %q read-only %q ran agent-secrets %q, want %q", role, ask.owner, ask.repos, ask.readOnly, strings.TrimSpace(string(seen)), ask.args)
-			}
+	role, app := "implement", implement
+	secret := "EXAMPLE_IMPLEMENT_APP"
+	for _, ask := range []struct {
+		owner, repos, readOnly, args string
+	}{
+		{"", "", "", secret + " --ttl 12h --reason=legion-live-proof-github-app-token -- sh -c printf %s \"$" + secret + "\""},
+		{"acme", "", "", secret + " --ttl 12h --reason=legion-live-proof-github-app-token --github-owner acme -- sh -c printf %s \"$" + secret + "\""},
+		{"acme", "legion", "", secret + " --ttl 12h --reason=legion-live-proof-github-app-token --github-owner acme --github-repo legion -- sh -c printf %s \"$" + secret + "\""},
+		{"acme", "legion nats-server", "1", secret + " --ttl 12h --reason=legion-live-proof-github-app-token --github-owner acme --github-repo legion --github-repo nats-server --github-read-only -- sh -c printf %s \"$" + secret + "\""},
+		{"acme", "", "1", secret + " --ttl 12h --reason=legion-live-proof-github-app-token --github-owner acme --github-read-only -- sh -c printf %s \"$" + secret + "\""},
+	} {
+		args := filepath.Join(t.TempDir(), "args")
+		run := exec.Command("sh", "-c", app.tokenCommand)
+		run.Env = append(with(), "PATH="+stub+string(os.PathListSeparator)+os.Getenv("PATH"), "STUB_VALUE="+release, "STUB_ARGS="+args,
+			"LEGION_GITHUB_OWNER="+ask.owner, "LEGION_GITHUB_REPOS="+ask.repos, "LEGION_GITHUB_READ_ONLY="+ask.readOnly)
+		got, err := run.Output()
+		if err != nil || string(got) != release {
+			t.Errorf("the %s App's token command for owner %q repositories %q read-only %q printed %q (err %v), want the release", role, ask.owner, ask.repos, ask.readOnly, got, err)
+		}
+		if seen, _ := os.ReadFile(args); strings.TrimSpace(string(seen)) != ask.args {
+			t.Errorf("the %s App's token command for owner %q repositories %q read-only %q ran agent-secrets %q, want %q", role, ask.owner, ask.repos, ask.readOnly, strings.TrimSpace(string(seen)), ask.args)
 		}
 	}
 
 	pasted := strings.Repeat("Zm9vYmFy", 9) // 72 base64 characters: a value, not a secret's name
 	refuses := func(t *testing.T, input, value string, extra ...string) {
 		t.Helper()
-		_, err := liveProofApps(append(with(input+"="+value), extra...))
+		_, err := liveProofImplementApp(append(with(input+"="+value), extra...))
 		if err == nil || !strings.Contains(err.Error(), input) || (value != "" && strings.Contains(err.Error(), value)) {
 			t.Errorf("%s=%q with %v: err = %v, want a refusal naming the input and not its value", input, value, extra, err)
 		}
@@ -361,7 +351,7 @@ func TestLiveProofAppsReadTheLib(t *testing.T) {
 		{"BASH_ENV=" + startup},
 		{"BASH_FUNC_printf%%=() { builtin printf 'HIJACK|'; builtin printf \"$@\"; }"},
 	} {
-		implement, err = liveProofApps(append(with(), inherited...))
+		implement, err = liveProofImplementApp(append(with(), inherited...))
 		if err != nil || implement.id != defaults["implement_app_id"] {
 			t.Errorf("with %v inherited the implement App is %q (err %v), want the lib's default %s", inherited, implement.id, err, defaults["implement_app_id"])
 		}
@@ -381,7 +371,7 @@ func TestLiveProofAppsReadTheLib(t *testing.T) {
 		if out, _ := probe.Output(); !strings.Contains(string(out), "bashrc ran") {
 			t.Skip("this bash reads no ~/.bashrc for a non-interactive shell under SSH_CLIENT (built without SSH_SOURCE_BASHRC), so this case cannot show --norc")
 		}
-		implement, err := liveProofApps(ssh)
+		implement, err := liveProofImplementApp(ssh)
 		if err != nil || implement.id != defaults["implement_app_id"] {
 			t.Errorf("under an ssh environment the implement App is %q (err %v), want the lib's default %s", implement.id, err, defaults["implement_app_id"])
 		}
@@ -398,7 +388,7 @@ func TestLiveProofAppsReadTheLib(t *testing.T) {
 		}
 		path := "PATH=" + stub + string(os.PathListSeparator) + os.Getenv("PATH")
 		kept := filepath.Join(stub, "kept.yaml")
-		implement, err := liveProofApps(with())
+		implement, err := liveProofImplementApp(with())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -462,7 +452,7 @@ write_github_apps implement`, want); err != nil {
 			if err := os.WriteFile(lib, []byte("source "+strconv.Quote(real)+"\n"+scratch.body+"\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			implement, err := liveProofAppsFrom(lib, with())
+			implement, err := liveProofImplementAppFrom(lib, with())
 			switch {
 			case scratch.refusal == "" && (err != nil || implement.id != defaults["implement_app_id"]):
 				t.Errorf("%s: got App %+v (err %v), want the lib's default implement App", scratch.name, implement, err)

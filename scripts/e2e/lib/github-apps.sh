@@ -5,7 +5,7 @@
 #
 # Sourced, never run. The caller defines fail (which exits) and note, and sets work, the run's
 # scratch directory. The gated Go proofs (packages/daemon/internal/api/real_github_test.go) are
-# callers too: liveProofApps defines fail and reads require_app_inputs's results and
+# callers too: liveProofImplementApp defines fail and reads require_app_inputs's results and
 # app_token_command from stdout, so neither of those two writes anything else to stdout, and
 # proveLiveProofApps defines fail and note, writes $work/github-apps.yaml itself from the block the
 # proofs act with, and runs check_github_apps on it. Each App is an id and the name of the secrets

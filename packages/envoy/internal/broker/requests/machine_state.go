@@ -599,26 +599,23 @@ func evaluate(set *policy.Set, names []string, requester policy.Requester, reaso
 		if err != nil {
 			return evaluation{}, err
 		}
-		outcome := d.Outcome
 		switch {
 		case d.Outcome == policy.Deny:
 			denied = true
 			if d.Reason != "" {
 				e.denials = append(e.denials, denial{name: name, reason: d.Reason})
 			}
+		case d.Outcome == policy.Approval && reasonless:
+			denied = true
+			d.Outcome = policy.Deny
+			e.denials = append(e.denials, denial{name: name, reason: policy.ReasonNoReason})
 		case d.Outcome == policy.Approval:
-			if reasonless {
-				denied = true
-				outcome = policy.Deny
-				e.denials = append(e.denials, denial{name: name, reason: policy.ReasonNoReason})
-				break
-			}
 			if e.approver != "" && e.approver != d.Approver {
 				return evaluation{}, ErrMixedApprovers
 			}
 			e.approver = d.Approver
 		}
-		e.decisions = append(e.decisions, SecretDecision{Name: name, Decision: outcome, Source: d.Source, AirlockDigest: set.Secrets[name].AirlockDigest})
+		e.decisions = append(e.decisions, SecretDecision{Name: name, Decision: d.Outcome, Source: d.Source, AirlockDigest: set.Secrets[name].AirlockDigest})
 	}
 	switch {
 	case denied:

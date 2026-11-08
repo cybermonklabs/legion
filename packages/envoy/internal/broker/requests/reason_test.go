@@ -29,6 +29,26 @@ func recordRows(t *testing.T, m *Machine) int {
 	return count
 }
 
+// deniedForWantOfAReason is the whole verdict on a request denied because it named no reason:
+// denied with no grant and no record, a detail naming secret as the name that refused it, no
+// credential-request record for anyone's page, and a request.created audit row that says denied.
+func deniedForWantOfAReason(t *testing.T, m *Machine, req Request, secret string) {
+	t.Helper()
+	want := secret + ": " + policy.ReasonNoReason
+	if req.State != "denied" || req.GrantID != nil || req.RecordID != nil {
+		t.Fatalf("Create(%s) with no reason = %+v; want it denied with no grant and no record", secret, req)
+	}
+	if req.Detail == nil || *req.Detail != want {
+		t.Fatalf("detail = %v, want %q", req.Detail, want)
+	}
+	if rows := recordRows(t, m); rows != 0 {
+		t.Fatalf("credential_requests rows = %d, want 0: a request no one is asked to approve opens no card", rows)
+	}
+	if state, _, _ := createdAudit(t, m, req.ID); state != "denied" {
+		t.Fatalf("request.created audit state = %q, want denied", state)
+	}
+}
+
 // withholdFromSession has the operator revoke the session's automatic grant of name, which
 // withholds it from that session from then on (RevokeByApprover's withhold), so the session's
 // next request for it is one a person has to approve.
@@ -71,24 +91,16 @@ func TestAReasonlessRequestOfANameThatWouldWaitIsDenied(t *testing.T) {
 
 			want := tc.secret + ": " + policy.ReasonNoReason
 			req, err := m.Create(ctx, enr, signRequest(t, m, key, "", tc.secret), "")
-			if err != nil || req.State != "denied" || req.GrantID != nil || req.RecordID != nil {
-				t.Fatalf("Create(%s) with no reason = %+v, %v; want it denied with no grant and no record", tc.secret, req, err)
+			if err != nil {
+				t.Fatalf("Create(%s) with no reason: %v", tc.secret, err)
 			}
+			deniedForWantOfAReason(t, m, req, tc.secret)
 			if len(req.Secrets) != 1 || req.Secrets[0].Name != tc.secret || req.Secrets[0].Decision != policy.Deny {
 				t.Fatalf("decisions = %+v; want %s decided %s", req.Secrets, tc.secret, policy.Deny)
-			}
-			if req.Detail == nil || *req.Detail != want {
-				t.Fatalf("Create's own detail = %v, want %q", req.Detail, want)
 			}
 			got, err := m.Get(ctx, req.ID)
 			if err != nil || got.Detail == nil || *got.Detail != want {
 				t.Fatalf("Get = %+v, %v; want the row's decision_detail to read %q", got, err, want)
-			}
-			if rows := recordRows(t, m); rows != 0 {
-				t.Fatalf("credential_requests rows = %d, want 0: a request no one is asked to approve opens no card", rows)
-			}
-			if state, _, _ := createdAudit(t, m, req.ID); state != "denied" {
-				t.Fatalf("request.created audit state = %q, want denied", state)
 			}
 
 			waiting, err := m.Create(ctx, enr, signRequest(t, m, key, "rotating the key", tc.secret), "")
@@ -110,22 +122,13 @@ func TestAReasonlessRequestIsDeniedByTheOneNameThatWouldWait(t *testing.T) {
 	ctx := context.Background()
 	m, enr, key, _ := newFixture(t)
 
-	const want = "DEEL_API_KEY: " + policy.ReasonNoReason
 	denied, err := m.Create(ctx, enr, signRequest(t, m, key, "", "AUTO_TOKEN", "DEEL_API_KEY"), "")
-	if err != nil || denied.State != "denied" || denied.GrantID != nil || denied.RecordID != nil {
-		t.Fatalf("Create(AUTO_TOKEN, DEEL_API_KEY) with no reason = %+v, %v; want it denied with no grant and no record", denied, err)
+	if err != nil {
+		t.Fatalf("Create(AUTO_TOKEN, DEEL_API_KEY) with no reason: %v", err)
 	}
-	if denied.Detail == nil || *denied.Detail != want {
-		t.Fatalf("detail = %v, want %q: the name that would wait is the one to name", denied.Detail, want)
-	}
+	deniedForWantOfAReason(t, m, denied, "DEEL_API_KEY")
 	if len(denied.Secrets) != 2 || denied.Secrets[0].Decision != policy.Automatic || denied.Secrets[1].Decision != policy.Deny {
 		t.Fatalf("decisions = %+v; want AUTO_TOKEN %s and DEEL_API_KEY %s", denied.Secrets, policy.Automatic, policy.Deny)
-	}
-	if rows := recordRows(t, m); rows != 0 {
-		t.Fatalf("credential_requests rows = %d, want 0", rows)
-	}
-	if state, _, _ := createdAudit(t, m, denied.ID); state != "denied" {
-		t.Fatalf("request.created audit state = %q, want denied", state)
 	}
 
 	granted, err := m.Create(ctx, enr, signRequest(t, m, key, "", "AUTO_TOKEN"), "")
@@ -170,21 +173,9 @@ func TestWhatCountsAsAReasonIsWhatIsLeftOfItTrimmed(t *testing.T) {
 				}
 				return
 			}
-			const want = "DEEL_API_KEY: " + policy.ReasonNoReason
-			if req.State != "denied" || req.GrantID != nil || req.RecordID != nil {
-				t.Fatalf("Create = %+v; want it denied with no grant and no record", req)
-			}
-			if req.Detail == nil || *req.Detail != want {
-				t.Fatalf("detail = %v, want %q", req.Detail, want)
-			}
+			deniedForWantOfAReason(t, m, req, "DEEL_API_KEY")
 			if len(req.Secrets) != 1 || req.Secrets[0].Decision != policy.Deny {
 				t.Fatalf("decisions = %+v; want DEEL_API_KEY decided %s", req.Secrets, policy.Deny)
-			}
-			if rows := recordRows(t, m); rows != 0 {
-				t.Fatalf("credential_requests rows = %d, want 0", rows)
-			}
-			if state, _, _ := createdAudit(t, m, req.ID); state != "denied" {
-				t.Fatalf("request.created audit state = %q, want denied", state)
 			}
 		})
 	}
