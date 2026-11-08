@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -62,6 +63,21 @@ const (
 	// answers would hold the lane and every later lifecycle row of the issue behind it — the
 	// starts that wait for the branch first of all.
 	issueBranchTimeout = 30 * time.Second
+	// claimReleaseWait is how long a claim release row rides out Dispatch's refusal to take the
+	// claim from its holder (claimHeldCode), measured from the row's own creation: the row
+	// carries no moment of its own, and row.CreatedAt is when the daemon decided the holder
+	// should let the issue go. An hour is longer than the claim can outlive a holder that
+	// stopped — Dispatch makes a claim takeable at the latest 20 minutes after its holder was
+	// last seen (packages/envoy/internal/dispatch/api/issue_claim.go, judgeClaim) — so a
+	// refusal that outlives it is a holder that did not stop, which no further attempt moves.
+	claimReleaseWait = time.Hour
+	// claimHeldCode and claimContendedCode are Dispatch's own spellings of the two 409s a claim
+	// release meets, neither of them final: ISSUE_CLAIMED is the holder still holding the claim,
+	// and CLAIM_CONTENDED is a holder that changed twice while the request ran, so Dispatch
+	// applied nothing (packages/envoy/internal/dispatch/api/issue_claim.go). No mechanism shares
+	// a value between this module and Dispatch's, so the spellings change together.
+	claimHeldCode      = "ISSUE_CLAIMED"
+	claimContendedCode = "CLAIM_CONTENDED"
 )
 
 // outbox runs each effect that the workflow transaction committed, one lane per issue and kind of
@@ -390,6 +406,16 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 		told = func() {
 			r.log.Log(scoped, level, "outbox READY merge ended without a merge; its architect is told", "row", row.ID, "issue", row.Issue, "error", cause)
 		}
+	case record.ClaimRelease:
+		// Nobody is told: the claim stands where it was, which is the state the daemon would
+		// have left behind had the row never run, and the issue's tree is over. The line is
+		// what says the row ended, since without it a 404 — an issue Dispatch no longer has —
+		// would end it in silence.
+		refusal, _ := dispatch.PermanentRefusal(cause)
+		told = func() {
+			r.log.Warn("outbox claim release refused by Dispatch and dropped", "row", row.ID, "issue", row.Issue,
+				"status", refusal.Status, "code", refusal.Code, "error", cause)
+		}
 	}
 	if err := pgx.BeginFunc(scoped, r.pool, func(tx pgx.Tx) error {
 		if follow != nil {
@@ -569,12 +595,25 @@ func retryBackoff(attempts int) time.Duration {
 // refuses where it still stands (ghautomerge.Refused), whose pull request GitHub has shown closed
 // or at another head than the record awaits for longer than ghautomerge.LagBound at now
 // (ghautomerge.Lagging.Stalled), or whose arm or merge-queue entry someone else removed without a
-// merge (ghautomerge.Removed), which a retry must not undo.
+// merge (ghautomerge.Removed), which a retry must not undo. A claim release is the shared
+// Dispatch rule with two 409s carved out of it: ISSUE_CLAIMED is the holder still holding the
+// claim, which the executor answers as a wait, and settle computes this before it tests
+// wait.ErrWaiting, so leaving it permanent would finish the row instead of waiting out the
+// holder; and CLAIM_CONTENDED is a holder that changed twice while the request ran, so Dispatch
+// judged nobody and applied nothing (issue_claim.go's answerContendedClaim), exactly as the
+// PARENT_CONTENDED the shared classifier already rides out. A 404, and every other coded 4xx,
+// stay permanent and end the row.
 func permanentRefusal(row record.OutboxRow, err error, now time.Time) bool {
 	switch row.Kind {
 	case record.OutboxKindDispatchStatus, record.OutboxKindDispatchMessage:
 		_, permanent := dispatch.PermanentRefusal(err)
 		return permanent
+	case record.OutboxKindClaimRelease:
+		refusal, permanent := dispatch.PermanentRefusal(err)
+		if !permanent || refusal.Status != http.StatusConflict {
+			return permanent
+		}
+		return refusal.Code != claimHeldCode && refusal.Code != claimContendedCode
 	case record.OutboxKindReadyMerge:
 		var refused *ghautomerge.Refused
 		var removed *ghautomerge.Removed
@@ -604,6 +643,8 @@ func (r *outbox) execute(ctx context.Context, row record.OutboxRow) error {
 		return r.status(ctx, row, value)
 	case record.MessagePost:
 		return r.message(ctx, row, value)
+	case record.ClaimRelease:
+		return r.releaseClaim(ctx, row)
 	case record.Notice:
 		return r.notice(ctx, row, value)
 	case record.ControllerNotice:
@@ -661,6 +702,114 @@ func (r *outbox) execute(ctx context.Context, row record.OutboxRow) error {
 		return fmt.Errorf("outbox row %d: no executor for %T", row.ID, payload)
 	}
 }
+
+// releaseClaim releases the Dispatch claim of an issue the daemon took out of the workflow
+// without closing it (record.ClaimRelease). The row carries the issue key alone, and the order
+// below is what the row stands on: the holder comes from Dispatch and the issue from the
+// daemon's own record when the row runs, never from when it was queued, because that is the
+// reading that is current when the DELETE is sent. A person who claimed the issue since, a
+// re-admission, a second park, or a holder that let the claim go on its own each end the row on
+// their own, with no generation or holder to fence it.
+//
+// Only a claim held by a session the daemon records in that issue's own tree is released. A
+// person's claim is theirs; the daemon's own session is a legitimate holder, as
+// workflow.Unresumable treats it; a session that claims in another tree owns the issue instead;
+// and a holder no claims row accounts for is one the daemon cannot attribute, which it leaves
+// and logs rather than take a claim from a session it knows nothing about.
+func (r *outbox) releaseClaim(ctx context.Context, row record.OutboxRow) error {
+	if r.dispatch == nil {
+		return errors.New("claim release executor has no Dispatch client")
+	}
+	issue, err := r.dispatch.GetIssue(ctx, row.Issue)
+	if err != nil {
+		return fmt.Errorf("read Dispatch issue %s before its claim release: %w", row.Issue, err)
+	}
+	switch {
+	case issue.ClaimUnread:
+		// Dispatch showed a claim naming no actor, so the read says neither who holds it nor
+		// that nobody does: there is nothing to hold the tree test against.
+		r.log.Warn("outbox claim release left a claim Dispatch names no actor for", "issue", row.Issue, "row", row.ID)
+		return nil
+	case issue.Claim == nil:
+		return nil
+	// The id a Dispatch claim carries is the session id the claims table holds, which is why the
+	// store reads below take Claim.ID and the daemon's own session is tested against it
+	// (workflow.Unresumable).
+	case issue.Claim.Kind != "session", issue.Claim.ID == dispatch.DaemonSession(row.Issue):
+		return nil
+	}
+	holder := issue.Claim
+	// release is whether the daemon's record attributes the holder to the issue's own tree, and
+	// unattributable whether it accounts for the holder at all. Both are read in one transaction,
+	// so the issue and the claims it is judged against are one state of the record.
+	var release, unattributable bool
+	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		recorded, err := r.records.Issue(ctx, tx, row.Issue)
+		if err != nil || recorded == nil {
+			return err
+		}
+		// The issue is live again, or its tree runs again at a later generation while Dispatch
+		// still shows it parked: the claim belongs to the run, not to the park this row answered.
+		if record.InWorkflow(*recorded) && !recorded.Lingers() {
+			return nil
+		}
+		inTree, err := r.records.SessionClaimsTree(ctx, tx, recorded.Tree, holder.ID)
+		if err != nil || inTree {
+			release = inTree
+			return err
+		}
+		elsewhere, err := r.records.SessionClaimsAnywhere(ctx, tx, holder.ID)
+		if err != nil || elsewhere {
+			return err
+		}
+		unattributable = true
+		return nil
+	}); err != nil {
+		return fmt.Errorf("read the record of %s before its claim release: %w", row.Issue, err)
+	}
+	if unattributable {
+		r.log.Warn("outbox claim release left a claim the daemon cannot attribute to the issue's tree",
+			"issue", row.Issue, "holder", holder.Holder())
+		return nil
+	}
+	if !release {
+		return nil
+	}
+	if err := r.dispatch.ReleaseClaim(ctx, row.Issue); err != nil {
+		var refusal *dispatch.Error
+		if errors.As(err, &refusal) && refusal.Status == http.StatusConflict && refusal.Code == claimHeldCode {
+			if r.now().UTC().Sub(row.CreatedAt) >= claimReleaseWait {
+				r.log.Warn("outbox claim release gave up: the holder still holds the claim an hour after the row was written",
+					"issue", row.Issue, "holder", holder.Holder())
+				return nil
+			}
+			return claimHeldWait(holder.Holder())
+		}
+		return fmt.Errorf("release the Dispatch claim of %s: %w", row.Issue, err)
+	}
+	return nil
+}
+
+// claimHeldWait is the wait a claim release answers while Dispatch still holds the claim for its
+// holder (claimHeldCode): the holder has not stopped yet, and the row tries again on its backoff
+// until claimReleaseWait is up. It deliberately wraps nothing of Dispatch's refusal, only its
+// holder's name: settle computes permanentRefusal before it tests wait.ErrWaiting, so a wait
+// errors.As could reach the *dispatch.Error through would be finished rather than retried.
+func claimHeldWait(holder string) error {
+	return claimHeld{err: wait.Errorf("the Dispatch claim is still held by %s", holder)}
+}
+
+// claimHeld is routine (routineWait), so the hour's attempts stay at debug: the backoff caps at
+// 64 seconds, so an hour costs about 57 of them, and every attempt from the seventh would
+// otherwise be logged as a warning (waitWarnAttempts). A holder that has not stopped yet is not
+// something an operator should be woken for; the hour running out is, and that line is its own.
+type claimHeld struct{ err error }
+
+func (c claimHeld) Error() string { return c.err.Error() }
+
+func (c claimHeld) Unwrap() error { return c.err }
+
+func (claimHeld) Routine() bool { return true }
 
 func (r *outbox) status(ctx context.Context, row record.OutboxRow, payload record.StatusWrite) error {
 	if r.dispatch == nil {
