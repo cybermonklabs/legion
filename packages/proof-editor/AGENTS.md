@@ -18,8 +18,8 @@ micromark-core-commonmark 2.0.3.
 
 The upstream modules this package imports at runtime are pinned at
 **dc6a852b2ab45463dc9d3d17762235450c8ff0d6** on the fork's cleaned `library` line, and come from
-`proof-sdk-dc6a852b2ab45463dc9d3d17762235450c8ff0d6.tgz`, committed beside this file and
-installed by `package.json`'s `"proof-sdk-upstream": "file:./proof-sdk-<commit>.tgz"`. It used to
+the tarball `proof-sdk-<commit>.tgz` committed beside this file and installed by
+`package.json`'s `"proof-sdk-upstream": "file:./proof-sdk-<commit>.tgz"`. It used to
 be a `github:` dependency, which made every `bun install` — every CI job's and every image
 build's — fetch 31 MB from api.github.com, so a bad minute there failed jobs that read nothing
 else of GitHub (INFRA-1545). Moving that pin changes nothing in the table; it changes what
@@ -29,9 +29,26 @@ else of GitHub (INFRA-1545). Moving that pin changes nothing in the table; it ch
 to run it. It downloads a commit's tree from `sjawhar/proof-sdk` and packs the `src/`,
 `package.json` and `LICENSE` of it that the git dependency used to install, and nothing else, to
 the same bytes on every run: the member list is sorted rather than left to readdir order, every
-entry carries the commit's author date and `0:0` ownership, and gzip writes no timestamp. So a
-pin is raised by running it for the new commit, deleting the old tarball, and letting
-`bun install` rewrite `bun.lock`, whose `sha512` for the dependency is the new file's.
+entry carries the commit's author date and `0:0` ownership, and gzip writes no timestamp.
+
+To raise the pin, in this directory:
+
+```bash
+bun run build-upstream-tarball <new commit>  # writes proof-sdk-<new commit>.tgz beside this file
+rm proof-sdk-<old commit>.tgz                # the tarball the pin leaves behind
+# then edit package.json: "proof-sdk-upstream": "file:./proof-sdk-<new commit>.tgz"
+bun install                                  # rewrites bun.lock, whose sha512 is the new file's
+```
+
+Nothing else names that file, and the reason is the glob. The `.gitignore` negation, every path
+filter under `.github/workflows/`, the `COPY` line of each image Dockerfile and
+`.github/scripts/ci_job_reads.py`'s read of the tarball all name `proof-sdk-*.tgz`, so each
+covers the new file as it covered the old one. The exact name is written in three places only,
+and in each of them it is the dependency's identity rather than a path to match: the tarball
+itself, `package.json`'s `file:` and `bun.lock`. Two steps are left after the install, and both
+belong to the sources rather than to the file's name: `bun run upstream-declarations` rewrites
+`upstream/` where the moved pin changed the surface (`tests/upstream-pin.test.ts` fails until it
+does), and the audit references above name the new commit.
 
 | File | What it is |
 | --- | --- |
@@ -347,8 +364,9 @@ fails: it reads the Dark Reader fix where it lives, renders each proof mark, red
 replacement in a happy-dom view, rejects an insert split by another, comments twice over one word,
 round-trips that through markdown and deletes one of the two, and renders one diagram of every
 Mermaid type while still refusing a flowchart that ends in an arrow. Moving the pin changes the
-tarball, the package dependency and the `.gitignore` negation that tracks it, `bun.lock`,
-`upstream/` and this file's source audit references; no Bun patch applies to this source.
+tarball, the package dependency, `bun.lock`, `upstream/` and this file's source audit
+references, and nothing else: the `.gitignore` negation and every path filter name the tarball
+by its glob (the procedure above). No Bun patch applies to this source.
 
 ## No build step
 

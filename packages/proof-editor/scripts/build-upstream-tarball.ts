@@ -110,9 +110,8 @@ function members(sourceDir: string): string[] {
  * 022 and under umask 002 is 644 and 664 on disk, and packs to two sha256 values from one commit.
  * The symbolic form leaves the executable bit alone — `a+r` adds read for everyone, `go-w` takes
  * write from group and other, and neither touches x — so a 644 file stays 644, a 664 one becomes
- * 644 and a 755 one stays 755. Every one of the 250 members of the committed
- * proof-sdk-dc6a852b2ab45463dc9d3d17762235450c8ff0d6.tgz is 644, so a rebuild of that pin writes
- * the bytes already committed.
+ * 644 and a 755 one stays 755. Every one of the 250 members of the committed proof-sdk tarball
+ * is 644, so a rebuild of the commit it was packed from writes the bytes already committed.
  */
 export function packUpstream({ sourceDir, mtime, outputPath }: PackOptions): void {
   const names = members(sourceDir);

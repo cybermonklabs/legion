@@ -150,8 +150,10 @@ def bun_job(job, workflow=CI):
         ("package.json", f"{install} reads the root manifest (workspaces package.json:19-31, patchedDependencies :50-59)"),
         ("bun.lock", f"{install} reads the lockfile to install the versions it records"),
         ("patches/**", f"{install} applies package.json:50-59 patchedDependencies"),
-        ("packages/proof-editor/proof-sdk-dc6a852b2ab45463dc9d3d17762235450c8ff0d6.tgz",
-         f"{install} installs proof-sdk-upstream from it (packages/proof-editor/package.json `file:` dependency)"),
+        ("packages/proof-editor/proof-sdk-*.tgz",
+         f"{install} installs proof-sdk-upstream from it (packages/proof-editor/package.json `file:` dependency). "
+         f"The glob, not the file name the pinned commit is in: a raise then changes the tarball, that `file:` "
+         f"name and bun.lock, and no filter and no entry here"),
         *[(f"{w}/package.json", f"{install}: package.json:19-31 lists {w}; a frozen install reads every workspace manifest")
           for w in WORKSPACES],
     )
@@ -1369,25 +1371,28 @@ GATES = [
 
     # The two jobs that prove the retry rather than the build (dispatch://INFRA-1545, T7):
     # download-retry runs each real site under .github/scripts/ci-fault-proxy.py, and
-    # download-retry-images builds the three Dockerfiles under the same fault. Each gate
-    # declares what those downloads read — the retry, the fault, the rig, the actions and the
-    # pins and manifests the sites themselves read — and nothing of what the downloads later
-    # build: worker-image and envoy-smoke prove the builds, these two prove that a download
-    # survives a faulting host, and no source file changes that behaviour.
+    # download-retry-images builds the three Dockerfiles under the same fault. Each gate declares
+    # the machinery alone — the retry loop, the fault, the rig, and the composite actions or
+    # Dockerfiles whose own downloads run under it — and nothing those downloads read. A
+    # manifest, a lockfile, a pin or a module file moves the bytes that come down the wire; what
+    # these two jobs prove is that a download survives a faulting host, which those bytes cannot
+    # change. So this gate declares none of them, and the filter beside it names none either:
+    # between them the bun install set, the Go workspace and the two tool pins made an ordinary
+    # dependency bump select a job of about two hours. The job that proves a version is the one
+    # that builds with it — worker-image and envoy-smoke for the images, every Bun and Go job for
+    # the rest.
     gate("download_retry", "download-retry", reads=reads(
+        (CI_RETRY, f"{at(RETRY_JOB, RETRY_GO_STEP)} and every other faulted site written as a run: step "
+                   f"source it and call retry_fetch"),
         (FAULT_PROXY, f"{at(RETRY_JOB, RETRY_FIRST_PROXY)} and every other proxy step of the job run it"),
         (RETRY_RIG, f"{at(RETRY_JOB, RETRY_FIRST_PROXY)} starts the proxy with it and "
                     f"{at(RETRY_JOB, RETRY_FIRST_REPORT)} reads its log with it"),
+        (".github/actions/setup-bun/**", at(RETRY_JOB, "./.github/actions/setup-bun")),
+        (".github/actions/install-jj/**", at(RETRY_JOB, "./.github/actions/install-jj")),
         (".github/actions/install-changie/**", at(RETRY_JOB, "./.github/actions/install-changie")),
         (".github/actions/install-claude-code/**", at(RETRY_JOB, "./.github/actions/install-claude-code")),
-        (".claude-code-pin", ".github/actions/install-claude-code/action.yml:16 pin=$(<.claude-code-pin)"),
-        ("go.work", f"{at(RETRY_JOB, RETRY_GO_STEP)}: the download runs in the root workspace"),
-        ("go.work.sum", f"{at(RETRY_JOB, RETRY_GO_STEP)}: the root workspace's sums"),
-        (f"{DAEMON}/go.mod", f"{at(RETRY_JOB, RETRY_GO_STEP)}: go.work binds it, so its requirements move what comes down"),
-        (f"{DAEMON}/go.sum", f"{at(RETRY_JOB, RETRY_GO_STEP)}: go.work binds it"),
-        (f"{ENVOY}/go.sum", f"{at(RETRY_JOB, RETRY_GO_STEP)}: the module whose download is faulted"),
-    ) + bun_job(RETRY_JOB) + install_jj(RETRY_JOB) + install_omp(RETRY_JOB)
-      + setup_go(RETRY_JOB, f"{ENVOY}/go.mod") + CI_SELF),
+        (".github/actions/install-omp/**", at(RETRY_JOB, "./.github/actions/install-omp")),
+    ) + CI_SELF),
 
     gate("download_retry_images", "download-retry-images", reads=reads(
         (f"{DAEMON}/docker/worker.Dockerfile", f"{at(IMAGES_JOB, IMAGES_WORKER_STEP)} builds it"),

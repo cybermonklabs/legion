@@ -53,7 +53,15 @@ COPY packages/dispatch/package.json packages/dispatch/package.json
 COPY packages/proof-editor/package.json packages/proof-editor/package.json
 # A dependency of that manifest, not a registry fetch: `file:./proof-sdk-<commit>.tgz` is the
 # upstream editor sources, so the install below reads them from the context rather than the network.
-COPY packages/proof-editor/proof-sdk-dc6a852b2ab45463dc9d3d17762235450c8ff0d6.tgz packages/proof-editor/
+# The glob, not the file name the pinned commit is in, so raising that pin edits nothing here.
+COPY packages/proof-editor/proof-sdk-*.tgz packages/proof-editor/
+# What the glob costs, and the line that pays it, as in packages/daemon/docker/worker.Dockerfile.
+# BuildKit builds every COPY source with AllowWildcard and AllowEmptyWildcard (buildkit v0.26.1
+# frontend/dockerfile/dockerfile2llb/convert.go:1669-1670), and a wildcard matching nothing
+# copies nothing and returns no error (solver/llbsolver/file/backend.go:248-252), where the
+# exact name this line used to carry failed at the cache key with `not found`.
+RUN set -- packages/proof-editor/proof-sdk-*.tgz; [ "$#" -eq 1 ] && [ -f "$1" ] \
+    || { echo "the build context holds $# files matching packages/proof-editor/proof-sdk-*.tgz, want 1" >&2; exit 1; }
 COPY packages/envoy/internal/dispatch/pmdoc/gen/package.json packages/envoy/internal/dispatch/pmdoc/gen/package.json
 COPY docs/site/package.json docs/site/package.json
 # The one fetch of this layer, and the largest in the file: Bun reads every dependency the root

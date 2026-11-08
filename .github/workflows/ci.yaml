@@ -113,8 +113,14 @@ name: CI
 # 60 s and then serving, where every site must recover, and once with it accepting the
 # connection and sending nothing, where every site must end at its own bound instead of hanging;
 # download-retry-images does the same for the inline retries of the three Dockerfiles. Their
-# filters name the retry, the fault and what those downloads read, and no source file, so an
-# ordinary change selects neither.
+# filters name the retry loop, the fault, the rig and the composite actions or Dockerfiles whose
+# own downloads run under that fault, and nothing those downloads read: a manifest, a lockfile, a
+# pin or a module file moves what comes down the wire, not whether it survives a faulting host,
+# so an ordinary change selects neither job. Neither runs in a merge group either — the `changes`
+# job's two outputs for them are 'false' there, and the comment above them says why a skip has to
+# come from the output rather than from the job's `if:`. download-retry costs about two hours, so
+# a queue that waited for it would hold every group behind it that long; the pull request's own
+# run proves the machinery, on the same files the group merges.
 #
 # Budgets: a retried download's worst case is five attempts at its own bound with the helper's
 # sleeps of 10, 20, 40 and 80 s between them, 5 x <bound> + 150 s; or, where curl makes the
@@ -387,8 +393,20 @@ jobs:
       go_notices: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_notices }}
       ci_filters: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_filters }}
       ci_images: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_images }}
-      download_retry: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.download_retry }}
-      download_retry_images: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.download_retry_images }}
+      # The two jobs that prove the retry machinery against an injected fault, and the only two
+      # outputs here that read the event before the filter: both are 'false' in a merge group, so
+      # neither job runs there. download-retry took 116.5 minutes at this branch's head, and a
+      # queue that waited for it would hold every group behind it for about two hours. The pull
+      # request's own run is where the machinery is proven, and it proves it on the same files the
+      # group merges.
+      #
+      # The event test is here rather than in either job's `if:` because an `if:` that declines a
+      # merge group leaves the job selected and skipped, and .github/scripts/ci-ok.sh:122 fails a
+      # selected job whose result is not success — :99 reads that skip as a disagreement between
+      # the filter and the `if:` the author must fix. Only :124 admits a skip, and only for a job
+      # `changes` did not select, which is what 'false' here makes these two.
+      download_retry: ${{ github.event_name == 'merge_group' && 'false' || github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.download_retry }}
+      download_retry_images: ${{ github.event_name == 'merge_group' && 'false' || github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.download_retry_images }}
     steps:
       # On pull_request dorny/paths-filter reads the file list from the API and never reads the
       # tree; merge_group diffs with git and needs the clone (a merge group diffs its
@@ -430,7 +448,10 @@ jobs:
             # root manifest, the lockfile, the patches package.json:50-59 applies, the tarball
             # packages/proof-editor/package.json installs proof-sdk-upstream from, and the
             # manifest of every workspace package.json:19-31 lists; .github/actions/setup-bun
-            # installs the Bun .bun-version pins.
+            # installs the Bun .bun-version pins. The tarball is named by its glob rather than by
+            # the commit in its file name, so raising that pin changes the tarball, the `file:`
+            # name in packages/proof-editor/package.json and bun.lock, and no path filter
+            # (packages/proof-editor/AGENTS.md writes the procedure).
             bun_install: &bun_install
               - 'package.json'
               - 'bun.lock'
@@ -443,7 +464,7 @@ jobs:
               - 'packages/pi-shared/package.json'
               - 'packages/claude-envoy/package.json'
               - 'packages/proof-editor/package.json'
-              - 'packages/proof-editor/proof-sdk-dc6a852b2ab45463dc9d3d17762235450c8ff0d6.tgz'
+              - 'packages/proof-editor/proof-sdk-*.tgz'
               - 'packages/dispatch/package.json'
               - 'packages/envoy/internal/dispatch/pmdoc/gen/package.json'
               - 'docs/site/package.json'
@@ -1689,7 +1710,7 @@ jobs:
               - 'package.json'
               - 'bun.lock'
               - 'patches/**'
-              - 'packages/proof-editor/proof-sdk-dc6a852b2ab45463dc9d3d17762235450c8ff0d6.tgz'
+              - 'packages/proof-editor/proof-sdk-*.tgz'
               - 'packages/envoy-client/package.json'
               - 'packages/broker-client/package.json'
               - 'packages/pi-envoy/package.json'
@@ -1808,7 +1829,7 @@ jobs:
               - 'patches/**'
               - 'packages/claude-envoy/**'
               - 'packages/proof-editor/package.json'
-              - 'packages/proof-editor/proof-sdk-dc6a852b2ab45463dc9d3d17762235450c8ff0d6.tgz'
+              - 'packages/proof-editor/proof-sdk-*.tgz'
               - 'packages/dispatch/package.json'
               - 'docs/site/package.json'
               - 'packages/daemon/**'
@@ -1956,29 +1977,39 @@ jobs:
               - '.github/actions/install-crane/**'
               - '.github/workflows/ci.yaml'
             # ci.yaml's download-retry job: the retry loop, the fault it is proved against, the
-            # rig that puts the two together, and the files the downloads it exercises read. It
-            # names no source file of anything those downloads later build: this job proves that
-            # a download survives a faulting host, and no source file changes that. The bun
-            # install set is the anchor every job that installs names, since this job runs that
-            # same install under the fault.
+            # rig that puts the two together, and the composite actions whose own downloads this
+            # job runs. It names nothing those downloads read — no manifest, no lockfile, no pin,
+            # no module file — because what the job proves is that a download survives a faulting
+            # host, and the bytes coming down the wire do not change whether it does. That is why
+            # the bun_install and the go_workspace anchors are gone from it, with the pins and the
+            # worker Dockerfile: each of them is what an ordinary change touches, and together
+            # they selected a job of about two hours on every dependency bump. The job that proves
+            # a version is the one that builds with it.
             download_retry:
+              # The job's own steps are written here: its sites, its bounds, the hosts each fault
+              # answers for and the budget each report holds its site to.
               - '.github/workflows/ci.yaml'
-              # Every composite action of this repository installs something, and each is a site
-              # this job runs under the fault.
-              - '.github/actions/**'
+              # The loop every faulted site retries through, the fault, and the rig that starts a
+              # proxy for one site, probes it and reads its log back.
               - '.github/scripts/ci-retry.sh'
               - '.github/scripts/ci-fault-proxy.py'
               - '.github/scripts/download-retry-proof.sh'
-              - *bun_install
-              # .github/actions/install-omp and .github/actions/install-claude-code read the pin
-              # each installs, and .github/actions/install-jj, which leaves the mise install-omp
-              # downloads through, reads the mise version and checksum the worker image pins.
-              - '.omp-pin'
-              - '.claude-code-pin'
-              - 'packages/daemon/docker/worker.Dockerfile'
-              # `go mod download` under the fault runs in the root workspace, whose module files
-              # decide what it downloads.
-              - *go_workspace
+              # The composite actions whose own downloads this job proves. Three are sites a
+              # fault is put in front of: install-changie's curl, install-omp's `mise install`
+              # and install-claude-code's `bun add`. The other two run unfaulted, and each is
+              # what a faulted site then runs on — setup-bun installs the Bun both Bun sites
+              # use, and install-jj leaves behind the mise install-omp installs its pin through.
+              # Named one by one rather than as .github/actions/**, which brought in
+              # install-crane, install-elan, install-pulumi, install-uv and pull-test-images,
+              # none of which this job runs. The ci-ok-report action its last step runs stays
+              # out, as it is out of every other filter of this file: it reports the verdict,
+              # and the `gh api` read this job proves is its own step's, written in that
+              # script's spelling.
+              - '.github/actions/setup-bun/**'
+              - '.github/actions/install-jj/**'
+              - '.github/actions/install-changie/**'
+              - '.github/actions/install-claude-code/**'
+              - '.github/actions/install-omp/**'
             # ci.yaml's download-retry-images job: the three Dockerfiles whose network RUN lines
             # carry the inline retry, the loop those copies mirror, the fault and the rig. Not
             # what the builds compile: worker-image and envoy-smoke prove the builds, and this
