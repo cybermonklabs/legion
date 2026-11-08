@@ -975,6 +975,11 @@ jobs:
           counts="$RUNNER_TEMP/selected-blobs/rows"
           report="$RUNNER_TEMP/report.json"
           jobs="$RUNNER_TEMP/jobs.json"
+          # What the step "Download every leg's blob report" concluded. It is read here, in the
+          # body, rather than in a step `env:` block, for the reason the shard job's head gives
+          # and which the `GH_TOKEN` export two lines below already follows. The missing-blob
+          # message reads it: a download that was refused is why no blob arrived for any leg.
+          downloaded="${{ steps.download-blobs.conclusion }}"
           # The run's own token, exported here rather than in an `env:` block, for the reason the
           # shard job's head gives. `actions: read` is the caller's, and ci.yaml's job that calls
           # this workflow already holds it.
@@ -1065,8 +1070,23 @@ jobs:
           echo "::notice title=dispatch-browser rows::the merged report holds $merged rows," \
             "against $printed_total printed by the legs (${line%, })"
           if [ -n "$missing" ]; then
-            echo "::error::no blob report arrived from:$missing;" \
-              "the merged report is short of those legs' rows"
+            # Where the download was refused, this step runs anyway - its `if:` is `always()` -
+            # and finds no blob for any leg, so the step above has already said the artifacts
+            # could not be downloaded and this one would then list every leg as though the legs
+            # produced nothing. Both lines are true and the one above comes first, but the last
+            # annotation is what a reader carries away: two true lines that leave a false
+            # impression are a reporting defect by this lane's own standard, so where that step
+            # concluded `failure` the reason named here is the refused download.
+            if [ "$downloaded" = failure ]; then
+              echo "::error::the legs' blob reports could not be downloaded, which is why the" \
+                "merged report is short of the rows of:$missing; the step above says what the" \
+                "download answered. This is a failed read of the run's artifacts and not a" \
+                "failed browser row: no row of the suite failed here, and the blobs those legs" \
+                "uploaded are still on the run for a re-run of this job to take."
+            else
+              echo "::error::no blob report arrived from:$missing;" \
+                "the merged report is short of those legs' rows"
+            fi
             exit 1
           fi
           # Every owed blob arrived, so the two counts are of the same rows and must be equal:

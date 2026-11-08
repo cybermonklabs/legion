@@ -39,9 +39,11 @@
 # The read goes through gh-read.sh's ladder, which the inline read had none of, and each attempt
 # is bounded by `timeout 30`, which the ladder does not bound: a host that accepts the
 # connection and then sends nothing would otherwise hang the step for as long as the job has.
-# A read refused after the ladder names the endpoint, the status gh last printed and the run
-# attempt, and says in those words that it is a failed read and not a failed row - the merge
-# job's readings name legs, and a reader who meets one of these lines must not take it for one.
+# A read refused after the ladder names the endpoint, the status printed by the last attempt
+# the ladder made - the attempt that decided the failure, and no earlier one - how many
+# attempts that was and the run attempt, and says in those words that it is a failed read and
+# not a failed row - the merge job's readings name legs, and a reader who meets one of these
+# lines must not take it for one.
 #
 # Everything it reads comes from the process environment - GH_TOKEN, GITHUB_REPOSITORY,
 # GITHUB_RUN_ID and GITHUB_RUN_ATTEMPT, as Actions sets them and as the merge job's `run:` body
@@ -92,35 +94,52 @@ case "$mode" in
     # This run's own attempt, which is the attempt this job is reporting on.
     route="repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
     route="$route/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100"
-    # The number of attempts the ladder makes. It mirrors gh-read.sh's own `for attempt in 1 2
-    # 3` loop, it is named only by the refusal line below, and it must move when that loop does.
-    read_attempts=3
 
     pages=$(mktemp)
-    read_stderr=$(mktemp)
-    trap 'rm -f "$pages" "$read_stderr"' EXIT
-    # gh's own output reaches the job log whether the read answered or was refused, as the
-    # inline read's did; it is captured first only so that the refusal line below can read the
-    # status out of it, and `cat` puts every attempt's back unchanged.
+    # One stderr file per attempt, and a count of the attempts the ladder made. gh_read runs
+    # its three attempts itself and sends every attempt's stderr straight to this script's,
+    # with nothing between them, so one capture file cannot be taken apart again afterwards:
+    # this wrapper is what keeps the attempts apart. It counts the attempt, gives gh that
+    # attempt's own stderr file and then puts the file back on stderr, so the job log still
+    # holds every attempt's words in order, as the inline read's did, and each attempt is
+    # still bounded by `timeout 30`, which the ladder itself does not bound.
+    work=$(mktemp -d)
+    trap 'rm -rf "$pages" "$work"' EXIT
+    printf '0' > "$work/attempts"
     set +e
-    gh_read timeout 30 gh api --paginate --slurp "$route" > "$pages" 2> "$read_stderr"
+    gh_read bash -c '
+      attempt=$(( $(cat "$1/attempts") + 1 ))
+      printf "%s" "$attempt" > "$1/attempts"
+      timeout 30 gh api --paginate --slurp "$2" 2> "$1/stderr.$attempt"
+      status=$?
+      cat "$1/stderr.$attempt" >&2
+      exit "$status"
+    ' bash "$work" "$route" > "$pages"
     read_status=$?
     set -e
-    cat "$read_stderr" >&2
+    attempts=$(cat "$work/attempts")
 
     if [ "$read_status" -ne 0 ]; then
-      # The last match, so the last attempt's status wins: the attempts before it were refused
-      # for reasons of their own, and the one that decided the failure is the one to name. No
-      # match at all is a refusal gh printed no status for - a resolution failure, a timeout -
-      # and the line says that rather than naming a status that was never answered.
-      http=$(grep -o 'HTTP [0-9][0-9][0-9]' "$read_stderr" | tail -n 1 || true)
+      # The last attempt's own file and no other, so the status named is the one printed by the
+      # attempt that decided the failure. Until 2026-11-08 one file held every attempt's stderr
+      # and the last match in it won, which is an earlier attempt's status the moment two
+      # attempts are refused for different reasons: an attempt answering
+      # `gh: Server Error (HTTP 502)` followed by two answering `error connecting to
+      # api.github.com`, which carries no status, produced a line naming HTTP 502 - a status
+      # that decided nothing and that sends a reader to GitHub's API health. No match in that
+      # one file is a refusal gh printed no status for - a resolution failure, a timeout - and
+      # the line says that rather than naming a status that was never answered. grep's own
+      # stderr is dropped because an attempt the wrapper could not start at all leaves no file,
+      # and the answer for that case is the same words.
+      http=$(grep -o 'HTTP [0-9][0-9][0-9]' "$work/stderr.$attempts" 2>/dev/null |
+        tail -n 1 || true)
       if [ -n "$http" ]; then
         answered="the last attempt answered $http"
       else
         answered="gh printed no HTTP status"
       fi
       echo "::error::this run's jobs could not be read, so the legs this lane owed are" \
-        "unknown: GET $route was refused and $answered; the ladder made $read_attempts" \
+        "unknown: GET $route was refused and $answered; the ladder made $attempts" \
         "attempts, all on run attempt $GITHUB_RUN_ATTEMPT. This is a failed read of the jobs" \
         "API and not a failed browser row: no row of the suite failed here, and re-running" \
         "this job reads the list again."
