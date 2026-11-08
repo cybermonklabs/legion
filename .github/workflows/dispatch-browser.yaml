@@ -133,10 +133,17 @@ jobs:
     # The three cache steps are measured rather than allowed for: they are in the "every other
     # step summed" row of the table above.
     #
-    # So the job budget is this job's measured duration plus the arithmetic of its one slowest
-    # retried step: 2005 s, the figure main derives for this job from the install step's 1320 s,
-    # the browser step's 600 s and 85 s of every other step, plus the install step's whole
-    # wait - 1170 s of bounded apt, 13.6 s of unpack, 0.4 s of decoder guard, 4650 s of browser
+    # So the job budget is this job's own duration plus the arithmetic of its one slowest
+    # retried step. The first term is not the measured maximum of the table above, which is
+    # 583 s: it is main's own budget for this job, 2005 s, which main derives from the install
+    # step's 1320 s, the browser step's 600 s and 85 s of every other step. That term is kept
+    # rather than tightened, and it is named here rather than passed off as a measurement: it
+    # stands above the measurement, so it only loosens this ceiling, and it holds the install
+    # step's own allowance a second time where the second term adds that step in full. Charging
+    # the job twice is refused below where it would tighten nothing and hide a stall; here it
+    # errs in the one direction a job budget may err, which is late.
+    # The second term is the install step's whole wait - 1170 s of bounded apt, 13.6 s of
+    # unpack, 0.4 s of decoder guard, 4650 s of browser
     # download (five attempts of 900 s with the 150 s of sleeps between them) and 1.6 s for the
     # list check, 5835.6 s, the arithmetic .github/scripts/playwright-install.sh's head derives
     # and that step's 98 minutes round up. 2005 + 5835.6 = 7840.6 s -> 131 min.
@@ -1140,7 +1147,7 @@ jobs:
     needs: [shard, alone, multiprocess, visual]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
-    # The budget is measured, and two of this job's steps now carry one of their own. Over the
+    # The budget is measured, and four of this job's steps now carry one of their own. Over the
     # 32 concluded `dispatch-browser / merge` jobs of the last 43 completed ci.yaml runs, read
     # from the jobs API on 2026-11-08, the job's maximum is 34 s: job 128737694112 of run
     # 42481906495, 12:57:25Z to 12:57:59Z.
@@ -1151,22 +1158,28 @@ jobs:
     # 4 s, Reading two 1 s, Reading three 1 s, the verdict step 1 s, the ci-ok report 1 s, Post
     # setup-bun 1 s, Post checkout 1 s, Complete job 1 s.
     #
-    # Three steps carry a budget of their own, each from its own retry arithmetic rather than a
+    # Four steps carry a budget of their own, each from its own retry arithmetic rather than a
     # measured maximum (dispatch://INFRA-1545): the workspace install, 5 x 180 + 150 = 1050 s
-    # -> 18 min, and the two that run
-    # .github/scripts/dispatch-browser-run-reads.sh - "Reading one, the rows" and "Report a
-    # refused blob download as a refused read" - which wait on that script's own `retry_fetch`
-    # ladder at 40 s an attempt, 5 x 40 + 150 = 350 s -> 6 min. A step reaches any of those
-    # ceilings only against a host that accepts the connection and then sends nothing, which is
-    # the one fault where every attempt runs its whole bound.
+    # -> 18 min; the two that run .github/scripts/dispatch-browser-run-reads.sh - "Reading one,
+    # the rows" and "Report a refused blob download as a refused read" - at 6 min each, which
+    # is what rule 8 asks of any step that calls that file, since it credits the file's whole
+    # ladder to every step that runs it whichever mode the step asks for, 5 x 40 + 150 = 350 s;
+    # and the ci-ok report, whose two `gh api` ladders are 2 x (5 x 30 + 150) = 600 s -> 12 min.
+    # Only one of the four really waits on a host here: "Reading one, the rows" makes the jobs
+    # read, where `blobs-refused` is one `echo` and makes no request at all. A step reaches any
+    # of those ceilings only against a host that accepts the connection and then sends nothing,
+    # which is the one fault where every attempt runs its whole bound.
     #
-    # So by the rule in this file's head the job's budget is this job's measured duration plus
-    # the arithmetic of its one slowest retried step: 240 s, the 4 minutes this job carries on
-    # main and far above that 34 s maximum, plus the workspace install's 1050 s.
+    # So by the rule in this file's head the job's budget is this job's own duration plus the
+    # arithmetic of its one slowest retried step. The first term is not the 34 s maximum above:
+    # it is main's own budget for this job, 240 s, kept rather than tightened and named here
+    # rather than passed off as a measurement, since it stands above the measurement and so
+    # only loosens this ceiling. Those 4 minutes already hold "Reading one", as the shard job's
+    # first term holds its install. The second term is the workspace install's 1050 s.
     # 240 + 1050 = 1290 s -> 22 min, which stands above the largest step budget, the install's
     # 18, so no job budget fires before a step's own.
     #
-    # The sum of all three is deliberately not the model, for the reason ci.yaml's "Budgets"
+    # The sum of all four is deliberately not the model, for the reason ci.yaml's "Budgets"
     # note gives: a job whose every download exhausts every attempt at once has met an outage of
     # the host rather than the transient fault a retry survives, and in an outage failing at the
     # job's budget is the right behaviour, where each step's own budget is where that step's
