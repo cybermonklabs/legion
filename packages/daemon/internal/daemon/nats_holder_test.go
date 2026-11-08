@@ -564,9 +564,9 @@ func (h *heardPullRequests) repositories() []string {
 // notificationsStreamOn creates Envoy's notification stream on the NATS server at url, through
 // workflowJetStream's client, and returns that client and the stream: the stream this project's
 // durable consumers are opened on, which every test here creates before the daemon connects,
-// and the client a test publishes through or reads another stream with. The stream's own shape
-// is written here and nowhere else — workflowNATS is this on the package's shared server — so a
-// test cannot boot a daemon against a stream of another shape.
+// and the client a test publishes through or reads another stream with. The tests that use it
+// — workflowNATS is this on the package's shared server — cannot boot a daemon against a
+// stream of another shape.
 func notificationsStreamOn(t *testing.T, url string) (jetstream.JetStream, jetstream.Stream) {
 	t.Helper()
 	js := workflowJetStream(t, url)

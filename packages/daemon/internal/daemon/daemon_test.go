@@ -1632,14 +1632,14 @@ func workflowConfig(t *testing.T, natsURL string) config.Config {
 	return cfg
 }
 
-// workflowJetStream is the package's one connect to a test NATS server: the client, closed when
-// t ends, and a JetStream handle on it. Every caller that needs a stream as well goes through
-// notificationsStreamOn, which is this plus the shape this project's durable consumers are
-// opened on.
+// workflowJetStream is the connect this package's stream helpers share: the client, closed when
+// t ends, and a JetStream handle on it. notificationsStreamOn is this plus the shape this
+// project's durable consumers are opened on. Other tests of the package still dial the server
+// themselves.
 //
-// The connect is given 5 s. A timeout is a bound and not a wait, so the wider one costs a
-// passing test nothing; the narrower one it replaced only decided a server this pod is slow to
-// answer, where a second is a flake and not a finding.
+// The connect is given 5 s, for every caller of this helper. A timeout is a bound and not a
+// wait, so the wider one costs a passing test nothing; the second it replaced here only decided
+// a server this pod is slow to answer, where a second is a flake and not a finding.
 func workflowJetStream(t *testing.T, natsURL string) jetstream.JetStream {
 	t.Helper()
 	conn, err := nats.Connect(natsURL, nats.Timeout(5*time.Second))
