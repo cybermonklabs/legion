@@ -121,18 +121,18 @@ need() {
 # directory` out of the job log. The `|| true` on the `grep` covers something else: under
 # `pipefail` a `grep` that matches nothing exits 1, which is any attempt whose stderr holds no
 # `HTTP` status. Measured 2026-11-08 against the test file beside this one: the `cat`'s
-# `|| true` taken off alone reads 129 passed, 8 failed, all of it in the two cases that stage
-# a killed wrapper; the `grep`'s taken off alone reads 125 passed, 12 failed, eight of those
-# in three cases where every file exists; and both `2>/dev/null` taken off read 137 passed, 0
-# failed, where a by-hand drive of a killed wrapper against that last copy prints that one
-# line beside the refusal line and the suite prints neither.
+# `|| true` taken off alone fails 8 checks, four in each of the two cases that stage a killed
+# wrapper; the `grep`'s taken off alone fails 12, eight of them in three cases where every
+# file exists; and both `2>/dev/null` taken off fail none, where a by-hand drive of a killed
+# wrapper against that last copy prints that one line beside the refusal line and the suite
+# prints neither.
 #
 # Two shapes reach the fourth branch. One is a wrapper killed during an attempt: the
 # redirection has made `stderr.<n>` and nothing has written `status.<n>`, and where gh had
 # printed a status on that stderr before the wrapper died, the attempt is described from it
 # rather than by these words. The test file's case "a killed wrapper whose gh had printed a
 # status before it died" is what holds that order: a copy asking whether the status file is
-# missing before it greps the stderr reads 135 passed, 2 failed, measured 2026-11-08. The
+# missing before it greps the stderr fails 2 checks, both in that case, measured 2026-11-08. The
 # other shape is a wrapper that never ran at all - driven 2026-11-08 with gh_read given a
 # command that does not exist, the line read `attempt 0, which decided the failure, left no
 # exit status on record, printing no HTTP status; the ladder made 0 attempts`, `attempts`
@@ -237,7 +237,7 @@ case "$mode" in
       # GitHub rather than left hanging. Not seen is not impossible, and nothing here rules it
       # out: such an attempt is reported as the bound and its status is not reported at all.
       # No test fixes this order either - measured 2026-11-08, a copy reading the stderr first
-      # and the 124 second reads 137 passed, 0 failed - so what holds it is this paragraph.
+      # and the 124 second fails no check - so what holds it is this paragraph.
       deciding=$(describe_attempt "$work" "$attempts")
       earlier=""
       for ((n = 1; n < attempts; n++)); do

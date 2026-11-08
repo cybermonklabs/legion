@@ -106,9 +106,9 @@ real_timeout=$(type -P timeout) ||
 # host without `/proc` is refused here by name too, in the same shape. Measured 2026-11-08 with
 # this guard taken off a scratch copy and the kill given a `/proc` path that is not there, the
 # awk cannot open the file, the kill is given no pid and fails, and both cases that stage a
-# killed wrapper go red: three checks in the first and two in the second, the suite reading
-# 132 passed, 5 failed. Two of those reds name the staging, and none of them names the host
-# this was run on, which is what this line is for.
+# killed wrapper go red: 5 checks fail, three in the first and two in the second. Two of those
+# reds name the staging, and none of them names the host this was run on, which is what this
+# line is for.
 [ -r /proc/self/stat ] ||
   { echo "dispatch-browser-run-reads.test.sh needs /proc (Linux) for the cases that stage a" \
       "killed wrapper" >&2
@@ -239,7 +239,7 @@ check "and keeps its conclusion" "$(is "$(field 14 .conclusion)" skipped)"
 check "the merge job carries a null leg" "$(is "$(field 15 .leg)" null)"
 check "and its conclusion, which is null while it runs" "$(is "$(field 15 .conclusion)" null)"
 check "the visual job is kept, with a null leg" "$(is "$(field 18 .leg)" null)"
-check "and its conclusion, so a run whose only red job is that one is named" \
+check "and keeps its conclusion, so reading three can name it when it is red" \
   "$(is "$(field 18 .conclusion)" failure)"
 check "the caller's own jobs are dropped" \
   "$(is "$(jq -r '[.[] | select(.id == 16 or .id == 17)] | length' "$work/out.json")" 0)"
@@ -328,14 +328,14 @@ echo "case: an attempt the 30 s bound ended is reported as a timeout and not as 
 # The first of the three cases that read the script's own `timeout 30` as the bound firing,
 # through the stand-in timeout they opt into per call. When this case was written nothing else
 # in this file held the bound: `timeout 30` taken out of a scratch copy of the script on
-# 2026-11-08 left the suite reading `76 passed, 0 failed`. The two cases that stage a killed
-# wrapper now fail without it as well, the kill they stage reaching the wrapper only through
-# the `timeout` process between gh and the wrapper, and with `timeout 30` taken out of a
-# scratch copy on 2026-11-08 the suite reads 105 passed, 32 failed. The stand-in answers 124
-# at once, so this case costs none of the 90 s a hanging gh under the real bound would, and it
-# bites either way the bound could go - dropped, and the stand-in is never called at all;
-# changed, and the 30 it recorded is not a 30. The gh here would answer, so the bound is the
-# only thing that can fail this drive.
+# 2026-11-08 failed no check. The two cases that stage a killed wrapper now fail without it
+# as well, the kill they stage reaching the wrapper only through the `timeout` process between
+# gh and the wrapper, and with `timeout 30` taken out of a scratch copy on 2026-11-08 32 checks
+# fail, in this case and the five after it, the two killed-wrapper cases among them. The
+# stand-in answers 124 at once, so this case costs none of the 90 s a hanging gh under the real
+# bound would, and it bites either way the bound could go - dropped, and the stand-in is never
+# called at all; changed, and the 30 it recorded is not a 30. The gh here would answer, so the
+# bound is the only thing that can fail this drive.
 #
 # All three calls are asked for, so every attempt ends at the bound and the line has one thing
 # to say about all three. That is why this case alone holds nothing about which attempt the
@@ -368,10 +368,11 @@ echo "case: the bound ended the first two attempts and the third answered a stat
 # with HTTP 502, so a script that read the deciding attempt's words from `status.1`, or that
 # took a 124 on any attempt as the one that decided, would call this read a timeout it was
 # not. Both mutations were made of a scratch copy of the script on 2026-11-08: the copy
-# reading `status.1` reads 129 passed, 8 failed and the copy taking a 124 on any attempt as
-# the deciding one reads 134 passed, 3 failed. With this case and the one after it taken out
-# of the file, measured the same day, the second copy passes what is left - 121 passed, 0
-# failed - while the first is still caught in two later cases, reading 117 passed, 4 failed.
+# reading `status.1` fails 8 checks and the copy taking a 124 on any attempt as the deciding
+# one fails 3, all of them in this case. With this case and the one after it taken out of the
+# file, measured the same day, the second copy fails nothing that is left, while the first is
+# still caught in two later cases, failing 4 checks: two in the 127 case and two in the first
+# killed-wrapper case.
 fixture 3 "HTTP 502"
 touch "$work/stub-timeout.0" "$work/stub-timeout.1"
 drive jobs "$work/out.json"
@@ -418,10 +419,10 @@ echo "case: the deciding attempt exited a status that is neither 1 nor 124"
 # (`timeout: failed to run command 'gh'`) and the attempt exits 137 for a gh that was killed,
 # and nothing refused anything in either. Every other case that reaches that branch exits 1,
 # so without this one a script printing a fixed `exited 1, printing no HTTP status` passes the
-# whole file: measured 2026-11-08, that copy reads 135 passed, 2 failed with this case here,
-# and with this case taken out of the file it reads 128 passed, 0 failed, which is what the
-# file as it stands reads without this case too. The stand-in timeout answers with the status
-# the case wrote in its file, 127 here, and with 124 where a case wrote no status at all.
+# whole file: measured 2026-11-08, that copy fails 2 checks, both in this case, and with this
+# case taken out of the file it fails none, which is what the file as it stands fails without
+# this case too. The stand-in timeout answers with the status the case wrote in its file, 127
+# here, and with 124 where a case wrote no status at all.
 fixture 3 "HTTP 502"
 printf '%s\n' 127 > "$work/stub-timeout.2"
 drive jobs "$work/out.json"
@@ -449,14 +450,13 @@ echo "case: an attempt whose wrapper was killed leaves no exit status on record"
 #
 # The lock is not an empty one: with the fourth branch removed, so that the third branch
 # prints the empty status it holds, this case reads `exited , printing no HTTP status` and the
-# suite reads 135 passed, 2 failed, measured 2026-11-08.
+# suite fails 2 checks, both in this case, measured 2026-11-08.
 #
 # The kill is held as well, because a kill that does not reach the wrapper leaves a case that
 # holds nothing: the stand-in then says it could not stage the case and exits 70, the wrapper
 # writes that 70 to `status.3`, and the line reads `exited 70, printing no HTTP status`. With
 # the kill pointed at pid 999999 in a scratch copy on 2026-11-08, both cases that stage a
-# killed wrapper go red - three checks here and two in the one after it - and the suite reads
-# 132 passed, 5 failed.
+# killed wrapper go red - three checks here and two in the one after it, 5 in all.
 #
 # The attempt is still counted, because the wrapper counts it before it runs gh, so the line
 # says three attempts and names the two that answered.
@@ -488,7 +488,7 @@ echo "case: a killed wrapper whose gh had printed a status before it died"
 # described from its own stderr and the fourth branch is not what it gets. This case is what
 # holds the order of those two reads: measured 2026-11-08, a copy of describe_attempt asking
 # whether the status file is missing before it greps the stderr calls this attempt one that
-# left no exit status on record, and reads 135 passed, 2 failed.
+# left no exit status on record, and fails 2 checks, both in this case.
 #
 # The order is held only while the kill reaches the wrapper. A kill that failed leaves the
 # `HTTP 503` in `stderr.3` and a 70 in `status.3`, and the line still reads `answered HTTP
