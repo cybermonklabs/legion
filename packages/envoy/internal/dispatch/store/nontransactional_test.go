@@ -41,6 +41,57 @@ func waitForInvalidIndex(t *testing.T, store *Store, name string) uint32 {
 	}
 }
 
+// migrationKeyLocks counts the advisory locks held on migrationLockKey in this store's database,
+// read on a connection of its own, which is the only connection that can answer the question: a
+// session is never made to wait on a key it holds itself, so pg_try_advisory_xact_lock asked
+// through store.Pool succeeds on the very pooled connection that leaked a session-level key.
+func migrationKeyLocks(t *testing.T, store *Store) int {
+	t.Helper()
+	ctx := context.Background()
+	conn, err := pgx.ConnectConfig(ctx, store.Pool.Config().ConnConfig)
+	if err != nil {
+		t.Fatalf("connect to count the migration key's advisory locks: %v", err)
+	}
+	defer conn.Close(ctx)
+	var held int
+	if err := conn.QueryRow(ctx, `select count(*) from pg_locks where locktype = 'advisory'
+		and database = (select oid from pg_database where datname = current_database())
+		and classid = 0 and objid = $1::bigint and objsubid = 1`, migrationLockKey).Scan(&held); err != nil {
+		t.Fatalf("count the migration key's advisory locks: %v", err)
+	}
+	return held
+}
+
+// waitForQueuedMigrationKey gives want runners at most bound to queue for migrationLockKey and
+// returns how many of them Postgres was seen holding ungranted. It fails nothing when none
+// appear, because the two worlds this file tells apart queue differently: a runner that waits by
+// polling pg_try_advisory_lock (lockMigrations) has nothing open between two tries and so shows
+// in no catalog at all, while a runner blocked in pg_advisory_lock - the wait these tests refuse
+// - is an ungranted advisory row here.
+//
+// The bound is what makes both worlds reach the release the same way: the blocking one returns
+// as soon as its rows appear, the polling one when the bound runs out, and in both the key is
+// released with every runner already queued for it, which is the order under test. The bound is
+// far longer than the milliseconds two goroutines need to reach their first try, and nothing the
+// polling world shows could confirm that arrival instead.
+func waitForQueuedMigrationKey(t *testing.T, store *Store, want int, bound time.Duration) int {
+	t.Helper()
+	ctx := context.Background()
+	deadline := time.Now().Add(bound)
+	for {
+		var queued int
+		if err := store.Pool.QueryRow(ctx, `select count(*) from pg_locks where locktype = 'advisory'
+			and database = (select oid from pg_database where datname = current_database())
+			and classid = 0 and objid = $1::bigint and objsubid = 1 and not granted`, migrationLockKey).Scan(&queued); err != nil {
+			t.Fatalf("count the sessions queued for the migration key: %v", err)
+		}
+		if queued >= want || time.Now().After(deadline) {
+			return queued
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func TestMigrateConcurrentIndexHoldsMigrationLockAndRetriesAnUnrecordedBuild(t *testing.T) {
 	ctx := context.Background()
 	store := openEmptyTestStore(t)
@@ -50,6 +101,11 @@ func TestMigrateConcurrentIndexHoldsMigrationLockAndRetriesAnUnrecordedBuild(t *
 	}
 	if err := store.migrate(ctx, fstest.MapFS{"migrations/0001_things.up.sql": set["migrations/0001_things.up.sql"]}); err != nil {
 		t.Fatal(err)
+	}
+	// This run was transactional throughout, so both of its pooled connections had to unlock
+	// before they went back: nothing closed one out of the pool to cover for them.
+	if held := migrationKeyLocks(t, store); held != 0 {
+		t.Fatalf("migration lock leaked: %d advisory locks on the key after a transactional run", held)
 	}
 	// The event trigger runs in the build's own session and checks the lock while it builds.
 	// Recording the version fails once, after the concurrent statement has already committed.
@@ -96,10 +152,11 @@ func TestMigrateConcurrentIndexHoldsMigrationLockAndRetriesAnUnrecordedBuild(t *
 	if retriedOID != oid || schemaVersion(t, store) != 2 {
 		t.Fatalf("retry rebuilt the index or failed to record version: oid %d -> %d, version %d", oid, retriedOID, schemaVersion(t, store))
 	}
-	// Closing the owned connection must release even a failed attempt's session-level lock.
-	var locked bool
-	if err := store.Pool.QueryRow(ctx, "select pg_try_advisory_xact_lock(8150001)").Scan(&locked); err != nil || !locked {
-		t.Fatalf("migration lock leaked: %v, %v", locked, err)
+	// Every connection that took the key gives it back, the failed attempt's included: the two
+	// transactional sites unlock before they release, and the concurrent build's owned connection
+	// closes.
+	if held := migrationKeyLocks(t, store); held != 0 {
+		t.Fatalf("migration lock leaked: %d advisory locks on the key after migrate returned", held)
 	}
 }
 
@@ -115,6 +172,12 @@ func TestMigrateTransactionalFailureStillRollsBackTheWholeMigration(t *testing.T
 	}
 	if schemaVersion(t, store) != 0 {
 		t.Fatal("failed transactional migration recorded its version")
+	}
+	// Both sites of this run held the key on a pooled connection - the version table's and the
+	// failing migration's - and nothing hijacked and closed one afterwards, so this is where a
+	// connection handed back to the pool while it still holds the key shows up.
+	if held := migrationKeyLocks(t, store); held != 0 {
+		t.Errorf("migration lock leaked: %d advisory locks on the key after a failed migration", held)
 	}
 }
 
@@ -212,16 +275,14 @@ func TestMigrateRecordsTheVersionAfterATimedOutConcurrentBuild(t *testing.T) {
 	}
 }
 
-// The production case INFRA-1973 reports, against the real migration set: a killed boot left an
-// INVALID embeddings_window_owner behind, and 20261102233630 must drop it, build the index again
-// and record its version instead of refusing on every later boot.
-func TestWindowOwnerMigrationDropsAnInvalidLeftoverAndRebuilds(t *testing.T) {
+// leaveInvalidWindowOwner seeds two window rows under one owner key and fails a UNIQUE
+// concurrent build of embeddings_window_owner over them, which leaves exactly the INVALID index
+// a killed or timed-out build of 20261102233630 leaves behind, and returns that leftover's oid
+// (as pgmigrate's leaveInvalidIndex does for its own table). Both window-owner tests start from
+// this one fixture, so a correction to it reaches both.
+func leaveInvalidWindowOwner(t *testing.T, store *Store) uint32 {
+	t.Helper()
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, 20261102233625)
-	// Two window rows under one owner key, which a UNIQUE build of the owner index cannot
-	// validate: the build fails over them and leaves exactly the INVALID index a killed or
-	// timed-out build of the real migration leaves.
 	if _, err := store.Pool.Exec(ctx, `insert into embeddings (kind, id, text_snapshot, content_hash) values
 		('document_block', 'owner#0', 'first block', 'hash-first'),
 		('document_block', 'owner#1', 'second block', 'hash-second')`); err != nil {
@@ -232,18 +293,26 @@ func TestWindowOwnerMigrationDropsAnInvalidLeftoverAndRebuilds(t *testing.T) {
 		t.Fatal("the unique build over two rows of one owner succeeded; it must fail and leave an INVALID index")
 	}
 	var leftover uint32
-	var validBefore bool
+	var valid bool
 	if err := store.Pool.QueryRow(ctx, `select indexrelid, indisvalid from pg_index
-		where indexrelid = 'embeddings_window_owner'::regclass`).Scan(&leftover, &validBefore); err != nil {
+		where indexrelid = 'embeddings_window_owner'::regclass`).Scan(&leftover, &valid); err != nil {
 		t.Fatalf("read the leftover embeddings_window_owner from pg_index: %v", err)
 	}
-	if validBefore {
+	if valid {
 		t.Fatal("the fixture left a VALID embeddings_window_owner: the migration would have nothing to recover from")
 	}
-	migrateThrough(t, store, 20261102233630)
+	return leftover
+}
+
+// checkRebuiltWindowOwner is what 20261102233630 must leave behind once it has recovered from
+// leaveInvalidWindowOwner's leftover: a VALID partial index of that name on embeddings, and a
+// different index from the leftover, since recovering means dropping that one and building
+// again. Both window-owner tests check the rebuild through here.
+func checkRebuiltWindowOwner(t *testing.T, store *Store, leftover uint32) {
+	t.Helper()
 	var rebuilt uint32
 	var valid, partial, onEmbeddings bool
-	if err := store.Pool.QueryRow(ctx, `select indexrelid, indisvalid, indpred is not null, indrelid = 'embeddings'::regclass
+	if err := store.Pool.QueryRow(context.Background(), `select indexrelid, indisvalid, indpred is not null, indrelid = 'embeddings'::regclass
 		from pg_index where indexrelid = 'embeddings_window_owner'::regclass`).Scan(&rebuilt, &valid, &partial, &onEmbeddings); err != nil {
 		t.Fatalf("read embeddings_window_owner from pg_index: %v", err)
 	}
@@ -253,6 +322,17 @@ func TestWindowOwnerMigrationDropsAnInvalidLeftoverAndRebuilds(t *testing.T) {
 	if rebuilt == leftover {
 		t.Errorf("embeddings_window_owner kept the leftover's oid %d: the INVALID index was not dropped and built again", leftover)
 	}
+}
+
+// The production case INFRA-1973 reports, against the real migration set: a killed boot left an
+// INVALID embeddings_window_owner behind, and 20261102233630 must drop it, build the index again
+// and record its version instead of refusing on every later boot.
+func TestWindowOwnerMigrationDropsAnInvalidLeftoverAndRebuilds(t *testing.T) {
+	store := openEmptyTestStore(t)
+	migrateThrough(t, store, 20261102233625)
+	leftover := leaveInvalidWindowOwner(t, store)
+	migrateThrough(t, store, 20261102233630)
+	checkRebuiltWindowOwner(t, store, leftover)
 	if got := schemaVersion(t, store); got != 20261102233630 {
 		t.Errorf("schema version = %d, want 20261102233630", got)
 	}
@@ -296,25 +376,7 @@ func TestTwoBootsAtOnceOverAnInvalidLeftoverNeverDeadlock(t *testing.T) {
 			ctx := context.Background()
 			first := openEmptyTestStore(t)
 			migrateThrough(t, first, 20261102233625)
-			// Two window rows under one owner key, so a UNIQUE build of the owner index fails
-			// over them and leaves exactly the INVALID index a killed build leaves behind.
-			if _, err := first.Pool.Exec(ctx, `insert into embeddings (kind, id, text_snapshot, content_hash) values
-				('document_block', 'owner#0', 'first block', 'hash-first'),
-				('document_block', 'owner#1', 'second block', 'hash-second')`); err != nil {
-				t.Fatalf("seed two window rows of one owner: %v", err)
-			}
-			if _, err := first.Pool.Exec(ctx, `create unique index concurrently embeddings_window_owner on embeddings
-				(kind, split_part(id, '#', 1)) where kind in ('document_block', 'comment_block', 'message_block', 'ask_part')`); err == nil {
-				t.Fatal("the unique build over two rows of one owner succeeded; it must fail and leave an INVALID index")
-			}
-			var validBefore bool
-			if err := first.Pool.QueryRow(ctx, `select indisvalid from pg_index
-				where indexrelid = 'embeddings_window_owner'::regclass`).Scan(&validBefore); err != nil {
-				t.Fatalf("read the leftover embeddings_window_owner from pg_index: %v", err)
-			}
-			if validBefore {
-				t.Fatal("the fixture left a VALID embeddings_window_owner: the migration would have nothing to recover from")
-			}
+			leftover := leaveInvalidWindowOwner(t, first)
 			second, err := Open(ctx, first.Pool.Config().ConnString())
 			if err != nil {
 				t.Fatalf("open the second booting process's store: %v", err)
@@ -334,14 +396,7 @@ func TestTwoBootsAtOnceOverAnInvalidLeftoverNeverDeadlock(t *testing.T) {
 					t.Errorf("one of two boots at once: %v", err)
 				}
 			}
-			var valid, partial, onEmbeddings bool
-			if err := first.Pool.QueryRow(ctx, `select indisvalid, indpred is not null, indrelid = 'embeddings'::regclass
-				from pg_index where indexrelid = 'embeddings_window_owner'::regclass`).Scan(&valid, &partial, &onEmbeddings); err != nil {
-				t.Fatalf("read embeddings_window_owner from pg_index: %v", err)
-			}
-			if !valid || !partial || !onEmbeddings {
-				t.Errorf("rebuilt owner index: valid %v, partial %v, on embeddings %v", valid, partial, onEmbeddings)
-			}
+			checkRebuiltWindowOwner(t, first, leftover)
 			var records int
 			if err := first.Pool.QueryRow(ctx, "select count(*) from schema_migrations where version = 20261102233630").Scan(&records); err != nil {
 				t.Fatalf("count the owner migration's version records: %v", err)
@@ -349,6 +404,96 @@ func TestTwoBootsAtOnceOverAnInvalidLeftoverNeverDeadlock(t *testing.T) {
 			if records != 1 {
 				t.Errorf("schema_migrations holds %d records of 20261102233630, want 1", records)
 			}
+			// Two runners took the key at every migration of the set; both boots having
+			// returned, neither session may still hold it.
+			if held := migrationKeyLocks(t, first); held != 0 {
+				t.Errorf("migration lock leaked: %d advisory locks on the key after two boots", held)
+			}
 		})
+	}
+}
+
+// A boot already blocked on the migration key when the concurrent build starts. That order is
+// the one a runner waiting for the key inside Postgres deadlocks on, and it is the one
+// TestTwoBootsAtOnceOverAnInvalidLeftoverNeverDeadlock does not reach at this site: in a plain
+// race the two boots arrive at the concurrent migration together, so the loser's wait begins
+// after the winner's build has taken the snapshot it waits for older transactions out of, and
+// the build never waits for the loser. With applyNonTransactionalMigration's wait made blocking
+// again, forty of those races passed.
+//
+// A third session of the test's own holds the key first, so both runners are queued for it
+// before either can build. When that session lets go, the winner starts CREATE INDEX
+// CONCURRENTLY while the loser is still inside the statement it was waiting in - a statement
+// whose snapshot is older than the build's phase, which the build must therefore see out, while
+// the loser waits for the key the builder holds. PostgreSQL 18.6 ends that cycle with "deadlock
+// detected" (SQLSTATE 40P01), which is no lock timeout and so fails the boot that gets it
+// (RetryLockTimeouts). Polling for the key (lockMigrations) keeps no snapshot between two tries,
+// so both runners finish.
+//
+// The two runners call applyMigration rather than migrate because migrate's first wait for the
+// key is createVersionTable's: with a third session holding the key both boots would queue
+// there instead, and the winner would then hold the key from that wait right through its build,
+// so the loser could never be waiting at the site this test is about.
+func TestABootAlreadyWaitingForTheKeyDoesNotDeadlockTheConcurrentBuild(t *testing.T) {
+	ctx := context.Background()
+	first, databaseURL := migratedToOne(t)
+	set := fstest.MapFS{
+		"migrations/0001_things.up.sql": censusBase["migrations/0001_things.up.sql"],
+		"migrations/0002_things_kind.up.sql": {Data: []byte(
+			"-- pgmigrate:non-transactional\ncreate index concurrently if not exists things_kind on things (kind);")},
+	}
+	migrations, err := pgmigrate.Load(set, "migrations")
+	if err != nil {
+		t.Fatalf("load the set the two runners apply: %v", err)
+	}
+	pending := migrations[1]
+	if !pending.NonTransactional || pending.Version != 2 {
+		t.Fatalf("the pending migration is %s at version %d, non-transactional %v; want the concurrent 0002",
+			pending.Name, pending.Version, pending.NonTransactional)
+	}
+	// A session of the test's own, not one of the pools': it holds the key while both runners
+	// queue for it, and no pooled connection may be left holding a session-level key.
+	holder, err := pgx.Connect(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("connect the session that holds the key first: %v", err)
+	}
+	t.Cleanup(func() { holder.Close(context.WithoutCancel(ctx)) })
+	if _, err := holder.Exec(ctx, "select pg_advisory_lock($1)", migrationLockKey); err != nil {
+		t.Fatalf("take the migration key on the test's own session: %v", err)
+	}
+	second, err := Open(ctx, first.Pool.Config().ConnString())
+	if err != nil {
+		t.Fatalf("open the second booting process's store: %v", err)
+	}
+	t.Cleanup(second.Pool.Close)
+	applied := make(chan error, 2)
+	for _, booting := range []*Store{first, second} {
+		go func(booting *Store) { applied <- booting.applyMigration(ctx, pending) }(booting)
+	}
+	queued := waitForQueuedMigrationKey(t, first, 2, 2*time.Second)
+	t.Logf("%d of the 2 runners were waiting for the key inside Postgres when it was released", queued)
+	if _, err := holder.Exec(ctx, "select pg_advisory_unlock($1)", migrationLockKey); err != nil {
+		t.Fatalf("release the key the test's own session holds: %v", err)
+	}
+	holder.Close(ctx)
+	for range 2 {
+		if err := <-applied; err != nil {
+			t.Errorf("a runner queued for the key before the build began: %v", err)
+		}
+	}
+	var valid bool
+	if err := first.Pool.QueryRow(ctx, `select indisvalid from pg_index
+		where indexrelid = 'things_kind'::regclass`).Scan(&valid); err != nil {
+		t.Fatalf("read things_kind from pg_index: %v", err)
+	}
+	if !valid {
+		t.Error("things_kind is INVALID: the concurrent build did not finish")
+	}
+	var records int
+	if err := first.Pool.QueryRow(ctx, "select count(*) from schema_migrations where version = $1::bigint", pending.Version).Scan(&records); err != nil {
+		t.Fatalf("count the migration's version records: %v", err)
+	}
+	if records != 1 {
+		t.Errorf("schema_migrations holds %d records of version %d, want 1", records, pending.Version)
 	}
 }
