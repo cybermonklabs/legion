@@ -318,7 +318,16 @@ jobs:
         # leg's blob report, which is what the upload steps below read: a file this step wrote
         # into the checkout would leave it dirty afterwards. The blob report goes beside the
         # list reporter's output, so a green run reports what it ran too.
-        timeout-minutes: 9
+        #
+        # Twenty-two minutes, which is what the suite now needs per shard rather than what it
+        # needed when this leg was written. `fullyParallel` splits a shard by row count and not
+        # by cost (e2e/playwright.config.ts), and the large-document rows cost tens of seconds
+        # each on the 406,000-character document at 4x CPU throttling, so a shard that draws
+        # several of them runs far longer than one that draws none: measured on run
+        # 42421190109, shard 3 of 4 reached row 134 of its 307 in the nine minutes it was then
+        # given and was killed with the rest unrun, which is about twenty-one minutes of work.
+        # The job's own 33 above still bounds the leg.
+        timeout-minutes: 22
         run: |
           # $RUNNER_TEMP holds everything this step writes, the run directory of e2e/run.ts
           # (mkdtempSync in os.tmpdir(), :183) among it, which is what the upload steps below
