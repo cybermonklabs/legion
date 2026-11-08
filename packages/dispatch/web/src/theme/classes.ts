@@ -59,14 +59,14 @@ function registerText(
 export const CANVAS = pair(P.SLATE_50, P.SLATE_950);
 export const SURFACE = pair(P.WHITE, P.SLATE_900);
 export const SURFACE_MUTED = pair(P.SLATE_100, P.SLATE_800);
-export const SURFACE_MUTED_STRONG = pair(P.SLATE_200, P.SLATE_700);
+export const SURFACE_MUTED_STRONG = pair(P.SKY_200, P.SLATE_700);
 /** An input recessed inside a `SURFACE` card needs to read as a level below it. */
 export const SURFACE_RECESSED = pair(P.WHITE, P.SLATE_950);
 
 export const surfaceBg = "bg-white dark:bg-slate-900";
 export const surfaceMutedBg = "bg-slate-100 dark:bg-slate-800";
 export const surfaceMutedHoverBg = "hover:bg-slate-100 dark:hover:bg-slate-800";
-export const surfaceMutedStrongBg = "bg-slate-200 dark:bg-slate-700";
+export const surfaceMutedStrongBg = "bg-sky-200 dark:bg-slate-700";
 export const surfaceRecessedBg = "bg-white dark:bg-slate-950";
 /** An `animate-pulse` skeleton placeholder: `SURFACE_MUTED`'s shades reused directly (both
  * `bg-slate-100` and `bg-slate-200` skeletons in the app already resolve to the same
