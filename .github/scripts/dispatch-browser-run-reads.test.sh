@@ -6,9 +6,11 @@
 # Each case writes the one slurped page a stand-in `gh` answers with - the array of page objects
 # `gh api --paginate --slurp` prints - and how many calls that stand-in refuses first, then runs
 # the real script with the stand-in first on PATH and reads the file it wrote, the arguments the
-# stand-in recorded and the lines the script printed. The ladder's waits are driven down with
-# GH_RETRY_SECONDS=1, which makes them 1 s and then 2 s, and two cases measure them with bash's
-# own SECONDS.
+# stand-in recorded and the lines the script printed. The ladder's waits are the case's own,
+# `retry_seconds` seconds for the first and twice that for the second, which `fixture` resets to
+# 0 so that only the three cases about the waits pay for one: two set it to 1 and read that the
+# drive took that long with bash's own SECONDS, and the control sets it to 10 and reads that the
+# drive took no time at all, which a script that slept whatever it was given would fail.
 #
 # NO CASE REACHES THE NETWORK: every case is files, a stand-in gh and the script.
 #
@@ -76,12 +78,15 @@ happy_page() {
 }
 
 # fixture <refused calls> [<stderr of a refused call>]: a fresh call log and no out-file, a
-# stand-in that refuses that many calls and then answers, and the happy page for the answer.
+# stand-in that refuses that many calls and then answers, and the happy page for the answer. It
+# also puts the ladder's wait back to 0, so a case that does not ask for one waits not at all
+# and the three that do set `retry_seconds` themselves after calling it.
 fixture() {
   rm -rf "$work/calls" "$work/out.json"
   mkdir -p "$work/calls"
   printf '%s\n' "${1:-0}" > "$work/refuse"
   printf '%s\n' "${2:-HTTP 502}" > "$work/stderr"
+  retry_seconds=0
   happy_page
 }
 
@@ -92,7 +97,7 @@ drive() {
   local started=$SECONDS
   set +e
   out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 \
-    GITHUB_RUN_ATTEMPT=$run_attempt GH_RETRY_SECONDS=1 "$read_script" "$@" 2>&1)
+    GITHUB_RUN_ATTEMPT=$run_attempt GH_RETRY_SECONDS=$retry_seconds "$read_script" "$@" 2>&1)
   status=$?
   set -e
   seconds=$((SECONDS - started))
@@ -106,6 +111,7 @@ errors() { grep -c '::error::' <<<"$out" || true; }
 error_line() { grep '::error::' <<<"$out" || true; }
 wrote_out_file() { [ -e "$work/out.json" ] && echo yes || echo no; }
 at_least() { [ "$1" -ge "$2" ] && echo true || echo false; }
+at_most() { [ "$1" -le "$2" ] && echo true || echo false; }
 
 echo "case: this attempt's jobs become the four fields the readings consume"
 fixture 0
@@ -137,7 +143,7 @@ check "under this repository and run" "$(contains "$(args)" 'repos/o/r/actions/r
 check "a hundred to a page" "$(contains "$(args)" 'jobs?per_page=100')"
 check "and holds no filter=all" "$(is "$(contains "$(args)" 'filter=all')" false)"
 check "slurps the pages, since gh refuses --slurp beside --jq" \
-  "$(contains "$(args)" -- '--paginate --slurp')"
+  "$(contains "$(args)" '--paginate --slurp')"
 
 echo "case: a project name holding a digit, a capital and a space is one leg"
 # The capture takes any project that holds no `)`. It read `[a-z-]*` once, which silently
@@ -152,6 +158,7 @@ check "holding the project whole" "$(is "$(field 21 .leg)" 'alone-Edge 2 alone')
 
 echo "case: every attempt refused with HTTP 502"
 fixture 3 "HTTP 502"
+retry_seconds=1
 drive jobs "$work/out.json"
 check "fails the step" "$(is "$status" 1)"
 check "writes no out-file" "$(is "$(wrote_out_file)" no)"
@@ -184,6 +191,7 @@ check "while gh's own words reach the log" \
 
 echo "case: refused once, answered on the second attempt"
 fixture 1
+retry_seconds=1
 drive jobs "$work/out.json"
 check "exits 0" "$(is "$status" 0)"
 check "tried twice" "$(is "$(calls)" 2)"
@@ -194,11 +202,15 @@ check "and waited the ladder's first second" "$(at_least "$seconds" 1)"
 
 echo "case: the negative control, a gh that answers at once"
 # Without this, the two cases above would pass for a script that slept whatever it was given.
+# The knob is 10 here and the gh answers at once, so an unconditional sleep would take 10 s and
+# this drive takes none; the bound is an upper one because SECONDS counts whole seconds and a
+# drive that straddles a tick reads 1 however short it was.
 fixture 0
+retry_seconds=10
 drive jobs "$work/out.json"
 check "exits 0" "$(is "$status" 0)"
 check "calls gh once" "$(is "$(calls)" 1)"
-check "and waits not at all" "$(is "$seconds" 0)"
+check "and waits not at all" "$(at_most "$seconds" 1)"
 
 echo "case: blobs-refused says the legs' blobs could not be downloaded"
 fixture 0
@@ -233,7 +245,7 @@ check "and writes no out-file" "$(is "$(wrote_out_file)" no)"
 
 fixture 0
 set +e
-out=$(PATH="$work/bin:$PATH" GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 \
+out=$(PATH="$work/bin:$PATH" GH_TOKEN= GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 \
   GITHUB_RUN_ATTEMPT=$run_attempt "$read_script" jobs "$work/out.json" 2>&1)
 status=$?
 set -e
