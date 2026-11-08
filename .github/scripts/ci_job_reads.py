@@ -489,7 +489,7 @@ FINALIZERS_SCRIPT = "GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 29m 
 DAEMON_RACE_PACKAGES = ["internal/daemon", "internal/sessionproxy", "internal/launcher"]
 DAEMON_RACE_STEP = "Test the concurrent packages under the race detector"
 DAEMON_RACE_PKGS = [f"./{p}/" for p in DAEMON_RACE_PACKAGES]
-DAEMON_RACE_TEXT = "go test -count=1 -race -timeout 30m " + " ".join(DAEMON_RACE_PKGS)
+DAEMON_RACE_TEXT = "go test -count=1 -race -timeout 15m " + " ".join(DAEMON_RACE_PKGS)
 DAEMON_PLAIN_STEP = "Test the Go daemon"
 DAEMON_PLAIN_PATTERN = "/(" + "|".join(DAEMON_RACE_PACKAGES) + ")$"
 DAEMON_PLAIN_SCRIPT = f"""\
@@ -842,8 +842,7 @@ GATES = [
         ("packages/*/.changie.yaml", f"{at('test', FOLD_CHECK_STEP)}: fold-check renders each listed package's fragments with that package's own changie configuration"),
         ("packages/*/.changes/unreleased/**", f"{at('test', FOLD_CHECK_STEP)}: fold-check renders every fragment a listed package holds"),
         (".github/actions/pull-test-images/**", at("test", "Pull the NATS test container images")),
-        (f"{DAEMON}/internal/testnats/nats.go", f"{at('test', 'Pull the NATS test container images')} const Image"),
-        (f"{ENVOY}/internal/testnats/nats.go", f"{at('test', 'Pull the NATS test container images')} const HubImage"),
+        (f"{ENVOY}/internal/testnats/nats.go", f"{at('test', 'Pull the NATS test container images')}: consts Image, HubImage"),
     ) + envoy_client_dep("scripts/e2e/lib/nats-stream.ts:16-18, operator-dispatch.ts:16-21, envoy-bridge.ts:11; "
                          "scripts/dispatch/ask-census.ts:10-15 (tsc -p scripts/dispatch)")
       + install_jj("test") + install_omp("test") + setup_go("test", f"{DAEMON}/go.mod")
