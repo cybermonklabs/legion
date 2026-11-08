@@ -298,6 +298,45 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-infra-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
 
+  # The elan home ci.yaml's airlock-lean job restores, the Lean toolchain that job's `lake build`
+  # needs. No setup-go and no Go family: the key is the content of the lean-toolchain the model
+  # names, since that file is what decides which toolchain elan installs, so the entry is
+  # refreshed when the model moves to another Lean and at no other time. install-elan puts elan
+  # under $RUNNER_TEMP/elan and `lake build` downloads the named toolchain into it on a miss,
+  # which is the whole of what is saved.
+  elan:
+    runs-on: ubuntu-24.04
+    # One toolchain download and one build of the model on a miss; a run that finds the key
+    # costs the checkout alone.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - id: elan-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/elan
+          key: elan-${{ runner.os }}-${{ hashFiles('packages/envoy/internal/broker/airlock/lean/lean-toolchain') }}
+          lookup-only: true
+
+      - if: steps.elan-cache.outputs.cache-hit != 'true'
+        uses: ./.github/actions/install-elan
+
+      # The build is what downloads the toolchain lean-toolchain names, so the entry holds what
+      # airlock-lean will find rather than elan alone.
+      - name: Build what airlock-lean builds
+        if: steps.elan-cache.outputs.cache-hit != 'true'
+        run: lake build
+        working-directory: packages/envoy/internal/broker/airlock/lean
+
+      - if: steps.elan-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/elan
+          key: elan-${{ runner.os }}-${{ hashFiles('packages/envoy/internal/broker/airlock/lean/lean-toolchain') }}
+
   # The Playwright browsers dispatch-browser.yaml's shard and alone jobs restore, the one entry
   # here that is no Go family: no setup-go, and the key is bun.lock's hash rather than a Go
   # version, since that lockfile pins the Playwright version whose browsers the install

@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test"
-import { mkdir, readdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises"
+import { mkdir, readdir, readFile, stat, utimes, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import type { EnvoyClient } from "@legion/envoy-client/transport"
 import {
@@ -29,17 +29,19 @@ import {
   noInterest,
   observedClient,
   recordingClient,
-  scratchState,
   sessionOptions,
   settled,
+  useScratchState,
   waitFor,
 } from "./channel-session-harness"
 import { isolatePaneEnvironment } from "./pane-environment"
 
 isolatePaneEnvironment()
 
+const scratchState = useScratchState()
+
 test("follows the session id its Claude process hands off: new subject first, the old one dropped before re-registering, then role transfer", async () => {
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   const calls: string[] = []
   const nats = new FakeNats(calls)
   const identity = new SessionIdentity("ses_old", "/tmp")
@@ -86,10 +88,10 @@ test("follows the session id its Claude process hands off: new subject first, th
       `a second registration of ses_new and ${expectedRole.trim()} in ${newRoleFile}`,
     )
 
-    const reregister = "subscribe ses_new [aside]"
+    const reregister = "subscribe ses_new [aside,steer]"
     // A tick that fired before the handoff file landed only re-registered the old id.
     const handoffCalls = calls.filter(
-      (call) => call !== "subscribe ses_old [aside]" && call !== "getInterest",
+      (call) => call !== "subscribe ses_old [aside,steer]" && call !== "getInterest",
     )
     expect(handoffCalls.slice(0, 8)).toEqual([
       "nats.subscribe notifications.agent.ses_new",
@@ -137,12 +139,11 @@ test("follows the session id its Claude process hands off: new subject first, th
     expect(await readdir(join(stateDirectory, "sessions"))).toEqual(["777"])
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
 test("registers the session's title, and a handoff re-registers under the new id's title", async () => {
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   const identity = new SessionIdentity("ses_old", "/tmp")
   const handoff = sessionHandoffFile(stateDirectory, 778)
   await writeSessionHandoff(handoff, "ses_old")
@@ -181,12 +182,11 @@ test("registers the session's title, and a handoff re-registers under the new id
     expect(stamped).toEqual(["ses_old legion ses_old", "ses_new legion ses_new"])
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
 test("a name chosen after the server started is what the next registration and stamp carry", async () => {
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   const identity = new SessionIdentity("ses_one", "/tmp")
   const titles: string[] = []
   const stamped: string[] = []
@@ -220,12 +220,11 @@ test("a name chosen after the server started is what the next registration and s
     expect(stamped).toEqual(["ses_one legion ses_one", "ses_one review the listener"])
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
 test("two channel servers under different Claude processes rebind independently", async () => {
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   const callsA: string[] = []
   const callsB: string[] = []
   const identityA = new SessionIdentity("ses_a", "/tmp")
@@ -283,12 +282,11 @@ test("two channel servers under different Claude processes rebind independently"
   } finally {
     await serverA.shutdown()
     await serverB.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
 test("a heartbeat tick that outlives the interval is never overlapped by the next one", async () => {
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   const identity = new SessionIdentity("ses_claude", "/tmp")
   const events: string[] = []
   const release = Promise.withResolvers<void>()
@@ -320,12 +318,11 @@ test("a heartbeat tick that outlives the interval is never overlapped by the nex
     expect(events.slice(0, 5)).toEqual(["start 1", "end 1", "start 2", "end 2", "start 3"])
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
 test("a subscription made while a handoff deregisters the old id registers under the new id only", async () => {
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   const calls: string[] = []
   const identity = new SessionIdentity("ses_old", "/tmp")
   const handoff = sessionHandoffFile(stateDirectory, 778)
@@ -358,12 +355,11 @@ test("a subscription made while a handoff deregisters the old id registers under
   } finally {
     unregistering.resolve()
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
 test("a delivery still in flight on the old subject does not hold back registration under the new id", async () => {
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   const calls: string[] = []
   const nats = new FakeNats(calls)
   const gate = Promise.withResolvers<void>()
@@ -398,18 +394,17 @@ test("a delivery still in flight on the old subject does not hold back registrat
     await waitFor(async () => notified, "the delivery on the old subject to reach the notifier")
     await writeSessionHandoff(handoff, "ses_new")
     await waitFor(
-      async () => calls.includes("subscribe ses_new [aside]"),
+      async () => calls.includes("subscribe ses_new [aside,steer]"),
       "a registration under ses_new while the old subject's delivery is still in flight",
     )
   } finally {
     gate.resolve()
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
 test("a handoff whose first registration under the new id fails takes the role back on a later heartbeat", async () => {
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   const calls: string[] = []
   const identity = new SessionIdentity("ses_old", "/tmp")
   const oldRoleFile = roleStateFile(stateDirectory, "ses_old")
@@ -453,12 +448,11 @@ test("a handoff whose first registration under the new id fails takes the role b
     expect(await readdir(join(stateDirectory, "roles"))).toEqual(["ses_new.json"])
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
 test("adopts a handed-off session id when the hook writes it, without waiting for a heartbeat", async () => {
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   const calls: string[] = []
   const identity = new SessionIdentity("ses_old", "/tmp")
   const handoff = sessionHandoffFile(stateDirectory, 781)
@@ -473,19 +467,18 @@ test("adopts a handed-off session id when the hook writes it, without waiting fo
   try {
     // The startup registration and the startup tick are done; only the file poll remains.
     await waitFor(
-      async () => calls.filter((call) => call === "subscribe ses_old [aside]").length >= 2,
+      async () => calls.filter((call) => call === "subscribe ses_old [aside,steer]").length >= 2,
       "the startup registration and the startup tick",
     )
     await writeSessionHandoff(handoff, "ses_new")
     await waitFor(async () => identity.id === "ses_new", "identity to follow the handoff file")
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
 test("a handoff stuck on a stalled NATS flush gives up, so shutdown still deregisters", async () => {
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   const calls: string[] = []
   const nats = new FakeNats(calls)
   const identity = new SessionIdentity("ses_old", "/tmp")
@@ -515,12 +508,11 @@ test("a handoff stuck on a stalled NATS flush gives up, so shutdown still deregi
     expect(identity.id).toBe("ses_old")
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
 test("a handoff that fails before the id switch leaves the new subject out of registrations under the old id", async () => {
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   const calls: string[] = []
   const nats = new FakeNats(calls)
   const identity = new SessionIdentity("ses_old", "/tmp")
@@ -557,12 +549,11 @@ test("a handoff that fails before the id switch leaves the new subject out of re
     expect(oldRegistrationTopics.flat()).not.toContain("notifications.agent.ses_new")
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
 test("two handoffs before a registration succeeds move the role from the first id", async () => {
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   const calls: string[] = []
   const identity = new SessionIdentity("ses_a", "/tmp")
   const roleFile = roleStateFile(stateDirectory, "ses_a")
@@ -607,12 +598,11 @@ test("two handoffs before a registration succeeds move the role from the first i
     expect(await readdir(join(stateDirectory, "roles"))).toEqual(["ses_c.json"])
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
 test("a role claim that fails at startup still starts the session, and the next heartbeat takes the role back", async () => {
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   const identity = new SessionIdentity("ses_claude", "/tmp")
   const roleFile = roleStateFile(stateDirectory, "ses_claude")
   await mkdir(dirname(roleFile), { recursive: true })
@@ -664,12 +654,11 @@ test("a role claim that fails at startup still starts the session, and the next 
     )
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
 test("a heartbeat that confirms this session as holder refreshes the role record the age sweep reads", async () => {
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   const identity = new SessionIdentity("ses_claude", "/tmp")
   const roleFile = roleStateFile(stateDirectory, "ses_claude")
   await mkdir(dirname(roleFile), { recursive: true })
@@ -703,12 +692,11 @@ test("a heartbeat that confirms this session as holder refreshes the role record
     })
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
 test("a record already past the sweep's age survives a startup whose claim was refused, and the heartbeat restores it", async () => {
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   const identity = new SessionIdentity("ses_claude", "/tmp")
   const roleFile = roleStateFile(stateDirectory, "ses_claude")
   await mkdir(dirname(roleFile), { recursive: true })
@@ -747,12 +735,11 @@ test("a record already past the sweep's age survives a startup whose claim was r
     })
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
 test("a listener answer that is not JSON at startup still starts the session, and a later heartbeat takes the role back", async () => {
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   const identity = new SessionIdentity("ses_claude", "/tmp")
   const roleFile = roleStateFile(stateDirectory, "ses_claude")
   await mkdir(dirname(roleFile), { recursive: true })
@@ -788,12 +775,11 @@ test("a listener answer that is not JSON at startup still starts the session, an
     })
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
 test("a role file whose bytes are not JSON starts the session without the role, and says so naming the file", async () => {
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   const identity = new SessionIdentity("ses_claude", "/tmp")
   const roleFile = roleStateFile(stateDirectory, "ses_claude")
   await mkdir(dirname(roleFile), { recursive: true })
@@ -833,12 +819,11 @@ test("a role file whose bytes are not JSON starts the session without the role, 
     }
   } finally {
     stderr.mockRestore()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
 test("a role file that cannot be read does not stop the heartbeat adopting the registered interests", async () => {
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   // A directory where the record should be: unreadable for any user, root included.
   await mkdir(roleStateFile(stateDirectory, "ses_claude"), { recursive: true })
   const alreadyRegistered = "notifications.dispatch.issue.DSP-5"
@@ -874,6 +859,5 @@ test("a role file that cannot be read does not stop the heartbeat adopting the r
     expect([...entry].sort()).toEqual([directSubject, alreadyRegistered])
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })

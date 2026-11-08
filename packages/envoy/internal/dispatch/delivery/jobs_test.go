@@ -3,6 +3,7 @@ package delivery
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -11,7 +12,10 @@ import (
 	"testing"
 	"time"
 
+	natsgo "github.com/nats-io/nats.go"
+
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -666,4 +670,153 @@ func TestAQueuedJobReadsDeadlineStartsOnceItHoldsItsSlot(t *testing.T) {
 			len(failed), runs, stored, took.Round(time.Millisecond), deadline, jobsLatency, first)
 	}
 	t.Logf("%d runs read in %s, %d at a time, each inside its %s deadline", runs, took.Round(time.Millisecond), reconcilePartialConcurrency, deadline)
+}
+
+// TestAJobEventHandledAfterTheIntakeStoppedIsHandedBackToTheNextHolderAtOnce drives the
+// shutdown's give-up as Run does it: the intake is handling one event when its context ends, a
+// second event is already buffered in its client behind that one, and giveUp -- what Run calls
+// when its ctx is done -- drains the subscription, so the callback is handed the buffered event
+// after the context is done and after the drain has written the subscription's UNSUB. Such an
+// event must not be acknowledged: its early signal would be lost for good, since the read it
+// asks for cannot run under the cancelled context.
+//
+// What the row decides is where that event goes, not which NATS call sent it there: a second
+// subscriber on the durable, the next holder, is handed it well inside jobAckWait (30 s). The
+// bound is what makes the row a proof rather than a restatement of what NATS does anyway. An
+// event the stopped intake left unanswered reaches the next holder only when that ack wait
+// expires, so this bound fails for it; the hand-back (deliver's Nak) reaches the next holder
+// rather than looping back into this callback because the drain's UNSUB is written before the
+// callback is handed anything buffered, which is deliver's reason in full.
+func TestAJobEventHandledAfterTheIntakeStoppedIsHandedBackToTheNextHolderAtOnce(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	seedDeliverySettings(t, ctx, pool)
+	seedRunningDeployRun(t, ctx, pool)
+	fake := newJobsFake(t)
+	clock := newFakeJobClock()
+	natsClient := intakeTestClient(t)
+	jobs := newJobIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), clock, loadedSettingsCache(t, ctx, pool))
+	// j.ctx is Run's context: this row sets the field Run sets and cancels it where Run's caller
+	// would, so that the give-up below is the one Run makes as its ctx ends.
+	runCtx, stop := context.WithCancel(ctx)
+	jobs.ctx = runCtx
+
+	// The durable as bind leaves it, created here because Run is not what binds it. It starts at
+	// new messages (jobConsumerConfig), so a durable an earlier row left on the package's shared
+	// stream is recreated and handed this row's events alone.
+	wanted := jobConsumerConfig()
+	if err := natsClient.JS().DeleteConsumer(bus.Stream, wanted.Durable); err != nil && !errors.Is(err, natsgo.ErrConsumerNotFound) {
+		t.Fatalf("delete the job durable: %v", err)
+	}
+	if _, err := natsClient.JS().AddConsumer(bus.Stream, &wanted); err != nil {
+		t.Fatalf("create the job durable: %v", err)
+	}
+	// The intake's own callback, held open on the first event it is handed: nats.go gives one
+	// subscription's messages to its callback one at a time, so the next event waits in the
+	// client, which is the state a stop finds and the only state in which a drain has something
+	// to hand over.
+	handling := make(chan struct{})
+	release := make(chan struct{})
+	releaseBuffered := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(releaseBuffered)
+	var held atomic.Bool
+	sub, err := subscribeDurable(natsClient, wanted, "", func(msg *natsgo.Msg) {
+		jobs.deliver(msg)
+		if held.CompareAndSwap(false, true) {
+			close(handling)
+			<-release
+		}
+	})
+	if err != nil {
+		t.Fatalf("subscribe to the job durable: %v", err)
+	}
+	t.Cleanup(func() { _, _ = natsClient.DrainSubscription(sub) })
+	consumer := func() *natsgo.ConsumerInfo {
+		t.Helper()
+		info, err := natsClient.JS().ConsumerInfo(bus.Stream, wanted.Durable)
+		if err != nil {
+			t.Fatalf("read the job durable: %v", err)
+		}
+		return info
+	}
+	pending := func() int {
+		msgs, _, err := sub.Pending()
+		if err != nil {
+			return -1
+		}
+		return msgs
+	}
+
+	// The event the intake is handling when the stop comes. Another repository's, which costs no
+	// GitHub call and arms no timer (TestAJobOfAnotherRepositoryIsIgnored) and which deliver
+	// acknowledges on receipt, so the one message outstanding from here on is the buffered one.
+	publishGitHubEnvelope(t, natsClient, "notifications.github.acme.other.job.501.completed", jobPayload("acme/other", 501))
+	select {
+	case <-handling:
+	case <-time.After(20 * time.Second):
+		t.Fatalf("the first job event never reached deliver: %+v", consumer())
+	}
+
+	// The event under test, waiting in the client behind the one in hand: nats.go counts a
+	// message as pending until the callback it was handed to returns (waitForMsgs, nats.go
+	// v1.53.1 :3696-3712), so two pending is one in hand and one buffered.
+	event := jobPayload("acme/widgets", 500)
+	publishGitHubEnvelope(t, natsClient, "notifications.github.acme.widgets.job.500.completed", event)
+	waitFor(t, 20*time.Second, func() bool { return pending() == 2 }, func() string {
+		return fmt.Sprintf("the client holds %d pending messages, want the job event buffered behind the one in hand: %+v", pending(), consumer())
+	})
+
+	// The shutdown: Run's ctx ends and Run gives the subscription up, which drains it.
+	stop()
+	jobs.giveUp(sub)
+	// The drain's UNSUB as the server reports it: the durable has no subscriber of this process's
+	// from here on, so what the callback hands back goes to the next one to bind rather than back
+	// to it. The buffered event is still the client's to hand over -- the drain lets the callback
+	// finish what it holds -- which the pending count says.
+	waitFor(t, 20*time.Second, func() bool { return !consumer().PushBound }, func() string {
+		return fmt.Sprintf("the give-up never unsubscribed the job durable: %+v", consumer())
+	})
+	if msgs := pending(); msgs != 2 {
+		t.Fatalf("the client holds %d pending messages after the give-up, want the buffered job event still waiting: %+v", msgs, consumer())
+	}
+
+	// The next holder: another process binding the durable this one gave up.
+	nextHolder := intakeTestClient(t)
+	handedOver := make(chan *natsgo.Msg, 1)
+	next, err := subscribeDurable(nextHolder, wanted, "", func(msg *natsgo.Msg) {
+		if err := msg.Ack(); err != nil {
+			t.Errorf("acknowledge the job event handed to the next holder: %v", err)
+		}
+		select {
+		case handedOver <- msg:
+		default:
+		}
+	})
+	if err != nil {
+		t.Fatalf("subscribe the next holder to the job durable: %v", err)
+	}
+	t.Cleanup(func() { _, _ = nextHolder.DrainSubscription(next) })
+
+	// The drain hands the stopped intake its buffered event, which it hands back.
+	const handOver = 5 * time.Second
+	handedAt := time.Now()
+	releaseBuffered()
+	select {
+	case msg := <-handedOver:
+		took := time.Since(handedAt)
+		var envelope contracts.Envelope
+		if err := json.Unmarshal(msg.Data, &envelope); err != nil {
+			t.Fatalf("decode the envelope the next holder was handed: %v", err)
+		}
+		if envelope.Payload != event {
+			t.Fatalf("the next holder was handed payload %q, want the event the stopped intake handed back %q", envelope.Payload, event)
+		}
+		t.Logf("the next holder was handed the event %s after the stopped intake was, with jobAckWait %s", took.Round(time.Millisecond), jobAckWait)
+	case <-time.After(handOver):
+		t.Fatalf("the next holder was not handed the job event within %s of the stopped intake being handed it, jobAckWait being %s: %+v",
+			handOver, jobAckWait, consumer())
+	}
+	if armed, calls, mints := clock.armed(), fake.calls.Load(), fake.tokenMints.Load(); armed != 0 || calls != 0 || mints != 0 {
+		t.Fatalf("an event handled after the stop: %d timers, %d jobs reads, %d token mints, want none: nothing is read under the cancelled context",
+			armed, calls, mints)
+	}
 }
