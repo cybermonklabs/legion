@@ -370,17 +370,12 @@ authorization {
 // that grant is applied, starts and serves every other route, logs one registry ERROR naming the
 // bucket however often it retries the open, and answers each registry route 503 naming the failed
 // open. The one registry ERROR is not the only ERROR a missing grant leaves: the server refuses
-// each open's publish to $JS.API.STREAM.INFO.KV_legion_agents and answers that request with
-// nothing, so the open sends it bus.unansweredSends times, each refused send reaching the
-// connection's async error handler as one `envoy nats async error` at ERROR. That is three such
-// records per open, and 30 s for the open rather than the 10 s of one send. The opens follow one
-// another a backoff apart, legionAgentRetryFirstWait doubling to legionAgentRetryMaxWait, so the
-// first four begin at 0 s, 31 s, 63 s and 97 s (each open's own 30 s, then 1 s, 2 s and 4 s of
-// backoff) and their twelve sends all fall within the first two minutes; once the backoff has
-// reached its 1 min cap an open begins every 90 s, that minute plus the open's own 30 s, since
-// every reconnect wakes the retry at once and sets its backoff back to 1 s. Once the server
-// applies the grant and the listener reconnects, its reconnect hook wakes the retry, which opens
-// the bucket, and the routes serve.
+// each open's publish to $JS.API.STREAM.INFO.KV_legion_agents, which the connection logs as one
+// `envoy nats async error` at ERROR per open -- six in the first two minutes, and about one every
+// 70 s only once the backoff has reached its 1 min cap (plus the open's own 10 s JetStream
+// timeout), since every reconnect wakes the retry at once and sets its backoff back to 1 s. Once
+// the server applies the grant and the listener reconnects, its reconnect hook wakes the retry,
+// which opens the bucket, and the routes serve.
 func TestAListenerWithoutTheRegistryGrantServesAndAnswersItsRoutes503(t *testing.T) {
 	bucket := "KV_" + bus.LegionAgentBucket
 	server, uri := testnats.StartConfig(t, listenerGrant(
@@ -390,10 +385,7 @@ func TestAListenerWithoutTheRegistryGrantServesAndAnswersItsRoutes503(t *testing
 	), []string{"-js"}, false)
 	uri = strings.Replace(uri, "nats://", "nats://listener:listener@", 1)
 	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), uri, "no-registry-grant")
-	// The start makes the first open of the bucket inline (openLegionAgentRegistry), the server
-	// answers none of its sends, and each of the three costs the JetStream wait, so this listener
-	// serves a little after 30 s rather than a little after 10.
-	listener.waitHealthyWithin(t, 90*time.Second)
+	listener.waitHealthy(t)
 
 	if status, answer := callListener(t, listener.port, http.MethodGet, "/v1/sessions", ""); status != http.StatusOK {
 		t.Fatalf("GET /v1/sessions without the registry grant = %d %s, want 200\n%s", status, answer, listener.Output.String())
@@ -419,10 +411,7 @@ func TestAListenerWithoutTheRegistryGrantServesAndAnswersItsRoutes503(t *testing
 	}
 
 	server.Restart(t, listenerGrant())
-	// The reconnect wakes the retry at once, but an open that began before the restart can still
-	// be spending its three sends, and the woken retry opens only after that one returns
-	// (legionAgentRegistry.retry, whose reconnected channel holds the wake).
-	deadline := time.Now().Add(90 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for {
 		status, answer := callListener(t, listener.port, http.MethodPut, "/v1/legion/agents/sessions/ses-tester", entry)
 		if status == http.StatusOK {

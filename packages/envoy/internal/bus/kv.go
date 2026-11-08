@@ -176,6 +176,17 @@ func namedRequest(request string, err error) error {
 // since awaitBucketApplied reads that deadline between reads and cuts no read in flight: a
 // lookup begun just under the deadline still spends its own three sends after it.
 //
+// A request the server refuses under the connection's grant is not sent again, since it would be
+// refused again: the server answers such a request with nothing and reports the refusal on the
+// connection instead, where the client that owns conn records it (recordPublishDenial), and the
+// send reads that record rather than take the silence for a member still working (refusedSend).
+// A step whose request is refused therefore costs one send and ends with an error naming
+// ErrPublishDenied and the subject, `KV_legion_agents STREAM.INFO: bus: NATS denied the publish
+// to "$JS.API.STREAM.INFO.KV_legion_agents": ...`, where it cost the whole of the step's three
+// sends and a bare deadline before. That reading needs the client conn belongs to: a connection
+// opened outside a Client records nothing, and a request of its own the server refuses still
+// costs the sends counted above.
+//
 // The error names the bucket's stream and the step that drew it:
 // `KV_envoy_webhook_redelivery STREAM.INFO: ...` for the lookup of the bucket, which this call
 // makes first and makes again while it waits a member out, and
@@ -189,13 +200,29 @@ func EnsureKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyV
 	stream := "KV_" + config.Bucket
 	lookup := stream + " STREAM.INFO"
 	create := stream + " create"
+	// The subjects each step publishes to, read for the server's refusal of a send it answered
+	// with nothing (refusedSend), in the order a send makes the requests. The lookup sends the
+	// stream's info (nats.go@v1.53.1 kv.go:397-411, js.go:189-192). The create sends the
+	// account's JetStream info first and then the stream's create (kv.go:432-434, :525), and on
+	// "stream name already in use" the stream's info and sometimes an update of it
+	// (kv.go:534-545).
+	streamInfoSubject := "$JS.API.STREAM.INFO." + stream
+	lookupSubjects := []string{streamInfoSubject}
+	createSubjects := []string{
+		"$JS.API.INFO",
+		"$JS.API.STREAM.CREATE." + stream,
+		streamInfoSubject,
+		"$JS.API.STREAM.UPDATE." + stream,
+	}
 	// lookUpBucket is the one lookup this call makes, here and again while it waits a member out,
 	// so the two are the same request, and it names its own error rather than leave each caller
 	// to name it. The name wraps the server's answer with %w (namedRequest), so awaitBucketApplied
 	// still reads the member's "bucket not found" through it (bucketMissing) and the switch below
 	// still reads nats.ErrBucketNotFound.
 	lookUpBucket := func() (nats.KeyValue, error) {
-		kv, err := sentAgain(lookup, func() (nats.KeyValue, error) { return js.KeyValue(config.Bucket) })
+		kv, err := sentAgain(lookup, func() (nats.KeyValue, error) {
+			return refusedSend(conn, lookupSubjects, func() (nats.KeyValue, error) { return js.KeyValue(config.Bucket) })
+		})
 		return kv, namedRequest(lookup, err)
 	}
 	kv, err := lookUpBucket()
@@ -216,8 +243,12 @@ func EnsureKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyV
 		// sends a STREAM.UPDATE of it (kv.go:534-545). That update goes again with the rest of
 		// the step where updateStream leaves an unanswered update alone, because it carries the
 		// configuration the stream already holds: it changes nothing when it lands twice, while
-		// the replica or age change updateStream guards is a write another one can race.
-		kv, err = sentAgain(create, func() (nats.KeyValue, error) { return js.CreateKeyValue(config) })
+		// the replica or age change updateStream guards is a write another one can race. A
+		// request of the step the server refuses under the connection's grant ends the step at
+		// that send instead (refusedSend): it would be refused again.
+		kv, err = sentAgain(create, func() (nats.KeyValue, error) {
+			return refusedSend(conn, createSubjects, func() (nats.KeyValue, error) { return js.CreateKeyValue(config) })
+		})
 		if errors.Is(err, nats.ErrStreamNameAlreadyInUse) {
 			// The bucket was created between this start's lookup and its create, by another start
 			// of this deployment, and the member answering may not have applied that create
