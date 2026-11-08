@@ -97,6 +97,29 @@ func (s *Session) Encode(a conversation.Append, now time.Time) ([]byte, error) {
 	return w.buf.Bytes(), nil
 }
 
+// EncodeDelivery is what a delivery of d after the session writes: one message entry for the
+// message the agent received, as Oh My Pi writes a user message and as Encode writes the question
+// side of an exchange, then the legion-answer custom entry naming the delivery, so a reader knows
+// it landed (Session.Answered) and the same message is not written in twice. No model turn
+// follows: the agent answers it itself when it resumes. When the session's content does not end
+// in a newline the bytes start with one. now stamps both entries.
+func (s *Session) EncodeDelivery(d conversation.Delivery, now time.Time) ([]byte, error) {
+	if err := d.Validate(); err != nil {
+		return nil, err
+	}
+	w := entryWriter{session: s, parent: s.Leaf, now: now, taken: map[string]bool{}}
+	if s.Torn {
+		w.buf.WriteByte('\n')
+	}
+	if err := w.message(userOut{Role: "user", Content: []any{textOut{Type: "text", Text: d.Text}}, Attribution: "user", Timestamp: now.UnixMilli()}); err != nil {
+		return nil, err
+	}
+	if err := w.custom(AnswerEntryType, map[string]string{"questionId": d.ID}); err != nil {
+		return nil, err
+	}
+	return w.buf.Bytes(), nil
+}
+
 // AppendFile appends a to the session file at path, which s was read from, in one O_APPEND write.
 // It refuses with an error that Is conversation.ErrMoved when the file is no longer the size s was
 // read at.
@@ -105,6 +128,22 @@ func AppendFile(path string, s *Session, a conversation.Append, now time.Time) e
 	if err != nil {
 		return err
 	}
+	return writeAfter(path, s, data)
+}
+
+// AppendDeliveryFile appends d to the session file at path, which s was read from, in the same
+// one write and under the same refusal as AppendFile.
+func AppendDeliveryFile(path string, s *Session, d conversation.Delivery, now time.Time) error {
+	data, err := s.EncodeDelivery(d, now)
+	if err != nil {
+		return err
+	}
+	return writeAfter(path, s, data)
+}
+
+// writeAfter appends data to the session file at path in one O_APPEND write, refusing with an
+// error that Is conversation.ErrMoved when the file is no longer the size s was read at.
+func writeAfter(path string, s *Session, data []byte) error {
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
 	if err != nil {
 		return err
@@ -130,6 +169,16 @@ func AppendFile(path string, s *Session, a conversation.Append, now time.Time) e
 // conversation.ErrMoved when the row's length is no longer s's.
 func AppendSQL(ctx context.Context, conn *pgx.Conn, path string, s *Session, a conversation.Append, now time.Time) error {
 	data, err := s.Encode(a, now)
+	if err != nil {
+		return err
+	}
+	return ompsessions.Append(ctx, conn, path, s.Size, data, now)
+}
+
+// AppendDeliverySQL appends d to the session Oh My Pi's session table holds at path, which s was
+// read from, through the same statement and under the same refusal as AppendSQL.
+func AppendDeliverySQL(ctx context.Context, conn *pgx.Conn, path string, s *Session, d conversation.Delivery, now time.Time) error {
+	data, err := s.EncodeDelivery(d, now)
 	if err != nil {
 		return err
 	}

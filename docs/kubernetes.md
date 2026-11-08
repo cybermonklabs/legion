@@ -1274,10 +1274,12 @@ A hand-off arrives on `notifications.legion.<project>.agents.<session>`
 (`packages/contracts/src/legion-handoff.ts`), read by a durable consumer, so one published while the
 daemon was down is read when it returns. The daemon answers only for a session its own record
 holds, of its own project: any other hand-off is logged (`answers: hand-off dropped: the daemon's
-history holds no such conversation`) and dropped. Every notice the daemon publishes and every
-message it sends itself carries `"handoff": false`, so a notice to a stopped architect is held and
-resent as before, never answered, and the loop's own answer to a stopped asker is never handed
-back to the loop.
+history holds no such conversation`) and dropped. Every notice the daemon publishes carries
+`"handoff": false`, so a notice to a stopped architect is held and resent as before, never
+answered. A message the daemon sends in a stopped agent's name carries no such field: when the
+agent it answers is stopped too, the listener hands that answer to its daemon in place of
+refusing it, and the loop writes it into the asking agent's conversation rather than answering it
+(below).
 
 ### What it answers, and what it refuses
 
@@ -1290,6 +1292,21 @@ back to the loop.
   messages, and anything carrying the loop's own marker (its `legion-answer:` dedupe key, the
   `<!-- legion-answer:<id> -->` marker every reply it posts carries, or a Legion footer with an
   `answer` key), so the loop never answers itself.
+- **The loop's own answer to a stopped asker.** The answer it posts for an Envoy message goes to
+  the asker through the listener, which hands it to the asker's own daemon when that agent is
+  stopped (the asker's own 404 before). It is never answered — no model call, no spend, nothing
+  posted, and no question of it reaches the controller — and it is written into the asking
+  agent's conversation as a message it received, the shape the question side of an exchange is
+  written in, so the asker holds the answer when it runs again, as a running asker holds what the
+  listener delivered to it live. It is written in once: the append records the envelope's
+  `dedupe_key` as the delivery's own, the way it records the question an exchange answered, so a
+  hand-off delivered again and one read after a restart add nothing (`answers: the asking agent's
+  conversation already holds this answer; it is not delivered again`). A claim that runs the
+  conversation takes it live instead, as a forwarded question does: the loop sends the answer to
+  that session through the listener in its sender's own words, for a live session and nobody
+  else (`"handoff": false`), and nothing is written into a running agent's conversation. A send
+  the listener refuses is an agent that stopped again in that race, and its answer is written in
+  after all, so no message goes round between the two.
 - **Once.** A question's identity holds across retries and restarts: the Dispatch message's or
   comment's id, or the Envoy envelope's `dedupe_key`, together with the agent it was handed to. A
   second hand-off of the same question is recorded and not answered again, and a newer conversation

@@ -254,6 +254,29 @@ func (a Append) Validate() error {
 	return nil
 }
 
+// Delivery is a message an agent was sent while it was stopped, which an appender writes into its
+// session as a message it received: no model turn follows it, and the agent reads it when it
+// resumes, as a running one reads what the listener delivered to it live.
+type Delivery struct {
+	// ID names the delivery; the appender records it beside the message the way it records the
+	// question an exchange answered, so a reader knows the delivery landed (the session's
+	// Answered) and a message handed off again is not written in twice.
+	ID string
+	// Text is the message as the agent reads it, written as a user turn.
+	Text string
+}
+
+// Validate refuses a Delivery an appender could not write as a message received.
+func (d Delivery) Validate() error {
+	switch {
+	case d.ID == "":
+		return errors.New("delivery: no id")
+	case d.Text == "":
+		return errors.New("delivery: no text")
+	}
+	return nil
+}
+
 func hasText(blocks []Block) bool {
 	for _, block := range blocks {
 		if block.Type == Text && block.Text != "" {

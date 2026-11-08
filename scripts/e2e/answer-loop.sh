@@ -1860,10 +1860,29 @@ listener_handoffs() {
     '[split("\n")[] | fromjson? | select(.msg == "listener handed a message to its legion daemon" and .event_id == $e)] | length' \
     "$evidence/logs/listener.log"
 }
+# listener_handoffs_to SESSION: how many hand-offs the listener published for SESSION's own
+# daemon, whatever the envelope ("listener handed a message to its legion daemon" naming it).
+listener_handoffs_to() {
+  jq -R -s --arg s "$1" \
+    '[split("\n")[] | fromjson? | select(.msg == "listener handed a message to its legion daemon" and .session_id == $s)] | length' \
+    "$evidence/logs/listener.log"
+}
+# newest_question SESSION STATE: the id of the newest question of SESSION this boot logged in
+# STATE, empty for none.
+newest_question() {
+  boot_log | jq -s -r --arg s "$1" --arg st "$2" \
+    '[.[] | select(.msg == "answers: question" and .session == $s and .state == $st) | .question] | last // ""'
+}
+# controller_questions REASON: how many questions `legion state` lists for the controller with
+# REASON.
+controller_questions() {
+  legion_cmd state --json | jq --arg r "$1" '[.questionsForController[]? | select(.reason == $r)] | length'
+}
 
 check_a8() {
-  criterion A8 "one question delivered twice, across a restart and across a kill just after its answer posted, gets one answer; the loop's own answer and an edit are not answered" || return 0
+  criterion A8 "one question delivered twice, across a restart and across a kill just after its answer posted, gets one answer; the loop's own answer is delivered into its asker's conversation unanswered, and an edit is not answered" || return 0
   local planner=${agent[$store:planner.session]} key=a8-$run_tag key3=a8-kill-$run_tag sent resend resent event event3 qid again taken codes handoffs replies posted_before own_before edit_before ok_twice=0 ok_kill=0 ok_own=0 ok_edit=0
+  local tester_old delivered_msg handed_before appended_before appended_after calls_before refused_before own_qid own_marker
   # One envelope sent three times under one idempotency key, the third after a restart. The
   # listener hands each send off, and every hand-off carries the envelope's dedupe key as its
   # MsgId, so the stream stores one copy: the daemon is handed the question once and answers it
@@ -1901,17 +1920,40 @@ check_a8() {
   sleep 60
   note "after the kill and restart: replies $(inbox_replies "$event3"); this boot's lines for the planner: $(boot_log | jq -s -c --arg s "$planner" '[.[] | select((.msg | startswith("answers:")) and .session == $s) | {msg, state}]')"
   [ "$(inbox_replies "$event3")" = 1 ] && ok_kill=1
-  # The loop's own answer: a question to the planner sent as the stopped, replaced tester session;
-  # the planner's answer goes to that session in the planner's name, and is never answered.
+  # The loop's own answer: a question to the planner sent as the stopped, replaced tester session.
+  # The planner's answer goes back to that session in the planner's name; no live session holds
+  # it, so the listener hands the answer to this daemon, which never answers an answer of its own
+  # — no model call for it, no question of it, nothing posted, nothing passed to the controller —
+  # and writes it into the stopped tester's conversation instead, once, as a message it received,
+  # so that tester holds the answer when it runs again. The delivery is counted by the marker
+  # entry the append ends with (appended_exchanges) and by the answer's own
+  # `legion-answer:<question>` marker inside the entry, which only the delivered message carries.
+  tester_old=${agent[$store:tester_old.session]}
+  delivered_msg="answers: the loop's own answer is delivered into the asking agent's conversation"
   posted_before=$(answers_lines "answers: question" "$planner" posted)
-  own_before=$(answers_lines "answers: question" "${agent[$store:tester_old.session]}")
-  envoy -o /dev/null --data "$(jq -cn --arg s "$planner" --arg from "${agent[$store:tester_old.session]}" --arg m "$(question_text repository-file) (question own-answer of run $run_tag)" \
+  own_before=$(answers_lines "answers: question" "$tester_old")
+  handed_before=$(listener_handoffs_to "$tester_old")
+  appended_before=$(appended_exchanges tester_old)
+  calls_before=$(proxy_count "daemon-$store")
+  refused_before=$(controller_questions post_refused)
+  envoy -o /dev/null --data "$(jq -cn --arg s "$planner" --arg from "$tester_old" --arg m "$(question_text repository-file) (question own-answer of run $run_tag)" \
     '{target_session: $s, source: "agent", source_session: $from, message: $m}')" "$(listener_url /v1/messages/send)"
   soft_wait 300 "the planner's answer to the tester's session to post" more_than "$posted_before" answers_lines "answers: question" "$planner" posted || true
+  own_qid=$(newest_question "$planner" posted)
+  own_delivered() { [ "$(answers_lines "$delivered_msg" "$tester_old")" -ge 1 ]; }
+  soft_wait 300 "the planner's answer to reach the stopped tester's conversation" own_delivered || true
   sleep 60
-  note "the planner's answers posted $posted_before → $(answers_lines "answers: question" "$planner" posted); questions for the replaced tester $own_before → $(answers_lines "answers: question" "${agent[$store:tester_old.session]}")"
-  [ "$(answers_lines "answers: question" "$planner" posted)" -gt "$posted_before" ] &&
-    [ "$(answers_lines "answers: question" "${agent[$store:tester_old.session]}")" = "$own_before" ] && ok_own=1
+  appended_after=$(appended_exchanges tester_old)
+  own_marker=$(occurrences "$(conversation_text tester_old)" "legion-answer:$own_qid")
+  note "the planner's answers posted $posted_before → $(answers_lines "answers: question" "$planner" posted), its answer's question $own_qid; hand-offs to the replaced tester $handed_before → $(listener_handoffs_to "$tester_old"), delivered lines $(answers_lines "$delivered_msg" "$tester_old"); that conversation's appended entries $appended_before → $appended_after, holding the answer's marker $own_marker time(s); questions for it $own_before → $(answers_lines "answers: question" "$tester_old"), answers $(answers_lines "answers: answered" "$tester_old"); a model call whose body holds the answer's marker: $(daemon_request_for "legion-answer:$own_qid"); the daemon's model calls $calls_before → $(proxy_count "daemon-$store"); post_refused questions for the controller $refused_before → $(controller_questions post_refused)"
+  [ "$(answers_lines "answers: question" "$planner" posted)" -gt "$posted_before" ] && [ -n "$own_qid" ] &&
+    [ "$(listener_handoffs_to "$tester_old")" -gt "$handed_before" ] &&
+    [ "$(answers_lines "$delivered_msg" "$tester_old")" = 1 ] && [ "$own_marker" = 1 ] &&
+    [ "$appended_after" = "$((appended_before + 1))" ] &&
+    [ "$(answers_lines "answers: question" "$tester_old")" = "$own_before" ] &&
+    [ "$(answers_lines "answers: answered" "$tester_old")" = 0 ] &&
+    [ "$(daemon_request_for "legion-answer:$own_qid")" = null ] &&
+    [ "$(controller_questions post_refused)" = "$refused_before" ] && ok_own=1
   # An edit: the person edits the comment A1's question was, on the open root issue. A closed
   # issue refuses every comment edit (409 ISSUE_CLOSED, comment_actions.go:19-31 lockedComment).
   if [ -n "${agent[$store:a1.comment]:-}" ]; then
@@ -1922,9 +1964,9 @@ check_a8() {
     [ "$(answers_lines "answers: question" "${agent[$store:architect.session]}")" = "$edit_before" ] && ok_edit=1
   fi
   if [ "$ok_twice$ok_kill$ok_own$ok_edit" = 1111 ]; then
-    record_result A8 PASS "one envelope sent three times under one key, the third across a restart: each send handed off, the stream stored one copy, one answer and nothing handed to the restarted daemon; killed just after the post and delivered again: one answer; the loop's own answer and an edit were not answered"
+    record_result A8 PASS "one envelope sent three times under one key, the third across a restart: each send handed off, the stream stored one copy, one answer and nothing handed to the restarted daemon; killed just after the post and delivered again: one answer; the loop's own answer to the stopped tester was handed to the daemon, written into that tester's conversation once with no model call, no answer and nothing passed to the controller; an edit was not answered"
   else
-    record_result A8 FAIL "twice and restart $ok_twice, kill after post $ok_kill, own answer unanswered $ok_own, edit unanswered $ok_edit (1 = shown)"
+    record_result A8 FAIL "twice and restart $ok_twice, kill after post $ok_kill, own answer delivered unanswered $ok_own, edit unanswered $ok_edit (1 = shown)"
   fi
 }
 

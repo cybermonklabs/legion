@@ -36,21 +36,9 @@ func (s *Session) Encode(a conversation.Append, now time.Time) ([]byte, error) {
 	if a.API != anthropicMessages {
 		return nil, fmt.Errorf("append: a Claude Code transcript holds %s turns, not %s", anthropicMessages, a.API)
 	}
-	if s.ID == "" {
-		return nil, errors.New("append: the transcript names no session")
-	}
-	version := s.Version
-	if version == "" {
-		version = PinnedVersion
-	}
-	w := lineWriter{
-		parent: s.Leaf,
-		common: commonOut{UserType: "external", Entrypoint: "sdk-cli", Cwd: s.Cwd, SessionID: s.ID, Version: version, GitBranch: s.GitBranch},
-		at:     isoTime(now),
-		effort: s.ThinkingLevel,
-	}
-	if s.Torn {
-		w.buf.WriteByte('\n')
+	w, err := s.writer(now)
+	if err != nil {
+		return nil, err
 	}
 	promptID := newUUID()
 	if err := w.user(promptID, a.Question, nil, ""); err != nil {
@@ -98,6 +86,58 @@ func (s *Session) Encode(a conversation.Append, now time.Time) ([]byte, error) {
 	return w.buf.Bytes(), nil
 }
 
+// EncodeDelivery is what a delivery of d after the transcript writes: one user line with the
+// message the agent received, as Claude Code writes a prompt and as Encode writes the question
+// side of an exchange; the legion-answer line naming the delivery, so a reader knows it landed
+// (Session.Answered) and the same message is not written in twice; and the last-prompt line
+// naming it, the checkpoint Claude Code resumes from. No assistant line follows: the agent
+// answers it itself when it runs again. When the transcript does not end in a newline the bytes
+// start with one. now stamps every line.
+func (s *Session) EncodeDelivery(d conversation.Delivery, now time.Time) ([]byte, error) {
+	if err := d.Validate(); err != nil {
+		return nil, err
+	}
+	w, err := s.writer(now)
+	if err != nil {
+		return nil, err
+	}
+	if err := w.user(newUUID(), d.Text, nil, ""); err != nil {
+		return nil, err
+	}
+	if err := w.write(answerLineOut{Type: AnswerLineType, QuestionID: d.ID, SessionID: s.ID, Timestamp: w.at}); err != nil {
+		return nil, err
+	}
+	if err := w.write(lastPromptOut{Type: "last-prompt", LastPrompt: d.Text, LeafUUID: w.parent, SessionID: s.ID}); err != nil {
+		return nil, err
+	}
+	return w.buf.Bytes(), nil
+}
+
+// writer is how an append and a delivery write the lines after the transcript: each conversation
+// line carries the session's id, working directory, release and git branch, and an assistant line
+// the effort the session last ran at. A transcript that names no session is refused, since no
+// line of it could name one; one that does not end in a newline opens with a newline, which
+// leaves the torn line the malformed one Claude Code skips.
+func (s *Session) writer(now time.Time) (*lineWriter, error) {
+	if s.ID == "" {
+		return nil, errors.New("append: the transcript names no session")
+	}
+	version := s.Version
+	if version == "" {
+		version = PinnedVersion
+	}
+	w := &lineWriter{
+		parent: s.Leaf,
+		common: commonOut{UserType: "external", Entrypoint: "sdk-cli", Cwd: s.Cwd, SessionID: s.ID, Version: version, GitBranch: s.GitBranch},
+		at:     isoTime(now),
+		effort: s.ThinkingLevel,
+	}
+	if s.Torn {
+		w.buf.WriteByte('\n')
+	}
+	return w, nil
+}
+
 // AppendFile appends a to the transcript at path, which s was read from, in one O_APPEND write.
 // It refuses with an error that Is conversation.ErrMoved when the file is no longer the size s was
 // read at.
@@ -106,6 +146,22 @@ func AppendFile(path string, s *Session, a conversation.Append, now time.Time) e
 	if err != nil {
 		return err
 	}
+	return writeAfter(path, s, data)
+}
+
+// AppendDeliveryFile appends d to the transcript at path, which s was read from, in the same one
+// write and under the same refusal as AppendFile.
+func AppendDeliveryFile(path string, s *Session, d conversation.Delivery, now time.Time) error {
+	data, err := s.EncodeDelivery(d, now)
+	if err != nil {
+		return err
+	}
+	return writeAfter(path, s, data)
+}
+
+// writeAfter appends data to the transcript at path in one O_APPEND write, refusing with an error
+// that Is conversation.ErrMoved when the file is no longer the size s was read at.
+func writeAfter(path string, s *Session, data []byte) error {
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
 	if err != nil {
 		return err

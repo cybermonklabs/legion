@@ -68,11 +68,19 @@ type Origin struct {
 	EventID string
 }
 
-// Verdict is what a hand-off is: a question to answer, a decision to pass to Decisions (a person's
-// answer or reply on the agent's ask that also asks something is both), or neither, Because says
-// why.
+// Verdict is what a hand-off is: a question to answer, an answer of the loop's own to deliver
+// into the conversation of the agent it was sent to (Delivery), a decision to pass to Decisions
+// (a person's answer or reply on the agent's ask that also asks something is both), or neither,
+// Because says why.
 type Verdict struct {
 	Question *Origin
+	// Delivery is the loop's own answer, sent in one stopped agent's name to an agent that is
+	// stopped too and so handed back to this daemon. It is never answered — no model call, no
+	// spend, nothing posted — and is written into the asking agent's conversation as a message it
+	// received, so that agent holds the answer when it runs again, as a running one holds what
+	// the listener delivered to it live. Its Identity, the envelope's dedupe key, is the
+	// delivery's own.
+	Delivery *Origin
 	Decision *Decision
 	Because  string
 }
@@ -101,11 +109,25 @@ func QuestionID(project, identity, token string) string {
 // approval request (its document's review reaches the architect), a reply the agent already got
 // (*.answered), the daemon's own notices and posts, the broker's (source envoy), and anything
 // carrying the loop's own marker (its dedupe key, the `<!-- legion-answer:` marker, a Legion footer
-// with an `answer` key). The ask's author is read from Dispatch.
+// with an `answer` key), which an agent's message carrying it is delivered into that agent's
+// conversation for instead (Delivery). The ask's author is read from Dispatch.
 func Classify(ctx context.Context, h intake.Handoff, conv store.AgentConversation, asks AskReader) (Verdict, error) {
 	env := h.Envelope
 	switch {
 	case strings.Contains(env.DedupeKey, answerDedupePrefix) || carriesLoopMark(env.PayloadSummary) || carriesLoopMark(env.Payload):
+		// The loop's own answer, however it carries the mark, is never answered. One that came
+		// as another agent's message is the answer this daemon sent in a stopped agent's name,
+		// handed back because the asker is stopped too: it is delivered into the asker's
+		// conversation. The loop's own publishes, which its dedupe key names (a question
+		// forwarded to a role topic), carry no answer and deliver nothing; the loop holds that
+		// question's own record already.
+		if env.Source == "agent" && env.SourceSession != "" && !strings.Contains(env.DedupeKey, answerDedupePrefix) {
+			origin, err := ReadOrigin(h)
+			if err != nil {
+				return Verdict{}, err
+			}
+			return Verdict{Delivery: &origin, Because: "the loop's own answer"}, nil
+		}
 		return Verdict{Because: "the loop's own answer"}, nil
 	case strings.HasPrefix(env.DedupeKey, outboxDedupePrefix):
 		return Verdict{Because: "the daemon's own notice"}, nil

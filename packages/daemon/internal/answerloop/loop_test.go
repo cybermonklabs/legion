@@ -149,8 +149,9 @@ func TestNoMoreConversationsAreAnsweredAtOnceThanTheBound(t *testing.T) {
 // Each kind of question is answered where it was asked, in the agent's name: a message and a
 // conversation-page message through their delivery attempt, a mention through its own, an ask
 // reply on the ask's thread with the question's marker, an Envoy message back to its sender in
-// reply to its envelope, carrying `handoff: false` as every send of the daemon's does, so an
-// answer to a stopped asker is never handed back to this loop to answer.
+// reply to its envelope, carrying no `handoff` field, so an answer to a sender that is stopped
+// too is handed to its daemon rather than refused; the loop's own marker, which the body ends
+// with, is what keeps that hand-off from being answered.
 func TestEachAnswerIsPostedWhereItWasAskedAsTheAgent(t *testing.T) {
 	r := newRig(t)
 	r.conversation("ses_tester", testerToken, 0)
@@ -187,8 +188,7 @@ func TestEachAnswerIsPostedWhereItWasAskedAsTheAgent(t *testing.T) {
 	}
 	sends := r.listener.posts()
 	wantSend := request{"POST", "/v1/messages/send", map[string]any{"target_session": "ses_asker", "source": "agent", "source_session": "ses_tester",
-		"message": "Plum, from Which?" + marker("agent.ses_tester.k9"), "in_reply_to": "evt-9", "idempotency_key": ids["agent.ses_tester.k9"],
-		"handoff": false}}
+		"message": "Plum, from Which?" + marker("agent.ses_tester.k9"), "in_reply_to": "evt-9", "idempotency_key": ids["agent.ses_tester.k9"]}}
 	if len(sends) != 1 || !reflect.DeepEqual(sends[0], wantSend) {
 		t.Fatalf("listener posts = %s; want %s", describe(sends), describe([]request{wantSend}))
 	}

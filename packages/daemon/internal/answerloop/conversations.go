@@ -22,13 +22,16 @@ type Conversations interface {
 }
 
 // Session is one conversation as read: what the model is resumed on, whether it already holds the
-// answer to a question (Answered, the marker an append of that question wrote: the append landed,
-// so it is neither answered nor appended again), and the append of an exchange after exactly what
-// was read (conversation.ErrMoved otherwise). Close releases what the read holds.
+// answer to a question or a delivery written in (Answered, the marker an append of that id wrote:
+// the append landed, so it is neither answered nor appended again), the append of an exchange
+// after exactly what was read (conversation.ErrMoved otherwise), and Deliver, the same write for
+// a message the agent received while it was stopped and answers itself when it runs again. Close
+// releases what the read holds.
 type Session interface {
 	Conversation() conversation.Conversation
 	Answered(questionID string) bool
 	Append(ctx context.Context, a conversation.Append, now time.Time) error
+	Deliver(ctx context.Context, d conversation.Delivery, now time.Time) error
 	Close()
 }
 
@@ -93,6 +96,9 @@ func (o ompFileSession) Answered(questionID string) bool         { return o.s.An
 func (o ompFileSession) Append(_ context.Context, a conversation.Append, now time.Time) error {
 	return omp.AppendFile(o.path, o.s, a, now)
 }
+func (o ompFileSession) Deliver(_ context.Context, d conversation.Delivery, now time.Time) error {
+	return omp.AppendDeliveryFile(o.path, o.s, d, now)
+}
 func (o ompFileSession) Close() {}
 
 type ompSQLSession struct {
@@ -107,6 +113,9 @@ func (o ompSQLSession) Answered(questionID string) bool         { return o.s.Ans
 func (o ompSQLSession) Append(ctx context.Context, a conversation.Append, now time.Time) error {
 	return omp.AppendSQL(ctx, o.conn, o.path, o.s, a, now)
 }
+func (o ompSQLSession) Deliver(ctx context.Context, d conversation.Delivery, now time.Time) error {
+	return omp.AppendDeliverySQL(ctx, o.conn, o.path, o.s, d, now)
+}
 func (o ompSQLSession) Close() { o.close() }
 
 type claudeSession struct {
@@ -118,5 +127,8 @@ func (c claudeSession) Conversation() conversation.Conversation { return c.s.Con
 func (c claudeSession) Answered(questionID string) bool         { return c.s.Answered(questionID) }
 func (c claudeSession) Append(_ context.Context, a conversation.Append, now time.Time) error {
 	return claude.AppendFile(c.path, c.s, a, now)
+}
+func (c claudeSession) Deliver(_ context.Context, d conversation.Delivery, now time.Time) error {
+	return claude.AppendDeliveryFile(c.path, c.s, d, now)
 }
 func (c claudeSession) Close() {}

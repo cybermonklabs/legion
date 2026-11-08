@@ -177,3 +177,80 @@ func TestEncodeRefusesWhatClaudeCodeCannotHold(t *testing.T) {
 		t.Error("an answer to no question was encoded")
 	}
 }
+
+// A message the agent was sent while it was stopped is written in as a message it received and
+// nothing else: one user line with the message, as Claude Code writes a prompt; the legion-answer
+// line naming the delivery; and the last-prompt checkpoint naming that user line, so a resume
+// continues from it. Read back, the conversation ends in the message as a user turn and the
+// transcript answers Answered for the delivery, which is how a second hand-off of it is written
+// in no second time.
+func TestEncodeDeliveryWritesAMessageReceivedAndItsMarker(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s-1.jsonl")
+	content := baseTranscript().bytes()
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := read(t, content)
+	delivery := conversation.Delivery{
+		ID:   "agent.ses_asker.0123456789abcdef0123456789abcdef",
+		Text: "session:ses_tester sent you, in an Envoy message from session ses_tester:\nPlum.",
+	}
+	if err := AppendDeliveryFile(path, s, delivery, appendedAt); err != nil {
+		t.Fatal(err)
+	}
+	written, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasPrefix(written, content) {
+		t.Fatalf("the transcript after the delivery:\n%s", written)
+	}
+	lines := strings.Split(strings.TrimSuffix(string(written), "\n"), "\n")
+	var records []map[string]any
+	for _, line := range lines[len(lines)-3:] {
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("appended line %q: %v", line, err)
+		}
+		records = append(records, record)
+	}
+	uuidPattern := regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+	message := records[0]["message"].(map[string]any)
+	if records[0]["type"] != "user" || message["role"] != "user" || message["content"] != delivery.Text ||
+		!uuidPattern.MatchString(records[0]["uuid"].(string)) || records[0]["parentUuid"] != s.Leaf ||
+		records[0]["sessionId"] != "s-1" || records[0]["cwd"] != "/work" || records[0]["gitBranch"] != "main" {
+		t.Errorf("the delivered line = %v, want one user line holding the message after %s", records[0], s.Leaf)
+	}
+	if marker := records[1]; marker["type"] != AnswerLineType || marker["questionId"] != delivery.ID || marker["sessionId"] != "s-1" {
+		t.Errorf("the legion-answer line %v, want it to name the delivery", marker)
+	}
+	if last := records[2]; last["type"] != "last-prompt" || last["leafUuid"] != records[0]["uuid"] || last["lastPrompt"] != delivery.Text {
+		t.Errorf("the last-prompt line %v, want it to name the delivered line", last)
+	}
+
+	back := read(t, written)
+	// Claude Code closes a prompt its model never answered with its synthetic reply, and the
+	// delivered message is exactly that until the agent runs again.
+	assertMessages(t, back.Messages[len(back.Messages)-2:], []conversation.Message{user(text(delivery.Text)), synthetic()})
+	if !back.Answered(delivery.ID) {
+		t.Errorf("the transcript read again answers Answered(%q) false; want the delivery recorded", delivery.ID)
+	}
+	if back.Leaf != records[0]["uuid"] {
+		t.Errorf("the transcript's leaf %q, want the delivered line", back.Leaf)
+	}
+	if err := AppendDeliveryFile(path, s, delivery, appendedAt); !errors.Is(err, conversation.ErrMoved) {
+		t.Errorf("a second delivery from the same read = %v, want ErrMoved", err)
+	}
+}
+
+// A delivery an appender could not write as a message received is refused before anything is
+// written: one naming no delivery, and one with no message.
+func TestEncodeDeliveryRefusesWhatItCannotWrite(t *testing.T) {
+	s := read(t, baseTranscript().bytes())
+	if _, err := s.EncodeDelivery(conversation.Delivery{Text: "Plum."}, appendedAt); err == nil {
+		t.Error("a delivery naming no delivery encoded")
+	}
+	if _, err := s.EncodeDelivery(conversation.Delivery{ID: "agent.ses_asker.k9"}, appendedAt); err == nil {
+		t.Error("a delivery with no message encoded")
+	}
+}

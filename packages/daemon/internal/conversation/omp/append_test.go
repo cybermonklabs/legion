@@ -244,3 +244,79 @@ func TestEncodeRefusesAnAppendItCannotWrite(t *testing.T) {
 		t.Error("an OpenAI Responses append with no output items encoded")
 	}
 }
+
+// A message the agent was sent while it was stopped is written in as a message it received and
+// nothing else: one user entry with the message, as Oh My Pi writes a user message, then the
+// legion-answer entry naming the delivery. Read back, the conversation ends in that message as a
+// user turn, the marker is not in it, and the session answers Answered for the delivery, which is
+// how a second hand-off of it is written in no second time.
+func TestEncodeDeliveryWritesAMessageReceivedAndItsMarker(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	content := baseSession().bytes()
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := ReadFile(path, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	delivery := conversation.Delivery{
+		ID:   "agent.ses_asker.0123456789abcdef0123456789abcdef",
+		Text: "session:ses_tester sent you, in an Envoy message from session ses_tester:\nPlum.",
+	}
+	if err := AppendDeliveryFile(path, s, delivery, appendedAt); err != nil {
+		t.Fatal(err)
+	}
+	written, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasPrefix(written, content) {
+		t.Fatalf("the session after the delivery:\n%s", written)
+	}
+	lines := strings.Split(strings.TrimSuffix(string(written), "\n"), "\n")
+	var entries []map[string]any
+	for _, line := range lines[len(lines)-2:] {
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("appended line %q: %v", line, err)
+		}
+		entries = append(entries, entry)
+	}
+	message := entries[0]["message"].(map[string]any)
+	if entries[0]["type"] != "message" || message["role"] != "user" || message["attribution"] != "user" ||
+		message["content"].([]any)[0].(map[string]any)["text"] != delivery.Text {
+		t.Errorf("the delivered entry = %v, want one user message holding the message", entries[0])
+	}
+	if entries[1]["type"] != "custom" || entries[1]["customType"] != AnswerEntryType ||
+		entries[1]["data"].(map[string]any)["questionId"] != delivery.ID {
+		t.Errorf("the last entry = %v, want the legion-answer entry naming the delivery", entries[1])
+	}
+
+	again, err := ReadFile(path, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertMessages(t, again.Messages[len(again.Messages)-1:], []conversation.Message{user(delivery.Text)})
+	if !again.Answered(delivery.ID) {
+		t.Errorf("the session read again answers Answered(%q) false; want the delivery recorded", delivery.ID)
+	}
+	if again.Leaf != entries[1]["id"] || again.Torn {
+		t.Errorf("leaf %q, torn %t; want the marker entry, not torn", again.Leaf, again.Torn)
+	}
+	if err := AppendDeliveryFile(path, s, delivery, appendedAt); !errors.Is(err, conversation.ErrMoved) {
+		t.Errorf("a second delivery from the first read = %v, want ErrMoved", err)
+	}
+}
+
+// A delivery an appender could not write as a message received is refused before anything is
+// written: one naming no delivery, and one with no message.
+func TestEncodeDeliveryRefusesWhatItCannotWrite(t *testing.T) {
+	s := read(t, baseSession().bytes())
+	if _, err := s.EncodeDelivery(conversation.Delivery{Text: "Plum."}, appendedAt); err == nil {
+		t.Error("a delivery naming no delivery encoded")
+	}
+	if _, err := s.EncodeDelivery(conversation.Delivery{ID: "agent.ses_asker.k9"}, appendedAt); err == nil {
+		t.Error("a delivery with no message encoded")
+	}
+}

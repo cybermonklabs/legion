@@ -1394,10 +1394,16 @@ land in `inbox.jsonl` under the stand-in controller's session.
   stream stores one copy. One reply on the asker's topic across the three, and the restarted
   daemon logs no `answers:` line naming that question at all — neither an answer nor a
   `handed off again`, the question having never been handed to it a second time. A kill -9 the
-  moment the reply lands, a restart and a redelivery still one reply; a question to the planner
-  sent as the replaced tester's session gets the planner's answer, which creates no question for
-  the tester; a person's edit of A1's comment, on the open root issue (a closed issue refuses
-  every comment edit, `409 ISSUE_CLOSED`), creates none for the architect.
+  moment the reply lands, a restart and a redelivery still one reply. A question to the planner
+  sent as the replaced tester's session gets the planner's answer, which the listener hands to
+  the daemon because that tester is stopped too (a `listener handed a message to its legion
+  daemon` line naming its session): the loop never answers an answer of its own, so no question
+  and no `answers: answered` line names that tester, no model call's body holds the answer's
+  `legion-answer:<question>` marker and nothing is passed to the controller as `post_refused`;
+  the answer is written into that tester's conversation instead, once — one more `legion-answer`
+  marker entry (`appended_exchanges`), holding the answer's own marker once. A person's edit of
+  A1's comment, on the open root issue (a closed issue refuses every comment edit,
+  `409 ISSUE_CLOSED`), creates no question for the architect.
 - A9: two questions at once are answered in order; the resumed architect's first captured request
   holds each question once, and its conversation holds exactly one appended exchange per question
   — the `legion-answer` marker entry naming that question id, which each reply carries in its

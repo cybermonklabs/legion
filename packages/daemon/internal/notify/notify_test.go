@@ -230,10 +230,11 @@ func TestHTTPPublisherTellsTheConfirmedSendAnswersApart(t *testing.T) {
 
 // A message in an agent's name goes through the listener's direct-message route with the fields
 // its sendHandler reads (packages/envoy/cmd/listener/api.go messageBody plus target_session): the
-// agent as source_session, the envelope it answers as in_reply_to, the idempotency key the
-// listener scopes its dedupe key by, and `handoff: false`, which every send and publish of the
-// daemon's carries (plan 2.2) so the answer loop's own answer to a stopped asker is never handed
-// back to it to answer. A refusal names the listener's error.
+// agent as source_session, the envelope it answers as in_reply_to, and the idempotency key the
+// listener scopes its dedupe key by. It carries no `handoff` field, unlike every publish of the
+// daemon's: an answer to an asker that is stopped too must reach that asker's own daemon, and the
+// loop's `<!-- legion-answer:<id> -->` marker, which every reply it posts ends with, is what keeps
+// the hand-off from being answered. A refusal names the listener's error.
 func TestSendPostsADirectMessageInTheAgentsName(t *testing.T) {
 	refuse := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -250,7 +251,7 @@ func TestSendPostsADirectMessageInTheAgentsName(t *testing.T) {
 		}
 		want := map[string]any{
 			"target_session": "ses_asker", "source": "agent", "source_session": "ses_tester", "message": "Plum.",
-			"in_reply_to": "evt-1", "idempotency_key": "0123456789abcdef0123456789abcdef", "handoff": false,
+			"in_reply_to": "evt-1", "idempotency_key": "0123456789abcdef0123456789abcdef",
 		}
 		for key, value := range want {
 			if body[key] != value {
@@ -275,5 +276,28 @@ func TestSendPostsADirectMessageInTheAgentsName(t *testing.T) {
 	refuse = true
 	if err := New(server.URL, "envoy-bearer").Send(context.Background(), message); err == nil || !strings.Contains(err.Error(), "no live session ses_asker") || !errors.Is(err, ErrRefused) {
 		t.Fatalf("refused send = %v, want the listener's refusal, ErrRefused", err)
+	}
+}
+
+// A message for a session that is running now and for nobody else carries `"handoff": false`, so
+// a listener that finds no live session refuses it (ErrRefused) rather than handing it to that
+// agent's daemon: the answer loop sends one when the agent it has an answer for started again,
+// and answers the refusal itself.
+func TestSendForALiveSessionOnlyCarriesHandoffFalse(t *testing.T) {
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"no live session ses_asker"}`))
+	}))
+	defer server.Close()
+	message := Message{Target: "ses_asker", SourceSession: "ses_tester", Text: "Plum.", IdempotencyKey: "agent.ses_asker.k9", LiveOnly: true}
+	if err := New(server.URL, "").Send(context.Background(), message); !errors.Is(err, ErrRefused) {
+		t.Fatalf("send = %v, want ErrRefused", err)
+	}
+	if body["handoff"] != false {
+		t.Fatalf("send body = %v, want handoff false", body)
 	}
 }

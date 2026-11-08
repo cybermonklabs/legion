@@ -330,23 +330,41 @@ func (p *HTTPPublisher) DeleteSession(ctx context.Context, session string, goneA
 // Message is a direct message sent in an agent's name: to Target's session, from SourceSession,
 // in reply to the envelope InReplyTo names, with IdempotencyKey the listener scopes its dedupe key
 // by (`agent.<target>.<key>`), so a re-send of the same message is a repeat the stream keeps once.
+//
+// LiveOnly is a message for a session that is running now and for nobody else: it carries
+// `"handoff": false`, so a listener that finds no live session refuses it (ErrRefused) rather
+// than handing it to that agent's daemon. The answer loop sends one when it has an answer for an
+// agent whose claim started since the listener handed that answer back, so the running agent
+// gets it live and a race that stopped it again ends in a refusal the loop answers itself,
+// never in a message handed round again.
 type Message struct {
 	Target         string
 	SourceSession  string
 	Text           string
 	InReplyTo      string
 	IdempotencyKey string
+	LiveOnly       bool
 }
 
 // Send posts m through the listener's direct-message route (POST /v1/messages/send, sendHandler in
 // packages/envoy/cmd/listener/api.go) as source `agent`. A 4xx answer, such as the listener's 404
-// for a target with no live session, is ErrRefused: sending it again is refused again.
+// for a target with no live session whose daemon does not answer for it, is ErrRefused: sending
+// it again is refused again.
 //
-// It carries `"handoff": false`, as every publish of the daemon's does: this is how the answer
-// loop answers a stopped agent's Envoy message, in the agent's name, and a send the listener
-// handed back to the loop would have it answer its own answer
-// (packages/envoy/cmd/listener/api.go's optedOutOfHandoff, plan 2.2).
+// Unlike Publish it carries no `"handoff": false`, unless m is LiveOnly: this is how the answer
+// loop answers a stopped agent's Envoy message, in the agent's name, and the asker may be stopped
+// too, so the listener hands the answer to the asker's own daemon (handOffToLegion) in place of
+// refusing it. The one place that hand-off could reach is the loop that sent it, as a message
+// from an agent, which the loop would otherwise answer; the answer carries the loop's
+// `<!-- legion-answer:<id> -->` marker, which the loop reads before any model call
+// (answerloop.Classify), so that hand-off is never answered and reaches the asking agent's
+// conversation instead. The marker is relied on rather than the field, because the answer must
+// reach the stopped asker and `"handoff": false` is exactly the refusal of that.
 func (p *HTTPPublisher) Send(ctx context.Context, m Message) error {
+	var handoff *bool
+	if m.LiveOnly {
+		handoff = new(bool)
+	}
 	body, err := json.Marshal(struct {
 		TargetSession  string `json:"target_session"`
 		Source         string `json:"source"`
@@ -354,9 +372,9 @@ func (p *HTTPPublisher) Send(ctx context.Context, m Message) error {
 		Message        string `json:"message"`
 		InReplyTo      string `json:"in_reply_to,omitempty"`
 		IdempotencyKey string `json:"idempotency_key"`
-		Handoff        bool   `json:"handoff"`
+		Handoff        *bool  `json:"handoff,omitempty"`
 	}{TargetSession: m.Target, Source: "agent", SourceSession: m.SourceSession, Message: m.Text, InReplyTo: m.InReplyTo,
-		IdempotencyKey: m.IdempotencyKey, Handoff: false})
+		IdempotencyKey: m.IdempotencyKey, Handoff: handoff})
 	if err != nil {
 		return fmt.Errorf("encode the message to %s: %w", m.Target, err)
 	}

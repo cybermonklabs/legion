@@ -24,6 +24,7 @@ package answerloop
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -34,6 +35,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/answer"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/conversation"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/ghtool"
@@ -327,10 +329,11 @@ func (l *Loop) work(ctx context.Context, session string) {
 }
 
 // Receive is the hand-off consumer's handler (intake.HandoffHandler): it finds the conversation the
-// hand-off is for in the daemon's history, classifies it, passes on the decision it carries
-// (Decisions), records the question it asks, and wakes the loop. A hand-off for a session the
-// history does not hold, and one that is no question, is logged and dropped; nil acknowledges it.
-// An error leaves it to be delivered again.
+// hand-off is for in the daemon's history, classifies it, delivers the loop's own answer into the
+// asking agent's conversation (deliver), passes on the decision it carries (Decisions), records
+// the question it asks, and wakes the loop. A hand-off for a session the history does not hold,
+// and one that is no question, is logged and dropped; nil acknowledges it. An error leaves it to
+// be delivered again.
 func (l *Loop) Receive(ctx context.Context, h intake.Handoff, raw []byte) error {
 	conv, ok, err := l.conversationFor(ctx, h)
 	if err != nil {
@@ -344,6 +347,9 @@ func (l *Loop) Receive(ctx context.Context, h intake.Handoff, raw []byte) error 
 	verdict, err := Classify(ctx, h, conv, l.cfg.Dispatch)
 	if err != nil {
 		return err
+	}
+	if verdict.Delivery != nil {
+		return l.deliver(ctx, h, conv, *verdict.Delivery)
 	}
 	if verdict.Decision != nil {
 		if err := l.cfg.Decisions.Decide(ctx, *verdict.Decision); err != nil {
@@ -373,6 +379,98 @@ func (l *Loop) Receive(ctx context.Context, h intake.Handoff, raw []byte) error 
 	l.logState(q, "")
 	l.poke()
 	return nil
+}
+
+// deliver gives the loop's own answer, handed back because the agent it was sent to was stopped,
+// to that agent: written into its conversation as a message it received, so it holds the answer
+// when it runs again, word for word as the listener would have delivered it live. Nothing is
+// answered, billed or posted for it. The delivery's identity is the envelope's dedupe key, which
+// the append records beside the message as it records a question's id, so a hand-off delivered
+// again and one the daemon is handed after a restart write nothing more (Session.Answered).
+//
+// A claim that runs the conversation takes the answer live instead, as a forwarded question goes
+// to a running agent: the loop sends it to the agent's own session through the listener, for a
+// live session and nobody else (notify.Message's LiveOnly), and the hand-off is done with. A
+// send the listener refuses is an agent that stopped again in that race, and its answer is
+// written into the conversation after all, which leaves no message going round between the two.
+//
+// A conversation the reader refuses, or its store no longer holds, is logged and the message
+// dropped: no later delivery of it would read any better. A conversation that moved since it was
+// read is an error, so the hand-off comes again and is written after a fresh read.
+func (l *Loop) deliver(ctx context.Context, h intake.Handoff, conv store.AgentConversation, d Origin) error {
+	session, err := l.cfg.Conversations.Open(ctx, conv)
+	switch {
+	case errors.Is(err, conversation.ErrUnknownFormat), errors.Is(err, conversationMissing):
+		l.cfg.Log.Warn("answers: the loop's own answer is not delivered: the agent's conversation cannot be read",
+			"delivery", d.Identity, "session", conv.Session, "error", err)
+		return nil
+	case err != nil:
+		return err
+	}
+	defer session.Close()
+	if session.Answered(d.Identity) {
+		l.cfg.Log.Info("answers: the asking agent's conversation already holds this answer; it is not delivered again",
+			"delivery", d.Identity, "issue", conv.Issue, "role", conv.Role, "session", conv.Session)
+		return nil
+	}
+	written, err := l.writeDelivery(ctx, session, conv, d)
+	if err != nil {
+		return err
+	}
+	if written {
+		return nil
+	}
+	// The agent is running: it takes the message the way the listener would have delivered it,
+	// its sender's own words. The idempotency key is the envelope's dedupe key, so this send is
+	// one message however often it is tried, and not the key the refused send to the stopped
+	// agent already used.
+	err = l.cfg.Envoy.Send(ctx, notify.Message{
+		Target: conv.Session, SourceSession: d.Sender, Text: d.Text, InReplyTo: h.Envelope.InReplyTo,
+		IdempotencyKey: d.Identity, LiveOnly: true,
+	})
+	if err == nil {
+		l.cfg.Log.Info("answers: the loop's own answer is given to the asking agent live; its claim runs the conversation",
+			"delivery", d.Identity, "issue", conv.Issue, "role", conv.Role, "session", conv.Session)
+		return nil
+	}
+	if !errors.Is(err, notify.ErrRefused) {
+		return fmt.Errorf("give the answer %s to the running %s: %w", d.Identity, conv.Session, err)
+	}
+	l.cfg.Log.Info("answers: the asking agent stopped before the answer reached it live; it is written into its conversation",
+		"delivery", d.Identity, "session", conv.Session, "error", err)
+	written, err = l.writeDelivery(ctx, session, conv, d)
+	switch {
+	case err != nil:
+		return err
+	case !written:
+		return fmt.Errorf("deliver the answer %s to %s: its claim runs the conversation again", d.Identity, conv.Session)
+	}
+	return nil
+}
+
+// writeDelivery writes d into the agent's conversation under the gate, and reports whether it
+// was written: false, and no error, for a claim that runs the conversation, which the loop
+// answers by giving the message to the running agent instead.
+func (l *Loop) writeDelivery(ctx context.Context, session Session, conv store.AgentConversation, d Origin) (bool, error) {
+	ran, err := l.cfg.Gate.Append(conv.Token, conv.Session, func() error {
+		return session.Deliver(ctx, conversation.Delivery{ID: d.Identity, Text: deliveredMessage(d)}, l.cfg.Now())
+	})
+	switch {
+	case !ran:
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("deliver the answer %s to %s: %w", d.Identity, conv.Session, err)
+	}
+	l.cfg.Log.Info("answers: the loop's own answer is delivered into the asking agent's conversation",
+		"delivery", d.Identity, "issue", conv.Issue, "role", conv.Role, "session", conv.Session)
+	return true, nil
+}
+
+// deliveredMessage is a delivery as the agent reads it in its conversation: who sent it and
+// where, then the message word for word, which is the shape the question side of an exchange is
+// written in (internal/answer's userMessage).
+func deliveredMessage(d Origin) string {
+	return fmt.Sprintf("%s sent you, in %s:\n%s", d.Asker, d.Where, d.Text)
 }
 
 // conversationFor is the conversation a hand-off is answered from: for a message to a role, the
