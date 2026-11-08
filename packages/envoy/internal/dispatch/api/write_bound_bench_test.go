@@ -151,13 +151,21 @@ func writeBoundProject(b testing.TB, handler http.Handler) {
 
 // writeBoundIssue opens one issue, whose spec is the document a version write and an upload
 // rewrite, and answers its key and the id of that document.
+//
+// It carries `force`, which is what that field is for: these four issues are a fixture, and
+// their titles are near copies of one another by construction - four short titles about one
+// document and one issue, opened seconds apart in one project. Without it the near-copy gate
+// answers 409 POSSIBLE_DUPLICATE to the upload's issue inside the first round and to every path
+// from the second round on, since `go test -count 10` re-invokes each sub-benchmark against the
+// same server and the same database, and A6's own command is exactly that run at the base and at
+// the head (TestTheWriteBoundBenchmarksOpenTheirIssues holds this).
 func writeBoundIssue(b testing.TB, handler http.Handler, title string) struct {
 	Key               string `json:"key"`
 	PrimaryArtifactID string `json:"primary_artifact_id"`
 } {
 	b.Helper()
-	response := writeBoundRequest(b, handler, http.MethodPost, "/api/v1/issues", map[string]string{
-		"project": writeBoundProjectKey, "title": title, "spec": writeBoundMarkdown(0),
+	response := writeBoundRequest(b, handler, http.MethodPost, "/api/v1/issues", map[string]any{
+		"force": true, "project": writeBoundProjectKey, "title": title, "spec": writeBoundMarkdown(0),
 	}, http.StatusCreated)
 	var issue struct {
 		Key               string `json:"key"`
