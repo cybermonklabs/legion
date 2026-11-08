@@ -143,6 +143,7 @@ func TestAProcessReportsASilentNATSCutWithinSeconds(t *testing.T) {
 // healthBody is the part of /healthz these tests read.
 type healthBody struct {
 	OK            bool  `json:"ok"`
+	DB            bool  `json:"db"`
 	NATS          *bool `json:"nats"`
 	SignIn        *bool `json:"signin"`
 	ServiceTokens *bool `json:"service_tokens"`
