@@ -260,6 +260,14 @@ Each item below names a script, then what it proves.
   with Dispatch stopped the write fails and the completion is refused `DISPATCH_READ_FAILED`, and once it is back both land and the issue's handoff list holds the record.
   No GitHub, no cluster
 
+- `plan-pointer-drive.sh`
+
+  a Legion phase worker whose task line names a stale plan-handoff pointer builds from the issue's `plan.md` as it stands (dispatch://INFRA-2038), over two arms that differ in the implementer's role prompt alone:
+  the head arm's is composed from this checkout's `packages/daemon`, the control's from the daemon module of the commit `--base-commit` names, taken with `git archive`, and both are composed by the daemon's own composer.
+  Each run stages one issue on a Dispatch server and a database of its own — a `plan.md` at eight versions whose design changed after the version the accepted handoff cites, six `plan` handoff records, and the plan approved at the first version — runs one real headless Oh My Pi session on the composed prompt with the daemon's own task line, writes a ninth plan version under that session the moment it first reads the plan, and prints a row naming every plan version it read and when, which design it wrote, the trigger and both plan-read times.
+  A reproduction and a control, never a rate.
+  A model and a loopback PostgreSQL; no daemon, no cluster, no GitHub
+
 - `envoy-session-delivery.sh`
 
   every Envoy event reaches a real Oh My Pi session and a real Claude Code session under `legion claude-bridge` exactly once
@@ -4170,6 +4178,68 @@ the Apps' tokens are placeholders; Envoy's listener is the package's `noticeList
 and no agent runs: each claim is launched by the package's fake runtime, which provisions its own workspace.
 The issues, pull requests, slots and the claims the boot relaunches are seeded through the store, as every daemon test seeds its fixture.
 `HANDOFF_RECORDS_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, Dispatch's (`dispatch.log`) and the driver's output.
+
+## plan-pointer-drive.sh
+
+```sh
+LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
+  LEGION_OMP_PATH=<omp> bash scripts/e2e/plan-pointer-drive.sh [--runs <n>] [--base-commit <rev>]     # → "plan pointer drive: PASS in <n>s", exit 0
+```
+
+dispatch://INFRA-2038's live proof that a Legion phase worker whose task line names a stale plan-handoff pointer builds from the issue's `plan.md` as it stands.
+A grep over the prompt files says the words changed;
+only a session says what an agent reading them writes, and only a control says the change caused it ([`docs/solutions/testing/prove-a-prompt-change-with-the-production-composer-a-real-session-and-the-old-prompt-as-the-control-INFRA-336.md`](../../docs/solutions/testing/prove-a-prompt-change-with-the-production-composer-a-real-session-and-the-old-prompt-as-the-control-INFRA-336.md)).
+
+The two arms differ in one thing, the implementer's role prompt:
+
+| arm | its daemon module | what it carries |
+| :--- | :--- | :--- |
+| `head` | this checkout's `packages/daemon` | the change's text: the plan is `plan.md` at its newest version, and the task's `Handoff: plan version <n>` line is the receipt for the record the daemon accepted |
+| `base` | `packages/daemon` of the commit `--base-commit` names (default `jj log -r 'trunk()'`), taken with `git archive` into the run's own work directory | the prompt before the change, which reads the plan through its handoff record alone |
+
+`packages/envoy` is taken with it, because `packages/daemon/go.mod` replaces `github.com/sjawhar/envoy` with `../envoy` and the composer runs `go run` in that module.
+Both prompts are composed by the daemon's own composer, `workerPane` in [`packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts`](../../packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts), with `systemPrompt: true`, the project token in lower case and `LEGION_GH_PATH` as the real `gh`;
+the whole `--append-system-prompt` argument it answers with is turned into the prompt file by the shell (`eval "args=( $(cat arg.txt) )"`), never by a regular expression.
+
+Its inputs:
+
+| input | what it is |
+| :--- | :--- |
+| `LEGION_TEST_PG_DSN` | required: the loopback PostgreSQL server each run creates a database of its own on, named `ppd_<pid>_<arm>_<n>`, where the database the DSN itself names is never written and every database the run made is dropped when it ends, on success and on failure |
+| `LEGION_OMP_PATH` | required: the Oh My Pi binary each session runs, which must reach a model |
+| `LEGION_GH_PATH` | optional: the real `gh` the composer is told; the first `gh` on `PATH` otherwise, which the composer refuses when it is a script |
+| `--runs <n>` | how many runs each arm makes, default 1; three or more is what a reading needs |
+| `--base-commit <rev>` | the control's commit, default `jj log -r 'trunk()'` of this checkout |
+| `PLAN_POINTER_DRIVE_TRIGGER_SECONDS` | the watcher's bound, default 120 |
+| `PLAN_POINTER_DRIVE_SESSION_SECONDS` | each session's bound, default 900 |
+
+Each run stages its own world and reads one row off it:
+
+| step | what it does |
+| :--- | :--- |
+| `<arm>-<n> database` | `createdb` on that server |
+| `<arm>-<n> dispatch` | the e2e harness's Dispatch on it ([`packages/dispatch/e2e/run-server.sh`](../../packages/dispatch/e2e/run-server.sh), its fakes at port 1 and no secrets broker, as pi-legion's skill-scenario rig starts it), on the port the kernel chose, read from its own `msg="dispatch: listening"` line; its agent bearer is the pinned `e2e-token` |
+| `<arm>-<n> seed` | the staged issue through [`packages/dispatch/e2e/api.ts`](../../packages/dispatch/e2e/api.ts): a spec, a `plan.md` at eight versions whose design changes at version 4, six `plan` handoff records (the first citing plan.md version 1, the sixth version 8), and the plan review's approval at version 1, so "approved" (v1), "the version the task's pointer cites" (v1) and "newest" (v8) are three different answers |
+| `<arm>-<n> prompt` | the arm's prompt, composed as above |
+| `<arm>-<n> dispatch-cli` | the real `dispatch` CLI reads the staged plan from the session's own environment before the session relies on it: `dispatch read --issue <key> --artifact plan-md` must print `Versions: 8` |
+| `<arm>-<n> task` | the task line, whose `Handoff:` sentence is byte for byte the shape the daemon renders (`task`, [`packages/daemon/internal/workflow/effects.go`](../../packages/daemon/internal/workflow/effects.go)), and which names no plan version other than that line's and nowhere says the plan can have moved |
+| `<arm>-<n> session` | one real headless session, `omp -p --session-dir`, with every `LEGION_*`, `DISPATCH_*`, `ENVOY_*`, `NATS_*`, `GH_*`, `GITHUB_*`, `OMP_SESSION_*` and `PI_SESSION_*` variable of the caller's shell unset, `OMP_SESSION_STORAGE=file` (which is what writes the transcript), the staged server as its Dispatch and an Envoy address nothing listens on, the watcher beside it writing plan.md version 9 — the second design change, with the plan review's approval of it — the moment the session's first read of the plan's text reaches the transcript, or at its bound when no such read does |
+| `<arm>-<n> row` | the run's row, from the transcript and the file the session wrote |
+
+Each design names one call the plan tells the implementer to write to a file — `pulumi.Import` at version 1, `aws.s3.BucketV2` from version 4, `pulumi.Alias` at the version written mid-session — so the row says which design the session built from by reading that file, never by reading what the session said.
+Every version of `plan.md` carries a `PLANREV-<version>` marker, which is how a tool result in the transcript says which version the session read, and how the watcher tells a read of the plan from any other command.
+A row names the arm, the run, the task's handoff pointer, the version that handoff record cites, the newest and approved versions at the start, every plan read with its time, the trigger and the times it fired and the version landed, the call the session wrote, and two judgements:
+`start-only-read=yes` when every plan read of the session's is older than the mid-session version's landing, and `scorable=no` when that version landed after the session stopped writing, which is a run to make again rather than a pass or a failure.
+One `summary` line per arm counts those rows.
+The work directory under `TMPDIR` is kept and printed either way, since the transcripts, prompts, task lines and rows in it are the evidence;
+only the extracted base tree is removed.
+
+What it does not cover:
+no daemon runs, so that the task line it writes is the line a daemon sends is the daemon's own tests' to prove, not this drive's;
+the session holds no `legion` tool, no jj workspace and no GitHub, so it completes no phase, opens no pull request and records nothing on the issue;
+Envoy is an address nothing listens on, so no role topic, message or notice reaches the session;
+and `skill://legion-worker` resolves to the `skills/legion-worker/SKILL.md` installed on the box, never this checkout's, so a change to that file is read by this drive rather than driven by it.
+Two arms over a few runs are a reproduction and a control, not a rate.
 
 ## envoy-session-delivery.sh
 
