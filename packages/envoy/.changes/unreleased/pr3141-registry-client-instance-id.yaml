@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+  `GET /v1/registry/<session_id>` answers the registration's `client_instance_id`, the client
+  process whose registration it is, left out where the entry carries none.
+
+  It is what lets a caller holding a session id tell one client process's registration from its
+  successor's under the same id. The Legion daemon's clean stop of a dead role reads it and sends
+  it back as the delete's own condition beside the moment its probe judged, so the stop takes the
+  dead process's registration and never the one that claim's relaunch writes.
