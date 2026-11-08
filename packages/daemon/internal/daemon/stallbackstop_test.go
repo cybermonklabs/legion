@@ -23,7 +23,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -1122,19 +1121,31 @@ const (
 // not among them, because a session is what outlives the stop and is brought back on a process
 // of its own, which is a row's own to tell.
 //
-// Those names are not written out runtime by runtime. Each runtime's own are read off
-// runtime.Locator, the one type every process of this daemon is addressed by
-// (stallRuntimeProcessNames), so a runtime added there brings its names with it and no list
-// here has to be remembered: the round that wrote this list out held "pod" and not "pane" or
-// "sandbox", and the tmux deployment's rows could have said either. What is written out is
-// what belongs to no runtime in particular — the turn, the process itself, the worker and the
-// agent that is in it, the container it runs in, the incarnation that is its address
-// (runtime.Locator's own word for a process rather than a slot), the stop this notice answers
-// for, and the charge: the charge itself, and the launch failure that is the only thing this
-// replacement can charge (the daemon's stallChargeClause). The claim's launch budget is not
-// among them, since the budget is the claim's standing allowance and holds every failure of
-// its life, where the charge is what this one replacement took out of it — and the rows name
-// that budget to say what can end the claim while it waits.
+// Those names are written out, runtime by runtime and plural by plural. An earlier round read
+// them off runtime.Locator instead — each pointer member of a zero locator set in turn, and
+// the first word of Locator.Label taken for that runtime's noun — which made the residue a
+// function of a log label's formatting: reword Label and the residue changes with it, and
+// nothing fails. A guard that rests on the shape of a log string is a coincidence rather than
+// a derivation, so the words stand here where a reader can see them, and the price is named
+// below.
+//
+// What is written out is every name a row could call the running thing by. Each runtime's own
+// are the member of runtime.Locator that carries its address, which is the word this daemon's
+// own code uses, and the noun Locator.Label writes in front of that address, which is the word
+// its log lines and its capability rows name that process by: "tmux" and "pane", "sandbox" and
+// "pod". Beside them is what belongs to no runtime in particular — the turn, the process
+// itself, the worker and the agent that is in it, the container it runs in, the incarnation
+// that is its address (runtime.Locator's own word for a process rather than a slot), the stop
+// this notice answers for, and the charge: the charge itself, and the launch failure that is
+// the only thing this replacement can charge (the daemon's stallChargeClause). The claim's
+// launch budget is not among them, since the budget is the claim's standing allowance and
+// holds every failure of its life, where the charge is what this one replacement took out of
+// it — and the rows name that budget to say what can end the claim while it waits.
+//
+// The price: a runtime added to runtime.Locator brings names this list does not hold, and
+// nothing here fails when nobody adds them. Whoever gives Locator a third backend member and
+// Locator.Label its case adds that member's name and that case's noun here, singular and
+// plural, in the same change. The list is as complete as the last person to read it made it.
 //
 // It is a list of words, and that is worth saying plainly: what the residue cannot do is judge
 // what it finds without one. What it is not is a list of phrasings. A new verb buys nothing
@@ -1143,91 +1154,32 @@ const (
 // round this notice lost was lost to a verb nobody had listed.
 var stallSubjectNames = stallNamesOfTheSubjects()
 
-// stallNamesOfTheSubjects builds that map: the names of each subject with their plurals, and
-// every runtime's own names for the process it runs beside them.
+// stallNamesOfTheSubjects is that map: each subject's names with their plurals, and every
+// runtime's own two names for the process it runs beside them.
 func stallNamesOfTheSubjects() map[string]string {
-	named := map[string]string{
+	return map[string]string{
 		// The stop and the charge are named by their verbs as well, which have no plural of
 		// their own.
 		"stopped": stallStopSubject, "stopping": stallStopSubject,
 		"charged": stallChargeSubject, "charging": stallChargeSubject,
-	}
-	add := func(subject string, names ...string) {
-		for _, name := range names {
-			named[name], named[stallPlural(name)] = subject, subject
-		}
-	}
-	add(stallTurnSubject, "turn")
-	add(stallStopSubject, "stop")
-	add(stallProcessSubject, "process", "worker", "agent", "container", "incarnation")
-	add(stallChargeSubject, "charge", "failure")
-	for _, runtimes := range stallRuntimeProcessNames() {
-		add(stallProcessSubject, runtimes.member, runtimes.label)
-	}
-	return named
-}
 
-// stallRuntimeName is what one runtime of this daemon calls the process it runs: the member of
-// runtime.Locator that carries its address, which is the word this daemon's own code uses for
-// it, and the noun runtime.Locator.Label writes in front of that address, which is the word its
-// log lines and its capability rows name that process by.
-type stallRuntimeName struct{ member, label string }
+		"turn": stallTurnSubject, "turns": stallTurnSubject,
+		"stop": stallStopSubject, "stops": stallStopSubject,
 
-// stallRuntimeProcessNames is those two names for every runtime this daemon has, read off
-// runtime.Locator rather than listed anywhere: each backend member of that struct is one
-// runtime's address for a process (runtime.Locator's Tmux and Sandbox), so a runtime added
-// there is a runtime whose names this residue holds without anyone adding them
-// (TestTheRowsOwnWordsResidueHoldsEveryRuntimesName, which is what fails when a runtime is
-// added that Label has no case for).
-func stallRuntimeProcessNames() []stallRuntimeName {
-	var names []stallRuntimeName
-	locator := reflect.TypeFor[runtime.Locator]()
-	for field := range locator.NumField() {
-		member := locator.Field(field)
-		if member.Type.Kind() != reflect.Pointer || member.Type.Elem().Kind() != reflect.Struct {
-			continue
-		}
-		addressed := reflect.New(locator).Elem()
-		addressed.Field(field).Set(reflect.New(member.Type.Elem()))
-		label := strings.Fields(addressed.Interface().(runtime.Locator).Label())
-		names = append(names, stallRuntimeName{member: strings.ToLower(member.Name), label: strings.ToLower(label[0])})
-	}
-	return names
-}
+		"process": stallProcessSubject, "processes": stallProcessSubject,
+		"worker": stallProcessSubject, "workers": stallProcessSubject,
+		"agent": stallProcessSubject, "agents": stallProcessSubject,
+		"container": stallProcessSubject, "containers": stallProcessSubject,
+		"incarnation": stallProcessSubject, "incarnations": stallProcessSubject,
 
-// stallPlural is the plural of one of those names, which the residue holds beside the singular
-// so that a row saying "the pods" is a row that named the process.
-func stallPlural(name string) string {
-	for _, ending := range []string{"s", "x", "z", "ch", "sh"} {
-		if strings.HasSuffix(name, ending) {
-			return name + "es"
-		}
-	}
-	return name + "s"
-}
+		// The runtimes: each one's member of runtime.Locator and the noun its Label writes.
+		"tmux": stallProcessSubject, "tmuxes": stallProcessSubject,
+		"pane": stallProcessSubject, "panes": stallProcessSubject,
+		"sandbox": stallProcessSubject, "sandboxes": stallProcessSubject,
+		"pod": stallProcessSubject, "pods": stallProcessSubject,
 
-// Every runtime this daemon addresses a process with is one the residue knows the names of,
-// which is what keeps the list above from being another list of the words somebody thought of:
-// a runtime added to runtime.Locator is a member of that struct and a case of its Label, and
-// both of those words land in stallSubjectNames through nothing anybody writes here. A member
-// Label has no case for is the one way out, and it is the failure this reads for: such a
-// runtime's process is named "claim" by Label, which is the claim and not the process, and a
-// row could then say the daemon shut its sandbox down and go unread.
-func TestTheRowsOwnWordsResidueHoldsEveryRuntimesName(t *testing.T) {
-	names := stallRuntimeProcessNames()
-	if len(names) == 0 {
-		t.Fatal("no backend member of runtime.Locator was found: this reads the pointer-to-struct members of that type, which are the runtimes, and a reading that finds none holds nothing to anything")
-	}
-	for _, runtimes := range names {
-		if runtimes.label == "claim" {
-			t.Errorf("runtime.Locator.Label names the process of the %s member %q, which is the claim rather than the process it runs: give that member a case in Label, so the word an owner reads for its process is a word this notice's residue holds", runtimes.member, runtimes.label)
-		}
-		for _, name := range []string{runtimes.member, runtimes.label, stallPlural(runtimes.member), stallPlural(runtimes.label)} {
-			if stallSubjectNames[name] != stallProcessSubject {
-				t.Errorf("the residue reads %q as %q, want %q: it is a name this daemon's %s runtime has for the process it runs, and a row that says it has stopped one has said what only the daemon's own derived sentence may (stallStopClause)",
-					name, stallSubjectNames[name], stallProcessSubject, runtimes.member)
-			}
-		}
+		"charge": stallChargeSubject, "charges": stallChargeSubject,
+		"failure": stallChargeSubject, "failures": stallChargeSubject,
 	}
 }
 

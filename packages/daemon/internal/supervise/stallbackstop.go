@@ -47,13 +47,16 @@ type StallBackstopStop struct {
 	// owner acts on. It is false for an end that let no process go.
 	StopUnconfirmed bool
 	// LaunchFailures is how many launch failures the replacement this end came out of charged
-	// the claim: one for every start of it the runtime refused (launchNow,
-	// Machine.failuresCharged). It is carried because the stall itself charges nothing while
-	// the replacement made for it can — one refused start and then a good one ends relaunched
-	// with a failure charged, and one refused start and then a refused write leaves the
-	// relaunch pending with the same — and the claim's own budget counts every failure of the
-	// claim's life rather than this replacement's (the daemon's stallChargeClause). It is 0 for
-	// an end no start was refused in.
+	// the claim: one for every start of it the runtime refused (launchNow). It is read as the
+	// claim's launch budget after the replacement less that budget before it, which is exact
+	// because the only two things that reset the budget are event rows of the table — the
+	// agent's ready and a retry (the table's ready and retry) — and a row runs under the
+	// machine's own lock, so none of them runs inside the replacement. It is carried because
+	// the stall itself charges nothing while the replacement made for it can — one refused
+	// start and then a good one ends relaunched with a failure charged, and one refused start
+	// and then a refused write leaves the relaunch pending with the same — and the budget
+	// itself counts every failure of the claim's life rather than this replacement's (the
+	// daemon's stallChargeClause). It is 0 for an end no start was refused in.
 	LaunchFailures int
 }
 
@@ -162,10 +165,15 @@ func (m *Machine) backstopStalledTurn(ctx context.Context, ev StallBackstop) err
 		"incarnation", incarnation, "bound", ev.Bound, "deadline", ev.Deadline,
 		"lastStep", last, "turnStartedAt", ev.Step.TurnStartedAt, "tool", ev.Step.Tool, "callId", ev.Step.CallID,
 		"callStartedAt", ev.Step.StartedAt, "heldSuspension", suspended)
+	// What this replacement charges is read across it: the claim's budget holds every launch
+	// failure of the claim's life, and the owner of a stalled worker is told what this one
+	// replacement took out of it (StallBackstopStop.LaunchFailures).
+	charged := m.claim.Budgets.LaunchFailures
 	end, err := m.replaceProcess(ctx, "the daemon's stall backstop ended a turn whose agent stopped stepping", ordinaryEnd)
+	charged = m.claim.Budgets.LaunchFailures - charged
 	if end.TellsOwner() && m.deps.StallBackstopped != nil {
 		stop := StallBackstopStop{Step: ev.Step, LastStep: last, Bound: ev.Bound, End: end,
-			StopUnconfirmed: m.stopUnconfirmed, LaunchFailures: m.failuresCharged}
+			StopUnconfirmed: m.stopUnconfirmed, LaunchFailures: charged}
 		if end == EndRelaunchParked {
 			// The wake the machine holds now is this replacement's own: the guard above returned
 			// over a claim that already held one, and the end itself is read from a wake that is

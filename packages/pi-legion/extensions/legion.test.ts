@@ -6735,10 +6735,11 @@ describe("the stall watch the plugin's entry arms", () => {
     const subagent: SessionContext = { ...pane.context, agent: { kind: "sub" } };
     await callStarts(pane);
 
-    // The second road a turn is closed by (`extensions/legion.ts:453-457`): a run that settled,
-    // which is what closes one that ended with no turn end of its own. A subagent's run settles
-    // inside the worker's turn — the `task` call running it is still open — and settling is the
-    // ordinary end of every subagent, so this arrives in every run that delegates at all.
+    // The second road a turn is closed by (the entry's `agent_end` handler): a run that
+    // settled, which is what closes one that ended with no turn end of its own. A subagent's
+    // run settles inside the worker's turn — the `task` call running it is still open — and
+    // settling is the ordinary end of every subagent, so this arrives in every run that
+    // delegates at all.
     await hook(pane.handlers, "agent_end")(
       { messages: [{ role: "assistant", stopReason: "stop" }] },
       subagent
@@ -6756,12 +6757,44 @@ describe("the stall watch the plugin's entry arms", () => {
     expect(ended.map((call) => call.toolCallId)).toEqual([stuckCall.toolCallId]);
   });
 
+  test("a subagent's run cancelled on its own closes none of the worker's calls, so its stuck one is still judged", async () => {
+    shortLimits();
+    const ended: StallCall[] = [];
+    setLegionStallProcessesForTests(() => fakeProcesses(ended));
+    const pane = await bootPane({ role: "implementer", sessionId: "ses_stall_sub_message_end" });
+    const subagent: SessionContext = { ...pane.context, agent: { kind: "sub" } };
+    await callStarts(pane);
+
+    // The third road, and the one that needs no id of the worker's to match: an assistant
+    // message that ended aborted closes every call the watch holds and the turn's one abort
+    // with them (`assistantMessage` in `pi-shared/src/stall-watchdog.ts`, through `closeAll`),
+    // since an aborted turn is readable nowhere else. A subagent the host cancelled on its own
+    // settles with exactly that message, inside the worker's turn, so unguarded it would carry
+    // off every call the worker holds open — the `task` call running that subagent among them,
+    // which would leave the worker's stuck call judged by nobody and its turn free to be
+    // aborted a second time. It is the failure the `agent_end` case above pins, by the other
+    // road.
+    await hook(pane.handlers, "message_end")(
+      { message: { role: "assistant", stopReason: "aborted" } },
+      subagent
+    );
+
+    const { value: written } = await loggedWarnings(() => sweeps(pane.intervals, pane.entries, 2));
+
+    expect(written.map((record) => [record.kind, record.toolCallId])).toEqual([
+      ["evidence", stuckCall.toolCallId],
+      ["step", stuckCall.toolCallId],
+    ]);
+    expect(ended.map((call) => call.toolCallId)).toEqual([stuckCall.toolCallId]);
+  });
+
   test("a subagent's `tool_call` is kept out of the worker's open calls, which the first rung counts", async () => {
     shortLimits();
     const ended: StallCall[] = [];
     // The list this host is built with is the one the entry hands the first rung
-    // (`extensions/legion.ts:371`), which is where `src/stall-recovery.ts:152-158` counts the
-    // open calls of a tool: what is read here is what that rule would read.
+    // (the `openCalls` the entry hands its process host), which is where `stallCallProcesses`
+    // in `src/stall-recovery.ts` counts the open calls of a tool: what is read here is what
+    // that rule would read.
     let openCalls: () => readonly StallCall[] = () => {
       throw new Error("the entry armed no watch, so it built no process host");
     };
@@ -6778,8 +6811,8 @@ describe("the stall watch the plugin's entry arms", () => {
 
     // The subagent makes a call of the same tool. `tool_call` is the one event that writes a
     // call down from its arguments alone, before any clock of its own starts
-    // (`pi-shared/src/stall-watchdog.ts:681-687`), so it is the one that would put a call the
-    // worker never made among the worker's own.
+    // (`callRequested` in `pi-shared/src/stall-watchdog.ts`), so it is the one that would put a
+    // call the worker never made among the worker's own.
     const subagentCall = { toolName: "eval", toolCallId: "toolu_sub", input: { code: "1 + 1" } };
     await hook(pane.handlers, "tool_call")(subagentCall, subagent);
     expect(openIds()).toEqual([stuckCall.toolCallId]);
@@ -6795,12 +6828,42 @@ describe("the stall watch the plugin's entry arms", () => {
     );
     expect(openIds()).toEqual([stuckCall.toolCallId]);
 
-    // Those two closing guards are redundant rather than load-bearing, which is why neither has
-    // a case of its own: with `tool_call` and `tool_execution_start` guarded, no subagent's id
-    // is ever among this watch's records, and closing by an id it does not hold does nothing at
-    // all — `close` returns on the failed delete, before even its log line
-    // (`pi-shared/src/stall-watchdog.ts:495-498`), and neither closing event touches anything
-    // else (`:701-702`), where the two opening ones both declare the turn open (`:685,691`).
+    // Those two closing guards are load-bearing, and the case below is theirs: a subagent's
+    // call id can equal one the worker holds open. The id is the provider's, which pi-ai hands
+    // on unchanged (`id: toolCall.id || ""` in `providers/openai-completions.ts`), and a
+    // provider is free to make it a function of the call alone rather than of the request —
+    // Kimi-K2 documents its tool-call id as `functions.<name>:<idx>` — so a worker and the
+    // subagent it delegated to, each on their first call of the same tool, carry the same id.
+    // With that collision and either guard gone, the subagent's `tool_execution_end` or
+    // `tool_result` deletes the worker's record (`close` in
+    // `pi-shared/src/stall-watchdog.ts`), and the worker's own stuck call is judged by nothing.
+  });
+
+  test("a subagent's call ending closes none of the worker's, though a provider can give the two the same id", async () => {
+    shortLimits();
+    const ended: StallCall[] = [];
+    setLegionStallProcessesForTests(() => fakeProcesses(ended));
+    const pane = await bootPane({ role: "implementer", sessionId: "ses_stall_sub_close" });
+    const subagent: SessionContext = { ...pane.context, agent: { kind: "sub" } };
+    await callStarts(pane);
+
+    // The two events that close a call close it by id alone, and the id is the provider's own:
+    // the subagent's call carries the worker's here, which is what a provider numbering its
+    // calls per request hands out. Unguarded, either of these would take the worker's record
+    // with it.
+    await hook(pane.handlers, "tool_execution_end")({ toolCallId: stuckCall.toolCallId }, subagent);
+    await hook(pane.handlers, "tool_result")(
+      { ...stuckCall, input: {}, details: {}, isError: false },
+      subagent
+    );
+
+    const { value: written } = await loggedWarnings(() => sweeps(pane.intervals, pane.entries, 2));
+
+    expect(written.map((record) => [record.kind, record.toolCallId])).toEqual([
+      ["evidence", stuckCall.toolCallId],
+      ["step", stuckCall.toolCallId],
+    ]);
+    expect(ended.map((call) => call.toolCallId)).toEqual([stuckCall.toolCallId]);
   });
 
   test("no step runs while the host reports the session idle, and a call that ended before the sweep is left alone", async () => {
@@ -6875,8 +6938,9 @@ describe("the stall watch the plugin's entry arms", () => {
     await callStarts(pane);
 
     // A turn that ended the ordinary way carries `stopReason: "stop"`, which the assistant
-    // message reads as nothing at all (`pi-shared/src/stall-watchdog.ts:703-709`), unlike the
-    // `aborted` of the case above: the end of the turn itself is all that closes this call.
+    // message reads as nothing at all (`assistantMessage` in
+    // `pi-shared/src/stall-watchdog.ts`), unlike the `aborted` of the case above: the end of
+    // the turn itself is all that closes this call.
     await hook(pane.handlers, "turn_end")(
       { message: { role: "assistant", stopReason: "stop" } },
       pane.context

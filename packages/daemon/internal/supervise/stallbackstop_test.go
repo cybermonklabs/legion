@@ -939,9 +939,12 @@ func (r *refusingTheFirstStop) Suspend(ctx context.Context, loc runtime.Locator)
 
 // What the replacement charged is the replacement's own, which is the other half of the same
 // rule: the claim's budget counts every launch failure of the claim's life, and the owner of a
-// stalled worker is told what the replacement made for this stall charged. A claim that comes
-// to the backstop with failures already charged and is relaunched at the first try was charged
-// nothing for the stall, however full its budget is (replaceProcess, launchNow).
+// stalled worker is told what the replacement made for this stall charged. The report reads
+// that budget on both sides of the replacement and tells the owner the difference
+// (backstopStalledTurn), so a claim that comes to the backstop with failures already charged
+// and is relaunched at the first try was charged nothing for the stall, however full its
+// budget is: this case is what holds the subtraction to the budget it came with rather than to
+// zero (replaceProcess, launchNow).
 func TestTheBackstopReportsTheFailuresThisReplacementCharged(t *testing.T) {
 	h, stops := backstopReports(t)
 	last, swept := stalledSweep(h)
@@ -953,30 +956,6 @@ func TestTheBackstopReportsTheFailuresThisReplacementCharged(t *testing.T) {
 	if got := h.budgets().LaunchFailures; got != 1 {
 		t.Fatalf("the claim's launch failures after the backstop = %d, want the one it came with: the stall charges nothing", got)
 	}
-	want := StallBackstopStop{Step: swept, LastStep: last, Bound: backstopBound, End: EndRelaunched}
-	if len(*stops) != 1 || (*stops)[0] != want {
-		t.Fatalf("the backstop reported %+v, want the relaunch it made with nothing of its own charged, %+v", *stops, want)
-	}
-}
-
-// And what an earlier replacement of the same claim charged is not what this one charged, so
-// the count this notice is rendered from starts at nothing at the head of every replacement
-// (replaceProcess, failuresCharged, StallBackstopStop.LaunchFailures). The case above reads
-// the claim's budget, which is a different field and one no replacement resets: a machine
-// that never cleared its own count would still report nothing there, since the count is zero
-// until something charges it. So the earlier charge is written onto the machine directly,
-// exactly as the earlier refusal is below, because every path that charges one either fails
-// the claim or goes on to a start that clears it (launchNow): the clear at the head of the
-// replacement is what this pins, and without it a notice tells the owner of a stall that its
-// relaunch cost launch failures another replacement charged.
-func TestTheBackstopReportsNoChargeFromAnEarlierReplacement(t *testing.T) {
-	h, stops := backstopReports(t)
-	last, swept := stalledSweep(h)
-	h.m.failuresCharged = 2
-
-	h.must(h.backstop(last))
-
-	h.wantState(StateLaunching)
 	want := StallBackstopStop{Step: swept, LastStep: last, Bound: backstopBound, End: EndRelaunched}
 	if len(*stops) != 1 || (*stops)[0] != want {
 		t.Fatalf("the backstop reported %+v, want the relaunch it made with nothing of its own charged, %+v", *stops, want)

@@ -897,15 +897,6 @@ type Machine struct {
 	// a start that succeeds clears it as well: the launch that started was handed the process it
 	// replaces (start).
 	stopUnconfirmed bool
-	// failuresCharged is how many launch failures the replacement now being made has charged the
-	// claim: one for each start of it the runtime refused, counted where it is charged
-	// (launchNow). It is carried to the owner of a stalled worker, because the stop that
-	// replacement was made for charges nothing while the replacement itself can, and the claim's
-	// own budget counts every launch failure of the claim's life rather than this replacement's
-	// (StallBackstopStop.LaunchFailures, the daemon's stallChargeClause). replaceProcess clears
-	// it before the replacement it reports on, as it clears stopUnconfirmed, so it counts that
-	// replacement's charges and no earlier one's.
-	failuresCharged int
 	// relaunch is the relaunch relaunchLater left waiting, tried again when TimerRelaunch fires; it
 	// lives as long as that timer, which letGo disarms with it. It is memory only, as the timer is: a
 	// restart launches that claim again as an unfinished launch.
@@ -1743,9 +1734,6 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool) error {
 		}
 		err = errors.Join(err, m.stopPrevious(ctx))
 		m.claim.Budgets.LaunchFailures++
-		// And what the replacement this launch belongs to has charged, which is the owner of a
-		// stalled worker's to hear beside the end it reached (failuresCharged).
-		m.failuresCharged++
 		m.log.Warn("supervise: launch failed", "generation", m.claim.Generation, "error", err,
 			"launchFailures", m.claim.Budgets.LaunchFailures, "limit", m.deps.Limits.LaunchFailures)
 		if m.claim.Budgets.LaunchFailures >= m.deps.Limits.LaunchFailures {
