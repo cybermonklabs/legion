@@ -244,8 +244,13 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		if err != nil {
 			t.Fatalf("open the request pool: %v", err)
 		}
-		t.Cleanup(pool.Close)
-		database.Pool = store.NewPool(pool)
+		requests := store.NewPool(pool)
+		// Close the store's whole pool set, not only the pgx pool it wraps: the pools this one
+		// opens on demand (the background loops', the live readers', the rooms') hold connections
+		// to the test's database of their own, and one left open fails storetest's drop of that
+		// database on any login without pg_signal_backend.
+		t.Cleanup(requests.Close)
+		database.Pool = requests
 	}
 	broker := events.NewBroker()
 	var documentPersistence docs.VersionedStore

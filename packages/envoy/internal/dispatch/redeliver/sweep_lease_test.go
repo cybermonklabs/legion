@@ -45,8 +45,10 @@ func redeliverTestLeases(t *testing.T) duty.Leases {
 	if err != nil {
 		t.Fatalf("open the lease pool: %v", err)
 	}
-	t.Cleanup(connections.Close)
 	pool := store.NewPool(connections)
+	// The store's whole pool set closes, not only the pgx pool it wraps: the leases pool below
+	// is one this pool opens on demand, and only this close gives its connections back.
+	t.Cleanup(pool.Close)
 	if err := (&store.Store{Pool: pool}).Migrate(ctx); err != nil {
 		t.Fatalf("migrate the lease pool's database: %v", err)
 	}

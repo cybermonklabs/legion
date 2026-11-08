@@ -27,6 +27,9 @@ Each item below names a variable, then its purpose.
   Every pool's size is fixed in code, at most 104 connections a process in all (`store.ConnectionsPerProcess`) (the request pool's 48 is `store.SharedPoolSize`), so a connection string carrying `pool_max_conns` is refused at startup; remove the parameter.
   Each connection names its pool in `application_name`, which replaces the connection string's own:
   `dispatch-requests`, `dispatch-background`, `dispatch-live`, `dispatch-settlements`, `dispatch-rooms`, `dispatch-room-appends`, `dispatch-health`, `dispatch-listen`, `dispatch-leases`, `dispatch-outbox`, `dispatch-compaction`, `dispatch-horizon` or `dispatch-registry`, so `select application_name, count(*) from pg_stat_activity group by 1` shows what each pool holds.
+  A request-pool connection carries one more setting no other pool's does, `idle_in_transaction_session_timeout` of 70 seconds (`store.RequestIdleInTransactionTimeout`), so Postgres ends an orphaned request transaction instead of leaving it holding the rows it locked and the event horizon until the server notices its socket is gone.
+  The 70 seconds is computed rather than chosen: the longest a request transaction sits idle by design is one cold read of a document's stored history (60 seconds, `store.ColdReadBound`), which a check-result write waits out with its transaction open under two issue row locks (`api/results.go` into `docs/read_cache.go`), plus the 5 seconds the rollback that ends it is bounded by (`store.RollbackTimeout`) and a 5-second margin.
+  Raising the cold read's bound raises this one with it, since the document service's own bound is that constant.
 
 - `DISPATCH_AGENT_TOKEN`
 

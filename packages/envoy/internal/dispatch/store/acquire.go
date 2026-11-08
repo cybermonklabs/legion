@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -339,10 +340,15 @@ func acquireTracerOf(tracer pgx.QueryTracer) *acquireTracer {
 	return nil
 }
 
+// idleInTransactionParam is the session setting Postgres ends an idle transaction by, which only
+// the request pool's connections carry (configurePool, RequestIdleInTransactionTimeout).
+const idleInTransactionParam = "idle_in_transaction_session_timeout"
+
 // configurePool names config's connections dispatch-<name> in application_name
-// (applicationNamePrefix) and sets the pool's acquire tracer, bounded at bound (zero is none) and
-// composed with any tracer config already carries. A configuration copied from another pool's is
-// re-configured from that pool's original tracer, not stacked on its acquire tracer.
+// (applicationNamePrefix), bounds an idle transaction on them where they are the request pool's
+// (idleInTransactionParam), and sets the pool's acquire tracer, bounded at bound (zero is none)
+// and composed with any tracer config already carries. A configuration copied from another pool's
+// is re-configured from that pool's original tracer, not stacked on its acquire tracer.
 func configurePool(config *pgxpool.Config, name string, bound time.Duration) *acquireTracer {
 	inner := config.ConnConfig.Tracer
 	if configured := acquireTracerOf(inner); configured != nil {
@@ -353,6 +359,17 @@ func configurePool(config *pgxpool.Config, name string, bound time.Duration) *ac
 		config.ConnConfig.RuntimeParams = map[string]string{}
 	}
 	config.ConnConfig.RuntimeParams["application_name"] = applicationNamePrefix + name
+	// Only the request pool's connections are bounded. Every separate pool's configuration is a
+	// copy of the request pool's (Pool.newSeparate), so each of them deletes the setting here,
+	// and a background loop, a settlement, a live reader, a room load or append, a compaction,
+	// the event horizon, a lease, the outbox, the registry and the listener may each sit in a
+	// transaction for as long as its own work takes. A connection string that sets the
+	// parameter itself is replaced either way, as its application_name is.
+	if name == RequestsPool {
+		config.ConnConfig.RuntimeParams[idleInTransactionParam] = strconv.FormatInt(requestIdleInTransaction.Milliseconds(), 10)
+	} else {
+		delete(config.ConnConfig.RuntimeParams, idleInTransactionParam)
+	}
 	if inner == nil {
 		config.ConnConfig.Tracer = tracer
 		return tracer

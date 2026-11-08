@@ -45,8 +45,10 @@ func deliveryTestPool(t *testing.T) (*store.Pool, context.Context) {
 	if err != nil {
 		t.Fatalf("pgxpool.New: %v", err)
 	}
-	t.Cleanup(pgxPool.Close)
 	pool := store.NewPool(pgxPool)
+	// The store's whole pool set closes, not only the pgx pool it wraps, so the pools it opens
+	// on demand (the leases' among them) give their connections back when the test ends.
+	t.Cleanup(pool.Close)
 	st := &store.Store{Pool: pool}
 	if err := st.Migrate(ctx); err != nil {
 		t.Fatalf("Migrate: %v", err)

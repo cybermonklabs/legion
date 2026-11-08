@@ -34,8 +34,12 @@ func writerGateHandler(
 	if err != nil {
 		t.Fatalf("open test pool: %v", err)
 	}
-	database.Pool = store.NewPool(pool)
-	t.Cleanup(pool.Close)
+	requests := store.NewPool(pool)
+	database.Pool = requests
+	// Close the store's whole pool set, not only the pgx pool it wraps: the pools this one opens
+	// on demand hold connections to the test's database of their own, and one left open fails
+	// storetest's drop of that database on any login without pg_signal_backend.
+	t.Cleanup(requests.Close)
 	service := docs.New(docs.Deps{Store: database, Settle: time.Hour})
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

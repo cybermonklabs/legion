@@ -10,7 +10,6 @@ import (
 	"runtime/debug"
 	"strconv"
 	"sync"
-	"time"
 	"unsafe"
 
 	"golang.org/x/sync/singleflight"
@@ -77,8 +76,12 @@ func readBudgetFor(memoryLimit int64) int64 {
 }
 
 // coldReadTimeout bounds a cold read's fold of the stored history (LoadDocument), which belongs to
-// the document rather than to the request that started it, so no request's end cancels it.
-var coldReadTimeout = 60 * time.Second
+// the document rather than to the request that started it, so no request's end cancels it. It is
+// store.ColdReadBound, the one declaration of this bound: the request pool's
+// idle_in_transaction_session_timeout is computed from it (store.RequestIdleInTransactionTimeout),
+// because a request transaction waiting here sits idle for as long as the fold takes, and raising
+// the fold's bound must raise that one with it (TestTheRequestPoolsIdleBoundOutlastsAColdRead).
+var coldReadTimeout = store.ColdReadBound
 
 // coldFolds is how many cold reads fold a stored history at once (foldDocument), each holding one
 // connection of the request pool while it does (foldContext). A fold is a second connection taken

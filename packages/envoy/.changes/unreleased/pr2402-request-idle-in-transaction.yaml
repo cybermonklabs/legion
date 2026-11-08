@@ -1,0 +1,15 @@
+kind: Changed
+body: |-
+  Postgres now ends a request transaction left idle for 70 seconds, and only a request
+  connection's: every connection of Dispatch's request pool carries
+  `idle_in_transaction_session_timeout`, and the background, live, settlement, rooms,
+  room-appends, compaction, horizon, lease, outbox, registry, listen and health pools carry none,
+  so work that is meant to sit in a transaction for as long as it takes still can.
+  Without it an orphaned request transaction — one whose connection was abandoned and whose
+  close reached Postgres late or not at all — held the rows it locked and the event horizon until
+  Postgres noticed the socket was gone, which a stall run measured at over two seconds past every
+  request that could have owned it.
+  The 70 seconds is computed rather than chosen, from the longest a request transaction sits idle
+  by design (one cold read of a document's stored history, 60 seconds, which a check-result write
+  waits out under two issue row locks), the 5 seconds the rollback that ends it is bounded by, and
+  a 5-second margin; raising the cold read's bound raises this one with it.

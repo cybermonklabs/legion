@@ -625,13 +625,50 @@ func CommitContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeoutCause(context.WithoutCancel(ctx), bound, ErrCommitTimeout)
 }
 
-// rollbackTimeout bounds a rollback RollbackContext has detached from its caller. A ROLLBACK
+// RollbackTimeout bounds a rollback RollbackContext has detached from its caller. A ROLLBACK
 // takes no lock and waits for nothing, so the only rollback that reaches this bound is one on a
-// connection the database has stopped answering on, which the bound then stops holding.
-const rollbackTimeout = 5 * time.Second
+// connection the database has stopped answering on, which the bound then stops holding. It is
+// exported because the request pool's idle-in-transaction bound is computed from it
+// (RequestIdleInTransactionTimeout).
+const RollbackTimeout = 5 * time.Second
+
+// ColdReadBound is the bound on one cold read's fold of a document's stored history: the document
+// service's own coldReadTimeout is this constant (docs/read_cache.go), and
+// TestTheRequestPoolsIdleBoundOutlastsAColdRead holds the two together. It is declared here
+// rather than in docs because the request pool's idle-in-transaction bound is computed from it
+// and docs imports this package, never the other way round.
+//
+// It is the longest a request-pool transaction sits idle by design. A write has no deadline of
+// its own (api's defaultReadDeadline says why), so a write that reads a document it holds no
+// fork for waits out the fold with its transaction open and no statement running: recording a
+// check result does exactly that, under the two issue row locks it holds (api/results.go's
+// refreshResolvedCheck, docs/read_cache.go's coldRead).
+const ColdReadBound = 60 * time.Second
+
+// requestIdleMargin is what RequestIdleInTransactionTimeout leaves over that longest idle wait
+// and the rollback that follows it, so the bound never ends a transaction the server was itself
+// about to end.
+const requestIdleMargin = 5 * time.Second
+
+// RequestIdleInTransactionTimeout is the idle_in_transaction_session_timeout every request-pool
+// connection carries, and no other pool's (configurePool): the longest a request transaction may
+// sit idle by design, plus the bound on the rollback that ends it, plus a margin - computed from
+// those three, so a raised cold-read bound raises this with it.
+//
+// Postgres is the only thing that can end an orphaned request transaction: one whose pgx
+// connection was abandoned, and whose close reached Postgres late or not at all, holds the rows
+// it locked and the event horizon until Postgres notices the socket is gone, which a stall run
+// measured at over two seconds past every request that could have owned it and which a starved
+// proxy can stretch much further. This bound ends it instead.
+const RequestIdleInTransactionTimeout = ColdReadBound + RollbackTimeout + requestIdleMargin
+
+// requestIdleInTransaction is the bound configurePool writes onto a request pool's connections.
+// Tests in this package shorten it so a transaction outlasts it in milliseconds rather than in
+// the seventy seconds production runs; nothing else moves it.
+var requestIdleInTransaction = RequestIdleInTransactionTimeout
 
 // RollbackContext is the context a transaction rolls back on: ctx's values without its
-// cancellation or deadline, bounded at rollbackTimeout. pgconn refuses a statement on a context
+// cancellation or deadline, bounded at RollbackTimeout. pgconn refuses a statement on a context
 // that is already done before it writes anything to the socket, and pgx answers a rollback that
 // failed by killing the connection (pgx.dbTx.Rollback -> Conn.die), so a rollback on the
 // cancelled context of a request whose client went away sent no ROLLBACK at all: the transaction
@@ -639,7 +676,7 @@ const rollbackTimeout = 5 * time.Second
 // busiest. On this context the ROLLBACK is sent, the transaction ends at once instead of when
 // the connection dies, and the connection goes back to the pool idle.
 func RollbackContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.WithoutCancel(ctx), rollbackTimeout)
+	return context.WithTimeout(context.WithoutCancel(ctx), RollbackTimeout)
 }
 
 // ErrRequestEnded is a commit never started, because the request that would have made it had
