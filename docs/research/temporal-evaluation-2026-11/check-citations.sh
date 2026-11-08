@@ -29,7 +29,9 @@
 #   Literal      (`packages/daemon/internal/api/handoff.go`, `"HANDOFF_STALE_ASSIGNMENT"`)
 #                The same shape with the second span double-quoted. It resolves on the
 #                exact quoted text being in that file. This is the form for a refusal
-#                code or any other token that is no declaration.
+#                code or any other token that is no declaration. Its path is read under
+#                the code form's rule, so no absolute path and no path holding "..": a
+#                citation reads a file of this repository or it is refused.
 #   Stored state the `lease_token` column of `outbox`, or the `outbox` table.
 #                A table resolves on a create table of that name in a *.up.sql file
 #                under packages/daemon/internal/store/migrations; a column resolves
@@ -41,12 +43,18 @@
 #                section with no citation.
 #   Figure       Any number a document attributes to a numbered experiment: the 92 of
 #                "Experiment 1 drove ... 92 history events". It resolves when that text,
-#                as written, is a number of its own in that experiment's committed
-#                transcript: no digit and no decimal point stands immediately before or
-#                after it there, so a figure of 1.8 is not resolved by a timestamp
-#                reading 51.864119017 and a figure of 0.16 is not resolved by a cost
-#                reading 0.164294. A figure quoted from a run nobody committed fails,
-#                and so does a figure written 1,015 where the transcript prints 1015.
+#                as written, is a number of its own in what that experiment's committed
+#                transcript measured: no digit and no decimal point stands immediately
+#                before or after it there, so a figure of 1.8 is not resolved by a
+#                timestamp reading 51.864119017 and a figure of 0.16 is not resolved by
+#                a cost reading 0.164294. Only the transcript's measured lines resolve a
+#                figure. Every transcript opens with a header of a few lines and then a
+#                line of dashes, and only what stands below that first all-dashes line
+#                is read, so the recording time, the commit the run was made from and
+#                the run id in the header resolve nothing, and a number that appears in
+#                the header alone fails. A figure quoted from a run nobody committed
+#                fails, and so does a figure written 1,015 where the transcript prints
+#                1015.
 #                The scope a number is read in is one table cell, and one sentence
 #                within it: cells are separated by ` | ` in the rendered text, and a
 #                sentence ends at ". ", "; ", "? " or the line end. A scope never runs
@@ -63,16 +71,22 @@
 #                resolves the figure.
 #   Dispatch     A bare dispatch:// reference, resolved by `dispatch read --ref`.
 #   Web          An https:// address immediately followed by ` (read YYYY-MM-DD)`. A
-#                404 or a 410 fails. Any other answer, and a timeout, print unreachable
-#                and do not fail the run, because a merge must not wait on a third
-#                party's uptime.
+#                404 or a 410 fails. Any other answer prints unreachable and does not
+#                fail the run. Of the exits curl itself can end on, exactly two are
+#                lenient and print unreachable: 28, the request timed out, and 7,
+#                nothing accepted the connection. Those two are the third party's
+#                uptime, and a merge must not wait on that. Every other non-zero curl
+#                exit fails, 6 among them, which is the host not resolving: a name that
+#                resolves nowhere is a citation of nothing, not a site briefly down.
 #
 # It exits non-zero on: a file that does not hold the identifier it is cited with; an
 # identifier cited in the code form that the file holds only as a string; a table no
 # migration creates; a dispatch:// reference that does not read; a number a document
-# attributes to an experiment that the experiment's committed transcript does not hold;
-# a web address with no read date beside it; an address answering 404 or 410; and a
-# document with no citation at all, because an empty set of citations is no evidence.
+# attributes to an experiment that the experiment's committed transcript does not
+# measure below its header; a citation whose path leaves the repository; a web address
+# with no read date beside it; an address answering 404 or 410, or one curl ends on an
+# exit other than a timeout and a connection nothing accepted; and a document with no
+# citation at all, because an empty set of citations is no evidence.
 # That last rule holds per document: each of the two must carry evidence of its own.
 # A document that does not exist, or that Dispatch will not read, is refused by name
 # before any citation of either document is resolved.
@@ -209,6 +223,10 @@ resolve_code() {
 
 resolve_literal() {
 	local text=$1 path=$2 literal=$3 file
+	if [[ "$path" = /* || "$path" == *..* ]]; then
+		report failed literal "$text" "$path is no repository-rooted path"
+		return
+	fi
 	file="$repo_root/$path"
 	if [[ ! -f "$file" ]]; then
 		report failed literal "$text" "the repository holds no $path"
@@ -385,6 +403,14 @@ experiment_figures() {
 	' <<<"$1"
 }
 
+# What a transcript measured: every line below the first line of dashes, which is the
+# rule under the header carrying the recording time, the commit the run was made from
+# and the run id. A figure is read against these lines alone, so a number the header
+# holds and no measurement holds resolves nothing.
+measured_lines() {
+	awk 'body { print; next } /^-+$/ { body = 1 }' <"$1"
+}
+
 resolve_experiment_figure() {
 	local numbers=$1 figure=$2 scope=$3 text detail digit transcript escaped pattern
 	local -a recorded=() searched=()
@@ -396,8 +422,8 @@ resolve_experiment_figure() {
 		mapfile -t recorded < <(find "$script_dir" -maxdepth 1 -type f -name "experiment-${digit}-*.txt" -size +0 | sort)
 		for transcript in "${recorded[@]}"; do
 			searched+=("${transcript##*/}")
-			if grep -qE -- "$pattern" "$transcript"; then
-				report resolved figure "$text" "written in ${transcript##*/}"
+			if grep -qE -- "$pattern" <(measured_lines "$transcript"); then
+				report resolved figure "$text" "measured in ${transcript##*/}"
 				return
 			fi
 		done
@@ -405,9 +431,9 @@ resolve_experiment_figure() {
 	if ((${#searched[@]} == 0)); then
 		detail="no recorded output of experiment ${numbers//,/ or } is committed beside this script, so the figure is quoted from a run nobody committed"
 	elif ((${#searched[@]} == 1)); then
-		detail="${searched[0]} does not hold $figure as a number of its own"
+		detail="${searched[0]} measures no $figure as a number of its own"
 	else
-		detail="none of ${searched[*]} holds $figure as a number of its own"
+		detail="none of ${searched[*]} measures $figure as a number of its own"
 	fi
 	report failed figure "$text" "$detail; the scope reads: $scope"
 }
@@ -430,9 +456,26 @@ resolve_web() {
 	fi
 	code=$(curl --silent --location --max-time "$web_timeout" \
 		--output /dev/null --write-out '%{http_code}' -- "$url" 2>/dev/null) || status=$?
-	if ((status != 0)); then
-		report unreachable web "$text" "the address did not answer within ${web_timeout}s (curl exit $status)"
-	elif [[ "$code" == 404 || "$code" == 410 ]]; then
+	case "$status" in
+	0) ;;
+	28)
+		report unreachable web "$text" "the address did not answer within ${web_timeout}s (curl exit 28)"
+		return
+		;;
+	7)
+		report unreachable web "$text" 'nothing accepted the connection (curl exit 7)'
+		return
+		;;
+	6)
+		report failed web "$text" 'curl cannot resolve the host of this address (curl exit 6)'
+		return
+		;;
+	*)
+		report failed web "$text" "curl could not read the address (curl exit $status)"
+		return
+		;;
+	esac
+	if [[ "$code" == 404 || "$code" == 410 ]]; then
 		report failed web "$text" "the address answers $code"
 	elif [[ "$code" =~ ^[23][0-9][0-9]$ ]]; then
 		report resolved web "$text" "answers $code"
@@ -549,10 +592,13 @@ A dispatch reference that does not read:
 dispatch://INFRA-1546/artifact/no-such-document-of-infra-1546
 A web address with no read date beside it: https://docs.temporal.io/evaluate/development-production-features
 An address that answers 404: https://docs.temporal.io/no-such-page-of-infra-1546 (read 2026-11-07)
+An address whose host no name server can resolve: https://no-such-host.invalid/ (read 2026-11-07)
+A literal citation reading outside the repository:
+(`../../../../etc/passwd`, `"root"`).
 EOF
 }
 
-readonly broken_fixture_citations=8
+readonly broken_fixture_citations=10
 
 # Citations of this repository that resolve today, in each form the grammar allows.
 well_formed_fixture() {
@@ -567,32 +613,36 @@ EOF
 
 # The experiment-figure rule, in one fixture: three figures experiment 1's committed
 # transcript holds, one it does not, one that its transcript holds only inside a longer
-# number, and one number in the cell beside an experiment mention, which the cell
-# boundary keeps out of the check. The table row is the line that fails if a scope is
-# ever allowed to run across a ` | `: experiment 1's transcript never prints 1,294 as
-# written (its one count of Legion's lines is 1294, unseparated), and 1,294 is
-# Legion's own count of the table and the engine. The 0.16 is the line that fails if a
-# figure is ever resolved by a longer number it is a part of: experiment 2's transcript
-# prints the thousand-gate cost as 0.164294 and never as 0.16.
+# number, one that stands in its transcript's header alone, and one number in the cell
+# beside an experiment mention, which the cell boundary keeps out of the check. The
+# table row is the line that fails if a scope is ever allowed to run across a ` | `:
+# experiment 1's transcript never prints 1,294 as written (its one count of Legion's
+# lines is 1294, unseparated), and 1,294 is Legion's own count of the table and the
+# engine. The 0.16 is the line that fails if a figure is ever resolved by a longer
+# number it is a part of: experiment 2's transcript prints the thousand-gate cost as
+# 0.164294 and never as 0.16. The 42 is the line that fails if a figure is ever
+# resolved against a transcript's header rather than against what it measured:
+# experiment 1's header records the run at 22:39:42Z, and nothing it measured is 42.
 experiment_figure_fixture() {
 	cat <<'EOF'
 Experiment 1 drove one issue in a 27-line workflow function over a data table, 12 signals and 92 history events, as its committed transcript holds it.
 Experiment 1 recorded 999999 history events, a figure no committed transcript of it holds.
 Experiment 2 priced a thousand gates standing open at 0.16 dollars of Active storage.
+Experiment 1 moved through 42 phases, a number only the recording time in its transcript's header holds.
 | Phase transitions | the measurement is experiment 1 | 1,294 lines of table and engine |
 EOF
 }
 
 # Two resolved citations of the experiments themselves and three resolved figures, 27,
-# 12 and 92; two refusals, 999999 and 0.16. The 1,294 of the last cell is no figure of
-# experiment 1, so it is neither.
+# 12 and 92; three refusals, 999999, 0.16 and the header's 42. The 1,294 of the last
+# cell is no figure of experiment 1, so it is neither.
 readonly experiment_figure_fixture_resolved=5
-readonly experiment_figure_fixture_failed=2
+readonly experiment_figure_fixture_failed=3
 
 self_test() {
 	local failures=0
 
-	printf 'self-test, the broken half: every line below must be a refusal\n\n'
+	printf 'self-test, the broken half: every line below must be a refusal, the address whose host resolves nowhere and the literal citation reading outside the repository among them\n\n'
 	reset_counts
 	resolve_document broken "$(broken_fixture)"
 	summary
@@ -601,7 +651,7 @@ self_test() {
 			"$broken_fixture_citations" "$count_failed" "$count_resolved" "$count_unreachable" >&2
 		failures=$((failures + 1))
 	else
-		printf 'self-test: all %d broken citations refused\n' "$broken_fixture_citations"
+		printf 'self-test: all %d broken citations refused, among them the address whose host resolves nowhere, which is a refusal and not an unreachable address, and the literal citation whose path leaves the repository\n' "$broken_fixture_citations"
 	fi
 
 	printf '\nself-test, a document with no citation at all: it must be refused\n\n'
@@ -624,7 +674,7 @@ self_test() {
 		failures=$((failures + 1))
 	fi
 
-	printf '\nself-test, the experiment-figure rule: a figure the transcript holds resolves, one it does not is refused, one it holds only inside a longer number is refused, and a number in the cell beside an experiment mention is not checked at all\n\n'
+	printf '\nself-test, the experiment-figure rule: a figure the transcript measured resolves, one it does not is refused, one it holds only inside a longer number is refused, one its header alone holds is refused, and a number in the cell beside an experiment mention is not checked at all\n\n'
 	reset_counts
 	resolve_document figures "$(experiment_figure_fixture)"
 	summary
@@ -634,7 +684,7 @@ self_test() {
 			"$count_resolved" "$count_failed" "$count_unreachable" >&2
 		failures=$((failures + 1))
 	else
-		printf 'self-test: the figure in the transcript resolved, the figure outside it and the figure only inside a longer number were refused, and the number in the next cell was not checked\n'
+		printf 'self-test: the measured figure resolved, the figure outside the transcript, the figure only inside a longer number and the figure standing in the header alone were refused, and the number in the next cell was not checked\n'
 	fi
 
 	printf '\n'

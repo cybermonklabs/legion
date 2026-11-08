@@ -1,22 +1,90 @@
-Experiment 3, Temporal: a session-bound activity, with its worker killed.
-Recorded 2026-11-07T22:39:42Z by docs/research/temporal-evaluation-2026-11/run.sh,
-from the branch of dispatch://INFRA-1546 based on commit 09bf32cc0298db50261183a12e129ad324b03cee,
+Experiment 3, Temporal: a session-bound activity, with its worker killed while the workflow runs on.
+Recorded 2026-11-08T02:36:34Z by docs/research/temporal-evaluation-2026-11/run.sh,
+from the branch of dispatch://INFRA-1546 based on commit ceef410e25f43882fa631b33b43c5c942f58c68b,
 in one Legion worker pod, against a real server or a real PostgreSQL.
 This is a transcript of one run, not a golden file: nothing re-records it.
 ------------------------------------------------------------------------------
-session-task-queue: exp3-session-1794090965510575345
-workflow-task-queue: exp3-workflow-1794090965510575345
-[worker1] sessionworker: pid=28421
-worker1-started-pid: 28421
-worker1-reported-pid: 28421
-workflow-id: exp3-kill-1794090965510575345
-run-id: 01a1b827-9b5b-77ff-9077-fef31b9a3d7c
+mechanism: Temporal sessions: workflow.CreateSession pins every activity of the session to the one worker process that took it
+session-task-queue: exp3-session-1794104826917891848
+session-creation-task-queue: exp3-session-1794104826917891848__internal_session_creation
+workflow-task-queue: exp3-workflow-1794104826917891848
+session-activity-side-effect-file: /legion/scratch/tmp/temporal-evaluation-2026-11/run/work/e3/exp3-session-effects-1794104826917891848
+workflow-held-open-by: the exp3Release signal: after probing the session the workflow waits for it, and the driver sends it only once the replacement worker has polled, so every reading below is taken from a run that is still going
+workflow-hold-open-fallback: 1m30s
+[worker1] sessionworker: pid=57607
+worker1-started-pid: 57607
+worker1-reported-pid: 57607
+workflow-id: exp3-kill-1794104826917891848
+run-id: 01a1b8fb-1d81-799f-bd9b-0997fb92906e
 session-activity-running-before-kill: true
+session-activity-first-body-line: attempt=1 pid=57607 host=legion-infra-infra-1546 at=2026-11-08T02:27:08.006277204Z
+session-body-executions-before-kill: 1
+session-activity-pending-before-kill: true
+session-activity-pending-state-before-kill: Started
+session-activity-pending-attempt-before-kill: 1
+session-activity-task-scheduled-events-before-kill: 1
+session-activity-task-started-events-before-kill: 0
+session-activity-last-history-event-before-kill: ActivityTaskScheduled
+history-event-count-before-kill: 11
+killed-run-status-before-kill: Running
 kill-sent: true
-killed-pid: 28421
+killed-pid: 57607
 kill-signal: SIGKILL
+timed: watched-after-the-kill-for: 2s
+session-body-executions-after-kill: 1
+session-activity-pending-after-kill: true
+session-activity-pending-state-after-kill: Started
+session-activity-pending-attempt-after-kill: 1
+session-activity-task-scheduled-events-after-kill: 1
+session-activity-task-started-events-after-kill: 0
+session-activity-last-history-event-after-kill: ActivityTaskScheduled
+history-event-count-after-kill: 11
+killed-run-status-after-kill: Running
+[worker2] sessionworker: pid=57626
+second-worker-started: true
+worker2-started-pid: 57626
+worker2-polls-task-queue: exp3-session-1794104826917891848
+timed: replacement-worker-polled-for: 6s
+session-body-executions-while-replacement-polls: 1
+session-activity-pending-while-replacement-polls: true
+session-activity-pending-state-while-replacement-polls: Started
+session-activity-pending-attempt-while-replacement-polls: 1
+session-activity-task-scheduled-events-while-replacement-polls: 1
+session-activity-task-started-events-while-replacement-polls: 0
+session-activity-last-history-event-while-replacement-polls: ActivityTaskScheduled
+history-event-count-while-replacement-polls: 11
+killed-run-status-while-replacement-polls: Running
+session-activity-task-started-events-after-the-kill-while-replacement-polls: 0
+killed-attempt-ended: true
+timed: killed-attempt-stayed-pending-after-the-kill-for: 15.178s
+timed: replacement-worker-kept-polling-after-the-attempt-ended-for: 5s
+session-body-executions-after-the-attempt-ended: 1
+session-activity-pending-after-the-attempt-ended: false
+session-activity-pending-state-after-the-attempt-ended: none
+session-activity-pending-attempt-after-the-attempt-ended: 0
+session-activity-task-scheduled-events-after-the-attempt-ended: 1
+session-activity-task-started-events-after-the-attempt-ended: 1
+session-activity-last-history-event-after-the-attempt-ended: ActivityTaskTimedOut
+history-event-count-after-the-attempt-ended: 23
+killed-run-status-after-the-attempt-ended: Running
+session-activity-task-started-events-after-the-kill-once-the-attempt-had-ended: 0
+session-activity-retry-state-when-the-attempt-ended: CancelRequested
+session-resource-specific-task-queue: 49183af2-3db9-4bfd-b92d-21c47c4608d4@legion-infra-infra-1546
+session-creation-activity-task-queue: exp3-session-1794104826917891848__internal_session_creation
+session-resource-specific-task-queue-is-the-base-task-queue: false
+session-resource-specific-task-queue-pollers-while-replacement-polls: 1
+session-resource-specific-task-queue-pollers-since-the-kill: 0
+session-resource-specific-task-queue-poller-identities: 57607@legion-infra-infra-1546@ last-polled-at=2026-11-08T02:27:08.007309187Z
+session-task-queue-pollers-while-replacement-polls: 2
+session-task-queue-pollers-since-the-kill: 1
+session-task-queue-poller-identities: 57626@legion-infra-infra-1546@ last-polled-at=2026-11-08T02:27:10.833463802Z; 57607@legion-infra-infra-1546@ last-polled-at=2026-11-08T02:27:07.773972043Z
+session-creation-task-queue-pollers-while-replacement-polls: 2
+session-creation-task-queue-pollers-since-the-kill: 1
+session-creation-task-queue-poller-identities: 57626@legion-infra-infra-1546@ last-polled-at=2026-11-08T02:27:10.832650589Z; 57607@legion-infra-infra-1546@ last-polled-at=2026-11-08T02:27:07.90587752Z
+release-signal-sent: true
+release-signal-name: exp3Release
 session-created: true
-session-id: a62229df-56f2-4e87-a721-ca2e7b028848
+session-id: ad2baa07-89fb-4011-a787-9c9602afe919
 session-host: legion-infra-infra-1546
 session-activity-result: none
 workflow-wait-error-type: *internal.CanceledError
@@ -29,22 +97,25 @@ session-probe-ran: false
 session-probe-error-type: *errors.errorString
 session-probe-error: session has failed
 session-probe-is-ErrSessionFailed: true
-history-event-count: 18
-session-activity-start-count: 0
+workflow-released-by: the exp3Release signal
+workflow-release-note: the driver finished watching the killed session at 2026-11-08T02:27:28.890212375Z, after the replacement worker had polled for 6s and kept polling for 5s past the end of the killed attempt
+timed: workflow-stayed-running-after-the-probe-for: 6.016s
+session-body-executions-total: 1
+history-event-count: 28
+session-activity-schedule-count: 1
+session-activity-start-count: 1
 session-activity-starts-after-kill: 0
-session-activity-final-event: ActivityTaskCancelRequested
+session-activity-final-event: ActivityTaskTimedOut
+killed-run-status-after-release: Completed
 workflow-observed-session-failure: true
-[worker2] sessionworker: pid=28432
-second-worker-started: true
-worker2-started-pid: 28432
-history-event-count-after-restart: 18
-session-activity-start-count-after-restart: 0
-session-activity-final-event-after-restart: ActivityTaskCancelRequested
-session-activity-resumed-after-restart: false
-killed-run-status-after-restart: Completed
-[worker2] time=2026-11-07T22:36:20.303Z level=WARN msg="RecordActivityHeartbeat with error" Namespace=e3 TaskQueue=exp3-session-1794090965510575345 WorkerID=28432@legion-infra-infra-1546@ ActivityID=6 ActivityType=internalSessionCreationActivity Attempt=1 WorkflowType=exp3SessionWorkflow WorkflowID=exp3-fresh-1794090978769878835 RunID=01a1b827-cdd5-720f-b24b-2bb11c31c764 Error=canceled
-[worker2] time=2026-11-07T22:36:20.304Z level=ERROR msg="Activity error." Namespace=e3 TaskQueue=exp3-session-1794090965510575345 WorkerID=28432@legion-infra-infra-1546@ WorkflowID=exp3-fresh-1794090978769878835 RunID=01a1b827-cdd5-720f-b24b-2bb11c31c764 ActivityType=internalSessionCreationActivity Attempt=1 Error="context canceled"
+new-session-side-effect-file: /legion/scratch/tmp/temporal-evaluation-2026-11/run/work/e3/exp3-fresh-effects-1794104826917891848
 new-session-after-restart: succeeded
-new-session-activity-ran-on: pid=28432 host=legion-infra-infra-1546
+new-session-activity-ran-on: pid=57626 host=legion-infra-infra-1546
 new-session-host: legion-infra-infra-1546
+new-session-body-executions: 1
+reasoned: what-the-activity-task-started-count-means: the server writes ActivityTaskStarted only when an attempt ends, and dates it from when that attempt began, so a count of zero does not say the body never ran and a count of one is not a second run; the side-effect file's line count is the reading that says how often the body ran
+reasoned: whether-the-session-queue-is-one-a-replacement-could-poll: the server dispatched the session's activity to 49183af2-3db9-4bfd-b92d-21c47c4608d4@legion-infra-infra-1546, the queue the session's own worker process made for itself, while the replacement worker polls exp3-session-1794104826917891848, exp3-session-1794104826917891848__internal_session_creation and a queue of its own; 0 poller(s) had touched 49183af2-3db9-4bfd-b92d-21c47c4608d4@legion-infra-infra-1546 since the kill when the readings above were taken, against 1 on exp3-session-1794104826917891848
+reasoned: what-the-server-put-anywhere-else: the server ended the killed attempt as ActivityTaskTimedOut with retry state CancelRequested, and the history holds 1 ActivityTaskScheduled event(s) for the session activity, the first of them the original dispatch; any further attempt would have gone to the queue those events name, 49183af2-3db9-4bfd-b92d-21c47c4608d4@legion-infra-infra-1546, while the queue the replacement worker polls is exp3-session-1794104826917891848
+reasoned: what-held-the-workflow-open: the workflow waited for the exp3Release signal after probing the session, and the driver sent it only after the replacement worker had polled for 6s and then for 5s more past the end of the killed attempt, so the run was Running at both readings and Completed only once it was released
+limit: one dev server, one session, one kill and one replacement worker, watched for 6s before the killed attempt ended and 5s after it: it says what this server did with this session's activity in that window, not what it would do once the session's 55s execution timeout expires, and not that Legion's sessions would map onto Temporal's
 experiment 3: PASS
