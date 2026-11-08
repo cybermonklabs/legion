@@ -3380,25 +3380,9 @@ jobs:
       # build, with nothing running beside it (run 42307926510, dispatch://INFRA-1075). Each
       # package measures its own process's heap or allocations, so running them at the same time
       # changes no number any of them asserts on.
-      # TEMPORARY, the INFRA-1075 CPU measurement: the wrapper `go test -exec` runs each test
-      # binary under, which records that binary's own user and system time and its peak resident
-      # set. The unit step and the race-impossible step below pass it, and the summary step after
-      # them prints a table of CPU per package, which is the number that decides a step the lane
-      # has measured as CPU-bound (-p 8, 12 and 16 give 345, 350 and 344 s). It comes out with
-      # the rest of this measurement's steps (dispatch://INFRA-1075).
-      - name: "TEMPORARY: the CPU wrapper go test -exec runs"
-        run: |
-          mkdir -p "$RUNNER_TEMP/cpu"
-          cat > "$RUNNER_TEMP/cpu-wrap.sh" <<'WRAP'
-          #!/usr/bin/env bash
-          bin=$(basename "$1")
-          exec /usr/bin/time -v -o "$RUNNER_TEMP/cpu/$bin.$$.time" "$@"
-          WRAP
-          chmod +x "$RUNNER_TEMP/cpu-wrap.sh"
-        working-directory: packages/envoy
       - name: Test what the race build cannot run at all or at full size
         run: |
-          go test -count=1 -exec "$RUNNER_TEMP/cpu-wrap.sh" -timeout 10m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestCopyLockComesBeforeEveryPendingRowAndEvent|TestCopyLockOrderGuardFollowsTheLockTakers|TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks|TestHoldsSeedAllocatesAtMostOneCopyPerDecoding|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestTheKeyedWriteGuardSeesWhatItGuards|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$' ./internal/bus ./internal/dispatch/api ./internal/dispatch/docs
+          go test -count=1 -timeout 10m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestCopyLockComesBeforeEveryPendingRowAndEvent|TestCopyLockOrderGuardFollowsTheLockTakers|TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks|TestHoldsSeedAllocatesAtMostOneCopyPerDecoding|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestTheKeyedWriteGuardSeesWhatItGuards|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$' ./internal/bus ./internal/dispatch/api ./internal/dispatch/docs
         working-directory: packages/envoy
       # The unit step below, the natslive step and the integration step each write their `go test
       # -json` stream to a file under $RUNNER_TEMP/go-test-json, which the upload step below
@@ -3465,7 +3449,7 @@ jobs:
           github.com/sjawhar/envoy/cmd/broker"
           s=0
           rest=$(go list ./... | grep -Ev '/integration|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$|/internal/dispatch/routes$' | grep -vxF "$lead")
-          printf '%s\n%s\n' "$lead" "$rest" | xargs go test -json -count=1 -exec "$RUNNER_TEMP/cpu-wrap.sh" -p 8 -parallel 12 -timeout 20m > "$RUNNER_TEMP/go-test-json/unit.json" || s=$?
+          printf '%s\n%s\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -timeout 20m > "$RUNNER_TEMP/go-test-json/unit.json" || s=$?
           if [ "$s" -eq 0 ]; then
             jq -rj 'select(.Action == "build-output" or (.Action == "output" and .Test == null)) | .Output' "$RUNNER_TEMP/go-test-json/unit.json"
           else
@@ -3473,23 +3457,6 @@ jobs:
           fi
           exit $s
         working-directory: packages/envoy
-      # TEMPORARY, the INFRA-1075 CPU measurement: the table the wrapper's files make, one row
-      # per test binary, sorted by CPU, with the total against four cores times the unit step's
-      # own wall. It comes out with the wrapper (dispatch://INFRA-1075).
-      - name: "TEMPORARY: CPU per package"
-        if: always()
-        run: |
-          total=0
-          for f in "$RUNNER_TEMP"/cpu/*.time; do
-            [ -e "$f" ] || continue
-            user=$(grep -a "User time" "$f" | tr -dc '0-9.')
-            sys=$(grep -a "System time" "$f" | tr -dc '0-9.')
-            rss=$(grep -a "Maximum resident set size" "$f" | tr -dc '0-9')
-            cpu=$(awk -v u="$user" -v s="$sys" 'BEGIN{printf "%.1f", u+s}')
-            total=$(awk -v t="$total" -v c="$cpu" 'BEGIN{printf "%.1f", t+c}')
-            printf '%8s s CPU (%7s user %7s sys)  %9s kB  %s\n' "$cpu" "$user" "$sys" "$rss" "$(basename "${f%%.*}")"
-          done | sort -rn
-          echo "total CPU of every test binary: $total s"
       # The routes package alone, on the second service: DISPATCH_TEST_DATABASE_URL names 5433
       # here and nowhere else, so the only transactions its horizon waits on are its own tests'.
       # It runs after the unit step rather than beside it because a step is a step; the package
