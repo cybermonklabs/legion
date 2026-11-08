@@ -219,17 +219,7 @@ func lockMigrations(ctx context.Context, conn *pgx.Conn) error {
 // (lockMigrations), begin, run fn, end the transaction, release the key and give the connection
 // back - or, where the connection's lock state is unknown, close it out of the pool.
 //
-// It is one helper rather than a pair of calls each site repeats because two things nothing else
-// enforces hold the sequence together: the transaction must end before the key is released, which
-// here is the order of two defers in one function, and every statement of fn must run on the
-// marked context this hands it, on the connection that holds the key, which here fn cannot get
-// wrong because it is given no other.
-//
-// fn commits nothing. It returns nil for the work it wants kept, which this commits, or an error,
-// which rolls back. Both callers have a path that keeps a transaction they added nothing to - the
-// set needs no widening, the migration is already recorded - and nil-means-commit lets those read
-// as a plain `return nil` instead of a second tx.Commit call each; a path that forgot to commit
-// is then a path that forgot to return, which does not compile.
+// fn follows pgx.BeginFunc's rule: nil commits, an error rolls back.
 func (s *Store) inMigrationLockTx(ctx context.Context, fn func(context.Context, pgx.Tx) error) error {
 	conn, err := s.Pool.Acquire(ctx)
 	if err != nil {
@@ -254,45 +244,54 @@ func (s *Store) inMigrationLockTx(ctx context.Context, fn func(context.Context, 
 		return err
 	}
 	defer unlockMigrations(ctx, conn)
-	tx, err := conn.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	// Runs before the unlock deferred above it, so the key is held until the transaction ends.
-	defer tx.Rollback(ctx)
-	if err := fn(ctx, tx); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
+	return pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error { return fn(ctx, tx) })
 }
 
 // unlockMigrations releases migrationLockKey on conn and gives conn back to the pool. When the
 // release errors or answers false the connection is taken out of the pool and closed instead:
 // a connection that may still hold a session-level key must never serve another caller, who would
 // hand the key on to a request and hold every later boot's migrations behind it (closeOutOfPool).
-// The unlock itself runs on a context a cancelled ctx does not cancel, so a cancelled boot still
-// gives back what it took.
+//
+// The unlock runs on a context a cancelled ctx does not cancel, so a boot cancelled between two
+// statements still releases what it took. A boot cancelled inside the transaction releases it
+// another way: BeginFunc's rollback fails on the cancelled context and pgx then closes the
+// connection, which ends the session and the key with it, and this unlock reaches a closed
+// socket. That is nothing to report - the key went with the session - so a connection already
+// closed leaves the pool without the ERROR, which stays for the case it was written for: a
+// connection still open whose key may still be held.
 func unlockMigrations(ctx context.Context, conn *pgxpool.Conn) {
 	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), pgmigrate.LockTimeout)
 	defer cancel()
 	var released bool
 	err := conn.QueryRow(cleanup, "select pg_advisory_unlock($1)", migrationLockKey).Scan(&released)
-	if err == nil && released {
+	switch {
+	case err == nil && released:
 		conn.Release()
 		return
+	case conn.Conn().IsClosed():
+		slog.Info("dispatch: the migration advisory lock's connection was closed before the unlock; its session ended the key",
+			"key", migrationLockKey, "error", err)
+	default:
+		slog.Error("dispatch: the migration advisory lock was not released; its connection leaves the pool",
+			"key", migrationLockKey, "released", released, "error", err)
 	}
-	slog.Error("dispatch: the migration advisory lock was not released; its connection leaves the pool",
-		"key", migrationLockKey, "released", released, "error", err)
 	closeOutOfPool(ctx, conn)
 }
 
 // closeOutOfPool takes conn out of the pool and closes it, which ends its session and releases
-// whatever advisory key that session still holds. Like the concurrent builds' cleanup it runs on
-// a context a cancelled ctx does not cancel, so a cancelled boot still gives back what it took.
+// whatever advisory key that session still holds.
 func closeOutOfPool(ctx context.Context, conn *pgxpool.Conn) {
+	closeBounded(ctx, conn.Hijack())
+}
+
+// closeBounded closes conn on a context a cancelled ctx does not cancel, bounded like the rest of
+// this runner's waits (pgmigrate.LockTimeout). Every site that ends a session to end its advisory
+// key closes it through here, so that bound is one number: the pooled sites hand over the
+// connection they hijack out of the pool, the concurrent build's its own.
+func closeBounded(ctx context.Context, conn *pgx.Conn) {
 	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), pgmigrate.LockTimeout)
 	defer cancel()
-	_ = conn.Hijack().Close(cleanup)
+	_ = conn.Close(cleanup)
 }
 
 // createVersionTable creates schema_migrations under the runner's advisory lock
@@ -396,11 +395,7 @@ func (s *Store) applyNonTransactionalMigration(ctx context.Context, migration pg
 		return err
 	}
 	conn := pooled.Hijack()
-	defer func() {
-		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), pgmigrate.LockTimeout)
-		defer cancel()
-		_ = conn.Close(cleanup)
-	}()
+	defer closeBounded(ctx, conn)
 	if err := lockMigrations(ctx, conn); err != nil {
 		return err
 	}

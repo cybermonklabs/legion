@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
 
@@ -41,22 +43,22 @@ func waitForInvalidIndex(t *testing.T, store *Store, name string) uint32 {
 	}
 }
 
-// migrationKeyLocks counts the advisory locks held on migrationLockKey in this store's database,
-// read on a connection of its own, which is the only connection that can answer the question: a
-// session is never made to wait on a key it holds itself, so pg_try_advisory_xact_lock asked
-// through store.Pool succeeds on the very pooled connection that leaked a session-level key.
+// migrationKeyRows selects the rows of pg_locks that are advisory locks on migrationLockKey in
+// the current database, with the key as $1. Both helpers below count through it, so the shape of
+// an advisory-key row - locktype, database, classid, objid, objsubid - is written once and the
+// two counts cannot drift apart over what they call a lock on this key.
+const migrationKeyRows = `from pg_locks where locktype = 'advisory'
+	and database = (select oid from pg_database where datname = current_database())
+	and classid = 0 and objid = $1::bigint and objsubid = 1`
+
+// migrationKeyLocks counts the advisory locks held on migrationLockKey in this store's database.
+// It reads pg_locks through store.Pool, which is where a leaked key would be: pg_locks is the
+// whole server's, so a pooled connection sees the rows of every session, its own included, and
+// the leak these tests are about is a pooled connection handed back while it still holds the key.
 func migrationKeyLocks(t *testing.T, store *Store) int {
 	t.Helper()
-	ctx := context.Background()
-	conn, err := pgx.ConnectConfig(ctx, store.Pool.Config().ConnConfig)
-	if err != nil {
-		t.Fatalf("connect to count the migration key's advisory locks: %v", err)
-	}
-	defer conn.Close(ctx)
 	var held int
-	if err := conn.QueryRow(ctx, `select count(*) from pg_locks where locktype = 'advisory'
-		and database = (select oid from pg_database where datname = current_database())
-		and classid = 0 and objid = $1::bigint and objsubid = 1`, migrationLockKey).Scan(&held); err != nil {
+	if err := store.Pool.QueryRow(context.Background(), "select count(*) "+migrationKeyRows, migrationLockKey).Scan(&held); err != nil {
 		t.Fatalf("count the migration key's advisory locks: %v", err)
 	}
 	return held
@@ -80,9 +82,7 @@ func waitForQueuedMigrationKey(t *testing.T, store *Store, want int, bound time.
 	deadline := time.Now().Add(bound)
 	for {
 		var queued int
-		if err := store.Pool.QueryRow(ctx, `select count(*) from pg_locks where locktype = 'advisory'
-			and database = (select oid from pg_database where datname = current_database())
-			and classid = 0 and objid = $1::bigint and objsubid = 1 and not granted`, migrationLockKey).Scan(&queued); err != nil {
+		if err := store.Pool.QueryRow(ctx, "select count(*) "+migrationKeyRows+" and not granted", migrationLockKey).Scan(&queued); err != nil {
 			t.Fatalf("count the sessions queued for the migration key: %v", err)
 		}
 		if queued >= want || time.Now().After(deadline) {
@@ -178,6 +178,83 @@ func TestMigrateTransactionalFailureStillRollsBackTheWholeMigration(t *testing.T
 	// connection handed back to the pool while it still holds the key shows up.
 	if held := migrationKeyLocks(t, store); held != 0 {
 		t.Errorf("migration lock leaked: %d advisory locks on the key after a failed migration", held)
+	}
+}
+
+// The pod stopped mid-migration INFRA-1973 is about, at the layer that holds the key: the
+// migration's statement fails on the cancelled context, BeginFunc's rollback fails on it too and
+// pgx closes the connection over that failure, so the deferred unlock reaches a closed socket.
+// The session took the key with it, so this leaves no advisory lock behind and logs no ERROR
+// saying the key was not released - the unlock meets the closed connection and says so instead.
+func TestACancelledMigrationEndsTheKeyWithItsSessionAndLogsNoError(t *testing.T) {
+	store := openEmptyTestStore(t)
+	records := &logtest.Recorder{}
+	logtest.SetDefault(t, records)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	set := fstest.MapFS{"migrations/0001_slow.up.sql": {Data: []byte("create table slow (id integer); select pg_sleep(30);")}}
+	migrated := make(chan error, 1)
+	go func() { migrated <- store.migrate(ctx, set) }()
+	waitForRunningStatement(t, store, "pg_sleep(30)")
+	cancel()
+	if err := <-migrated; !errors.Is(err, context.Canceled) {
+		t.Fatalf("migrate = %v, want the cancellation", err)
+	}
+	// The key goes with the session, and the session goes when the server reads the end of the
+	// socket pgx closed, which is not the same instant. Everything else here is already settled.
+	deadline := time.Now().Add(pgmigrate.LockTimeout)
+	for {
+		held := migrationKeyLocks(t, store)
+		if held == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("migration lock leaked: %d advisory locks on the key after a cancelled migration", held)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	var errorMessages []string
+	closedConnection := false
+	for _, record := range records.Records() {
+		if record.Level >= slog.LevelError {
+			errorMessages = append(errorMessages, record.Message)
+		}
+		if strings.Contains(record.Message, "connection was closed before the unlock") {
+			closedConnection = true
+		}
+	}
+	if len(errorMessages) > 0 {
+		t.Errorf("a cancelled migration logged errors: %v", errorMessages)
+	}
+	if !closedConnection {
+		t.Error("the unlock did not meet the closed connection a cancelled transaction leaves, so this run proves nothing about what it logs")
+	}
+	if schemaVersion(t, store) != 0 {
+		t.Error("the cancelled migration recorded its version")
+	}
+}
+
+// waitForRunningStatement waits for a backend of this database other than the caller's to be
+// running a statement that holds substring, which is how a test reaches into a migration while
+// it is still open. It bounds the wait like every other wait here.
+func waitForRunningStatement(t *testing.T, store *Store, substring string) {
+	t.Helper()
+	ctx := context.Background()
+	deadline := time.Now().Add(pgmigrate.LockTimeout)
+	for {
+		var running int
+		if err := store.Pool.QueryRow(ctx, `select count(*) from pg_stat_activity
+			where datname = current_database() and pid <> pg_backend_pid()
+			and state = 'active' and query like '%' || $1 || '%'`, substring).Scan(&running); err != nil {
+			t.Fatalf("look for a backend running %s: %v", substring, err)
+		}
+		if running > 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no backend ran %s", substring)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
