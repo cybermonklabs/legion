@@ -61,17 +61,21 @@ const realStale = staleExemptions(realRows, exemptions);
 // the same cores, and the ceiling is the point at which something is wrong rather than slow.
 const listingTimeout = 180_000;
 
-/** The four planted controls, read by name rather than by pointing `specFiles` at their
+/** The six planted controls, read by name rather than by pointing `specFiles` at their
  *  directory: they are no part of the suite, and a file that was would run in it. Each is read
  *  and parsed once, here, for the tests below that read its rows. */
 const noBrowserFixture = "__tests__/fixtures/no-browser-row.fixture.ts";
 const browserFixture = "__tests__/fixtures/browser-row.fixture.ts";
 const unreadShapesFixture = "__tests__/fixtures/unread-row-shapes.fixture.ts";
 const unresolvedShapeFixture = "__tests__/fixtures/unresolved-row-shape.fixture.ts";
+const crossFileShapeFixture = "__tests__/fixtures/cross-file-row-shape.fixture.ts";
+const namedCallbackFixture = "__tests__/fixtures/named-callback-fixtures.fixture.ts";
 const noBrowserFixtureRows = rowsOfFile(noBrowserFixture);
 const browserFixtureRows = rowsOfFile(browserFixture);
 const unreadShapesFixtureRows = rowsOfFile(unreadShapesFixture);
 const unresolvedShapeFixtureRows = rowsOfFile(unresolvedShapeFixture);
+const crossFileShapeFixtureRows = rowsOfFile(crossFileShapeFixture);
+const namedCallbackFixtureRows = rowsOfFile(namedCallbackFixture);
 
 // A scan that found nothing would satisfy every rule below without reading a row, so this is
 // asserted once here rather than again in each test that reads `realRows`.
@@ -187,6 +191,51 @@ test("a planted row whose title and whose callback are both passed by name is na
   expect(unexplainedRows(unresolvedShapeFixtureRows, exemptions)).toEqual(
     unresolvedShapeFixtureRows
   );
+});
+
+// The other half of the same hole, and the half no reading of the file under scan can settle:
+// the row's callback is imported from `cross-file-row-callback.ts`, so the name resolves to
+// nothing in the file `rowsOfSource` parses. The call is still a row — `test` takes a title
+// first and nothing else, unlike `test.skip(<condition>, <reason>)` — and the check reports it
+// with no fixtures, which is what `packages/dispatch/AGENTS.md` means by refusing a row whose
+// callback it cannot read. A reading that skipped it would return no row for a file holding a
+// `test(` call, which is the gate hole in its purest form.
+test("a planted row whose callback is imported from another module is named too", () => {
+  expect(crossFileShapeFixtureRows).toEqual([
+    {
+      file: crossFileShapeFixture,
+      line: 33,
+      title: "computedTitle",
+      fixtures: [],
+    },
+  ]);
+  expect(unexplainedRows(crossFileShapeFixtureRows, exemptions)).toEqual(crossFileShapeFixtureRows);
+});
+
+// What a resolved callback is read FOR: its parameters. Every other planted shape would pass on
+// a reading that reported each unreadable row with no fixtures and never looked at a
+// declaration, since each of their callbacks takes none. These two take one each, by the two
+// ways a file declares a callback a call then names, and one of them is a browser: the row that
+// opens a page is left alone and the row that only asks over HTTP is named, which is the rule
+// deciding on fixtures it read out of the file rather than on what it could not see.
+test("the fixtures of a callback passed by name are read, whatever the row's title is", () => {
+  expect(namedCallbackFixtureRows).toEqual([
+    {
+      file: namedCallbackFixture,
+      line: 32,
+      title: "computedTitle",
+      fixtures: ["page"],
+    },
+    {
+      file: namedCallbackFixture,
+      line: 40,
+      title: '"a planted row whose callback is a const declared beside it"',
+      fixtures: ["request"],
+    },
+  ]);
+  expect(unexplainedRows(namedCallbackFixtureRows, exemptions)).toEqual([
+    namedCallbackFixtureRows[1],
+  ]);
 });
 
 test("an exemption for a row that drives a browser, and one for a row no file holds, are stale", () => {

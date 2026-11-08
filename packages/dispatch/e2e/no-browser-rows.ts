@@ -87,6 +87,15 @@ export const exemptions: readonly Exemption[] = [];
  *  title and callback tests in `rowOfCall` rather than by its callee. */
 const rowCallees = new Set(["test", "test.skip", "test.only", "test.fixme", "test.fail"]);
 
+/** The row callees whose first argument is a title and nothing else, so a call of one declares
+ *  a row however little of it this module can read. @playwright/test 1.64.1
+ *  (`types/test.d.ts`) gives `test` and `test.only` their title forms alone — `(title, body)`
+ *  and `(title, details, body)` — while `skip`, `fixme` and `fail` each take
+ *  `(condition, description)` as well, which marks the row it stands in rather than declaring
+ *  one. That second form is why a call of those three is read as a row only when something of
+ *  it is readable: a literal title, or a callback. */
+const titledRowCallees = new Set(["test", "test.only"]);
+
 /** The fixtures that are a browser. Playwright's `request` is not one of them: it is
  *  Playwright's HTTP client, which opens no page. */
 const browserFixtures = new Set(["browser", "context", "page"]);
@@ -104,24 +113,81 @@ function calleeName(expression: ts.Expression): string | undefined {
   return undefined;
 }
 
+/** A function this module can read a row's fixtures from: one written in the call, or one the
+ *  file declares under a name the call passes. */
+type RowCallback = ts.ArrowFunction | ts.FunctionExpression | ts.FunctionDeclaration;
+
+/** The functions one file declares under a name a call in it can pass, by that name: every
+ *  function declaration, and every `const` whose initializer is a function. Anything else a name
+ *  may stand for — a `let`, a parameter, a property, an import — is left out, so an argument
+ *  that names one resolves to nothing and the call is read as if the name were unreadable.
+ *
+ * A name this file declares twice is recorded as unreadable rather than as either declaration:
+ * a walk of the whole file is no scope analysis, and two functions of one name are two
+ * different parameter lists, of which this module cannot say which the call names. The map
+ * holds `undefined` for such a name, which is why it is read with `get` and not `has`. */
+function namedCallbacksOfFile(sourceFile: ts.SourceFile): Map<string, RowCallback | undefined> {
+  const callbacks = new Map<string, RowCallback | undefined>();
+  const record = (name: string, callback: RowCallback): void => {
+    callbacks.set(name, callbacks.has(name) ? undefined : callback);
+  };
+  const visit = (node: ts.Node): void => {
+    if (ts.isFunctionDeclaration(node)) {
+      if (node.name !== undefined) record(node.name.text, node);
+    } else if (ts.isVariableStatement(node)) {
+      // `setParentNodes` is false in `rowsOfSource`, so a declaration cannot be asked for its
+      // list: the `const` test is made here, where the list is in hand.
+      if ((node.declarationList.flags & ts.NodeFlags.Const) !== 0) {
+        for (const declaration of node.declarationList.declarations) {
+          const initializer = declaration.initializer;
+          if (
+            ts.isIdentifier(declaration.name) &&
+            initializer !== undefined &&
+            (ts.isArrowFunction(initializer) || ts.isFunctionExpression(initializer))
+          ) {
+            record(declaration.name.text, initializer);
+          }
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  ts.forEachChild(sourceFile, visit);
+  return callbacks;
+}
+
 /** The row's callback among the arguments that follow the title: the first that is a function,
- *  which both an arrow function and a function expression carry a body for. A row may take a
- *  details object between its title and its callback (`test(title, { tag }, callback)`), so this
- *  reads the arguments rather than one position. It is passed the arguments after the first
- *  because a function in first position is a condition, not a callback:
+ *  which both an arrow function and a function expression carry a body for, or the first that
+ *  names one this file declares. A row may take a details object between its title and its
+ *  callback (`test(title, { tag }, callback)`), so this reads the arguments rather than one
+ *  position. It is passed the arguments after the first because a function in first position is
+ *  a condition, not a callback:
  *  `test.skip(({ browserName }) => browserName === "webkit", "reason")` inside a row body
- *  declares no row. */
+ *  declares no row.
+ *
+ * A name is resolved wherever it stands, including on a call with a literal title, which until
+ * now reported `fixtures: []` for a callback passed by name. One syntax is read one way: the
+ * fixtures are written in the file and this module now reads them, and reading them only where
+ * nothing else resolved would report two different fixture lists for one callback depending on
+ * how its row happens to be titled. It cuts both ways and that is the point — such a row now
+ * passes the gate when its named callback binds `page`, because it does drive a browser, and it
+ * is still named when the callback binds none. */
 function rowCallback(
-  argumentsAfterTitle: readonly ts.Expression[]
-): ts.ArrowFunction | ts.FunctionExpression | undefined {
+  argumentsAfterTitle: readonly ts.Expression[],
+  namedCallbacks: ReadonlyMap<string, RowCallback | undefined>
+): RowCallback | undefined {
   for (const argument of argumentsAfterTitle) {
     if (ts.isArrowFunction(argument) || ts.isFunctionExpression(argument)) return argument;
+    if (ts.isIdentifier(argument)) {
+      const named = namedCallbacks.get(argument.text);
+      if (named !== undefined) return named;
+    }
   }
   return undefined;
 }
 
 /** The fixture names a callback's first parameter binds. */
-function fixturesOfCallback(callback: ts.ArrowFunction | ts.FunctionExpression): string[] {
+function fixturesOfCallback(callback: RowCallback): string[] {
   const [parameter] = callback.parameters;
   if (parameter === undefined || !ts.isObjectBindingPattern(parameter.name)) return [];
   const fixtures: string[] = [];
@@ -136,23 +202,30 @@ function fixturesOfCallback(callback: ts.ArrowFunction | ts.FunctionExpression):
 
 /** The row `call` declares, or nothing when it declares none.
  *
- * A call whose callback is written inline is a row whatever its first argument is, so a row
- * titled from a variable is read as surely as one titled by a literal, and its `title` is that
- * argument's source text — all a reader of the source alone can have.
+ * A call whose callback is written inline, or passed by the name of a function the same file
+ * declares, is a row whatever its first argument is, so a row titled from a variable is read as
+ * surely as one titled by a literal, and its `title` is that argument's source text — all a
+ * reader of the source alone can have.
  *
- * A call with a literal title whose callback this module cannot read, because it is declared
- * beside the row and passed by name, is reported too, with no fixtures. It is reported rather
- * than skipped because a gate a row can get past is a gap in the gate: fixtures this module did
- * not read are not fixtures it saw, so the check fails closed and `unexplainedRows` names the
- * row until someone moves it or writes it an exemption. A literal title is what tells such a row
- * from `test.skip(test.info()…, "reason")` inside a row body, whose first argument is a
- * condition and no title at all; and a call whose arguments are all strings after the title is
- * `test.fixme(condition, description)` and its kin, which declare nothing either.
+ * A call whose callback this module still cannot read — an identifier naming something this
+ * file does not declare, because it is imported — is reported too, with no fixtures, whenever
+ * the call is a row at all. It is reported rather than skipped because a gate a row can get
+ * past is a gap in the gate: fixtures this module did not read are not fixtures it saw, so the
+ * check fails closed and `unexplainedRows` names the row until someone moves it or writes it an
+ * exemption.
+ *
+ * What says the call is a row at all, when neither half can be read, is its callee: `test` and
+ * `test.only` take a title first and nothing else (`titledRowCallees`), while `test.skip` and
+ * its kin also take `(condition, description)`, which declares no row. That and the all-strings
+ * test leave out the modifier calls of this suite: `test.skip(<condition>, "<reason>")` inside
+ * a row body, and the four written with no string literal at all, whose second argument names a
+ * string constant and not a function, so it resolves to no callback here.
  */
 function rowOfCall(
   call: ts.CallExpression,
   sourceFile: ts.SourceFile,
-  file: string
+  file: string,
+  namedCallbacks: ReadonlyMap<string, RowCallback | undefined>
 ): SuiteRow | undefined {
   const callee = calleeName(call.expression);
   if (callee === undefined || !rowCallees.has(callee)) return undefined;
@@ -160,10 +233,13 @@ function rowOfCall(
   // Every form that declares a row names it and gives it a body, so a call of one argument or
   // none — `test.skip()`, `test.fail("this is broken")` — marks the row it stands in.
   if (title === undefined || rest.length === 0) return undefined;
-  const callback = rowCallback(rest);
+  const callback = rowCallback(rest, namedCallbacks);
   if (callback === undefined) {
+    // `test.fixme(condition, description)` and its kin: a call carrying nothing but strings
+    // after its first argument gives no body and declares nothing.
+    if (rest.every((argument) => ts.isStringLiteral(argument))) return undefined;
     const titled = ts.isStringLiteralLike(title) || ts.isTemplateExpression(title);
-    if (!titled || rest.every((argument) => ts.isStringLiteral(argument))) return undefined;
+    if (!titled && !titledRowCallees.has(callee)) return undefined;
   }
   return {
     file,
@@ -183,10 +259,11 @@ export function rowsOfSource(file: string, source: string): SuiteRow[] {
   // `title.getText(sourceFile)`), so attaching a parent to every node of every spec of the
   // suite would roughly double this parse for no reader.
   const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, false);
+  const namedCallbacks = namedCallbacksOfFile(sourceFile);
   const rows: SuiteRow[] = [];
   const visit = (node: ts.Node): void => {
     if (ts.isCallExpression(node)) {
-      const row = rowOfCall(node, sourceFile, file);
+      const row = rowOfCall(node, sourceFile, file, namedCallbacks);
       if (row !== undefined) rows.push(row);
     }
     ts.forEachChild(node, visit);
