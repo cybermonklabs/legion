@@ -816,6 +816,10 @@ func parseBlock(node ast.Node, source []byte, footnotes map[int]string, depth in
 		// Only the display read makes one, where it shows a block as the markdown it is written
 		// as (drawDisplayBlocks).
 		return &Node{Type: "paragraph", Children: displayLiteral(current.text)}, nil
+	case *displayHTML:
+		// Only the display read makes one, where it shows a block of HTML as the browser's
+		// engine draws it (drawDisplayBlocks).
+		return &Node{Type: "paragraph", Children: []*Node{{Type: "html", Attrs: Attrs{"value": current.value}}}}, nil
 	default:
 		// refuseBlocks refuses every block outside convertedBlocks before conversion starts.
 		panic(fmt.Sprintf("conversion reached a %s block, which refuseBlocks passed and parseBlock does not convert (convertedBlocks)", node.Kind()))

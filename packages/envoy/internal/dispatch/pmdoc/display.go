@@ -354,6 +354,29 @@ func (n *displayText) Kind() ast.NodeKind {
 	return kindDisplayText
 }
 
+// kindDisplayHTML is the node drawDisplayBlocks leaves where a block of HTML stood.
+var kindDisplayHTML = ast.NewNodeKind("DisplayHTML")
+
+// displayHTML is a block of HTML the display read shows as the browser's engine draws it: one
+// paragraph holding the block's own characters as the schema's inline `html` node, which
+// conversion makes of it (parseBlock). The Proof schema has no block of HTML and gains none, so
+// the browser wraps the block in a paragraph of its own (remarkHtmlBlockParagraphs,
+// proof-editor's html-blocks.ts) and this reads it the same way: one `html` node per block,
+// however many lines it spans, so a reader of a comment and a reader of the editor are shown
+// one body.
+type displayHTML struct {
+	ast.BaseBlock
+	value string
+}
+
+func (n *displayHTML) Dump(source []byte, level int) {
+	ast.DumpHelper(n, source, level, nil, nil)
+}
+
+func (n *displayHTML) Kind() ast.NodeKind {
+	return kindDisplayHTML
+}
+
 // displayFillAttr marks a typed block the display read keeps typed whose content Milkdown's
 // NodeType.createAndFill would open with an empty paragraph, because the block's content rule
 // wants one before what the markdown wrote (displayContentFit). Only the display read sets it;
@@ -365,20 +388,26 @@ var displayFillAttr = []byte("pmdoc-display-fill-paragraph")
 // proof-editor's typed-block-drawing.ts): a container directive the schema refuses, or whose
 // content its content rule refuses, is drawn as its opening fence line, the blocks it held, and
 // its closing fence where the markdown closes it; a directive the schema takes keeps the
-// attribute values the conversion writes. Every other block conversion has no node for - an HTML
-// block, which the Proof schema carries inline only - is shown as its own text. Each is decided
-// after the blocks inside it, so a drawn block's lines are weighed against its parent's content
-// rule in turn.
+// attribute values the conversion writes. A block of HTML, which the Proof schema carries inline
+// only, is drawn as a paragraph holding that block as an inline `html` node, and every other
+// block conversion has no node for is shown as its own text. Each is decided after the blocks
+// inside it, so a drawn block's lines are weighed against its parent's content rule in turn.
 func drawDisplayBlocks(parent ast.Node, source []byte) {
 	for child := parent.FirstChild(); child != nil; {
 		next := child.NextSibling()
 		if entersDisplayBlocks(child) {
 			drawDisplayBlocks(child, source)
 		}
-		if directive, typed := child.(*typedDirective); typed {
-			drawDisplayDirective(parent, directive, source)
-		} else if child.Type() == ast.TypeBlock && !convertedBlocks[child.Kind()] && child.Kind() != kindDisplayText {
-			parent.ReplaceChild(parent, child, displayTextOf(child, source))
+		switch block := child.(type) {
+		case *typedDirective:
+			drawDisplayDirective(parent, block, source)
+		case *ast.HTMLBlock:
+			parent.ReplaceChild(parent, child, displayHTMLOf(block, source))
+		default:
+			drawn := child.Kind() == kindDisplayText || child.Kind() == kindDisplayHTML
+			if child.Type() == ast.TypeBlock && !convertedBlocks[child.Kind()] && !drawn {
+				parent.ReplaceChild(parent, child, displayTextOf(child, source))
+			}
 		}
 		child = next
 	}
@@ -455,14 +484,27 @@ func displayClosingFence(directive *typedDirective, source []byte) string {
 	return strings.Repeat(":", colons)
 }
 
-// displayTextOf is block shown as the markdown it is written as, its lines and the line that
-// closes it where goldmark records one apart from them (an HTML block's).
+// displayTextOf is block shown as the markdown it is written as.
 func displayTextOf(block ast.Node, source []byte) *displayText {
-	text := segmentsText(block.Lines(), source)
-	if html, ok := block.(*ast.HTMLBlock); ok && html.HasClosure() {
-		text += string(html.ClosureLine.Value(source))
+	node := &displayText{text: strings.TrimRight(segmentsText(block.Lines(), source), "\n")}
+	node.SetPos(max(sourceStart(block), 0))
+	return node
+}
+
+// displayHTMLOf is one block of HTML as the schema's inline `html` node carries it: the block's
+// lines and the line that closes it, which goldmark records apart from them, with no line ending
+// after the last.
+//
+// The up-to-three spaces a block of HTML may open with are block syntax and not content, and the
+// browser drops them (drawHtmlBlocks, proof-editor's html-blocks.ts), so keeping them here would
+// draw ` </script>` where the browser draws the tag alone. Only the first line's indentation
+// goes; a later line's belongs to the block's text.
+func displayHTMLOf(block *ast.HTMLBlock, source []byte) *displayHTML {
+	value := segmentsText(block.Lines(), source)
+	if block.HasClosure() {
+		value += string(block.ClosureLine.Value(source))
 	}
-	node := &displayText{text: strings.TrimRight(text, "\n")}
+	node := &displayHTML{value: strings.TrimLeft(strings.TrimRight(value, "\n"), " \t")}
 	node.SetPos(max(sourceStart(block), 0))
 	return node
 }
@@ -510,7 +552,7 @@ func displayChildTypes(directive *typedDirective) []string {
 // displayNodeType is the Proof node type block converts to, or "" for one no node holds.
 func displayNodeType(block ast.Node) string {
 	switch current := block.(type) {
-	case *ast.Paragraph, *ast.TextBlock, *displayText:
+	case *ast.Paragraph, *ast.TextBlock, *displayText, *displayHTML:
 		return "paragraph"
 	case *ast.Heading:
 		return "heading"
@@ -594,7 +636,7 @@ func displayRefusals(root ast.Node, source []byte) error {
 		switch node.(type) {
 		case *ast.Paragraph, *ast.TextBlock:
 			return ast.WalkSkipChildren, nil
-		case *displayText:
+		case *displayText, *displayHTML:
 			return ast.WalkSkipChildren, nil
 		case *typedDirective:
 			return ast.WalkContinue, nil

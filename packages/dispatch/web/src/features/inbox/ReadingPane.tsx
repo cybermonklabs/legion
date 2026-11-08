@@ -216,7 +216,7 @@ function ApprovalBody({
      *  reads as it was written, and a rule tells it from the document's first paragraph. */
     const question = (
       <div className={`mb-3 border-b pb-3 ${borderDefault}`} data-testid="pane-approval-question">
-        <MarkdownBody markdown={ask.question} />
+        <MarkdownBody markdown={ask.question} tree={ask.question_tree} />
       </div>
     );
     /** Whether the document below the question is still opening: every read `VersionView` needs

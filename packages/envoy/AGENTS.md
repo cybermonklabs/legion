@@ -240,6 +240,7 @@ Each item below names a task and where its code is, then notes on it.
 
   A request that carries `Dispatch-Trees: 1` is answered with the ProseMirror tree of every stored text the answer holds, beside the markdown in a sibling field (`body` and `body_tree`), and an event carries its texts' trees in the envelope's own `trees` map, keyed by the payload path, so no payload gains a field.
   The tree is `pmdoc.ReadForDisplay`'s reading, encoded by `pmdoc`'s display encoding, and the dashboard draws it rather than parsing the markdown again.
+  The reading is the browser's own, block for block: the Proof schema holds no block of HTML, and both readers draw one as a paragraph whose single child is the schema's inline `html` node, holding the block's characters with the up-to-three spaces it may open with dropped (`pmdoc`'s `displayHTML`, proof-editor's `remarkHtmlBlockParagraphs`).
 
   Those trees are stored, not read on the request.
   One table, `text_trees` (migration `20261105121325`), holds one row per whole text, keyed by the text's SHA-256, the display mode and `pmdoc.DisplayTreeVersion` — a version of its own, because the display read, the wire encoding and the dashboard's schema each change a tree and none of them changes a rendering, which is what `RendererVersion` numbers.

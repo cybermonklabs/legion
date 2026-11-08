@@ -23,9 +23,10 @@ import { api } from "../../api/client";
 import { agentMessagesQuery, askThreadQuery, issueQuery, myRepliesKey } from "../../api/queries";
 import type {
   Actor,
-  Comment,
-  Message,
+  CommentWithTrees,
+  DisplayTree,
   MessageRead,
+  MessageWithTrees,
   MyReplyAgentRow,
   MyReplyRow,
   MyReplyThreadRow,
@@ -70,6 +71,9 @@ interface ThreadTurn {
   readonly author: Actor;
   readonly body: string;
   readonly created_at: string;
+  /** The reading Go sent with `body`, which the turn draws rather than parsing the markdown
+   *  again (`MarkdownBody`). */
+  readonly tree?: DisplayTree;
   /** Drawn under the body: an Agent reply the session took as a turn of its live conversation
    *  says so there. */
   readonly note?: ReactNode;
@@ -121,7 +125,7 @@ function ThreadTurnView({
         ) : null}
       </p>
       <div className={textPrimaryOnSurfaceMuted}>
-        <MarkdownBody markdown={turn.body} />
+        <MarkdownBody markdown={turn.body} tree={turn.tree} />
       </div>
       {turn.note}
     </div>
@@ -241,7 +245,7 @@ function useThreadRead(thread: MyReplyThreadRow, owner: RepliesOwner | undefined
 }
 
 /** The replies an Agent thread marks when nothing has dwelled yet. */
-const NO_REPLIES: readonly Message[] = [];
+const NO_REPLIES: readonly MessageWithTrees[] = [];
 
 /**
  * An Agent row's read mark. Its replies are read by id (`useMarkShownRepliesRead`), never by
@@ -250,7 +254,10 @@ const NO_REPLIES: readonly Message[] = [];
  * newest message, and it marks the unread replies the row names among the ones drawn - every
  * one of them at or before that newest message, since the body draws the thread whole.
  */
-function useAgentThreadRead(thread: MyReplyAgentRow, replies: readonly Message[]): DwellRef {
+function useAgentThreadRead(
+  thread: MyReplyAgentRow,
+  replies: readonly MessageWithTrees[]
+): DwellRef {
   const unreadIds = thread.unread_reply_ids;
   // Which set of unread replies has dwelled, as `useMarkThreadRead` keeps which reply has: a
   // reply that arrives while the thread is on screen is read only once it has dwelled too.
@@ -346,21 +353,23 @@ function CommentThreadBody({
   );
 }
 
-function commentTurn(comment: Comment): ThreadTurn {
+function commentTurn(comment: CommentWithTrees): ThreadTurn {
   return {
     author: comment.author,
     body: comment.body,
     created_at: comment.created_at,
     id: comment.id,
+    tree: comment.body_tree,
   };
 }
 
-function messageTurn(message: Message, note?: ReactNode): ThreadTurn {
+function messageTurn(message: MessageWithTrees, note?: ReactNode): ThreadTurn {
   return {
     author: message.author,
     body: message.body,
     created_at: message.created_at,
     id: message.id,
+    tree: message.body_tree,
     ...(note === undefined ? {} : { note }),
   };
 }
@@ -526,7 +535,7 @@ function AgentThreadBody({
     return <p className={`mt-2 text-sm ${dangerText}`}>Could not load this conversation.</p>;
   }
   const newest = read === undefined ? undefined : (read.replies.at(-1) ?? read.message);
-  const turn = (message: Message): ThreadTurn =>
+  const turn = (message: MessageWithTrees): ThreadTurn =>
     messageTurn(
       message,
       message.deliveries.some((attempt) => attempt.accepted_as === "user_turn") ? (

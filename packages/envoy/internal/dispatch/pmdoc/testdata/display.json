@@ -626,22 +626,10 @@
           "type": "paragraph",
           "content": [
             {
-              "type": "text",
-              "text": "\u003cdiv class=\"note\"\u003e"
-            },
-            {
-              "type": "hardbreak"
-            },
-            {
-              "type": "text",
-              "text": "  \u003cp\u003eMarkup the Proof schema carries inline only.\u003c/p\u003e"
-            },
-            {
-              "type": "hardbreak"
-            },
-            {
-              "type": "text",
-              "text": "\u003c/div\u003e"
+              "type": "html",
+              "attrs": {
+                "value": "\u003cdiv class=\"note\"\u003e\n  \u003cp\u003eMarkup the Proof schema carries inline only.\u003c/p\u003e\n\u003c/div\u003e"
+              }
             }
           ]
         },
@@ -672,22 +660,10 @@
           "type": "paragraph",
           "content": [
             {
-              "type": "text",
-              "text": "\u003cdiv class=\"note\"\u003e"
-            },
-            {
-              "type": "hardbreak"
-            },
-            {
-              "type": "text",
-              "text": "  \u003cp\u003eMarkup the Proof schema carries inline only.\u003c/p\u003e"
-            },
-            {
-              "type": "hardbreak"
-            },
-            {
-              "type": "text",
-              "text": "\u003c/div\u003e"
+              "type": "html",
+              "attrs": {
+                "value": "\u003cdiv class=\"note\"\u003e\n  \u003cp\u003eMarkup the Proof schema carries inline only.\u003c/p\u003e\n\u003c/div\u003e"
+              }
             }
           ]
         },
