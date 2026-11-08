@@ -361,8 +361,8 @@ export interface FailedMermaidChunks {
  *
  *  The default pattern fails them all, so the worker stops at the renderer module's own chunk
  *  with Mermaid never loaded; `mermaidChunkNamed(...)` fails the one chunk a redeploy moved,
- *  and then the worker loads Mermaid and reaches the fetch that this source's own type or
- *  layout makes, inside the parse, the warm render or the draw. */
+ *  and then the worker loads Mermaid and reaches the fetch this source's own type makes,
+ *  inside the parse, the warm render or the draw. */
 export async function failMermaidChunks(
   context: BrowserContext,
   pattern: RegExp = mermaidChunks

@@ -246,8 +246,8 @@ describe("sanitizeMermaidSvg", () => {
   // What the filter makes of each shape the review of INFRA-925 tried it with, and of each
   // behaviour the readers it replaced had. The sheet is no longer read by this package: the
   // window's own CSS parser reads it (`new view.CSSStyleSheet().replaceSync`), the rules it
-  // yields are serialized by it, every rule whose text fetches is left out, and the whole
-  // sheet goes where what is left still fetches, holds a backslash or holds an `@import`.
+  // yields are serialized by it, every rule whose text fetches or holds a backslash is left
+  // out, and the whole sheet goes where an `@import` is left in what stayed.
   //
   // Under bun that parser is happy-dom's, not a browser's, and the two differ where it is
   // recorded below. Each difference is the same way round — happy-dom keeps less, so what
@@ -314,7 +314,7 @@ describe("sanitizeMermaidSvg", () => {
     {
       // `cssText` serializes an at-rule with everything nested in it, so one test over the
       // rule reaches an `@font-face`'s `src` and an `@media`'s own declarations alike.
-      name: "an @font-face src, which takes its rule and so the whole sheet",
+      name: "an @font-face src, which takes its rule, the only rule the sheet holds",
       sheet: "@font-face{font-family:x;src:url(https://evil.example/f.woff);}",
       kept: "",
     },
@@ -329,7 +329,7 @@ describe("sanitizeMermaidSvg", () => {
       kept: "#d .a rect { fill: #f00; }\n",
     },
     {
-      name: "a declaration the sheet ends before its ; does, which no cut reaches",
+      name: "a declaration the sheet ends before its ; does, which the engine drops from its rule",
       sheet: "#d .a rect{fill:#f00;mask-image:url(https://evil.example/a)",
       kept: "#d .a rect {  }\n",
     },
@@ -337,7 +337,7 @@ describe("sanitizeMermaidSvg", () => {
       // The one place happy-dom is the laxer tokenizer: it ends the string where Chromium runs
       // it on to the end of the sheet, so happy-dom reads two rules and Chromium one, whose
       // text then holds the `url(` and takes the whole sheet. Either way the fetch is gone.
-      name: "a string the sheet ends before, which the reader cannot take apart",
+      name: "a string the sheet ends before, which the two tokenizers end differently",
       sheet: '#d .a rect{content:"x;}#d .b rect{mask-image:url(https://evil.example/b);}',
       kept: '#d .a rect { content: "x; }\n',
     },
@@ -390,7 +390,13 @@ describe("sanitizeMermaidSvg", () => {
       kept: "",
     },
     {
-      name: "an at-rule other than @import that fetches, which takes the whole sheet with it",
+      // happy-dom 20.14.0 yields no rule at all here: it drops the `@namespace` and the rule
+      // after it, as it does after an `@import` it removed. Chromium and Firefox yield the
+      // `@namespace`, whose text holds the `url(`, so the rule goes on its own and
+      // `text { fill: red; }` stays. With the two the other way round happy-dom keeps that
+      // rule as well (measured in happy-dom; round 4's reviewer measured the browsers).
+      // Neither engine lets the fetch through.
+      name: "an at-rule other than @import that fetches, which goes as its own rule",
       sheet: "@namespace url(https://evil.example/ns);text{fill:red;}",
       kept: "",
     },
@@ -674,7 +680,8 @@ describe("sanitizeMermaidSvg, over upstream Mermaid's drawings", () => {
         "font-size: var(--mermaid-font-size); fill: var(--mermaid-text-color); }"
     );
 
-    // The marker that declaration's neighbour points at is still drawn, and so is the edge
+    // The five dropped rules each pointed a `marker-end` at the drawing's own arrowhead, which
+    // no rule of the kept sheet does now. The marker itself is still drawn, and so is the edge
     // attribute that references it.
     expect(
       Array.from(svg.getElementsByTagName("marker"), (marker) => marker.getAttribute("id"))

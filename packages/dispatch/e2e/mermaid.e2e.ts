@@ -2776,7 +2776,7 @@ const CLASS_DEF_FETCH_SOURCE = [
 
 // SLOW(>=2s): Mermaid's chunks load for this row before its one block is drawn; the download is
 // the whole cost, and the margin below is a quarter of a second of it.
-test("a classDef whose paint would fetch draws in its own colour, and fetches nothing", async ({
+test("a classDef whose paint would fetch loses its colour with the rule, and fetches nothing", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });

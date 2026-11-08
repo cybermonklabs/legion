@@ -14,9 +14,11 @@
  * A source is drawn in two steps rather than one (`MermaidRenderer`), because the page bounds a
  * download and a layout differently: everything Mermaid fetches for a source is fetched in
  * `prepare`, so `draw` is the layout alone. The source's own parse is neither a download nor
- * the layout, and `prepare` leaves it to `draw`: nothing here reads the source's own config,
- * since `layout`, the one config key that could have sent a render for a chunk of its own, is
- * on the `secure` list mermaid is configured with below.
+ * the layout, and `prepare` leaves it to `draw` wherever it has a stand-in of the source's type
+ * to warm with; a source whose type has none is parsed in `prepare` instead, because that parse
+ * is what downloads the type's definition chunk. Nothing of the source's own config is read
+ * either way, since `layout`, the one config key that could have sent a render for a chunk of
+ * its own, is on the `secure` list mermaid is configured with below.
  *
  * Every colour below is a literal, measured against the two page backgrounds Dispatch draws on
  * (`#f8fafc` light, `#020618` dark), except the seven keys mermaid accepts a CSS custom property
@@ -50,7 +52,7 @@ export interface MermaidRenderer {
    *
    * Nothing of `source` is read for its config: `layout` is on the renderer's `secure` list,
    * so a source chooses no layout engine and the warm needs to carry nothing of the source's
-   * own text. The only parse a reader pays for is `draw`'s.
+   * own text. A source whose type has a stand-in is parsed once, in `draw`.
    *
    * It throws what Mermaid throws for a source Mermaid refuses -- a parse error, an unknown
    * type, a source past `MERMAID_MAX_SOURCE_CHARS` -- which is the refusal the reader is
@@ -301,18 +303,23 @@ async function load(): Promise<MermaidRenderer> {
     // `layout` names the engine a diagram is laid out by, which mermaid imports as a chunk of
     // its own inside `render` (`dagre`, `swimlane`, `cose-bilkent`, `elk` with the ELK
     // algorithms, the last 1,513,480 bytes built). A source that chose one would download it
-    // under the reader's five seconds, since the warm above draws the type's stand-in and the
-    // stand-in has no such choice. No requirement here asks Dispatch to honour a source's
-    // layout choice, so the key is refused rather than carried into the warm: the warm and the
-    // render then agree by construction, both taking the bundle's own default for the type.
-    // What it costs an author is measured: a source whose front matter or directive names
-    // `dagre`, `cose-bilkent`, `elk` or `swimlane` is laid out by its type's default engine
-    // instead, which is what every source that names none already gets. A type that chooses
-    // its own engine is untouched, because that choice is no config key of the source's:
-    // `flowchart-elk`'s own detector sets it, a swimlane and a state diagram carry it in
-    // mermaid's default config, and a mindmap reads `mindmap.layoutAlgorithm`.
+    // under the reader's five seconds, since the warm below draws the type's stand-in
+    // (`warmLayoutFor`) and the stand-in has no such choice. No requirement here asks
+    // Dispatch to honour a source's layout choice, so the key is refused rather than carried
+    // into the warm: the warm and the render then agree by construction, both taking the
+    // bundle's own default for the type. What it costs an author is measured: a source whose
+    // front matter or directive names `dagre`, `cose-bilkent`, `elk` or `swimlane` is laid
+    // out by its type's default engine instead, which is what every source that names none
+    // already gets. A type that chooses its own engine is untouched. For three of them the
+    // choice is no config key of a source's at all: `flowchart-elk`'s own detector sets it,
+    // and a swimlane and a state diagram carry it in mermaid's default config. A mindmap
+    // reads the same `layout` key and falls back to `cose-bilkent` where the user config
+    // names none (`mindmap-definition-I2QAS2VK.mjs:994-997,1058`), so what keeps a mindmap
+    // on its own engine is this list deleting `layout` from a source's config;
+    // `mindmap.layoutAlgorithm` is a default value nothing in the package reads
+    // (`chunk-BG4553SI.mjs:4380`).
     //
-    // The last two are the only keys left that make a source fetch inside `render`. A `$$...$$`
+    // `legacyMathML` and `forceLegacyMathML` are the other two of that three. A `$$...$$`
     // label draws `MathML is unsupported in this environment.` in this worker, because the
     // shim's linkedom `window` defines no `MathMLElement`, unless the source turns one of them
     // on -- and then mermaid imports katex (261,763 bytes built) inside the render, under the

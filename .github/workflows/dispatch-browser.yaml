@@ -129,14 +129,23 @@ jobs:
     # jobs fill both entries, on a push to main and on a workflow_dispatch of that file, each of
     # which writes the default branch's cache scope, and this workflow restores them.
     #
+    # The `build:web` step carries no budget of its own, so by this file's rule it counts at its
+    # measured maximum, and this issue moved that maximum: the diagram worker now carries
+    # upstream Mermaid, 62 code-split chunks of about 5.6 MB
+    # (`packages/dispatch/web/vite.config.ts`), which the build pays for (INFRA-925). Read from
+    # the runners' own `built in` lines, a build takes 28.9 s to 36.0 s on main and 54.9 s to
+    # 72.0 s with Mermaid in the worker, so up to about 36 s more; the multiprocess job's budget
+    # below reads the same two figures for the two builds its own step makes. This job builds
+    # once, so 36 s go on the row above.
+    #
     # So the job budget is the install step's 1320 s, the browser step's 540 s and 92 s of every
-    # other step summed: 1952 s -> 33 min.
+    # other step summed with those 36 s: 1988 s -> 34 min.
     #
     # The 114 MB cold draw is still a tail rather than a cost of the lane: it is paid once per
     # cache key, on the first run after a Playwright upgrade or an image roll, and it is the same
     # class of tail as the 1004 s leg below. It is accounted in this pull request's body, cited to
     # dispatch://INFRA-1443. What this budget costs instead: a leg that is going to fail its
-    # install holds a runner for up to 33 min before it says so.
+    # install holds a runner for up to 34 min before it says so.
     #
     # The 1004 s leg sets none of that, and is named here as the tail it is. Its install stalled
     # 627 s on the apt download where every other install of the two runs took 19 to 49 s, and
@@ -150,7 +159,7 @@ jobs:
     # eight projects the full lane's four shards run, of which 1,058 are in the two the
     # pull-request lane runs. The remaining 55 are the three `-alone` projects', which the alone
     # job runs.
-    timeout-minutes: 33
+    timeout-minutes: 34
     strategy:
       fail-fast: false
       # Four legs. The count is written here and in the `--shard` denominator of the browser step
@@ -492,20 +501,26 @@ jobs:
     # 23:13:54 with the install step starting at 23:14:00, so those 482 MB landed inside 6 s and
     # this cache's 114 MB are under that. They are counted here as 7 s on top of the 82 s row.
     #
+    # The `build:web` step carries no budget of its own, so by this file's rule it counts at its
+    # measured maximum, and this issue moved that maximum: with upstream Mermaid in the diagram
+    # worker a build takes up to about 36 s more, for the reason and the readings the shard
+    # job's budget gives at length (INFRA-925). This job builds once, so 36 s go on the row
+    # above.
+    #
     # So the job budget is the install step's 1320 s, the browser step's 180 s and 89 s of every
-    # other step summed: 1589 s -> 27 min.
+    # other step summed with those 36 s: 1625 s -> 28 min.
     #
     # The 114 MB cold draw is still a tail rather than a cost of this job: it is paid once per
     # cache key, on the first run after a Playwright upgrade or an image roll, and it is the same
     # class of tail as the shard job's 627 s apt stall. It is accounted in this pull request's
     # body, cited to dispatch://INFRA-1443. What this budget costs instead: a leg that is going to
-    # fail its install holds a runner for up to 27 min before it says so.
+    # fail its install holds a runner for up to 28 min before it says so.
     #
     # Three legs of one run is a thin reading, and these are the projects whose rows are read
     # from the wall clock, so a slower machine moves them further than it moves a parallel row.
     # The 15 per cent the rule adds is what carries that, and a leg that outran it fails the
     # browser step by name, which is a reading of its own.
-    timeout-minutes: 27
+    timeout-minutes: 28
     strategy:
       fail-fast: false
       matrix:
@@ -756,8 +771,9 @@ jobs:
     # for the reason its own comment gives.
     #
     # The move into this workflow changed none of that: the job runs the same steps on the same
-    # machine, and that head's full-lane run, 42316487530, fell inside every figure above - 9 s
-    # install, 191 s dashboard, 12 s sign-in, 96 s in the steps without a budget, 313 s whole.
+    # machine, and the full-lane run of the head that moved it, 42316487530, fell inside every
+    # figure above - 9 s install, 191 s dashboard, 12 s sign-in, 96 s in the steps without a
+    # budget, 313 s whole.
     #
     # The dashboard step's own figure moved after that window, so it is measured again here.
     # That step builds the dashboard twice inside itself, and the diagram worker now carries

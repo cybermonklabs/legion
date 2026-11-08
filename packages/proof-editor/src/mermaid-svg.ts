@@ -168,8 +168,8 @@ export function showMermaidSvg(host: HTMLElement, svg: SVGSVGElement, sheet: str
  * carrying `ALLOWED_XHTML_ATTRIBUTES`, so no `<img>`, `<a>` or `href` survives in a label; and
  * each kept `<style>` is rebuilt from the rules `document`'s own CSS parser reads in it, less
  * every rule that fetches, which is where the same `classDef` paint lands in upstream Mermaid's
- * markup, and the whole sheet goes instead where what that parser left still fetches, still
- * holds an `@import`, or held more `{` than `MAX_SHEET_BRACES` before that parser was given it
+ * markup, and the whole sheet goes instead where what that parser left still holds an
+ * `@import`, or where it held more `{` than `MAX_SHEET_BRACES` before that parser was given it
  * (`sanitizedSheet`). Under `"html"` the drawing keeps the first `<style>` alone, since Mermaid
  * writes one and every later one is an author's `</style><style>` (`keepFirstStyle`). The
  * parser and every node come from `document` and its window, never from the global scope, so
@@ -280,7 +280,8 @@ function fetches(text: string): boolean {
  *  to; this is the second gate, so that an engine that read the sheet differently from the one
  *  that will mount it cannot carry an import past this module. Nothing else here would see one:
  *  a quoted target is no fetching function. An escaped spelling (`@\69mport`, which a browser
- *  reads as this one) needs no pattern of its own, since a backslash refuses the sheet. */
+ *  reads as this one) needs no pattern of its own: the engine resolves the escape as it parses,
+ *  so the rule it serializes is spelled `@import` and this pattern reads it. */
 const IMPORT_RULE = /@import/i;
 
 /** The most `{` a sheet may hold before it is refused whole, counted before any engine reads a
@@ -336,11 +337,16 @@ const MAX_SHEET_BRACES = 3_000;
  * no `url(` anywhere in it. The cost is the author's own rule: a `classDef` whose paint fetches
  * loses the colour beside it too.
  *
- * Then the whole sheet is refused where anything that fetches, any backslash or any `@import`
- * is left in the serialization — one linear pass over text the parser has already bounded.
- * The engine serializes a selector's odd characters as escapes, so an author's own class name
- * can refuse the sheet it is written into; that costs that author their drawing's styling and
- * no other reader anything.
+ * Then the joined text is read once more, and the whole sheet is refused where anything that
+ * fetches, any backslash or any `@import` is left in it — one linear pass over text the parser
+ * has already bounded. The `@import` is what that pass is there for. The other half of it can
+ * find nothing: `kept` holds only rules that already passed the test above, and each
+ * serialized `cssText` ends in `}` or `;`, so no fetch and no backslash is left in one and no
+ * match spans two. So a backslash takes its own rule and no more — the escapes the engine
+ * writes an author's own odd class name back as among them. `.a\:b{fill:red}text{fill:blue}`
+ * keeps `text { fill: blue; }` and loses the escaped rule alone, in happy-dom, in Chromium and
+ * in Firefox (round 4's reviewer measured the three). That costs the author who wrote the
+ * escape the styling of that rule, and no other reader anything.
  *
  * What reaches a sheet differs between the renderers, which is why the fetch rule has to run
  * here as well as over attributes: beautiful-mermaid writes an author's `classDef` or `style`
