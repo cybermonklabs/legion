@@ -361,8 +361,8 @@ test("lists the slowest jobs in the server's order and the jobs that failed in t
 
 test("says when no job has enough results and when no job failed", () => {
   view({ ...PIPELINE, pr_checks: { ...PIPELINE.pr_checks, failing_jobs: [], slowest_jobs: [] } });
-  expect(document.body.textContent).toContain("No job has 50 timed results yet.");
-  expect(document.body.textContent).toContain("No job failed in the last 24 hours.");
+  expect(document.body).toHaveTextContent("No job has 50 timed results yet.");
+  expect(document.body).toHaveTextContent("No job failed in the last 24 hours.");
 });
 
 test("the failing-jobs note names the roll-up the server leaves out only by its role", () => {
@@ -373,7 +373,7 @@ test("the failing-jobs note names the roll-up the server leaves out only by its 
 
 test("names the shown days in the header", () => {
   view();
-  expect(document.body.textContent).toContain("Last 7 days, Sep 26 to Oct 2 (UTC)");
+  expect(document.body).toHaveTextContent("Last 7 days, Sep 26 to Oct 2 (UTC)");
 });
 
 /** The window a test renders the section for: the fixture's seven days, as the page's window
@@ -492,15 +492,15 @@ test("an unconfigured delivery says what the section reads, with no retry", asyn
   expect(
     await screen.findByText(/reads the delivery timeline's deploy repository and workflows/)
   ).toBeDefined();
-  expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
 });
 
 test("while the snapshot is out the page says it is loading, and shows nothing else", async () => {
   renderSection();
   await subscribed();
   expect(await screen.findByText("Loading pipeline…")).toBeDefined();
-  expect(screen.queryByText("PR CI")).toBeNull();
-  expect(screen.queryByRole("alert")).toBeNull();
+  expect(screen.queryByText("PR CI")).not.toBeInTheDocument();
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 });
 
 test("a refused subscription says so with Retry, and Retry subscribes again", async () => {
@@ -509,8 +509,10 @@ test("a refused subscription says so with Retry, and Retry subscribes again", as
   const { socket, frame } = await subscribed();
   act(() => socket.receive(errorFrame(frame.sub, "UNAVAILABLE", "try later")));
   const alert = await screen.findByRole("alert");
-  expect(alert.textContent).toContain("Couldn't load the pipeline.");
-  expect(screen.queryByText(/reads the delivery timeline's deploy repository/)).toBeNull();
+  expect(alert).toHaveTextContent("Couldn't load the pipeline.");
+  expect(
+    screen.queryByText(/reads the delivery timeline's deploy repository/)
+  ).not.toBeInTheDocument();
 
   await user.click(screen.getByRole("button", { name: "Retry" }));
   const retried = await waitFor(() => {
@@ -520,5 +522,5 @@ test("a refused subscription says so with Retry, and Retry subscribes again", as
   });
   act(() => socket.receive(snapshotFrame(retried.sub, PIPELINE)));
   await screen.findByText("PR CI");
-  expect(screen.queryByRole("alert")).toBeNull();
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 });
