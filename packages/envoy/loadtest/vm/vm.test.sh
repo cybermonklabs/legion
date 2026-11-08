@@ -1016,15 +1016,40 @@ run_dir() { printf '%s/%s\n' "$LOADTEST_VM_ROOT" "$(cat "$LOADTEST_VM_ROOT/curre
 # more than once.
 docker_run_line() { grep -- " run --name $1 " "$fake/docker.log" | tail -n1; }
 
-# sudo_log TARGET: every command vm.sh ran with sudo on TARGET, one a line.
+# sudo_log TARGET: every command vm.sh ran with sudo on TARGET, one a line. A case takes what
+# it says into a variable and asks its question of that, for the reason grep_first below gives:
+# an awk whose output goes into a `grep -q` is killed by SIGPIPE as soon as that grep has its
+# answer and the awk still has a line to write, and this suite's pipefail turns the death into
+# a failure with no assertion to name. A here-string is read whole, so it carries no such risk.
 sudo_log() { awk -F'\t' -v t="$1" '$1 == "sudo" && $2 == t { print $3 }' "$fake/actions.log"; }
 
-# line_at PATTERN: the first line of the action log that matches PATTERN, by number.
-line_at() { grep -n -- "$1" "$fake/actions.log" | head -n1 | cut -d: -f1; }
+# grep_first ARG...: the first line of what `grep ARG...` prints, and nothing at all when it
+# matches nothing. It is here because a grep whose output is piped into a `head -n1` is a
+# hazard under the pipefail this suite sets: head leaves the pipe as soon as it has its line,
+# the grep behind it is killed by SIGPIPE while it still has output to write, and the suite
+# ends on a broken pipe with no word of the assertion it was in the middle of. Reading grep's
+# output whole and taking the first line of it afterwards leaves no reader that stops early,
+# and nothing here is big enough for the reading to cost anything. The `|| true` is
+# the other half of the same answer: grep exits 1 when it matches nothing, which is an answer
+# here and not a failure.
+grep_first() {
+  local out
+  out=$(grep "$@" || true)
+  printf '%s\n' "${out%%$'\n'*}"
+}
+
+# line_at PATTERN: the first line of the action log that matches PATTERN, by number, and empty
+# when nothing matches.
+line_at() {
+  local hit
+  hit=$(grep_first -n -- "$1" "$fake/actions.log")
+  printf '%s\n' "${hit%%:*}"
+}
 
 # actions: the ordered actions of the deployment, one word per line, from every fake's log: a
 # container stopped or started, the database dropped or made, the JetStream store emptied and
-# the wait on /healthz. It is how a test asserts the order of a reset.
+# the wait on /healthz. It is how a test asserts the order of a reset, and its callers read what
+# it says whole, for the reason sudo_log's own comment gives.
 actions() {
   awk -F'\t' '
     $1 == "docker" && $3 ~ /^rm -f / { n = split($3, a, " "); print "stop " a[n]; next }
@@ -1104,7 +1129,8 @@ pass "up starts NATS with JetStream on the VM's disk and the hub listener, neith
   fail "up started $(grep -c -- ' run --name ' "$fake/docker.log") containers, not the 9 of the specification"
 grep -q -- '@sha256:' <<<"$(grep -- ' run --name ' "$fake/docker.log")" ||
   fail "up started a container by something other than a digest"
-grep -- ' run --name ' "$fake/docker.log" | grep -qv '@sha256:' &&
+untagged=$(grep -- ' run --name ' "$fake/docker.log" | grep -v '@sha256:' || true)
+[ -z "$untagged" ] ||
   fail "up started a container whose image is not a digest"
 pass "up starts the nine containers of the specification, each by image digest"
 
@@ -1112,8 +1138,8 @@ order=$(actions | grep '^start ' | sed 's/^start //')
 [ "$order" = "$(printf 'nats\nauth-proxy\nhub-listener\nload-listener-1\nload-listener-2\nload-listener-3\nload-listener-4\ndispatch-listener\ndispatch\n')" ] ||
   fail "up started the containers in the order: $order"
 grep -q 'stub-embed' "$fake/loadgen.log" || fail "up did not start the stub embedder"
-stub_at=$(grep -n 'loadgen	stub-embed' "$fake/actions.log" | head -n1 | cut -d: -f1)
-dispatch_at=$(grep -n 'docker	.*run --name dispatch ' "$fake/actions.log" | head -n1 | cut -d: -f1)
+stub_at=$(line_at 'loadgen	stub-embed')
+dispatch_at=$(line_at 'docker	.*run --name dispatch ')
 [ -n "$stub_at" ] && [ -n "$dispatch_at" ] && ((stub_at < dispatch_at)) ||
   fail "up started Dispatch before the stub embedder it reads a certificate from"
 [ -f "$remote/app/stub-embed.pem" ] || fail "up left no stub embedder certificate on Dispatch's machine"
@@ -1534,7 +1560,8 @@ done
 grep -q 'step 3x is the first failing step' "$tmp/out" || fail "series does not name the first failing step"
 grep -q 'refine.txt names the factors 3.5' "$tmp/out" || fail "series does not follow refine.txt"
 grep -q 'refinement done: refine.txt is empty' "$tmp/out" || fail "series does not stop when refine.txt is empty"
-grep -- '-duration 60m' "$fake/loadgen-run.log" | grep -q -- '-warmup 5m' ||
+warmed=$(grep -- '-duration 60m' "$fake/loadgen-run.log" | grep -- '-warmup 5m' || true)
+[ -n "$warmed" ] ||
   fail "series does not run the long steps at 60 minutes after a 5-minute warm-up"
 [ "$(grep -c -- '-duration 60m' "$fake/loadgen-run.log")" = 3 ] ||
   fail "series ran $(grep -c -- '-duration 60m' "$fake/loadgen-run.log") long steps, not the baseline, 1x and 2x"
@@ -1775,7 +1802,8 @@ run_vm down --config "$config"
 stopped=$(actions | grep '^stop ' | sed 's/^stop //' | sort -u | tr '\n' ' ')
 [ "$stopped" = "auth-proxy dispatch dispatch-listener hub-listener load-listener-1 load-listener-2 load-listener-3 load-listener-4 nats " ] ||
   fail "down stopped '$stopped', not every container"
-actions | grep -q '^start ' && fail "down started something"
+started=$(actions || true)
+grep -q '^start ' <<<"$started" && fail "down started something"
 grep -q 'left as they are' "$tmp/out" || fail "down does not say that the VMs and the instance are left alone"
 pass "down stops every container and leaves the VMs and the Cloud SQL instance alone"
 
@@ -1794,9 +1822,9 @@ run_vm step --config "$config" 1x 1 --duration 10m
 # identity and host-key options vm.sh puts in front of them (the identity case below).
 grep -q -- " -L $tunnel_port:127.0.0.1:6060 $app_target\$" "$fake/tunnel.log" ||
   fail "the step's tunnel does not end in '-L $tunnel_port:127.0.0.1:6060 $app_target': $(cat "$fake/tunnel.log")"
-tunnel_at=$(grep -n '^tunnel	' "$fake/actions.log" | head -n1 | cut -d: -f1)
-probe_at=$(grep -n "^curl	http://127.0.0.1:$tunnel_port/debug/pprof/goroutine?debug=1$" "$fake/actions.log" | head -n1 | cut -d: -f1)
-run_at=$(grep -n '^loadgen	run ' "$fake/actions.log" | head -n1 | cut -d: -f1)
+tunnel_at=$(line_at '^tunnel	')
+probe_at=$(line_at "^curl	http://127.0.0.1:$tunnel_port/debug/pprof/goroutine?debug=1$")
+run_at=$(line_at '^loadgen	run ')
 [ -n "$tunnel_at" ] || fail "step opened no profiling tunnel"
 [ -n "$probe_at" ] || fail "step did not prove the tunnel with a read of /debug/pprof/goroutine?debug=1 through it"
 [ -n "$run_at" ] && ((tunnel_at < probe_at)) && ((probe_at < run_at)) ||
@@ -1878,13 +1906,14 @@ cmp -s "$(run_dir)/oslogin" "$identity" ||
 # but no line of the key is an argument of anything. A line number is all a failure here
 # prints, since the line it names holds the key.
 grep -v '^$' "$(run_dir)/oslogin" >"$tmp/key-lines"
-! grep -qFf "$tmp/key-lines" "$fake/ssh.log" ||
-  fail "a line of the run's OS Login key reached a command line (ssh.log line $(grep -nFf "$tmp/key-lines" "$fake/ssh.log" | head -n1 | cut -d: -f1))"
+key_hit=$(grep_first -nFf "$tmp/key-lines" "$fake/ssh.log")
+[ -z "$key_hit" ] ||
+  fail "a line of the run's OS Login key reached a command line (ssh.log line ${key_hit%%:*})"
 
 # It was put there before the tunnel was started: put_file's own remote command is the one that
 # writes beside its target and renames it on, and its last two words are the path and the mode.
 put_at=$(awk -F'\t' -v p=" $identity 600" '$1 == "ssh" && index($3, "cat >\"$1.new\"") > 0 && index($3, p) > 0 { print NR; exit }' "$fake/actions.log")
-tunnel_at=$(grep -n '^tunnel	' "$fake/actions.log" | head -n1 | cut -d: -f1)
+tunnel_at=$(line_at '^tunnel	')
 [ -n "$put_at" ] || fail "no put_file wrote the tunnel's identity $identity on the load machine"
 [ -n "$tunnel_at" ] && ((put_at < tunnel_at)) ||
   fail "the tunnel's identity was put on the load machine at line ${put_at} and the tunnel started at line ${tunnel_at:-none}: the key must be there before the ssh that reads it"
@@ -1923,14 +1952,15 @@ reset_fake
 run_vm up --config "$config"
 ((RC == 0)) || fail "up failed: see the output above"
 for target in "$app_target" "$gen_target" "$nats_target"; do
-  sudo_log "$target" | grep -qxF -- "mkdir -p -- /mnt/stateful_partition/app" ||
-    fail "up did not make the backing directory under the stateful partition with sudo on $target: $(sudo_log "$target")"
-  sudo_log "$target" | grep -qxF -- "mount --bind -- /mnt/stateful_partition/app $remote/app" ||
-    fail "up did not bind-mount the backing directory at the remote root on $target: $(sudo_log "$target")"
-  sudo_log "$target" | grep -qxF -- "mount -o remount,bind,exec,nosuid,nodev -- /mnt/stateful_partition/app $remote/app" ||
-    fail "up did not remount the remote root exec,nosuid,nodev on $target: $(sudo_log "$target")"
-  sudo_log "$target" | grep -qxF -- "chown -- $(id -un) $remote/app" ||
-    fail "up did not give the remote root to the ssh user on $target: $(sudo_log "$target")"
+  sudo_lines=$(sudo_log "$target" || true)
+  grep -qxF -- "mkdir -p -- /mnt/stateful_partition/app" <<<"$sudo_lines" ||
+    fail "up did not make the backing directory under the stateful partition with sudo on $target: $sudo_lines"
+  grep -qxF -- "mount --bind -- /mnt/stateful_partition/app $remote/app" <<<"$sudo_lines" ||
+    fail "up did not bind-mount the backing directory at the remote root on $target: $sudo_lines"
+  grep -qxF -- "mount -o remount,bind,exec,nosuid,nodev -- /mnt/stateful_partition/app $remote/app" <<<"$sudo_lines" ||
+    fail "up did not remount the remote root exec,nosuid,nodev on $target: $sudo_lines"
+  grep -qxF -- "chown -- $(id -un) $remote/app" <<<"$sudo_lines" ||
+    fail "up did not give the remote root to the ssh user on $target: $sudo_lines"
 done
 [ -d "$fake/stateful/app" ] || fail "up made no backing directory under the stateful partition"
 pass "up makes the backing directory under the stateful partition with sudo, bind-mounts it at the remote root, remounts it exec,nosuid,nodev and gives it to the ssh user, on every machine"
@@ -1945,10 +1975,11 @@ pass "up mounts every remote root before it copies loadgen onto the load machine
 run_vm up --config "$config"
 ((RC == 0)) || fail "a second up over machines that already carry the mount failed: see the output above"
 for target in "$app_target" "$gen_target" "$nats_target"; do
-  sudo_log "$target" | grep -q -- '--bind --' &&
+  sudo_lines=$(sudo_log "$target" || true)
+  grep -q -- '--bind --' <<<"$sudo_lines" &&
     fail "a second up mounted the remote root again on $target, stacking a second mount on it"
-  sudo_log "$target" | grep -qxF -- "mount -o remount,bind,exec,nosuid,nodev -- /mnt/stateful_partition/app $remote/app" ||
-    fail "a second up did not remount the remote root on $target: $(sudo_log "$target")"
+  grep -qxF -- "mount -o remount,bind,exec,nosuid,nodev -- /mnt/stateful_partition/app $remote/app" <<<"$sudo_lines" ||
+    fail "a second up did not remount the remote root on $target: $sudo_lines"
 done
 [ "$(actions | grep -c '^start ')" = 9 ] ||
   fail "a second up started $(actions | grep -c '^start ') containers, not the 9 of the specification"
@@ -1985,10 +2016,11 @@ jq --arg r "$remote/elsewhere" '.paths.remote_root = $r' "$config" >"$tmp/moved.
 run_vm up --config "$tmp/moved.json"
 ((RC == 0)) || fail "up failed on a deployment file whose remote root is elsewhere: see the output above"
 for target in "$app_target" "$gen_target" "$nats_target"; do
-  sudo_log "$target" | grep -qxF -- "mkdir -p -- /mnt/stateful_partition/elsewhere" ||
-    fail "the backing directory does not follow the remote root's last element on $target: $(sudo_log "$target")"
-  sudo_log "$target" | grep -qxF -- "mount --bind -- /mnt/stateful_partition/elsewhere $remote/elsewhere" ||
-    fail "the moved remote root is not a bind mount of the directory its last element names on $target: $(sudo_log "$target")"
+  sudo_lines=$(sudo_log "$target" || true)
+  grep -qxF -- "mkdir -p -- /mnt/stateful_partition/elsewhere" <<<"$sudo_lines" ||
+    fail "the backing directory does not follow the remote root's last element on $target: $sudo_lines"
+  grep -qxF -- "mount --bind -- /mnt/stateful_partition/elsewhere $remote/elsewhere" <<<"$sudo_lines" ||
+    fail "the moved remote root is not a bind mount of the directory its last element names on $target: $sudo_lines"
 done
 pass "the backing directory's name is the remote root's own last element"
 
@@ -1997,8 +2029,9 @@ jq --arg r "$remote/elsewhere" '.paths.remote_root = $r | .paths.stateful_dir = 
 run_vm up --config "$tmp/named.json"
 ((RC == 0)) || fail "up failed on a deployment file that names its own stateful directory: see the output above"
 for target in "$app_target" "$gen_target" "$nats_target"; do
-  sudo_log "$target" | grep -qxF -- "mount --bind -- /mnt/stateful_partition/loadtest-backing $remote/elsewhere" ||
-    fail "paths.stateful_dir is not the backing directory on $target: $(sudo_log "$target")"
+  sudo_lines=$(sudo_log "$target" || true)
+  grep -qxF -- "mount --bind -- /mnt/stateful_partition/loadtest-backing $remote/elsewhere" <<<"$sudo_lines" ||
+    fail "paths.stateful_dir is not the backing directory on $target: $sudo_lines"
 done
 pass "the deployment file names the backing directory under the stateful partition"
 
@@ -2149,8 +2182,9 @@ key=$(run_dir)/oslogin
 [ "$(stat -c %a "$key")" = 600 ] || fail "the run's private key is mode $(stat -c %a "$key"), not 600"
 grep -q -- "-F /dev/null -i $key .* $app_target " "$fake/ssh.log" ||
   fail "up's ssh does not run as the OS Login user with the run's own key: $(head -n1 "$fake/ssh.log")"
-grep -v -- "-i $key " "$fake/ssh.log" | grep -q . &&
-  fail "an ssh of this run ran without the run's own key: $(grep -v -- "-i $key " "$fake/ssh.log" | head -n1)"
+others=$(grep -v -- "-i $key " "$fake/ssh.log" || true)
+[ -z "$others" ] ||
+  fail "an ssh of this run ran without the run's own key: ${others%%$'\n'*}"
 # The tunnel's own ssh is the deployment file's command, run on the load machine, so it carries
 # no key of this pod's: ssh.log holds this script's own ssh calls alone.
 pass "every ssh of the run goes as the user the login profile named, with the key the run made and no ssh config of this pod's"
@@ -2165,7 +2199,7 @@ run_vm up --config "$config" --run "$(cat "$LOADTEST_VM_ROOT/current")"
 pass "a second up of one run imports the key it already has and makes no second one"
 
 ! grep -rqF 'minted-token' "$(run_dir)" ||
-  fail "the minted access token was written into a file the run keeps: $(grep -rlF 'minted-token' "$(run_dir)" | head -n1)"
+  fail "the minted access token was written into a file the run keeps: $(grep_first -rlF 'minted-token' "$(run_dir)")"
 ! grep -qF 'minted-token' "$fake/curl.argv" ||
   fail "the minted access token reached a curl command line, where any process on this pod can read it"
 ! grep -qF 'minted-token' "$fake/actions.log" || fail "the minted access token reached the action log"
@@ -2229,11 +2263,10 @@ printf '%s\n' "$(($(date -u +%s) - 23 * 3600))" >"$renew_dir/oslogin.imported"
 run_fn RUN="$renew_run" RUN_DIR="$renew_dir" SSH_KEY="$key" CGROUP_JSONL="$renew_dir/cgroup.jsonl" \
   run_step stale-key 1 10m 30s
 ((RC == 0)) || fail "the step of a run whose key is nearly expired failed: $(cat "$tmp/out")"
-# A step that imported nothing is the defect these cases are here for, and line_at's grep
-# answers 1 for it, which this suite's own pipefail would turn into a silent exit: each of the
-# two is read with the empty answer that failure leaves, and judged below.
-import_at=$(line_at 'importSshPublicKey' || true)
-ssh_at=$(line_at '^ssh' || true)
+# A step that imported nothing is the defect these cases are here for, and line_at answers
+# nothing at all for it: each of the two is read with that empty answer, and judged below.
+import_at=$(line_at 'importSshPublicKey')
+ssh_at=$(line_at '^ssh')
 [ -n "$import_at" ] ||
   fail "a step started with under two hours of its key left imported nothing, so every ssh of this run is refused publickey once that key expires"
 [ -n "$ssh_at" ] || fail "the step of the renewal case reached no machine at all"
@@ -2257,8 +2290,9 @@ expires_usec=$(sed -n 's/.*"expirationTimeUsec": *"\([0-9]*\)".*/\1/p' "$tmp/ren
 # ssh.log holds a line per line of the argv it was given, and a step's load is started through
 # an sh script of several lines, so the ssh calls themselves are the lines that carry ssh_cmd's
 # own -F /dev/null.
-grep -- '-F /dev/null' "$fake/ssh.log" | grep -v -- "-i $key " | grep -q . &&
-  fail "an ssh of the step that renewed the key ran without the run's own key: $(grep -- '-F /dev/null' "$fake/ssh.log" | grep -v -- "-i $key " | head -n1)"
+keyless=$(grep -- '-F /dev/null' "$fake/ssh.log" | grep -v -- "-i $key " || true)
+[ -z "$keyless" ] ||
+  fail "an ssh of the step that renewed the key ran without the run's own key: ${keyless%%$'\n'*}"
 [ -f "$renew_dir/steps/stale-key/meta.json" ] ||
   fail "the step that renewed the key left no meta.json, so the work it does over ssh never finished"
 pass "the run records when its key was imported, and the renewal imports that same key again with the same 24-hour expiry, leaving the step's ssh working"
@@ -2484,8 +2518,9 @@ pass "every remote command of a subcommand reaches ssh as one word"
 # beforehand and the pod's own known_hosts must not decide what the run trusts.
 grep -q -- "-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$(run_dir)/known_hosts $app_target " "$fake/ssh.log" ||
   fail "up's ssh does not take the machines' host keys into the run's own known_hosts: $(head -n1 "$fake/ssh.log")"
-grep -v -- "-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$tmp/root/" "$fake/ssh.log" | grep -q . &&
-  fail "an ssh ran under this pod's own host keys: $(grep -v -- "UserKnownHostsFile=$tmp/root/" "$fake/ssh.log" | head -n1)"
+pod_hosts=$(grep -v -- "-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$tmp/root/" "$fake/ssh.log" || true)
+[ -z "$pod_hosts" ] ||
+  fail "an ssh ran under this pod's own host keys: $(grep_first -v -- "UserKnownHostsFile=$tmp/root/" "$fake/ssh.log")"
 pass "every ssh accepts a new host key into the run's own known_hosts file and reads no other"
 
 # 3. put_file writes beside its target and renames it on, because a plain write onto a file that
@@ -2495,7 +2530,7 @@ pass "every ssh accepts a new host key into the run's own known_hosts file and r
 # wrote to the mode the reader of that file needs, which case (v) below reads off the files.
 put_cmd=$(grep -m1 -F 'cat >"$1.new"' "$fake/actions.log" || true)
 [ -n "$put_cmd" ] ||
-  fail "put_file does not write beside its target: $(grep -F 'umask 077' "$fake/actions.log" | head -n1)"
+  fail "put_file does not write beside its target: $(grep_first -F 'umask 077' "$fake/actions.log")"
 [[ $put_cmd == *'mv -f -- "$1.new" "$1"'* ]] ||
   fail "put_file does not rename onto its target what it wrote beside it: $put_cmd"
 # The kernel under this pod refuses no write to a running binary, so this case puts in its place
@@ -2518,7 +2553,8 @@ pass "put_file writes beside the target and renames it on, which replaces a file
 # 5. The Dispatch container takes no --storage-opt: docker on Container-Optimized OS refuses one
 # ("supported only for overlay over xfs with 'pquota' mount option"), so production's 8 GiB
 # ephemeral limit has no form here and check reads back the network mode alone.
-grep -- ' run --name ' "$fake/docker.log" | grep -q -- '--storage-opt' &&
+storage_opt=$(grep -- ' run --name ' "$fake/docker.log" | grep -- '--storage-opt' || true)
+[ -z "$storage_opt" ] ||
   fail "up gave a container a --storage-opt, which the docker on these machines refuses"
 pass "no container is started with a --storage-opt this deployment's docker refuses"
 
@@ -2528,8 +2564,9 @@ pass "no container is started with a --storage-opt this deployment's docker refu
 line=$(docker_run_line dispatch)
 [[ $line == *"--entrypoint envoy-dispatch $dispatch_image"* ]] ||
   fail "up's Dispatch container does not name the entrypoint envoy-dispatch before its image: $line"
-grep -- ' run --name ' "$fake/docker.log" | grep -v -- ' --name dispatch ' | grep -q -- '--entrypoint' &&
-  fail "up gave a container other than Dispatch an entrypoint of its own: $(grep -- ' run --name ' "$fake/docker.log" | grep -v -- ' --name dispatch ' | grep -- '--entrypoint' | head -n1)"
+entrypoints=$(grep -- ' run --name ' "$fake/docker.log" | grep -v -- ' --name dispatch ' | grep -- '--entrypoint' || true)
+[ -z "$entrypoints" ] ||
+  fail "up gave a container other than Dispatch an entrypoint of its own: ${entrypoints%%$'\n'*}"
 pass "the Dispatch container runs envoy-dispatch, and no other container names an entrypoint"
 
 # 7. Dispatch's environment carries ENVOY_MACHINE_ID and ENVOY_ALLOW_REMOTE_NATS: NATS is on a
@@ -2568,7 +2605,7 @@ grep -q '^| dispatch env ENVOY_ALLOW_REMOTE_NATS | ENVOY_ALLOW_REMOTE_NATS=1 | E
 # whole, the value equalled no expectation and every machine's row came back empty.
 for name in app generator nats; do
   grep -q "^| $name VM scheduling.maxRunDuration seconds | 259200 | 259200 | yes |$" "$tmp/out" ||
-    fail "check does not read the $name machine's run-time limit out of the object the API answers: $(grep maxRunDuration "$tmp/out" | head -n1)"
+    fail "check does not read the $name machine's run-time limit out of the object the API answers: $(grep_first maxRunDuration "$tmp/out")"
 done
 pass "check reads every machine's run-time limit out of the object the Compute API answers"
 
@@ -2600,7 +2637,7 @@ run_vm up --config "$config" --run "$(cat "$LOADTEST_VM_ROOT/current")"
 # 4. stub_embed_start stops whatever the last start left running: a stub an earlier up left
 # holds the port, so the new one answers "address already in use" and writes no certificate.
 stop_at=$(line_at 'kill -TERM')
-start_at=$(grep -n 'loadgen	stub-embed' "$fake/actions.log" | head -n1 | cut -d: -f1)
+start_at=$(line_at 'loadgen	stub-embed')
 [ -n "$stop_at" ] || fail "the second up did not stop the stub embedder the first left running"
 [ -n "$start_at" ] && ((stop_at < start_at)) ||
   fail "the second up started its stub embedder (line ${start_at:-none}) before it stopped the one before it (line $stop_at)"
@@ -2694,7 +2731,7 @@ while IFS=$'\t' read -r name value; do
       fail "the deployment's $name reached a command line (${log##*/}): $(grep -m1 -F -- "$value" "$log")"
   done
   ! grep -rqF -- "$value" "$(run_dir)" ||
-    fail "the deployment's $name reached a file the run keeps: $(grep -rlF -- "$value" "$(run_dir)" | head -n1)"
+    fail "the deployment's $name reached a file the run keeps: $(grep_first -rlF -- "$value" "$(run_dir)")"
 done < <(credentials)
 pass "no token, no api-key and no password of the deployment reaches the command line of an ssh, a docker, a psql or a loadgen of an up, a seed and a step, or a file the run keeps"
 
@@ -2744,7 +2781,7 @@ credential_read() {
 # ssh's, for as long as the deployment stands.
 embed_key=$(jq -r '.secrets.embed_key' "$config")
 IFS=$'\t' read -r path mode content < <(credential_read stub-embed -key-file) || true
-[ -n "${path:-}" ] || fail "the stub embedder was given no -key-file: $(grep 'stub-embed' "$fake/loadgen.log" | head -n1)"
+[ -n "${path:-}" ] || fail "the stub embedder was given no -key-file: $(grep_first 'stub-embed' "$fake/loadgen.log")"
 [ "$path" = "$run_secrets/embed-key" ] ||
   fail "the stub embedder read its key from $path, not from the run's own directory on the load machine ($run_secrets/embed-key)"
 [ "$content" = "$embed_key" ] || fail "$path held '$content', not the deployment file's own embedder key"
@@ -2785,7 +2822,7 @@ grep -q "credential files are removed from the $(jq -r .load_vm "$config") VM" "
   fail "down does not say that it removed the run's credential files: $(cat "$tmp/out")"
 while IFS=$'\t' read -r name value; do
   ! grep -rqF -- "$value" "$remote/work" ||
-    fail "down left the deployment's $name on the load machine: $(grep -rlF -- "$value" "$remote/work" | head -n1)"
+    fail "down left the deployment's $name on the load machine: $(grep_first -rlF -- "$value" "$remote/work")"
 done < <(credentials)
 pass "down removes the run's credential files from the load machine, leaving none of its credentials there, and says it did"
 
@@ -2953,8 +2990,9 @@ refusal=$(FAKE_SSH_TARGET=$nats_target rm -rf -- "$store" 2>&1) || true
 run_vm reset --config "$config"
 umask "$saved_umask"
 ((RC == 0)) || fail "reset failed over a JetStream store the NATS container had written in: see the output above"
-sudo_log "$nats_target" | grep -qxF -- "rm -rf -- $store" ||
-  fail "reset did not remove the JetStream store with sudo on $nats_target: what is inside the store is the NATS container's, written as root at mode 700, and the ssh user cannot remove it: $(sudo_log "$nats_target")"
+nats_sudo=$(sudo_log "$nats_target" || true)
+grep -qxF -- "rm -rf -- $store" <<<"$nats_sudo" ||
+  fail "reset did not remove the JetStream store with sudo on $nats_target: what is inside the store is the NATS container's, written as root at mode 700, and the ssh user cannot remove it: $nats_sudo"
 [ -d "$store" ] || fail "reset left no JetStream store at $store, so the NATS container it started next has nothing at /data"
 [ -z "$(ls -A -- "$store")" ] ||
   fail "reset left $(ls -A -- "$store" | tr '\n' ' ')in the JetStream store at $store: step N+1 would start with step N's streams, consumers and KV buckets"
@@ -2965,10 +3003,11 @@ store_mode=$(stat -c %a "$store") store_owner=$(stat -c %U "$store")
   fail "reset left the JetStream store at mode $store_mode and up leaves it at $up_mode: the next container start would meet a store the first one did not"
 ((8#$store_mode & 8#044)) && ((8#$store_mode & 8#011)) ||
   fail "reset left the JetStream store at mode $store_mode, which its owner alone can read or enter, and the NATS container mounts it at /data as its own user"
-sudo_log "$nats_target" | grep -q -- "mkdir -p -- $store" &&
+grep -q -- "mkdir -p -- $store" <<<"$nats_sudo" &&
   fail "reset made the JetStream store again with sudo, which leaves it root's at root's umask: the NATS container would go on writing in a store that no later reset could empty as the ssh user, which is this defect hidden rather than fixed"
-actions | grep -qx wipe-jetstream ||
-  fail "reset's own record of the emptied store is gone from the action log: $(actions)"
+reset_actions=$(actions || true)
+grep -qx wipe-jetstream <<<"$reset_actions" ||
+  fail "reset's own record of the emptied store is gone from the action log: $reset_actions"
 pass "reset empties a JetStream store the NATS container wrote in as root -- the removal with sudo, the store made again as the ssh user -- and leaves it there, empty, at the owner and mode up leaves it at"
 
 # ---- (z) a step records what R6 asks of Postgres ---------------------------------------------
@@ -3011,17 +3050,12 @@ pass "a step records Postgres's statements, its lock waits and its database's si
 # flags of the instance, but the view is a thing of the database the extension was made in, and
 # every reset makes the step's database again from the template. A step that does not make it
 # again loses every statement in its first second, and R6's clause for the statements is FAIL.
-# pg_at PATTERN: the line of the action log that first matches PATTERN, by number, and empty
-# when nothing matches. The `|| true` is what makes the empty answer an answer: under pipefail a
-# grep that matches nothing would end the suite here with no word of which action was missing,
-# and which action is missing is the whole of what the next lines say.
-pg_at() { grep -n -- "$1" "$fake/actions.log" | head -n1 | cut -d: -f1 || true; }
 reset_at=$(grep -n '^psql	create database dispatch template' "$fake/actions.log" | tail -n1 | cut -d: -f1 || true)
-extension_at=$(pg_at '^psql	create extension if not exists pg_stat_statements')
-size_start_at=$(pg_at '^loadgen	pg-size .*-phase start')
-watch_at=$(pg_at '^loadgen	pg-statements ')
-load_at=$(pg_at '^loadgen	run ')
-size_end_at=$(pg_at '^loadgen	pg-size .*-phase end')
+extension_at=$(line_at '^psql	create extension if not exists pg_stat_statements')
+size_start_at=$(line_at '^loadgen	pg-size .*-phase start')
+watch_at=$(line_at '^loadgen	pg-statements ')
+load_at=$(line_at '^loadgen	run ')
+size_end_at=$(line_at '^loadgen	pg-size .*-phase end')
 for pair in "the database made from the template:$reset_at" "the pg_stat_statements extension:$extension_at" \
   "the start size:$size_start_at" "the statements and lock-wait collector:$watch_at" \
   "the load:$load_at" "the end size:$size_end_at"; do
@@ -3053,7 +3087,7 @@ for collector in pg-statements pg-size; do
   [ ! -e "$path" ] || fail "$path is still on this pod after the step that wrote it"
 done
 ! grep -rqF -- "$(jq -r '.cloudsql.password' "$config")" "$(run_dir)" ||
-  fail "the instance's password is in a file the run keeps: $(grep -rlF -- "$(jq -r '.cloudsql.password' "$config")" "$(run_dir)" | head -n1)"
+  fail "the instance's password is in a file the run keeps: $(grep_first -rlF -- "$(jq -r '.cloudsql.password' "$config")" "$(run_dir)")"
 pass "both collectors read the step database over a file of mode 600 under the run's directory on this pod, which the step removes when it ends"
 
 # ---- (aa) a step interrupted stops its remote work -------------------------------------------
