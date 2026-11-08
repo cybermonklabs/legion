@@ -2,6 +2,36 @@
 
 Rules for this repository's tests that the code under test does not show.
 
+## The fixtures a test takes rather than copies
+
+Each of these is one body per Go module, and a test that needs what it does calls it rather than writing the body again.
+Each bullet says what the helper does not do, so a site that must keep its own body is not folded into it.
+
+- A test that captures a log takes its buffer from the module's own: `packages/daemon/internal/testlog`'s `Buffer`, and `packages/envoy/internal/logtest`'s, which lives beside that package's default-logger swap and carries `Lines`, the logged lines holding a substring.
+  `packages/envoy/internal/cmdtest`'s `LockedBuffer` and `storetest`'s `LockedLog` are both aliases of it, so either name reaches the same body.
+  It is a mutex around a byte sink and nothing else: a type that needs a reader of its own embeds it and keeps that reader, and a writer that is no log sink — an `http.ResponseWriter`, a TCP relay, a writer that gates what it passes on — keeps its own body.
+
+- A bounded wait is the module's `internal/testwait`.
+  `Eventually` is the wait a test usually wants, a minute or the binary's own deadline less a second, at `Poll`, the package's own pace, failing with what it waited for; `WithinPolling` takes a bound and a pace of its own; `Holds` answers rather than fails, for a caller whose failure text is its own diagnostic dump or is built at give-up; and `Bounded` is that deadline clamp alone, for a wait that keeps a loop or a margin of its own, as the idle rig's do.
+  A loop that is not a wait-for keeps its body: one that runs its check for a whole span rather than stopping at the first success, one that sends or serves on a tick, one that drives a stand-in process's own main loop, and one that retries a compare-and-set.
+
+- A fixture that runs git or jj takes its runner and its `init` argv from `packages/daemon/internal/fixturegit`.
+  `Runner` holds the test and the child's whole environment — `Isolated(t, home)` is the usual one — and runs one command four ways: `Run` trimmed, `Raw` untrimmed, `Out` for standard output alone, and `Try` for a caller that keeps the error.
+  `InitBare`, `InitWorkTree` and `JJInit` build the whole argv, and the semantic axes stay the call site's: bare or not, the initial branch, and colocation, with only the quiet spelling normalised.
+  The runner chooses no binary — `argv[0]` does, so a fixture that runs a pinned git or jj passes that path itself.
+  `packages/envoy` has no Go git or jj fixture runner, so this one is the daemon module's alone.
+
+- A fake GitHub server is the module's `internal/githubtest`: `Server` for a fake its caller reaches by URL, `Serve` where the caller needs the server itself, and `Unexpected` as the default arm of a fake for which an unplanned request is a failure.
+  `Spec` carries the opt-in bearer gate and the opt-in request recorder.
+  The `switch`, its `default:` arm and the fake's own state stay the caller's, because they are what each test proves: a fake that reads the per-owner token the daemon minted must answer a request it then reads, and a `default:` that logs, that answers 400 or that is the happy path says something a shared arm would take away.
+  A server that is no fake GitHub keeps its body, whatever it mentions: the daemon's own API, the issue-sandbox API, a fake Dispatch, a fake secrets broker, a reverse proxy in front of another fake, and a real `git http-backend` CGI behind a TLS proxy.
+  A fake a test builds inline, in its own body rather than in a function of its own, is the same skeleton and takes the helper the same way; it is no shared copy, though, so nothing counts it, and most of the two modules' inline fakes still write it out.
+
+- An in-test `go build` in `packages/envoy` goes through `internal/cmdtest`: `Build`, `BuildStamped`, or `BuildCommand` for a build that needs a directory, a target, flags or an environment of its own.
+  One body holds `ENVOY_TEST_GO_OVERLAY`, the output under the test's own temporary directory and the failure; the overlay that variable names must be an absolute path, because a build whose `Dir` is another directory reads it from there.
+  A `go build` that produces no binary, such as a compile check of a generated module, is not a build of this kind, and neither is one that takes no `testing.TB`: `infra/internal/pulumitest/pulumitest.go` builds the test binary's own plugin once per binary, under a `sync.Once` and removed by its `Main`, and returns an error rather than failing a test.
+
+
 ## Bun tests
 
 `bun test` runs every file of a package in one process, so what one file leaves behind is what the
