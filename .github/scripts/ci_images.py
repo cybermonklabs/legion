@@ -138,9 +138,15 @@ def recipe_sha256(dockerfile: str, workflow: str) -> str:
     not the file: two rows naming two Dockerfiles of one directory read the same files, so
     without that path they would hash alike, and a row built from the other file of
     .github/docker would carry the hash the browser image's own label holds — rule 10 of
-    .github/scripts/check-ci-images.sh would pass it, while rule 8 refuses it in lint saying
-    that rule 10 would not. The build is told which file to build (the build step's `file:`),
+    .github/scripts/check-ci-images.sh would pass it on that label, and rule 8, which refuses
+    such a row in lint because rule 10 refuses it over the network, would be resting on a
+    refusal that never came. The build is told which file to build (the build step's `file:`),
     so that name is as much of the recipe as the bytes it names.
+
+    That paragraph is the one place this repository argues for the path being in the hash.
+    Rule 8 and rule 10 of .github/scripts/check-ci-images.sh, the BUILT_DOCKERFILE comment
+    beside them, the comment over rule 8's loop and rule 8's own refusal message each say that
+    the path is in the hash and point here for why, so the argument is changed in one place.
 
     All three are in it because all three decide the bytes that get pushed. The Dockerfile and
     every other file of the context, because the build reads them: a `COPY` takes a context
