@@ -28,6 +28,10 @@ type Migration struct {
 	Version int
 	Name    string
 	SQL     string
+	// NonTransactional selects a single idempotent CREATE INDEX CONCURRENTLY outside a
+	// transaction, declared by -- pgmigrate:non-transactional on the file's first line.
+	// Runners without that execution mode must refuse it before applying anything.
+	NonTransactional bool
 	// Census is the text of <version>_<name>.census.sql when the migration declares one: one
 	// select answering one integer, the number of existing rows the migration would refuse or
 	// rewrite, which a deployment reads with Census before it applies the migration. Empty when
@@ -51,6 +55,8 @@ type Migration struct {
 //     would apply the first, pass over the rest as already applied, and report success;
 //   - an entry is named any other way: a runner reading only *.up.sql would never see it, while
 //     whoever wrote it believes it runs;
+//   - a -- pgmigrate:non-transactional first-line marker does not hold exactly one
+//     CREATE INDEX CONCURRENTLY IF NOT EXISTS statement (concurrentIndex);
 //   - a rollback script or a census has no forward migration of its name;
 //   - a census is not one select, holds a Unicode escape, or names pg_terminate_backend,
 //     pg_cancel_backend, pg_sleep, an advisory-lock function or a function that runs a query
@@ -124,7 +130,15 @@ func Load(fsys fs.FS, dir string) ([]Migration, error) {
 			problems = append(problems, fmt.Errorf("read migration %s: %w", name, err))
 			continue
 		}
-		migrations = append(migrations, Migration{Version: version, Name: name, SQL: string(sql)})
+		migration := Migration{Version: version, Name: name, SQL: string(sql)}
+		migration.NonTransactional = nonTransactionalHeader(migration.SQL)
+		if migration.NonTransactional {
+			if _, err := concurrentIndex(migration.SQL); err != nil {
+				problems = append(problems, fmt.Errorf("migration %s: %w", name, err))
+				continue
+			}
+		}
+		migrations = append(migrations, migration)
 	}
 	for i := range migrations {
 		stem := strings.TrimSuffix(migrations[i].Name, ".up.sql")

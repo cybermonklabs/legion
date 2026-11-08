@@ -1319,8 +1319,9 @@ Everything the load needs comes from that pool, `onLoadDocument`'s issue read in
   an observation queued behind requests would hold back every live reader of the event log.
 
 The migration runner takes one more connection outside the shared pool.
-`pgmigrate.Exec`, which applies every migration, first sets the transaction's `lock_timeout` to `pgmigrate.LockTimeout` (five seconds), after the runner's advisory lock, so a migration queued behind a long transaction fails the boot rather than holding every read and write of its table behind its request.
-While the migration runs, its lock watch reads `pg_locks` for the transaction's backend every 200 ms on a connection opened at its first reading by the one `dial` `pgmigrate.Exec` builds:
+`pgmigrate.Exec` sets a transactional migration's `lock_timeout` to `pgmigrate.LockTimeout` (five seconds), after the runner's advisory lock; `pgmigrate.ExecNonTransactional` sets and restores the session setting for a marked single concurrent index build.
+The marked mode holds the session-level advisory lock on the same key until its separate version insert, then closes its owned connection; ordinary migrations keep their transaction-level lock and atomic version record.
+While either mode runs, its shared lock watch reads `pg_locks` for the migration backend every 200 ms on a connection opened at its first reading:
 from that backend's own configuration (`pgx.Conn.Config`), signed in first through the pool's `BeforeConnect` when the pool has one (the broker's RDS IAM token minter, since the backend's own token may be older than a token lasts).
 It closes when the migration ends, so a migration faster than one reading dials nothing.
 The watch's last reading is how the failure names the lock and its holders: Postgres's own error says only `canceling statement due to lock timeout`.
