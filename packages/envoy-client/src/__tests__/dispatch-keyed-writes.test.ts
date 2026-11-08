@@ -1224,18 +1224,19 @@ describe("DispatchClient's uploads on a real connection", () => {
   // The claim is that an upload its connection stops taking is cut off and sent again under its key,
   // not that exactly two attempts do it: a second attempt a busy machine also stalls is cut off too,
   // and the client is right to send a third, which is how this row failed. So it asserts what it
-  // means - the first attempt went out incomplete, the last one landed whole, every attempt carried
-  // the one key - and not the count, which is the machine's answer rather than the client's. The
-  // body is 16 MiB rather than the 2 MiB just over `STREAMED_BODY_MIN`, because the socket buffers
-  // in this pod took 2 MiB and 512 bytes whole 1 round of 5: at that size the first attempt can
-  // leave the client entirely, and what cuts it off is then the silence after the body went rather
-  // than a connection that stopped taking it. At 16 MiB the connection stops taking it part way,
-  // which is the row's subject, and the first attempt's own count says so: the server counts what
-  // the connection took before it stopped, so `received` is above nothing and below the body. The
-  // silence bound is 1,000 ms so a stall of the machine's own does not cut a healthy attempt. The
-  // 30 s limit is a hang guard, not a budget: it fires only if the resend never lands. Measured in
-  // a 2-CPU pod: 2.18 s idle; under 16 busy loops (8 x nproc), 3.68 s at most in a whole-suite
-  // run.
+  // means - the first attempt reached the server incomplete, the last one landed whole, every
+  // attempt carried the one key - and not the count, which is the machine's answer rather than the
+  // client's. The body is 16 MiB rather than the 2 MiB just over `STREAMED_BODY_MIN`, because the
+  // socket buffers in this pod took 2 MiB and 512 bytes whole 1 round of 5: at that size the first
+  // attempt can leave the client entirely, and what cuts it off is then the silence after the body
+  // went rather than a connection that stopped taking it. At 16 MiB the connection stops taking it
+  // part way, which is the row's subject. No assertion sees how much of the body left the client,
+  // so that size is what keeps the stall in the middle of the upload: `received` shows only that
+  // the server read the first of the attempt and then stopped, so it is above nothing and below
+  // the body. The silence bound is 1,000 ms so a stall of the machine's own does not cut a healthy
+  // attempt. The 30 s limit is a hang guard, not a budget: it fires only if the resend never lands.
+  // Measured in a 2-CPU pod: 2.18 s idle; under 16 busy loops (8 x nproc), 3.68 s at most in a
+  // whole-suite run.
   test("an upload its connection stops taking is cut off and sent again under its key", async () => {
     const silenceMs = 1_000;
     const dispatch = await dispatchOn(["stall", "full"]);

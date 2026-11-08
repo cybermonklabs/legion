@@ -336,9 +336,9 @@ describe("defaultExec", () => {
   // can do only once the abort's SIGKILL reaches it, and bun's unwritten 5,000 ms per-test default
   // is a limit on that wait rather than on a hang. Under 16 busy loops (8 x nproc) in a 2-CPU pod
   // it timed out at 5,000.89 ms, 1 whole-suite run of 20, where it costs 0.14 s idle and, under
-  // those loops, 0.31 s with this file alone. The child sleeps 120 s, four times that limit, so a
-  // kill that only sends SIGTERM leaves the row waiting on a child that outlives the limit, and
-  // the limit is what reports it.
+  // those loops, 0.31 s with this file alone. The child sleeps 120 s, four times the row's 30 s
+  // limit, so a kill that only sends SIGTERM leaves the row waiting on a child that outlives the
+  // limit, and the limit is what reports it.
   it("kills a child that ignores SIGTERM when its signal aborts", async () => {
     const dir = temporaryDirectory("dispatch-cwd-");
     try {
