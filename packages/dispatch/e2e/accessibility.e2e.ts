@@ -10,7 +10,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 
 import { type AccessibilityExclusion, accessibilityExclusions } from "./accessibility-exclusions";
-import { scannedRoutes } from "./review-routes";
+import { scannedRoutes, waitForRouteSettled } from "./review-routes";
 import { seedReviewRoutes } from "./review-seed";
 import { resetDatabase } from "./seed";
 import { withAlice } from "./users";
@@ -73,10 +73,11 @@ for (const route of scannedRoutes) {
       const failures: string[] = [];
       for (const colorScheme of SCHEMES) {
         await page.emulateMedia({ colorScheme });
-        // Before the scan, so axe reads the drawn page and never a loading skeleton or a 404,
-        // which would pass with no findings at all.
-        await expect(route.ready(page)).toBeVisible();
-
+        // Before the scan, so axe reads the page a reader reads and never a loading skeleton,
+        // a 404 or a page still resolving itself: the first two would pass with no findings at
+        // all, and the third would report findings about a state no reader sees
+        // (`waitForRouteSettled`).
+        await waitForRouteSettled(page, route);
         const results = await new AxeBuilder({ page }).withTags(AXE_TAGS).analyze();
         await testInfo.attach(`axe ${route.name} ${colorScheme}.json`, {
           body: JSON.stringify(results, null, 2),

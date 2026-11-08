@@ -50,14 +50,16 @@
  *    scrolled to, so a scroll position is in no baseline either, and a change below the fold is
  *    reviewed like one above it. The project pins the viewport (1280x800), so the width and
  *    every layout breakpoint are fixed and only the page's own height follows its content.
- *  - Lazy chunks. A route's `ready` locator is what waits for them: it resolves once the page is
- *    drawn, so no baseline is of a loading skeleton or of a route whose chunk is still coming.
+ *  - Lazy chunks, a pending query, a document still connecting, a reference still resolving. One
+ *    wait covers them all: `waitForRouteSettled` (e2e/review-routes.ts), which the accessibility
+ *    layer calls too, so no baseline is of a skeleton, of a route whose chunk is still coming or
+ *    of a page that is still filling itself in.
  */
 import { readFileSync } from "node:fs";
 import { expect, test } from "@playwright/test";
 
 import { setLiveSessions } from "./agents";
-import { type ReviewSeed, shotRoutes } from "./review-routes";
+import { type ReviewSeed, shotRoutes, waitForRouteSettled } from "./review-routes";
 import { withAlice } from "./users";
 import { workspaceSessions } from "./workspace";
 
@@ -95,12 +97,30 @@ for (const route of shotRoutes) {
     }
     const seed = JSON.parse(readFileSync(seedPath, "utf8")) as ReviewSeed;
     await withAlice(browser, async (page) => {
+      // The page's clock, pinned a minute after the corpus was written. Every relative label
+      // these pages draw - "just now", "2 minutes ago", "0m", "Updated just now" - is that
+      // label's own time against `Date.now()`, so without this a row read "just now" in a run
+      // that reached it inside a minute of the seed and "2 minutes ago" in a slower one. That
+      // is what made the last rows of a run differ and the first rows match: rows 13, 14 and
+      // 22 to 24 crossed the minute and rows 1 to 12 did not.
+      //
+      // A mask does not fix it, which is the thing to know before reaching for one: a mask
+      // paints over the element's own box, and "just now" and "2 minutes ago" are boxes of
+      // different widths, so the painted rectangle changes with the text under it.
+      //
+      // Pinned from the corpus rather than from a fixed literal, because what the label reads
+      // is the gap between the two: a literal would drift against a corpus written now.
+      if (seed.seededAt !== undefined) {
+        await page.clock.install({ time: new Date(Date.parse(seed.seededAt) + 60_000) });
+      }
       await page.goto(route.path(seed));
       for (const colorScheme of SCHEMES) {
         await page.emulateMedia({ colorScheme });
-        // Before the shot, so no baseline is taken of a loading skeleton or a 404, either of
-        // which would compare clean against itself for ever after.
-        await expect(route.ready(page)).toBeVisible();
+        // Before the shot, so no baseline is taken of a loading skeleton, a 404 or a page
+        // still resolving itself - each would compare clean against itself for ever after,
+        // and the third is what two container runs of this corpus disagreed about
+        // (`waitForRouteSettled`).
+        await waitForRouteSettled(page, route);
         await expect(page).toHaveScreenshot(`${route.name}-${colorScheme}.png`, {
           fullPage: true,
           // Everything on these pages that is not the same twice, and there are two kinds.

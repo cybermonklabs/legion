@@ -28,7 +28,11 @@ const seed = await seedReviewRoutes();
 // row of the two specs skips itself, and the run would pass having compared nothing. So the
 // message names the path and the status is non-zero.
 try {
-  writeFileSync(path, `${JSON.stringify(seed, null, 2)}\n`);
+  // `seededAt` is what lets every row pin its page clock to a fixed moment just after this
+  // corpus was written, so a relative label reads the same whatever the run's own pace
+  // (e2e/visual.e2e.ts says why that matters, and why a mask does not do it).
+  const written = { ...seed, seededAt: new Date().toISOString() };
+  writeFileSync(path, `${JSON.stringify(written, null, 2)}\n`);
 } catch (error) {
   console.error(`e2e/visual-seed.ts could not write the seed to ${path}: ${String(error)}`);
   process.exit(1);
