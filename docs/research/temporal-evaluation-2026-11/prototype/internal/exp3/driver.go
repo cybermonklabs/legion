@@ -355,6 +355,24 @@ func Run(ctx context.Context, cfg harness.Config, suppressKill bool) error {
 	if before.bodies != 1 {
 		return fmt.Errorf("the session activity's body ran %d time(s) before the kill, not once, so the kill did not land on a single running body", before.bodies)
 	}
+	for _, reading := range []struct {
+		when   string
+		bodies int
+	}{
+		{"after the kill", afterKill.bodies},
+		{"while the replacement worker polled", during.bodies},
+		{"once the killed attempt had ended", afterEnd.bodies},
+		{"in total, once the run was over", final.bodies},
+	} {
+		if reading.bodies == 1 {
+			continue
+		}
+		why := "so the work was run again somewhere rather than left with the worker that died, which is the thing this experiment exists to detect"
+		if reading.bodies < 1 {
+			why = "so the side-effect file no longer holds the one body run the kill landed on, and the reading this experiment rests on is gone"
+		}
+		return fmt.Errorf("the session activity's body ran %d time(s) %s, not once, %s", reading.bodies, reading.when, why)
+	}
 	if !ended {
 		return fmt.Errorf("the killed attempt had not ended after %s, so this run never reached the state the claim is about: an activity the server is free to put somewhere else", attemptEndWait)
 	}

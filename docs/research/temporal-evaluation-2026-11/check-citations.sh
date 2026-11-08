@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 #
-# check-citations.sh resolves every citation the two documents of INFRA-1546 carry:
+# check-citations.sh resolves the citations of the two documents of INFRA-1546 that
+# the grammar below reads, and prints how many resolved. It does not read every
+# citation those documents carry: a dotted identifier with no path beside it, in
+# either order, is read by no rule here, and a span mixing a code citation with
+# another kind is read only in the part that matches. What the count covers is the
+# grammar below and nothing wider, and whether a claim is missing its citation
+# altogether is the reviewer's reading, as the issue's Verification document says in
+# its own words. The two documents:
 #
 #   the answer   dispatch://INFRA-1546/artifact/temporal-evaluation-md
 #   the plan     dispatch://INFRA-1546/artifact/implementation-plan-md
@@ -28,7 +35,10 @@
 #                code span in parentheses after it. Both resolve when that file holds
 #                the identifier's last dotted element as a Go declaration: a function,
 #                a method, a type, a var, a const, a member of a grouped var, const or
-#                type, or a struct field. No relative path and no "same file", either
+#                type, a struct field, or a method in an interface. A declaration and
+#                not a use: a name a function body assigns, returns or calls is no
+#                declaration of it, so `record.err` resolves against no file whose
+#                functions merely use err. No relative path and no "same file", either
 #                way round: an absolute path and a path holding ".." are refused in
 #                both forms. Both print the same resolved and failed lines, so the
 #                output does not say which way round a citation was written.
@@ -48,10 +58,23 @@
 #                under packages/daemon/internal/store/migrations; a column resolves
 #                when a migration creates that table with the column or alters the
 #                table to add it.
-#   Experiment   experiment 1 .. experiment 18. It resolves when that experiment's
-#                recorded output is committed beside this script, and it counts as a
-#                citation, so a section whose only evidence is a measurement is not a
-#                section with no citation.
+#   Experiment   experiment 1 .. experiment N, where N is the highest-numbered
+#                transcript committed beside this script: the bound is read from the
+#                directory at every run, so a twenty-second experiment recorded beside
+#                this script is read by this one with no edit here. It resolves when
+#                that experiment's recorded output is committed beside this script,
+#                which a number within the bound whose own transcript is missing is
+#                not, and it counts as a citation, so a section whose only evidence is
+#                a measurement is not a section with no citation. A number above the
+#                bound is no experiment of this directory and no citation of either
+#                kind: what makes it one is its transcript, committed beside this
+#                script.
+#                The plural names more than one experiment, and each one it names is a
+#                citation of its own, resolved against its own transcript:
+#                "experiments N and M" and "experiments N, M and O" name each number
+#                listed, however many, where the word "and" closes the list; a comma
+#                alone closes nothing, so the 12 of "experiment 1, 12 signals" stays a
+#                figure. "experiments N to M" names every experiment from N to M.
 #   Figure       Any number a document attributes to a numbered experiment: the 92 of
 #                "Experiment 1 drove ... 92 history events". It resolves when that text,
 #                as written, is a number of its own in what that experiment's committed
@@ -70,16 +93,19 @@
 #                within it: cells are separated by ` | ` in the rendered text, and a
 #                sentence ends at ". ", "; ", "? " or the line end. A scope never runs
 #                across a ` | `, so the verdict table's experiment column never lends
-#                its experiment to the line counts in the next column. In a scope
-#                naming experiment N, every numeric token is a figure except: the
-#                experiment numbers themselves; a token in a code span; a token
-#                immediately after a code span, after an optional comma, which is how
-#                both documents write a Legion line count (`internal/workflow`, 8,158);
-#                a token in a dispatch:// reference or a web address; a token inside a
-#                YYYY-MM-DD date; and a single digit. A trailing comma, full stop or
-#                semicolon is the sentence's, not the number's. Where a scope names
-#                more than one experiment, any of their transcripts holding the text
-#                resolves the figure.
+#                its experiment to the line counts in the next column. A scope names an
+#                experiment by the singular "experiment N" and by each plural form the
+#                Experiment paragraph lists, so the 19 and the 20 of "experiments 19
+#                and 20" are that scope's experiment numbers and a figure of neither.
+#                In a scope naming an experiment, every numeric token is a figure
+#                except: the experiment numbers themselves; a token in a code span; a
+#                token immediately after a code span, after an optional comma, which is
+#                how both documents write a Legion line count (`internal/workflow`,
+#                8,158); a token in a dispatch:// reference or a web address; a token
+#                inside a YYYY-MM-DD date; and a single digit. A trailing comma, full
+#                stop or semicolon is the sentence's, not the number's. Where a scope
+#                names more than one experiment, any of their transcripts holding the
+#                text resolves the figure.
 #   Dispatch     A bare dispatch:// reference, resolved by `dispatch read --ref`.
 #   Web          An https:// address immediately followed by ` (read YYYY-MM-DD)`. A
 #                404 or a 410 fails. Any other answer prints unreachable and does not
@@ -146,9 +172,30 @@ readonly \
 	literal_pattern='\(`[^`]+`, `"[^"]*"`\)' \
 	column_pattern='the `[A-Za-z0-9_]+` column of `[A-Za-z0-9_]+`' \
 	table_pattern='the `[A-Za-z0-9_]+` table' \
-	experiment_pattern='[Ee]xperiment (1[0-8]|[1-9])([^0-9]|$)' \
 	dispatch_pattern='dispatch://[A-Za-z0-9._/@#-]+' \
 	web_pattern='https://[^][:space:]`")<>]+( \(read [0-9]{4}-[0-9]{2}-[0-9]{2}\))?'
+
+# The experiments this directory holds: 1 up to the highest-numbered transcript
+# committed beside this script. The bound is read from the directory rather than
+# written here, so a transcript recorded beside this script is read by the experiment
+# rule and by the figure rule with no edit to this script.
+highest_experiment_recorded() {
+	local file base number highest=0
+	for file in "$script_dir"/experiment-[0-9]*-*.txt; do
+		[[ -s "$file" ]] || continue
+		base=${file##*/}
+		number=${base#experiment-}
+		number=${number%%-*}
+		[[ "$number" =~ ^[0-9]+$ ]] || continue
+		if ((number > highest)); then highest=$number; fi
+	done
+	printf '%s\n' "$highest"
+}
+
+experiment_max=$(highest_experiment_recorded)
+readonly experiment_max
+((experiment_max > 0)) ||
+	die "no experiment transcript experiment-N-*.txt stands beside this script in $script_dir, so no experiment and no figure of one can be resolved"
 
 # --- counting -----------------------------------------------------------------------
 
@@ -195,17 +242,47 @@ without_trailing_punctuation() {
 # --- resolving one citation of each kind --------------------------------------------
 
 # A Go declaration of NAME in FILE: a function, a method, a type, a var, a const, a
-# member of a grouped var, const or type, or a struct field. A grouped member and a
-# field are both an indented line whose first word is the name, which is why a name
-# that appears only inside a string or only in a call does not match.
+# member of a grouped var, const or type, a struct field, or a method in an interface.
+#
+# The first three stand at the left margin and are read there. The last three are
+# indented, and an indented line is read only inside a body that holds declarations
+# and nothing else: a grouped var, const or type opened by "var (", "const (" or
+# "type (" and closed by a ")" at the margin, and the body of a struct or an interface
+# opened by its "type NAME struct {" or "type NAME interface {" and closed by a "}" at
+# the margin. Inside such a body every line one tab in declares what it names, which a
+# line of a function body does not: err is declared by none of the files whose
+# functions assign it, return it or pass it on, so (`.../store.go`, `record.err`) is
+# refused rather than resolved against a file that merely uses the name.
+#
+# One tab is the depth gofmt gives a member of a body opened at the margin, so a name
+# deeper than that -- a key of a composite literal in a grouped var, a field of a
+# struct nested in a struct -- is no declaration this reads. A declaration may name
+# more than one at once, as "A, B string" and "a, b = 1, 2" do, and each name it lists
+# is declared by it.
 go_declares() {
 	local file=$1 name=$2
-	grep -qE \
-		-e "^func[[:space:]]+${name}[[:space:]]*[([]" \
-		-e "^func[[:space:]]*\([^)]*\)[[:space:]]*${name}[[:space:]]*[([]" \
-		-e "^(type|var|const)[[:space:]]+${name}([[:space:]]|\[|$)" \
-		-e "^[[:space:]]+${name}([[:space:]]+[^=]|[[:space:]]*=|,|[[:space:]]*$)" \
-		-- "$file"
+	awk -v name="$name" '
+	BEGIN {
+		ident = "[A-Za-z_][A-Za-z0-9_]*"
+		# The names a declaration may list before the one cited.
+		also = "(" ident "[ \t]*,[ \t]*)*"
+		func_decl = "^func[ \t]+" name "[ \t]*[([]"
+		method_decl = "^func[ \t]*\\([^)]*\\)[ \t]*" name "[ \t]*[([]"
+		top_decl = "^(type|var|const)[ \t]+" also name "([ \t,[]|$)"
+		member_decl = "^\t" also name "([ \t,([]|$)"
+		opens_group = "^(type|var|const)[ \t]*\\([ \t]*$"
+		# A body this reads is opened at the end of its line and closed at the
+		# margin, so a "type X struct{}" that opens and closes on one line opens
+		# none and leaves no body open over the lines below it.
+		opens_body = "^type[ \t]+" ident "(\\[[^]]*\\])?[ \t]+(struct|interface)[ \t]*[{][ \t]*$"
+	}
+	$0 ~ func_decl || $0 ~ method_decl || $0 ~ top_decl { found = 1; exit }
+	closer != "" && substr($0, 1, 1) == closer { closer = ""; next }
+	closer != "" && $0 ~ member_decl { found = 1; exit }
+	$0 ~ opens_group { closer = ")"; next }
+	$0 ~ opens_body { closer = "}" }
+	END { exit found ? 0 : 1 }
+	' "$file"
 }
 
 resolve_code() {
@@ -308,6 +385,72 @@ resolve_experiment() {
 	fi
 }
 
+# The awk function both experiment rules read text with: every experiment a stretch of
+# text names, as a comma-separated list in the order they are named, empty when it
+# names none.
+#
+#   experiment N               N alone
+#   experiments N and M        N and M
+#   experiments N, M and O     each number listed, however many, when the word "and"
+#                              closes the list: a comma alone closes nothing, so the
+#                              12 of "experiment 1, 12 signals" is no experiment
+#   experiments N to M         every experiment from N to M
+#
+# A number above max, the highest-numbered transcript committed beside this script,
+# names no experiment of this directory and is passed over.
+# shellcheck disable=SC2016  # this is awk source, not shell
+readonly experiments_named_awk='
+	function experiments_named(text, max,   out, pos, rest, plural, hit, j, list, count, ended, sep, hi, m, k) {
+		out = ""
+		pos = 1
+		while (match(substr(text, pos), /[Ee]xperiments? [0-9]+/) > 0) {
+			rest = substr(text, pos + RSTART - 1)
+			pos = pos + RSTART + RLENGTH - 1
+			plural = (rest ~ /^[Ee]xperiments /)
+			hit = substr(rest, 1, RLENGTH)
+			j = RLENGTH + 1
+			sub(/^[Ee]xperiments? /, "", hit)
+			count = 1
+			list[1] = hit + 0
+			ended = 1
+			if (plural && match(substr(rest, j), /^ to [0-9]+/) > 0) {
+				hi = substr(rest, j + 4, RLENGTH - 4) + 0
+				j = j + RLENGTH
+				for (m = list[1] + 1; m <= hi && m <= max; m++) list[++count] = m
+			} else if (plural) {
+				ended = 0
+				while (match(substr(rest, j), /^(, and | and |, )[0-9]+/) > 0) {
+					sep = substr(rest, j, RLENGTH)
+					j = j + RLENGTH
+					ended = (sep ~ / and /)
+					sub(/^[^0-9]+/, "", sep)
+					list[++count] = sep + 0
+				}
+			}
+			if (!ended) count = 1
+			for (k = 1; k <= count; k++) {
+				if (list[k] < 1 || list[k] > max) continue
+				if (index("," out ",", "," list[k] ",") > 0) continue
+				out = out (out == "" ? "" : ",") list[k]
+			}
+		}
+		return out
+	}
+'
+
+# Every experiment the document names, one number per line, each named once, whether
+# it was named on its own or in a plural naming several.
+experiment_mentions() {
+	awk -v max="$experiment_max" "$experiments_named_awk"'
+	{
+		named = experiments_named($0, max)
+		if (named == "") next
+		count = split(named, each, ",")
+		for (i = 1; i <= count; i++) if (!seen[each[i]]++) print each[i]
+	}
+	' <<<"$1"
+}
+
 # Prints one record per number a scope of the document attributes to an experiment:
 #
 #   <the experiment numbers of the scope, comma separated>\t<the number>\t<the scope>
@@ -316,7 +459,7 @@ resolve_experiment() {
 # The same number attributed to the same experiments twice is one record.
 # shellcheck disable=SC2016  # the backticks below are markdown, not substitution
 experiment_figures() {
-	awk '
+	awk -v max="$experiment_max" "$experiments_named_awk"'
 	function blank(n,   s) {
 		s = ""
 		while (n-- > 0) s = s " "
@@ -367,21 +510,12 @@ experiment_figures() {
 		return out
 	}
 
-	function figures(text,   numbers, named, pos, hit, t, n, i, j, k, token, own) {
+	function figures(text,   numbers, named, t, n, i, j, k, token, own) {
 		sub(/^[ \t]+/, "", text)
 		sub(/[ \t]+$/, "", text)
 
-		# Every experiment the scope names, possessive or not, 1 to 18.
-		numbers = ""
-		pos = 1
-		while (match(substr(text, pos), /[Ee]xperiment (1[0-8]|[1-9])([^0-9]|$)/) > 0) {
-			hit = substr(text, pos + RSTART - 1, RLENGTH)
-			sub(/^[Ee]xperiment /, "", hit)
-			sub(/[^0-9]$/, "", hit)
-			if (index("," numbers ",", "," hit ",") == 0)
-				numbers = numbers (numbers == "" ? "" : ",") hit
-			pos = pos + RSTART + RLENGTH - 2
-		}
+		# Every experiment the scope names, singular or plural, possessive or not.
+		numbers = experiments_named(text, max)
 		if (numbers == "") return
 		split(numbers, named, ",")
 
@@ -506,7 +640,7 @@ resolve_web() {
 resolve_document() {
 	local document=$2 before
 	local -a matches
-	local match path rest ident table column digit ref url dated numbers figure scope
+	local match path rest ident table column number ref url dated numbers figure scope
 
 	document_label=$1
 	before=$((count_resolved + count_unreachable + count_failed))
@@ -557,10 +691,9 @@ resolve_document() {
 		resolve_table "$match" "$table"
 	done
 
-	mapfile -t matches < <(grep -oE "$experiment_pattern" <<<"$document" | tr 'E' 'e' | sed -E 's/[^0-9]+$//' | sort -u)
-	for match in "${matches[@]}"; do
-		digit=${match##* }
-		resolve_experiment "$match" "$digit"
+	mapfile -t matches < <(experiment_mentions "$document" | sort -n)
+	for number in "${matches[@]}"; do
+		resolve_experiment "experiment $number" "$number"
 	done
 
 	mapfile -t matches < <(experiment_figures "$document")
@@ -623,10 +756,15 @@ A code citation written the other way round, whose file does not hold the identi
 `record.Postgres.NoSuchMethodOfThisStore` (`packages/daemon/internal/record/store.go`).
 A code citation written the other way round, reading outside the repository:
 `record.Postgres.Enqueue` (`../../../../etc/passwd`).
+A name the cited file only uses, which its functions assign and pass on and no
+declaration of that file declares:
+(`packages/daemon/internal/record/store.go`, `record.err`).
+A word that begins indented lines of the cited file without declaring anything:
+(`packages/daemon/internal/record/store.go`, `record.return`).
 EOF
 }
 
-readonly broken_fixture_citations=12
+readonly broken_fixture_citations=14
 
 # Citations of this repository that resolve today, in each form the grammar allows.
 well_formed_fixture() {
@@ -637,6 +775,9 @@ Literal: (`packages/daemon/internal/api/handoff.go`, `"HANDOFF_STALE_ASSIGNMENT"
 Stored state: the `lease_token` column of `outbox`, and the `pending_task_deliveries` table.
 Dispatch: dispatch://INFRA-1546.
 Web: https://docs.temporal.io/evaluate/development-production-features (read 2026-11-07)
+Code, a struct field: (`packages/daemon/internal/record/record.go`, `record.Issue.Generation`).
+Code, a member of a grouped const: (`packages/daemon/internal/daemon/outbox.go`, `daemon.outboxSettleTimeout`).
+Code, a method in an interface: (`packages/daemon/internal/record/record.go`, `record.Store.Gate`).
 EOF
 }
 
@@ -668,10 +809,36 @@ EOF
 readonly experiment_figure_fixture_resolved=5
 readonly experiment_figure_fixture_failed=3
 
+# The two rules widened after a review found this check reading experiments 1 to 18
+# alone, in one fixture: a figure of experiment 21, which that range read as a figure
+# of no experiment and left unchecked; a figure of 21 its transcript does not measure;
+# and two scopes naming experiments in the plural, one with "and" and one with a range.
+# The plural lines are the ones that fail if a scope naming several experiments is ever
+# read as naming none: the 19 and the 20 would then be numbers of whatever experiment
+# the sentence named, and the 11 would be a figure of nothing and go unchecked. They
+# are also what fails if the numbers of a plural are ever read as figures of it: each
+# of 19, 20, 16 and 18 stands in its own transcript inside a task queue name, so a
+# reading that took them for figures would resolve and the count below would not hold.
+experiments_named_fixture() {
+	cat <<'EOF'
+Experiment 21 handed a task token of 144 bytes to a process that holds a working copy, as its committed transcript holds it.
+Experiment 21 handed a token of 4096 bytes, a figure no committed transcript of it holds.
+Experiments 19 and 20 left the handout Started on attempt 1, the longer of them across 11 readings.
+Experiments 16 to 18 each have a transcript committed beside this script, which the range names one by one.
+EOF
+}
+
+# Six experiments named and resolved -- 21, named twice and counted once; 19 and 20 of
+# the plural; and 16, 17 and 18, which the range names although it writes only two of
+# them -- and two figures, the 144 of experiment 21 and the 11 of experiment 20. One
+# refusal, the 4096 no transcript of experiment 21 measures.
+readonly experiments_named_fixture_resolved=8
+readonly experiments_named_fixture_failed=1
+
 self_test() {
 	local failures=0
 
-	printf 'self-test, the broken half: every line below must be a refusal, the address whose host resolves nowhere, the literal citation reading outside the repository, and the two code citations written the other way round, one naming a file that does not hold its identifier and one reading outside the repository, among them\n\n'
+	printf 'self-test, the broken half: every line below must be a refusal, the address whose host resolves nowhere, the literal citation reading outside the repository, the two code citations written the other way round, one naming a file that does not hold its identifier and one reading outside the repository, and the two names the cited file only uses, among them\n\n'
 	reset_counts
 	resolve_document broken "$(broken_fixture)"
 	summary
@@ -680,7 +847,7 @@ self_test() {
 			"$broken_fixture_citations" "$count_failed" "$count_resolved" "$count_unreachable" >&2
 		failures=$((failures + 1))
 	else
-		printf 'self-test: all %d broken citations refused, among them the address whose host resolves nowhere, which is a refusal and not an unreachable address, the literal citation whose path leaves the repository, and the two citations written identifier first, which are refused on the same two rules as the ones written path first\n' "$broken_fixture_citations"
+		printf 'self-test: all %d broken citations refused, among them the address whose host resolves nowhere, which is a refusal and not an unreachable address, the literal citation whose path leaves the repository, the two citations written identifier first, which are refused on the same two rules as the ones written path first, and the two names the cited file only uses, which no declaration of it declares\n' "$broken_fixture_citations"
 	fi
 
 	printf '\nself-test, a document with no citation at all: it must be refused\n\n'
@@ -716,9 +883,22 @@ self_test() {
 		printf 'self-test: the measured figure resolved, the figure outside the transcript, the figure only inside a longer number and the figure standing in the header alone were refused, and the number in the next cell was not checked\n'
 	fi
 
+	printf '\nself-test, every experiment this directory holds and the plural that names them: a figure of experiment 21 resolves, one its transcript does not measure is refused, and a scope naming experiments in the plural names each of them, so each is a citation of its own and none of their numbers is read as a figure\n\n'
+	reset_counts
+	resolve_document named "$(experiments_named_fixture)"
+	summary
+	if ((count_resolved != experiments_named_fixture_resolved || count_failed != experiments_named_fixture_failed)); then
+		printf 'self-test: expected %d resolved and %d refused of the plural fixture, got %d resolved, %d refused and %d unreachable\n' \
+			"$experiments_named_fixture_resolved" "$experiments_named_fixture_failed" \
+			"$count_resolved" "$count_failed" "$count_unreachable" >&2
+		failures=$((failures + 1))
+	else
+		printf 'self-test: experiment 21 and the figure its transcript measures resolved, the figure it never measured was refused, and the six experiments of two plurals were each named, each resolved and each kept out of the figures of its scope\n'
+	fi
+
 	printf '\n'
 	if ((failures > 0)); then
-		printf 'self-test: %d of 4 checks did not hold\n' "$failures" >&2
+		printf 'self-test: %d of 5 checks did not hold\n' "$failures" >&2
 		return 1
 	fi
 	printf 'self-test: the resolver refuses every broken form and resolves every well-formed one\n'

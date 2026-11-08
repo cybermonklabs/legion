@@ -44,7 +44,7 @@ Each experiment shows that a mechanism exists, not that it holds at Legion's sca
 - `experiment-2-human-gate.txt` — the design gate as a wait for a person's approval, withdrawn by a later document version and reopened by a second approval, with the cost of a wait of days split into what this run timed and what it reasoned from the mechanism.
 
 - `experiment-3-session-activity.txt` — a session-bound activity whose worker process is killed while it runs, with the workflow held open by a signal so a replacement worker polls the queue while the run is still going, and one line per execution of the activity's body so a reader can count them.
-  It has its own control: a run that killed no worker fails, and `run.sh` runs that control for every kill experiment.
+  It has its own control: a run that killed no worker fails, and `run.sh` runs that control for each of the five kill experiments that have one, 3, 7, 10, 13 and 16.
 
 - `experiment-4-delivery-once.txt` — a write to an outside system under an idempotency key with a crash after the write, and a delivery that can never succeed under a bounded retry policy.
 
@@ -96,7 +96,7 @@ Each experiment shows that a mechanism exists, not that it holds at Legion's sca
 bash docs/research/temporal-evaluation-2026-11/run.sh
 ```
 
-It installs the pinned Temporal command and the pinned Restate server under `$TMPDIR`, verifying each one's checksum and version, runs `gofmt -l` and `go vet` over the prototype, builds its six commands, runs the twenty-one experiments in order, runs the negative control of each kill experiment and requires it to fail, and ends with `temporal-evaluation: all 21 experiments passed`.
+It installs the pinned Temporal command and the pinned Restate server under `$TMPDIR`, verifying each one's checksum and version, runs `gofmt -l` and `go vet` over the prototype, builds its six commands, runs the twenty-one experiments in order, runs the negative control of each of the five kill experiments that have one and requires it to fail, and ends with `temporal-evaluation: all 21 experiments passed`.
 It writes nothing into the working tree.
 Set `TMPDIR` to a directory on a volume with about 300 MB free; the script refuses an unset one and one under `/tmp`.
 Set `LEGION_TEST_PG_DSN` to a PostgreSQL the run may create a database in; nine of the twenty-one need it (7 to 9, and 13 to 18), and the script refuses an empty one by name.
@@ -116,8 +116,10 @@ cd prototype && GOWORK=off go vet ./...
 bash docs/research/temporal-evaluation-2026-11/check-citations.sh
 ```
 
-It reads the answer and the plan live from Dispatch and resolves every citation in both: a Legion file and identifier, a quoted literal, a table or a column with its table, a figure of a numbered experiment, a `dispatch://` reference, and a web address with the date it was read.
-A figure resolves only against the measured lines of its experiment's transcript, below the header's dashed rule, as a number of its own, so a figure that stands only in a header, or only inside a longer number, fails.
+It reads the answer and the plan live from Dispatch and resolves the citations of both that its grammar reads: a Legion file and identifier in either order, a quoted literal, a table or a column with its table, a numbered experiment and the figures attributed to it, a `dispatch://` reference, and a web address with the date it was read.
+A figure resolves only against the measured lines of its experiment's transcript, below the header's dashed rule, as a number of its own, so a figure that stands only in a header, or only inside a longer number, fails, and the highest experiment it reads is the highest-numbered transcript committed beside it.
+It does not read every citation those documents carry: a dotted identifier with no path beside it is read by no rule, and a span mixing a code citation with another kind is read only in the part that matches.
+What the count covers is that grammar and nothing wider, and whether a claim is missing its citation altogether is the reviewer's reading, as the issue's Verification document says in its own words.
 It ends with `citations: N resolved, M unreachable, 0 failed`.
 
 ```sh
