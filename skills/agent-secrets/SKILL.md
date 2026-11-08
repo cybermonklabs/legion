@@ -19,7 +19,10 @@ agent-secrets NAME... [--reason TEXT] [--wait DURATION] [--ttl DURATION] -- <com
   a secret behind the airlock, as a placeholder standing for it (below). Nothing runs unless
   every name is granted: a denial of one name denies the whole request, so the command never starts
   with some of its secrets missing (`cmdExec`, `packages/envoy/cmd/agent-secrets/main.go`).
-- `--reason` is what a person reads if the request waits for a decision. Write one.
+- `--reason` is necessary wherever a person approves: a request that names a secret someone must
+  decide, and carries none, is denied whole. Say what the credential is for, in a sentence the
+  approver can decide on. A request every name of which is granted at once reaches nobody and
+  needs none.
 - `agent-secrets --help` holds the rest: the flags that narrow a GitHub App token
   (`--github-owner`, `--github-repo`, `--github-read-only`), and how long a grant lasts.
 - A narrowing and the airlock do not go together. Ask for a narrowing in a run whose grant holds
@@ -138,7 +141,9 @@ Without the grant line the status is the client's own:
   `AGENT_SECRETS_URL`, no `--`, no `NAME`, or a flag value the client refuses.
 - **75** — the request still waits for a person. The message names who decides it, where, and the
   `agent-secrets status <request_id>` that reads it.
-- **77** — the request was denied.
+- **77** — the request was denied. The approver denied it, a name is a service's secret, or the
+  request named a secret a person must approve and carried no reason, which the detail reads
+  `<NAME>: a reason is necessary; ask again with --reason`.
 
 The other statuses come from forms this skill does not use: 76 from `agent-secrets renew`, a
 refusal that is permanent; 126 and 127 from `agent-secrets register --exec`, whose command could not
