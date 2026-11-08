@@ -582,13 +582,20 @@ test("one post-approval thread loop for each role, in every copy", () => {
 test("no Go file of the daemon reads a review thread's state", () => {
   // grep exits 1 when it matches nothing, which is this test's passing case, so the status is
   // read rather than thrown: 0 names files, 1 names none, anything else is grep itself failing.
-  const grep = Bun.spawnSync({
-    cmd: ["grep", "-rlE", "reviewThreads|isResolved|resolveReviewThread", "--include=*.go", "."],
-    cwd: path.join(REPO_ROOT, "packages/daemon"),
-  });
-  expect(grep.exitCode, grep.stderr.toString()).toBeLessThan(2);
-  const named = grep.stdout.toString().split("\n").filter(Boolean);
-  expect(named).toEqual([]);
+  const search = (pattern: string) => {
+    const grep = Bun.spawnSync({
+      cmd: ["grep", "-rlE", pattern, "--include=*.go", "."],
+      cwd: path.join(REPO_ROOT, "packages/daemon"),
+    });
+    expect(grep.exitCode, grep.stderr.toString()).toBeLessThan(2);
+    return grep.stdout.toString().split("\n").filter(Boolean);
+  };
+  expect(search("reviewThreads|isResolved|resolveReviewThread")).toEqual([]);
+  // An absence a broken search also satisfies is no evidence: a wrong path, a renamed directory
+  // or a pattern that cannot compile prints nothing and reads as a pass. The same search over
+  // the same paths must find what the daemon does read of a review — its decision — so the
+  // empty list above is an absence and not a search that reached nothing.
+  expect(search("ReviewDecision").length).toBeGreaterThan(0);
 });
 
 // dispatch://INFRA-924's rule, beside dispatch://INFRA-332's eight above: a retro learning cites
