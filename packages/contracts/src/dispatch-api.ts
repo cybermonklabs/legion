@@ -1067,6 +1067,10 @@ export interface EditPreconditionMismatch {
 export interface EditPreconditionCurrent {
   readonly document: string;
   readonly blocks: readonly EditBlockPrecondition[];
+  /** The number of the newest version the document has, on a refusal whose caller read it beside
+   *  the write it refused (an upload). An edit refuses without reading the version rows and
+   *  names none. */
+  readonly version?: number;
 }
 
 export interface Version {
@@ -3986,6 +3990,14 @@ export interface MessageReplyResult extends Message {
 interface CreateArtifactOptions {
   readonly name: string;
   readonly summary?: string;
+  /** The base a whole-document upload replaces: the token of the document the uploader read,
+   *  which only `document` may name (`blocks` is refused `400 INVALID_PRECONDITION`, since the
+   *  upload rewrites the whole tree). A base behind the live document is refused
+   *  `409 PRECONDITION_FAILED`, whose `current` carries the live token and `current.version` the
+   *  live version number. A first upload under a name, and a file that is no document, name
+   *  none; whether a replacement that names none is refused is the server's
+   *  `DISPATCH_UPLOAD_BASE_REQUIRED` setting, off by default. */
+  readonly precondition?: EditPrecondition;
   readonly actor?: Actor;
 }
 

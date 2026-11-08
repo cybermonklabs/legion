@@ -186,6 +186,11 @@ place with `dispatch doc-edit`. Do not upload a file named `spec.md` to change i
 whole spec with your text. Use `dispatch artifact` for real files, such as a report, an image, or a
 draft to send as-is.
 
+An upload that does replace a document the owner already holds under that name says which text it replaces.
+Read the document with `dispatch doc-read`, which prints `Document token: sha256:…`, and upload with `--precondition-json '{"document":"sha256:…"}'`.
+A base behind the live document is refused `409 PRECONDITION_FAILED`, which names the live token and the live version, and nothing is written: read the document again, decide what the new version says, and upload again.
+A first upload of a name has no base to name, and whether a replacement that names none is refused at all is the server setting `DISPATCH_UPLOAD_BASE_REQUIRED`, which is off by default.
+
 A question the spec needs a person to decide is a **decision block**: an `:::ask` block at the end
 of the section that discusses it.
 

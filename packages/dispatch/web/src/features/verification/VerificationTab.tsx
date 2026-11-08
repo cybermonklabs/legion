@@ -262,7 +262,16 @@ export function VerificationTab({
     return (
       <div data-testid="verification-empty">
         <EmptyState
-          action={<code>{`dispatch artifact --issue ${issueKey} --name verification.md`}</code>}
+          action={
+            <>
+              <code>{`dispatch artifact --issue ${issueKey} --name verification.md`}</code>
+              <p className="mt-3">
+                A later upload under that name replaces the document, so it names the base it
+                replaces: add <code>--precondition-json</code> with the document token{" "}
+                <code>dispatch doc-read</code> prints.
+              </p>
+            </>
+          }
           label="Verification empty state"
           message={`${issueKey} has no Verification document. Make one with:`}
         />

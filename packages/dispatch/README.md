@@ -24,6 +24,10 @@ surface. Below the `xl` breakpoint, navigation is a drawer and the margin is a b
 opening a thread uses a full-height view with a bottom-pinned composer. Controls use 44 px
 minimum touch targets.
 
+An upload replaces whatever document the owner already holds under the name being uploaded, so it names the base it replaces.
+It reads that document's token first (`GET /api/v1/issues/{key}/artifacts/{slug}/text`, which resolves a slug or a filename) and sends it as the upload's `precondition`, so an upload over a document someone changed first is refused `409 PRECONDITION_FAILED` instead of writing over their text.
+A first upload of a name names no base, and neither does a document whose tree is outside the Proof schema: it renders no markdown and so has no token, and an upload is how it is repaired.
+
 ## Development
 
 Run commands from this package:

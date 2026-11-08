@@ -1,7 +1,13 @@
 import { expect, test } from "@playwright/test";
 import type { RequirementCoverage } from "../web/src/api/types";
 
-import { createIssue, createIssueArtifact, createProject, getIssueCoverage } from "./api";
+import {
+  createIssue,
+  createIssueArtifact,
+  createProject,
+  documentBase,
+  getIssueCoverage,
+} from "./api";
 import { resetDatabase } from "./seed";
 import { asUser } from "./users";
 
@@ -44,7 +50,10 @@ test("a requirement no check serves is flagged on the Spec tab, and a check that
 Every requirement of the spec is listed.
 :::
 `;
-  await createIssueArtifact(issue.key, { content: oneCheck, name: "verification.md" });
+  const verification = await createIssueArtifact(issue.key, {
+    content: oneCheck,
+    name: "verification.md",
+  });
   await expect.poll(() => coverageOf(issue.key, "r2").then((row) => row.checks)).toBe(0);
 
   const alice = await asUser(browser, "alice");
@@ -64,7 +73,8 @@ Every requirement of the spec is listed.
     await page.screenshot({ path: testInfo.outputPath("spec-requirement-gap.png") });
 
     // A check that serves it is the whole of what it lacked: the next version of the
-    // Verification document clears the flag.
+    // Verification document clears the flag. That version replaces the whole document, so it
+    // names the base it replaces.
     await createIssueArtifact(issue.key, {
       content: `${oneCheck}
 :::check{#c2 serves="dispatch://${issue.key}/spec#b-r2" surface="browser" run="bun run e2e -- e2e/coverage.e2e.ts"}
@@ -72,6 +82,7 @@ A requirement nothing checks is flagged.
 :::
 `,
       name: "verification.md",
+      precondition: await documentBase(verification.artifact.id),
     });
     await expect.poll(() => coverageOf(issue.key, "r2").then((row) => row.checks)).toBe(1);
 
@@ -123,10 +134,12 @@ List every requirement under the spec.
     );
     await expect(panel).toContainText("List every requirement under the spec.");
 
-    // The next version of the plan drops the task, and with it the edge.
+    // The next version of the plan drops the task, and with it the edge. It replaces the whole
+    // document, so it names the base it replaces.
     await createIssueArtifact(issue.key, {
       content: `How ${issue.key} is built.\n`,
       name: "plan.md",
+      precondition: await documentBase(plan.artifact.id),
     });
     await expect.poll(() => coverageOf(issue.key, "r1").then((row) => row.plan_tasks)).toBe(0);
 

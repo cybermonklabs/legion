@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, type Mock, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -69,6 +69,10 @@ test("confirming the staged file uploads it with the typed summary", async () =>
       summary: "First draft",
     },
   });
+  // The issue holds no notes.md yet, so this upload has no base to name.
+  const ownerArtifactText = spyOn(api, "ownerArtifactText").mockRejectedValue(
+    new ApiError(404, { code: "ARTIFACT_NOT_FOUND", error: "artifact not found" })
+  );
   const view = renderHarness();
 
   try {
@@ -90,6 +94,81 @@ test("confirming the staged file uploads it with the typed summary", async () =>
   } finally {
     view.unmount();
     uploadArtifact.mockRestore();
+    ownerArtifactText.mockRestore();
+  }
+});
+
+/** What Dispatch answers the uploads below, whose own fields none of them reads. */
+const UPLOADED = {
+  artifact: {
+    created_at: "2026-09-11T00:00:00Z",
+    created_by: { id: "alice", kind: "user" as const },
+    id: "artifact-1",
+    issue_key: "CORE-1",
+    kind: "doc" as const,
+    name: "notes.md",
+    primary: false,
+    project: "CORE",
+    slug: "notes-md",
+    versions: [],
+  },
+  version: {
+    authors: [{ id: "alice", kind: "user" as const }],
+    created_at: "2026-09-11T00:00:00Z",
+    named: false,
+    number: 2,
+    summary: null,
+  },
+};
+
+/** Stages `notes.md` and presses Upload, waiting until `text` has answered the base read. */
+async function uploadNotes(text: Mock<typeof api.ownerArtifactText>): Promise<void> {
+  const file = new File(["content"], "notes.md", { type: "text/markdown" });
+  fireEvent.change(screen.getByLabelText("Upload artifact"), { target: { files: [file] } });
+  await screen.findByText("notes.md");
+  fireEvent.click(screen.getByRole("button", { name: "Upload" }));
+  await waitFor(() => expect(text).toHaveBeenCalledTimes(1));
+}
+
+test("an upload over a document the issue already holds names the base it replaces", async () => {
+  const ownerArtifactText = spyOn(api, "ownerArtifactText").mockResolvedValue({
+    markdown: "# Notes\n",
+    token: "sha256:live-notes",
+    version: 1,
+  });
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockResolvedValue(UPLOADED);
+  const view = renderHarness();
+
+  try {
+    await uploadNotes(ownerArtifactText);
+    await waitFor(() => expect(uploadArtifact).toHaveBeenCalledTimes(1));
+    // The name is read as Dispatch resolves an upload's: by the owner's own artifact route.
+    expect(ownerArtifactText.mock.calls[0]).toEqual([{ issue: "CORE-1" }, "notes.md"]);
+    const [, input] = uploadArtifact.mock.calls[0] ?? [];
+    expect(input?.precondition).toEqual({ document: "sha256:live-notes" });
+  } finally {
+    view.unmount();
+    uploadArtifact.mockRestore();
+    ownerArtifactText.mockRestore();
+  }
+});
+
+test("the first upload of a name has no base to name, and names none", async () => {
+  const ownerArtifactText = spyOn(api, "ownerArtifactText").mockRejectedValue(
+    new ApiError(404, { code: "ARTIFACT_NOT_FOUND", error: "artifact not found" })
+  );
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockResolvedValue(UPLOADED);
+  const view = renderHarness();
+
+  try {
+    await uploadNotes(ownerArtifactText);
+    await waitFor(() => expect(uploadArtifact).toHaveBeenCalledTimes(1));
+    const [, input] = uploadArtifact.mock.calls[0] ?? [];
+    expect(input?.precondition).toBeUndefined();
+  } finally {
+    view.unmount();
+    uploadArtifact.mockRestore();
+    ownerArtifactText.mockRestore();
   }
 });
 
@@ -99,6 +178,9 @@ test("confirming the staged file uploads it with the typed summary", async () =>
 test("an upload answered KEY_COMMITTED lets go of the staged file, says it was stored, and a second press sends nothing", async () => {
   const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(
     new ApiError(409, { code: "KEY_COMMITTED", error: "already made" })
+  );
+  const ownerArtifactText = spyOn(api, "ownerArtifactText").mockRejectedValue(
+    new ApiError(404, { code: "ARTIFACT_NOT_FOUND", error: "artifact not found" })
   );
   const view = renderHarness();
 
@@ -121,6 +203,7 @@ test("an upload answered KEY_COMMITTED lets go of the staged file, says it was s
   } finally {
     view.unmount();
     uploadArtifact.mockRestore();
+    ownerArtifactText.mockRestore();
   }
 });
 

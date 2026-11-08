@@ -1,0 +1,6 @@
+kind: Added
+body: |-
+    A whole-document upload names the base it replaces. `POST /api/v1/issues/{key}/artifacts` and the project route read a `precondition` of the shape `dispatch doc-edit` takes, `{"document":"sha256:…"}`, from the JSON body and from the multipart form alike, and check it inside the write's own lock: a base behind the live document is refused `409 PRECONDITION_FAILED` carrying the live token, the document's current version and where to read a fresh token, and nothing is written. A `blocks` precondition is refused `400 INVALID_PRECONDITION`, since an upload rewrites the whole tree. The new setting `DISPATCH_UPLOAD_BASE_REQUIRED` decides whether a replacement that names no base at all is refused `400 PRECONDITION_REQUIRED`; it is off by default, so such an upload is taken as before. A first upload, a file and the repair of a document outside the Proof schema each name no base and are unaffected.
+time: 2026-11-08T00:00:04.000000000Z
+custom:
+    Issue: pr3000

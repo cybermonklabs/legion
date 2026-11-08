@@ -334,6 +334,47 @@ describe("runRulesCheck: which asks a call opens", () => {
       "The ask block #region that starts 'Which region?'",
     ]);
   });
+  test("an opener naming no id is not new when its question is one the stored version holds", async () => {
+    // A composed body names no block id, and the server gives such a block the live block's id
+    // when its text is unchanged, so the upload opens no ask for it. The opener whose question
+    // nothing stored matches is the only new ask.
+    const check = await checkRules({
+      toolName: "dispatch_artifact",
+      tool: "dispatch artifact",
+      input: {
+        issue: "X-1",
+        name: "brief.md",
+        content: ":::ask{}\nWhich deployment window?\n:::\n\n:::ask{}\nWhich region?\n:::\n",
+      },
+    });
+    expect(check?.names).toEqual(["The ask block that starts 'Which region?'"]);
+  });
+  test("a re-upload whose every opener names no id and repeats a stored question is not judged", async () => {
+    let walks = 0;
+    const check = await checkRules(
+      {
+        toolName: "dispatch_artifact",
+        tool: "dispatch artifact",
+        input: {
+          issue: "X-1",
+          name: "brief.md",
+          content: ":::ask{}\nWhich deployment window?\n:::\n",
+        },
+      },
+      {
+        walk: async () => {
+          walks += 1;
+          return {
+            answer: { kind: "answer" as const, text: RULES_NONE },
+            called: {},
+            elapsedMs: 0,
+          };
+        },
+      }
+    );
+    expect(walks).toBe(0);
+    expect(check).toBeUndefined();
+  });
   test("only an upload leaves out the ids the document holds: a doc-edit insert of one is a new ask", async () => {
     const check = await checkRules({
       toolName: "dispatch_doc_edit",

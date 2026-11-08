@@ -161,5 +161,9 @@ test("an issue with no plan document shows the command that makes one", () => {
   const empty = screen.getByTestId("plan-empty");
   expect(empty.textContent).toContain("CORE-1 has no plan document.");
   expect(empty.textContent).toContain("dispatch artifact --issue CORE-1 --name plan.md");
+  expect(empty.textContent).toContain(
+    "A later upload under that name replaces the document, so it names the base it replaces"
+  );
+  expect(empty.textContent).toContain("--precondition-json");
   expect(getArtifactBlocks).not.toHaveBeenCalled();
 });

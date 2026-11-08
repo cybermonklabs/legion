@@ -183,6 +183,10 @@ test("an issue with no Verification document shows the command that makes one", 
   const empty = screen.getByTestId("verification-empty");
   expect(empty.textContent).toContain("CORE-1 has no Verification document.");
   expect(empty.textContent).toContain("dispatch artifact --issue CORE-1 --name verification.md");
+  expect(empty.textContent).toContain(
+    "A later upload under that name replaces the document, so it names the base it replaces"
+  );
+  expect(empty.textContent).toContain("--precondition-json");
   // Nothing is read for an issue that has no such document.
   expect(getIssueResults).not.toHaveBeenCalled();
 });

@@ -1644,12 +1644,16 @@ export class DispatchClient {
     return { status: response.status, payload: await this.#response<T>(method, url, response) };
   }
 
-  /** An upload to an owner's artifact route: inline content as JSON, a file as multipart. */
+  /** An upload to an owner's artifact route: inline content as JSON, a file as multipart. A base
+   *  the upload names travels in the JSON body as `precondition`, and in a multipart form as the
+   *  field `precondition` holding that same JSON object's text, which is how the route reads it. */
   async #upload<T>(path: readonly string[], input: CreateArtifactInput, key?: string): Promise<T> {
     if ("content" in input) return this.#json("POST", path, input, undefined, undefined, key);
     const form = new FormData();
     form.set("name", input.name);
     if (input.summary !== undefined) form.set("summary", input.summary);
+    if (input.precondition !== undefined)
+      form.set("precondition", JSON.stringify(input.precondition));
     if (input.actor !== undefined) form.set("actor", JSON.stringify(input.actor));
     form.set("file", input.file, input.name);
     return this.#form("POST", path, form, key);

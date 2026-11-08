@@ -129,6 +129,10 @@ the Dispatch specs behind the `dispatch` command:
   between them.
   Ask lifecycle payloads include nullable `block_id`; `block.repaired` restores server-owned
   attributes and `block.invalid` records a malformed browser-authored ask block.
+- `dispatch artifact` takes the same optional `precondition` as `dispatch doc-edit`, built by one `preconditionArgument` so both tools read one shape and one wording, and `CreateArtifactInput` carries it to `POST /api/v1/{issues|projects}/{key}/artifacts`: in the JSON body, and for a multipart upload in the form field `precondition`, holding that same object's JSON text.
+  An upload replaces the whole document, so only the document token says which text it replaces, and the server refuses a `blocks` guard in one with `400 INVALID_PRECONDITION`.
+  A base behind the live document is refused `409 PRECONDITION_FAILED`, whose `current` carries the live token and whose `current.version` carries the live version number (`EditPreconditionCurrent.version`, which an edit's own refusal omits because it reads no version rows).
+  A first upload of a name has no base to name, and whether a replacement that names none is refused at all is the server's `DISPATCH_UPLOAD_BASE_REQUIRED` setting, which is off by default.
 - Quote anchors retain their quote display cache and inline mark while carrying nullable `block_id`;
   new quotes use their lowest complete containing block, while quotes across top-level siblings
   remain unpinned. Clients must preserve the field.

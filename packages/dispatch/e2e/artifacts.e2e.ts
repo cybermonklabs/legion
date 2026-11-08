@@ -12,6 +12,7 @@ import {
   createIssueArtifact,
   createProject,
   dashboardOrigin,
+  documentBase,
   editArtifact,
   getArtifactText,
 } from "./api";
@@ -357,8 +358,13 @@ test("an uploaded document is linked from the Activity tab and counted on its ow
   await expect(added).toHaveCount(1);
   await page.screenshot({ path: testInfo.outputPath("activity-added-artifact.png") });
 
-  // A second upload under the same name is a new version; its line links that version.
-  await createIssueArtifact(issue.key, { content: "# Draft\n\nRevised.\n", name });
+  // A second upload under the same name is a new version; its line links that version. It
+  // replaces the whole document, so it names the base it replaces.
+  await createIssueArtifact(issue.key, {
+    content: "# Draft\n\nRevised.\n",
+    name,
+    precondition: await documentBase(upload.artifact.id),
+  });
   const saved = rows.filter({ hasText: `saved ${name} v2` });
   await expect(saved).toHaveCount(1);
   await expect(page.getByRole("tab", { exact: true, name: "Artifacts (2)" })).toBeVisible();

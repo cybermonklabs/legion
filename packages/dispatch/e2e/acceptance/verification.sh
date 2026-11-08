@@ -262,10 +262,25 @@ close_issue() {
   pass "$1" "closed $2"
 }
 
-# upload SECTION ISSUE NAME FILE: uploads FILE as the document NAME of ISSUE.
+# upload SECTION ISSUE NAME FILE [BASE]: uploads FILE as the document NAME of ISSUE. BASE is the
+# document token the upload replaces, which an upload over a document the issue already holds
+# names; a first upload of a name has none to name.
 upload() {
-  run "$1" "upload $3 to $2" artifact --issue "$2" --name "$3" --path "$4"
+  if [[ -n "${5:-}" ]]; then
+    run "$1" "upload $3 to $2" artifact --issue "$2" --name "$3" --path "$4" \
+      --precondition-json "$(jq -cn --arg t "$5" '{document: $t}')"
+  else
+    run "$1" "upload $3 to $2" artifact --issue "$2" --name "$3" --path "$4"
+  fi
   pass "$1" "uploaded $3 to $2"
+}
+
+# token_of SECTION ISSUE SLUG: sets $doc_token to the document token of ISSUE's document SLUG,
+# the base an upload replacing it names.
+token_of() {
+  get "/api/v1/issues/$2/artifacts/$3/text"
+  want_status 200 "$1" "read $2's $3 token"
+  doc_token="$(jq -er '.token' "$work/body")" || fail "$1" "read $2's $3 token" "$(body)"
 }
 
 # document_body ISSUE NAME FILE: the JSON an artifact POST takes for FILE under NAME.
@@ -801,7 +816,10 @@ else
   h1="$(sha256sum "$work/approved-spec.md" | cut -d' ' -f1)"
   cp "$work/approved-spec.md" "$work/revised-spec.md"
   printf '\nA new line the person has not approved.\n' >>"$work/revised-spec.md"
-  upload review "$both" spec.md "$work/revised-spec.md"
+  # This upload replaces the spec whole, so it names the base it replaces, through the multipart
+  # form `--path` sends.
+  token_of review "$both" spec.md
+  upload review "$both" spec.md "$work/revised-spec.md" "$doc_token"
   get "/api/v1/artifacts/$artifact/versions/2"
   want_status 200 review "$both's spec version 2 answers"
   h2="$(jq -j .markdown "$work/body" | sha256sum | cut -d' ' -f1)"

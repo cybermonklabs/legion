@@ -658,7 +658,8 @@ func refuseEmptyQuestionEdit(block askBlock, edit AskBlockEdit) error {
 				"decision, so none reaches this block - upload the document again "+
 				"as a new version with the question written beside that paragraph (dispatch artifact "+
 				"--issue <KEY>, or --project <KEY> for a project's document, --name <the document> "+
-				"--content-file -), or write the question beside it in "+
+				"--content-file - --precondition-json '{\"document\":\"<the token dispatch doc-read "+
+				"prints>\"}', which names the text the upload replaces), or write the question beside it in "+
 				"the document editor; either keeps what the paragraph holds",
 			block.id, quoted)}
 	}

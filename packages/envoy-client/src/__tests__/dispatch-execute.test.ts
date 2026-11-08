@@ -9844,6 +9844,93 @@ describe("executeDispatchTool", () => {
     expect(body).not.toHaveProperty("primary");
   });
 
+  // The base a replacement names travels in both encodings: the JSON body's `precondition`, and
+  // the multipart form field `precondition` holding that same object's JSON text, which is what
+  // the upload route reads (`packages/envoy/internal/dispatch/api/artifacts.go`).
+  test("sends the base a replacement names, as JSON and as a multipart form field", async () => {
+    const precondition = { document: "sha256:live-spec" };
+    const sent = async (args: Record<string, unknown>, cwd: string): Promise<RequestInit> => {
+      const requests: RequestInit[] = [];
+      const fetchImpl = async (_url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+        requests.push(init ?? {});
+        return response({
+          artifact: { id: "artifact-42", issue_key: "DSP-42", name: "spec.md" },
+          version: { number: 2 },
+        });
+      };
+      await executeDispatchTool({
+        tool: "dispatch_artifact",
+        args: { issue: "DSP-42", name: "spec.md", precondition, ...args },
+        cwd,
+        host: "omp",
+        sessionId: "session-42",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as typeof fetch,
+      });
+      expect(requests).toHaveLength(1);
+      return requests[0] ?? {};
+    };
+
+    const json = await sent({ content: "# Spec\n" }, "/workspace");
+    expect(JSON.parse(json.body as string)).toMatchObject({ precondition });
+
+    const cwd = makeDirectory();
+    writeFileSync(path.join(cwd, "spec.md"), "# Spec\n");
+    const multipart = await sent({ path: "spec.md" }, cwd);
+    const form = await new Response(multipart.body, {
+      headers: multipart.headers as Record<string, string>,
+    }).formData();
+    expect(form.get("precondition")).toBe(JSON.stringify(precondition));
+  });
+
+  // A base behind the live document is Dispatch's own refusal, and the reader gets the words it
+  // sent: which document moved on, and that the next upload names the token `dispatch doc-read`
+  // prints. Nothing is swallowed into a bare status.
+  test("hands the reader the words a stale base was refused with", async () => {
+    const error =
+      "document edit precondition failed: the document changed; read the document with `dispatch doc-read`, " +
+      "which prints `Document token: sha256:…`, and upload again naming that token as " +
+      '`--precondition-json \'{"document":"sha256:…"}\'`';
+    const fetchImpl = async (_url: RequestInfo | URL): Promise<Response> =>
+      new Response(
+        JSON.stringify({
+          code: "PRECONDITION_FAILED",
+          error,
+          current: { document: "sha256:live-spec", blocks: [], version: 7 },
+        }),
+        { status: 409, headers: { "Content-Type": "application/json" } }
+      );
+
+    await expect(
+      executeDispatchTool({
+        tool: "dispatch_artifact",
+        args: {
+          issue: "DSP-42",
+          name: "spec.md",
+          content: "# Spec\n",
+          precondition: { document: "sha256:behind" },
+        },
+        cwd: "/workspace",
+        host: "omp",
+        sessionId: "session-42",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as typeof fetch,
+      })
+    ).rejects.toEqual(
+      expect.objectContaining({
+        name: "DispatchServiceError",
+        code: "PRECONDITION_FAILED",
+        status: 409,
+        message: error,
+        current: { document: "sha256:live-spec", blocks: [], version: 7 },
+      })
+    );
+  });
+
   test("reports the artifact slug and dispatch:// reference in the upload result text", async () => {
     const fetchImpl = async (_url: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
       response({

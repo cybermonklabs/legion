@@ -42,19 +42,49 @@ export interface UploadResult {
   version: Version;
 }
 
-/** One attempt of `file`'s upload to `owner`, under the write's key (`bounds`). */
-export function uploadFile(
+/**
+ * The base a replacement names: the token of the live document the owner already holds under
+ * `name`, read by the route that resolves a slug or a filename. Nothing when the owner holds no
+ * document under that name, so this upload is the first one; nothing when the read fails, which
+ * is what a document whose tree is outside the Proof schema answers — it renders no markdown and
+ * so has no token, and an upload is the only way to repair it, which the server lets through
+ * (`refuseUploadNamingNoBase`). Only a document has a base: Dispatch stores an upload as one
+ * when its media type is text/markdown (`artifactKind` in the server's `api/artifacts.go`),
+ * which is the type a browser gives a `.md` or a `.markdown` file, and a conversation holds
+ * files and images and no document at all.
+ */
+async function uploadBase(
+  owner: ArtifactOwner,
+  name: string,
+  type: string
+): Promise<string | undefined> {
+  if ("session" in owner || !(type === "text/markdown" || /\.(?:md|markdown)$/i.test(name))) {
+    return undefined;
+  }
+  try {
+    return (await api.ownerArtifactText(owner, name)).token;
+  } catch {
+    return undefined;
+  }
+}
+
+/** One attempt of `file`'s upload to `owner`, under the write's key (`bounds`). An upload over a
+ *  document the owner already holds names the base it replaces (`uploadBase`). */
+export async function uploadFile(
   owner: ArtifactOwner,
   file: File,
   options: { name?: string; summary?: string },
   bounds: WriteBounds
 ): Promise<UploadResult> {
+  const name = options.name ?? (file.name || "artifact");
+  const base = await uploadBase(owner, name, file.type);
   return api.uploadArtifact(
     owner,
     {
       file,
-      name: options.name ?? (file.name || "artifact"),
+      name,
       summary: options.summary,
+      ...(base === undefined ? {} : { precondition: { document: base } }),
     },
     bounds
   );

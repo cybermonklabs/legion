@@ -5258,6 +5258,10 @@ export async function executeDispatchTool(
       const summary = optionalString(args, "summary");
       const name = stringArg(args, "name");
       const content = optionalString(args, "content");
+      // The base this upload replaces, for an upload over a document that already exists; the
+      // server takes the document token alone and refuses a blocks guard.
+      const uploadBase = args.precondition as EditPrecondition | undefined;
+      const base = uploadBase === undefined ? {} : { precondition: uploadBase };
       const artifactInput =
         content === undefined
           ? {
@@ -5271,12 +5275,14 @@ export async function executeDispatchTool(
                       type: Bun.file(resolvePath(input.cwd, stringArg(args, "path"))).type,
                     }),
               ...(summary === undefined ? {} : { summary }),
+              ...base,
               actor,
             }
           : {
               name,
               content,
               ...(summary === undefined ? {} : { summary }),
+              ...base,
               actor,
             };
       const artifactOwner = documentOwner();

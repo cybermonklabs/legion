@@ -1392,6 +1392,14 @@ export class DispatchApiClient {
     return this.json<ArtifactText>(`/api/v1/artifacts/${pathSegment(id)}/text`);
   }
 
+  /** `GET …/artifacts/{slug}/text`: the markdown, version and whole-document token of the
+   *  document `owner` holds under `slug`, which may be its slug or its filename. `404
+   *  ARTIFACT_NOT_FOUND` when the owner holds no such document, which is what the first upload
+   *  of a name reads. A conversation serves no such route. */
+  ownerArtifactText(owner: ArtifactOwner, slug: string): Promise<ArtifactText> {
+    return this.json<ArtifactText>(`${artifactsPath(owner)}/${pathSegment(slug)}/text`);
+  }
+
   rebuildArtifact(
     id: string,
     markdown: string | undefined,

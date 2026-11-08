@@ -1050,8 +1050,12 @@ primary_issue() {
   # and only the human's own review reopens the gate. No READY is held yet, so that reopening
   # releases nothing: a merging stint has one refusal-and-release cycle (a held READY is accepted at
   # the first reopening, the daemon's advancePendingReady), and this proof spends it on the carry.
+  # The upload replaces the spec whole, so it names the base it replaces: the document token the
+  # live read answers, which Dispatch checks under the write's own lock.
+  spec_base=$(dispatch_get "artifacts/$artifact_id/text" | jq -er '.token') ||
+    fail "the spec of $root_issue answers no document token for the upload to name as its base"
   dispatch_human POST "issues/$root_issue/artifacts" \
-    "$(jq -cn --arg name spec.md --arg content "# Stage 3 smoke\n\nThe human revised this proof specification before READY.\n" '{name:$name,content:$content,summary:"Stage 3 gate re-close"}')" >/dev/null
+    "$(jq -cn --arg name spec.md --arg content "# Stage 3 smoke\n\nThe human revised this proof specification before READY.\n" --arg base "$spec_base" '{name:$name,content:$content,summary:"Stage 3 gate re-close",precondition:{document:$base}}')" >/dev/null
   until_true 120 "the human's new primary spec version to close the gate" design_gate_closed "$root_issue"
   uploaded_version=$(design_gate_version "$root_issue")
   until_true 60 "the artifact.version event naming spec version $uploaded_version on $root_issue" spec_event "$root_issue" artifact.version "$uploaded_version"

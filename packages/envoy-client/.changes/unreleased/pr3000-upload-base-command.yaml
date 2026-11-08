@@ -1,0 +1,5 @@
+kind: Added
+body: '`dispatch artifact --precondition-json ''{"document":"sha256:…"}''` names the base an upload replaces. It travels in the JSON body of an inline upload and in the multipart form field `precondition` of a `--path` upload, and the command''s help says when it is needed and that `dispatch doc-read` prints the token. Dispatch''s refusal of a base behind the live document reaches the reader with its own words, which name `dispatch doc-read` and say to upload again.'
+time: 2026-11-08T00:00:01.000000000Z
+custom:
+    Issue: pr3000

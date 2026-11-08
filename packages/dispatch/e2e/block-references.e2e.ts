@@ -240,14 +240,23 @@ test("a block reference a person made keeps resolving after an upload that leave
   // A whole document posted under the document's own name is a new version of it through
   // `docs.ReplaceText`, the path `dispatch artifact` takes. This one holds the document's own
   // text with one other paragraph changed, so the cited paragraph is left exactly as it was.
-  const { markdown } = await getArtifactText(specId);
+  const { markdown, token } = await getArtifactText(specId);
   const uploaded = markdown.replace(
     "The rollout waits on review.",
     "The rollout waits on the staging run."
   );
   expect(uploaded).not.toBe(markdown);
   expect(uploaded).toContain(cited);
-  await createIssueArtifact(issue.key, { content: uploaded, name: spec.name });
+  // The upload replaces the whole document, so it names the base it replaces: the token this same
+  // read answered.
+  if (token === undefined) {
+    throw new Error(`${spec.name} answers no document token`);
+  }
+  await createIssueArtifact(issue.key, {
+    content: uploaded,
+    name: spec.name,
+    precondition: { document: token },
+  });
   await expect.poll(() => latestVersion(specId), PROBE).toBe(before + 1);
 
   // The reference still names a block of the live document, so it reads that paragraph's text and

@@ -147,7 +147,16 @@ export function PlanTab({
     return (
       <div data-testid="plan-empty">
         <EmptyState
-          action={<code>{`dispatch artifact --issue ${issueKey} --name plan.md`}</code>}
+          action={
+            <>
+              <code>{`dispatch artifact --issue ${issueKey} --name plan.md`}</code>
+              <p className="mt-3">
+                A later upload under that name replaces the document, so it names the base it
+                replaces: add <code>--precondition-json</code> with the document token{" "}
+                <code>dispatch doc-read</code> prints.
+              </p>
+            </>
+          }
           label="Plan empty state"
           message={`${issueKey} has no plan document. Make one with:`}
         />

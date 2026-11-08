@@ -789,6 +789,20 @@ export function getArtifactText(id: string, options: ApiOptions = {}): Promise<A
   );
 }
 
+/** The base an upload replacing the document names: the token its live read answers, in the shape
+ *  `CreateArtifactInput.precondition` takes. An upload over a document the owner already holds
+ *  says which text it replaces, and the server checks it under the write's own lock. */
+export async function documentBase(
+  id: string,
+  options: ApiOptions = {}
+): Promise<{ readonly document: string }> {
+  const { token } = await getArtifactText(id, options);
+  if (token === undefined) {
+    throw new Error(`document ${id} answers no document token`);
+  }
+  return { document: token };
+}
+
 /** The blocks of the document's current version, each with the span of markdown it covers. */
 export function getArtifactBlocks(id: string, options: ApiOptions = {}): Promise<ArtifactBlock[]> {
   return request<ArtifactBlock[]>(

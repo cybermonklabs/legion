@@ -121,6 +121,49 @@ const NAME_EXTENSION = /\.([^\s.]+)$/u;
 
 const MARKDOWN_EXTENSION = /^(md|markdown)$/i;
 
+const PRECONDITION_RULE = "A precondition selects exactly one of document or blocks.";
+
+function preconditionKept(value: unknown): boolean {
+  const input = value as { readonly precondition?: unknown };
+  if (input.precondition === undefined) return true;
+  if (typeof input.precondition !== "object" || input.precondition === null) return false;
+  const precondition = input.precondition as {
+    readonly document?: unknown;
+    readonly blocks?: unknown;
+  };
+  return (typeof precondition.document === "string") !== Array.isArray(precondition.blocks);
+}
+
+/** The guard dispatch_doc_edit and dispatch_artifact both take, declared once so a writer reads
+ *  one shape and one wording for an edit and for a whole-document upload. An upload rewrites the
+ *  whole document, so the server takes only `document` from it and refuses `blocks` with
+ *  400 INVALID_PRECONDITION. */
+function preconditionArgument<E extends SchemaNode<E>>(z: SchemaApi<E>): E {
+  return z
+    .object({
+      document: z
+        .string({ min: 1 })
+        .describe("Token for the exact canonical document returned by dispatch doc-read.")
+        .optional(),
+      blocks: z
+        .array(
+          z.object({
+            id: z.string({ min: 1 }).describe("Stable block id dispatch doc-read --blocks lists."),
+            token: z
+              .string({ min: 1 })
+              .describe("That block's full-state token, including inline marks."),
+          }),
+          { min: 1 }
+        )
+        .describe(
+          "Every content block this batch changes, each with the token dispatch doc-read --blocks lists."
+        )
+        .optional(),
+    })
+    .describe("Optional optimistic-concurrency guard; select exactly one of document or blocks.")
+    .optional();
+}
+
 const artifactOwner = documentOwnerValidation(false);
 
 /** The refusal of the part of dispatch_artifact's rule `value` breaks, or undefined when it keeps
@@ -138,6 +181,7 @@ function artifactProblem(value: unknown): string | undefined {
       (typeof input.path === "string") !== (typeof input.content === "string"),
       ARTIFACT_SOURCE_RULE,
     ],
+    [preconditionKept(value), PRECONDITION_RULE],
   ]);
   if (ownerOrSourceProblem !== undefined) return ownerOrSourceProblem;
   if (typeof input.content !== "string" || typeof input.name !== "string") return undefined;
@@ -147,18 +191,6 @@ function artifactProblem(value: unknown): string | undefined {
 }
 
 const documentEditOwner = documentOwnerValidation(true);
-const PRECONDITION_RULE = "A precondition selects exactly one of document or blocks.";
-
-function preconditionKept(value: unknown): boolean {
-  const input = value as { readonly precondition?: unknown };
-  if (input.precondition === undefined) return true;
-  if (typeof input.precondition !== "object" || input.precondition === null) return false;
-  const precondition = input.precondition as {
-    readonly document?: unknown;
-    readonly blocks?: unknown;
-  };
-  return (typeof precondition.document === "string") !== Array.isArray(precondition.blocks);
-}
 
 function documentEditProblem(value: unknown): string | undefined {
   return brokenParts([
@@ -1185,33 +1217,7 @@ export const dispatchToolSpecs = [
         .describe(
           "Flat tagged edits; an operation takes only the keys below, a misspelled one is refused rather than ignored, and the server validates the fields its op requires."
         ),
-      precondition: z
-        .object({
-          document: z
-            .string({ min: 1 })
-            .describe("Token for the exact canonical document returned by dispatch doc-read.")
-            .optional(),
-          blocks: z
-            .array(
-              z.object({
-                id: z
-                  .string({ min: 1 })
-                  .describe("Stable block id dispatch doc-read --blocks lists."),
-                token: z
-                  .string({ min: 1 })
-                  .describe("That block's full-state token, including inline marks."),
-              }),
-              { min: 1 }
-            )
-            .describe(
-              "Every content block this batch changes, each with the token dispatch doc-read --blocks lists."
-            )
-            .optional(),
-        })
-        .describe(
-          "Optional optimistic-concurrency guard; select exactly one of document or blocks."
-        )
-        .optional(),
+      precondition: preconditionArgument(z),
       summary: z.string().describe("Optional named-version summary.").optional(),
     }),
     validation: documentEditValidation,
@@ -1429,6 +1435,7 @@ export const dispatchToolSpecs = [
     description:
       "Attach a local file or inline text as an issue artifact or project document. Do not use it to edit a live document; use " +
       "dispatch doc-edit instead. Never upload a document's own name to change it (spec.md replaces the spec whole); edit it with dispatch doc-edit. Uploading the same name again makes its next version, and so does uploading a document's slug (plan-md for plan.md). Exactly one of path or content is required; a markdown document is at most 1 MiB and any other file at most 25 MiB. " +
+      "An upload that replaces a document the owner already holds under that name says which text it replaces: precondition.document takes the document token dispatch doc-read prints as `Document token: sha256:…`. A base behind the live document is refused with 409 PRECONDITION_FAILED, whose answer carries the live token and the live version; read the document again, decide what the new version says, and upload again. A first upload under a name has no base to name, and neither has a file that is not a document. Whether a replacement that names no base is refused at all is the server's own setting, DISPATCH_UPLOAD_BASE_REQUIRED, which is off by default. " +
       `${ARTIFACT_CONTENT_NAME_RULE} ` +
       "Markdown is also refused with 413 CAP_EXCEEDED when it makes more than 65,536 elements (a block weighs 3, and an empty list item, quote, footnote definition or typed block 3 more for the empty paragraph it holds; a table cell 4, a hard line break 3, an image 3, a piece of inline HTML 2, an autolink 2, a footnote reference 2; inline syntax, marks, lines of text and backslash escapes or character references 1 each), or when a new version would leave the document's stored markdown (what its text reads back as) longer than 1 MiB or making more than 65,536 elements, and longer or heavier than before; shorten it or split it across documents. " +
       "In a table row, write every | in a cell as \\|, in code too: a | after two backslashes ends the cell, and a row with more cells than its table is refused. " +
@@ -1445,11 +1452,12 @@ export const dispatchToolSpecs = [
           "Inline text to store as a Markdown document, under a name ending in .md or .markdown or with no extension; a CR LF or a lone carriage return in it is stored as a line feed."
         )
         .optional(),
+      precondition: preconditionArgument(z),
       summary: z.string().describe("Optional version summary.").optional(),
     }),
     validation: {
       check: (value) => artifactProblem(value) === undefined,
-      message: `${ARTIFACT_OWNER_AND_SOURCE_RULE} ${ARTIFACT_CONTENT_NAME_RULE}`,
+      message: `${ARTIFACT_OWNER_AND_SOURCE_RULE} ${PRECONDITION_RULE} ${ARTIFACT_CONTENT_NAME_RULE}`,
       refusal: (value) => artifactProblem(value) ?? ARTIFACT_OWNER_AND_SOURCE_RULE,
     },
   },

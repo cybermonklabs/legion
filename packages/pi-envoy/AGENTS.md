@@ -919,6 +919,11 @@ comment anchor. A question about a document is written as an `ask` block through
 directive, not as an issue-level `dispatch ask`. Every request a command sends has the shared client's
 60-second HTTP deadline (`DISPATCH_TOOL_DEADLINE_MS`).
 
+`dispatch artifact` takes the same `--precondition-json`, with the document token alone: an upload replaces the whole document, so a `blocks` guard in one returns `INVALID_PRECONDITION`.
+An upload over a document the owner already holds under that name names the base it replaces, the token `dispatch doc-read` prints as `Document token: sha256:…`.
+A base behind the live document returns `PRECONDITION_FAILED` with the live token and the live version number, and writes nothing: read the document again, decide what the new version says, and upload again.
+A first upload of a name has no base to give, and whether a replacement that names none is refused at all is the server's own `DISPATCH_UPLOAD_BASE_REQUIRED`, which is off by default.
+
 With Dispatch configured, a `context` handler (`src/dispatch-first.ts`) puts the `dispatch-first`
 skill into every provider request as a user message after any leading `compactionSummary`
 messages: top-level sessions, Legion panes and `task` subagents alike. Oh My Pi keeps nothing a
