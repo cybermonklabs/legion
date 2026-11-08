@@ -41,30 +41,22 @@ COPY packages/envoy/internal/dispatch/pmdoc/gen/package.json packages/envoy/inte
 COPY docs/site/package.json docs/site/package.json
 # Four of the twelve workspaces the lockfile resolves, because the SPA build and the contract
 # codegen that follow read no more: packages/dispatch, packages/contracts,
-# packages/proof-editor, and the root workspace, which under Bun's isolated linker is the only
-# supplier of packages scripts/third-party-notices.ts imports, among them zod,
-# spdx-expression-parse and spdx-license-list (that script is imported by
+# packages/proof-editor, and the root workspace, which supplies what
+# scripts/third-party-notices.ts imports (that script is imported by
 # packages/dispatch/web/vite.config.ts). Every manifest is still copied above: the lockfile
-# resolves against all of them.
-# Each pattern begins with ./ because Bun reads a pattern without one as a package name, and
-# these workspaces are named @sjawhar/dispatch, @legion/contracts and @legion/proof-editor.
-# A filter that drops one of them is caught by the build rather than by a check: with './'
-# removed the install takes 571 packages and `bun run build:web` below then fails with
-# `Cannot find package 'spdx-expression-parse'`.
+# resolves against all of them. Each pattern begins with ./ because Bun reads a pattern
+# without one as a package name, and these workspaces are named @sjawhar/dispatch,
+# @legion/contracts and @legion/proof-editor. Remove './' and `bun run build:web` below fails
+# with `Cannot find package 'spdx-expression-parse'`.
 # --frozen-lockfile stays immediately after install:
 # .github/scripts/check-bun-workspace-manifests.sh matches `bun install --frozen-lockfile`, and a
 # flag written between the two takes this install out of that check's sight, silently.
-# --ignore-scripts skips the lifecycle script of every package installed here, not one package's.
-# Bun runs such a script only for a package on its own trusted list, which holds because the
-# root package.json sets no trustedDependencies; in this install that list reaches
-# better-sqlite3 and esbuild's postinstall. better-sqlite3 is the reason for the flag:
-# prebuild-install fetches no prebuilt binary for it under Bun ("not yet supported in Bun",
-# oven-sh/bun#4290), so node-gyp compiles it from source on every install, and the stage then
-# needs python3, make and g++ for a module the image never ships, which packages/proof-editor
-# reaches through proof-sdk and nothing copies out of this stage.
-# A dependency that needs its install script is skipped with no message, and fails only a later
-# step that reads what the script would have written, or never. No CI job compares the image's
-# contents, so whoever adds such a dependency checks it themselves.
+# --ignore-scripts skips the lifecycle script of every package installed here. better-sqlite3 is
+# the reason for it: prebuild-install fetches no prebuilt binary for that package under Bun
+# ("not yet supported in Bun", oven-sh/bun#4290), so node-gyp compiles it from source on every
+# install, and the stage would then need python3, make and g++ for a module the image never
+# ships, which packages/proof-editor reaches through proof-sdk and nothing copies out of this
+# stage.
 RUN bun install --frozen-lockfile --ignore-scripts \
     --filter './' \
     --filter './packages/dispatch' \
