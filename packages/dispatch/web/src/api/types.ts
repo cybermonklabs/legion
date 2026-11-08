@@ -63,6 +63,7 @@ export type {
   CheckResult,
   CheckResultCurrency,
   ChildStatusEventPayload,
+  CollaboratorReason,
   Comment,
   CommentDelivery,
   CommentDeliveryEventPayload,
@@ -151,6 +152,7 @@ export type {
   EventsLiveView,
   EventType,
   ExternalLink,
+  GatedStep,
   GraphEdge,
   GraphReferences,
   Handoff,
@@ -170,6 +172,10 @@ export type {
   IssueClaim,
   IssueClaimEventPayload,
   IssueClaimLiveness,
+  IssueCollaboratorAgent,
+  IssueCollaboratorLegion,
+  IssueCollaboratorPerson,
+  IssueCollaborators,
   IssueComponents,
   IssueComponentsInput,
   IssueCoverage,
@@ -246,7 +252,20 @@ export type {
   WriteSuggestion,
 } from "@legion/contracts";
 
-import type { CredentialRequestKind, CredentialSession } from "@legion/contracts";
+import type {
+  CredentialRequestKind,
+  CredentialSession,
+  IssueCollaboratorAgent,
+  IssueCollaboratorLegion,
+} from "@legion/contracts";
+
+/** A collaborator session the Legion registry knows: its `legion` entry is never null. Both
+ *  readers that keep such sessions apart from the rest - the Collaborators tab's Legion sections
+ *  and the composer's "Not running" options - narrow to this with a type guard of their own, so
+ *  the narrowed shape is named once here. */
+export type IssueCollaboratorLegionAgent = IssueCollaboratorAgent & {
+  readonly legion: IssueCollaboratorLegion;
+};
 
 // Dispatch-UI-only DTOs mirroring the credential broker's JSON verbatim (its UI routes, in the
 // broker's HTTP API reference: https://cybermonklabs.github.io/legion/broker/reference/api/). These have

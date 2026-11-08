@@ -71,8 +71,11 @@ shapes that client parses, and the pane's environment — the identity variables
 workspace, the pane's cwd; read by `claim-session.ts`, which resolves it and scopes the overlay's
 `Dispatch:` line to it), `LEGION_GENERATION` (set by the daemon, read by
 nothing here), `LEGION_BOOT_TOKEN_FILE`, `LEGION_DAEMON_URL`, the GitHub
-variables (`LEGION_GH_OWNERS_DIR`, the role's gh bundle of one directory per GitHub owner and one
-per other repository its issue's owner serves; `GH_CONFIG_DIR`, its issue's owner's directory;
+variables (`LEGION_GH_OWNERS_DIR`, the role's gh bundle of one directory per GitHub owner, one per
+owner a configured rename moved a repository away from while the project serves the name it moved
+to, and one per other repository served by its issue's recorded owner and by the owner whose
+installation serves its issue's repository;
+`GH_CONFIG_DIR`, its issue's owner's directory;
 `LEGION_GH_PATH`, the real gh the pane's `gh` wrapper runs; with `GH_TOKEN`, `GITHUB_TOKEN` and
 `GH_HOST` set empty: read by the pane's `gh` and `git`, by nothing here), the Envoy
 variables (`ENVOY_URL`, `ENVOY_NATS_URL`, `ENVOY_TOKEN_FILE`, read by `@legion/envoy-client`),
@@ -243,8 +246,11 @@ Contract 5 added `LEGION_GRANT_FILE` to the pane's environment (LEGION-262), the
 hook minted a grant into before a bash command that invoked `legion`; contract 19 removes it with
 that hook. Nothing in a pane runs `legion` from bash: the `legion` tool mints each operation's grant
 in-process and posts it with the request, and `gh` and `git` read the role's GitHub App tokens from
-the gh bundle under the pane's `LEGION_GH_OWNERS_DIR` (one directory per owner and one per other
-repository the issue's owner serves, each a `hosts.yml` and `config.yml` rendered and refreshed by
+the gh bundle under the pane's `LEGION_GH_OWNERS_DIR` (one directory per owner, one per owner a
+configured rename moved a repository away from while the project serves the name it moved to, and
+one per other repository served by the issue's recorded owner and by the owner whose installation
+serves the issue's repository, each a
+`hosts.yml` and `config.yml` rendered and refreshed by
 the daemon: `/var/run/legion/gh` in a pod,
 `<state_dir>/secrets/<claim>-gh` on tmux; `GH_CONFIG_DIR` names the issue owner's), with
 `GH_TOKEN`, `GITHUB_TOKEN` and `GH_HOST` set empty so no token in the daemon's environment outranks
@@ -691,7 +697,4 @@ closed.
 `bunx tsc --noEmit`, `bun run test`, `bunx biome check extensions/ src/`, each from this directory;
 `LEGION_TEST_OMP=<omp> bun test extensions/legion-phase-stall-omp.test.ts extensions/legion-role-tools-omp.test.ts` and
 `LEGION_TEST_OMP=<omp> LEGION_TEST_NATS_URL=<nats> bun test ./extensions/controller-start-omp.test.ts` for the real binary.
-`bun run test` runs `controller-start-omp.test.ts` in a process of its own: `extensions/legion.test.ts`
-replaces the `nats` module for the whole process (`mock.module`), and that file's card case
-publishes over the real NATS server, so a plain `bun test` with both variables set fails it.
 The phase reminder's own unit tests live beside the machine, in `packages/pi-shared` (`bun test` there).
