@@ -182,8 +182,9 @@ func noCommitForSHA(body []byte) bool {
 }
 
 // DefaultBranch is the name of the repository's default branch (`GET /repos/{owner}/{repo}`,
-// `default_branch` alone), the branch an after-merge or default-branch result's commit must be
-// on. A 403 or 404 is ErrRepositoryUnreadable.
+// `default_branch` alone), the branch a default-branch result's commit must be on, and an
+// after-merge result's where Dispatch holds no merge of its issue. A 403 or 404 is
+// ErrRepositoryUnreadable.
 func (c *Client) DefaultBranch(ctx context.Context, token, owner, repo string) (string, error) {
 	if c == nil {
 		return "", ErrNoAppKey

@@ -228,13 +228,13 @@ func HeadStoredAt(ctx context.Context, pool *store.Pool, repoFull, sha string) (
 // issue is measured against (api/results_currency.go). An issue whose pull request merged
 // into an integration branch has reached that branch and no other, so a result of it is
 // current at a commit that branch's history carries, where the repository's default branch
-// answers nothing about the work until the integration branch itself lands. The newest merge
-// answers: the rows are
-// ordered by event_at descending with the rows carrying none last, since a row with no event
-// time is one whose envelope reported none and says less than any row that did, and by the
-// pull request's own number descending where two merges share a time, so one issue merged
-// twice stands at the branch its latest merge reached rather than at whichever row the
-// planner returned first.
+// answers nothing about the work until the integration branch itself lands. The merged row
+// last updated answers: event_at is the pull request's updated_at as its newest event carried
+// it, which is the time of the merge only until a later event of that pull request (an edit, a
+// label) moves it. The rows are ordered by event_at descending with the rows carrying none
+// last, since a row with no event time is one whose envelope reported none and says less than
+// any row that did, and by the pull request's own number descending where two share a time, so
+// the answer does not turn on whichever row the planner returned first.
 //
 // The read is keyed by the issue and not by the result's commit because Legion merges with
 // squash: the commit that lands on the base branch is the one the squash makes, which is no
