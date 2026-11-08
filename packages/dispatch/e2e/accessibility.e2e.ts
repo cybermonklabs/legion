@@ -26,9 +26,7 @@ const AXE_TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"];
  *  since every report line and every failure names its scheme. */
 const SCHEMES = ["light", "dark"] as const;
 
-/** The four impacts axe reports, worst first. Axe's own types live in `axe-core`, which is
- *  `@axe-core/playwright`'s dependency and not this package's, so there is no name here to
- *  import for them. */
+/** The four impacts axe reports, worst first. */
 type Impact = "critical" | "serious" | "moderate" | "minor";
 
 /** What this worker process scanned, and which entries its scans matched. `test.afterAll` reads
@@ -70,6 +68,22 @@ for (const route of scannedRoutes) {
     const seed = await seedReviewRoutes();
     await withAlice(browser, async (page) => {
       await page.goto(route.path(seed));
+      // `styles.css` eases `color`, `background-color` and `border-color` over 150ms on every
+      // button and link, and axe's `color-contrast` rule reads `getComputedStyle`, so a scan
+      // that starts right after the scheme switch below reads colours part-way through the
+      // ease: a real dark-mode contrast regression passes on one run and a false serious
+      // finding appears on the next. Measured on `issue-spec`, the page's colours keep moving
+      // for ~150ms after the switch while `waitForRouteSettled` returns in 60-140ms, so the
+      // scan lands inside the ease; with this sheet the first frame after a switch already
+      // holds the settled colours. It is the same answer the visual layer gets from
+      // `toHaveScreenshot`'s own `animations: "disabled"` (`e2e/visual.e2e.ts`). Waiting for
+      // `document.getAnimations()` to empty was the other way, and is not this one: it pays
+      // the full ease on every scheme of every route, and it never empties on a page holding
+      // an `animate-pulse` skeleton, which runs forever. `e2e/theme.e2e.ts` polls the one
+      // colour it asserts, which a scan of every colour on the page cannot do.
+      await page.addStyleTag({
+        content: "*, *::before, *::after { transition: none !important; }",
+      });
       const failures: string[] = [];
       for (const colorScheme of SCHEMES) {
         await page.emulateMedia({ colorScheme });
@@ -93,7 +107,7 @@ for (const route of scannedRoutes) {
             // only where it cannot judge the node, and such a node is counted minor rather than
             // gated on: this layer refuses a pull request, so a finding whose impact axe does
             // not name is reported, never enforced.
-            const impact = (node.impact ?? violation.impact ?? "minor") as Impact;
+            const impact = node.impact ?? violation.impact ?? "minor";
             counts[impact] += 1;
             if (impact !== "serious" && impact !== "critical") continue;
             // `target` is one selector per frame, outermost first; the dashboard's pages hold no
