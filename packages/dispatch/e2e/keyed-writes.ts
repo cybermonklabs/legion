@@ -69,29 +69,70 @@ export function replayed(page: Page, method: string, path: string): Promise<Resp
   );
 }
 
-/** Runs `page`'s own clock forward in `stepMs` pieces, a tenth of a second of real time apart,
+/** How long each turn of `runClockUntil` waits in real time, and how far it runs the page's own
+ *  clock while a write is out. One number read in both places, so a change to one is a change to
+ *  both: each turn runs the clock at most this far and then waits this long, and `runFor` takes
+ *  real time of its own, so the page's clock never outruns the wall clock - it crawls a little
+ *  behind it rather than at it, which is the pace this row needs. */
+const REAL_STEP_MS = 100;
+
+/** Runs `page`'s own clock forward in `stepMs` pieces, `REAL_STEP_MS` of real time apart,
  *  until `landing` settles, and answers what it settled with. A write between two attempts is
  *  waiting on a page `setTimeout` (`pause`, `web/src/features/writes/keyed-write.ts`) armed only
  *  once the attempt before it ended, which is after the row saw that attempt, so the clock is
  *  driven until the write moves rather than jumped once. `runFor` rather than `fastForward`:
  *  it fires a repeating timer every period it covers, where `fastForward` fires each timer once.
  *  The page's clock must be installed before it loaded (`page.clock.install()`, which leaves the
- *  clock running at real speed), so the write loop's timers are the ones driven here. */
+ *  clock running at real speed), so the write loop's timers are the ones driven here.
+ *
+ *  While a write of the page's is out the clock crawls a little behind real time instead of
+ *  running at eleven times it, and it never stops: the crawling step and the wait between turns
+ *  are the one `REAL_STEP_MS`, which is what holds it there. An attempt the page has heard
+ *  nothing of for
+ *  `KEYED_SEND_ATTEMPT_MS` of the page's own time is given up and made again under its key
+ *  (`writeUnderKey`), and at the ordinary pace this loop spends `stepMs` of page time for each
+ *  `REAL_STEP_MS` of real time — 1.1 s for every 0.1 s. Driven at that pace over an attempt in
+ *  flight it reaches that 15 s in under a second and a half of a loaded lane's real time,
+ *  abandoning the very attempt the row waits for and raising one more POST than the row counts.
+ *  At the crawling pace the same 15 s costs 15 s of real time, which no answer of this harness
+ *  takes. The clock crawls rather than stopping because a write that never ends must not hold
+ *  the backoff of the write after it: a stopped clock fires no timer at all, and the row then
+ *  waits out its whole budget for a retry that was never armed. Reads (`GET`) are left out of
+ *  the reckoning: none of them is a keyed attempt, and the page holds some of them open for as
+ *  long as it lives. */
 export async function runClockUntil<T>(
   page: Page,
   landing: Promise<T>,
   stepMs = 1_100
 ): Promise<T> {
+  // The writes of the page's that are out, by request: an attempt that went out before this was
+  // called ends while it runs, and a tally would count that ending as one write fewer than none.
+  const out = new Set<Request>();
+  const went = (request: Request) => {
+    if (request.method() !== "GET") out.add(request);
+  };
+  const ended = (request: Request) => {
+    out.delete(request);
+  };
+  page.on("request", went);
+  page.on("requestfailed", ended);
+  page.on("requestfinished", ended);
   let waiting = true;
   const landed = landing.finally(() => {
     waiting = false;
   });
   const quiet = landed.catch(() => undefined);
-  while (waiting) {
-    await page.clock.runFor(stepMs);
-    const margin = Promise.withResolvers<void>();
-    setTimeout(margin.resolve, 100);
-    await Promise.race([quiet, margin.promise]);
+  try {
+    while (waiting) {
+      await page.clock.runFor(out.size === 0 ? stepMs : Math.min(stepMs, REAL_STEP_MS));
+      const margin = Promise.withResolvers<void>();
+      setTimeout(margin.resolve, REAL_STEP_MS);
+      await Promise.race([quiet, margin.promise]);
+    }
+  } finally {
+    page.off("request", went);
+    page.off("requestfailed", ended);
+    page.off("requestfinished", ended);
   }
   return landed;
 }
@@ -175,6 +216,48 @@ export async function dropFirstAnswer(
     await route.abort("failed").catch(() => undefined);
   });
   return promise;
+}
+
+/** Hands the page the first `method` answer on `path` over a body that errors as it is read,
+ *  under that answer's own status and headers, as a connection lost under an answer's body does:
+ *  Dispatch made the write and the page learns nothing of what it did. Every later answer is
+ *  the page's own.
+ *
+ *  Why not a `page.route`: Playwright fulfils a route with a body Chromium hands the page as it
+ *  was given, so neither a `Content-Encoding` the body does not honour nor a short
+ *  `Content-Length` makes a body the page cannot read - the page reads both bodies whole. The cut
+ *  therefore goes where the page reads the answer, over the `fetch` the API client calls
+ *  (`createApiClient`), from before the page loads. The request itself is the real one, so
+ *  Playwright's network events and the row's `watchWrites` list it as any other. */
+export async function cutFirstAnswerBody(page: Page, method: string, path: string): Promise<void> {
+  await page.addInitScript(
+    ({ method, path }) => {
+      const sent = window.fetch;
+      let cut = false;
+      // Every name of the page's own is read off `window`: this module's `Request` and
+      // `Response` are Playwright's.
+      const cutting = async (
+        input: Parameters<typeof window.fetch>[0],
+        init?: Parameters<typeof window.fetch>[1]
+      ) => {
+        if (cut) return sent(input, init);
+        const asked = input instanceof window.Request ? input.url : String(input);
+        const sentMethod = (
+          init?.method ?? (input instanceof window.Request ? input.method : "GET")
+        ).toUpperCase();
+        const response = await sent(input, init);
+        if (cut || sentMethod !== method) return response;
+        if (new URL(asked, window.location.href).pathname !== path) return response;
+        cut = true;
+        return new window.Response(
+          new ReadableStream<Uint8Array>({ start: (body) => body.error(new TypeError("cut")) }),
+          { headers: response.headers, status: response.status, statusText: response.statusText }
+        );
+      };
+      window.fetch = cutting as typeof window.fetch;
+    },
+    { method, path }
+  );
 }
 
 /** One attempt of an upload as the page's own `XMLHttpRequest` saw it: the key it went under and

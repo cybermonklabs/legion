@@ -122,7 +122,7 @@ function fail(error: unknown): never {
 
 /** The lane's bucket in the file store the caller started, made here with one request. A bucket
  *  is mutable state every lane would otherwise share; a run of one lane keeps the caller's own,
- *  the bucket it made itself (`.github/workflows/ci.yaml`). */
+ *  the bucket it made itself (`.github/workflows/dispatch-browser.yaml`'s shard job). */
 async function laneBucket(index: number, count: number): Promise<string | undefined> {
   const endpoint = (process.env.DISPATCH_E2E_FILE_STORE_ENDPOINT ?? "").trim().replace(/\/$/, "");
   const bucket = (process.env.DISPATCH_E2E_FILE_STORE_BUCKET ?? "").trim();
@@ -148,6 +148,26 @@ function laneEnvironment(count: number): Record<string, string> {
     }
   }
   return { ...exported, ...lanes[0]?.env };
+}
+
+// `@legion/contracts` as Playwright's own runner reads it. The specs and `e2e/agents.ts` import
+// that package, and Playwright loads them under Node, which takes the package's `default` export
+// condition - `dist/`, which is gitignored - where a `bun` run takes its source. So a workspace
+// that has never built it dies at the first spec with `Cannot find module
+// @legion/contracts/dist/index.js`, naming no cause. Building it here costs a fraction of a
+// second and makes every run self-sufficient, CI's as much as a workstation's: no workflow builds
+// contracts for the suite, so this is where that build happens.
+async function buildContracts(): Promise<void> {
+  const built = Bun.spawn(["bun", "run", "build"], {
+    cwd: join(import.meta.dir, "..", "..", "contracts"),
+    stdio: ["ignore", "ignore", "inherit"],
+  });
+  if ((await built.exited) !== 0) {
+    throw new Error(
+      "e2e/run.ts: `bun run build` in packages/contracts failed, and Playwright's Node runner " +
+        "reads that build; the error above is the build's own."
+    );
+  }
 }
 
 /** No two lanes share a port. Each lane's listeners bind port 0 and its Postgres takes a port the
@@ -179,6 +199,7 @@ try {
   // Before a directory is made or a server starts, and before this adds its own values of the
   // variables it names, so a caller's value can never reach one lane's servers.
   if (count > 1) refuseLaneConflicts(count);
+  await buildContracts();
   const given = (process.env.DATABASE_URL ?? "").trim();
   runDir = mkdtempSync(join(tmpdir(), "dispatch-e2e-run-"));
   // A run of one lane against the database the caller named starts no Postgres, which is what

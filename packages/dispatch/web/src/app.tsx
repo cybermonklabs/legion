@@ -14,6 +14,7 @@ import { Inbox } from "./features/inbox/Inbox";
 import { InboxDrawer } from "./features/inbox/InboxDrawer";
 import { useInboxCount } from "./features/inbox/useInboxCount";
 import { CreateIssueDialog } from "./features/issue/CreateIssueDialog";
+import { ISSUE_TAB_LABELS } from "./features/issue/issue-tab-list";
 import { MarginColumn } from "./features/margin/MarginColumn";
 import { MarginProvider } from "./features/margin/margin-context";
 import { DEFAULT_MARGIN_WIDTH } from "./features/margin/margin-width";
@@ -116,6 +117,14 @@ const AgentsPage = lazy(() =>
   import("./features/agents/AgentsPage").then((module) => ({ default: module.AgentsPage }))
 );
 
+const MachinesPage = lazy(() =>
+  import("./features/machines/MachinesPage").then((module) => ({ default: module.MachinesPage }))
+);
+
+const MachinePage = lazy(() =>
+  import("./features/machines/MachinePage").then((module) => ({ default: module.MachinePage }))
+);
+
 const AgentConversationPage = lazy(() =>
   import("./features/agent-view/AgentConversationPage").then((module) => ({
     default: module.AgentConversationPage,
@@ -176,8 +185,11 @@ function IssuePageFallback(): ReactNode {
           />
         </h1>
       </header>
-      <div className={`mb-4 flex gap-2 border-b ${borderDefault}`} role="tablist">
-        {["Spec", "Conversation", "Children", "Artifacts", "Activity"].map((label) => (
+      {/* `overflow-hidden`: the nine labels are wider than a narrow window and this row neither
+          wraps nor scrolls, where the real tablist scrolls inside itself. Clipped, a chunk's load
+          never scrolls the page sideways. */}
+      <div className={`mb-4 flex gap-2 overflow-hidden border-b ${borderDefault}`} role="tablist">
+        {ISSUE_TAB_LABELS.map((label) => (
           <span
             className={`animate-pulse rounded px-3 py-2 text-sm ${textTransparent} ${skeletonBg}`}
             key={label}
@@ -825,6 +837,8 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
                 <Route element={<BroadcastPage />} path="/agents/broadcasts/:id" />
                 <Route element={<AgentConversationPage />} path={AGENT_LIVE_PATH} />
                 <Route element={<AgentArtifactPage />} path={AGENT_ARTIFACT_PATH} />
+                <Route element={<MachinesPage />} path="/machines" />
+                <Route element={<MachinePage />} path="/machines/:machine" />
                 <Route element={<IssuePage />} path="/issues/:key/*" />
                 <Route element={<ProjectPage />} path="/projects/:key" />
                 <Route element={<ProjectPage />} path="/projects/:key/architecture" />
