@@ -2,11 +2,14 @@ package store
 
 import (
 	"context"
+	"maps"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -160,6 +163,70 @@ func TestRoleConversationsAreNewestFirstWithRegisteredBeforeScanned(t *testing.T
 	}
 	if got, want := sessionsOf(all), []string{"old-scanned", "old-registered", "new-registered", "late-scanned", "reviewer"}; !slices.Equal(got, want) {
 		t.Errorf("AgentConversations = %v, want %v", got, want)
+	}
+}
+
+// seedIssue writes one issue row of the tree root, at phase and status, lingering or not.
+func seedIssue(t *testing.T, s *Store, key, tree, issuePhase, status string, lingers bool) {
+	t.Helper()
+	var linger *time.Time
+	if lingers {
+		until := time.Now().Add(time.Hour)
+		linger = &until
+	}
+	_, err := s.Pool().Exec(context.Background(), `insert into issues
+		(key, tree, project, title, phase, generation, status, rank, last_dispatch_seq, linger_until)
+		values ($1, $2, 'LEGION', 'seeded', $3, 1, $4, 'A', 1, $5)
+		on conflict (key) do update set phase = excluded.phase, status = excluded.status,
+			linger_until = excluded.linger_until`, key, tree, issuePhase, status, linger)
+	if err != nil {
+		t.Fatalf("seed issue %s: %v", key, err)
+	}
+}
+
+// FinishedIssues says which issues of the project's conversations have left the workflow, the
+// one answer the registry's `finished` carries: an issue the workflow still runs has not, and a
+// closed issue, a parked one (lingering past its close with a status out of the workflow), a
+// member of a tree whose root lingers, and an issue the record no longer holds all have.
+// IssueConversations reads just the rows of one of them.
+func TestFinishedIssuesNamesEveryIssueThatHasLeftTheWorkflow(t *testing.T) {
+	ctx := context.Background()
+	s := migratedStore(t)
+	rows := map[string]string{
+		"ses-running": "LEGION-209", "ses-second": "LEGION-209",
+		"ses-done": "LEGION-210", "ses-parked": "LEGION-211",
+		"ses-child": "LEGION-212", "ses-unrecorded": "LEGION-213",
+	}
+	for session, issue := range rows {
+		c := testerConversation(session, at(1))
+		c.Issue, c.Token = issue, claim.Token("legion-legion-"+strings.ToLower(issue)+"-tester")
+		if _, err := s.RegisterConversation(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seedIssue(t, s, "LEGION-209", "LEGION-209", "implementing", "in_progress", false)
+	seedIssue(t, s, "LEGION-210", "LEGION-210", "done", "done", false)
+	seedIssue(t, s, "LEGION-211", "LEGION-211", "implementing", "backlog", true)
+	seedIssue(t, s, "LEGION-200", "LEGION-200", "implementing", "in_progress", true)
+	seedIssue(t, s, "LEGION-212", "LEGION-200", "implementing", "in_progress", false)
+
+	finished, err := s.FinishedIssues(ctx, "legion", record.OutOfWorkflow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{
+		"LEGION-209": false, "LEGION-210": true, "LEGION-211": true, "LEGION-212": true, "LEGION-213": true,
+	}
+	if !maps.Equal(finished, want) {
+		t.Errorf("FinishedIssues = %v, want %v: a running issue keeps its role's messages, every other issue has no holder coming", finished, want)
+	}
+
+	held, err := s.IssueConversations(ctx, "legion", "LEGION-209")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := sessionsOf(held), []string{"ses-running", "ses-second"}; !slices.Equal(got, want) {
+		t.Errorf("IssueConversations = %v, want %v", got, want)
 	}
 }
 

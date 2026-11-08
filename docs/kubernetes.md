@@ -1249,10 +1249,24 @@ for conversations older than this release, by a scan at boot that finds them by 
 close forgets a claim's session; this record keeps it. With `answers` set, the daemon mirrors that
 record into the Envoy listener's agent registry (`PUT /v1/legion/agents`, in batches at boot and one
 write per registration) and writes its project's `answering` heartbeat
-(`PUT /v1/legion/projects/<project>`) every minute; the listener hands a stopped agent's message off
-only while that heartbeat is younger than three minutes, so a daemon that stops, loses `answers` or
-is taken down reverts its agents to the `404` within minutes. A listener too old for these routes
-answers `404`, which the daemon logs once per boot and tries again every minute.
+(`PUT /v1/legion/projects/<project>`) every minute; the listener hands a project's messages off
+while that record last said `answering`, whatever its age, so a daemon that stops still gets its
+agents' messages and answers them when it returns, and one that loses `answers` or is taken down
+states `answering: false` at its next boot, which reverts its agents to the `404` at once. A
+listener too old for these routes answers `404`, which the daemon logs once per boot and tries
+again every minute.
+
+Each entry carries `finished`, whether its issue has left the workflow — closed or done, parked,
+or its tree retired or lingering past its close — so no next holder of that role is coming. The
+daemon reads the standing of every issue its history names each minute and writes that issue's
+entries again whenever it changes, in either direction, so an issue a person moves back into the
+workflow stops being finished within the minute. It decides what a message to a role **nobody
+holds** gets: a finished role's message is handed to the daemon and its sender answered `200`
+with the stopped agent as `recipient`, while an unfinished role's is kept on that role's kept
+lane for its next worker and answered `202 kept unclaimed`, which is what the gap between two
+phase workers of one issue, and a pod being replaced, both need. A message addressed to a session
+id is handed off whether its issue is finished or not: that session has stopped, and the message
+is for it rather than for a role another session will take.
 
 A hand-off arrives on `notifications.legion.<project>.agents.<session>`
 (`packages/contracts/src/legion-handoff.ts`), read by a durable consumer, so one published while the

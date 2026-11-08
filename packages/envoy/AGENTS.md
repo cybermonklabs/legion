@@ -4340,7 +4340,7 @@ Dispatch reads it through `internal/dispatch/envoy` (`Agent`, `RoleAgents`, `Iss
 
 - **Entry.**
   `session_id` (letters, digits, `-`, `_`, at most 128 bytes), `legion_project` (the Legion project token, `claim.ProjectToken`:
-  lower-case letters and digits; not the Dispatch project), `issue` (a Dispatch issue key, upper case), `role` (one of the six workflow roles), `role_token` (exactly `legion-<legion_project>-<issue lower-cased>-<role>`, `claim.NewToken`'s token), `title`, `harness` (`omp` or `claude`), `started_at` (RFC 3339 UTC, ending `Z`) and `recorded_at`, which the listener sets at a session's first write and keeps.
+  lower-case letters and digits; not the Dispatch project), `issue` (a Dispatch issue key, upper case), `role` (one of the six workflow roles), `role_token` (exactly `legion-<legion_project>-<issue lower-cased>-<role>`, `claim.NewToken`'s token), `title`, `harness` (`omp` or `claude`), `started_at` (RFC 3339 UTC, ending `Z`), `finished` (optional, false when absent: the issue has left the workflow, so no next holder of the role is coming — see "Legion hand-off") and `recorded_at`, which the listener sets at a session's first write and keeps.
   `Validate` is the one check both writes refuse through, and its bounds keep every key far inside what NATS takes, so a validated entry is never refused halfway through its writes.
   A session id, issue key or role token a route names is checked the same way before NATS sees it, so these routes answer a name NATS would refuse with a 400 naming the field rather than a 413.
   Readers ignore fields they do not know.
@@ -4383,10 +4383,14 @@ Dispatch reads it through `internal/dispatch/envoy` (`Agent`, `RoleAgents`, `Iss
 A message for a stopped Legion agent goes to the agent's daemon, which answers it, rather than being refused.
 `handOffToLegion` (`cmd/listener/legion_handoff.go`) runs on the three paths that find no session to deliver to:
 `/v1/messages/send` before its `404 no live session`, `/v1/messages/publish` to a role topic before the keep and the `unclaimed` or `holder_lapsed` 404 (`roleSend.noHolder`), and an agent subject's bus delivery in place of its `no_holder` exception, after the deferral window is spent (`unplaceable_delivery.go`).
+A role publish is the one of the three that is held back by the keep: it is handed off only for a role whose issue has finished, and a role whose issue still runs is kept for its next holder instead (the bullet below).
 It hands off only when all hold:
 
 - the source is not `envoy` (the broker's wake sends and the listener's own exceptions are not questions), and the send or publish body does not carry `"handoff": false`, which every publish the daemon makes carries (`notify.HTTPPublisher`), so a notice to a stopped agent is refused and held as before;
 - the Legion agent registry names the target: the session addressed, or for a role publish the role token's newest session (a role that is not a Legion workflow role's token never is);
+- for a role publish, that newest entry is `finished`: the role's issue has left the workflow — closed or done, parked, or its tree retired or lingering past its close — so no next holder of that role is coming (`legionagents.Entry.Finished`, written by the daemon's mirror from the issue's state it records and rewritten whenever that state changes).
+  A role whose issue is still in the workflow hands off nothing: the gap between two phase workers of one issue and a pod being replaced both leave a role unclaimed while the registry still names the worker that stopped, so the message is kept on the role's kept lane for the next holder and answered `202 kept unclaimed` (INFRA-514), exactly as before the hand-off existed.
+  A send addressed to a session id is handed off whether its issue is finished or not: that session has stopped, and the message is for it rather than for a role another session will take;
 - that session's project last said it answers: `project.<legion_project>` holds `answering: true`.
   Only the flag the project last stated counts, never the record's age: a daemon that stated `answering: true` and then stopped still gets its agents' messages, which JetStream holds until it reads them, and it answers or forwards them when it returns (spec v21, section 2.12 of dispatch://INFRA-204's plan).
   A project that stated `answering: false`, or never stated anything, keeps the refusal it had before hand-off.

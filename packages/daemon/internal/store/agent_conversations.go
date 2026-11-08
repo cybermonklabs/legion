@@ -8,6 +8,8 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -127,6 +129,65 @@ func (s *Store) AgentConversations(ctx context.Context, project string) ([]Agent
 		return nil, fmt.Errorf("read the conversations of project %s: %w", project, err)
 	}
 	return found, nil
+}
+
+// IssueConversations is every recorded conversation of one issue of the Legion project token,
+// oldest first, equal times ordered by session: the rows whose registry entries are written
+// again when that issue's standing changes (agenthistory.Mirror).
+func (s *Store) IssueConversations(ctx context.Context, project, issue string) ([]AgentConversation, error) {
+	rows, err := s.pool.Query(ctx, `select `+conversationColumns+` from agent_conversations
+		where project = $1 and issue = $2 order by started_at, session`, project, issue)
+	if err != nil {
+		return nil, fmt.Errorf("read the conversations of %s: %w", issue, err)
+	}
+	found, err := scanConversations(rows)
+	if err != nil {
+		return nil, fmt.Errorf("read the conversations of %s: %w", issue, err)
+	}
+	return found, nil
+}
+
+// FinishedIssues says, of every issue the project's recorded conversations name, whether it has
+// left the workflow: neither it nor its tree root is the workflow's to run any more
+// (pods.InWorkflowNotLingering, the one gate every path that acts on a released pod reads), so no
+// later worker of any of its roles is coming. An issue closed or done, one parked, and a member
+// of a tree that was retired or still lingers past its close are each finished; one still running
+// is not. An issue the record no longer holds is finished too: nothing will run it again.
+//
+// outOfWorkflow is record.OutOfWorkflow, passed in because this package sits below record, as
+// every other reader of that rule here passes it (resumeStanding).
+func (s *Store) FinishedIssues(ctx context.Context, project string, outOfWorkflow func(status string) bool) (map[string]bool, error) {
+	rows, err := s.pool.Query(ctx, `select distinct c.issue, i.phase, i.status, i.linger_until is not null,
+		root.phase, root.status, root.linger_until is not null
+		from agent_conversations c
+		left join issues i on i.key = c.issue
+		left join issues root on root.key = i.tree
+		where c.project = $1`, project)
+	if err != nil {
+		return nil, fmt.Errorf("read the standing of the issues of project %s: %w", project, err)
+	}
+	defer rows.Close()
+	finished := map[string]bool{}
+	for rows.Next() {
+		var issue string
+		var issuePhase, status, rootPhase, rootStatus *string
+		var lingering, rootLingering *bool
+		if err := rows.Scan(&issue, &issuePhase, &status, &lingering, &rootPhase, &rootStatus, &rootLingering); err != nil {
+			return nil, fmt.Errorf("read the standing of the issues of project %s: %w", project, err)
+		}
+		if issuePhase == nil || rootPhase == nil {
+			finished[issue] = true
+			continue
+		}
+		finished[issue] = !pods.InWorkflowNotLingering(
+			pods.Standing{Phase: phase.Phase(*issuePhase), Status: *status, Lingers: *lingering},
+			pods.Standing{Phase: phase.Phase(*rootPhase), Status: *rootStatus, Lingers: *rootLingering},
+			outOfWorkflow)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the standing of the issues of project %s: %w", project, err)
+	}
+	return finished, nil
 }
 
 func scanConversations(rows pgx.Rows) ([]AgentConversation, error) {

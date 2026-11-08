@@ -71,10 +71,31 @@ func (c *fakeClock) fire(w fakeWait) {
 	w.fire <- now
 }
 
-// fakeStore holds the history in memory.
+// fakeStore holds the history in memory, with the standing the test gives each of its issues.
 type fakeStore struct {
 	mu   sync.Mutex
 	rows []store.AgentConversation
+	// finished is what FinishedIssues says of each issue; an issue it does not name is running.
+	finished map[string]bool
+	// standingErr is what FinishedIssues fails with while it is set.
+	standingErr error
+}
+
+// setFinished is the record moving an issue out of the workflow (a close, a park, its tree
+// retired) or back into it.
+func (s *fakeStore) setFinished(issue string, finished bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.finished == nil {
+		s.finished = map[string]bool{}
+	}
+	s.finished[issue] = finished
+}
+
+func (s *fakeStore) failStandings(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.standingErr = err
 }
 
 func (s *fakeStore) RegisterConversation(_ context.Context, c store.AgentConversation) (store.AgentConversation, error) {
@@ -99,6 +120,40 @@ func (s *fakeStore) AgentConversations(_ context.Context, project string) ([]sto
 		}
 	}
 	return rows, nil
+}
+
+// IssueConversations is every row of one issue of the project (store.IssueConversations).
+func (s *fakeStore) IssueConversations(_ context.Context, project, issue string) ([]store.AgentConversation, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var rows []store.AgentConversation
+	for _, row := range s.rows {
+		if row.Project == project && row.Issue == issue {
+			rows = append(rows, row)
+		}
+	}
+	return rows, nil
+}
+
+// FinishedIssues names every issue the project's rows carry, with the standing the test set it,
+// and checks that the mirror reads the record's own rule (store.FinishedIssues takes
+// record.OutOfWorkflow, which no other function answers the same way).
+func (s *fakeStore) FinishedIssues(_ context.Context, project string, outOfWorkflow func(string) bool) (map[string]bool, error) {
+	if outOfWorkflow == nil || !outOfWorkflow("done") || !outOfWorkflow("backlog") || outOfWorkflow("in_progress") {
+		return nil, fmt.Errorf("the mirror passed a rule that is not record.OutOfWorkflow")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.standingErr != nil {
+		return nil, s.standingErr
+	}
+	finished := map[string]bool{}
+	for _, row := range s.rows {
+		if row.Project == project {
+			finished[row.Issue] = s.finished[row.Issue]
+		}
+	}
+	return finished, nil
 }
 
 // beat is one heartbeat the stand-in took.
@@ -235,6 +290,14 @@ func (s *standIn) entry(raw []byte) (Entry, error) {
 	want := []string{"harness", "issue", "legion_project", "role", "role_token", "session_id", "started_at", "title"}
 	got := make([]string, 0, len(fields))
 	for key := range fields {
+		// finished is the one optional field: it is written only for an issue that has left the
+		// workflow, and omitted while the issue runs, which is what the listener reads as false.
+		if key == "finished" {
+			if value, ok := fields[key].(bool); !ok || !value {
+				return Entry{}, fmt.Errorf("finished is %v, want it written only when it is true", fields[key])
+			}
+			continue
+		}
 		got = append(got, key)
 	}
 	slices.Sort(got)
@@ -558,5 +621,123 @@ func TestAnyOtherFailureIsRetriedOnABackoff(t *testing.T) {
 	}
 	if w.d <= 50*time.Second {
 		t.Errorf("the mirror waits %s with everything written, want the rest of the heartbeat's minute", w.d)
+	}
+}
+
+// fireUntil fires the waits the mirror asks for until holds, so a test does not have to count
+// the passes a queued write's own wake adds.
+func fireUntil(t *testing.T, clock *fakeClock, what string, holds func() bool) {
+	t.Helper()
+	for range 20 {
+		if holds() {
+			return
+		}
+		clock.fire(clock.wait(t))
+	}
+	t.Fatalf("the mirror never %s", what)
+}
+
+// An entry's `finished` is the standing of its issue: false while the issue runs, so the listener
+// keeps a message to that role for its next worker (INFRA-514's 202), and true once the issue has
+// left the workflow - closed, parked, or its tree retired - so the listener hands such a message
+// to this daemon, which answers it from the stopped agent's own conversation. The mirror writes
+// every conversation of an issue again whenever that standing changes, in either direction.
+func TestTheMirrorWritesFinishedWhenAnIssueLeavesTheWorkflowAndAgainWhenItReturns(t *testing.T) {
+	listener, server := newStandIn(t)
+	st := &fakeStore{rows: []store.AgentConversation{testerRow(t, "ses-0", 0), testerRow(t, "ses-1", 1)}}
+	_, clock := runMirror(t, server, st, &logs{})
+	w := clock.wait(t)
+
+	batches, _, _ := listener.snapshot()
+	if len(batches) != 1 || len(batches[0]) != 2 {
+		t.Fatalf("the boot wrote %+v, want one batch holding both conversations", batches)
+	}
+	for _, entry := range batches[0] {
+		if entry.Finished {
+			t.Fatalf("the boot wrote %s finished while its issue runs: a message to its role would be answered from a stopped agent instead of kept for the role's next worker", entry.SessionID)
+		}
+	}
+
+	// The issue leaves the workflow: every conversation of it is written again, finished.
+	st.setFinished("LEGION-7", true)
+	clock.fire(w)
+	fireUntil(t, clock, "wrote the closed issue's conversations again", func() bool {
+		_, puts, _ := listener.snapshot()
+		return len(puts) == 2
+	})
+	_, puts, _ := listener.snapshot()
+	if puts[0].SessionID != "ses-0" || puts[1].SessionID != "ses-1" || !puts[0].Finished || !puts[1].Finished {
+		t.Fatalf("the close wrote %+v, want both conversations, oldest first, each finished", puts)
+	}
+
+	// A standing that did not change writes nothing, whatever the minute brings.
+	for range 2 {
+		clock.fire(clock.wait(t))
+	}
+	if _, again, _ := listener.snapshot(); len(again) != 2 {
+		t.Fatalf("a standing that did not change wrote %+v, want only the two writes the close made", again)
+	}
+
+	// And back into the workflow - a person moved the issue in again: the entries say so, so the
+	// role's next worker is kept its messages once more.
+	st.setFinished("LEGION-7", false)
+	fireUntil(t, clock, "wrote the reopened issue's conversations again", func() bool {
+		_, puts, _ := listener.snapshot()
+		return len(puts) == 4
+	})
+	_, puts, _ = listener.snapshot()
+	if puts[2].Finished || puts[3].Finished {
+		t.Fatalf("the reopen wrote %+v, want both conversations again with finished false", puts[2:])
+	}
+}
+
+// A registration recorded while its issue is finished carries that standing, and a standing read
+// that fails changes nothing and is read again on the lane's backoff.
+func TestTheMirrorWritesTheStandingItLastReadAndRetriesAReadThatFailed(t *testing.T) {
+	listener, server := newStandIn(t)
+	st := &fakeStore{rows: []store.AgentConversation{testerRow(t, "ses-history", 0)}}
+	st.setFinished("LEGION-7", true)
+	st.failStandings(fmt.Errorf("the record is not readable"))
+	log := &logs{}
+	m, clock := runMirror(t, server, st, log)
+	fireUntil(t, clock, "wrote the history", func() bool {
+		batches, _, _ := listener.snapshot()
+		return len(batches) == 1
+	})
+	if batches, _, _ := listener.snapshot(); batches[0][0].Finished {
+		t.Fatalf("the boot wrote %+v while no standing could be read, want every entry unfinished: the keep is what an unread standing leaves", batches[0][0])
+	}
+
+	// A registration made while no standing could be read is unfinished too, which is the answer
+	// every entry had before this field.
+	m.Put(testerRow(t, "ses-registered", 1))
+	fireUntil(t, clock, "wrote the registration", func() bool {
+		_, puts, _ := listener.snapshot()
+		return len(puts) == 1
+	})
+	if _, puts, _ := listener.snapshot(); puts[0].Finished {
+		t.Fatalf("a registration written while no standing could be read is %+v, want it unfinished", puts[0])
+	}
+	if lines := log.lines("could not read the standing of its issues"); len(lines) == 0 {
+		t.Fatalf("the failed standing read was not logged:\n%s", strings.Join(log.lines(), "\n"))
+	}
+
+	// The read recovers: the finished issue's conversation is written again, finished, and a
+	// registration made after it carries the standing too.
+	st.failStandings(nil)
+	fireUntil(t, clock, "wrote the finished issue's conversation again", func() bool {
+		_, puts, _ := listener.snapshot()
+		return len(puts) == 2
+	})
+	if _, puts, _ := listener.snapshot(); !puts[1].Finished || puts[1].SessionID != "ses-history" {
+		t.Fatalf("the recovered read wrote %+v, want the finished issue's recorded conversation written again", puts[1])
+	}
+	m.Put(testerRow(t, "ses-later", 2))
+	fireUntil(t, clock, "wrote the second registration", func() bool {
+		_, puts, _ := listener.snapshot()
+		return len(puts) == 3
+	})
+	if _, puts, _ := listener.snapshot(); !puts[2].Finished {
+		t.Fatalf("a registration of a finished issue is %+v, want it finished", puts[2])
 	}
 }

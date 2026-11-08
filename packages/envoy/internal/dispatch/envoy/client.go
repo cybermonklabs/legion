@@ -548,6 +548,11 @@ func (c *Client) Session(ctx context.Context, sessionID string) (Session, error)
 // Live is the registry's own reading of the session's state: true only while that session's last
 // registration is inside the listener's live window. A session past it is unresponsive and not
 // gone (dispatch://INFRA-392), so Live false is never read as "that agent has stopped".
+//
+// Finished is whether the entry's issue has left the workflow, so no next holder of its role
+// token is coming. The listener omits it while the issue runs, which decodes as false: a role
+// whose issue still runs is nobody's to answer for, because its next worker will claim the role
+// and take what was kept for it.
 type LegionAgent struct {
 	SessionID     string  `json:"session_id"`
 	LegionProject string  `json:"legion_project"`
@@ -559,6 +564,7 @@ type LegionAgent struct {
 	StartedAt     string  `json:"started_at"`
 	RecordedAt    string  `json:"recorded_at"`
 	Live          bool    `json:"live"`
+	Finished      bool    `json:"finished"`
 	ReplacedBy    *string `json:"replaced_by"`
 	ReplacedAt    *string `json:"replaced_at"`
 }

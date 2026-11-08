@@ -47,6 +47,16 @@ type Entry struct {
 	// RecordedAt is when the listener first recorded the session, RFC 3339 UTC. The listener sets
 	// it; a writer's value is ignored.
 	RecordedAt string `json:"recorded_at"`
+	// Finished is whether the session's issue has left the workflow, so no later holder of its
+	// role token will come: the issue is closed or done, parked, or its tree retired or lingering
+	// after its close. The daemon's mirror sets it from the issue's state it records, and writes
+	// the entry again whenever that changes, in either direction. It is false by default, and a
+	// writer that never states it leaves every entry of its project unfinished.
+	//
+	// A message to a role nobody holds reads it (handOffToLegion): an unfinished role's message
+	// is kept on the role's kept lane for the next worker of that phase, while a finished role's
+	// is handed to the daemon, because no holder is coming for it.
+	Finished bool `json:"finished,omitempty"`
 }
 
 // Agent is an entry with what a read derives from the other sessions of its role token, ordered by

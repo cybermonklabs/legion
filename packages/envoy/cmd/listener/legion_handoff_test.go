@@ -86,6 +86,13 @@ func (r *handoffRig) register(t *testing.T, sessionID, issue, role, started stri
 	r.want(t, http.StatusOK, http.MethodPut, "/v1/legion/agents/sessions/"+sessionID, legionEntry(sessionID, issue, role, started))
 }
 
+// registerFinished records a Legion agent whose issue has left the workflow, so no next holder of
+// its role is coming: the one shape a role's message is handed off for.
+func (r *handoffRig) registerFinished(t *testing.T, sessionID, issue, role, started string) {
+	t.Helper()
+	r.want(t, http.StatusOK, http.MethodPut, "/v1/legion/agents/sessions/"+sessionID, finishedLegionEntry(sessionID, issue, role, started))
+}
+
 // beat writes the project infra's answering record through its route, as the daemon writes it.
 func (r *handoffRig) beat(t *testing.T, answering bool, at time.Time) {
 	t.Helper()
@@ -179,14 +186,14 @@ func TestLegionProjectRouteStoresTheAnsweringRecord(t *testing.T) {
 	}
 }
 
-// A send and a role publish to a stopped Legion agent whose project last said it answers are
-// handed to that project's daemon on the retained subject, carrying the envelope whole. Two
-// hand-offs of one envelope - the copies two listeners' durables make, and a send repeated under
-// one idempotency key - collapse on their MsgId, so the stream stores one.
+// A send to a stopped Legion agent whose project last said it answers, and a role publish whose
+// role is finished, are handed to that project's daemon on the retained subject, carrying the
+// envelope whole. Two hand-offs of one envelope - the copies two listeners' durables make, and a
+// send repeated under one idempotency key - collapse on their MsgId, so the stream stores one.
 func TestHandOffToLegionHandsAStoppedAgentToItsDaemon(t *testing.T) {
 	rig := newHandoffRig(t, 0)
 	rig.register(t, handoffAgent, "INFRA-204", "implementer", "2026-10-26T03:00:00Z")
-	rig.register(t, handoffArchitect, "INFRA-204", "architect", "2026-10-26T03:00:00Z")
+	rig.registerFinished(t, handoffArchitect, "INFRA-204", "architect", "2026-10-26T03:00:00Z")
 	rig.beat(t, true, time.Now())
 
 	item := envelopeFor(contracts.AgentSubject(handoffAgent), "agent."+handoffAgent+".k1", "agent")
@@ -214,7 +221,8 @@ func TestHandOffToLegionHandsAStoppedAgentToItsDaemon(t *testing.T) {
 		t.Fatalf("the stream holds %d copies of one hand-off, want 1", count)
 	}
 
-	// A role publish with no live holder resolves to the role token's newest session.
+	// A role publish with no live holder, whose role's issue has left the workflow, resolves to
+	// the role token's newest session.
 	role := envelopeFor(contracts.RoleTopicPrefix+handoffRoleToken, "publish.k2", "agent")
 	handedRole, err := rig.handoff.handOffToLegion(context.Background(), legionHandoffTarget{envelope: role, roleToken: handoffRoleToken})
 	if err != nil || handedRole == nil || handedRole.TargetSession != handoffArchitect {
@@ -271,11 +279,13 @@ func TestHandOffToLegionKeysOnTheLastStatedAnsweringFlag(t *testing.T) {
 }
 
 // What the hand-off never takes, with the project answering and the agent registered throughout:
-// a session the registry does not name, a role token that is no Legion workflow role's, a source
-// of envoy (the broker's wake sends and the listener's own exceptions), a body that carried
-// "handoff": false (every publish the daemon makes), a session this listener holds live, and a
-// session past the live window that is not gone - it keeps its claims and its stored messages and
-// may answer in a moment, so the message stays the agent's.
+// a session the registry does not name, a role token that is no Legion workflow role's, a role
+// token whose newest entry is not finished - its issue is still in the workflow, so the role's
+// next worker is coming and the message is kept for it (INFRA-514) - a source of envoy (the
+// broker's wake sends and the listener's own exceptions), a body that carried "handoff": false
+// (every publish the daemon makes), a session this listener holds live, and a session past the
+// live window that is not gone - it keeps its claims and its stored messages and may answer in a
+// moment, so the message stays the agent's.
 func TestHandOffToLegionLeavesTheseAsTheyWere(t *testing.T) {
 	rig := newHandoffRig(t, time.Nanosecond)
 	rig.register(t, handoffAgent, "INFRA-204", "implementer", "2026-10-26T03:00:00Z")
@@ -292,6 +302,7 @@ func TestHandOffToLegionLeavesTheseAsTheyWere(t *testing.T) {
 		{"a session id the registry would not hold", legionHandoffTarget{envelope: item("b"), session: "ses bad/id"}},
 		{"a role token that is no Legion role's", legionHandoffTarget{envelope: item("c"), roleToken: "reviewer"}},
 		{"a role token no session holds", legionHandoffTarget{envelope: item("d"), roleToken: "legion-infra-infra-999-merger"}},
+		{"a role token whose issue is still in the workflow", legionHandoffTarget{envelope: item("d2"), roleToken: "legion-infra-infra-204-implementer"}},
 		{"a source of envoy", legionHandoffTarget{envelope: envelopeFor(contracts.AgentSubject(handoffAgent), "agent."+handoffAgent+".e", "envoy"), session: handoffAgent}},
 		{"a body that opted out", legionHandoffTarget{envelope: item("f"), session: handoffAgent, optedOut: true}},
 	} {

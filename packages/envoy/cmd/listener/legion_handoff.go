@@ -81,7 +81,9 @@ type legionHandoff struct {
 //   - the source is not envoy, whose messages (the broker's wake sends, the listener's own
 //     exceptions) are not questions, and the body did not opt out with "handoff": false;
 //   - the Legion agent registry names the session: the session addressed, or the role token's
-//     newest session;
+//     newest session, and for a role token that session's entry is finished - its issue has left
+//     the workflow, so no next holder of the role is coming (answeringAgent). A role whose issue
+//     still runs keeps its message for that next holder instead;
 //   - that session's project last said it answers (project.<legion_project>, legionagents.Project).
 //     Only the flag counts, never its age: a daemon that stated answering: true and then stopped
 //     still gets its agents' messages, which JetStream holds until it reads them (spec v21,
@@ -150,6 +152,15 @@ func (h *legionHandoff) handOffToLegion(ctx context.Context, target legionHandof
 // session id the registry would not hold, included), when its project said otherwise, and while
 // the registry's bucket is not open, which the routes answer 503 and this answers as it answers a
 // registry naming no session.
+//
+// A role token is answered for only while its newest entry is finished: the role's issue has left
+// the workflow, so no later holder of that role is coming (legionagents.Entry.Finished). A role
+// whose issue still runs is nobody's to answer for - the gap between two phase workers of one
+// issue, and a pod being replaced, both leave the role unclaimed while the registry still names
+// the worker that stopped - so its message is kept on the role's kept lane for the next holder
+// (INFRA-514's 202, roleSend.noHolder), which is what it was before the hand-off existed. A
+// session addressed by id is answered for whether its issue is finished or not: that session has
+// stopped, and the message is for it, not for a role another session will take.
 func (h *legionHandoff) answeringAgent(ctx context.Context, target legionHandoffTarget) (*legionagents.Entry, error) {
 	agents := h.agents.store()
 	if agents == nil {
@@ -166,7 +177,7 @@ func (h *legionHandoff) answeringAgent(ctx context.Context, target legionHandoff
 		if err != nil {
 			return nil, err
 		}
-		if len(held) == 0 {
+		if len(held) == 0 || !held[0].Entry.Finished {
 			return nil, nil
 		}
 		entry = held[0].Entry

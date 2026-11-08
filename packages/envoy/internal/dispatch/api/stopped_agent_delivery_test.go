@@ -28,13 +28,16 @@ const (
 
 // stoppedAgentListener is an Envoy listener with no live session and no live role holder, whose
 // Legion agent registry holds two stopped sessions of the role legion-test-planner, stopped-2
-// newest and stopped-1 before it. Its registry reads fail while registryDown is set. It takes
+// newest and stopped-1 before it, each of an issue that has left the workflow (`finished`). Its
+// registry reads fail while registryDown is set, and its entries carry no `finished` while
+// roleRuns is set, as the registry's entries of an issue the workflow still runs do. It takes
 // every send, as its hand-off does, and records the session each one is for; while refuseSends is
 // set it records each and refuses it as a listener with no daemon answering for the agent does.
 type stoppedAgentListener struct {
 	*httptest.Server
 	registryDown atomic.Bool
 	refuseSends  atomic.Bool
+	roleRuns     atomic.Bool
 
 	mu    sync.Mutex
 	sends []string
@@ -44,11 +47,17 @@ func newStoppedAgentListener(t *testing.T) *stoppedAgentListener {
 	t.Helper()
 	listener := &stoppedAgentListener{}
 	agent := func(sessionID string) map[string]any {
-		return map[string]any{
+		entry := map[string]any{
 			"session_id": sessionID, "legion_project": "legiontest", "issue": "TEST-1", "role": "planner",
 			"role_token": registeredRole, "title": "planner " + sessionID, "harness": "omp",
 			"started_at": "2026-10-26T00:00:00Z", "recorded_at": "2026-10-26T00:00:00Z", "live": false,
 		}
+		// The listener omits `finished` for an issue the workflow still runs, and writes it for
+		// one that has left it (legionagents.Entry.Finished).
+		if !listener.roleRuns.Load() {
+			entry["finished"] = true
+		}
+		return entry
 	}
 	listener.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		registry := strings.HasPrefix(r.URL.Path, "/v1/legion/agents")
@@ -173,6 +182,8 @@ func TestMessageToAStoppedRegisteredAgentIsSentToItsSessionAndTakesItsReply(t *t
 	assertAnswered(t, "the issue-less message", replyAs(t, handler, issueless.ID, stoppedAgent, "Same answer."), issueless.ID)
 }
 
+// A finished role's newest session takes the role's messages: its issue has left the workflow,
+// so no next worker of that role is coming.
 func TestRoleMessageToAStoppedRegisteredRoleGoesToItsNewestSession(t *testing.T) {
 	listener := newStoppedAgentListener(t)
 	handler, _ := newTargetedMessageHandler(t, listener.URL)
@@ -192,6 +203,57 @@ func TestRoleMessageToAStoppedRegisteredRoleGoesToItsNewestSession(t *testing.T)
 		t.Fatalf("older session's reply: status=%d body=%s, want 403 REPLY_FORBIDDEN", older.Code, older.Body.String())
 	}
 	assertAnswered(t, "the role message", replyAs(t, handler, message.ID, stoppedNewest, "I did."), message.ID)
+}
+
+// A role whose issue is still in the workflow is nobody's to answer for: nobody holds it between
+// two of its workers, and the next one claims it and is handed what Envoy kept for it. So a
+// message and a mention of such a role keep the listener's own no-holder answer, recorded against
+// no session and sent to no stopped agent, exactly as they did before the registry was read for a
+// role at all. A session named outright is handed off as ever: that session has stopped, and the
+// message is for it rather than for a role another session will take.
+func TestRoleMessageToARoleWhoseIssueStillRunsIsNotSentToTheStoppedWorker(t *testing.T) {
+	listener := newStoppedAgentListener(t)
+	listener.roleRuns.Store(true)
+	handler, database := newTargetedMessageHandler(t, listener.URL)
+	issue := createInteractionIssue(t, handler, "TEST", "Running role", "before")
+	noHolder := "no holder for role " + registeredRole
+
+	message := createIssueMessage(t, handler, issue.Key, map[string]any{
+		"body": "Who holds this?", "target": "role:" + registeredRole, "delivery": "aside",
+	}, "alice")
+	if got := message.Deliveries; len(got) != 1 || got[0].State != "failed" || got[0].SessionID != "" ||
+		got[0].Error == nil || *got[0].Error != noHolder {
+		t.Fatalf("a role message of a running issue: deliveries = %#v, want failed %q with no session, so Envoy keeps it for the role's next holder", got, noHolder)
+	}
+
+	sessionTarget, roleTarget := "session:"+stoppedAgent, "role:"+registeredRole
+	comment := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
+		"body": "Can either of you explain this?", "delivery": "btw",
+		"mentions": []map[string]any{{"target": sessionTarget}, {"target": roleTarget}},
+	}))
+	if len(comment.Deliveries) != 2 {
+		t.Fatalf("mention deliveries = %#v, want one per mention", comment.Deliveries)
+	}
+	for _, delivery := range comment.Deliveries {
+		if delivery.Target == roleTarget {
+			if delivery.State != "failed" || delivery.SessionID != nil || delivery.Error == nil || *delivery.Error != noHolder {
+				t.Fatalf("the role mention = %#v (session %v, error %q), want failed %q with no session",
+					delivery, deref(delivery.SessionID), deref(delivery.Error), noHolder)
+			}
+			if row := commentAttemptRow(t, database, comment.ID, delivery.Target, 1); row != "failed/"+noHolder+"//" {
+				t.Fatalf("the role mention's attempt row = %q, want failed with no session", row)
+			}
+			continue
+		}
+		if delivery.State != "sent" || delivery.SessionID == nil || *delivery.SessionID != stoppedAgent {
+			t.Fatalf("the session mention = %#v (session %v, error %q), want it handed off to %s as ever",
+				delivery, deref(delivery.SessionID), deref(delivery.Error), stoppedAgent)
+		}
+	}
+
+	if got := listener.sent(); len(got) != 1 || got[0] != stoppedAgent {
+		t.Fatalf("listener sends = %v, want only the session mention's, none for the role", got)
+	}
 }
 
 func TestMentionOfAStoppedRegisteredAgentIsSentToItsSessionAndTakesItsReply(t *testing.T) {

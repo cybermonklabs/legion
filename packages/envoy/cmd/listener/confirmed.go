@@ -264,12 +264,18 @@ func (s *roleSend) delivered(outcome sendOutcome) {
 	s.settle(outcome)
 }
 
-// noHolder answers a role with no live claim. A stopped Legion agent whose daemon answers for it
-// takes the message through that daemon (handOffToLegion), answered 200 with the agent's session
-// as recipient: that comes before the keep, because a message kept on the role's lane waits for a
-// holder that may never claim the role again, while the daemon answers this one now from the
-// stopped agent's own conversation. It raises no refusal exception either, since nothing was
-// refused. A hand-off whose publish failed is answered as any publish the bus refused is.
+// noHolder answers a role with no live claim. A Legion role whose issue is finished - closed,
+// parked, or its tree retired, so no next holder of the role is coming - and whose daemon
+// answers for it takes the message through that daemon (handOffToLegion), answered 200 with the
+// stopped agent's session as recipient: nothing would ever drain a copy kept for that role,
+// while the daemon answers this one now from the stopped agent's own conversation. It raises no
+// refusal exception either, since nothing was refused. A hand-off whose publish failed is
+// answered as any publish the bus refused is.
+//
+// A role whose issue still runs hands off nothing, whatever the registry names: the gap between
+// two phase workers of one issue, and a pod being replaced, both leave the role unclaimed for a
+// while, and the message is the next holder's, so it is kept below as it was before the hand-off
+// existed (INFRA-514).
 //
 // For a state the listener keeps for (roleKeepable: an unclaimed role, since no resolution of
 // this build releases a claim), and while this send's own keep flag asks for it, it keeps the

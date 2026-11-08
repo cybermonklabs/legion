@@ -120,15 +120,20 @@ func resolveThenLock[R, T any](
 // verbatim. Every other failure takes the error path, so an unreachable listener never reads as
 // an ended session.
 //
-// A session the listener holds no record of or calls gone, and a role it holds no live holder
-// for, may still be a stopped Legion agent whose daemon answers for it: the listener hands a
-// send to such a session to that daemon and answers it as delivered
+// A session the listener holds no record of or calls gone, and a role whose issue has finished
+// and that it holds no live holder for, may still be a stopped Legion agent whose daemon answers
+// for it: the listener hands a send to such a session to that daemon and answers it as delivered
 // (cmd/listener/legion_handoff.go). So before either answer becomes a failure the route is
 // looked up in the listener's Legion agent registry (registeredAgent), and a session it names is
 // the target. That target skips the capability check, because its daemon answers every mode by
 // reply, and the attempt records that session, so the reply its daemon posts as it is the
 // attempt's own. A route the registry does not name, or a registry read that did not answer,
 // keeps the answer the listener gave.
+//
+// A role whose issue is still in the workflow is never resolved to a registry entry, whatever
+// the registry names: its next worker claims the role and is handed what Envoy kept for it, so
+// the message is that worker's, not the stopped one's, and the delivery keeps the listener's own
+// no-holder answer exactly as it did before the registry was read here (registeredAgent).
 //
 // The registry names a session whether or not its daemon answers, so the listener may still
 // refuse the send: no daemon answers for that project now. The registry's target therefore keeps
@@ -191,6 +196,11 @@ func (s *server) registeredTarget(ctx context.Context, route model.Route, answer
 // session for: the entry under a session id, or a role token's newest entry, its current holder.
 // A read the registry did not answer is logged and names nothing, so the route keeps the
 // listener's own answer, exactly as before the registry existed.
+//
+// A role names a session only while that newest entry is finished - its issue has left the
+// workflow, so no next holder of the role is coming (legionagents.Entry.Finished). A role whose
+// issue still runs names none: nobody holds it for a while between two of its workers, and the
+// message is the next worker's, which Envoy keeps for it.
 func (s *server) registeredAgent(ctx context.Context, route model.Route) (dispatchenvoy.LegionAgent, bool) {
 	if route.Kind == "role" {
 		agents, err := s.deps.Envoy.RoleAgents(ctx, route.ID)
@@ -199,7 +209,7 @@ func (s *server) registeredAgent(ctx context.Context, route model.Route) (dispat
 				"role", route.ID, "error", err)
 			return dispatchenvoy.LegionAgent{}, false
 		}
-		if len(agents) == 0 {
+		if len(agents) == 0 || !agents[0].Finished {
 			return dispatchenvoy.LegionAgent{}, false
 		}
 		return agents[0], true
