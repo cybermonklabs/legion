@@ -201,7 +201,7 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	// slot: whether that resume waits for one is admit's slotFor over record.TreeGate.EverOpened,
 	// and where it waits the `waiting-for-slot` notice is admit's tellWaitingForSlot and the
 	// `waitingLine` on its state is the projection's (api.WaitingLineView). An architect reads the
-	// rule in skills/legion-architect/references/acceptance.md, which states it once. The members
+	// rule in skills/legion-architect/references/acceptance.md and references/design-gate.md. The members
 	// the opening releases are started by admission's own pass over this same fact, which gives
 	// each the slot its first phase needs (record.Waiting's LineFirstPhase).
 	switch {
@@ -887,7 +887,7 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 		// slotFor over record.TreeGate.EverOpened, and where it waits the `waiting-for-slot` notice
 		// is admit's tellWaitingForSlot and the `waitingLine` on its state is the projection's
 		// (api.WaitingLineView). An architect reads the rule in
-		// skills/legion-architect/references/acceptance.md, which states it once.
+		// skills/legion-architect/references/acceptance.md and references/design-gate.md.
 		// Who approved is named on the notice, since nobody in a parked tree hears it and the
 		// decision then goes to the controller instead (the outbox's parkDecision).
 		reviewer := fact.Actor.Name()
