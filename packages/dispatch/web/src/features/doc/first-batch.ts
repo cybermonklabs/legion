@@ -31,14 +31,50 @@ let awaited = false;
 const listeners = new Set<() => void>();
 
 /**
+ * How long the page holds those reads for a batch that has not come.
+ *
+ * Every way a first batch arrives has an end that says so, and each of them releases the hold:
+ * the batch itself (`ProofDocument`'s `onBatch`), an issue or a text read that names no
+ * document to open (`open-document-early.ts`), a transport or editor chunk that failed and a
+ * stored tree the server will not admit (`ProofDocument`'s `reportLoadFailure` and its blocked
+ * admission). What has no end is a socket that neither connects nor fails: it stays
+ * `connecting`, nothing reports anything, and the page's header and tab strip are a skeleton
+ * with nothing left to release them (`AfterTheFirstBatch.tsx`'s `ChromeAfterTheFirstBatch`).
+ *
+ * So the hold is a bargain with a deadline rather than an open one. The reader has the
+ * document's own text on the screen about 0.6 s into the load whatever the socket does
+ * (`first-screen.ts`), so what the hold costs them when it runs long is not the document but
+ * the page around it - the header, the tab strip, the artifact's chrome, the way out of a
+ * document that is not opening - and no reader should lose that to a connection that is never
+ * going to answer.
+ *
+ * Eight seconds, because it has to sit above the slowest first batch a working page makes and
+ * below any wait worth a reader's patience: on this pod, `iphone` at 4x CPU throttling, the
+ * page's own draw of a 28-section document lands at 4.7 s and the editor's half of the load
+ * begins around 5.9 s (dispatch://INFRA-341, R11, `open-document-early.ts`). A deadline that
+ * fires on a page whose batch was only slow costs that page the reads' head start and nothing
+ * else: the panels read, the chrome lands, and `keepWhatStandsUnder` holds the reader's words
+ * where they are (`readers-place.ts`).
+ */
+const LONGEST_HOLD_MS = 8_000;
+
+/** The deadline armed with the hold above, cleared by whatever releases it first. */
+let deadline: number | undefined;
+
+/**
  * Whether the page waits for a first batch before making the reads above.
  *
  * `true` from the address alone, before anything has rendered: an address that opens a document
  * (`openDocumentEarly`). `false` as soon as nothing is waited for - the first batch is in, the
- * address opens no document, the issue names no document to open, or the surface reports that
- * no editor is coming - and false is where it stays until the next address.
+ * address opens no document, the issue names no document to open, the surface reports that
+ * no editor is coming, or the deadline above has passed - and false is where it stays until the
+ * next address.
  */
 export function theFirstBatchIsAwaited(next: boolean): void {
+  window.clearTimeout(deadline);
+  deadline = next
+    ? window.setTimeout(() => theFirstBatchIsAwaited(false), LONGEST_HOLD_MS)
+    : undefined;
   if (awaited === next) {
     return;
   }

@@ -214,9 +214,25 @@ a {
 /* A document of 400,000 characters is a thousand top-level blocks, and a phone pays style,
    layout and paint for every one of them before it draws the first. `content-visibility: auto`
    leaves the browser to skip the blocks off the screen and do that work as the reader reaches
-   them; `contain-intrinsic-size: auto 120px` gives a block it has not drawn yet a height, near a
-   paragraph's at this measure, and `auto` makes the browser keep the real one once it has drawn
-   it, so the scrollbar settles and a block link still lands (dispatch://INFRA-341, R11).
+   them; `contain-intrinsic-size: auto 24px` gives a block it has not drawn yet a height, and
+   `auto` makes the browser keep the real one once it has drawn it, so the scrollbar settles and
+   a block link still lands (dispatch://INFRA-341, R11).
+
+   24px is a line of the document's text, which is the least a top-level block stands, and the
+   estimate is a floor rather than a guess at an average block because the two kinds of error
+   are not alike. An estimate above what a block really stands collapses the document under a
+   reader the page has already placed: the browser draws the band of blocks nearest them, each
+   one gives back the difference, the page loses that height and the scroll is clamped to the
+   new end of it, which brings the next band near and takes the reader down again. Measured
+   here, a 52-paragraph version opened at a comment link in its last paragraph: 120px against
+   the 26px a one-line paragraph stands, and the landing at 6,884 px was clamped back nine
+   times to 3,372 px (`e2e/deep-links.e2e.ts`, "a past version's comment link lands on its
+   quote in a document with no diagram"). An estimate below it only grows the page, which moves
+   the scroll the other way: the browser's own scroll anchoring holds the words the reader is
+   on, and a focus the growth pushed down is run again once the drawing settles
+   (`features/doc/refocus-when-settled.ts`). So the page under-counts a document it has not
+   drawn and grows into its real height, rather than over-counting it and shrinking out from
+   under whoever is reading it.
 
    Whatever stands beside the document. The rule used to stand down for a document the page was
    measuring - the margin up beside it, or the block reference badges at its blocks - because a
@@ -246,7 +262,7 @@ a {
 .dispatch-doc .dispatch-doc-preview > *,
 .dispatch-doc .milkdown .editor > * {
   content-visibility: auto;
-  contain-intrinsic-size: auto 120px;
+  contain-intrinsic-size: auto 24px;
 }
 
 /* A document's own headings are content, not the page's identity. `@legion/proof-editor` sizes
