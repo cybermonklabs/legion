@@ -110,13 +110,15 @@ const (
 	busyBackoffFirst = 250 * time.Millisecond
 	// cleanSessionStopBudget bounds one clean stop of an Envoy session registration — the
 	// registry read and the delete that follows it, together (cleanSessionStop). It is longer
-	// than the listener's own budget for either route (sendRequestBudget,
-	// packages/envoy/cmd/listener/api.go: 3.5 s), so a listener that answers at all answers
-	// inside it, and short enough that one that never answers is abandoned while the claim's
-	// relaunch is still a launch backoff and a process boot away (launchBackoffFirst), rather
-	// than left in flight for as long as the listener likes. What keeps a stop that does land
-	// late off the relaunch's registration is the two conditions the stop carries
-	// (cleanSessionStop), not this bound.
+	// than the listener's own budget for one route (sendRequestBudget,
+	// packages/envoy/cmd/listener/api.go: 3.5 s) and shorter than two of them, so a listener
+	// answering promptly answers both inside it while one slow on the read spends the budget
+	// there and sends no delete — which costs that session only the wait it already had. It is
+	// short enough that a listener which never answers is abandoned while the claim's relaunch
+	// is still a launch backoff and a process boot away (launchBackoffFirst), rather than left
+	// in flight for as long as the listener likes. What keeps a stop that does land late off
+	// the relaunch's registration is the two conditions the stop carries (cleanSessionStop),
+	// not this bound.
 	cleanSessionStopBudget = 5 * time.Second
 )
 
@@ -1363,16 +1365,21 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 // process's own registration — its client instance id, read from the listener first (send) —
 // and carries goneAt beside it, and the listener deletes only under both.
 //
-// Neither condition alone would do, and each covers the other's hole. The moment alone cannot:
-// the registration's UpdatedAt is stamped by the listener's own clock on every write
-// (packages/envoy/internal/session/registry.go), not by the registering process, so the dead
-// process's last heartbeat is stamped after goneAt as readily as a relaunch's registration is,
-// and a stop judged on the moment refused the dead pane's own heartbeat — the defect this
-// change removes (dispatch://INFRA-2064). The instance id alone cannot: it is read a moment
-// before the delete, so a read answered after the relaunch had registered hands back the
-// successor's id, and a delete naming it would take the live registration. Together the id
-// keeps the dead process's heartbeats from refusing a stop that is owed, and the moment keeps a
-// stop whose read was answered that late from landing on the relaunch.
+// Neither condition alone would do. The moment alone cannot: UpdatedAt is stamped by the
+// listener's own clock on every write (packages/envoy/internal/session/registry.go), not by the
+// registering process, so a stop dated before the moment it was asked at — the second this
+// change removes — read the dead pane's own last heartbeat as a registration written since and
+// refused the stop that was owed (dispatch://INFRA-2064). Carrying the probe's own moment
+// undated is what removes that refusal, since the probe runs after that heartbeat, and the
+// instance id is what guards the relaunch in the dating's place. The instance id alone cannot:
+// it is read a moment before the delete, so a read answered after the relaunch had registered
+// hands back the successor's id, and a delete naming it would take the live registration; the
+// moment keeps that registration all the same.
+//
+// The listener keeps the entry on either condition (session.DeleteConditions.keeps), so the id
+// rescues no registration the moment refuses: a heartbeat whose write lands after the probe, or
+// a listener clock ahead of this daemon's, is still kept even where the id names the dead
+// process, and that session waits the gone horizon out as it did before this path existed.
 //
 // The judgement is the listener's, at the revision it deletes, as the session registry's own
 // compare-and-swap is (session.SessionRegistry.DeleteIf): what is stored when the delete lands

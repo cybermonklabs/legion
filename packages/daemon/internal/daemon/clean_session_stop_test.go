@@ -261,7 +261,9 @@ func TestCleanSessionStopKeptLineCarriesTheListenersOwnReason(t *testing.T) {
 
 // A registration that names no client process — one a client predating that field wrote — leaves
 // the moment the probe judged to decide the delete on its own, and the stop names no instance at
-// all rather than naming an empty one, which the listener would read as a condition of its own.
+// all rather than naming an empty one: the listener compares no instance for an empty value as
+// for an absent one (session.InstanceMatches), so the query states only the condition the stop
+// really holds.
 func TestCleanSessionStopDeletesOnTheMomentAloneWhenTheEntryNamesNoInstance(t *testing.T) {
 	listener := &listenerRecorder{held: storedRegistration{lastSeen: time.Now().Add(-time.Second)}}
 	server := listener.server(t)

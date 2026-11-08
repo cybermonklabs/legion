@@ -2,6 +2,7 @@ package notify
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -43,8 +44,9 @@ func TestDeleteSessionAsksTheSessionRouteWithTheBearerTheMomentAndTheInstance(t 
 
 // An entry that names no client process — one a client predating the field wrote — leaves the
 // moment to judge the delete alone, and the parameter is left out rather than sent empty: the
-// listener reads an empty client_instance_id as a condition of its own, which would keep every
-// registration that names a process.
+// listener compares no instance for an empty value as for an absent one
+// (session.InstanceMatches), so the two are the same delete and the query states only the
+// condition the stop really holds.
 func TestDeleteSessionLeavesOutAnInstanceTheEntryDoesNotName(t *testing.T) {
 	var query string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -168,6 +170,42 @@ func TestReadSessionRegistrationReadsA404AsNoRegistration(t *testing.T) {
 	}
 	if registration != (SessionRegistration{}) {
 		t.Fatalf("ReadSessionRegistration = %+v, want no registration at all", registration)
+	}
+}
+
+// The registry answers the whole session row — its topics, its roles, its capabilities — and
+// nothing bounds how many topics a long-lived session subscribes to, so the entry is read from
+// the stream rather than through refusalBodyLimit, which bounds an error body. A row cut off at
+// that limit would not decode, and the stop of the busiest session would be reported as a
+// listener that did not answer and send no delete at all.
+func TestReadSessionRegistrationReadsAnEntryPastTheRefusalBodyLimit(t *testing.T) {
+	topics := make([]string, 0, 400)
+	for i := range 400 {
+		topics = append(topics, fmt.Sprintf("notifications.dispatch.issue.infra-%04d", i))
+	}
+	entry, err := json.Marshal(map[string]any{
+		"session_id": "ses_busy", "client_instance_id": "inst_busy", "last_seen": 1762560000000,
+		"topics": topics,
+	})
+	if err != nil {
+		t.Fatalf("build the entry: %v", err)
+	}
+	if len(entry) <= refusalBodyLimit {
+		t.Fatalf("the entry is %d bytes, want one past the %d-byte refusal limit", len(entry), refusalBodyLimit)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(entry)
+	}))
+	defer server.Close()
+
+	registration, err := New(server.URL, "").ReadSessionRegistration(context.Background(), "ses_busy")
+	if err != nil {
+		t.Fatalf("ReadSessionRegistration of a %d-byte entry: %v", len(entry), err)
+	}
+	want := SessionRegistration{Registered: true, ClientInstanceID: "inst_busy", LastSeen: 1762560000000}
+	if registration != want {
+		t.Fatalf("ReadSessionRegistration = %+v, want %+v", registration, want)
 	}
 }
 
