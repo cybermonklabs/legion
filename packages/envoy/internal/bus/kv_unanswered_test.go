@@ -21,12 +21,13 @@ import (
 // of them on the package's shared server and removed when it ends.
 const unansweredBucket = "envoy_unanswered_test"
 
-// openSubject is the request wrapKeyValue sends to open the jetstream handle of a bucket: the
-// STREAM.INFO of the bucket's stream, which is what the relay below counts and drops.
+// openSubject is the subject of the STREAM.INFO of a bucket's stream: the request wrapKeyValue
+// sends to open the bucket's jetstream handle, and the one EnsureKeyValue's lookup sends before
+// it. It is what the relay below counts and drops.
 func openSubject(bucket string) string { return "$JS.API.STREAM.INFO.KV_" + bucket }
 
-// unansweredRelay is a TCP relay between a client and a real NATS server that counts the handle
-// opens the client sends on it, the STREAM.INFO of one bucket's stream, and drops the first drops
+// unansweredRelay is a TCP relay between a client and a real NATS server that counts the
+// STREAM.INFO requests of one bucket's stream the client sends on it, and drops the first drops
 // of them: the request never reaches the server, as a server whose meta leader is changing leaves
 // one unanswered, so no answer is ever published and the caller's wait runs out with the deadline
 // it held. Everything else both sides send is relayed untouched, so the connection is a real one
@@ -35,8 +36,10 @@ func openSubject(bucket string) string { return "$JS.API.STREAM.INFO.KV_" + buck
 // The jetstream handle wrapKeyValue opens is built from the connection inside that function
 // (jetstream.New(conn)), and jetstream.New takes the concrete *nats.Conn, so no JetStream context
 // a test passes in can reach that open: the seam a test has for it is the connection's own wire,
-// which is this relay. The bucket's own name is in the subject, so only the opens of this bucket
-// are touched, and the legacy lookups a start makes before it are counted apart from them (arm).
+// which is this relay. The bucket's own name is in the subject, so only the requests of this
+// bucket are touched. A lookup of the bucket is the same request on the same subject, so a row
+// arms the relay after the lookups that lead to its call (arm), or lets them through
+// (passThenDrop).
 type unansweredRelay struct {
 	subject  string
 	url      string
@@ -75,8 +78,9 @@ func startUnansweredRelay(t *testing.T, target, bucket string) *unansweredRelay 
 	return relay
 }
 
-// arm has the relay drop the next drops sends of the handle open and counts the sends from now, so
-// a row counts the opens of the call it is about to make and not the lookups that led to it.
+// arm has the relay drop the next drops STREAM.INFO requests of the bucket and counts them from
+// now, so a row counts the requests of the call it is about to make and not the lookups that led
+// to it.
 func (r *unansweredRelay) arm(drops int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -97,7 +101,7 @@ func (r *unansweredRelay) passThenDrop(pass, drops int) {
 	r.sends = 0
 }
 
-// sent is how many handle opens the client has sent since it was armed.
+// sent is how many STREAM.INFO requests of the bucket the client has sent since it was armed.
 func (r *unansweredRelay) sent() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()

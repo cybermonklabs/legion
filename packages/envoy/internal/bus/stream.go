@@ -838,7 +838,7 @@ func unanswered(err error) bool {
 
 // unansweredSends bounds how many times a caller sends one JetStream request the server left
 // unanswered (sentAgain): the stream read and the create of ensureStreamWithConfig, and the
-// handle open of wrapKeyValue's create path. A server answers a stream read or a create in
+// handle open EnsureKeyValue makes. A server answers a stream read or a create in
 // milliseconds when it answers at all, so a wait that runs out is a request that drew no answer,
 // and sending it again is the only remedy there is: a longer wait buys nothing for an answer that
 // is never coming. Three sends, because a start that lost two in a row has a bus that is not
