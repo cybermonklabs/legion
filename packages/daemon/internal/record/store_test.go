@@ -609,6 +609,50 @@ func TestClaimSessionAnswersTheSeededSessionOrEmpty(t *testing.T) {
 	})
 }
 
+// SessionClaimsTree and SessionClaimsAnywhere together separate the three answers a claim
+// release stands on (the outbox's releaseClaim): a session the daemon records in the tree being
+// asked about, a session it records only in another tree — which owns its own issue, not this
+// one — and a session it holds no claim row for at all, which it cannot attribute.
+func TestSessionClaimsSeparateTheAskedTreeFromAnotherAndFromNoClaimAtAll(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	seed := func(tx pgx.Tx, token, tree, session string) {
+		t.Helper()
+		_, err := tx.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file,
+			state, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
+			values ($1, 'LEGION', $2, $2, $3, 0, $4, '', $5, 0, 0, 0, 0)`,
+			token, tree, string(claim.RoleArchitect), session, string(supervise.StateWorking))
+		must(t, err)
+	}
+	inTx(t, st, func(tx pgx.Tx) {
+		seed(tx, "here", "LEGION-208", "ses-here")
+		seed(tx, "elsewhere", "LEGION-209", "ses-elsewhere")
+	})
+	for _, tc := range []struct {
+		name            string
+		session         string
+		inTree, claimed bool
+	}{
+		{name: "claims the asked tree", session: "ses-here", inTree: true, claimed: true},
+		{name: "claims only another tree", session: "ses-elsewhere", claimed: true},
+		{name: "claims nothing anywhere", session: "ses-unknown"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			inTx(t, st, func(tx pgx.Tx) {
+				inTree, err := records.SessionClaimsTree(ctx, tx, "LEGION-208", tc.session)
+				must(t, err)
+				claimed, err := records.SessionClaimsAnywhere(ctx, tx, tc.session)
+				must(t, err)
+				if inTree != tc.inTree || claimed != tc.claimed {
+					t.Fatalf("%s claims LEGION-208 = %t and anywhere = %t, want %t and %t",
+						tc.session, inTree, claimed, tc.inTree, tc.claimed)
+				}
+			})
+		})
+	}
+}
+
 func TestStoreRoundTripsLingerStateAndRefusesHeldFromHeld(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)

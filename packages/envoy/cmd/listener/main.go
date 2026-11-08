@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dedupe"
 	"github.com/sjawhar/envoy/internal/envconf"
 	"github.com/sjawhar/envoy/internal/ghrename"
+	"github.com/sjawhar/envoy/internal/legionagents"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -41,6 +42,9 @@ type listenerDeps struct {
 	client   *bus.Client
 	registry *store.Registry
 	sessions *session.SessionRegistry
+	// legionAgents is the Legion agent registry the /v1/legion/agents routes serve, or why it is
+	// unavailable. It keeps no cache, so it is in no list of caches.
+	legionAgents *legionAgentRegistry
 	// ciStore is nil on a listener that mounts no GitHub webhook route, the one route that uses it.
 	ciStore *cistore.Store
 	// roleLane is the role lane's own client (bus.ConnectRoleLane), nil in a test that builds the
@@ -162,7 +166,8 @@ const defaultSessionReapInterval = time.Minute
 // its holder gone. Judged every minute, a stalled holder would lose its role up to five times
 // sooner than the fixed pass this change replaces, which is the opposite of what this change is
 // for; the raise of that maximum age past the gone horizon is dispatch://INFRA-887's, and it
-// cannot land first. The grace a restored claim gets is measured from the listener's own start
+// cannot land first. The grace a restored claim gets - and a claim the hand-back marked gets
+// none, since no registration renews a marked claim - is measured from the listener's own start
 // against the live window (store.Registry.releaseReadExpiredRoleClaim, which the reaper's pass
 // hands the claim it read), not counted in passes, so the period does not move it; what the
 // period decides is how long after a holder is gone its role is free.
@@ -969,13 +974,16 @@ func main() {
 	// deployment's replica count and byte limit (listenerStreamOptions).
 	client, err := bus.ConnectOwningStream(cfg.NATSURLs, listenerStreamOptions(cfg)...)
 	if err != nil {
-		log.Fatal(err)
+		// Named, because this step and the two below it are the whole of the start-up between the
+		// listening line and "webhooks open", and each one can end it with a bare error: a reader
+		// of a log that holds only "context deadline exceeded" cannot tell which step timed out.
+		log.Fatalf("connect to NATS and reconcile the %s stream: %v", bus.Stream, err)
 	}
 	// The spent-proof bucket, before anything of /v1 can be served: a listener configured to take
 	// broker access tokens on a bus that cannot open it refuses to start, naming the setting,
 	// rather than recording spent proofs where its own replicas cannot see them.
 	if err := brokerTokenAuth.open(client.Conn, cfg.NATSReplicas); err != nil {
-		log.Fatal(err)
+		log.Fatalf("open the spent-proof bucket for broker access tokens: %v", err)
 	}
 	consumer := bus.ListenerDurable(cfg.MachineID)
 	// The durable is checked here, before the cache warm-ups below (up to 30 s each), so a refused
@@ -1005,7 +1013,7 @@ func main() {
 		renames = webhookCfg.GitHub.RepositoryRenames
 		ciStore, err = cistore.Open(client.Conn, logger, cistore.WithReplicas(cfg.NATSReplicas), cistore.WithTTL(7*24*time.Hour))
 		if err != nil {
-			log.Fatal(err)
+			log.Fatalf("open the CI store: %v", err)
 		}
 	} else {
 		logger.Info("CI store not opened: no GitHub webhook route, so this listener records and settles no checks")
@@ -1122,11 +1130,21 @@ func main() {
 	}
 	sessionCacheReadyCancel()
 
+	// The Legion agent registry (internal/legionagents) keeps no cache: every read is a read of its
+	// bucket, so it joins no warm-up or self-health. A listener that cannot open the bucket (a
+	// missing grant is the usual cause) logs one ERROR and serves on, its registry routes answering
+	// 503 while it retries the open in the background, with a backoff and at once after a reconnect
+	// (legionAgentRegistry). Its reconnect hook runs after the caches' rewatch, and moves its bucket
+	// handle onto a connection the bus dialled to replace a closed one; its drain hook ends the retry.
+	legionAgents := openLegionAgentRegistry(client.Conn, logger, legionagents.WithReplicas(cfg.NATSReplicas), legionagents.WithLogger(logger.Slog()))
+
 	// KV watchers are not bus subscriptions: tie them to the connection, so a disconnect stops each
 	// copy following its bucket, every recovered connection reads each bucket again, and the drain
 	// ends them before the connection's own.
 	caches := listenerCaches(registry, sessions, ciStore)
 	hookListenerKVWatchers(client, caches)
+	client.AddReconnectHook(legionAgents.reconnect)
+	client.AddDrainHook(legionAgents.close)
 
 	dedupeCache := dedupe.New(10 * time.Minute)
 
@@ -1252,19 +1270,25 @@ func main() {
 	stopping, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
+	// The live window the session registry runs with: what the role claim reaper weighs a
+	// standing claim's renewal against, read from the registry itself so the two can never be
+	// configured apart. The role routes read it from that same registry when they weigh a claim
+	// (roleSetHandler, through session.SessionRegistry.Windows).
+	sessionLive, _ := sessions.Windows()
 	ready := &listenerDeps{
-		client:     client,
-		roleLane:   roleLaneClient,
-		consumers:  delivery,
-		registry:   registry,
-		sessions:   sessions,
-		ciStore:    ciStore,
-		caches:     caches,
-		consumer:   consumer,
-		streamName: bus.Stream,
-		wakes:      wakes,
-		delivery:   &deliveryConfig,
-		confirmed:  dedupe.New(10 * time.Minute),
+		client:       client,
+		roleLane:     roleLaneClient,
+		consumers:    delivery,
+		registry:     registry,
+		sessions:     sessions,
+		legionAgents: legionAgents,
+		ciStore:      ciStore,
+		caches:       caches,
+		consumer:     consumer,
+		streamName:   bus.Stream,
+		wakes:        wakes,
+		delivery:     &deliveryConfig,
+		confirmed:    dedupe.New(10 * time.Minute),
 
 		sendsToUnresponsive: sendsToUnresponsive,
 	}
@@ -1314,10 +1338,19 @@ func main() {
 	// watchers whose consumers nats.go creates and deletes, so the shutdown stops them and waits for
 	// a pass in flight before it drains NATS (kvLoopsDone).
 	//
-	// A restored role claim's holder gets one live window to register again, not one bucket
-	// maximum age: the window is what makes a session live to every other reader, and with a
-	// maximum age raised past the gone horizon the age would hold a dead holder's claim for an
-	// hour after the reaper had already found it gone.
+	// The live window is what the role claim reaper weighs a claim against twice, because the
+	// two grants it makes are both that long. A restored claim's holder gets one live window
+	// from this listener's start to register again, not one bucket maximum age: the window is
+	// what makes a session live to every other reader, and with a maximum age raised past the
+	// gone horizon the age would hold a dead holder's claim for an hour after the reaper had
+	// already found it gone. A claim the hand-back marked takes none of that grace: the grace
+	// is for a holder to register again, no registration renews a marked claim, and so over
+	// such a claim it could only hold the role past the window its own renewal is weighed
+	// against. And every claim, restored or not, is kept while its own holder answered for it
+	// inside one live window, so a holder that goes on renewing its claim keeps its role even
+	// where the session id it registered under has left the bucket - which is what a second
+	// process that resumes that id and then deregisters it leaves behind
+	// (store.Registry.ReapRoleClaims).
 	//
 	// The role claim reaper runs at ENVOY_ROLE_CLAIM_REAP_INTERVAL, its own period and not the
 	// session reaper's: what it waits for is what that reaper decides, but a pass of it is what
@@ -1325,11 +1358,10 @@ func main() {
 	// to settle the bucket's maximum age sooner is not asking for that (the two defaults say
 	// why). Each pass is judged against this listener's own live window, not counted, so the
 	// period moves when a gone holder's role is freed and nothing else.
-	sessionLive, _ := sessions.Windows()
 	kvLoopsCtx, kvLoopsCancel := context.WithCancel(context.Background())
 	kvLoopsDone := []<-chan struct{}{
 		registry.StartReaper(kvLoopsCtx, func(sessionID string) (bool, error) { return sessionMayBeLive(sessions, sessionID) }, 5*time.Minute, store.InterestReapGrace),
-		registry.StartRoleClaimReaper(kvLoopsCtx, func(sessionID string) bool { return roleHolderMayBeLive(logger, sessions, sessionID) }, roleClaimReapInterval, sessionLive),
+		registry.StartRoleClaimReaper(kvLoopsCtx, func(sessionID string) bool { return roleHolderMayBeLive(logger, sessions, sessionID) }, roleClaimReapInterval, sessionLive, sessionLive),
 		// The session reaper is the one loop that deletes a session's record, and the one place
 		// the bucket's maximum age is settled while the listener runs (session.ReapSessions).
 		sessions.StartSessionReaper(kvLoopsCtx, sessionReapInterval, session.SessionReaper{
@@ -1479,8 +1511,9 @@ func shutdownListener(logger *logging.Logger, parts listenerParts, loops listene
 	}
 
 	// Ordered shutdown:
-	// 1. Session relays — publish no frame and ack nothing more; the messages they hold are
-	//    delivered again once their ack wait runs out.
+	// 1. Session relays — publish no frame and ack nothing more; each one pulling returns the
+	//    messages it holds to the server with a nak (sessionRelays.release), so they are
+	//    delivered again at once rather than after their ack wait.
 	// 2. HTTP server — stop accepting new requests, drain in-flight.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
