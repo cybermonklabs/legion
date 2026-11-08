@@ -19,13 +19,15 @@ name: Dispatch browser suite
 # same, so a reader can diff them.
 #
 # That reason is a composite action's, and not a script's: a step that calls a script keeps its
-# own timeout-minutes. So the one body the two jobs really share is a script, written once and
-# called from both - .github/scripts/dispatch-browser-samples.sh for the memory and CPU sampler
-# and its two readings - and that file's head is where what it does and why is written down.
-# Two more stood beside it, the Playwright install and the key its apt archive cache was
-# restored under: the shard and alone jobs run in the image this repository builds now, which
-# carries the three browsers and every host package they need, so both scripts are gone with
-# the steps that called them (dispatch://INFRA-1443).
+# own timeout-minutes. So a body the shard and alone jobs really share is a script, written
+# once and called from both, and that script's head is where what it does and why is written
+# down. There are two: .github/scripts/dispatch-browser-samples.sh for the memory and CPU
+# sampler and its two readings, and .github/scripts/dispatch-browser-postgres.sh for the
+# reading of the lanes' PostgreSQL, which stood as a copy in each job's own step list until a
+# review read the two together. Two more stood beside them, the Playwright install and the key
+# its apt archive cache was restored under: those two jobs run in the image this repository
+# builds now, which carries the three browsers and every host package they need, so both of
+# those scripts are gone with the steps that called them (dispatch://INFRA-1443).
 #
 # The budget rule every job and step below follows, this file being where it is written down now
 # that ci.yaml's dispatch job is gone: a step's budget is its measured maximum plus 15 per cent,
@@ -170,12 +172,17 @@ jobs:
     #
     # --user 1001 is the image's own pwuser, and the uid the runner owns $GITHUB_WORKSPACE and
     # every bind mount with: initdb refuses to run as root and refuses a uid with no passwd
-    # entry, so the lanes' clusters need exactly this uid, and a job that is not root keeps
-    # Chromium's own sandbox on. --ipc=host is Playwright's own Docker guidance: without it the
-    # container gets Docker's default 64 MB of /dev/shm and Chromium runs out of shared memory
-    # mid-page. With it /dev/shm is the host's, 7.9 GB, which this job's first step reads, so
-    # `--shm-size=2g` is not needed beside it. --init gives the container a pid 1 that reaps the
-    # browsers' orphans, which four lanes of them make many of.
+    # entry, so the lanes' clusters need exactly this uid. It is not a sandbox decision: the
+    # suite runs Chromium with `--no-sandbox` at any uid, as it did on the bare runner before
+    # this change, because playwright-core 1.64.1 - the version bun.lock resolves - adds that
+    # argument unless a launch passes `chromiumSandbox: true`
+    # (lib/coreBundle.js, `if (options.chromiumSandbox !== true) chromeArguments.push("--no-sandbox")`),
+    # and nothing under packages/dispatch/e2e or docs/site/media passes it. --ipc=host is
+    # Playwright's own Docker guidance, and what it buys is shared memory and nothing else:
+    # without it the container gets Docker's default 64 MB of /dev/shm and Chromium runs out of
+    # shared memory mid-page. With it /dev/shm is the host's, 7.9 GB, measured on this
+    # container's first runs, so `--shm-size=2g` is not needed beside it. --init gives the
+    # container a pid 1 that reaps the browsers' orphans, which four lanes of them make many of.
     container:
       image: ghcr.io/cybermonklabs/legion/ci@sha256:5f5aca44f3ada006603a0ff98681f879f0825fdffcb14004d33361df4b92df83
       options: --user 1001 --ipc=host --init
@@ -223,7 +230,6 @@ jobs:
     #   step                                                 max
     #   Set up job                                             1
     #   Initialize containers                                 43
-    #   Read what this container gives the suite               1
     #   actions/checkout                                       8
     #   actions/download-artifact                              5
     #   Make the downloaded binaries executable                1
@@ -244,9 +250,15 @@ jobs:
     #   Stop containers                                        1
     #   Complete job                                           0
     #
+    # The PostgreSQL row is that step as it was measured, when each job held a copy of its
+    # body: at this head both call .github/scripts/dispatch-browser-postgres.sh, which runs the
+    # same commands and prints with them the uid that the container reading this head deletes
+    # printed. So the figure is the measured step the script replaces, and the script's own
+    # first measurement comes with the next run.
+    #
     # The browser step is the one step of this job that carries a budget, so the job's budget is
-    # that budget plus the maxima above of every step without one, which sum to 145 s:
-    # 540 + 145 = 685 s, 11 min 25 s, rounded up to the 12 minutes below. That is a backstop
+    # that budget plus the maxima above of every step without one, which sum to 144 s:
+    # 540 + 144 = 684 s, 11 min 24 s, rounded up to the 12 minutes below. That is a backstop
     # above the sum of the step budgets, as this file's head says a job budget is, and it is now
     # a measurement rather than what was left over from a step that no longer runs.
     #
@@ -264,38 +276,6 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4]
     steps:
-      # The first step of this container's first run, and of every run after it: these readings
-      # are what decide the container's own shape, and they are deliberate rather than left over
-      # from the spike. `id -u`, `id -g`, `id` and $HOME say which user the job really runs as
-      # and whether that uid has a passwd entry and a home, which is what initdb refuses to run
-      # without. The `ls -ld` of $GITHUB_WORKSPACE, $RUNNER_TEMP, /__w, /__e, /github/home and
-      # /opt/hostedtoolcache says which of the runner's own directories uid 1001 can write, and
-      # the ownership of /opt/hostedtoolcache and $RUNNER_TEMP is what decides whether a setup
-      # action can install a tool at this uid at all. /dev/shm's mode and size decide whether
-      # `--shm-size=2g` replaces `--ipc=host` in this job's container options above, since
-      # shared memory is the one thing Chromium needs the host's IPC namespace for. nproc,
-      # free -m and df say what four lanes share. `go` and `docker` are expected MISSING: this
-      # job runs no go command, as the head above says, and a job inside a container can start
-      # no container. `bun` is expected MISSING too, since ./.github/actions/setup-bun installs
-      # it further down.
-      - name: Read what this container gives the suite
-        run: |
-          id -u
-          id -g
-          id
-          echo "HOME=$HOME"
-          ls -ld "$GITHUB_WORKSPACE" "$RUNNER_TEMP" /__w /__e /github/home /opt/hostedtoolcache || true
-          ls -ld /dev/shm
-          df -h /dev/shm
-          nproc
-          free -m || true
-          df -h /tmp "$RUNNER_TEMP"
-          for tool in psql initdb pg_ctl pg_config python3 flock jq weed git openssl unzip tar curl node bun go docker sudo; do
-            printf '%-14s %s\n' "$tool" "$(command -v "$tool" || echo MISSING)"
-          done
-          pg_config --version
-          python3 --version
-          node --version
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -332,45 +312,24 @@ jobs:
           bun run build:web
           ls -l web/dist/THIRD_PARTY_NOTICES.txt
         working-directory: packages/dispatch
-      # What the lanes' databases are, read from the same binaries they use and before they
-      # use them: packages/dispatch/e2e/harness-postgres.ts runs `initdb` once per run and
-      # copies the data directory per lane, and this starts one of those clusters and asks it.
-      # The suite's own lanes leave nothing behind to read afterwards, since e2e/run.ts removes
-      # its run directory when it ends, so the server version and the extension this job's
-      # image carries are recorded here or nowhere. It also times what the provider costs,
-      # which is the figure harness-postgres.ts records for itself.
+      # What the lanes' databases are, and who runs them, read from the same binaries they use
+      # and before they use them: packages/dispatch/e2e/harness-postgres.ts runs `initdb` once
+      # per run and copies the data directory per lane, and the script starts one of those
+      # clusters and asks it. The suite's own lanes leave nothing behind to read afterwards,
+      # since e2e/run.ts removes its run directory when it ends, so the server version and the
+      # extension this job's image carries are recorded here or nowhere. It also prints the
+      # `id` this job's steps run as, which is what initdb stands or falls on, and times what
+      # the provider costs, which is the figure harness-postgres.ts records for itself.
+      #
+      # One script, called from here and from the alone job's step of this name, as this file's
+      # head says a body the two jobs share must be: it stood as a copy in each job's step
+      # list, the two differing in nothing but the number of lanes they copied, until a review
+      # read them together (dispatch://INFRA-1443).
+      # Its head says what each line it prints is for. The argument is this job's lane count,
+      # the DISPATCH_E2E_WORKERS the browser step below exports, so the copy time it prints is
+      # this job's own.
       - name: Read the lanes' PostgreSQL and time its provider
-        run: |
-          bin=/usr/lib/postgresql/18/bin
-          work="$RUNNER_TEMP/pg-reading"
-          rm -rf "$work"
-          mkdir -p "$work/template"
-          start=$(date +%s.%N)
-          "$bin/initdb" -D "$work/template/pgdata" -U postgres --auth=trust --no-sync -E UTF8 > /dev/null
-          after_initdb=$(date +%s.%N)
-          "$bin/pg_ctl" -D "$work/template/pgdata" -l "$work/template/postgres.log" \
-            -o "-p 55432 -h 127.0.0.1 -k $work/template" -w start > /dev/null
-          url="postgres://postgres@127.0.0.1:55432/postgres?sslmode=disable"
-          "$bin/psql" "$url" -v ON_ERROR_STOP=1 -c 'create database dispatch_e2e' > /dev/null
-          lane="postgres://postgres@127.0.0.1:55432/dispatch_e2e?sslmode=disable"
-          "$bin/psql" "$lane" -v ON_ERROR_STOP=1 -c 'create extension vector' > /dev/null
-          "$bin/psql" "$lane" -XAt -v ON_ERROR_STOP=1 -c 'select version()'
-          "$bin/psql" "$lane" -XAt -v ON_ERROR_STOP=1 \
-            -c "select 'vector ' || extversion from pg_extension where extname = 'vector'"
-          "$bin/pg_ctl" -D "$work/template/pgdata" -m fast -w stop > /dev/null
-          after_template=$(date +%s.%N)
-          for lane_number in 0 1 2 3; do
-            mkdir -p "$work/lane-$lane_number"
-            cp -a "$work/template/pgdata" "$work/lane-$lane_number/pgdata"
-          done
-          done_at=$(date +%s.%N)
-          awk -v a="$start" -v b="$after_initdb" -v c="$after_template" -v d="$done_at" 'BEGIN {
-            printf "initdb:               %.2f s\n", b - a
-            printf "template db + vector: %.2f s\n", c - b
-            printf "four lane copies:     %.2f s\n", d - c
-            printf "the whole provider:   %.2f s\n", d - a
-          }'
-          rm -rf "$work"
+        run: .github/scripts/dispatch-browser-postgres.sh 4
       # The file store the browser suite uploads through: the server runs with
       # DISPATCH_FILE_STORE_BUCKET set (e2e/run-server.sh reads
       # DISPATCH_E2E_FILE_STORE_ENDPOINT), so every upload and download the dashboard makes goes
@@ -637,10 +596,11 @@ jobs:
     #
     # Its steps are the shard job's, with three differences - one worker rather than four, the
     # Playwright command below, and no file store on the machine - and their commands are kept
-    # the same everywhere else, so the two can be diffed; the sampler is the same script on
-    # both, which is part of what keeps them so. They are not one composite action for the
-    # reason this file's head gives. The container, the `sh -e {0}` rule and the `env:` rule of
-    # the shard job's head hold here too, and so do their reasons.
+    # the same everywhere else, so the two can be diffed; the two bodies that are really shared
+    # are scripts both jobs call, the sampler and the PostgreSQL reading, which is part of what
+    # keeps them so. They are not one composite action for the reason this file's head gives.
+    # The container, the `sh -e {0}` rule and the `env:` rule of the shard job's head hold here
+    # too, and so do their reasons.
     container:
       image: ghcr.io/cybermonklabs/legion/ci@sha256:5f5aca44f3ada006603a0ff98681f879f0825fdffcb14004d33361df4b92df83
       options: --user 1001 --ipc=host --init
@@ -675,7 +635,6 @@ jobs:
     #   step                                                 max
     #   Set up job                                             2
     #   Initialize containers                                 36
-    #   Read what this container gives the suite               1
     #   actions/checkout                                       7
     #   actions/download-artifact                              2
     #   Make the downloaded binaries executable                0
@@ -694,9 +653,15 @@ jobs:
     #   Stop containers                                        0
     #   Complete job                                           0
     #
+    # The PostgreSQL row is that step as it was measured, when each job held a copy of its
+    # body: at this head both call .github/scripts/dispatch-browser-postgres.sh, which runs the
+    # same commands and prints with them the uid that the container reading this head deletes
+    # printed. So the figure is the measured step the script replaces, and the script's own
+    # first measurement comes with the next run.
+    #
     # The browser step is the one step of this job that carries a budget, so the job's budget is
-    # that budget plus the maxima above of every step without one, which sum to 98 s:
-    # 180 + 98 = 278 s, 4 min 38 s, rounded up to the 5 minutes below. It is a backstop above
+    # that budget plus the maxima above of every step without one, which sum to 97 s:
+    # 180 + 97 = 277 s, 4 min 37 s, rounded up to the 5 minutes below. It is a backstop above
     # the sum of the step budgets, as this file's head says a job budget is, and a measurement
     # now rather than what was left over from a step that no longer runs.
     timeout-minutes: 5
@@ -705,27 +670,6 @@ jobs:
       matrix:
         project: [chromium-alone, firefox-alone, webkit-alone]
     steps:
-      # The shard job's step of this name, and what it reads is that job's head's business: the
-      # two jobs run the same image with the same options, so a reading that moved on one
-      # machine and not the other is itself the thing worth seeing.
-      - name: Read what this container gives the suite
-        run: |
-          id -u
-          id -g
-          id
-          echo "HOME=$HOME"
-          ls -ld "$GITHUB_WORKSPACE" "$RUNNER_TEMP" /__w /__e /github/home /opt/hostedtoolcache || true
-          ls -ld /dev/shm
-          df -h /dev/shm
-          nproc
-          free -m || true
-          df -h /tmp "$RUNNER_TEMP"
-          for tool in psql initdb pg_ctl pg_config python3 flock jq weed git openssl unzip tar curl node bun go docker sudo; do
-            printf '%-14s %s\n' "$tool" "$(command -v "$tool" || echo MISSING)"
-          done
-          pg_config --version
-          python3 --version
-          node --version
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -770,39 +714,12 @@ jobs:
           ls -l web/dist/THIRD_PARTY_NOTICES.txt
         working-directory: packages/dispatch
       # The shard job's step of this name, on this job's one lane: what the image's PostgreSQL
-      # is and what the provider costs, read from the same binaries the lane uses. Its head
-      # says why it is read here or nowhere. One copy rather than four, since this job runs one
-      # lane.
+      # is, who runs it and what the provider costs, read from the same binaries the lane uses.
+      # That step says why it is read here or nowhere, and the script it calls says what each
+      # line it prints is for. The argument is this job's lane count: one copy rather than
+      # four, since this job runs one lane.
       - name: Read the lanes' PostgreSQL and time its provider
-        run: |
-          bin=/usr/lib/postgresql/18/bin
-          work="$RUNNER_TEMP/pg-reading"
-          rm -rf "$work"
-          mkdir -p "$work/template"
-          start=$(date +%s.%N)
-          "$bin/initdb" -D "$work/template/pgdata" -U postgres --auth=trust --no-sync -E UTF8 > /dev/null
-          after_initdb=$(date +%s.%N)
-          "$bin/pg_ctl" -D "$work/template/pgdata" -l "$work/template/postgres.log" \
-            -o "-p 55432 -h 127.0.0.1 -k $work/template" -w start > /dev/null
-          url="postgres://postgres@127.0.0.1:55432/postgres?sslmode=disable"
-          "$bin/psql" "$url" -v ON_ERROR_STOP=1 -c 'create database dispatch_e2e' > /dev/null
-          lane="postgres://postgres@127.0.0.1:55432/dispatch_e2e?sslmode=disable"
-          "$bin/psql" "$lane" -v ON_ERROR_STOP=1 -c 'create extension vector' > /dev/null
-          "$bin/psql" "$lane" -XAt -v ON_ERROR_STOP=1 -c 'select version()'
-          "$bin/psql" "$lane" -XAt -v ON_ERROR_STOP=1 \
-            -c "select 'vector ' || extversion from pg_extension where extname = 'vector'"
-          "$bin/pg_ctl" -D "$work/template/pgdata" -m fast -w stop > /dev/null
-          after_template=$(date +%s.%N)
-          mkdir -p "$work/lane-0"
-          cp -a "$work/template/pgdata" "$work/lane-0/pgdata"
-          done_at=$(date +%s.%N)
-          awk -v a="$start" -v b="$after_initdb" -v c="$after_template" -v d="$done_at" 'BEGIN {
-            printf "initdb:               %.2f s\n", b - a
-            printf "template db + vector: %.2f s\n", c - b
-            printf "one lane copy:        %.2f s\n", d - c
-            printf "the whole provider:   %.2f s\n", d - a
-          }'
-          rm -rf "$work"
+        run: .github/scripts/dispatch-browser-postgres.sh 1
       - name: Browser-test dispatch dashboard (${{ matrix.project }})
         # `bun run e2e` builds the SPA itself, which would rebuild it a second time in this job.
         # Calling the wrapper directly reuses the "Build dispatch dashboard" step's dist above and
@@ -1114,7 +1031,11 @@ jobs:
   # own jobs for the same reason. The step-level `if: always()` inside this job are a different
   # thing and stay: a step's condition is about the steps before it, not about the run.
   merge:
-    needs: [shard, alone, multiprocess]
+    # Every job of this workflow, the binaries job among them: a build that failed leaves the
+    # shard and alone jobs skipped and no blob report anywhere, and without it in this list the
+    # run would be reported as legs that uploaded nothing rather than as the build that never
+    # handed them anything. The verdict step below names it as it names the rest.
+    needs: [binaries, shard, alone, multiprocess]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     # The budget is measured. This job ran 27 s on the pull-request lane of this head
@@ -1213,7 +1134,7 @@ jobs:
           export GH_TOKEN="${{ github.token }}"
           # This run's jobs, the newest attempt of each, fetched once here and read again by
           # reading three below. The jobs API lists the caller's jobs too, so the name is held to
-          # this workflow's four; a called workflow's job is named `<the caller's job> / <this
+          # this workflow's five; a called workflow's job is named `<the caller's job> / <this
           # job>`, with a matrix leg in brackets after it.
           #
           # `filter=all` lists every attempt's jobs, so the newest attempt of each name is taken
@@ -1247,14 +1168,15 @@ jobs:
           # then had to land in both copies.
           #
           # `shard (3)` becomes `shard-3` and `alone (webkit-alone)` becomes `alone-webkit-alone`,
-          # after either caller's prefix. `merge` and `multiprocess` are this workflow's other two
-          # jobs: they pass the name filter below and get a null leg, so reading one passes them
-          # over and reading three names them as holding no row. ci.yaml's jobs do not get a null
-          # leg - that filter drops them before this expression sees them, which is what keeps
-          # them out of reading three, since reading three selects on conclusion alone. The two
-          # that come nearest are ci.yaml's own `dispatch-multiprocess` and `broker-multiprocess`,
-          # kept out only because the character before `multiprocess` is a hyphen and the filter
-          # wants a space or a line start; anyone who loosens it pulls them in.
+          # after either caller's prefix. `binaries`, `merge` and `multiprocess` are this
+          # workflow's other three jobs: they pass the name filter below and get a null leg, so
+          # reading one passes them over and reading three names them as holding no row.
+          # ci.yaml's jobs do not get a null leg - that filter drops them before this expression
+          # sees them, which is what keeps them out of reading three, since reading three
+          # selects on conclusion alone. The two that come nearest are ci.yaml's own
+          # `dispatch-multiprocess` and `broker-multiprocess`, kept out only because the
+          # character before `multiprocess` is a hyphen and the filter wants a space or a line
+          # start; anyone who loosens it pulls them in.
           #
           # The project part takes any name that holds no `)`, and the loops below read one leg
           # per line, so a project name holding a space or a comma is one leg here rather than
@@ -1269,7 +1191,7 @@ jobs:
           # second matrix dimension would leave a leg's derived name and its blob's name apart
           # and reading one would call it MISSING. Nothing of that is reachable from today's
           # matrix, and whoever widens it reads the alone job's own steps, not this line.
-          jq '[.[].jobs[] | select(.name | test("(^| )(shard|alone|multiprocess|merge)( \\(|$)"))]
+          jq '[.[].jobs[] | select(.name | test("(^| )(binaries|shard|alone|multiprocess|merge)( \\(|$)"))]
             | group_by(.name) | map(max_by(.run_attempt) | {id, name, conclusion,
                 leg: ((.name | capture(" shard \\((?<n>[0-9]+)\\)$") | "shard-\(.n)")
                   // (.name | capture(" alone \\((?<p>[^)]*)\\)$") | "alone-\(.p)")
@@ -1451,14 +1373,14 @@ jobs:
           done < "$unhappy"
       # The verdict, which the three readings above do not give: they report, and this fails. Two
       # of the job's three failures are here - an upstream job that neither succeeded nor was
-      # skipped, and a failed row in the merged report - and the third, a missing blob, is in
-      # reading one, where it is found.
+      # skipped, the binaries job among them, and a failed row in the merged report - and the
+      # third, a missing blob, is in reading one, where it is found.
       - name: Fail when a leg failed or the merged report holds a failed row
         if: always()
         run: |
           failed=0
-          for pair in "shard:${{ needs.shard.result }}" "alone:${{ needs.alone.result }}" \
-            "multiprocess:${{ needs.multiprocess.result }}"; do
+          for pair in "binaries:${{ needs.binaries.result }}" "shard:${{ needs.shard.result }}" \
+            "alone:${{ needs.alone.result }}" "multiprocess:${{ needs.multiprocess.result }}"; do
             case "${pair#*:}" in
               success | skipped) ;;
               *)

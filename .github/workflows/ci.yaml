@@ -1103,13 +1103,15 @@ jobs:
               - '.github/workflows/dispatch-browser.yaml'
               - '.github/workflows/dispatch-browser-nightly.yaml'
               # The memory and CPU sampler the shard and alone jobs' browser steps start and read
-              # back, and the script the merge job runs to take each leg's newest attempt. The
+              # back, the reading of the lanes' PostgreSQL those two jobs run before the suite,
+              # and the script the merge job runs to take each leg's newest attempt. The
               # Playwright install both jobs ran stood here too, with the pinned apt list it
               # installed, the key their apt archive cache was read under and the check that the
               # list had not fallen behind Playwright: those two jobs run in the image this
               # repository builds now, which carries the browsers and their host packages, so
               # all four files are gone (dispatch://INFRA-1443).
               - '.github/scripts/dispatch-browser-samples.sh'
+              - '.github/scripts/dispatch-browser-postgres.sh'
               - '.github/scripts/dispatch-browser-latest-blobs.sh'
               # The container image the shard and alone jobs run in and everything that decides
               # which bytes it is: the row that pins its digest, the Dockerfile it is built from
