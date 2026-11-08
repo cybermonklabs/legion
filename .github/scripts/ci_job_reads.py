@@ -1292,6 +1292,9 @@ GATES = [
         (".github/scripts/mirror-ci-images.sh", f"{at('ci-images', COPY_STEP)} runs it"),
         (".github/scripts/check-ci-images.sh", f"{at('ci-images', PACKAGE_STEP)} runs it"),
         (".github/scripts/ci_images.py", "both scripts read a row's upstream with it"),
+        (".github/docker/browser.Dockerfile", f"{at('ci-images', PACKAGE_STEP)} hashes it, and refuses the "
+                                              f"built row whose published image carries another Dockerfile's "
+                                              f"sha256 in its legion.browser-image.source-sha256 label"),
         (".github/actions/install-crane/**", at("ci-images", "./.github/actions/install-crane")),
     ) + CI_SELF),
 ]

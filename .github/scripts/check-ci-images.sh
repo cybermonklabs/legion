@@ -20,15 +20,18 @@
 #            ci.yaml's lint job runs it, and lint runs on every non-draft run. A change that
 #            names a third-party registry again can touch any file of the tree, and an image
 #            filter names few of those files, so this half must read every change.
-#   package  the one refusal that reads the package, over the network. ci.yaml's ci-images job
-#            runs it, after the copy of that same job. The ci_images filter selects that job and
-#            names every file that decides what the copy and this read do: .github/ci-images.yaml,
-#            the two scripts, .github/scripts/ci_images.py (the reference grammar both read a row
-#            with), .github/actions/install-crane and ci.yaml itself. The package can
+#   package  the two refusals that read the package, over the network. ci.yaml's ci-images job
+#            runs them, after the copy of that same job. The ci_images filter selects that job
+#            and names every file that decides what the copy and these reads do:
+#            .github/ci-images.yaml, the two scripts, .github/scripts/ci_images.py (the
+#            reference grammar both read a row with), .github/docker/browser.Dockerfile (rule
+#            10 hashes it), .github/actions/install-crane and ci.yaml itself. The package can
 #            also change under a run that touches none of them, and a re-run reads it again.
 #
 # Both modes read .github/ci-images.yaml, because the package mode asks ghcr.io about each row's
-# digest. The package mode leaves the shape of a row to the tree mode, which runs on every change.
+# digest, and both read the Dockerfile a `built` row names: the tree mode to see that this tree
+# holds it and that it is the file the build workflow builds, the package mode to hash it. The
+# package mode leaves the shape of a row to the tree mode, which runs on every change.
 #
 # It fails, naming the file, the line and the remedy, on:
 #
@@ -71,10 +74,17 @@
 #      other row: that stage would build with the other Go, and the worker's toolchain stage
 #      downloads the ARG's. A bump's second commit moves the ARG and every FROM together, so it
 #      passes. .github/scripts/check-bun-version.sh holds a Bun FROM to .bun-version this way.
+#   8. a `built` row naming a Dockerfile other than .github/docker/browser.Dockerfile.
+#      .github/workflows/browser-image.yaml builds that one file and no other, so a row built
+#      from anything else is a row nothing builds and nothing pushes: no image of the package
+#      carries that file's sha256, and rule 10 below would have no label to hold the row to.
+#      Such a row would pass both halves of this check while nothing ever published it. A
+#      second image this repository builds is a second build workflow, and this rule and rule
+#      10 would then name the Dockerfile each of them builds.
 #
 # IN PACKAGE MODE:
 #
-#   8. a row whose digest the package does not hold: the manifest is read with an anonymous
+#   9. a row whose digest the package does not hold: the manifest is read with an anonymous
 #      `HEAD` against ghcr.io. A `built` row is in the package like any other, because the
 #      build pushes it there. The message of an `upstream` row names .github/ci-images.yaml and
 #      says that ci.yaml's ci-images job copies a row before this mode reads the package, so
@@ -82,6 +92,18 @@
 #      names its Dockerfile and .github/workflows/browser-image.yaml instead: that build runs
 #      in the push that adds the Dockerfile, and the row carrying the digest it pushed lands in
 #      a later push.
+#  10. a `built` row whose published image was built from other bytes than the Dockerfile the
+#      row names, as this tree holds it. .github/workflows/browser-image.yaml writes that
+#      Dockerfile's own sha256 into the image it pushes, as the label
+#      legion.browser-image.source-sha256, and this rule reads the label back out of the image
+#      at the row's own digest and holds it equal to the sha256 of the file `built` names.
+#      Without it an edit to the Dockerfile merges green and changes nothing CI runs: the row
+#      still names a digest the package holds, so rule 9 passes, the tag still matches that
+#      digest, so rule 2 passes, and every `shard` and `alone` leg keeps running the image
+#      built before the edit. The tree mode cannot make this comparison, because the label is
+#      on the published image and only a read of the registry can see it. The remedy is the
+#      build: let .github/workflows/browser-image.yaml push the image this Dockerfile makes,
+#      then move the row's digest onto what it pushed.
 #
 # CI'S REACH is every .github/workflows/*.yaml, every .github/actions/*/action.yml, and each
 # other file a CI job runs that names an image. The first two kinds come from those two globs;
@@ -124,15 +146,25 @@
 # Files are discovered by walking the tree, not by asking git, so an unsnapshotted change cannot
 # read green locally.
 #
-# CHECK 8 AND THE NETWORK. The package mode's read of the package is one anonymous token request
-# (`GET https://ghcr.io/token?scope=repository:cybermonklabs/legion/ci:pull&service=ghcr.io`) and one
-# `HEAD https://ghcr.io/v2/cybermonklabs/legion/ci/manifests/<digest>` per row, with an `Accept` naming
-# the four index and manifest media types. CI_IMAGES_MANIFEST_HEAD is the seam that read hangs
-# on: when it is set, this check runs `"$CI_IMAGES_MANIFEST_HEAD" <digest>` once per row instead
-# and reads the HTTP status code the command prints on stdout (200 = the package holds the
-# digest, 404 = it does not). check-ci-images.test.sh sets it to a small script of its own, and
-# mirror-ci-images.test.sh drives this rule with it over the repository's own rows, so no case of
-# either test reaches the network.
+# CHECKS 9 AND 10 AND THE NETWORK. The package mode's read of the package is one anonymous token
+# request (`GET https://ghcr.io/token?scope=repository:cybermonklabs/legion/ci:pull&service=ghcr.io`)
+# and one `HEAD https://ghcr.io/v2/cybermonklabs/legion/ci/manifests/<digest>` per row, with an
+# `Accept` naming the four index and manifest media types. Rule 10 adds, for each `built` row
+# the package holds, a `GET` of that same manifest and a `GET` of the config blob it names,
+# which is the one place an image's labels are written; a manifest that is an index is followed
+# to its linux/amd64 entry first. Those three requests go to the same ghcr.io and take the same
+# anonymous token, so this check reads a label itself rather than shelling out to crane, which
+# it would otherwise need for nothing.
+# CI_IMAGES_MANIFEST_HEAD is the seam both reads hang on: when it is set, this check runs
+# `"$CI_IMAGES_MANIFEST_HEAD" <digest>` once per row instead of reaching ghcr.io, and reads what
+# the command prints on stdout — the HTTP status code of the HEAD (200 = the package holds the
+# digest, 404 = it does not), and after it, where the stand-in answers for one, the image's
+# legion.browser-image.source-sha256 label. A stand-in that prints a status alone answers for
+# the manifest and not for a label, so rule 10 compares nothing for that row, and the summary
+# line says how many `built` rows it did compare. check-ci-images.test.sh sets the seam to a
+# small script of its own, which prints the label its rule 10 cases drive the comparison with,
+# and mirror-ci-images.test.sh drives rule 9 with it over the repository's own rows, so no case
+# of either test reaches the network.
 #
 # Run from anywhere: .github/scripts/check-ci-images.sh tree
 #                    .github/scripts/check-ci-images.sh package
@@ -157,12 +189,14 @@ export CI_IMAGES_MODE="$1"
 # beside this script in the repository it checks, which PYTHONPATH names.
 # PYTHONDONTWRITEBYTECODE keeps the imports from leaving a __pycache__ in the tree.
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts python3 <<'PY'
+import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import NamedTuple
@@ -221,6 +255,13 @@ MIRROR_JOB = "ci.yaml's ci-images job"
 UPSTREAM = "upstream"
 BUILT = "built"
 BUILD_WORKFLOW = ".github/workflows/browser-image.yaml"
+# The one Dockerfile BUILD_WORKFLOW builds, and the label that build writes the Dockerfile's
+# own sha256 into. Rule 8 holds every `built` row to that file, because a row naming another is
+# a row no build pushes; rule 10 reads the label back out of the image the row's digest names,
+# and so is the only half of this check that can tell an edited Dockerfile from the bytes the
+# package serves.
+BUILT_DOCKERFILE = ".github/docker/browser.Dockerfile"
+SOURCE_LABEL = "legion.browser-image.source-sha256"
 BUN_PIN = Path(".bun-version")
 WORKER_DOCKERFILE = Path("packages/daemon/docker/worker.Dockerfile")
 # The two upstream repositories a pin of this repository names: rule 3 asks for a row at each
@@ -528,18 +569,94 @@ def verdict(what: str, summary: str) -> None:
     raise SystemExit(0)
 
 
-# ---------------------------------------------------------------- rule 8: the package
-def manifest_status(digests: list[str]) -> dict[str, str]:
-    """The HTTP status of an anonymous manifest HEAD, per digest. CI_IMAGES_MANIFEST_HEAD stands
-    in for the read, so a test drives this check without the network."""
+# ---------------------------------------------------------------- rules 9 and 10: the package
+class PackageRead(NamedTuple):
+    """What this mode read about one row's digest. `status` is the HTTP status of the manifest
+    HEAD rule 9 reads. `label` is the SOURCE_LABEL the image at that digest carries, which rule
+    10 holds the row's Dockerfile to, and `trouble` says why a read that was made gave no
+    label. Both are empty where no label was read at all, which is what a CI_IMAGES_MANIFEST_HEAD
+    stand-in that prints a status alone answers."""
+
+    status: str
+    label: str
+    trouble: str
+
+
+class KeepAuthHome(urllib.request.HTTPRedirectHandler):
+    """ghcr.io serves a blob as a redirect to a storage host, which carries its own credential
+    in the URL it redirects to. urllib would send this request's `Authorization` header there
+    too, and a host reading two credentials can refuse the read, so the header is dropped when
+    the redirect leaves the host it was issued for."""
+
+    def redirect_request(self, request, fp, code, msg, headers, newurl):
+        followed = super().redirect_request(request, fp, code, msg, headers, newurl)
+        here = urllib.parse.urlsplit(request.full_url).netloc
+        if followed is not None and urllib.parse.urlsplit(newurl).netloc != here:
+            followed.remove_header("Authorization")
+        return followed
+
+
+OPENER = urllib.request.build_opener(KeepAuthHome)
+
+
+def fetch_json(url: str, token: str, accept: str = "") -> object:
+    """One authenticated GET of ghcr.io, read as JSON."""
+    request = urllib.request.Request(url)
+    request.add_header("Authorization", f"Bearer {token}")
+    if accept:
+        request.add_header("Accept", accept)
+    with OPENER.open(request, timeout=30) as answer:
+        return json.load(answer)
+
+
+def source_label(digest: str, token: str) -> tuple[str, str]:
+    """The SOURCE_LABEL the image at one digest carries, and, where it gives none, the clause
+    that says why. An image's labels are written in its config blob, which its manifest names,
+    and a manifest that is an index names one manifest per platform: the build pushes
+    linux/amd64 alone, so that is the entry whose config carries the label."""
+    try:
+        manifest = fetch_json(f"https://ghcr.io/v2/{REPOSITORY}/manifests/{digest}", token, ACCEPT)
+        entries = manifest.get("manifests") if isinstance(manifest, dict) else None
+        if isinstance(entries, list):
+            wanted = [
+                entry
+                for entry in entries
+                if (entry.get("platform") or {}).get("architecture") == "amd64"
+            ] or entries
+            if not wanted:
+                return "", "the index at that digest names no manifest"
+            manifest = fetch_json(
+                f"https://ghcr.io/v2/{REPOSITORY}/manifests/{wanted[0]['digest']}", token, ACCEPT
+            )
+        config = (manifest.get("config") or {}).get("digest") if isinstance(manifest, dict) else ""
+        if not config:
+            return "", "the manifest at that digest names no config blob, where a label is written"
+        blob = fetch_json(f"https://ghcr.io/v2/{REPOSITORY}/blobs/{config}", token)
+        labels = (blob.get("config") or {}).get("Labels") if isinstance(blob, dict) else None
+        carried = (labels or {}).get(SOURCE_LABEL, "")
+        if not carried:
+            return "", f"the image at that digest carries no {SOURCE_LABEL} label"
+        return one_line(carried), ""
+    except Exception as error:  # noqa: BLE001 - every failure to read the package is a refusal
+        return "", f"reading its config failed ({type(error).__name__}: {one_line(error)})"
+
+
+def package_reads(rows: list[Row]) -> dict[str, PackageRead]:
+    """What the package says about each row, by digest. CI_IMAGES_MANIFEST_HEAD stands in for
+    both reads, so a test drives this mode without the network."""
     command = os.environ.get("CI_IMAGES_MANIFEST_HEAD", "")
     if command:
         out = {}
-        for digest in digests:
+        for row in rows:
             done = subprocess.run(
-                [command, digest], capture_output=True, text=True, check=False
+                [command, row.digest], capture_output=True, text=True, check=False
             )
-            out[digest] = done.stdout.strip().split()[0] if done.stdout.strip() else "no status"
+            # The stand-in prints the status, and after it the label the image at that digest
+            # carries, where it answers for one at all.
+            words = done.stdout.split()
+            out[row.digest] = PackageRead(
+                words[0] if words else "no status", words[1] if len(words) > 1 else "", ""
+            )
         return out
     try:
         with urllib.request.urlopen(
@@ -555,56 +672,92 @@ def manifest_status(digests: list[str]) -> dict[str, str]:
         )
         return {}
     out = {}
-    for digest in digests:
+    for row in rows:
         request = urllib.request.Request(
-            f"https://ghcr.io/v2/{REPOSITORY}/manifests/{digest}", method="HEAD"
+            f"https://ghcr.io/v2/{REPOSITORY}/manifests/{row.digest}", method="HEAD"
         )
         request.add_header("Authorization", f"Bearer {token}")
         request.add_header("Accept", ACCEPT)
         try:
             with urllib.request.urlopen(request, timeout=30) as answer:
-                out[digest] = str(answer.status)
+                status = str(answer.status)
         except urllib.error.HTTPError as error:
-            out[digest] = str(error.code)
+            status = str(error.code)
         except Exception as error:  # noqa: BLE001
-            out[digest] = f"{type(error).__name__}: {one_line(error)}"
+            status = f"{type(error).__name__}: {one_line(error)}"
+        # The label is read for a `built` row alone, and only where the package holds the
+        # digest: rule 9 already names a digest the package lacks, and an image that is not
+        # there has no config to read.
+        label, trouble = "", ""
+        if row.kind == BUILT and status == "200":
+            label, trouble = source_label(row.digest, token)
+        out[row.digest] = PackageRead(status, label, trouble)
     return out
 
 
 if MODE == PACKAGE:
     # Rule 1, a row's own shape, is the tree mode's, and that mode reads every change. A row
     # this mode cannot read is one it asks ghcr.io nothing about, so this mode names the rows
-    # the package lacks and nothing else.
+    # the package lacks, and the built rows the package holds at other bytes than this tree's,
+    # and nothing else.
     problems = []
     held = 0
+    compared = 0
     if readable:
-        statuses = manifest_status([row.digest for row in readable])
+        reads = package_reads(readable)
         for line, kind, source, tag, digest in readable:
-            status = statuses.get(digest)
-            if status == "200":
+            read = reads.get(digest)
+            if read is None:
+                continue
+            if read.status == "200":
                 held += 1
-            elif status is not None and kind == UPSTREAM:
+            elif kind == UPSTREAM:
                 problems.append(
                     f"{CI_IMAGES}:{line}: {REGISTRY}@{digest} ({tag}, the copy of "
                     f"{one_line(source)}) is not in the package: a manifest HEAD answered "
-                    f"{status}. {MIRROR_JOB} copies a row of {CI_IMAGES} before this mode reads "
-                    f"the package, so merge this row, or re-run that job, before a job pins the "
-                    f"digest."
+                    f"{read.status}. {MIRROR_JOB} copies a row of {CI_IMAGES} before this mode "
+                    f"reads the package, so merge this row, or re-run that job, before a job "
+                    f"pins the digest."
                 )
-            elif status is not None:
+            else:
                 # A built row is in the package like any other, because the build pushes it
                 # there; nothing copies it, so the remedy names the build and not the mirror.
                 problems.append(
                     f"{CI_IMAGES}:{line}: {REGISTRY}@{digest} ({tag}, the image "
                     f"{BUILD_WORKFLOW} builds from {one_line(source)}) is not in the package: a "
-                    f"manifest HEAD answered {status}. That build runs in the push that adds "
-                    f"{one_line(source)}, and the row carrying the digest it pushed lands in a "
-                    f"later push, so let that build run, or re-run it, before a job pins the "
-                    f"digest."
+                    f"manifest HEAD answered {read.status}. That build runs in the push that "
+                    f"adds {one_line(source)}, and the row carrying the digest it pushed lands "
+                    f"in a later push, so let that build run, or re-run it, before a job pins "
+                    f"the digest."
                 )
+            # Rule 10: the published image carries the sha256 of the Dockerfile the row names,
+            # because the build writes it there. A read that gave no label at all is a
+            # CI_IMAGES_MANIFEST_HEAD stand-in answering for the manifest alone, and the
+            # summary line below is where a run says how many rows it did compare.
+            if kind != BUILT or read.status != "200" or not (read.label or read.trouble):
+                continue
+            tree_sha256 = hashlib.sha256(Path(source).read_bytes()).hexdigest()
+            if read.label == tree_sha256:
+                compared += 1
+                continue
+            carried = read.trouble or (
+                f"the image at that digest carries sha256 {read.label} in its {SOURCE_LABEL} "
+                f"label"
+            )
+            problems.append(
+                f"{CI_IMAGES}:{line}: {REGISTRY}@{digest} ({tag}) is not the image "
+                f"{one_line(source)} builds: {one_line(source)} hashes to sha256 "
+                f"{tree_sha256} as this tree holds it, and {carried}. {BUILD_WORKFLOW} writes "
+                f"the Dockerfile's own sha256 into the image it pushes, as that label, so the "
+                f"two differ when the Dockerfile changed and no build pushed the change: every "
+                f"job pinning this row would keep running the image built before it. Let that "
+                f"build push the image this Dockerfile makes, then move this row's digest onto "
+                f"what it pushed."
+            )
     verdict(
         f"between {CI_IMAGES} and the package",
-        f"{CI_IMAGES} holds {len(readable)} row(s), {held} of them in the package",
+        f"{CI_IMAGES} holds {len(readable)} row(s), {held} of them in the package, "
+        f"{compared} built row(s) at the Dockerfile this tree holds",
     )
 
 
@@ -653,6 +806,25 @@ for row in readable:
             f"tag without them is a tag another digest of the same image can take, and the copy "
             f"that takes it moves the tag off the digest consumers pin. The rest names the image "
             f"a reader of the package sees. Name this row {wanted}."
+        )
+
+
+# Rule 8: a `built` row names the one Dockerfile BUILD_WORKFLOW builds. Rule 1 has already held
+# `built` to a file this tree holds; this rule holds it to the file that workflow builds,
+# because a row built from any other file is a row no build pushes and no image of the package
+# carries the sha256 of — so rule 10, which reads that sha256 back out of the published image,
+# would have nothing to read and the row would pass both halves of this check having never been
+# published at all. The path is compared as a path, which is how BUILD_WORKFLOW reads the same
+# key when it looks its own row up.
+for row in readable:
+    if row.kind == BUILT and Path(row.source) != Path(BUILT_DOCKERFILE):
+        problems.append(
+            f"{CI_IMAGES}:{row.line}: this row is built from {one_line(row.source)}, and "
+            f"{BUILD_WORKFLOW} builds {BUILT_DOCKERFILE} and no other file, so nothing builds "
+            f"this row: no image of the package carries {one_line(row.source)}'s sha256, and "
+            f"rule 10 would have no label to hold this row to. Name {BUILT_DOCKERFILE}, or "
+            f"give {BUILD_WORKFLOW} a build for {one_line(row.source)} and this check the rule "
+            f"that holds the row it pushes to it."
         )
 
 

@@ -10,14 +10,16 @@
 # A fixture holds every file CI's reach names, because the check fails on a reach file that is
 # gone.
 #
-# NO CASE REACHES THE NETWORK. The check reads which rows the package holds through
-# CI_IMAGES_MANIFEST_HEAD: when that variable is set, it runs the command it names once per row
-# and reads the HTTP status code the command prints. Every case here sets it to `head.sh` below,
-# which answers 200 for every digest but the ones MISSING names, and 404 for those. So the check
-# that reads ghcr.io is driven by a case, and nothing is pulled.
+# NO CASE REACHES THE NETWORK. The check reads the package through CI_IMAGES_MANIFEST_HEAD:
+# when that variable is set, it runs the command it names once per row and reads what the
+# command prints — the HTTP status code of the manifest HEAD, and after it the
+# legion.browser-image.source-sha256 label of the image at that digest, where the stand-in
+# answers for one. Every case here sets it to `head.sh` below, which answers 200 for every
+# digest but the ones MISSING names, 404 for those, and the label LABELS pairs with a digest.
+# So the two checks that read ghcr.io are driven by a case, and nothing is pulled.
 #
 # EVERY CASE NAMES ITS MODE. The check takes one mode: `tree` runs the checks that read the
-# files of the tree, and `package` runs the one that reads ghcr.io. Each case runs under the
+# files of the tree, and `package` runs the two that read ghcr.io. Each case runs under the
 # mode that owns its refusal, and one case holds each mode to its own half — the tree mode runs
 # the stand-in for the network never, and the package mode passes a tree the tree mode refuses.
 #
@@ -48,14 +50,26 @@ UNKNOWN=sha256:9f8e7d6c5b4a30219f8e7d6c5b4a30219f8e7d6c5b4a30219f8e7d6c5b4a3021
 BROWSER=sha256:60718293a4b5c6d760718293a4b5c6d760718293a4b5c6d760718293a4b5c6d7
 REGISTRY=ghcr.io/cybermonklabs/legion/ci
 
-# The stand-in for the manifest HEAD: the package holds every digest but the ones MISSING names.
+# The stand-in for the package's reads: the package holds every digest but the ones MISSING
+# names, and the image at a digest LABELS pairs a sha256 with carries that sha256 in its
+# legion.browser-image.source-sha256 label, which is what rule 10 holds a built row's
+# Dockerfile to. LABELS is `<digest>=<sha256>`, space separated; a digest it does not name is
+# answered with the status alone, which the check reads as a stand-in that answers for the
+# manifest and not for a label.
 head_script="$work/head.sh"
 cat > "$head_script" <<'SH'
 #!/usr/bin/env bash
+status=200
 case " ${MISSING:-} " in
-  *" $1 "*) echo 404 ;;
-  *) echo 200 ;;
+  *" $1 "*) status=404 ;;
 esac
+label=
+for pair in ${LABELS:-}; do
+  case "$pair" in
+    "$1="*) label=" ${pair#*=}" ;;
+  esac
+done
+echo "$status$label"
 SH
 chmod +x "$head_script"
 
@@ -188,11 +202,12 @@ YAML
 
 # run_check <mode> <root>: runs the script under test against that tree, in that mode, setting
 # `out` to its combined output and `status` to its exit code. Not a subshell, so both survive the
-# call. MISSING, which the caller may set, names the digests the stand-in package does not hold.
+# call. MISSING, which the caller may set, names the digests the stand-in package does not hold,
+# and LABELS the sha256 the image at a digest carries in its source label.
 run_check() {
   local mode=$1 root=$2
   set +e
-  out=$(CI_IMAGES_MANIFEST_HEAD="$head_script" MISSING="${MISSING:-}" \
+  out=$(CI_IMAGES_MANIFEST_HEAD="$head_script" MISSING="${MISSING:-}" LABELS="${LABELS:-}" \
     "$root/.github/scripts/check-ci-images.sh" "$mode" 2>&1)
   status=$?
   set -e
@@ -357,6 +372,63 @@ check "the package mode exits 0" "$(is "$status" 0)"
 check "and reports it held like the others" \
   "$(contains "$out" 'holds 5 row(s), 5 of them in the package')"
 
+echo "case: rule 8 — a built row naming a Dockerfile the build workflow does not build"
+# .github/workflows/browser-image.yaml builds one Dockerfile. A row built from another file is
+# a row nothing pushes, so no image of the package carries that file's sha256 and rule 10 below
+# would have no label to read: the tree alone says this, so the tree mode is where it is said.
+root=$(fixture built-other-dockerfile)
+cp "$root/.github/docker/browser.Dockerfile" "$root/.github/docker/other.Dockerfile"
+cat >> "$root/.github/ci-images.yaml" <<YAML
+  - built: .github/docker/other.Dockerfile
+    tag: other-60718293
+    digest: $BROWSER
+YAML
+browser_job "$root" "$BROWSER"
+run_check tree "$root"
+check "fails" "$(is "$status" 1)"
+check "names the file the row gives and the one that workflow builds" \
+  "$(contains "$out" 'this row is built from .github/docker/other.Dockerfile, and .github/workflows/browser-image.yaml builds .github/docker/browser.Dockerfile and no other file')"
+check "and says nothing builds the row" "$(contains "$out" 'so nothing builds this row')"
+
+echo "case: rule 10 — a built row whose image was built from the Dockerfile this tree holds"
+# The build writes the Dockerfile's own sha256 into the image it pushes, as the label this mode
+# reads back out of the image the row's digest names. Here the two agree, which is what a
+# merged bump leaves behind: the build pushed the edited Dockerfile's image, and a later push
+# moved the row onto that digest.
+root=$(fixture built-label-matches)
+browser_row "$root"
+browser_job "$root" "$BROWSER"
+published=$(sha256sum "$root/.github/docker/browser.Dockerfile" | cut -d ' ' -f 1)
+LABELS="$BROWSER=$published" run_check package "$root"
+check "the package mode exits 0" "$(is "$status" 0)"
+check "and counts the built row it compared" "$(contains "$out" '1 built row(s) at the Dockerfile this tree holds')"
+
+echo "case: rule 10 — a built row whose image was built from other bytes"
+# The hole this rule closes: a one-line edit to the Dockerfile that no build pushed. The row
+# still names a digest the package holds, so rule 9 passes and the tag rule passes, and every
+# job pinning the row would keep running the image built before the edit.
+root=$(fixture built-label-stale)
+browser_row "$root"
+browser_job "$root" "$BROWSER"
+# The label the build wrote when it pushed: the Dockerfile's sha256 before the edit below.
+published=$(sha256sum "$root/.github/docker/browser.Dockerfile" | cut -d ' ' -f 1)
+echo 'RUN echo a layer the published image does not carry' \
+  >> "$root/.github/docker/browser.Dockerfile"
+edited=$(sha256sum "$root/.github/docker/browser.Dockerfile" | cut -d ' ' -f 1)
+LABELS="$BROWSER=$published" run_check package "$root"
+check "fails" "$(is "$status" 1)"
+check "names the Dockerfile and the sha256 this tree holds" \
+  "$(contains "$out" "is not the image .github/docker/browser.Dockerfile builds: .github/docker/browser.Dockerfile hashes to sha256 $edited")"
+check "and the sha256 the published image carries" \
+  "$(contains "$out" "the image at that digest carries sha256 $published in its legion.browser-image.source-sha256 label")"
+check "and the remedy" \
+  "$(contains "$out" "move this row's digest onto what it pushed")"
+# The tree mode reads the same edited Dockerfile and passes: the label is on the published
+# image, so no read of this tree can tell the two apart, which is why rule 10 is the package
+# mode's.
+run_check tree "$root"
+check "and the tree mode passes the same tree" "$(is "$status" 0)"
+
 echo "case: a row carrying both upstream: and built:"
 root=$(fixture row-both-kinds)
 cat >> "$root/.github/ci-images.yaml" <<YAML
@@ -516,7 +588,7 @@ check "names that row and the Go it copies" \
 check "and rule 3 reads the pinned row under its short spelling" \
   "$(is "$(contains "$out" 'no row copies library/golang')" false)"
 
-echo "case: rule 8 — a row the package does not hold"
+echo "case: rule 9 — a row the package does not hold"
 root=$(fixture not-published)
 MISSING=$GOLANG run_check package "$root"
 check "a row ghcr.io answers 404 for fails" "$(is "$status" 1)"
