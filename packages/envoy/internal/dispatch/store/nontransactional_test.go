@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -254,5 +255,99 @@ func TestWindowOwnerMigrationDropsAnInvalidLeftoverAndRebuilds(t *testing.T) {
 	}
 	if got := schemaVersion(t, store); got != 20261102233630 {
 		t.Errorf("schema version = %d, want 20261102233630", got)
+	}
+}
+
+// bootRaces is how many times TestTwoBootsAtOnceOverAnInvalidLeftoverNeverDeadlock runs the race,
+// each on a database of its own and all of them side by side.
+//
+// One run proves little. The two boots take the key for one migration after another, and most
+// runs end with them level at the concurrent index - both waiting for the same key, which is safe
+// however that wait is taken. The run that deadlocks is the one where a boot takes the key for
+// several migrations before the other is granted it once, so the second is still inside an
+// earlier migration's transaction when the first starts its CONCURRENTLY statement, and which run
+// that is, is up to the order Postgres wakes waiters in. Measured on PostgreSQL 18.6 with
+// applyMigrationOnce's wait made blocking again: one run in three, one in eight and one in
+// sixteen caught it with the runs one after another, and three of sixteen with the runs side by
+// side, which is also what makes twenty of them take half a minute rather than forty seconds.
+// Twenty runs at that rate catch the deadlock in better than nineteen cases out of twenty.
+const bootRaces = 20
+
+// Two Dispatch processes booting at once over the INVALID leftover INFRA-1973 reports. One of
+// them holds the migration advisory key while 20261102233630 drops that leftover and builds
+// embeddings_window_owner again, both CONCURRENTLY; the other waits for the key.
+//
+// A runner that waited for the key inside Postgres - pg_advisory_xact_lock in a transaction, or a
+// blocking pg_advisory_lock on a session - would keep the snapshot its blocked statement took,
+// and a concurrent index build waits for every older snapshot, so the holder would wait for the
+// waiter and the waiter for the holder: PostgreSQL 18.6 answers that cycle with "deadlock
+// detected" (SQLSTATE 40P01) and one of the two boots fails on it. Polling for the key
+// (lockMigrations) leaves nothing open between two tries, so both boots finish.
+//
+// The second runner is a Store of its own on the same database, not a goroutine on the first
+// one's pool, because two booting processes are what this is about.
+func TestTwoBootsAtOnceOverAnInvalidLeftoverNeverDeadlock(t *testing.T) {
+	started := time.Now()
+	t.Cleanup(func() { t.Logf("%d boot races took %s", bootRaces, time.Since(started).Round(time.Millisecond)) })
+	for attempt := 1; attempt <= bootRaces; attempt++ {
+		t.Run(fmt.Sprintf("boot-race-%d", attempt), func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			first := openEmptyTestStore(t)
+			migrateThrough(t, first, 20261102233625)
+			// Two window rows under one owner key, so a UNIQUE build of the owner index fails
+			// over them and leaves exactly the INVALID index a killed build leaves behind.
+			if _, err := first.Pool.Exec(ctx, `insert into embeddings (kind, id, text_snapshot, content_hash) values
+				('document_block', 'owner#0', 'first block', 'hash-first'),
+				('document_block', 'owner#1', 'second block', 'hash-second')`); err != nil {
+				t.Fatalf("seed two window rows of one owner: %v", err)
+			}
+			if _, err := first.Pool.Exec(ctx, `create unique index concurrently embeddings_window_owner on embeddings
+				(kind, split_part(id, '#', 1)) where kind in ('document_block', 'comment_block', 'message_block', 'ask_part')`); err == nil {
+				t.Fatal("the unique build over two rows of one owner succeeded; it must fail and leave an INVALID index")
+			}
+			var validBefore bool
+			if err := first.Pool.QueryRow(ctx, `select indisvalid from pg_index
+				where indexrelid = 'embeddings_window_owner'::regclass`).Scan(&validBefore); err != nil {
+				t.Fatalf("read the leftover embeddings_window_owner from pg_index: %v", err)
+			}
+			if validBefore {
+				t.Fatal("the fixture left a VALID embeddings_window_owner: the migration would have nothing to recover from")
+			}
+			second, err := Open(ctx, first.Pool.Config().ConnString())
+			if err != nil {
+				t.Fatalf("open the second booting process's store: %v", err)
+			}
+			t.Cleanup(second.Pool.Close)
+			booted := make(chan error, 2)
+			release := make(chan struct{})
+			for _, booting := range []*Store{first, second} {
+				go func(booting *Store) {
+					<-release
+					booted <- booting.migrate(ctx, migrationFiles)
+				}(booting)
+			}
+			close(release)
+			for range 2 {
+				if err := <-booted; err != nil {
+					t.Errorf("one of two boots at once: %v", err)
+				}
+			}
+			var valid, partial, onEmbeddings bool
+			if err := first.Pool.QueryRow(ctx, `select indisvalid, indpred is not null, indrelid = 'embeddings'::regclass
+				from pg_index where indexrelid = 'embeddings_window_owner'::regclass`).Scan(&valid, &partial, &onEmbeddings); err != nil {
+				t.Fatalf("read embeddings_window_owner from pg_index: %v", err)
+			}
+			if !valid || !partial || !onEmbeddings {
+				t.Errorf("rebuilt owner index: valid %v, partial %v, on embeddings %v", valid, partial, onEmbeddings)
+			}
+			var records int
+			if err := first.Pool.QueryRow(ctx, "select count(*) from schema_migrations where version = 20261102233630").Scan(&records); err != nil {
+				t.Fatalf("count the owner migration's version records: %v", err)
+			}
+			if records != 1 {
+				t.Errorf("schema_migrations holds %d records of 20261102233630, want 1", records)
+			}
+		})
 	}
 }
