@@ -339,6 +339,42 @@ export interface WriteAdvice {
     readonly approved_by: string;
   };
   /**
+   * The review the issue's specification already carries when a question is opened on the
+   * issue: the newest review of the issue's primary document, given by a person (an actor of
+   * kind `user` with no agent named beside them) and pinned to the version the document is at
+   * now. Set only on a question opened on an issue. Omitted when the document has moved past
+   * the reviewed version, when nobody has reviewed it, when the newest review is a plan review
+   * or one an agent wrote under a person's scope, when the issue has no specification
+   * document, when the question is on a project document, and whenever the read failed: the
+   * question is written either way.
+   */
+  readonly standing_review?: {
+    /** Who reviewed, as the review records the actor's id. */
+    readonly by: string;
+    /**
+     * RFC3339 timestamp of the review. For a carried review this is when Dispatch recorded the
+     * carry, not when the person reviewed.
+     */
+    readonly at: string;
+    readonly state: "approved" | "changes_requested";
+    /** The version the review is pinned to, which is the document's newest. */
+    readonly version: number;
+    /**
+     * The reviewer's reason, the first 500 characters of it. Omitted when the review carries
+     * none, which an approval may, and on a carried review, whose stored reason is Dispatch's
+     * own carry sentence rather than anything the person wrote.
+     */
+    readonly reason?: string;
+    /**
+     * True when Dispatch carried the review forward to this version rather than the person
+     * giving it on this version, and `carried_from_version` is then the version the carry's own
+     * reason names: the version the person reviewed, or, where a carry followed a carry, the
+     * version the carry before it named.
+     */
+    readonly carried?: boolean;
+    readonly carried_from_version?: number;
+  };
+  /**
    * The related-item check (LEGION-550), set on an issue or ask creation: the items
    * most like what was just filed, any past decision that matches, and what the check did
    * (`outcome`). Never refuses the write; it waits at most five seconds, and a check that did not

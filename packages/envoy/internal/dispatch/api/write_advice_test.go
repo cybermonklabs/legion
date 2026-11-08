@@ -33,6 +33,7 @@ type testWriteAdvice struct {
 	DecisionBlocks          *int                `json:"decision_blocks"`
 	DecisionBlocksAdded     *int                `json:"decision_blocks_added"`
 	SupersededApproval      *supersededApproval `json:"superseded_approval"`
+	StandingReview          *standingReview     `json:"standing_review"`
 	LegionManagedStatus     *bool               `json:"legion_managed_status"`
 	UnparsedOpeners         *struct {
 		Count    int      `json:"count"`

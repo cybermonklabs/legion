@@ -249,6 +249,43 @@ async function followsAsk(
   const subscribe = ownerSubscribeLine(owner, await subscriptions?.());
   return `You follow this ask: its answer and replies reach you directly.${subscribe === null ? "" : ` ${subscribe}`}`;
 }
+
+/** How much of a reviewer's reason the standing-review line prints. The server already cuts the
+ *  reason to this, so the cut here only bounds one that reaches the command uncut. */
+const standingReviewReasonLimit = 500;
+
+/**
+ * What a question says about the review its issue's specification already carries
+ * (`WriteAdvice.standing_review`): who reviewed, when, whether they approved or asked for
+ * changes, their reason, and the one thing the sender can do about it. The sender is asking
+ * about text someone has already read and judged, so the answer they need is what changed since
+ * that review. Nothing is printed when the advice carries no review.
+ *
+ * A carried review is Dispatch's own bookkeeping of an earlier approval, so its line says so and
+ * prints no reason: the stored reason is Dispatch's sentence, its time is when Dispatch recorded
+ * the carry, and the version it names is the one the carry's reason names, which is the version
+ * the person read.
+ */
+function standingReviewLines(advice: WriteAdvice | undefined): string[] {
+  const review = advice?.standing_review;
+  if (review === undefined) return [];
+  const carriedFrom = review.carried === true ? review.carried_from_version : undefined;
+  if (carriedFrom !== undefined) {
+    return [
+      `${review.by}'s approval of this issue's spec was carried forward from the approval of version ${carriedFrom}, and Dispatch recorded that carry on ${review.at}.`,
+      "Say what changed since that review in a reply on this ask.",
+    ];
+  }
+  const verb = review.state === "approved" ? "approved" : "asked for changes on";
+  const opening = `${review.by} ${verb} this issue's spec at version ${review.version} on ${review.at}`;
+  const reason =
+    review.reason === undefined ? "" : review.reason.slice(0, standingReviewReasonLimit);
+  return [
+    reason === "" ? `${opening}, and gave no reason.` : `${opening}: "${reason}"`,
+    "Say what changed since that review in a reply on this ask.",
+  ];
+}
+
 const triageAdviceShown = new Set<string>();
 
 export function resetAdviceMemory(): void {
@@ -4653,13 +4690,14 @@ export async function executeDispatchTool(
           : resolved === undefined
             ? issueTopic(issue())
             : documentTopic(resolved.artifact);
-      // The check's form sits right under the line naming the ask; renderAdvice's cadence line
-      // must stay the result's last line.
+      // The check's form sits right under the line naming the ask, the standing review under
+      // that; renderAdvice's cadence line must stay the result's last line.
       const checkLines = relatedCheckLines(ask.advice?.suggestions, {
         project: resolved?.artifact.project ?? (ask.issue_key ?? "").replace(/-[0-9]+$/, ""),
         text: stringArg(args, "question"),
         configUrl: linkBase,
       });
+      const reviewLines = await otherAdviceLines(() => standingReviewLines(ask.advice));
       const adviceLines = await otherAdviceLines(() =>
         renderAdvice(input.tool, askOwner.label, ask.advice, {})
       );
@@ -4667,6 +4705,7 @@ export async function executeDispatchTool(
         text: [
           `Asked ${ask.id} on ${askOwner.label} (urgency ${ask.urgency}): ${ask.question}`,
           ...checkLines,
+          ...reviewLines,
           await followsAsk(askOwner, input.subscriptions),
           ...adviceLines,
         ].join("\n"),

@@ -3,11 +3,14 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
@@ -41,6 +44,9 @@ type writeAdvice struct {
 	// SupersededApproval is set by a document write that stored a version replacing the one a
 	// person had approved; nil (omitted) everywhere else.
 	SupersededApproval *supersededApproval `json:"superseded_approval,omitempty"`
+	// StandingReview is the person's review the issue's specification already carries, set only
+	// on a question opened on an issue (createAskFor); nil (omitted) everywhere else.
+	StandingReview *standingReview `json:"standing_review,omitempty"`
 	// Suggestions is the related-item check's result, set only on an issue or ask
 	// creation; nil (omitted) everywhere else.
 	Suggestions *model.Suggestions `json:"suggestions,omitempty"`
@@ -353,6 +359,160 @@ func newestReviewAsApproval(ctx context.Context, q docs.Queryer, artifactID stri
 		Version:         version,
 		ApprovedBy:      review.Actor.ID,
 	}, nil
+}
+
+// standingReview is the review a question's issue already carries on its specification: the
+// newest review of the issue's primary document, given by a person and pinned to the version
+// that document is at now. An agent opening a question on such an issue is asking about text
+// someone has already read and judged, so the question's answer names the review and asks the
+// sender to say what changed since. It is about the document and not about the words of the
+// question, so it holds for a question worded in any way; the related-item check beside it
+// (Suggestions) is the one that depends on the words.
+type standingReview struct {
+	// By is who reviewed, as the review records the actor's id.
+	By string `json:"by"`
+	// At is when the review was recorded. For a carried review this is when Dispatch recorded
+	// the carry, not when the person reviewed.
+	At time.Time `json:"at"`
+	// State is "approved" or "changes_requested".
+	State string `json:"state"`
+	// Version is the version the review is pinned to, which is the document's newest.
+	Version int `json:"version"`
+	// Reason is the reviewer's reason cut at standingReviewReasonLimit characters, empty when
+	// the review carries none, which an approval may. A carried review's reason is Dispatch's
+	// own carry sentence rather than anything the person wrote.
+	Reason string `json:"reason,omitempty"`
+	// Carried says the review is one Dispatch carried forward to this version rather than one
+	// the person gave on it, and CarriedFromVersion is the version the carry's reason names:
+	// the version the person reviewed, or, where a carry followed a carry, the version the
+	// carry before it named.
+	Carried            bool `json:"carried,omitempty"`
+	CarriedFromVersion int  `json:"carried_from_version,omitempty"`
+}
+
+// standingReviewReasonLimit is how much of the reviewer's reason the advice carries, counted in
+// characters so a cut never splits one.
+const standingReviewReasonLimit = 500
+
+// carriedApprovalReasonPrefix opens the reason of every review Dispatch carried forward to a
+// later version: both sentences the carry writes (carryReason and restoreReason in
+// docs/approval_carry.go) begin with it, and the version the person reviewed follows it. The
+// carry row's own Version is the new version, so that number is the only record of which
+// version the person read, and a carry that followed a carry names the version the carry before
+// it named. The Legion daemon tells a carry from a person's own approval by the same words from
+// its own module (intake.CarriedApprovalReasonPrefix).
+const carriedApprovalReasonPrefix = "Carried forward from the approval of version "
+
+// standingReviewAdvice is the review the issue's specification already carries when a question
+// is opened on it, or nil when it carries none and whenever the read failed: the question is
+// written either way, so this reports nothing rather than refusing the write.
+//
+// Like every other advice query it runs behind a savepoint, because a failed statement aborts
+// the transaction it ran in. It writes nothing, so the savepoint is always rolled back, which
+// also restores the statement_timeout it set.
+func (s *server) standingReviewAdvice(ctx context.Context, tx pgx.Tx, route, issueKey string) *standingReview {
+	adviceTx, err := tx.Begin(ctx)
+	if err != nil {
+		s.logAdviceError(route, issueKey, "standing_review", err)
+		return nil
+	}
+	defer func() { _ = adviceTx.Rollback(ctx) }()
+	if _, err := adviceTx.Exec(ctx, "set local statement_timeout = '500ms'"); err != nil {
+		s.logAdviceError(route, issueKey, "standing_review", err)
+		return nil
+	}
+	review, err := standingSpecReview(ctx, adviceTx, issueKey)
+	if err != nil {
+		s.logAdviceError(route, issueKey, "standing_review", err)
+		return nil
+	}
+	return review
+}
+
+// standingSpecReview is standingReviewAdvice's rule, over whatever queryer the caller holds: the
+// newest review of the issue's primary document (docs.NewestReview, which adds no read of
+// artifact_reviews to this module), reported when all three of these hold - the review is
+// pinned to the document's newest version, its kind is a person's, and its actor is a person
+// with no agent named beside it. An issue with no primary document, a document with no version
+// and a document nobody has reviewed each report nothing, as does a review of an older version,
+// a plan review, and a review an agent wrote under a person's scope.
+func standingSpecReview(ctx context.Context, q queryer, issueKey string) (*standingReview, error) {
+	var artifactID string
+	if err := q.QueryRow(ctx, `
+		select id::text from artifacts where issue_key = $1 and is_primary and kind = 'doc'
+	`, issueKey).Scan(&artifactID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read the issue's primary document: %w", err)
+	}
+	latest, err := latestVersionNumber(ctx, q, artifactID)
+	if err != nil || latest == nil {
+		return nil, err
+	}
+	review, err := docs.NewestReview(ctx, q, artifactID)
+	if err != nil {
+		return nil, fmt.Errorf("read the document's newest review: %w", err)
+	}
+	if review == nil || review.Version != *latest || review.Kind != docs.ReviewKindPerson {
+		return nil, nil
+	}
+	if review.Actor.Kind != "user" || review.Actor.Act != nil {
+		return nil, nil
+	}
+	standing := &standingReview{
+		By:      review.Actor.ID,
+		At:      review.CreatedAt,
+		State:   review.State,
+		Version: review.Version,
+	}
+	// A carried review's stored reason is Dispatch's own carry sentence rather than anything
+	// the person wrote, so the carry is reported and the sentence is not: a reader that printed
+	// it would quote Dispatch back to the sender as the reviewer's words.
+	if review.Reason != nil {
+		if from, carried := carriedApprovalVersion(*review.Reason); carried {
+			standing.Carried, standing.CarriedFromVersion = true, from
+		} else {
+			standing.Reason = firstCharacters(*review.Reason, standingReviewReasonLimit)
+		}
+	}
+	return standing, nil
+}
+
+// carriedApprovalVersion reads the version a carried review's reason names out of
+// carriedApprovalReasonPrefix's sentence, and reports false for every reason a person wrote. A
+// reason that opens with the prefix but names no number there is read as a person's: the number
+// is what the line would print, and a line naming no version says less than none.
+func carriedApprovalVersion(reason string) (int, bool) {
+	rest, found := strings.CutPrefix(reason, carriedApprovalReasonPrefix)
+	if !found {
+		return 0, false
+	}
+	digits, _, found := strings.Cut(rest, ":")
+	if !found {
+		return 0, false
+	}
+	version, err := strconv.Atoi(digits)
+	if err != nil || version < 1 {
+		return 0, false
+	}
+	return version, true
+}
+
+// firstCharacters is text cut to the first count characters, whole: a cut between two bytes of
+// one rune would leave the reader a replacement character where a letter was.
+func firstCharacters(text string, count int) string {
+	if utf8.RuneCountInString(text) <= count {
+		return text
+	}
+	runes := 0
+	for index := range text {
+		if runes == count {
+			return text[:index]
+		}
+		runes++
+	}
+	return text
 }
 
 // documentWriteAdvice is the whole advice of a document write with no issue state to report: a

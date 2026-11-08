@@ -1041,6 +1041,146 @@ describe("the related-item check", () => {
   });
 });
 
+// The review an issue's specification already carries when a question is opened on it
+// (WriteAdvice.standing_review). The server decides whether a review stands; the command decides
+// what it reads like and where it sits.
+describe("dispatch_ask's standing review", () => {
+  const changedSince = "Say what changed since that review in a reply on this ask.";
+  const askArgs = { issue: "DSP-42", question: "Should the billing service retry?" };
+  // Every question runs the related-item check too, so its line sits between the asked line and
+  // the review in each case below; here it finds nothing.
+  const noRelatedLine = "Related-item check searched (meaning and keywords) and found nothing.";
+  const emptyCheck: Suggestions = { outcome: "none", search: "meaning_and_keywords", related: [] };
+
+  async function askWithReview(review: NonNullable<WriteAdvice["standing_review"]>) {
+    return await executeWrite(
+      "dispatch_ask",
+      askArgs,
+      advice({ suggestions: emptyCheck, standing_review: review })
+    );
+  }
+
+  test("an approval names the person, the version, the time and the reason, between the asked line and the follow line", async () => {
+    const result = await askWithReview({
+      by: "alice",
+      at: "2026-09-12T13:20:00Z",
+      state: "approved",
+      version: 4,
+      reason: "The rollback path is named.",
+    });
+
+    expect(result.text).toBe(
+      [
+        askedLine,
+        noRelatedLine,
+        'alice approved this issue\'s spec at version 4 on 2026-09-12T13:20:00Z: "The rollback path is named."',
+        changedSince,
+        followsLine,
+      ].join("\n")
+    );
+  });
+
+  test("a request for changes says so", async () => {
+    const result = await askWithReview({
+      by: "alice",
+      at: "2026-09-12T13:20:00Z",
+      state: "changes_requested",
+      version: 4,
+      reason: "The rollback path is missing.",
+    });
+
+    expect(result.text.split("\n")[2]).toBe(
+      'alice asked for changes on this issue\'s spec at version 4 on 2026-09-12T13:20:00Z: "The rollback path is missing."'
+    );
+  });
+
+  test("a review with no reason says so rather than quoting nothing", async () => {
+    const result = await askWithReview({
+      by: "alice",
+      at: "2026-09-12T13:20:00Z",
+      state: "approved",
+      version: 4,
+    });
+    const lines = result.text.split("\n");
+
+    expect(lines[2]).toBe(
+      "alice approved this issue's spec at version 4 on 2026-09-12T13:20:00Z, and gave no reason."
+    );
+    expect(lines[2]).not.toContain('""');
+  });
+
+  test("the reason is cut at 500 characters", async () => {
+    const reason = "a".repeat(640);
+    const result = await askWithReview({
+      by: "alice",
+      at: "2026-09-12T13:20:00Z",
+      state: "approved",
+      version: 4,
+      reason,
+    });
+
+    expect(result.text.split("\n")[2]).toBe(
+      `alice approved this issue's spec at version 4 on 2026-09-12T13:20:00Z: "${"a".repeat(500)}"`
+    );
+  });
+
+  test("a carried review names the version its carry reason gives, the carry's own time, and no reason", async () => {
+    const result = await askWithReview({
+      by: "alice",
+      at: "2026-09-14T09:05:00Z",
+      state: "approved",
+      version: 7,
+      // The stored reason is Dispatch's carry sentence, which the line never prints.
+      reason:
+        "Carried forward from the approval of version 5: the answer to a decision block was the whole change since it.",
+      carried: true,
+      carried_from_version: 5,
+    });
+    const lines = result.text.split("\n");
+
+    expect(lines.slice(2, 4)).toEqual([
+      "alice's approval of this issue's spec was carried forward from the approval of version 5, and Dispatch recorded that carry on 2026-09-14T09:05:00Z.",
+      changedSince,
+    ]);
+    expect(result.text).not.toContain("version 7");
+    expect(result.text).not.toContain("the answer to a decision block");
+  });
+
+  test("the cadence line stays last", async () => {
+    const result = await executeWrite(
+      "dispatch_ask",
+      askArgs,
+      advice({
+        session_writes_since_human: 3,
+        suggestions: emptyCheck,
+        standing_review: {
+          by: "alice",
+          at: "2026-09-12T13:20:00Z",
+          state: "approved",
+          version: 4,
+          reason: "The rollback path is named.",
+        },
+      })
+    );
+    const lines = result.text.split("\n");
+
+    expect(lines.slice(0, 5)).toEqual([
+      askedLine,
+      noRelatedLine,
+      'alice approved this issue\'s spec at version 4 on 2026-09-12T13:20:00Z: "The rollback path is named."',
+      changedSince,
+      followsLine,
+    ]);
+    expect(lines.at(-1)).toStartWith("Posted. You've sent 3 messages on DSP-42");
+  });
+
+  test("advice carrying no review prints nothing new", async () => {
+    const result = await executeWrite("dispatch_ask", askArgs, advice({ suggestions: emptyCheck }));
+
+    expect(result.text).toBe([askedLine, noRelatedLine, followsLine].join("\n"));
+  });
+});
+
 describe("dispatch_doc_edit's decision block checks", () => {
   const askBlock =
     ':::ask{urgency="med"}\nShould webhook deliveries back off exponentially?\n:::\n';

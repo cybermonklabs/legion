@@ -297,6 +297,17 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 		advice = s.writeAdvice(
 			r.Context(), tx, "POST /api/v1/issues/{key}/asks", *owner.IssueKey, actor, rowID, *status,
 		)
+		// The review the issue's specification already carries, read in the same transaction as
+		// the advice above and reported beside it. It is about the document rather than about
+		// this session, so it is read for a person's question as for an agent's, and it rides
+		// the advice the write already answers rather than a read of its own. A question on a
+		// project document has no issue and so no specification, and a write whose advice read
+		// failed carries nothing to hang it on; both report no review.
+		if advice != nil {
+			advice.StandingReview = s.standingReviewAdvice(
+				r.Context(), tx, "POST /api/v1/issues/{key}/asks", *owner.IssueKey,
+			)
+		}
 	}
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
