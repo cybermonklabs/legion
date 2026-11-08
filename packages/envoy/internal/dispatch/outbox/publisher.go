@@ -1264,6 +1264,14 @@ func envelope(event model.Event, slug string) (contracts.Envelope, error) {
 	if strings.HasPrefix(event.Type, "ask.") {
 		item.Urgency = payloadString(event.Payload, "urgency")
 	}
+	// An answered ask and an approved artifact are receipts: the event tells its reader what a
+	// person decided, and there is nothing to send back. The envelope leaves the field out all
+	// the same, as every other event type does, because a listener built before #2903 reads
+	// expects_reply only as a string: the literal false fails its decode, and the frame is
+	// acknowledged and dropped, so a Dispatch server rolled ahead of the listeners of its
+	// deployment would lose every answered ask and approved artifact. What removes the
+	// workaround: every listener of a deployment at or after #2903, after which these two types
+	// carry contracts.ExpectsReplyNone again and say "nothing wanted back" out loud.
 	return item, nil
 }
 

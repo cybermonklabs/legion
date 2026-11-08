@@ -20,12 +20,12 @@ import { SHELL_OUTPUT_MAX } from "../src/typed-shell";
 
 // What the live view's two session-side surfaces do on the real Oh My Pi (dispatch://INFRA-812,
 // R3 and R4): the `context` frame the session publishes about how full its context window is
-// (extensions/envoy.ts's `refreshAgentStreamContext` over src/agent-stream.ts's `setContext`), and
-// a person's `!command`, which the session runs itself before the host is handed the line
-// (src/typed-shell.ts, read in `runTypedInput`). Both are read off the wire: the frames over a real
-// NATS server, as the Dispatch relay reads them, and the reply over the stand-in Dispatch. What
-// reached the model is read off the requests the binary sends the stand-in gateway, each held
-// until the test answers it.
+// (extensions/envoy.ts's `refreshAgentStreamContext` over `@legion/pi-shared/agent-stream`'s
+// `setContext`), and a person's `!command`, which the session runs itself before the host is
+// handed the line (src/typed-shell.ts, read in `runTypedInput`). Both are read off the wire: the
+// frames over a real NATS server, as the Dispatch relay reads them, and the reply over the
+// stand-in Dispatch. What reached the model is read off the requests the binary sends the
+// stand-in gateway, each held until the test answers it.
 // LEGION_TEST_OMP names the binary, as in card-delivery-omp.test.ts, and LEGION_TEST_NATS_URL the
 // NATS server. A run without both skips, except on GitHub Actions, where the pi-envoy job
 // supplies both.

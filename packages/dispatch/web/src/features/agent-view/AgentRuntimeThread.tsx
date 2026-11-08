@@ -11,7 +11,13 @@ import { compareTimestamps } from "../../lib/timestamps";
 import type { SessionSends } from "../conversation/useSessionSends";
 import { isViewer } from "../refs/actor";
 import { AgentThread } from "./AgentThread";
-import { type AgentConversation, dispatchTurns, toThreadMessages } from "./conversation";
+import {
+  type AgentConversation,
+  type DispatchTurn,
+  dispatchTurns,
+  toThreadMessages,
+  turnSaysBody,
+} from "./conversation";
 import {
   type DispatchAuthor,
   dispatchMetadata,
@@ -38,19 +44,21 @@ function dispatchId(messageId: string): string {
  * Whether a streamed user turn is the stored message it names, so the view draws the pair once
  * rather than one under the other.
  *
- * A turn saying exactly what the person sent is that message. So is the report of a person's
- * `!command` (INFRA-812, R4): the session runs the line itself and publishes the person's line,
- * what the command printed and how it ended as one user message, because the person ran it and
- * the host wrote nothing (`shellCommandReport` in `packages/pi-envoy/src/typed-shell.ts`). Its
- * first line is the message's whole body and a blank line follows it, so the turn still says
- * what the person said and the rest of it is the session's answer to that line.
+ * A turn saying what the person wrote is that message, beside what the stream names of what the
+ * message carried, such as a picture's `[image]` (`turnSaysBody`, which holds the row to the
+ * body's own lines and to the body's own pictures). So is the report of a person's `!command`
+ * (INFRA-812, R4): the session runs the line itself and publishes the person's line, what the
+ * command printed and how it ended as one user message, because the person ran it and the host
+ * wrote nothing (`shellCommandReport` in `packages/pi-envoy/src/typed-shell.ts`). Its first line
+ * is the message's whole body and a blank line follows it, so the turn still says what the
+ * person said and the rest of it is the session's answer to that line.
  *
  * Anything else is left to show beside the stored copy: the bus is open to any client, and a
  * tag is no licence to put words in a person's mouth.
  */
-function takesOverStored(text: string, body: string): boolean {
-  if (text === body) return true;
-  return body.startsWith("!") && text.startsWith(`${body}\n\n`);
+function takesOverStored(turn: DispatchTurn, body: string): boolean {
+  if (turnSaysBody(turn, body)) return true;
+  return body.startsWith("!") && turn.text.startsWith(`${body}\n\n`);
 }
 
 /**
@@ -113,7 +121,8 @@ export function AgentRuntimeThread({
     // naming whoever wrote it. An untagged one is returned unchanged and its stored copy is never
     // taken, so it shows twice (`packages/pi-envoy/AGENTS.md` says which turns go untagged). Any
     // bus client can publish a tag, so only a person's stored message can be one, and only a
-    // streamed message saying what that person sent, or answering their `!` line, replaces its
+    // streamed message saying what that person wrote - beside what the stream names of what the
+    // message carried, such as a picture's `[image]` - or answering their `!` line, replaces its
     // stored copy (`takesOverStored`).
     const byID = new Map(
       storedMessages
@@ -125,7 +134,7 @@ export function AgentRuntimeThread({
     const streamed = toThreadMessages(conversation).map((message) => {
       const turn = turns.get(message.id ?? "");
       const source = byID.get(turn?.dispatchMessageId ?? "");
-      if (turn === undefined || source === undefined || !takesOverStored(turn.text, source.body)) {
+      if (turn === undefined || source === undefined || !takesOverStored(turn, source.body)) {
         return message;
       }
       taken.add(source.id);

@@ -95,13 +95,18 @@ launcher and its `gh`, a script that runs `legion gh`. Nothing else of Legion's 
 jj of 0.38 or later — the jj bound it refuses to boot below (`resolveTools`, naming
 `LEGION_JJ_PATH`, its own override for the jj it runs) — and the real `gh` (`LEGION_GH_PATH`, or the
 first `gh` on its `PATH`, refused when that is a script), which every pane is told as `LEGION_GH_PATH`. A pane's GitHub identity is
-a set of files that binary reads, one directory per GitHub owner of the project and, under the
-issue's own owner, one more per other repository the project serves there: the daemon writes gh's
-own `hosts.yml` (an App installation token, user `x-access-token`) and `config.yml` under
-`<state_dir>/secrets/<claim>-gh/<dir>` (0700, files 0600) when it opens the pane — in the issue
-owner's own directory the role's App token for the issue's repository and no other, and in every
+a set of files that binary reads, one directory per GitHub owner of the project, one more per owner
+a configured rename moved a repository away from while the project serves the name it moved to,
+and an `<owner>/<repo>` directory for each other repository the issue's recorded owner and the
+owner serving the issue's repository serve: the
+daemon writes gh's own `hosts.yml` (an App installation token, user `x-access-token`) and
+`config.yml` under `<state_dir>/secrets/<claim>-gh/<dir>` (0700, files 0600) when it opens the
+pane — in two directories, the issue's recorded owner's and the one named for the owner whose
+installation serves that repository now, which are one directory unless a rename moved the issue's
+repository, the role's App token for the issue's repository and no other, and in every
 other directory that App's token narrowed to reading contents, pull requests, Actions and metadata
-over the repositories that directory names (each token asks for what the App's installation on
+over the repositories that directory names, an `<owner>/<repo>` directory's over the one repository
+its own name resolves to (each token asks for what the App's installation on
 that owner is granted of the set, and a permission it is granted none of is left out, named on
 the daemon's stderr) — names the issue owner's directory as `GH_CONFIG_DIR`
 and the bundle's root as `LEGION_GH_OWNERS_DIR`, with `GH_TOKEN`, `GITHUB_TOKEN` and `GH_HOST` set
@@ -216,8 +221,8 @@ worker_backends:
 Each key is an issue role (`architect`, `planner`, `implementer`, `tester`, `reviewer`, `merger`)
 and each value `omp` or `claude`; a role left out runs on Oh My Pi. What each harness may run is
 one table, `runtime.Backends` (`packages/daemon/internal/runtime/backend.go`): Claude Code runs the
-phase workers alone, since an architect is woken by notices on its Envoy role topic and Claude
-Code's print mode delivers no channel notification, and it runs them under either runtime — a tmux
+phase workers alone, since the architect's loop and the controller's are proven only on Oh My Pi,
+and it runs them under either runtime — a tmux
 pane here, and an issue pod under `runtime: kubernetes`, whose worker image carries the
 claude-envoy plugin and Claude Code's pin, from which the pod installs and verifies the pinned
 Claude Code at every launch (`docs/kubernetes.md`). The loader refuses a role on a harness that does
@@ -225,10 +230,13 @@ not run it, naming both, a role named twice, and any other value. The
 controller always runs on Oh My Pi.
 
 For such a role the pane's shim runs `legion claude-bridge -- claude -p --input-format stream-json
---output-format stream-json --verbose --replay-user-messages --permission-mode bypassPermissions
---strict-mcp-config …`. With `--replay-user-messages` Claude Code re-emits each user message it
-takes, and the bridge answers an Envoy delivery only then, so claude-envoy counts the delivery
-taken only once Claude Code has it.
+--output-format stream-json --verbose --replay-user-messages --thinking-display summarized
+--permission-mode bypassPermissions --strict-mcp-config …`.
+With `--replay-user-messages` Claude Code re-emits each user message it takes,
+and the bridge answers an Envoy delivery only then,
+so claude-envoy counts the delivery taken only once Claude Code has it.
+With `--thinking-display summarized` it writes the text of its thinking rather than a thinking block with none,
+so a worker's thinking reaches the pane and Dispatch's Agents page.
 The claim's own Claude Code directory, `<state_dir>/claude/<claim token>`, is the pane's
 `CLAUDE_CONFIG_DIR`: it holds the transcript, the MCP configuration the daemon writes (one server,
 `legion`, running claude-envoy's `dist/envoy-channel.js` on bun) and that server's phase-reminder

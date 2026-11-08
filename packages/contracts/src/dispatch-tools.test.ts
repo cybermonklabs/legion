@@ -46,6 +46,7 @@ function recordingSchemaApi(): {
       number: leaf,
       boolean: leaf,
       enum: leaf,
+      literal: leaf,
       array: leaf,
       unknown: leaf,
       object,
@@ -93,6 +94,7 @@ function argumentDescriptions(name: string): readonly string[] {
     number: node,
     boolean: node,
     enum: node,
+    literal: node,
     array: node,
     unknown: node,
     object: node,
@@ -171,7 +173,7 @@ function schemaFor(name: keyof typeof validCalls) {
 const ISSUE_UPDATE_FIELDS_RULE =
   "Issue update requires at least one field besides issue: status, title, labels, priority, external_links, route, parent, blocked_by, components, repo, before, or after.";
 const ISSUE_UPDATE_DONE_RULE =
-  "status done requires reason, a non-empty note saying why the issue is closing, posted on the issue before it closes because a closed issue refuses messages, comments, and artifacts.";
+  "status done requires reason, a non-empty note saying why the issue is closing, posted on the issue before it closes so the close carries its note.";
 const reasonOnlyWithDone = (status: string): string =>
   `reason goes only with status done: it is the note posted on the issue as it closes, and ${status} closes nothing. Drop reason, or set status done to close the issue.`;
 
@@ -197,6 +199,33 @@ describe("zodSchemaApi", () => {
         .array(schemaApi.string(), { max: 8 })
         .safeParse(Array.from({ length: 9 }, () => "item")).success
     ).toBe(false);
+  });
+
+  test("refuses every value outside a literal set", () => {
+    const field = schemaApi.literal([false, "optional", "required"] as const);
+
+    expect([false, "optional", "required"].map((value) => field.safeParse(value).success)).toEqual([
+      true,
+      true,
+      true,
+    ]);
+    expect(field.safeParse("none").success).toBe(false);
+  });
+
+  // Oh My Pi's `pi.zod` facade has a `literal` that takes one value: handed the set, it builds a
+  // literal equal to the array, which would refuse every call a model can make. A field built on
+  // such a host must still take the whole vocabulary; the refusal comes from real Zod where the
+  // arguments are parsed.
+  test("takes every value of a literal set on a host whose own literal holds one value", () => {
+    const oneValueLiteral = {
+      ...z,
+      literal: (value: unknown) => z.unknown().refine((input) => input === value),
+    };
+
+    const field = zodSchemaApi(oneValueLiteral).literal([false, "optional", "required"] as const);
+
+    expect(field.safeParse("optional").success).toBe(true);
+    expect(field.safeParse(false).success).toBe(true);
   });
 });
 
@@ -728,9 +757,8 @@ describe("dispatchToolSpecs", () => {
     }
   });
 
-  // A closed issue refuses messages, comments, and artifacts, so the reason an issue closed can
-  // only be written before the close: the tool takes it in the same call and refuses the close
-  // without it.
+  // The reason is the close's note, so the tool takes it in the same call, posts it before the
+  // close, and refuses the close without it.
   // Each refusal names the part of the rule the call broke, so a reopen that also passed reason
   // is told reason is the close's, never that it named no field.
   test("dispatch_issue_update closes only with a reason, and takes a reason only to close", () => {
@@ -1300,7 +1328,7 @@ describe("dispatchToolSpecs", () => {
     ],
     [
       "dispatch_message",
-      "keep --issue whenever the frame you answer gave one. A BTW, Aside or Steer frame carries a reply_with command: answer with it, on that issue. On Oh My Pi an Agents-page Send or Aside arrives as a user message: answer in the conversation, with no dispatch message.",
+      "keep --issue whenever the frame you answer gave one. A frame reading expects_reply: optional or required carries a reply_with command: answer with it, on that issue. One reading false carries none and asks for no answer; where you answer one anyway, its card names what to answer. On Oh My Pi an Agents-page Send or Aside arrives as a user message: answer in the conversation, with no dispatch message.",
     ],
     [
       "dispatch_ask",

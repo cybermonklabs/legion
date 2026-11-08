@@ -51,6 +51,22 @@ import {
 } from "./decision-record";
 import type { Usage } from "./rules-check";
 
+/**
+ * The one omp setting AskGate carries: the provider ids of one machine that reach one billing
+ * account. It is read from an OPERATOR layer of omp's settings and from nowhere else — the
+ * global `config.yml` of the agent directory, a file named in `PI_CONFIG_FILES`, a `--config`
+ * overlay, or a runtime override — since `Settings.grantAuthority()` is what reads it and that
+ * view drops every project layer. A repository's own `.omp/config.yml` therefore declares
+ * nothing, which is the point: the agent under review can write that file.
+ *
+ * An omp setting rather than a key of the plugin's envoy.json because omp's settings are per
+ * agent directory and a launcher may give each profile its own overlay, while one machine's
+ * profiles can share a single envoy.json — and a profile that bills another account has to be
+ * able to state that for itself. Unset, it is the empty list and the gate behaves as it did
+ * before the setting existed.
+ */
+const SHARED_ACCOUNT_PROVIDERS_ID = "askgate.sharedAccountProviders";
+
 /** What the entry hands the gate from its own extension: where the switch lives, and where notices go. */
 export interface AskGateHost {
   /**
@@ -183,6 +199,7 @@ async function loadAskGate(
     { cfgExtensionHandlersToolCallTimeoutMs },
     { findRetryFallbackCandidates, getRetryFallbackChains, resolveRetryFallbackChainKey },
     { cfgRetry },
+    { lookup, register },
   ] = await Promise.all([
     import("@oh-my-pi/pi-ai"),
     import("@oh-my-pi/pi-coding-agent/session/session-context"),
@@ -193,7 +210,22 @@ async function loadAskGate(
     import("@oh-my-pi/pi-coding-agent/extensibility/settings"),
     import("@oh-my-pi/pi-coding-agent/session/retry-fallback-chains"),
     import("@oh-my-pi/pi-coding-agent/session/settings"),
+    import("@oh-my-pi/pi-coding-agent/config/registry"),
   ]);
+
+  // AskGate's one setting of its own, declared on the host's registry so the gate reads it with
+  // the host's own layering rather than parsing config files itself. The registration is this
+  // process's: a host command that never loads extensions (`omp config`) does not know the id,
+  // and a `cfg://` list built before the gate loaded does not hold it, so the setting is a
+  // config-file setting and nothing more. A machine that sets nothing gets the empty list, which
+  // decides nothing (`sameAccount` in askgate-core.ts). `register` refuses a repeated id, so a
+  // second evaluation of this module takes the handle already registered.
+  const sharedAccounts = (lookup(SHARED_ACCOUNT_PROVIDERS_ID) ??
+    register({
+      id: SHARED_ACCOUNT_PROVIDERS_ID,
+      type: "array",
+      default: [],
+    })) as { get(s: typeof settings): unknown };
 
   /** The models after `primary` in `role`'s chain, each followed by its own chain, deduplicated; none when model fallback is off. */
   const fallbackModels = (ctx: unknown, primary: GateModel, role: GateRole): GateModel[] => {
@@ -332,6 +364,22 @@ async function loadAskGate(
     appendFile: appendDump,
     complete,
     fallbackModels,
+    // Read at each call, so a machine's edit reaches a running session as every other setting
+    // does, and read ONLY through the host's own grant authority: a repository's settings file
+    // is writable by the agent under review, and a declaration from there would let that agent
+    // send its transcript to another account's model. A host build that offers no such view
+    // offers nothing safe to read, so it declares nothing rather than falling back to the
+    // merged settings, which carry that project layer. YAML gives whatever was written, so
+    // anything that is not a list of strings, a list with one entry that is not a string
+    // included, is no declaration at all and reads as the empty list rather than deciding part
+    // of the question.
+    sharedAccountProviders: () => {
+      const authority = settings.grantAuthority?.();
+      if (authority === undefined) return [];
+      const value = sharedAccounts.get(authority);
+      if (!Array.isArray(value) || value.some((id) => typeof id !== "string")) return [];
+      return value as string[];
+    },
     // The runner's tool_call handler ceiling, normalised as the runner does (runner.ts normalizeHandlerTimeout).
     handlerCeilingMs: () => {
       const configured = cfgExtensionHandlersToolCallTimeoutMs.get(settings);
