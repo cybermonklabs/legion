@@ -1,0 +1,7 @@
+kind: Fixed
+body: |-
+  The fake daemon the plugin's Oh My Pi suites stand up answers the settings of this contract
+  (`review_round_cap`), not the retired `max_fix_attempts`. A body the contract's strict schema
+  refuses is no state at all, so the phase reminder's record check found no record for the issue,
+  failed open as it does for an unreachable daemon, and continued a turn the daemon's own record
+  would have left alone.
