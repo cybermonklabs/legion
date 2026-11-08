@@ -801,7 +801,7 @@ func claimReads(t *testing.T, conn *pgxpool.Conn, claim tracedStatement) (rowsRe
 		t.Fatalf("run the claim: %v\n%s", err, claim.sql)
 	}
 	// The first column is the event's id. Taking the row's values drains the row set, which the
-	// counters need, and spells out none of the other twenty columns.
+	// counters need, and spells out none of the row's other nineteen columns.
 	for rows.Next() {
 		values, err := rows.Values()
 		if err != nil {
@@ -868,11 +868,11 @@ func measureClaim(t *testing.T, backlog int) claimCost {
 	// Ten more due events, so the statement measured and explained has a batch to choose.
 	unpublished := fresh()
 
-	fastest := math.Inf(1)
-	var plans []explainedPlan
 	// The fastest of several runs: the box is small and shared, and a run another test's work
 	// delayed says nothing about the statement.
 	const runs = 20
+	fastest := math.Inf(1)
+	plans := make([]explainedPlan, 0, runs)
 	for range runs {
 		tx, err := database.Pool.Begin(ctx)
 		if err != nil {
@@ -942,7 +942,8 @@ func someIDs(ids []int64) string {
 // never published, nor the backed-off events of owners that have nothing due: with 5,000 of each
 // in the table it reads three rows of events for each event it returns and nothing else, no node
 // of its plan that reads events removes a row by filter or recheck, none scans events in full,
-// and with 20,000 of each it reads the same number of rows.
+// and with 20,000 of each it reads the same number of rows. Three a row is what it reads today,
+// and the row allows up to eight, so a plan that reads one more of each event still passes.
 //
 // The measure is Postgres's own count of the rows read from events, seq_tup_read + idx_tup_fetch
 // of pg_stat_xact_user_tables, taken inside the claim's own transaction, as
@@ -955,12 +956,13 @@ func someIDs(ids []int64) string {
 func TestTheClaimSkipsPendingCommandsAndBackedOffRows(t *testing.T) {
 	small := measureClaim(t, 5000)
 	big := measureClaim(t, 20000)
-	for _, cost := range []claimCost{small, big} {
+	costs := []claimCost{small, big}
+	for _, cost := range costs {
 		t.Logf("with %d backed-off events and %d pending commands the claim read %d rows from events, %d of them sequentially, and returned %d of the %d events waiting; it ran in %.3f ms at its fastest of %d:\n%s",
 			cost.backlog, cost.backlog, cost.rowsRead, cost.seqRead, len(cost.kept), len(cost.unpublished),
 			cost.fastest, len(cost.plans), cost.plans[0].body)
 	}
-	for _, cost := range []claimCost{small, big} {
+	for _, cost := range costs {
 		if !slices.Equal(cost.kept, cost.unpublished) {
 			t.Errorf("with a backlog of %d the claim returned %s, want the events no one has published, in id order: %s",
 				cost.backlog, someIDs(cost.kept), someIDs(cost.unpublished))
@@ -975,19 +977,21 @@ func TestTheClaimSkipsPendingCommandsAndBackedOffRows(t *testing.T) {
 			big.rowsRead, big.backlog, small.rowsRead, small.backlog)
 	}
 	if bound := 8 * int64(len(small.kept)); small.rowsRead > bound {
-		t.Errorf("the claim read %d rows of events to return %d events, want at most %d: it reads three rows of events for each event it returns",
+		t.Errorf("the claim read %d rows of events to return %d events, want at most %d: it reads three of each event it returns, and the row allows eight",
 			small.rowsRead, len(small.kept), bound)
 	}
-	for _, explained := range slices.Concat(small.plans, big.plans) {
-		explained.root.walk(func(node planNode) {
-			if node.Relation != "events" {
-				return
-			}
-			if node.NodeType == "Seq Scan" || node.RemovedByFilter != 0 || node.RemovedByRecheck != 0 {
-				t.Fatalf("the claim's %s of events (%s) removed %.0f rows by filter and %.0f by recheck, want none:\n%s",
-					node.NodeType, node.Index, node.RemovedByFilter, node.RemovedByRecheck, explained.body)
-			}
-		})
+	for _, cost := range costs {
+		for _, explained := range cost.plans {
+			explained.root.walk(func(node planNode) {
+				if node.Relation != "events" {
+					return
+				}
+				if node.NodeType == "Seq Scan" || node.RemovedByFilter != 0 || node.RemovedByRecheck != 0 {
+					t.Fatalf("the claim's %s of events (%s) removed %.0f rows by filter and %.0f by recheck, want none:\n%s",
+						node.NodeType, node.Index, node.RemovedByFilter, node.RemovedByRecheck, explained.body)
+				}
+			})
+		}
 	}
 }
 
