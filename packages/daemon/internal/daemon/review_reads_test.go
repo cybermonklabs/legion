@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -74,11 +75,7 @@ func reviewsStandInWithCommit(t *testing.T, reviews func() string, reads *atomic
 func reviewsStandInCounting(t *testing.T, reviews func() string, reads *atomic.Int64, outsider func() string,
 	outsiderReads *atomic.Int64, committed func() string, commitReads *atomic.Int64) *httptest.Server {
 	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer outbox-token" {
-			http.Error(w, `{"message":"Bad credentials"}`, http.StatusUnauthorized)
-			return
-		}
+	return githubtest.Serve(t, githubtest.Spec{Token: "outbox-token", Handle: func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/repos/acme/widgets/pulls/86":
 			w.Write([]byte(`{"number":86,"base":{"ref":"main"},"mergeable":true,"mergeable_state":"clean"}`))
@@ -105,9 +102,7 @@ func reviewsStandInCounting(t *testing.T, reviews func() string, reads *atomic.I
 		default:
 			http.NotFound(w, r)
 		}
-	}))
-	t.Cleanup(server.Close)
-	return server
+	}})
 }
 
 // reviewReadRuntime is a workflow runtime over pool whose GitHub reads go to api, with the review
