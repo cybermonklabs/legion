@@ -45,6 +45,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/config"
 	"github.com/sjawhar/envoy/internal/broker/enroll"
 	"github.com/sjawhar/envoy/internal/broker/exchange"
+	"github.com/sjawhar/envoy/internal/broker/judge"
 	"github.com/sjawhar/envoy/internal/broker/leasetime"
 	"github.com/sjawhar/envoy/internal/broker/machine"
 	"github.com/sjawhar/envoy/internal/broker/oauth"
@@ -429,6 +430,10 @@ func main() {
 	}
 	enr.Chain = enroll.NewChainVerifier(st, cfg.PublicURL, time.Duration(cfg.ProofSkewSeconds)*time.Second)
 	reqMachine := newRequestMachine(cfg, st, current, secretStore, enr.Replay, rules, airlockCACertificate)
+	// The model judge, on ctx rather than on serving: a run writes a grant, so an in-flight one
+	// has to end at the first SIGTERM, before the drain, leaving its request pending for the
+	// person who decides it today rather than approving it while the pod is going away.
+	wireJudge(ctx, cfg, rules, reqMachine)
 	credentialLifetime := time.Duration(cfg.LauncherCredentialSeconds) * time.Second
 	oauthStore := oauthstore.New(st.Pool)
 	oauthStore.Reused = enroll.RevokeReusedCredential
@@ -1009,6 +1014,61 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 	}
 	m.Chain = requests.NewChainVerifier(st, cfg.PublicURL, time.Duration(cfg.ProofSkewSeconds)*time.Second, m.Airlock)
 	return m
+}
+
+// The request machine answers every question the model judge asks of the broker. The assertion
+// lives here, where the two already meet, and never in internal/broker/requests: that package
+// must not import the judge, since the judge imports it. Breaking either of the three methods
+// fails this build rather than a deployment's first judged request.
+var _ judge.Requests = (*requests.Machine)(nil)
+
+// judgeDispatchTimeout bounds each of the judge's two Dispatch GETs. A run's own 30-second
+// budget already ends a read whose server never answers, but that budget is shared with the
+// 20-second model call, so a client with no timeout of its own would let one stalled read eat
+// the whole run. Ten seconds is wake.Envoy's own bound for the same kind of call, an authorized
+// GET against a service inside the cluster.
+const judgeDispatchTimeout = 10 * time.Second
+
+// wireJudge gives m the broker's model judge, when this deployment configures one, and logs in
+// one line which of the two brokers this is. The five settings are all-or-none (config.Load
+// refuses a start that sets some of them), so the model URL alone says whether there is a judge.
+//
+// ctx is main's own signal.NotifyContext, which the first SIGTERM cancels, and not boot's
+// `serving`, which outlives the drain: every run hangs off it, so one in flight when the broker
+// is asked to stop ends there, before the drain, having written nothing at all and left its
+// request pending for the person who decides it today. That is the right way round for a judge
+// where it is not for the policy reload — a half-finished reload costs a pod stale tags for its
+// drain, while a half-finished run would approve a credential as the pod goes away.
+func wireJudge(ctx context.Context, cfg config.Config, rules airlock.Rules, m *requests.Machine) {
+	if cfg.JudgeModelURL == "" {
+		slog.Info("model judge", "state", "off",
+			"detail", "none of "+strings.Join(config.JudgeSettings, ", ")+" is set, so every human-tier request waits for the person who decides it today")
+		return
+	}
+	runner := judge.New(ctx, judge.Options{
+		Rules: rules,
+		Dispatch: judge.Dispatch{
+			BaseURL:   cfg.JudgeDispatchURL,
+			TokenFile: cfg.JudgeDispatchTokenFile,
+			HTTP:      &http.Client{Timeout: judgeDispatchTimeout},
+		},
+		Model:      judge.NewModel(cfg.JudgeModelURL, cfg.JudgeModel, cfg.JudgeModelProtocol, cfg.JudgeModelAudience),
+		Requests:   m,
+		SkipChecks: cfg.JudgeTestSkipChecks,
+	})
+	// The hook the state machine calls for each request it writes pending. The two types hold
+	// the same fields for this one conversion, which is what keeps requests from importing the
+	// judge; Consider returns at once, so nothing of a run is on the requester's path.
+	m.Judge = func(p requests.PendingRequest) {
+		runner.Consider(judge.PendingRequest{
+			RecordID: p.RecordID, RequestID: p.RequestID,
+			EnrollmentID: p.EnrollmentID, SessionID: p.SessionID,
+			Secrets: p.Secrets, LifetimeSeconds: p.LifetimeSeconds,
+			Reason: p.Reason, Approver: p.Approver,
+		})
+	}
+	slog.Info("model judge", "state", "on", "model", cfg.JudgeModel, "protocol", cfg.JudgeModelProtocol,
+		"dispatch", cfg.JudgeDispatchURL, "skip_checks", cfg.JudgeTestSkipChecks)
 }
 
 // serviceNames is every registered service, sorted and each once: BROKER_SERVICES' and

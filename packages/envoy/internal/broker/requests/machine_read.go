@@ -511,6 +511,45 @@ var errSourceMoved = errors.New("source moved")
 // never brings back a grant they held while they were off it; they ask again instead.
 var errRequesterNotListed = errors.New("requester not listed")
 
+// JudgePolicy answers what the live policy says about name for the enrollment that asked, and
+// whether that name is withheld from its session: the one question the broker's model judge asks
+// the machine before it decides a pending request (judge.Requests, whose other two methods are
+// the writes a verdict makes — ApplyJudgeDecision and LogJudged, in machine_state.go).
+//
+// It re-reads everything now rather than taking what the request froze. The policy comes from
+// m.Policy.Get(), the snapshot a request made minutes ago may no longer have been decided under,
+// and the requester from the database through the same m.requester Create decides with, so the
+// person the session acts for, the service its account still proves and the names its operator
+// has taken back from it are read exactly as a decision reads them, rather than a second time in
+// words of this method's own.
+//
+// The withheld flag is answered beside the decision because Evaluate folds a withheld name into
+// its outcome — a withheld agent-tier name comes back as an approval rather than as automatic —
+// so the two are not one answer: the judge decides no name its session's operator withheld,
+// whatever the policy would otherwise give it.
+//
+// An enrollment that is no longer live (revoked, or its lease lapsed) is an error carrying
+// pgx.ErrNoRows, never a decision: the judge's check fails and the request waits for its person,
+// where a silent approval would grant a credential to a box that has gone.
+func (m *Machine) JudgePolicy(ctx context.Context, enrollmentID, name string) (policy.Decision, bool, error) {
+	enr, err := m.enrollment(ctx, enrollmentID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return policy.Decision{}, false, fmt.Errorf("enrollment %s is no longer live: %w", enrollmentID, err)
+		}
+		return policy.Decision{}, false, err
+	}
+	requester, err := m.requester(ctx, m.Store.Pool, enr)
+	if err != nil {
+		return policy.Decision{}, false, err
+	}
+	decision, err := m.Policy.Get().Evaluate(name, requester)
+	if err != nil {
+		return policy.Decision{}, false, err
+	}
+	return decision, slices.Contains(requester.Withheld, name), nil
+}
+
 // Get reads one request by id. Its Approver is the approver column of its credential-request
 // record, the column PendingForApprover lists the record by, so the request names exactly the
 // person whose list shows it; a request with no record has none.

@@ -207,6 +207,31 @@ type Decision struct {
 // error never holds the stored value or a token.
 type Minter func(ctx context.Context, req secrets.MintRequest) (secrets.Minted, error)
 
+// PendingRequest is one credential request Create has just written pending, as it hands it to
+// Machine.Judge: what the broker's model judge reads of a request, and nothing else.
+//
+// Its fields are judge.PendingRequest's, name for name and type for type, so the broker's main
+// converts one to the other in a single struct literal. The two types are kept apart on purpose:
+// the judge names no concrete machine, and this package names no judge (the hook is a func field
+// main wires, never a call this package makes into that one).
+type PendingRequest struct {
+	// RecordID is the credential-request record a decision is written against, and
+	// RequestID the request row it belongs to.
+	RecordID, RequestID string
+	// EnrollmentID is the enrollment that asked, which the policy is re-read for, and
+	// SessionID the Envoy session that enrollment recorded, empty for one that names none.
+	EnrollmentID, SessionID string
+	// Secrets are the names the request asks for, in the request's own name order.
+	Secrets []string
+	// LifetimeSeconds is the lifetime the requester signed, nil for a grant that lasts
+	// until its session ends.
+	LifetimeSeconds *int
+	// Reason is the requester's own signed reason, which names the Dispatch issue, and
+	// Approver the record's approver: the secret's owner, or record.AnyoneApprover for a
+	// shared one.
+	Reason, Approver string
+}
+
 type Machine struct {
 	Store      *store.Store
 	Policy     *policy.Current
@@ -248,6 +273,18 @@ type Machine struct {
 	// both, since a command that cannot reach the proxy or cannot trust it has nothing.
 	AirlockProxyURL      string
 	AirlockCACertificate string
+	// Judge, when set, is handed every request Create has just written pending, once that
+	// transaction has committed and the request's grant-log line is out: the broker's model
+	// judge, which may approve such a request in its approver's place (cmd/broker wires it to
+	// judge.Runner.Consider, and nothing else ever sets it). A nil field is no judge at all,
+	// which is every test and every deployment that configures none; a human-tier request
+	// then waits for the person who decides it today, exactly as before.
+	//
+	// It is called for a request this Create wrote pending and never for one it coalesced
+	// onto a pending request already there, so one record is never judged twice. Nothing a
+	// judge does belongs on the requester's path, so the hook must return at once: Consider
+	// starts a goroutine of its own and does.
+	Judge func(PendingRequest)
 	// missRereads is MissRereads' per-enrollment buckets, built on first use (missRereadLimiter).
 	missRereads     *ratelimit.Keyed
 	missRereadsOnce sync.Once
@@ -353,6 +390,9 @@ func (m *Machine) requester(ctx context.Context, q querier, e enrollmentRow) (po
 // denied request, with a granted one's grant, or a pending request and its credential-request
 // record. A second pending request that overlaps one of its names is refused, so an untrusted
 // session cannot flood an approver's Inbox by varying --ttl.
+//
+// A request it writes pending is handed to Machine.Judge once the transaction has committed, and
+// one it coalesced onto a pending request is not, so the model judge sees each record once.
 func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sessionID string) (Request, error) {
 	if !validSessionID(sessionID) {
 		return Request{}, ErrSessionIDInvalid
@@ -470,6 +510,18 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 		return Request{}, err
 	}
 	store.LogGrantEvent(r.createdRequestLogEvent(enr))
+	// The model judge, for a request this call has just written pending. It is called here, past
+	// the commit and past the grant-log line, so the judge's own reads find the request and the
+	// record that are now there and nothing it does runs inside the transaction. The coalescing
+	// branch above returns before this point, so a request that joined a pending one is never
+	// handed over a second time and one record is never judged twice. A nil hook is no judge.
+	if m.Judge != nil && r.state == "pending" {
+		m.Judge(PendingRequest{
+			RecordID: deref(req.RecordID), RequestID: r.id, EnrollmentID: enrollmentID,
+			SessionID: enr.SessionID, Secrets: r.names(), LifetimeSeconds: r.lifetime,
+			Reason: r.reason, Approver: deref(req.Approver),
+		})
+	}
 	return req, nil
 }
 
