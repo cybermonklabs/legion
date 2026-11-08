@@ -1,4 +1,4 @@
-import { hashKey, type MutationKey } from "@tanstack/react-query";
+import { hashKey, type MutationKey, useQuery } from "@tanstack/react-query";
 import {
   type ClipboardEvent,
   type DragEvent,
@@ -22,7 +22,14 @@ import {
   isAnchorMissing,
   isCapExceeded,
 } from "../../api/client";
-import type { Agent, AskOption, AskUrgency } from "../../api/types";
+import { issueCollaboratorsQuery } from "../../api/queries";
+import type {
+  Agent,
+  AskOption,
+  AskUrgency,
+  IssueCollaboratorAgent,
+  IssueCollaboratorLegionAgent,
+} from "../../api/types";
 import { Chip } from "../../components/Chip";
 import { AgentListRefilling, QueryError } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
@@ -114,12 +121,14 @@ interface Draft {
 
 interface MentionOption {
   readonly capabilities: readonly string[];
-  /** Where and when: the session's directory and when it was last seen. */
+  /** Where and when: the session's directory and when it was last seen; for a role no live agent
+   *  holds, the role and that it is not running. */
   readonly detail: string;
   /** The name of the session the option is, or of the one holding its role, as `useAgentText`
    *  gives it: the filter matches it, and a role option's detail tooltip names it. */
   readonly holder: string;
-  /** The session the option is, or, for a role, the session holding it: `AgentName` draws it. */
+  /** The session the option is, or, for a role, the session holding it (the newest one for a
+   *  role nobody holds): `AgentName` draws it. */
   readonly sessionId: string;
   /** That session's title as the agent list gave it: its name when the registry cache has none. */
   readonly sessionTitle: string;
@@ -208,6 +217,46 @@ export function mentionOptions(
         title: text.sessionText(agent.session_id, agent.title),
       })),
   ];
+}
+
+/**
+ * The picker's "Not running" options: one per Legion role token the issue's collaborators record
+ * (`IssueCollaborators.agents[].legion`) that no live agent holds - the live agents' `roles`, the
+ * rule the live role options follow - addressed `role:<token>` and drawn by the role's newest
+ * session, the one entry per token the server leaves unreplaced (`legion.replaced_by` null), so a
+ * replaced session is never an option of its own. A session the live list itself names is left
+ * out whatever its roles say: a live session that claims no role would otherwise be offered here
+ * and draw its own `Running` mark, so one row would read running and not running at once.
+ *
+ * The options keep the server's order, which the collaborators contract states: the registry's
+ * agents by role in workflow order, then newest first.
+ */
+export function stoppedRoleOptions(
+  live: readonly Agent[],
+  collaborators: readonly IssueCollaboratorAgent[],
+  text: Pick<AgentText, "sessionText">
+): MentionOption[] {
+  const held = new Set(live.flatMap((agent) => agent.roles));
+  const running = new Set(live.map((agent) => agent.session_id));
+  const offered = (agent: IssueCollaboratorAgent): agent is IssueCollaboratorLegionAgent =>
+    agent.legion !== null &&
+    agent.legion.replaced_by === null &&
+    !held.has(agent.legion.role_token) &&
+    !running.has(agent.session_id);
+  return collaborators.filter(offered).map((agent) => {
+    // The title the server gives is the registry's, else the session's newest stamped one; the
+    // name is still `useAgentText`'s, as a live option's holder is.
+    const storedTitle = agent.title ?? "";
+    return {
+      capabilities: [],
+      detail: `${agent.legion.role} · not running`,
+      holder: text.sessionText(agent.session_id, storedTitle),
+      sessionId: agent.session_id,
+      sessionTitle: storedTitle,
+      target: `role:${agent.legion.role_token}`,
+      title: agent.legion.role_token,
+    };
+  });
 }
 
 /** Reconcile accepted mentions against the actual textarea edit range. */
@@ -594,19 +643,41 @@ export function MentionComposer({
   const agentsCurrent = suppliedAgents !== undefined || live.current;
   const text = useAgentText();
   const options = useMemo(() => mentionOptions(agents, text), [agents, text]);
-  const filteredOptions = useMemo(() => {
-    if (autocomplete === undefined) return [];
+  // The issue's collaborators feed the "Not running" options, read once the picker opens on an
+  // issue owner alone: a project document's margin composer carries that document rather than an
+  // issue, while an issue document's margin composer is an issue owner and does read them, and a
+  // closed picker and a direct message read nothing. The query is the Collaborators tab's, so the
+  // two readers share one entry - a tab read within the shell's 30 s `staleTime` opens the picker
+  // with no request of its own - and the event feed refreshes that key by a rule of its own
+  // (`changesCollaborators` in event-refresh.ts), which refetches it under a picker that stays
+  // open.
+  const collaboratorsIssue = owner.kind === "issue" ? owner.issueKey : undefined;
+  const collaborators = useQuery({
+    ...issueCollaboratorsQuery(collaboratorsIssue),
+    enabled: collaboratorsIssue !== undefined && autocompleteOpen,
+  });
+  // A live list whose state is unknown (not read yet, or its read failed) holds every role as far
+  // as the picker can tell, which is what `agentsCurrent` false says of it, so no role is offered
+  // as not running.
+  const stoppedOptions = useMemo(
+    () => (agentsCurrent ? stoppedRoleOptions(agents, collaborators.data?.agents ?? [], text) : []),
+    [agents, agentsCurrent, collaborators.data, text]
+  );
+  const [filteredOptions, filteredStoppedOptions] = useMemo<
+    [MentionOption[], MentionOption[]]
+  >(() => {
+    if (autocomplete === undefined) return [[], []];
     const query = autocomplete.query.toLocaleLowerCase();
     // A role option matches its holder's name too, which its detail line shows.
-    return options.filter(
-      (option) =>
-        query === "" ||
-        option.target.toLocaleLowerCase().includes(query) ||
-        option.title.toLocaleLowerCase().includes(query) ||
-        option.holder.toLocaleLowerCase().includes(query) ||
-        option.detail.toLocaleLowerCase().includes(query)
-    );
-  }, [autocomplete, options]);
+    const matches = (option: MentionOption) =>
+      query === "" ||
+      option.target.toLocaleLowerCase().includes(query) ||
+      option.title.toLocaleLowerCase().includes(query) ||
+      option.holder.toLocaleLowerCase().includes(query) ||
+      option.detail.toLocaleLowerCase().includes(query);
+    return [options.filter(matches), stoppedOptions.filter(matches)];
+  }, [autocomplete, options, stoppedOptions]);
+  const notRunningId = useId();
   const compact = inline || edit !== undefined;
   /** The whole draft, gone - the body, its accepted mentions, a suggestion's replacement and an
    *  ask's options - on a successful send and on Discard alike, in every host, leaving what a fresh
@@ -883,6 +954,49 @@ export function MentionComposer({
       textarea.current?.focus();
       textarea.current?.setSelectionRange(query.start + text.length, query.start + text.length);
     });
+  };
+  /** One suggestion: a button that inserts the mention. Each suggestion is one option inside a
+   *  listbox, which owns only options, so the agent in it is drawn by `AgentName` without a link
+   *  (exclusion E2): a session option's name, and a role option's holder - for a role no live
+   *  agent holds, its newest session. */
+  const mentionOptionButton = (option: MentionOption) => {
+    const isRole = option.target.startsWith("role:");
+    const agent = (
+      <AgentName kind="static" sessionId={option.sessionId} storedTitle={option.sessionTitle} />
+    );
+    return (
+      // Below `xl` every button is `inline-flex` with centred items (styles.css's touch rule,
+      // unlayered, so it beats `block`): the title and detail stack explicitly and each stretches
+      // to the row's width.
+      // A session option's full id is its tooltip and accessible description: its name can be the
+      // short form `session:<8>…`, which two sessions may share.
+      <button
+        aria-label={option.title}
+        className={`flex min-h-11 w-full flex-col rounded-lg px-3 py-2 text-left text-sm ${surfaceMutedHoverBg}`}
+        key={option.target}
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={() => addMention(option)}
+        role="option"
+        title={isRole ? undefined : option.sessionId}
+        type="button"
+      >
+        <span className={`self-stretch font-medium ${textPrimaryOnSurface}`}>
+          {isRole ? option.title : agent}
+        </span>
+        <TruncatedText
+          className={`self-stretch text-xs ${textMutedOnSurface}`}
+          title={isRole ? `${option.holder} · ${option.detail}` : option.detail}
+        >
+          {isRole ? (
+            <>
+              {agent} · {option.detail}
+            </>
+          ) : (
+            option.detail
+          )}
+        </TruncatedText>
+      </button>
+    );
   };
   const onBodyChange = (value: string, selectionStart: number | null) => {
     const before = previousBody.current;
@@ -1293,54 +1407,27 @@ export function MentionComposer({
           className={`max-h-52 overflow-y-auto rounded-lg border p-1 ${surfaceRecessedBg}`}
           role="listbox"
         >
-          {filteredOptions.map((option) => {
-            const isRole = option.target.startsWith("role:");
-            // Each suggestion is one option that inserts the mention; a listbox owns only
-            // options, so the agent in it is drawn by `AgentName` without a link (exclusion E2):
-            // a session option's name, and a role option's holder.
-            const agent = (
-              <AgentName
-                kind="static"
-                sessionId={option.sessionId}
-                storedTitle={option.sessionTitle}
-              />
-            );
-            return (
-              // Below `xl` every button is `inline-flex` with centred items (styles.css's touch
-              // rule, unlayered, so it beats `block`): the title and detail stack explicitly and
-              // each stretches to the row's width.
-              // A session option's full id is its tooltip and accessible description: its name
-              // can be the short form `session:<8>…`, which two sessions may share.
-              <button
-                aria-label={option.title}
-                className={`flex min-h-11 w-full flex-col rounded-lg px-3 py-2 text-left text-sm ${surfaceMutedHoverBg}`}
-                key={option.target}
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => addMention(option)}
-                role="option"
-                title={isRole ? undefined : option.sessionId}
-                type="button"
+          {filteredOptions.map(mentionOptionButton)}
+          {/* The issue's Legion roles no live agent holds, after the live options: a mention of
+              one is addressed to its role as any role option is. */}
+          {filteredStoppedOptions.length === 0 ? null : (
+            // biome-ignore lint/a11y/useSemanticElements: a listbox owns only options and groups of options; a fieldset is neither.
+            <div aria-labelledby={notRunningId} role="group">
+              <div
+                className={`px-3 pt-2 pb-1 text-xs font-semibold ${textMutedOnSurface}`}
+                id={notRunningId}
+                role="presentation"
               >
-                <span className={`self-stretch font-medium ${textPrimaryOnSurface}`}>
-                  {isRole ? option.title : agent}
-                </span>
-                <TruncatedText
-                  className={`self-stretch text-xs ${textMutedOnSurface}`}
-                  title={isRole ? `${option.holder} · ${option.detail}` : option.detail}
-                >
-                  {isRole ? (
-                    <>
-                      {agent} · {option.detail}
-                    </>
-                  ) : (
-                    option.detail
-                  )}
-                </TruncatedText>
-              </button>
-            );
-          })}
+                Not running
+              </div>
+              {filteredStoppedOptions.map(mentionOptionButton)}
+            </div>
+          )}
+          {/* Only when the picker offers nothing at all: a "Not running" group with options in
+              it is a match, so saying no agent matches underneath it would contradict the list
+              the reader is looking at. */}
           {agentsCurrent ? (
-            filteredOptions.length === 0 ? (
+            filteredOptions.length === 0 && filteredStoppedOptions.length === 0 ? (
               <p className={`px-3 py-2 text-sm ${textMutedOnSurface}`}>No live agents match.</p>
             ) : null
           ) : live.refilling ? (

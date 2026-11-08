@@ -1133,15 +1133,25 @@ A wanted message runs under its key: a pull request under its repository and num
 Messages of one key run in delivery order, each after the one before has finished, since each fetches its pull request's or run's current state from GitHub and writes it, and run at once an older fetch could be written over a newer one;
 messages of different keys run at once, at most 4, the durable's `MaxAckPending`.
 Its durable's `AckWait`, `MaxAckPending` and filter subject are unchanged.
-`Intake.StopDelivering` hands the durable over, and `Run` calls it when the process stops.
-It drains the subscription the bus client holds for it
+`Intake.StopDelivering` hands the durable over, and `Run` calls it from two places: when the process stops, and on a connection event of its bus client.
+It ends the subscription the bus client holds for it
 — after the client has replaced its connection, the one the client bound on the new connection
-— and gives up the subscription's registration on the client, so the server delivers it nothing more, no reconnect binds it again and a later subscribe starts afresh (`bus.Client.DrainSubscription`), and holds every message waiting behind its key, and every message the client is handed meanwhile, until no handler is running.
+— and gives up that subscription's registration on the client, so no reconnect binds it again and a later subscribe starts afresh (`bus.Client.DrainSubscription`).
+On a live link it ends it by draining it, so the server delivers it nothing more while nats.go hands the callback what the client had already buffered;
+with the link down it unsubscribes it instead, and nats.go then drops what that subscription had buffered without calling the callback at all, so those messages are not handed back and there is no drain to wait for — the server redelivers them to the next holder when their ack wait expires.
+Either way it holds every message waiting behind its key, and every message the callback is handed meanwhile, until no handler is running.
 The messages in their handlers get until the stop's deadline
-— `intakeStopBudget`, 15 s after `Run`'s context ends, armed when it ends
-— to finish and be acknowledged; the handlers still running then are given up, their GitHub calls cancelled, and their messages negatively acknowledged.
-Only then does it negatively acknowledge the held messages, so NATS redelivers them at once to the next holder, which can then not start a pull request's or run's next message while this process still works on the one before it.
-Last it waits for the drain to end, cut short by that deadline.
+— `intakeStopBudget`, 15 s, counted by each stop from its own start
+— to finish; one whose handler finishes by then has its message acknowledged where the handler finished, and held for the stop only where the bus refused that acknowledgement, and the handlers still running then are given up, their GitHub calls cancelled, and their messages held for the hand-back the rest are in.
+Only once no handler is running, and the client has a connection to answer over, does it answer what it holds, each message by its own kind: an acknowledgement for one whose handler finished and whose own acknowledgement was refused, and a negative acknowledgement for the rest, which NATS redelivers at once to the next holder, which can then not start a pull request's or run's next message while this process still works on the one before it.
+An acknowledgement, negative or not, is a publish, and the client buffers none while it reconnects, so a stop that begins with the link down waits for one:
+a wait the stop's deadline ends logs that the messages it holds will wait out the five-minute ack wait in the next holder's four-slot window instead, a handler's finished work among them.
+Last it waits for a drain it began to end, cut short by that deadline; where it unsubscribed there is nothing to wait for.
+A connection event is what takes the durable away from a process that was cut off
+— nats.go re-sends a subscription inside its own reconnect, and the client binds its registration again on a connection it dialled to replace a closed one, neither of them asking whether the durable is still this process's to deliver —
+so the intake gives its subscription up at the event, which for an outage is the disconnect, before nats.go can re-send it.
+That stop runs under a budget of its own, 15 s from the event rather than from `Run`'s context, so one stuck handler cannot keep the intake out of its poll;
+the intake then returns to the bind poll, which runs only while the client has a connection and takes the durable again only while it is free.
 A bind under way when the context ends — a standby's poll
 — spends the same deadline rather than starting one of its own:
 its reconciliation's JetStream calls end with it, no subscribe starts once the context has ended, and the subscription of a subscribe already under way is stopped under that deadline.
