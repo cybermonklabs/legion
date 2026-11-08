@@ -1472,6 +1472,9 @@ jobs:
               # PROBE ONLY (dispatch://INFRA-1526): main's copy of the Dockerfile, which this
               # branch's envoy-smoke job builds beside the real one.
               - 'packages/envoy/docker/Dockerfile.baseline'
+              # PROBE ONLY (dispatch://INFRA-1526): the tester's narrower install, which this
+              # branch's envoy-smoke job builds as a negative control.
+              - 'packages/envoy/docker/Dockerfile.mutant'
               - '.dockerignore'
               - '.bun-version'
               - 'package.json'
@@ -4438,6 +4441,70 @@ jobs:
             docker run --rm --user 0 --entrypoint sha256sum "$image" \
               /usr/share/doc/legion/THIRD_PARTY_NOTICES /srv/dispatch-web/THIRD_PARTY_NOTICES.txt
           done
+      # PROBE ONLY, TESTER'S NEGATIVE CONTROL (dispatch://INFRA-1526, k4): the comparison above
+      # must be able to fail. The same reads run against a copy of this change's own image with
+      # one byte appended to one binary, and this step fails the job unless both diffs report
+      # the alteration.
+      - name: Negative control, the same comparison against a deliberately altered image
+        env:
+          ENVOY_ALTERED_IMAGE: legion-envoy-altered:${{ github.sha }}
+        run: |
+          set -eu
+          ctx="$(mktemp -d)"
+          printf 'FROM %s\nUSER 0\nRUN printf x >> /usr/local/bin/envoy-broker\n' "$ENVOY_SMOKE_IMAGE" > "$ctx/Dockerfile"
+          docker build -t "$ENVOY_ALTERED_IMAGE" "$ctx"
+          docker run --rm --user 0 --entrypoint find "$ENVOY_ALTERED_IMAGE" / -xdev -type f -printf '%p %s\n' | sort > /tmp/altered.txt
+          sed -E 's#(/srv/dispatch-web/.*)-[A-Za-z0-9_-]{8,}\.#\1-HASH.#' /tmp/altered.txt | sort > /tmp/altered.norm
+          reported=0
+          echo "=== normalised listing difference, this change against the altered copy (a difference is the pass)"
+          if diff /tmp/changed.norm /tmp/altered.norm; then
+            echo "NO DIFFERENCE: the listing comparison cannot fail"
+          else
+            reported=$((reported + 1))
+          fi
+          echo "=== size multiset difference, this change against the altered copy (a difference is the pass)"
+          if diff <(awk '{print $2}' /tmp/changed.txt | sort -n) <(awk '{print $2}' /tmp/altered.txt | sort -n); then
+            echo "NO DIFFERENCE: the size comparison cannot fail"
+          else
+            reported=$((reported + 1))
+          fi
+          echo "=== the altered copy's binaries"
+          docker run --rm --user 0 --entrypoint sha256sum "$ENVOY_ALTERED_IMAGE" \
+            /usr/local/bin/envoy-listener /usr/local/bin/envoy-dispatch \
+            /usr/local/bin/envoy-broker /usr/local/bin/agent-secrets
+          if [ "$reported" -ne 2 ]; then
+            echo "the comparison did not report a one-byte alteration: it proves nothing about the two images above"
+            exit 1
+          fi
+          echo "the comparison reports a one-byte alteration in both of its diffs"
+      # PROBE ONLY, TESTER'S NEGATIVE CONTROL (dispatch://INFRA-1526, k1/k4): the same install
+      # with `--filter './'` taken out. The Dockerfile under test says the root workspace is
+      # what supplies scripts/third-party-notices.ts's imports, so this build must fail, and it
+      # must fail for that reason. Last round this control reported its outcome and enforced
+      # nothing, so a skipped step would have read as a quiet line; it now refuses a build that
+      # succeeds and a build that fails for any other reason. `docker build` rather than the
+      # build action, so the output is a file this step can read. It reads the cache the builds
+      # above left, since no time is measured here.
+      - name: Negative control, the install with the root workspace filter taken out
+        env:
+          ENVOY_MUTANT_IMAGE: legion-envoy-mutant:${{ github.sha }}
+        run: |
+          set -eu
+          status=0
+          docker build -f packages/envoy/docker/Dockerfile.mutant -t "$ENVOY_MUTANT_IMAGE" . \
+            > /tmp/mutant.log 2>&1 || status=$?
+          echo "=== the last 40 lines of the build without the root workspace filter"
+          tail -40 /tmp/mutant.log
+          echo "=== docker build exited $status"
+          if [ "$status" -eq 0 ]; then
+            echo "the install without --filter './' built an image: the comment's claim is wrong"
+            exit 1
+          fi
+          if ! grep -q "Cannot find package 'spdx-expression-parse'" /tmp/mutant.log; then
+            echo "the build failed for some other reason than the missing root workspace: this control proves nothing"
+            exit 1
+          fi
+          echo "the install without the root workspace fails at bun run build:web with the package the comment names"
       # The image envoy-infra's live tests run (pulumitest.HeldPortImage): the smoke image above with
       # packages/envoy/infra/host/heldportwrapper as its envoy-listener, which takes the listening
       # socket the test holds for the container's port over an abstract unix socket and executes the
