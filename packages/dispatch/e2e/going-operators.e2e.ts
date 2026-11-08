@@ -1,6 +1,7 @@
 import { expect, type Page, test } from "@playwright/test";
 
 import { createComment, createIssue, createProject, patchIssue } from "./api";
+import { usesFakeEmbedder } from "./harness-embedder";
 import { sql } from "./psql";
 import { resetDatabase } from "./seed";
 import { asUser } from "./users";
@@ -106,9 +107,17 @@ test("the operator forms are offered as the words are typed, and each narrows th
     await expect.soft(inUse("exclude")).toHaveCount(1);
     await expect(options.first()).toContainText("sextant case");
 
-    // The harness runs no embedder, so every search here is the keyword half alone and the bar
-    // says so above the hits it still shows (`e2e/run-server.sh`, DISPATCH_TEST_EMBEDDER_OFF).
-    await expect.soft(dialog.getByTestId("search-degraded")).toContainText("Searching words only");
+    // Under the switch nearly every spec runs with, the server embeds nowhere, so every search
+    // here is the keyword half alone and the bar says so above the hits it still shows
+    // (`e2e/harness-embedder.ts`). A run that gives the server an embedder is not degraded and
+    // draws no such line, and that is this row's own claim: the banner follows the deployment,
+    // not the operators, which the rows above it have already judged.
+    const degraded = dialog.getByTestId("search-degraded");
+    if (usesFakeEmbedder) {
+      await expect.soft(degraded).toHaveCount(0);
+    } else {
+      await expect.soft(degraded).toContainText("Searching words only");
+    }
   } finally {
     await context.close();
   }

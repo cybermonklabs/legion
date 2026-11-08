@@ -3,14 +3,16 @@ name: Dispatch browser suite
 # Every browser job of the Dispatch suite, in one place. ci.yaml's dispatch-browser job calls it
 # with the pull-request lane on a pull request that carries no `full-ci` label and the full lane
 # on everything else, and the nightly workflow calls it with the full lane. The rows are spread
-# over four shard machines, the three `-alone` projects get a machine each, and one merge job
-# joins what they wrote into a single report and publishes the run's flake rate.
+# over four shard machines, the three `-alone` projects get a machine each, the two-process job
+# and the fake-embedder job take one each, and one merge job joins what the shard and alone legs
+# wrote into a single report and publishes the run's flake rate.
 #
 # Two lanes, one input. `pull-request` runs the two projects a pull request is held to, `chromium`
-# and `iphone`; `full` runs all eight parallel projects, the three `-alone` ones and the
-# two-process job. So an unlabelled pull request pays for the rows that answer it, and the merge
-# queue, a labelled pull request, a workflow_dispatch and the nightly run pay for the rest, each
-# of which has the wall time for them.
+# and `iphone`, and the fake-embedder job, which holds a check of the pull request it is on;
+# `full` runs all eight parallel projects, the three `-alone` ones, the two-process job and that
+# same embedder job. So an unlabelled pull request pays for the rows that answer it, and the
+# merge queue, a labelled pull request, a workflow_dispatch and the nightly run pay for the
+# rest, each of which has the wall time for them.
 #
 # A reusable workflow, not a composite action, for the reason docs-site.yaml's head comment
 # gives: `services:` is a job-level key and a composite action's step keys do not include
@@ -863,6 +865,96 @@ jobs:
           name: dispatch-browser-multiprocess-test-results-${{ github.run_attempt }}
           path: packages/dispatch/e2e/test-results
 
+  # The rows that read what the bar costs a model, which no other lane runs. The two tiers of
+  # the command bar are a claim about embeddings - a keystroke makes none and a pause makes
+  # exactly one - and the only thing that can read a count back is the fake embedder
+  # (e2e/fake-embedder.ts) the server calls as it calls Bedrock, under DISPATCH_E2E_EMBEDDER=fake
+  # (e2e/harness-embedder.ts). That switch is the server's, chosen before Playwright starts, so
+  # no project of another lane can carry it and e2e/search-tiers.e2e.ts skips everywhere else.
+  # This job is where it runs.
+  #
+  # On both lanes, where the alone and multiprocess jobs above run on `full` alone: this is one
+  # Chromium install and two rows of about 90 s, and it holds a check of the pull request it is
+  # on (check k2 of dispatch://INFRA-1042) rather than a clock reading or a second server shape.
+  # A lane that skipped it would leave the claim unread until the merge queue.
+  #
+  # Its rows upload no blob report, as the multiprocess job's do not: the merge job joins the
+  # shard and alone legs, and this job's own conclusion is what the caller's `dispatch-browser`
+  # job reads. It is in the merge job's `needs` and in that job's name filter, where it gets a
+  # null leg and is passed over by reading one, exactly as multiprocess is.
+  #
+  # No budget measured on this file's own runs yet, so the two below are derived from the
+  # multiprocess job's measured steps, which are the same steps on the same machine: its install
+  # step's 4 min, and 4 min for a browser step whose two rows run in about 90 s locally. The job
+  # budget is those two plus that job's measured 135 s maximum for every step without one,
+  # rounded up: 4 + 4 min plus 135 s = 11 min. The first runs replace these with readings of
+  # their own, as this file's head requires.
+  embedder:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 11
+    services:
+      postgres:
+        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          cache: false
+      # go-envoy, restored only, as the multiprocess job restores it and for the same reason:
+      # run-server.sh builds the Dispatch server, which the family's saving jobs do not.
+      - id: go-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-{0}-', runner.os) || '' }}
+      - uses: ./.github/actions/setup-bun
+      - run: bun install --frozen-lockfile
+      - name: Build contracts for dispatch e2e
+        # The e2e helpers the specs import read some of contracts' values from its built dist/,
+        # through Playwright's own Node resolution (the shard job's step of the same name).
+        run: bun run build
+        working-directory: packages/contracts
+      - name: Build the Dispatch server
+        # run-server.sh builds it too, inside the harness's boot wait; built here, the server
+        # finds it current and starts in seconds.
+        run: go build -o ./dispatch-e2e ./cmd/dispatch
+        working-directory: packages/envoy
+      - name: Install Playwright Chromium
+        # Browsers only, no apt: the multiprocess job's step of this name says why that list is
+        # not needed and what the 4 minutes are.
+        timeout-minutes: 4
+        run: bunx playwright install chromium
+        working-directory: packages/dispatch
+      - name: Browser-test the bar's two tiers against a counting embedder
+        timeout-minutes: 4
+        run: bun run e2e:embedder
+        working-directory: packages/dispatch
+      # `if: failure()`, as the multiprocess job's upload is: the chromium project retries a
+      # failed row, but a row that fails after its retries fails this job and this upload runs.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure()
+        with:
+          name: dispatch-browser-embedder-test-results-${{ github.run_attempt }}
+          path: packages/dispatch/e2e/test-results
+
   # What the legs together ran. It joins every shard's and every alone leg's blob report into one
   # report, publishes three readings of it - the rows, the flake rate and the legs that did not
   # succeed - and is the one job of this workflow that reports ci-ok, so a run gets one verdict
@@ -881,7 +973,7 @@ jobs:
   # own jobs for the same reason. The step-level `if: always()` inside this job are a different
   # thing and stay: a step's condition is about the steps before it, not about the run.
   merge:
-    needs: [shard, alone, multiprocess]
+    needs: [shard, alone, multiprocess, embedder]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     # The budget is measured. This job ran 27 s on the pull-request lane of this head
@@ -980,7 +1072,7 @@ jobs:
           export GH_TOKEN="${{ github.token }}"
           # This run's jobs, the newest attempt of each, fetched once here and read again by
           # reading three below. The jobs API lists the caller's jobs too, so the name is held to
-          # this workflow's four; a called workflow's job is named `<the caller's job> / <this
+          # this workflow's five; a called workflow's job is named `<the caller's job> / <this
           # job>`, with a matrix leg in brackets after it.
           #
           # `filter=all` lists every attempt's jobs, so the newest attempt of each name is taken
@@ -1014,14 +1106,15 @@ jobs:
           # then had to land in both copies.
           #
           # `shard (3)` becomes `shard-3` and `alone (webkit-alone)` becomes `alone-webkit-alone`,
-          # after either caller's prefix. `merge` and `multiprocess` are this workflow's other two
-          # jobs: they pass the name filter below and get a null leg, so reading one passes them
-          # over and reading three names them as holding no row. ci.yaml's jobs do not get a null
-          # leg - that filter drops them before this expression sees them, which is what keeps
-          # them out of reading three, since reading three selects on conclusion alone. The two
-          # that come nearest are ci.yaml's own `dispatch-multiprocess` and `broker-multiprocess`,
-          # kept out only because the character before `multiprocess` is a hyphen and the filter
-          # wants a space or a line start; anyone who loosens it pulls them in.
+          # after either caller's prefix. `merge`, `multiprocess` and `embedder` are this
+          # workflow's other three jobs: they pass the name filter below and get a null leg, so
+          # reading one passes them over and reading three names them as holding no row.
+          # ci.yaml's jobs do not get a null leg - that filter drops them before this expression
+          # sees them, which is what keeps them out of reading three, since reading three selects
+          # on conclusion alone. The two that come nearest are ci.yaml's own
+          # `dispatch-multiprocess` and `broker-multiprocess`, kept out only because the
+          # character before `multiprocess` is a hyphen and the filter wants a space or a line
+          # start; anyone who loosens it pulls them in.
           #
           # The project part takes any name that holds no `)`, and the loops below read one leg
           # per line, so a project name holding a space or a comma is one leg here rather than
@@ -1036,7 +1129,7 @@ jobs:
           # second matrix dimension would leave a leg's derived name and its blob's name apart
           # and reading one would call it MISSING. Nothing of that is reachable from today's
           # matrix, and whoever widens it reads the alone job's own steps, not this line.
-          jq '[.[].jobs[] | select(.name | test("(^| )(shard|alone|multiprocess|merge)( \\(|$)"))]
+          jq '[.[].jobs[] | select(.name | test("(^| )(shard|alone|multiprocess|embedder|merge)( \\(|$)"))]
             | group_by(.name) | map(max_by(.run_attempt) | {id, name, conclusion,
                 leg: ((.name | capture(" shard \\((?<n>[0-9]+)\\)$") | "shard-\(.n)")
                   // (.name | capture(" alone \\((?<p>[^)]*)\\)$") | "alone-\(.p)")
