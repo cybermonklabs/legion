@@ -42,9 +42,10 @@ func waitingLineState() State {
 }
 
 // waitingLinesServed is the place of every issue of a state body that carries one, by issue key.
-// The key is read by name (WaitingLineField) and an issue without it is in no entry, because the
-// reader before waitingLineContract refuses the key whatever it holds: whether the key is on the
-// wire at all is what the strip is read by.
+// The key is read by name (WaitingLineField) and an issue without it is in no entry, because
+// whether the key is on the wire at all is what the strip is read by: a reader below
+// waitingLineContract is to be served no such key, whether its own schema would refuse one it
+// does not name or quietly drop it.
 func waitingLinesServed(t *testing.T, body []byte) map[string]WaitingLineView {
 	t.Helper()
 	var state struct {
@@ -114,7 +115,7 @@ func TestTheWaitingLinePlaceIsStrippedBelowItsContract(t *testing.T) {
 	state := waitingLineState()
 	behind := stateFrom(t, state, statePodAddr+":4100", podClaims(waitingLineContract-1))
 	if served := waitingLinesServed(t, behind); len(served) != 0 {
-		t.Errorf("the pod below %d is served the places %+v, want none: its reader refuses the key",
+		t.Errorf("the pod below %d is served the places %+v, want none: the field is not its contract's",
 			waitingLineContract, served)
 	}
 
