@@ -1096,10 +1096,15 @@ func TestAWedgedCommitReportsRatherThanWedgingTheSuite(t *testing.T) {
 	if _, parked := parkedCommitTrial(); parked {
 		t.Skip("the child process runs the case, not this test")
 	}
-	// The parked trial's own guard takes thirty seconds (the commit's ten, ten more for a late
-	// commit, ten for the close), so this deadline leaves a minute above it for the trial's
-	// setup and for a loaded runner.
-	const childDeadline = 90 * time.Second
+	// The child reports at the end of the parked trial's own guard, thirty seconds of it (the
+	// commit's ten, ten more for a late commit, ten for the close), with its own storetest
+	// template migration and database clone before that: 54.56 s of it in this package's issue
+	// pod under -race and six busy loops on two CPUs, 47.75 s plain. The deadline is three times
+	// that worst measurement, so a slow runner cannot turn a reporting child into this row's red,
+	// and it is minutes below the deadline of any run that holds this package (29 m of
+	// envoy-go-docs-finalizers, 60 m of envoy-go-race-docs), so a child that truly wedges ends in
+	// this row's own failure rather than in the parent run's panic.
+	const childDeadline = 180 * time.Second
 	command := exec.Command(os.Args[0],
 		"-test.run=^TestAWriteSurvivesItsIssueClosingAsItPublishes$/^20_paragraphs$",
 		"-test.timeout="+childDeadline.String())
