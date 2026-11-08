@@ -80,9 +80,9 @@ const (
 	jobQuiet         = 2 * time.Second
 	jobMaxWait       = 10 * time.Second
 	jobMaxAckPending = 64
-	// jobAckWait bounds a message the handler never reached, and one the handler was given after
-	// the stop and left unacknowledged (deliver); every other message is acked on receipt, before
-	// its checks.
+	// jobAckWait bounds a message the handler never reached, and one the callback was handed
+	// after the stop whose hand-back the link refused (deliver, which Naks such a message rather
+	// than leaving it unanswered); every other message is acked on receipt, before its checks.
 	jobAckWait = 30 * time.Second
 	// jobCheckTimeout bounds one message's indexed read (RunTracked).
 	jobCheckTimeout = 10 * time.Second
@@ -226,16 +226,23 @@ func (j *JobIntake) bind(ctx, stopping context.Context) (*natsgo.Subscription, b
 // good and the read that follows it would fail under the cancelled context with an ERROR line
 // of its own.
 //
-// The hand-back does not come back here, because the drain's UNSUB is already on the wire ahead
-// of it. nats.go v1.53.1's Conn.unsubscribe (:5416-5476) holds the connection's lock for the
-// whole of a drain's start: it marks the subscription draining and starts checkDrained
-// (:5447-5453), then appends the UNSUB to the connection's write buffer and kicks the flusher
-// (:5457-5460), and checkDrained's own first act is an nc.Flush() (:5333-5345) that waits for
-// that same lock. The callback meanwhile is handed what the client buffered, one message at a
-// time, and this Nak is a publish appended to that one write buffer behind the UNSUB. The
-// server therefore sees the unsubscribe first, and redelivers what this callback hands back to
-// the next subscriber of the durable rather than to this one; the delivery intake's stop turns
-// on the same order (intake_delivery.go's stop, which drains before it answers anything).
+// What the drain hands this callback does not come back here, because the drain's UNSUB is on
+// the wire ahead of it. nats.go v1.53.1's Conn.unsubscribe (:5416-5476) holds the connection's
+// lock for the whole of a drain's start (:5427-5429): it marks the subscription draining
+// (:5447-5453) and appends the UNSUB to the connection's write buffer, kicking the flusher
+// (:5457-5460). The callback is handed what the client had buffered one message at a time after
+// that, and this Nak is a publish appended to that same write buffer behind the UNSUB. The
+// server therefore sees the unsubscribe first, and redelivers those messages to the next
+// subscriber of the durable rather than to this one; the delivery intake's stop turns on the
+// same order (intake_delivery.go's stop, which drains before it answers anything).
+//
+// A message handed to this callback while the subscription is still bound is the other case:
+// one the server delivers after j.ctx is done and before Run reaches giveUp (Run's ctx case),
+// or during a bind confirmation under a context already cancelled. Its Nak reaches the server
+// with this subscriber's interest still in place, so the server may hand it here once more
+// before the UNSUB lands, and it is handed back again. That is bounded -- the hand-back after
+// the UNSUB goes to the next subscriber -- and loses nothing, since neither pass reads the
+// message.
 //
 // A Nak the link refuses -- which is the state a give-up over an outage begins in -- leaves the
 // message outstanding, as the bare unsubscribe this give-up replaced left it: the next holder is

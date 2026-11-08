@@ -33,7 +33,9 @@ type intakeDelivery struct {
 	mu sync.Mutex
 	// held is what the stop answers once no handler of this delivery is running and the client has
 	// a connection to answer over: the messages that were waiting behind their keys, those the
-	// callback was handed since, and those whose handler finished while the stop was under way.
+	// callback was handed since, and those whose handler finished while the stop was under way
+	// and whose own acknowledgement the bus refused (acknowledgeOrHold). A handler that finishes
+	// over a live link acknowledges its message itself and leaves nothing here.
 	held []heldMessage
 	// released is set once held has been answered; the callback then answers a message at once.
 	released bool
@@ -309,9 +311,19 @@ func (d *intakeDelivery) giveBack(msg *natsgo.Msg) {
 // its handling had finished, and four such handlers would stop the next holder being delivered
 // anything. A refused Ack leaves the message unacknowledged -- nats.go sets ackd only where the
 // publish succeeded (js.go:3661-3664) -- so the stop can answer it again (answerHeld). Reading
-// the refusal rather than the stopping flag also covers the handler that finishes between the
-// TCP drop and the disconnect callback, before stopping is set, whose acknowledgement is refused
+// the refusal rather than the stopping flag also covers the handler that finishes after the link
+// has dropped and before the disconnect callback sets stopping, whose acknowledgement is refused
 // with no stop yet to hold it.
+//
+// It covers that handler only once nats.go has noticed the drop, which is all any reading here
+// can cover. Until it does, the connection's status is still CONNECTED and the acknowledgement
+// is appended to the connection's write buffer and returns nil (nats.go v1.53.1's Conn.publish,
+// nats.go:4649-4661; its one refusal before that, atLimitIfUsingPending, is false while the
+// writer holds no pending buffer, nats.go:2368-2373), so it goes out on a socket that is gone
+// and is lost with no error to read, exactly as on main. From the moment nats.go switches the
+// writer to pending and goes to RECONNECTING (processOpErr, nats.go:3556-3574) a publish is
+// refused -- the bus sets opts.ReconnectBufSize = -1 (internal/bus/connect.go), so that pending
+// buffer is at its limit from the first byte -- and that refusal is the one this reads.
 //
 // Once the stop has released, there is nobody left to answer the message: the refusal is logged
 // and the message handed back, as acknowledge does for every other caller, and the ack wait is

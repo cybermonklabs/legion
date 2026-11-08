@@ -230,9 +230,10 @@ func TestAHandlerThatFinishesDuringTheOutageIsAcknowledgedWhenTheLinkIsBack(t *t
 	// that fetch.
 	processes.proxy.Cut()
 	// The hold is released only once that stop has ended the subscription, which it does before
-	// it waits for the handlers. From there the handler's acknowledgement is one the stop holds
-	// rather than one the handler makes for itself over the dead link, which is the case this
-	// row is about and the one the row above cannot reach.
+	// it waits for the handlers. From there the handler makes its own acknowledgement over the
+	// dead link, the bus refuses it, and the stop holds that refused answer and makes it again
+	// once the link is back (acknowledgeOrHold, intake_delivery.go's stop), which is the case
+	// this row is about and the one the row above cannot reach.
 	waitFor(t, 30*time.Second, func() bool {
 		return !intakeHoldsSubscription(processes.holder)
 	}, func() string {
