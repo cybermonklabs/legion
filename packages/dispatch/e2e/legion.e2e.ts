@@ -24,6 +24,47 @@ test.beforeEach(async () => {
   await resetDatabase();
 });
 
+test("the Settings page's control changes the admission cap of a daemon @legion", async ({
+  browser,
+}) => {
+  const daemon = await startFakeLegionDaemon({ admission_cap: { applied: "at-once" } });
+  await seedLegionFixture(daemon.url);
+  const context = await asUser(browser, "alice");
+  const page = await context.newPage();
+
+  try {
+    // The control sits in the project's Legion setting on the Settings page (dispatch://INFRA-979).
+    await page.goto("/settings");
+
+    // Each setting with its value and where it came from, as the daemon reports them.
+    const cap = page.locator('[data-legion-setting="admission_cap"]');
+    await expect(cap.locator("[data-legion-setting-value]")).toHaveText("4");
+    await expect(cap.locator('[data-legion-setting-source="file"]')).toContainText(
+      "configuration file"
+    );
+    await expect(
+      page.locator('[data-legion-setting="review_round_cap"] [data-legion-setting-source="route"]')
+    ).toContainText("Changed here by bob");
+
+    await page.getByLabel("New value for admission_cap").fill("6");
+    await page.getByRole("button", { name: "Change admission_cap" }).click();
+
+    // What the daemon said about the key, and the new value with the route as its source and the
+    // person who changed it.
+    await expect(cap.locator("[data-legion-setting-result]")).toHaveText("Applied at once");
+    await expect(cap.locator("[data-legion-setting-value]")).toHaveText("6");
+    await expect(cap.locator('[data-legion-setting-source="route"]')).toContainText(
+      "Changed here by alice"
+    );
+
+    // Dispatch relayed the change itself, naming the person who asked for it.
+    expect(daemon.changes).toEqual([{ by: "alice", changes: { admission_cap: 6 } }]);
+  } finally {
+    await context.close();
+    await daemon.close();
+  }
+});
+
 // A1: "a daemon URL set on the Settings page that brings the view", and A4's "A project with no
 // Legion setting shows no Legion view". The project is seeded with its issues and its daemon's
 // observations but no `legion_settings` row, so the only thing that can bring the view is the
