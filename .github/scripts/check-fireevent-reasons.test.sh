@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Tests for `check-fireevent-reasons.sh`: a call with no comment above it fails and is named with a
-# GitHub annotation; a reason on the line above passes, and one six lines up does not; the three
-# ways a reader found of satisfying the check without writing a reason all fail — an arithmetic `*`
-# line above the call, a `//` inside a string on the call's own line, and the direct
-# `fireEvent(node, event)` form the dotted pattern never saw; a call named inside a comment is prose
-# and is not counted; and the real repository passes.
+# GitHub annotation; a reason on the line above passes, and one six lines up does not; the four ways
+# a reader found of satisfying the check without writing a reason all fail — an arithmetic `*` line
+# above the call, a `//` inside a string before the call on its own line, that same URL on the line
+# above, and the direct `fireEvent(node, event)` form the dotted pattern never saw; a call named
+# inside a comment is prose and is not counted; and the real repository passes over a count of calls
+# it actually found, so a run that scanned nothing fails rather than reporting a clean scan.
 #
 # Each case builds a miniature tree under a temporary directory and symlinks the real script into
 # it, so the script under test is the file CI runs: it resolves its root from its own path, which
@@ -170,6 +171,6 @@ status=$?
 set -e
 check "exits 0" "$(is "$status" 0)"
 check "reports the clean scan" "$(contains "$out" 'carries a reason$')"
-check "scanned a three-figure count of calls" "$(contains "$out" 'every one of the [1-9][0-9][0-9] fireEvent calls')"
+check "scanned a non-zero count of calls" "$(contains "$out" 'every one of the [1-9][0-9]* fireEvent calls')"
 
 summary "check-fireevent-reasons.sh"

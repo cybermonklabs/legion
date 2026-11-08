@@ -55,10 +55,12 @@ const shellHandlers: RequestHandler[] = [
     Response.json({ code: "NO_IDENTITY", error: "no identity" }, { status: 401 })
   ),
   http.get("/api/v1/agents", () => Response.json([])),
-  // The sidebar reads the project list on every signed-in page (`Sidebar.tsx`, `projectsQuery`),
-  // and the issue header reads it under the same key to learn which design steps are gated. An
-  // empty list is a project with no gate, which is what a page with no `api.listProjects` spy drew
-  // before.
+  // Read under one key (`projectsQuery`) by the issue header for every root issue, to learn which
+  // design steps are gated (`features/issue/IssueHeader.tsx:292`, `enabled: issue.parent === null`),
+  // and by `CreateIssueDialog`, `ProjectPage`, the palette's project mode and two settings
+  // sections. So a row that renders a root issue's page reaches it without asserting on it: with
+  // this handler removed, 36 rows in `features/issue` fail. An empty list is a project with no
+  // gate, which is what a page with no `api.listProjects` spy drew before.
   http.get("/api/v1/projects", () => Response.json([])),
   http.get("/api/v1/me/replies", () => Response.json({ rows: [], total: 0, limit: 50, offset: 0 })),
   http.get("/api/v1/credential-requests", () => Response.json({ pending: [] })),
