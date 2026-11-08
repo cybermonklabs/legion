@@ -2,7 +2,7 @@
 // line each one is given, a client dialled against the server under test, a wait for
 // that server's namespace, and the printing the write-up quotes.
 //
-// Experiments 1 to 6, 19 and 20 measure Temporal and take its address; experiments 7 to 9
+// Experiments 1 to 6 and 19 to 21 measure Temporal and take its address; experiments 7 to 9
 // measure DBOS, which is a library rather than a server, and take a PostgreSQL URL
 // instead; experiments 10 to 12 measure Restate, which is a server that calls the
 // application, and take its two loopback addresses, the restate-server binary and the
@@ -29,7 +29,7 @@ import (
 // Config is the command line of cmd/experiments, shared by every experiment. An
 // experiment reads only the fields its own run needs.
 type Config struct {
-	// Experiment is the number given to -experiment, 1..20.
+	// Experiment is the number given to -experiment, 1..21.
 	Experiment int
 	// Address is the server's gRPC host:port.
 	Address string
