@@ -340,7 +340,15 @@ test("a status change whose answer is lost survives a reload, lands once, and th
   }
 });
 
-test("an ask answer whose answer is lost lands once, under one key", async ({ browser }) => {
+// @webkit under the second of the two reasons for an engine tag (`e2e/playwright.config.ts`, the
+// comment above `tagged`): not a WebKit behaviour of its own - the keyed write path's request
+// failure is the one the tagged rows above exercise in every engine - but the engine this row's
+// own failures were in, both of them, two timeouts in 213 CI runs. The tag is what keeps the row
+// there now that the projects select rows by tag rather than by file (`webkitTagged`); without it
+// the row would run only where its defect was never seen.
+test("an ask answer whose answer is lost lands once, under one key @webkit", async ({
+  browser,
+}) => {
   await createProject({ key: "KW", name: "Keyed writes" });
   const issue = await createIssue({ project: "KW", title: "An answer once" });
   const ask = await createAsk(
