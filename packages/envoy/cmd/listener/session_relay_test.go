@@ -698,7 +698,9 @@ func TestSessionConsumerRelayLosingItsSessionReturnsTheMessageItHolds(t *testing
 // A hand-over that could not reach the server says so: its line names the error and counts
 // nothing returned, rather than reporting a whole hand-over. A reader told the messages were
 // given back expects the session's next owner to be delivered them at once, while in truth every
-// one of them waits out bus.SessionConsumerAckWait (60 s).
+// one of them waits out bus.SessionConsumerAckWait (60 s). The row holds the level the line is
+// written at and both halves of the error it carries, not only which of the two lines is
+// written, because the level and the error are what a reader and an alert key on.
 func TestSessionConsumerRelayHandOverThatReachesNoServerSaysSo(t *testing.T) {
 	// The receipt wait is longer than the row, so the relay cannot pause, and so forget the frame
 	// it holds, before the row takes the session away.
@@ -719,30 +721,36 @@ func TestSessionConsumerRelayHandOverThatReachesNoServerSaysSo(t *testing.T) {
 	rig.deps.consumers.close()
 	rig.relays.setOwned(false)
 
-	const failed = `"msg":"session relay stopped; it could not give the server back every message it held, and each one it did not is delivered again only after the consumer's ack wait"`
-	const whole = `"msg":"session relay stopped; it gave the server back the messages it held, so they are delivered again at once rather than after the consumer's ack wait"`
+	const failed = "session relay stopped; it could not give the server back every message it held, and each one it did not is delivered again only after the consumer's ack wait"
+	const whole = "session relay stopped; it gave the server back the messages it held, so they are delivered again at once rather than after the consumer's ack wait"
 	awaitLogLine(t, rig, failed, 15*time.Second)
 	// The log is read once the hand-over line is in it: before that the run has written neither
 	// line, and a missing line of a whole hand-over would say nothing.
 	logs := rig.harness.logs.String()
-	var line string
-	for candidate := range strings.SplitSeq(logs, "\n") {
-		if strings.Contains(candidate, failed) && strings.Contains(candidate, `"session_id":"`+sessionID+`"`) {
-			line = candidate
+	// warnLinesNaming answers every WARN record naming the session, and a relay whose connection
+	// is closed writes others, so the hand-over's own line is picked out by its message.
+	var reports []map[string]any
+	for _, record := range warnLinesNaming(logs, sessionID) {
+		if record["msg"] == failed {
+			reports = append(reports, record)
 		}
 	}
-	if line == "" {
-		t.Fatalf("no line reports a failed hand-over of session %s:\n%s", sessionID, logs)
+	if len(reports) != 1 {
+		t.Fatalf("%d WARN records report a failed hand-over of session %s, want exactly 1:\n%s", len(reports), sessionID, logs)
 	}
-	var record struct {
-		Returned *int   `json:"returned"`
-		Error    string `json:"error"`
+	report := reports[0]
+	// A number of a log record decodes from JSON as a float64, so the count reads as one here.
+	if returned, ok := report["returned"].(float64); !ok || returned != 0 {
+		t.Fatalf("the hand-over line of session %s counts returned %#v, want the number 0: it reached the server with nothing at all:\n%v", sessionID, report["returned"], report)
 	}
-	if err := json.Unmarshal([]byte(line), &record); err != nil {
-		t.Fatalf("decode the hand-over line of session %s: %v\n%s", sessionID, err, line)
+	// The two halves of the hand-over are held apart, so that a failure says which of them the
+	// line left out: the relay's own naks, and the drain of its pull.
+	failure, _ := report["error"].(string)
+	if !strings.Contains(failure, "the relay of session") {
+		t.Fatalf("the hand-over line of session %s names error %q, want it naming the relay's own naks, which failed:\n%v", sessionID, failure, report)
 	}
-	if record.Returned == nil || *record.Returned != 0 || record.Error == "" {
-		t.Fatalf("the hand-over line of session %s must count nothing returned and name what failed:\n%s", sessionID, line)
+	if !strings.Contains(failure, "could not be drained") {
+		t.Fatalf("the hand-over line of session %s names error %q, want it naming the drain of its pull, which failed:\n%v", sessionID, failure, report)
 	}
 	if strings.Contains(logs, whole) {
 		t.Fatalf("the run reported a whole hand-over as well, having reached the server with nothing at all:\n%s", logs)
