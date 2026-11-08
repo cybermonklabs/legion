@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 
 import { MessageBoxHelp } from "./MessageBoxHelp";
@@ -13,14 +14,15 @@ function Host() {
 // R6. The page prints no rule, so everything a person has to know about the message box is
 // behind this one question mark: what `!` does, where a command runs, and what this view keeps
 // of the conversation.
-test("the question mark opens the panel, which says what ! does, where a command runs and what is kept", () => {
+test("the question mark opens the panel, which says what ! does, where a command runs and what is kept", async () => {
+  const user = userEvent.setup();
   const view = render(<Host />);
   try {
     const trigger = screen.getByRole("button", { name: "What the message box does" });
     expect(trigger.getAttribute("aria-expanded")).toBe("false");
     expect(screen.queryByTestId("agent-help-popover")).toBeNull();
 
-    fireEvent.click(trigger);
+    await user.click(trigger);
 
     const panel = screen.getByRole("dialog", { name: "What the message box does" });
     expect(trigger.getAttribute("aria-expanded")).toBe("true");
@@ -40,14 +42,15 @@ test("the question mark opens the panel, which says what ! does, where a command
   }
 });
 
-test("Escape closes the panel and leaves the focus on the question mark", () => {
+test("Escape closes the panel and leaves the focus on the question mark", async () => {
+  const user = userEvent.setup();
   const view = render(<Host />);
   try {
     const trigger = screen.getByTestId("agent-help");
-    fireEvent.click(trigger);
+    await user.click(trigger);
     expect(screen.getByTestId("agent-help-popover")).toBeTruthy();
 
-    fireEvent.keyDown(document, { key: "Escape" });
+    await user.keyboard("{Escape}");
 
     expect(screen.queryByTestId("agent-help-popover")).toBeNull();
     expect(trigger.getAttribute("aria-expanded")).toBe("false");
@@ -59,16 +62,17 @@ test("Escape closes the panel and leaves the focus on the question mark", () => 
 
 // A press on the page behind it is a press on the page, not on the panel: the panel goes, and a
 // press inside it - on the text a person is reading - leaves it standing.
-test("a pointer press outside closes the panel, one inside leaves it open", () => {
+test("a pointer press outside closes the panel, one inside leaves it open", async () => {
+  const user = userEvent.setup();
   const view = render(<Host />);
   try {
-    fireEvent.click(screen.getByTestId("agent-help"));
+    await user.click(screen.getByTestId("agent-help"));
     const panel = screen.getByTestId("agent-help-popover");
 
-    fireEvent.pointerDown(panel);
+    await user.click(panel);
     expect(screen.queryByTestId("agent-help-popover")).toBeTruthy();
 
-    fireEvent.pointerDown(document.body);
+    await user.click(document.body);
     expect(screen.queryByTestId("agent-help-popover")).toBeNull();
   } finally {
     view.unmount();

@@ -37,16 +37,21 @@ import (
 //     A migration that bounds its own lock wait sets lock_timeout
 //     (0066_asks_handed_back_reply_fkey, 20261101182522_search_term_queue_triggers), and that
 //     line must not be what costs it an exemption the rest of its statements earn.
+//   - alter table, but only catalogOnlyAlterTable's metadata-only constraint changes and
+//     nullable text columns without defaults. Validating a constraint, adding a default or
+//     computing a generated value can scan or rewrite rows and is not exempt.
 //
 // An event trigger on these commands runs code of its own when they run, so Census does not apply
 // the exemption where one is enabled (ddlEventTriggers). Adding a kind is a reviewed edit with the
-// same argument for it; a kind that can scan or rewrite (create index, alter table, a DO block,
-// any DML) never belongs here.
+// same argument for it; a kind that can scan or rewrite (create index, other alter table forms,
+// a DO block, any DML) never belongs here. A marked concurrent index has a separate size
+// exception in Census: it scans rows without holding off ordinary writes, not catalog-only work.
 var catalogOnlyStatements = map[string]func(node json.RawMessage) string{
 	"CreateFunctionStmt": catalogOnlyFunction,
 	"CreateTrigStmt":     func(json.RawMessage) string { return "create trigger" },
 	"DropStmt":           catalogOnlyDrop,
 	"VariableSetStmt":    func(json.RawMessage) string { return "set" },
+	"AlterTableStmt":     catalogOnlyAlterTable,
 }
 
 // catalogOnlyFunction names a create function's kind, "create function", when its parse node
@@ -109,6 +114,73 @@ func catalogOnlyDrop(node json.RawMessage) string {
 	return ""
 }
 
+// catalogOnlyAlterTable admits only these metadata-only forms: DROP CONSTRAINT RESTRICT removes
+// catalog entries (including any backing index) without scanning rows; ADD CONSTRAINT CHECK NOT
+// VALID records the check without testing existing rows; ADD COLUMN nullable text (or text[])
+// without a default or constraints leaves existing tuples unchanged. Each still takes ACCESS
+// EXCLUSIVE briefly, bounded by the runner's lock_timeout. All defaults, including non-volatile
+// defaults, are conservatively excluded, as are domains, identity/generated values, NOT NULL,
+// validated checks, ALTER COLUMN TYPE and VALIDATE CONSTRAINT, which can scan or rewrite rows.
+func catalogOnlyAlterTable(node json.RawMessage) string {
+	var alter struct {
+		Cmds []struct {
+			Command struct {
+				Subtype  string                     `json:"subtype"`
+				Behavior string                     `json:"behavior"`
+				Def      map[string]json.RawMessage `json:"def"`
+			} `json:"AlterTableCmd"`
+		} `json:"cmds"`
+	}
+	if json.Unmarshal(node, &alter) != nil || len(alter.Cmds) == 0 {
+		return ""
+	}
+	for _, item := range alter.Cmds {
+		cmd := item.Command
+		switch cmd.Subtype {
+		case "AT_DropConstraint":
+			if cmd.Behavior != "DROP_RESTRICT" {
+				return ""
+			}
+		case "AT_AddConstraint":
+			var constraint struct {
+				Type           string `json:"contype"`
+				SkipValidation bool   `json:"skip_validation"`
+			}
+			if json.Unmarshal(cmd.Def["Constraint"], &constraint) != nil || constraint.Type != "CONSTR_CHECK" || !constraint.SkipValidation {
+				return ""
+			}
+		case "AT_AddColumn":
+			var column struct {
+				Type struct {
+					Names []struct {
+						String struct {
+							Value string `json:"sval"`
+						} `json:"String"`
+					} `json:"names"`
+				} `json:"typeName"`
+				Constraints []json.RawMessage `json:"constraints"`
+				Default     json.RawMessage   `json:"raw_default"`
+				Identity    string            `json:"identity"`
+				Generated   string            `json:"generated"`
+				NotNull     bool              `json:"is_not_null"`
+			}
+			if json.Unmarshal(cmd.Def["ColumnDef"], &column) != nil || len(column.Constraints) != 0 || len(column.Default) != 0 || column.Identity != "" || column.Generated != "" || column.NotNull {
+				return ""
+			}
+			names := column.Type.Names
+			if len(names) == 2 && names[0].String.Value == "pg_catalog" {
+				names = names[1:]
+			}
+			if len(names) != 1 || names[0].String.Value != "text" {
+				return ""
+			}
+		default:
+			return ""
+		}
+	}
+	return "alter table"
+}
+
 // tableSizeExemption says why migration sql is exempt from CensusTableLimit: the kinds of its
 // statements, as the report names them ("create function and create trigger"), when every one of
 // its statements is a catalogOnlyStatements kind; "" when any statement is not one of those
@@ -162,9 +234,9 @@ func tableSizeExemption(sql string) (exemption string) {
 }
 
 // ddlEventTriggersQuery names, sorted and comma-separated, every enabled event trigger on
-// ddl_command_start, ddl_command_end or sql_drop whose tags are unset or name one of the five
-// command tags below, the DDL commands catalogOnlyStatements admits (its set and reset fire no
-// event trigger, and a create function's command tag is CREATE FUNCTION or CREATE PROCEDURE);
+// ddl_command_start, ddl_command_end or sql_drop whose tags are unset or name one of the
+// command tags below: the catalog-only DDL commands and CREATE INDEX for the separate concurrent
+// exception (set and reset fire no event trigger);
 // "" when there are none. A drop fires sql_drop as well as the two ddl_command_ events, so an
 // event trigger on sql_drop would run code of its own on a drop the exemption covers. Census
 // reads this once for the whole database rather than per migration, so such a trigger on
@@ -174,4 +246,4 @@ const ddlEventTriggersQuery = `
 	select coalesce(string_agg(evtname, ', ' order by evtname), '')
 	from pg_event_trigger
 	where evtenabled <> 'D' and evtevent in ('ddl_command_start', 'ddl_command_end', 'sql_drop')
-		and (evttags is null or evttags && array['CREATE FUNCTION', 'CREATE PROCEDURE', 'CREATE TRIGGER', 'DROP FUNCTION', 'DROP TRIGGER'])`
+		and (evttags is null or evttags && array['CREATE FUNCTION', 'CREATE PROCEDURE', 'CREATE TRIGGER', 'DROP FUNCTION', 'DROP TRIGGER', 'ALTER TABLE', 'CREATE INDEX'])`

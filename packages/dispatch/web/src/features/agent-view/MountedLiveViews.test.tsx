@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
 import type { AgentStreamFrame } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { Link, MemoryRouter, Route, Routes, useMatch } from "react-router-dom";
 
@@ -263,12 +264,13 @@ test("a live address opens that session's view, in front of everything else", as
 // drawn, which is what makes coming back to it immediate, and the page they are on is the only
 // one they see or a screen reader reads.
 test("leaving a live view hides it but keeps it watching, and coming back costs no new watch", async () => {
+  const user = userEvent.setup();
   mockDispatch();
   renderShell(`/agents/${PLANNER}/live`);
   await screen.findByTestId("agent-conversation");
   const socket = openSocket();
 
-  fireEvent.click(screen.getByRole("link", { name: "Leave for Agents" }));
+  await user.click(screen.getByRole("link", { name: "Leave for Agents" }));
   await screen.findByRole("heading", { name: "Agents" });
 
   const lingering = viewOf(PLANNER);
@@ -277,7 +279,7 @@ test("leaving a live view hides it but keeps it watching, and coming back costs 
   expect(within(lingering).getByTestId("agent-conversation")).toBeTruthy();
   expect(dropped(socket)).toEqual([]);
 
-  fireEvent.click(screen.getByRole("link", { name: "Open Planner" }));
+  await user.click(screen.getByRole("link", { name: "Open Planner" }));
   await waitFor(() => expect(viewOf(PLANNER).getAttribute("data-front")).toBe("true"));
   expect(watched(socket)).toEqual([PLANNER]);
 });
@@ -286,15 +288,16 @@ test("leaving a live view hides it but keeps it watching, and coming back costs 
 // the first, which then holds nothing at all - no conversation on the page and no session on the
 // wire - which is what keeps eight pinned agents from costing eight subscriptions.
 test("opening a third live view puts the first to sleep, where it renders nothing", async () => {
+  const user = userEvent.setup();
   mockDispatch();
   renderShell(`/agents/${PLANNER}/live`);
   await screen.findByTestId("agent-conversation");
   const socket = openSocket();
 
-  fireEvent.click(screen.getByRole("link", { name: "Open Reviewer" }));
+  await user.click(screen.getByRole("link", { name: "Open Reviewer" }));
   await waitFor(() => expect(mountedSessions()).toEqual([PLANNER, REVIEWER]));
 
-  fireEvent.click(screen.getByRole("link", { name: "Open Tester" }));
+  await user.click(screen.getByRole("link", { name: "Open Tester" }));
   await waitFor(() => expect(mountedSessions()).toEqual([REVIEWER, TESTER]));
   expect(screen.queryAllByTestId("agent-conversation")).toHaveLength(2);
   await waitFor(() => expect(dropped(socket)).toEqual([PLANNER]));
@@ -305,6 +308,7 @@ test("opening a third live view puts the first to sleep, where it renders nothin
 // lingering view that marked its session's replies read would clear a badge the person never
 // looked at, for as long as the view lingers.
 test("only the view in front marks the session's replies read", async () => {
+  const user = userEvent.setup();
   threads[PLANNER] = [exchange(PLANNER, "2026-09-27T21:20:28Z")];
   threads[REVIEWER] = [exchange(REVIEWER, "2026-09-27T21:20:28Z")];
   const putAgentState = mockDispatch({
@@ -316,7 +320,7 @@ test("only the view in front marks the session's replies read", async () => {
     expect(readMarks(putAgentState)).toEqual([[PLANNER, "2026-09-27T21:20:28Z"]])
   );
 
-  fireEvent.click(screen.getByRole("link", { name: "Open Reviewer" }));
+  await user.click(screen.getByRole("link", { name: "Open Reviewer" }));
   await waitFor(() =>
     expect(readMarks(putAgentState)).toContainEqual([REVIEWER, "2026-09-27T21:20:28Z"])
   );
@@ -343,12 +347,13 @@ test("only the view in front marks the session's replies read", async () => {
 // view lingers - which is what a session does as it takes up new work - must not take the name
 // of the tab from the view in front of it.
 test("a lingering view leaves the tab's name to the view in front", async () => {
+  const user = userEvent.setup();
   mockDispatch();
   const queryClient = renderShell(`/agents/${PLANNER}/live`);
   await screen.findByTestId("agent-conversation");
   await waitFor(() => expect(document.title).toContain("Planner"));
 
-  fireEvent.click(screen.getByRole("link", { name: "Open Reviewer" }));
+  await user.click(screen.getByRole("link", { name: "Open Reviewer" }));
   await waitFor(() => expect(document.title).toContain("Reviewer"));
 
   registry = registry.map((agent) =>
@@ -367,6 +372,7 @@ test("a lingering view leaves the tab's name to the view in front", async () => 
 // this build cannot render costs the reader that session's view, and neither the view behind it
 // - which holds a draft and a reading place - nor the shell around them.
 test("a view that throws takes itself down and leaves the other view and the shell standing", async () => {
+  const user = userEvent.setup();
   mockDispatch();
   const settingsView = conversation.sessionSettingsView;
   spies.push(
@@ -381,7 +387,7 @@ test("a view that throws takes itself down and leaves the other view and the she
   await screen.findByTestId("agent-conversation");
   const socket = openSocket();
 
-  fireEvent.click(screen.getByRole("link", { name: "Open Reviewer" }));
+  await user.click(screen.getByRole("link", { name: "Open Reviewer" }));
   await waitFor(() => expect(mountedSessions()).toEqual([PLANNER, REVIEWER]));
   replay(socket, REVIEWER, [assistantFrame(BAD_TURN)]);
 

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 
 import { ContextRing, type ContextUsage, contextShare } from "./ContextRing";
@@ -31,7 +32,8 @@ describe("the share a session's figures make", () => {
 });
 
 describe("the context ring", () => {
-  test("draws the share, and its panel the tokens and the window", () => {
+  test("draws the share, and its panel the tokens and the window", async () => {
+    const user = userEvent.setup();
     const view = render(<Host usage={{ contextWindow: 200_000, tokens: 68_000 }} />);
     try {
       const ring = screen.getByRole("button", { name: "Context window, 34 percent used" });
@@ -40,7 +42,7 @@ describe("the context ring", () => {
       expect(screen.getByTestId("agent-context-share").textContent).toBe("34% of the window");
       expect(screen.queryByTestId("agent-context-popover")).toBeNull();
 
-      fireEvent.click(ring);
+      await user.click(ring);
       const panel = screen.getByRole("dialog", { name: "Context window" });
       expect(ring.getAttribute("aria-expanded")).toBe("true");
       expect(panel.textContent).toContain("68,000 of 200,000 tokens · 34%");
@@ -99,10 +101,11 @@ describe("the context ring", () => {
     }
   });
 
-  test("a nearly full window says what happens from here on", () => {
+  test("a nearly full window says what happens from here on", async () => {
+    const user = userEvent.setup();
     const view = render(<Host usage={{ contextWindow: 200_000, tokens: 184_210 }} />);
     try {
-      fireEvent.click(screen.getByRole("button", { name: "Context window, 92 percent used" }));
+      await user.click(screen.getByRole("button", { name: "Context window, 92 percent used" }));
       expect(screen.getByRole("dialog").textContent).toContain("This window is nearly full.");
     } finally {
       view.unmount();
@@ -111,21 +114,22 @@ describe("the context ring", () => {
     // The window below the threshold keeps the plain wording: 79 percent is not nearly full.
     const filling = render(<Host usage={{ contextWindow: 200_000, tokens: 158_000 }} />);
     try {
-      fireEvent.click(screen.getByRole("button", { name: "Context window, 79 percent used" }));
+      await user.click(screen.getByRole("button", { name: "Context window, 79 percent used" }));
       expect(screen.getByRole("dialog").textContent).not.toContain("This window is nearly full.");
     } finally {
       filling.unmount();
     }
   });
 
-  test("Escape closes the panel and leaves the focus on the ring", () => {
+  test("Escape closes the panel and leaves the focus on the ring", async () => {
+    const user = userEvent.setup();
     const view = render(<Host usage={{ contextWindow: 200_000, tokens: 68_000 }} />);
     try {
       const ring = screen.getByTestId("agent-context-ring");
-      fireEvent.click(ring);
+      await user.click(ring);
       expect(screen.getByTestId("agent-context-popover")).toBeTruthy();
 
-      fireEvent.keyDown(document, { key: "Escape" });
+      await user.keyboard("{Escape}");
       expect(screen.queryByTestId("agent-context-popover")).toBeNull();
       expect(ring.getAttribute("aria-expanded")).toBe("false");
       expect(document.activeElement).toBe(ring);
@@ -134,15 +138,16 @@ describe("the context ring", () => {
     }
   });
 
-  test("a pointer press outside closes the panel, one inside leaves it open", () => {
+  test("a pointer press outside closes the panel, one inside leaves it open", async () => {
+    const user = userEvent.setup();
     const view = render(<Host usage={{ contextWindow: 200_000, tokens: 68_000 }} />);
     try {
-      fireEvent.click(screen.getByTestId("agent-context-ring"));
+      await user.click(screen.getByTestId("agent-context-ring"));
       const panel = screen.getByTestId("agent-context-popover");
-      fireEvent.pointerDown(panel);
+      await user.click(panel);
       expect(screen.queryByTestId("agent-context-popover")).toBeTruthy();
 
-      fireEvent.pointerDown(document.body);
+      await user.click(document.body);
       expect(screen.queryByTestId("agent-context-popover")).toBeNull();
     } finally {
       view.unmount();

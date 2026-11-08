@@ -1,6 +1,7 @@
 import { afterEach, expect, type Mock, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 
@@ -195,6 +196,7 @@ test("the rail says where the pin is when nothing is pinned", async () => {
 
 // The heading is still the link to the Agents page; the chevron beside it folds the rows.
 test("the Agents heading folds its rows and still opens the Agents page", async () => {
+  const user = userEvent.setup();
   renderRail({ agentState: pins });
 
   await waitFor(() => expect(rowTexts()).toHaveLength(3));
@@ -206,23 +208,24 @@ test("the Agents heading folds its rows and still opens the Agents page", async 
   expect(fold.getAttribute("aria-expanded")).toBe("true");
   expect(fold.getAttribute("aria-controls")).toBe("rail-pinned-agents");
 
-  fireEvent.click(fold);
+  await user.click(fold);
   expect(document.getElementById("rail-pinned-agents")).toBeNull();
   expect(screen.getByRole("link", { name: "Agents New replies 2" }).getAttribute("href")).toBe(
     "/agents"
   );
 
-  fireEvent.click(screen.getByRole("button", { name: "Show pinned agents" }));
+  await user.click(screen.getByRole("button", { name: "Show pinned agents" }));
   expect(rowTexts()).toHaveLength(3);
 });
 
 // Unpinning from the rail writes the person's state, as the Agents row and the live view do, and
 // the row goes with the pin.
 test("a rail row unpins its agent", async () => {
+  const user = userEvent.setup();
   const { putAgentState } = renderRail({ agentState: pins });
 
   await waitFor(() => expect(rowTexts()).toHaveLength(3));
-  fireEvent.click(screen.getByRole("button", { name: "Unpin Reviewer from the sidebar" }));
+  await user.click(screen.getByRole("button", { name: "Unpin Reviewer from the sidebar" }));
 
   await waitFor(() => expect(rowTexts()).toEqual(["Planner2asleep", "Testerasleep"]));
   expect(putAgentState.mock.calls.map(([session, input]) => [session, input])).toEqual([
@@ -234,17 +237,18 @@ test("a rail row unpins its agent", async () => {
 // views for the page they came from, rather than walking back through every agent they looked
 // at. A rail row followed from another page pushes, so Back returns to that page.
 test("a move between pinned agents from the rail replaces the address, and one from another page pushes", async () => {
+  const user = userEvent.setup();
   renderRail({ agentState: pins, entries: ["/", `/agents/${PLANNER}/live`] });
 
   await waitFor(() => expect(rowTexts()).toHaveLength(3));
-  fireEvent.click(screen.getByRole("link", { name: "Reviewer" }));
+  await user.click(screen.getByRole("link", { name: "Reviewer" }));
   expect(screen.getByTestId("address").textContent).toBe(`/agents/${REVIEWER}/live`);
 
-  fireEvent.click(screen.getByRole("button", { name: "Back" }));
+  await user.click(screen.getByRole("button", { name: "Back" }));
   expect(screen.getByTestId("address").textContent).toBe("/");
 
-  fireEvent.click(screen.getByRole("link", { name: "Tester" }));
+  await user.click(screen.getByRole("link", { name: "Tester" }));
   expect(screen.getByTestId("address").textContent).toBe(`/agents/${TESTER}/live`);
-  fireEvent.click(screen.getByRole("button", { name: "Back" }));
+  await user.click(screen.getByRole("button", { name: "Back" }));
   expect(screen.getByTestId("address").textContent).toBe("/");
 });
