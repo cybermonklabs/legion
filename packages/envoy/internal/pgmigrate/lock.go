@@ -275,7 +275,8 @@ func sessionList(sessions []Session) string {
 }
 
 // LockTimeoutError is a migration that gave up waiting for a lock. A transactional migration
-// rolled back; a concurrent build may have left an INVALID index and needs the next check.
+// rolled back; a concurrent build may have left an INVALID index of its own name, which the next
+// attempt drops and builds again.
 type LockTimeoutError struct {
 	Migration        string
 	NonTransactional bool
@@ -294,7 +295,7 @@ func (e *LockTimeoutError) Error() string {
 	var b strings.Builder
 	effect := " and applied nothing"
 	if e.NonTransactional {
-		effect = "; a concurrent build may have left an INVALID index; retry checks it before recording the version"
+		effect = "; a concurrent build may have left an INVALID index of its own name; the next attempt drops that leftover and builds the index again"
 	}
 	if e.Wait == nil {
 		fmt.Fprintf(&b, "migration %s gave up waiting for a lock when its lock_timeout ran out (%s unless the migration sets its own)%s; the lock watch did not see which lock", e.Migration, LockTimeout, effect)
