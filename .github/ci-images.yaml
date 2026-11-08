@@ -148,5 +148,5 @@ images:
   # and pushes it, and nothing copies it. Every CI job that can launch WebKit or Firefox runs in
   # it, pinned at this digest by a `container:` of .github/workflows/dispatch-browser.yaml.
   - built: .github/docker/browser.Dockerfile
-    tag: browser-55ba22b1
-    digest: sha256:55ba22b1d20f5ed49c59f33eb484aae5b941981bfbe21f4ea87372249757dd7c
+    tag: browser-3abac981
+    digest: sha256:3abac98123ef5417c03ade98731253960ec20076d0a87373f7f54d7c8055e510
