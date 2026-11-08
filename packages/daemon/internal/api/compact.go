@@ -138,9 +138,7 @@ func (s *server) compactClaim(w http.ResponseWriter, r *http.Request) {
 //     names the compaction, so a controller told to compact first is not told to ask for a
 //     fresh session instead (refuseInATurn). A claim already being compacted is in no turn, so
 //     it is told so in its own words: the compaction in flight is what it waits for. A claim a
-//     suspension is held over is read ahead of both, whatever it is stored working under,
-//     because its wait is the hold's end and not a turn's or a compaction's
-//     (refuseHeldSuspension);
+//     suspension is held over has a refusal of its own (refuseHeldSuspension);
 //   - a claim between states has no settled agent to ask: one queued, one with a launch in
 //     flight, and one stored working under a launch the daemon's wake pacing parks, which is
 //     told that the launch's turn comes by itself (claimUnsettled, refuseParkedRelaunch);
@@ -256,10 +254,9 @@ func boundReason(text string) string {
 // refuseState is the refusal the machine answered a compaction with, in the words of the state
 // that refusal names (supervise.RefusedError.State). view is the claim as its machine last
 // published it, for the things the state alone does not say: whether a suspension is held over
-// the claim, which its own refusal answers ahead of the rest (supervise.Claim.SuspensionHeld,
-// refuseHeldSuspension), whether a working claim is working because its session is being
-// compacted rather than because a turn is (supervise.Claim.Compacting), and whether a launch
-// waits its paced turn over it, which the order below reaches with no suspension held
+// the claim (supervise.Claim.SuspensionHeld, refuseHeldSuspension), whether a working claim is
+// working because its session is being compacted rather than because a turn is
+// (supervise.Claim.Compacting), and whether a launch waits its paced turn over it
 // (relaunchWaits). It always reports false, so a caller returns it as its own answer.
 func refuseState(w http.ResponseWriter, token claim.Token, state supervise.ClaimState, view supervise.ClaimView) bool {
 	switch {
