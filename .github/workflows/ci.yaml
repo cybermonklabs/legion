@@ -1109,13 +1109,14 @@ jobs:
               - 'packages/envoy-client/bin/dispatch.ts'
               - 'packages/broker-client/**'
               # The one markdown fixture table: the browser row each parity family keeps reads it
-              # through web/src/__tests__/pmdoc-fixtures.ts:44. This entry declares that read
-              # explicitly and selects nothing on its own: `*dispatch_server` above (:1079) already
-              # matches it through 'packages/envoy/internal/dispatch/pmdoc/**' (:457), as it does
-              # the block schema e2e/engine-reading.ts:13 reads. Measured with
-              # ci_filter_coverage.changes_filters and workflow_paths.PathsFilter under both
-              # quantifiers: this filter covers the table with the entry and without it, where
-              # dispatch-ui's own copy (:1183) covers it only with, that filter taking no anchor.
+              # at web/src/__tests__/pmdoc-fixtures.ts:48, whose path is the new URL at :44. This
+              # entry declares that read explicitly and selects nothing on its own:
+              # `*dispatch_server` above (:1079) already matches it through
+              # 'packages/envoy/internal/dispatch/pmdoc/**' (:457), as it does the block schema
+              # e2e/engine-reading.ts:13 reads. Measured with ci_filter_coverage.changes_filters
+              # and workflow_paths.PathsFilter under both quantifiers: this filter covers the
+              # table with the entry and without it, where dispatch-ui's own copy (:1183) covers
+              # it only with, that filter naming no anchor that reaches the table.
               - 'packages/envoy/internal/dispatch/pmdoc/testdata/fixtures.json'
               # The file store image: the pull step names its declaration to the pull-test-images
               # action, and the S3 step reads the same declaration for its docker run.
@@ -1175,8 +1176,9 @@ jobs:
               # packages/proof-editor/tests/ask-concurrent-edit.test.ts:269-275, which this job
               # runs, reads block-node-types.json beside it.
               - 'packages/envoy/internal/dispatch/pmdoc/schema/**'
-              # The one markdown fixture table, read through web/src/__tests__/pmdoc-fixtures.ts:44
-              # by the three suites this job runs over it: features/refs/fixture-table-readings.test.ts,
+              # The one markdown fixture table, read at web/src/__tests__/pmdoc-fixtures.ts:48,
+              # whose path is the new URL at :44, by the three suites this job runs over it:
+              # features/refs/fixture-table-readings.test.ts,
               # markdown-engine.test.ts and markdown-surfaces.test.tsx. The dispatch-browser job
               # declares it too, for the browser rows that import the same module, but that job
               # runs no unit test.
