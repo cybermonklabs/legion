@@ -4181,13 +4181,15 @@ jobs:
   # selects on, and the install then asks the proxy for one of the three hosts: that host's count
   # goes above zero and the report step fails naming it.
   #
-  # github.com itself is not faulted, and that is measured rather than assumed. Run 42452287267
-  # counted one request to github.com from a cold runner install and none to any of the three, so
-  # whatever makes it is not this route; the host this route has to use is api.github.com, which
-  # the merge-base drive showed, failing on
+  # github.com itself is not faulted, and that is measured rather than assumed. A cold runner
+  # install makes one request to github.com and one to release-assets.githubusercontent.com, and
+  # none to any of the three hosts above (job 128647167946's own tally). That pair is a release
+  # asset, which is how a dependency's install script fetches a prebuilt binary; it is not this
+  # route, and faulting github.com turned the job red on it (job 128643900648). The host this
+  # route has to use is api.github.com, which the merge-base drive showed, failing on
   # https://api.github.com/repos/sjawhar/proof-sdk/tarball/dc6a852 with six refusals on that host
-  # and none on the others. These three are the hosts this issue's check names. The tally of what
-  # the proxy passed through, printed by the last step, is where that github.com request shows.
+  # and none on the others. These three are the hosts this issue's check names. The last step's
+  # tally of what the proxy passed through is where every other host the installs reach shows.
   proof-sdk-offline:
     needs: changes
     if: needs.changes.outputs.proof_sdk_offline == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
