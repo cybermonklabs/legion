@@ -1151,13 +1151,14 @@ jobs:
     # 4 s, Reading two 1 s, Reading three 1 s, the verdict step 1 s, the ci-ok report 1 s, Post
     # setup-bun 1 s, Post checkout 1 s, Complete job 1 s.
     #
-    # Two steps carry a budget of their own, each from its own retry arithmetic rather than a
+    # Three steps carry a budget of their own, each from its own retry arithmetic rather than a
     # measured maximum (dispatch://INFRA-1545): the workspace install, 5 x 180 + 150 = 1050 s
-    # -> 18 min, and "Reading one, the rows", which calls
-    # .github/scripts/dispatch-browser-run-reads.sh and so waits on that script's own
-    # `retry_fetch` ladder, 5 x 30 + 150 = 300 s -> 6 min. A step reaches either ceiling only
-    # against a host that accepts the connection and then sends nothing, which is the one fault
-    # where every attempt runs its whole bound.
+    # -> 18 min, and the two that run
+    # .github/scripts/dispatch-browser-run-reads.sh - "Reading one, the rows" and "Report a
+    # refused blob download as a refused read" - which wait on that script's own `retry_fetch`
+    # ladder at 40 s an attempt, 5 x 40 + 150 = 350 s -> 6 min. A step reaches any of those
+    # ceilings only against a host that accepts the connection and then sends nothing, which is
+    # the one fault where every attempt runs its whole bound.
     #
     # So by the rule in this file's head the job's budget is this job's measured duration plus
     # the arithmetic of its one slowest retried step: 240 s, the 4 minutes this job carries on
