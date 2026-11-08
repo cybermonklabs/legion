@@ -704,8 +704,8 @@ func TestTheControllersFreshSessionRefusesTheRoleController(t *testing.T) {
 }
 
 // The controller's own claim is refused through the operator's door too, which names a claim by
-// its token and so can name the controller's: the controller is started by its keeper, and a
-// fresh session of it would cut the project's one controller off.
+// its token and so can name the controller's: the daemon's controller keeper is what starts the
+// controller in every state, so no fresh session is run on it here.
 func TestAFreshSessionRefusesTheControllersOwnClaim(t *testing.T) {
 	h := freshSessionHarness(t, &phaseRestarter{})
 	// The refusal comes before any state is read, so the launched claim needs no agent: the

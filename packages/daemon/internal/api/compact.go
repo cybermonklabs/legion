@@ -137,7 +137,10 @@ func (s *server) compactClaim(w http.ResponseWriter, r *http.Request) {
 //     running and that turn may be the one that ends the run of provider errors; the refusal
 //     names the compaction, so a controller told to compact first is not told to ask for a
 //     fresh session instead (refuseInATurn). A claim already being compacted is in no turn, so
-//     it is told so in its own words: the compaction in flight is what it waits for;
+//     it is told so in its own words: the compaction in flight is what it waits for. A claim a
+//     suspension is held over is read ahead of both, whatever it is stored working under,
+//     because its wait is that suspension landing rather than a turn's or a compaction's end
+//     (refuseHeldSuspension);
 //   - a claim between states has no settled agent to ask: one queued, one with a launch in
 //     flight, and one stored working under a launch the daemon's wake pacing parks, which is
 //     told that the launch's turn comes by itself (claimUnsettled, refuseParkedRelaunch);
@@ -149,10 +152,11 @@ func (s *server) compactClaim(w http.ResponseWriter, r *http.Request) {
 //
 // The project's own controller claim is not refused here, where a fresh session of it is
 // (freshSession's NOT_THE_CONTROLLER). The asymmetry is the two operations' own, not an
-// oversight: a fresh session of the controller would cut the project's one controller off,
-// and a compaction cuts nothing off — the session, its process and everything the controller
-// holds stay, and only the transcript gets shorter. The controller's own door still cannot name
-// it, since `controller` is no role a claim token is built from (claimCompact).
+// oversight: a fresh session stops the controller's process and starts it again, which is the
+// daemon's controller keeper's to do in every state the controller is in, and a compaction
+// stops nothing — the session, its process and everything the controller holds stay, and only
+// the transcript gets shorter. The controller's own door still cannot name it, since
+// `controller` is no role a claim token is built from (claimCompact).
 //
 // A compaction that ran puts the claim's run of provider-error turns back to zero, and the
 // ladder's wait goes with it, so the owed task goes now rather than at the end of a wait
@@ -216,8 +220,9 @@ func (s *server) compact(w http.ResponseWriter, r *http.Request, m *supervise.Ma
 		var refused *supervise.RefusedError
 		if errors.As(err, &refused) {
 			// The machine takes no compaction in the state it names: a claim in a turn, one
-			// already being compacted, one whose relaunch waits its paced turn, one whose agent
-			// is not running, one between states. The answer is written from that state and the
+			// already being compacted, one whose relaunch waits its paced turn, one a
+			// suspension is held over while that relaunch waits, one whose agent is not
+			// running, one between states. The answer is written from that state and the
 			// published view (refuseState).
 			return CompactResponse{}, refuseState(w, token, refused.State, m.View())
 		}
@@ -250,12 +255,16 @@ func boundReason(text string) string {
 
 // refuseState is the refusal the machine answered a compaction with, in the words of the state
 // that refusal names (supervise.RefusedError.State). view is the claim as its machine last
-// published it, for the two things the state alone does not say: whether a working claim is
-// working because its session is being compacted rather than because a turn is
-// (supervise.Claim.Compacting), and whether a launch waits its paced turn over it
-// (relaunchWaits). It always reports false, so a caller returns it as its own answer.
+// published it, for the things the state alone does not say: whether a suspension is held over
+// the claim, which is the wait its own sentence names (supervise.Claim.SuspensionHeld,
+// refuseHeldSuspension), whether a working claim is working because its session is being
+// compacted rather than because a turn is (supervise.Claim.Compacting), and whether a launch
+// waits its paced turn over it (relaunchWaits). It always reports false, so a caller returns it
+// as its own answer.
 func refuseState(w http.ResponseWriter, token claim.Token, state supervise.ClaimState, view supervise.ClaimView) bool {
 	switch {
+	case state == supervise.StateWorking && view.SuspensionHeld:
+		return refuseHeldSuspension(w, token, compactOp)
 	case state == supervise.StateWorking && view.Compacting:
 		writeFailure(w, http.StatusConflict, claimInATurn, fmt.Sprintf(
 			"%s is being compacted already: wait for that compaction to end", token))
