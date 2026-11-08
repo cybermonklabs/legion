@@ -213,7 +213,10 @@ If you are that child's architect:
 - It says `handed_over` alone (no gate to carry): your workers already run their phases, so
   decompose nothing, and read the root's phase from the catch-up (for a root `held`, the phase its
   `held` notice names). Before `awaiting_merge`, register your spec with `register_gate`: your
-  merger's READY waits for its approval. When that `design-approved` arrives, release and start
+  merger's READY waits for its approval.
+  A registration that leaves the approval request with the person returns your root's admission slot, and while a step your root still needs has never opened and every slot is taken you get one `waiting-for-slot` notice and your record carries `waitingLine`, your place in the line and its length.
+  Act on neither: the daemon starts you again at the next free slot.
+  When that `design-approved` arrives, release and start
   nothing: the workers are already running. A child carried in `accepting` is yours to accept. In
   `awaiting_merge` the READY is through, so register none; a red or conflicting head that returns
   the root to `implementing` makes its next READY read the gate again, so a later `ready-refused`

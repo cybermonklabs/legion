@@ -145,8 +145,10 @@ func (e *Engine) catchUpApplied(ctx context.Context, tx pgx.Tx, fact intake.Catc
 	return intake.Result{}, e.store.SetCaughtUp(ctx, tx, issue.Key, fact.Through)
 }
 
-// answerWait records that by answered root's wait now, with detail, which puts the root at the
-// front of the waiting line (record.Waiting) and names the act in the task its architect resumes
+// answerWait records that by answered root's wait now, with detail, which puts the root in the
+// waiting line (record.Waiting) —
+// among the issues whose work came back, oldest first — and names the act in the task its
+// architect resumes
 // with (resumeTask). The detail is the act's own: the ask a person acted on, the version and
 // reason of the review that answered, or who took the question away, so a later act of the same
 // kind does not rename it.

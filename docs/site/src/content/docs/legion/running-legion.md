@@ -923,7 +923,7 @@ Closing the terminal leaves the project without one, and the daemon logs
   legion WIDGETS on http://192.0.2.10:13370 — schema 12, boot 7 started 2026-10-03T09:12:40Z (first boot 2026-09-20T15:02:11Z)
   admission: 3 issues hold a slot, cap 4, 1 waiting; 2 live trees; 9 issues
   blocked on Dispatch links: none
-  roots waiting on a person: 1, 0 answered and waiting for a slot — WIDGETS-9 waits on ask 7f3c2a10, unanswered
+  roots waiting on a person: 1, 0 answered and standing in the admission line — WIDGETS-9 waits on ask 7f3c2a10, unanswered
   open production checks: 1; the oldest, WIDGETS-12 #42 at 4b7d2a1, worked by the tester, look 1 woken by merge at 2026-10-03T10:15:02Z, next look 2026-10-03T14:15:02Z
   pending Dispatch status writes: none
   held lifecycle rows: none
@@ -939,11 +939,18 @@ Closing the terminal leaves the project without one, and the daemon logs
   trees` count is the trees that run whether or not any issue of theirs holds one.
 
   The `roots waiting on a person` line counts the roots that gave their admission slot back to
-  wait on a person (phase `awaiting_person`), how many have been answered — each first in line,
-  and each resuming at once and taking no slot once its design gate has opened — and each by key
-  with what it waits on (`none` when no root waits). An
+  wait on a person (phase `awaiting_person`), how many of them a person answered and the
+  published line still names — each standing
+  among the issues whose work came back, oldest first, since one whose design gate has opened
+  resumes at once, takes no slot and so stands in no line at all — and each by key
+  with what it waits on (`none` when no root waits). A daemon older than contract 56 serves no
+  `waitingLine`, so that count reads 0 against one, which is the true answer for a caller that
+  cannot see the line. An
   unanswered one is in neither admission list, only among the live trees, so without this line the
   capacity it freed looks idle.
+  While an answered root waits for its slot, its architect is sent one `waiting-for-slot` notice
+  saying what answered the wait, where the root stands in the line and that the daemon starts the
+  architect again by itself; nobody acts on it.
 
   The `open production checks` line counts the closed issues whose production check is still
   open and names the oldest: its pull request, merge commit, the role working it, which look it
@@ -992,7 +999,9 @@ Closing the terminal leaves the project without one, and the daemon logs
   (one entry per gated step: `step`, `artifactId`, `currentVersion`, `approvedVersion`, `status`
   — `unregistered`, `waiting`, `approved` or `changes_requested` — and `changesReason`), for a root in `awaiting_person`
   `waitingOn` (`kind` `ask` with its `ask`, or `gate` with `gateVersion` and `artifactId`; `since`; and
-  `answeredAt` with `answeredBy` once it was answered) and, for a closed
+  `answeredAt` with `answeredBy` once it was answered), for an issue `admission.waiting` names
+  `waitingLine` (`place`, 1 at the front of the line, and `length`, the line's length at this
+  read; a daemon below contract 56 serves none) and, for a closed
   issue whose
   production check is open, `check` (`repo`, `pullRequest`, `mergeCommit`, `openedAt`, `role` —
   the role the check recorded as the one that works it — `looks`,

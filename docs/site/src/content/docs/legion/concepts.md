@@ -191,7 +191,10 @@ root goes to the front of the waiting line, among the issues whose work came bac
 every issue whose first phase has yet to start, and its promotion there gives the same architect
 session a task naming what answered it and what is still with you: at once, taking no slot, once
 the root's design gate has opened, and at the next free
-slot while its architect is still writing the first spec. An
+slot while its architect is still writing the first spec. While it waits for that slot,
+`waitingLine` on the issue gives its place in the line and the line's length, and its architect
+is sent one `waiting-for-slot` notice saying where the root stands and that the daemon starts the
+architect again by itself; neither is anything for you to act on. An
 agent's answer or resolution of another ask answers nothing, and an act of yours from before the
 wait began is one the architect already read. Taking the label off, or a person or an outside session
 claiming the root on Dispatch, takes it out of the workflow instead: Legion never resumes work

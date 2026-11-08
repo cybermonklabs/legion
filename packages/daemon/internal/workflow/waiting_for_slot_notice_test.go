@@ -1,10 +1,13 @@
 package workflow
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -75,5 +78,73 @@ func TestTheOutboxTakesAWaitingForSlotNotice(t *testing.T) {
 	}
 	if row.Issue != "LEGION-208" {
 		t.Fatalf("the row is of %s, want the root the notice is about", row.Issue)
+	}
+}
+
+// The waiting line's two new words and the one fragment that states its order are shipped text,
+// so each is read from the source it is declared in rather than written out again here: the
+// notice's kind (WaitingForSlotNoticeKind), the name the place carries on the wire
+// (api.WaitingLineField) and the part of the line an answered root stands in
+// (record.WaitingLineBand).
+//
+// The first nine files are everything a root's architect and an operator read about a root whose
+// wait a person answered while every slot was taken: each must say that the architect is sent
+// the notice, that the issue's record carries the field, and that neither asks anything of its
+// reader, because the daemon starts the architect again by itself. The thirteen below them carry
+// the fourteen texts that state where the line puts an answered root — admit.go carries two of
+// them — and each had said it stands at the front of the line, which record.Waiting does not do:
+// it stands in the line's first part, oldest first. (INFRA-1100.)
+func TestTheShippedWordsNameTheWaitingLineNotice(t *testing.T) {
+	root := filepath.Join("..", "..", "..", "..")
+	body := func(file string) string {
+		t.Helper()
+		text, err := os.ReadFile(filepath.Join(root, file))
+		if err != nil {
+			t.Fatalf("read %s: %v", file, err)
+		}
+		return string(text)
+	}
+	for _, file := range []string{
+		"packages/daemon/internal/prompts/roles/architect-root.md",
+		"skills/legion-architect/SKILL.md",
+		"skills/legion-architect/references/wake-routing.md",
+		"skills/legion-architect/references/design-gate.md",
+		"skills/legion-architect/references/acceptance.md",
+		"docs/site/src/content/docs/legion/running-legion.md",
+		"docs/site/src/content/docs/legion/troubleshooting.md",
+		"docs/site/src/content/docs/legion/concepts.md",
+		"packages/daemon/internal/workflow/gate.go",
+	} {
+		text := body(file)
+		if !strings.Contains(text, string(WaitingForSlotNoticeKind)) {
+			t.Errorf("%s does not name the notice a root waiting for a slot gets (%q)", file, WaitingForSlotNoticeKind)
+		}
+		if !strings.Contains(text, api.WaitingLineField) {
+			t.Errorf("%s does not name the %q the root's record carries while it waits", file, api.WaitingLineField)
+		}
+	}
+	const bothTexts = "packages/daemon/internal/admit/admit.go"
+	for _, file := range []string{
+		"AGENTS.md",
+		bothTexts,
+		"docs/site/src/content/docs/legion/running-legion.md",
+		"docs/site/src/content/docs/legion/troubleshooting.md",
+		"packages/contracts/src/legion-api.ts",
+		"packages/daemon/cmd/legion/main.go",
+		"packages/daemon/internal/admit/awaiting_person_test.go",
+		"packages/daemon/internal/admit/hold_test.go",
+		"packages/daemon/internal/api/state.go",
+		"packages/daemon/internal/daemon/awaiting_catchup.go",
+		"packages/daemon/internal/phase/phase.go",
+		"packages/daemon/internal/workflow/awaiting_person.go",
+		"skills/legion-controller/references/admission.md",
+	} {
+		if !strings.Contains(body(file), record.WaitingLineBand) {
+			t.Errorf("%s states where the waiting line puts an answered root without saying it stands %q",
+				file, record.WaitingLineBand)
+		}
+	}
+	if got := strings.Count(body(bothTexts), record.WaitingLineBand); got != 2 {
+		t.Errorf("%s says %q %d times, want twice: two of the fourteen texts are its own", bothTexts, record.WaitingLineBand, got)
 	}
 }

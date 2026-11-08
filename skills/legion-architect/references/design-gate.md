@@ -174,7 +174,12 @@ tree is at work, the root returns its admission slot and waits on its design gat
 approval or changes request delivers your next task, and so does a newer spec version once
 Dispatch shows the request back on your turn. While the root waits on a question instead, the
 human's approval or changes request of the spec answers that wait too, and the task says how the
-spec stands. Release no wave until every gated step is open: a delivered wake shows
+spec stands. While that next task waits for an admission slot — your root's gate has never
+opened, so its resume needs one — you get one `waiting-for-slot` notice saying what answered the
+wait, where your root stands in the admission line then and that the daemon starts you again by
+itself, and your record's `waitingLine` gives the live place and the line's length; act on
+neither.
+Release no wave until every gated step is open: a delivered wake shows
 `design-approved` on the root, or a task says its design gate is open, and under more than one
 step `gatedSteps` in your record shows each one `approved`. The daemon sends a root waiting on a
 person no `design-approved` notice, and "this resume is your design-approved wake" is that wake.

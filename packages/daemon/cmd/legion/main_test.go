@@ -19,8 +19,10 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/registry"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // testMainEnv makes this package's test binary the real `legion`: with it set, TestMain is main()
@@ -1658,7 +1660,8 @@ func TestPlainStateSummarizesTheOpenProductionChecks(t *testing.T) {
 }
 
 // An operator reading plain `legion state` is told which roots gave their slot up to wait on a
-// person, how many a person answered, and each by key with what it waits on: an unanswered one is
+// person, how many of them a person answered and the daemon's own published waiting line still
+// names, and each by key with what it waits on: an unanswered one is
 // in neither admission list, so without this line the capacity it freed looks idle.
 func TestPlainStateNamesTheRootsWaitingOnAPerson(t *testing.T) {
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
@@ -1666,6 +1669,7 @@ func TestPlainStateNamesTheRootsWaitingOnAPerson(t *testing.T) {
 	gate := `"LEGION-210":{"key":"LEGION-210","generation":1,"phase":"awaiting_person","status":"in_progress",` +
 		`"waitingOn":{"kind":"gate","gateVersion":3,"artifactId":"spec-210","since":"2026-10-25T10:00:00Z"}}`
 	asked := `"LEGION-211":{"key":"LEGION-211","generation":1,"phase":"awaiting_person","status":"in_progress",` +
+		`"waitingLine":{"place":1,"length":1},` +
 		`"waitingOn":{"kind":"ask","ask":"ask-7","since":"2026-10-25T11:00:00Z","answeredAt":"2026-10-25T12:00:00Z","answeredBy":"reply"}}`
 	for _, tc := range []struct {
 		name, issues, want string
@@ -1673,13 +1677,13 @@ func TestPlainStateNamesTheRootsWaitingOnAPerson(t *testing.T) {
 		{
 			name:   "two waiting, one answered",
 			issues: `{` + asked + `,` + gate + `}`,
-			want: "roots waiting on a person: 2, 1 answered and waiting for a slot — LEGION-210 waits on spec version 3 of spec-210, unanswered; " +
+			want: "roots waiting on a person: 2, 1 answered and standing in the admission line — LEGION-210 waits on spec version 3 of spec-210, unanswered; " +
 				"LEGION-211 waits on ask ask-7, answered at 2026-10-25T12:00:00Z (reply)\n",
 		},
 		{
 			name:   "one unanswered",
 			issues: `{` + gate + `}`,
-			want:   "roots waiting on a person: 1, 0 answered and waiting for a slot — LEGION-210 waits on spec version 3 of spec-210, unanswered\n",
+			want:   "roots waiting on a person: 1, 0 answered and standing in the admission line — LEGION-210 waits on spec version 3 of spec-210, unanswered\n",
 		},
 		{name: "none", issues: `{}`, want: "roots waiting on a person: none\n"},
 	} {
@@ -1702,6 +1706,67 @@ func TestPlainStateNamesTheRootsWaitingOnAPerson(t *testing.T) {
 				t.Fatalf("legion state printed %q, want the line %q", out.String(), tc.want)
 			}
 		})
+	}
+}
+
+// The `roots waiting on a person` line counts the answered roots the daemon's own published
+// waiting line still names (api.WaitingLineView), not every answered one: a root whose design
+// gate has opened at every gated step resumes at once and takes no slot, so it stands in no line
+// and belongs in no count of one. A daemon below contract 56 serves no place at all, and 0 is
+// the true answer for a caller that cannot see the line.
+//
+// The operator's guide prints this line as its sample and says what the count is, so the sample
+// is built here from the state the guide describes and read back out of the guide, and the words
+// the guide uses for the wait are read from the source that declares each. (INFRA-1100.)
+func TestTheShippedWordsNameTheWaitingLineCount(t *testing.T) {
+	answered := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
+	const (
+		gateWait   = "LEGION-210 waits on spec version 3 of spec-210, unanswered"
+		askWait    = "LEGION-211 waits on ask ask-7, answered at 2026-10-25T12:00:00Z (reply)"
+		unanswered = "roots waiting on a person: 2, 0 answered and standing in the admission line — "
+	)
+	waiting := api.Issue{WaitingOn: &api.WaitingOnView{Kind: "gate", GateVersion: 3, ArtifactID: "spec-210"}}
+	resumed := api.Issue{WaitingOn: &api.WaitingOnView{Kind: "ask", Ask: "ask-7", AnsweredAt: &answered, AnsweredBy: "reply"}}
+	standing := resumed
+	standing.WaitingLine = &api.WaitingLineView{Place: 2, Length: 3}
+	for _, tc := range []struct {
+		name   string
+		issues map[string]api.Issue
+		want   string
+	}{
+		{
+			name:   "an answered root standing in the line",
+			issues: map[string]api.Issue{"LEGION-210": waiting, "LEGION-211": standing},
+			want:   "roots waiting on a person: 2, 1 answered and standing in the admission line — " + gateWait + "; " + askWait,
+		},
+		{
+			name:   "an answered root the line does not name",
+			issues: map[string]api.Issue{"LEGION-210": waiting, "LEGION-211": resumed},
+			want:   unanswered + gateWait + "; " + askWait,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := awaitingSummary(tc.issues); got != tc.want {
+				t.Fatalf("awaitingSummary = %q, want %q", got, tc.want)
+			}
+		})
+	}
+
+	guide := filepath.Join("..", "..", "..", "..", "docs", "site", "src", "content", "docs", "legion", "running-legion.md")
+	body, err := os.ReadFile(guide)
+	if err != nil {
+		t.Fatalf("read %s: %v", guide, err)
+	}
+	sample := awaitingSummary(map[string]api.Issue{"WIDGETS-9": {WaitingOn: &api.WaitingOnView{Kind: "ask", Ask: "7f3c2a10"}}})
+	for _, want := range []string{
+		sample,
+		record.WaitingLineBand,
+		api.WaitingLineField,
+		string(workflow.WaitingForSlotNoticeKind),
+	} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("running-legion.md does not carry %q", want)
+		}
 	}
 }
 

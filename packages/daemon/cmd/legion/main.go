@@ -676,19 +676,26 @@ func memorySummary(issues map[string]api.Issue) string {
 // awaitingSummary is the one line an operator reads for the roots that gave their admission slot
 // up to wait on a person (api.WaitingOnView): an unanswered one holds no slot and is in neither
 // `active` nor `waiting`, only among the live trees, so without this line the capacity it freed
-// looks idle. It says how many, how many a person answered (each at the front of the waiting line
-// for the next free slot), and each by key with what it waits on and whether, when and by what act
-// it was answered.
+// looks idle. It says how many, how many of them a person answered and the daemon's own published
+// line names (api.WaitingLineView), and each by key with what it waits on and whether, when and by
+// what act it was answered.
+//
+// The second count reads the published line rather than judging the wait a second time: an
+// answered root whose design gate has opened at every gated step resumes at once and takes no
+// slot, so it stands in no line at all, while one whose architect is still writing the spec stands
+// among the issues whose work came back, oldest first. A daemon below contract 56 serves no
+// `waitingLine` on any issue, so the count is 0 against such a daemon, which is the true answer
+// for a caller that cannot see the line.
 func awaitingSummary(issues map[string]api.Issue) string {
 	var keys []string
-	answered := 0
+	standing := 0
 	for key, issue := range issues {
 		if issue.WaitingOn == nil {
 			continue
 		}
 		keys = append(keys, key)
-		if issue.WaitingOn.AnsweredAt != nil {
-			answered++
+		if issue.WaitingOn.AnsweredAt != nil && issue.WaitingLine != nil {
+			standing++
 		}
 	}
 	if len(keys) == 0 {
@@ -708,8 +715,8 @@ func awaitingSummary(issues map[string]api.Issue) string {
 		}
 		waits[i] = key + " waits on " + on + ", " + state
 	}
-	return fmt.Sprintf("roots waiting on a person: %d, %d answered and waiting for a slot — %s",
-		len(keys), answered, strings.Join(waits, "; "))
+	return fmt.Sprintf("roots waiting on a person: %d, %d answered and standing in the admission line — %s",
+		len(keys), standing, strings.Join(waits, "; "))
 }
 
 // pendingSummary is the one line an operator reads for the Dispatch status writes the daemon has

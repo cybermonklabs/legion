@@ -151,7 +151,8 @@ func TestARootWaitingOnAPersonReturnsItsSlot(t *testing.T) {
 	}
 }
 
-// A person's answer puts the waiting root at the front of the line, ahead of every root that never
+// A person's answer puts the waiting root in the line,
+// among the issues whose work came back, oldest first, ahead of every root that never
 // ran, and the next free slot hands its architect the task in its live session, told what answered
 // it. The resume is a handout: what it handed back before is cleared, so only its next hand-back
 // starts the next wait.

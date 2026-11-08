@@ -313,10 +313,13 @@ the approval request is on the architect's turn), `closed` (a session or anyone 
 person closed the question), `turn` (a session handed it back to the agent's turn), `retracted`
 (Dispatch's settlement), and `approved` also when the spec's gate stands open with nobody's
 approval on a deployment that gates no step, or when the last gated step was taken out of
-`gates.design` while the root waited on it. The root is
-at the front of `admission.waiting` and resumes itself there: at once, holding no slot, once its
-design gate has opened at every gated step, and at the next free slot while its architect is
-still writing the first design. Do not park it or
+`gates.design` while the root waited on it. The root stands in `admission.waiting`
+among the issues whose work came back, oldest first, and resumes itself there: at once, holding
+no slot, once its design gate has opened at every gated step, and at the next free slot while its
+architect is still writing the first design. While it waits for that slot, `waitingLine` on the
+issue gives its place in the line and the line's length, and its architect is sent one
+`waiting-for-slot` notice saying where the root stands and that the daemon starts it again by
+itself; neither is anything to act on. Do not park it or
 start it by hand. Without `answeredAt`, check, in order:
 
 1. **The question is still with the person.** `dispatch read <KEY>` shows the root's asks. A
