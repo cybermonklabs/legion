@@ -48,9 +48,9 @@ export async function settle(): Promise<void> {
 
 /** Runs `body` on the fake clock, so a wait inside it - a backoff, a send's deadline, a key's
  *  whole life - waits no real time, and brings the real clock back through `realClock` however
- *  `body` ends. This is how a row of this package installs the clock: a row whose whole body
- *  needs it wraps the body, and a row where one wait crosses a timer wraps that wait alone,
- *  leaving its render and its assertions on the real clock. */
+ *  `body` ends. Wrap the whole body when every wait in the row needs the clock, and wrap one
+ *  wait alone when a single wait crosses a timer, leaving the row's render and its assertions
+ *  on the real clock; a row that installs the clock itself restores it with `realClock`. */
 export async function onFakeClock(body: () => Promise<void>): Promise<void> {
   jest.useFakeTimers();
   try {

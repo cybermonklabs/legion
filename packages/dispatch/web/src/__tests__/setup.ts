@@ -39,13 +39,17 @@ GlobalRegistrator.register();
 // is kept as small as that rule allows, because every hung test costs the whole budget on CI as
 // well as in a pod. dispatch://INFRA-1405 sets this same budget for its own loaded rows; the
 // overlap is intended.
-// This line is not enough on its own, measured here: on bun 1.4.4 a preload's `jest.setTimeout`
-// reaches only the first file of a serial run, so a 6 s test in this directory ends "this test
-// timed out after 5000ms" three times of three under `bun test web/src/__tests__`, and passes
-// alone, under `--parallel`, and under `--timeout 30000`. So `package.json`'s `test` script
-// carries `--timeout 30000` as well, which reaches every file in every run mode, and this line
-// is what a run of one file or of a directory started by hand still gets. The two numbers are
-// one budget and move together.
+// This line is not dependable on its own, measured here and by this issue's tester: a run of
+// this directory started by hand can lose the deadline, and the loss takes the whole run. A
+// 6 s probe test in `web/src/__tests__` ends "this test timed out after 5000ms" three times
+// of three under `bun test web/src/__tests__` with two scratch files in the directory, and
+// passes with one, so no file count explains it; the same probe passes alone, under
+// `--parallel`, and under `--timeout 30000`. What file of a run keeps the deadline and what
+// file loses it did not reproduce the same way twice, so this comment claims no boundary. So
+// `package.json`'s `test` script carries `--timeout 30000` as well, which reached every file
+// in every run mode measured and cuts no larger deadline a file sets for itself (MarkdownBody
+// 54 pass, harness-lanes 8 pass). A run of one file still gets the deadline from this line.
+// The two numbers are one budget and move together.
 jest.setTimeout(30_000);
 
 // Testing Library reads the document as it loads, so it must load after

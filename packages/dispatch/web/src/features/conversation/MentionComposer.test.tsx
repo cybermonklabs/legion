@@ -1978,7 +1978,7 @@ test("a send the server answers at 35 s posts once: the deadline offers no Retry
     expect(refreshed).toContain(JSON.stringify(["comments", "CORE-1"]));
     expect(refreshed).toContain(JSON.stringify(["events", "CORE-1"]));
   } finally {
-    jest.useRealTimers();
+    realClock();
     view.unmount();
     createComment.mockRestore();
   }
@@ -2013,7 +2013,7 @@ test("a refusal after the deadline hands the draft back with Retry", async () =>
     expect(holdControls().disabled).toBe(false);
     expect(screen.getByTestId("host-holds").textContent).toBe("Reply free, Back free");
   } finally {
-    jest.useRealTimers();
+    realClock();
     view.unmount();
     createComment.mockRestore();
   }
@@ -2300,8 +2300,7 @@ test("a stopped send the reader comes back to a day later says its key has run o
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Discard draft" })).toBeTruthy();
   } finally {
-    jest.advanceTimersByTime(1);
-    jest.useRealTimers();
+    realClock();
     view.unmount();
     createAgentMessage.mockRestore();
   }
