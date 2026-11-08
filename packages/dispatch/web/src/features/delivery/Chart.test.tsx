@@ -1,5 +1,7 @@
 import { afterEach, expect, mock, test } from "bun:test";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
+import type { UserEvent } from "@testing-library/user-event";
+import userEvent from "@testing-library/user-event";
 
 import {
   Chart,
@@ -85,8 +87,8 @@ function rows(): string[][] {
     .map((row) => Array.from(row.querySelectorAll("th, td"), (cell) => cell.textContent ?? ""));
 }
 
-function showTable(label: string): void {
-  fireEvent.click(
+async function showTable(user: UserEvent, label: string): Promise<void> {
+  await user.click(
     within(screen.getByRole("group", { name: `${label} view` })).getByRole("button", {
       name: "Table",
     })
@@ -113,9 +115,10 @@ test("the chart draws its series as bars and names both controls", () => {
   expect(screen.getByLabelText("PR CI comparison")).toBeDefined();
 });
 
-test("the table holds every number the graph draws, each day a row", () => {
+test("the table holds every number the graph draws, each day a row", async () => {
+  const user = userEvent.setup();
   render(<Chart label="PR CI" range={WINDOW} series={[runTime, deploys]} />);
-  showTable("PR CI");
+  await showTable(user, "PR CI");
 
   expect(rows()).toEqual([
     ["Day", "Run time median", "Run time p90", "Runs", "Deploys"],
@@ -129,16 +132,18 @@ test("the table holds every number the graph draws, each day a row", () => {
   );
 });
 
-test("a day with nothing measured reads as nothing measured, never as zero", () => {
+test("a day with nothing measured reads as nothing measured, never as zero", async () => {
+  const user = userEvent.setup();
   render(<Chart label="Deploys a day" range={WINDOW} series={[deploys]} />);
-  showTable("Deploys a day");
+  await showTable(user, "Deploys a day");
 
   const empty = rows()[3];
   expect(empty).toEqual(["2026-09-28 (partial)", "\u2014"]);
   expect(empty?.[1]).not.toBe("0 deploys");
 });
 
-test("the default compare range is the one immediately before the window, of the same length", () => {
+test("the default compare range is the one immediately before the window, of the same length", async () => {
+  const user = userEvent.setup();
   const onRange = mock();
   render(
     <Chart
@@ -155,7 +160,7 @@ test("the default compare range is the one immediately before the window, of the
     "Custom range…",
   ]);
 
-  fireEvent.change(control, { target: { value: "preceding" } });
+  await user.selectOptions(control, "preceding");
 
   // The 28 days ending where the window begins: 2026-08-04 to 2026-09-01.
   expect(onRange).toHaveBeenCalledWith({
@@ -170,14 +175,15 @@ test("the default compare range is the one immediately before the window, of the
   });
 });
 
-test("a compare table puts the two ranges side by side with the change between them", () => {
+test("a compare table puts the two ranges side by side with the change between them", async () => {
+  const user = userEvent.setup();
   const compare: ChartCompare = {
     onRange: mock(),
     range: precedingRange(WINDOW),
     series: [earlierDeploys],
   };
   render(<Chart compare={compare} label="Deploys a day" range={WINDOW} series={[deploys]} />);
-  showTable("Deploys a day");
+  await showTable(user, "Deploys a day");
 
   expect(rows()).toEqual([
     ["Day", "Compare day", "Deploys", "Deploys compare", "Deploys change"],
@@ -190,7 +196,8 @@ test("a compare table puts the two ranges side by side with the change between t
   );
 });
 
-test("rows a chart names, rather than days, pair with the compare range by that name", () => {
+test("rows a chart names, rather than days, pair with the compare range by that name", async () => {
+  const user = userEvent.setup();
   const compare: ChartCompare = {
     onRange: mock(),
     range: precedingRange(WINDOW),
@@ -205,7 +212,7 @@ test("rows a chart names, rather than days, pair with the compare range by that 
       series={[workTime]}
     />
   );
-  showTable("Work time to merge");
+  await showTable(user, "Work time to merge");
 
   // Row 1 of each range is a different issue, so the window's rows pair with the compare range's
   // by key: the issue both ranges hold shows its change, and an issue only one of them holds
@@ -261,19 +268,21 @@ test("a compare draws both ranges, each under the days it covers", () => {
   expect(screen.getAllByRole("img", { name: "per-day trend" })).toHaveLength(2);
 });
 
-test("while the compare range's read is out its numbers are pending, not nothing measured", () => {
+test("while the compare range's read is out its numbers are pending, not nothing measured", async () => {
+  const user = userEvent.setup();
   const compare: ChartCompare = {
     onRange: mock(),
     range: precedingRange(WINDOW),
     series: undefined,
   };
   render(<Chart compare={compare} label="Deploys a day" range={WINDOW} series={[deploys]} />);
-  showTable("Deploys a day");
+  await showTable(user, "Deploys a day");
 
   expect(rows()[1]).toEqual(["2026-09-26", "\u2026", "5 deploys", "\u2026", "\u2026"]);
 });
 
-test("the reader names a compare range of their own, and an overlong one is refused here", () => {
+test("the reader names a compare range of their own, and an overlong one is refused here", async () => {
+  const user = userEvent.setup();
   const onRange = mock();
   render(
     <Chart
@@ -283,20 +292,23 @@ test("the reader names a compare range of their own, and an overlong one is refu
       series={[deploys]}
     />
   );
-  fireEvent.change(screen.getByLabelText("Deploys a day comparison"), {
-    target: { value: "custom" },
-  });
-  fireEvent.change(screen.getByLabelText("From"), { target: { value: "2026-01-01" } });
-  fireEvent.change(screen.getByLabelText("To"), { target: { value: "2026-06-30" } });
-  fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+  await user.selectOptions(screen.getByLabelText("Deploys a day comparison"), "custom");
+  await user.click(screen.getByLabelText("From"));
+  await user.paste("2026-01-01");
+  await user.click(screen.getByLabelText("To"));
+  await user.paste("2026-06-30");
+  await user.click(screen.getByRole("button", { name: "Apply" }));
 
   expect(screen.getByRole("alert").textContent).toBe(
     "The window can span at most 84 days; this range spans 181."
   );
   expect(onRange).not.toHaveBeenCalled();
 
-  fireEvent.change(screen.getByLabelText("To"), { target: { value: "2026-01-28" } });
-  fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+  const to = screen.getByLabelText("To");
+  await user.clear(to);
+  await user.click(to);
+  await user.paste("2026-01-28");
+  await user.click(screen.getByRole("button", { name: "Apply" }));
 
   expect(onRange).toHaveBeenCalledWith({
     kind: "custom",

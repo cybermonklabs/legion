@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 
 import {
@@ -436,6 +437,7 @@ test("a preset window subscribes by its days", async () => {
 });
 
 test("a card's comparison reads the range the reader names as a second view", async () => {
+  const user = userEvent.setup();
   renderSection();
   const { socket, frame } = await subscribed();
   act(() => socket.receive(snapshotFrame(frame.sub, PIPELINE)));
@@ -451,10 +453,12 @@ test("a card's comparison reads the range the reader names as a second view", as
   ]);
 
   // A range of the reader's own: the route reads it as the window it is.
-  fireEvent.change(compare, { target: { value: "custom" } });
-  fireEvent.change(screen.getByLabelText("From"), { target: { value: "2026-09-01" } });
-  fireEvent.change(screen.getByLabelText("To"), { target: { value: "2026-09-14" } });
-  fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+  await user.selectOptions(compare, "custom");
+  await user.click(screen.getByLabelText("From"));
+  await user.paste("2026-09-01");
+  await user.click(screen.getByLabelText("To"));
+  await user.paste("2026-09-14");
+  await user.click(screen.getByRole("button", { name: "Apply" }));
   await waitFor(() => {
     expect(socket.subscribed("pipeline").view).toEqual({
       kind: "pipeline",
@@ -463,7 +467,7 @@ test("a card's comparison reads the range the reader names as a second view", as
   });
 
   // And the preceding days are the window they are: Sep 19 to Sep 26.
-  fireEvent.change(compare, { target: { value: "preceding" } });
+  await user.selectOptions(compare, "preceding");
   const compared = await waitFor(() => {
     const again = socket.subscribed("pipeline");
     expect(again.view).toEqual({
@@ -500,6 +504,7 @@ test("while the snapshot is out the page says it is loading, and shows nothing e
 });
 
 test("a refused subscription says so with Retry, and Retry subscribes again", async () => {
+  const user = userEvent.setup();
   renderSection();
   const { socket, frame } = await subscribed();
   act(() => socket.receive(errorFrame(frame.sub, "UNAVAILABLE", "try later")));
@@ -507,7 +512,7 @@ test("a refused subscription says so with Retry, and Retry subscribes again", as
   expect(alert.textContent).toContain("Couldn't load the pipeline.");
   expect(screen.queryByText(/reads the delivery timeline's deploy repository/)).toBeNull();
 
-  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await user.click(screen.getByRole("button", { name: "Retry" }));
   const retried = await waitFor(() => {
     const again = socket.subscribed("pipeline");
     expect(again.sub).not.toBe(frame.sub);

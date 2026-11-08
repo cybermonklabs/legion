@@ -340,8 +340,31 @@ type rig struct {
 	service *airlocktest.Service
 }
 
-// newRig builds the whole world. Everything of o the caller leaves zero is filled in.
-func newRig(t *testing.T, o Options) *rig {
+// wrapListener is the seam a row puts a connection of its own under the proxy with: every
+// connection this listener accepts is handed to each wrap in turn, and what the last one
+// answers is what the proxy hijacks, decrypts, cuts and joins. A row that has to hold one of
+// those sockets - or watch what is read of it - reaches it here, under everything the proxy
+// builds on top of it, rather than sniffing a wrapper out of what the proxy holds.
+type wrapListener struct {
+	net.Listener
+	wrap []func(net.Conn) net.Conn
+}
+
+func (l *wrapListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	for _, wrap := range l.wrap {
+		conn = wrap(conn)
+	}
+	return conn, nil
+}
+
+// newRig builds the whole world. Everything of o the caller leaves zero is filled in, and each
+// wrap, where a row gives one, is applied in order to every connection the proxy port's
+// listener accepts.
+func newRig(t *testing.T, o Options, wrap ...func(net.Conn) net.Conn) *rig {
 	t.Helper()
 	r := &rig{t: t, grants: newFakeGrants(), logs: &logCapture{}, trust: x509.NewCertPool()}
 
@@ -398,9 +421,12 @@ func newRig(t *testing.T, o Options) *rig {
 	if err != nil {
 		t.Fatalf("bind the proxy port: %v", err)
 	}
+	// The address is the real listener's, which is what a row dials; the wrapper is only what
+	// the proxy serves on.
 	r.addr = listener.Addr().String()
+	served := &wrapListener{Listener: listener, wrap: wrap}
 	go func() {
-		if err := r.proxy.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := r.proxy.Serve(served); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			t.Errorf("the proxy stopped serving: %v", err)
 		}
 	}()

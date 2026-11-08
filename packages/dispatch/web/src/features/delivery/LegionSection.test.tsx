@@ -1,6 +1,7 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
 import { api } from "../../api/client";
 import type { LegionMetricsResponse, LegionSetting } from "../../api/types";
@@ -204,10 +205,11 @@ test("each card's headline numbers are the answer's own", async () => {
 });
 
 test("a card's table holds every number its graph draws", async () => {
+  const user = userEvent.setup();
   await renderSection([setting("ACME")], () => report());
 
   await screen.findByText("Work time to merge");
-  fireEvent.click(
+  await user.click(
     screen
       .getByRole("group", { name: "Phase time by worker type view" })
       .querySelector("button:last-of-type") as HTMLElement
@@ -227,6 +229,7 @@ test("a card's table holds every number its graph draws", async () => {
 });
 
 test("the scope toggle reads the metrics again for the roots alone", async () => {
+  const user = userEvent.setup();
   const { metrics } = await renderSection([setting("ACME")], (query) =>
     query.scope === "roots" ? report({ finished: 1, scope: "roots" }) : report()
   );
@@ -234,7 +237,7 @@ test("the scope toggle reads the metrics again for the roots alone", async () =>
   await screen.findByText("Work time to merge");
   expect(figure("work_time", "Issues finished")).toBe("2");
 
-  fireEvent.click(screen.getByRole("button", { name: "Roots" }));
+  await user.click(screen.getByRole("button", { name: "Roots" }));
 
   await waitFor(() => expect(figure("work_time", "Issues finished")).toBe("1"));
   expect(metrics).toHaveBeenCalledWith({
@@ -246,6 +249,7 @@ test("the scope toggle reads the metrics again for the roots alone", async () =>
 });
 
 test("the project picker reads the project it names, and the first that has a daemon by default", async () => {
+  const user = userEvent.setup();
   const { metrics } = await renderSection([setting("ACME"), setting("LINUX")], (query) =>
     report({ project: query.project })
   );
@@ -258,7 +262,7 @@ test("the project picker reads the project it names, and the first that has a da
     to: WINDOW.to,
   });
 
-  fireEvent.change(screen.getByLabelText("Legion project"), { target: { value: "LINUX" } });
+  await user.selectOptions(screen.getByLabelText("Legion project"), "LINUX");
 
   await waitFor(() =>
     expect(metrics).toHaveBeenCalledWith({

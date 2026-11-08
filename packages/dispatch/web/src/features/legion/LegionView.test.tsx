@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import type { UserEvent } from "@testing-library/user-event";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import {
@@ -123,6 +125,16 @@ function columnIds(): string[] {
   return [...document.querySelectorAll("[data-legion-column]")].map(
     (column) => column.getAttribute("data-legion-column") ?? ""
   );
+}
+
+/** Replaces what the row's field holds with `value` and presses its Change button, as a person
+ *  changing one setting does. */
+async function changeSetting(user: UserEvent, key: string, value: string): Promise<void> {
+  const input = screen.getByLabelText(`New value for ${key}`);
+  await user.clear(input);
+  await user.click(input);
+  await user.paste(value);
+  await user.click(screen.getByRole("button", { name: `Change ${key}` }));
 }
 
 test("the view subscribes the board over the page's live socket, by project alone", async () => {
@@ -324,6 +336,7 @@ test("a daemon no read has recorded the settings of says so rather than showing 
 // body with `recorded`, whether the daemon wrote the change into its own store
 // (`putLegionProjectSettings`).
 test("a change goes to the relay route and shows what the daemon did with the key", async () => {
+  const user = userEvent.setup();
   const put = spyOn(api, "putLegionProjectSettings").mockResolvedValue({
     recorded: true,
     settings: { admission_cap: { applied: "at-once" } },
@@ -333,8 +346,7 @@ test("a change goes to the relay route and shows what the daemon did with the ke
 
     const input = screen.getByLabelText("New value for admission_cap") as HTMLInputElement;
     expect(input.value).toBe("4");
-    fireEvent.change(input, { target: { value: "6" } });
-    fireEvent.click(screen.getByRole("button", { name: "Change admission_cap" }));
+    await changeSetting(user, "admission_cap", "6");
 
     expect(await screen.findByText("Applied at once")).toBeDefined();
     expect(put).toHaveBeenCalledWith("ACME", { admission_cap: 6 }, expect.anything());
@@ -352,6 +364,7 @@ test("a change goes to the relay route and shows what the daemon did with the ke
 });
 
 test("a refused key shows the daemon's reason and leaves the value as it was", async () => {
+  const user = userEvent.setup();
   const put = spyOn(api, "putLegionProjectSettings").mockResolvedValue({
     recorded: true,
     settings: { admission_cap: { refused: "a running issue holds a slot" } },
@@ -359,10 +372,7 @@ test("a refused key shows the daemon's reason and leaves the value as it was", a
   try {
     await renderView(board({}, SETTINGS));
 
-    fireEvent.change(screen.getByLabelText("New value for admission_cap"), {
-      target: { value: "1" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Change admission_cap" }));
+    await changeSetting(user, "admission_cap", "1");
 
     expect(await screen.findByText("Refused: a running issue holds a slot")).toBeDefined();
     const cap = document.querySelector('[data-legion-setting="admission_cap"]');
@@ -386,6 +396,7 @@ test("a refused key shows the daemon's reason and leaves the value as it was", a
 // `failed`, which the daemon writes as `<holder>: <error>`. So the fixture below names a
 // `holder` the failure does not, and the row must not show it.
 test("a key the daemon could not carry into what holds it reads as a failure, not a success", async () => {
+  const user = userEvent.setup();
   const put = spyOn(api, "putLegionProjectSettings").mockResolvedValue({
     recorded: true,
     settings: {
@@ -400,10 +411,7 @@ test("a key the daemon could not carry into what holds it reads as a failure, no
   try {
     await renderView(board({}, SETTINGS));
 
-    fireEvent.change(screen.getByLabelText("New value for instructions"), {
-      target: { value: '"/etc/legion/instructions.md"' },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Change instructions" }));
+    await changeSetting(user, "instructions", '"/etc/legion/instructions.md"');
 
     const answer = await screen.findByRole("alert");
     expect(answer.textContent).toContain("what holds it kept the old one: launch-specs:");
@@ -428,6 +436,7 @@ test("a key the daemon could not carry into what holds it reads as a failure, no
 // the keyed write retries every 5xx under its key until Dispatch decides it (`retriesUnderKey`),
 // so a daemon that cannot be reached is tried again rather than shown.
 test("a refusal Dispatch itself made lands on the row it was made from", async () => {
+  const user = userEvent.setup();
   const put = spyOn(api, "putLegionProjectSettings").mockRejectedValue(
     new ApiError(403, {
       code: "PROJECT_SCOPE_DEPLOYMENT",
@@ -437,10 +446,7 @@ test("a refusal Dispatch itself made lands on the row it was made from", async (
   try {
     await renderView(board({}, SETTINGS));
 
-    fireEvent.change(screen.getByLabelText("New value for admission_cap"), {
-      target: { value: "6" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Change admission_cap" }));
+    await changeSetting(user, "admission_cap", "6");
 
     expect(
       await screen.findByText(/this request's credential may write project ACME/)
@@ -461,6 +467,7 @@ test("a refusal Dispatch itself made lands on the row it was made from", async (
 // and must not read as a failure; what the panel says is that the daemon is running on the new
 // value and a restart puts back the old one.
 test("a change the daemon applied and could not record stays applied on the row, and says what a restart undoes", async () => {
+  const user = userEvent.setup();
   const put = spyOn(api, "putLegionProjectSettings").mockResolvedValue({
     recorded: false,
     settings: { admission_cap: { applied: "at-once" } },
@@ -468,10 +475,7 @@ test("a change the daemon applied and could not record stays applied on the row,
   try {
     await renderView(board({}, SETTINGS));
 
-    fireEvent.change(screen.getByLabelText("New value for admission_cap"), {
-      target: { value: "6" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Change admission_cap" }));
+    await changeSetting(user, "admission_cap", "6");
 
     const answer = await screen.findByText(/running on the new value but could not record it/);
     expect(answer.textContent).toContain("Applied at once");
@@ -489,14 +493,12 @@ test("a change the daemon applied and could not record stays applied on the row,
 });
 
 test("a value that is not JSON is refused here, and nothing is sent", async () => {
+  const user = userEvent.setup();
   const put = spyOn(api, "putLegionProjectSettings");
   try {
     await renderView(board({}, SETTINGS));
 
-    fireEvent.change(screen.getByLabelText("New value for admission_cap"), {
-      target: { value: "six" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Change admission_cap" }));
+    await changeSetting(user, "admission_cap", "six");
 
     expect(await screen.findByText(/That is not JSON/)).toBeDefined();
     expect(put).not.toHaveBeenCalled();

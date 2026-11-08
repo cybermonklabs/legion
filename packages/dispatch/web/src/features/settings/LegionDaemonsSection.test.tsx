@@ -1,6 +1,7 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { ApiError, api } from "../../api/client";
@@ -100,16 +101,16 @@ test("a deployment where no project names a daemon says so", async () => {
 });
 
 test("naming a project's daemon sends the PUT and lists what the server stored", async () => {
+  const user = userEvent.setup();
   const server = legionServer([]);
   const putLegionSetting = spyOn(api, "putLegionSetting").mockImplementation(server.put);
   spies.push(putLegionSetting);
   const section = await renderSection(server);
 
-  fireEvent.change(await section.findByLabelText("Legion project"), { target: { value: "ACME" } });
-  fireEvent.change(section.getByLabelText("Legion daemon state URL"), {
-    target: { value: "http://127.0.0.1:9731" },
-  });
-  fireEvent.click(section.getByRole("button", { name: "Save Legion daemon" }));
+  await user.selectOptions(await section.findByLabelText("Legion project"), "ACME");
+  await user.click(section.getByLabelText("Legion daemon state URL"));
+  await user.paste("http://127.0.0.1:9731");
+  await user.click(section.getByRole("button", { name: "Save Legion daemon" }));
 
   await waitFor(() =>
     expect(putLegionSetting).toHaveBeenLastCalledWith("ACME", "http://127.0.0.1:9731", keyedAttempt)
@@ -120,18 +121,22 @@ test("naming a project's daemon sends the PUT and lists what the server stored",
 });
 
 test("removing a project's daemon sends the DELETE and drops its row", async () => {
+  const user = userEvent.setup();
   const server = legionServer([setting]);
   const deleteLegionSetting = spyOn(api, "deleteLegionSetting").mockImplementation(server.remove);
   spies.push(deleteLegionSetting);
   const section = await renderSection(server);
 
-  fireEvent.click(await section.findByRole("button", { name: "Remove the Legion daemon of ACME" }));
+  await user.click(
+    await section.findByRole("button", { name: "Remove the Legion daemon of ACME" })
+  );
 
   await waitFor(() => expect(deleteLegionSetting).toHaveBeenLastCalledWith("ACME", keyedAttempt));
   expect(await section.findByText("No project names a Legion daemon yet.")).toBeDefined();
 });
 
 test("a refusal the server made is shown as the server wrote it, and the row goes back", async () => {
+  const user = userEvent.setup();
   const server = legionServer([]);
   const putLegionSetting = spyOn(api, "putLegionSetting").mockRejectedValue(
     new ApiError(403, {
@@ -142,11 +147,10 @@ test("a refusal the server made is shown as the server wrote it, and the row goe
   spies.push(putLegionSetting);
   const section = await renderSection(server);
 
-  fireEvent.change(await section.findByLabelText("Legion project"), { target: { value: "ACME" } });
-  fireEvent.change(section.getByLabelText("Legion daemon state URL"), {
-    target: { value: "http://127.0.0.1:9731" },
-  });
-  fireEvent.click(section.getByRole("button", { name: "Save Legion daemon" }));
+  await user.selectOptions(await section.findByLabelText("Legion project"), "ACME");
+  await user.click(section.getByLabelText("Legion daemon state URL"));
+  await user.paste("http://127.0.0.1:9731");
+  await user.click(section.getByRole("button", { name: "Save Legion daemon" }));
 
   await waitFor(() =>
     expect(section.getByRole("alert").textContent).toContain(
@@ -160,16 +164,16 @@ test("a refusal the server made is shown as the server wrote it, and the row goe
 // packages/envoy/internal/dispatch/api/settings_legion.go), rather than sending a URL the server
 // is bound to turn down.
 test("a URL with a path is refused by the field, in the words the route uses", async () => {
+  const user = userEvent.setup();
   const server = legionServer([]);
   const putLegionSetting = spyOn(api, "putLegionSetting").mockImplementation(server.put);
   spies.push(putLegionSetting);
   const section = await renderSection(server);
 
-  fireEvent.change(await section.findByLabelText("Legion project"), { target: { value: "ACME" } });
-  fireEvent.change(section.getByLabelText("Legion daemon state URL"), {
-    target: { value: "http://127.0.0.1:9731/legion/v1/state" },
-  });
-  fireEvent.click(section.getByRole("button", { name: "Save Legion daemon" }));
+  await user.selectOptions(await section.findByLabelText("Legion project"), "ACME");
+  await user.click(section.getByLabelText("Legion daemon state URL"));
+  await user.paste("http://127.0.0.1:9731/legion/v1/state");
+  await user.click(section.getByRole("button", { name: "Save Legion daemon" }));
 
   expect((await section.findByRole("alert")).textContent).toContain(
     "state_url must be an absolute http(s) URL with a host and no path"
