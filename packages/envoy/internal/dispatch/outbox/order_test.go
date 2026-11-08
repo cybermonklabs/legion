@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -894,8 +895,8 @@ func measureClaim(t *testing.T, backlog int) claimCost {
 		fastest = min(fastest, explained[0].ExecutionTime)
 	}
 	// The measurement comes after the explains, not before them: a pooled connection this
-	// function holds while they run costs each of them about 0.2 ms, 0.65 ms against 0.43 ms
-	// here, and the row below reads that time as the claim's own.
+	// function holds while they run adds about 0.2 ms to each of them, 0.65 ms against 0.43 ms
+	// here, and the logged time would report that delay as the claim's own.
 	conn, err := database.Pool.Acquire(ctx)
 	if err != nil {
 		t.Fatalf("acquire the connection the counters are read on: %v", err)
@@ -922,10 +923,35 @@ func measureClaim(t *testing.T, backlog int) claimCost {
 	}
 }
 
+// someIDs renders ids as how many there are and at most the first twelve of them, so a message
+// about a claim that returned thousands of rows stays short enough to read.
+func someIDs(ids []int64) string {
+	const most = 12
+	shown, tail := ids, ""
+	if len(shown) > most {
+		shown, tail = shown[:most], " …"
+	}
+	text := make([]string, 0, len(shown))
+	for _, id := range shown {
+		text = append(text, strconv.FormatInt(id, 10))
+	}
+	return fmt.Sprintf("%d events: [%s%s]", len(ids), strings.Join(text, " "), tail)
+}
+
 // The statement that chooses a batch reads neither the pending subscription commands, which are
 // never published, nor the backed-off events of owners that have nothing due: with 5,000 of each
-// in the table and again with 20,000, no node of its plan that reads events removes a row by
-// filter or recheck, none scans events in full, and it runs in under half a millisecond.
+// in the table it reads three rows of events for each event it returns and nothing else, no node
+// of its plan that reads events removes a row by filter or recheck, none scans events in full,
+// and with 20,000 of each it reads the same number of rows.
+//
+// The measure is Postgres's own count of the rows read from events, seq_tup_read + idx_tup_fetch
+// of pg_stat_xact_user_tables, taken inside the claim's own transaction, as
+// api/suggestion_outcomes_test.go's TestOldPendingSuggestionsOnOtherIssuesCostAPassNothing counts
+// them. A count is the same on a loaded machine as on an idle one, which no wall clock is. This
+// row asserted the claim ran in under 0.5 ms, and on 2026-11-08 the claim, unchanged and healthy,
+// ran in 0.434 to 0.448 ms on an idle pod and in 0.749 to 0.799 ms on the same pod under 48 busy
+// loops. No one wall-clock bound separates a healthy claim from a broken one on every machine
+// that runs this row, so the row asserts the count and only logs the time.
 func TestTheClaimSkipsPendingCommandsAndBackedOffRows(t *testing.T) {
 	small := measureClaim(t, 5000)
 	big := measureClaim(t, 20000)
@@ -934,8 +960,23 @@ func TestTheClaimSkipsPendingCommandsAndBackedOffRows(t *testing.T) {
 			cost.backlog, cost.backlog, cost.rowsRead, cost.seqRead, len(cost.kept), len(cost.unpublished),
 			cost.fastest, len(cost.plans), cost.plans[0].body)
 	}
-	if small.fastest >= 0.5 {
-		t.Fatalf("the claim ran in %.3f ms at its fastest, want under 0.5 ms:\n%s", small.fastest, small.plans[0].body)
+	for _, cost := range []claimCost{small, big} {
+		if !slices.Equal(cost.kept, cost.unpublished) {
+			t.Errorf("with a backlog of %d the claim returned %s, want the events no one has published, in id order: %s",
+				cost.backlog, someIDs(cost.kept), someIDs(cost.unpublished))
+		}
+		if cost.seqRead != 0 {
+			t.Errorf("with a backlog of %d the claim read %d rows of events sequentially, want none",
+				cost.backlog, cost.seqRead)
+		}
+	}
+	if big.rowsRead != small.rowsRead {
+		t.Errorf("the claim read %d rows of events with a backlog of %d and %d with a backlog of %d, want the same figure at both sizes",
+			big.rowsRead, big.backlog, small.rowsRead, small.backlog)
+	}
+	if bound := 8 * int64(len(small.kept)); small.rowsRead > bound {
+		t.Errorf("the claim read %d rows of events to return %d events, want at most %d: it reads three rows of events for each event it returns",
+			small.rowsRead, len(small.kept), bound)
 	}
 	for _, explained := range slices.Concat(small.plans, big.plans) {
 		explained.root.walk(func(node planNode) {
