@@ -1406,7 +1406,7 @@ GATES = [
         (".github/scripts/mirror-ci-images.sh", f"{at('ci-images', COPY_STEP)} runs it"),
         (".github/scripts/check-ci-images.sh", f"{at('ci-images', PACKAGE_STEP)} runs it"),
         (".github/scripts/ci_images.py", "both scripts read a row's upstream with it"),
-        (".github/ci-tools.yaml", f"{at('ci-images', TOOL_COPY_STEP)} fills the copy of every ghcr row it holds"),
+        (".github/ci-tools.yaml", f"{at('ci-images', TOOL_COPY_STEP)} fills the copy of every ghcr-mirror row it holds"),
         (".github/scripts/mirror-ci-tools.sh", f"{at('ci-images', TOOL_COPY_STEP)} runs it"),
         (".github/scripts/ci-tools.sh", f"{at('ci-images', TOOL_COPY_STEP)}: the filler reads a row's fields and "
                                         "its seams the way that helper does, and the copy it fills is what the "
@@ -1420,8 +1420,8 @@ GATES = [
     # the gate beside it, the rig and the fault proxy it drives, the four actions it installs
     # through, and the two files a row's version is pinned in.
     gate("tool_fallback", "tool-fallback", reads=reads(
-        (".github/ci-tools.yaml", f"{at('tool-fallback', TOOL_BLOB_STEP)} reads the digest of every ghcr row, and "
-                                  f"{at('tool-fallback', TOOL_ROWS_STEP)} reads every row"),
+        (".github/ci-tools.yaml", f"{at('tool-fallback', TOOL_BLOB_STEP)} reads the digest of every ghcr-mirror row, "
+                                  f"and {at('tool-fallback', TOOL_ROWS_STEP)} reads every row"),
         (".github/scripts/ci-tools.sh", f"{at('tool-fallback', TOOL_STAGE_STEP)}: the rig fetches each row's correct "
                                         "bytes through it, and the two steps above source it for a row's fields"),
         (".github/scripts/ci-tools-proof.sh", f"{at('tool-fallback', TOOL_STAGE_STEP)} runs it, as every other step "
@@ -1440,18 +1440,22 @@ GATES = [
         (".github/actions/setup-bun/**", at("tool-fallback", "./.github/actions/setup-bun")),
         (f"{DAEMON}/docker/worker.Dockerfile", f"{at('tool-fallback', TOOL_JJ_SEED_STEP)}: the rig reads ARG JJ_TOOL "
                                                "to name mise's own install directory for that tool, and "
-                                               ".github/actions/install-jj reads that ARG and the mise row's own pin "
-                                               "from the same file"),
+                                               ".github/actions/install-jj reads that same ARG, while the mise row "
+                                               "that action installs mise from is pinned to this file's "
+                                               "ARG MISE_VERSION and ARG MISE_SHA256 by .github/scripts/check-ci-tools.sh"),
         (".bun-version", f"{at('tool-fallback', TOOL_BUN_BYTE_STEP)} reads the pinned version out of it, and "
                          ".github/actions/setup-bun installs the Bun it pins"),
     ) + CI_SELF),
 
-    # The tool-fallback-arm job: the same two halves of the Bun install on an arm64 runner, the
-    # one architecture no other job of this repository installs a tool on. It runs no go command
-    # either, and reads less than the job above: the action, the version it pins, the manifest
-    # row the action and the rig both read, the helper that reads it, and the rig and the fault
-    # proxy that put the release hosts out of reach.
-    gate("tool_fallback_arm", "tool-fallback-arm", reads=reads(
+    # A second gate on tool_fallback: the tool-fallback-arm job proves the same two halves of
+    # the Bun install on an arm64 runner, the one architecture no other job of this repository
+    # installs a tool on. It drives the same action over the same manifest through the same
+    # helper, so one filter selects both jobs, and check-ci-filters.sh keys a claim by
+    # (job, step), so the two gates claim different steps and do not collide.
+    # It runs no go command either, and reads less than the job above: the action, the version
+    # it pins, the manifest row the action and the rig both read, the helper that reads it, and
+    # the rig and the fault proxy that put the release hosts out of reach.
+    gate("tool_fallback", "tool-fallback-arm", reads=reads(
         (".github/actions/setup-bun/**", at("tool-fallback-arm", "./.github/actions/setup-bun")),
         (".bun-version", f"{at('tool-fallback-arm', TOOL_ARM_READ_STEP)}: the rig holds what bun answers to the "
                          "version that file pins, and .github/actions/setup-bun installs the Bun it pins"),

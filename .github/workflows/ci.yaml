@@ -164,7 +164,7 @@ env:
       "ci-filters": "ci_filters",
       "ci-images": "ci_images",
       "tool-fallback": "tool_fallback",
-      "tool-fallback-arm": "tool_fallback_arm",
+      "tool-fallback-arm": "tool_fallback",
       "proof-sdk-offline": "proof_sdk_offline",
       "worker-image": "worker_image"
     }
@@ -287,10 +287,10 @@ jobs:
       ci_filters: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_filters }}
       ci_images: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_images }}
       # The second source of every tool install, proved by driving it: no `full-ci` term, so the
-      # proof comes back on every change that selects it.
+      # proof comes back on every change that selects it. It selects the arm64 half of that
+      # proof too, which drives the same action over the same manifest through the same helper
+      # and so reads the same files.
       tool_fallback: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.tool_fallback }}
-      # The arm64 half of that proof, selected by exactly the list the filter above holds.
-      tool_fallback_arm: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.tool_fallback_arm }}
       proof_sdk_offline: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.proof_sdk_offline }}
     steps:
       # On pull_request dorny/paths-filter reads the file list from the API and never reads the
@@ -1865,12 +1865,18 @@ jobs:
               - '**/go.work.sum'
               - 'packages/daemon/**'
               - 'packages/envoy/**'
-            # ci.yaml's tool-fallback job, the live proof of the second source every tool
-            # install reads when the first source does not serve the bytes: the manifest that
-            # names both sources of each row, the fetch helper every install goes through, the
-            # filler and the gate beside it, the rig and the fault proxy it drives, the four
-            # actions it installs through, and the two files a row's version is pinned in
-            # (.bun-version for the bun rows, the worker image's Dockerfile for mise and jj).
+            # ci.yaml's tool-fallback and tool-fallback-arm jobs, the live proof of the second
+            # source every tool install reads when the first source does not serve the bytes:
+            # the manifest that names both sources of each row, the fetch helper every install
+            # goes through, the filler and the gate beside it, the rig and the fault proxy it
+            # drives, the four actions it installs through, and the two files a row's version
+            # is pinned in (.bun-version for the bun rows, the worker image's Dockerfile for
+            # mise and jj).
+            # One filter for the two jobs, as `envoy_go_race_docs` is for its two: the arm64
+            # job drives the same action over the same manifest through the same helper, so a
+            # change that selects one of them must select both, and one list cannot drift from
+            # another that does not exist. Each job carries a gate of its own in
+            # .github/scripts/ci_job_reads.py for what it reads.
             # It carries an anchor because the ci_images filter below names it whole.
             tool_fallback: &tool_fallback
               - '.github/ci-tools.yaml'
@@ -1886,14 +1892,6 @@ jobs:
               - '.bun-version'
               - 'packages/daemon/docker/worker.Dockerfile'
               - '.github/workflows/ci.yaml'
-            # ci.yaml's tool-fallback-arm job, which proves the two halves of the Bun install
-            # again on an arm64 runner. It is the one filter above, named through that filter's
-            # own anchor, which dorny/paths-filter flattens into this list: the job drives the
-            # same action over the same manifest through the same helper, so a change that
-            # selects one of the two must select both, and written this way neither list can
-            # drift from the other.
-            tool_fallback_arm:
-              - *tool_fallback
             # ci.yaml's ci-images job: the image copy (.github/scripts/mirror-ci-images.sh,
             # through the crane .github/actions/install-crane installs), the package mode of
             # .github/scripts/check-ci-images.sh, which reads ghcr.io, and the tool copy
@@ -2162,9 +2160,24 @@ jobs:
   # Dockerfile and the four actions, so a step of it that waited on a release host would turn
   # every pull request touching one of those files red on exactly the day the fallback is doing
   # its work.
-  # .github/scripts/ci-tools-proof.sh is the rig, and this job is that script's only caller.
+  # .github/scripts/ci-tools-proof.sh is the rig, and this job and tool-fallback-arm are its
+  # only callers.
   # It needs ci-images, which fills the copy this proof reads; the comment on the ci_images
   # filter says why that filter is a superset of this job's.
+  #
+  # WHAT THIS JOB DRIVES, AND WHAT IT ONLY REASONS ABOUT.
+  # Everything a case is read on is driven here: the fault, the origin that stands in for all
+  # three sources, the corrupted payloads, and the removals each case makes before it.
+  # One thing is not. oven-sh/setup-bun, which .github/actions/setup-bun's first step pins,
+  # declares a `cache-hit` output in its own action.yml at that commit, and that wrapper passes
+  # it `no-cache: ${{ github.ref != 'refs/heads/main' }}`, so a run of this job on a pull
+  # request restores no Bun from the Actions cache while a dispatch of ci.yaml on main can,
+  # and the Actions cache is on hosts this job's fault does not hold. That second reading is
+  # taken from the action's own declaration and from the ref, not from a run of this job: a
+  # dispatch of main cannot be made from a pull request, so nothing here measures it.
+  # What this job does against it is to leave no Bun behind where a case that must read the
+  # second source would find one: every such case takes ~/.bun/bin/bun and the bunx beside it
+  # away before the install it reads.
   tool-fallback:
     needs: [changes, ci-images]
     if: needs.changes.outputs.tool_fallback == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
@@ -2182,17 +2195,20 @@ jobs:
         with:
           persist-credentials: false
 
-      # The merge base, for the negative control below: the tree whose installs have one source
-      # each and nowhere else to go.
-      - name: Check out the merge base, which has no second source
+      # The merge base, for the negative control below: a second tree of this same repository,
+      # whose four installs that control drives with nowhere left to go. The comment on those
+      # steps says what keeps this checkout here.
+      - name: Check out the merge base the negative control installs from
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.sha }}
           path: base
           persist-credentials: false
 
-      # The package holds the blob of every mirrored row, asked for with no credential at all,
-      # which is how an install asks for it.
+      # The package holds the blob of every mirrored row, asked for with no credential at all
+      # and at the address .github/scripts/ci-tools.sh builds, which is how an install asks for
+      # it: this step reads the blob an install reads, through the same CI_TOOLS_GHCR_BASE
+      # seam, and writes no address of its own.
       # This rule is the opposite of the filler's, on purpose. .github/scripts/mirror-ci-tools.sh
       # leaves a cold row green, because an asset that does not answer is the outage the copy
       # exists to survive and a red ci-ok during that outage helps nobody. Here a cold row is a
@@ -2203,16 +2219,15 @@ jobs:
           set -euo pipefail
           # shellcheck source=.github/scripts/ci-tools.sh
           . .github/scripts/ci-tools.sh
-          registry=$(ci_tools_field crane registry)
-          path=${registry#*/}
+          registry=$(ci_tools_registry)
           token=$(ci_tools_ghcr_token)
           rows=$(ci_tools_rows ghcr-mirror)
           cold=""
           for row in $rows; do
-            digest=$(ci_tools_digest "$row")
+            url=$(ci_tools_blob_url "$row")
             status=$(curl -sS -o /dev/null -I -L -w '%{http_code}' \
-              -H "Authorization: Bearer $token" "https://ghcr.io/v2/$path/blobs/sha256:$digest")
-            echo "$row: $registry answers $status for the blob sha256:$digest"
+              -H "Authorization: Bearer $token" "$url")
+            echo "$row: $registry answers $status for $url"
             [ "$status" = 200 ] || cold="$cold $row"
           done
           if [ -n "$cold" ]; then
@@ -2294,74 +2309,85 @@ jobs:
       - name: Read the jj-primary case
         run: .github/scripts/ci-tools-proof.sh report jj-primary --outcome ${{ steps.jj-primary.outcome }} --row jj --expect-source github-release
 
-      # What that case seeded goes, so the head's own install-jj below must read the copy: under
-      # the fault `mise install` cannot resolve the tool at all, and an install directory left
-      # here would be the one thing that could answer it.
+      # What that case seeded goes, so nothing of it reaches the installs below: the head's own
+      # install-jj meets an empty mise directory, as a fresh runner would.
+      # It is not what decides that install. Measured in CI at run 42507815176, `mise install`
+      # resolves the tool's version list over api.github.com even when its install directory
+      # already holds the tool, so under the fault below that install fails whether this
+      # directory is here or not, and the action reads the copy either way. What a directory
+      # left here would leave behind is the one-byte-changed jj this case seeded, on a runner
+      # whose later steps run what this job installed.
       - name: Take mise's install away again, so the faulted install must read the copy
         run: rm -rf "$HOME/.local/share/mise"
 
-      - id: fault
-        name: Start the fault in front of GitHub's release assets
-        run: >-
-          .github/scripts/ci-tools-proof.sh start-fault
-          --hosts github.com,release-assets.githubusercontent.com,objects.githubusercontent.com
-
-      # Every later step reads the proxy, in all four spellings of the two variables and with
-      # both bypass lists emptied, which is the whole of what a client reads before it decides to
-      # go around a proxy.
-      # It goes through $GITHUB_ENV rather than a step `env:` map because GitHub refuses a map
-      # that holds two spellings of one name, and the workflow would then not start at all.
+      # The fault, and the routing of every later step through it, in one step: the rig starts
+      # .github/scripts/ci-fault-proxy.py over the release hosts its own FAULT_HOSTS names, and
+      # writes the four spellings of the two proxy variables and the two emptied bypass lists
+      # to $GITHUB_ENV itself. Those hosts and those variables are written there and in no step
+      # of this file, so a release host that moves again is one edit in one place.
       # The runner resolves and downloads an action with its own environment rather than a
-      # step's, so every action this job uses is already on disk when the fault starts and the
+      # step's, so every action this job uses is already on disk when the fault starts, and the
       # fault is met only by what an action fetches.
-      # The hosts are github.com, where a release download starts, and the two
-      # githubusercontent.com hosts it ends at, rather than the whole githubusercontent.com
-      # domain. Measured on 2026-11-08: a release asset redirects to
-      # release-assets.githubusercontent.com, and a ghcr.io blob redirects to
-      # pkg-containers.githubusercontent.com, so faulting the domain takes the second source
-      # down with the first and the proof reads nothing (run 42484733737, where crane's copy
-      # answered curl exit 22 behind that fault). objects.githubusercontent.com is the host
-      # release downloads ended at before, and the issue's own check names it.
-      # The negative control below is what catches a release host that moves again: a merge
-      # base install that succeeds under this fault fails the job by name.
-      - name: Route every later step through the fault
-        env:
-          PROXY: ${{ steps.fault.outputs.proxy }}
-        run: |
-          set -euo pipefail
-          {
-            echo "http_proxy=$PROXY"
-            echo "https_proxy=$PROXY"
-            echo "HTTP_PROXY=$PROXY"
-            echo "HTTPS_PROXY=$PROXY"
-            echo "no_proxy="
-            echo "NO_PROXY="
-          } >> "$GITHUB_ENV"
+      - name: Start the fault in front of GitHub's release assets
+        run: .github/scripts/ci-tools-proof.sh start-fault
 
       - name: Read the fault before any install meets it
         run: .github/scripts/ci-tools-proof.sh probe github.com
 
-      # The negative control, under the same fault: the merge base's four installs, each with one
-      # source and nowhere else to go, so every one of them must fail here.
-      # That is what makes the pass below a reading of the new source rather than of a cache, of
-      # a tool the runner image already carries, or of a proxy that let the asset through.
+      # The negative control, under the same fault: the merge base's four installs, each given a
+      # ghcr base and an npm base on a dead port, so every one of them must fail here.
+      # What it asserts is a property of this change and not a fact about history: an install
+      # whose primary meets the fault and whose second source cannot be reached fails. That is
+      # what makes the passes below a reading of the second source rather than of a cache, of a
+      # tool the runner image already carries, or of a proxy that let the asset through.
+      # A control that leaned on the merge base having one source each would expire the day this
+      # change lands on main: the base would then be this tree, each primary would meet the
+      # fault, each second source would reach the real ghcr — whose blobs redirect to
+      # pkg-containers.githubusercontent.com, which this fault leaves alone on purpose — or the
+      # real npm, all four would succeed, and this step would fail every pull request and merge
+      # group that selects this job. On a workflow_dispatch the ref below falls through to
+      # github.sha, the head itself, so that control is wrong already.
+      # A dead port rather than a manifest with its `second_source` rows deleted: a row with no
+      # second source makes ci_tools__second_source refuse the empty field, so the install would
+      # fail for the wrong reason — it would prove the helper rejects an empty field, not that
+      # the install had nowhere to go, and a negative control must fail for the reason the check
+      # names. A base that does not have the helper ignores both variables and fails as it
+      # always did.
+      # The merge-base checkout stays. It is this repository's only caller of the rule
+      # .github/scripts/check-image-trigger-paths.sh keeps about a local `uses:` under a second
+      # checkout of this same repository, and that check's own comment names this job for it.
+      # After this change is on main the checkout is redundant to the two variables below, which
+      # drive the control by themselves, so a later reader who deletes these four steps is
+      # deleting that caller too and should move the rule's exercise rather than lose it.
       - id: base-crane
         continue-on-error: true
         uses: ./base/.github/actions/install-crane
+        env:
+          CI_TOOLS_GHCR_BASE: http://127.0.0.1:1
+          CI_TOOLS_NPM_BASE: http://127.0.0.1:1
 
       - id: base-changie
         continue-on-error: true
         uses: ./base/.github/actions/install-changie
+        env:
+          CI_TOOLS_GHCR_BASE: http://127.0.0.1:1
+          CI_TOOLS_NPM_BASE: http://127.0.0.1:1
 
       - id: base-jj
         continue-on-error: true
         uses: ./base/.github/actions/install-jj
+        env:
+          CI_TOOLS_GHCR_BASE: http://127.0.0.1:1
+          CI_TOOLS_NPM_BASE: http://127.0.0.1:1
 
       - id: base-bun
         continue-on-error: true
         uses: ./base/.github/actions/setup-bun
+        env:
+          CI_TOOLS_GHCR_BASE: http://127.0.0.1:1
+          CI_TOOLS_NPM_BASE: http://127.0.0.1:1
 
-      - name: Check all four installs of the merge base failed under the fault
+      - name: Check all four installs with nowhere to go failed
         env:
           CRANE: ${{ steps.base-crane.outcome }}
           CHANGIE: ${{ steps.base-changie.outcome }}
@@ -2371,11 +2397,11 @@ jobs:
           set -euo pipefail
           wrong=""
           for pair in "crane:$CRANE" "changie:$CHANGIE" "jj:$JJ" "bun:$BUN"; do
-            echo "the merge base's ${pair%%:*} install ended in ${pair#*:}"
+            echo "the merge base's ${pair%%:*} install, its primary faulted and its second source on a dead port, ended in ${pair#*:}"
             [ "${pair#*:}" = failure ] || wrong="$wrong ${pair%%:*}"
           done
           if [ -n "$wrong" ]; then
-            echo "::error::the merge base's install of$wrong succeeded under the fault, so it read something this job did not serve — a cache, a tool the runner image carries, or a request that went around the proxy — and the pass below would then say nothing about the new source" >&2
+            echo "::error::the merge base's install of$wrong served bytes with its primary behind the fault and its second source pointed at a dead port, so it read something this job did not serve — a cache, a tool the runner image carries, or a request that went around the proxy — and the passes below would then say nothing about the second source" >&2
             exit 1
           fi
 
@@ -2523,10 +2549,16 @@ jobs:
       - name: Read the bun-primary case
         run: .github/scripts/ci-tools-proof.sh report bun-primary --outcome ${{ steps.bun-primary.outcome }} --row bun-linux-x64 --expect-source github-release
 
-      # Case 8 of 8: the case above refused the Bun it found and took it away — setup-bun's
-      # third step removes the bun and the bunx it refused from ~/.bun/bin — so there is no Bun
-      # of the pinned version here, setup-bun's second step must read the second source, and the
-      # npm package serves one byte changed.
+      # Case 8 of 8: with no Bun of the pinned version on this runner, setup-bun's second step
+      # must read the second source, and the npm package serves one byte changed.
+      # This case takes the pair away itself rather than leaning on the case before it. That
+      # case's refusal does remove the bun and the bunx it refused from ~/.bun/bin — setup-bun's
+      # third step says so — but a case that must read the second source is held to its own
+      # state and not to the one the case before it happened to leave, and a Bun the Actions
+      # cache restored on a dispatch of main would otherwise satisfy this one.
+      - name: Take any Bun away, so the second source must serve this case
+        run: rm -f "$HOME/.bun/bin/bun" "$HOME/.bun/bin/bunx"
+
       - name: Corrupt the Bun package for its second-source case
         run: .github/scripts/ci-tools-proof.sh corrupt bun-linux-x64
 
@@ -2547,9 +2579,9 @@ jobs:
       # the binary where mise left it and copies to ~/.local/bin/jj only after that passes, so
       # the jj here is the pinned one the head's own install under the fault wrote and neither
       # jj case moved it. setup-bun removes the bun and the bunx it refused from ~/.bun/bin,
-      # which is on this job's PATH, so the bun-primary case took away the Bun it refused, and
-      # the bun-second-source case after it refused the npm bytes before anything was written
-      # in their place: this runner ends with no bun at all.
+      # which is on this job's PATH, so the bun-primary case took away the Bun it refused; the
+      # case after it took that pair away again before its own install and then refused the npm
+      # bytes before anything was written in their place: this runner ends with no bun at all.
       # crane and changie are held to the version they answer, because their rows pin the release
       # tarball rather than the binary inside it; jj is held to its row's own digest, which is of
       # the installed binary.
@@ -2569,7 +2601,7 @@ jobs:
               echo "::error::$taken is still here, and no case of this job may leave one: the bun-primary case's refusal takes the binary it refused away, and the bun-second-source case's refusal writes none in its place, so a bun here is a refused binary on the PATH of every later step" >&2
               wrong="$wrong $taken"
             else
-              echo "$taken is gone: the bun-primary case's refusal took it away, and the bun-second-source case refused the corrupted package before it wrote anything there"
+              echo "$taken is gone: the bun-primary case's refusal took it away, the case after it took the pair away again before its own install, and that case refused the corrupted package before it wrote anything there"
             fi
           done
           if [ -n "$wrong" ]; then
@@ -2580,17 +2612,11 @@ jobs:
 
       # The proxy stops with this job, and the steps after this one must not be routed through
       # it: the ci-ok-report step below runs actions/upload-artifact, which would otherwise
-      # upload through a proxy that is about to go.
-      - name: Clear the proxy
+      # upload through a proxy that is about to go. The rig writes the emptied variables, as it
+      # wrote the proxy ones.
+      - name: Stop routing this job through the fault
         if: always()
-        run: |
-          set -euo pipefail
-          {
-            echo "http_proxy="
-            echo "https_proxy="
-            echo "HTTP_PROXY="
-            echo "HTTPS_PROXY="
-          } >> "$GITHUB_ENV"
+        run: .github/scripts/ci-tools-proof.sh stop-fault
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
@@ -2611,12 +2637,29 @@ jobs:
   # third step holds it to the aarch64 row, and the npm path, under the fault the tool-fallback
   # job uses, where the release hosts answer nothing and the second source serves the same
   # binary. Each half ends in a reading of what this runner holds, printed for a person reading
-  # the run: the machine, the version, the path, the binary's sha256 and the row's own pins.
+  # the run: the machine, the version, the path, the row's own pins, and what ci_tools_verify
+  # reads that binary as against the row.
+  # The npm half says which source served it as well, because neither the version nor the
+  # digest can: the release asset and the npm package are one binary by design, so a run where
+  # the release host answered after all would read exactly as a run where npm served. What says
+  # it is the fault proxy's own 504 for github.com after the probe, the refusal that sent the
+  # install to its second source. The `ci-tools:` line the install wrote would say it too, and
+  # no step can read it: a composite action writes that line to the job's log, which no later
+  # step reads.
+  # The tool-fallback job's comment about the Actions cache holds here too — a dispatch of
+  # ci.yaml on main can restore Bun from a store this fault does not hold, which is read from
+  # oven-sh/setup-bun's own `cache-hit` declaration and from `no-cache` being false on main
+  # rather than driven by a run of this job — and the npm half takes ~/.bun/bin away before its
+  # install, so no Bun the healthy half left behind satisfies it.
+  # The `tool_fallback` filter selects this job, as it selects that one: both drive the same
+  # action over the same manifest through the same helper, so one filter decides both and
+  # neither can drift from the other. CI_OK_SELECTED_BY maps this job to that filter, and
+  # .github/scripts/ci_job_reads.py holds a gate of its own on it for what this job reads.
   # It needs the `changes` job alone: nothing it runs reads the ghcr copy the ci-images job
   # fills, so it has no reason to wait for that job as tool-fallback does.
   tool-fallback-arm:
     needs: changes
-    if: needs.changes.outputs.tool_fallback_arm == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    if: needs.changes.outputs.tool_fallback == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04-arm
     # The budget, added up from the slowest run this job can have rather than copied from
     # another job: the checkout and the runner's download of the actions (1), the healthy
@@ -2648,34 +2691,18 @@ jobs:
       - name: Read the Bun the release asset served
         run: .github/scripts/ci-tools-proof.sh installed-bun bun-linux-aarch64
 
-      - id: fault
-        name: Start the fault in front of GitHub's release assets
-        run: >-
-          .github/scripts/ci-tools-proof.sh start-fault
-          --hosts github.com,release-assets.githubusercontent.com,objects.githubusercontent.com
-
-      # The same four spellings and the same two emptied bypass lists as the tool-fallback job,
-      # and through $GITHUB_ENV for the same reason: GitHub refuses a step `env:` map that holds
-      # two spellings of one name, and the workflow would then not start at all.
-      - name: Route every later step through the fault
-        env:
-          PROXY: ${{ steps.fault.outputs.proxy }}
-        run: |
-          set -euo pipefail
-          {
-            echo "http_proxy=$PROXY"
-            echo "https_proxy=$PROXY"
-            echo "HTTP_PROXY=$PROXY"
-            echo "HTTPS_PROXY=$PROXY"
-            echo "no_proxy="
-            echo "NO_PROXY="
-          } >> "$GITHUB_ENV"
+      # The fault and the routing of every later step through it, as in the tool-fallback job:
+      # the rig starts the proxy over the release hosts its own FAULT_HOSTS names and writes the
+      # four spellings of the two proxy variables and the two emptied bypass lists to
+      # $GITHUB_ENV, so neither the hosts nor the variables are written in this file.
+      - name: Start the fault in front of GitHub's release assets
+        run: .github/scripts/ci-tools-proof.sh start-fault
 
       - name: Read the fault before any install meets it
         run: .github/scripts/ci-tools-proof.sh probe github.com
 
       # Both names, because the action's refusal takes both: what must be read again is an
-      # install, not a bun left over from the healthy half.
+      # install, not a bun left over from the healthy half and not one a cache restored.
       - name: Take the installed Bun away, so the second source must serve it
         run: rm -f "$HOME/.bun/bin/bun" "$HOME/.bun/bin/bunx"
 
@@ -2683,22 +2710,19 @@ jobs:
       # action's second step reads the @oven/bun-linux-aarch64 package the row names.
       - uses: ./.github/actions/setup-bun
 
+      # --expect-refused is this half's own reading of the source: the proxy's 504 for
+      # github.com after the probe is the refusal that sent this install to npm, and the
+      # version and the digest cannot say it, since both sources serve one binary.
       - name: Read the Bun npm served
-        run: .github/scripts/ci-tools-proof.sh installed-bun bun-linux-aarch64
+        run: .github/scripts/ci-tools-proof.sh installed-bun bun-linux-aarch64 --expect-refused github.com
 
       # The proxy stops with this job, and the steps after this one must not be routed through
       # it: the ci-ok-report step below runs actions/upload-artifact, which would otherwise
-      # upload through a proxy that is about to go.
-      - name: Clear the proxy
+      # upload through a proxy that is about to go. The rig writes the emptied variables, as it
+      # wrote the proxy ones.
+      - name: Stop routing this job through the fault
         if: always()
-        run: |
-          set -euo pipefail
-          {
-            echo "http_proxy="
-            echo "https_proxy="
-            echo "HTTP_PROXY="
-            echo "HTTPS_PROXY="
-          } >> "$GITHUB_ENV"
+        run: .github/scripts/ci-tools-proof.sh stop-fault
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

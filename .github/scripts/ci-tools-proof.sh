@@ -6,13 +6,13 @@
 # Those two jobs are this script's only callers, and it is this script's own exercise: every
 # verb below either prints a reading a job is judged on or refuses the job itself, so a rig that
 # misbehaves is a job that fails, and both jobs run on every change that touches what they prove
-# (the `tool_fallback` filter of the `changes` job names this file among them, and the
-# `tool_fallback_arm` filter is that list itself).
+# (the `tool_fallback` filter of the `changes` job names this file among them, and that one
+# filter selects both jobs).
 # A second source nothing exercises rots, and this repository's own principle is that testing
 # means booting and running it, so the rig is part of the proof rather than a test beside it.
 #
 # THE VERBS, in the order the `tool-fallback` job runs them; `tool-fallback-arm` runs
-# `start-fault`, `probe` and `installed-bun`.
+# `start-fault`, `probe`, `installed-bun` and `stop-fault`.
 #
 #   origin-start
 #       Writes a small python3 HTTP origin to $RUNNER_TEMP/ci-tools-proof/origin.py, starts it on
@@ -33,11 +33,22 @@
 #       It prints each file with its size and its sha256, and refuses the job naming the row
 #       when a fetch or a digest does not come out right.
 #
-#   start-fault --hosts <list>
+#   start-fault [--hosts <list>]
 #       Starts .github/scripts/ci-fault-proxy.py --mode fail over those hosts, waits for its
-#       port, and writes `proxy=http://127.0.0.1:<port>` to $GITHUB_OUTPUT, which the job then
-#       puts into $GITHUB_ENV as every spelling of the proxy variables.
+#       port, writes `proxy=http://127.0.0.1:<port>` to $GITHUB_OUTPUT, and writes the four
+#       spellings of the two proxy variables and the two emptied bypass lists to $GITHUB_ENV,
+#       printing each line as it wrote it, so a job routes its later steps through the fault by
+#       running this verb and nothing else.
+#       --hosts defaults to FAULT_HOSTS below, the release hosts both jobs fault, which is
+#       written there and in no step of either job.
 #       Its log is $RUNNER_TEMP/ci-tools-proof/fault.log.
+#
+#   stop-fault
+#       The same four proxy variables, emptied in $GITHUB_ENV and printed. The steps after it
+#       must not go through a proxy that stops with the job: the ci-ok-report step every job
+#       ends with uploads an artifact.
+#       The two bypass lists stay as `start-fault` wrote them, because with no proxy set
+#       nothing reads them.
 #
 #   probe <faulted host>
 #       The pair that reads the fault before any install meets it: one request through the proxy
@@ -48,18 +59,28 @@
 #       verb fails naming which of the two was wrong.
 #       The second reading is what catches a bypass: a request that never reached the proxy
 #       leaves no line in its log, whatever carried it past.
+#       It also marks where the proxy's log stands when it ends, which is where this job's own
+#       installs begin: `installed-bun --expect-refused` reads the refusals after that mark, so
+#       it reads an install's 504 and never this probe's.
 #
 #   version-answers <row> <printed>
 #       Reads what one installed tool printed as its version against the row that pins it.
 #       Prints the reading and returns non-zero where the two do not agree, so the step that
 #       runs it keeps its own list of the tools that answered wrongly.
 #
-#   installed-bun <row>
+#   installed-bun <row> [--expect-refused <host>]
 #       The bun on this job's PATH, read against that row: the machine, what `bun --version`
-#       answers, the path `command -v bun` gives, the sha256 of that file, and the row's own
-#       version and digest.
+#       answers, the path `command -v bun` gives, the row's own version, and the digest check
+#       ci_tools_verify makes of that file against that row, which is the one digest reader of
+#       this repository, so the rig holds a binary to a row the way every action does.
 #       It refuses the job where the version is not the one .bun-version pins or the binary is
 #       not that row's bytes, and it is what the arm64 job's two halves are read by.
+#       `--expect-refused <host>` adds the reading that says which source served those bytes:
+#       the fault proxy must have refused a request to that host, after the probe marked its
+#       log, with the 504 that sent the install to its second source. Neither the version nor
+#       the digest can say it, since a row's two sources serve one binary by design and read
+#       the same whichever answered, and no later step can read the `ci-tools:` line the
+#       install wrote, since a composite action writes it to the job's log.
 #
 #   corrupt [row…]
 #       Writes the control file the origin reads, with those rows or with none, and prints what
@@ -85,12 +106,16 @@
 #       Writes that file as the jj binary inside mise's own install directory for the tool
 #       packages/daemon/docker/worker.Dockerfile pins, which is where
 #       .github/actions/install-jj reads an installed jj from, and prints the path and the
-#       file's sha256.
+#       file's sha256. That directory is derived from the `ARG JJ_TOOL` spec rather than
+#       written here, so an ARG that moves to another fork moves the seed with it.
 #       Measured in this issue's pod: with
-#       `$MISE_DATA_DIR/installs/github-sjawhar-jj/<version>/jj` in place as a file of mode 0755
-#       and nothing else there, `mise install github:sjawhar/jj@<version>` exits 0 without
-#       reaching the network — "installed but not activated" is its whole output — and
+#       `$MISE_DATA_DIR/installs/<the spec's own directory>/<version>/jj` in place as a file of
+#       mode 0755 and nothing else there, `mise install github:sjawhar/jj@<version>` exits 0
+#       having downloaded nothing — "installed but not activated" is its whole output — and
 #       `mise x github:sjawhar/jj@<version> -- sh -c 'command -v jj'` prints that path.
+#       It is no offline install: measured in CI at run 42507815176, that `mise install`
+#       resolves the tool's version list over api.github.com even when the directory already
+#       holds the tool, so the case that seeds it runs before the fault rather than inside it.
 #       The jj-primary case uses it because a live `mise install` inside the fault is the thing
 #       that made this job red during an outage: jj's release asset is on the host the fault
 #       holds, so a case about the bytes mise installed would spend the outage downloading
@@ -140,6 +165,19 @@ mark="$work/mark"
 # The two other bun rows are the same binary for another runner (.github/ci-tools.yaml says so),
 # and no case installs them, so nothing would serve their payload.
 STAGED_ROWS="crane changie mise jj bun-linux-x64"
+
+# The hosts both jobs fault, written here and in no step of .github/workflows/ci.yaml:
+# github.com, where a release download starts, and the two githubusercontent.com hosts it ends
+# at, rather than the whole githubusercontent.com domain.
+# Measured on 2026-11-08: a release asset redirects to release-assets.githubusercontent.com and
+# a ghcr.io blob redirects to pkg-containers.githubusercontent.com, so faulting the domain takes
+# the second source down with the first and the proof reads nothing (run 42484733737, where
+# crane's copy answered curl exit 22 behind that fault). objects.githubusercontent.com is the
+# host release downloads ended at before, and the issue's own check names it.
+# A release host that moves again is one edit here. What catches the move is the second-source
+# cases of the `tool-fallback` job: each of them fails when the origin served nothing for its
+# row, which is what a primary that answered after all leaves behind.
+FAULT_HOSTS="github.com,release-assets.githubusercontent.com,objects.githubusercontent.com"
 
 # RFC 2606's reserved suffix, which `probe` hangs on the faulted host to make its control.
 # Nobody owns a name under it and no resolver answers for one, so only the proxy can answer a
@@ -410,8 +448,28 @@ stage() {
 
 # ---------------------------------------------------------------- start-fault
 
+# fault_env <proxy>: every variable a client reads before it decides where to send a request,
+# written to $GITHUB_ENV and printed as it was written.
+# The four spellings are the whole of what a client reads, and the two bypass lists are emptied
+# with a proxy set because either one holding a star sends every host past it. A cleared proxy
+# leaves those two alone: with nothing to go around, nothing reads them.
+# It goes through $GITHUB_ENV rather than a step `env:` map because GitHub refuses a map that
+# holds two spellings of one name, and the workflow would then not start at all.
+# Off a runner there is no $GITHUB_ENV, and the lines are printed and written nowhere.
+fault_env() {
+  local proxy=$1 line
+  local -a lines=(
+    "http_proxy=$proxy" "https_proxy=$proxy" "HTTP_PROXY=$proxy" "HTTPS_PROXY=$proxy"
+  )
+  [ -z "$proxy" ] || lines+=("no_proxy=" "NO_PROXY=")
+  for line in "${lines[@]}"; do
+    [ -z "${GITHUB_ENV:-}" ] || printf '%s\n' "$line" >> "$GITHUB_ENV"
+    printf '  %s\n' "$line"
+  done
+}
+
 start_fault() {
-  local hosts=""
+  local hosts=$FAULT_HOSTS
   while [ "$#" -gt 0 ]; do
     case $1 in
       --hosts)
@@ -421,7 +479,8 @@ start_fault() {
       *) die "start-fault: unknown argument '$1'" ;;
     esac
   done
-  [ -n "$hosts" ] || die "start-fault: --hosts is required"
+  [ -n "$hosts" ] ||
+    die "start-fault: --hosts was given no host, and an empty list would fault every host there is"
   mkdir -p "$work"
   local port_file="$work/fault.port"
   rm -f "$port_file" "$fault_log"
@@ -437,6 +496,20 @@ start_fault() {
   } > "$fault_state"
   [ -z "${GITHUB_OUTPUT:-}" ] || echo "proxy=$proxy" >> "$GITHUB_OUTPUT"
   note "the fault proxy is $proxy, answering HTTP 504 for $hosts and passing every other host on"
+  note "every later step of this job goes through it:"
+  fault_env "$proxy"
+}
+
+# ---------------------------------------------------------------- stop-fault
+
+# stop_fault: the four proxy variables emptied, which is where a job stops going through the
+# fault. The proxy process itself ends with the job; what must end before that is every later
+# step reading it, since the ci-ok-report step each job ends with uploads an artifact and a
+# proxy about to go would carry that upload.
+stop_fault() {
+  [ "$#" -eq 0 ] || die "stop-fault takes no argument, and this call gave $#"
+  note "no later step of this job goes through the fault proxy:"
+  fault_env ""
 }
 
 # ---------------------------------------------------------------- probe
@@ -527,6 +600,10 @@ probe() {
   fi
 
   [ "$problems" -eq 0 ] || exit 1
+  # Where the proxy's log stands now, which is where this job's own installs begin: a later
+  # `installed-bun --expect-refused` reads the refusals after this mark, so it reads an
+  # install's 504 and never this probe's, whose request names the same host.
+  printf 'probed=%s\n' "$(wc -l < "$fault_log")" >> "$fault_state"
   echo "  the pair reads as it must, so every install below meets the fault rather than the host"
 }
 
@@ -553,11 +630,15 @@ version_answers() {
 
 # ---------------------------------------------------------------- installed-bun
 
-# installed_bun <row>: the bun on this job's PATH read against that row, which is how a job on a
-# runner architecture this repository proves nothing else on says which Bun it got.
+# installed_bun <row> [--expect-refused <host>]: the bun on this job's PATH read against that
+# row, which is how a job on a runner architecture this repository proves nothing else on says
+# which Bun it got.
 # It prints the machine, what `bun --version` answers, the path `command -v bun` gives, the
-# sha256 of that file, and the row's own version and digest, and it refuses the job where the
-# version is not the one .bun-version pins or the binary is not that row's bytes.
+# row's own version and digest, and what ci_tools_verify reads that file as, and it refuses the
+# job where the version is not the one .bun-version pins or the binary is not that row's bytes.
+# The digest reading is ci_tools_verify's and not one of this rig's own: that function is this
+# repository's one digest check, it writes the `ci-tools:` line that names what was held to the
+# row, and a second comparison here is a second rule that can disagree with it.
 #
 # The row a reader wants is the one .github/actions/setup-bun chose from `uname -m`, and no step
 # can read that out of the action: a composite action's step outputs are its own. It is read
@@ -565,9 +646,27 @@ version_answers() {
 # holds the same file to the row named here, and one file has one sha256, so two passing
 # readings name one row — the three bun rows of .github/ci-tools.yaml do not share the aarch64
 # row's digest.
+#
+# `--expect-refused <host>` is the other half of a reading taken under the fault: which source
+# served those bytes. The version and the digest cannot say it, because a row's release asset
+# and its npm package are one binary by design and read the same whichever answered. The fault
+# proxy's own log can: a 504 for that host, logged after the probe marked the log, is the
+# refusal that sent this install to its second source.
 installed_bun() {
-  [ "$#" -eq 1 ] || die "installed-bun takes the row this runner's bun must be, and this call gave $#"
-  local row=$1 bun digest version pinned printed read_back problems=0
+  [ "$#" -ge 1 ] ||
+    die "installed-bun takes the row this runner's bun must be, and this call gave none"
+  local row=$1 refused=""
+  shift
+  while [ "$#" -gt 0 ]; do
+    case $1 in
+      --expect-refused)
+        refused=$2
+        shift 2
+        ;;
+      *) die "installed-bun: unknown argument '$1'" ;;
+    esac
+  done
+  local bun digest version pinned printed problems=0
   digest=$(ci_tools_digest "$row")
   version=$(ci_tools_field "$row" version)
   pinned=$(tr -d '[:space:]' < "$root/.bun-version")
@@ -575,20 +674,42 @@ installed_bun() {
   [ -n "$bun" ] ||
     die "installed-bun: no bun is on this job's PATH, so neither source of the $row row installed one"
   printed=$("$bun" --version)
-  read_back=$(sha256sum -- "$bun")
-  read_back=${read_back%% *}
 
   note "the bun this $(uname -m) runner holds, read against the $row row"
   echo "  bun --version answers $printed, and .bun-version pins $pinned"
-  echo "  command -v bun gives $bun, whose sha256 is $read_back"
+  echo "  command -v bun gives $bun"
   echo "  the $row row pins version $version and sha256 $digest"
   if [ "$printed" != "$pinned" ]; then
     echo "::error::ci-tools-proof: the bun at $bun answers $printed, and .bun-version pins $pinned, so this runner installed another Bun than the one this repository locks." >&2
     problems=$((problems + 1))
   fi
-  if [ "$read_back" != "$digest" ]; then
-    echo "::error::ci-tools-proof: the bun at $bun is sha256 $read_back, and the $row row pins $digest, so the bytes on this runner are not the ones that row names." >&2
+  ci_tools_verify "$row" "$bun" "the bun on this $(uname -m) runner's PATH" ||
     problems=$((problems + 1))
+  if [ -n "$refused" ]; then
+    local probed refusals
+    [ -f "$fault_state" ] ||
+      die "installed-bun: --expect-refused reads the fault proxy's log, and this job started no fault proxy"
+    probed=$(sed -n 's/^probed=//p' "$fault_state" | tail -n 1)
+    [ -n "$probed" ] ||
+      die "installed-bun: --expect-refused reads the refusals logged after the probe, and this job ran no probe under this fault"
+    # The proxy writes `ci-fault-proxy: 504 <verb> <target>`, where the target is `<host>:<port>`
+    # for the CONNECT an https request makes and the whole URL for a plain one, so the host is
+    # read off the target and compared rather than searched for in the line.
+    refusals=$(awk -v skip="$probed" -v host="$refused" '
+      NR > skip && $2 == "504" {
+        target = $4
+        sub(/^https?:\/\//, "", target)
+        sub(/[:\/].*$/, "", target)
+        if (target == host) print
+      }' "$fault_log")
+    echo "  what the fault proxy refused for $refused since the probe:"
+    if [ -n "$refusals" ]; then
+      sed 's/^/    /' <<<"$refusals"
+    else
+      echo "    nothing at all"
+      echo "::error::ci-tools-proof: the fault proxy refused no request to $refused after the probe, so nothing here says the second source served this bun: the two sources of the $row row are one binary with one digest by design, and a run where $refused answered after all reads exactly as this one does." >&2
+      problems=$((problems + 1))
+    fi
   fi
   [ "$problems" -eq 0 ] || exit 1
   echo "  the bun on this runner is the $row row's pinned binary"
@@ -660,9 +781,12 @@ payload_path() {
 # tool packages/daemon/docker/worker.Dockerfile pins, which is where .github/actions/install-jj
 # reads an installed jj from.
 # Measured in this issue's pod: with that one file in place as mode 0755 and nothing else in the
-# directory, `mise install github:sjawhar/jj@<version>` exits 0 without reaching the network —
+# directory, `mise install github:sjawhar/jj@<version>` exits 0 having downloaded nothing —
 # "installed but not activated" is its whole output — and
 # `mise x github:sjawhar/jj@<version> -- sh -c 'command -v jj'` prints that path.
+# It is no offline install: measured in CI at run 42507815176, that `mise install` resolves the
+# tool's version list over api.github.com even when the directory already holds the tool, which
+# is why the case that seeds it runs before the fault rather than inside it.
 # The jj-primary case is about the bytes mise installed and not about mise's fetch, and a live
 # `mise install` inside the fault is what made this job red during an outage: jj's release asset
 # is on the host the fault holds, so that install would spend the outage downloading through a
@@ -671,14 +795,21 @@ payload_path() {
 # where it was.
 seed_mise_jj() {
   [ "$#" -eq 1 ] || die "seed-mise-jj takes the file to seed mise's install with, and this call gave $#"
-  local file=$1 dockerfile="$root/packages/daemon/docker/worker.Dockerfile" jj_tool version dir
+  local file=$1 dockerfile="$root/packages/daemon/docker/worker.Dockerfile" jj_tool spec version dir
   [ -f "$file" ] || die "seed-mise-jj: there is no file at '$file' to seed mise's install with"
   jj_tool=$(sed -n 's/^ARG JJ_TOOL=//p' "$dockerfile")
   [ -n "$jj_tool" ] || die "seed-mise-jj: $dockerfile names no ARG JJ_TOOL"
   version=${jj_tool##*@}
   [ "$version" != "$jj_tool" ] ||
     die "seed-mise-jj: the ARG JJ_TOOL '$jj_tool' names no version after an @, so this rig cannot name mise's install directory for it"
-  dir="${MISE_DATA_DIR:-$HOME/.local/share/mise}/installs/github-sjawhar-jj/$version"
+  # mise's own directory for a tool is that tool's spec with its `:` and its `/` written as `-`,
+  # and it is derived here rather than written out: an ARG that moved to another fork would
+  # otherwise leave this rig seeding a directory mise never reads, and the case would download
+  # the real jj and fail as "did not refuse", naming the wrong cause.
+  spec=${jj_tool%@*}
+  spec=${spec//:/-}
+  spec=${spec//\//-}
+  dir="${MISE_DATA_DIR:-$HOME/.local/share/mise}/installs/$spec/$version"
   # The directory holds this one file and nothing else, which is what the measurement above was
   # taken on: a half-written install an earlier `mise install` left behind is not that reading.
   rm -rf "$dir"
@@ -806,12 +937,13 @@ report() {
 
 verb=${1:-}
 [ "$#" -ge 1 ] ||
-  die "usage: $(basename "$0") <origin-start|stage|start-fault|probe|version-answers|installed-bun|corrupt|flip-last-byte|payload-path|seed-mise-jj|report> [argument…]"
+  die "usage: $(basename "$0") <origin-start|stage|start-fault|stop-fault|probe|version-answers|installed-bun|corrupt|flip-last-byte|payload-path|seed-mise-jj|report> [argument…]"
 shift
 case $verb in
   origin-start) origin_start "$@" ;;
   stage) stage "$@" ;;
   start-fault) start_fault "$@" ;;
+  stop-fault) stop_fault "$@" ;;
   probe) probe "$@" ;;
   version-answers) version_answers "$@" ;;
   installed-bun) installed_bun "$@" ;;
@@ -820,5 +952,5 @@ case $verb in
   payload-path) payload_path "$@" ;;
   seed-mise-jj) seed_mise_jj "$@" ;;
   report) report "$@" ;;
-  *) die "'$verb' is no verb of this rig (origin-start, stage, start-fault, probe, version-answers, installed-bun, corrupt, flip-last-byte, payload-path, seed-mise-jj, report)" ;;
+  *) die "'$verb' is no verb of this rig (origin-start, stage, start-fault, stop-fault, probe, version-answers, installed-bun, corrupt, flip-last-byte, payload-path, seed-mise-jj, report)" ;;
 esac
