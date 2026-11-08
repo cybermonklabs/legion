@@ -210,11 +210,27 @@ const stallBackstopNotice = "worker-stalled"
 // second time if it does not happen (supervise's backstopStalledTurn).
 //
 // What became of the stalled process is a sentence of its own (stallStopClause), written from
-// the machine's own record of the stop rather than from the end: the end says the process was
-// let go, and only the machine knows whether the runtime stopped it
+// the machine's own record of the stop rather than from the end: the end says whether the
+// process was let go, and only the machine knows whether the runtime stopped it
 // (supervise.StallBackstopStop.StopUnconfirmed). A pod the runtime would not stop goes on
 // running and goes on holding what it runs on, which is the half of this news its owner acts on.
+//
+// Those two derived clauses are the whole of what this notice says about the stalled process
+// and about the stalled turn. A row of stallBackstopEnds says nothing of either subject — not
+// even something true of it — and what holds every row to that is read from the notice itself
+// rather than from the rows: the daemon's own words are taken out of the rendered text, and
+// what is left, which is the row's own words and nothing else, must name neither subject
+// (stallRecordInWords, TestTheRowsOwnWordsSayNothingOfTheStalledProcessOrTheTurn).
 func stallBackstopRecord(c supervise.Claim, stop supervise.StallBackstopStop, silent time.Duration) string {
+	return stallRecordInWords(c, stop, silent, stallBackstopEnd(stop.End))
+}
+
+// stallRecordInWords is that notice written from the words it is handed rather than from the
+// ones its end carries, which is the seam the property above reads it through: the same notice
+// written from no words at all is every word of it the daemon derived, so what the two differ
+// by is the row's own words and nothing else, and no part of the notice can be mistaken for
+// the other side.
+func stallRecordInWords(c supervise.Claim, stop supervise.StallBackstopStop, silent time.Duration, words stallEndWords) string {
 	call := "the daemon saw no call of this turn"
 	if stop.Step.CallID != "" {
 		call = fmt.Sprintf("the last call the daemon saw was %s (%s), which started at %s and has not ended",
@@ -224,7 +240,6 @@ func stallBackstopRecord(c supervise.Claim, stop supervise.StallBackstopStop, si
 				stop.Step.Tool, stop.Step.CallID, stallInstant(stop.Step.StartedAt), stallInstant(stop.Step.EndedAt))
 		}
 	}
-	words := stallBackstopEnd(stop.End)
 	fill := stallFill(c, stop)
 	return fmt.Sprintf("%s: its agent last stepped at %s, %s ago, past the %s this deployment gives the role (worker_stall_backstop_hours). The turn began at %s, and %s. The task it was serving is still owed to it and %s; %s %sThe arguments of a call are never recorded, so they are in no part of this notice.",
 		fill.Replace(words.opening(stop)), stallInstant(stop.LastStep), silent.Round(time.Minute), stop.Bound,
@@ -265,31 +280,47 @@ const (
 	stallTurnActedOn       = "the daemon's stall backstop acted on the " + stallRoleWord + "'s stalled turn"
 )
 
-// stallStopClause is what the notice says of the stalled process itself, for an end that let it
-// go: that it was stopped, or that the runtime would not stop it and it may be running still. An
-// end that let no process go — the relaunch the pacing parked, whose claim keeps and runs its
-// process (supervise.EndRelaunchParked) — has no such sentence, and neither has an end this
-// daemon has no row for, which says nothing of a process it cannot name (stallBackstopEnd).
+// stallStopClause is what the notice says of the stalled process itself, and the whole of what
+// it says of it. For an end that let that process go: that it was stopped, or that the runtime
+// would not stop it and it may be running still. For the one end that kept it — the relaunch
+// the pacing parked, whose claim goes on recording its process (supervise.EndRelaunchParked) —
+// that the daemon made no stop of it, which is what that owner acts on while the queued launch
+// waits. An end this daemon has no row for has no such sentence, since it says nothing of a
+// process it cannot name (stallBackstopEnd).
+//
+// None of the three says the process is alive. The daemon has not looked: this notice is
+// written because the agent stopped stepping, and an agent that stopped stepping because its
+// process died silently is one of the shapes a stall takes. What each says is what the daemon
+// did about that process and what follows from that — a stop made, a stop the runtime never
+// answered, or no stop at all.
 //
 // The sentence ends with a space, since it stands between the charge clause and the one about a
 // call's arguments, and is empty where there is none.
 func stallStopClause(words stallEndWords, stop supervise.StallBackstopStop) string {
-	if words.process != stallProcessLetGo {
-		return ""
+	switch words.process {
+	case stallProcessKept:
+		return stallProcessNotStopped + " "
+	case stallProcessLetGo:
+		if stop.StopUnconfirmed {
+			return stallStopRefused + " "
+		}
+		return stallProcessStopped + " "
 	}
-	if stop.StopUnconfirmed {
-		return stallStopRefused + " "
-	}
-	return stallProcessStopped + " "
+	return ""
 }
 
-// stallProcessStopped and stallStopRefused are those two sentences. The second says what the
-// daemon knows and no more: the runtime did not answer the stop, so the process is one nobody
-// has seen end, and a pod of it goes on holding its node's room and its disk until an operator
-// or the tree's close ends it (supervise's endHeld, stopPrevious).
+// The three sentences stallStopClause picks between, which are every statement this notice
+// makes about the claim's stalled process. stallStopRefused says what the daemon knows and no
+// more: the runtime did not answer the stop, so the process is one nobody has seen end, and a
+// pod of it goes on holding its node's room and its disk until an operator or the tree's close
+// ends it (supervise's endHeld, stopPrevious). stallProcessNotStopped is the end that asked
+// for no stop at all, where that room and that disk are what nothing of the daemon's has given
+// back, and where the claim goes on recording the process until the queued launch comes due
+// (supervise's reserveWake, parkWake).
 const (
-	stallProcessStopped = "Its stalled process was stopped."
-	stallStopRefused    = "The runtime did not confirm the stop of its stalled process, so that process may be running still and holding what it runs on."
+	stallProcessStopped    = "Its stalled process was stopped."
+	stallProcessNotStopped = "The daemon made no stop of its stalled process, and the claim records that process still, so nothing the daemon has done has taken away what that process holds."
+	stallStopRefused       = "The runtime did not confirm the stop of its stalled process, so that process may be running still and holding what it runs on."
 )
 
 // stallFill fills the two values a clause of the notice names where it names them: the claim's
@@ -373,42 +404,48 @@ const stallNothingCharged = "nothing was charged to the claim."
 // — the row says so and names what a person has to do, rather than promising a resume or a
 // retry that may never come.
 //
-// No row says the stalled process was stopped, however plainly its end let that process go, and
-// no row says the turn was ended: the runtime can refuse a stop and the machine goes on anyway
-// (supervise's endHeld, stopPrevious), so both of those are derived from the machine's own
-// record of the stop (stallTurnClause, stallStopClause, stallProcessFate).
+// No row says anything at all of the stalled process or of the stalled turn — not that the
+// process was stopped, however plainly its end let that process go, and not that the turn was
+// ended: the runtime can refuse a stop and the machine goes on anyway (supervise's endHeld,
+// stopPrevious), so both subjects belong to the clauses the daemon derives from the machine's
+// own record of the stop (stallTurnClause, stallStopClause, stallProcessFate). A row that names
+// either of them, to say anything whatever, is a row the property fails
+// (TestTheRowsOwnWordsSayNothingOfTheStalledProcessOrTheTurn), so each row below says what the
+// daemon did to the launch, the session, the claim or the task, and leaves those two subjects
+// to the daemon's own sentences.
 //
 // The launch failures of a replacement that never started are charged, as every launch failure
 // is, and the one end that carries them says so rather than leaving the owner a sentence its
 // budgets contradict.
 var stallBackstopEnds = map[supervise.ProcessEnd]stallEndWords{
 	supervise.EndRelaunched: {
-		did:     "and started a new process in its place",
-		end:     "its session was brought back on a new process",
+		did:     "and started a replacement in its place",
+		end:     "its session was brought back on the replacement the daemon started",
 		charged: stallNothingCharged,
 		process: stallProcessLetGo},
 	supervise.EndRelaunchParked: {
-		did: "and queued the relaunch that replaces its stalled process",
-		end: "the launch that replaces its stalled process is queued in the daemon's wake pacing and is due at " + stallDueWord +
-			": what the park settled is that launch queued and that process running on until its turn. That turn may start nothing, or not the launch the park queued — a suspension waiting for this claim, " +
-			"the lifecycle recheck every launch makes refusing this one, the tree's close dropping the queued launch, a take-back the store refuses at the turn itself, a launch whose own write or start the daemon cannot make, " +
-			"and an operator's task that runs this launch before its turn are among the things that can change it",
+		did: "and queued the replacement launch",
+		end: "the launch that replaces it is queued in the daemon's wake pacing and is due at " + stallDueWord +
+			": what the park settled is that launch queued and the claim waiting on it until then. What comes due at " + stallDueWord +
+			" may be nothing at all, or not the launch the park queued — a suspension waiting for this claim, " +
+			"the lifecycle recheck every launch makes refusing this one, the tree's close dropping the queued launch, a take-back the store refuses when that launch comes due, a launch whose own write or start the daemon cannot make, " +
+			"and an operator's task that runs this launch before it is due are among the things that can change it",
 		charged: stallNothingCharged,
 		process: stallProcessKept},
 	supervise.EndRelaunchPending: {
-		did: "and let its stalled process go",
-		end: "the launch that replaces that process has not started: either its write was refused, which the daemon tries again at its probe interval, or the daemon's own stop cut the launch short, which the daemon's next start takes up; " +
+		did: "and did not get a replacement started in its place",
+		end: "the launch that replaces it has not started: either its write was refused, which the daemon tries again at its probe interval, or the daemon's own shutdown cut the launch short, which the daemon's next start takes up; " +
 			"and a suspension waiting for this claim, a tree cleanup already reserved or the claim's launch budget running out leaves it suspended or failed with nothing started for it instead",
 		charged: stallNothingCharged,
 		process: stallProcessLetGo},
 	supervise.EndSuspended: {
 		did: "in the suspension that was already waiting for it",
-		end: "a suspension that was already waiting for this turn ran instead of a replacement, and the claim is suspended with nothing queued for it: " +
+		end: "a suspension that was already waiting for this claim ran instead of a replacement, and the claim is suspended with nothing queued for it: " +
 			"what it waits on is a resume, or the close of its tree, which retires it",
 		charged: stallNothingCharged,
 		process: stallProcessLetGo},
 	supervise.EndFailed: {
-		did: "and could not replace its stalled process, which failed the claim",
+		did: "and could not make the replacement, which failed the claim",
 		end: "every try at the replacement was refused, which ran the claim's launch budget out, so the claim is failed and the daemon starts nothing for it: " +
 			"what it waits on is a retry, or the close of its tree, which retires it",
 		charged: "the stall itself charged the claim nothing; the launch failures of the replacement that could not be started are what it was charged.",

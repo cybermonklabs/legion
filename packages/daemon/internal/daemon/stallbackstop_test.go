@@ -10,7 +10,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -283,13 +285,13 @@ func TestTheStallBackstopEndsAStalledTurnAndTellsTheOwnerOnce(t *testing.T) {
 		t.Fatalf("the notice = %+v, want a worker-stalled of the implementer", notice)
 	}
 	for _, want := range []string{
-		"the daemon ended the implementer's turn and started a new process in its place",
+		"the daemon ended the implementer's turn and started a replacement in its place",
 		"4h30m0s ago",
 		"past the 4h0m0s this deployment gives the role",
 		"bash (toolu_impl_11)",
 		"has not ended",
 		"still owed",
-		"its session was brought back on a new process",
+		"its session was brought back on the replacement the daemon started",
 	} {
 		if !strings.Contains(notice.Reason, want) {
 			t.Errorf("the notice says %q, which does not carry %q", notice.Reason, want)
@@ -562,7 +564,7 @@ func TestTheStallBackstopTellsASuspendedEndAsSuspended(t *testing.T) {
 	if resumes := rig.resumes(stalled.Token); len(resumes) != 0 {
 		t.Fatalf("resumes = %d, want none: the held suspension ended the process rather than replacing it", len(resumes))
 	}
-	for _, want := range []string{"still owed", "a suspension that was already waiting for this turn ran instead of a replacement",
+	for _, want := range []string{"still owed", "a suspension that was already waiting for this claim ran instead of a replacement",
 		"the claim is suspended with nothing queued for it", "what it waits on is a resume, or the close of its tree, which retires it",
 		stallProcessStopped} {
 		if !strings.Contains(notices[0].Reason, want) {
@@ -605,10 +607,10 @@ func TestTheStallBackstopTellsTheOwnerOfAnEndTheStoreWouldNotWrite(t *testing.T)
 	if c := m.Claim(); c.State != supervise.StateLaunching || c.Locator != nil {
 		t.Fatalf("the claim is %s with locator %+v, want it launching with the stalled process let go", c.State, c.Locator)
 	}
-	for _, want := range []string{"still owed", "the daemon ended the implementer's turn and let its stalled process go",
-		"the launch that replaces that process has not started",
+	for _, want := range []string{"still owed", "the daemon ended the implementer's turn and did not get a replacement started in its place",
+		"the launch that replaces it has not started",
 		"either its write was refused, which the daemon tries again at its probe interval",
-		"or the daemon's own stop cut the launch short, which the daemon's next start takes up",
+		"or the daemon's own shutdown cut the launch short, which the daemon's next start takes up",
 		"leaves it suspended or failed with nothing started for it instead", "nothing was charged to the claim",
 		stallProcessStopped} {
 		if !strings.Contains(notices[0].Reason, want) {
@@ -696,18 +698,21 @@ func TestTheStallBackstopTellsTheOwnerOfAnEndThatFailedTheClaim(t *testing.T) {
 }
 
 // A replacement the wake pacing parked is the one end whose turn was not ended: the take-back
-// has run, so the task is owed again, and the claim keeps the stalled process and keeps running
-// it until the launch's turn (supervise's reserveWake, parkWake). The notice says exactly that
-// much and no more. Its opening never says the turn was ended, because it was not — the opening
-// cannot say it, since the daemon derives that clause from the end's own record of the process
-// (stallTurnClause). Its clause says what the park settled and then names what can change it,
-// as an open list rather than a closed one: a suspension that arrived while the launch waited
-// ends the turn in a stop (supervise's wakeNow, endHeld), a lifecycle recheck refuses the
-// turn's own launch and keeps the process (runWake, relaunchRefused), a tree close drops the
-// wake with the process (letGo), the take-back the turn itself makes can be refused by the
-// store (runWake), the launch can fail its own write or its start (launchNow, relaunchLater,
-// fail), and an operator's task can run the launch before its turn (runParkedLaunchNow). None
-// of them writes this owner a second notice. And the wait is the wake's own due time, which the
+// has run, so the task is owed again, and the claim goes on recording the stalled process
+// until the launch comes due (supervise's reserveWake, parkWake). The notice says exactly that
+// much and no more. Its opening never says the turn was ended, because it was not — the
+// opening cannot say it, since the daemon derives that clause from the end's own record of the
+// process (stallTurnClause), and the kept process is the daemon's own sentence too, which says
+// that the daemon made no stop of it and says nothing of whether it is alive, which the daemon
+// has not looked at (stallStopClause). The row's own clause says what the park settled and
+// then names what can change it, as an open list rather than a closed one: a suspension that
+// arrived while the launch waited ends the turn in a stop
+// (supervise's wakeNow, endHeld), a lifecycle recheck refuses the launch when it comes due and
+// keeps the process (runWake, relaunchRefused), a tree close drops the wake with the process
+// (letGo), the take-back the launch itself makes can be refused by the store (runWake), the
+// launch can fail its own write or its start (launchNow, relaunchLater, fail), and an
+// operator's task can run the launch before it is due (runParkedLaunchNow). None of them
+// writes this owner a second notice. And the wait is the wake's own due time, which the
 // machine carries on its report (supervise.StallBackstopStop.WakeDue), not a guess at how long
 // a wave takes.
 func TestTheStallBackstopTellsAParkedRelaunchAsWhatParkTimeSettles(t *testing.T) {
@@ -743,18 +748,19 @@ func TestTheStallBackstopTellsAParkedRelaunchAsWhatParkTimeSettles(t *testing.T)
 		t.Fatalf("the claim holds wake %+v, want the backstop's launch waiting its turn", parked)
 	}
 	for _, want := range []string{
-		"the daemon took back the implementer's task without ending its turn and queued the relaunch that replaces its stalled process",
+		"the daemon took back the implementer's task without ending its turn and queued the replacement launch",
 		"still owed",
-		"the launch that replaces its stalled process is queued in the daemon's wake pacing and is due at " + stallInstant(parked.At),
-		"what the park settled is that launch queued and that process running on until its turn",
-		"That turn may start nothing, or not the launch the park queued",
+		"the launch that replaces it is queued in the daemon's wake pacing and is due at " + stallInstant(parked.At),
+		"what the park settled is that launch queued and the claim waiting on it until then",
+		"What comes due at " + stallInstant(parked.At) + " may be nothing at all, or not the launch the park queued",
 		"a suspension waiting for this claim",
 		"the lifecycle recheck every launch makes refusing this one",
 		"the tree's close dropping the queued launch",
-		"a take-back the store refuses at the turn itself",
+		"a take-back the store refuses when that launch comes due",
 		"a launch whose own write or start the daemon cannot make",
-		"an operator's task that runs this launch before its turn are among the things that can change it",
+		"an operator's task that runs this launch before it is due are among the things that can change it",
 		"nothing was charged to the claim",
+		stallProcessNotStopped,
 	} {
 		if !strings.Contains(notices[0].Reason, want) {
 			t.Errorf("the notice says %q, which does not carry %q", notices[0].Reason, want)
@@ -787,24 +793,26 @@ func TestTheStallBackstopTellsAParkedRelaunchAsWhatParkTimeSettles(t *testing.T)
 // held over every rendering, so neither is satisfied by a row that says nothing:
 //
 //   - an end that let the claim's process go says that the process was stopped under a
-//     confirmed stop and that it may be running still under an unconfirmed one, and nowhere
-//     under that unconfirmed one does any word of it call the process stopped; an end that
-//     kept the process says neither sentence under either value, and calls that process
-//     stopped nowhere;
+//     confirmed stop, and under an unconfirmed one says instead that it may be running still
+//     and nowhere that it was stopped; an end that kept the process says under either value
+//     that the daemon made no stop of it, and neither of the sentences a let-go end carries;
 //   - an end that let the process go says the turn was ended under a confirmed stop and says
 //     so nowhere under an unconfirmed one; an end that kept the process never says it at all.
 //
-// Both are read over the whole notice rather than over the clauses the turn and the stalled
-// process are derived into, because the derivation is what keeps a row from picking those
-// words and this is what keeps a row from writing them anyway (stallTurnClause,
-// stallStopClause, stallTurnEndedClaims, stallStopClaims).
+// Each is read against the clauses themselves rather than against phrasings of them. That is
+// what it buys to have those clauses be every statement the notice makes about either subject:
+// the two lists of phrasings this walk carried, one for the turn and one for the stop, are
+// gone, and what keeps a row from writing such a statement in its own words is the residue
+// property, which reads the row's words out of the rendered notice by taking the daemon's away
+// (stallTurnClause, stallStopClause,
+// TestTheRowsOwnWordsSayNothingOfTheStalledProcessOrTheTurn).
 //
 // It catches an end added with no opening or no sentence, an end whose sentence claims the
 // wrong thing, a clause whose values nothing fills in (stallFill), and a row left behind for an
 // end that no longer exists. It cannot catch a sentence that is merely wrong about what the
 // machine did: the cases above read each end's own notice for that.
 func TestTheNoticeHasWordsForEveryEndThatTellsItsOwner(t *testing.T) {
-	const relaunched = "its session was brought back on a new process"
+	const relaunched = "its session was brought back on the replacement the daemon started"
 	worded := map[supervise.ProcessEnd]bool{}
 	for end := range stallBackstopEnds {
 		worded[end] = true
@@ -855,35 +863,37 @@ func TestTheNoticeHasWordsForEveryEndThatTellsItsOwner(t *testing.T) {
 		if strings.Contains(told, stallRoleWord) || strings.Contains(told, stallDueWord) {
 			t.Errorf("the notice of %q reads %q, which still holds %s or %s: every value a clause names is filled in by stallFill", end, told, stallRoleWord, stallDueWord)
 		}
-		ended := stallTurnEndedClaims(rigClaim())
-		stopped := stallStopClaims(rigClaim())
+		// Every statement this notice makes about the turn and about the stalled process is one
+		// of the clauses the daemon derives, so each rendering is read for the clause its facts
+		// pick and against the ones they do not.
+		turnEnded := fill.Replace(stallTurnEnded)
 		switch words.process {
 		case stallProcessLetGo:
 			if !strings.Contains(told, stallProcessStopped) {
-				t.Errorf("the notice of %q reads %q, which does not say %q: this end let the claim's process go", end, told, stallProcessStopped)
+				t.Errorf("the notice of %q reads %q, which does not say %q: this end let the claim's process go and the runtime confirmed the stop of it", end, told, stallProcessStopped)
+			}
+			if !strings.Contains(told, turnEnded) {
+				t.Errorf("the notice of %q over a stop the runtime made reads %q, which says nowhere that the turn was ended (%q): this end let the claim's process go and the runtime confirmed the stop of it, so the turn is over", end, told, turnEnded)
 			}
 			if !strings.Contains(refused, stallStopRefused) {
 				t.Errorf("the notice of %q over a stop the runtime refused reads %q, which does not say %q: an owner told the process was stopped would leave a pod running", end, refused, stallStopRefused)
 			}
-			if said := saidFirst(refused, stopped); said != "" {
-				t.Errorf("the notice of %q over a stop the runtime refused reads %q, which says %q all the same: nobody saw that process stop, so no word of this notice may call it stopped and an owner who reads that one leaves a pod running (stallStopClause)", end, refused, said)
+			if strings.Contains(refused, stallProcessStopped) {
+				t.Errorf("the notice of %q over a stop the runtime refused reads %q, which says %q all the same: nobody saw that process stop, and an owner who reads that leaves a pod running (stallStopClause)", end, refused, stallProcessStopped)
 			}
-			if said := saidFirst(told, ended); said == "" {
-				t.Errorf("the notice of %q over a stop the runtime made reads %q, which says nowhere that the turn was ended: this end let the claim's process go and the runtime confirmed the stop of it, so the opening is the end's claim that the turn is over", end, told)
-			}
-			if said := saidFirst(refused, ended); said != "" {
-				t.Errorf("the notice of %q over a stop the runtime refused reads %q, which says %q: nobody saw that process stop, so it may be running the turn still and no word of this notice may call the turn ended (stallTurnClause)", end, refused, said)
+			if strings.Contains(refused, turnEnded) {
+				t.Errorf("the notice of %q over a stop the runtime refused reads %q, which says %q: nobody saw that process stop, so it may be running that turn still (stallTurnClause)", end, refused, turnEnded)
 			}
 		case stallProcessKept:
 			for reading, text := range map[string]string{"a stop the runtime made": told, "a stop the runtime refused": refused} {
-				if said := saidFirst(text, stopped); said != "" {
-					t.Errorf("the notice of %q over %s reads %q, which says %q: this end let no process go, so no word of this notice may call stopped the process the claim keeps and runs", end, reading, text, said)
+				if !strings.Contains(text, stallProcessNotStopped) {
+					t.Errorf("the notice of %q over %s reads %q, which does not say %q: this end let no process go, and what nothing of the daemon's has given back is what that owner acts on (stallStopClause)", end, reading, text, stallProcessNotStopped)
 				}
-				if strings.Contains(text, stallStopRefused) {
-					t.Errorf("the notice of %q over %s reads %q, which says %q: this end asked for no stop of the process its claim keeps and runs", end, reading, text, stallStopRefused)
+				if strings.Contains(text, stallProcessStopped) || strings.Contains(text, stallStopRefused) {
+					t.Errorf("the notice of %q over %s reads %q, which carries a sentence about a process that was let go: this end asked for no stop of the process its claim goes on recording", end, reading, text)
 				}
-				if said := saidFirst(text, ended); said != "" {
-					t.Errorf("the notice of %q over %s reads %q, which says %q: this end kept the claim's process and the turn it is running, so no word of this notice may call that turn ended", end, reading, text, said)
+				if strings.Contains(text, turnEnded) {
+					t.Errorf("the notice of %q over %s reads %q, which says %q: this end kept the claim's process and the turn that process was running", end, reading, text, turnEnded)
 				}
 			}
 		}
@@ -893,80 +903,128 @@ func TestTheNoticeHasWordsForEveryEndThatTellsItsOwner(t *testing.T) {
 	}
 }
 
-// stallTurnEndedClaims is every way this notice's words can say the stalled turn was ended,
-// filled for the claim the walk writes its notices from. The walk reads the whole notice for
-// them, because what the derivation above cannot reach is a row that writes the claim into its
-// own words (stallTurnClause, stallEndWords.did).
-func stallTurnEndedClaims(c supervise.Claim) []string {
-	role := string(c.Role)
-	return []string{
-		"ended the " + role + "'s turn",
-		"ended its turn",
-		"ended this turn",
-		"ended that turn",
-		"ended the turn",
-		"turn was ended",
-		"turn has ended",
-		"turn is over",
-	}
-}
-
-// stallStopClaims is every way this notice's words can say the claim's stalled process was
-// stopped, taken away or ended, filled for the claim the walk writes its notices from. The
-// walk reads the whole notice for them, as it does for the turn, because the derivation that
-// keeps a row from picking the sentence about that process (stallStopClause) cannot keep a row
-// from writing the claim into its own words (stallEndWords.did).
+// What the notice says about the claim's stalled process and about its stalled turn is the
+// daemon's own, derived from the machine's record of the stop at the moment of the stall
+// (stallTurnClause, stallStopClause), and a row of the table says nothing of either subject at
+// all — however that row is worded and whoever adds it.
 //
-// None of them is carried by the true sentence of a stop the runtime refused, which says the
-// runtime did not confirm the stop and that the process may be running still
-// (stallStopRefused): a phrasing read over the whole notice must name a stop that was made,
-// never the word stop alone, or the one end that must say that sentence could not say it. For
-// the same reason the words a let-go end uses of its own record — that it let the process go,
-// which is true whether or not the runtime stopped it (stallProcessLetGo) — are not claims
-// here. A notice that keeps a process and calls the task taken back is likewise saying nothing
-// of the process, so every claim below names the process it stops.
-func stallStopClaims(c supervise.Claim) []string {
-	role := string(c.Role)
-	return []string{
-		"stopped the " + role + "'s stalled process",
-		"stopped the " + role + "'s process",
-		"stopped its stalled process",
-		"stopped the stalled process",
-		"stopped its process",
-		"stopped that process",
-		"stopped the process",
-		"process was stopped",
-		"process has been stopped",
-		"process is stopped",
-		"confirmed the stop",
-		"ended the " + role + "'s process",
-		"ended its process",
-		"ended that process",
-		"ended the process",
-		"process was ended",
-		"process has ended",
-		"killed its process",
-		"killed that process",
-		"killed the process",
-		"process was killed",
-		"took its process away",
-		"took that process away",
-		"took the process away",
-		"process was taken away",
-		"process is gone",
-		"process is no longer running",
-	}
-}
-
-// saidFirst is the first of claims that told carries, and the empty string for a notice that
-// carries none.
-func saidFirst(told string, claims []string) string {
-	for _, said := range claims {
-		if strings.Contains(told, said) {
-			return said
+// The rounds before this one answered that with phrasings: a list of the ways a row could say
+// the turn was ended, another of the ways it could say the process was stopped, both read over
+// the rendered notice. A list of phrasings is indexed by predication — this subject, that verb
+// — and that product is open, so each list let through the next verb nobody had thought of: a
+// row that said it had shut the stalled process down walked through a list holding "stopped
+// the stalled process". This is indexed by reference instead. To say anything whatever of
+// either subject a row must refer to it, and this notice's prose refers to those two by name,
+// so the row's own words are read out of the rendered notice and must name neither — whatever
+// they would have gone on to predicate of it.
+//
+// The row's words are read out by subtraction rather than taken from the table on trust: the
+// notice is written twice, once from the end's row and once from no words at all
+// (stallRecordInWords), and the row's three clauses are taken out of the first. What is left
+// must be the second, exactly. That equality is what makes the residue total — a word of the
+// row the subtraction could not find, or a word of the daemon's it took away, leaves the two
+// unequal and fails here rather than going unread — and it is why a clause added to the notice
+// later needs nothing added here: whatever the daemon writes is on one side of it and whatever
+// a row writes is on the other.
+//
+// What this cannot catch is a row that refers to a subject without naming it: a pronoun bound
+// to the derived clause its words are appended to ("and shut it down"), or some name for a
+// running worker that stallSubjectNames does not hold. That hole is real, and it is a
+// different shape from the lists' — it needs a row that talks about the stalled process while
+// avoiding every word for the thing it is talking about, where a list needed only a verb
+// nobody had listed.
+func TestTheRowsOwnWordsSayNothingOfTheStalledProcessOrTheTurn(t *testing.T) {
+	c := rigClaim()
+	for _, end := range supervise.ProcessEnds() {
+		for _, unconfirmed := range []bool{false, true} {
+			stop := supervise.StallBackstopStop{Bound: backstopBound, End: end, WakeDue: time.Now(), StopUnconfirmed: unconfirmed}
+			words := stallBackstopEnd(end)
+			fill := stallFill(c, stop)
+			told := stallBackstopRecord(c, stop, time.Hour)
+			// The opening is the derived clause and the row's own half with a space between
+			// them (stallEndWords.opening), so the row's half comes away with that space; the
+			// other two clauses stand on their own.
+			left, residue := told, []string{}
+			for _, own := range []struct{ clause, words, span string }{
+				{"did", fill.Replace(words.did), " " + fill.Replace(words.did)},
+				{"end", fill.Replace(words.end), fill.Replace(words.end)},
+				{"charge clause", fill.Replace(words.charged), fill.Replace(words.charged)},
+			} {
+				if own.words == "" {
+					continue
+				}
+				cut := strings.Replace(left, own.span, "", 1)
+				if cut == left {
+					t.Errorf("the notice of %q reads %q, which does not carry its own %s, %q", end, told, own.clause, own.words)
+					continue
+				}
+				left, residue = cut, append(residue, own.words)
+			}
+			bare := stallRecordInWords(c, stop, time.Hour, stallEndWords{process: words.process})
+			if left != bare {
+				t.Errorf("the notice of %q does not come apart into the daemon's own words and the row's: taking the row's clauses out of %q left %q, and the same notice written from no words at all is %q. This property reads what a row wrote by taking the daemon's words away, so the two must differ by the row's words and nothing else",
+					end, told, left, bare)
+				continue
+			}
+			if named, _ := stallNamesASubject(bare); named == "" {
+				t.Errorf("the daemon's own words in the notice of %q are %q, and no word of stallSubjectNames is in them: those names are how this property finds a row talking about the stalled process or the stalled turn, and names the daemon's own sentences do not use are names that catch nothing", end, bare)
+			}
+			for _, said := range residue {
+				named, subject := stallNamesASubject(said)
+				if named == "" {
+					continue
+				}
+				t.Errorf("the row for %q writes %q, and the word %q in it names %s: every statement this notice makes about the claim's stalled process and about its stalled turn is derived from the machine's own record of the stop, read at the stall (stallTurnClause, stallStopClause), and a row is written once and knows neither — so a row may say nothing of them, not even something true. Say what the daemon did to the launch, the session, the claim or the task, and leave %s to the daemon's own sentences",
+					end, said, named, subject, subject)
+			}
 		}
 	}
-	return ""
+}
+
+// stallSubjectNames is what this notice's own prose can name its two derived subjects by: the
+// stalled turn, the process the claim was running it in, and the stop of that process, which
+// the derived clauses answer for and a row may not speak of. The names of the running thing
+// are the ones a deployment of this daemon uses for it, since a row that called the pod or the
+// worker stopped would be read by an owner as the stalled process stopped; "session" is not
+// among them, because a session is what outlives the stop and is brought back on a process of
+// its own, which is a row's own to tell.
+//
+// It is a list of words, and that is worth saying plainly: what the residue cannot do is judge
+// what it finds without one. What it is not is a list of phrasings. A new verb buys nothing
+// here — "shut down the stalled process", "terminated the stalled process" and "reaped the
+// stalled process" are one word to it — and that is the whole of the difference, since every
+// round this notice lost was lost to a verb nobody had listed.
+var stallSubjectNames = map[string]string{
+	"turn":       "the stalled turn",
+	"turns":      "the stalled turn",
+	"process":    "the claim's stalled process",
+	"processes":  "the claim's stalled process",
+	"pod":        "the claim's stalled process",
+	"pods":       "the claim's stalled process",
+	"container":  "the claim's stalled process",
+	"containers": "the claim's stalled process",
+	"worker":     "the claim's stalled process",
+	"workers":    "the claim's stalled process",
+	"agent":      "the claim's stalled process",
+	"agents":     "the claim's stalled process",
+	"stop":       "the stop of that process",
+	"stops":      "the stop of that process",
+	"stopped":    "the stop of that process",
+	"stopping":   "the stop of that process",
+}
+
+// stallSubjectNamed matches any of those names, whole words and whatever their case, so that a
+// name inside a longer word ("stopgap", "turnaround") is not one.
+var stallSubjectNamed = regexp.MustCompile(`(?i)\b(` + strings.Join(slices.Sorted(maps.Keys(stallSubjectNames)), "|") + `)\b`)
+
+// stallNamesASubject is the first name of a derived subject that text carries and the subject
+// that name names, and two empty strings for text that names neither.
+func stallNamesASubject(text string) (string, string) {
+	named := stallSubjectNamed.FindString(text)
+	if named == "" {
+		return "", ""
+	}
+	return named, stallSubjectNames[strings.ToLower(named)]
 }
 
 // rigClaim is a claim of the rig's shape for a case that writes a notice from it directly,
