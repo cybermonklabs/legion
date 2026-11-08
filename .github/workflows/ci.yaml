@@ -3,9 +3,10 @@ name: CI
 # The router: every check a pull request or the merge queue runs, in one workflow.
 # Its first job, `changes`, reads the paths the change touched and selects, through one
 # dorny/paths-filter filter per job, the jobs that read those paths; each job runs only when its
-# filter matches (lint runs on every change, and typecheck, test and daemon-go also run when
-# `changes` itself failed). ci-ok condenses every job's result into one check: it fails when a job `changes`
-# selected did not succeed. Main's ruleset requires ci-ok and pr-title. ci-ok is the `ci-ok` job
+# filter matches (lint runs on every change, and typecheck, test, daemon-go, plugin-pack,
+# sessions-script and text-checks also run when `changes` itself failed). ci-ok condenses every
+# job's result into one check: it fails when a job `changes` selected did not succeed.
+# Main's ruleset requires ci-ok and pr-title. ci-ok is the `ci-ok` job
 # at the end of this file, which needs every job of it but itself and those CI_OK_EXEMPT names,
 # and fails when .github/scripts/ci-ok.sh's verdict over their results is failure, so the
 # verdict rides on that job's own check run — a job's check run is in its run's own check suite,
@@ -415,7 +416,8 @@ jobs:
           # and `.github/scripts/check-ci-filters.sh write` puts them in that filter's own block
           # between a BEGIN and an END comment. The ordinary run of that check refuses a block
           # that is not what it computes, naming the first pattern that differs, so an edit by
-          # hand is lost; 19 of this job's filters carry one today, 528 patterns in all. That is
+          # hand is lost. The check prints how many it wrote on every run, so no count is kept
+          # here. That is
           # dispatch://INFRA-1413's R18, the selection half of the rule whose coverage half is
           # rule 1: a job must not run for a change to a test file of a package whose tests it
           # never runs, and the pattern that selects such a file (packages/envoy/** and its kin)
@@ -1739,7 +1741,7 @@ jobs:
               - '.github/scripts/apt-archive-cache-key.sh'
               - '.github/scripts/dispatch-browser-samples.sh'
               - '.github/scripts/dispatch-browser-latest-blobs.sh'
-              # e2e/cli-reply-answers.e2e.ts:18 runs envoy-client's dispatch CLI, spawned as its
+              # e2e/inbox-cli.e2e.ts:330 runs envoy-client's dispatch CLI, spawned as its
               # own process (e2e/dispatch-cli.ts:8), and @legion/broker-client is compiled with
               # its sources, through packages/envoy-client/src/broker-credential.ts:21-22
               # (ci_job_reads.py's envoy_client_dep).
@@ -3354,13 +3356,17 @@ jobs:
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
-  # lint, typecheck, test and daemon-go are jobs ci-ok condenses; main's ruleset requires none
-  # of their names. Each covers the shipped daemon (packages/daemon, the Go `legion`). Fail-open:
-  # when `changes` did not succeed, typecheck, test and daemon-go run rather than skip. ci-ok
-  # fails then anyway
-  # (ci-ok.sh), so this buys signal: their results while `changes` is broken. A re-run of only the
-  # failed jobs can leave the jobs `changes` then selects skipped, and ci-ok fails a selected job
-  # that skipped rather than passing with nothing tested: re-run every job instead.
+  # lint, typecheck, test, daemon-go, plugin-pack, sessions-script and text-checks are jobs
+  # ci-ok condenses; main's ruleset requires none of their names. Fail-open: when `changes` did
+  # not succeed, all of them but lint, which runs on every change anyway, run rather than skip.
+  # ci-ok fails then anyway (ci-ok.sh), so this buys signal: their results while `changes` is
+  # broken. The set is what the shipped daemon's own suites run in, which is no longer the test
+  # job alone: its daemon Go tests are daemon-go's, the plugin pack test is plugin-pack's, the
+  # daemon's text checks are text-checks' and the session script suite is sessions-script's, so
+  # each of those carries the term too and a suite that moves out of a fail-open job takes it
+  # with it. A re-run of only the failed jobs can leave the jobs `changes` then selects skipped,
+  # and ci-ok fails a selected job that skipped rather than passing with nothing tested: re-run
+  # every job instead.
   typecheck:
     needs: changes
     if: ${{ !cancelled() && !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') && (needs.changes.result != 'success' || needs.changes.outputs.typecheck == 'true') }}
@@ -3450,7 +3456,7 @@ jobs:
   # it by name (.github/scripts/ci_job_reads.py's PACK_TESTS builds both steps' text).
   plugin-pack:
     needs: changes
-    if: needs.changes.outputs.plugin_pack == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    if: ${{ !cancelled() && !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') && (needs.changes.result != 'success' || needs.changes.outputs.plugin_pack == 'true') }}
     permissions:
       contents: read
       actions: read
@@ -3528,7 +3534,7 @@ jobs:
   # service on a job whose other thirty-odd steps would start it for nothing.
   sessions-script:
     needs: changes
-    if: needs.changes.outputs.sessions_script == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    if: ${{ !cancelled() && !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') && (needs.changes.result != 'success' || needs.changes.outputs.sessions_script == 'true') }}
     permissions:
       contents: read
       actions: read
@@ -3738,7 +3744,7 @@ jobs:
   # (.github/workflows/ci-job-text-checks.yaml's header).
   text-checks:
     needs: changes
-    if: needs.changes.outputs.text_checks == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    if: ${{ !cancelled() && !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') && (needs.changes.result != 'success' || needs.changes.outputs.text_checks == 'true') }}
     permissions:
       contents: read
       actions: read

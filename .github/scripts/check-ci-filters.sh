@@ -256,8 +256,8 @@
 #      taking the highest tree that may go whole, naming file by file the excluded files of a
 #      directory that holds a read one too, and reading directories and files in sorted order,
 #      so two runs over one tree write one text. They are generated because they are too many
-#      to keep by hand - 528 patterns over 19 of this file's filters today, 22 for
-#      daemon_go_tests and 139 for docs - and because none of them is a judgement: each follows
+#      to keep by hand - every filter edit moves the count, which this check prints on each run
+#      - and because none of them is a judgement: each follows
 #      from the read sets above. The block belongs to the filter whose list holds it and never
 #      to a group an anchor names, since two filters sharing an anchor need not run the same
 #      tests; a filter with nothing to exclude carries no block, and so does a filter no gate
@@ -275,12 +275,13 @@
 #      #2945): the whole block in one step measured 137,498 bytes of this branch's text once the
 #      520 generated `!` patterns rule 17 wrote at that measurement were in it (137,494 when
 #      that issue measured it), against 76,669 bytes on main. The cure is that the changes job
-#      declares its filters in two paths-filter steps rather than one - 80,373 and 65,650 bytes
-#      today - and this rule is what keeps the next filter from growing one of
+#      declares its filters in two paths-filter steps rather than one, and this rule is what
+#      keeps the next filter from growing one of
 #      them back over the cap: it fails here, on the pull request that writes it, rather than
-#      on a runner. The margin is a quarter of the cap, which leaves the longer of the two
-#      17,931 bytes to grow in and covers many times over the 14 bytes of `INPUT_FILTERS=` the
-#      kernel counts beside the value. Every rule above reads the filters of all those steps as
+#      on a runner. The margin is a quarter of the cap, and what each step measures against it
+#      is printed by the run that writes them, so no size is kept here either; the 14 bytes of
+#      `INPUT_FILTERS=` the kernel counts beside the value are many times over inside that
+#      margin. Every rule above reads the filters of all those steps as
 #      one set, since that is what the job's outputs hand on; a group an anchor names that
 #      filters of both steps share is written out in both, because a YAML anchor reaches no
 #      further than the string it is in, and the two copies must be the same patterns under the
