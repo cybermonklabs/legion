@@ -5,7 +5,7 @@
 #
 # Sourced, never run. The caller defines fail (which exits) and note, and sets work, the run's
 # scratch directory. The gated Go proofs (packages/daemon/internal/api/real_github_test.go) are
-# callers too: liveProofApps defines fail and reads require_app_inputs's results and
+# callers too: liveProofImplementApp defines fail and reads require_app_inputs's results and
 # app_token_command from stdout, so neither of those two writes anything else to stdout, and
 # proveLiveProofApps defines fail and note, writes $work/github-apps.yaml itself from the block the
 # proofs act with, and runs check_github_apps on it. Each App is an id and the name of the secrets
@@ -340,7 +340,12 @@ write_github_apps() {
 # implement App's contents, the review App's checks), which also refuses the two Apps swapped whole.
 # A command that fails, a release GitHub refuses, an answer naming another id or lacking the
 # permission, or a GitHub that never answers fails the check, naming the App by its role and id and
-# never a token.
+# never a token. One of those failures has its fix in an input rather than on GitHub: the secrets
+# broker refusing a role's github-app secret outright, UNKNOWN_SECRET (`no agent secret has this
+# name`), which says this deployment's broker holds no credential under the name the role's inputs
+# gave. app-logins.ts reads that refusal out of the run it already makes, asking the broker nothing
+# of its own (a probe of a human-tier secret raises a person's approval card), and writes the role
+# and the LEGION_E2E_<ROLE>_APP_SECRET to set on its own stderr, above the refusal below.
 github_app_logins=
 check_github_apps() {
   local roles
