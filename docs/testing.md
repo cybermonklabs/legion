@@ -72,24 +72,42 @@ rather than beside the module's other Postgres-backed packages: together they sh
 service and the machine's CPU, and on a small machine `api` and `docs` then each overran the default
 (`docs/solutions/testing/the-dispatch-servers-go-suites-in-an-issue-pod-run-api-and-docs-alone-with-a-timeout-and-read-the-c-collation-docker-and-bun-failures-as-the-environment-LEGION-752.md`).
 
-`packages/daemon/internal/daemon` is the daemon's slow, Postgres-backed package. The test
-job now runs it only under the race detector, in its race step, once per job; the plain step
-("Test the Go daemon") leaves it out, and `go vet -tags e2e ./...` in the `typecheck` job still
-compiles it without the detector. On CI's runners, while the plain step still ran it, it took
-at most 625 s there over the 49 green main `test` jobs of 2026-11-01 to 2026-11-03, and up to
-733.581 s in the jobs whose race step timed out (job 125688799071). Under `-race` it took up
-to 570 s over the 51 green `test` jobs of 2026-11-02 and 2026-11-03 that sjawhar/legion#2709
-measured, on main and on pull requests, and ran go test's own ten minutes out on main at
-job 125691048644 of run 41562777668; the race step gives it 30 minutes. On a busy machine it
-takes longer still (908 s under `-race` on a shared devbox), so a command that runs the whole
-package, alone or in a pattern that includes it, passes `-timeout 30m`:
+`packages/daemon/internal/daemon` is the daemon's Postgres-backed package, and the one the test
+job runs only under the race detector, in its race step, once per job;
+the plain step ("Test the Go daemon") leaves it out, and `go vet -tags e2e ./...` in the
+`typecheck` job still compiles it without the detector.
+Its tests run beside each other: 790 of its 825 built top-level tests call `t.Parallel()`, and
+each of the 35 that do not carries a comment naming what it shares with the rest of the process.
+Each test that opens a store gets a database of its own, cloned from the template the run
+migrates once, and each test that needs NATS gets a server of its own inside the test process.
+
+It took 273.7 s under `-race` in the pull-request lane at job 128629918060 of 2026-11-08, where
+it had taken 544.3 s one test at a time in the same lane at job 128526777098;
+the race step gives it 15 minutes, three times what the merge group's thirty kept-property seeds
+imply.
+A command that runs the whole package, alone or in a pattern that includes it, passes a deadline
+of its own for the same reason the step does:
 
 ```sh
 cd packages/daemon
-go test -race -timeout 30m ./internal/daemon/
+CGO_ENABLED=1 go test -race -timeout 15m ./internal/daemon/
 ```
 
-A Legion issue pod does not run that whole package either: `skills/legion-worker/references/tools.md` says what the pod runs and where the rest goes.
+`CGO_ENABLED=1` is there because the detector needs cgo and a Legion issue pod has cgo off: go
+refuses with "go: -race requires cgo; enable cgo by setting CGO_ENABLED=1".
+CI's runners set it themselves.
+
+A Legion issue pod runs that whole package now, which it could not before: the NATS fixture
+starts its server in the test process rather than a container, and the test database's drop no
+longer forces other backends off the server.
+Three pages under `docs/solutions/` say otherwise and are history nobody rewrites —
+`docs/solutions/testing/the-daemons-nats-tests-run-in-a-docker-less-pod-against-a-local-nats-server-named-by-two-variables-INFRA-388.md`,
+`docs/solutions/testing/pgvector-from-the-pgdg-deb-lets-the-pods-embedded-postgres-run-the-scratch-dispatch-tests-INFRA-252.md` and
+`docs/solutions/testing/go-test-in-a-worker-pod-leaves-gowork-to-go-work-and-names-the-packages-the-pod-cannot-run-LEGION-630.md`.
+What holds instead is this paragraph: the pod needs no `LEGION_TEST_NATS_URL`, no
+`LEGION_TEST_NATS_MONITOR_URL`, no `go test -p 1` and no container runtime for this package, and
+the one test of it whose subject is the published NATS images skips where no container runtime
+answers, naming what it needs (`TestDaemonPermissionsOnRealServers`).
 
 ## A cleanup's closure or argument holds nothing that reaches its object
 

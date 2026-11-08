@@ -2055,9 +2055,11 @@ jobs:
     # measured green duration plus its own -timeout, not its compile plus its -timeout: 325 s of
     # setup before the plain step starts, then that step's 839 s (measured while it still ran
     # internal/daemon, so an upper bound for it now) and its 15 minutes, then the race step's
-    # 694 s and its 30, then 13 s for the steps after it, which is 4571 s, or about 76 minutes
-    # (dispatch://INFRA-1052 measured them over the 30 newest counted test jobs of main push runs).
-    timeout-minutes: 80
+    # 386 s and its 15, then 13 s for the steps after it, which is 3363 s, or about 57 minutes
+    # (dispatch://INFRA-1052 measured the first and the last over the 30 newest counted test jobs
+    # of main push runs; the race step's wall and deadline are its reading at job 128629918060,
+    # where dispatch://INFRA-1524 had its package run its tests beside each other).
+    timeout-minutes: 60
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -2365,15 +2367,18 @@ jobs:
       # detector needs cgo, which the runners have gcc for. The lane tests hold a fake clock, so
       # they are deterministic under it.
       #
-      # The step carries a package deadline of its own, as the envoy race lanes do: under go
-      # test's ten-minute default, internal/daemon, by far the slowest of the three packages, took
-      # up to 570 s on the green runs of 2026-11-02 and 2026-11-03 and ran the ten minutes out on
-      # main at job 125691048644 (run 41562777668). No single test dominates it: a local run timed
-      # 648 tests one after another, the slowest at 44 s. The 30 minutes leave it three times its
-      # slowest run. Those counts are read again whenever the package's shape changes, and
-      # dispatch://INFRA-1524 is reading them now.
+      # The step carries a package deadline of its own, as the envoy race lanes do, and the
+      # deadline is three times the slowest of its three packages in the lane that costs most.
+      # internal/daemon is that package and it now runs its tests beside each other
+      # (dispatch://INFRA-1524): 273.7 s in the pull-request lane at job 128629918060, which the
+      # merge group's thirty kept-property seeds against this lane's eight put at about 296 s,
+      # so fifteen minutes leave it three times its own reading. It was 544.3 s one at a time in
+      # the same lane, under a thirty-minute deadline. No single test dominates it: the slowest
+      # is the kept-decision property family, and the package's 825 built top-level tests are
+      # parallel but for the 35 that share state with the rest of the process, each named by a
+      # comment beside it.
       - name: Test the concurrent packages under the race detector
-        run: go test -count=1 -race -timeout 30m ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/
+        run: go test -count=1 -race -timeout 15m ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/
         working-directory: packages/daemon
 
       - name: Stage 1 live proof

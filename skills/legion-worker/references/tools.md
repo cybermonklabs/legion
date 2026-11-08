@@ -51,8 +51,10 @@ heavy run goes where your deployment's instructions say.
   Make one and point the variable at it:
   `createdb -h 127.0.0.1 -p 5433 -U legion_test "e2e_$(date +%s)"`.
   The DSN's own database is owned by your login and writable, so what keeps two roles out of it is
-  this rule rather than the server. `packages/daemon/internal/daemon` is the third case, whose
-  `TestMain` takes one database for the package's run through `internal/testpg/testdb`.
+  this rule rather than the server.
+  `packages/daemon/internal/daemon` is the third case, whose
+  `TestMain` migrates one template through `internal/testpg` and gives each test a clone of it,
+  dropped when that test ends.
   Empty the served database by dropping your own suite's schemas and your own objects in `public`,
   never `public` itself: `vector` goes with it, your login may not create it again, and
   `ensure` only ever installs it at a database's creation.
@@ -573,25 +575,17 @@ something to count.
   `internal/tests3` (`internal/dispatch/files`, which `DISPATCH_TEST_NO_CONTAINERS=1` skips) and
   `internal/testpg` (unless `DISPATCH_TEST_DATABASE_URL` names a Postgres).
 
-  The daemon's NATS-backed tests have a way round it: `packages/daemon/internal/testnats` serves
-  the server `LEGION_TEST_NATS_URL` and `LEGION_TEST_NATS_MONITOR_URL` name, and starts no
-  container when both are set, so run one yourself and point them at it:
+  The daemon module's NATS-backed tests need none of that: `packages/daemon/internal/testnats`
+  runs a nats-server with JetStream inside the test process, one for each test, so they pass
+  here with no variable set, no server of your own and no `-p 1`.
+  One test of that module starts a container still, `TestDaemonPermissionsOnRealServers`, whose
+  subject is the published NATS images themselves; it skips here, naming the runtime it needs.
+  `LEGION_TEST_NATS_URL` and `LEGION_TEST_NATS_MONITOR_URL` are read by nothing of that module
+  now (dispatch://INFRA-1524).
 
-  ```sh
-  go run github.com/nats-io/nats-server/v2@v2.15.1 -js -p 14222 -m 18222 -sd "$TMPDIR/nats" &
-  export LEGION_TEST_NATS_URL=nats://127.0.0.1:14222 LEGION_TEST_NATS_MONITOR_URL=http://127.0.0.1:18222
-  ```
-
-  Both or neither: one set without the other fails the test rather than falling back. The
-  monitor port is read, not decoration — the per-test reset waits there for every client
-  connection to end. One server serves one test binary at a time, so name one package a
-  command (or pass `-p 1`): two packages' binaries on one server delete each other's streams.
-  Pick ports no sibling role holds, and keep the store directory off your home. In your own
-  work, run the NATS-backed tests your change touches by name (`go test -run`), as the first
-  section says. Measured here, as proof of the route and not as a run to repeat:
-  `go run …@v2.15.1 --version` prints `nats-server: v2.15.1`, and with the two variables set
-  `go test -count=1 -timeout 40m ./internal/workflow/` runs whole in the pod, with no docker
-  panic.
+  So the whole of `packages/daemon/internal/daemon` runs in a pod, which it could not before.
+  Under the race detector, set `CGO_ENABLED=1`: the pod has cgo off and go refuses with
+  `-race requires cgo`.
 - **The rest, by package**, for a named run the pod does make. A Postgres unpacked from Debian
   packages (the harness under **The worked case** of `withheld-capability.md`) has only the
   `C`, `C.utf8` and `POSIX` locales, so its default collation is byte order, and
