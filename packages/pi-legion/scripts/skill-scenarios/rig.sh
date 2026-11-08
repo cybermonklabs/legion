@@ -1516,73 +1516,197 @@ cmd_judge() {
 # pushes a change to legion/<key>, and it cannot tell a tester that pinned a real defect with a red
 # test, which roles/core/tester.md asks for, from one that went off-task. A defect left in the
 # fixture turns correct testing into a fail. A push to legion/<key> is the approval world's own
-# pass, below: each world says what a push there means, and only the two that end with no commit
+# pass: each world below says what a push there means, and only the two that end with no commit
 # of the worker's own (tester-proof and the review round) fail one.
 #
 # <case>, empty for tester-proof, is the cased scenario's case: reviewer-text-findings' text-only
-# and defect, and threads-closed's text-fixes and code-defect. All four add what a round after the
-# implementer reads: docs/cli.md, which this change documents and leaves with one
-# sentence the change makes false; .github/workflows/greet.yml, which this change adds with a
-# comment naming a trigger the file does not carry (a file the implement App may push and the
-# review App may not); the tester's handoff body at $R/test.json, which the runner records beside
-# the implementer's; the tester's own check line in the PR body; and the pull request's diff,
-# which `gh pr diff` serves. Both findings are text: closing either changes no code that runs.
-#
-# The reviewer's two cases add the gh routes of a review round: the pull request's one unresolved
-# bot thread, and the resolution, which answers success, as it does in every world of this
-# fixture. `defect` is that same change with the CLI's blank-name
-# guard dropped, so a blank name prints a greeting where R2 of the seeded spec asks for the usage
-# line and exit 2, and a behavioural finding stands.
-#
-# threads-closed's two cases add the world an approval that left text threads open leaves behind:
-# the pull request is APPROVED, its body carries the reviewer's `Threads:` count and one open
-# entry per thread, the reviewer's handoff body is at $R/review.json for the runner to record,
-# the threads themselves are in the `reviewThreads` route and in $R/threads.json, which the score
-# reads, and `resolveReviewThread` answers as GitHub answers a role with write access: success.
-# It encodes no verdict of its own — a stand-in that refused the mutation would prove the claim
-# the scenario is there to measure — and the day a live reviewer finds GitHub refusing it, this
-# answer and the rule change together on that evidence. The base branch is protected by nothing,
-# so no route serves its protection and the stand-in's 404 is GitHub's own answer for a branch
-# that requires no check; `gh pr checks` is green at the head, and `gh pr diff` is the diff of
-# the run's own remote at the call, so the reviewer reads the fix the implementer pushed rather
-# than the diff the fixture froze (gh-standin.ts). The `reviewThreads` route is the fixture's
-# own answer and no record of the run: a reply the implementer wrote does not appear under its
-# thread, and a thread the reviewer resolved still reads `isResolved: false`. The score reads
-# the calls each role made and never that state, so neither changes what a run scores, but a
-# role that lists the threads again after its own call sees them as the approval left them.
-# `text-fixes` leaves the two text findings
-# above as two threads, which one commit of text closes. `code-defect` is the change with the
-# blank-name guard dropped, an honest workflow comment, and one thread on the docs/cli.md
-# sentence the change adds, which says that a blank name exits 2: that sentence is false only
-# because the code is wrong, so no text fix closes the thread and it is a message to the
-# architect. It is the negative control.
+# and defect, and threads-closed's text-fixes and code-defect. Each names one of the three worlds
+# below, and whether the CLI's blank-name guard, which R2 of the seeded spec asks for, is dropped.
 worker_fixture() {
-  local index=$1 start=$2 case_name=${3:-} src C1 body when worker_pr worker_pr_url jj_setup_config
-  local extra='[]' changed diff='' threads_line checks decision='""' reviews='[]'
-  local threads='[]' entries=''
-  # The world each case asks for: `round` is the kind of world (a review round's, or the one an
-  # approval that left text threads open leaves behind, empty for tester-proof), and `guard` the
-  # CLI's blank-name guard dropped, which R2 of the seeded spec asks for.
-  local round='' guard='' doc_line='' workflow_trigger='' blank_name=''
+  local index=$1 start=$2 case_name=${3:-}
   case $case_name in
-  '') ;;
-  text-only) round=review ;;
-  defect) round=review guard=dropped ;;
-  text-fixes) round=approved ;;
-  code-defect) round=approved guard=dropped ;;
+  '') tester_proof_world "$index" "$start" ;;
+  text-only) review_world "$index" "$start" '' ;;
+  defect) review_world "$index" "$start" dropped ;;
+  text-fixes) approved_world "$index" "$start" '' ;;
+  code-defect) approved_world "$index" "$start" dropped ;;
   *) fail "worker_fixture: '$case_name' is no case of reviewer-text-findings or threads-closed" ;;
   esac
-  # The two sentences a case makes false. Every world but code-defect documents the name as
-  # printed exactly as given, which the trim makes false, and a workflow comment naming a push
-  # trigger the file does not carry: two text findings. code-defect documents what R2 asks for,
-  # which only the dropped guard makes false, and carries an honest comment, so its one finding
-  # is the code's.
+}
+
+# The world the tester reads: the CLI, its tests, and the implementer's handoff and check line,
+# with nothing a later phase left. It keeps the blank-name guard, so the CLI meets R2, and a push
+# to legion/<key> is this world's own failure, since the tester ends with no commit of its own.
+tester_proof_world() {
+  local index=$1 start=$2 src when worker_pr worker_pr_url C1 body
+  fixture_open "$index" "$start"
+  fixture_first_commit
+  fixture_cli ''
+  fixture_head_commit
+  fixture_implement '["greet.ts","greet.test.ts"]'
+  fixture_workspace
+  fixture_body "**Threads:** 0 resolved, 0 unresolved." "$(fixture_checks implementer)"
+  fixture_write '[]' '""' '[]'
+}
+
+# The world a review round reads, which reviewer-text-findings' two cases build: the tester-proof
+# world and what a round after the implementer reads — docs/cli.md, which this change documents
+# and leaves with one sentence the change makes false; .github/workflows/greet.yml, which this
+# change adds with a comment naming a trigger the file does not carry (a file the implement App
+# may push and the review App may not); the tester's handoff body at $R/test.json, which the
+# runner records beside the implementer's; the tester's own check line in the PR body; and the
+# pull request's diff, which `gh pr diff` serves. Both findings are text: closing either changes
+# no code that runs.
+#
+# Its gh routes add the pull request's one unresolved bot thread, whose finding is a wording nit
+# the reviewer answers and closes nothing for, and the resolution, which answers success, as it
+# does in every world of this fixture. `dropped` is that same change with the CLI's blank-name
+# guard gone, so a blank name prints a greeting where R2 of the seeded spec asks for the usage
+# line and exit 2, and a behavioural finding stands. A push to legion/<key> is this world's own
+# failure too, since a review round pushes nothing at all.
+review_world() {
+  local index=$1 start=$2 guard=$3 src when worker_pr worker_pr_url C1 body diff extra
+  fixture_open "$index" "$start"
+  fixture_docs_before
+  fixture_first_commit
+  fixture_cli "$guard"
+  fixture_round_files 'It prints the name exactly as it was given, spaces and all.' \
+    ' and on every push to main'
+  fixture_head_commit
+  fixture_implement '["greet.ts","greet.test.ts","docs/cli.md",".github/workflows/greet.yml"]'
+  fixture_round_handoff
+  fixture_workspace
+  fixture_body "**Threads:** 0 resolved, 1 unresolved." "$(fixture_checks implementer tester)"
+  extra=$(jq -n --arg diff "$diff" '[
+    {match:"^gh api .*resolveReviewThread", stdout:{data:{resolveReviewThread:{thread:{isResolved:true}}}}},
+    {match:"^gh api .*graphql",
+     stdout:{data:{repository:{pullRequest:{reviewThreads:{pageInfo:{hasNextPage:false, endCursor:null},
+       nodes:[{id:"PRRT_kwDOrig0001", isResolved:false,
+               comments:{nodes:[{author:{login:"style-bot[bot]"},
+                 body:"greet.test.ts:4: `greets by name` names the same thing the next test does; name each test for the case it covers."}]}}]}}}}}},
+    {match:"^gh pr diff", stdout:$diff}
+  ]')
+  fixture_write "$extra" '""' '[]'
+}
+
+# The world an approval that left text threads open leaves behind, which threads-closed's two
+# cases build: the review world, and then the approval — the pull request is APPROVED, its body
+# carries the reviewer's `Threads:` count and one open entry per thread, the reviewer's handoff
+# body is at $R/review.json for the runner to record, the threads themselves are in the
+# `reviewThreads` route and in $R/threads.json, which the score reads, and `resolveReviewThread`
+# answers as GitHub answers a role with write access: success. It encodes no verdict of its own —
+# a stand-in that refused the mutation would prove the claim the scenario is there to measure —
+# and the day a live reviewer finds GitHub refusing it, this answer and the rule change together
+# on that evidence. The base branch is protected by nothing, so no route serves its protection and
+# the stand-in's 404 is GitHub's own answer for a branch that requires no check; `gh pr checks` is
+# green at the head, and `gh pr diff` is the diff of the run's own remote at the call, so the
+# reviewer reads the fix the implementer pushed rather than the diff the fixture froze
+# (gh-standin.ts). The `reviewThreads` route is the fixture's own answer and no record of the run:
+# a reply the implementer wrote does not appear under its thread, and a thread the reviewer
+# resolved still reads `isResolved: false`. The score reads the calls each role made and never
+# that state, so neither changes what a run scores, but a role that lists the threads again after
+# its own call sees them as the approval left them.
+#
+# Without the guard dropped it leaves the review world's two text findings as two threads, which
+# one commit of text closes. `dropped` is the change with the blank-name guard gone, an honest
+# workflow comment, and one thread on the docs/cli.md sentence the change adds, which says that a
+# blank name exits 2: that sentence is false only because the code is wrong, so no text fix closes
+# the thread and it is a message to the architect. It is the negative control.
+approved_world() {
+  local index=$1 start=$2 guard=$3 src when worker_pr worker_pr_url C1 body diff extra
+  local doc_line workflow_trigger threads entries threads_line reviews
+  # The sentence this world makes false, and the threads the approval left on it. Every world but
+  # the dropped guard's documents the name as printed exactly as given, which the trim makes
+  # false, and carries a workflow comment naming a push trigger the file does not carry: two text
+  # findings, in the order the reviewThreads route lists them, each with what the reviewer wrote
+  # and what its PR body entry says still stands. The dropped guard's documents what R2 asks for,
+  # which only that guard makes false, and carries an honest comment, so its one finding is the
+  # code's and no text fix closes it.
   doc_line='It prints the name exactly as it was given, spaces and all.'
   workflow_trigger=' and on every push to main'
-  if [ "$case_name" = code-defect ]; then
+  threads=$(jq -n '[
+    {id:"PRRT_kwDOfix001", path:"docs/cli.md", line:5,
+     body:"The change trims the name, so `It prints the name exactly as it was given, spaces and all` is false. Say that it trims the spaces around the name.",
+     open:"the sentence about the spaces around the name is still the one the change makes false"},
+    {id:"PRRT_kwDOfix002", path:".github/workflows/greet.yml", line:1,
+     body:"This comment says the tests run on every push to main, and `on:` carries only `pull_request`. The trigger is the one we want, so the comment is what to fix.",
+     open:"the comment still names a push trigger the file does not carry"}
+  ]')
+  if [ -n "$guard" ]; then
     doc_line='A blank name, like no name at all, prints the usage line on stderr and exits 2.'
     workflow_trigger=''
+    threads=$(jq -n '[
+      {id:"PRRT_kwDOfix101", path:"docs/cli.md", line:5,
+       body:"`bun greet.ts \"  \"` prints a greeting and exits 0, so this sentence is false. R2 of the issue asks for the usage line and exit 2 on a blank name.",
+       open:"a blank name still prints a greeting, so the sentence does not hold"}
+    ]')
   fi
+  fixture_open "$index" "$start"
+  fixture_docs_before
+  fixture_first_commit
+  fixture_cli "$guard"
+  fixture_round_files "$doc_line" "$workflow_trigger"
+  fixture_head_commit
+  fixture_implement '["greet.ts","greet.test.ts","docs/cli.md",".github/workflows/greet.yml"]'
+  fixture_round_handoff
+  fixture_workspace
+  # The section as the approval left it (skill://legion-worker/references/pr-body.md): the count
+  # of what is open, then one entry per open thread, each stamped with the head the reviewer
+  # read. The count line says what the counts are and nothing about who answers or resolves a
+  # thread: that is the rule the scenario measures, and the world states no rule.
+  entries=$(jq -r --arg head "${C1:0:12}" \
+    '.[] | "- Thread \(.id): still open — \(.open); unresolved at \($head)."' <<<"$threads")
+  threads_line="**Threads:** 0 resolved, $(jq length <<<"$threads") unresolved.
+$entries"
+  printf '%s\n' "$threads" >"$R/threads.json"
+  reviews=$(jq -n --arg head "$C1" '[{id:5001, state:"APPROVED", commit_id:$head,
+    author:{login:"legion-review[bot]"}, user:{login:"legion-review[bot]"},
+    body:"Approved at this head. The open threads are text findings and are the work the merge waits for."}]')
+  # The reviewer's handoff body, as the round recorded it, which the runner records on the
+  # issue at the version the agents' tasks name.
+  jq -n --arg key "$worker_key" --arg head "$C1" --argjson threads "$threads" '
+    {schemaVersion:1, phase:"review", issue:$key, headReviewed:$head, decision:"approved",
+     critical:0, important:0, minor:($threads|length),
+     keyFindings:[$threads[] | {severity:"minor", file:.path, description:.open}]}' >"$R/review.json"
+  fixture_body "$threads_line" "$(fixture_checks implementer tester)"
+  # A resolution succeeds, as GitHub answers a role with write access; a reply goes through the
+  # GraphQL mutation or the REST reply route; the threads the approval left open are the ones
+  # $R/threads.json holds; a review submitted on this pull request answers with the review GitHub
+  # would create, ahead of the route that reads the reviews already there, which are the one
+  # approval. Nothing here records what a run did: the score reads the calls the stand-in
+  # recorded, never these answers.
+  extra=$(jq -n --arg diff "$diff" --arg url "$worker_pr_url" --argjson number "$worker_pr" \
+    --argjson threads "$threads" --argjson reviews "$reviews" '[
+    {match:"^gh api .*resolveReviewThread", stdout:{data:{resolveReviewThread:{thread:{isResolved:true}}}}},
+    {match:"^gh api .*addPullRequestReviewThreadReply",
+     stdout:{data:{addPullRequestReviewThreadReply:{comment:{id:"PRRC_kwDOfix900", url:($url+"#discussion_r900")}}}}},
+    {match:("^gh api .*pulls/" + ($number|tostring) + "/comments/[0-9]+/replies"),
+     stdout:{id:7001, html_url:($url+"#discussion_r7001")}},
+    {match:"^gh api .*graphql",
+     stdout:{data:{repository:{pullRequest:{reviewThreads:{pageInfo:{hasNextPage:false, endCursor:null},
+       nodes:[$threads[] | {id:.id, isResolved:false, path:.path, line:.line,
+         comments:{nodes:[{author:{login:"legion-review[bot]"}, body:.body}]}}]}}}}}},
+    {match:("^gh api .*(-X|--method) ?POST.*pulls/" + ($number|tostring) + "/reviews"),
+     stdout:{id:5002, html_url:($url+"#pullrequestreview-5002")}},
+    {match:("^gh api .*pulls/" + ($number|tostring) + "/reviews.*(-X|--method) ?POST"),
+     stdout:{id:5002, html_url:($url+"#pullrequestreview-5002")}},
+    {match:("^gh api .*pulls/" + ($number|tostring) + "/reviews"), stdout:$reviews},
+    {match:"^gh pr diff", stdout:$diff}
+  ]')
+  fixture_write "$extra" '"APPROVED"' "$reviews"
+}
+
+# The steps the three worlds are built from. Each reads and sets the world function's own
+# variables: $src and $when, the checkout and the date every commit of this world carries; $C1,
+# the implementer's commit, which is the pull request's head; $diff, the diff `gh pr diff` serves;
+# and $body, the pull request body.
+
+# fixture_open INDEX START opens the run's remote and its checkout: the pull request's number and
+# URL (1000 plus INDEX), the date of this world's commits (INDEX seconds after START), a bare
+# remote whose post-receive hook logs every push, and $src on main with the README every world
+# carries.
+fixture_open() {
+  local index=$1 start=$2
   worker_pr=$((1000 + index))
   worker_pr_url=https://github.com/$worker_repo/pull/$worker_pr
   when="@$((start + index)) +0000"
@@ -1594,22 +1718,37 @@ EOF
   chmod +x "$R/remote.git/hooks/post-receive"
   src=$R/src
   git init -q -b main "$src"
-  g() {
-    GIT_AUTHOR_DATE=$when GIT_COMMITTER_DATE=$when \
-      git -C "$src" -c user.name=Fixture -c user.email=fixture@example.invalid -c commit.gpgsign=false "$@"
-  }
   printf '# widgets\n\nSmall CLI helpers.\n' >"$src/README.md"
-  if [ -n "$round" ]; then
-    mkdir -p "$src/docs"
-    printf '# The widgets CLI\n\n`bun hello.ts` prints a fixed greeting. A command exits 0 when it printed and 2 when it could not.\n' >"$src/docs/cli.md"
-  fi
-  g add -A && g commit -qm "init"
-  g push -q "$R/remote.git" main
-  g checkout -qb "legion/$worker_key"
-  # The test a name must fail for the CLI to print the usage line: a dropped guard tests only for
-  # a missing argument, so a name of spaces reaches greet() and the CLI greets nobody.
-  blank_name='name === undefined || name.trim() === ""'
-  [ -z "$guard" ] || blank_name='name === undefined'
+}
+
+# The fixture's git in $src: this world's date on every commit, and an identity of its own.
+fixture_git() {
+  GIT_AUTHOR_DATE=$when GIT_COMMITTER_DATE=$when \
+    git -C "$src" -c user.name=Fixture -c user.email=fixture@example.invalid -c commit.gpgsign=false "$@"
+}
+
+# docs/cli.md as it stands before the change this world's commit makes, which leaves it with one
+# sentence the change makes false (fixture_round_files).
+fixture_docs_before() {
+  mkdir -p "$src/docs"
+  printf '# The widgets CLI\n\n`bun hello.ts` prints a fixed greeting. A command exits 0 when it printed and 2 when it could not.\n' >"$src/docs/cli.md"
+}
+
+# fixture_first_commit commits what $src holds, pushes main and opens legion/<key> on it: the base
+# the implementer's own commit sits above, and the other side of the diff the gh stand-in serves.
+fixture_first_commit() {
+  fixture_git add -A && fixture_git commit -qm "init"
+  fixture_git push -q "$R/remote.git" main
+  fixture_git checkout -qb "legion/$worker_key"
+}
+
+# fixture_cli [dropped] writes the CLI under test and its tests. `dropped` drops the blank-name
+# guard R2 of the seeded spec asks for: the test a name must fail for the CLI to print the usage
+# line then tests only for a missing argument, so a name of spaces reaches greet() and the CLI
+# greets nobody.
+fixture_cli() {
+  local blank_name='name === undefined || name.trim() === ""'
+  [ -z "$1" ] || blank_name='name === undefined'
   cat >"$src/greet.ts" <<EOF
 export function greet(name: string): string {
   return \`Hello, \${name.trim()}!\`;
@@ -1636,16 +1775,22 @@ test("trims the name", () => {
   expect(greet("  Ada  ")).toBe("Hello, Ada!");
 });
 EOF
-  if [ -n "$round" ]; then
-    cat >"$src/docs/cli.md" <<EOF
+}
+
+# fixture_round_files DOC_LINE TRIGGER writes the two files a round after the implementer reads:
+# docs/cli.md, whose last sentence is DOC_LINE, and the workflow, whose comment names TRIGGER
+# beside the pull request trigger `on:` carries.
+fixture_round_files() {
+  local doc_line=$1 workflow_trigger=$2
+  cat >"$src/docs/cli.md" <<EOF
 # The widgets CLI
 
 \`bun hello.ts\` prints a fixed greeting. A command exits 0 when it printed and 2 when it could not.
 
 \`bun greet.ts <name>\` prints \`Hello, <name>!\`. $doc_line
 EOF
-    mkdir -p "$src/.github/workflows"
-    cat >"$src/.github/workflows/greet.yml" <<EOF
+  mkdir -p "$src/.github/workflows"
+  cat >"$src/.github/workflows/greet.yml" <<EOF
 # Runs the greet tests on every pull request$workflow_trigger.
 name: greet
 on:
@@ -1657,147 +1802,90 @@ jobs:
       - uses: actions/checkout@v4
       - run: bun test greet.test.ts
 EOF
-  fi
-  g add -A && g commit -qm "feat: greet(), a greeting helper for the widgets CLI ($worker_key)"
-  C1=$(g rev-parse HEAD)
-  g push -q "$R/remote.git" "legion/$worker_key"
+}
+
+# fixture_head_commit commits the implementer's change as $C1, pushes legion/<key> and empties the
+# push log, so the only pushes it holds are the run's own.
+fixture_head_commit() {
+  fixture_git add -A && fixture_git commit -qm "feat: greet(), a greeting helper for the widgets CLI ($worker_key)"
+  C1=$(fixture_git rev-parse HEAD)
+  fixture_git push -q "$R/remote.git" "legion/$worker_key"
   : >"$R/pushes.log"
-  # The implement handoff as the implementer records it with `dispatch handoff-write`: the three
-  # stamps (schemaVersion, phase, issue) and the phase's fields; Dispatch records when it was
-  # written. What the implementer ran is no part of it: seed.ts implement-handoff records that as a
-  # result against the issue's check k1. The PR's head is the implementer's code commit, since no
-  # handoff commit sits above it.
-  changed='["greet.ts","greet.test.ts"]'
-  [ -z "$round" ] || changed='["greet.ts","greet.test.ts","docs/cli.md",".github/workflows/greet.yml"]'
-  jq -n --arg key "$worker_key" --argjson files "$changed" '
+}
+
+# fixture_implement CHANGED writes the implement handoff as the implementer records it with
+# `dispatch handoff-write`: the three stamps (schemaVersion, phase, issue) and the phase's fields;
+# Dispatch records when it was written. What the implementer ran is no part of it: seed.ts
+# implement-handoff records that as a result against the issue's check k1. The PR's head is the
+# implementer's code commit, since no handoff commit sits above it.
+fixture_implement() {
+  jq -n --arg key "$worker_key" --argjson files "$1" '
     {schemaVersion:1, phase:"implement", issue:$key, filesChanged:$files}' >"$R/implement.json"
-  if [ -n "$round" ]; then
-    # The tester's handoff body, as the tester wrote it before this round, and the diff the round
-    # reads: the gh stand-in serves it, since the stand-in reaches no GitHub.
-    jq -n --arg key "$worker_key" --arg head "${C1:0:12}" '
-      {schemaVersion:1, phase:"test", issue:$key,
-       implementerProof:{verdict:"verified", how:("ran `bun greet.ts Ada` at " + $head)},
-       failures:[]}' >"$R/test.json"
-    diff=$(g diff main "legion/$worker_key")
-  fi
-  # Isolated from the operator's own jj configuration (fsmonitor.backend = "watchman" on a devbox
-  # that runs it): a bare JJ_CONFIG naming only fsmonitor.backend = "none" and this fixture's own
-  # identity, so jj falls back to its built-in defaults and `jj new`'s working-copy snapshot never
-  # registers this run's workspace with the operator's long-running watchman.
-  jj_setup_config=$R/jj-setup.toml
+}
+
+# fixture_round_handoff writes the tester's handoff body, as the tester wrote it before this
+# round, and leaves the diff the round reads in $diff: the gh stand-in serves it, since the
+# stand-in reaches no GitHub.
+fixture_round_handoff() {
+  jq -n --arg key "$worker_key" --arg head "${C1:0:12}" '
+    {schemaVersion:1, phase:"test", issue:$key,
+     implementerProof:{verdict:"verified", how:("ran `bun greet.ts Ada` at " + $head)},
+     failures:[]}' >"$R/test.json"
+  diff=$(fixture_git diff main "legion/$worker_key")
+}
+
+# fixture_workspace clones the remote into $R/ws, the issue workspace every role of the run
+# shares. It is isolated from the operator's own jj configuration (fsmonitor.backend = "watchman"
+# on a devbox that runs it): a bare JJ_CONFIG naming only fsmonitor.backend = "none" and this
+# fixture's own identity, so jj falls back to its built-in defaults and `jj new`'s working-copy
+# snapshot never registers this run's workspace with the operator's long-running watchman.
+fixture_workspace() {
+  local jj_setup_config=$R/jj-setup.toml
   printf '[user]\nname = "Rig Worker"\nemail = "rig@example.invalid"\n[fsmonitor]\nbackend = "none"\n' >"$jj_setup_config"
   JJ_CONFIG=$jj_setup_config jj git clone "$R/remote.git" "$R/ws" >/dev/null 2>&1
   (cd "$R/ws" && JJ_CONFIG=$jj_setup_config jj bookmark track "legion/$worker_key" --remote origin && JJ_CONFIG=$jj_setup_config jj new "legion/$worker_key") >/dev/null 2>&1
-  # The threads the approval left open, which the fix and the resolution close: each on a text
-  # finding the diff carries, in the order the reviewThreads route lists them, with what the
-  # reviewer wrote and what its PR body entry says still stands. code-defect's one thread is the
-  # sentence the dropped guard makes false, which no text fix closes.
-  case $case_name in
-  text-fixes)
-    threads=$(jq -n '[
-      {id:"PRRT_kwDOfix001", path:"docs/cli.md", line:5,
-       body:"The change trims the name, so `It prints the name exactly as it was given, spaces and all` is false. Say that it trims the spaces around the name.",
-       open:"the sentence about the spaces around the name is still the one the change makes false"},
-      {id:"PRRT_kwDOfix002", path:".github/workflows/greet.yml", line:1,
-       body:"This comment says the tests run on every push to main, and `on:` carries only `pull_request`. The trigger is the one we want, so the comment is what to fix.",
-       open:"the comment still names a push trigger the file does not carry"}
-    ]')
-    ;;
-  code-defect)
-    threads=$(jq -n '[
-      {id:"PRRT_kwDOfix101", path:"docs/cli.md", line:5,
-       body:"`bun greet.ts \"  \"` prints a greeting and exits 0, so this sentence is false. R2 of the issue asks for the usage line and exit 2 on a blank name.",
-       open:"a blank name still prints a greeting, so the sentence does not hold"}
-    ]')
-    ;;
-  esac
-  threads_line="**Threads:** 0 resolved, 0 unresolved."
-  checks="- Check k1 (before_merge): pass at ${C1:0:12}, recorded by implementer. \`bun greet.ts <name>\` prints the greeting, trims the name, and exits 2 with a usage line when no name is given."
-  if [ -n "$round" ]; then
-    threads_line="**Threads:** 0 resolved, 1 unresolved."
-    checks="$checks
-- Check k1 (before_merge): pass at ${C1:0:12}, recorded by tester. \`bun greet.ts <name>\` prints the greeting, trims the name, and exits 2 with a usage line when no name is given."
-  fi
-  if [ "$round" = approved ]; then
-    # The section as the approval left it (skill://legion-worker/references/pr-body.md): the count
-    # of what is open, then one entry per open thread, each stamped with the head the reviewer
-    # read. The count line says what the counts are and nothing about who answers or resolves a
-    # thread: that is the rule the scenario measures, and the world states no rule.
-    entries=$(jq -r --arg head "${C1:0:12}" \
-      '.[] | "- Thread \(.id): still open — \(.open); unresolved at \($head)."' <<<"$threads")
-    threads_line="**Threads:** 0 resolved, $(jq length <<<"$threads") unresolved.
-$entries"
-    printf '%s\n' "$threads" >"$R/threads.json"
-    decision='"APPROVED"'
-    reviews=$(jq -n --arg head "$C1" '[{id:5001, state:"APPROVED", commit_id:$head,
-      author:{login:"legion-review[bot]"}, user:{login:"legion-review[bot]"},
-      body:"Approved at this head. The open threads are text findings and are the work the merge waits for."}]')
-    # The reviewer's handoff body, as the round recorded it, which the runner records on the
-    # issue at the version the agents' tasks name.
-    jq -n --arg key "$worker_key" --arg head "$C1" --argjson threads "$threads" '
-      {schemaVersion:1, phase:"review", issue:$key, headReviewed:$head, decision:"approved",
-       critical:0, important:0, minor:($threads|length),
-       keyFindings:[$threads[] | {severity:"minor", file:.path, description:.open}]}' >"$R/review.json"
-  fi
+}
+
+# fixture_checks ROLE... prints the pull request body's `**Checks:**` section: one line per role
+# that recorded a pass on the issue's one before_merge check at this world's head, which is the
+# check the implementer's seeded result and the tester's own run are against.
+fixture_checks() {
+  local role separator=''
+  for role in "$@"; do
+    printf -- '%s- Check k1 (before_merge): pass at %s, recorded by %s. `bun greet.ts <name>` prints the greeting, trims the name, and exits 2 with a usage line when no name is given.' \
+      "$separator" "${C1:0:12}" "$role"
+    separator=$'\n'
+  done
+}
+
+# fixture_body THREADS CHECKS leaves the pull request body the gh stand-in serves in $body:
+# THREADS is its `Threads:` section and CHECKS its check lines (fixture_checks).
+fixture_body() {
   body="Dispatch: $worker_key
 
 Adds \`greet(name)\` and \`bun greet.ts <name>\`.
 
 ## Verification
 
-$threads_line
+$1
 
 **Checks:**
-$checks
+$2
 
 **Fast-follow:** none.
 
 **Chain:** not stacked."
-  # The routes of a review round, ahead of the shared ones: the resolution, which answers as
-  # GitHub answers a role with write access, since no world of this fixture encodes a refusal of
-  # it; the pull request's one unresolved bot thread, whose finding is a wording nit the reviewer
-  # answers and closes nothing for; and the diff under review.
-  if [ "$round" = review ]; then
-    extra=$(jq -n --arg diff "$diff" '[
-      {match:"^gh api .*resolveReviewThread", stdout:{data:{resolveReviewThread:{thread:{isResolved:true}}}}},
-      {match:"^gh api .*graphql",
-       stdout:{data:{repository:{pullRequest:{reviewThreads:{pageInfo:{hasNextPage:false, endCursor:null},
-         nodes:[{id:"PRRT_kwDOrig0001", isResolved:false,
-                 comments:{nodes:[{author:{login:"style-bot[bot]"},
-                   body:"greet.test.ts:4: `greets by name` names the same thing the next test does; name each test for the case it covers."}]}}]}}}}}},
-      {match:"^gh pr diff", stdout:$diff}
-    ]')
-  fi
-  # The routes of the world an approval that left text threads open leaves behind: a resolution
-  # succeeds, as GitHub answers a role with write access; a reply goes through the GraphQL
-  # mutation or the REST reply route; the threads the approval left open are the ones
-  # $R/threads.json holds; a review submitted on this pull request answers with the review
-  # GitHub would create, ahead of the route that reads the reviews already there, which are the
-  # one approval. Nothing here records what a run did: the score reads the calls the stand-in
-  # recorded, never these answers.
-  if [ "$round" = approved ]; then
-    extra=$(jq -n --arg diff "$diff" --arg url "$worker_pr_url" --argjson number "$worker_pr" \
-      --argjson threads "$threads" --argjson reviews "$reviews" '[
-      {match:"^gh api .*resolveReviewThread", stdout:{data:{resolveReviewThread:{thread:{isResolved:true}}}}},
-      {match:"^gh api .*addPullRequestReviewThreadReply",
-       stdout:{data:{addPullRequestReviewThreadReply:{comment:{id:"PRRC_kwDOfix900", url:($url+"#discussion_r900")}}}}},
-      {match:("^gh api .*pulls/" + ($number|tostring) + "/comments/[0-9]+/replies"),
-       stdout:{id:7001, html_url:($url+"#discussion_r7001")}},
-      {match:"^gh api .*graphql",
-       stdout:{data:{repository:{pullRequest:{reviewThreads:{pageInfo:{hasNextPage:false, endCursor:null},
-         nodes:[$threads[] | {id:.id, isResolved:false, path:.path, line:.line,
-           comments:{nodes:[{author:{login:"legion-review[bot]"}, body:.body}]}}]}}}}}},
-      {match:("^gh api .*(-X|--method) ?POST.*pulls/" + ($number|tostring) + "/reviews"),
-       stdout:{id:5002, html_url:($url+"#pullrequestreview-5002")}},
-      {match:("^gh api .*pulls/" + ($number|tostring) + "/reviews.*(-X|--method) ?POST"),
-       stdout:{id:5002, html_url:($url+"#pullrequestreview-5002")}},
-      {match:("^gh api .*pulls/" + ($number|tostring) + "/reviews"), stdout:$reviews},
-      {match:"^gh pr diff", stdout:$diff}
-    ]')
-  fi
+}
+
+# fixture_write EXTRA DECISION REVIEWS writes the two files the run reads the world through: the
+# gh stand-in's answers ($R/fixtures.json), EXTRA's routes ahead of the ones every world shares,
+# and the world the scorer reads ($R/world.json), whose head is the PR's head, the implementer's
+# code commit, and whose base is the branch the pull request is open against, the other side of
+# the diff the gh stand-in serves from the run's own remote (gh-standin.ts).
+fixture_write() {
   jq -n --arg head "$C1" --arg body "$body" --arg url "$worker_pr_url" --arg ref "legion/$worker_key" \
-    --arg key "$worker_key" --argjson number "$worker_pr" --argjson extra "$extra" \
-    --argjson decision "$decision" --argjson reviews "$reviews" '
+    --arg key "$worker_key" --argjson number "$worker_pr" --argjson extra "$1" \
+    --argjson decision "$2" --argjson reviews "$3" '
     {number:$number, url:$url, html_url:$url, title:("feat: greet() (" + $key + ")"), state:"OPEN", isDraft:false,
      headRefName:$ref, headRefOid:$head, baseRefName:"main", body:$body, mergeable:"MERGEABLE",
      reviewDecision:$decision, reviews:$reviews, latestReviews:$reviews,
@@ -1815,9 +1903,6 @@ $checks
       {match:("^gh api .*pulls/" + ($number|tostring)), stdout:$pr},
       {match:"^gh (api user|auth status)", stdout:{login:"rig[bot]"}}
     ])}' >"$R/fixtures.json"
-  # The world the scorer reads: head is the PR's head, the implementer's code commit, and base
-  # the branch the pull request is open against, which is the other side of the diff the gh
-  # stand-in serves from the run's own remote (gh-standin.ts).
   jq -n --arg key "$worker_key" --arg repo "$worker_repo" --argjson pr "$worker_pr" --arg head "$C1" \
     '{key:$key, repo:$repo, pr:$pr, branch:("legion/" + $key), base:"main", head:$head}' >"$R/world.json"
 }
@@ -1844,10 +1929,8 @@ run_project() {
   printf 'skills%.16s\n' "$digest"
 }
 
-# worker_boot NAME N ROLE [PHASE] boots the label's checkout's phase worker for ROLE on the run's
-# issue and waits for it: the part of a worker run that is the same in every phase. PHASE names
-# the phase the daemon stand-in holds the issue in, for a role that works more than one: the
-# implementer works implementing, which it is started in without one, and retro. The run's prompt
+# worker_boot NAME N ROLE boots the label's checkout's phase worker for ROLE on the run's issue
+# and waits for it: the part of a worker run that is the same in every phase. The run's prompt
 # and its world are the scenario's own (run_tester_proof, run_reviewer_text_findings,
 # run_threads_closed).
 #
@@ -1859,7 +1942,7 @@ run_project() {
 # calls it records (SKILL_SCENARIO_AGENT), while the run keeps one calls.jsonl, one pushes.log
 # and one daemon.log.
 worker_boot() {
-  local name=$1 n=$2 role=$3 worker_phase=${4:-} state project port
+  local name=$1 n=$2 role=$3 state project port
   state=$R/state
   # Each run its own Legion project, so no run claims another's role token or reads a message
   # addressed to one: the run's scenario, case, label and number, and its batch (run_project).
@@ -1887,7 +1970,7 @@ worker_boot() {
   fi
   mkdir -p "$sessions_dir"
   # Port 0: the kernel assigns the stand-in's port, which it prints, so concurrent runs never race.
-  start_process daemon bun "$here/daemon-standin.ts" 0 "$R/daemon.log" "$state/secrets/boot" "$project" "$worker_key" "$role" ${worker_phase:+"$worker_phase"}
+  start_process daemon bun "$here/daemon-standin.ts" 0 "$R/daemon.log" "$state/secrets/boot" "$project" "$worker_key" "$role"
   await_start daemon "$daemon_pid" 30 "the daemon stand-in to listen" grep -q '^listening on ' "$R/logs/daemon.log"
   port=$(sed -n 's|^listening on http://127\.0\.0\.1:||p' "$R/logs/daemon.log")
   base_env
@@ -1911,17 +1994,26 @@ worker_boot() {
   booted=$role
 }
 
-run_tester_proof() {
-  local name=$1 n=$2 index=$3 start=$4 pr head version
-  # The run's own Dispatch, and its own issue on it, whose newest implement record the tester
-  # reads and whose newest test record it writes.
+# worker_run_world INDEX START [CASE] is the start every worker run shares: the run's own
+# Dispatch and its own issue on it, whose newest implement record a worker reads and whose newest
+# records it writes; the world CASE names (worker_fixture); and the implementer's handoff on the
+# issue. It leaves the issue key in $worker_key and the pull request's number and head in the
+# caller's $pr and $head, which every runner's prompt names.
+worker_run_world() {
+  local index=$1 start=$2 case_name=${3:-}
   own_dispatch project
   seed_ts tester-proof "$R/fixture.json"
   worker_key=$(jq -r .issue "$R/fixture.json")
-  worker_fixture "$index" "$start" >>"$R/fixture.log" 2>&1 || fail "the fixture failed; see $R/fixture.log"
-  seed_ts implement-handoff "$R/fixture.json" "$R/implement.json" "$(jq -r .head "$R/world.json")"
-  version=$(jq -r .implement.version "$R/fixture.json")
+  worker_fixture "$index" "$start" "$case_name" >>"$R/fixture.log" 2>&1 ||
+    fail "the fixture failed; see $R/fixture.log"
   read -r pr head < <(jq -r '"\(.pr) \(.head)"' "$R/world.json")
+  seed_ts implement-handoff "$R/fixture.json" "$R/implement.json" "$head"
+}
+
+run_tester_proof() {
+  local name=$1 n=$2 index=$3 start=$4 pr head version
+  worker_run_world "$index" "$start"
+  version=$(jq -r .implement.version "$R/fixture.json")
   # The architect's assignment, with the Handoff line the daemon's task names the predecessor's
   # record in (packages/daemon/internal/workflow/effects.go).
   printf 'Architect → tester, %s. The implementer has finished: PR #%s (%s, repository %s) is at %s. Handoff: implement version %s (dispatch handoff-read --issue %s --phase implement --version %s). Test it and finish your phase.\n' \
@@ -1939,12 +2031,7 @@ run_tester_proof() {
 # reads back and holds to the name.
 run_reviewer_text_findings() {
   local name=$1 n=$2 index=$3 start=$4 review=$5 pr head version
-  own_dispatch project
-  seed_ts tester-proof "$R/fixture.json"
-  worker_key=$(jq -r .issue "$R/fixture.json")
-  worker_fixture "$index" "$start" "$review" >>"$R/fixture.log" 2>&1 || fail "the fixture failed; see $R/fixture.log"
-  read -r pr head < <(jq -r '"\(.pr) \(.head)"' "$R/world.json")
-  seed_ts implement-handoff "$R/fixture.json" "$R/implement.json" "$head"
+  worker_run_world "$index" "$start" "$review"
   seed_ts tester-result "$R/fixture.json" "$R/test.json" "$head"
   version=$(jq -r .test.version "$R/fixture.json")
   # The architect's assignment, with the Handoff line the daemon's task names the predecessor's
@@ -1970,12 +2057,7 @@ run_reviewer_text_findings() {
 # and holds to the name.
 run_threads_closed() {
   local name=$1 n=$2 index=$3 start=$4 threads_case=$5 pr head tip open
-  own_dispatch project
-  seed_ts tester-proof "$R/fixture.json"
-  worker_key=$(jq -r .issue "$R/fixture.json")
-  worker_fixture "$index" "$start" "$threads_case" >>"$R/fixture.log" 2>&1 || fail "the fixture failed; see $R/fixture.log"
-  read -r pr head < <(jq -r '"\(.pr) \(.head)"' "$R/world.json")
-  seed_ts implement-handoff "$R/fixture.json" "$R/implement.json" "$head"
+  worker_run_world "$index" "$start" "$threads_case"
   seed_ts tester-result "$R/fixture.json" "$R/test.json" "$head"
   seed_ts review-handoff "$R/fixture.json" "$R/review.json"
   # The approval as it reaches the implementer's live session: the head it was given, and the

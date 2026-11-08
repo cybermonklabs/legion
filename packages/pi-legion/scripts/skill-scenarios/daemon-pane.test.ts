@@ -184,15 +184,13 @@ test("refuses a script as the first gh on PATH and takes the gh the rig names", 
   expect(named.LEGION_GH_PATH).toBe(path.join(scriptBin, "gh"));
 }, 600_000);
 
-// The daemon starts the implementer twice, in implementing and again in retro, and the two end
-// differently: implementing ends with the implement handoff record and retro with none. The
-// stand-in daemon holds the issue in the phase it is told, so a rig scenario can boot a worker
-// in either.
-test("phase names the phase a role works, the one asked for when the role works more than one", () => {
+// The phase a worker runs in is the daemon's own: the first phase of the transition table
+// workflow.RoleFor gives the role, with the word of the handoff record that phase ends with, and
+// a role the table gives no phase is an error rather than an empty answer.
+test("phase names the phase a role works and the handoff word it ends with", () => {
   expect(runDaemonPane(DAEMON_MODULE, ["phase", "implementer"])).toBe("implementing\nimplement\n");
-  expect(runDaemonPane(DAEMON_MODULE, ["phase", "implementer", "retro"])).toBe("retro\n\n");
-  expect(runDaemonPane(DAEMON_MODULE, ["phase", "tester", "testing"])).toBe("testing\ntest\n");
-  expect(() => runDaemonPane(DAEMON_MODULE, ["phase", "tester", "retro"])).toThrow(
-    '"tester" works no phase "retro"'
+  expect(runDaemonPane(DAEMON_MODULE, ["phase", "tester"])).toBe("testing\ntest\n");
+  expect(() => runDaemonPane(DAEMON_MODULE, ["phase", "nobody"])).toThrow(
+    '"nobody" works no phase'
   );
 }, 600_000);
