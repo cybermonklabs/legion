@@ -613,10 +613,9 @@ func TestAHolderWhoseRecordFindsTheHoldAnothersStopsItsRenewal(t *testing.T) {
 	if !ok {
 		t.Fatalf("no record of the log says %q; it says %q", "lost the publisher hold", loggedMessages(recorder))
 	}
-	stoppedBy, ok := timeIn(t, recorder, "lost the publisher hold", "stopped_by")
-	if !ok {
-		t.Fatalf("no record of the log says %q; it says %q", "lost the publisher hold", loggedMessages(recorder))
-	}
+	// timeIn has already found that record, and it fails the row itself when a key it is asked
+	// for is missing, so there is nothing left for a second !ok to catch.
+	stoppedBy, _ := timeIn(t, recorder, "lost the publisher hold", "stopped_by")
 	// The four comparisons below hold the whole order a reader of the log depends on:
 	// began <= stopped <= stopped_by <= returned, with stopped_by still short of the deadline.
 	// began is read just ahead of publish and returned just after it, so the pair is held inside
@@ -624,10 +623,17 @@ func TestAHolderWhoseRecordFindsTheHoldAnothersStopsItsRenewal(t *testing.T) {
 	// a stopped that is too early - a zero value, or one dated before this turn began - would
 	// pass every bound from the future and is caught by the first. The middle comparison is the
 	// reason this row reads stopped_by at all: this is the one path here where the two are not
-	// the same capped value, so a publish that read its second clock on the wrong side of
-	// o.hold.Store(nil) - leaving an upper bound no later than the lower one, and so no bound on
-	// the stop from above - fails here, rather than in the two-process row and there only by
-	// chance.
+	// the same capped value, so the two clocks read in the wrong order, or the two attributes
+	// swapped, leave an upper bound no later than the lower one and no bound on the stop from
+	// above, and fail here.
+	//
+	// What no comparison here can catch is which side of o.hold.Store(nil) each clock was read
+	// on. Moving the second read above the store, and leaving it after the first, keeps the two
+	// in order and every bound below holding; the line is written after both reads and after the
+	// store, so nothing it carries says where the store fell between them. That placement is
+	// held by publish's own doc comment and by the two-process row, which reads /healthz while
+	// the turn is running and so sees Publishing() answer true past a stopped_by that came too
+	// early.
 	if stopped.Before(began) {
 		t.Errorf("the line dates the stop at %s, before publish was called at %s",
 			stopped.Format(time.RFC3339Nano), began.Format(time.RFC3339Nano))
@@ -700,7 +706,8 @@ func (h *heldRelease) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEn
 //
 // It takes the attribute's name because the lost and released lines carry two bounds on the
 // moment the process stopped publishing, stopped and stopped_by, and a row that reads only the
-// first leaves the second's side of the store of nil untested.
+// first leaves their order, their place inside the turn and their distance from the deadline
+// unheld.
 func timeIn(t *testing.T, recorder *logtest.Recorder, message, key string) (time.Time, bool) {
 	t.Helper()
 	for _, record := range recorder.Records() {
