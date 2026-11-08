@@ -83,7 +83,7 @@ type MigrationCensus struct {
 	// them does its work in the catalog (tableSizeExemption) and no enabled event trigger runs on
 	// them (ddlEventTriggersQuery), so CensusTableLimit does not apply to it; empty otherwise.
 	TableSizeExemption string
-	// ConcurrentIndex is a validated, marked single CREATE INDEX CONCURRENTLY. Its table
+	// ConcurrentIndex is a validated, marked single non-unique CREATE INDEX CONCURRENTLY. Its table
 	// scans do not hold off ordinary writes, so the size limit does not apply; holder and
 	// census checks still do. Enabled DDL event triggers disable this exception too.
 	ConcurrentIndex bool

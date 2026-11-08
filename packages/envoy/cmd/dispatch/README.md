@@ -1221,7 +1221,7 @@ What no directive embeds, such as a symlink, a `.git` or a hidden name Go's modu
 Versions are applied by their number, not by file name, and the store's tests require every file on disk to be embedded (`TestEveryMigrationFileIsEmbedded`) and the identifiers to be the numbered migrations 1 to the number the series closed at (recorded once in `migrationid`), each taken once with none above it, and a real UTC instant above them (`TestMigrationSetTakesNumbersThenTimestamps`, `migrationid.Check`), both reading file names alone.
 
 A file whose first line is exactly `-- pgmigrate:non-transactional` runs outside a transaction (`pgmigrate.ExecNonTransactional`).
-The loader accepts that marker only on one `CREATE INDEX CONCURRENTLY IF NOT EXISTS` statement, parsed as PostgreSQL parses it; multiple statements and other commands refuse the whole set.
+The loader accepts that marker only on one non-unique `CREATE INDEX CONCURRENTLY IF NOT EXISTS` statement, parsed as PostgreSQL parses it; UNIQUE indexes, multiple statements and other commands refuse the whole set.
 The runner owns and closes that connection and holds the session-level advisory lock on the same migration key through the build and its separate version insert, excluding transactional runners and schema-version readers too.
 If recording the version fails after a successful build, the next boot safely repeats the idempotent statement.
 An existing INVALID index is not success: the runner refuses with a schema-qualified `DROP INDEX CONCURRENTLY` recovery command to run outside a transaction after investigating the failed build, then retry.
@@ -2040,7 +2040,7 @@ It refuses:
   each does its work in the catalog or in the session's settings and reads no row of the table, so the time it holds its lock does not grow with the table, and a migration that bounds its own lock wait with `set local lock_timeout` keeps the exemption its other statements earn.
   Metadata-only `alter table` forms are exempt too: drop a constraint without `cascade`, add a `check … not valid`, or add a nullable `text` or `text[]` column without a default or constraints (`catalogOnlyAlterTable`).
   Those `alter table` forms still take ACCESS EXCLUSIVE briefly under the runner's `lock_timeout`; the exception removes a size refusal, not the lock bound.
-  A marked single `CREATE INDEX CONCURRENTLY IF NOT EXISTS` has a separate size exception: its scans do not hold off ordinary writes, not because the build is catalog-only.
+  A marked single non-unique `CREATE INDEX CONCURRENTLY IF NOT EXISTS` has a separate size exception: its scans do not hold off ordinary writes, not because the build is catalog-only.
   The census still reports its table size, skips counting rows above the limit, and checks its holders and census as usual.
   A function in another language is not exempt, since creating a C function loads its library, which can run any code;
   a drop with `cascade` is not exempt either, since what it drops besides the object it names is not in the statement the census reads, and neither is a drop of anything else (a table, an index, a view, a schema, a procedure);
