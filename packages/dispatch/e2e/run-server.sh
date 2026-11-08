@@ -105,7 +105,10 @@ fi
 # sign-in, the one shape the server reads it in: a suite whose assertions count search hits
 # counts the keyword answers Dispatch gives a deployment with no embedder, which is what every
 # spec but the ones that drive meaning search is written against. The acceptance driver and the
-# two-process run ask for it (packages/dispatch/README.md).
+# two-process run ask for it (packages/dispatch/README.md). No row of the two-process lane reads
+# a vector since INFRA-1554 moved its rollout row to a Go test, so that lane's request is for the
+# work ahead of it rather than for a row it has: dispatch://INFRA-558's plan builds on an embedder
+# there, and the dev embedder calls no model service, so leaving it on costs that lane nothing.
 web_dist="${DISPATCH_E2E_SERVER_WEB_DIST:-../dispatch/web/dist}"
 dev_embedder=0
 case "${DISPATCH_E2E_SIGNIN:-}" in
@@ -270,12 +273,12 @@ fi
 #
 # The runs that do prove the embed path are the ones this harness builds the dev embedder for
 # (DISPATCH_DEV_EMBEDDER above, which calls no model service): the acceptance driver's meaning
-# rows and `two-builds.multiprocess.e2e.ts`'s rollout row, which read vectors the queue wrote and
-# can pass no other way. The default follows that build rather than making each of them say it
-# twice, and it follows the build rather than the request for it, since the server reads the dev
-# embedder beside dev sign-in alone: a run that asks for it under DISPATCH_E2E_SIGNIN=oidc gets
-# no embedder, and defaulting on the request there would leave it building Bedrock's client on
-# the file store's static keys, which is the one thing this setting exists to stop.
+# rows, which read vectors the queue wrote and can pass no other way. The default follows that
+# build rather than making each of them say it twice, and it follows the build rather than the
+# request for it, since the server reads the dev embedder beside dev sign-in alone: a run that
+# asks for it under DISPATCH_E2E_SIGNIN=oidc gets no embedder, and defaulting on the request
+# there would leave it building Bedrock's client on the file store's static keys, which is the
+# one thing this setting exists to stop.
 if [ "$dev_embedder" = "1" ]; then
   embedder_off="${DISPATCH_TEST_EMBEDDER_OFF:-0}"
 else

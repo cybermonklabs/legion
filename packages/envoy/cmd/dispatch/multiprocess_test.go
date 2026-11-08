@@ -66,6 +66,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/startup"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/githubtest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/session"
 	envoystore "github.com/sjawhar/envoy/internal/store"
@@ -2410,7 +2411,7 @@ type githubFake struct {
 func startGitHubFake(t *testing.T) *githubFake {
 	t.Helper()
 	fake := &githubFake{release: make(chan struct{})}
-	fake.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	fake.server = githubtest.Serve(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/hook/deliveries") {
 			fake.countDeliveryListing()
 			fake.holdFirstDeliveryListing(r.Context())
@@ -2419,14 +2420,10 @@ func startGitHubFake(t *testing.T) *githubFake {
 			fake.countPullRequestFetch()
 		}
 		status, body := githubFakeAnswer(r)
-		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		_, _ = io.WriteString(w, body)
-	}))
-	t.Cleanup(func() {
-		fake.Release()
-		fake.server.Close()
-	})
+	}})
+	t.Cleanup(fake.Release)
 	return fake
 }
 
@@ -7496,8 +7493,7 @@ func startRateLimitGitHub(t *testing.T) *rateLimitGitHub {
 		}
 		_, _ = io.WriteString(w, `{"state":"open","title":"Ship it"}`)
 	})
-	fake.server = httptest.NewServer(mux)
-	t.Cleanup(fake.server.Close)
+	fake.server = githubtest.Serve(t, githubtest.Spec{Handle: mux.ServeHTTP})
 	return fake
 }
 
@@ -7753,11 +7749,8 @@ func startArchitectureGitHub(t *testing.T, head string, commits map[string]map[s
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, "[]")
 	})
-	fake.server = httptest.NewServer(mux)
-	t.Cleanup(func() {
-		fake.releaseHeld()
-		fake.server.Close()
-	})
+	fake.server = githubtest.Serve(t, githubtest.Spec{Handle: mux.ServeHTTP})
+	t.Cleanup(fake.releaseHeld)
 	return fake
 }
 

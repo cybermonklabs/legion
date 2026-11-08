@@ -413,6 +413,7 @@ jobs:
               - 'packages/envoy/internal/githubappjwt/*'
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/internal/id/*'
+              - 'packages/envoy/internal/logtest/*'
               - 'packages/envoy/internal/oidc/**'
               - 'packages/envoy/internal/pgmigrate/*'
               - 'packages/envoy/internal/ratelimit/*'
@@ -1161,9 +1162,9 @@ jobs:
               - '.github/scripts/apt-archive-cache-key.sh'
               - '.github/scripts/dispatch-browser-samples.sh'
               - '.github/scripts/dispatch-browser-latest-blobs.sh'
-              # e2e/cli-reply-answers.e2e.ts:18 runs envoy-client's dispatch CLI, spawned as its
-              # own process (e2e/dispatch-cli.ts:8), and @legion/broker-client is compiled with
-              # its sources, through packages/envoy-client/src/broker-credential.ts:21-22
+              # e2e/inbox-cli.e2e.ts:330 runs envoy-client's dispatch CLI, spawned as its own
+              # process (e2e/dispatch-cli.ts:8), and @legion/broker-client is compiled with its
+              # sources, through packages/envoy-client/src/broker-credential.ts:21-22
               # (ci_job_reads.py's envoy_client_dep).
               - 'packages/envoy-client/src/**'
               - 'packages/envoy-client/bin/dispatch.ts'
@@ -1216,6 +1217,7 @@ jobs:
               - 'packages/envoy/internal/broker/secrets/*'
               - 'packages/envoy/internal/broker/store/**'
               - 'packages/envoy/internal/broker/wake/*'
+              - 'packages/envoy/internal/logtest/*'
               - 'packages/envoy/internal/oidc/oidctest/*'
               - 'packages/envoy/internal/ratelimit/*'
               # storetest's DatabaseURL makes a test's own database with internal/testpg.
@@ -1340,8 +1342,11 @@ jobs:
               # counts its testdata among what this job reads.
               - 'packages/envoy/internal/dispatch/text/testdata/**'
               - 'packages/envoy/internal/fixtureenv/*'
+              - 'packages/envoy/internal/githubtest/*'
+              - 'packages/envoy/internal/logtest/*'
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testpg/*'
+              - 'packages/envoy/internal/testwait/*'
               # The image pull before its tests, of the consts in testnats/nats.go and
               # testpg/testpg.go.
               - '.github/actions/pull-test-images/**'
@@ -1424,6 +1429,7 @@ jobs:
               - 'packages/envoy/internal/pglisten/*'
               - 'packages/envoy/internal/pgmigrate/*'
               - 'packages/envoy/internal/stacktest/*'
+              - 'packages/envoy/internal/testwait/*'
               - 'packages/envoy/migrationid/*'
               # internal/dispatch/docs/approval_carry_test.go:26.
               - 'packages/contracts/fixtures/decision-blocks/**'
@@ -1435,7 +1441,9 @@ jobs:
               - '.github/workflows/ci.yaml'
               - *go_workspace
               - *dispatch_command_tests
+              - 'packages/envoy/internal/githubtest/*'
               - 'packages/envoy/internal/testnats/*'
+              - 'packages/envoy/internal/testwait/*'
               # The step takes the memory tag's test list from this script at run time.
               - '.github/scripts/go-tagged-tests.sh'
             # `go test -tags multiprocess ./cmd/dispatch`, the same closure as dispatch_memory.
@@ -1443,7 +1451,9 @@ jobs:
               - '.github/workflows/ci.yaml'
               - *go_workspace
               - *dispatch_command_tests
+              - 'packages/envoy/internal/githubtest/*'
               - 'packages/envoy/internal/testnats/*'
+              - 'packages/envoy/internal/testwait/*'
               # The step takes the multiprocess tag's test list from this script at run time.
               - '.github/scripts/go-tagged-tests.sh'
             # `go test -tags twobuild ./cmd/dispatch`, as dispatch_multiprocess plus what the job
@@ -1459,7 +1469,9 @@ jobs:
               - '.github/workflows/ci.yaml'
               - *go_workspace
               - *dispatch_command_tests
+              - 'packages/envoy/internal/githubtest/*'
               - 'packages/envoy/internal/testnats/*'
+              - 'packages/envoy/internal/testwait/*'
               - 'packages/envoy/scripts/build-dispatch-build.sh'
               - 'packages/envoy-client/**'
               - 'packages/contracts/**'
@@ -1523,6 +1535,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/text/**'
               - 'packages/envoy/internal/fixtureenv/*'
               - 'packages/envoy/internal/githubappjwt/*'
+              - 'packages/envoy/internal/logtest/*'
               - 'packages/envoy/internal/oidc/oidctest/*'
               - 'packages/envoy/internal/pglisten/*'
               - 'packages/envoy/internal/pgmigrate/*'
@@ -1530,6 +1543,7 @@ jobs:
               - 'packages/envoy/internal/redact/*'
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testpg/*'
+              - 'packages/envoy/internal/testwait/*'
               - 'packages/envoy/internal/webhook/testdata/**'
               - 'packages/envoy/migrationid/*'
               # cmd/listener/api_test.go:191,436,480, which the soak's run compiles too.
@@ -1576,6 +1590,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/githubapp/githubapptest/*'
               - 'packages/envoy/internal/githubappjwt/*'
               - 'packages/envoy/internal/googleidentity/*'
+              - 'packages/envoy/internal/logtest/*'
               - 'packages/envoy/internal/oidc/**'
               - 'packages/envoy/internal/pglisten/*'
               - 'packages/envoy/internal/pgmigrate/*'
@@ -1583,6 +1598,7 @@ jobs:
               - 'packages/envoy/internal/redact/*'
               # storetest's DatabaseURL makes a test's own database with internal/testpg.
               - 'packages/envoy/internal/testpg/*'
+              - 'packages/envoy/internal/testwait/*'
               - 'packages/envoy/migrationid/*'
               # The step takes the multiprocess tag's test list from this script at run time.
               - '.github/scripts/go-tagged-tests.sh'

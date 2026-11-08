@@ -941,30 +941,68 @@ func unanswered(err error) bool {
 }
 
 // unansweredSends bounds how many times a caller sends one JetStream request the server left
-// unanswered (sentAgain): the stream read and the create of ensureStreamWithConfig, and the
-// handle open EnsureKeyValue makes. A server answers a stream read or a create in
-// milliseconds when it answers at all, so a wait that runs out is a request that drew no answer,
-// and sending it again is the only remedy there is: a longer wait buys nothing for an answer that
-// is never coming. Three sends, because a start that lost two in a row has a bus that is not
-// serving JetStream at all, which is a start that must end. Each send carries its own wait, so a
-// caller's worst case is this count times that wait.
+// unanswered (sentAgain): the stream read and the create of ensureStreamWithConfig, the handle
+// open EnsureKeyValue makes, and EnsureKeyValue's lookup of a KV bucket and its create
+// (internal/bus/kv.go). A wait that runs out is either a request the server will never answer,
+// on one of the paths sentAgain lists below, or one it is still working on, and either is safe
+// to send again: a read changes nothing, and a second identical create is deduplicated and
+// carries the same id as the one that may have landed, so no second send can contradict the
+// send before it (an update is read again rather than sent again, updateStream). A longer wait
+// buys nothing for an answer that is never coming. Three sends, because a start that lost two in
+// a row has a bus that is not serving JetStream at all, which is a start that must end. Each
+// send carries the wait of each request it makes, so this count times that wait is a caller's
+// worst case only where the server answers nothing at all and every send ends at its first
+// request; a step whose earlier requests do answer costs more, which EnsureKeyValue's doc counts.
 const unansweredSends = 3
 
 // sentAgain is what send answers, sent again while the server leaves it unanswered (unanswered)
 // and at most unansweredSends times, with request naming it in the line each further send logs.
 // Any answer, the server's refusal included, is returned at once, so a refused create is sent
-// once.
+// once. A refusal the server reports on the connection rather than in the request's answer
+// arrives here as an answer too, because EnsureKeyValue's lookup and create read the connection's
+// record of it before they hand this function a request's silence (refusedSend): on a connection
+// a client owns, a request of theirs the grant does not cover is sent once. The handle open and
+// ensureStreamWithConfig's read and create read no such record, so a request of theirs the grant
+// does not cover is sent unansweredSends times; for a bucket's handle open that cannot happen,
+// since the lookup before it publishes to the same subject and ends the call at its first refused
+// send.
 //
 // Two programs starting at once each reconcile the one ENVOY_NOTIFICATIONS stream, and the start
 // that loses the answer to its own stream read is the listener that dies ten seconds after it
 // binds its port, serving nothing: cmd/listener's role-lane row
 // (TestRoleLaneRefusedSharedQueueFallsBackToMachineGroupsAndStoresOneCopy), whose fatal line was
-// the bare "context deadline exceeded" of the JetStream context's own ten-second wait. An update
-// is read again rather than sent again (updateStream), since one that drew no answer may still
-// land; a read changes nothing, and a create sent again carries the same id as the one that may
-// have landed, so neither resend can contradict the send before it. Nor is it the in-process
-// server's own fault: the production server leaves a JetStream request unanswered too while its
-// meta leader changes.
+// the bare "context deadline exceeded" of the JetStream context's own ten-second wait.
+// Nor is it the in-process server's own fault: the production server leaves a JetStream request
+// unanswered too while its meta leader changes.
+//
+// A request that draws no answer never draws one later, because neither side sends it again:
+// nats.go publishes each JetStream request exactly once and waits (nats.go@v1.53.1
+// js.go:3559-3578), and nats-server v2.15.1 returns from several paths these requests take with
+// no response to the requester:
+//   - the account $JS.API.INFO nats.go sends before a KV create (nats.go@v1.53.1 kv.go:432-434)
+//     and a STREAM.CREATE, each at a member that is not the metadata leader
+//     (server/jetstream_api.go:1461-1474 and :1550-1563), and a STREAM.INFO of a stream this
+//     member holds no assignment for (a bucket not yet created, or one whose create this member
+//     has not yet applied) at such a member (:2087-2093). Each of those answers
+//     JSClusterNotAvailError instead once js.isLeaderless() is true, which it is only once the
+//     metadata group is older than lostQuorumInterval and the member holds no leader
+//     (jetstream_cluster.go:1481-1497); so the silence is a young metadata group, or a member
+//     that has not yet seen its leader go. That error is an answer and is not sent again. The
+//     STREAM.INFO handler sends its own 500 ms late (sendDelayedAPIErrResponse, errRespDelay at
+//     jetstream_api.go:1211), to let the leader answer first;
+//   - a STREAM.INFO of an existing bucket at a member that is not its stream's leader, while
+//     that member does not yet see the stream's group as leaderless (:2100-2133): only the
+//     stream's leader answers it;
+//   - a STREAM.CREATE whose metadata proposal is refused because the term moved
+//     (jetstream_cluster.go:11110-11112, with raft.go:1046-1060);
+//   - every request pending in the JetStream API queue (a STREAM.CREATE) or the info queue (a
+//     STREAM.INFO, the account $JS.API.INFO) when a push reaches that queue's limit, 10,000 by
+//     default: the server drains that queue, answers none of them, logs a rate-limited warning
+//     and publishes JSAdvisoryAPILimitReached to the system account
+//     (jetstream_api.go:1029-1045), which is no answer to the caller.
+//
+// So a start that opens a bucket through a member in one of those states waits its whole bound
+// out and ends the program over one send that was never going to be answered.
 func sentAgain[T any](request string, send func() (T, error)) (T, error) {
 	var answer T
 	var err error
