@@ -24,18 +24,24 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/requests"
 )
 
-// testSecret is the one secret these tests ask for, and testIssue the issue every signed reason
-// names.
+// testSecret is the one secret these tests ask for, testIssue the issue every signed reason
+// names, and shortJudgeSecret the second secret with a judge of its own, whose 300 seconds are
+// the bound a request asks past in the one case the class's own 15 minutes would let through.
 const (
-	testSecret = "DEEL_API_KEY"
-	testIssue  = "INFRA-1353"
-	testModel  = "claude-standin"
+	testSecret        = "DEEL_API_KEY"
+	testIssue         = "INFRA-1353"
+	testModel         = "claude-standin"
+	shortJudgeSecret  = "SHORT_JUDGE_KEY"
+	shortJudgeSeconds = 300
 )
 
-// testRules give the judge 900 seconds of testSecret and nothing of any other name.
+// testRules give the judge 900 seconds of testSecret, 300 of shortJudgeSecret — a bound of its
+// own well inside the class's 15 minutes, which is what a request can ask past while still
+// asking for less than the class allows — and nothing of any other name.
 func testRules() airlock.Rules {
 	return airlock.Rules{Secrets: []airlock.SecretRule{
 		{Name: testSecret, Hosts: []string{"api.deel.example"}, Judge: new(uint32(900))},
+		{Name: shortJudgeSecret, Hosts: []string{"api.short.example"}, Judge: new(uint32(shortJudgeSeconds))},
 		{Name: "NO_JUDGE_KEY", Hosts: []string{"other.example"}},
 	}}
 }
@@ -364,6 +370,23 @@ func failedCheck(t *testing.T, detail map[string]any) string {
 	for _, c := range checks {
 		if !c.Passed {
 			return c.Check
+		}
+	}
+	return ""
+}
+
+// failedDetail is what the first failed check of a detail object says it read, and "" when every
+// check passed. It is the sentence GET /v1/grant-log then serves a person, so a test that must
+// tell two failures of one check apart reads it rather than the check's name.
+func failedDetail(t *testing.T, detail map[string]any) string {
+	t.Helper()
+	checks, ok := detail["checks"].([]check)
+	if !ok {
+		t.Fatalf("the detail's checks are %T, want the judge's own checks", detail["checks"])
+	}
+	for _, c := range checks {
+		if !c.Passed {
+			return c.Detail
 		}
 	}
 	return ""

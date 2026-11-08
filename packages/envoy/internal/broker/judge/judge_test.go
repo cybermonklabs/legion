@@ -6,6 +6,8 @@ package judge
 
 import (
 	"context"
+	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/requests"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // TestACheckThatFailsLeavesTheRequestPendingAndAsksTheModelNothing is each of the five checks in
@@ -23,6 +26,7 @@ func TestACheckThatFailsLeavesTheRequestPendingAndAsksTheModelNothing(t *testing
 	for _, c := range []struct {
 		name          string
 		want          string
+		wantDetail    string
 		readsDispatch bool
 		request       func(*PendingRequest)
 		machine       func(*fakeRequests)
@@ -38,11 +42,25 @@ func TestACheckThatFailsLeavesTheRequestPendingAndAsksTheModelNothing(t *testing
 		},
 		{
 			name: "a lifetime past the fifteen minutes of the class", want: checkLifetime,
-			request: func(p *PendingRequest) { p.LifetimeSeconds = new(3600) },
+			wantDetail: "past the 15m0s the judge decides",
+			request:    func(p *PendingRequest) { p.LifetimeSeconds = new(3600) },
+		},
+		{
+			// The one request this check holds back that the class's own bound would
+			// let through: ten minutes is well inside the 15 the judge ever decides,
+			// and past the five this name's own entry gives it. A judge that read only
+			// the class would decide it, which is a grant longer than the rules file
+			// says anyone may have of this secret without a person.
+			name: "a lifetime inside the class but past the entry's own judge", want: checkLifetime,
+			wantDetail: "past the 300 the rules let the judge decide",
+			request: func(p *PendingRequest) {
+				p.Secrets, p.LifetimeSeconds = []string{shortJudgeSecret}, new(600)
+			},
 		},
 		{
 			name: "no signed lifetime at all", want: checkLifetime,
-			request: func(p *PendingRequest) { p.LifetimeSeconds = nil },
+			wantDetail: "signed no lifetime",
+			request:    func(p *PendingRequest) { p.LifetimeSeconds = nil },
 		},
 		{
 			name: "the tag policy refusing the name now", want: checkPolicy,
@@ -84,6 +102,9 @@ func TestACheckThatFailsLeavesTheRequestPendingAndAsksTheModelNothing(t *testing
 			row := theOneRow(t, machine)
 			if got := failedCheck(t, row); got != c.want {
 				t.Errorf("the row names %q as the check that failed; want %q", got, c.want)
+			}
+			if detail := failedDetail(t, row); c.wantDetail != "" && !strings.Contains(detail, c.wantDetail) {
+				t.Errorf("the failed check reads %q; want it to say %q, the bound it was held to", detail, c.wantDetail)
 			}
 			if row["verdict"] != Refer || row["asked"] != false {
 				t.Errorf("the row reads verdict %v, asked %v; want a referral the model was never asked for", row["verdict"], row["asked"])
@@ -274,6 +295,49 @@ func TestAnApprovalTheRequestMachineRefusedStillRecordsItsVerdict(t *testing.T) 
 			}
 			if notApplied, _ := row["not_applied"].(string); !strings.Contains(notApplied, refusal.Error()) {
 				t.Errorf("the row reads not_applied %q; want the machine's own refusal", row["not_applied"])
+			}
+		})
+	}
+}
+
+// TestALostRaceRaisesNoErrorLineAndEveryOtherRefusalDoes: the person who decides the request
+// today answered while the judge was reading, so the judge's own approval lands on a request
+// that is already terminal. That is the ordinary end of a race the judge is built to lose, and
+// the deployment's alarms read the broker's ERROR lines, so it leaves none, and the row it
+// writes carries no error either — "error" is the model call's own failure, and nothing failed
+// here. A refusal of any other kind is a judge that reached a request it should not have, and
+// that does raise one, naming the record a person has to look at.
+func TestALostRaceRaisesNoErrorLineAndEveryOtherRefusalDoes(t *testing.T) {
+	for _, c := range []struct {
+		refusal   error
+		wantError bool
+	}{
+		{requests.ErrTerminal, false},
+		{requests.ErrExpired, false},
+		{errors.New("the grant could not be written"), true},
+	} {
+		t.Run(c.refusal.Error(), func(t *testing.T) {
+			var records logtest.Recorder
+			logtest.SetDefault(t, &records)
+			dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Approve, "yes")), newRequests()
+			machine.applyErr = c.refusal
+			New(t.Context(), testOptions(t, dispatch, model, machine)).consider(t.Context(), pending())
+
+			var errorLines []string
+			for _, r := range records.Records() {
+				if r.Level >= slog.LevelError {
+					errorLines = append(errorLines, r.Message)
+				}
+			}
+			if got := len(errorLines) > 0; got != c.wantError {
+				t.Errorf("the run wrote the ERROR lines %q; want any: %v", errorLines, c.wantError)
+			}
+			_, logged := machine.rows()
+			if len(logged) != 1 {
+				t.Fatalf("the run logged %d rows; want the verdict kept whatever the refusal", len(logged))
+			}
+			if _, carries := logged[0]["error"]; carries {
+				t.Errorf("the row carries error %v; want none: the model answered, and it was the apply that was refused", logged[0]["error"])
 			}
 		})
 	}

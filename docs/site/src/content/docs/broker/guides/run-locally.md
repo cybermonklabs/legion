@@ -95,7 +95,10 @@ knows, so a typo never becomes a caller that reaches nothing.
 The fake secrets file holds two secrets of `ada@example.com`'s, under the namespace
 `example/agent-secrets/` and on its example key: `DEMO_READ_TOKEN`, tagged `tier=agent`, which her
 own sessions ([the kinds of session](/legion/broker/concepts/#sessions-and-enrollment)) get without
-asking, and `DEMO_API_KEY`, tagged `tier=human`, which she approves. A grant lasts for the `--ttl` its
+asking, and `DEMO_API_KEY`, tagged `tier=human`, which she approves. A third,
+`DEMO_SERVICE_TOKEN`, tagged `owner=legion-daemon tier=agent`, is the registered service's own:
+a pod session enrolled under that service gets it without asking, and no person's session sees
+it at all. A grant lasts for the `--ttl` its
 request names; with none, 15 minutes when any secret it names is human tier and 12 hours otherwise
 (until its session ends for a secret tagged `default-grant=session`), and never past its session. Every command below runs in that second shell.
 

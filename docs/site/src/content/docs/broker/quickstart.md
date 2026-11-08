@@ -12,9 +12,10 @@ in](/legion/broker/guides/log-a-machine-in/) first and start each agent with
 `agent-secrets register --wait 10 --exec -- <agent>`.
 
 No broker yet? [Run the local stack](/legion/broker/guides/run-locally/) and log its helper in, as
-that page shows. Its two secrets are `ada@example.com`'s: `DEMO_READ_TOKEN` at the agent tier,
-which her own sessions get without asking, and `DEMO_API_KEY` at the human tier, which she
-approves. It has no Dispatch: step 2's Inbox row is absent there, and the page a person approves
+that page shows. Two of its three secrets are `ada@example.com`'s: `DEMO_READ_TOKEN` at the agent
+tier, which her own sessions get without asking, and `DEMO_API_KEY` at the human tier, which she
+approves; the third is a registered service's, which only a pod session of that service gets.
+It has no Dispatch: step 2's Inbox row is absent there, and the page a person approves
 on is the one `agent-secrets` prints, as [approving without
 Dispatch](/legion/broker/guides/approve-a-request/#without-dispatch) shows. Every terminal output
 below is from that stack, with the record id in the approval link written as `<record>`.
