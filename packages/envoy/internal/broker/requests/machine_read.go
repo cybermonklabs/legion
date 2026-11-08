@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
@@ -62,7 +63,8 @@ type grantRelease struct {
 // service BROKER_SERVICES' accounts prove), or any granted name carries a requesters tag
 // (anyListed: an entry naming a service matches by those same accounts) — that the current
 // policy still allows the session, with the names its operator withheld from it, every granted
-// name under the login that decided it (stillAllowed), that no granted name's max-grant is now
+// name under the login that decided it, or, for a grant the model judge decided, under the
+// judge the rules still give that name (stillAllowed), that no granted name's max-grant is now
 // shorter than the lifetime the grant's request signed (overMaxGrant), and that no granted
 // name's airlock entry has changed since the request recorded its fingerprint, which ends the
 // grant for good.
@@ -110,7 +112,7 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner string) (gran
 			return grantRelease{}, err
 		}
 		for _, g := range granted {
-			if err := stillAllowed(set, g.name, g.source, g.decision, decidedBy, requester); err != nil {
+			if err := stillAllowed(set, m.Airlock, g.name, g.source, g.decision, decidedBy, lifetime, requester); err != nil {
 				// A grant whose frozen source is not the one the name is served from now (its kind
 				// was changed or removed) ends for good: setting the kind back serves the same
 				// source again, and the grant must not come back with it. So does one whose
@@ -438,7 +440,11 @@ func requestedSecrets(ctx context.Context, q querier, requestID string) ([]reque
 // asks again. A name whose requesters tag no longer lists this requester is not live either, and
 // ends the grant for good (errRequesterNotListed): that list is who may ask for the secret at
 // all, so a grant made before it dropped them must not go on releasing while they are off it.
-func stillAllowed(set *policy.Set, name, frozenSource, frozenDecision, decidedBy string, requester policy.Requester) error {
+// A grant the model judge decided — record.JudgeLogin reads a judge actor off its decidedBy — is
+// held to the rules instead of to that login: the rules in force must still give the name a judge
+// of at least the seconds the grant was given (judgeStillDecides, which lifetime carries here).
+// No judge login goes through record.MayDecide, which refuses every one of them.
+func stillAllowed(set *policy.Set, rules airlock.Rules, name, frozenSource, frozenDecision, decidedBy string, lifetime *int, requester policy.Requester) error {
 	d, err := set.Evaluate(name, requester)
 	if errors.Is(err, policy.ErrUnknownSecret) {
 		return noLongerServed(name)
@@ -449,6 +455,7 @@ func stillAllowed(set *policy.Set, name, frozenSource, frozenDecision, decidedBy
 	if set.Secrets[name].Source != frozenSource {
 		return sourceMoved(name)
 	}
+	_, judged := record.JudgeLogin(decidedBy)
 	switch {
 	case d.Outcome == policy.Deny && d.Reason == policy.ReasonRequesterNotListed:
 		return requesterNotListed(name)
@@ -458,8 +465,37 @@ func stillAllowed(set *policy.Set, name, frozenSource, frozenDecision, decidedBy
 		return nil
 	case frozenDecision == policy.Automatic && !slices.Contains(requester.Withheld, name):
 		return fmt.Errorf("%w: the current policy requires approval for %s", ErrGrantNotLive, name)
+	case judged:
+		return judgeStillDecides(rules, name, lifetime)
 	case !record.MayDecide(record.KindAgentSecret, d.Approver, "", decidedBy):
 		return fmt.Errorf("%w: %s now needs its owner's approval, which this grant does not have", ErrGrantNotLive, name)
+	}
+	return nil
+}
+
+// judgeStillDecides is stillAllowed's arm for a grant the model judge decided: the rules in force
+// must still give name a judge of at least lifetime, the seconds the grant was given. The judge's
+// authority is that entry and not a person's, so this arm reads the entry where the person's arm
+// reads a login: a secret handed to another person ends a grant that person must approve and did
+// not, and leaves a judged one alone, no person's approval being what it rested on, while a
+// rules file that stops letting the judge decide this name, or that lowers it below what this
+// grant holds, ends it. An entry that changed at all already ends the grant through the frozen
+// request_secrets.airlock_digest, so this states the same rule where a reader of the release
+// checks it, over the one thing the judge's approval rested on.
+//
+// A grant with no lifetime — one that lasts until its session ends — is not live under a judge
+// decider: record.MayJudge refuses a record that names no lifetime, since an unbounded grant is
+// exactly what the judge's seconds are there to bound, so the judge made no such grant and no
+// such grant is its.
+func judgeStillDecides(rules airlock.Rules, name string, lifetime *int) error {
+	bound, ok := rules.JudgeSeconds(name)
+	switch {
+	case lifetime == nil:
+		return fmt.Errorf("%w: %s was granted until its session ends, which the judge never decides", ErrGrantNotLive, name)
+	case !ok:
+		return fmt.Errorf("%w: the rules no longer let the judge decide %s", ErrGrantNotLive, name)
+	case int64(*lifetime) > int64(bound):
+		return fmt.Errorf("%w: the rules now let the judge decide at most %d seconds of %s, short of this grant's %d", ErrGrantNotLive, bound, name, *lifetime)
 	}
 	return nil
 }
@@ -690,7 +726,9 @@ func writtenBeforeMigration13(alias string) string {
 // (anyServiceOwned: the policy's version does not cover which service BROKER_SERVICES' accounts
 // prove) and no granted name carries a requesters tag (anyListed: an entry naming a service
 // matches by those same accounts), or the current policy still allows it to the session
-// (stillAllowed, the check Values makes), and its whole approval chain still verifies
+// (stillAllowed, the check Values makes, which holds a judged grant to the judge the rules still
+// give its name, over the lifetime this reuse matched it on, the grant's own), and its whole
+// approval chain still verifies
 // (VerifyChain, the same check Values makes). A caller that already holds a live grant for these
 // exact names never re-asks a human who already approved it, a policy tightened since then is
 // never bypassed by reuse, and neither is a chain that no longer verifies.
@@ -727,7 +765,7 @@ func (m *Machine) reuseLiveGrant(ctx context.Context, enr enrollmentRow, names [
 			return Request{}, false, err
 		}
 		for _, g := range granted {
-			err := stillAllowed(set, g.name, g.source, g.decision, decidedBy, requester)
+			err := stillAllowed(set, m.Airlock, g.name, g.source, g.decision, decidedBy, lifetime, requester)
 			switch {
 			case errors.Is(err, errRequesterNotListed):
 				// The list dropped this requester while the grant was live: end it here as Values
@@ -1028,8 +1066,16 @@ type ApproverGrant struct {
 // signed-in person already lists and revokes the service login behind them, which no person
 // approved (enroll.Service.LiveCredentials, record.MayDecide). The sentinel record.AnyoneApprover
 // and an empty login are no signed-in person and list nothing. No row that already belongs to
-// somebody moves: a grant with an approver, or on a person's own session, is listed for that
-// person and no one else, exactly as before.
+// somebody moves: a grant with a person's approver, or on a person's own session, is listed for
+// that person and no one else, exactly as before.
+//
+// It lists, to every signed-in person in the same way, every live grant whose approver is the
+// sentinel record.AnyoneApprover: the model judge approved it in anyone's stead, so the grant
+// records anyone as its approver and names no person at all, and such a grant of a shared secret
+// sits on a pod, whose enrollment has no operator either. Without this nobody would see what the
+// judge had approved. That is the reasoning the paragraph above already gives — every signed-in
+// person sees these — over the grants anyone may approve in the first place, so the people who
+// see one are the people who could have approved it themselves.
 //
 // The enrollment each grant is listed under is joined on the grants row's own enrollment_id, so a
 // grant that followed its session to another box is listed once, naming the box the session runs
@@ -1046,9 +1092,9 @@ func (m *Machine) GrantsForApprover(ctx context.Context, approver string) ([]App
 		join enrollments e on e.id=g.enrollment_id
 		join launcher_credentials c on c.id=e.launcher_credential_id
 		where g.revoked_at is null and `+grantUnexpired("g")+`
-		and (g.approver=$1 or e.operator=$1
+		and (g.approver=$1 or e.operator=$1 or g.approver=$2
 			or (g.approver is null and e.operator is null and c.service is not null))
-		order by g.created_at desc`, login)
+		order by g.created_at desc`, login, record.AnyoneApprover)
 	if err != nil {
 		return nil, err
 	}

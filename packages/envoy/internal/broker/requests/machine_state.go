@@ -1663,13 +1663,22 @@ func withhold(ctx context.Context, tx pgx.Tx, enrollmentID, requestID, actor str
 // mayRevoke answers whether login may revoke a grant, and whether as its enrollment's operator,
 // whose revoke withholds (RevokeByApprover), rather than as its approver. The operator is checked
 // first, so an operator who also approved the grant revokes it as the operator.
+//
+// A grant whose approver is the sentinel record.AnyoneApprover is every signed-in person's to
+// end: the model judge approved it in anyone's stead, so it names no person who could end it,
+// and GrantsForApprover lists it to everyone for that same reason. The revoke is the approver's
+// and not the operator's, since whoever ends it stands in for the record's approver and withholds
+// nothing from a session that is not theirs. The sentinel is no signed-in person itself, and
+// neither is an empty login: neither revokes anything.
 func mayRevoke(login string, approver, operator *string) (allowed, asOperator bool) {
 	login = record.CanonicalLogin(login)
 	switch {
-	case login == "":
+	case login == "" || login == record.AnyoneApprover:
 		return false, false
 	case operator != nil && record.CanonicalLogin(*operator) == login:
 		return true, true
+	case approver != nil && record.CanonicalLogin(*approver) == record.AnyoneApprover:
+		return true, false
 	case approver != nil && record.CanonicalLogin(*approver) == login:
 		return true, false
 	}
