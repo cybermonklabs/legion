@@ -10,9 +10,8 @@ import {
   useRef,
   useState,
 } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 
-import { api } from "../../api/client";
 import { projectsQuery, whoAmIQuery } from "../../api/queries";
 import type { Project, SearchOperator, SearchResult, SearchResultKind } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
@@ -35,7 +34,6 @@ import {
   textSecondaryOnSurface,
   textSecondaryOnSurfaceMuted,
 } from "../../theme/classes";
-import { useProjectArtifact } from "../document/useProjectArtifact";
 import { statusText } from "../project/board-model";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { searchSnippetMarkdown } from "../refs/markdown-fragment";
@@ -45,34 +43,21 @@ import {
   buildProjectPath,
   type DispatchReferenceRoute,
   nodeRouteFromHref,
-  routeProjectOf,
 } from "../refs/routes";
 import { appKeymap, DIALOG_SCOPE, type KeymapAction, useKeymap } from "../shell/keymap";
 import { KeyHints } from "../shell/ShortcutHelp";
 import { useCloseOnNavigation, useDialog } from "../shell/useDialog";
 import { AskHitStatus } from "./AskHitStatus";
-import {
-  type BarScopeLevel,
-  barTargets,
-  documentRouteOf,
-  issueOfPage,
-  readSelectedIssues,
-  scopeAtCursor,
-  scopeOfPage,
-  scopeOfProject,
-} from "./bar-scope";
-import { NEW_ISSUE_GROUP_ID, NEW_ISSUE_OPTION_ID, useNewIssueOffer } from "./NewIssueOffer";
-import { barNoteClassName } from "./offer";
+import { NEW_ISSUE_GROUP_ID, useNewIssueOffer } from "./NewIssueOffer";
+import { barNoteClassName, type Offer, type OfferRow } from "./offer";
 import { type RecentItem, readRecents } from "./recents";
 import { SearchFilterBar } from "./SearchFilterBar";
 import { SearchOperators } from "./SearchOperators";
-import {
-  SEND_TO_AGENT_GROUP_ID,
-  SEND_TO_AGENT_OPTION_ID,
-  useSendToAgentOffer,
-} from "./SendToAgentOffer";
-import { type SearchBarFilters, type SearchRequest, searchRequest } from "./search-filters";
+import { SEND_TO_AGENT_GROUP_ID, useSendToAgentOffer } from "./SendToAgentOffer";
+import { type SearchBarFilters, searchRequest } from "./search-filters";
 import { groupResults, kindLabel, optionId, stepActive } from "./search-model";
+import { useBarScope } from "./useBarScope";
+import { useTieredSearch } from "./useTieredSearch";
 
 const emptyResults: SearchResult[] = [];
 const emptyProjects: Project[] = [];
@@ -81,18 +66,6 @@ const ACTIONS_GROUP_ID = "search-group-actions";
 const MORE_ACTIONS_GROUP_ID = "search-group-more-actions";
 const PROJECTS_GROUP_ID = "search-group-projects";
 const RECENT_GROUP_ID = "search-group-recent";
-
-/** How long the bar waits after a keystroke before it searches the words alone. Short enough
- *  that the list answers the letter just typed, long enough that a fast typist sends one search
- *  for a word rather than one for each of its letters. */
-const KEYSTROKE_DEBOUNCE_MS = 150;
-/** How long the bar waits after the last keystroke before it searches by meaning as well as by
- *  words. It has to be clearly longer than the keystroke's wait, or every burst of typing would
- *  pay for an embedding; and short enough that the re-ranked list still reads as part of typing
- *  rather than as something that happened later. Half a second is both: more than three times
- *  the keystroke's wait, and longer than the gap between the letters of a word typed at any
- *  speed a person types at, so a reader who is still typing never pays for it. */
-export const MEANING_PAUSE_MS = 500;
 
 interface ActionRow {
   action: KeymapAction;
@@ -119,22 +92,10 @@ interface RecentRow {
   kind: "recent";
 }
 
-/** The offer of the words in the box as a new issue, which the bar lists when its search
- *  matched nothing. */
-interface NewIssueRow {
-  id: string;
-  kind: "new-issue";
-}
-
-/** The offer of the words in the box as a message to the agent on this issue, which the bar
- *  lists while a live session holds that issue's claim. */
-interface SendToAgentRow {
-  id: string;
-  kind: "send-to-agent";
-}
-
-/** One selectable line, whatever it came from: arrows, Enter and `aria-activedescendant` see only these. */
-type PaletteRow = ActionRow | NewIssueRow | ProjectRow | RecentRow | ResultRow | SendToAgentRow;
+/** One selectable line, whatever it came from: arrows, Enter and `aria-activedescendant` see
+ *  only these. An offer's row (`OfferRow`) carries its own press, so the dialog never reaches
+ *  back into the offer to run it. */
+type PaletteRow = ActionRow | OfferRow | ProjectRow | RecentRow | ResultRow;
 
 function SearchResultIcon({ kind }: { kind: SearchResultKind }): ReactNode {
   const common = {
@@ -331,8 +292,20 @@ interface CommandSection {
   options: readonly {
     hint: ReactNode;
     label: string;
-    row: ActionRow | NewIssueRow | ProjectRow | RecentRow | SendToAgentRow;
+    row: ActionRow | OfferRow | ProjectRow | RecentRow;
   }[];
+}
+
+/** The section one offer is listed in: its own row where it has one to press, and no row at
+ *  all where it has none. The two offers are the same section built from the same parts, so
+ *  they are built here once rather than written out twice. */
+function offerSection(id: string, label: string, offer: Offer | undefined): CommandSection {
+  const row = offer?.row;
+  return {
+    id,
+    label,
+    options: row === undefined ? [] : [{ hint: null, label: row.label, row }],
+  };
 }
 
 /* The heading is `aria-hidden` for the same reason as an owner row: the group below takes its
@@ -423,15 +396,6 @@ function PaletteDialog({
   onClose: () => void;
 }): ReactNode {
   const [query, setQuery] = useState("");
-  // The two queries the bar searches, one per tier. `debouncedQuery` is the keystroke's, and
-  // asks the route for the keyword leg alone (`keywords_only`), which embeds nothing: an
-  // embedding behind each keystroke is a second of waiting on a deployment whose embedder is
-  // live, and the words answer in tens of milliseconds. `restedQuery` is the pause's, made once
-  // the reader stops typing, and asks for the whole search - meaning as well as words - whose
-  // fused order then replaces the list the keystrokes painted. Every keystroke starts both waits
-  // again, so a reader still typing pays for no embedding.
-  const [debouncedQuery, setDebouncedQuery] = useState("");
-  const [restedQuery, setRestedQuery] = useState("");
   // The highlight: the row the reader sees highlighted, held by its id, beside the query whose
   // hits were listed when it was last decided ("" while none were). The two are one state
   // because they are read together, to tell a fresh query's first hits - which take the head -
@@ -443,41 +407,10 @@ function PaletteDialog({
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
-  const location = useLocation();
-  // The project of the page this open was made from (its own page, or an issue of it), decided
-  // on the first render as the action rows are, so a hit the reader opens cannot change it
-  // before the bar closes. It narrows nothing: a search from a project page searches
-  // everything, as a search from anywhere does. The route reads it to tell which issue a query
-  // that is a bare number names, and a reader who wants this project alone adds its chip.
-  const [pageProject] = useState(() => routeProjectOf(location.pathname));
   const [filters, setFilters] = useState<SearchBarFilters>({});
-  // What the bar will act on. The page seeds it, `Tab` narrows it to the block the writing
-  // cursor was in and `Backspace` widens it to the project: all three are read on this first
-  // render, the cursor because `useDialog` takes the focus a frame later and the document's
-  // selection is no longer the page's once it has.
-  const [blockScope] = useState(scopeAtCursor);
-  const [projectScope] = useState(() => scopeOfProject(location.pathname));
-  const [scopeLevel, setScopeLevel] = useState<BarScopeLevel>("page");
-  // The issues the issue list had selected as this open was made, so no render of the list
-  // behind the bar moves a chip the reader is looking at.
-  const [selectedIssues] = useState(readSelectedIssues);
-  // The document page's own read, under the key that page uses, so the chip names the document
-  // by its name with no request of its own.
-  const [documentRoute] = useState(() => documentRouteOf(location.pathname, location.search));
-  // The issue the bar was opened over, decided on the first render as the rest of the page's
-  // own values are, so a hit the reader arrows past cannot move what an offer would act on.
-  const [pageIssue] = useState(() => issueOfPage(location.pathname, location.search));
-  const documentName = useProjectArtifact(documentRoute).data?.name;
-  const pageScope = scopeOfPage(location.pathname, location.search, documentName, selectedIssues);
-  const scope =
-    scopeLevel === "block" ? blockScope : scopeLevel === "project" ? projectScope : pageScope;
-  // What each offer acts on at the level the chip is at now, so a row acts on what the chip
-  // above it names rather than on the page the bar was opened over.
-  const targets = barTargets(scopeLevel, {
-    block: blockScope,
-    issue: pageIssue,
-    project: pageProject,
-  });
+  // What the bar will act on, in the words the chip says it in: the line above the box, the
+  // two keys that move it, and what each offer acts on at the level they have left it at.
+  const scope = useBarScope(query);
   // The person's recent items, read from the browser on the render that opens the bar: the
   // keystroke that opens it makes no request, which is what lets the list paint at once. They
   // are one person's own, so they wait for the signed-in identity the shell already read.
@@ -507,45 +440,20 @@ function PaletteDialog({
   const tooLong = searchText.length > SEARCH_QUERY_MAX;
   const queryEnabled = !tooShort && !tooLong;
 
-  useEffect(() => {
-    // The words in the box have just changed, so the meaning search the keystroke before it was
-    // heading for is withdrawn: the timer below is cleared when it has not fired, and where it
-    // had, dropping its query here leaves that search with no reader, which aborts the request
-    // through the signal React Query hands the search below.
-    setRestedQuery("");
-    const keystroke = window.setTimeout(() => setDebouncedQuery(searchText), KEYSTROKE_DEBOUNCE_MS);
-    const pause = window.setTimeout(() => setRestedQuery(searchText), MEANING_PAUSE_MS);
-    return () => {
-      window.clearTimeout(keystroke);
-      window.clearTimeout(pause);
-    };
-  }, [searchText]);
-
   // The chips narrow every leg of the search, so they belong to the request and to the key the
   // answer is kept under: a chip added or dropped is another search, not another reading of
-  // this one. The page's project rides with them, under the parameter that narrows nothing.
-  const narrowed = searchRequest(filters, pageProject);
-  // The two tiers, each its own answer under its own key: the keystroke's words-only search,
-  // and the pause's whole search. Keeping them apart is what lets the keyword list stay painted
-  // while the meaning search is still out, and what keeps an answer the reader has moved on
-  // from off the list - it lands under the key it was asked for, which the list no longer
-  // reads.
-  const keywordRequest: SearchRequest = { ...narrowed, keywords_only: true };
-  const keywords = useQuery({
-    enabled: debouncedQuery.length >= 2 && debouncedQuery.length <= SEARCH_QUERY_MAX,
-    queryFn: ({ signal }) => api.search(debouncedQuery, keywordRequest, { signal }),
-    queryKey: ["search", debouncedQuery, keywordRequest],
-  });
-  const meaning = useQuery({
-    enabled: restedQuery.length >= 2 && restedQuery.length <= SEARCH_QUERY_MAX,
-    queryFn: ({ signal }) => api.search(restedQuery, narrowed, { signal }),
-    queryKey: ["search", restedQuery, narrowed],
-  });
-  // What the list reads: the fused order once the pause's search of the query in hand has
-  // answered, and the keyword order until then. Everything below - the hits, the operators the
-  // query was read as, the degraded line and the message under the list - reads this one
-  // answer, so the list, what it says about itself and the highlight all speak of one search.
-  const search = restedQuery === debouncedQuery && meaning.data !== undefined ? meaning : keywords;
+  // this one. The page's project rides with them, under the parameter that narrows nothing,
+  // and it is the chip's project at every level because every level sits in one project.
+  const narrowed = searchRequest(filters, scope.targets.project);
+  // The one search the list reads, in two tiers the hook answers as one. Everything below -
+  // the hits, the operators the query was read as, the degraded line and the message under the
+  // list - reads this one answer, so the list, what it says about itself and the highlight all
+  // speak of one search.
+  const {
+    asked,
+    search,
+    waiting: waitingForQuery,
+  } = useTieredSearch({ enabled: queryEnabled, request: narrowed, words: searchText });
   // The project chip's own list, which every open of the bar offers, and the rows a query that
   // names a project leads to.
   const projects = useQuery(projectsQuery());
@@ -599,7 +507,6 @@ function PaletteDialog({
   // The hits answer the query in the box, so a query still in flight shows none: the message
   // below the list says which of "type more", "searching", "failed" and "nothing" it is. A
   // refresh that fails keeps the answer the query already has, and so do the hits.
-  const waitingForQuery = queryEnabled && debouncedQuery !== searchText;
   const showHits = queryEnabled && !waitingForQuery && search.data !== undefined;
   const hitGroups = showHits
     ? groups.map(({ owner, results: ownerResults }) => ({
@@ -618,7 +525,7 @@ function PaletteDialog({
       navigate(buildIssuePath({ key, kind: "issue" }));
       onClose();
     },
-    project: targets.project,
+    project: scope.targets.project,
     words: searchText,
   });
   // The words in the box as a message to the agent on the issue the chip names, offered only
@@ -626,8 +533,8 @@ function PaletteDialog({
   // what sends, and it sits among the foot rows below, so no Enter aimed at a hit sends
   // anything.
   const sendToAgent = useSendToAgentOffer({
-    block: targets.block,
-    issue: targets.issue,
+    block: scope.targets.block,
+    issue: scope.targets.issue,
     words: searchText,
   });
   const commandSections: readonly CommandSection[] = [
@@ -663,34 +570,12 @@ function PaletteDialog({
   // arrows reach last: a More action is a coincidence of words, and each offer is a write, so
   // none of them runs on an Enter the reader meant for the row above. The two offers come
   // under the actions, because they are the rows that write.
-  const newIssueSection: CommandSection = {
-    id: NEW_ISSUE_GROUP_ID,
-    label: "New issue",
-    options:
-      newIssue?.row === undefined
-        ? []
-        : [
-            {
-              hint: null,
-              label: newIssue.row.label,
-              row: { id: NEW_ISSUE_OPTION_ID, kind: "new-issue" } as const,
-            },
-          ],
-  };
-  const sendToAgentSection: CommandSection = {
-    id: SEND_TO_AGENT_GROUP_ID,
-    label: "This issue's agent",
-    options:
-      sendToAgent?.row === undefined
-        ? []
-        : [
-            {
-              hint: null,
-              label: sendToAgent.row.label,
-              row: { id: SEND_TO_AGENT_OPTION_ID, kind: "send-to-agent" } as const,
-            },
-          ],
-  };
+  const newIssueSection = offerSection(NEW_ISSUE_GROUP_ID, "New issue", newIssue);
+  const sendToAgentSection = offerSection(
+    SEND_TO_AGENT_GROUP_ID,
+    "This issue's agent",
+    sendToAgent
+  );
   const moreActions: CommandSection = {
     id: MORE_ACTIONS_GROUP_ID,
     label: "More actions",
@@ -712,7 +597,7 @@ function PaletteDialog({
   ];
   // The hits the highlight is decided against: the query they answer, "" while the list holds
   // none.
-  const listedQuery = showHits ? debouncedQuery : "";
+  const listedQuery = showHits ? asked : "";
   // The highlight is the row the reader sees highlighted, held by its id: hits arriving below
   // the actions, or an answer re-ranking them, leave it on that row. The first hits of a query
   // send it to the head, and the head it lands on is then adopted, so a row coming back does
@@ -756,17 +641,14 @@ function PaletteDialog({
   useCloseOnNavigation(true, onClose);
 
   const selectRow = (row: PaletteRow) => {
-    if (row.kind === "new-issue") {
-      // One of the two rows that write: it makes the issue with the bar still open, so the
-      // person reads what was made and, with no session named, that nothing was started on it.
-      // It closes the bar itself, by opening the issue.
-      newIssue?.row?.select();
-      return;
-    }
-    if (row.kind === "send-to-agent") {
-      // The other: pressing it is the approval, and the approval is what sends. The bar stays
-      // open, so the person reads that it went and to whom.
-      sendToAgent?.row?.select();
+    if (row.kind === "offer") {
+      // The rows that write, each pressed through the row it carries rather than through the
+      // offer behind it. The new issue is made with the bar still open, so the person reads
+      // what was made and, with no session named, that nothing was started on it; that press
+      // closes the bar itself, by opening the issue. Pressing the send is the approval, and
+      // the approval is what sends: the bar stays open, so the person reads that it went and
+      // to whom.
+      row.select();
       return;
     }
     if (row.kind === "action") {
@@ -782,24 +664,6 @@ function PaletteDialog({
     }
     onClose();
   };
-  // The two keys that move the chip. `Tab` narrows it to the block the writing cursor was in,
-  // and only where there was one: everywhere else Tab still steps through the bar's own
-  // controls, which is the only way a reader without a pointer reaches the filter chips.
-  // `Backspace` widens it to the project, and only on an empty box: with words in the box it
-  // rubs out a letter, as it does in every other field.
-  const canNarrow = blockScope !== undefined && scopeLevel !== "block";
-  const canWiden = projectScope !== undefined && scopeLevel !== "project" && scope !== projectScope;
-  const handleScopeKey = (event: KeyboardEvent<HTMLInputElement>): boolean => {
-    if (event.key === "Tab" && !event.shiftKey && canNarrow) {
-      setScopeLevel("block");
-      return true;
-    }
-    if (event.key === "Backspace" && query === "" && canWiden) {
-      setScopeLevel("project");
-      return true;
-    }
-    return false;
-  };
   // While the search the list shows is out - its first answer, or a refetch behind a cached one
   // - its hits can still arrive above the More actions, so an arrow aimed at the list now would
   // land on whatever row then sits there: until the search answers, the arrows walk only the
@@ -813,7 +677,7 @@ function PaletteDialog({
   const firstMore = rows.length - footRows;
   const walkable = searchOut && activeIndex < firstMore ? firstMore : rows.length;
   const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (handleScopeKey(event)) {
+    if (scope.handleKey(event)) {
       // The browser's own move is what this cancels: the box is the dialog's first focusable,
       // so the dialog's Tab trap, which acts at either end, leaves this key alone.
       event.preventDefault();
@@ -849,33 +713,7 @@ function PaletteDialog({
           ref={dialog.containerRef}
           role="dialog"
         >
-          {/* What the bar will act on, above the box, with the two keys that move it. The
-              filter chips below the box are another thing and read as one: they say which items
-              the words search, each with a Remove control of its own, while this says what the
-              bar acts on and is moved by Tab and Backspace alone. */}
-          {scope === undefined ? null : (
-            <div
-              className={`flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b px-3 py-2 text-xs ${borderDefault} ${textSecondaryOnSurface}`}
-              data-testid="search-scope"
-              role="status"
-            >
-              <span className="min-w-0">
-                Acting on <span className="font-medium">{scope}</span>
-              </span>
-              {canNarrow ? (
-                <span className={`inline-flex items-center gap-1 ${textMutedOnSurface}`}>
-                  <KeyHints keys={["Tab"]} />
-                  for the block you are writing in
-                </span>
-              ) : null}
-              {canWiden ? (
-                <span className={`inline-flex items-center gap-1 ${textMutedOnSurface}`}>
-                  <KeyHints keys={["Backspace"]} />
-                  for the whole project
-                </span>
-              ) : null}
-            </div>
-          )}
+          {scope.header}
           <div className={`shrink-0 border-b p-3 ${borderDefault}`}>
             <input
               aria-activedescendant={activeRow?.id}

@@ -38,8 +38,6 @@ export interface FiledIssue {
   /** The session the issue was routed to and its first message went to; `""` where the
    *  deployment names none, which is the issue made with no conversation started on it. */
   readonly session: string;
-  /** The words it was made from, so a bar whose box has moved on drops the result. */
-  readonly words: string;
   /** The first write onto the issue Dispatch refused, where one was: the filing ended there,
    *  and the issue stands without it. Undefined where every write landed. */
   readonly refused?: RefusedWrite;
@@ -97,7 +95,6 @@ export async function fileNewIssue(
     issue,
     refused,
     session: settings.session,
-    words,
   });
   const criterion = await writeOnto(
     writes,

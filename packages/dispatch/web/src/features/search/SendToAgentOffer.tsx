@@ -1,6 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-import { useState } from "react";
 
 import { issueQuery } from "../../api/queries";
 import type { IssueDetails } from "../../api/types";
@@ -8,7 +7,7 @@ import { claimHoldingFromRead } from "../issue/ClaimChip";
 import { useAgentText } from "../refs/AgentName";
 import { type AgentRegistry, useAgentRegistry } from "../refs/agent-registry";
 import { useWrites } from "../writes/write-store";
-import { barNoteClassName, refusalText } from "./offer";
+import { barNoteClassName, type Offer, refusalText, useWordsState } from "./offer";
 import { type SendToAgent, sendToAgent } from "./send-to-agent";
 
 /** The group the offer's one row sits in, and the row's own id, which the bar's arrows and
@@ -16,23 +15,12 @@ import { type SendToAgent, sendToAgent } from "./send-to-agent";
 export const SEND_TO_AGENT_GROUP_ID = "search-group-send-to-agent";
 export const SEND_TO_AGENT_OPTION_ID = "search-option-send-to-agent";
 
-/** Where the offer stands: nothing pressed, the send out, the message sent, or a refusal in the
- *  person's words. */
+/** Where the offer stands once a press has been made: the send out, the message sent, or a
+ *  refusal in the person's words. Nothing pressed is no state at all (`useWordsState`). */
 type OfferState =
-  | { readonly kind: "idle" }
   | { readonly kind: "sending"; readonly words: string }
   | { readonly agent: string; readonly kind: "sent"; readonly words: string }
   | { readonly kind: "refused"; readonly refusal: string; readonly words: string };
-
-/** What the offer is at this moment. */
-export interface SendToAgentOffer {
-  /** The row the bar lists. It is gone from the press onward: one approval sends one message,
-   *  so there is no second press to make, and the line below says what became of it. A refused
-   *  send puts the row back, because then nothing was sent. */
-  readonly row: { readonly label: string; readonly select: () => void } | undefined;
-  /** What the bar says under the list about the message it sent or could not send. */
-  readonly said: ReactNode;
-}
 
 /**
  * The session a live agent holds this issue's claim with, or undefined where no such agent does:
@@ -82,25 +70,18 @@ export function useSendToAgentOffer({
   readonly send?: SendToAgent;
   /** The words in the box, as the person typed them. */
   readonly words: string;
-}): SendToAgentOffer | undefined {
+}): Offer | undefined {
   const writes = useWrites();
   const detail = useQuery({ ...issueQuery(issue), enabled: issue !== undefined && words !== "" });
   const claim = detail.data?.claim;
   const registry = useAgentRegistry(claim?.actor.kind === "session");
   const text = useAgentText();
-  const [state, setState] = useState<OfferState>({ kind: "idle" });
-  // A box the person has typed on since is another request, so what the words before it sent is
-  // no longer this offer's answer.
-  if (state.kind !== "idle" && state.words !== words) {
-    setState({ kind: "idle" });
-  }
-  const here: OfferState =
-    state.kind !== "idle" && state.words === words ? state : { kind: "idle" };
+  const [here, setState] = useWordsState<OfferState>(words);
   const holder = liveHolderOf(detail.data, registry);
   // Nothing to offer and nothing to say: no words, or no live agent on the issue. Once a press
   // has been made the offer stays, so a poll that finds the agent gone does not take back the
   // line saying what was already sent.
-  if (issue === undefined || words === "" || (holder === undefined && here.kind === "idle")) {
+  if (issue === undefined || words === "" || (holder === undefined && here === undefined)) {
     return undefined;
   }
   const approve = (session: string) => {
@@ -123,14 +104,22 @@ export function useSendToAgentOffer({
     );
   };
   // The session to send to, carried rather than tested twice: the row is offered only while an
-  // agent is live on the issue and no send of these words is out.
+  // agent is live on the issue and no send of these words is out. The row is gone from the
+  // press onward: one approval sends one message, so there is no second press to make, and the
+  // line below says what became of it. A refused send puts the row back, because then nothing
+  // was sent.
   const sendable =
-    holder !== undefined && (here.kind === "idle" || here.kind === "refused") ? holder : undefined;
+    holder !== undefined && (here === undefined || here.kind === "refused") ? holder : undefined;
   return {
     row:
       sendable === undefined
         ? undefined
-        : { label: `Send this to the agent on ${issue}`, select: () => approve(sendable) },
+        : {
+            id: SEND_TO_AGENT_OPTION_ID,
+            kind: "offer",
+            label: `Send this to the agent on ${issue}`,
+            select: () => approve(sendable),
+          },
     said: <SendToAgentSaid issue={issue} state={here} />,
   };
 }
@@ -141,9 +130,9 @@ function SendToAgentSaid({
   state,
 }: {
   readonly issue: string;
-  readonly state: OfferState;
+  readonly state: OfferState | undefined;
 }): ReactNode {
-  if (state.kind === "idle") {
+  if (state === undefined) {
     return null;
   }
   if (state.kind === "sending") {

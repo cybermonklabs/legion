@@ -1,37 +1,24 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-import { useState } from "react";
 
 import { newIssueSettingsQuery } from "../../api/queries";
 import { useWrites, type Writes } from "../writes/write-store";
 import { type FiledIssue, fileNewIssue, type NewIssueWrite } from "./new-issue";
-import { barNoteClassName, refusalText } from "./offer";
+import { barNoteClassName, type Offer, type OfferRow, refusalText, useWordsState } from "./offer";
 
 /** The group the offer's one row sits in, and the row's own id, which the bar's arrows and
  *  `aria-activedescendant` read. */
 export const NEW_ISSUE_GROUP_ID = "search-group-new-issue";
 export const NEW_ISSUE_OPTION_ID = "search-option-new-issue";
 
-/** Where the offer stands: nothing pressed, the writes out, the issue made (`filed` absent for
- *  one Dispatch had no answer naming, and carrying the write onto it that Dispatch refused
- *  where there was one), or the create itself refused, in the person's words. */
+/** Where the offer stands once a press has been made: the writes out, the issue made (`filed`
+ *  absent for one Dispatch had no answer naming, and carrying the write onto it that Dispatch
+ *  refused where there was one), or the create itself refused, in the person's words. Nothing
+ *  pressed is no state at all (`useWordsState`). */
 type OfferState =
-  | { readonly kind: "idle" }
   | { readonly kind: "making"; readonly words: string }
   | { readonly filed: FiledIssue | undefined; readonly kind: "made"; readonly words: string }
   | { readonly kind: "refused"; readonly refusal: string; readonly words: string };
-
-/** What the offer is at this moment: the row the bar lists for it, if any, and the line the
- *  bar says underneath. */
-export interface NewIssueOffer {
-  /** The row the bar lists: the offer to make the issue while a press can still make one, and
-   *  `Open CORE-7` once one is made. It is gone while the writes are out, and gone for a
-   *  create Dispatch landed with no answer naming, because a second press there would make a
-   *  second issue (dispatch://INFRA-1042/spec#b-r14, the husk). */
-  readonly row: { readonly label: string; readonly select: () => void } | undefined;
-  /** What the bar says under the list about the issue it made or could not make. */
-  readonly said: ReactNode;
-}
 
 /** How the offer writes; the tests pass their own. */
 export type FileNewIssue = (
@@ -66,7 +53,7 @@ export function useNewIssueOffer({
   readonly project: string | undefined;
   /** The words in the box, as the person typed them. */
   readonly words: string;
-}): NewIssueOffer | undefined {
+}): Offer | undefined {
   const queryClient = useQueryClient();
   const writes = useWrites();
   // The two settings decide what the press writes, so the row waits for them: a press made
@@ -76,18 +63,11 @@ export function useNewIssueOffer({
     ...newIssueSettingsQuery(),
     enabled: offered && project !== undefined,
   });
-  const [state, setState] = useState<OfferState>({ kind: "idle" });
-  // A box the person has typed on since is another question, so what the words before it made
-  // is no longer this offer's answer.
-  if (state.kind !== "idle" && state.words !== words) {
-    setState({ kind: "idle" });
-  }
+  const [here, setState] = useWordsState<OfferState>(words);
   if (!offered || project === undefined || settings.data === undefined) {
     return undefined;
   }
-  const here: OfferState =
-    state.kind !== "idle" && state.words === words ? state : { kind: "idle" };
-  const filed = here.kind === "made" ? here.filed : undefined;
+  const filed = here?.kind === "made" ? here.filed : undefined;
   const accept = () => {
     const settled = settings.data;
     setState({ kind: "making", words });
@@ -112,18 +92,28 @@ export function useNewIssueOffer({
   };
   // Pressing the row once the issue is made opens it, which is the one thing left to do with
   // it: the create landed, so nothing here creates again.
-  const openRow =
+  const openRow: OfferRow | undefined =
     filed === undefined
       ? undefined
-      : { label: `Open ${filed.issue.key}`, select: () => onOpen(filed.issue.key) };
+      : {
+          id: NEW_ISSUE_OPTION_ID,
+          kind: "offer",
+          label: `Open ${filed.issue.key}`,
+          select: () => onOpen(filed.issue.key),
+        };
   return {
     // The row is listed from the two states a press can still create from - nothing pressed,
     // and a create Dispatch refused - and as `Open …` once an issue is made. While the writes
     // are out, and for a create Dispatch landed with no answer naming, there is no row: a press
     // there would make a second issue.
     row:
-      here.kind === "idle" || here.kind === "refused"
-        ? { label: `Make a new issue from “${words}”`, select: accept }
+      here === undefined || here.kind === "refused"
+        ? {
+            id: NEW_ISSUE_OPTION_ID,
+            kind: "offer",
+            label: `Make a new issue from “${words}”`,
+            select: accept,
+          }
         : openRow,
     said: <NewIssueSaid state={here} />,
   };
@@ -132,8 +122,8 @@ export function useNewIssueOffer({
 /** The one line the bar says about the issue it is making, made, or could not make. An issue
  *  it made that a later write was refused on says which write that was, against the key of the
  *  issue it has: the create landed, so there is an issue whatever the rest of the filing did. */
-function NewIssueSaid({ state }: { readonly state: OfferState }): ReactNode {
-  if (state.kind === "idle") {
+function NewIssueSaid({ state }: { readonly state: OfferState | undefined }): ReactNode {
+  if (state === undefined) {
     return null;
   }
   if (state.kind === "making") {
