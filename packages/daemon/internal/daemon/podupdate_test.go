@@ -505,6 +505,32 @@ func (r *podUpdateRig) awaitMessages(count int, what string) []string {
 	return bodies
 }
 
+// awaitNotices is awaitMessages for the controller's notices, and it is there for the same
+// reason: a sweep decides on claim state its machines write, so a notice the tick means to write
+// can be a moment behind the tick's return. A read that wants none takes notices() as it is —
+// waiting for an absence proves nothing — and one that wants a notice waits for it here.
+func (r *podUpdateRig) awaitNotices(count int, what string) []record.ControllerNotice {
+	r.t.Helper()
+	var notices []record.ControllerNotice
+	testwait.Eventually(r.t, what, func() bool {
+		notices = r.notices()
+		return len(notices) >= count
+	})
+	return notices
+}
+
+// awaitNoticeRows is awaitNotices for a caller that reads the row rather than the notice it
+// carries, which is what a test of the payload's own shape needs.
+func (r *podUpdateRig) awaitNoticeRows(count int, what string) []record.OutboxRow {
+	r.t.Helper()
+	var rows []record.OutboxRow
+	testwait.Eventually(r.t, what, func() bool {
+		rows = r.rows(record.OutboxKindControllerNotice)
+		return len(rows) >= count
+	})
+	return rows
+}
+
 func (r *podUpdateRig) replacements() []fake.Call {
 	return r.rt.CallsOf("ReplacePod")
 }
@@ -766,7 +792,7 @@ func TestPodUpdateTellsTheControllerOnceAfterTheNoticeBound(t *testing.T) {
 	rig.clock.advance(podUpdateNotice)
 	rig.tick()
 
-	notices := rig.notices()
+	notices := rig.awaitNotices(1, "the controller to be told")
 	if len(notices) != 1 {
 		t.Fatalf("the controller was told %d times at the notice bound, want once", len(notices))
 	}
@@ -788,7 +814,7 @@ func TestPodUpdateTellsTheControllerOnceAfterTheNoticeBound(t *testing.T) {
 	rig.clock.advance(podUpdateNotice)
 	rig.tick()
 
-	if notices := rig.notices(); len(notices) != 1 {
+	if notices := rig.awaitNotices(1, "the controller to be told"); len(notices) != 1 {
 		t.Fatalf("the controller was told %d times over two bounds, want once per round", len(notices))
 	}
 }
@@ -1751,7 +1777,7 @@ func TestPodUpdateTellsTheControllerWhenTheTurnsNeverEnd(t *testing.T) {
 	rig.clock.advance(podUpdateNotice)
 	rig.tick()
 
-	notices := rig.notices()
+	notices := rig.awaitNotices(1, "the controller to be told")
 	if len(notices) != 1 {
 		t.Fatalf("the controller was told %d times about a round whose turn never ends, want once", len(notices))
 	}
@@ -1772,7 +1798,7 @@ func TestPodUpdateTellsTheControllerWhenTheTurnsNeverEnd(t *testing.T) {
 	rig.clock.advance(podUpdateNotice)
 	rig.tick()
 
-	if notices := rig.notices(); len(notices) != 1 {
+	if notices := rig.awaitNotices(1, "the controller to be told"); len(notices) != 1 {
 		t.Fatalf("the controller was told %d times over two bounds, want once per round", len(notices))
 	}
 }
@@ -1802,7 +1828,7 @@ func TestPodUpdateTellsTheControllerWhenTheReplacementKeepsFailing(t *testing.T)
 	rig.clock.advance(podUpdateNotice)
 	rig.tick()
 
-	notices := rig.notices()
+	notices := rig.awaitNotices(1, "the controller to be told")
 	if len(notices) != 1 {
 		t.Fatalf("the controller was told %d times about a replacement that keeps failing, want once", len(notices))
 	}
@@ -1826,7 +1852,7 @@ func TestPodUpdateNoticeKeepsTheReasonsWhole(t *testing.T) {
 	rig.clock.advance(podUpdateNotice)
 	rig.tick()
 
-	rows := rig.rows(record.OutboxKindControllerNotice)
+	rows := rig.awaitNoticeRows(1, "the controller to be told")
 	if len(rows) != 1 {
 		t.Fatalf("the controller was told %d times, want once past the notice bound", len(rows))
 	}
@@ -1947,7 +1973,7 @@ func TestPodUpdateMeasuresTheLateNoticeFromTheLastAnswer(t *testing.T) {
 	rig.clock.advance(podUpdateNotice)
 	rig.tick()
 
-	notices := rig.notices()
+	notices := rig.awaitNotices(1, "the controller to be told")
 	if len(notices) != 1 {
 		t.Fatalf("the controller was told %d times a bound after the last answer, want once", len(notices))
 	}
@@ -1983,7 +2009,7 @@ func TestPodUpdateTellsTheControllerWhenNoClaimRecordsThePod(t *testing.T) {
 	rig.clock.advance(podUpdateNotice)
 	rig.tick()
 
-	notices := rig.notices()
+	notices := rig.awaitNotices(1, "the controller to be told")
 	if len(notices) != 1 {
 		t.Fatalf("the controller was told %d times about a round whose issue records no pod, want once", len(notices))
 	}
@@ -2001,7 +2027,7 @@ func TestPodUpdateTellsTheControllerWhenNoClaimRecordsThePod(t *testing.T) {
 	rig.clock.advance(podUpdateNotice)
 	rig.tick()
 
-	if notices := rig.notices(); len(notices) != 1 {
+	if notices := rig.awaitNotices(1, "the controller to be told"); len(notices) != 1 {
 		t.Fatalf("the controller was told %d times over two bounds, want once per round", len(notices))
 	}
 }
@@ -2361,7 +2387,7 @@ func TestPodUpdatePodlessNoticeListsOnlyTheWorkersThatHaveNotAnswered(t *testing
 	rig.clock.advance(podUpdateNotice)
 	rig.tick()
 
-	notices := rig.notices()
+	notices := rig.awaitNotices(1, "the controller to be told")
 	if len(notices) != 1 {
 		t.Fatalf("the controller was told %d times about a round one worker has not answered, want once", len(notices))
 	}
