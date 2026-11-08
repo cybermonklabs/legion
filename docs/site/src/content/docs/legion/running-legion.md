@@ -1049,6 +1049,9 @@ Closing the terminal leaves the project without one, and the daemon logs
   their length and a fingerprint alone, because a shell command routinely holds a credential. The
   project controller's claim is on no issue and so on no part of this line; `legion claims list`
   prints each claim's open call in the same shape, in its last column, the controller's included.
+  A shell command Oh My Pi backgrounded (a plain one still running after about a minute, or at
+  once when a message is steered into the turn) is an ended call here while its process runs on:
+  `none` says no agent is parked in a call, not that nothing runs on its machine.
 
   The `webhook App missing` lines name each served repository Dispatch's GitHub App is not known
   to be installed on, one line each with why (`webhook App missing on <repo>: <reason>`), or say

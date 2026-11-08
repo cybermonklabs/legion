@@ -188,8 +188,9 @@ func writeClaimLine(w io.Writer, c api.OperatorClaim) {
 // stepped at all — which the line prints as `-`.
 //
 // A call the host backgrounded is an ended call here, and its command may still be running: Oh
-// My Pi backgrounds a foreground shell command that has not returned in about a minute, ending
-// the call with no error and handing the job to the agent, which is a `tool_execution_end` on
+// My Pi backgrounds a plain foreground shell command that has not returned in about a minute, or
+// at once when a steering message reaches the turn, ending the call with no error and handing
+// the job to the agent, which is a `tool_execution_end` on
 // the stream like any other (measured 2026-11-08 in the plugin's own live proof,
 // legion-stall-watchdog-omp.test.ts). So this column says what the agent is parked in, which is
 // what a stalled turn is read from, and never what is running on the worker's machine.

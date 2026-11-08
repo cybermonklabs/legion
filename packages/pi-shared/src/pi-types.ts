@@ -239,7 +239,9 @@ export interface AgentEndMessage {
  * `message_start`, `message_end` and `turn_end` alike) or from `prompt_result.status`.
  */
 export interface AgentEndEvent {
-  /** Set when OMP has already scheduled a continuation, so the turn is not settling. */
+  /** Set when OMP has already scheduled a continuation, so the turn is not settling: a
+   * background job's follow-up sets it, with `awaitingAsyncWork`; a steered run's non-terminal
+   * end does not, and reads instead as `ctx.hasPendingMessages()` true (measured 2026-11-08). */
   readonly willContinue?: boolean;
   /** The run's messages; the last assistant entry says how the run ended. */
   readonly messages?: readonly AgentEndMessage[];

@@ -79,19 +79,24 @@ import type { StallLimits } from "./stall-limits";
  *    (`packages/daemon/internal/config/config.go:253`); a deployment may move that key, and this
  *    plugin cannot read it. Under Kubernetes the count lives in the pod's own `LEGION_STATE_DIR`,
  *    so a pod replacement resets it while the daemon's death budget is not reset.
- * 5. **A message steered into a running turn takes no call out of this book** (measured
- *    2026-11-08 on the same binary, driven in `legion-stall-watchdog-omp.test.ts`). A delivery
- *    sent as `pi.sendMessage(…, { deliverAs: "steer", triggerTurn: false })`, which is how an
- *    Envoy role message reaches a worker, arrives while the turn is parked in a call and leaves
- *    that call the turn's: an `eval` cell and a `pty: true` shell call each ran on with no end
- *    frame of their own, and the cell was judged, told and recovered as it would have been with
- *    no delivery at all. What the delivery does change is the end of the run the ladder's abort
- *    then makes: the host has the steered message to go on with, so its RPC `agent_end` frame
- *    reads `isTerminal` false and another turn follows at once. **That flag is not given to an
- *    extension**: an `agent_end` handler's event carried `type`, `messages` and `willContinue`
- *    alone, with `willContinue` undefined on that end and on the terminal one alike, so a run
- *    end is one thing here and closes the run's calls whichever it was — which is also what this
- *    watch wants, since the turn after it is a turn of its own with calls of its own.
+ * 5. **A message steered into a running turn takes no judged call out of this book** (measured
+ *    2026-11-08 on the same binary; the `eval` half driven in
+ *    `legion-stall-watchdog-omp.test.ts`, the `pty: true` half by hand). A delivery sent as
+ *    `pi.sendMessage(…, { deliverAs: "steer", triggerTurn: false })`, which is how an Envoy role
+ *    message reaches a worker, arrives while the turn is parked in a call and leaves that call
+ *    the turn's: an `eval` cell and a `pty: true` shell call each ran on with no end frame of
+ *    their own, and the cell was judged, told and recovered as it would have been with no
+ *    delivery at all. A plain (non-`pty`) `bash` call is the exception, and one this watch never
+ *    judges anyway (item 1): a steer backgrounds it at once rather than at the minute. What the
+ *    delivery does change is the end of the run the ladder's abort then makes: the host has the
+ *    steered message to go on with, so its RPC `agent_end` frame reads `isTerminal` false and
+ *    another turn follows. The run's calls are closed at that end whichever it was, because the
+ *    host writes every call's `tool_execution_end` before a run's `turn_end` and `agent_end`, so
+ *    none of them is open there. An extension could tell the ends apart — a background job's
+ *    follow-up arrives with `willContinue` and `awaitingAsyncWork` set, and
+ *    `ctx.hasPendingMessages()` is true at a steered run's non-terminal end — and this watch
+ *    reads neither on purpose, since the turn after it is a turn of its own with calls of its
+ *    own.
  */
 
 /** How the host clamps a deadline a call's arguments declare: `0` disables it, and any other

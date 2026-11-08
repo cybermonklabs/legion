@@ -406,7 +406,8 @@ export default function legionExtension(pi: PiApi): void {
    * **Seven handlers of this entry ask it**, and each is load-bearing: the two that open a call
    * (`tool_call`, `tool_execution_start`), the two that close one by id (`tool_execution_end`,
    * `tool_result`), and the three that close every call this watch holds at once (`turn_end`,
-   * `agent_end`, and `message_end`, whose aborted assistant message matches no id at all). A
+   * `agent_end`, and `message_end` — the last registered far below the others, with the
+   * phase-stall handlers — whose aborted assistant message matches no id at all). A
    * subagent's event reaching any of the last three would carry off the worker's own open calls,
    * the `task` call running that subagent among them, and its stuck call would be judged by
    * nobody; through either of the two closing by id it would do the same wherever the provider
@@ -444,10 +445,11 @@ export default function legionExtension(pi: PiApi): void {
   // host freed its turn and handed it the job, so the ladder's steps would end the processes of
   // a call nobody waits on and abort a turn that is working. What the agent does with the job
   // next is a call of its own with a clock of its own, and a session that goes quiet altogether
-  // is the daemon's backstop to end. Driven on this host in
-  // `legion-stall-watchdog-omp.test.ts`: a foreground shell command that does not return is
-  // backgrounded about a minute in, its `tool_execution_end` carries no error and a job still
-  // running, this watch writes nothing for it, and the command's process runs on.
+  // is the daemon's backstop to end. A plain (non-`pty`) shell command that does not return is
+  // backgrounded about a minute in, or at once when a steering message reaches the turn; its
+  // `tool_execution_end` carries no error and a job still running, this watch writes nothing for
+  // it, and the command's process runs on (driven for the minute route in
+  // `legion-stall-watchdog-omp.test.ts`).
   pi.on("tool_execution_end", async (event, context) => {
     if (subagentEvent(context)) return;
     stallWatch?.executionEnded(event);
@@ -471,10 +473,13 @@ export default function legionExtension(pi: PiApi): void {
   // that ends with no turn end of its own, whose last assistant message is the only thing that
   // says how it ended. A run the host has something to continue with — a steering delivery it
   // took while the turn ran, a background job's follow-up — ends here too, and the calls of that
-  // run are closed with every other: the turn after it is a turn of its own with calls of its
-  // own. Nothing here could tell the two apart in any case: the RPC frame's `isTerminal` is not
-  // given to an extension, and `willContinue` was undefined on both ends of a steered run
-  // measured on this host (`legion-stall-watchdog-omp.test.ts`).
+  // run are closed with every other. That is right because the host ends every call of a run
+  // before its `turn_end` and `agent_end`: a tool round waits for every call's `execute` and
+  // writes each call's `tool_execution_end` first, the error path included, so no call of the
+  // run is still open here. It is not forced: an extension could tell such an end apart — a
+  // background job's follow-up arrives with `willContinue` and `awaitingAsyncWork` set, and
+  // `ctx.hasPendingMessages()` is true at a steered run's non-terminal end — and the watch reads
+  // neither on purpose, since the turn after it is a turn of its own with calls of its own.
   pi.on("agent_end", async (event, context) => {
     if (subagentEvent(context)) return;
     stallWatch?.assistantMessage(event.messages?.at(-1));
