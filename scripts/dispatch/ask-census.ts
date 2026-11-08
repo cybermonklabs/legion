@@ -581,3 +581,4 @@ async function run(options: RunOptions): Promise<void> {
 }
 
 if (import.meta.main) await run(parseArguments(Bun.argv.slice(2)));
+// probe: a one-line change for INFRA-1413's selection evidence.
