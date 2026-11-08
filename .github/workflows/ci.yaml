@@ -3115,8 +3115,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+      # No bun: no step of this job runs it. The two steps that installed it were a few seconds
+      # each on a good day and 126 s on the morning GitHub's release downloads answered 504
+      # (run 42466199008), for a job whose every step is go, docker, jq or a shell script
+      # (dispatch://INFRA-1075).
       - id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -3287,11 +3289,25 @@ jobs:
       # is the rest of the module less the routes package, the two longest packages of it (the
       # API's and the documents service's) now among the ones the lane runs, so its 20 minutes
       # are ample.
+      # The long poles lead the list. `go test` starts the packages in the order its arguments
+      # name, so a package that starts late ends the step late however little it is waiting for:
+      # measured in run 42469495554, pmdoc started about 95 s into the step and ended it 91 s
+      # after any other package finished, while every other long package was done 90 s earlier.
+      # Leading with the six longest overlaps the longest one with the rest, which is what
+      # longest-first scheduling buys, and the order is read back from the step's own -json
+      # (dispatch://INFRA-1075).
       - name: Unit test envoy Go package
         run: |
           mkdir -p "$RUNNER_TEMP/go-test-json"
+          lead="github.com/sjawhar/envoy/internal/dispatch/pmdoc
+          github.com/sjawhar/envoy/cmd/dispatch-seed
+          github.com/sjawhar/envoy/internal/dispatch/outbox
+          github.com/sjawhar/envoy/internal/pgmigrate
+          github.com/sjawhar/envoy/cmd/dispatch
+          github.com/sjawhar/envoy/cmd/broker"
           s=0
-          go list ./... | grep -Ev '/integration|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$|/internal/dispatch/routes$' | xargs go test -json -count=1 -p 8 -parallel 12 -timeout 20m > "$RUNNER_TEMP/go-test-json/unit.json" || s=$?
+          rest=$(go list ./... | grep -Ev '/integration|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$|/internal/dispatch/routes$' | grep -vxF "$lead")
+          printf '%s\n%s\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -timeout 20m > "$RUNNER_TEMP/go-test-json/unit.json" || s=$?
           if [ "$s" -eq 0 ]; then
             jq -rj 'select(.Action == "build-output" or (.Action == "output" and .Test == null)) | .Output' "$RUNNER_TEMP/go-test-json/unit.json"
           else

@@ -591,9 +591,18 @@ UNIT_TEST_PATTERN = "|".join(
     ["/integration"] + [f"/{p.name}($|/)" if p.tree else f"/{p.name}$" for job in ENVOY_RACE_LANE for p in job.packages]
     + [f"/{ROUTES_PACKAGE}$"])
 # -p 8 and -parallel 12, and the stream the step writes, are ci.yaml's own comment's to explain.
+# UNIT_TEST_LEAD is the longest-first order ci.yaml's comment gives its reason for: go test starts
+# the packages in the order its arguments name them, so the longest must lead or it ends the step
+# alone. The names are import paths because that is what `go list ./...` prints, and the lines of
+# the workflow's own block carry its indentation, which YAML strips before the shell sees them.
+UNIT_TEST_LEAD = ["internal/dispatch/pmdoc", "cmd/dispatch-seed", "internal/dispatch/outbox",
+                  "internal/pgmigrate", "cmd/dispatch", "cmd/broker"]
+UNIT_TEST_PRELUDE = ("lead=\"" + "\n".join(f"github.com/sjawhar/envoy/{p}" for p in UNIT_TEST_LEAD)
+                     + "\"\n")
 UNIT_TEST_SCRIPT = json_stream_script(
-    f"go list ./... | grep -Ev '{UNIT_TEST_PATTERN}' | xargs go test -json -count=1 -p 8 -parallel 12 -timeout 20m",
-    "unit.json")
+    f"rest=$(go list ./... | grep -Ev '{UNIT_TEST_PATTERN}' | grep -vxF \"$lead\")\n"
+    "printf '%s\\n%s\\n' \"$lead\" \"$rest\" | xargs go test -json -count=1 -p 8 -parallel 12 -timeout 20m",
+    "unit.json", prelude=UNIT_TEST_PRELUDE)
 # The routes package's own step, which the unit step's pattern leaves out: the event log's safe
 # horizon is instance-wide, so this one runs against a Postgres service of its own and nothing
 # else runs against it (ci.yaml's postgres_routes service).
@@ -1209,7 +1218,7 @@ GATES = [
     ], reads=reads(
         (".github/actions/pull-test-images/**", at("envoy-go", "Pull test container images")),
         (TAGGED_TESTS, f"{at('envoy-go', NATS_MATRIX_STEP)} takes its -run from it"),
-    ) + setup_go("envoy-go", f"{ENVOY}/go.mod") + bun_job("envoy-go") + CI_SELF),
+    ) + setup_go("envoy-go", f"{ENVOY}/go.mod") + CI_SELF),
 
     # envoy-go's fast half: its format and generated-code checks, the seven shell-script tests
     # and the build and pack of the envoy commands (ci.yaml's comment on envoy-go-checks says why
