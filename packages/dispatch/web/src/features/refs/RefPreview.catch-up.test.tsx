@@ -10,9 +10,13 @@ import { closeRefPreview, referenceTriggerProps } from "./ref-preview-state";
 
 // The hover card's host is loaded beside the route rather than in the entry chunk
 // (`features/shell/deferred-shell.ts`), so a page draws its references before the host's
-// document listeners exist. A pointer resting on a reference is told again the moment it
-// crosses a boundary, but `focusin` fires once: a reader who tabs to a reference while that
-// chunk is still arriving has no second event coming, and their card never opened at all.
+// document listeners exist. The event that put the reader on a reference - a `focusin`, or the
+// `pointerover` of a pointer now resting there - fired before those listeners, and no second
+// one is coming: the card never opened at all. The host reads both where the browser keeps
+// them, and this row is the focus half. The pointer half is read from the hover chain
+// (`:hover`), which happy-dom does not keep - no pointer moves in this process - so what proves
+// it is the browser row `e2e/heavy-bodies.e2e.ts`'s hover card of a comment of 8,000 list
+// items, the page whose own long body holds this chunk up longest.
 
 afterEach(() => {
   closeRefPreview();

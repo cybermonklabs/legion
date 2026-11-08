@@ -197,6 +197,7 @@ function attachTriggers(): () => void {
   document.addEventListener("wheel", onReaderInput, { capture: true, passive: true });
   document.addEventListener("keydown", onReaderInput, { capture: true, passive: true });
   document.addEventListener("pointerdown", onReaderInput, { capture: true, passive: true });
+  // BASELINE PROBE - restored before the fix lands.
   // The reader may already be on a trigger when these go up. This host is loaded beside the
   // route rather than in the entry chunk (`features/shell/deferred-shell.ts`), so a page draws
   // its references before the listeners above exist. A pointer resting on one is told again the

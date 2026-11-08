@@ -40,6 +40,16 @@ interface TypedText {
  * reported: the text stands where it was typed and the caret is in front of it. Anything else
  * is left alone, because a caret that did not end up in either of those two places was put
  * somewhere by a plugin that meant it (an input rule rewriting what was typed, say).
+ *
+ * This plugin is a workaround and is to be deleted once ProseMirror reads that keystroke back
+ * correctly, or once Chromium stops leaving the caret there. Upstream has not fixed it yet: the
+ * repository pins prosemirror-view 1.42.3, and the fourth row of
+ * `packages/dispatch/e2e/build-typing.e2e.ts` is red three times of three with this plugin
+ * unregistered on **1.42.9**, the newest release at the time of writing (2026-10-31), which the
+ * run installed through a `prosemirror-view` override in the root manifest. Nothing between
+ * 1.42.4 and 1.42.9 claims this fix either; the nearest entries are 1.42.9's two about the
+ * selection around focus, which is why that version was the one tried. So when the pin moves,
+ * unregister this plugin, run that row, and delete the plugin if the row stays green.
  */
 export const caretAfterTypingPlugin = $prose(() => {
   let typed: TypedText | undefined;
