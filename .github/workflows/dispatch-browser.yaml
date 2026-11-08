@@ -218,53 +218,62 @@ jobs:
     # shard's browser step, and which the container does not move: it is the same rows in the
     # same browsers.
     #
-    # The job budget below is the rule's arithmetic, read over the shape this job has now that
-    # it runs in the image: the 22-minute Playwright install step the old figure was the sum of
-    # is gone, and the steps the container brought - its own `Initialize containers`, the
-    # artifact download, the PostgreSQL reading and the file store's start and wait - have a
-    # reading of their own at last. It is the jobs API over every containerised leg of this job
-    # that has run at 99bdf09cf435, eight legs of two runs: the full lane's four shards in
-    # workflow_dispatch run 42444713653 of dispatch-browser-nightly.yaml and the pull-request
-    # lane's four shards in CI run 42444698197. The maximum each step reached over those eight
-    # legs, in seconds:
+    # The job budget below is the rule's arithmetic, read again on the image this file pins now.
+    # The figures it replaces were read at 99bdf09cf435, which pinned the image from before
+    # build-essential was added to it (dispatch://INFRA-1443), over eight legs of two runs: not
+    # one of them ran the image these jobs run in now, and none is a leg of the reading below.
+    # Three steps the job budget carries are higher here - `Initialize containers` 39 -> 45 s,
+    # which is the larger image to pull, `./.github/actions/setup-bun` 3 -> 19 s and
+    # `bun install --frozen-lockfile` 10 -> 62 s, those two the slowest download of 24 legs
+    # rather than of 8, since the 62 s leg installed the same 928 packages and compiled nothing
+    # (job 128739827223). None of the three carries a budget of its own, so the sum they feed
+    # is the job's whole margin, and the old one left this job below what the rule gives.
+    #
+    # This reading is the jobs API over every containerised leg of this job at the two heads
+    # that pin sha256:ba003193, every attempt: 24 legs in five runs, CI runs 42481141876 and
+    # 42483222992 (two attempts, so eight legs) and workflow_dispatch runs 42481269619,
+    # 42483357068 and 42487610878 of dispatch-browser-nightly.yaml. The maximum each step
+    # reached over those 24 legs, in seconds:
     #
     #   step                                                 max
     #   Set up job                                             2
-    #   Initialize containers                                 39
+    #   Initialize containers                                 45
     #   actions/checkout                                       8
-    #   actions/download-artifact                              3
-    #   Make the downloaded binaries executable                0
-    #   ./.github/actions/setup-bun                            3
-    #   bun install --frozen-lockfile                         10
-    #   Build contracts for dispatch e2e                       1
-    #   Build dispatch dashboard                              33
-    #   Read the lanes' PostgreSQL and time its provider       3
-    #   Start an S3-compatible server for uploaded files       0
+    #   actions/download-artifact                              5
+    #   Make the downloaded binaries executable                1
+    #   ./.github/actions/setup-bun                           19
+    #   bun install --frozen-lockfile                         62
+    #   Build dispatch dashboard                              34
+    #   Read the lanes' PostgreSQL and time its provider       5
+    #   Start an S3-compatible server for uploaded files       1
     #   Wait for the S3-compatible server                     24
-    #   Browser-test dispatch dashboard                      287   (carries its own budget)
-    #   upload-artifact, this leg's blob report                2
-    #   What the run left behind                               0
+    #   Browser-test dispatch dashboard                      356   (carries its own budget)
+    #   upload-artifact, this leg's blob report                3
+    #   What the run left behind                               1
     #   upload-artifact, the record directory                  2
-    #   upload-artifact, the failed rows' traces               3
+    #   upload-artifact, the failed rows' traces               4
     #   Post Run ./.github/actions/setup-bun                   1
     #   Post Run actions/checkout                              1
     #   Stop containers                                        1
     #   Complete job                                           0
     #
     # The three uploads are three steps of this job and not one, so the sum below counts each
-    # of them: 2 + 2 + 3, not 3.
+    # of them: 3 + 2 + 4, not 4.
+    #
+    # The browser step's own 9 minutes above still holds: 356 s is the most it took over these
+    # 24 legs, under the 419 s that budget was derived from, so the pooled maximum the rule
+    # reads is still that 419 s and the budget the rule gives is still 9 minutes.
     #
     # The browser step is the one step of this job that carries a budget, so the job's budget is
-    # that budget plus the maxima above of every step without one, which sum to 136 s:
-    # 540 + 136 = 676 s, 11 min 16 s, rounded up to the 12 minutes below. That is a backstop
-    # above the sum of the step budgets, as this file's head says a job budget is, and it is now
-    # a measurement rather than what was left over from a step that no longer runs.
+    # that budget plus the maxima above of every step without one, which sum to 219 s:
+    # 540 + 219 = 759 s, 12 min 39 s, rounded up to the 13 minutes below. That is a backstop
+    # above the sum of the step budgets, as this file's head says a job budget is.
     #
     # The rows behind those seconds were the suite of the head those runs measured. Listed again
     # after the forward merges of main, the suite holds 1,200 rows: 1,145 in the eight projects
     # the full lane's four shards run, of which 1,058 are in the two the pull-request lane
     # runs. The remaining 55 are the three `-alone` projects', which the alone job runs.
-    timeout-minutes: 12
+    timeout-minutes: 13
     strategy:
       fail-fast: false
       # Four legs. The count is written here and in the `--shard` denominator of the browser step
@@ -405,8 +414,8 @@ jobs:
         # reporter's output, so a green run reports what it ran too.
         #
         # The budget below is the 9 minutes the job's head derives from the sharded head's own
-        # runs, and this head does not move it: the most this step took over the eight
-        # containerised legs the job's head lists is 287 s, under those runs' 419 s and well
+        # runs, and the image this head pins does not move it: the most this step took over the
+        # 24 containerised legs the job's head lists is 356 s, under those runs' 419 s and well
         # under the budget, so the pooled maximum the rule reads is still 419 s.
         timeout-minutes: 9
         run: |
@@ -612,44 +621,53 @@ jobs:
     # than it moves a parallel row. The 15 per cent the rule adds is what carries that, and a
     # leg that outran it fails the browser step by name, which is a reading of its own.
     #
-    # The job budget below is the rule's arithmetic, read over the shape this job has now that
-    # it runs in the image, for the reason the shard job's head gives: the 22-minute Playwright
-    # install step the old figure was the sum of is gone, and the steps the container brought
-    # have a reading of their own at last. It is the jobs API over every leg of this job that
-    # has run at 99bdf09cf435, the three legs of the full lane in workflow_dispatch run
-    # 42444713653 of dispatch-browser-nightly.yaml; the pull-request lane of that head, CI run
-    # 42444698197, still runs none. The maximum each step reached over those three legs, in
-    # seconds:
+    # The job budget below is the rule's arithmetic, read again on the image this file pins now,
+    # for the reason the shard job's head gives: the figures it replaces were read at
+    # 99bdf09cf435, which pinned the image from before build-essential was added to it
+    # (dispatch://INFRA-1443), over three legs of one run. The two steps that moved most are
+    # `./.github/actions/setup-bun`, 2 -> 20 s, and `Initialize containers`, 38 -> 45 s, the
+    # larger image to pull; neither carries a budget of its own, so both land in the sum that
+    # is this job's whole margin, and the old one left it below what the rule gives.
+    #
+    # This reading is the jobs API over every leg of this job at the two heads that pin
+    # sha256:ba003193, every attempt: nine legs, the three legs of the full lane in each of
+    # workflow_dispatch runs 42481269619, 42483357068 and 42487610878 of
+    # dispatch-browser-nightly.yaml. The pull-request lane runs no leg of this job, so CI runs
+    # 42481141876 and 42483222992 contribute none. The maximum each step reached over those
+    # nine legs, in seconds:
     #
     #   step                                                 max
-    #   Set up job                                             1
-    #   Initialize containers                                 38
-    #   actions/checkout                                       8
-    #   actions/download-artifact                              3
-    #   Make the downloaded binaries executable                1
-    #   ./.github/actions/setup-bun                            2
-    #   bun install --frozen-lockfile                         10
-    #   Build contracts for dispatch e2e                       0
-    #   Build dispatch dashboard                              33
-    #   Read the lanes' PostgreSQL and time its provider       2
-    #   Browser-test dispatch dashboard                       68   (carries its own budget)
-    #   upload-artifact, this leg's blob report                1
+    #   Set up job                                             2
+    #   Initialize containers                                 45
+    #   actions/checkout                                       9
+    #   actions/download-artifact                              5
+    #   Make the downloaded binaries executable                0
+    #   ./.github/actions/setup-bun                           20
+    #   bun install --frozen-lockfile                          9
+    #   Build dispatch dashboard                              35
+    #   Read the lanes' PostgreSQL and time its provider       3
+    #   Browser-test dispatch dashboard                       69   (carries its own budget)
+    #   upload-artifact, this leg's blob report                2
     #   What the run left behind                               0
-    #   upload-artifact, the record directory                  1
+    #   upload-artifact, the record directory                  2
     #   upload-artifact, the failed rows' traces               1
-    #   Post Run ./.github/actions/setup-bun                   0
-    #   Post Run actions/checkout                              0
+    #   Post Run ./.github/actions/setup-bun                   1
+    #   Post Run actions/checkout                              1
     #   Stop containers                                        1
-    #   Complete job                                           0
+    #   Complete job                                           1
     #
-    # The three uploads are three steps here too, and the sum below counts each of them.
+    # The three uploads are three steps here too, and the sum below counts each of them:
+    # 2 + 2 + 1, not 2.
+    #
+    # The browser step's own 3 minutes above still holds: 69 s is the most it took over these
+    # nine legs, webkit-alone's again, under the 141 s that budget was derived from, so the
+    # pooled maximum the rule reads is still that 141 s.
     #
     # The browser step is the one step of this job that carries a budget, so the job's budget is
-    # that budget plus the maxima above of every step without one, which sum to 102 s:
-    # 180 + 102 = 282 s, 4 min 42 s, rounded up to the 5 minutes below. It is a backstop above
-    # the sum of the step budgets, as this file's head says a job budget is, and a measurement
-    # now rather than what was left over from a step that no longer runs.
-    timeout-minutes: 5
+    # that budget plus the maxima above of every step without one, which sum to 137 s:
+    # 180 + 137 = 317 s, 5 min 17 s, rounded up to the 6 minutes below. It is a backstop above
+    # the sum of the step budgets, as this file's head says a job budget is.
+    timeout-minutes: 6
     strategy:
       fail-fast: false
       matrix:
@@ -723,8 +741,8 @@ jobs:
         # goes beside the list reporter's output, so a green run reports what it ran too.
         #
         # The budget below is the 3 minutes the job's head derives from the sharded head's own
-        # run, and this head does not move it: the most this step took over the three
-        # containerised legs the job's head lists is 68 s, well under webkit-alone's 141 s
+        # run, and the image this head pins does not move it: the most this step took over the
+        # nine containerised legs the job's head lists is 69 s, well under webkit-alone's 141 s
         # there, so the pooled maximum the rule reads is still 141 s.
         timeout-minutes: 3
         run: |

@@ -1052,9 +1052,6 @@ GATES = [
     # job still starts compile closures this filter already carries: run-server.sh builds
     # ./cmd/dispatch, which that job's own pinned build step below names, and
     # run-signin-issuer.sh builds ./cmd/dev-oidc-issuer, which that first entry names.
-    #
-    # cybermonklabs/legion#2853 gave this gate three script Runs again, on main, where no job of
-    # the called workflow has a container; the paragraph above is why they cannot stand here.
     gate("dispatch_browser", BROWSER_JOB, exact=[
         # The four commands the shard and alone jobs' scripts built before those jobs moved
         # into a container, built once in the binaries job and downloaded by both: this is the

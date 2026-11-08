@@ -63,10 +63,11 @@ e2e_dir="$(cd "$(dirname "$0")" && pwd)"
 # `cd` to packages/envoy below, and one name for the directory is all the script needs.
 work="$(cd "$e2e_dir/../../envoy" && pwd)/out/dispatch-e2e-broker"
 
-# The three binaries the broker's harness needs, read here rather than below because a relative
-# value is made absolute against the caller's directory, which this script leaves for
-# packages/envoy further down; the header above says what DISPATCH_E2E_BROKER_BIN_DIR holds and
-# who sets it.
+# The three binaries the broker's harness needs; the header above says what
+# DISPATCH_E2E_BROKER_BIN_DIR holds and who sets it. The check below reads the handed-over value
+# while the script is still in the caller's directory, above the `cd` to packages/envoy, so a
+# relative value resolves against the directory the caller named it from, which is what a caller
+# writing one means.
 # This script execs exactly one of broker and dev-oidc-issuer per invocation and never runs
 # requestseed: e2e/real-broker.ts runs that one itself, out of
 # packages/envoy/out/dispatch-e2e-broker, the fixed path the build below writes to and the one
@@ -80,7 +81,6 @@ work="$(cd "$e2e_dir/../../envoy" && pwd)/out/dispatch-e2e-broker"
 # a stale broker and the suite tests the wrong build.
 prebuilt_bin="${DISPATCH_E2E_BROKER_BIN_DIR:-}"
 if [ -n "$prebuilt_bin" ]; then
-  [[ "$prebuilt_bin" == /* ]] || prebuilt_bin="$PWD/$prebuilt_bin"
   # The handed-over value against `$work`, which is resolved the way e2e/real-broker.ts resolves
   # that directory: against this script's own place in the checkout, never against the caller's
   # directory. Both sides go through `cd <dir> && pwd -P`, so a trailing slash, a `..` and a
