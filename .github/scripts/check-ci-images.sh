@@ -78,9 +78,12 @@
 #      .github/workflows/browser-image.yaml builds that one file and no other, so a row built
 #      from anything else is a row nothing builds and nothing pushes: no image of the package
 #      was ever pushed from it, and rule 10 below would hold the row to the hash of a build
-#      recipe no build ever ran. Such a row would pass both halves of this check while nothing
-#      ever published it. A second image this repository builds is a second build workflow,
-#      and this rule and rule 10 would then name the Dockerfile each of them builds.
+#      recipe no build ever ran. Rule 10 does refuse such a row, in the package mode and over
+#      the network; this rule is that same refusal made in lint, which reads the files of this
+#      tree alone and runs on every change, so a row nothing builds is refused where it is
+#      written rather than in the one job that reads the package. A second image this
+#      repository builds is a second build workflow, and this rule and rule 10 would then name
+#      the Dockerfile each of them builds.
 #
 # IN PACKAGE MODE:
 #
@@ -159,21 +162,27 @@
 # request (`GET https://ghcr.io/token?scope=repository:cybermonklabs/legion/ci:pull&service=ghcr.io`)
 # and one `HEAD https://ghcr.io/v2/cybermonklabs/legion/ci/manifests/<digest>` per row, with an
 # `Accept` naming the four index and manifest media types. Rule 10 adds, for each `built` row
-# the package holds, a `GET` of that same manifest and a `GET` of the config blob it names,
-# which is the one place an image's labels are written; a manifest that is an index is followed
-# to its linux/amd64 entry first. Those three requests go to the same ghcr.io and take the same
-# anonymous token, so this check reads a label itself rather than shelling out to crane, which
-# it would otherwise need for nothing.
+# the package holds, one `crane config --platform linux/amd64
+# ghcr.io/cybermonklabs/legion/ci@<digest>`, which answers the image config a label is written
+# in. That is the read .github/scripts/mirror-ci-images.sh already makes for a row's Go
+# version, with the crane .github/actions/install-crane puts on PATH in ci.yaml's ci-images
+# job, before this mode runs there; one reader of an image config, so the two cannot disagree
+# about which bytes of an index they read. The platform is named because the build pushes
+# linux/amd64 alone, and a read that answered for whatever entry an index happened to carry
+# would hold a row to the label of an image this repository never built. A read that fails for
+# any reason — no crane on PATH, a refusal from the registry, an image carrying no label — is a
+# refusal naming what failed, never a pass.
 # CI_IMAGES_MANIFEST_HEAD is the seam both reads hang on: when it is set, this check runs
-# `"$CI_IMAGES_MANIFEST_HEAD" <digest>` once per row instead of reaching ghcr.io, and reads what
-# the command prints on stdout — the HTTP status code of the HEAD (200 = the package holds the
-# digest, 404 = it does not), and after it, where the stand-in answers for one, the image's
+# `"$CI_IMAGES_MANIFEST_HEAD" <digest>` once per row instead of reaching ghcr.io or running
+# crane, and reads what the command prints on stdout — the HTTP status code of the HEAD (200 =
+# the package holds the digest, 404 = it does not), and after it the image's
 # legion.browser-image.source-sha256 label. A stand-in that prints a status alone answers for
-# the manifest and not for a label, so rule 10 compares nothing for that row, and the summary
-# line says how many `built` rows it did compare. check-ci-images.test.sh sets the seam to a
-# small script of its own, which prints the label its rule 10 cases drive the comparison with,
-# and mirror-ci-images.test.sh drives rule 9 with it over the repository's own rows, so no case
-# of either test reaches the network.
+# the manifest and not for a label, and rule 10 refuses a `built` row answered that way rather
+# than passing it over: a seam that could turn a rule off is a seam that hides what the rule
+# would have said. check-ci-images.test.sh sets the seam to a small script of its own, which
+# prints the label its rule 10 cases drive the comparison with, and mirror-ci-images.test.sh
+# drives rule 9 with it over the repository's own rows, so no case of either test reaches the
+# network.
 #
 # Run from anywhere: .github/scripts/check-ci-images.sh tree
 #                    .github/scripts/check-ci-images.sh package
@@ -204,7 +213,6 @@ import re
 import subprocess
 import sys
 import urllib.error
-import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import NamedTuple
@@ -280,6 +288,12 @@ BUILD_WORKFLOW = ".github/workflows/browser-image.yaml"
 # from the bytes the package serves.
 BUILT_DOCKERFILE = ".github/docker/browser.Dockerfile"
 SOURCE_LABEL = "legion.browser-image.source-sha256"
+# How rule 10 reads an image's label: `crane config` answers the config a label is written in,
+# and the platform is named because this repository's build pushes linux/amd64 alone.
+# MIRROR_SCRIPT reads a row's Go version with this same call, and CRANE_ACTION is the step that
+# puts crane on PATH in MIRROR_JOB, which runs the copy and then this mode.
+CRANE_CONFIG = ("crane", "config", "--platform", "linux/amd64")
+CRANE_ACTION = ".github/actions/install-crane"
 BUN_PIN = Path(".bun-version")
 WORKER_DOCKERFILE = Path("packages/daemon/docker/worker.Dockerfile")
 # The two upstream repositories a pin of this repository names: rule 3 asks for a row at each
@@ -583,72 +597,48 @@ def verdict(what: str, summary: str) -> None:
 class PackageRead(NamedTuple):
     """What this mode read about one row's digest. `status` is the HTTP status of the manifest
     HEAD rule 9 reads. `label` is the SOURCE_LABEL the image at that digest carries, which rule
-    10 holds the row's Dockerfile to, and `trouble` says why a read that was made gave no
-    label. Both are empty where no label was read at all, which is what a CI_IMAGES_MANIFEST_HEAD
-    stand-in that prints a status alone answers."""
+    10 holds the row's build recipe to, and `trouble` says why a read that was made gave no
+    label. For a `built` row the package holds, one of the two is always set: a read that gave
+    no label is a read rule 10 refuses on, never one it passes over."""
 
     status: str
     label: str
     trouble: str
 
 
-class KeepAuthHome(urllib.request.HTTPRedirectHandler):
-    """ghcr.io serves a blob as a redirect to a storage host, which carries its own credential
-    in the URL it redirects to. urllib would send this request's `Authorization` header there
-    too, and a host reading two credentials can refuse the read, so the header is dropped when
-    the redirect leaves the host it was issued for."""
-
-    def redirect_request(self, request, fp, code, msg, headers, newurl):
-        followed = super().redirect_request(request, fp, code, msg, headers, newurl)
-        here = urllib.parse.urlsplit(request.full_url).netloc
-        if followed is not None and urllib.parse.urlsplit(newurl).netloc != here:
-            followed.remove_header("Authorization")
-        return followed
-
-
-OPENER = urllib.request.build_opener(KeepAuthHome)
-
-
-def fetch_json(url: str, token: str, accept: str = "") -> object:
-    """One authenticated GET of ghcr.io, read as JSON."""
-    request = urllib.request.Request(url)
-    request.add_header("Authorization", f"Bearer {token}")
-    if accept:
-        request.add_header("Accept", accept)
-    with OPENER.open(request, timeout=30) as answer:
-        return json.load(answer)
-
-
-def source_label(digest: str, token: str) -> tuple[str, str]:
+def source_label(digest: str) -> tuple[str, str]:
     """The SOURCE_LABEL the image at one digest carries, and, where it gives none, the clause
-    that says why. An image's labels are written in its config blob, which its manifest names,
-    and a manifest that is an index names one manifest per platform: the build pushes
-    linux/amd64 alone, so that is the entry whose config carries the label."""
+    that says why. An image's labels are written in its config, and `crane config` is what
+    answers one: the read MIRROR_SCRIPT already makes for a row's Go version, under the crane
+    CRANE_ACTION puts on PATH in the job that runs both. The platform is named because an
+    index names one manifest per platform and this repository's build pushes linux/amd64
+    alone, so reading whatever entry an index happens to carry would hold a row to the label
+    of an image no build of this repository pushed."""
+    reference = f"{REGISTRY}@{digest}"
+    call = " ".join((*CRANE_CONFIG, reference))
     try:
-        manifest = fetch_json(f"https://ghcr.io/v2/{REPOSITORY}/manifests/{digest}", token, ACCEPT)
-        entries = manifest.get("manifests") if isinstance(manifest, dict) else None
-        if isinstance(entries, list):
-            wanted = [
-                entry
-                for entry in entries
-                if (entry.get("platform") or {}).get("architecture") == "amd64"
-            ] or entries
-            if not wanted:
-                return "", "the index at that digest names no manifest"
-            manifest = fetch_json(
-                f"https://ghcr.io/v2/{REPOSITORY}/manifests/{wanted[0]['digest']}", token, ACCEPT
-            )
-        config = (manifest.get("config") or {}).get("digest") if isinstance(manifest, dict) else ""
-        if not config:
-            return "", "the manifest at that digest names no config blob, where a label is written"
-        blob = fetch_json(f"https://ghcr.io/v2/{REPOSITORY}/blobs/{config}", token)
-        labels = (blob.get("config") or {}).get("Labels") if isinstance(blob, dict) else None
-        carried = (labels or {}).get(SOURCE_LABEL, "")
-        if not carried:
-            return "", f"the image at that digest carries no {SOURCE_LABEL} label"
-        return one_line(carried), ""
+        done = subprocess.run(
+            [*CRANE_CONFIG, reference], capture_output=True, text=True, check=False, timeout=120
+        )
     except Exception as error:  # noqa: BLE001 - every failure to read the package is a refusal
-        return "", f"reading its config failed ({type(error).__name__}: {one_line(error)})"
+        return "", (
+            f"`{call}` would not run ({type(error).__name__}: {one_line(error)}), and "
+            f"{CRANE_ACTION} is what puts crane on PATH before this mode runs"
+        )
+    if done.returncode != 0:
+        return "", (
+            f"`{call}` exited {done.returncode} "
+            f"({one_line(done.stderr) or 'saying nothing on stderr'})"
+        )
+    try:
+        config = json.loads(done.stdout)
+    except ValueError as error:
+        return "", f"`{call}` answered what is not an image config ({one_line(error)})"
+    labels = (config.get("config") or {}).get("Labels") if isinstance(config, dict) else None
+    carried = (labels or {}).get(SOURCE_LABEL, "")
+    if not carried:
+        return "", f"the image at that digest carries no {SOURCE_LABEL} label"
+    return one_line(carried), ""
 
 
 def package_reads(rows: list[Row]) -> dict[str, PackageRead]:
@@ -662,10 +652,24 @@ def package_reads(rows: list[Row]) -> dict[str, PackageRead]:
                 [command, row.digest], capture_output=True, text=True, check=False
             )
             # The stand-in prints the status, and after it the label the image at that digest
-            # carries, where it answers for one at all.
+            # carries. A stand-in that prints a status alone has answered for the manifest and
+            # not for the label, and that is trouble rather than silence: this seam stands in
+            # for the whole of the package read, so a half-answer it passed over would turn
+            # rule 10 off and no run would say so.
             words = done.stdout.split()
+            label = words[1] if len(words) > 1 else ""
             out[row.digest] = PackageRead(
-                words[0] if words else "no status", words[1] if len(words) > 1 else "", ""
+                words[0] if words else "no status",
+                label,
+                ""
+                if label
+                else (
+                    f"the CI_IMAGES_MANIFEST_HEAD stand-in {one_line(command)} printed a "
+                    f"status and no {SOURCE_LABEL} label after it, so it answered for the "
+                    f"manifest and not for the image's label. Have it print that label after "
+                    f"the status, or unset CI_IMAGES_MANIFEST_HEAD and let this check read the "
+                    f"package itself"
+                ),
             )
         return out
     try:
@@ -700,7 +704,7 @@ def package_reads(rows: list[Row]) -> dict[str, PackageRead]:
         # there has no config to read.
         label, trouble = "", ""
         if row.kind == BUILT and status == "200":
-            label, trouble = source_label(row.digest, token)
+            label, trouble = source_label(row.digest)
         out[row.digest] = PackageRead(status, label, trouble)
     return out
 
@@ -741,11 +745,10 @@ if MODE == PACKAGE:
                     f"the digest."
                 )
             # Rule 10: the published image carries the hash of the build recipe the row's
-            # Dockerfile belongs to, because the build writes it there. A read that gave no
-            # label at all is a CI_IMAGES_MANIFEST_HEAD stand-in answering for the manifest
-            # alone, and the summary line below is where a run says how many rows it did
-            # compare.
-            if kind != BUILT or read.status != "200" or not (read.label or read.trouble):
+            # Dockerfile belongs to, because the build writes it there. Every `built` row the
+            # package holds is compared, and a read that gave no label is refused below on its
+            # `trouble`: a row this rule read nothing for is a row nothing held to a recipe.
+            if kind != BUILT or read.status != "200":
                 continue
             # Half of that recipe is BUILD_WORKFLOW's own text, so a tree without it is a tree
             # this rule cannot hash a row against, and saying so beats a traceback.
@@ -826,18 +829,21 @@ for row in readable:
 # `built` to a file this tree holds; this rule holds it to the file that workflow builds,
 # because a row built from any other file is a row no build pushes — so rule 10, which reads
 # the published image's recipe hash back out of the registry, would hold the row to a recipe
-# no build ever ran, and the row would pass both halves of this check having never been
-# published at all. The path is compared as a path, which is how BUILD_WORKFLOW reads the same
-# key when it looks its own row up.
+# no build ever ran, and refuse it there. This rule is that refusal made in lint: the tree
+# alone says which file BUILD_WORKFLOW builds, so the row is refused on every change rather
+# than in the one job that reads the package. The path is compared as a path, which is how
+# BUILD_WORKFLOW reads the same key when it looks its own row up.
 for row in readable:
     if row.kind == BUILT and Path(row.source) != Path(BUILT_DOCKERFILE):
         problems.append(
             f"{CI_IMAGES}:{row.line}: this row is built from {one_line(row.source)}, and "
             f"{BUILD_WORKFLOW} builds {BUILT_DOCKERFILE} and no other file, so nothing builds "
             f"this row: no build ever pushed an image from {one_line(row.source)}, and rule 10 "
-            f"would hold this row to a recipe no build ran. Name {BUILT_DOCKERFILE}, or "
-            f"give {BUILD_WORKFLOW} a build for {one_line(row.source)} and this check the rule "
-            f"that holds the row it pushes to it."
+            f"refuses this row in the package mode, where it holds the published image to the "
+            f"hash of a recipe no build ever ran. This is that refusal in lint, which reads "
+            f"this tree alone. Name {BUILT_DOCKERFILE}, or give {BUILD_WORKFLOW} a build for "
+            f"{one_line(row.source)} and this check the rule that holds the row it pushes to "
+            f"it."
         )
 
 

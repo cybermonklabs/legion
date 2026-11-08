@@ -108,16 +108,20 @@ esac
 SH
 chmod +x "$work/bin/crane"
 
-# The stand-in for check-ci-images.sh's manifest HEAD: 200 for a digest the stand-in package
-# holds, 404 for one it does not.
+# The stand-in for check-ci-images.sh's package reads: 200 for a digest the stand-in package
+# holds, 404 for one it does not, and after a 200 the legion.browser-image.source-sha256 label
+# `labels` pairs with that digest. The label is not decoration: the gate's rule 10 reads it
+# back out of a `built` row's image, and refuses a built row this stand-in answered a status
+# alone for, since a status alone answers for the manifest and not for the label.
 head_script="$work/head.sh"
 cat > "$head_script" <<'SH'
 #!/usr/bin/env bash
-if grep -qxF -- "$1" "${CRANE_STATE:?}/package"; then
-  echo 200
-else
+if ! grep -qxF -- "$1" "${CRANE_STATE:?}/package"; then
   echo 404
+  exit 0
 fi
+label=$(awk -F'\t' -v digest="$1" '$1 == digest { print $2 }' "$CRANE_STATE/labels")
+echo "200${label:+ $label}"
 SH
 chmod +x "$head_script"
 
@@ -355,10 +359,14 @@ state="$work/ordering"
 mkdir -p "$state"
 : > "$state/copied"
 : > "$state/references"
-held_back=$(PYTHONDONTWRITEBYTECODE=1 python3 - "$repository" "$state" <<'PY'
+held_back=$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$repository/.github/scripts" \
+  python3 - "$repository" "$state" <<'PY'
+import os
 import sys
 
 import yaml
+
+from ci_images import recipe_sha256
 
 repository, state = sys.argv[1], sys.argv[2]
 document = yaml.safe_load(open(f"{repository}/.github/ci-images.yaml"))
@@ -392,6 +400,20 @@ with open(f"{state}/tags", "w") as tags, open(f"{state}/package", "w") as packag
         if "built" not in row:
             tags.write(f"{registry}:{row['tag']}\t{row['digest']}\n")
         package.write(f"{row['digest']}\n")
+# The label the image of a `built` row carries: the sha256 of the build recipe that row's
+# Dockerfile belongs to — every file of its context directory and the workflow that builds it
+# — which that workflow stamps into the image it pushes and the gate's rule 10 reads back out
+# of the published image. The stand-in head prints it after the status for that row's digest,
+# because a status alone would answer for the manifest and not for the label, and rule 10
+# refuses a built row answered that way. recipe_sha256 reads both paths from the repository
+# root, which is where every reader of a row runs, so the hash is taken there, and it is the
+# gate's own function rather than a second copy of the rule.
+os.chdir(repository)
+with open(f"{state}/labels", "w") as labels:
+    for row in rows:
+        if "built" in row:
+            recipe = recipe_sha256(row["built"], ".github/workflows/browser-image.yaml")
+            labels.write(f"{row['digest']}\t{recipe}\n")
 print(held_back["tag"])
 PY
 )

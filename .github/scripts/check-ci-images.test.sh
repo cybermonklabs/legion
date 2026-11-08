@@ -54,8 +54,9 @@ REGISTRY=ghcr.io/cybermonklabs/legion/ci
 # names, and the image at a digest LABELS pairs a sha256 with carries that sha256 in its
 # legion.browser-image.source-sha256 label, which is what rule 10 holds a built row's build
 # recipe to. LABELS is `<digest>=<sha256>`, space separated; a digest it does not name is
-# answered with the status alone, which the check reads as a stand-in that answers for the
-# manifest and not for a label.
+# answered with the status alone, which is an answer for the manifest and not for a label, and
+# which rule 10 refuses for a `built` row rather than passing it over — so every case below
+# whose package holds a built row names that row's label.
 head_script="$work/head.sh"
 cat > "$head_script" <<'SH'
 #!/usr/bin/env bash
@@ -393,7 +394,7 @@ browser_job "$root" "$BROWSER"
 run_check tree "$root"
 check "the tree mode exits 0" "$(is "$status" 0)"
 check "counts the built row with the rest" "$(contains "$out" 'holds 5 row(s);')"
-run_check package "$root"
+LABELS="$BROWSER=$(recipe "$root")" run_check package "$root"
 check "the package mode exits 0" "$(is "$status" 0)"
 check "and reports it held like the others" \
   "$(contains "$out" 'holds 5 row(s), 5 of them in the package')"
@@ -508,6 +509,23 @@ check "fails" "$(is "$status" 1)"
 check "names the workflow that is gone" \
   "$(contains "$out" "this tree holds no .github/workflows/browser-image.yaml, and that workflow's own text is half of the build recipe")"
 check "without a traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+
+echo "case: rule 10 — a stand-in that answers for the manifest and not for the label"
+# CI_IMAGES_MANIFEST_HEAD stands in for the whole of the package read, so a stand-in that
+# prints a status and no label has answered half of it. Rule 10 refuses the row rather than
+# passing it over: a rule a seam can turn off, with nothing but a count to say it went quiet,
+# is a rule nothing holds. LABELS names no digest here, which is that stand-in.
+root=$(fixture built-label-unanswered)
+browser_row "$root"
+browser_job "$root" "$BROWSER"
+run_check package "$root"
+check "fails" "$(is "$status" 1)"
+check "names the stand-in and what it left out" \
+  "$(contains "$out" "the CI_IMAGES_MANIFEST_HEAD stand-in .* printed a status and no legion.browser-image.source-sha256 label after it")"
+check "and says how to answer for the label" \
+  "$(contains "$out" "Have it print that label after the status, or unset CI_IMAGES_MANIFEST_HEAD")"
+check "and holds the row to the recipe this tree holds" \
+  "$(contains "$out" "is not the image this tree's build recipe makes: every file of .github/docker and .github/workflows/browser-image.yaml hash to sha256 $(recipe "$root")")"
 
 echo "case: a row carrying both upstream: and built:"
 root=$(fixture row-both-kinds)
@@ -824,11 +842,26 @@ set -e
 check "the real tree passes the tree mode" "$(is "$status" 0)"
 check "says what it read" "$(contains "$out" "reference(s) in .* file(s) of CI's reach")"
 
+# This tree's own `built` row carries the digest of an image this repository published, and
+# rule 10 holds that image's label to the recipe this tree holds. The row is read out of
+# .github/ci-images.yaml rather than written here, so a row that moves takes this case with
+# it, and the label the stand-in answers with is the hash the build stamps into what it
+# pushes: the row passes here for the reason it passes in CI.
+repository=$(cd "$script_dir/../.." && pwd)
+built_digest=$(cd "$repository" && PYTHONDONTWRITEBYTECODE=1 python3 -c '
+import yaml
+
+rows = yaml.safe_load(open(".github/ci-images.yaml"))["images"]
+print(next(row["digest"] for row in rows if "built" in row))
+')
 set +e
-out=$(CI_IMAGES_MANIFEST_HEAD="$head_script" "$check_script" package 2>&1)
+out=$(CI_IMAGES_MANIFEST_HEAD="$head_script" LABELS="$built_digest=$(recipe "$repository")" \
+  "$check_script" package 2>&1)
 status=$?
 set -e
 check "the real tree passes the package mode, with every row held" "$(is "$status" 0)"
 check "says so" "$(contains "$out" "holds .* row(s), .* of them in the package")"
+check "and compared its built row" \
+  "$(contains "$out" '1 built row(s) at the build recipe this tree holds')"
 
 summary "check-ci-images.sh"
