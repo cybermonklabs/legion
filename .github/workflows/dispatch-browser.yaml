@@ -1085,19 +1085,39 @@ jobs:
     needs: [shard, alone, multiprocess, embedder, visual]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
-    # The budget is measured. This job ran 27 s on the pull-request lane of this head
-    # (42334424798) and 22 s on its full lane (42316487530); over the twelve merge jobs of this
-    # branch's ten ci.yaml runs the maximum is 37 s, on the green second attempt of 42328655988.
-    # No step here carries a budget of its own, so by the rule in this file's head the job's
-    # budget is that maximum: 37 x 1.15 = 43 s, which the rule's two-minute floor raises to
-    # 2 min.
+    # The budget is measured. Over the 32 concluded `dispatch-browser / merge` jobs of the last
+    # 43 completed ci.yaml runs, read from the jobs API on 2026-11-08, the job's maximum is
+    # 34 s: job 128737694112 of run 42481906495, 12:57:25Z to 12:57:59Z. The 37 s this comment
+    # carried before was measured on another branch and is replaced by that sample.
+    #
+    # Each step's own maximum over that sample, summed, is 40 s: Set up job 2 s, checkout 9 s,
+    # setup-bun 3 s, `bun install` 7 s, Download every leg's blob report 2 s, Take the newest
+    # attempt 0 s, Merge the legs' blob reports 3 s, Upload the merged report 3 s, Reading one
+    # 4 s, Reading two 1 s, Reading three 1 s, the verdict step 1 s, the ci-ok report 1 s, Post
+    # setup-bun 1 s, Post checkout 1 s, Complete job 1 s.
+    #
+    # One step carries a budget of its own: "Reading one, the rows", which calls
+    # .github/scripts/dispatch-browser-run-reads.sh and so waits on gh-read.sh's ladder. The
+    # ladder bounds that wait rather than measuring it - three attempts, each bounded by
+    # `timeout 30`, with waits of 10 s and 20 s between them, which is 120 s at most - and a
+    # bound takes no 15 per cent. The step's own work has a measured maximum of 4 s, and
+    # 4 x 1.15 = 4.6 s, so 120 + 4.6 = 124.6 s, at the next whole minute above, is the 3 min
+    # that step carries. The rule's two-minute floor does not bind.
+    #
+    # So by the rule in this file's head the job's budget is the sum of its step budgets, that
+    # one step's 180 s, plus the measured maximum of every step without one: 40 s less reading
+    # one's 4 s is 36 s, and 1 s for "Report a refused blob download as a refused read", which
+    # runs one `echo` and has no measurement of its own - 1 s is what this job's other
+    # one-command steps measure. 180 + 37 = 217 s, which is 3 min 37 s, so 4 min. The job's
+    # budget is above the step's, so the step's own budget fires first and names the step,
+    # which is the reason this file's head gives for putting budgets on steps.
     #
     # What that sample does not hold: no browser step failed in any of those runs, so no blob
     # report in them carries a failed row's trace, and the download, the merge and reading
     # three's per-leg merge all grow with those. A job cancelled at this budget posts no ci-ok,
     # so the run is red and read again from the jobs API; it cannot pass a verdict it never
     # reached.
-    timeout-minutes: 2
+    timeout-minutes: 4
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1114,10 +1134,30 @@ jobs:
       # pattern matches them all; two attempts of one leg hold the same inner paths, so merging
       # them into one directory let one attempt overwrite the other in an order nothing fixes.
       - name: Download every leg's blob report
+        id: download-blobs
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: dispatch-browser-blob-*
           path: ${{ runner.temp }}/blobs
+      # A download `actions/download-artifact` could not complete is a failed read of the run's
+      # artifacts and not a failed browser row, and the download step's own message says only
+      # that the download failed: three merge jobs of pull request #2983 were first investigated
+      # as test failures because of it (jobs 128735037875, 128729862923 and 128724678335, each
+      # carrying `##[error]Unable to download artifact(s): Unable to download and extract
+      # artifact: Artifact download failed after 5 retries.`, read 2026-11-08). This step says
+      # which of the two it was and exits 0, the download step above having already failed the
+      # job. The script reads GITHUB_RUN_ATTEMPT, which Actions sets, so this step needs no
+      # `env:` block and no token; it names the download step and that attempt and nothing
+      # else, the action's own call and retries being in the download step's error line and
+      # not anywhere this job can read.
+      #
+      # This step is kept rather than deleted in favour of reading one's `downloaded =
+      # failure` branch, which names the refused download too, because a run whose jobs read
+      # is refused as well exits reading one at its own refusal and never reaches that
+      # branch, and then this step is the only line that names the refused download.
+      - name: Report a refused blob download as a refused read
+        if: failure() && steps.download-blobs.conclusion == 'failure'
+        run: .github/scripts/dispatch-browser-run-reads.sh blobs-refused
       # The newest attempt of each leg, and no other, into one directory of the shape the steps
       # below read. A leg a failed-only re-run did not run keeps the attempt that ran it, which
       # is what .github/scripts/ci-ok-report.sh already does with the jobs' ci-ok reports; the
@@ -1170,85 +1210,61 @@ jobs:
       # different places.
       - name: Reading one, the rows
         if: always()
+        timeout-minutes: 3
         run: |
           blobs="$RUNNER_TEMP/selected-blobs/blob-report"
           counts="$RUNNER_TEMP/selected-blobs/rows"
           report="$RUNNER_TEMP/report.json"
           jobs="$RUNNER_TEMP/jobs.json"
+          # What the step "Download every leg's blob report" concluded. It is read here, in the
+          # body, rather than in a step `env:` block, for the reason the shard job's head gives
+          # and which the `GH_TOKEN` export two lines below already follows. The missing-blob
+          # message reads it: a download that was refused is why no blob arrived for any leg.
+          downloaded="${{ steps.download-blobs.conclusion }}"
           # The run's own token, exported here rather than in an `env:` block, for the reason the
           # shard job's head gives. `actions: read` is the caller's, and ci.yaml's job that calls
           # this workflow already holds it.
           export GH_TOKEN="${{ github.token }}"
-          # This run's jobs, the newest attempt of each, fetched once here and read again by
-          # reading three below. The jobs API lists the caller's jobs too, so the name is held to
-          # this workflow's six - shard, alone, multiprocess, embedder, visual and merge; a
-          # called workflow's job is named `<the caller's job> / <this job>`, with a matrix leg
-          # in brackets after it.
+          # This run's attempt's jobs, read once here and read again by reading three below.
+          # The call writes $RUNNER_TEMP/jobs.json: the array of {id, name, conclusion, leg}
+          # that both readings take. The jobs API lists the caller's jobs too, so the script
+          # holds the name to this workflow's six - shard, alone, multiprocess, embedder,
+          # visual and merge; a called workflow's job is named `<the caller's job> / <this
+          # job>`, with a matrix leg in brackets after it.
           #
-          # `filter=all` lists every attempt's jobs, so the newest attempt of each name is taken
-          # here, as the blob selection above takes each leg's newest artifact and as
-          # .github/scripts/ci-ok-report.sh takes each job's newest report. Without that, a green
-          # re-run names the attempt the re-run replaced: measured on run 42328655988, whose
-          # attempt 1 lost shards 3 and 4 to a transient `bun install` failure and whose attempt
-          # 2 was green, reading three named both of those jobs and the superseded merge job as
-          # legs that did not succeed.
+          # The route is `.../runs/<id>/attempts/<n>/jobs?per_page=100` and not `filter=all`.
+          # `filter=all` lists every attempt's jobs, so each re-run made the read heavier:
+          # measured 2026-11-08 on run 42468236584 it answers 276 jobs over three pages, with
+          # GitHub answering HTTP 502 on pages 2 and 3, where the attempt endpoint answers 46
+          # jobs on one page for each of attempts 1 to 6. Job 128737742196 of that run exited 1
+          # on that 502 at 12:58:20Z, with 1291 browser rows and 0 failed.
           #
-          # The fetch and the filter are two commands, and that is what makes the grouping work.
-          # `gh api --paginate --jq` runs the filter once per page, so a `group_by(.name)` inside
-          # it groups each page by itself and not the run, and a superseded leg on another page
-          # is named again. With `filter=all` the list holds every job of every attempt of the
-          # calling workflow, about 37 an attempt, so it passes one 100-job page at the third
-          # attempt, which is where that bug begins. `--slurp` collects the pages into one array,
-          # and gh refuses it beside `--jq` (`the --slurp option is not supported with --jq or
-          # --template`, gh 2.98.0), so the filter runs as its own `jq` over that array - once,
-          # over every page. The array holds the page objects, which is why the filter opens
-          # `.[].jobs[]`.
-          pages="$RUNNER_TEMP/jobs-pages.json"
-          gh api --paginate --slurp \
-            "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?filter=all&per_page=100" \
-            > "$pages" || {
-            echo "::error::this run's jobs could not be read, so the legs this lane owed are unknown"
-            exit 1
-          }
-          # Each job's leg name is derived here, once, beside the fields it travels with, so the
-          # two readings below take it rather than each parsing the job name again. It was parsed
-          # twice until a review found it, and the fix for a leg name the parse could not read
-          # then had to land in both copies.
+          # Nor the default filter, `latest`, which gives the same rows today and is what
+          # .github/scripts/ci-ok-report.sh reads: a run re-run while this job is running moves
+          # `latest` on, so the merge job of attempt N would report the legs of attempt N+1,
+          # which it never joined, where the attempt endpoint is pinned to the attempt whose
+          # blobs this job merged.
           #
-          # `shard (3)` becomes `shard-3` and `alone (webkit-alone)` becomes `alone-webkit-alone`,
-          # after either caller's prefix. `merge`, `multiprocess`, `embedder` and `visual` are
-          # this workflow's other four jobs: they pass the name filter below and get a null leg,
-          # so reading one passes them over and reading three names them as holding no row. The
-          # visual job is in that filter because a run whose only red job is that one must not
-          # read "every leg of this workflow concluded success": the verdict loop below fails
-          # `ci-ok` either way, so the gate held, but the summary a person reads was wrong. The
-          # embedder job is there for the same reason.
+          # There is no grouping left. One attempt's snapshot holds one job per name, so the
+          # `group_by(.name) | map(max_by(.run_attempt) | …)` this read carried is a no-op, and
+          # it is gone. The leg derivation and the name filter are the script's now, and its
+          # head carries why `visual` is in that filter: a run whose only red job is that one
+          # must not read "every leg of this workflow concluded success".
           #
-          # ci.yaml's jobs do not get a null leg - that filter drops them before this expression
-          # sees them, which is what keeps them out of reading three, since reading three selects
-          # on conclusion alone. The two that come nearest are ci.yaml's own
-          # `dispatch-multiprocess` and `broker-multiprocess`,
-          # kept out only because the character before `multiprocess` is a hyphen and the filter
-          # wants a space or a line start; anyone who loosens it pulls them in.
+          # The attempt any message names is this run's own GITHUB_RUN_ATTEMPT and never a job's
+          # `run_attempt` field: the attempt endpoint re-labels a leg carried forward from an
+          # earlier attempt with a new job id and a `run_attempt` equal to the attempt asked
+          # for. Measured on run 42468236584 at attempt 6, `dispatch-browser / shard (1)`
+          # appears there with job id 128737742824, `run_attempt: 6` and `started_at
+          # 2026-11-08T09:41:30Z`, which is attempt 1's time.
           #
-          # The project part takes any name that holds no `)`, and the loops below read one leg
-          # per line, so a project name holding a space or a comma is one leg here rather than
-          # two. It read `[a-z-]*` until retro found it, which silently dropped a project named
-          # with a digit or a capital, and a leg absent from reading one's list is a leg whose
-          # missing blob nothing reports, which is the one thing that list is for. A name holding
-          # `)` is the one shape this still would not read, and no project holds one.
-          #
-          # That is a promise about these two readings and no more of the lane. A project the
-          # alone job could not run, or whose blob it would name differently, still needs work
-          # elsewhere: the blob and the artifact are named from `matrix.project` alone, so a
-          # second matrix dimension would leave a leg's derived name and its blob's name apart
-          # and reading one would call it MISSING. Nothing of that is reachable from today's
-          # matrix, and whoever widens it reads the alone job's own steps, not this line.
-          jq '[.[].jobs[] | select(.name | test("(^| )(shard|alone|multiprocess|embedder|visual|merge)( \\(|$)"))]
-            | group_by(.name) | map(max_by(.run_attempt) | {id, name, conclusion,
-                leg: ((.name | capture(" shard \\((?<n>[0-9]+)\\)$") | "shard-\(.n)")
-                  // (.name | capture(" alone \\((?<p>[^)]*)\\)$") | "alone-\(.p)")
-                  // null)})' "$pages" > "$jobs"
+          # The script retries the read through .github/scripts/gh-read.sh's ladder and, when
+          # that is spent, names the endpoint, the status and the attempt and says it is a
+          # failed read rather than a failed row, which is why this step no longer carries a
+          # `|| { echo …; exit 1; }` block of its own. It still reads with `--paginate --slurp`
+          # and runs the filter as a second `jq`, gh refusing `--slurp` beside `--jq`; the
+          # script's head says the rest.
+          .github/scripts/dispatch-browser-run-reads.sh jobs "$jobs"
           # The legs this lane owed, read from those jobs rather than written out a second time
           # here. A leg the lane does not run is skipped by its job's own `if:` - the alone and
           # multiprocess jobs on the pull-request lane - and owes nothing. A leg that failed
@@ -1300,8 +1316,27 @@ jobs:
           echo "::notice title=dispatch-browser rows::the merged report holds $merged rows," \
             "against $printed_total printed by the legs (${line%, })"
           if [ -n "$missing" ]; then
-            echo "::error::no blob report arrived from:$missing;" \
-              "the merged report is short of those legs' rows"
+            # Where the download was refused, this step runs anyway - its `if:` is `always()` -
+            # and finds no blob for any leg, so the step "Report a refused blob download as a
+            # refused read" has already said the artifacts could not be downloaded and this one
+            # would then list every leg as though the legs produced nothing. Both lines are
+            # true and that one comes first, but the last annotation is what a reader carries
+            # away: two true lines that leave a false impression are a reporting defect by this
+            # lane's own standard, so where the download step concluded `failure` the reason
+            # named here is the refused download. The legs are named and nothing more is
+            # claimed of them: a leg that died before its upload - shards 3 and 4 of run
+            # 42328655988, on a `bun install` failure - wrote no blob at all, so this line says
+            # the download failed rather than that each leg's blob is waiting on the run.
+            if [ "$downloaded" = failure ]; then
+              echo "::error::the download of the legs' blob reports failed, so no leg's blob" \
+                "could be read and the merged report is short of the rows of:$missing; the" \
+                "step \"Download every leg's blob report\" carries that download's own error" \
+                "line. This is a failed read of the run's artifacts and not a failed browser" \
+                "row: no row of the suite failed here."
+            else
+              echo "::error::no blob report arrived from:$missing;" \
+                "the merged report is short of those legs' rows"
+            fi
             exit 1
           fi
           # Every owed blob arrived, so the two counts are of the same rows and must be equal:
@@ -1358,10 +1393,12 @@ jobs:
           blobs="$RUNNER_TEMP/selected-blobs/blob-report"
           jobs="$RUNNER_TEMP/jobs.json"
           unhappy="$RUNNER_TEMP/unhappy-jobs.tsv"
-          # The jobs reading one fetched: the newest attempt of each job of this workflow, with
-          # its id, its name, its conclusion and its leg. That step says what the fetch holds and
-          # why it cannot be done a page at a time. It is read here rather than fetched again so
-          # the two readings cannot disagree about which attempt ran.
+          # The jobs reading one read: this attempt's snapshot of each job of this workflow,
+          # with its id, its name, its conclusion and its leg. A job id in it is this attempt's
+          # id for that leg, because the attempt endpoint gives a leg carried forward from an
+          # earlier attempt an id of its own - job 128737742824 for `shard (1)` at attempt 6 of
+          # run 42468236584. That step says why the route is this attempt's. It is read here
+          # rather than read again so the two readings cannot disagree about which attempt ran.
           if [ ! -f "$jobs" ]; then
             echo "::warning::no jobs list, so no leg exits; reading one above says why"
             exit 0
