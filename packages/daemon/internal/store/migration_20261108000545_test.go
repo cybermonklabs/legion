@@ -28,11 +28,14 @@ func TestTheOutboxTakesTheClaimReleaseKindWith20261108000545(t *testing.T) {
 			values ($1, 'LEGION-208', '{}', 0, now(), '')`, kind)
 		return err
 	}
-	err := queue("claim_release")
-	if err == nil || !strings.Contains(err.Error(), "outbox_kind_check") {
-		t.Fatalf("queueing a claim_release row before the migration = %v, want the kind constraint to refuse it: it is the row the migration exists for", err)
+	// This branch's own 20261107095842 runs below this version and admits the kind too, since a
+	// database main migrated meets that list after main's own (20261108152000's comment), so on
+	// this branch's path the row is taken before this migration rather than refused. What the
+	// upgrade from main does with such a row is
+	// TestADatabaseMainMigratedUpgradesWithEveryRowItHolds.
+	if err := queue("claim_release"); err != nil {
+		t.Fatalf("queueing a claim_release row on this branch's path = %v, want it taken: 20261107095842 admits the kind below this version", err)
 	}
-	t.Logf("before the migration the claim-release row is refused: %v", err)
 	if _, err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate through the claim-release kind: %v", err)
 	}

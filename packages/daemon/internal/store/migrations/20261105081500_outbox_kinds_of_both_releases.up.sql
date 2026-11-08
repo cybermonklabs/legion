@@ -24,10 +24,15 @@
 -- when it runs late over them. The compare kind stays named for the database that queued one
 -- under the release before that rename, and `gated_steps_publish` for the same reason: INFRA-1272
 -- added that kind on main after this version, and a database that ran it first queues such a row.
--- 20261107095842 is the last word of both lists and names only what the merged daemon writes.
+-- `claim_release` is named for the same reason and is the one that has to be: main's
+-- 20261108000545 added it, a park queues such a row on main and retries it for up to an hour, so
+-- a database main migrated carries one at the upgrade and this version runs after main's. A list
+-- without it fails that upgrade on the row (SQLSTATE 23514) and the daemon cannot boot.
+-- 20261108152000 is the last word of every one of these lists and names only what the merged
+-- daemon writes.
 alter table outbox drop constraint if exists outbox_kind_check;
 alter table outbox add constraint outbox_kind_check check (kind in (
   'dispatch_status', 'dispatch_message', 'notice', 'controller_notice', 'supervise', 'gate_seed',
   'linger_close', 'workspace_remove', 'issue_branch', 'issue_suspend', 'check_compare',
   'check_wake', 'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle',
-  'issue_release', 'gated_steps_publish'));
+  'issue_release', 'gated_steps_publish', 'claim_release'));
