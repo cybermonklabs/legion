@@ -221,9 +221,9 @@ func processGoneRefusal(token claim.Token, operation string) string {
 	return string(token) + " is stored working over a process the daemon's last report of it found gone: the " +
 		"relaunch that replaces that process has not run, so no turn of " + string(token) + " is running and " +
 		"waiting for one to end waits for nothing. The daemon reads that process again at its runtime sweep, " +
-		"which it makes by itself, and raises the relaunch again — or fails " + string(token) + ", where that " +
-		"report is the death its budget runs out on. Ask again once " + string(token) + " is running, " +
-		"which is when " + operation + " reaches it"
+		"which it makes by itself, and raises the relaunch again. That report is the one death read twice, so " +
+		"it counts no second death against " + string(token) + ", and the relaunch is what it brings. Ask " +
+		"again once " + string(token) + " is running, which is when " + operation + " reaches it"
 }
 
 // workingAfterTheRelaunchWasRefused is the window the refusals below are asked in: a worker
@@ -537,14 +537,16 @@ func heldSuspensionCases() []heldSuspensionCase {
 }
 
 // heldSuspensionRefusal is the sentence both recoveries give a claim a suspension is held over,
-// with the asking operation's own name in it (api's refuseHeldSuspension, controllerOp).
-func heldSuspensionRefusal(token claim.Token, operation string) string {
+// with the asking operation's own name in it and what starts the claim again once the hold has
+// ended, which is the claim's role's: the fresh session for a workflow role, and the daemon's
+// controller keeper for the project's own controller (api's refuseHeldSuspension,
+// startsAgainName, controllerOp).
+func heldSuspensionRefusal(token claim.Token, startsAgain, operation string) string {
 	return string(token) + " has a suspension held over it, and " + operation + " reaches no claim a " +
 		"suspension waits over. The hold ends by itself, and not always in a suspension: a start the daemon " +
 		"runs against the claim drops a hold of the daemon's own, and the end of the claim's process takes " +
-		"any hold with it. Ask again once the hold has ended: fresh_session (`legion claims retry " +
-		"--fresh-session`) reaches " + string(token) + " if it is suspended, stopped or failed by then, and " +
-		operation + " if it is ready or idle"
+		"any hold with it. Ask again once the hold has ended: " + startsAgain + " reaches " + string(token) +
+		" if it is suspended, stopped or failed by then, and " + operation + " if it is ready or idle"
 }
 
 // A suspension held over the claim is read ahead of every other window the claim can be in,
@@ -568,7 +570,7 @@ func TestARecoveryRefusedUnderAHeldSuspensionSaysTheClaimStopsWorking(t *testing
 				recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
 
 				wantFreshSessionRefusal(t, recorder, http.StatusConflict, held.code,
-					heldSuspensionRefusal(token, "a compaction"))
+					heldSuspensionRefusal(token, freshSessionName, "a compaction"))
 			})
 		}
 		for _, door := range freshSessionDoors() {
@@ -579,13 +581,44 @@ func TestARecoveryRefusedUnderAHeldSuspensionSaysTheClaimStopsWorking(t *testing
 				recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
 
 				wantFreshSessionRefusal(t, recorder, http.StatusConflict, held.code,
-					heldSuspensionRefusal(token, "a fresh session"))
+					heldSuspensionRefusal(token, freshSessionName, "a fresh session"))
 				if m, _ := h.supervisor.Machine(token); !m.View().SuspensionHeld {
 					t.Errorf("the refused claim holds no suspension, want the one the refusal left held")
 				}
 			})
 		}
 	}
+}
+
+// The project's own controller is the one claim of these that no fresh session reaches once
+// its hold has ended. The compaction reaches the controller in every state, since it stops
+// nothing (api's compact), and the fresh session refuses it in every state, since starting the
+// controller's process again is the daemon's controller keeper's alone (api's freshSession).
+// So this refusal names that keeper as what reaches the suspended, stopped or failed claim the
+// hold's end may leave: fresh_session would send the operator to a door that answers
+// NOT_THE_CONTROLLER, which is the circle the rows above exist to keep a caller out of. Only
+// the operator's door asks it, since `controller` is no role the controller's own compact may
+// name (api's claimCompact).
+func TestACompactionRefusedUnderAHeldSuspensionOverTheControllerNamesItsKeeper(t *testing.T) {
+	h := compactHarness(t, nil)
+	// The hold that is live before the agent is: the operator's suspend reaches the controller
+	// its keeper launched before anything registered on it, so the machine holds the stop for
+	// the agent's ready (supervise's holdSuspendUntilReady).
+	token, _ := h.launchController()
+	if recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/suspend", nil); recorder.Code != http.StatusAccepted {
+		t.Fatalf("the suspend of the launching controller = %d, want the 202 of one held for the agent's ready; body %s",
+			recorder.Code, recorder.Body)
+	}
+	m, _ := h.supervisor.Machine(token)
+	if view := m.View(); view.State != supervise.StateLaunching || !view.SuspensionHeld {
+		t.Fatalf("the controller is %s holding %v, want the launching claim with the operator's suspension held",
+			view.State, view.SuspensionHeld)
+	}
+
+	recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/compact", nil)
+
+	wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimUnsettled,
+		heldSuspensionRefusal(token, controllerKeeperName, "a compaction"))
 }
 
 // suspensionHeldOverAReadyAgent is the one held claim the machine's own take reaches: the

@@ -22,11 +22,14 @@ import (
 // sent it the task it owes again, or nothing when it owes none (supervise's compactEnded). So
 // this answer always carries the claim back, whatever it says of the compaction, and the CLI
 // prints both halves of it in one line (cmd/legion's printCompaction). What it promises of the
-// owed task is that the send ran. The send holds a task back where the claim it reaches is
-// held back itself — a turn Oh My Pi started under the compaction, the paced turn of a launch
-// parked over the process, an open update round the worker has answered — and each of those
-// ends of the daemon's own accord with the task sent; none leaves the worker stopped
-// (supervise's sendPending).
+// owed task is that nothing of the daemon's is left holding it: either the send ran, or the
+// claim came back into something whose own end sends it, and none of those ends leaves the
+// worker stopped. There are two shapes of that. A turn Oh My Pi started under the compaction
+// leaves the claim working for it and the end sends nothing at all: that turn's end gives the
+// claim back and sends the task (supervise's compactEnded, turnEnded). Where the end does
+// reach the send, the send itself can hold the task back — the paced turn of a launch parked
+// over the process, an open update round the worker has answered — and each of those ends of
+// the daemon's own accord with the task sent (supervise's sendPending).
 //
 // Every other outcome is a failure status and gives the claim back nothing here: a refusal made
 // before anything was asked — a claim in no state to be compacted, a Claude Code claim, a role
@@ -139,7 +142,9 @@ func (s *server) compactClaim(w http.ResponseWriter, r *http.Request) {
 //
 //   - a claim that is suspended, stopped or failed runs no agent at all, so there is no session
 //     to ask (startsAgain). Such a claim is started again rather than compacted, and the refusal
-//     names fresh_session, which is the operation that reaches it;
+//     names what does start it, which the claim's role decides: fresh_session for every
+//     workflow role, and the daemon's controller keeper for the project's own controller, which
+//     fresh_session refuses (startsAgainName);
 //   - a claim in a turn is refused because a compaction aborts whatever turn its session is
 //     running and that turn may be the one that ends the run of provider errors; the refusal
 //     names the compaction, so a controller told to compact first is not told to ask for a
@@ -173,6 +178,10 @@ func (s *server) compactClaim(w http.ResponseWriter, r *http.Request) {
 // stops nothing — the session, its process and everything the controller holds stay, and only
 // the transcript gets shorter. The controller's own door still cannot name it, since
 // `controller` is no role a claim token is built from (claimCompact).
+//
+// So the refusals of this door are the only ones a controller claim ever reads, and what they
+// name as starting it again is that keeper rather than the fresh session, which would refuse
+// the very claim they send there (startsAgainName, refuseState, refuseHeldSuspension).
 //
 // A compaction that ran puts the claim's run of provider-error turns back to zero, and the
 // ladder's wait goes with it, so the owed task goes now rather than at the end of a wait
@@ -215,9 +224,12 @@ func (s *server) compact(w http.ResponseWriter, r *http.Request, m *supervise.Ma
 		writeFailure(w, http.StatusConflict, compactionFailed, err.Error())
 		return CompactResponse{}, false
 	case errors.Is(err, supervise.ErrCompactNotEnded):
-		// Oh My Pi answered and the write that gives the claim back failed, so the claim is left
-		// working with its task unsent. The store's failure is what the caller is told: a 200
-		// would promise it the claim is back and whatever task it owed has gone again.
+		// Oh My Pi answered and a step of the hand-back failed, so the task the claim owes is
+		// unsent: the write that gives the claim back, which leaves it working, or a step after
+		// that write, which leaves it back with its agent and the task still to go
+		// (supervise.ErrCompactNotEnded). The daemon's failure is what the caller is told
+		// either way: a 200 would promise it the claim is back and whatever task it owed has
+		// gone again.
 		s.logFailure("api: the compaction ended and the claim could not be given back", "claim", token, "error", err)
 		writeFailure(w, http.StatusInternalServerError, compactionFailed, err.Error())
 		return CompactResponse{}, false
@@ -235,15 +247,19 @@ func (s *server) compact(w http.ResponseWriter, r *http.Request, m *supervise.Ma
 	case errors.Is(err, supervise.ErrCompactSuspended):
 		// The compaction ran, and the end of it found a suspension held over the claim: the
 		// hold ran there and left the claim suspended, or the claim is working for a turn Oh
-		// My Pi started under the compaction and the hold runs at that turn's end. The claim
+		// My Pi started under the compaction and the hold waits for that turn's end. The claim
 		// was given back to neither its agent nor its task, so the caller is told that rather
-		// than a recovery that landed. What becomes of the owed task is the hold's own: an
-		// operator's suspension keeps the claim's phase and the task with it, and the
-		// daemon's ends that phase, which retires the task queued for it (supervise's
-		// settle, SuspendSource.RetiresPhaseTask, ErrCompactSuspended).
+		// than a recovery that landed. What becomes of the owed task is the hold's own, and
+		// the hold has three ends, not two: an operator's suspension keeps the claim's phase
+		// and the task with it; the daemon's ends that phase, which retires the task queued
+		// for it; and a start the daemon runs against a claim still working for its turn
+		// drops a hold of the daemon's own unrun, where the claim works on and the turn's own
+		// end sends the task (supervise's settle, SuspendSource.RetiresPhaseTask, StartedBy,
+		// dropHeld, ErrCompactSuspended). Named only the first two, a caller would read a
+		// dropped hold as a task that was retired.
 		s.log.Warn("api: a suspension held over the claim ended its compaction", "claim", token)
 		writeFailure(w, http.StatusConflict, compactionFailed, fmt.Sprintf(
-			"%s's session was compacted, and a suspension held over the claim ended that compaction rather than the claim coming back: it was not given back, and the task it owes was not sent. An operator's suspension keeps that task, and it goes when %s runs again; a suspension of the daemon's own ends the claim's phase, and the task queued for that phase is retired with it", token, token))
+			"%s's session was compacted, and a suspension held over the claim ended that compaction rather than the claim coming back: it was not given back, and the task it owes was not sent. What becomes of that task is the hold's own. An operator's suspension keeps it, and it goes when %s runs again; a suspension of the daemon's own ends the claim's phase, and the task queued for that phase is retired with it; and where the compaction left %s working for a turn Oh My Pi started under it, the hold waits for that turn's end, and a start the daemon runs against %s meanwhile drops a hold of its own, so the turn ends as any other turn does and sends the task", token, token, token, token))
 		return CompactResponse{}, false
 	default:
 		var refused *supervise.RefusedError
@@ -287,16 +303,17 @@ func boundReason(text string) string {
 // published it, for the things the state alone does not say: whether a suspension is held over
 // the claim (supervise.Claim.SuspensionHeld, refuseHeldSuspension), whether a working claim is
 // working because its session is being compacted rather than because a turn is
-// (supervise.Claim.Compacting), and what else a working claim can be (refuseWorkingClaim). The
-// hold is read first and without the state, because a hold outlives the state it arrived in:
-// it is held over a launch that has not registered and still stands when that launch reaches
-// shim_connected and registered (supervise's holdSuspendUntilReady), and what such a claim
-// waits for is the hold's end rather than the launch's. It always reports false, so a caller
-// returns it as its own answer.
+// (supervise.Claim.Compacting), what else a working claim can be (refuseWorkingClaim), and the
+// claim's role, which decides what a refusal may name as starting it again (startsAgainName).
+// The hold is read first and without the state, because a hold outlives the state it arrived
+// in: it is held over a launch that has not registered and still stands when that launch
+// reaches shim_connected and registered (supervise's holdSuspendUntilReady), and what such a
+// claim waits for is the hold's end rather than the launch's. It always reports false, so a
+// caller returns it as its own answer.
 func refuseState(w http.ResponseWriter, token claim.Token, state supervise.ClaimState, view supervise.ClaimView) bool {
 	switch {
 	case view.SuspensionHeld:
-		return refuseHeldSuspension(w, token, state, compactOp)
+		return refuseHeldSuspension(w, token, state, view.Role, compactOp)
 	case state == supervise.StateWorking && view.Compacting:
 		writeFailure(w, http.StatusConflict, claimInATurn, fmt.Sprintf(
 			"%s is being compacted already: wait for that compaction to end", token))
@@ -305,7 +322,7 @@ func refuseState(w http.ResponseWriter, token claim.Token, state supervise.Claim
 	case startsAgain(state):
 		writeFailure(w, http.StatusConflict, claimNotRunning, fmt.Sprintf(
 			"%s is %s, so it runs no Oh My Pi session to compact; %s starts it again instead",
-			token, state, freshSessionName))
+			token, state, startsAgainName(view.Role)))
 	default:
 		writeFailure(w, http.StatusConflict, claimUnsettled, fmt.Sprintf(
 			"%s is %s: a compaction reaches a claim whose agent is ready or idle; ask again when %s is one of those",
@@ -317,3 +334,21 @@ func refuseState(w http.ResponseWriter, token claim.Token, state supervise.Claim
 // freshSessionName is the operation a refusal of a compaction names as the one that reaches the
 // claim instead, spelled as both doors' callers know it.
 const freshSessionName = "fresh_session (`legion claims retry --fresh-session`)"
+
+// controllerKeeperName is what starts the project's own controller again, in the words the
+// fresh session's own refusal of the controller gives it (freshSession).
+const controllerKeeperName = "the daemon's controller keeper"
+
+// startsAgainName is what a refusal names as starting the claim again once it is stopped, which
+// the claim's role decides. Every workflow role's is the fresh session. The project's own
+// controller's is the daemon's controller keeper: the fresh session refuses the controller in
+// every state, since stopping its process and starting it again is that keeper's alone
+// (freshSession's NOT_THE_CONTROLLER), so a controller sent to the fresh session is sent to a
+// door that refuses it. Only the compaction's refusals have a controller to answer, because the
+// compaction is the one of the two recoveries that reaches it (compact).
+func startsAgainName(role claim.Role) string {
+	if role == claim.RoleController {
+		return controllerKeeperName
+	}
+	return freshSessionName
+}

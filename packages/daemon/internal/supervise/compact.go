@@ -34,12 +34,22 @@ var ErrCompactInstructions = errors.New("a compaction carries custom instruction
 // (RefusedError, compactStart).
 var ErrCompactNotTaken = errors.New("the claim was not taken for a compaction, so nothing was asked of its session")
 
-// ErrCompactNotEnded is a compaction whose end the store would not write: Oh My Pi answered and
-// the write that gives the claim back failed, so the claim is left working and the task it owes
-// is unsent. It is the store's failure and not a compaction that did not run, whose answer
-// promises the claim is back and its task has gone again (api's compact). What a daemon that
-// stops here leaves behind is the shape a restart already knows: a claim stored working, whose
-// agent's own answer to "are you streaming" ends it (askTurnOver).
+// ErrCompactNotEnded is a compaction whose end did not finish: Oh My Pi answered and a step of
+// the hand-back failed, so the task the claim owes is unsent. It is the daemon's own failure
+// and not a compaction that did not run, whose answer promises the claim is back and its task
+// has gone again (api's compact).
+//
+// Two shapes reach it, and the claim is in a different place in each. The write that gives the
+// claim back failed, and the claim is left working, which is where the compaction took it. Or
+// that write landed and what follows it failed — the stale-plugin relaunch held for this end,
+// the update round's slot, or the send of the owed task itself (afterTurn) — and the claim is
+// back with its agent, as a claim whose turn ended is, with the task still to go. The error
+// says the hand-back did not finish, which is true of both, rather than naming one of them.
+//
+// What a daemon that stops here leaves behind is a shape it already knows: a claim stored
+// working, whose agent's own answer to "are you streaming" ends it (askTurnOver), or a ready
+// or idle claim holding a task, which the next thing that reaches that claim sends — its
+// agent's hello, its ready, the end of a turn it takes of its own (sendPending's callers).
 var ErrCompactNotEnded = errors.New("the compaction ended and the claim could not be given back, so the task it owes was not sent")
 
 // ErrCompactProcessGone is a compaction whose end found it was no longer the claim's own

@@ -309,7 +309,7 @@ func TestACompactionOfAReadyClaimUnderAHeldSuspensionIsNotTaken(t *testing.T) {
 			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
 
 			wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimUnsettled,
-				heldSuspensionRefusal(token, "a compaction"))
+				heldSuspensionRefusal(token, freshSessionName, "a compaction"))
 			if asked := conn.Compactions(); len(asked) != 0 {
 				t.Fatalf("Oh My Pi was asked %+v, want nothing: the claim was never taken", asked)
 			}
@@ -325,15 +325,29 @@ func TestACompactionOfAReadyClaimUnderAHeldSuspensionIsNotTaken(t *testing.T) {
 	}
 }
 
+// suspendedCompactionRefusal is the sentence the compaction gives a claim a held suspension's
+// end took in place of its agent (api's compact, supervise.ErrCompactSuspended). It names
+// every end that hold has, since the owed task's fate differs at each.
+func suspendedCompactionRefusal(token claim.Token) string {
+	return string(token) + "'s session was compacted, and a suspension held over the claim ended that " +
+		"compaction rather than the claim coming back: it was not given back, and the task it owes " +
+		"was not sent. What becomes of that task is the hold's own. An operator's suspension keeps it, " +
+		"and it goes when " + string(token) + " runs again; a suspension of the daemon's own ends the " +
+		"claim's phase, and the task queued for that phase is retired with it; and where the compaction " +
+		"left " + string(token) + " working for a turn Oh My Pi started under it, the hold waits for " +
+		"that turn's end, and a start the daemon runs against " + string(token) + " meanwhile drops a " +
+		"hold of its own, so the turn ends as any other turn does and sends the task"
+}
+
 // A suspension that arrives while the session is being compacted is held for the compaction's
 // end, and that end runs it: the claim is suspended with its process stopped and the task it
 // owes unsent, which only the operator's resume starts again. The compaction says so rather
 // than answering 200 — the answer that promises the claim is back and whatever task it owed
 // has gone again (CompactResponse) — so a controller reads a recovery that did not land and
-// an operator is not told a stopped worker is running. The answer splits the two holds, since
-// the task's fate is each hold's own: the operator's keeps it for the resume, which is what
-// this claim shows, and the daemon's ends the phase the task was queued for (supervise's
-// settle, SuspendSource.RetiresPhaseTask).
+// an operator is not told a stopped worker is running. The answer splits the holds, since the
+// task's fate is each hold's own: the operator's keeps it for the resume, which is what this
+// claim shows, and the daemon's ends the phase the task was queued for (supervise's settle,
+// SuspendSource.RetiresPhaseTask).
 func TestACompactionASuspensionHeldOverItEndedSaysTheClaimWasNotGivenBack(t *testing.T) {
 	for _, door := range compactDoors() {
 		t.Run(door.name, func(t *testing.T) {
@@ -352,12 +366,7 @@ func TestACompactionASuspensionHeldOverItEndedSaysTheClaimWasNotGivenBack(t *tes
 			}
 			release()
 
-			wantFreshSessionRefusal(t, <-answered, http.StatusConflict, compactionFailed,
-				string(token)+"'s session was compacted, and a suspension held over the claim ended that "+
-					"compaction rather than the claim coming back: it was not given back, and the task it owes "+
-					"was not sent. An operator's suspension keeps that task, and it goes when "+string(token)+
-					" runs again; a suspension of the daemon's own ends the claim's phase, and the task queued "+
-					"for that phase is retired with it")
+			wantFreshSessionRefusal(t, <-answered, http.StatusConflict, compactionFailed, suspendedCompactionRefusal(token))
 			settled(h, token)
 			after := h.stored(token)
 			if after.State != supervise.StateSuspended || after.SuspendedBy != supervise.SuspendedByOperator {
@@ -366,6 +375,60 @@ func TestACompactionASuspensionHeldOverItEndedSaysTheClaimWasNotGivenBack(t *tes
 			}
 			if after.Pending == nil || after.Pending.ID != owed {
 				t.Errorf("the claim holds %+v, want the task %s it still owes", after.Pending, owed)
+			}
+			if prompts := conn.Prompts(); len(prompts) != 0 {
+				t.Errorf("the connection was sent %#v, want nothing: the claim was not given back", prompts)
+			}
+		})
+	}
+}
+
+// The same answer is given where the hold has not run at all: a turn Oh My Pi started under
+// the compaction leaves the claim working for that turn, and the hold waits for its end rather
+// than running at the compaction's (supervise's compactEnded). The claim was given back to
+// neither its agent nor its task there either, so the answer is the one above — and the end it
+// is waiting for is the one whose landing is not a suspension at all: a start the daemon runs
+// against the claim meanwhile drops a hold of the daemon's own, the turn then ends as any
+// other turn does, and the task goes (supervise's StartedBy, dropHeld, turnEnded). A sentence
+// that named only the suspension's two landings would tell a caller the task was retired for a
+// claim that is about to be sent it.
+func TestACompactionThatEndedIntoATurnUnderAHeldSuspensionSaysTheClaimWasNotGivenBack(t *testing.T) {
+	for _, door := range compactDoors() {
+		t.Run(door.name, func(t *testing.T) {
+			h := compactHarness(t, nil)
+			token := idleOnTheLadder(t, h)
+			conn := connected(h, token)
+			owed := h.stored(token).Pending.ID
+			release := conn.HoldCompact()
+			answered := make(chan *httptest.ResponseRecorder, 1)
+			go func() { answered <- door.ask(t, h, "LEGION-209", claim.RoleImplementer) }()
+			waitForCompacting(t, h, token)
+
+			// Oh My Pi starts a turn of its own under the compaction — a follow-up an Envoy
+			// delivery queued — so the claim is left working for that turn when the compaction
+			// ends, and the suspension held over it waits for the turn's end.
+			m, _ := h.supervisor.Machine(token)
+			if err := m.Handle(h.ctx, supervise.StreamTurnStart{Claim: token}); err != nil {
+				t.Fatalf("the turn Oh My Pi started under the compaction: %v", err)
+			}
+			if recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/suspend", nil); recorder.Code != http.StatusAccepted {
+				t.Fatalf("the suspend of the claim being compacted = %d, want the 202 of one held for the turn's end; body %s",
+					recorder.Code, recorder.Body)
+			}
+			release()
+
+			wantFreshSessionRefusal(t, <-answered, http.StatusConflict, compactionFailed, suspendedCompactionRefusal(token))
+			settled(h, token)
+			after := h.stored(token)
+			if after.State != supervise.StateWorking {
+				t.Errorf("the claim is %s, want it working for the turn Oh My Pi started under the compaction", after.State)
+			}
+			if view := m.View(); !view.SuspensionHeld || view.Compacting {
+				t.Errorf("the claim reports a suspension held %v and Compacting %v, want the hold still waiting with the compaction over",
+					view.SuspensionHeld, view.Compacting)
+			}
+			if after.Pending == nil || after.Pending.ID != owed {
+				t.Errorf("the claim holds %+v, want the task %s it still owes, unsent", after.Pending, owed)
 			}
 			if prompts := conn.Prompts(); len(prompts) != 0 {
 				t.Errorf("the connection was sent %#v, want nothing: the claim was not given back", prompts)
@@ -388,7 +451,7 @@ func TestAStartDropsTheDaemonsHoldAndTheIdleClaimItLeavesIsCompacted(t *testing.
 	refused := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/compact", nil)
 
 	wantFreshSessionRefusal(t, refused, http.StatusConflict, claimInATurn,
-		heldSuspensionRefusal(token, "a compaction"))
+		heldSuspensionRefusal(token, freshSessionName, "a compaction"))
 	if err := m.StartedBy(h.ctx, 42); err != nil {
 		t.Fatalf("the start run against the held claim: %v", err)
 	}
@@ -432,6 +495,34 @@ func TestACompactionIsRefusedForASuspendedAStoppedAndAFailedClaimNamingFreshSess
 						freshSessionName+" starts it again instead")
 			})
 		}
+	}
+}
+
+// The project's own controller is the one claim that refusal may not name fresh_session for.
+// The compaction reaches the controller in every state, since it stops nothing (api's
+// compact), and `legion claims compact --claim <the controller>` is how an operator asks for
+// it; the fresh session refuses the controller in every state, since stopping its process and
+// starting it again is the daemon's controller keeper's alone (api's freshSession). So the
+// refusal names that keeper, and an operator sent to fresh_session would be answered
+// NOT_THE_CONTROLLER by the door it was sent to. Only the operator's door asks it: `controller`
+// is no role the controller's own compact may name (api's claimCompact).
+func TestACompactionOfAStoppedControllerNamesItsKeeperRatherThanFreshSession(t *testing.T) {
+	h := compactHarness(t, nil)
+	token, _ := h.launchController()
+	if recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/stop", nil); recorder.Code != http.StatusOK {
+		t.Fatalf("stop the controller = %d, want 200; body %s", recorder.Code, recorder.Body)
+	}
+	if state := h.stored(token).State; state != supervise.StateRetired {
+		t.Fatalf("the stopped controller is %s, want it retired: the state the keeper's own retry starts again", state)
+	}
+
+	recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/compact", nil)
+
+	wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimNotRunning,
+		string(token)+" is retired, so it runs no Oh My Pi session to compact; "+
+			controllerKeeperName+" starts it again instead")
+	if strings.Contains(recorder.Body.String(), "fresh_session") {
+		t.Errorf("the refusal is %s, want it to name no fresh session: that door refuses the controller", recorder.Body)
 	}
 }
 

@@ -253,15 +253,18 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 	if c.Role == claim.RoleController {
 		// The keeper's resume is the rule's, which an operator's suspension holds against (the
 		// daemon's controllerKeeper, supervise.Claim.RuleHolds), so the sentence names the
-		// suspension that keeper does lift: the daemon's own.
+		// suspension that keeper does lift: the daemon's own. It is the one place the keeper is
+		// named in full, and the compaction's refusals of the controller name it in the same
+		// words (controllerKeeperName, startsAgainName).
 		writeFailure(w, http.StatusConflict, "NOT_THE_CONTROLLER", fmt.Sprintf(
-			"%s is the project's controller: the daemon's controller keeper is what starts it — it launches a queued controller, resumes one the daemon suspended, and retries one that failed or retired — so the controller is left to that keeper, whatever state it is in, and no fresh session is run on it here", token))
+			"%s is the project's controller: %s is what starts it — it launches a queued controller, resumes one the daemon suspended, and retries one that failed or retired — so the controller is left to that keeper, whatever state it is in, and no fresh session is run on it here",
+			token, controllerKeeperName))
 		return 0, "", false
 	}
 	view := m.View()
 	switch {
 	case view.SuspensionHeld:
-		return 0, "", refuseHeldSuspension(w, token, c.State, freshSessionOp)
+		return 0, "", refuseHeldSuspension(w, token, c.State, c.Role, freshSessionOp)
 	case c.State == supervise.StateWorking:
 		return 0, "", refuseWorkingClaim(w, token, view, freshSessionOp)
 	case startsAgain(c.State):
@@ -359,19 +362,26 @@ func refuseParkedRelaunch(w http.ResponseWriter, token claim.Token, op controlle
 //
 // Such a claim is in no turn, whatever its session was doing when the process went, so the
 // refusal of a claim in a turn would send a controller back for an end that never comes — in
-// the one window these recoveries exist for. What does come is the runtime's next report of
-// that process, and the refusal names both of the things that report brings: the relaunch
-// raised again, and, where that report is the death the claim's budget runs out on, the claim
-// failed instead (supervise's judge, died, chargeDeath, relaunchAfterFailure). A failed claim
-// is one an operator's retry reaches rather than either recovery, so a caller told only of
-// the relaunch would wait for a running claim that never comes back.
+// the one window these recoveries exist for. What does come is the daemon's own orphan sweep,
+// which reports that process again and raises the relaunch the refusal left owing: the
+// runtimes stop watching a process once they have reported it gone, so the sweep is what
+// reaches it (the daemon's reconcileOrphans, supervise's judge, died).
+//
+// The relaunch is the whole of what that report brings, and the sentence promises it: the
+// machine reads the second report of the one death as the death it already has and charges it
+// nothing, so no deaths budget runs out on that report (supervise's died, chargeDeath). What
+// the sentence does not promise is that the claim cannot fail at all, because the relaunch it
+// raises is a launch like any other: a runtime that refuses it until the launch budget runs
+// out fails the claim there (supervise's launchNow). That is the end every relaunch of the
+// daemon's has, and the refusal of a claim whose relaunch waits its paced turn names it no
+// more than this one does (refuseParkedRelaunch).
 //
 // The code is the turn's: the claim is stored working, as a claim in a turn is, and what
 // differs is the wait (claimInATurn, refuseInATurn). It always reports false, so a caller
 // returns it as its own answer.
 func refuseProcessGone(w http.ResponseWriter, token claim.Token, op controllerOp) bool {
 	writeFailure(w, http.StatusConflict, claimInATurn, fmt.Sprintf(
-		"%s is stored working over a process the daemon's last report of it found gone: the relaunch that replaces that process has not run, so no turn of %s is running and waiting for one to end waits for nothing. The daemon reads that process again at its runtime sweep, which it makes by itself, and raises the relaunch again — or fails %s, where that report is the death its budget runs out on. Ask again once %s is running, which is when %s reaches it",
+		"%s is stored working over a process the daemon's last report of it found gone: the relaunch that replaces that process has not run, so no turn of %s is running and waiting for one to end waits for nothing. The daemon reads that process again at its runtime sweep, which it makes by itself, and raises the relaunch again. That report is the one death read twice, so it counts no second death against %s, and the relaunch is what it brings. Ask again once %s is running, which is when %s reaches it",
 		token, token, token, token, op.name))
 	return false
 }
@@ -401,10 +411,13 @@ func refuseProcessGone(w http.ResponseWriter, token claim.Token, op controllerOp
 // once the claim is suspended waits for a state those ends never bring.
 //
 // The sentence therefore names the one thing every one of those ends shares — the hold ends,
-// of itself — and then splits by what the claim is once it has. A fresh session is what
-// reaches the suspended, stopped or failed claim the ends that take the process leave
-// (startsAgain), and the asking operation is what reaches the ready or idle one a dropped hold
-// leaves, so the refusal names both (freshSessionName, controllerOp).
+// of itself — and then splits by what the claim is once it has. What starts the suspended,
+// stopped or failed claim the ends that take the process leave is the claim's role's
+// (startsAgain, startsAgainName): the fresh session for a workflow role, and the daemon's
+// controller keeper for the project's own controller, which only this operation's compaction
+// reaches, since the fresh session refuses the controller at its door. The asking operation is
+// what reaches the ready or idle claim a dropped hold leaves, so the refusal names both
+// (controllerOp).
 //
 // The code follows the claim rather than the hold, so no caller's answer changes for a state
 // that was refused before this refusal read the hold at all: a claim stored working takes the
@@ -412,14 +425,14 @@ func refuseProcessGone(w http.ResponseWriter, token claim.Token, op controllerOp
 // between states, which is what the unsettled default gave a claim still coming up
 // (claimInATurn, claimUnsettled). It always reports false, so a caller returns it as its own
 // answer.
-func refuseHeldSuspension(w http.ResponseWriter, token claim.Token, state supervise.ClaimState, op controllerOp) bool {
+func refuseHeldSuspension(w http.ResponseWriter, token claim.Token, state supervise.ClaimState, role claim.Role, op controllerOp) bool {
 	code := claimUnsettled
 	if state == supervise.StateWorking {
 		code = claimInATurn
 	}
 	writeFailure(w, http.StatusConflict, code, fmt.Sprintf(
 		"%s has a suspension held over it, and %s reaches no claim a suspension waits over. The hold ends by itself, and not always in a suspension: a start the daemon runs against the claim drops a hold of the daemon's own, and the end of the claim's process takes any hold with it. Ask again once the hold has ended: %s reaches %s if it is suspended, stopped or failed by then, and %s if it is ready or idle",
-		token, op.name, freshSessionName, token, op.name))
+		token, op.name, startsAgainName(role), token, op.name))
 	return false
 }
 

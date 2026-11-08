@@ -74,6 +74,69 @@ func TestAnAgentThatDiesWithWorkOutstandingIsFailedAtTheLimit(t *testing.T) {
 	}
 }
 
+// A death the daemon's orphan sweep reports again, over the process a refused relaunch left the
+// claim standing on, is the one death read twice and is charged once (judge, died). The refusal
+// kept that dead process and wrote nothing of the claim (relaunchRefused), and what brings such
+// a claim back is the next report of the same process: the runtimes stop watching a process once
+// they have reported it gone, so that report is the sweep's (the daemon's reconcileOrphans).
+//
+// The rows are the two the second charge decides. Over a claim's first death it only miscounts;
+// over the death its budget would run out on it fails the worker, in the very window both
+// recovery doors read such a claim in and promise the relaunch to (Claim.ProcessGone, api's
+// refuseProcessGone). The negative control is the charge made again: the second row's claim
+// then comes out failed, with its deaths at the limit, for one dead process.
+func TestADeathReportedAgainOverTheKeptProcessIsChargedOnce(t *testing.T) {
+	limit := testLimits().LaunchFailures
+	for _, row := range []struct {
+		name string
+		// before is how many deaths the claim's task already carries when the one below is
+		// reported twice.
+		before int
+	}{
+		{"the claim's first death", 0},
+		{"the death its budget would run out on", limit - 2},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.reach(StateReady)
+			h.must(RequestDeliver{Claim: testToken, Task: "the task"})
+			h.must(StreamTurnStart{Claim: testToken})
+			for range row.before {
+				h.observe(runtime.Gone)
+				h.relaunched()
+				h.must(StreamTurnStart{Claim: testToken})
+			}
+			dead := h.locator()
+			store := &unansweredCheckLaunchStore{memStore: h.store, failing: true}
+			h.m.deps.Store = store
+
+			// The first report charges the death and raises the relaunch, and the lifecycle
+			// recheck the store will not answer refuses it: the refusal goes back to the report
+			// that raised it and leaves the claim over its dead process.
+			gone := RuntimeObservation{Observation: runtime.Observation{Locator: dead, Kind: runtime.Gone, At: h.clock.Now()}}
+			if err := h.handle(gone); err == nil {
+				t.Fatal("the relaunch the death raised was taken, want the lifecycle recheck's refusal of it")
+			}
+
+			h.wantState(StateWorking)
+			h.wantBudgets(Budgets{Deaths: row.before + 1})
+			if got := h.claim(); got.Locator == nil || *got.Locator != dead || !got.ProcessGone {
+				t.Fatalf("the refused claim records %+v with ProcessGone %v, want the dead process it kept, %+v, reported gone",
+					got.Locator, got.ProcessGone, dead)
+			}
+
+			// The sweep reports that same process again, which raises the relaunch the refusal
+			// left owing. It is the one death the claim has already been charged for.
+			store.failing = false
+			h.must(gone)
+
+			h.wantState(StateLaunching)
+			h.wantBudgets(Budgets{LaunchFailures: 1, Deaths: row.before + 1})
+			h.relaunched()
+		})
+	}
+}
+
 // A process that dies before its agent is ready is a launch failure, however much work the claim
 // holds: Deaths counts only deaths after ready, so a boot death after earlier deaths with work is
 // charged once, to LaunchFailures, and does not bring the claim nearer the deaths limit.
