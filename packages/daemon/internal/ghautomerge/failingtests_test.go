@@ -261,7 +261,10 @@ const (
 // the read to says no URL of its own: that one is pre-signed, and a signature belongs in no
 // message. A name is quoted where it carries markdown's own punctuation, since the line is
 // rendered into an implementer's prompt and an issue's markdown (INFRA-1442).
-func TestAFailingJobsLineSaysWhatItsLogStatesFailed(t *testing.T) {
+// The name is the one the issue's check k4 runs (`go test ./internal/ghautomerge/ -run
+// TestTheFailingRuns`), since this is the table of the five logs that check names: a `-run`
+// pattern matching nothing exits 0, so a later move keeps this prefix or the check runs nothing.
+func TestTheFailingRunsLineSaysWhatEachJobsLogStatesFailed(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		held heldJobLog
