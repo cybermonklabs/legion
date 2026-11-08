@@ -17,7 +17,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/testbuild"
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // idleRigListener is the real Envoy listener of packages/envoy/cmd/listener, built once per test
@@ -95,7 +94,7 @@ func startIdleRigListenerOn(t *testing.T, natsURL, machine string, port int) *id
 			t.Logf("the Envoy listener's own log:\n%s", l.log())
 		}
 	}()
-	testwait.EventuallyWithin(t, 60*time.Second, "the Envoy listener answering /healthz healthy", func() bool {
+	idleRigEventually(t, idleRigListenerStartWait, "the Envoy listener answering /healthz healthy", func() bool {
 		response, err := l.client.Get(l.url + "/healthz")
 		if err != nil {
 			return false
