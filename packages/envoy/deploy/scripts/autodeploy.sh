@@ -167,8 +167,9 @@ pg_client() {
 schema_applied() {
   local sql answer versions line count max digest deadline
   # The script reaches psql on its standard input, since \gset and \if are psql's own and -c
-  # takes SQL alone. The here-document is the container shell's, so no part of the script is an
-  # argument of any process.
+  # takes SQL alone. The here-document is the container shell's, so the script travels as part of
+  # sh -c's argument (pg_client) and nothing of it reaches psql's own arguments; it carries no
+  # credential, only the connection's name in the environment.
   sql="psql -X -q -At -v ON_ERROR_STOP=1 -f - \"\$DATABASE_URL\" <<'PSQL'
 set lock_timeout = 30000;
 select pg_try_advisory_lock(8150001) as got \\gset

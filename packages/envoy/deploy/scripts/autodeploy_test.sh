@@ -18,8 +18,9 @@ password='s@cret-canary'
 url_without_password='postgres://dispatch@db.test:5432/dispatch?sslmode=require'
 # The schema read, as it reaches psql: the connection on the command line, and on standard input
 # a script that tries for the migration key and reads the versions only once the try was granted.
-# The fake psql below records every statement it actually runs as a psql-sql line of the argv
-# log, so the test counts the reads apart from the runs, whichever way the deployer sends them.
+# The fake psql below reads that script on standard input, refuses a run that sends none, and
+# records every statement it actually runs as a psql-sql line of the argv log, so the test counts
+# the reads apart from the runs.
 psql_run="^psql .*$url_without_password\$"
 schema_try='psql-sql select pg_try_advisory_lock(8150001)'
 schema_read='psql-sql select version from schema_migrations order by version'
@@ -253,17 +254,13 @@ run_statement() {
       ;;
   esac
 }
-# The statements of the run: -c takes them as arguments, -f - reads a script on standard input.
-statements=()
+# The run's script: the deployer sends it on standard input with -f -, and nothing else is
+# accepted, so a return to -c fails here rather than passing unnoticed.
 script=0
 args=("$@")
 i=0
 while ((i < ${#args[@]})); do
   case "${args[i]}" in
-    -c)
-      statements+=("${args[i + 1]}")
-      i=$((i + 2))
-      ;;
     -f)
       [[ "${args[i + 1]}" == - ]] && script=1
       i=$((i + 2))
@@ -272,37 +269,34 @@ while ((i < ${#args[@]})); do
     *) i=$((i + 1)) ;;
   esac
 done
-if ((script)); then
-  # psql reading a script: \gset keeps a statement's one value in a variable instead of printing
-  # it, \echo prints a variable, and what stands between \if and \endif runs only where the
-  # variable is true.
-  skip=0
-  while IFS= read -r line; do
-    case "$line" in
-      '') ;;
-      '\echo :got') ((skip)) || printf '%s\n' "$got" ;;
-      '\if :got') [[ "$got" == t ]] || skip=1 ;;
-      '\endif') skip=0 ;;
-      *'\gset')
-        ((skip)) || run_statement "${line% \\gset}"
-        ;;
-      \\*)
-        printf 'psql: unexpected backslash command: %s\n' "$line" >&2
-        exit 3
-        ;;
-      *)
-        if ((skip)); then continue; fi
-        run_statement "$line"
-        [[ -z "$sql_out" ]] || printf '%s\n' "$sql_out"
-        ;;
-    esac
-  done
-else
-  for stmt in "${statements[@]}"; do
-    run_statement "$stmt"
-    [[ -z "$sql_out" ]] || printf '%s\n' "$sql_out"
-  done
+if ((script == 0)); then
+  printf 'psql: this run sends no script on standard input (-f -): %s\n' "$*" >&2
+  exit 3
 fi
+# psql reading a script: \gset keeps a statement's one value in a variable instead of printing
+# it, \echo prints a variable, and what stands between \if and \endif runs only where the
+# variable is true.
+skip=0
+while IFS= read -r line; do
+  case "$line" in
+    '') ;;
+    '\echo :got') ((skip)) || printf '%s\n' "$got" ;;
+    '\if :got') [[ "$got" == t ]] || skip=1 ;;
+    '\endif') skip=0 ;;
+    *'\gset')
+      ((skip)) || run_statement "${line% \\gset}"
+      ;;
+    \\*)
+      printf 'psql: unexpected backslash command: %s\n' "$line" >&2
+      exit 3
+      ;;
+    *)
+      if ((skip)); then continue; fi
+      run_statement "$line"
+      [[ -z "$sql_out" ]] || printf '%s\n' "$sql_out"
+      ;;
+  esac
+done
 exit 0
 EOF
 cat >"$tools/pg_dump" <<'EOF'
