@@ -162,8 +162,12 @@ func (m *Machine) replaceProcess(ctx context.Context, interruption string, outOf
 	parked := m.wake
 	// Whether the runtime left a process running is this replacement's own fact, so it starts
 	// unset here: a refusal an earlier replacement of this claim met is not what the end reached
-	// now says of the process it let go (stopUnconfirmed, backstopStalledTurn).
-	m.stopUnconfirmed = false
+	// now says of the process it let go (stopUnconfirmed, backstopStalledTurn). What this
+	// replacement charges is its own in the same way, and is counted from nothing here: the
+	// claim's budget holds every launch failure of the claim's life, and what the owner of a
+	// stalled worker is told is what the replacement made for that stall charged
+	// (failuresCharged).
+	m.stopUnconfirmed, m.failuresCharged = false, 0
 	err := m.replaceNow(ctx, interruption, outOfMemory)
 	return m.endReached(found, parked), err
 }

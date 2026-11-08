@@ -26,10 +26,10 @@ func (s StepRecord) LastStep() time.Time {
 // record the request carried, the moment the machine judged from, the bound it passed, the
 // end the machine reached — relaunched, the relaunch parked on the wake pacing, the relaunch
 // still to make, suspended, or the claim failed (ProcessEnd) — the moment a parked launch's
-// turn comes, and whether the process that end let go was left possibly running. The owner's
-// notice is written from this and not from what the sweep asked for, because the sweep asks
-// over claims it read before the decision and the machine can answer by leaving the turn
-// exactly as it stands.
+// turn comes, whether the process that end let go was left possibly running, and what the
+// replacement charged the claim on its way to that end. The owner's notice is written from
+// this and not from what the sweep asked for, because the sweep asks over claims it read
+// before the decision and the machine can answer by leaving the turn exactly as it stands.
 type StallBackstopStop struct {
 	Step     StepRecord
 	LastStep time.Time
@@ -46,6 +46,15 @@ type StallBackstopStop struct {
 	// record no process — and a pod nothing stopped goes on holding what it runs on, which its
 	// owner acts on. It is false for an end that let no process go.
 	StopUnconfirmed bool
+	// LaunchFailures is how many launch failures the replacement this end came out of charged
+	// the claim: one for every start of it the runtime refused (launchNow,
+	// Machine.failuresCharged). It is carried because the stall itself charges nothing while
+	// the replacement made for it can — one refused start and then a good one ends relaunched
+	// with a failure charged, and one refused start and then a refused write leaves the
+	// relaunch pending with the same — and the claim's own budget counts every failure of the
+	// claim's life rather than this replacement's (the daemon's stallChargeClause). It is 0 for
+	// an end no start was refused in.
+	LaunchFailures int
 }
 
 // backstopStalledTurn is the daemon's stall backstop reaching a claim whose recorded last step is
@@ -74,12 +83,16 @@ type StallBackstopStop struct {
 // What it does when it does act is exactly what a daemon-made replacement does (replaceProcess):
 // the turn in flight is interrupted, so the task it was serving goes back to waiting and the
 // relaunched agent is sent it again; a held suspension ends in a suspension (endHeld); and
-// otherwise the recorded session is resumed on a new process. Nothing is charged — not a launch
-// failure, and not a death with work outstanding (chargeDeath) — which is the whole reason this
-// path is replaceProcess and not the death path: the worker's own ladder already ends its
-// process twice before the daemon is reached (the plugin's stall watch), so a stall that repeats
-// would spend the claim's death budget and fail the claim at launch_failure_limit, where the
-// requirement is that the claim come back with its task still owed.
+// otherwise the recorded session is resumed on a new process. The stop itself charges nothing —
+// not a launch failure, and not a death with work outstanding (chargeDeath) — which is the whole
+// reason this path is replaceProcess and not the death path: the worker's own ladder already
+// ends its process twice before the daemon is reached (the plugin's stall watch), so a stall
+// that repeats would spend the claim's death budget and fail the claim at launch_failure_limit,
+// where the requirement is that the claim come back with its task still owed. What the
+// replacement itself charges is another thing: a start the runtime refuses inside it is a launch
+// failure like any other (launchNow), so the end can carry charges the stop did not make, and
+// the report carries how many of them this replacement charged for the owner's notice to say
+// (StallBackstopStop.LaunchFailures).
 //
 // Every end the machine can reach is told but one (ProcessEnd.TellsOwner, Deps.StallBackstopped),
 // and it is told which end it was: the owner's notice says what happened to the worker, and the
@@ -151,7 +164,8 @@ func (m *Machine) backstopStalledTurn(ctx context.Context, ev StallBackstop) err
 		"callStartedAt", ev.Step.StartedAt, "heldSuspension", suspended)
 	end, err := m.replaceProcess(ctx, "the daemon's stall backstop ended a turn whose agent stopped stepping", ordinaryEnd)
 	if end.TellsOwner() && m.deps.StallBackstopped != nil {
-		stop := StallBackstopStop{Step: ev.Step, LastStep: last, Bound: ev.Bound, End: end, StopUnconfirmed: m.stopUnconfirmed}
+		stop := StallBackstopStop{Step: ev.Step, LastStep: last, Bound: ev.Bound, End: end,
+			StopUnconfirmed: m.stopUnconfirmed, LaunchFailures: m.failuresCharged}
 		if end == EndRelaunchParked {
 			// The wake the machine holds now is this replacement's own: the guard above returned
 			// over a claim that already held one, and the end itself is read from a wake that is

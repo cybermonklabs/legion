@@ -891,9 +891,21 @@ type Machine struct {
 	// no process either way — and a stalled worker's owner is told of it, since a process the
 	// runtime would not stop goes on holding what it runs on (StallBackstopStop.StopUnconfirmed,
 	// the daemon's stallBackstopRecord). replaceProcess clears it before the replacement it
-	// reports on, so it names that replacement and no earlier one, and a start that succeeds
-	// clears it again: the launch that started was handed the process it replaces (start).
+	// reports on, so it names that replacement and no earlier one; a later stop of that same
+	// process that the runtime does make clears it too, since the question is whether this one
+	// process was seen to stop and the latest answer about it is the answer (stopPrevious); and
+	// a start that succeeds clears it as well: the launch that started was handed the process it
+	// replaces (start).
 	stopUnconfirmed bool
+	// failuresCharged is how many launch failures the replacement now being made has charged the
+	// claim: one for each start of it the runtime refused, counted where it is charged
+	// (launchNow). It is carried to the owner of a stalled worker, because the stop that
+	// replacement was made for charges nothing while the replacement itself can, and the claim's
+	// own budget counts every launch failure of the claim's life rather than this replacement's
+	// (StallBackstopStop.LaunchFailures, the daemon's stallChargeClause). replaceProcess clears
+	// it before the replacement it reports on, as it clears stopUnconfirmed, so it counts that
+	// replacement's charges and no earlier one's.
+	failuresCharged int
 	// relaunch is the relaunch relaunchLater left waiting, tried again when TimerRelaunch fires; it
 	// lives as long as that timer, which letGo disarms with it. It is memory only, as the timer is: a
 	// restart launches that claim again as an unfinished launch.
@@ -1731,6 +1743,9 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool) error {
 		}
 		err = errors.Join(err, m.stopPrevious(ctx))
 		m.claim.Budgets.LaunchFailures++
+		// And what the replacement this launch belongs to has charged, which is the owner of a
+		// stalled worker's to hear beside the end it reached (failuresCharged).
+		m.failuresCharged++
 		m.log.Warn("supervise: launch failed", "generation", m.claim.Generation, "error", err,
 			"launchFailures", m.claim.Budgets.LaunchFailures, "limit", m.deps.Limits.LaunchFailures)
 		if m.claim.Budgets.LaunchFailures >= m.deps.Limits.LaunchFailures {
@@ -1835,10 +1850,14 @@ func (m *Machine) start(ctx context.Context, token string) (runtime.Locator, err
 // (runtime.Runtime's Spawn and Resume). Suspend stops that one process alone, and does nothing for
 // one already gone or replaced; previous is kept, for the next launch to wait out.
 //
-// A refusal is recorded as well as returned (stopUnconfirmed): every caller joins this error to
-// one of its own and goes on — to the retry, to the next try, or to the failed claim — so the
-// process is left possibly running, and the owner of a stalled worker is told that rather than
-// that it was stopped.
+// A refusal is recorded as well as returned, and a stop the runtime makes clears that record
+// (stopUnconfirmed): every caller joins a refusal to an error of its own and goes on — to the
+// retry, to the next try, or to the failed claim — so the process is left possibly running, and
+// the owner of a stalled worker is told that rather than that it was stopped. The tries of one
+// launch stop one process, the one letGo moved into previous (launchNow holds it until a start
+// succeeds), so what the record answers is whether that process was seen to stop, and the
+// latest answer about it is the answer: a stop refused and then made is a process somebody saw
+// stop, and an owner told otherwise is sent after a pod that is not there.
 func (m *Machine) stopPrevious(ctx context.Context) error {
 	if m.previous == nil {
 		return nil
@@ -1847,6 +1866,7 @@ func (m *Machine) stopPrevious(ctx context.Context) error {
 		m.stopUnconfirmed = true
 		return fmt.Errorf("stop the process %s let go before its relaunch: %w", m.previous.Incarnation, err)
 	}
+	m.stopUnconfirmed = false
 	return nil
 }
 

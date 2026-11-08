@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -619,7 +620,7 @@ func TestTheStallBackstopTellsTheOwnerOfAnEndTheStoreWouldNotWrite(t *testing.T)
 	}
 	for _, never := range []string{"brought back", "nothing runs for the claim", "could not be written"} {
 		if strings.Contains(notices[0].Reason, never) {
-			t.Errorf("the notice says %q, which claims %q: the write of this launch landed where the daemon's own stop cut it short, and the sentence about the process is the stop clause's", notices[0].Reason, never)
+			t.Errorf("the notice says %q, which claims %q: what this case drives is the store refusing the launch's write, which the daemon tries again at its probe interval — a shutdown cutting the launch short is the other way into the same end, which the row names beside it — and the sentence about the process is the stop clause's", notices[0].Reason, never)
 		}
 	}
 }
@@ -659,8 +660,10 @@ func TestTheStallBackstopTellsAStopTheRuntimeWouldNotMake(t *testing.T) {
 // And a turn whose replacement the runtime refused until the claim's launch budget was gone:
 // the claim has failed, nothing relaunches it, and the notice says so rather than leaving its
 // owner waiting for a session that is never coming back. The launch failures that end is made
-// of are the one thing a stall does charge, so the notice names them instead of the sentence
-// every other end carries.
+// of are the one thing a stall does charge, and the notice counts them: the clause is the same
+// derived one every end carries, read from what the machine says this replacement charged
+// (stallChargeClause), so the end that failed the claim says how many rather than keeping a
+// sentence of its own.
 func TestTheStallBackstopTellsTheOwnerOfAnEndThatFailedTheClaim(t *testing.T) {
 	rig := newBackstopRig(t)
 	stalled := rig.claim(claim.RoleTester, "LEGION-224", backstopBound+time.Hour, true)
@@ -686,7 +689,7 @@ func TestTheStallBackstopTellsTheOwnerOfAnEndThatFailedTheClaim(t *testing.T) {
 	for _, want := range []string{"still owed", "every try at the replacement was refused",
 		"the claim is failed and the daemon starts nothing for it",
 		"what it waits on is a retry, or the close of its tree, which retires it",
-		"the launch failures of the replacement that could not be started are what it was charged",
+		fmt.Sprintf("the %d launch failures the replacement charged are what it was charged", rig.sup.deps.Limits.LaunchFailures),
 		stallProcessStopped} {
 		if !strings.Contains(notices[0].Reason, want) {
 			t.Errorf("the notice says %q, which does not carry %q", notices[0].Reason, want)
@@ -694,6 +697,82 @@ func TestTheStallBackstopTellsTheOwnerOfAnEndThatFailedTheClaim(t *testing.T) {
 	}
 	if strings.Contains(notices[0].Reason, "nothing was charged to the claim") {
 		t.Errorf("the notice says nothing was charged, and the launch failures were: %q", notices[0].Reason)
+	}
+}
+
+// The charge clause over the common shape of all: one start the runtime refused inside the
+// replacement, and the next one taken. The end is the relaunch that worked — the session is
+// back, the task is owed to it, and nothing about that end says a budget was spent — and the
+// claim was charged the launch failure all the same (supervise's launchNow). An owner reading
+// that nothing was charged has a sentence the claim's own budgets contradict, which is why
+// the clause is read from what the machine says this replacement charged and not from the row
+// (stallChargeClause).
+func TestTheStallBackstopCountsALaunchFailureChargedOnTheWayToARelaunch(t *testing.T) {
+	rig := newBackstopRig(t)
+	stalled := rig.claim(claim.RoleImplementer, "LEGION-228", backstopBound+time.Hour, true)
+	claims := rig.supervising(stalled)
+	rig.rt.ScriptResume(fake.SpawnResult{Err: errors.New("the pod did not start")})
+
+	rig.sweep(claims)
+
+	rig.awaitResumed(stalled.Token, 2)
+	notices := rig.awaitNotices("LEGION-228", 1)
+	m, ok := rig.sup.Machine(stalled.Token)
+	if !ok {
+		t.Fatal("the stalled claim is not supervised")
+	}
+	if c := m.Claim(); c.Locator == nil || c.Budgets.LaunchFailures != 1 {
+		t.Fatalf("the claim after the backstop = %+v, want it recording the process the second try started with the one refusal charged", c)
+	}
+	for _, want := range []string{
+		"the daemon ended the implementer's turn and started a replacement in its place",
+		"its session was brought back on the replacement the daemon started",
+		"the stall itself charged the claim nothing; the one launch failure the replacement charged is what it was charged",
+		stallProcessStopped} {
+		if !strings.Contains(notices[0].Reason, want) {
+			t.Errorf("the notice says %q, which does not carry %q", notices[0].Reason, want)
+		}
+	}
+	if strings.Contains(notices[0].Reason, stallNothingCharged) {
+		t.Errorf("the notice says %q, which says nothing was charged to the claim: the claim's budget records the launch failure this replacement charged, and the owner reads the two together", notices[0].Reason)
+	}
+}
+
+// The same charge where the replacement never started: one start the runtime refused, and then
+// a write the store would not take, which leaves the launch still to make (supervise's
+// launchNow, relaunchLater). The end is the relaunch pending, and the failure charged on the
+// way to it is charged whatever the end was.
+func TestTheStallBackstopCountsALaunchFailureChargedBeforeAPendingRelaunch(t *testing.T) {
+	rig := newBackstopRig(t)
+	stalled := rig.claim(claim.RoleTester, "LEGION-229", backstopBound+time.Hour, true)
+	claims := rig.supervising(stalled)
+	rig.rt.ScriptResume(fake.SpawnResult{Err: errors.New("the pod did not start")})
+	// The store takes the first try's write and refuses what follows it, which is the window
+	// the second try's own write falls in: the refusal is set where the first start is made,
+	// after that write landed and before the retry writes again.
+	rig.rt.HoldResume(func() { rig.claimStore().refuse(errors.New("the store is down")) })
+
+	rig.sweep(claims)
+
+	notices := rig.awaitNotices("LEGION-229", 1)
+	m, ok := rig.sup.Machine(stalled.Token)
+	if !ok {
+		t.Fatal("the stalled claim is not supervised")
+	}
+	if c := m.Claim(); c.State != supervise.StateLaunching || c.Locator != nil || c.Budgets.LaunchFailures != 1 {
+		t.Fatalf("the claim after the backstop = %+v, want it launching with nothing started and the one refusal charged", c)
+	}
+	for _, want := range []string{
+		"the daemon ended the tester's turn and did not get a replacement started in its place",
+		"the launch that replaces it has not started",
+		"the stall itself charged the claim nothing; the one launch failure the replacement charged is what it was charged",
+		stallProcessStopped} {
+		if !strings.Contains(notices[0].Reason, want) {
+			t.Errorf("the notice says %q, which does not carry %q", notices[0].Reason, want)
+		}
+	}
+	if strings.Contains(notices[0].Reason, stallNothingCharged) {
+		t.Errorf("the notice says %q, which says nothing was charged to the claim: the claim's budget records the launch failure this replacement charged before its write was refused", notices[0].Reason)
 	}
 }
 
@@ -788,23 +867,31 @@ func TestTheStallBackstopTellsAParkedRelaunchAsWhatParkTimeSettles(t *testing.T)
 // default is unreachable for every end this daemon declares (stallBackstopEnds,
 // stallBackstopEnd).
 //
-// Every end is rendered under both values of the one fact the machine records about the stop
-// (supervise.StallBackstopStop.StopUnconfirmed), and both directions of two properties are
-// held over every rendering, so neither is satisfied by a row that says nothing:
+// Every end is rendered under both values of the fact the machine records about the stop
+// (supervise.StallBackstopStop.StopUnconfirmed) and under the relevant values of what it
+// records about the charge (supervise.StallBackstopStop.LaunchFailures) — none charged, one
+// charged, several — and both directions of three properties are held over those renderings,
+// so none is satisfied by a row that says nothing:
 //
 //   - an end that let the claim's process go says that the process was stopped under a
 //     confirmed stop, and under an unconfirmed one says instead that it may be running still
 //     and nowhere that it was stopped; an end that kept the process says under either value
 //     that the daemon made no stop of it, and neither of the sentences a let-go end carries;
 //   - an end that let the process go says the turn was ended under a confirmed stop and says
-//     so nowhere under an unconfirmed one; an end that kept the process never says it at all.
+//     so nowhere under an unconfirmed one; an end that kept the process never says it at all;
+//   - every end says the claim was charged nothing where the replacement charged nothing and
+//     speaks of no launch failure there, and names the failures where it charged some and
+//     says nowhere that nothing was charged. Every end is read both ways because every end is
+//     reachable both ways: a start the runtime refuses inside the replacement is charged and
+//     the loop tries again, so the relaunch that worked and the relaunch still pending carry
+//     charges as readily as the claim that failed (supervise's launchNow).
 //
 // Each is read against the clauses themselves rather than against phrasings of them. That is
-// what it buys to have those clauses be every statement the notice makes about either subject:
+// what it buys to have those clauses be every statement the notice makes about those subjects:
 // the two lists of phrasings this walk carried, one for the turn and one for the stop, are
 // gone, and what keeps a row from writing such a statement in its own words is the residue
 // property, which reads the row's words out of the rendered notice by taking the daemon's away
-// (stallTurnClause, stallStopClause,
+// (stallTurnClause, stallStopClause, stallChargeClause,
 // TestTheRowsOwnWordsSayNothingOfTheStalledProcessOrTheTurn).
 //
 // It catches an end added with no opening or no sentence, an end whose sentence claims the
@@ -833,8 +920,8 @@ func TestTheNoticeHasWordsForEveryEndThatTellsItsOwner(t *testing.T) {
 		if words.did == "" {
 			t.Errorf("the notice's row for %q is %+v, want the end's own half of the opening: add a did to stallBackstopEnds saying what the daemon did to this claim beside what it did to the turn, which the notice derives (stallTurnClause)", end, words)
 		}
-		if words.end == "" || words.charged == "" {
-			t.Errorf("the notice's row for %q is %+v, want both clauses: what became of the worker and what the claim was charged", end, words)
+		if words.end == "" {
+			t.Errorf("the notice's row for %q is %+v, want the clause that says what became of the worker", end, words)
 		}
 		if claimed := strings.Contains(words.end, relaunched); claimed != (end == supervise.EndRelaunched) {
 			t.Errorf("the sentence for %q is %q, which says %q: only %q brought a session back, and a notice that claims a relaunch nobody made sends an architect looking for a process that is not there",
@@ -852,7 +939,7 @@ func TestTheNoticeHasWordsForEveryEndThatTellsItsOwner(t *testing.T) {
 		// the stop the runtime made, and the stop it refused, which leaves a process that may
 		// be running the turn still.
 		refused := stallBackstopRecord(rigClaim(), refusedStop, time.Hour)
-		for clause, text := range map[string]string{"opening": words.opening(stop), "sentence": words.end, "charge clause": words.charged} {
+		for clause, text := range map[string]string{"opening": words.opening(stop), "sentence": words.end} {
 			if !strings.Contains(told, fill.Replace(text)) {
 				t.Errorf("the notice of %q reads %q, which does not carry its own %s", end, told, clause)
 			}
@@ -897,6 +984,29 @@ func TestTheNoticeHasWordsForEveryEndThatTellsItsOwner(t *testing.T) {
 				}
 			}
 		}
+		// And the third derived clause: what the claim was charged, read from the launch
+		// failures the replacement charged on its way to this end rather than from the row
+		// (stallChargeClause). Every end is rendered with none charged and with some, because
+		// every end a replacement reaches can be reached after a start the runtime refused:
+		// one refused start and then a good one is the relaunch that worked, one refused start
+		// and then a refused write is the relaunch still pending, and the claim's own budget
+		// is what the owner would otherwise read the notice against.
+		for charged, reading := range map[int]string{1: "the one launch failure the replacement charged", 3: "the 3 launch failures the replacement charged"} {
+			chargedStop := supervise.StallBackstopStop{Bound: backstopBound, End: end, WakeDue: time.Now(), LaunchFailures: charged}
+			withCharge := stallBackstopRecord(rigClaim(), chargedStop, time.Hour)
+			if !strings.Contains(withCharge, reading) {
+				t.Errorf("the notice of %q over a replacement that charged %d reads %q, which does not say %q: a launch failure charged on the way to this end is charged to the claim like any other (supervise's launchNow)", end, charged, withCharge, reading)
+			}
+			if strings.Contains(withCharge, stallNothingCharged) {
+				t.Errorf("the notice of %q over a replacement that charged %d reads %q, which says %q all the same: the claim's own budgets say otherwise, and this is the notice its owner acts on", end, charged, withCharge, stallNothingCharged)
+			}
+		}
+		if !strings.Contains(told, stallNothingCharged) {
+			t.Errorf("the notice of %q over a replacement that charged nothing reads %q, which does not say %q", end, told, stallNothingCharged)
+		}
+		if strings.Contains(told, "launch failure") {
+			t.Errorf("the notice of %q over a replacement that charged nothing reads %q, which speaks of a launch failure: nothing of this replacement was charged (stallChargeClause)", end, told)
+		}
 	}
 	for end := range worded {
 		t.Errorf("the notice has a sentence for %q, which is no end the machine can reach: drop the row, or add the end to supervise.ProcessEnds", end)
@@ -920,12 +1030,15 @@ func TestTheNoticeHasWordsForEveryEndThatTellsItsOwner(t *testing.T) {
 //
 // The row's words are read out by subtraction rather than taken from the table on trust: the
 // notice is written twice, once from the end's row and once from no words at all
-// (stallRecordInWords), and the row's three clauses are taken out of the first. What is left
+// (stallRecordInWords), and the row's two clauses are taken out of the first. What is left
 // must be the second, exactly. That equality is what makes the residue total — a word of the
 // row the subtraction could not find, or a word of the daemon's it took away, leaves the two
 // unequal and fails here rather than going unread — and it is why a clause added to the notice
 // later needs nothing added here: whatever the daemon writes is on one side of it and whatever
-// a row writes is on the other.
+// a row writes is on the other. The charge clause is on the daemon's side of it now
+// (stallChargeClause), which is why no row has one to subtract, and the renderings below run
+// over a replacement that charged nothing and one that charged two launch failures so that
+// side is read in both of its shapes.
 //
 // What this cannot catch is a row that refers to a subject without naming it: a pronoun bound
 // to the derived clause its words are appended to ("and shut it down"), or some name for a
@@ -936,81 +1049,174 @@ func TestTheNoticeHasWordsForEveryEndThatTellsItsOwner(t *testing.T) {
 func TestTheRowsOwnWordsSayNothingOfTheStalledProcessOrTheTurn(t *testing.T) {
 	c := rigClaim()
 	for _, end := range supervise.ProcessEnds() {
-		for _, unconfirmed := range []bool{false, true} {
-			stop := supervise.StallBackstopStop{Bound: backstopBound, End: end, WakeDue: time.Now(), StopUnconfirmed: unconfirmed}
-			words := stallBackstopEnd(end)
-			fill := stallFill(c, stop)
-			told := stallBackstopRecord(c, stop, time.Hour)
-			// The opening is the derived clause and the row's own half with a space between
-			// them (stallEndWords.opening), so the row's half comes away with that space; the
-			// other two clauses stand on their own.
-			left, residue := told, []string{}
-			for _, own := range []struct{ clause, words, span string }{
-				{"did", fill.Replace(words.did), " " + fill.Replace(words.did)},
-				{"end", fill.Replace(words.end), fill.Replace(words.end)},
-				{"charge clause", fill.Replace(words.charged), fill.Replace(words.charged)},
-			} {
-				if own.words == "" {
-					continue
-				}
-				cut := strings.Replace(left, own.span, "", 1)
-				if cut == left {
-					t.Errorf("the notice of %q reads %q, which does not carry its own %s, %q", end, told, own.clause, own.words)
-					continue
-				}
-				left, residue = cut, append(residue, own.words)
-			}
-			bare := stallRecordInWords(c, stop, time.Hour, stallEndWords{process: words.process})
-			if left != bare {
-				t.Errorf("the notice of %q does not come apart into the daemon's own words and the row's: taking the row's clauses out of %q left %q, and the same notice written from no words at all is %q. This property reads what a row wrote by taking the daemon's words away, so the two must differ by the row's words and nothing else",
-					end, told, left, bare)
-				continue
-			}
-			if named, _ := stallNamesASubject(bare); named == "" {
-				t.Errorf("the daemon's own words in the notice of %q are %q, and no word of stallSubjectNames is in them: those names are how this property finds a row talking about the stalled process or the stalled turn, and names the daemon's own sentences do not use are names that catch nothing", end, bare)
-			}
-			for _, said := range residue {
-				named, subject := stallNamesASubject(said)
-				if named == "" {
-					continue
-				}
-				t.Errorf("the row for %q writes %q, and the word %q in it names %s: every statement this notice makes about the claim's stalled process and about its stalled turn is derived from the machine's own record of the stop, read at the stall (stallTurnClause, stallStopClause), and a row is written once and knows neither — so a row may say nothing of them, not even something true. Say what the daemon did to the launch, the session, the claim or the task, and leave %s to the daemon's own sentences",
-					end, said, named, subject, subject)
+		for _, charged := range []int{0, 2} {
+			for _, unconfirmed := range []bool{false, true} {
+				renderTheRowsOwnWords(t, c, end, charged, unconfirmed)
 			}
 		}
 	}
 }
 
-// stallSubjectNames is what this notice's own prose can name its two derived subjects by: the
-// stalled turn, the process the claim was running it in, and the stop of that process, which
-// the derived clauses answer for and a row may not speak of. The names of the running thing
-// are the ones a deployment of this daemon uses for it, since a row that called the pod or the
-// worker stopped would be read by an owner as the stalled process stopped; "session" is not
-// among them, because a session is what outlives the stop and is brought back on a process of
-// its own, which is a row's own to tell.
+// renderTheRowsOwnWords is one rendering of that property: the notice of this end under this
+// record of the stop and of the charge, taken apart into the row's own words and the daemon's.
+func renderTheRowsOwnWords(t *testing.T, c supervise.Claim, end supervise.ProcessEnd, charged int, unconfirmed bool) {
+	t.Helper()
+	stop := supervise.StallBackstopStop{Bound: backstopBound, End: end, WakeDue: time.Now(),
+		StopUnconfirmed: unconfirmed, LaunchFailures: charged}
+	words := stallBackstopEnd(end)
+	fill := stallFill(c, stop)
+	told := stallBackstopRecord(c, stop, time.Hour)
+	// The opening is the derived clause and the row's own half with a space between them
+	// (stallEndWords.opening), so the row's half comes away with that space; the other clause
+	// stands on its own.
+	left, residue := told, []string{}
+	for _, own := range []struct{ clause, words, span string }{
+		{"did", fill.Replace(words.did), " " + fill.Replace(words.did)},
+		{"end", fill.Replace(words.end), fill.Replace(words.end)},
+	} {
+		if own.words == "" {
+			continue
+		}
+		cut := strings.Replace(left, own.span, "", 1)
+		if cut == left {
+			t.Errorf("the notice of %q reads %q, which does not carry its own %s, %q", end, told, own.clause, own.words)
+			continue
+		}
+		left, residue = cut, append(residue, own.words)
+	}
+	bare := stallRecordInWords(c, stop, time.Hour, stallEndWords{process: words.process})
+	if left != bare {
+		t.Errorf("the notice of %q does not come apart into the daemon's own words and the row's: taking the row's clauses out of %q left %q, and the same notice written from no words at all is %q. This property reads what a row wrote by taking the daemon's words away, so the two must differ by the row's words and nothing else",
+			end, told, left, bare)
+		return
+	}
+	if named, _ := stallNamesASubject(bare); named == "" {
+		t.Errorf("the daemon's own words in the notice of %q are %q, and no word of stallSubjectNames is in them: those names are how this property finds a row talking about the stalled process or the stalled turn, and names the daemon's own sentences do not use are names that catch nothing", end, bare)
+	}
+	for _, said := range residue {
+		named, subject := stallNamesASubject(said)
+		if named == "" {
+			continue
+		}
+		t.Errorf("the row for %q writes %q, and the word %q in it names %s: every statement this notice makes about the claim's stalled process and about its stalled turn is derived from the machine's own record of the stop, read at the stall (stallTurnClause, stallStopClause), and a row is written once and knows neither — so a row may say nothing of them, not even something true. Say what the daemon did to the launch, the session, the claim or the task, and leave %s to the daemon's own sentences",
+			end, said, named, subject, subject)
+	}
+}
+
+// The three subjects the derived clauses answer for, which a row may not speak of, as this
+// notice's own prose names them.
+const (
+	stallTurnSubject    = "the stalled turn"
+	stallProcessSubject = "the claim's stalled process"
+	stallStopSubject    = "the stop of that process"
+)
+
+// stallSubjectNames is what this notice's own prose can name those three by. The names of the
+// running thing are what a deployment of this daemon calls it, since a row that called the pod
+// or the worker stopped would be read by an owner as the stalled process stopped; "session" is
+// not among them, because a session is what outlives the stop and is brought back on a process
+// of its own, which is a row's own to tell.
+//
+// Those names are not written out runtime by runtime. Each runtime's own are read off
+// runtime.Locator, the one type every process of this daemon is addressed by
+// (stallRuntimeProcessNames), so a runtime added there brings its names with it and no list
+// here has to be remembered: the round that wrote this list out held "pod" and not "pane" or
+// "sandbox", and the tmux deployment's rows could have said either. What is written out is
+// what belongs to no runtime in particular — the turn, the process itself, the worker and the
+// agent that is in it, the container it runs in, the incarnation that is its address
+// (runtime.Locator's own word for a process rather than a slot), and the stop this notice
+// answers for.
 //
 // It is a list of words, and that is worth saying plainly: what the residue cannot do is judge
 // what it finds without one. What it is not is a list of phrasings. A new verb buys nothing
 // here — "shut down the stalled process", "terminated the stalled process" and "reaped the
 // stalled process" are one word to it — and that is the whole of the difference, since every
 // round this notice lost was lost to a verb nobody had listed.
-var stallSubjectNames = map[string]string{
-	"turn":       "the stalled turn",
-	"turns":      "the stalled turn",
-	"process":    "the claim's stalled process",
-	"processes":  "the claim's stalled process",
-	"pod":        "the claim's stalled process",
-	"pods":       "the claim's stalled process",
-	"container":  "the claim's stalled process",
-	"containers": "the claim's stalled process",
-	"worker":     "the claim's stalled process",
-	"workers":    "the claim's stalled process",
-	"agent":      "the claim's stalled process",
-	"agents":     "the claim's stalled process",
-	"stop":       "the stop of that process",
-	"stops":      "the stop of that process",
-	"stopped":    "the stop of that process",
-	"stopping":   "the stop of that process",
+var stallSubjectNames = stallNamesOfTheSubjects()
+
+// stallNamesOfTheSubjects builds that map: the names of each subject with their plurals, and
+// every runtime's own names for the process it runs beside them.
+func stallNamesOfTheSubjects() map[string]string {
+	named := map[string]string{
+		// The stop is named by its verb as well, which has no plural of its own.
+		"stopped": stallStopSubject, "stopping": stallStopSubject,
+	}
+	add := func(subject string, names ...string) {
+		for _, name := range names {
+			named[name], named[stallPlural(name)] = subject, subject
+		}
+	}
+	add(stallTurnSubject, "turn")
+	add(stallStopSubject, "stop")
+	add(stallProcessSubject, "process", "worker", "agent", "container", "incarnation")
+	for _, runtimes := range stallRuntimeProcessNames() {
+		add(stallProcessSubject, runtimes.member, runtimes.label)
+	}
+	return named
+}
+
+// stallRuntimeName is what one runtime of this daemon calls the process it runs: the member of
+// runtime.Locator that carries its address, which is the word this daemon's own code uses for
+// it, and the noun runtime.Locator.Label writes in front of that address, which is the word its
+// log lines and its capability rows name that process by.
+type stallRuntimeName struct{ member, label string }
+
+// stallRuntimeProcessNames is those two names for every runtime this daemon has, read off
+// runtime.Locator rather than listed anywhere: each backend member of that struct is one
+// runtime's address for a process (runtime.Locator's Tmux and Sandbox), so a runtime added
+// there is a runtime whose names this residue holds without anyone adding them
+// (TestTheRowsOwnWordsResidueHoldsEveryRuntimesName, which is what fails when a runtime is
+// added that Label has no case for).
+func stallRuntimeProcessNames() []stallRuntimeName {
+	var names []stallRuntimeName
+	locator := reflect.TypeFor[runtime.Locator]()
+	for field := range locator.NumField() {
+		member := locator.Field(field)
+		if member.Type.Kind() != reflect.Pointer || member.Type.Elem().Kind() != reflect.Struct {
+			continue
+		}
+		addressed := reflect.New(locator).Elem()
+		addressed.Field(field).Set(reflect.New(member.Type.Elem()))
+		label := strings.Fields(addressed.Interface().(runtime.Locator).Label())
+		names = append(names, stallRuntimeName{member: strings.ToLower(member.Name), label: strings.ToLower(label[0])})
+	}
+	return names
+}
+
+// stallPlural is the plural of one of those names, which the residue holds beside the singular
+// so that a row saying "the pods" is a row that named the process.
+func stallPlural(name string) string {
+	for _, ending := range []string{"s", "x", "z", "ch", "sh"} {
+		if strings.HasSuffix(name, ending) {
+			return name + "es"
+		}
+	}
+	return name + "s"
+}
+
+// Every runtime this daemon addresses a process with is one the residue knows the names of,
+// which is what keeps the list above from being another list of the words somebody thought of:
+// a runtime added to runtime.Locator is a member of that struct and a case of its Label, and
+// both of those words land in stallSubjectNames through nothing anybody writes here. A member
+// Label has no case for is the one way out, and it is the failure this reads for: such a
+// runtime's process is named "claim" by Label, which is the claim and not the process, and a
+// row could then say the daemon shut its sandbox down and go unread.
+func TestTheRowsOwnWordsResidueHoldsEveryRuntimesName(t *testing.T) {
+	names := stallRuntimeProcessNames()
+	if len(names) == 0 {
+		t.Fatal("no backend member of runtime.Locator was found: this reads the pointer-to-struct members of that type, which are the runtimes, and a reading that finds none holds nothing to anything")
+	}
+	for _, runtimes := range names {
+		if runtimes.label == "claim" {
+			t.Errorf("runtime.Locator.Label names the process of the %s member %q, which is the claim rather than the process it runs: give that member a case in Label, so the word an owner reads for its process is a word this notice's residue holds", runtimes.member, runtimes.label)
+		}
+		for _, name := range []string{runtimes.member, runtimes.label, stallPlural(runtimes.member), stallPlural(runtimes.label)} {
+			if stallSubjectNames[name] != stallProcessSubject {
+				t.Errorf("the residue reads %q as %q, want %q: it is a name this daemon's %s runtime has for the process it runs, and a row that says it has stopped one has said what only the daemon's own derived sentence may (stallStopClause)",
+					name, stallSubjectNames[name], stallProcessSubject, runtimes.member)
+			}
+		}
+	}
 }
 
 // stallSubjectNamed matches any of those names, whole words and whatever their case, so that a

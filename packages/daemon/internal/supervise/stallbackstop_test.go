@@ -455,7 +455,8 @@ func TestTheBackstopTellsTheOwnerOfAnEndThatFailedTheClaim(t *testing.T) {
 	}
 	h.wantState(StateFailed)
 
-	want := StallBackstopStop{Step: swept, LastStep: last, Bound: backstopBound, End: EndFailed}
+	want := StallBackstopStop{Step: swept, LastStep: last, Bound: backstopBound, End: EndFailed,
+		LaunchFailures: testLimits().LaunchFailures}
 	if len(*stops) != 1 || (*stops)[0] != want {
 		t.Fatalf("the backstop reported %+v, want the one end it made told to the owner, %+v", *stops, want)
 	}
@@ -829,9 +830,10 @@ func compiledDependencies(t *testing.T) func(string) (io.ReadCloser, error) {
 }
 
 // The one thing the claim cannot show about an end is whether the runtime made the stop that
-// end asked for, and these four cases are every write of it (Machine.stopUnconfirmed): the
-// refusal a launch's own stop met, the refusal cleared by a start that succeeded, the launch
-// the daemon's own stop cut short before any stop was made, and the refusal an earlier
+// end asked for, and these five cases are every write of it (Machine.stopUnconfirmed): the
+// refusal a launch's own stop met, the refusal cleared by a later stop of the same process
+// that the runtime did make, the refusal cleared by a start that succeeded, the launch the
+// daemon's own stop cut short before any stop was made, and the refusal an earlier
 // replacement of the same claim met, which this one does not carry. What rests on them is one
 // sentence of the owner's notice: a pod the runtime would not stop goes on holding its node's
 // room and its disk, and the owner is the one who acts on that (the daemon's
@@ -875,9 +877,85 @@ func TestTheBackstopReportsNoUnconfirmedStopOnceTheReplacementStarted(t *testing
 	if c := h.claim(); c.Locator == nil {
 		t.Fatalf("the claim is %+v, want it recording the process the second try started", c)
 	}
-	want := StallBackstopStop{Step: swept, LastStep: last, Bound: backstopBound, End: EndRelaunched}
+	want := StallBackstopStop{Step: swept, LastStep: last, Bound: backstopBound, End: EndRelaunched, LaunchFailures: 1}
 	if len(*stops) != 1 || (*stops)[0] != want {
 		t.Fatalf("the backstop reported %+v, want the relaunch it made with nothing left unstopped, %+v", *stops, want)
+	}
+}
+
+// A stop the runtime refused and then made is a process somebody saw stop. The tries of one
+// launch stop one process — the one letGo moved into previous, which launchNow holds until a
+// start succeeds — so the latest answer about it is the answer, and a claim that ends failed
+// with every start refused but its process stopped on the second ask is a claim whose owner
+// must not be sent after a pod that is not there: the notice of an unconfirmed stop opens by
+// taking the turn off the claim rather than ending it, and says the process may be running
+// still, which wakes.md has the architect put to a person (stopPrevious, the daemon's
+// stallTurnClause and stallStopClause).
+func TestTheBackstopReportsNoUnconfirmedStopOnceALaterStopWasMade(t *testing.T) {
+	h, stops := backstopReports(t)
+	last, swept := stalledSweep(h)
+	refused := errors.New("the pod did not start")
+	for range testLimits().LaunchFailures {
+		h.rt.ScriptResume(fake.SpawnResult{Err: refused})
+	}
+	rt := &refusingTheFirstStop{Runtime: h.rt, refusal: errors.New("the pod would not stop")}
+	h.m.deps.Runtime = rt
+
+	if err := h.handle(h.backstop(last)); !errors.Is(err, refused) {
+		t.Fatalf("the backstop whose every relaunch the runtime refused = %v, want the runtime's refusal", err)
+	}
+
+	h.wantState(StateFailed)
+	if asked := []error{rt.refusal, nil, nil}; !slices.Equal(rt.answers, asked) {
+		t.Fatalf("the runtime answered the stops of the process this replacement let go with %v, want %v: the case is one stop refused and the later ones made", rt.answers, asked)
+	}
+	want := StallBackstopStop{Step: swept, LastStep: last, Bound: backstopBound, End: EndFailed,
+		LaunchFailures: testLimits().LaunchFailures}
+	if len(*stops) != 1 || (*stops)[0] != want {
+		t.Fatalf("the backstop reported %+v, want the end it made with the stop a later try did make, %+v", *stops, want)
+	}
+}
+
+// refusingTheFirstStop refuses the first stop the machine asks for and makes every one after
+// it, which is a runtime that dropped one request: the process the launch let go is the same
+// process each try (launchNow holds it in previous until a start succeeds), so the stop the
+// second try made is a stop of the process the first try could not stop.
+type refusingTheFirstStop struct {
+	*fake.Runtime
+	refusal error
+	// answers is what this runtime told the machine, one per stop it was asked for: the first
+	// refused, and every one after it made.
+	answers []error
+}
+
+func (r *refusingTheFirstStop) Suspend(ctx context.Context, loc runtime.Locator) error {
+	err := r.Runtime.Suspend(ctx, loc)
+	if err == nil && len(r.answers) == 0 {
+		err = r.refusal
+	}
+	r.answers = append(r.answers, err)
+	return err
+}
+
+// What the replacement charged is the replacement's own, which is the other half of the same
+// rule: the claim's budget counts every launch failure of the claim's life, and the owner of a
+// stalled worker is told what the replacement made for this stall charged. A claim that comes
+// to the backstop with failures already charged and is relaunched at the first try was charged
+// nothing for the stall, however full its budget is (replaceProcess, launchNow).
+func TestTheBackstopReportsTheFailuresThisReplacementCharged(t *testing.T) {
+	h, stops := backstopReports(t)
+	last, swept := stalledSweep(h)
+	h.m.claim.Budgets.LaunchFailures = 1
+
+	h.must(h.backstop(last))
+
+	h.wantState(StateLaunching)
+	if got := h.budgets().LaunchFailures; got != 1 {
+		t.Fatalf("the claim's launch failures after the backstop = %d, want the one it came with: the stall charges nothing", got)
+	}
+	want := StallBackstopStop{Step: swept, LastStep: last, Bound: backstopBound, End: EndRelaunched}
+	if len(*stops) != 1 || (*stops)[0] != want {
+		t.Fatalf("the backstop reported %+v, want the relaunch it made with nothing of its own charged, %+v", *stops, want)
 	}
 }
 
