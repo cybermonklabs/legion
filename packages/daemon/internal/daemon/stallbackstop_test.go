@@ -787,14 +787,17 @@ func TestTheStallBackstopTellsAParkedRelaunchAsWhatParkTimeSettles(t *testing.T)
 // held over every rendering, so neither is satisfied by a row that says nothing:
 //
 //   - an end that let the claim's process go says that the process was stopped under a
-//     confirmed stop and that it may be running still under an unconfirmed one, and never the
-//     other sentence; an end that kept the process says neither, under either value;
+//     confirmed stop and that it may be running still under an unconfirmed one, and nowhere
+//     under that unconfirmed one does any word of it call the process stopped; an end that
+//     kept the process says neither sentence under either value, and calls that process
+//     stopped nowhere;
 //   - an end that let the process go says the turn was ended under a confirmed stop and says
 //     so nowhere under an unconfirmed one; an end that kept the process never says it at all.
 //
-// The second is read over the whole notice rather than over the clause the turn is derived
-// into, because the derivation is what keeps a row from picking those words and this is what
-// keeps a row from writing them anyway (stallTurnClause, stallTurnEndedClaims).
+// Both are read over the whole notice rather than over the clauses the turn and the stalled
+// process are derived into, because the derivation is what keeps a row from picking those
+// words and this is what keeps a row from writing them anyway (stallTurnClause,
+// stallStopClause, stallTurnEndedClaims, stallStopClaims).
 //
 // It catches an end added with no opening or no sentence, an end whose sentence claims the
 // wrong thing, a clause whose values nothing fills in (stallFill), and a row left behind for an
@@ -853,6 +856,7 @@ func TestTheNoticeHasWordsForEveryEndThatTellsItsOwner(t *testing.T) {
 			t.Errorf("the notice of %q reads %q, which still holds %s or %s: every value a clause names is filled in by stallFill", end, told, stallRoleWord, stallDueWord)
 		}
 		ended := stallTurnEndedClaims(rigClaim())
+		stopped := stallStopClaims(rigClaim())
 		switch words.process {
 		case stallProcessLetGo:
 			if !strings.Contains(told, stallProcessStopped) {
@@ -861,8 +865,8 @@ func TestTheNoticeHasWordsForEveryEndThatTellsItsOwner(t *testing.T) {
 			if !strings.Contains(refused, stallStopRefused) {
 				t.Errorf("the notice of %q over a stop the runtime refused reads %q, which does not say %q: an owner told the process was stopped would leave a pod running", end, refused, stallStopRefused)
 			}
-			if strings.Contains(refused, stallProcessStopped) {
-				t.Errorf("the notice of %q over a stop the runtime refused reads %q, which says %q all the same", end, refused, stallProcessStopped)
+			if said := saidFirst(refused, stopped); said != "" {
+				t.Errorf("the notice of %q over a stop the runtime refused reads %q, which says %q all the same: nobody saw that process stop, so no word of this notice may call it stopped and an owner who reads that one leaves a pod running (stallStopClause)", end, refused, said)
 			}
 			if said := saidFirst(told, ended); said == "" {
 				t.Errorf("the notice of %q over a stop the runtime made reads %q, which says nowhere that the turn was ended: this end let the claim's process go and the runtime confirmed the stop of it, so the opening is the end's claim that the turn is over", end, told)
@@ -871,12 +875,13 @@ func TestTheNoticeHasWordsForEveryEndThatTellsItsOwner(t *testing.T) {
 				t.Errorf("the notice of %q over a stop the runtime refused reads %q, which says %q: nobody saw that process stop, so it may be running the turn still and no word of this notice may call the turn ended (stallTurnClause)", end, refused, said)
 			}
 		case stallProcessKept:
-			for _, said := range []string{stallProcessStopped, stallStopRefused} {
-				if strings.Contains(told, said) || strings.Contains(refused, said) {
-					t.Errorf("the notice of %q says %q, and this end let no process go: the claim keeps and runs it", end, said)
-				}
-			}
 			for reading, text := range map[string]string{"a stop the runtime made": told, "a stop the runtime refused": refused} {
+				if said := saidFirst(text, stopped); said != "" {
+					t.Errorf("the notice of %q over %s reads %q, which says %q: this end let no process go, so no word of this notice may call stopped the process the claim keeps and runs", end, reading, text, said)
+				}
+				if strings.Contains(text, stallStopRefused) {
+					t.Errorf("the notice of %q over %s reads %q, which says %q: this end asked for no stop of the process its claim keeps and runs", end, reading, text, stallStopRefused)
+				}
 				if said := saidFirst(text, ended); said != "" {
 					t.Errorf("the notice of %q over %s reads %q, which says %q: this end kept the claim's process and the turn it is running, so no word of this notice may call that turn ended", end, reading, text, said)
 				}
@@ -903,6 +908,53 @@ func stallTurnEndedClaims(c supervise.Claim) []string {
 		"turn was ended",
 		"turn has ended",
 		"turn is over",
+	}
+}
+
+// stallStopClaims is every way this notice's words can say the claim's stalled process was
+// stopped, taken away or ended, filled for the claim the walk writes its notices from. The
+// walk reads the whole notice for them, as it does for the turn, because the derivation that
+// keeps a row from picking the sentence about that process (stallStopClause) cannot keep a row
+// from writing the claim into its own words (stallEndWords.did).
+//
+// None of them is carried by the true sentence of a stop the runtime refused, which says the
+// runtime did not confirm the stop and that the process may be running still
+// (stallStopRefused): a phrasing read over the whole notice must name a stop that was made,
+// never the word stop alone, or the one end that must say that sentence could not say it. For
+// the same reason the words a let-go end uses of its own record — that it let the process go,
+// which is true whether or not the runtime stopped it (stallProcessLetGo) — are not claims
+// here. A notice that keeps a process and calls the task taken back is likewise saying nothing
+// of the process, so every claim below names the process it stops.
+func stallStopClaims(c supervise.Claim) []string {
+	role := string(c.Role)
+	return []string{
+		"stopped the " + role + "'s stalled process",
+		"stopped the " + role + "'s process",
+		"stopped its stalled process",
+		"stopped the stalled process",
+		"stopped its process",
+		"stopped that process",
+		"stopped the process",
+		"process was stopped",
+		"process has been stopped",
+		"process is stopped",
+		"confirmed the stop",
+		"ended the " + role + "'s process",
+		"ended its process",
+		"ended that process",
+		"ended the process",
+		"process was ended",
+		"process has ended",
+		"killed its process",
+		"killed that process",
+		"killed the process",
+		"process was killed",
+		"took its process away",
+		"took that process away",
+		"took the process away",
+		"process was taken away",
+		"process is gone",
+		"process is no longer running",
 	}
 }
 
