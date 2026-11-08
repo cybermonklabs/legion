@@ -28,6 +28,9 @@
 //  9. anyone signed in approves a shared human-tier secret              -> "9_..."
 //  10. another person's session asking for the operator's agent-tier
 //     secret waits for the operator's approval                          -> "10_..."
+//  11. a human-tier secret owned by one person who is neither the asking
+//     session's operator nor "shared" is pending for that one owner
+//     alone, and only their approval releases it                        -> "11_..."
 package e2e
 
 import (
@@ -70,12 +73,13 @@ const (
 	// dispatchAudience is the audience its projected token carries, the one the broker's verifier
 	// checks.
 	dispatchAudience = "agent-secrets"
-	// testApprover operates the box every request below comes from, owns every secret but the
-	// shared one, and so is every approval's approver but the shared one's; and the machine
-	// login's login_hint.
+	// testApprover operates the box every request below comes from, and owns every secret but the
+	// shared one and otherPerson's own, so is every approval's approver but those two's; and the
+	// machine login's login_hint.
 	testApprover = "sami@example.com"
-	// otherPerson signs in to Dispatch too: they approve the shared secret, and their own machine
-	// asks for testApprover's agent-tier secret.
+	// otherPerson signs in to Dispatch too: they approve the shared secret, their own machine
+	// asks for testApprover's agent-tier secret, and they alone own the human-tier secret of
+	// step 11.
 	otherPerson = "ben@example.com"
 
 	// reloadInterval is policy.NewCurrent's own ticker period for this test: short enough that
@@ -184,6 +188,9 @@ var e2eSecrets = []secrets.LocalSecret{
 	policytest.Secret("NOTION_API_KEY", testApprover, policy.TierHuman, "notion-v1"),
 	policytest.Secret("LINEAR_API_KEY", testApprover, policy.TierHuman, "linear-v1"),
 	policytest.Secret("SHARED_DEPLOY_KEY", policy.OwnerShared, policy.TierHuman, "shared-deploy-v1"),
+	// PAGERDUTY_API_KEY is owned by one person who is neither the step-1 session's operator nor
+	// policy.OwnerShared: step 11's card is on that one owner's page and nobody else's.
+	policytest.Secret("PAGERDUTY_API_KEY", otherPerson, policy.TierHuman, "pagerduty-v1"),
 	policytest.Secret("AUTO_READ_TOKEN", testApprover, policy.TierAgent, "read-v1"),
 }
 
@@ -676,6 +683,40 @@ func TestEndToEnd(t *testing.T) {
 		ts.signedIn(t, testApprover, recordID).Decide(t, recordID, true)
 		ts.awaitValue(t, otherKey, otherEnrollment, ts.grantOf(t, otherKey, otherEnrollment, requestID), "AUTO_READ_TOKEN", "read-v1")
 	})
+
+	// Step 11: a human-tier secret owned by one identity that is neither the asking session's
+	// operator nor policy.OwnerShared. Step 9 is this step's control: there a shared-owner
+	// human-tier secret's card is on every signed-in person's page, its approver being
+	// record.AnyoneApprover, so any of them may release it. Here the card is on exactly one
+	// person's page — the owner's — and on nobody else's: not the requesting session's own
+	// operator's, and not the shared approver's pending list. Only that one owner, signed in to
+	// the broker, decides it on the broker's own page, as step 3's approver does, and only then
+	// does the value reach the asking session.
+	t.Run("11_OnlyTheSoleOwnerOfAHumanTierSecretApprovesIt", func(t *testing.T) {
+		requestID, recordID := ts.createPending(t, sessionKey, enrollmentID, "e2e needs the pager", "PAGERDUTY_API_KEY")
+		if read := ts.status(t, sessionKey, enrollmentID, requestID); read.State != "pending" || read.Approver == nil || *read.Approver != otherPerson {
+			t.Fatalf("request for the sole owner's secret = %+v, want pending with approver %s", read, otherPerson)
+		}
+		ts.awaitPendingFor(t, otherPerson, recordID)
+		// Nobody else has a pending row for it: neither the requesting session's own operator,
+		// who owns every other human-tier secret here, nor the shared approver step 9 relies on.
+		ts.refutePendingFor(t, testApprover, recordID)
+		ts.refutePendingFor(t, record.AnyoneApprover, recordID)
+		var approver string
+		if err := ts.Store.Pool.QueryRow(context.Background(),
+			`select approver from credential_requests where id = $1`, recordID).Scan(&approver); err != nil {
+			t.Fatalf("read credential_requests.approver of %s: %v", recordID, err)
+		}
+		if approver != otherPerson {
+			t.Fatalf("credential_requests.approver = %q, want the sole owner %q", approver, otherPerson)
+		}
+		if form := brokertest.DecisionForm(t, ts.signedIn(t, testApprover, recordID).Page(t, recordID).Body, recordID); form != nil {
+			t.Fatalf("the requesting session's own operator %s is offered a decision on %s's secret", testApprover, otherPerson)
+		}
+
+		ts.signedIn(t, otherPerson, recordID).Decide(t, recordID, true)
+		ts.awaitValue(t, sessionKey, enrollmentID, ts.grantOf(t, sessionKey, enrollmentID, requestID), "PAGERDUTY_API_KEY", "pagerduty-v1")
+	})
 }
 
 // awaitStatus asks for name from a fresh session until the create route answers status (and, for
@@ -713,6 +754,23 @@ func (s *e2eServer) awaitPendingFor(t *testing.T, person, recordID string) {
 		}
 	}
 	t.Fatalf("GET /v1/pending?approver=%s = %s, want record %s listed", person, body, recordID)
+}
+
+// refutePendingFor fails t if GET /v1/pending?approver=<person> lists recordID: the card is on
+// that person's page when it must not be.
+func (s *e2eServer) refutePendingFor(t *testing.T, person, recordID string) {
+	t.Helper()
+	status, body := s.ui(t, http.MethodGet, "/v1/pending?approver="+person, nil)
+	if status != http.StatusOK {
+		t.Fatalf("GET /v1/pending?approver=%s = %d: %s", person, status, body)
+	}
+	for _, p := range decode[struct {
+		Pending []wirePendingEntry `json:"pending"`
+	}](t, body).Pending {
+		if p.RecordID == recordID {
+			t.Fatalf("GET /v1/pending?approver=%s lists record %s, want it on no page but its owner's", person, recordID)
+		}
+	}
 }
 
 // awaitValue fails t unless the session's grant releases name's value.
