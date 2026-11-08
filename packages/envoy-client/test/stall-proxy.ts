@@ -130,3 +130,4 @@ export async function startStallProxy(upstream: string): Promise<StallProxy> {
     },
   };
 }
+// probe: a one-line change for INFRA-1413's selection evidence.
