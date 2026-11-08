@@ -778,7 +778,7 @@ What the two processes share, and what each keeps to itself:
 - A delivery a process left behind is sent by another.
   A direct message's first attempt is written in the transaction that stores it, and a request's own send outlives a cut connection.
   An attempt a process left pending - killed between its claim and its settle, a direct message, a broadcast recipient's, a comment mention's or a Retry's alike - is sent by whichever process runs the delivery sweep next (`api/delivery_sweep.go`, `resumeOwedDeliveries`, a pass of the maintenance loop below, once a minute), once its claim is a minute old, under its own attempt number and idempotency key, so the session is handed it once.
-  An attempt older than `DELIVERY_DUPLICATE_WINDOW_MS` (72 hours), past which a resend is no longer recognised as a repeat, is left for a person's Retry, and an attempt nothing can send - its issue closed, its mention gone - is settled `failed` with that cause instead.
+  An attempt older than `DELIVERY_DUPLICATE_WINDOW_MS` (72 hours), past which a resend is no longer recognised as a repeat, is left for a person's Retry, and a mention attempt nothing can send - its mention gone, its document gone - is settled `failed` with that cause instead.
 
 - A send waits out a listener take-over.
   While the active Envoy listener pod is replaced, its successor refuses connections, answers 502, 503 or 504, or does not hold the session yet;
@@ -1133,15 +1133,25 @@ A wanted message runs under its key: a pull request under its repository and num
 Messages of one key run in delivery order, each after the one before has finished, since each fetches its pull request's or run's current state from GitHub and writes it, and run at once an older fetch could be written over a newer one;
 messages of different keys run at once, at most 4, the durable's `MaxAckPending`.
 Its durable's `AckWait`, `MaxAckPending` and filter subject are unchanged.
-`Intake.StopDelivering` hands the durable over, and `Run` calls it when the process stops.
-It drains the subscription the bus client holds for it
+`Intake.StopDelivering` hands the durable over, and `Run` calls it from two places: when the process stops, and on a connection event of its bus client.
+It ends the subscription the bus client holds for it
 — after the client has replaced its connection, the one the client bound on the new connection
-— and gives up the subscription's registration on the client, so the server delivers it nothing more, no reconnect binds it again and a later subscribe starts afresh (`bus.Client.DrainSubscription`), and holds every message waiting behind its key, and every message the client is handed meanwhile, until no handler is running.
+— and gives up that subscription's registration on the client, so no reconnect binds it again and a later subscribe starts afresh (`bus.Client.DrainSubscription`).
+On a live link it ends it by draining it, so the server delivers it nothing more while nats.go hands the callback what the client had already buffered;
+with the link down it unsubscribes it instead, and nats.go then drops what that subscription had buffered without calling the callback at all, so those messages are not handed back and there is no drain to wait for — the server redelivers them to the next holder when their ack wait expires.
+Either way it holds every message waiting behind its key, and every message the callback is handed meanwhile, until no handler is running.
 The messages in their handlers get until the stop's deadline
-— `intakeStopBudget`, 15 s after `Run`'s context ends, armed when it ends
-— to finish and be acknowledged; the handlers still running then are given up, their GitHub calls cancelled, and their messages negatively acknowledged.
-Only then does it negatively acknowledge the held messages, so NATS redelivers them at once to the next holder, which can then not start a pull request's or run's next message while this process still works on the one before it.
-Last it waits for the drain to end, cut short by that deadline.
+— `intakeStopBudget`, 15 s, counted by each stop from its own start
+— to finish; one whose handler finishes by then has its message acknowledged where the handler finished, and held for the stop only where the bus refused that acknowledgement, and the handlers still running then are given up, their GitHub calls cancelled, and their messages held for the hand-back the rest are in.
+Only once no handler is running, and the client has a connection to answer over, does it answer what it holds, each message by its own kind: an acknowledgement for one whose handler finished and whose own acknowledgement was refused, and a negative acknowledgement for the rest, which NATS redelivers at once to the next holder, which can then not start a pull request's or run's next message while this process still works on the one before it.
+An acknowledgement, negative or not, is a publish, and the client buffers none while it reconnects, so a stop that begins with the link down waits for one:
+a wait the stop's deadline ends logs that the messages it holds will wait out the five-minute ack wait in the next holder's four-slot window instead, a handler's finished work among them.
+Last it waits for a drain it began to end, cut short by that deadline; where it unsubscribed there is nothing to wait for.
+A connection event is what takes the durable away from a process that was cut off
+— nats.go re-sends a subscription inside its own reconnect, and the client binds its registration again on a connection it dialled to replace a closed one, neither of them asking whether the durable is still this process's to deliver —
+so the intake gives its subscription up at the event, which for an outage is the disconnect, before nats.go can re-send it.
+That stop runs under a budget of its own, 15 s from the event rather than from `Run`'s context, so one stuck handler cannot keep the intake out of its poll;
+the intake then returns to the bind poll, which runs only while the client has a connection and takes the durable again only while it is free.
 A bind under way when the context ends — a standby's poll
 — spends the same deadline rather than starting one of its own:
 its reconciliation's JetStream calls end with it, no subscribe starts once the context has ended, and the subscription of a subscribe already under way is stopped under that deadline.
@@ -2486,9 +2496,10 @@ Neither send route takes a body `idempotency_key` any more.
 A delivery a dead process left owed is made whether anyone asks again or not.
 Every write that delivers to sessions claims each attempt before its send and settles it after, on a context its client's cancellation does not reach.
 The maintenance loop's pass, once a minute, first settles `failed`, with its receipt, every owed attempt nothing can send:
-a message attempt, or a keyed send with no attempt yet, on an issue that has closed (`not sent: the issue closed before this
-attempt was delivered`), a mention attempt whose issue closed, whose document is no longer a project's (`not sent: the document is gone`) or whose comment no longer holds the mention (`not
-sent: the comment no longer mentions this target`), each checked again under its owner's lock so an issue reopened meanwhile keeps its attempt owed.
+a mention attempt whose comment no longer holds the mention (`not
+sent: the comment no longer mentions this target`) or whose document is no longer a project's (`not sent: the document is gone`), each checked again under its owner's lock so a comment that holds its mention again keeps its attempt owed.
+A closed issue is not one of them: a message and a comment on a closed issue are delivered like any other, so an attempt stranded on an issue that closed under it is sent, not settled.
+A document that is no longer a project's owns no receipt, so that settle fails and each pass logs one `level=ERROR msg="dispatch: settle an owed delivery nothing can send"` per such attempt, which stays pending and out of every send batch until an operator restores its document or deletes its rows.
 It then sends each attempt that is still pending under a claim that has lapsed, is its message's or mention's latest, and was opened over a minute ago and inside the 72-hour duplicate window (`DELIVERY_DUPLICATE_WINDOW_MS`), the exact attempt it found under its own attempt number, so the listener drops a frame that did land;
 and the first attempt of a keyed send whose process died between committing its message and opening that attempt.
 An attempt that cannot be sent never takes a place in a send batch.
@@ -3005,6 +3016,14 @@ Each item below names a path with its method and identity, then its purpose.
   An `If-None-Match` value equal to the response ETag returns `304`.
   `versions=latest` leaves each member's `artifact.versions` holding only its latest version and carries its own ETag;
   absent, empty or `all` is the full answer; any other value, or `versions` given more than once, is `400 INVALID_QUERY`.
+
+- `/api/v1/issues/{key}/collaborators` (GET; cookie, trusted header, or bearer)
+
+  Everyone who worked the issue, running or not, as `{issue_key, people, agents, legion_registry}`.
+  `people` (`kind: "user"`, one per lowercase login): the assignee, everyone who claimed it, posted a comment, message, ask or document version on it or its documents, or answered one of its asks.
+  `agents` (`kind: "session"`, one per session id): the same writers that are agent sessions (the Legion daemon's `legion-daemon:<PROJECT>` writer left out), merged with every session the listener's Legion agent registry records for the issue, which adds `legion: {role, role_token, started_at, replaced_by, replaced_at}` and the registry's `title`.
+  Each row carries `reasons` (`assignee`, `claimed`, `posted`, `answered`) and `last_at`; no running state.
+  When the listener is not configured or does not answer, `legion_registry` is `"unavailable"` and the rest still answers; `404 NOT_FOUND` for an unknown issue.
 
 - `/api/v1/references?to=|from=&kind=&since=` (GET; cookie, trusted header, or bearer)
 

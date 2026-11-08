@@ -43,6 +43,10 @@ const (
 	SessionBucket = "envoy_sessions"
 	// CIStateBucket holds the CI state of each commit of a pull request (internal/cistore).
 	CIStateBucket = "envoy_ci_state"
+	// LegionAgentBucket holds the Legion agent registry: each Legion session the daemon ran, under
+	// session.<id>, and the same entry under its issue (issue.<ISSUE>.<id>) and its role token
+	// (role.<role_token>.<id>), never deleted (internal/legionagents).
+	LegionAgentBucket = "legion_agents"
 	// DPoPProofBucket holds one record per RFC 9449 proof a listener has already spent, keyed by
 	// the proof's 'jti' and target URI, so a captured proof presented a second time inside its
 	// acceptance window is refused by whichever listener of a deployment receives it
@@ -57,14 +61,15 @@ const (
 
 // ListenerBuckets reports the KV buckets envoy-listener opens, in the order its NATS grant lists
 // them: the interest and role-claim buckets (internal/store), the session registry
-// (internal/session), the CI state bucket, which only a listener with the GitHub webhook route
-// opens (internal/cistore), and the spent-proof bucket, which only a listener that takes broker
-// access tokens opens (cmd/listener/brokerauth.go). The listener's keeper raises each of them
-// (WithKeptBuckets), and envoy-infra grants the listener and the host each one's calls
+// (internal/session), the Legion agent registry (internal/legionagents), the CI state bucket,
+// which only a listener with the GitHub webhook route opens (internal/cistore), and the
+// spent-proof bucket, which only a listener that takes broker access tokens opens
+// (cmd/listener/brokerauth.go). The listener's keeper raises each of them (WithKeptBuckets), and
+// envoy-infra grants the listener and the host each one's calls
 // (packages/envoy/infra/core/permissions.go), so a bucket named here is both kept and granted.
 // Each call returns a fresh slice, so no caller changes another's list.
 func ListenerBuckets() []string {
-	return []string{InterestBucket, RoleClaimBucket, SessionBucket, CIStateBucket, DPoPProofBucket}
+	return []string{InterestBucket, RoleClaimBucket, SessionBucket, LegionAgentBucket, CIStateBucket, DPoPProofBucket}
 }
 
 // NotificationTopicPrefix begins every notification topic: the subjects the stream carries, the
@@ -626,9 +631,12 @@ func (r streamReconciliation) log() {
 // update lands while the server checks this one (TestTwoStartsRaisingOneStreamAtOnceBothSucceed). A
 // stream one start creates first is reconciled by the other, keeping the id it was created with
 // (AddStream answers ErrStreamNameAlreadyInUse, as its config's id differs). Two that both find no
-// id write the same one, derived from what both read.
+// id write the same one, derived from what both read. A third race is settled here: a server that
+// leaves one of two starts' stream reads or creates unanswered, which each request below is sent
+// again for (sentAgain), since a start that returns such an error ends the program.
 func ensureStreamWithConfig(js nats.JetStreamContext, cfg *nats.StreamConfig, defaultsAnUnsetCap bool) error {
-	info, err := js.StreamInfo(Stream)
+	readStream := func() (*nats.StreamInfo, error) { return js.StreamInfo(Stream) }
+	info, err := sentAgain("STREAM.INFO", readStream)
 	if errors.Is(err, nats.ErrStreamNotFound) {
 		created := *cfg
 		created.Metadata = maps.Clone(cfg.Metadata)
@@ -636,10 +644,17 @@ func ensureStreamWithConfig(js nats.JetStreamContext, cfg *nats.StreamConfig, de
 			created.Metadata = map[string]string{}
 		}
 		created.Metadata[StreamIDMetadataKey] = id.New()
-		if _, err = js.AddStream(&created); !errors.Is(err, nats.ErrStreamNameAlreadyInUse) {
+		// A create whose answer was lost is made again with the same configuration and the same
+		// id, drawn once above. A server that applied the lost create reads the second send as an
+		// equal create and answers it with the stream (v2.15.1 server/jetstream_cluster.go
+		// jsClusteredStreamRequest, "This is an equal assignment"), so the start goes on; only
+		// another start's create, which carries another id, draws ErrStreamNameAlreadyInUse, which
+		// this branch reads as such and follows with the read below.
+		_, err = sentAgain("STREAM.CREATE", func() (*nats.StreamInfo, error) { return js.AddStream(&created) })
+		if !errors.Is(err, nats.ErrStreamNameAlreadyInUse) {
 			return refusedSettings(err, nil, &created)
 		}
-		info, err = js.StreamInfo(Stream)
+		info, err = sentAgain("STREAM.INFO", readStream)
 	}
 	if err != nil {
 		return err
@@ -824,6 +839,46 @@ func maxConsumersRefused(err error) bool {
 // than the server's refusal.
 func unanswered(err error) bool {
 	return errors.Is(err, nats.ErrTimeout) || errors.Is(err, context.DeadlineExceeded)
+}
+
+// unansweredSends bounds how many times a caller sends one JetStream request the server left
+// unanswered (sentAgain): the stream read and the create of ensureStreamWithConfig, and the
+// handle open EnsureKeyValue makes. A server answers a stream read or a create in
+// milliseconds when it answers at all, so a wait that runs out is a request that drew no answer,
+// and sending it again is the only remedy there is: a longer wait buys nothing for an answer that
+// is never coming. Three sends, because a start that lost two in a row has a bus that is not
+// serving JetStream at all, which is a start that must end. Each send carries its own wait, so a
+// caller's worst case is this count times that wait.
+const unansweredSends = 3
+
+// sentAgain is what send answers, sent again while the server leaves it unanswered (unanswered)
+// and at most unansweredSends times, with request naming it in the line each further send logs.
+// Any answer, the server's refusal included, is returned at once, so a refused create is sent
+// once.
+//
+// Two programs starting at once each reconcile the one ENVOY_NOTIFICATIONS stream, and the start
+// that loses the answer to its own stream read is the listener that dies ten seconds after it
+// binds its port, serving nothing: cmd/listener's role-lane row
+// (TestRoleLaneRefusedSharedQueueFallsBackToMachineGroupsAndStoresOneCopy), whose fatal line was
+// the bare "context deadline exceeded" of the JetStream context's own ten-second wait. An update
+// is read again rather than sent again (updateStream), since one that drew no answer may still
+// land; a read changes nothing, and a create sent again carries the same id as the one that may
+// have landed, so neither resend can contradict the send before it. Nor is it the in-process
+// server's own fault: the production server leaves a JetStream request unanswered too while its
+// meta leader changes.
+func sentAgain[T any](request string, send func() (T, error)) (T, error) {
+	var answer T
+	var err error
+	for sends := 1; sends <= unansweredSends; sends++ {
+		if answer, err = send(); !unanswered(err) {
+			return answer, err
+		}
+		if sends < unansweredSends {
+			slog.Warn("envoy nats stream request unanswered; sending it again",
+				slog.String("request", request), slog.Int("sent", sends), slog.String("error", err.Error()))
+		}
+	}
+	return answer, err
 }
 
 // refusedSettings is err, the server's answer to request, a create (deployed nil) or an update of

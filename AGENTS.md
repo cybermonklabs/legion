@@ -160,9 +160,25 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 
   What ci.yaml's `typecheck` job runs: vet of the Go daemon, its e2e-tagged live proofs included
 
-- `bun test`
+- `(cd <package> && bun run test)`
 
-  Test
+  Run one package's Bun tests against its own recipe.
+  The root has no `test` script, so a bare `bun test` there is no command this repository keeps green: it would run every package's files in one process.
+  CI runs this in each of these, in the job of ci.yaml that owns the package:
+  packages/broker-client, claude-envoy, contracts, dispatch, envoy-client, pi-envoy, pi-legion, pi-shared, proof-editor and test-fixtures.
+  packages/dispatch's recipe builds `@legion/contracts` before it runs a test, as its `e2e` recipe does:
+  rows of `e2e/__tests__` list a Playwright configuration, and Playwright evaluates it under Node, which reads that package's build output rather than its sources.
+
+- `bun test scripts/third-party-notices.test.ts && bun test scripts/semantic-line-breaks.test.ts && bun test scripts/dispatch && bun test scripts/e2e/lib && bun test scripts/conflicts`
+
+  The Bun tests under `scripts/`, which is no workspace.
+  ci.yaml's `test` job runs the first four, one step each and in that order, and runs no other Bun test under `scripts/`: `scripts/semantic-line-breaks.guides.test.ts` checks the guides' own layout on demand and gates nothing.
+  `bun test scripts/conflicts` runs in the `conflicts-script` job instead, after that job's biome and tsc steps over the same directory.
+  Beyond `bun install`, a suite needs only what it names in the line it prints when it skips, and that line, not this entry, is the whole of it:
+  the two Claude backend rigs (`scripts/e2e/lib/claude-backend-app-secrets.test.ts` and `scripts/e2e/lib/claude-backend-bun-pin.test.ts`) name 44 POSIX programs each, from `bash` and `jq` to `flock` and `sha256sum`.
+  Examples of the rest: `gofmt` (contracts' Go generator), `go` (the daemon-pane scenario and the held-port proof), `docker` (the rigs that start a container), `openssl` (the h2 settings proof), `tmux` (claude-envoy's session-title rows and the parked-decision teardown proof), `bash` and `sleep` (the Claude backend guard rows, where pi-shared's shell-command row needs `bash` alone), `node` (claude-envoy's channel rows, and packages/dispatch's lane row, which also needs the Playwright `bun install` wrote into this checkout), `jj` (pi-shared's handoff record and pi-legion's pane fixtures), and `psql` with `LEGION_TEST_PG_DSN` naming a PostgreSQL server the run may create a database on (packages/dispatch's psql and lane suites, whose one skip line names whichever of the two the host does not have).
+  The `-omp` and Claude Code suites are the exception that prints nothing: they skip silently unless `LEGION_TEST_OMP` or `LEGION_TEST_CLAUDE` names a real binary, and on GitHub Actions they fail rather than skip.
+  The browser suite is no `bun run test` at all — `bun run e2e` in packages/dispatch builds @legion/contracts and the SPA and runs Playwright, and refuses before it starts a harness or a Postgres when `bun run e2e:install` has not downloaded the browsers (docs/testing.md, "Bun tests")
 
 - `legion start [--config <legion.yaml>] [--check-config]`
 
@@ -225,7 +241,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 
 - `legion claude-bridge -- <claude argv…>`
 
-  What `legion worker-shim` runs in Oh My Pi's place for a phase worker whose role `worker_backends` puts on claude, under either runtime (the daemon builds the argv, `claude -p --input-format stream-json --output-format stream-json …` with `--session-id <new id>` on a fresh launch or `--resume <id>` on a relaunch;
+  What `legion worker-shim` runs in Oh My Pi's place for a phase worker whose role `worker_backends` puts on claude, under either runtime (the daemon builds the argv, `claude -p --input-format stream-json --output-format stream-json --thinking-display summarized …` with `--session-id <new id>` on a fresh launch or `--resume <id>` on a relaunch;
   one definition of it, `packages/daemon/internal/claudelaunch`):
   turns the daemon's prompt, get_state and negotiate_protocol frames into Claude Code's stream-json and its results into agent_start/agent_end, with the prompt_result behind each turn's agent_end that names which prompt that turn was — a background task finishing makes Claude Code start a turn of its own, reported as agent_start…agent_end like any other, and the result is the only thing that tells the daemon which of the turns was its task's — seeds a fresh session with `/rename` so its transcript exists before registration, takes Envoy deliveries as user turns from the unix socket it exports as LEGION_CLAUDE_INBOX, and exits with Claude Code's status.
   It is transport: the phase reminder runs in the worker's own MCP server (`packages/claude-envoy`), driven by Claude Code's hooks
@@ -258,7 +274,9 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 
   the `gh` first on every tmux pane's and pod's PATH (a script in the pane's launcher directory, `/opt/legion/bin/gh` in the image) runs it, never a person:
   it runs the real gh (LEGION_GH_PATH) with GH_CONFIG_DIR at a directory of the role's gh bundle (LEGION_GH_OWNERS_DIR:
-  one directory per GitHub owner of the project, the issue's owner's holding the role App's write token for the issue's repository alone, a `<owner>/<repo>` directory under it, read-only over that repository alone, for every other repository the project serves there, and every other owner's read-only over the repositories that owner serves):
+  one directory per GitHub owner of the project and one more per owner a configured rename moved a repository away from while the project serves the name it moved to, the role App's write token for the issue's repository alone standing in two of them, the directory named for the issue's recorded owner and the one named for the owner whose installation serves that repository now, which are one directory unless a rename moved the issue's repository;
+  beside them a `<owner>/<repo>` directory for each other repository the owner serving the issue's repository serves and for each the recorded owner serves, read-only over the one repository its own name resolves to;
+  and every other owner's directory read-only over the repositories that owner serves, or, for an owner only a rename puts in the bundle, over those of the owner its repository moved to):
   the repository's own directory where the command names one repository and the bundle holds that directory, and its owner's otherwise, read as gh reads the command, with pflag's rules, from the real gh's own help of each command down to its leaf (its selectors:
   -R/--repo before or after the command, a repository or owner argument, before `--` or as a clone's or fork's first after it, a github.com URL argument (for a pr command or agent-task view only a pull request's, any other naming a branch of its own repository), every one of a slot gh's usage takes several of, agent-task view's OWNER/REPO#N, `gh api`'s `repos/orgs/users/<owner>/` endpoint and a search endpoint's q, a search query's plain repo:/owner:
   qualifiers, the options naming a repository, an owner, a team or an issue by URL;
@@ -572,7 +590,7 @@ Each item below names a task and where its code is, then notes on it.
 - Dispatch's document editor — `packages/proof-editor/`
 
   The editor entry, typed blocks and block ids, source-only.
-  Copied from the `sjawhar/proof-sdk` fork at the commit a git dependency pins; the upstream editor modules stay there.
+  Copied from the `sjawhar/proof-sdk` fork at the commit a committed tarball pins; the upstream editor modules stay there.
   See `packages/proof-editor/AGENTS.md`
 
 - Legion daemon — `packages/daemon/`
@@ -791,7 +809,7 @@ A completion is a report on a look when the caller's own live assignment is that
 A report is refused when the issue has no open check, or the one it has is not the check the look belongs to (`CHECK_NOT_OPEN`), when the look has ended (`CHECK_LOOK_NOT_OPEN`), when the verdict is none of the three (`CHECK_VERDICT_REQUIRED`), when the reporting role is not the check's (`CHECK_ROLE_MISMATCH`), when a `pending` on a look that is not the last carries no `wake_at` (`CHECK_WAKE_REQUIRED`, which records nothing and leaves the look open, so the same report with a time is taken), and when a `wake_at` rides a `pass`, a `fail` or a `pending` on the last look (`CHECK_WAKE_UNEXPECTED`, which the daemon also answers a phase completion that carries a `wake_at`).
 Each look is bounded at 2 hours, and a look nobody reported — its 2 hours, an operator's hold, or a claim that failed to start — starts the next look two hours later; on the last look it closes the check as `not_run`.
 The check is bounded at `production_check_hours` (336 by default) from the close, and its last look starts at that bound.
-The record is that result and the pull request: a closed issue takes a result for an `after_merge` or `default_branch` check and refuses every other write; `legion state` prints `open production checks: …`, whose line names the role working the oldest check and that check's next look.
+The record is that result and the pull request: a closed issue takes a result for an `after_merge` or `default_branch` check, a comment and a message, and refuses every other write; `legion state` prints `open production checks: …`, whose line names the role working the oldest check and that check's next look.
 
 Statuses above are native Dispatch issue statuses, not GitHub labels
 — the daemon writes `in_progress`/`testing`/`needs_review`/`retro` through its outbox (a `dispatch_status` row it delivers to Dispatch) for the issues it runs, and a human may set any lifecycle status from the Dispatch dashboard.
@@ -945,6 +963,11 @@ Between boots nothing re-reads a waiting root's asks:
 if the event of a person's answer never reaches the daemon, the root waits until any newer act of a person on any ask of the root, or a review of its spec, reaches it, or until the daemon's next boot, whose catch-up applies the root's event log after its cursor (the site's troubleshooting page, "A tree waits on a person").
 
 A root parked out of the workflow (`backlog`, `icebox`) runs nothing, and its architect is suspended or gone.
+Its park releases its Dispatch claim as well: the daemon queues that release whenever it takes an issue out of the workflow without closing it, since Dispatch releases a claim at a close alone.
+The release takes only a claim held by a session the daemon records in that issue's own tree, leaving a person's claim, a session of another tree, and a holder no claims row accounts for each where it stands.
+A tree the operator holds is left alone as well, whoever holds the claim, since its claims are the operator's to release with the rest of its cleanup, as its pod and its workspaces are.
+A boot releases the ones parked before, one release for each issue of its listing that still carries a claim while the daemon's own record says it stopped.
+The boot's pass makes no operator test of its own, so it queues a row for such a tree too, and the executor ends that row when it runs, on the reading current then.
 A person's spec decision on it (an approval, a changes request, or an approval carried to a child's new tree) that the daemon could not deliver to its architect, and a person's answer, resolution or reply on an ask of its issues (one that gives the turn to the agent, or one under a closed ask), goes to the controller as `parked-decision`, once per decision.
 One approval is not relayed: a person's approval of the primary document of a parked root that carries the `legion` label and whose tree is not live is that person's handover, which the daemon queues itself (`todo`, logged `admission: queued a person's handover` with `source=approval`), whoever parked the root, and no `parked-decision` is sent for it.
 The daemon keeps the newest decision per Dispatch reference, under the issue it was decided on, never under a root: the tree that owes the person an answer is the tree that issue stands in now, so a child a linger hands to Legion, a parked child a person's todo orphans, a grandchild handed over beside its parent and a queued root admission adopts into a live tree each take what was decided on them with them, in any order, with nothing to move.
@@ -1039,6 +1062,7 @@ A refusal GitHub would repeat on a retry ends the row and is told to the archite
 GitHub checks the expected head only when auto-merge is enabled, and arming is right only for an awaiting issue's READY head, so the daemon queues an `auto_merge_disable` outbox row on every other push or reopen, when a child is set back to `todo`, and when an issue leaves the workflow.
 The row reads GitHub, then the record: it keeps the arm only while the issue awaits its merge, its READY is not by hand, and the pull request's head is the merger's READY commit, and otherwise disables auto-merge and removes the merge-queue entry, as the implement App;
 READY is refused (`READY_HEAD_MOVED`) when the head moved past its commit.
+An issue leaving the workflow for any status but `done` queues a `claim_release` outbox row beside the disable, which releases the issue's Dispatch claim.
 When a push or reopen moves the head past the one READY named, the head's own CI turns red before the merge, the head starts conflicting with its base (GitHub computes no merge ref for a conflicting head and runs no checks on it at all), or the merge queue fails its merge, the daemon sends the issue back to `implementing`, disarms the pull request, posts the READY's withdrawal on the Dispatch issue, and publishes it to that role.
 GitHub's own merge queue (`merge_group` trigger) is a repository setting Legion does not modify.
 No lifecycle labels exist; GitHub issues are never read or written by Legion.

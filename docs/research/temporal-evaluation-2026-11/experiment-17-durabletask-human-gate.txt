@@ -1,0 +1,74 @@
+Experiment 17, durabletask-go: a wait for a person.
+Recorded 2026-11-07T22:39:42Z by docs/research/temporal-evaluation-2026-11/run.sh,
+from the branch of dispatch://INFRA-1546 based on commit 09bf32cc0298db50261183a12e129ad324b03cee,
+in one Legion worker pod, against a real server or a real PostgreSQL.
+This is a transcript of one run, not a golden file: nothing re-records it.
+------------------------------------------------------------------------------
+library: github.com/dapr/durabletask-go v0.16.0
+database: legion_golib_eval
+schema: exp17_28971_375863
+instance-id: exp17-gate-1794091132468179216
+wait-mechanism: ctx.WaitForSingleEvent("approval", -1s), answered by client.RaiseEvent from another process
+unbounded-wait-available: yes, with a timer behind it: a negative timeout still creates a durable timer, whose fire time the library sets to 9999-12-31T23:59:59Z, so an open-ended wait is a TimerCreated event and a NewEvents row that is invisible until that date
+[gate1] dtworker: pid=28979
+gate1-pid: 28979
+[gate1] dtworker: goroutines-before-the-workflow=9
+[gate1] dtworker: workflow-started=exp17-gate-1794091132468179216
+[gate1] dtworker: goroutines-while-waiting=10
+sql-while-waiting-instances: RuntimeStatus=RUNNING Version=none LockedBy=legion-infra-infra-1546,28979,54048c10-fe12-42cc-aecd-4a04dea015c8 LockExpiration=null CompletedTime=null Output=none FailureDetails=none
+sql-while-waiting-history: 6: WorkflowStarted ExecutionStarted TaskScheduled(ask-the-person) WorkflowStarted TaskCompleted TimerCreated
+sql-while-waiting-newevents: newevents seq=3 event=TimerFired DequeueCount=0 LockedBy=none LockExpiration=null VisibleTime=9999-12-31T23:59:59.999999Z
+sql-while-waiting-newtasks: no rows
+recorded-state-while-waiting: RUNNING, with LockExpiration null: a waiting instance is a RUNNING row that no worker holds
+the-wait-itself-in-the-database: one NewEvents row carrying the indefinite TimerFired, with VisibleTime in the year 9999: the poller's query skips rows whose VisibleTime is in the future, so the wait costs one row that is never selected
+held-while-waiting-goroutines-in-the-waiting-process: 9 before the workflow, 10 while it waits
+held-while-waiting-goroutine-delta: 1
+[gate1] dtworker: goroutines-while-still-waiting=9
+held-after-seconds-of-waiting-goroutines: 9
+held-after-seconds-of-waiting-goroutine-delta: 0
+held-while-waiting-connections: total=5 active=1 idle=3 idle-in-transaction=1 idle-in-transaction-for-longer-than-2s=0
+held-while-waiting-open-transactions: 1 sampled mid-flight, 0 of them older than 2s: a durabletask poller begins and rolls back a transaction every poll, and only one that outlived a poll cycle would be the wait holding it
+held-while-waiting-locks-on-the-schema-or-rows: 1
+held-while-waiting-rows: instances=1 history=6 newevents=1 newtasks=0
+held-while-waiting-row-bytes: 1826
+connection-model-read-from-the-library: durabletask-go holds one pgx pool per process, whose default size is one connection, and polls it with a backoff; there is no connection, no transaction and no listener per waiting instance
+killed-pid: 28979
+kill-signal: SIGKILL
+sql-after-the-waiting-process-died: RuntimeStatus=RUNNING Version=none LockedBy=legion-infra-infra-1546,28979,54048c10-fe12-42cc-aecd-4a04dea015c8 LockExpiration=null CompletedTime=null Output=none FailureDetails=none
+sql-after-the-waiting-process-died-history: 6: WorkflowStarted ExecutionStarted TaskScheduled(ask-the-person) WorkflowStarted TaskCompleted TimerCreated
+what-the-death-cost-the-wait: nothing in the database changed: the wait was already only rows, so there was nothing in the dead process to lose
+[gate2] dtworker: pid=28988
+replacement-pid: 28988
+replacement-started-after-seconds: 0.074
+answer-sent: approved
+seconds-from-answer-to-completed: 0.258
+sql-final-instances: RuntimeStatus=COMPLETED Version=none LockedBy=legion-infra-infra-1546,28988,1919b116-08a6-4ae9-bf3f-3932dd992507 LockExpiration=null CompletedTime=2026-11-07T22:39:02.497987Z Output="issue=INFRA-1546 answer=approved applied-by-pid=28988" FailureDetails=none
+sql-final-history: 12: WorkflowStarted ExecutionStarted TaskScheduled(ask-the-person) WorkflowStarted TaskCompleted TimerCreated WorkflowStarted EventRaised(approval) TaskScheduled(apply-the-answer) WorkflowStarted TaskCompleted ExecutionCompleted
+sql-final-newevents: newevents seq=3 event=TimerFired DequeueCount=0 LockedBy=none LockExpiration=null VisibleTime=9999-12-31T23:59:59.999999Z
+sql-final-eventraised-events: 1
+question-line-1: issue=INFRA-1546 question=approve-the-spec asked-by-pid=28979
+decision-line-1: issue=INFRA-1546 answer=approved applied-by-pid=28988
+question-asked-times: 1
+work-before-the-wait-re-run-after-the-restart: false
+wait-resumed-in-the-replacement: true
+indefinite-timer-left-behind: 1 NewEvents row(s) after the answer: the library does not delete the timer it created for an unbounded wait, so the row stays until the instance is purged
+timed: row-bytes-for-one-open-wait: 1826
+timed: row-bytes-source: sum(pg_column_size(row)) over Instances, History, NewEvents and NewTasks for this instance
+timed: goroutines-added-by-one-open-wait: 1
+timed: goroutines-added-after-seconds-of-waiting: 0
+timed: connections-to-the-database-while-one-wait-was-open: 5
+timed: connections-idle-in-transaction-while-waiting: 1 at the sample, 0 older than 2s
+timed: locks-held-while-waiting: 1
+timed: undelivered-event-rows-while-waiting: 1
+timed: wall-clock-this-gate-actually-waited: 8.303s, from the question being asked to the answer being sent
+reasoned: storage-bytes-for-one-gate-open-1-days: 1826 (the rows do not grow while nothing happens: a wait writes nothing per day, so 1 days cost the same 1826 bytes as one minute)
+reasoned: storage-bytes-for-one-gate-open-7-days: 1826 (the rows do not grow while nothing happens: a wait writes nothing per day, so 7 days cost the same 1826 bytes as one minute)
+reasoned: storage-bytes-for-one-gate-open-30-days: 1826 (the rows do not grow while nothing happens: a wait writes nothing per day, so 30 days cost the same 1826 bytes as one minute)
+reasoned: storage-bytes-for-1000-gates-open-30-days: 1826000 (1000 x 1826 bytes, on the PostgreSQL Legion already runs, not a metered store)
+reasoned: goroutine-stacks-for-1000-open-gates-in-one-process: 0: the engine keeps no goroutine for an instance between work items, so a thousand waits add no goroutines to any process
+reasoned: what-a-waiting-gate-costs-per-day: no work item, no write and no timer that ever fires: the row for the indefinite timer is in NewEvents with a VisibleTime the poller's WHERE clause excludes, so the gate is never even a candidate
+reasoned: what-the-bound-costs: an unbounded wait is a row that is never collected: the library writes the indefinite timer when the wait starts and leaves it in NewEvents after the answer arrives, so a fleet of answered gates leaves one dead row each until the instances are purged
+reasoned: what-a-pod-cannot-do: this run waited seconds; the lines above extend its measured bytes and goroutines over days by arithmetic, and nothing here observed a gate that really stood for days
+limit: one gate on one PostgreSQL, waiting seconds rather than days, with one answer: it shows what a durabletask-go wait holds in a process and in a database and that the wait survives the process dying, while the cost of a real multi-day wait is arithmetic on this run's bytes and goroutines, not a wait this pod sat through
+schema-dropped: exp17_28971_375863
+experiment 17: PASS

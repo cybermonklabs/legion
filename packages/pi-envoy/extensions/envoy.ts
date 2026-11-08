@@ -130,7 +130,20 @@ import {
   mergeInterestSources,
   type SubscribeResult,
 } from "@legion/envoy-client/transport";
+import { type AcceptedUserTurnDelivery, acceptUserTurn } from "@legion/pi-shared/accept-user-turn";
+import {
+  AgentStreamPublisher,
+  type AgentStreamSettingsState,
+  modelReference,
+} from "@legion/pi-shared/agent-stream";
+import { transcriptPictures, withDeliveredPictures } from "@legion/pi-shared/delivery-pictures";
 import { currentSessionID } from "@legion/pi-shared/dispatch-session-id";
+import {
+  type AcceptedUserTurn,
+  HANDLED_ATTEMPT_ENTRY,
+  handledAttempts,
+  typedInputReply,
+} from "@legion/pi-shared/dispatch-user-turn";
 import {
   dropInjectedUserTurn,
   endInjectedUserTurns,
@@ -169,25 +182,10 @@ import { connect, Events, type NatsConnection, StringCodec, type Subscription } 
 import { name as packageName, version as packageVersion } from "../package.json" with {
   type: "json",
 };
-import {
-  AgentStreamPublisher,
-  type AgentStreamSettingsState,
-  modelReference,
-} from "../src/agent-stream";
 import { CardAges } from "../src/card-age";
 import { CardWake, type EnvoyCardMarker } from "../src/card-wake";
-import { transcriptPictures, withDeliveredPictures } from "../src/delivery-pictures";
 import { withDispatchFirst } from "../src/dispatch-first";
 import { sessionDispatchClient } from "../src/dispatch-session";
-import {
-  type AcceptedUserTurn,
-  HANDLED_ATTEMPT_ENTRY,
-  handledAttemptKey,
-  handledAttempts,
-  isUserTurnCandidate,
-  turnFromAccept,
-  typedInputReply,
-} from "../src/dispatch-user-turn";
 import { recordEnvoySession, resolveEnvoySession } from "../src/envoy-session";
 import {
   CONSUMER_STATE_ENTRY,
@@ -279,6 +277,36 @@ function liveSessionSettings(live: LiveAgentSession | undefined): AgentStreamSet
 }
 
 const codec = StringCodec();
+
+/**
+ * The dial `dialNats` opens this session's NATS connection with: nats.js's own `connect`, unless
+ * a test put a stand-in in its place. Production never sets one.
+ *
+ * The stand-in lives on `globalThis` under a process-wide symbol rather than in a binding of this
+ * module, because a suite loads this entry many times over — each `import("./envoy.ts?<row>")` is
+ * a module of its own, with a closure of its own — and one setter call has to reach every
+ * instance. It is the rule the Envoy session record is kept under for the same reason
+ * (`src/envoy-session.ts`).
+ */
+const NATS_CONNECT = Symbol.for("legion.pi-envoy.nats-connect");
+
+interface GlobalNatsConnect {
+  [key: symbol]: typeof connect | undefined;
+}
+
+const natsConnectStore = globalThis as unknown as GlobalNatsConnect;
+
+export function setNatsConnectForTests(dial: typeof connect): void {
+  natsConnectStore[NATS_CONNECT] = dial;
+}
+
+// The slot outlives every instance of this entry in the process, so a file that set a stand-in
+// clears it when it ends; otherwise every later file of the same `bun test` process dials that
+// file's stand-in, with that file's state. Production callers never call this.
+export function resetNatsConnectForTests(): void {
+  delete natsConnectStore[NATS_CONNECT];
+}
+
 const NATS_RETRY_INTERVAL_MS = 15_000;
 /** How long a delivery waits for the pictures it embeds before it goes out as text alone. */
 const DELIVERY_PICTURES_TIMEOUT_MS = 20_000;
@@ -1064,7 +1092,7 @@ export default function envoyExtension(pi: PiApi): void {
   const dialNats = async (): Promise<NatsConnection> => {
     const { natsUrls, natsSeed } = requireInbound();
     // nats.js re-subscribes existing subscriptions on its own once reconnected.
-    return connect(
+    return (natsConnectStore[NATS_CONNECT] ?? connect)(
       natsConnectionOptions({
         servers: natsUrls,
         name: `omp-${sessionID || "unknown"}`,
@@ -1383,60 +1411,59 @@ export default function envoyExtension(pi: PiApi): void {
       });
   };
 
-  // The user turn a person's direct Send or Aside becomes (`src/dispatch-user-turn.ts`): only one
-  // whose acceptance by this session Dispatch records, as the body and mode Dispatch answers. The
-  // attempt is recorded as handled before Dispatch is asked, so whatever this frame becomes - a
-  // turn, or the card every refusal, error and timeout keeps, a broken Dispatch configuration
-  // included - no later frame naming the attempt is accepted: a replay, or one forged inside the
-  // accept's minute for a Send that arrived as a card. Undefined for every frame that is not a
-  // turn; the caller then delivers today's card, which is the delivery, and posts nothing.
+  // The user turn a person's direct Send or Aside becomes: only one whose acceptance by this
+  // session Dispatch records, as the body and mode Dispatch answers. The step itself is shared
+  // with the Claude Code plugin (`acceptUserTurn`, `@legion/pi-shared/accept-user-turn`, which
+  // `packages/claude-envoy/src/user-turn-router.ts` calls too), so a fix to the accept rule
+  // lands in both hosts; the order of its steps, and why the attempt is recorded as handled
+  // before Dispatch is asked - a 404 included - is stated there. Undefined for every frame that
+  // is not a turn; the caller then delivers today's card, which is the delivery, and posts
+  // nothing.
   //
-  // A forged frame can name an attempt before Dispatch's frame does and so spend it; what that
-  // costs is `packages/pi-envoy/AGENTS.md`'s (the record's limit). Do not skip the record when
-  // the accept answers 404: the route answers 404 for a transient database error too, and a frame
-  // another subscription's pump carded while that accept was in flight would be forgotten, so a
-  // Send that arrived as a card could become a turn on a later forged frame.
-  const acceptedUserTurn = async (
+  // What this host puts into it: the attempts it holds in memory and writes to its transcript
+  // (`HANDLED_ATTEMPT_ENTRY`, read back on every start, so a restart or a switch to another
+  // branch of the tree keeps a delivered attempt from being accepted again), its Dispatch
+  // bounded by `USER_TURN_ACCEPT_TIMEOUT_MS`, and these log lines. A forged frame can name an
+  // attempt before Dispatch's frame does and so spend it; what that costs is
+  // `packages/pi-envoy/AGENTS.md`'s (the record's limit).
+  const acceptedUserTurn = (
     rendered: RenderInboundResult,
     acceptedSessionID: string
-  ): Promise<
-    { readonly turn: AcceptedUserTurn; readonly delivery: DispatchDelivery } | undefined
-  > => {
-    if (!isUserTurnCandidate(rendered)) return undefined;
-    const { delivery } = rendered;
-    const key = handledAttemptKey(delivery.id, delivery.attempt);
-    if (handledDispatchAttempts.has(key)) {
-      logger.warn(
-        "envoy: a frame names a Dispatch attempt this session already delivered; it arrives as a card",
-        { attempt: delivery.attempt, messageID: delivery.id }
-      );
-      return undefined;
-    }
-    handledDispatchAttempts.add(key);
-    pi.appendEntry(HANDLED_ATTEMPT_ENTRY, { attempt: delivery.attempt, message_id: delivery.id });
-    try {
-      const dispatch = timedDispatchClient(USER_TURN_ACCEPT_TIMEOUT_MS);
-      if (dispatch === undefined) return undefined;
-      const accepted = await dispatch.acceptMessageDelivery(delivery.id, delivery.attempt, {
-        actor: { id: acceptedSessionID, kind: "session" },
-      });
-      const turn = turnFromAccept(accepted);
-      if (turn === undefined) {
+  ): Promise<AcceptedUserTurnDelivery | undefined> =>
+    acceptUserTurn({
+      actorId: acceptedSessionID,
+      dispatch: () => timedDispatchClient(USER_TURN_ACCEPT_TIMEOUT_MS),
+      handle: (key, delivery) => {
+        handledDispatchAttempts.add(key);
+        pi.appendEntry(HANDLED_ATTEMPT_ENTRY, {
+          attempt: delivery.attempt,
+          message_id: delivery.id,
+        });
+      },
+      handled: (key) => handledDispatchAttempts.has(key),
+      rendered,
+      warn: (refusal) => {
+        const fields = { attempt: refusal.delivery.attempt, messageID: refusal.delivery.id };
+        if (refusal.reason === "handled") {
+          logger.warn(
+            "envoy: a frame names a Dispatch attempt this session already delivered; it arrives as a card",
+            fields
+          );
+          return;
+        }
+        if (refusal.reason === "no-body") {
+          logger.warn(
+            "envoy: Dispatch accepted a direct message without the stored body and mode to inject; it arrives as a card",
+            fields
+          );
+          return;
+        }
         logger.warn(
-          "envoy: Dispatch accepted a direct message without the stored body and mode to inject; it arrives as a card",
-          { attempt: delivery.attempt, messageID: delivery.id }
+          "envoy: Dispatch did not accept a direct message as this session's turn; it arrives as a card",
+          { ...fields, error: messageFor(refusal.error) }
         );
-        return undefined;
-      }
-      return { delivery, turn };
-    } catch (error) {
-      logger.warn(
-        "envoy: Dispatch did not accept a direct message as this session's turn; it arrives as a card",
-        { attempt: delivery.attempt, messageID: delivery.id, error: messageFor(error) }
-      );
-      return undefined;
-    }
-  };
+      },
+    });
 
   // `topic` is the subscription the frame came on, `subject` the subject it was published to, and
   // `receivedAt` when the subscription yielded it (`readArrivals`): a cursor that started after
