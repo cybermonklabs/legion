@@ -7,9 +7,7 @@
  *  phone width rearranges run again, in the `visual-phone` project's iPhone 13 viewport, and
  *  their titles carry ` @phone` - the tag the suite already selects phone rows by. That project
  *  greps the tag and `visual` inverts it (e2e/playwright.config.ts), so each row runs under
- *  exactly one project and each project writes into its own `__screenshots__` directory. The two
- *  halves were two specs once and the copy drifted: every sentence below held for both files and
- *  only one of them was kept up to date.
+ *  exactly one project and each project writes into its own `__screenshots__` directory.
  *
  *  WHERE IT RUNS. Inside the pinned Playwright image, started by `e2e/visual-run.sh`, and
  *  nowhere else: a baseline a person takes and a baseline CI compares must be the same

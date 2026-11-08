@@ -499,8 +499,7 @@ const aloneProjects = [
  * Both projects run that one spec and split its rows by the ` @phone` tag its phone rows carry,
  * the tag the suite already selects phone rows by (`phoneTagged` above): `visual-phone` greps
  * it and `visual` inverts it, so every row runs under exactly one project and reads the
- * baseline directory of that project alone. Two specs would be two copies of one head comment,
- * which is what they were and how they drifted.
+ * baseline directory of that project alone.
  *
  * A baseline a person takes and a baseline CI compares must be the same rendering, so both
  * projects run inside the pinned Playwright image and nowhere else: `e2e/visual-run.sh` seeds on

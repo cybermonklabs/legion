@@ -2571,9 +2571,11 @@ baselines come out of CI's own run.** The `visual` job is on the full lane alone
 that moves any shot page passes the pull-request lane and is caught by the merge queue or the
 nightly instead; the recovery from either is the same four steps.
 
-1. Get a full-lane run of the head. Add the `full-ci` label and push, or read the merge-queue
-   run that refused the change. The label takes effect at the next push, not when it is added,
-   and it is taken off again once that run has passed (the root `AGENTS.md` says why).
+1. Read the full-lane run that refused the change: the merge queue's, or the nightly's. To
+   check the new baselines before the queue reads them again, add the `full-ci` label and push:
+   checking a fix for a failure that took the pull request out of the queue is the case the
+   root `AGENTS.md` gives the label. It takes effect at the next push, not when it is added,
+   and it is taken off again once that run has passed.
 2. Download what the job uploaded: `gh run download <run id> --repo <owner>/<repo> --name
    dispatch-browser-visual-<attempt>`. The attempt is the run attempt, so a re-run's artifact
    is `-2`.
