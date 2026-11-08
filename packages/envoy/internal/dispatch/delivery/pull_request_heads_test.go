@@ -1714,6 +1714,74 @@ func TestARefusalUnderTheDefaultBranchsOwnNameHoldsNothing(t *testing.T) {
 	}
 }
 
+// The branch spelled out is read for as the branch resolved is. The pair of a repository's own
+// default branch is never held, on purpose (the test above), so a repository the App has lost
+// would otherwise cost one refused compare read per result commit on every read of the
+// Verification tab for as long as it stays lost — the very cost the hold saves for every other
+// branch, and the reason the default branch is gated on the repository read instead.
+//
+// The caller is the `after_merge` walk of an issue merged the ordinary way: its first step
+// names `main`, the trunk this process resolved on an earlier read. Once the App has lost the
+// repository and the read that named the branch is stale, that step goes through branchOf as
+// the walk's second step does, and answers from the stored row while it stands and
+// BranchUnknown otherwise. What the walk spends is one refused read of the repository per
+// BranchCommitStaleAfter, whatever the number of result commits, and no compare read at all.
+func TestTheDefaultBranchSpelledOutIsGatedByTheRepositoryRead(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	readable := true
+	var compares, repoReads atomic.Int64
+	fake := newFakeGitHub(t)
+	fake.handle("GET /repos/acme/widgets", func(w http.ResponseWriter, _ *http.Request) {
+		repoReads.Add(1)
+		if !readable {
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"message":"Not Found"}`)
+			return
+		}
+		mustEncode(t, w, map[string]any{"full_name": "acme/widgets", "default_branch": "main"})
+	})
+	fake.handle("GET /repos/acme/widgets/compare/{basehead}", func(w http.ResponseWriter, _ *http.Request) {
+		compares.Add(1)
+		if !readable {
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"message":"Not Found"}`)
+			return
+		}
+		mustEncode(t, w, map[string]any{"status": "behind"})
+	})
+	client := fake.newTestClient()
+	branches := &Branches{}
+	asked := time.Now()
+
+	// `main` is resolved while the App can still read the repository, as the default-branch
+	// step of any earlier read of the issue's results resolves it.
+	if answer := branches.CommitOnBranch(ctx, pool, client, "acme/widgets", DefaultBranch, landedCommit, asked); answer != BranchCarries {
+		t.Fatalf("a commit on the default branch of a readable repository = %v, want %v", answer, BranchCarries)
+	}
+	spent := compares.Load()
+
+	// The App loses the repository, and the read that named the branch goes stale.
+	readable = false
+	later := asked.Add(BranchCommitStaleAfter + time.Minute)
+	const walked = 10
+	answers := make([]BranchAnswer, 0, walked)
+	for commit := range walked {
+		answers = append(answers, branches.CommitOnBranch(
+			ctx, pool, client, "acme/widgets", "main", fmt.Sprintf("%040x", commit), later))
+	}
+	if got := compares.Load() - spent; got != 0 {
+		t.Fatalf("compare reads of %d commits named against the lost repository's own default branch = %d, want none: the gate answers before any is spent", walked, got)
+	}
+	if got := repoReads.Load(); got != 2 {
+		t.Fatalf("reads of the repository = %d, want one for the name and one for the loss: the gate costs one per %v", got, BranchCommitStaleAfter)
+	}
+	for commit, answer := range answers {
+		if answer != BranchUnknown {
+			t.Fatalf("commit %d of a lost repository, named against its own default branch = %v, want %v", commit, answer, BranchUnknown)
+		}
+	}
+}
+
 // A compare read that is slow to be refused must not hold a pair a quicker read has been
 // answered about meanwhile. The refusal is the older fact however the two returned, and the
 // answer is the newer one: GitHub can see the branch again, and a hold taken after it would

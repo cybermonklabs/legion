@@ -194,10 +194,15 @@ func (c *Branches) RepositoryReadable(ctx context.Context, client *githubapp.Cli
 //
 // What branch_commits holds for that repository, branch and commit answers first while it still
 // stands — a yes for good, a no for BranchCommitStaleAfter — and GitHub is read against the
-// resolved branch, and its answer written back under it, otherwise. A caller that names a
-// branch spends no GET /repos/{owner}/{repo}: the default branch is resolved only for a caller
-// that names none, and the stored row is read before any call to GitHub, so a named branch
-// Dispatch has already answered for costs nothing at all.
+// resolved branch, and its answer written back under it, otherwise. A caller that names any
+// branch but the repository's own default spends no GET /repos/{owner}/{repo}, and the stored
+// row is read before any call to GitHub, so such a branch Dispatch has already answered for
+// costs nothing at all. The repository's own default branch is resolved through branchOf for
+// the caller that spells it out as it is for the caller that names none, since the two ask the
+// same question of the same branch; that resolve is this process's own and is held for
+// BranchCommitStaleAfter, so it costs at most one GET /repos/{owner}/{repo} a repository in
+// that span — the read the default-branch step of the same `after_merge` walk makes anyway
+// wherever the base-branch step did not carry the commit.
 //
 // A compare read the App is refused is BranchUnseen, and for every branch but the repository's
 // own default one it holds that repository and branch for BranchCommitStaleAfter: every caller
@@ -217,12 +222,15 @@ func (c *Branches) RepositoryReadable(ctx context.Context, client *githubapp.Cli
 // spelled out by an `after_merge` check whose issue merged into the trunk itself, which is the
 // ordinary merge. isDefaultBranch tells the one branch from every other with no read of
 // GitHub, from the name this process last resolved for the repository, and where it is that
-// branch no hold is read and none is written.
+// branch no hold is read and none is written. The same recognition is what sends the caller
+// that spelled the branch out through branchOf before anything else is read, so one branch
+// takes one path under either of its names.
 //
 // A compare read of that branch is made within BranchCommitStaleAfter of branchOf reading the
-// repository and GitHub naming the branch, so a 403 or 404 to it is not a branch that is gone;
-// and it is a repository the App has lost for no longer than that same span, after which
-// branchOf reads again, learns nothing, and this answers from the stored row before any
+// repository and GitHub naming the branch, under either of the names it reaches here under, so
+// a 403 or 404 to it is not a branch that is gone; and it is a repository the App has lost for
+// no longer than that same span, after which branchOf reads again, learns nothing, and this
+// answers from the stored row while it stands and BranchUnknown otherwise, before any
 // compare read is spent. What is left is GitHub's third reason for those two statuses: a
 // commit the repository does not hold, which a result can be recorded at — the record route
 // refuses a commit only on GitHub's 422 proof that the repository does not hold it, so a
@@ -244,16 +252,19 @@ func (c *Branches) RepositoryReadable(ctx context.Context, client *githubapp.Cli
 // again. A hold there would make one bad second of GitHub's five minutes in which every result
 // of the repository reads unknown, which is a reviewer refusing approvals over a hiccup.
 //
-// A caller that names no branch, of a repository the App cannot read just now, is answered from
-// the stored row alone, under the last default branch this process resolved for that repository
-// (branchOf's name). A row is keyed by a branch, so the name has to come from somewhere before
-// the cache can be asked at all, and without this the first unreadable moment would turn every
-// `default_branch` result, and every `after_merge` result of an issue Dispatch holds no merge
-// of, from current to unknown for BranchCommitStaleAfter — even where the permanent yes is
-// stored. A default branch renamed while the App cannot be read leaves that answer under the
-// old name, which is the same staleness the retention rule already accepts of a yes. Where this
-// process has resolved no name for the repository at all, there is nothing to ask the cache
-// about and the answer is BranchUnknown.
+// A caller of that branch, of a repository the App cannot read just now, is answered from the
+// stored row alone: the caller that names no branch under the last default branch this process
+// resolved for that repository (branchOf's name), and the caller that spells that same name
+// out under the name it passed. A row is keyed by a branch, so the name has to come from
+// somewhere before the cache can be asked at all, and without this the first unreadable moment
+// would turn every `default_branch` result, and every `after_merge` result of an issue Dispatch
+// holds no merge of, from current to unknown for BranchCommitStaleAfter — even where the
+// permanent yes is stored. A default branch renamed while the App cannot be read leaves that
+// answer under the old name, which is the same staleness the retention rule already accepts of
+// a yes. Where this process has resolved no name for the repository at all, a caller that names
+// none has nothing to ask the cache about and the answer is BranchUnknown, while a caller that
+// names a branch is recognised as naming no default branch and spends the compare read it
+// always did.
 func (c *Branches) CommitOnBranch(
 	ctx context.Context,
 	pool *store.Pool,
@@ -261,14 +272,22 @@ func (c *Branches) CommitOnBranch(
 	repoFull, branch, sha string,
 	now time.Time,
 ) BranchAnswer {
-	// readable is what the newest read of the repository could say, which only a caller naming
-	// no branch asks for; a caller that names a branch has asked nothing of the repository yet,
-	// so the compare read below is what finds out.
+	// readable is what the newest read of the repository could say, which the two callers of
+	// the repository's own default branch ask for: the one naming no branch, which branchOf
+	// names that branch for as well, and the one spelling the branch out, which asks the same
+	// question of the same branch and so is gated on the same read. A caller naming any other
+	// branch has asked nothing of the repository, so the compare read below is what finds out.
 	readable := true
-	if branch == DefaultBranch {
+	switch {
+	case branch == DefaultBranch:
 		if branch, readable = c.branchOf(ctx, client, repoFull, now); branch == "" {
 			return BranchUnknown
 		}
+	case c.isDefaultBranch(repoBranch{repo: repoFull, branch: branch}):
+		// The caller's own name stands: branchOf is read here for whether the repository can
+		// be read at all, and a default branch renamed away from this one since leaves it an
+		// ordinary named branch rather than quietly measuring against another branch.
+		_, readable = c.branchOf(ctx, client, repoFull, now)
 	}
 	stored, found, err := readBranchCommit(ctx, pool, repoFull, branch, sha)
 	if err != nil {
@@ -384,6 +403,9 @@ func (c *Branches) put(repo, branch string, now time.Time) string {
 // reasons CommitOnBranch gives. It is asked of the resolved name rather than of the caller's
 // argument because that branch reaches CommitOnBranch under two names, DefaultBranch and its
 // own, and the rule is about the branch and not about who named it.
+// CommitOnBranch asks it of a caller that named a branch before anything is read as well,
+// where a yes sends that caller through branchOf's read of the repository as a caller naming
+// none goes; it is asked again once the branch is resolved, for the hold.
 //
 // The name answers whether or not the read that learned it still stands, since cachedBranch
 // keeps a name across a read that could say nothing and a name learned five minutes ago is
