@@ -157,4 +157,4 @@ require (
 
 // The fork keeps the upstream module path; consume its published tag through a remote
 // versioned replacement. RELEASE_NOTES.md in the tagged fork lists its upstream fixes.
-replace github.com/reearth/ygo => github.com/sjawhar/ygo v1.55.1-sami.2
+replace github.com/reearth/ygo => github.com/sjawhar/ygo v1.55.1-sami.7
