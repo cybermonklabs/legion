@@ -901,7 +901,7 @@ export class DispatchApiClient {
     return this.read("/api/v1/settings/repo-projects", {});
   }
 
-  putRepoProject(
+  async putRepoProject(
     repo: string,
     input: Body<"/api/v1/settings/repo-projects/{owner}/{repo}", "put">,
     bounds: WriteBounds
@@ -948,7 +948,7 @@ export class DispatchApiClient {
 
   /** Adds `repo` (`owner/name`) as a source of the project, or changes the branch of the source
    *  it already is. */
-  putArchitectureSource(
+  async putArchitectureSource(
     project: string,
     repo: string,
     input: Body<"/api/v1/projects/{key}/architecture-sources/{owner}/{repo}", "put">,
@@ -963,7 +963,7 @@ export class DispatchApiClient {
   }
 
   /** Imports one source's model now; the row's `last_error` says whether the import failed. */
-  syncArchitectureSource(project: string, repo: string, bounds: WriteBounds) {
+  async syncArchitectureSource(project: string, repo: string, bounds: WriteBounds) {
     return this.post(
       "/api/v1/projects/{key}/architecture-sources/{owner}/{repo}/sync",
       { key: project, ...repoParams(repo) },
