@@ -1652,14 +1652,11 @@ type MyAnswersResponse struct {
 // comment or a message), or the ask's answer, whose ID is the ask's, whose author is the answerer
 // and whose first line is the answer's options and text.
 type MyReplyReply struct {
-	ID        string `json:"id"`
-	Kind      string `json:"kind"`
-	Author    Actor  `json:"author"`
-	FirstLine string `json:"first_line"`
-	// FirstLineTree is the ProseMirror tree FirstLine is shown as, present only for a caller
-	// that sent `Dispatch-Trees: 1`.
-	FirstLineTree json.RawMessage `json:"first_line_tree,omitempty"`
-	CreatedAt     time.Time       `json:"created_at"`
+	ID        string    `json:"id"`
+	Kind      string    `json:"kind"`
+	Author    Actor     `json:"author"`
+	FirstLine string    `json:"first_line"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // MyReplySession is the agent session an Agent row's thread was sent to: the session's id and the
@@ -1685,12 +1682,9 @@ type MyReplyRow struct {
 	// Priority is the owning issue's coarse priority, absent on a row with no issue or none set.
 	Priority *int `json:"priority,omitempty"`
 	// Project is the thread owner's project key, absent on an Agent row, which has no owner.
-	Project *string `json:"project,omitempty"`
-	Subject string  `json:"subject"`
-	// SubjectTree is the ProseMirror tree Subject is shown as, present only for a caller that
-	// sent `Dispatch-Trees: 1`.
-	SubjectTree json.RawMessage `json:"subject_tree,omitempty"`
-	Reply       MyReplyReply    `json:"reply"`
+	Project *string      `json:"project,omitempty"`
+	Subject string       `json:"subject"`
+	Reply   MyReplyReply `json:"reply"`
 	// ReadThrough is the caller's read mark on the thread (user_threads.read_through), absent on
 	// an Agent row, whose replies are read by id rather than by a mark.
 	ReadThrough *time.Time `json:"read_through,omitempty"`

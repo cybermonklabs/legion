@@ -157,6 +157,13 @@ type Deps struct {
 	// DashboardEntry is the entry chunk (`/assets/index-*.js`) of the dashboard build this process
 	// serves, "" when it serves none; GET /api/v1/dashboard/builds answers it as serving.
 	DashboardEntry string
+	// BuildCommit is the legion commit this process was built from, which cmd/dispatch holds in
+	// its own `buildCommit` and the image build stamps (docker/Dockerfile's LEGION_COMMIT). It
+	// is hashed into every list validator (listETag), so two builds never answer one ETag for
+	// two bodies; a build nothing stamped - every `go test` binary, a devbox `go run` - leaves
+	// it empty, which is one identity for every such build and is why a deploy is what it is
+	// for rather than a key anything depends on being unique.
+	BuildCommit string
 }
 
 // defaultStreamHeartbeat is StreamHeartbeat when DepsInput leaves it zero.
@@ -220,6 +227,8 @@ type DepsInput struct {
 	ListenerRosterUncached bool
 	// DashboardEntry is this process's dashboard entry chunk; see Deps.DashboardEntry.
 	DashboardEntry string
+	// BuildCommit is the commit this process was built from; see Deps.BuildCommit.
+	BuildCommit string
 }
 
 // NewDeps parses boot configuration once and returns API dependencies.
@@ -290,6 +299,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		TestHookTimeout:        input.TestHookTimeout,
 		ListenerRosterUncached: input.ListenerRosterUncached,
 		DashboardEntry:         input.DashboardEntry,
+		BuildCommit:            input.BuildCommit,
 	}, nil
 }
 

@@ -128,6 +128,9 @@ type testServerOptions struct {
 	// dashboardEntry is the entry chunk of the dashboard build the server serves; empty is a
 	// server with no dashboard, as the Go test rigs are.
 	dashboardEntry string
+	// buildCommit is the commit the server says it was built from (Deps.BuildCommit), which its
+	// list validators name; empty is a build nothing stamped, as every `go test` binary is.
+	buildCommit string
 }
 
 // testTakeoverWindow is the listener take-over window of a test server that sets none. A send to
@@ -253,6 +256,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		Answerer:               options.answerer,
 		Files:                  options.files,
 		DashboardEntry:         options.dashboardEntry,
+		BuildCommit:            options.buildCommit,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)

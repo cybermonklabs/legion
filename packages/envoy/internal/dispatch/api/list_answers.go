@@ -8,8 +8,6 @@ import (
 	"hash"
 	"log/slog"
 	"net/http"
-	"runtime/debug"
-	"strings"
 	"sync/atomic"
 
 	"github.com/sjawhar/envoy/internal/dispatch/bytelru"
@@ -232,52 +230,22 @@ func listAnswerKeyFor(r *http.Request, route, owner, etag string) listAnswerKey 
 // is in it for the same reason across a deploy: a build that reads markdown differently answers
 // different trees, and every validator the build before it gave is then another reading's.
 //
-// The build identity is in it because the parser version moves for a change to what a tree holds
+// The build commit is in it because the parser version moves for a change to what a tree holds
 // and for nothing else, while a deploy can change what these lists carry in a dozen other ways:
 // a new field, a shaper that fills one it filled wrongly, a fix to the trees hung on a reply
 // block. The browser revalidates with the body it holds (web/src/api/client.ts sets no cache
 // mode), so without it every open tab would be answered 304 against the build before this one
 // and keep the old body until the issue's next write, and the two builds of a rolling deploy
 // would give one validator for two different answers - which the dashboard's own page already
-// avoids by naming its build in its ETag (routes.pageTag).
-func listETag(hash hash.Hash, trees bool) string {
+// avoids by naming its build in its ETag (routes.pageTag). It is the commit the process was
+// handed at boot (Deps.BuildCommit, cmd/dispatch's `buildCommit`), not something read back out
+// of the binary: a build nothing stamped - every `go test` binary - names itself the empty
+// commit, which is one identity for every such build and is why a deploy is what this is for
+// rather than a cache key anything depends on being unique.
+func (s *server) listETag(hash hash.Hash, trees bool) string {
 	_, _ = fmt.Fprintf(hash, "trees=%t\nparser=%d\nbuild=%q\n",
-		trees, pmdoc.DisplayTreeVersionNow(), *listBuildIdentity.Load())
+		trees, pmdoc.DisplayTreeVersionNow(), s.deps.BuildCommit)
 	return `"` + hex.EncodeToString(hash.Sum(nil)) + `"`
-}
-
-// listBuildIdentity is the build identity listETag hashes. It is read through a pointer because
-// a test stands this process at another build to watch both validators move, as it stands it at
-// another display parser version (setListBuildIdentityForTest); no server writes it, so one runs
-// its whole life at the identity of the binary it is.
-var listBuildIdentity = func() *atomic.Pointer[string] {
-	identity := &atomic.Pointer[string]{}
-	built := buildIdentity()
-	identity.Store(&built)
-	return identity
-}()
-
-// buildIdentity names the build this binary is, from what the Go toolchain recorded in it: the
-// revision of the checkout it was built from and whether that checkout was modified, and the
-// -ldflags it was given, which is where the deployed image stamps the commit it builds
-// (docker/Dockerfile passes its LEGION_COMMIT argument through `-X main.buildCommit`, and the
-// release workflow reads the same setting back out with `go version -m`). A build that recorded
-// none of them - `go test`'s binary, a build with -buildvcs=false and no flags - names itself
-// the empty identity, which is one identity for every such build and is why a deploy is what
-// this is for rather than a cache key anything depends on being unique.
-func buildIdentity() string {
-	info, ok := debug.ReadBuildInfo()
-	if !ok {
-		return ""
-	}
-	var identity strings.Builder
-	for _, setting := range info.Settings {
-		switch setting.Key {
-		case "vcs.revision", "vcs.modified", "-ldflags":
-			_, _ = fmt.Fprintf(&identity, "%s=%s\n", setting.Key, setting.Value)
-		}
-	}
-	return identity.String()
 }
 
 // answerNotModified answers a request whose If-None-Match names etag, and reports whether it did.

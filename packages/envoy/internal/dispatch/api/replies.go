@@ -510,7 +510,6 @@ func (s *server) listMyReplies(w http.ResponseWriter, r *http.Request) {
 	wantAgent = wantAgent && issue == "" && artifact == nil
 
 	login := model.CanonicalLogin(caller.ID)
-	trees := wantsDisplayTrees(r)
 	response := model.MyRepliesResponse{Rows: []model.MyReplyRow{}, Offset: offset}
 	if limit != nil {
 		response.Limit = *limit
@@ -610,15 +609,6 @@ func (s *server) listMyReplies(w http.ResponseWriter, r *http.Request) {
 	if err := tx.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, fmt.Errorf("read my replies: %w", err))
 		return
-	}
-	// The trees are rendered once the page is cut, so a caller that asked for them
-	// (`Dispatch-Trees: 1`) pays for the rows it is answered and no more, whichever half each one
-	// came from.
-	if trees {
-		for index := range rows {
-			rows[index].SubjectTree = displayTree(rows[index].Subject)
-			rows[index].Reply.FirstLineTree = displayTree(rows[index].Reply.FirstLine)
-		}
 	}
 	response.Rows = append(response.Rows, rows...)
 	WriteJSON(w, http.StatusOK, response)

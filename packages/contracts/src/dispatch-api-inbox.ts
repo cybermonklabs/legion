@@ -167,8 +167,6 @@ export interface MyReplyReply {
   readonly author: Actor;
   /** The reply's or the answer's first non-empty line, at most 160 characters. */
   readonly first_line: string;
-  /** The display tree of `first_line`, absent unless the request sent `Dispatch-Trees: 1`. */
-  readonly first_line_tree?: DisplayTree;
   readonly created_at: string;
 }
 
@@ -183,8 +181,6 @@ interface MyReplyRowBase {
   readonly ref: string;
   /** The ask's question, or the root's first line, at most 160 characters. */
   readonly subject: string;
-  /** The display tree of `subject`, absent unless the request sent `Dispatch-Trees: 1`. */
-  readonly subject_tree?: DisplayTree;
   readonly reply: MyReplyReply;
   /** Whether the row still holds a write the caller has not read: always true under
    *  `state=unread`, either way under `state=inbox` and `state=dismissed`. */

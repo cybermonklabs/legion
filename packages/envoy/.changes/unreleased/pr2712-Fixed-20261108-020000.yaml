@@ -1,6 +1,6 @@
 kind: Fixed
 body: |-
-  The display read draws a block of HTML as the browser's read-only engine draws it: one paragraph holding the block's characters as the Proof schema's inline `html` node, with the up-to-three spaces the block may open with dropped (`pmdoc`'s `displayHTML`). It drew the block as literal text with a hard break per line, so a comment of `<div>` was shown with a text node where the browser shows a tag, and a reader of the stored tree and a reader of the markdown were shown two different bodies. `pmdoc.DisplayTreeVersion` is 2, so every tree stored by the build before this one is read again.
+  The display read draws a block of HTML as the browser's read-only engine draws it: one paragraph holding the block's characters as the Proof schema's inline `html` node, with the up-to-three spaces the block may open with dropped (`pmdoc`'s `displayHTML`). It drew the block as literal text with a hard break per line, so a comment of `<div>` was shown with a text node where the browser shows a tag, and a reader of the stored tree and a reader of the markdown were shown two different bodies.
 time: 2026-11-08T02:00:00.000000000Z
 custom:
     Issue: pr2712

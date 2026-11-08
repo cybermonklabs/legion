@@ -97,6 +97,9 @@ type AppContextOptions struct {
 	// when it published the build (dashboard.Publish); "" when it serves none. See
 	// api.DepsInput.
 	DashboardEntry string
+	// BuildCommit is the commit this process was built from, which main holds in its own
+	// `buildCommit`; "" for a build nothing stamped. See api.DepsInput.
+	BuildCommit    string
 	Sessions       auth.SessionStore
 	People         auth.PeopleStore
 	Identity       identity.Identity
@@ -203,6 +206,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		ListenerTakeoverWindow: opts.ListenerTakeoverWindow,
 		ListenerRosterUncached: opts.ListenerRosterUncached,
 		DashboardEntry:         opts.DashboardEntry,
+		BuildCommit:            opts.BuildCommit,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("BuildAppContext: %w", err)

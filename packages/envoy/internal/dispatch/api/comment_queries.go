@@ -61,7 +61,7 @@ func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner
 		return
 	}
 	trees := wantsDisplayTrees(r)
-	etag := commentListETag(owner, artifactFilter, watermark, lastSeq, trees)
+	etag := s.commentListETag(owner, artifactFilter, watermark, lastSeq, trees)
 	if answerNotModified(w, r, etag) {
 		return
 	}
@@ -124,11 +124,11 @@ func (s *server) commentListWatermark(ctx context.Context, owner owner) (int64, 
 // ETags carry (listETag). It is referencesETag's shape - one line per part, then the hash of them
 // - and, unlike the feed's, it names its owner, so two lists standing at one count never share a
 // validator.
-func commentListETag(owner owner, artifactFilter string, watermark, lastSeq int64, trees bool) string {
+func (s *server) commentListETag(owner owner, artifactFilter string, watermark, lastSeq int64, trees bool) string {
 	hash := sha256.New()
 	_, _ = fmt.Fprintf(hash, "issue=%s\nartifact=%s\nfilter=%s\nwatermark=%d\nlast_seq=%d\n",
 		deref(owner.IssueKey), deref(owner.ArtifactID), artifactFilter, watermark, lastSeq)
-	return listETag(hash, trees)
+	return s.listETag(hash, trees)
 }
 
 func (s *server) loadOwnerComments(ctx context.Context, q queryer, owner owner, artifactFilter string) ([]model.Comment, error) {

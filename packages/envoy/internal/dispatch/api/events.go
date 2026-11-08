@@ -82,7 +82,7 @@ func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	trees := wantsDisplayTrees(r)
-	etag := eventFeedETag(lastSeq, createdAt, options, trees)
+	etag := s.eventFeedETag(lastSeq, createdAt, options, trees)
 	if answerNotModified(w, r, etag) {
 		return
 	}
@@ -126,14 +126,14 @@ func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 // the row's birth stamp is hashed in beside it. It is the same fact, read the same way, that
 // tells the event relay an event log that was reset under its cursor from one that merely went
 // quiet (eventLogWasReset).
-func eventFeedETag(lastSeq int, createdAt time.Time, options eventListOptions, trees bool) string {
+func (s *server) eventFeedETag(lastSeq int, createdAt time.Time, options eventListOptions, trees bool) string {
 	hash := sha256.New()
 	_, _ = fmt.Fprintf(hash, "created=%d\nlast_seq=%d\nafter=%d\nbefore=%d\nhas_before=%t\ndescending=%t\nlimit=%d\n",
 		createdAt.UnixMicro(), lastSeq, options.after, options.before, options.hasBefore, options.descending, options.limit)
 	for _, id := range options.ids {
 		_, _ = fmt.Fprintf(hash, "id=%d\n", id)
 	}
-	return listETag(hash, trees)
+	return s.listETag(hash, trees)
 }
 
 // issueEventSequence is the newest event sequence of the issue key names and the created_at that
