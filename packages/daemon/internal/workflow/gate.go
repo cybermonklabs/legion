@@ -201,9 +201,9 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	// slot: whether that resume waits for one is admit's slotFor over record.TreeGate.EverOpened,
 	// and where it waits the `waiting-for-slot` notice is admit's tellWaitingForSlot and the
 	// `waitingLine` on its state is the projection's (api.WaitingLineView). An architect reads the
-	// rule in skills/legion-architect/references/acceptance.md and references/design-gate.md. The members
-	// the opening releases are started by admission's own pass over this same fact, which gives
-	// each the slot its first phase needs (record.Waiting's LineFirstPhase).
+	// rule in skills/legion-architect/references/acceptance.md and references/design-gate.md. The
+	// members the opening releases are started by admission's own pass over this same fact, which
+	// gives each the slot its first phase needs (record.Waiting's LineFirstPhase).
 	switch {
 	case issue.AwaitingPerson():
 		e.logOnCommit(ctx, "workflow: a root waiting on a person is told its open gate by its resume", "issue", issue.Key, "version", gate.LatestVersion)
