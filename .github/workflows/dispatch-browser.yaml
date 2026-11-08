@@ -218,16 +218,18 @@ jobs:
     # shard's browser step, and which the container does not move: it is the same rows in the
     # same browsers.
     #
-    # The job budget below is the rule's arithmetic, read on sha256:ba003193, the build of this
-    # same Dockerfile from before the last move of .github/ci-images.yaml's `built:` row, and not
-    # on the digest this file pins, which every later rewording of a recipe file rebuilds afresh.
-    # It carries across those rebuilds: they are rebuilds of this one Dockerfile, ten layers each,
-    # and each build prints its own size -- 1,160,268,762 bytes for sha256:ba003193 (job
-    # 128730667606), 1,160,268,675 for the rebuild after it (job 128766793614) and 1,160,268,418
-    # for the one after that (job 128789111286), a few hundred bytes of one layer's comment text
-    # apart, with layers 8 to 10 differing because the apt installs are not pinned to versions.
-    # A few hundred bytes do not move a pull that took six seconds more when build-essential added
-    # real bytes to it, and a measured table carries the head it was measured at, which is worth
+    # The job budget below is the rule's arithmetic, read on sha256:ba003193, the build of commit
+    # 47a222cd (run 42480325123, job 128730667606), and not on the digest this file pins, which
+    # every later rewording of a recipe file rebuilds afresh.
+    # It carries across those rebuilds, because what the pull costs is the size it pulls: each
+    # build prints its own -- 1,160,268,762 bytes for sha256:ba003193, 1,160,268,675 for the
+    # rebuild after it (job 128766793614) and 1,160,268,418 for the one after that (job
+    # 128789111286), 344 bytes apart over 1.16 GB. They are not the same bytes: layers 1 to 7 are
+    # identical, and layers 8 to 10 differ in digest because the image build's own apt installs
+    # are not pinned to versions, so a rebuild of one recipe installs what the mirror serves that
+    # minute. Nothing here depends on a rebuild reproducing the previous image -- every job pins a
+    # digest -- and 344 bytes do not move a pull that took six seconds more when build-essential
+    # added real bytes to it. A measured table carries the head it was measured at, which is worth
     # saying plainly rather than claiming an identity that does not hold.
     # The figures it replaces were read at 99bdf09cf435, which pinned the image from before
     # build-essential was added to it (dispatch://INFRA-1443), over eight legs of two runs: not one
@@ -956,11 +958,12 @@ jobs:
         # apt source, which it carried only because that source's index intermittently failed
         # `apt-get update`.
         #
-        # The fonts are not needed: this job's two specs, signin.multiprocess.e2e.ts and
-        # two-builds.multiprocess.e2e.ts, run headless Chromium and compare no screenshot
-        # (neither holds `toHaveScreenshot` or `toMatchSnapshot`), and fonts-liberation and
-        # fonts-noto-color-emoji are on the image already. A row that later needs CJK or Thai
-        # glyphs would fail visibly.
+        # The fonts are not needed: this job's specs are every *.multiprocess.e2e.ts there is --
+        # coedit, signin and two-builds today (e2e/playwright.config.ts:50 matches them by that
+        # suffix, so a new one joins without an edit here) -- and they run headless Chromium and
+        # compare no screenshot (none holds `toHaveScreenshot` or `toMatchSnapshot`), and
+        # fonts-liberation and fonts-noto-color-emoji are on the image already. A row that later
+        # needs CJK or Thai glyphs would fail visibly.
         #
         # The 4-minute budget: this step downloads browsers only, and Playwright makes up to
         # five attempts, across its download hosts, inside it. Of the 339 s maximum above,

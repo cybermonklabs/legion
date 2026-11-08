@@ -145,7 +145,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 - **Reading a `built:` row's digest move** starts at the attestation, whose certificate is the one part of the chain a workflow edit cannot write.
   Rule 10 trusts a label the publishing run wrote, and on a pull request that run is the pull request's own copy of `browser-image.yaml`, which can stamp whatever hash it likes into whatever image it builds.
   The procedure is written here and not in that workflow because this file is in no image's recipe hash:
-  correcting a word of it costs nothing, while the same correction there moves the hash, publishes another image and asks for the row to move again, so the dated run below may be refreshed freely.
+  correcting a word of it costs nothing, while the same correction there moves the hash, publishes another image and asks for the row to move again, so the worked run below, which published `sha256:f77e9ae1…` on 8 November 2026 (job 128653250894), may be refreshed freely.
   A CI image's attestation names the branch whose run built it — `refs/pull/<n>/merge` for the pull-request run that pushes, `refs/heads/gh-readonly-queue/…` for a merge group, the dispatched ref for a `workflow_dispatch` — so the command names that run's ref, and `--cert-identity …@refs/heads/main` names an attestation this repository never makes:
 
   ```bash
@@ -185,15 +185,29 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   printed `Merge 1f240c0049b7bda0edc40891ffeb5307450262bf into 30f6270b5868f3561bb3bec4900c9cebde41f639`, then those two parents in that order:
   the base first, the head the build read second.
 
-- **The comparison itself is one command**, run with that second parent in hand (`git fetch origin <it>` where the clone has not got the commit):
-  `git diff <that second parent> <the head under review> -- .github`, which must show nothing but the row's `digest:` move, the `container:` pins that move with it, and whatever this pull request is reviewed for.
+- **The comparison itself is one command**, run with that second parent in hand (`git fetch origin <it>` where the clone has not got the commit).
+  For a head with no merge after that second parent it is `git diff <that second parent> <the head under review> -- .github`.
+  For a head that merged `main` after it — which any long-lived branch does — read it as
+  `git log --first-parent --remerge-diff -p <that second parent>..<the head under review> -- .github` instead, which shows this branch's own commits and, of each merge, only its conflict resolutions:
+  measured on this pull request's `7d56e209c1d0..d3bbd5f18339`, the plain diff is 662 lines of `.github`, almost all of it what `main` brought in, and this form is 30.
+  A merge here puts the branch side first, which is what makes `--first-parent` the branch's own history.
   It compares the source the build actually read with this tree, so it covers every file the build job reads or runs under `.github` — `.github/docker`, `browser-image.yaml`, `.github/scripts/ci_images.py` and `.github/actions/install-crane/**` among them — and every file it starts reading next.
   Nothing shorter stands in for it, and no list of paths replaces it:
   a list is a thing someone must remember to extend, and the diff is both wider and shorter than any list.
-  Recomputing the recipe hash at that head proves nothing, which is why nothing in the workflow does it:
-  that head's own run stamped the label from that head's own files with that head's own `.github/scripts/ci_images.py`, so `recipe_sha256` run there matches the label whatever the recipe there was.
-  A later push that restores this tree's recipe and moves the row onto the image the changed recipe built is refused by rule 10 on its own, the label that image carries being the changed recipe's hash.
-  A reviewer runs this by hand because no gate reads the attestation's own source commit:
+
+- **What that reading may show is a closed list**, and "whatever this pull request is reviewed for" is not on it.
+  No hunk may touch a file the build job reads or runs — every file of `.github/docker`, `browser-image.yaml`, `.github/scripts/ci_images.py`, `.github/actions/install-crane/**` — whatever the pull request under review is reviewed for, because in the honest two-push order every change to those files is before the second parent and appears in no such hunk.
+  A hunk in one of them is the case this reading exists for:
+  a push that changes a build input so that it stamps the hash of the recipe the next push will hold, then a push that reverts the input and moves the row, which rule 10 passes.
+  The exemptions are three and closed:
+  the row's own `digest:` and `tag:` lines of `.github/ci-images.yaml`, which are the move being read, and the `container:` pins that move with them, which are in a file the build neither reads nor runs.
+  Exempting the row costs nothing, because a row pointing at another Dockerfile is refused by rule 10 itself:
+  the label records `recipe_sha256` of the row's own Dockerfile, and rule 10 compares the two.
+  Recomputing the recipe hash at that head proves nothing, which is why this procedure has no such step:
+  that head's own run stamped the label from that head's own files with that head's own `.github/scripts/ci_images.py` (`browser-image.yaml`'s row step computes it to stamp the label, and that script is not among the inputs `recipe_sha256` folds), so `recipe_sha256` run there matches the label whatever the recipe there was.
+  A later push that restores this tree's recipe and moves the row onto the image the changed recipe built is refused by rule 10 only when the changed push stamped its own recipe's hash;
+  a push that stamped the restored recipe's hash passes rule 10, and that case is the one this reading catches.
+  A reviewer runs it by hand because no gate reads the attestation's own source commit:
   building one was decided out, no attack having been seen, so this reading is the check.
 
 ## Commands
