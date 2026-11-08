@@ -83,24 +83,28 @@ jobs:
     # and DISPATCH_E2E_FILE_STORE_BUCKET are in that set and stay in the browser step's `env:`.
     #
     # The budgets below, this one and the two on steps, are measured, on the two runs of this
-    # head: 42334424798, the pull-request lane, and 42316487530, the full lane. Four legs each,
+    # head: 42499402537, the pull-request lane, and 42499408504, the full lane. Four legs each,
     # in shard order, in seconds:
     #
     #   step                                     pull-request lane        full lane
-    #   Install the lane's Playwright browsers   23, 19, 21, 32      49, 20, 30, 627
-    #   Browser-test dispatch dashboard         413, 293, 307, 292  419, 297, 334, 295
-    #   every other step summed                  76, 67, 72, 85      79, 76, 80, 77
-    #   the whole job                           515, 383, 402, 413  551, 396, 449, 1004
+    #   Install the lane's Playwright browsers   21, 21, 22, 26      23, 20, 27, 20
+    #   Browser-test dispatch dashboard         441, 346, 305, 343  474, 244, 364, 295
+    #   every other step summed                  78, 71, 74, 85      83, 64, 85, 72
+    #   the whole job                           544, 442, 405, 459  583, 332, 480, 391
     #
-    # Those install readings are of the reduced package list this head installed before
-    # dispatch://INFRA-1506 (cybermonklabs/legion#2888) put Playwright's whole list back, and
-    # before the apt archive cache the two steps above the install restore, so they bound
-    # nothing now. The three cache steps came after those two runs as well, so the "every other
-    # step summed" row holds none of them.
+    # These readings are of the whole Playwright package list and of the apt archive cache the
+    # two steps above the install restore, so every install here is a warm one: 20 to 27 s,
+    # where the runs this table replaced read 19 to 627 s on a list that was shorter and a
+    # cache that did not exist (dispatch://INFRA-1506, cybermonklabs/legion#2888). The three
+    # cache steps are in the "every other step summed" row now, which the earlier table had to
+    # add an allowance for.
     #
-    # The rule is in this file's head. The browser step's maximum is the full lane's 419 s, so
-    # 419 x 1.15 = 482 s -> 9 min, which is the bound this issue's R1 asks of the longest
-    # shard's browser step. The install step keeps its 22 minutes, which is
+    # The rule is in this file's head. The browser step's maximum is the full lane's 474 s, so
+    # 474 x 1.15 = 545 s -> 10 min, which is the bound this issue's R1 asks of the longest
+    # shard's browser step. That maximum moved with the accessibility layer this change adds:
+    # it was 419 s, which derived 9 min, and the pull-request lane now reads 441 s against the
+    # same budget, so a reader comparing a later run compares with 474 and not with 419. The
+    # install step keeps its 22 minutes, which is
     # .github/scripts/playwright-install.sh's retry arithmetic rather than a measured maximum,
     # for the reason that file's head gives.
     #
@@ -116,41 +120,36 @@ jobs:
     #
     # A job budget built on the warm figure was written here and taken out: it would have
     # cancelled a leg this branch measured rather than imagined - shard 4's install took
-    # 624 to 631 s in runs 42314019622 and 42314955394, which with this job's other steps is over
-    # 15 min - and cancelled it with no named cause, where the step's own bound fails it saying
-    # which phase ran out.
+    # 624 to 631 s in runs 42314019622 and 42314955394, before the apt archive cache, which
+    # with this job's other steps is over 15 min - and cancelled it with no named cause, where
+    # the step's own bound fails it saying which phase ran out.
     #
-    # The two cache steps before the install have no reading of their own: in job 128209099649
-    # the restore missed, and the key and restore steps took under a second each. The nearest
-    # reading of a restore that hits is that job's browser cache, 482 MB, whose hit line is at
-    # 23:13:54 with the install step starting at 23:14:00, so those 482 MB landed inside 6 s and
-    # this cache's 114 MB are under that. They are counted here as 7 s on top of the 85 s row,
-    # and no save follows the install: .github/workflows/ci-caches.yaml's browsers and apt-debs
-    # jobs fill both entries, on a push to main and on a workflow_dispatch of that file, each of
-    # which writes the default branch's cache scope, and this workflow restores them.
+    # The three cache steps are measured now rather than allowed for: they are in the "every
+    # other step summed" row of the table above, where that row's maximum is 85 s. The earlier
+    # table predated them and carried 85 s plus a 7 s allowance for the restore instead.
     #
-    # So the job budget is the install step's 1320 s, the browser step's 540 s and 92 s of every
-    # other step summed: 1952 s -> 33 min.
+    # So the job budget is the install step's 1320 s, the browser step's 600 s and 85 s of every
+    # other step summed: 2005 s -> 34 min.
     #
     # The 114 MB cold draw is still a tail rather than a cost of the lane: it is paid once per
     # cache key, on the first run after a Playwright upgrade or an image roll, and it is the same
-    # class of tail as the 1004 s leg below. It is accounted in this pull request's body, cited to
-    # dispatch://INFRA-1443. What this budget costs instead: a leg that is going to fail its
-    # install holds a runner for up to 33 min before it says so.
+    # class of tail as the 627 s install named above. It is accounted in this pull request's
+    # body, cited to dispatch://INFRA-1443. What this budget costs instead: a leg that is going
+    # to fail its install holds a runner for up to 34 min before it says so.
     #
-    # The 1004 s leg sets none of that, and is named here as the tail it is. Its install stalled
-    # 627 s on the apt download where every other install of the two runs took 19 to 49 s, and
-    # that stall is the same slow-mirror case the apt archive cache now answers on every run but
-    # the first under a key. The rule builds a job budget from step budgets and not from measured
-    # job maxima, so letting that one leg set this figure would charge the job twice for a stall
-    # the step already holds.
+    # That 627 s install sets none of that, and is named here as the tail it is: it stalled on
+    # the apt download where every other install of those runs took 19 to 49 s, and that stall
+    # is the same slow-mirror case the apt archive cache now answers on every run but the first
+    # under a key, which is why no install of the table above is over 27 s. The rule builds a
+    # job budget from step budgets and not from measured job maxima, so letting one such leg
+    # set this figure would charge the job twice for a stall the step already holds.
     #
     # The rows behind those seconds were the suite of the head those runs measured. Listed at
     # this head, after the forward merges of main, the suite holds 1,200 rows: 1,145 in the
     # eight projects the full lane's four shards run, of which 1,058 are in the two the
     # pull-request lane runs. The remaining 55 are the three `-alone` projects', which the alone
     # job runs.
-    timeout-minutes: 33
+    timeout-minutes: 34
     strategy:
       fail-fast: false
       # Four legs. The count is written here and in the `--shard` denominator of the browser step
@@ -309,7 +308,7 @@ jobs:
         # leg's blob report, which is what the upload steps below read: a file this step wrote
         # into the checkout would leave it dirty afterwards. The blob report goes beside the
         # list reporter's output, so a green run reports what it ran too.
-        timeout-minutes: 9
+        timeout-minutes: 10
         run: |
           # $RUNNER_TEMP holds everything this step writes, the run directory of e2e/run.ts
           # (mkdtempSync in os.tmpdir(), :183) among it, which is what the upload steps below
@@ -956,6 +955,15 @@ jobs:
         if: always()
         with:
           name: dispatch-browser-visual-${{ github.run_attempt }}
+          # The third pattern matches no file in THIS job and is not dead: it is what fixes the
+          # archive's layout. This job runs one lane, and for one lane e2e/run.ts leaves
+          # `logDir` unset, so the harness writes to stderr and no `lane-*/log/*.log` is ever
+          # created. upload-artifact takes the archive root from the least common ancestor of
+          # its patterns' search paths, so this `${{ runner.temp }}` pattern is what keeps that
+          # root at the runner's work directory and the repository path inside the archive -
+          # which is what packages/dispatch/AGENTS.md's step 3 tells a reader to look for when
+          # it takes a changed baseline out of this artifact. Delete it as unused and
+          # `test-results` moves to the top of the archive and that step goes wrong.
           path: |
             packages/dispatch/e2e/test-results
             packages/dispatch/e2e/__screenshots__
