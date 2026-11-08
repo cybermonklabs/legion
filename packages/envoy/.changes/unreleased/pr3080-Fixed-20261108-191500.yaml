@@ -7,7 +7,8 @@ body: |-
     of the boots with SQLSTATE 40P01. Every wait for that key now polls pg_try_advisory_lock in
     statements of its own, with nothing open between two tries: the three places a boot waits for
     it, and the auto-deployer's schema read, which no longer fails a deploy while a boot builds an
-    index.
+    index. That read takes the key and reads the applied set as two statements of one psql
+    session, so the set it reads is the one the migration it waited for left.
 time: 2026-11-08T19:15:00Z
 custom:
     Issue: pr3080
