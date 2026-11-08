@@ -55,15 +55,17 @@ const shellHandlers: RequestHandler[] = [
     Response.json({ code: "NO_IDENTITY", error: "no identity" }, { status: 401 })
   ),
   http.get("/api/v1/agents", () => Response.json([])),
-  // The sidebar reads the project list on every signed-in page, unconditionally
-  // (`features/sidebar/Sidebar.tsx:91`, drawn by `app.tsx:375`), which is why this belongs in the
-  // baseline rather than in the files that assert on projects. The issue header is a second reader
-  // of the same `projectsQuery` key, for every root issue, to learn which design steps are gated
-  // (`features/issue/IssueHeader.tsx:292`, `enabled: issue.parent === null`), and `CreateIssueDialog`,
-  // `ProjectPage`, the palette's project mode and three settings sections
-  // (`ArchitectureSourcesSection.tsx:52`, `ProjectsSection.tsx:42`, `SettingsPage.tsx:75`) read it
-  // too. An empty list is a project with no gate, which is what a page with no `api.listProjects`
-  // spy drew before, and every row that asserts on project content spies that method above MSW.
+  // The sidebar reads the project list wherever it is drawn - on a wide viewport with the sidebar
+  // shown, or in the compact navigation drawer while it is open - with no `enabled` guard
+  // (`features/sidebar/Sidebar.tsx:91`, drawn by `app.tsx:375`). The issue header reads the same
+  // `projectsQuery` key for every root issue, to learn which design steps are gated
+  // (`features/issue/IssueHeader.tsx:292`, `enabled: issue.parent === null`), and that is the
+  // reader this answer exists for: without it, 36 rows of pages carrying the header fail on an
+  // unanswered read, none of them about projects. `CreateIssueDialog`, `ProjectPage`, the
+  // palette's project mode and three settings sections (`ArchitectureSourcesSection.tsx:52`,
+  // `ProjectsSection.tsx:42`, `SettingsPage.tsx:75`) read it too. An empty list is a project with
+  // no gate, which is what a page with no `api.listProjects` spy drew before, and every row that
+  // asserts on project content spies that method above MSW.
   http.get("/api/v1/projects", () => Response.json([])),
   http.get("/api/v1/me/replies", () => Response.json({ rows: [], total: 0, limit: 50, offset: 0 })),
   http.get("/api/v1/credential-requests", () => Response.json({ pending: [] })),
