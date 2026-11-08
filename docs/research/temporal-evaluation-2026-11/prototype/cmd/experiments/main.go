@@ -53,14 +53,14 @@ const notImplemented = 2
 
 func main() {
 	var cfg harness.Config
-	flag.IntVar(&cfg.Experiment, "experiment", 0, "which experiment to run, 1..12")
+	flag.IntVar(&cfg.Experiment, "experiment", 0, "which experiment to run, 1..18")
 	flag.StringVar(&cfg.Address, "address", "127.0.0.1:7233", "the Temporal server's gRPC address (experiments 1..6)")
 	flag.StringVar(&cfg.Namespace, "namespace", "default", "the Temporal namespace to run in (experiments 1..6)")
 	flag.StringVar(&cfg.SessionWorker, "session-worker", "", "absolute path of the built cmd/sessionworker binary (experiment 3)")
 	flag.StringVar(&cfg.MetricsURL, "metrics-url", "", "the dev server's Prometheus endpoint (experiment 6)")
 	flag.StringVar(&cfg.WorkDir, "work-dir", "", "a writable scratch directory the experiment may use")
 	flag.StringVar(&cfg.RepoRoot, "repo-root", "", "the Legion repository's root, whose own code experiment 1 measures (default: found by walking up from the working directory)")
-	flag.StringVar(&cfg.PostgresDSN, "postgres-dsn", os.Getenv("LEGION_TEST_PG_DSN"), "the PostgreSQL the DBOS experiments measure against (experiments 7..9)")
+	flag.StringVar(&cfg.PostgresDSN, "postgres-dsn", os.Getenv("LEGION_TEST_PG_DSN"), "the PostgreSQL the library experiments measure against (experiments 7..9 and 13..18)")
 	flag.StringVar(&cfg.DBOSWorker, "dbos-worker", "", "absolute path of the built cmd/dbosworker binary (experiments 7..9; default: the dbosworker beside this binary)")
 	flag.StringVar(&cfg.RestateIngress, "restate-ingress", "127.0.0.1:8080", "the Restate server's ingress address, which must be on 127.0.0.1 (experiments 10..12)")
 	flag.StringVar(&cfg.RestateAdmin, "restate-admin", "127.0.0.1:9070", "the Restate server's admin address, which must be on 127.0.0.1 (experiments 10..12)")

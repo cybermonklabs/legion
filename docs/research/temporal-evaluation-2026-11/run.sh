@@ -123,13 +123,13 @@ mkdir -p -- "$cli_dir" "$restate_dir" "$bin_dir" "$server_dir"
 say "temporary directory: $base_dir"
 say "repository root: $repo_root"
 
-# --- 2. the PostgreSQL ten of the eighteen need --------------------------------------
+# --- 2. the PostgreSQL nine of the eighteen need -------------------------------------
 
 # Experiments 7 to 9, 13 to 15 and 16 to 18 measure libraries whose whole state lives
 # in the application's own PostgreSQL. Without a database there is nothing to measure,
 # and a run that skipped them would not be this evaluation.
 [[ -n "${LEGION_TEST_PG_DSN:-}" ]] ||
-	die "LEGION_TEST_PG_DSN is empty. Ten of the eighteen experiments -- 7 to 9 for DBOS, 13 to 15 for go-workflows and 16 to 18 for durabletask-go -- measure libraries that keep their workflow state in PostgreSQL, so this run cannot measure them without one. Set LEGION_TEST_PG_DSN to a PostgreSQL URL this process may create a database in and run again."
+	die "LEGION_TEST_PG_DSN is empty. Nine of the eighteen experiments -- 7 to 9 for DBOS, 13 to 15 for go-workflows and 16 to 18 for durabletask-go -- measure libraries that keep their workflow state in PostgreSQL, so this run cannot measure them without one. Set LEGION_TEST_PG_DSN to a PostgreSQL URL this process may create a database in and run again."
 readonly postgres_dsn="$LEGION_TEST_PG_DSN"
 say 'LEGION_TEST_PG_DSN is set'
 

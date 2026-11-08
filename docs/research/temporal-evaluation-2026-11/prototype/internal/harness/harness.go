@@ -29,7 +29,7 @@ import (
 // Config is the command line of cmd/experiments, shared by every experiment. An
 // experiment reads only the fields its own run needs.
 type Config struct {
-	// Experiment is the number given to -experiment, 1..9.
+	// Experiment is the number given to -experiment, 1..18.
 	Experiment int
 	// Address is the server's gRPC host:port.
 	Address string

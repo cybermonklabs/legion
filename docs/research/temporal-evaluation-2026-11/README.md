@@ -88,7 +88,7 @@ bash docs/research/temporal-evaluation-2026-11/run.sh
 It installs the pinned Temporal command and the pinned Restate server under `$TMPDIR`, verifying each one's checksum and version, runs `gofmt -l` and `go vet` over the prototype, builds its six commands, runs the eighteen experiments in order and ends with `temporal-evaluation: all 18 experiments passed`.
 It writes nothing into the working tree.
 Set `TMPDIR` to a directory on a volume with about 300 MB free; the script refuses an unset one and one under `/tmp`.
-Set `LEGION_TEST_PG_DSN` to a PostgreSQL the run may create a database in; ten of the eighteen need it, and the script refuses an empty one by name.
+Set `LEGION_TEST_PG_DSN` to a PostgreSQL the run may create a database in; nine of the eighteen need it (7 to 9, and 13 to 18), and the script refuses an empty one by name.
 Run one at a time: two runs share one directory under `$TMPDIR` and collide.
 
 To build or test the Go program by hand, from this directory:
@@ -105,7 +105,7 @@ cd prototype && GOWORK=off go vet ./...
 bash docs/research/temporal-evaluation-2026-11/check-citations.sh
 ```
 
-It reads the answer live from Dispatch and resolves every citation in it: a Legion file and identifier, a quoted literal, a table or a column with its table, a numbered experiment, a `dispatch://` reference, and a web address with the date it was read.
+It reads the answer and the plan live from Dispatch and resolves every citation in both: a Legion file and identifier, a quoted literal, a table or a column with its table, a figure of a numbered experiment, a `dispatch://` reference, and a web address with the date it was read.
 It ends with `citations: N resolved, M unreachable, 0 failed`.
 
 ```sh

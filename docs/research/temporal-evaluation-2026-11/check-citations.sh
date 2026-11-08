@@ -17,8 +17,8 @@
 # It runs from the repository root, or from anywhere else: it finds its own directory
 # and the repository root from there, and it writes nothing.
 #
-# The grammar it implements, which both documents follow and the directory's README
-# states:
+# The grammar it implements, which both documents follow (the directory's README lists
+# the kinds of citation; this header is where their grammar is written):
 #
 #   Code         (`packages/daemon/internal/record/store.go`, `record.Postgres.Enqueue`)
 #                A repository-rooted path in a code span, a comma and a space, then a
@@ -569,7 +569,8 @@ EOF
 # transcript holds, one it does not, one that its transcript holds only inside a longer
 # number, and one number in the cell beside an experiment mention, which the cell
 # boundary keeps out of the check. The table row is the line that fails if a scope is
-# ever allowed to run across a ` | `: experiment 1 never recorded 1,294, which is
+# ever allowed to run across a ` | `: experiment 1's transcript never prints 1,294 as
+# written (its one count of Legion's lines is 1294, unseparated), and 1,294 is
 # Legion's own count of the table and the engine. The 0.16 is the line that fails if a
 # figure is ever resolved by a longer number it is a part of: experiment 2's transcript
 # prints the thousand-gate cost as 0.164294 and never as 0.16.
