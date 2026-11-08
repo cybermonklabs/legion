@@ -625,6 +625,36 @@ function changesQuestionMaps(event: DispatchEvent): boolean {
   );
 }
 
+/**
+ * Whether the event can change who the issue's collaborators are, the server's own list of what
+ * makes one (`collaboratorEventReasons` in
+ * packages/envoy/internal/dispatch/api/issue_collaborators.go): a claim, a
+ * comment, a message, an ask, a document version, and an answer to any of them. An issue
+ * document's events carry the issue's key, so the version here is that issue's.
+ *
+ * The assignee is a collaborator with no write of their own, so an `issue.updated` that moved
+ * `assignee` - or that does not say what it moved - changes the list too.
+ */
+function changesCollaborators(event: DispatchEvent): boolean {
+  switch (event.type) {
+    case "artifact.version":
+    case "ask.answered":
+    case "ask.opened":
+    case "comment.answered":
+    case "comment.created":
+    case "issue.claimed":
+    case "message.answered":
+    case "message.created":
+      return true;
+    case "issue.updated": {
+      const changes = issueChanges(event);
+      return changes === undefined || changes.has("assignee");
+    }
+    default:
+      return false;
+  }
+}
+
 /** What a project document's event refreshes: an ask, a comment, a version or a review on a
  *  document that belongs to no issue. */
 function documentTargets(event: DispatchEvent, viewer: string | undefined): RefreshTarget[] {
@@ -807,6 +837,12 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
   if (changesQuestionMaps(event)) {
     targets.push(EVERY_QUESTION_MAP);
   }
+  if (changesCollaborators(event)) {
+    // The Collaborators tab's read and the composer's "Not running" options, named here because
+    // every issue target is `exact` and because the branches below return before this point - a
+    // claim's among them, and a claim is what makes a Legion agent a collaborator.
+    targets.push({ exact: true, queryKey: ["issue", key, "collaborators"] });
+  }
   if (event.type === "decision.kept") {
     // A Keep moves one decision's row of the issue's Decisions view and nothing else: it writes
     // no document version, no ask and no issue field.
@@ -827,9 +863,10 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     event.type === "issue.released" ||
     event.type === "issue.deployed"
   ) {
-    // A claim changes only who holds the issue: its detail, its log, and the project lists that
-    // render the claim. No rollup, ask count or component attachment moves with it. A deploy is a
-    // line in the issue's log and nothing the lists or rollups read.
+    // A claim changes who holds the issue, and its holder is a collaborator from then on: the
+    // detail, the log, the project lists that render the claim, and the collaborators the
+    // branch above named. No rollup, ask count or component attachment moves with it. A deploy
+    // is a line in the issue's log and nothing the lists or rollups read.
     return targets;
   }
   if (event.type === "artifact.human_edited") {

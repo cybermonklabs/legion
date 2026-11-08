@@ -1471,6 +1471,13 @@ export class DispatchApiClient {
   getIssueReferences(key: string) {
     return this.read("/api/v1/issues/{key}/references", { key });
   }
+
+  /** Everyone who worked the issue, running or not: people, and agent sessions merged with the
+   *  listener's Legion agent registry - `legion_registry: "unavailable"` when it did not answer. */
+  getIssueCollaborators(key: string) {
+    return this.read("/api/v1/issues/{key}/collaborators", { key });
+  }
+
   /** The edges at a node; `kind` keeps those of one kind - `part_of` lists a document's blocks,
    *  which a document's read otherwise leaves out. */
   getReferences(reference: string, options: { kind?: string } = {}) {

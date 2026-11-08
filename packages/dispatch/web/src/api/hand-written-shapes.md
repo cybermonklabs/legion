@@ -29,6 +29,12 @@ generated.
   `Body<"/api/v1/artifacts/{id}/reviews", "post">`, `ErrorCandidate` is the union of the
   candidate shapes a refusal carries, and `ReferenceSourceKind` is read off that route's own
   query schema. Each is derived from the document rather than declared beside it.
+- **`types.ts`'s `IssueCollaboratorLegionAgent`** — the generated `IssueCollaboratorAgent` with
+  its `legion` entry narrowed to non-null. The two readers that keep the registry's sessions
+  apart from the rest - the Collaborators tab's Legion sections and the composer's "Not running"
+  options - narrow to it with a type guard of their own, so the narrowed shape is named once.
+  It declares no field the generated row does not; it is a refinement of it, as
+  `MyReplyThreadRow` is of `MyReplyRow`.
 - **`paths.ts`** — `PathsOf`, `Op`, `Json200`, `Json201`, `Answer`, `PathParams`, `QueryParams`,
   `JsonBodyOf`, `RequestBody`, `FormBody`, `Query`, `Body`, `Result`. These are how a route
   method reads its own shapes **out of** the generated document; each is a projection of

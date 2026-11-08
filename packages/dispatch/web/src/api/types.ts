@@ -61,6 +61,7 @@ export type {
   CheckResultCurrency,
   ChildStatusEventPayload,
   ClaimHolderLiveness,
+  CollaboratorReason,
   Comment,
   CommentDelivery,
   CommentDeliveryEventPayload,
@@ -160,6 +161,10 @@ export type {
   IssueChild,
   IssueClaim,
   IssueClaimEventPayload,
+  IssueCollaboratorAgent,
+  IssueCollaboratorLegion,
+  IssueCollaboratorPerson,
+  IssueCollaborators,
   IssueComponents,
   IssueComponentsInput,
   IssueCoverage,
@@ -233,3 +238,13 @@ export type {
   Version,
   WriteSuggestion,
 } from "@legion/contracts";
+
+import type { IssueCollaboratorAgent, IssueCollaboratorLegion } from "@legion/contracts";
+
+/** A collaborator session the Legion registry knows: its `legion` entry is never null. Both
+ *  readers that keep such sessions apart from the rest - the Collaborators tab's Legion sections
+ *  and the composer's "Not running" options - narrow to this with a type guard of their own, so
+ *  the narrowed shape is named once here. */
+export type IssueCollaboratorLegionAgent = IssueCollaboratorAgent & {
+  readonly legion: IssueCollaboratorLegion;
+};
