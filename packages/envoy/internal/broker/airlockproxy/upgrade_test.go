@@ -12,6 +12,7 @@ package airlockproxy
 import (
 	"bufio"
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
 	"net"
@@ -438,5 +439,246 @@ func TestAJoinedConnectionSurvivesAMintWhoseUpstreamCouldNotBeAsked(t *testing.T
 	}
 	if lines := r.logs.joins(); len(lines) != 0 {
 		t.Fatalf("the proxy closed the joined connection and logged %d lines for it; want none", len(lines))
+	}
+}
+
+// cutWait bounds every wait the row below makes on an event it expects. It is no part of what
+// the row proves: each of those events is one another goroutine makes happen, so the deadline
+// is there to fail the row with what the service does hold rather than to wait an event out.
+const cutWait = 5 * time.Second
+
+// blockedClose is the socket under a joined connection's TLS, with a Close that waits to be
+// released and nothing else of it changed. tls.Conn.Close writes close_notify and closes the
+// socket under it only after that write, so a Close held here holds open the exact window
+// between the two, which is the window the row below is about.
+type blockedClose struct {
+	net.Conn
+	release chan struct{}
+}
+
+func (c *blockedClose) Close() error {
+	<-c.release
+	return c.Conn.Close()
+}
+
+// copySink stands for the service at the far end of a join: it holds every byte the copy from
+// the command carried to it, and signals each write, so a row waits for a frame to arrive
+// rather than sleeping for the time one takes.
+type copySink struct {
+	mu      sync.Mutex
+	carried []byte
+	writes  chan struct{}
+}
+
+func (s *copySink) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	s.carried = append(s.carried, p...)
+	s.mu.Unlock()
+	// A signal nobody is waiting for is dropped, since the waiter below reads what the
+	// service holds before it waits at all: a drop happens only while signals are already
+	// queued, and each of those wakes that read again.
+	select {
+	case s.writes <- struct{}{}:
+	default:
+	}
+	return len(p), nil
+}
+
+// read is every byte the service has been carried so far, which a row reads while the copy to
+// it is still running.
+func (s *copySink) read() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return string(s.carried)
+}
+
+// waitFor waits until the service holds want, woken by the copy's own writes.
+func (s *copySink) waitFor(t *testing.T, want, when string) {
+	t.Helper()
+	deadline := time.After(cutWait)
+	for {
+		if strings.Contains(s.read(), want) {
+			return
+		}
+		select {
+		case <-s.writes:
+		case <-deadline:
+			t.Fatalf("%s the service read %q; want it to hold %q", when, s.read(), want)
+		}
+	}
+}
+
+// joinedStandIn is one joined connection and nothing else of the proxy: the command's side,
+// the side the proxy holds and closes, the copy to the service that httputil.ReverseProxy
+// runs for a join, and the socket's own Close held until the row lets it go. The rows above
+// drive the whole proxy because what they prove is what it decides; this one is about what a
+// close does to the bytes in flight under it, which is decided by those two halves alone.
+type joinedStandIn struct {
+	command *tls.Conn     // the command's side, which writes the frames
+	joined  *tls.Conn     // the side watchJoined closes
+	sink    *copySink     // the service the join copies the command's side to
+	copied  chan struct{} // closed when that copy returns
+	release func()        // lets the socket under joined close
+}
+
+// newJoinedStandIn builds that connection over a real TCP socket, since the frame written in
+// the window has to sit somewhere the kernel holds it while the close is in the middle of it,
+// which an in-memory pipe has nowhere to do.
+func newJoinedStandIn(t *testing.T) *joinedStandIn {
+	t.Helper()
+	authority := newTestAuthority(t)
+	certificate, err := authority.leaf(boundHost)
+	if err != nil {
+		t.Fatalf("the joined connection's certificate: %v", err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for the joined connection: %v", err)
+	}
+	defer func() { _ = listener.Close() }()
+
+	released := make(chan struct{})
+	var once sync.Once
+	release := func() { once.Do(func() { close(released) }) }
+	// A row that fails inside the window would otherwise leave the close waiting for a
+	// release nobody writes.
+	t.Cleanup(release)
+
+	type served struct {
+		conn *tls.Conn
+		err  error
+	}
+	serving := make(chan served, 1)
+	go func() {
+		raw, err := listener.Accept()
+		if err != nil {
+			serving <- served{err: err}
+			return
+		}
+		joined := tls.Server(&blockedClose{Conn: raw, release: released}, &tls.Config{Certificates: []tls.Certificate{*certificate}})
+		if err := joined.Handshake(); err != nil {
+			serving <- served{err: err}
+			return
+		}
+		serving <- served{conn: joined}
+	}()
+
+	trust := x509.NewCertPool()
+	trust.AddCert(authority.Certificate())
+	command, err := tls.Dial("tcp", listener.Addr().String(), &tls.Config{RootCAs: trust, ServerName: boundHost})
+	if err != nil {
+		t.Fatalf("dial the joined connection: %v", err)
+	}
+	t.Cleanup(func() { _ = command.Close() })
+	answered := <-serving
+	if answered.err != nil {
+		t.Fatalf("the side the proxy holds: %v", answered.err)
+	}
+
+	join := &joinedStandIn{
+		command: command,
+		joined:  answered.conn,
+		sink:    &copySink{writes: make(chan struct{}, 8)},
+		copied:  make(chan struct{}),
+		release: release,
+	}
+	go func() {
+		defer close(join.copied)
+		_, _ = io.Copy(join.sink, join.joined)
+	}()
+	return join
+}
+
+// waitCopied waits for the copy to the service to return. After the cut that return is the
+// row's own event, since the cut is what ends the copy and nothing is timed to make it
+// happen; at the end of either half it says the copy is over, so what the service holds then
+// is all it will ever hold.
+func (j *joinedStandIn) waitCopied(t *testing.T, when string) {
+	t.Helper()
+	select {
+	case <-j.copied:
+	case <-time.After(cutWait):
+		t.Fatalf("the copy to the service did not return %s", when)
+	}
+}
+
+// readEnd reads the command's side to the end of the stream, which is the close_notify the
+// close wrote: the command is told the stream has ended, and the socket under it is still
+// open while it is told, which is the window itself.
+func (j *joinedStandIn) readEnd(t *testing.T) {
+	t.Helper()
+	if err := j.command.SetReadDeadline(time.Now().Add(cutWait)); err != nil {
+		t.Fatalf("set the command's read deadline: %v", err)
+	}
+	rest, err := io.ReadAll(j.command)
+	if err != nil {
+		t.Fatalf("read the command's side to the end of the stream: %v", err)
+	}
+	if len(rest) != 0 {
+		t.Fatalf("the command read %q before the end of the stream; want nothing", rest)
+	}
+}
+
+// TestTheCloseOfAJoinedConnectionCutsTheCommandsSideFirst: the connection the close ends is a
+// *tls.Conn, and tls.Conn.Close writes close_notify first and closes the socket under it only
+// after that write, which crypto/tls gives five seconds of its own. The command reads that
+// close_notify as the end of the stream while the socket is still open and the join's copy of
+// the command's side is still reading it, so a command that answers the end of a stream with
+// one more frame - which is what a framed protocol does - has that frame carried to the
+// service after the airlock decided the grant no longer carries the connection. cutJoined
+// ends the reads of the command's side before the close, which shuts that window.
+//
+// The plain close is the row's negative control, and it belongs in it because it is what says
+// the window is real: the late frame crosses it, so the cut above is what shut it rather than
+// a window that had closed itself. The socket's own Close waits for the row to let it go, so
+// the window is held open rather than raced for, and every wait is on an event another
+// goroutine makes happen rather than on a sleep.
+func TestTheCloseOfAJoinedConnectionCutsTheCommandsSideFirst(t *testing.T) {
+	const (
+		carried = "a frame while the grant carries this connection\n"
+		late    = "a frame after the grant stopped carrying it\n"
+	)
+	for _, row := range []struct {
+		name  string
+		close func(net.Conn)
+		// crosses is whether the late frame reaches the service, which is what the
+		// control shows and what the cut must not.
+		crosses bool
+	}{
+		{"the cut before the close carries no frame written after it", cutJoined, false},
+		{"a plain close carries one, which is the window the cut shuts", func(c net.Conn) { _ = c.Close() }, true},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			join := newJoinedStandIn(t)
+			if _, err := join.command.Write([]byte(carried)); err != nil {
+				t.Fatalf("write the frame from before the close: %v", err)
+			}
+			join.sink.waitFor(t, carried, "before the close")
+
+			// In a goroutine because the socket under the close is held: the close sits
+			// in the window this row is about until the release below.
+			go row.close(join.joined)
+			if row.crosses {
+				join.readEnd(t)
+			} else {
+				join.waitCopied(t, "after the cut")
+			}
+			if _, err := join.command.Write([]byte(late)); err != nil {
+				t.Fatalf("write the late frame: %v", err)
+			}
+			if row.crosses {
+				join.sink.waitFor(t, late, "while the socket under the close was still open")
+			}
+
+			join.release()
+			join.waitCopied(t, "after the socket under the close was let go")
+			want := carried
+			if row.crosses {
+				want = carried + late
+			}
+			if got := join.sink.read(); got != want {
+				t.Fatalf("the service read %q; want %q", got, want)
+			}
+		})
 	}
 }

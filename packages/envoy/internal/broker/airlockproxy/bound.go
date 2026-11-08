@@ -460,11 +460,26 @@ func (s *Server) watchJoined(ctx context.Context, decrypted net.Conn, info connI
 			continue
 		}
 		s.log.Info(joinMessage, s.callFields(info, r, chosen, status, why)...)
-		// The close ends the copy in both directions, so the ServeHTTP this watcher was
+		// The cut ends the copy in both directions, so the ServeHTTP this watcher was
 		// started for returns and the cancel there stops this goroutine.
-		decrypted.Close()
+		cutJoined(decrypted)
 		return
 	}
+}
+
+// cutJoined stops the bytes of a joined connection and then closes it. The cut comes first
+// because the connection is a *tls.Conn, and tls.Conn.Close writes close_notify, which the
+// command reads as the end of the stream, and closes the socket under it only after that
+// write, which crypto/tls gives five seconds of its own: in that window the copy from the
+// command is still running on an open socket, so a command that answers the end of the stream
+// with one more frame would have that frame carried to the service after the airlock decided
+// the grant no longer carries this connection. A read deadline in the past ends every read of
+// the command's side at once, the one in flight included, so nothing crosses after the
+// decision; the close then ends the connection as it did, close_notify and all, since a read
+// deadline bounds no write.
+func cutJoined(c net.Conn) {
+	_ = c.SetReadDeadline(time.Now())
+	_ = c.Close()
 }
 
 // joinRefusal is why the grant behind a joined connection no longer carries it, and "" while it
