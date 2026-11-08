@@ -406,7 +406,8 @@ func (r *Runtime) driftedInPod(pod *corev1.Pod, role claim.Role) []movedAddress 
 // pod without that owner's directory has drifted and is replaced by its next launch.
 //
 // Owner directories alone are compared, on both sides (ghOwnerDirs). A bundle built now holds a
-// `<owner>/<repo>` directory for each other repository the pod's own owner serves, and a pod that
+// `<owner>/<repo>` directory for each other repository the pod's recorded owner and the owner
+// whose installation serves its repository serve, and a pod that
 // lacks one of those is not a pod to replace: a repository the mapping gains under another owner
 // is reached through that owner's directory, whose read lease the refresher re-mints over the
 // repositories the mapping serves now, and one it gains under the pod's own write owner is read

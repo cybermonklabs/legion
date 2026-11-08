@@ -2529,32 +2529,77 @@ test("a stopped send the reader comes back to a day later says its key has run o
   }
 });
 
-// A closed owner takes no send. Its composer stays mounted for a send it still has out and for
-// that send's refusal - Send refused, Discard draft in place of Retry - and shows nothing else.
-test("a closed composer shows only a send of its own still out, then its refusal with Discard", async () => {
-  const refused = Promise.withResolvers<Comment>();
-  const createComment = spyOn(api, "createComment").mockReturnValueOnce(refused.promise);
+// A closed issue takes comments: its composer shows and sends one, and a refusal still shows,
+// with Retry, as on an open issue. It refuses suggestions and asks, so the kind switch offers
+// neither there.
+test("a closed composer sends a comment, hides Suggest and Ask, and still shows a refusal", async () => {
   const user = userEvent.setup();
-  const { rerender, view } = renderComposer();
+  const createComment = spyOn(api, "createComment")
+    .mockRejectedValueOnce(commentRefused)
+    .mockResolvedValueOnce(createdComment);
+  const anchor = { artifact: "artifact-1", mark_id: "mark-1", quote: "brown" };
+  const props = { anchor, closed: true, onKindChange: () => undefined };
+  const { rerender, view } = renderComposer(props);
 
   try {
-    rerender({ closed: true });
-    expect(screen.queryByRole("form", { name: "Comment composer" })).not.toBeInTheDocument();
-    rerender({});
+    expect(screen.getByRole("form", { name: "Comment composer" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Suggest" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Ask" })).toBeNull();
+    rerender({ anchor, onKindChange: () => undefined });
+    expect(screen.getByRole("button", { name: "Suggest" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Ask" })).toBeTruthy();
+    rerender(props);
 
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
     await user.click(field);
     await user.keyboard("{Control>}a{/Control}");
-    await user.paste("Closing under me");
+    await user.paste("After the close");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await screen.findByText(`Couldn't send — ${COMMENT_REFUSED}`);
+    expect(field.value).toBe("After the close");
+    expect(screen.queryByRole("button", { name: "Discard draft" })).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(2));
+    expect(createComment.mock.calls.at(-1)?.[1]).toEqual({
+      anchor: { artifact: "artifact-1", mark_id: "mark-1" },
+      body: "After the close",
+    });
+    await waitFor(() => expect(field.value).toBe(""));
+  } finally {
+    view.unmount();
+    createComment.mockRestore();
+  }
+});
+
+// A suggestion is a proposed edit a closed issue refuses. Its composer stays mounted for a send it
+// still has out and for that send's refusal - Send refused, Discard draft in place of Retry - and
+// shows nothing else.
+test("a closed suggestion composer shows only a send of its own still out, then its refusal with Discard", async () => {
+  const refused = Promise.withResolvers<Comment>();
+  const createComment = spyOn(api, "createComment").mockReturnValueOnce(refused.promise);
+  const user = userEvent.setup();
+  const anchor = { artifact: "artifact-1", mark_id: "mark-1", quote: "brown" };
+  const { rerender, view } = renderComposer({ anchor, kind: "suggestion" });
+
+  try {
+    rerender({ anchor, closed: true, kind: "suggestion" });
+    expect(screen.queryByRole("form", { name: "Comment composer" })).not.toBeInTheDocument();
+    rerender({ anchor, kind: "suggestion" });
+
+    const replacement = screen.getByLabelText<HTMLTextAreaElement>("Replacement");
+    await user.click(replacement);
+    await user.keyboard("{Control>}a{/Control}");
+    await user.paste("red");
     await user.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
-    rerender({ closed: true });
+    rerender({ anchor, closed: true, kind: "suggestion" });
     expect(screen.getByRole("form", { name: "Comment composer" })).toBeTruthy();
     expect(holdControls().disabled).toBe(true);
 
     refused.reject(new ApiError(409, { code: "ISSUE_CLOSED", error: "issue is closed" }));
     await screen.findByText("Couldn't send — issue is closed");
-    expect(screen.getByLabelText<HTMLTextAreaElement>("Comment").value).toBe("Closing under me");
+    expect(screen.getByLabelText<HTMLTextAreaElement>("Replacement").value).toBe("red");
     expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
     const send = screen.getByRole("button", { name: "Send" });
     expect(send).toHaveAttribute("aria-disabled", "true");

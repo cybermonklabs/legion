@@ -31,6 +31,7 @@ function Composer({
 }: {
   anchor?: ComposerAnchor;
   autoFocus?: boolean;
+  closed?: boolean;
   edit?: { body: string; id: string };
   inline?: boolean;
   kind: ComposerKind;
@@ -281,6 +282,46 @@ test("Composer sends the browser mark id for asks, comments, and suggestions", a
     suggestion.unmount();
   } finally {
     createAsk.mockRestore();
+    createComment.mockRestore();
+  }
+});
+
+// A closed issue's document holds no provisional mark: the composer names the text by quote and
+// occurrence, which the server anchors, and offers no other kind.
+test("Composer on a closed issue sends a quote anchor by its quote and occurrence", async () => {
+  const user = userEvent.setup();
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const createComment = spyOn(api, "createComment").mockResolvedValue(undefined as never);
+
+  try {
+    const view = render(
+      <QueryClientProvider client={queryClient}>
+        <Composer
+          anchor={{ artifact: "document-1", occurrence: 2, quote: "brown" }}
+          closed
+          kind="comment"
+          onClose={() => {}}
+          owner={{ key: "CORE-1", kind: "issue" }}
+        />
+      </QueryClientProvider>
+    );
+    expect(screen.queryByRole("button", { name: "Suggest" })).toBeNull();
+    expect(screen.queryByRole("button", { exact: true, name: "Ask" })).toBeNull();
+    await user.click(screen.getByLabelText("Comment"));
+    await user.paste("After the close");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
+    expect(createComment.mock.calls[0]?.slice(0, 2)).toEqual([
+      "CORE-1",
+      {
+        anchor: { artifact: "document-1", occurrence: 2, quote: "brown" },
+        body: "After the close",
+      },
+    ]);
+    view.unmount();
+  } finally {
     createComment.mockRestore();
   }
 });

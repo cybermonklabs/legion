@@ -1,6 +1,6 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
@@ -82,8 +82,10 @@ test("confirming the staged file uploads it with the typed summary", async () =>
     await user.paste("First draft");
     await user.click(screen.getByRole("button", { name: "Upload" }));
 
+    // The upload goes out once its file is kept in IndexedDB (`features/writes/write-store.ts`),
+    // which is not the press's own tick, so the row waits for the call.
+    await waitFor(() => expect(uploadArtifact).toHaveBeenCalledTimes(1));
     await screen.findByText("Upload");
-    expect(uploadArtifact).toHaveBeenCalledTimes(1);
     const [, input] = uploadArtifact.mock.calls[0] ?? [];
     expect(input?.name).toBe("notes.md");
     expect(input?.summary).toBe("First draft");
