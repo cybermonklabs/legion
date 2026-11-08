@@ -39,42 +39,45 @@ COPY packages/dispatch/package.json packages/dispatch/package.json
 COPY packages/proof-editor/package.json packages/proof-editor/package.json
 COPY packages/envoy/internal/dispatch/pmdoc/gen/package.json packages/envoy/internal/dispatch/pmdoc/gen/package.json
 COPY docs/site/package.json docs/site/package.json
-# Four of the twelve packages the lockfile resolves, because the SPA build and the contract
+# Four of the twelve workspaces the lockfile resolves, because the SPA build and the contract
 # codegen that follow read no more: packages/dispatch, packages/contracts,
-# packages/proof-editor, and the root workspace, whose spdx-expression-parse and
-# spdx-license-list are what scripts/third-party-notices.ts imports (that script is imported by
+# packages/proof-editor, and the root workspace, which under Bun's isolated linker is the only
+# supplier of packages scripts/third-party-notices.ts imports, among them zod,
+# spdx-expression-parse and spdx-license-list (that script is imported by
 # packages/dispatch/web/vite.config.ts). Every manifest is still copied above: the lockfile
 # resolves against all of them.
 # Each pattern begins with ./ because Bun reads a pattern without one as a package name, and
-# these packages are named @sjawhar/dispatch, @legion/contracts and @legion/proof-editor.
+# these workspaces are named @sjawhar/dispatch, @legion/contracts and @legion/proof-editor.
+# A filter that drops one of them is caught by the build rather than by a check: with './'
+# removed the install takes 571 packages and `bun run build:web` below then fails with
+# `Cannot find package 'spdx-expression-parse'`.
 # --frozen-lockfile stays immediately after install:
 # .github/scripts/check-bun-workspace-manifests.sh matches `bun install --frozen-lockfile`, and a
 # flag written between the two takes this install out of that check's sight, silently.
-# --ignore-scripts, because one package's lifecycle script costs this stage more than every
-# other part of the install together. Bun runs an install script only for a package on its own
-# trusted list, and better-sqlite3 is on it; prebuild-install fetches no prebuilt binary for
-# that package under Bun ("not yet supported in Bun", oven-sh/bun#4290), so node-gyp compiles it
-# from source on every install, and the stage then needs python3, make and g++ for a module the
-# image never ships: packages/proof-editor reaches it through proof-sdk, and nothing of it is
-# copied out of this stage. Measured on one runner, cold, this Dockerfile and main's copy of it
-# built one after the other in run 42433931955, job 128588657023: this install's layer takes
-# 4.2 s for its 576 packages where main's takes 72.5 s for its 928, and the whole build step
-# 99 s against 169 s. The two images that job built hold the same paths once each web asset's
-# content-hash suffix is taken out of the name, the same multiset of file sizes and the same
-# SHA-256 for each of the four binaries and the two notice files; the suffixes themselves move
-# on every build of any tree, which is why the comparison normalises them. A dependency that
-# ever does need its script fails this build where the script would have run, loudly, and that
-# comparison is what says whether what the image ships has moved.
-RUN bun install --frozen-lockfile --ignore-scripts --filter './' --filter './packages/dispatch' --filter './packages/contracts' --filter './packages/proof-editor'
+# --ignore-scripts skips the lifecycle script of every package installed here, not one package's.
+# Bun runs such a script only for a package on its own trusted list, which holds because the
+# root package.json sets no trustedDependencies; in this install that list reaches
+# better-sqlite3 and esbuild's postinstall. better-sqlite3 is the reason for the flag:
+# prebuild-install fetches no prebuilt binary for it under Bun ("not yet supported in Bun",
+# oven-sh/bun#4290), so node-gyp compiles it from source on every install, and the stage then
+# needs python3, make and g++ for a module the image never ships, which packages/proof-editor
+# reaches through proof-sdk and nothing copies out of this stage.
+# A dependency that needs its install script is skipped with no message, and fails only a later
+# step that reads what the script would have written, or never. No CI job compares the image's
+# contents, so whoever adds such a dependency checks it themselves.
+RUN bun install --frozen-lockfile --ignore-scripts \
+    --filter './' \
+    --filter './packages/dispatch' \
+    --filter './packages/contracts' \
+    --filter './packages/proof-editor'
 
 COPY packages/contracts packages/contracts
 COPY packages/dispatch packages/dispatch
 COPY packages/proof-editor packages/proof-editor
 # The SPA build writes dist/THIRD_PARTY_NOTICES.txt with this (packages/dispatch/web/vite.config.ts).
 COPY scripts/third-party-notices.ts scripts/third-party-notices.ts
-# WORKDIR rather than `RUN cd … && …`, which Docker's build best-practices page names. The
-# stage ends at /repo/packages/dispatch, which reaches nothing: every later stage copies out of
-# it by absolute path (`COPY --from=web /repo/…`).
+# The stage ends with its working directory at /repo/packages/dispatch, which reaches nothing:
+# every later stage copies out of it by absolute path (`COPY --from=web /repo/…`).
 WORKDIR /repo/packages/contracts
 RUN bun run gen:go
 WORKDIR /repo/packages/dispatch

@@ -180,13 +180,8 @@ ARG PGDG_KEY_SHA256=0144068502a1eddd2a0280ede10ef607d1ec592ce819940991203941564e
 FROM ghcr.io/cybermonklabs/legion/ci@sha256:1846adf22496bd711036aae8be147e57bdebbaea2e5264e3e0b5af1db187d9a4 AS plugin
 WORKDIR /repo
 # jq: the same version and omp.extensions rewrites release.yaml's pi_envoy_build and pi_legion_build jobs run.
-# python3/make/g++: node-gyp compiles a native dependency of this stage's own install from
-# source, because Bun fetches no prebuilt binary for one (better-sqlite3, oven-sh/bun#4290), and
-# node-gyp needs all three. It is this install's business alone: packages/envoy/docker/Dockerfile
-# carried the same three for the same reason and no longer does, since its install narrowed to
-# the four workspaces the Dispatch web build reads and took --ignore-scripts with it, so this
-# line mirrors that one no more. An install here that stops needing a compiler is what retires
-# these three.
+# python3/make/g++: node-gyp compiles better-sqlite3 from source in the install below, because
+# Bun fetches no prebuilt binary for it (oven-sh/bun#4290), and node-gyp needs all three.
 # hadolint ignore=DL3008
 RUN apt-get update && apt-get install -y --no-install-recommends jq python3 make g++ \
     && rm -rf /var/lib/apt/lists/*
