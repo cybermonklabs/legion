@@ -447,10 +447,15 @@ test("project board: 20 title writes 250 ms apart send at most 7 list reads and 
     });
     await page.clock.install();
     await page.goto("/projects/CORE");
+    await page.getByRole("button", { name: "Board", exact: true }).click();
+    const board = page.getByRole("region", { name: "Project board", exact: true });
     const first = issues[0];
     const last = issues[issues.length - 1];
     if (first === undefined || last === undefined) throw new Error("no issues seeded");
-    await expect(page.getByLabel(`${last.key} ${last.title}`, { exact: true })).toBeVisible();
+    await expect(
+      board.getByRole("article", { name: `${last.key} ${last.title}`, exact: true })
+    ).toBeVisible();
+    await expect(page.getByRole("table", { name: "Project issues table" })).toHaveCount(0);
     // The board's barrier: a card shows a title only an event can have brought.
     let barrier = 0;
     await expect
@@ -460,9 +465,9 @@ test("project board: 20 title writes 250 ms apart send at most 7 list reads and 
           const title = `${first.title} (barrier ${barrier})`;
           await patchIssue(first.key, { title }, bob);
           try {
-            await expect(page.getByLabel(`${first.key} ${title}`, { exact: true })).toBeVisible({
-              timeout: 2_000,
-            });
+            await expect(
+              board.getByRole("article", { name: `${first.key} ${title}`, exact: true })
+            ).toBeVisible({ timeout: 2_000 });
             return true;
           } catch {
             return false;
@@ -479,9 +484,9 @@ test("project board: 20 title writes 250 ms apart send at most 7 list reads and 
       await until(startedAt + index * 250);
       await patchIssue(issue.key, { title: `${issue.title} renamed` }, bob);
     }
-    await expect(page.getByLabel(`${last.key} ${last.title} renamed`, { exact: true })).toBeVisible(
-      { timeout: 2_000 }
-    );
+    await expect(
+      board.getByRole("article", { name: `${last.key} ${last.title} renamed`, exact: true })
+    ).toBeVisible({ timeout: 2_000 });
     await drainRefreshWindow(page, traffic);
     console.log(`REFETCH-BOARD [${testInfo.project.name}] project list reads: ${listReads}`);
     expect(listReads).toBeLessThanOrEqual(7);

@@ -476,7 +476,8 @@ test("moving between issue documents leaves one open document connection, not on
     const page = await alice.newPage();
     const open = openDocumentSockets(page);
     await page.goto(`/projects/NAVDOC/issues`);
-    await page.getByRole("link", { name: new RegExp(first.key) }).click();
+    const table = page.getByRole("table", { name: "Project issues table" });
+    await table.getByRole("link", { name: first.key, exact: true }).click();
     await expect(documentEditor(page)).toContainText("First body.");
     await expect.poll(open).toBe(1);
 
@@ -489,11 +490,11 @@ test("moving between issue documents leaves one open document connection, not on
     for (let visit = 0; visit < 4; visit += 1) {
       await page.mouse.move(0, 0);
       await page.goBack();
-      await page.getByRole("link", { name: new RegExp(second.key) }).click();
+      await table.getByRole("link", { name: second.key, exact: true }).click();
       await expect(documentEditor(page)).toContainText("Second body.");
       await page.mouse.move(0, 0);
       await page.goBack();
-      await page.getByRole("link", { name: new RegExp(first.key) }).click();
+      await table.getByRole("link", { name: first.key, exact: true }).click();
       await expect(documentEditor(page)).toContainText("First body.");
     }
     await expect.poll(open).toBe(1);

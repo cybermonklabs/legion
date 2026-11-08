@@ -1155,7 +1155,9 @@ test("on a phone, a comment link to the newest conversation marks the issue read
     // Where the reader comes from, so the back below leaves the issue rather than landing on
     // the Conversation, whose own dwell would write the mark whatever the thread did.
     await page.goto("/projects/CORE/issues");
-    const issueLink = page.getByRole("link", { name: new RegExp(issue.key) }).first();
+    const issueLink = page
+      .getByRole("table", { name: "Project issues table" })
+      .getByRole("link", { name: issue.key, exact: true });
     await drawn(issueLink, 1);
     await expect(issueLink).toBeVisible();
 
