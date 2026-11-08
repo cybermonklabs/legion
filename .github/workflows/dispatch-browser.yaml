@@ -145,11 +145,12 @@ jobs:
     # job maxima, so letting that one leg set this figure would charge the job twice for a stall
     # the step already holds.
     #
-    # The rows behind those seconds were the suite of the head those runs measured. Listed at
-    # this head, after the forward merges of main, the suite holds 1,200 rows: 1,145 in the
-    # eight projects the full lane's four shards run, of which 1,058 are in the two the
-    # pull-request lane runs. The remaining 55 are the three `-alone` projects', which the alone
-    # job runs.
+    # The rows behind those seconds were the suite of the head those runs measured. Counted at
+    # this head, by the project tag of each row of `playwright test --list` rather than by hand,
+    # the suite holds 1,474 rows: 1,418 in the eight projects the full lane's four shards run,
+    # of which 1,203 are in the two the pull-request lane runs. The remaining 56 are the three
+    # `-alone` projects' (22, 17 and 17), which the alone job runs. A count here is a snapshot
+    # and goes stale: count it again rather than trusting this line.
     timeout-minutes: 33
     strategy:
       fail-fast: false
@@ -437,9 +438,11 @@ jobs:
   alone:
     if: inputs.lane == 'full'
     runs-on: ubuntu-24.04
-    # The three projects whose rows are read from the wall clock, one machine each. Each runs with
+    # The three projects whose rows are measured rather than merely run, one machine each: two
+    # read a wall-clock time and one reads how many bytes a page fetched, and all three are
+    # wrong if anything else runs beside them. Each runs with
     # one worker and `--no-deps`, so nothing else is on the machine while it measures. The full
-    # lane alone: a pull request runs no clock row, since a shard job's machine cannot hold one
+    # lane alone: a pull request runs no measured row, since a shard job's machine cannot hold one
     # still enough to measure.
     #
     # Its steps are the shard job's, with four differences - one worker rather than four, the
@@ -622,14 +625,14 @@ jobs:
         # these projects' rows are read from the wall clock, and three other lanes on the machine
         # would be in the reading.
         #
-        # No file store on this machine, and no DISPATCH_E2E_FILE_STORE_* names: every spec these
-        # legs run is a clock spec, and no clock spec uploads or downloads anything.
-        # chromium-alone runs all three (`clockSpecs`: heavy-bodies, heavy-document-writes and
-        # nested-directive, named at e2e/playwright.config.ts:201 and taken by that project at
-        # :382), firefox-alone and webkit-alone run
-        # heavy-bodies alone (:390, :402). And e2e/run.ts:126-130 makes no lane bucket at one
-        # worker. A container serving nothing would be charged to the very reading these rows
-        # exist for. A clock spec that later uploads fails here by name rather than quietly.
+        # No file store on this machine, and no DISPATCH_E2E_FILE_STORE_* names: no spec these
+        # legs run needs one. A row that uploads is answered from the stored row's own bytes,
+        # since e2e/run-server.sh wires a store only under DISPATCH_E2E_FILE_STORE_ENDPOINT, so
+        # view-bytes.e2e.ts, which uploads a page file and data files, measures correctly here
+        # with none. chromium-alone runs the three clock specs and that file (`measuredSpecs`,
+        # e2e/playwright.config.ts), firefox-alone and webkit-alone run heavy-bodies alone. And
+        # e2e/run.ts:126-130 makes no lane bucket at one worker. A container serving nothing
+        # would be charged to the very reading these rows exist for.
         #
         # The memory and CPU sampler both this job and the shard job run is
         # .github/scripts/dispatch-browser-samples.sh: MemAvailable and where the CPU goes,

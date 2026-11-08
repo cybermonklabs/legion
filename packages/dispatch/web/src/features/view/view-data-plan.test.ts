@@ -65,8 +65,8 @@ function grantOf(version: number | null, id = "grant-1", artifact = "data-1"): A
 const unasked: PinnedVersionResult = { data: undefined, error: null, isError: false };
 
 /** A read of a pinned version that answered: the bytes it weighs, and the type its row
- *  records. */
-function answered(size: number, mime: string | null = null): PinnedVersionResult {
+ *  records, absent where it records none. */
+function answered(size: number, mime?: string): PinnedVersionResult {
   return { data: { mime, size }, error: null, isError: false };
 }
 

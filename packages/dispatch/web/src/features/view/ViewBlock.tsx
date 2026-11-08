@@ -1,7 +1,7 @@
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 
-import { ApiError, api, artifactVersionUrl } from "../../api/client";
+import { ApiError, artifactVersionUrl } from "../../api/client";
 import { borderDefault, dangerText, linkText, textMutedOnSurface } from "../../theme/classes";
 import {
   artifactGrantsQuery,
@@ -44,40 +44,28 @@ const PAGE_REFUSALS: Record<number, string> = {
   415: "this file is not a page file",
 };
 
-/** One version's size in bytes, as the `HEAD` of its address answers `Content-Length`. A
- *  summary carries the latest version's size alone, so this is what a block weighs against the
- *  16 MiB whenever the version it sends is an older one, whether the reference or the grant
- *  pinned it (dispatch://INFRA-682, R6). The server answers the `HEAD` from the row's length,
- *  reading none of the bytes. */
-async function versionSize(id: string, version: number): Promise<number> {
+/** What the block must know about a version a pin holds back from the latest, which the summary
+ *  answers for the latest version alone: how many bytes it weighs against the 16 MiB, and the
+ *  type it is stored under, which is what the page is told the file is
+ *  (dispatch://INFRA-682, R6).
+ *
+ *  One `HEAD` of the version's own address answers both. The server reads them off the row,
+ *  reading none of the bytes, and names the stored type in a header of its own
+ *  (`X-Dispatch-Stored-Type`) because `Content-Type` cannot: a version stored as `text/html`,
+ *  `application/xhtml+xml`, `image/svg+xml`, `text/xml` or `application/xml` is downloaded as
+ *  `application/octet-stream`, so that no uploaded file is drawn as a page on Dispatch's own
+ *  origin. One read for both facts is also why they cannot disagree, and why an update reads
+ *  no list of the artifact's versions - of which `kernel-loop.json` has over two thousand. */
+async function pinnedVersion(id: string, version: number): Promise<PinnedVersion> {
   const response = await fetch(artifactVersionUrl(id, version), {
     credentials: "same-origin",
     method: "HEAD",
   });
-  const length = contentLengthBytes(response.headers.get("Content-Length"));
-  if (!response.ok || length === undefined) {
+  const size = contentLengthBytes(response.headers.get("Content-Length"));
+  if (!response.ok || size === undefined) {
     throw new ApiError(response.status, { error: "this version's size cannot be read" });
   }
-  return length;
-}
-
-/** What the block must know about a version a pin holds back from the latest, which the summary
- *  answers for the latest version alone: how many bytes it weighs, and the type it is stored
- *  under, which is what the page is told the file is.
- *
- *  The type is the version row's, from the artifact's versions list, because the read of the
- *  bytes no longer carries it: a version stored as `text/html`, `application/xhtml+xml`,
- *  `image/svg+xml`, `text/xml` or `application/xml` is downloaded as `application/octet-stream`,
- *  so that no uploaded file is drawn as a page on Dispatch's own origin. The versions list is
- *  read only where a pin holds the version back, and a read of it that fails leaves the page
- *  with no type rather than no file: the size, which the cap rests on, is the `HEAD`'s. */
-async function pinnedVersion(id: string, version: number): Promise<PinnedVersion> {
-  const [size, artifact] = await Promise.all([
-    versionSize(id, version),
-    api.getArtifact(id).catch(() => undefined),
-  ]);
-  const stored = artifact?.versions.find((row) => row.number === version);
-  return { mime: stored?.mime ?? null, size };
+  return { mime: response.headers.get("X-Dispatch-Stored-Type") ?? undefined, size };
 }
 
 /** No read has failed: the lines a block starts with, and the map it keeps while every read

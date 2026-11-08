@@ -138,14 +138,31 @@ func downloadContentType(storedType string) string {
 	return storedType
 }
 
+// storedTypeHeader names the type a version is stored under, which Content-Type cannot: the
+// five types an engine draws as a document are downloaded as `application/octet-stream`
+// (downloadContentType), so a reader that must say what a file is - a `view` block telling its
+// page what it is being given (R6, dispatch://INFRA-682) - would otherwise have to read the
+// artifact's whole versions list for it. A browser acts on no header of this name, so naming
+// the stored type here takes nothing back from the rule above: the body is still typed as a
+// thing no engine draws.
+const storedTypeHeader = "X-Dispatch-Stored-Type"
+
 // downloadHeaders is the download answer's headers, written once with the body's length:
 // serveFileVersion hands it to serveVersionBytes, which calls it after the last refusal and
 // before the first byte, and a HEAD calls it itself on the length of the version's bytes, having
 // read none of them (getArtifactVersion). Both answers carry the same headers, Content-Length
-// included.
+// included, so one HEAD answers both facts about one version - how many bytes it weighs and
+// what it is stored as - and the two can never be read from two answers that disagree.
+//
+// A version whose row records no type carries no storedTypeHeader at all, rather than an empty
+// one: the reader is told nothing, which is what the row holds.
 func downloadHeaders(w http.ResponseWriter, contentType, sha *string) func(length int64) {
 	return func(length int64) {
-		w.Header().Set("Content-Type", downloadContentType(deref(contentType)))
+		stored := deref(contentType)
+		w.Header().Set("Content-Type", downloadContentType(stored))
+		if stored != "" {
+			w.Header().Set(storedTypeHeader, stored)
+		}
 		if sha != nil {
 			w.Header().Set("ETag", *sha)
 		}

@@ -3,10 +3,11 @@
  * block as a reader's page holds it, the data a page draws, the issue that holds a page file
  * and a data file, and opening a comment's thread in the Conversation.
  *
- * One module, so a change to the directive or to the seed is one edit rather than four:
- * `view-block.e2e.ts`, `view-budget.e2e.ts`, `view-grants.e2e.ts` and `view-sandbox.e2e.ts`
- * each kept a copy of these, and the four copies were the same text. Only the page a row shows
- * stays the row's own, since each spec reads something different of its page.
+ * One module, so a change to the directive or to the seed is one edit rather than five:
+ * `view-block.e2e.ts`, `view-budget.e2e.ts`, `view-bytes.e2e.ts`, `view-grants.e2e.ts` and
+ * `view-sandbox.e2e.ts` each read these, and the copies they kept before were the same text.
+ * Only the page a row shows stays the row's own, since each spec reads something different of
+ * its page.
  */
 import { expect, type Locator, type Page } from "@playwright/test";
 

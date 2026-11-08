@@ -233,6 +233,56 @@ func TestAHeadOfAStoreBackedVersionAnswersItsLengthWithoutReadingTheObject(t *te
 	}
 }
 
+// The same `HEAD` says what the version is stored as, which its Content-Type cannot: a version
+// stored as one of the five types an engine draws as a document is downloaded as
+// `application/octet-stream`, so that no uploaded file is drawn as a page on Dispatch's own
+// origin. A `view` block tells its page what each file it sends is (dispatch://INFRA-682, R6),
+// and one read of one version answers both facts it needs - the bytes it weighs against the
+// 16 MiB and the type it is stored under - so the two can never come from two answers that
+// disagree, and no reader of this route has to fetch the artifact's whole versions list for a
+// type.
+func TestAFileVersionsHeadNamesTheTypeItIsStoredUnder(t *testing.T) {
+	handler, database, _ := newTestServer(t, testServerOptions{})
+	issue := fileIssue(t, handler)
+	drawing := []byte(`<svg xmlns="http://www.w3.org/2000/svg"/>`)
+	version := uploadTestFile(t, handler, "/api/v1/issues/"+issue+"/artifacts", "shape.svg", "image/svg+xml", drawing)
+	route := "/api/v1/artifacts/" + version.Artifact.ID + "/versions/1"
+
+	head := dispatchRequest(t, handler, http.MethodHead, route, nil, "alice")
+	if head.Code != http.StatusOK {
+		t.Fatalf("HEAD: status=%d body=%s, want 200", head.Code, head.Body.String())
+	}
+	if got := head.Header().Get("X-Dispatch-Stored-Type"); got != "image/svg+xml" {
+		t.Errorf("HEAD X-Dispatch-Stored-Type = %q, want image/svg+xml", got)
+	}
+	if got := head.Header().Get("Content-Type"); got != "application/octet-stream" {
+		t.Errorf("HEAD Content-Type = %q, want application/octet-stream: the body is drawn by no engine", got)
+	}
+	if got := head.Header().Get("Content-Length"); got != strconv.Itoa(len(drawing)) {
+		t.Errorf("HEAD Content-Length = %q, want %d: one answer carries the size as well", got, len(drawing))
+	}
+
+	// The GET says the same, since both answers are written by one function: a reader that
+	// weighed a version by its HEAD and drew it from its GET is told one type.
+	served := dispatchRequest(t, handler, http.MethodGet, route, nil, "alice")
+	if got := served.Header().Get("X-Dispatch-Stored-Type"); got != "image/svg+xml" {
+		t.Errorf("GET X-Dispatch-Stored-Type = %q, want image/svg+xml", got)
+	}
+
+	// A row that records no type carries no header at all, rather than an empty one: the
+	// reader is told nothing, which is what the row holds.
+	if _, err := database.Pool.Exec(context.Background(), `update artifact_versions set mime = null where artifact_id = $1`, version.Artifact.ID); err != nil {
+		t.Fatalf("clear the version's stored type: %v", err)
+	}
+	untyped := dispatchRequest(t, handler, http.MethodHead, route, nil, "alice")
+	if _, named := untyped.Header()["X-Dispatch-Stored-Type"]; named {
+		t.Errorf("a version with no stored type answered X-Dispatch-Stored-Type %q, want no such header", untyped.Header().Get("X-Dispatch-Stored-Type"))
+	}
+	if got := untyped.Header().Get("Content-Type"); got != "application/octet-stream" {
+		t.Errorf("a version with no stored type: Content-Type = %q, want application/octet-stream", got)
+	}
+}
+
 func TestAClearedRowIsAnsweredByWhatTheStoreSays(t *testing.T) {
 	memory := filestest.NewMemory()
 	handler, database, _ := newTestServer(t, testServerOptions{files: memory})

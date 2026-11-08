@@ -32,10 +32,10 @@ export interface SummaryResult {
 }
 
 /** What one version a pin holds back from the latest is: the bytes it weighs against the 16 MiB
- *  cap, and the type it is stored under, null where the row records none or the read of the
- *  artifact's versions could not be made. */
+ *  cap, and the type it is stored under, absent where the row records none. One form of "no
+ *  type" everywhere, the same `mime?: string` the summary's files and a sent entry carry. */
 export interface PinnedVersion {
-  readonly mime: string | null;
+  readonly mime?: string;
   readonly size: number;
 }
 
@@ -288,13 +288,11 @@ export function planViewData(
       // The version the page is sent, as the summary carries it for the latest version and the
       // read above for any other: its bytes against the cap, and the type it is stored under.
       const sent =
-        grant.version === state.latest
-          ? { mime: state.mime ?? null, size: state.size }
-          : older.data;
+        grant.version === state.latest ? { mime: state.mime, size: state.size } : older.data;
       weighing ||= sent?.size === undefined;
       bytes += sent?.size ?? 0;
       entry = {
-        contentType: sent?.mime ?? undefined,
+        contentType: sent?.mime,
         id: state.id,
         name: state.name,
         ref: state.ref,

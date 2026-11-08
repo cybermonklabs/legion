@@ -615,8 +615,8 @@ Two rules decide which four, and both are there because a page drawing several b
 Take a loading frame's slot and the engine aborts that navigation, reports the abort as a `load` of the removed frame, and the block starts the ready deadline over a frame that is gone, so it says `this page sent no ready message in 10 seconds` for ever; the block's own `load` handler drops that report (`stopped`) and `e2e/view-budget.e2e.ts`'s row over a page of five bodies counts one page request per block and no request that failed.
 That hold is bounded by `PAGE_DEADLINE_MS` (10 s, the one deadline `frame-budget.ts` exports and `ViewBlock.tsx` also gives a loaded page to send its `ready`), and one timer per loading slot re-ranks when it is up: a navigation that never completes - a stalled connection, which is no error page and so fires no `load` - would otherwise hold its slot for the life of the page, and four of them would leave every other block of the page saying `waiting` for ever (`e2e/view-budget.e2e.ts`'s row over six blocks whose page route never answers).
 Of all this, a document that holds no `view` block downloads the drawing and the slot alone: `renderViewBlockShell`, `collectViewSlots`, `spliceViewFrames` and `viewPortals`, each of which runs before any block is known to exist, and the editor's node view (`features/doc/view-block.ts`), which `installTypedBlocks` reaches from every document. `ViewBlock.tsx`, `view-attributes.ts`, `view-data-plan.ts` and `frame-budget.ts` sit behind `viewPortals`' `import()` and are fetched by a page that holds a block and by no other (`e2e/two-builds.multiprocess.e2e.ts`'s `view-block` piece). The node view keeps the budget out of every document's download by dispatching `VIEW_FRAME_RELEASE` (`dispatch-view:release`, `view-slots.ts`) on its own slot as it is destroyed, rather than calling `releaseViewFrame`: the budget listens for it on every slot it holds, with one listener function for all of them, so the event and the call `registerViewFrame` answers with take one slot out once, in either order, and a slot the budget does not hold - a block whose renderer never mounted - hears the event into nothing.
-Moving the budget behind that `import()` took 1,639 bytes off every document's download and put 1,708 on a page that holds a block. What A5 bounds is their sum, measured against a build of the branch's merge base, so no move between the two chunks changes it: a page with a block fetches both of them, and only writing less code makes that number smaller (`e2e/view-budget.e2e.ts`, whose own `costs` line is the same-build figure - the lazy chunk alone - and is a different number).
-Before it sends anything the block reads the page file's grants (`artifactGrantsQuery`, the one `["artifact-grants", <page id>]` definition the panel reads too, each caller naming its own `staleTime`), and the page route's `HEAD` for its refusals (`404 ARTIFACT_NOT_FOUND`, `415 NOT_A_PAGE`, `413 PAGE_TOO_LARGE`); a block whose granted set changes starts a new frame, so a page that lost a grant loses the data it held. What each named file is given - the grant that covers it, the version that grant gives the page, the lines a reader sees in its place and the 16 MiB hold - is `planViewData` (`features/view/view-data-plan.ts`), a pure function the block wires around and `view-data-plan.test.ts` covers case by case.
+Moving the budget behind that `import()` took 1,639 bytes off every document's download and put 1,708 on a page that holds a block. What A5 bounds is their sum, measured against a build of the branch's merge base, so no move between the two chunks changes it: a page with a block fetches both of them, and only writing less code makes that number smaller (`e2e/view-bytes.e2e.ts`, whose own `costs` line is the same-build figure - the lazy chunk alone - and is a different number).
+Before it sends anything the block reads the page file's grants (`artifactGrantsQuery`, the one `["artifact-grants", <page id>]` definition the panel reads too, each caller naming its own `staleTime`), and the page route's `HEAD` for its refusals (`404 ARTIFACT_NOT_FOUND`, `415 NOT_A_PAGE`, `413 PAGE_TOO_LARGE`); a block whose granted set changes starts a new frame, so a page that lost a grant loses the data it held. A data file the block sends an older version of - a pin the reference or the grant made - costs one `HEAD` of that version (`pinnedVersion`), which answers both facts the block needs of it: its size in `Content-Length` and the type it is stored under in `X-Dispatch-Stored-Type`, so an update reads one version and never the artifact's list of them (R6). What each named file is given - the grant that covers it, the version that grant gives the page, the lines a reader sees in its place and the 16 MiB hold - is `planViewData` (`features/view/view-data-plan.ts`), a pure function the block wires around and `view-data-plan.test.ts` covers case by case.
 `features/artifacts/ArtifactGrantsPanel.tsx` is the panel "Data this page may read" on an issue or project page file's own view, shown to a person alone (`useIsHuman`), where a person adds a grant from a `dispatch://` reference and removes one; both writes are `useKeyedWrite` with `inline` refusals, and every token gets `403 HUMAN_ONLY` from the routes, so an agent asks a person instead (`skill://dispatch-view`). Its page test is the server's (`isPageFile`, packages/envoy/internal/dispatch/api/artifacts.go): the **latest** version's stored type, never the version on screen, so the panel shows exactly where the grants routes answer a list rather than `415 NOT_A_PAGE`.
 The page's bytes come from `GET /api/v1/artifacts/{id}/versions/{number}/page`, which answers `inline` only to a request whose `Sec-Fetch-Dest` is `iframe`, under the Content-Security-Policy of `pageContentSecurityPolicy` (below, and `packages/envoy/internal/dispatch/api/artifact_files.go`).
 A browser sends that header only to a potentially trustworthy URL, so a view draws over HTTPS and on localhost and not on the suite's plain-HTTP origin.
@@ -2119,12 +2119,12 @@ and holds the body it applies to `after.json`. It also checks that the probe reo
 after a 4001, its second subscribe arriving within 500 ms of the close, and within the first
 attempt's spread after a 1012 (`RECONNECT_SPREAD_MS`, two seconds).
 
-The `view` block has four spec files.
+The `view` block has five spec files.
 `e2e/view-block.e2e.ts` (the block, the frame, the data messages and the minimal page of `skill://dispatch-view`), `e2e/view-sandbox.e2e.ts` (the page route's headers and what the sandbox stops) and `e2e/view-grants.e2e.ts` (the grants panel) run in `webkit` and `firefox` as well as the default `chromium`, because a frame's load counting, its sandbox and its `postMessage` are each engine's own: every row of those three carries `@webkit` and `@firefox`, the tags those two projects select by.
 They are also in `webkit-iphone`'s `testMatch` and in its title `grep`, which they join through the phrase `a view block` that every one of their titles holds: a file matched there with no title in the `grep` runs zero tests and looks green.
 `e2e/view-block.e2e.ts`'s rows carry `@phone` too, so `iphone` runs them.
-`e2e/view-budget.e2e.ts` is Chromium's alone, and says in its header why.
-None of the four is in `plainHttpSpecs` or `clockSpecs`.
+`e2e/view-budget.e2e.ts` (the four rules of the frame budget) and `e2e/view-bytes.e2e.ts` (what a block costs the reader in JavaScript) are Chromium's alone, and each says in its header why.
+Of the five, only `e2e/view-bytes.e2e.ts` is in a project's measured set: it is `byteSpecs`, which `chromium-alone` runs and every four-lane project ignores, and none of the five is in `plainHttpSpecs` or `clockSpecs`.
 A browser sends `Sec-Fetch-Dest` only to a potentially trustworthy URL, so on `chromium-plain-http`'s plain-HTTP host name the page route answers `attachment`, no frame draws, and a view row there would fail for its origin rather than for the behaviour under test.
 
 The `webkit` Playwright project runs the rows tagged `@webkit` (`webkitTagged` in
@@ -2249,18 +2249,22 @@ rather than leaving the route unanswered, because Chromium sends a paused reques
 server once its page closes. They skip on an `https:` `PLAYWRIGHT_BASE_URL` as the two specs
 above do.
 
-The `chromium-alone`, `firefox-alone`, `webkit-alone` and `chromium-alone-rows` projects run the rows whose claim a shared machine spoils, with the machine to themselves.
-The first three take the rows whose claim is a wall-clock time.
+The `chromium-alone`, `firefox-alone` and `webkit-alone` projects run the rows whose claim a shared machine spoils, with the machine to themselves.
 `chromium-alone` runs
 `e2e/heavy-document-writes.e2e.ts` (a document write of each heavy body answers in under a
 second), `e2e/heavy-bodies.e2e.ts` and `e2e/nested-directive.e2e.ts` (a card draws without
-holding the main thread for a second, both through `e2e/main-thread-hold.ts`); `firefox-alone`
+holding the main thread for a second, both through `e2e/main-thread-hold.ts`), whose claims are
+wall-clock times, and `e2e/view-bytes.e2e.ts`, whose one row measures what a view block costs
+the reader in JavaScript and which four lanes would leave to whichever scripts the page got
+through before the row looked; `firefox-alone`
 and `webkit-alone` run `e2e/heavy-bodies.e2e.ts`, which ran in those engines before, for the
 reasons given under `webkit` and `firefox` above.
-`chromium-alone-rows` takes the rows tagged `@alone`, whose claim is a count of bytes rather than of seconds, and `chromium` inverts that tag, so such a row runs in one project only.
-Today the one is `e2e/view-budget.e2e.ts`'s measure of what a view block costs the reader in JavaScript, which four lanes would leave to whichever scripts a quiet window happened to catch.
-No project above them runs those three files,
-so each row runs once. Each of the four names every project before it in `dependencies`, so
+Each of the three selects by `testMatch`, the file, because the file is what the CI job names
+(`.github/workflows/dispatch-browser.yaml`'s alone leg runs these three projects by name): a
+project that took single rows out of files other projects run would have to be named there too,
+and a project nothing names runs in no job at all.
+No project above them runs those four files,
+so each row runs once. Each of the three names every project before it in `dependencies`, so
 Playwright starts them only once the rest of the run has finished and runs them one after
 another, and each sets `workers: 1`, which caps that project's own workers while the run's own
 `workers` stays at the lane count: `dependencies` orders a project but does not stop its own
