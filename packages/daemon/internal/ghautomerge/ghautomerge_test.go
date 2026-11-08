@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"regexp"
 	"slices"
 	"strconv"
@@ -18,6 +17,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
@@ -229,7 +229,7 @@ func (g *github) serveJobLog(t *testing.T, w http.ResponseWriter, r *http.Reques
 
 func (g *github) serve(t *testing.T) string {
 	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		g.mu.Lock()
 		defer g.mu.Unlock()
 		// The log of a failing job is the one read this package makes outside GraphQL: GET
@@ -248,7 +248,6 @@ func (g *github) serve(t *testing.T) string {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
 		// GitHub validates the document before it reads anything of it, so a document whose
 		// variables and inputs disagree is an answer with errors and no change at all.
 		if message := refusedVariables(request.Query); message != "" {
@@ -383,9 +382,7 @@ func (g *github) serve(t *testing.T) string {
 			}
 			_, _ = w.Write([]byte(answer))
 		}
-	}))
-	t.Cleanup(server.Close)
-	return server.URL
+	}})
 }
 
 // clients are the two the merge path calls the fake with: GitHub's GraphQL route, which the pull

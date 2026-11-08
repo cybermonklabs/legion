@@ -793,7 +793,13 @@ describe("DispatchClient", () => {
   // controls the body, and the excerpt is built synchronously on the host's event loop, before the
   // 120-character cut. Each pass over the body must stay linear and the scan bounded, or a page of
   // unclosed tags freezes the session: a quadratic pass takes seconds on tens of kilobytes. The
-  // bound is generous so a loaded machine passes and a quadratic pass does not.
+  // row's own 5 s limit is that bound, and nothing here reads a clock. It sits between the row and
+  // the defect it catches, so an idle machine catches it as well as a busy one: measured in a
+  // 2-CPU pod, dropping tags one at a time over the whole body costs this row 33.0 to 36.1 s with
+  // no load at all and 153 to 225 s under 16 busy loops (8 x nproc), where the row itself costs
+  // 0.03 s idle and 0.60 s at most under those loops. The limit is a bound on work, not a hang
+  // guard, and it stays on the row rather than taking the suite's 30 s default, which the
+  // defect's idle cost would pass.
   test("builds the excerpt of a megabyte of unclosed tags in bounded time", async () => {
     const megabyte = 1 << 20;
     // The last three hold the client's bearer, "secret", everywhere, or almost everywhere.
@@ -817,18 +823,16 @@ describe("DispatchClient", () => {
         bearerCredential("secret"),
         fetchImpl
       );
-      const started = performance.now();
       const message = await client.getIssue("DSP-1").then(
         () => "",
         (error: Error) => error.message
       );
 
-      expect(performance.now() - started).toBeLessThan(2_000);
       expect(message).toStartWith(
         "GET http://dispatch.test/api/v1/issues/DSP-1 answered 502 with "
       );
     }
-  });
+  }, 5_000);
 
   // The excerpt reads at most the first 64 KiB of the body, so what it costs has a bound however
   // large the body is. Redacting the bearer shortens the text, so it runs on that slice: redacting
@@ -929,8 +933,13 @@ describe("DispatchClient", () => {
   // Nothing checks a bearer's length or its characters on load, and the excerpt is built on the
   // host's event loop. A bearer of one character repeated is thousands of pieces that are all the
   // same, and searching the 64 KiB slice once for each of them marks every position again per
-  // piece: seconds for this one. Each distinct piece is searched once. The bound is generous so a
-  // loaded machine passes and a search per piece does not.
+  // piece. Each distinct piece is searched once, and the row's own 2 s limit is what says so
+  // without reading a clock. It sits between the row and the defect it catches, so an idle machine
+  // catches it as well as a busy one: measured in a 2-CPU pod, a search per piece costs this row
+  // 8.82 s with no load at all and 75 to 151 s under 16 busy loops (8 x nproc), where the row
+  // itself costs 0.01 s idle and 0.19 s at most under those loops. The limit is a bound on work,
+  // not a hang guard, and it stays on the row rather than taking the suite's 30 s default, which
+  // the defect's idle cost would pass.
   test("redacts a bearer of one character repeated from a 64 KiB body in bounded time", async () => {
     const { fetchImpl } = fakeFetch([
       new Response("x".repeat(64 * 1024), {
@@ -943,17 +952,15 @@ describe("DispatchClient", () => {
       bearerCredential("x".repeat(2048)),
       fetchImpl
     );
-    const started = performance.now();
 
     const message = await client.getIssue("DSP-1").then(
       () => "",
       (error: Error) => error.message
     );
 
-    expect(performance.now() - started).toBeLessThan(2_000);
     expect(message).toContain('("[redacted]")');
     expect(message).not.toContain("xxxxxxxx");
-  });
+  }, 2_000);
 
   // A body of nothing but markup is not empty, and an agent told it was would look for a gateway
   // that sent nothing. The answer gives the body's size in bytes and says none of it reads as
