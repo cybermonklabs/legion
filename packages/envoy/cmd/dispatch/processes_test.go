@@ -36,10 +36,11 @@ import (
 
 // multiprocessNATS is the NATS server a pair's processes share: one of this test's own, with
 // JetStream for Dispatch's outbox stream, running in this test process and ending with the test.
-func multiprocessNATS(t *testing.T) string {
+// The server itself, and not only its URL, because a row reads what it has bound from the
+// server's own listings (/connz, dispatchPair.natsServer).
+func multiprocessNATS(t *testing.T) (*testnats.Server, string) {
 	t.Helper()
-	_, url := testnats.Start(t)
-	return url
+	return testnats.Start(t)
 }
 
 // multiprocessSigningKey is the one DISPATCH_SIGNING_KEY every process of a pair carries: a
@@ -52,8 +53,11 @@ const multiprocessSigningKey = "multiprocess-signing-key"
 type dispatchPair struct {
 	a, b     *dispatchProcess
 	database *store.Store
-	nats     string
-	proxies  map[*dispatchProcess]*testnats.Proxy
+	// natsServer is the server nats names, for a row that reads the server's own connection
+	// listing rather than a client's view; nil for a pair started without one (startHookPair).
+	natsServer *testnats.Server
+	nats       string
+	proxies    map[*dispatchProcess]*testnats.Proxy
 }
 
 // newPair opens the database and takes the NATS server the pair will share, and starts nothing:
@@ -62,7 +66,8 @@ type dispatchPair struct {
 // start.
 func newPair(t *testing.T) *dispatchPair {
 	t.Helper()
-	return &dispatchPair{database: storetest.Open(t), nats: multiprocessNATS(t), proxies: map[*dispatchProcess]*testnats.Proxy{}}
+	server, url := multiprocessNATS(t)
+	return &dispatchPair{database: storetest.Open(t), natsServer: server, nats: url, proxies: map[*dispatchProcess]*testnats.Proxy{}}
 }
 
 // databaseURL is the connection string a process is started with: the database storetest cloned
