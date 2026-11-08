@@ -122,12 +122,13 @@ func countedApprovalRequest(t *testing.T, handler http.Handler, artifactID strin
 	return response
 }
 
-// One approval request on a document with no request open costs thirty-six round trips, counted
-// as the issue read's are (roundTrips): one for each statement it runs on its own and one for
-// each batch, whatever that batch holds. The first eight read the coverage the answer reports,
-// before the request's transaction opens (approvalCoverage); the twenty-six after them are the
-// transaction itself, and the last two store the display trees of the texts it wrote, after the
-// commit. In the order it sends them:
+// One approval request on a document with no request open costs at most thirty-six round trips,
+// counted as the issue read's are (roundTrips): one for each statement it runs on its own and one
+// for each batch, whatever that batch holds. The budget is a ceiling, and the enumeration below
+// is where it goes today: the first eight read the coverage the answer reports, before the
+// request's transaction opens (approvalCoverage); the twenty-six after them are the transaction
+// itself, and the last two store the display trees of the texts it wrote, after the commit. In the
+// order it sends them:
 //
 //  1. the artifact row the coverage is read for (loadArtifact);
 //  2. a batch of 3: that artifact's versions, its latest review and its open approval request
@@ -181,7 +182,7 @@ func countedApprovalRequest(t *testing.T, handler http.Handler, artifactID strin
 //
 // The five batches hold twelve statements between them, so a request that sent each statement on
 // its own would send forty-three round trips.
-func TestApprovalRequestsCostThirtySixRoundTrips(t *testing.T) {
+func TestApprovalRequestsCostAtMostThirtySixRoundTrips(t *testing.T) {
 	database := storetest.Open(t)
 	counter := &roundTrips{}
 	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
@@ -202,10 +203,14 @@ func TestApprovalRequestsCostThirtySixRoundTrips(t *testing.T) {
 	if response.Code != http.StatusCreated {
 		t.Fatalf("request approval: status=%d body=%s", response.Code, response.Body.String())
 	}
-	const want = 36
-	if len(counted) != want {
-		t.Fatalf("the approval request made %d round trips, want %d:\n%s",
-			len(counted), want, strings.Join(roundTripLines(counted), "\n"))
+	// A ceiling, not an equality: the round trips are counted through helpers several other
+	// requests share, so an exact count reds this row for a change that sends one round trip
+	// fewer and costs nothing. What the name states is the cost bound, and the enumeration above
+	// says where the thirty-six go.
+	const ceiling = 36
+	if len(counted) > ceiling {
+		t.Fatalf("the approval request made %d round trips, want at most %d:\n%s",
+			len(counted), ceiling, strings.Join(roundTripLines(counted), "\n"))
 	}
 }
 
