@@ -904,6 +904,41 @@ func TestDocumentEditAdviceKeepsCountWhenIssueAdviceFails(t *testing.T) {
 	}
 }
 
+// Only a session's write runs the issue-advice queries, so only a session's create can meet one
+// that fails; what it keeps is the block report of the spec it seeded - its own read of the
+// document it wrote - beside the related-item check's result.
+func TestIssueCreateKeepsTheSeededSpecsBlocksWhenIssueAdviceFails(t *testing.T) {
+	handler, _ := newFailingAdviceHandler(t, "session_writes_since_human", 0)
+	createAdviceProject(t, handler, "SEEDED")
+
+	created := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "SEEDED", "title": "Seeded spec with a decision block", "force": true,
+		"spec":  "# Seeded\n\n:::ask{#window}\nWhich deployment window?\n:::",
+		"actor": adviceSessionActor("session-seeded-spec"),
+	})
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create with failed write advice: status=%d body=%s", created.Code, created.Body.String())
+	}
+	advice := adviceFromResponse(t, created.Code, created.Body.String())
+	if advice.DecisionBlocks == nil || *advice.DecisionBlocks != 1 {
+		t.Fatalf("create advice = %#v, want the one decision block its spec seeded: %s", advice, created.Body.String())
+	}
+	if suggestions := issueSuggestions(t, "the create with failed write advice", created); suggestions.Outcome == "" {
+		t.Fatalf("create advice carries no related-item check beside the block count: %s", created.Body.String())
+	}
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(created.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode the create's response: %v", err)
+	}
+	var rawAdvice map[string]json.RawMessage
+	if err := json.Unmarshal(body["advice"], &rawAdvice); err != nil {
+		t.Fatalf("decode block-count advice: %v body=%s", err, created.Body.String())
+	}
+	if len(rawAdvice) != 2 {
+		t.Fatalf("advice fields = %#v, want decision_blocks and suggestions alone", rawAdvice)
+	}
+}
+
 func newFailingAdviceHandler(t *testing.T, query string, suggestionTimeout time.Duration) (http.Handler, *store.Store) {
 	t.Helper()
 	database := storetest.Open(t)

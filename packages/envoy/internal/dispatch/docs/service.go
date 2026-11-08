@@ -2462,7 +2462,9 @@ func (s *Service) issueOpenChanged(ctx context.Context, issueKey string) {
 // recheckResidentIssues is the issue-open lane's work after each LISTEN stands: a close or a
 // reopen notified while the listener had no connection reached nobody and is never sent again, so
 // the issue of every room this process holds is read once more, in one statement, and each room
-// whose record no longer matches takes the issue's state (setRoomIssueOpen).
+// whose record no longer matches, and each room of a closed issue that no close of the issue has
+// reached, takes the issue's state (setRoomIssueOpen). A room loaded while its issue was open and
+// open still is left alone, so a LISTEN that stands again closes nothing it need not.
 func (s *Service) recheckResidentIssues(ctx context.Context) {
 	var rooms []string
 	s.roomLoads.Range(func(key, _ any) bool {
@@ -2584,10 +2586,8 @@ func (s *Service) closeRoomOnReplacedHistory(room string, instance *roomInstance
 // again. A notified reopen also closes a room whose record already reads open: a record a
 // connection's own registration (addConnection) or a load after the reopen committed made holds
 // the default open flag while a browser on the room was admitted read-only before the reopen, and
-// only a reconnect gives that browser the writable scope. A recheck reads only rooms that hold a
-// record and closes only those whose record holds the other state, so a LISTEN that stands again
-// closes no room the issue's state already matches. Its ctx is the room-sync lane's or a close's
-// own, holding no transaction, so the rooms are recorded and closed one at a time.
+// only a reconnect gives that browser the writable scope. Its ctx is the room-sync lane's or a
+// close's own, holding no transaction, so the rooms are recorded and closed one at a time.
 func (s *Service) setRoomIssueOpen(ctx context.Context, room string, open, notified bool) {
 	state := s.lockExistingState(room)
 	if state == nil {
@@ -2596,7 +2596,15 @@ func (s *Service) setRoomIssueOpen(ctx context.Context, room string, open, notif
 		}
 		return
 	}
-	matched := state.closed == !open
+	// settled is whether this change leaves the room nothing to take: its record holds the state
+	// reported here, and, where that state is closed, the room standing now has been closed for it
+	// (closedForIssue). A record matching is not enough: a load whose read of the issue ran after
+	// the close committed records the close itself and clears that mark (onLoadDocument), so the
+	// notification that follows, and every later recheck, would read their own work as done and
+	// leave the room open until it idled out (INFRA-592). An open record needs no such mark: the
+	// room was loaded while the issue was open, which is the scope its browsers were admitted
+	// with, and a reopen a room must hear of leaves the record closed or arrives notified.
+	settled := state.closed == !open && (open || state.closedForIssue)
 	// The change is recorded as of now, after the commit that made it, so it stands over any
 	// read of the issue that began before it: a document socket's admission records the read it
 	// made before this change once it registers its connection (authorize), and a room's load
@@ -2604,7 +2612,7 @@ func (s *Service) setRoomIssueOpen(ctx context.Context, room string, open, notif
 	// the older read's own instant would be wiped by it and the socket admitted as the issue no
 	// longer stands.
 	state.recordIssueLocked(issueRead{open: open, at: time.Now()})
-	if matched && !(open && notified) {
+	if settled && !(open && notified) {
 		s.unlockState(room, state)
 		return
 	}
@@ -2619,6 +2627,11 @@ func (s *Service) setRoomIssueOpen(ctx context.Context, room string, open, notif
 		// reserveRoomCloseLocked): a record kept across the close and a reopen starts over.
 		state.settleFailures = 0
 		s.stopSettleTimer(state.settle)
+		// The close below is this record's close for the issue it records, marked here, before
+		// the record is let go: a load that publishes a room on this record while the close runs
+		// clears the mark after it (onLoadDocument), where a mark made after the close would
+		// wipe that load's and pass its room over.
+		state.closedForIssue = true
 		// Snapshot while the state is locked, then write after unlocking: settlement holds the
 		// document's advisory lock before it takes state.mu, so taking that lock here while
 		// holding the state would invert the lock order. The authors are already in the
@@ -2645,17 +2658,30 @@ func (s *Service) setRoomIssueOpen(ctx context.Context, room string, open, notif
 			s.lastActorPersisted(room, creditSeq)
 		}
 	}
-	s.closeRoomForIssue(ctx, room)
+	if closed := s.closeRoomForIssue(ctx, room); !open && !closed {
+		// Nothing was closed: the close did not go through, or this process held no room of the
+		// document - and a load already under way publishes one the close never reached. Either
+		// way the record is not closed for the issue it holds, and the next notification or
+		// recheck has that room to close.
+		state.mu.Lock()
+		state.closedForIssue = false
+		s.unlockState(room, state)
+	}
 }
 
 // closeRoomForIssue closes room because its issue closed or reopened, waiting for a caller inside
 // it to leave (roomServer.closeRoom) and reporting a close that did not go through: its browsers
-// keep the admission they connected with until one does.
-func (s *Service) closeRoomForIssue(ctx context.Context, room string) {
-	if err := s.srv.closeRoom(ctx, room, true); err != nil && !errors.Is(err, websocket.ErrRoomNotFound) {
-		slog.Warn("dispatch: close a document room of an issue that closed or reopened; its browsers keep the admission they had",
-			"room", room, "error", err)
+// keep the admission they connected with until one does. It answers whether it closed a room:
+// false for a close that failed and for one that found no room of this process to close.
+func (s *Service) closeRoomForIssue(ctx context.Context, room string) bool {
+	if err := s.srv.closeRoom(ctx, room, true); err != nil {
+		if !errors.Is(err, websocket.ErrRoomNotFound) {
+			slog.Warn("dispatch: close a document room of an issue that closed or reopened; its browsers keep the admission they had",
+				"room", room, "error", err)
+		}
+		return false
 	}
+	return true
 }
 
 // restoreLastActor gives the record of a reopened issue's document the latest edit source its

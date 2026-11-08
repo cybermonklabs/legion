@@ -577,6 +577,10 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 	state.lastUsed = s.now()
 	state.weight = roomWeight(stored)
 	state.recordIssueLocked(issue)
+	// The room this load publishes has been closed for no state of the record: whether the record
+	// holds this load's own read or a close recorded while the load ran, a close of the issue the
+	// record already matches still has this room to close (setRoomIssueOpen).
+	state.closedForIssue = false
 	open := !state.closed
 	// The room has counted itself loaded here since roomLoaded, above, and stays counted until its
 	// unload (roomLoadedHere), so a socket's admission offers it no preload from then on

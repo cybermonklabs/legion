@@ -52,8 +52,11 @@ type writeAdvice struct {
 // suggestionsOnlyAdvice is the advice of a write with no issue state to report: an ask on an
 // unlinked project document, which has no issue status, no writes-since-human count and no
 // issue-scoped open-ask list, or an issue or ask write whose write-advice read failed. It still
-// carries the related-item check's result (withSuggestions).
+// carries the related-item check's result and, for a create that seeded a spec, the block report
+// that create read of it (withSuggestions): both are the write's own, and neither depends on the
+// issue advice beside them.
 type suggestionsOnlyAdvice struct {
+	*documentBlocks
 	Suggestions *model.Suggestions `json:"suggestions"`
 }
 

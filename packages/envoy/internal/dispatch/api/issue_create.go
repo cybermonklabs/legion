@@ -459,8 +459,12 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	advice := s.writeAdvice(
 		r.Context(), "POST /api/v1/issues", key, actor, "", issue.Status,
 	)
-	if advice != nil && input.Spec != nil && strings.TrimSpace(*input.Spec) != "" {
-		advice.documentBlocks = documentBlocksFor(documentReadBack, markdown)
+	// The block report of the spec this create seeded is the write's own read of what it wrote,
+	// so it rides whatever advice the response carries, the issue advice's or the check's alone
+	// (withSuggestions).
+	var blocks *documentBlocks
+	if input.Spec != nil && strings.TrimSpace(*input.Spec) != "" {
+		blocks = documentBlocksFor(documentReadBack, markdown)
 	}
 	// The related-item check runs after the write committed, whatever writeAdvice
 	// answered, and waits at most relatedAllowance; its result rides the advice, or advice of its
@@ -475,7 +479,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	suggestions.TitleMatches = outcome.TitleMatches
 	suggestions.LikelyDuplicate = outcome.LikelyDuplicate
 	suggestions.NearCopyCheck = outcome.NearCopyCheck
-	WriteJSON(w, http.StatusCreated, withSuggestions(issue, advice, suggestions))
+	WriteJSON(w, http.StatusCreated, withSuggestions(issue, advice, suggestions, blocks))
 }
 
 // duplicateGateTimeout bounds the near-copy gate's whole read, on the context and as the read
@@ -595,7 +599,7 @@ func (s *server) respondWithExistingExternalIssue(
 		source:  suggestionSource{kind: "issue", issueKey: existingKey, actor: actor},
 		record:  true,
 	}, relatedReasonAlreadyExists, "Dispatch already holds this issue; nothing was created")
-	WriteJSON(w, http.StatusOK, withSuggestions(existing, advice, suggestions))
+	WriteJSON(w, http.StatusOK, withSuggestions(existing, advice, suggestions, nil))
 }
 
 func isUniqueViolation(err error) bool {

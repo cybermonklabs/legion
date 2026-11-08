@@ -201,15 +201,19 @@ func notMadeSuggestions(text string) *model.Suggestions {
 	return &model.Suggestions{Outcome: relatedNotMade, Related: []model.WriteSuggestion{}, Missing: text}
 }
 
-// withSuggestions wraps a write's payload with its advice carrying the check's result, or, when
+// withSuggestions wraps a write's payload with its advice carrying the check's result and blocks,
+// the block report of the document the write seeded (nil for a write that seeded none), or, when
 // writeAdvice answered nil (a project document has no issue state, or the write-advice read
-// failed), with suggestionsOnlyAdvice: every issue and ask write answers its check.
-func withSuggestions(payload any, advice *writeAdvice, suggestions *model.Suggestions) any {
+// failed), with suggestionsOnlyAdvice carrying both: every issue and ask write answers its check,
+// and the block report is the write's own read of what it wrote, which no failure of the issue
+// advice beside it drops.
+func withSuggestions(payload any, advice *writeAdvice, suggestions *model.Suggestions, blocks *documentBlocks) any {
 	if advice != nil {
 		advice.Suggestions = suggestions
+		advice.documentBlocks = blocks
 		return withAdvice(payload, advice)
 	}
-	return withRawAdvice(payload, suggestionsOnlyAdvice{Suggestions: suggestions})
+	return withRawAdvice(payload, suggestionsOnlyAdvice{documentBlocks: blocks, Suggestions: suggestions})
 }
 
 // decisionBlockChecks runs the related-item check for each decision block a document edit added,

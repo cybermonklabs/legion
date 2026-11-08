@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/persistence"
+	ygws "github.com/reearth/ygo/provider/websocket"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -680,4 +681,141 @@ func TestAnIssueClosedWhileTheListenerWasDownClosesItsRoomsOnTheReconnect(t *tes
 	close(up)
 	requireEnds(t, alice, "the issue closed while the listener was down, and the reconnect left alice's browser connected")
 	connectWithScope(t, server.URL, artifactID, "alice", "readonly", "before\n")
+}
+
+// closedRoomWait bounds a test's wait for a closed issue's room to go. It is well under
+// roomIdleTimeout, so a room nothing but ygo's idle sweeper closes fails the wait instead of
+// passing it a minute late.
+const closedRoomWait = roomIdleTimeout / 4
+
+// loadARoomAsItsIssueCloses loads artifactID's room while DOC-1 closes, leaving that room
+// resident: the issue is open when the load is let in (allowInject) and closed by the time the
+// load reads it, which the test does as the load decodes the stored state (bootstrapping, which
+// runs on the load's own goroutine before its read of the issue). The record the load leaves
+// therefore holds the close, which no close of the room made.
+func loadARoomAsItsIssueCloses(t *testing.T, service *Service, artifactID string) {
+	t.Helper()
+	service.bootstrapping = func(room string, _ []byte) {
+		if room == artifactID {
+			writeIssueClosed(t, service.store, "DOC-1", true)
+		}
+	}
+	defer func() { service.bootstrapping = nil }()
+	err := service.srv.Apply(context.Background(), artifactID, func(*crdt.Doc, func(func(*crdt.Transaction))) {})
+	if err != nil && !errors.Is(err, ygws.ErrNoChanges) {
+		t.Fatalf("load the room of %s as its issue closed: %v", artifactID, err)
+	}
+	if service.srv.GetDoc(artifactID) == nil {
+		t.Fatalf("the room of %s is not resident after the load that was to publish it", artifactID)
+	}
+	if closed, recorded := service.recordedIssueClosed(artifactID); !recorded || !closed {
+		t.Fatalf("the load recorded closed=%t (recorded %t), want the close its own read of the issue found", closed, recorded)
+	}
+}
+
+// requireRoomClosedPromptly fails unless service's room of artifactID has gone within
+// closedRoomWait, which closer was to close it in.
+func requireRoomClosedPromptly(t *testing.T, service *Service, artifactID, closer string) {
+	t.Helper()
+	waitFor(t, min(closedRoomWait, roomWait(t)), closer+" to close the room of "+artifactID, func() bool {
+		return service.srv.GetDoc(artifactID) == nil
+	})
+}
+
+// A room whose load read the issue after its close committed records that close itself, and the
+// notification of the close - which arrives next, since the load began before it - must still
+// close that room: the record matching is no sign the room was closed for it. Reading the record
+// alone, as it did, the notification took its own work as done and left the room standing until
+// ygo's idle sweeper took it a minute later (INFRA-592).
+func TestANotificationClosesARoomThatLoadedAsItsIssueClosed(t *testing.T) {
+	database := storetest.Open(t)
+	artifactID := createDocument(t, database, "before")
+	service, _ := newTestServiceInstance(t, database)
+	seedServiceText(t, service, artifactID, "before")
+	waitForLandedAppends(t, service, artifactID)
+	// The room the seed loaded goes first, so the load under test is the one that opens a room
+	// again, with the close committing under it.
+	if err := service.Evict(context.Background(), artifactID); err != nil {
+		t.Fatalf("evict the room the seed loaded: %v", err)
+	}
+	loadARoomAsItsIssueCloses(t, service, artifactID)
+
+	// The notification the close's commit sent, which this test's service hears on its room-sync
+	// lane in production and takes here directly: it runs no room sync of its own.
+	service.issueOpenChanged(store.WithTransactionTracking(context.Background()), "DOC-1")
+	requireRoomClosedPromptly(t, service, artifactID, "the close's notification")
+}
+
+// The same room, where the close's notification reached this process before the load published
+// the room - or reached it not at all, the listener having been down. The recheck each LISTEN
+// stands runs over the rooms this process holds (recheckResidentIssues), and a room of a closed
+// issue that no close reached is one of its own to close.
+func TestARecheckClosesARoomThatLoadedAsItsIssueClosed(t *testing.T) {
+	database := storetest.Open(t)
+	artifactID := createDocument(t, database, "before")
+	service, _ := newTestServiceInstance(t, database)
+	seedServiceText(t, service, artifactID, "before")
+	waitForLandedAppends(t, service, artifactID)
+	if err := service.Evict(context.Background(), artifactID); err != nil {
+		t.Fatalf("evict the room the seed loaded: %v", err)
+	}
+	loadARoomAsItsIssueCloses(t, service, artifactID)
+
+	service.recheckResidentIssues(store.WithTransactionTracking(context.Background()))
+	requireRoomClosedPromptly(t, service, artifactID, "the recheck after a LISTEN")
+}
+
+// A settlement owed by a document whose issue closed before the settlement's warm-up has nothing
+// to do, and nothing to answer for: no room of this process holds the document, so no record here
+// remembers the close, and the warm-up's load reads the issue itself and is refused (allowInject,
+// ErrIssueClosed). A closed issue settles nothing, so the settlement ends exactly as a record that
+// remembers the close ends it, writing nothing and failing nothing; the document's
+// pending-settlement row keeps the work for the resumption to arm once the issue reopens. Taken
+// for a settlement that stopped short, as it was here, every closed issue's owed settlement was
+// logged as a failed settlement, counted against its room and run again, and the third failed the
+// room.
+func TestASettlementRefusedByAClosedIssueAtItsWarmUpDoesNothing(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	artifactID := createDocument(t, database, "before")
+	taskA, _ := newTestServiceInstance(t, database)
+	seedServiceText(t, taskA, artifactID, "Context\n")
+	waitForLandedAppends(t, taskA, artifactID)
+	writeIssueClosed(t, database, "DOC-1", true)
+	// Task B is the process the settlement runs on: it holds no room and no record of the
+	// document, so nothing there remembers the close, and neither task runs a room sync.
+	taskB, _ := newTestServiceInstance(t, storetest.SecondProcess(t, database))
+	if _, recorded := taskB.recordedIssueClosed(artifactID); recorded {
+		t.Fatal("task B records the document's issue, so its settlement would end before the warm-up it is here to test")
+	}
+	if owed, _, err := readOwedSettlement(ctx, database.Pool, artifactID); err != nil || !owed {
+		t.Fatalf("the document owes no settlement to run (owed %t, %v)", owed, err)
+	}
+
+	logs := captureLogs(t)
+	state := taskB.lockState(artifactID)
+	generation := state.roomGeneration
+	taskB.unlockState(artifactID, state)
+	outcome := taskB.settleRoomWithin(ctx, artifactID, generation, false)
+	// What the timer's settlement does with the outcome, which is where a retry is counted and
+	// logged (retrySettle).
+	taskB.followUpSettlement(artifactID, outcome)
+	if outcome.next != settleEnded || outcome.err != nil {
+		t.Fatalf("the settlement of a closed issue's document ended %d (%v), want settleEnded and no error", outcome.next, outcome.err)
+	}
+	if logged := logs.String(); strings.Contains(logged, "settle document") {
+		t.Fatalf("the settlement logged:\n%s\nwant nothing of a failed settlement: a closed issue has none", logged)
+	}
+	state = taskB.lockState(artifactID)
+	failures, armed := state.settleFailures, taskB.isSettleTimerArmed(state.settle)
+	taskB.unlockState(artifactID, state)
+	if failures != 0 || armed {
+		t.Fatalf("the settlement left %d failures counted against the room and armed=%t, want none and no retry", failures, armed)
+	}
+	if owed, _, err := readOwedSettlement(ctx, database.Pool, artifactID); err != nil || !owed {
+		t.Fatalf("the pending-settlement row says owed=%t (%v), want the work left for the resumption", owed, err)
+	}
+	if taskB.srv.GetDoc(artifactID) != nil {
+		t.Fatal("the refused warm-up left task B holding a room of the closed issue")
+	}
 }

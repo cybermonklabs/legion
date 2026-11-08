@@ -757,20 +757,24 @@ func (s *server) storeArtifact(
 	if kind == "doc" {
 		blocks = documentBlocksFor(documentReadBack, documentMarkdown)
 	}
+	responsePayload := map[string]any{"artifact": artifact, "version": version}
+	// The block report and the approval this upload superseded are the write's own, read in its
+	// transaction; only the issue-scoped advice beside them is a read that can fail. A nil advice
+	// therefore carries them on advice of their own rather than dropping them, exactly as the edit
+	// route does (editArtifact).
 	if advice != nil {
 		advice.documentBlocks = blocks
 		advice.SupersededApproval = superseded
-	}
-	responsePayload := map[string]any{"artifact": artifact, "version": version}
-	if target.IssueKey != nil {
 		WriteJSON(w, http.StatusCreated, withAdvice(responsePayload, advice))
-	} else if blocks != nil || superseded != nil {
+		return
+	}
+	if blocks != nil || superseded != nil {
 		WriteJSON(w, http.StatusCreated, withRawAdvice(responsePayload, documentWriteAdvice{
 			documentBlocks: blocks, SupersededApproval: superseded,
 		}))
-	} else {
-		WriteJSON(w, http.StatusCreated, responsePayload)
+		return
 	}
+	WriteJSON(w, http.StatusCreated, responsePayload)
 }
 
 func (s *server) getArtifact(w http.ResponseWriter, r *http.Request) {

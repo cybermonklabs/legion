@@ -678,7 +678,7 @@ The position is one derived field of those reads, so a document they cannot read
 the read answers 200 without `anchor_block` and with `anchor_block_error`, logged at WARN.
 `api.documentErrorCode` names that error for the read and for `writeHandlerError` alike, and both take its codes in one order, so `anchor_block_error` is the code the block route answers the same error with.
 `DOC_SERVICE_UNAVAILABLE` is a room or store that could not serve the document, taken before any cause the error carries:
-a failed room carries the error another operation failed it with (settlement's schema refusal, a settlement that failed three times - its warm-up refused because the issue had closed, among others - a writer's failed or cancelled commit, a failed store write or load, a history that did not decode), which says nothing of this request.
+a failed room carries the error another operation failed it with (settlement's schema refusal, a settlement that failed three times - its warm-up refused because the document was being rebuilt, among others, while a warm-up refused because the issue had closed is no failure at all, since a closed issue settles nothing - a writer's failed or cancelled commit, a failed store write or load, a history that did not decode), which says nothing of this request.
 `DOCUMENT_UNLOADABLE` (409) is a stored history this request itself could not decode (`docs.ErrDocumentUnloadable`), the one state `POST /api/v1/artifacts/{id}/rebuild` repairs and the one code the dashboard offers that rebuild for.
 `DOC_SCHEMA` is a tree outside the schema:
 one the document holds is a `docs.OutsideSchemaError`, which `treeOf` and `documentMarkdown` classify where they read or render a document's tree, so every route that starts from it - `GET /text`, `GET /blocks`, `POST /edits`, `POST /versions` - answers 409 with its one message, while a schema refusal of a tree a write itself produced is a 500 (`producedSchemaError`).
@@ -965,6 +965,7 @@ An issue's close and reopen reach every process through migration 20261101181500
 Each process, the patching one included, reads the issue's state and closes its rooms of the issue's documents (`issueOpenChanged`, `setRoomIssueOpen`), so their browsers reconnect with the scope the issue now allows;
 `patchIssue` calls no document method for it.
 Each LISTEN that stands reads the issue of every resident room again (`recheckResidentIssues`).
+A room whose load read the issue after the close committed records that close itself, and the notification, or the next recheck, closes that room all the same: a record carries whether the room standing on it was closed for the state it holds (`roomState.closedForIssue`, cleared by each load), so a record that matches is no sign the close reached the room (INFRA-592).
 The gate's issue read refuses a browser's append that its room took more than `closeMargin` (2 s) after the close committed, and closes that room when its process has not heard of the close yet (`refuseClosedIssueAppend`).
 An edit the room took before that margin ran out is stored, even when its append reaches the store after the close (`observedBeforeClose`).
 `patchIssue` stamps `closed_at = clock_timestamp()` again as the close transaction's last statement, so the margin counts from the close's commit:
