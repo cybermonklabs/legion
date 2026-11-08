@@ -206,7 +206,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		Store: st, Policy: cur, Secrets: policytest.Store(local), PendingTTL: 12 * time.Hour,
 		Audience: srv.URL, Skew: time.Minute, Replay: enr.Replay, Minters: config.minters,
 	}
-	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute)
+	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
 	provider := NewOAuthProvider(t, st, issuer)
 	mach := &machine.Service{
 		Store: st, Enroll: enr, Policy: cur,

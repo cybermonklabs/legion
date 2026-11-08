@@ -99,7 +99,7 @@ func newRig(t *testing.T) *rig {
 		Store: st, Policy: current, Secrets: policytest.Store(local), PendingTTL: 12 * time.Hour,
 		Audience: srv.URL, Skew: time.Minute, Replay: enr.Replay,
 	}
-	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute)
+	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
 	provider := brokertest.NewOAuthProvider(t, st, issuer)
 	mach := &machine.Service{
 		Store: st, Enroll: enr, Policy: current,

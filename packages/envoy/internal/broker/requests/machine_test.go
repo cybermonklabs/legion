@@ -149,7 +149,7 @@ func newFixture(t *testing.T) (m *Machine, enrollmentID string, requesterKey *ec
 		Replay:            replayer(st),
 		ServicesByAccount: map[string]string{fixtureSubject: fixtureService},
 	}
-	m.Chain = NewChainVerifier(st, testAudience, time.Minute)
+	m.Chain = NewChainVerifier(st, testAudience, time.Minute, m.Airlock)
 	return m, enrollmentID, requesterKey, fixtureOperator
 }
 

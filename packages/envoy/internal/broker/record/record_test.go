@@ -784,6 +784,130 @@ func TestMayJudgeAdmitsOneBoundedSecretNamingAnIssue(t *testing.T) {
 	}
 }
 
+// judgeModel is the model the test's judge decides as, in the audit actor its approved event
+// carries.
+const judgeModel = "claude-opus-5"
+
+// TestChainVerifierAdmitsAJudgesApprovalOnlyInsideTheRulesBound pins the arm ChainVerifier.Verify
+// takes for an approval the model judge made: the event's actor chooses it, and MayJudge, over
+// the verifier's own JudgeSeconds, decides it. A judged approval of one bounded secret naming an
+// issue verifies; one of two secrets, one past the entry's judge, one whose reason names no
+// issue, and one against a verifier left no bound at all are each ErrChainBroken naming the model
+// and the reason MayJudge gave. A judged event whose row also carries a login is still the
+// judge's, so no login written beside it can buy a record MayJudge refuses. The person's arm is
+// untouched: the approver's own approval verifies and another login's does not.
+//
+// Every judged case would be refused by MayDecide alone, an empty login deciding nothing, so
+// each refusal is checked to name what MayJudge said rather than only to be a refusal.
+func TestChainVerifierAdmitsAJudgesApprovalOnlyInsideTheRulesBound(t *testing.T) {
+	key, _ := proof.NewKey()
+	now := time.Now()
+	judged := func(secret string) (uint32, bool) {
+		if secret == "DEEL_API_KEY" {
+			return 900, true
+		}
+		return 0, false
+	}
+	secret := func(name string) AuthorizationDetail {
+		return AuthorizationDetail{Type: KindAgentSecret, Identifier: name, Actions: []string{"inject"}}
+	}
+	// stored is the record a request for details with reason, asking for lifetime seconds, was
+	// stored as: the request object really signed, so Verify's own re-verification holds.
+	stored := func(details []AuthorizationDetail, reason string, lifetime int) Body {
+		t.Helper()
+		compact, err := Sign(key, "https://secrets.test", details, reason, "", &lifetime, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := podBody(compact)
+		body.LifetimeSeconds = &lifetime
+		return body
+	}
+	byJudge := TerminalEvent{Event: "approved", Actor: JudgeActor(judgeModel)}
+	byPerson := func(login string) TerminalEvent {
+		return TerminalEvent{Event: "approved", Login: login, Actor: HumanActor(login)}
+	}
+	one := []AuthorizationDetail{secret("DEEL_API_KEY")}
+	two := []AuthorizationDetail{secret("DEEL_API_KEY"), secret("SLACK_MCP_XOXP_TOKEN")}
+	issue := "unblock INFRA-1353"
+	for _, c := range []struct {
+		name         string
+		body         Body
+		event        TerminalEvent
+		judgeSeconds func(string) (uint32, bool)
+		want         string // the refusal names this, "" for a chain that verifies
+	}{
+		{
+			name: "the judge, on one secret inside the bound, naming an issue",
+			body: stored(one, issue, 300), event: byJudge, judgeSeconds: judged,
+		},
+		{
+			name: "the judge, on two secrets",
+			body: stored(two, issue, 300), event: byJudge, judgeSeconds: judged,
+			want: "2 authorization details",
+		},
+		{
+			name: "the judge, past the entry's judge",
+			body: stored(one, issue, 901), event: byJudge, judgeSeconds: judged,
+			want: "past the 900",
+		},
+		{
+			name: "the judge, on a reason naming no issue",
+			body: stored(one, "deploying the broker", 300), event: byJudge, judgeSeconds: judged,
+			want: "names no Dispatch issue",
+		},
+		{
+			name: "the judge, against a verifier holding no bound",
+			body: stored(one, issue, 300), event: byJudge, judgeSeconds: nil,
+			want: "no judge bound is available",
+		},
+		{
+			name: "the judge, on a row that also names the approver as its login",
+			body: stored(two, issue, 300), judgeSeconds: judged,
+			event: TerminalEvent{Event: "approved", Login: "sjawhar", Actor: JudgeActor(judgeModel)},
+			want:  "2 authorization details",
+		},
+		{
+			name: "the record's own approver",
+			body: stored(one, issue, 300), event: byPerson("sjawhar"), judgeSeconds: judged,
+		},
+		{
+			name: "a person the record does not name",
+			body: stored(one, issue, 300), event: byPerson("mallory"), judgeSeconds: judged,
+			want: `approved by "mallory"`,
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			verifier := &ChainVerifier{
+				Kind: KindAgentSecret, Audience: "https://secrets.test", Skew: time.Minute,
+				JudgeSeconds: c.judgeSeconds,
+				FetchRecord: func(context.Context, string) (string, time.Time, bool, error) {
+					return c.body.Canonical(), now, true, nil
+				},
+				FetchDecisions: func(context.Context, string) ([]TerminalEvent, error) {
+					return []TerminalEvent{c.event}, nil
+				},
+			}
+			got, err := verifier.Verify(context.Background(), c.body.ID())
+			if c.want == "" {
+				if err != nil || got.Canonical() != c.body.Canonical() {
+					t.Fatalf("Verify = %+v, %v; want the stored body back", got, err)
+				}
+				return
+			}
+			if !errors.Is(err, ErrChainBroken) {
+				t.Fatalf("Verify = %v, want ErrChainBroken", err)
+			}
+			if !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("Verify = %v, want it to name %q", err, c.want)
+			}
+			if _, byTheJudge := JudgeLogin(c.event.Actor); byTheJudge && !strings.Contains(err.Error(), judgeModel) {
+				t.Fatalf("Verify = %v, want the refusal to name the model %q", err, judgeModel)
+			}
+		})
+	}
+}
+
 // TestIssueKeyInReason: the proxy's log line names the issue the session said it was working on,
 // and the judge reads the same reason for one, which is the first Dispatch key it holds.
 func TestIssueKeyInReason(t *testing.T) {

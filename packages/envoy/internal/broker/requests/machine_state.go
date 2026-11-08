@@ -271,9 +271,14 @@ func (m *Machine) missRereadLimiter() *ratelimit.Keyed {
 }
 
 // NewChainVerifier builds the record.ChainVerifier VerifyChain uses, scoped to agent_secret
-// records.
-func NewChainVerifier(st *store.Store, audience string, skew time.Duration) *record.ChainVerifier {
-	return st.ChainVerifier(record.KindAgentSecret, audience, skew)
+// records. rules are the airlock's, the ones the machine itself holds (Machine.Airlock): they
+// reach the verifier as record.ChainVerifier.JudgeSeconds, so a grant the model judge approved
+// re-verifies against the same bound the judge decided under. Zero rules give the judge nothing,
+// which refuses every such approval.
+func NewChainVerifier(st *store.Store, audience string, skew time.Duration, rules airlock.Rules) *record.ChainVerifier {
+	chain := st.ChainVerifier(record.KindAgentSecret, audience, skew)
+	chain.JudgeSeconds = rules.JudgeSeconds
+	return chain
 }
 
 type enrollmentRow struct {

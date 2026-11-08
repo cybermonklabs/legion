@@ -1003,7 +1003,7 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 		AirlockProxyURL:      cfg.AirlockProxyURL,
 		AirlockCACertificate: caCertificate,
 	}
-	m.Chain = requests.NewChainVerifier(st, cfg.PublicURL, time.Duration(cfg.ProofSkewSeconds)*time.Second)
+	m.Chain = requests.NewChainVerifier(st, cfg.PublicURL, time.Duration(cfg.ProofSkewSeconds)*time.Second, m.Airlock)
 	return m
 }
 
