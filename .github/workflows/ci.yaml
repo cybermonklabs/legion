@@ -4111,15 +4111,17 @@ jobs:
       # needs: api.github.com, a host of the old route, must be refused, and registry.npmjs.org,
       # the host a frozen install of this repository still fetches every package from, must be
       # answered. A proxy that refused everything would make the installs' silence about GitHub
-      # mean nothing. Both probes run through the same four variables the installs use, and each
+      # mean nothing. Both probes run through the same proxy variables the installs use, and each
       # prints the proxy's own log line for it. The log is emptied at the end, so the counts the
       # report step reads are the installs' alone.
       - name: Probe the proxy before the installs
+        # GitHub Actions folds an env key's case, so `http_proxy` and `HTTP_PROXY` in one block
+        # are the same key written twice and it refuses the whole workflow file, with no job run
+        # and no annotation on the pull request. The lowercase pair is the one both readers here
+        # honour: curl reads `http_proxy` only in lowercase, and Bun reads either spelling.
         env:
           http_proxy: http://127.0.0.1:${{ steps.proxy.outputs.port }}
           https_proxy: http://127.0.0.1:${{ steps.proxy.outputs.port }}
-          HTTP_PROXY: http://127.0.0.1:${{ steps.proxy.outputs.port }}
-          HTTPS_PROXY: http://127.0.0.1:${{ steps.proxy.outputs.port }}
         run: |
           log="$RUNNER_TEMP/ci-fault-proxy.log"
           if curl -sS -o /dev/null --max-time 30 https://api.github.com/meta; then
@@ -4141,8 +4143,6 @@ jobs:
         env:
           http_proxy: http://127.0.0.1:${{ steps.proxy.outputs.port }}
           https_proxy: http://127.0.0.1:${{ steps.proxy.outputs.port }}
-          HTTP_PROXY: http://127.0.0.1:${{ steps.proxy.outputs.port }}
-          HTTPS_PROXY: http://127.0.0.1:${{ steps.proxy.outputs.port }}
         run: bun install --frozen-lockfile
 
       # The same install again, over the cache and the node_modules the step above left: the
@@ -4151,8 +4151,6 @@ jobs:
         env:
           http_proxy: http://127.0.0.1:${{ steps.proxy.outputs.port }}
           https_proxy: http://127.0.0.1:${{ steps.proxy.outputs.port }}
-          HTTP_PROXY: http://127.0.0.1:${{ steps.proxy.outputs.port }}
-          HTTPS_PROXY: http://127.0.0.1:${{ steps.proxy.outputs.port }}
         run: bun install --frozen-lockfile
 
       # The verdict, read off the proxy's log: the host of every refusal it wrote while the two
