@@ -181,10 +181,15 @@ def check_cache_round_trip(document: dict, problems: list) -> None:
     pairs a save with the restores to hold it to; the keys are compared as text and the paths as
     the ordered lists of lines they name. A family ci.yaml restores that this workflow does not
     save is no fault: docs-pages.yaml saves go-docs. The other way round is one, a family nothing
-    restores being a fill nobody reads. Each restore here is a lookup, which must be
-    `lookup-only: true` with no restore-keys: the question it asks is whether that exact key is
-    already there, the entry it would download is read by nothing in this workflow, and a prefix
-    hit would answer for an older key and skip the build that fills this one. A ci-caches.yaml
+    restores. Each restore here is a lookup, which must be
+    `lookup-only: true` with no restore-keys, and must name its own save's paths: the question it
+    asks is whether that exact key is already there, the entry it would download is read by
+    nothing in this workflow, a prefix hit would answer for an older key and skip the build that
+    fills this one, and a lookup naming other paths than its save asks after an entry the save
+    would not write - actions/cache keys an entry on its path list as well as its key, so such a
+    lookup hits an older entry, skips the build and the save, and the entry ci.yaml restores is
+    never written (dispatch://INFRA-1075).
+    A ci-caches.yaml
     that is not in the repository saves nothing, and so has nothing to hold."""
     if not (REPO / CACHE_WORKFLOW).is_file():
         return
@@ -212,6 +217,8 @@ def check_cache_round_trip(document: dict, problems: list) -> None:
                                 f"it into {', '.join(restored_paths) or '(no path)'}: the "
                                 f"entry then holds other directories than the job reads, and the job rebuilds what "
                                 f"the fill already built")
+    saved_paths = {family: path_lines(given.get("path", ""))
+                   for _, family, given in cache_steps(caches, "save")}
     for job_id, family, given in cache_steps(caches, "restore"):
         if str(given.get("lookup-only", "")).strip().lower() != "true":
             problems.append(f"::error file={CACHE_WORKFLOW}::job {job_id}'s actions/cache/restore of family "
@@ -221,6 +228,13 @@ def check_cache_round_trip(document: dict, problems: list) -> None:
             problems.append(f"::error file={CACHE_WORKFLOW}::job {job_id}'s actions/cache/restore of family "
                             f"{family} has restore-keys: a prefix hit would answer for an older key, and the build "
                             f"that fills this one would be skipped, leaving the key empty")
+        looked = path_lines(given.get("path", ""))
+        if family in saved_paths and looked != saved_paths[family]:
+            problems.append(f"::error file={CACHE_WORKFLOW}::job {job_id}'s actions/cache/restore of family "
+                            f"{family} looks up {', '.join(looked) or '(no path)'}, but this job saves it from "
+                            f"{', '.join(saved_paths[family]) or '(no path)'}: a lookup naming other paths than "
+                            f"its save asks after an entry the save would not write, so it hits an older one and "
+                            f"skips the build and the save, leaving the key {WORKFLOW} restores unwritten")
 
 
 # ------------------------------------------- the race build that fills the race lane's cache

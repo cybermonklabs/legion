@@ -202,12 +202,18 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
 
+      # The lookup names the save's own paths, exclusion and all. actions/cache keys an entry on
+      # its path list as well as its key, so a lookup that names other paths hits an entry this
+      # fill's own save would not write and skips the build and the save: that is what kept
+      # envoy-go's restore missing go-envoy-test-Linux-go1.27.3 on every run while this lookup
+      # hit the entry saved before the zips were left out (dispatch://INFRA-1075).
       - id: go-envoy-test
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
+            !~/go/pkg/mod/cache/download/**/*.zip
           key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
           lookup-only: true
 
