@@ -823,7 +823,13 @@ test("gives up on a jj that never answers, keeping the other exports and the sum
   // and 86 s at its worst over 40 runs on a 2-CPU host carrying 240 busy loops, so 180 s is far
   // above what load can cost it and far below what the defect costs. Written here rather than
   // left to the package's `bun test --timeout=60000`, so a run of this file without that flag
-  // gets the same guard.
+  // gets the same guard. What the limit does not guard is load reaching the assertions below it:
+  // in a whole-suite run of this package on this 2-CPU host carrying 80 busy loops per CPU the
+  // row failed on `expect(result.stdout).toStartWith("Dispatch authored-ask summary:\n")`,
+  // charged 36624.60 ms and so nowhere near this limit, because the hook's own
+  // `OPEN_ASKS_TIMEOUT_MS` of 3 s (`hooks/session-hook.ts:120`) lost the Dispatch read on a
+  // starved host. That bound reads no environment variable, so no per-test limit guards it.
+  // Row-filtered at 160 busy loops the row is 20 of 20 green.
 }, 180_000)
 
 // `CLAUDE_ENV_FILE` is one file per session id
@@ -859,8 +865,10 @@ test("keeps the session's own export when a later run of the same id has no jj t
       `export JJ_CONFIG='${userConfig}:${overlay}'\n`,
     )
 
-    // The resume: same session id, same file, and a jj that never answers.
-    const hanging = await jjDirectory(join(scratch, "hanging"), "exec sleep 30")
+    // The resume: same session id, same file, and a jj that never answers. 300 s, not 30: the
+    // limit below outlives a 30 s sleep, so a hook that stopped bounding its wait would have
+    // returned behind one well inside the limit and left the row green while broken.
+    const hanging = await jjDirectory(join(scratch, "hanging"), "exec sleep 300")
     expect((await runHook(hookInput, env(hanging))).exitCode).toBe(0)
 
     expect(await readFile(envFile, "utf8")).toBe(
@@ -875,4 +883,15 @@ test("keeps the session's own export when a later run of the same id has no jj t
   } finally {
     await rm(scratch, { recursive: true, force: true })
   }
-}, 20_000)
+  // A hang guard, not a bound on the work: the only thing that reaches this limit is a hook that
+  // waits for a jj that never answers, which costs the full 300 s above. The row itself costs
+  // 3.5 s idle (3.55 / 3.58 / 3.62 s min / median / max over 5 runs) and 75.7 s at its worst
+  // over 20 runs on this 2-CPU host carrying 160 busy loops, 80 per CPU (20.9 / 41.8 / 75.7 s);
+  // a second 20 runs under that same load cost 82.3 s of wall at their worst, file load included.
+  // Six times the row's own worst, 75.7 s, would be 454 s, which does not fit: 180 s is the
+  // ceiling, the value the row above carries, and the gap is that this limit is a little over
+  // twice the worst load has cost, not six times. It still sits well inside the `claude-envoy`
+  // job's `timeout-minutes: 10`, so a hang reddens with this test named instead of cancelling
+  // the job, and is written here rather than left to the package's `bun test --timeout=60000`,
+  // so a run of this file without that flag gets the same guard.
+}, 180_000)
