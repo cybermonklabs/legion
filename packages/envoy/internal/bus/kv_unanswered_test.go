@@ -2,6 +2,8 @@ package bus
 
 import (
 	"bufio"
+	"context"
+	"errors"
 	"io"
 	"net"
 	"net/url"
@@ -14,6 +16,10 @@ import (
 
 	"github.com/sjawhar/envoy/internal/testnats"
 )
+
+// unansweredBucket is the bucket the handle-open rows below open a jetstream handle on, created
+// afresh by each of them on the package's shared server and removed when it ends.
+const unansweredBucket = "envoy_unanswered_test"
 
 // openSubject is the request a lookup of a bucket sends: the STREAM.INFO of the bucket's stream,
 // which nats.go builds from the bucket's name for the legacy js.KeyValue (nats.go@v1.53.1
@@ -53,6 +59,7 @@ type unansweredRelay struct {
 	url      string
 	listener net.Listener
 	mu       sync.Mutex
+	pass     int
 	drops    int
 	sends    int
 }
@@ -92,6 +99,19 @@ func startUnansweredRelayOn(t *testing.T, target, subject string) *unansweredRel
 func (r *unansweredRelay) arm(drops int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.pass = 0
+	r.drops = drops
+	r.sends = 0
+}
+
+// passThenDrop lets the next pass sends of the subject through and drops the drops after them,
+// counting the sends from now. A row that drives a whole start needs this where arm does not:
+// EnsureKeyValue looks its bucket up with the same STREAM.INFO on the same subject as the handle
+// open, so a relay armed to drop the first send would drop the lookup instead of the open.
+func (r *unansweredRelay) passThenDrop(pass, drops int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pass = pass
 	r.drops = drops
 	r.sends = 0
 }
@@ -112,6 +132,10 @@ func (r *unansweredRelay) send(subject string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.sends++
+	if r.pass > 0 {
+		r.pass--
+		return false
+	}
 	if r.drops > 0 {
 		r.drops--
 		return true
@@ -318,5 +342,144 @@ func TestAnUnansweredAccountInfoIsSentAgainAndTheStartGoesOn(t *testing.T) {
 	// no answer. Each of those rides a subject of its own, which this relay passes on.
 	if sends := relay.sent(); sends != 2 {
 		t.Fatalf("account infos sent = %d, want 2: the lost one and the one of the send that made the bucket", sends)
+	}
+}
+
+// unansweredKeyValue creates the bucket on a connection through relay and returns that connection
+// with the legacy handle a start holds when it comes to open the jetstream handle of it.
+func unansweredKeyValue(t *testing.T, relay *unansweredRelay) (*nats.Conn, nats.JetStreamContext, nats.KeyValue) {
+	t.Helper()
+	conn := testnats.Connect(t, relay.url)
+	t.Cleanup(conn.Close)
+	js, err := conn.JetStream(nats.MaxWait(RequestTimeout))
+	if err != nil {
+		t.Fatalf("open JetStream through the relay: %v", err)
+	}
+	kv, err := js.CreateKeyValue(&nats.KeyValueConfig{Bucket: unansweredBucket, Storage: nats.MemoryStorage})
+	if err != nil {
+		t.Fatalf("create the bucket: %v", err)
+	}
+	t.Cleanup(func() { _ = js.DeleteKeyValue(unansweredBucket) })
+	return conn, js, kv
+}
+
+// A start whose open of a bucket's jetstream handle draws no answer sends it again and goes on,
+// rather than ending the program with "open the jetstream handle of KV bucket <name>: context
+// deadline exceeded". The first open never reaches the server, so the handle the start is given
+// is the second one's, and it reads the bucket's stream. This is the start that created the
+// bucket.
+func TestAnUnansweredHandleOpenIsSentAgainAndTheStartGoesOn(t *testing.T) {
+	relay := startUnansweredRelayOn(t, testnats.URL(t), openSubject(unansweredBucket))
+	conn, _, kv := unansweredKeyValue(t, relay)
+
+	relay.arm(1)
+	handle, err := wrapKeyValue(conn, kv, true, startSendsAgain)
+	if err != nil {
+		t.Fatalf("a start whose first handle open drew no answer = %v, want it to go on", err)
+	}
+
+	if sends := relay.sent(); sends != 2 {
+		t.Fatalf("handle opens sent = %d, want 2: the lost one and the one that answered", sends)
+	}
+	if handle.Bucket() != unansweredBucket {
+		t.Fatalf("the handle is on bucket %q, want %q", handle.Bucket(), unansweredBucket)
+	}
+	if _, err := handle.ReadStreamState(); err != nil {
+		t.Fatalf("read the bucket's stream through the handle the start was given: %v", err)
+	}
+}
+
+// A start that found its bucket rather than creating it sends the open again too. This is the
+// ordinary start, a restart of a deployment whose buckets are already there, and it was the one
+// the resend missed while the create and not the caller chose it: EnsureKeyValue leaves created
+// false on that path, so one lost answer still ended the program.
+func TestAnUnansweredHandleOpenOfAFoundBucketIsSentAgainAndTheStartGoesOn(t *testing.T) {
+	relay := startUnansweredRelayOn(t, testnats.URL(t), openSubject(unansweredBucket))
+	conn, _, kv := unansweredKeyValue(t, relay)
+
+	relay.arm(1)
+	handle, err := wrapKeyValue(conn, kv, false, startSendsAgain)
+	if err != nil {
+		t.Fatalf("a start that found its bucket and lost its first handle open = %v, want it to go on", err)
+	}
+
+	if sends := relay.sent(); sends != 2 {
+		t.Fatalf("handle opens sent = %d, want 2: the lost one and the one that answered", sends)
+	}
+	if _, err := handle.ReadStreamState(); err != nil {
+		t.Fatalf("read the bucket's stream through the handle the start was given: %v", err)
+	}
+}
+
+// An answer the server gives ends the sending: a start sends the open once and is done, so
+// nothing a server answers is ever asked twice.
+func TestAnAnsweredHandleOpenIsSentOnce(t *testing.T) {
+	relay := startUnansweredRelayOn(t, testnats.URL(t), openSubject(unansweredBucket))
+	conn, _, kv := unansweredKeyValue(t, relay)
+
+	relay.arm(0)
+	if _, err := wrapKeyValue(conn, kv, true, startSendsAgain); err != nil {
+		t.Fatalf("a start whose handle open the server answered = %v, want it to go on", err)
+	}
+
+	if sends := relay.sent(); sends != 1 {
+		t.Fatalf("handle opens sent = %d, want 1: an answer is the server's and is not sent again", sends)
+	}
+}
+
+// A caller that is no start sends the open once, whatever the server does with it.
+// roles.Buckets.bucket reaches WrapKeyValue through OpenKeyValue, under its own lock and on a
+// request whose budget is two seconds, so an open that kept sending would stop every role and
+// session read of the process instead of saving a start.
+func TestAnUnansweredHandleOpenOffAStartIsSentOnce(t *testing.T) {
+	relay := startUnansweredRelayOn(t, testnats.URL(t), openSubject(unansweredBucket))
+	conn, _, kv := unansweredKeyValue(t, relay)
+
+	relay.arm(1)
+	_, err := WrapKeyValue(conn, kv)
+
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("an open the server left unanswered off a start = %v, want %v", err, context.DeadlineExceeded)
+	}
+	if sends := relay.sent(); sends != 1 {
+		t.Fatalf("handle opens sent = %d, want 1: this path is a request's, not a start's", sends)
+	}
+}
+
+// A start that opens its bucket the way every start of this deployment does, through
+// EnsureKeyValue, sends the handle open again when the server leaves it unanswered.
+//
+// The rows above hold wrapKeyValue with the choice already handed to it, and the choice is the
+// half that was wrong: while created made it, a start that found its bucket sent the open once
+// and one lost answer ended the program with "open the jetstream handle of KV bucket <name>:
+// context deadline exceeded". Nothing held EnsureKeyValue's own choice - with it handing oneSend
+// the whole of internal/bus passes and go vet is clean - so this row drives the entry point a
+// start calls and reads the sends off the wire.
+//
+// How many requests a clean start sends on this subject is read rather than counted here: the
+// lookup EnsureKeyValue makes is the same STREAM.INFO on the same subject as the open that
+// follows it, so the drop is placed behind what a clean start sends, and a step added to the
+// found-bucket path moves it along rather than landing it on another request.
+func TestAStartThatOpensAFoundBucketThroughEnsureKeyValueSendsTheOpenAgain(t *testing.T) {
+	relay := startUnansweredRelayOn(t, testnats.URL(t), openSubject(unansweredBucket))
+	conn, js, _ := unansweredKeyValue(t, relay)
+	config := &nats.KeyValueConfig{Bucket: unansweredBucket, Storage: nats.MemoryStorage}
+
+	relay.arm(0)
+	if _, err := EnsureKeyValue(conn, js, config); err != nil {
+		t.Fatalf("a start whose every request the server answered = %v, want it to go on", err)
+	}
+	answered := relay.sent()
+	if answered < 1 {
+		t.Fatalf("a clean start sent %d requests on the bucket's stream, want at least the handle open itself", answered)
+	}
+
+	relay.passThenDrop(answered-1, 1)
+	if _, err := EnsureKeyValue(conn, js, config); err != nil {
+		t.Fatalf("a start that found its bucket and lost its handle open = %v, want it to go on", err)
+	}
+	if sends := relay.sent(); sends != answered+1 {
+		t.Fatalf("the start sent %d requests on the bucket's stream, want %d: a clean start's %d with the lost open sent again",
+			sends, answered+1, answered)
 	}
 }

@@ -631,9 +631,12 @@ func (r streamReconciliation) log() {
 // update lands while the server checks this one (TestTwoStartsRaisingOneStreamAtOnceBothSucceed). A
 // stream one start creates first is reconciled by the other, keeping the id it was created with
 // (AddStream answers ErrStreamNameAlreadyInUse, as its config's id differs). Two that both find no
-// id write the same one, derived from what both read.
+// id write the same one, derived from what both read. A third race is settled here: a server that
+// leaves one of two starts' stream reads or creates unanswered, which each request below is sent
+// again for (sentAgain), since a start that returns such an error ends the program.
 func ensureStreamWithConfig(js nats.JetStreamContext, cfg *nats.StreamConfig, defaultsAnUnsetCap bool) error {
-	info, err := js.StreamInfo(Stream)
+	readStream := func() (*nats.StreamInfo, error) { return js.StreamInfo(Stream) }
+	info, err := sentAgain("STREAM.INFO", readStream)
 	if errors.Is(err, nats.ErrStreamNotFound) {
 		created := *cfg
 		created.Metadata = maps.Clone(cfg.Metadata)
@@ -641,10 +644,17 @@ func ensureStreamWithConfig(js nats.JetStreamContext, cfg *nats.StreamConfig, de
 			created.Metadata = map[string]string{}
 		}
 		created.Metadata[StreamIDMetadataKey] = id.New()
-		if _, err = js.AddStream(&created); !errors.Is(err, nats.ErrStreamNameAlreadyInUse) {
+		// A create whose answer was lost is made again with the same configuration and the same
+		// id, drawn once above. A server that applied the lost create reads the second send as an
+		// equal create and answers it with the stream (v2.15.1 server/jetstream_cluster.go
+		// jsClusteredStreamRequest, "This is an equal assignment"), so the start goes on; only
+		// another start's create, which carries another id, draws ErrStreamNameAlreadyInUse, which
+		// this branch reads as such and follows with the read below.
+		_, err = sentAgain("STREAM.CREATE", func() (*nats.StreamInfo, error) { return js.AddStream(&created) })
+		if !errors.Is(err, nats.ErrStreamNameAlreadyInUse) {
 			return refusedSettings(err, nil, &created)
 		}
-		info, err = js.StreamInfo(Stream)
+		info, err = sentAgain("STREAM.INFO", readStream)
 	}
 	if err != nil {
 		return err
@@ -832,16 +842,18 @@ func unanswered(err error) bool {
 }
 
 // unansweredSends bounds how many times a caller sends one JetStream request the server left
-// unanswered (sentAgain): EnsureKeyValue's lookup of a KV bucket and its create
+// unanswered (sentAgain): the stream read and the create of ensureStreamWithConfig, the handle
+// open of wrapKeyValue's create path, and EnsureKeyValue's lookup of a KV bucket and its create
 // (internal/bus/kv.go). A wait that runs out is either a request the server will never answer,
 // on one of the paths sentAgain lists below, or one it is still working on, and either is safe
-// to send again: a lookup only reads, and a second identical create is deduplicated (the
-// comment on the create in EnsureKeyValue). A longer wait buys nothing for an answer that is
-// never coming. Three sends, because a start that lost two in a row has a bus that is not
-// serving JetStream at all, which is a start that must end. Each send carries the wait of each
-// request it makes, so this count times that wait is a caller's worst case only where the server
-// answers nothing at all and every send ends at its first request; a step whose earlier requests
-// do answer costs more, which EnsureKeyValue's doc counts.
+// to send again: a read changes nothing, and a second identical create is deduplicated and
+// carries the same id as the one that may have landed, so no second send can contradict the
+// send before it (an update is read again rather than sent again, updateStream). A longer wait
+// buys nothing for an answer that is never coming. Three sends, because a start that lost two in
+// a row has a bus that is not serving JetStream at all, which is a start that must end. Each
+// send carries the wait of each request it makes, so this count times that wait is a caller's
+// worst case only where the server answers nothing at all and every send ends at its first
+// request; a step whose earlier requests do answer costs more, which EnsureKeyValue's doc counts.
 const unansweredSends = 3
 
 // sentAgain is what send answers, sent again while the server leaves it unanswered (unanswered)
@@ -852,6 +864,12 @@ const unansweredSends = 3
 // record of it before it hands this function a request's silence (refusedSend): on a connection a
 // client owns, a request the grant does not cover is sent once, and this function's own count
 // applies to a server that answers nothing.
+//
+// Two programs starting at once each reconcile the one ENVOY_NOTIFICATIONS stream, and the start
+// that loses the answer to its own stream read is the listener that dies ten seconds after it
+// binds its port, serving nothing: cmd/listener's role-lane row
+// (TestRoleLaneRefusedSharedQueueFallsBackToMachineGroupsAndStoresOneCopy), whose fatal line was
+// the bare "context deadline exceeded" of the JetStream context's own ten-second wait.
 //
 // A request that draws no answer never draws one later, because neither side sends it again:
 // nats.go publishes each JetStream request exactly once and waits (nats.go@v1.53.1
@@ -880,7 +898,9 @@ const unansweredSends = 3
 //     (jetstream_api.go:1029-1045), which is no answer to the caller.
 //
 // So a start that opens a bucket through a member in one of those states waits its whole bound
-// out and ends the program over one send that was never going to be answered.
+// out and ends the program over one send that was never going to be answered. Nor is it the
+// in-process server's own fault: the production server leaves a JetStream request unanswered too
+// while its meta leader changes.
 func sentAgain[T any](request string, send func() (T, error)) (T, error) {
 	var answer T
 	var err error
