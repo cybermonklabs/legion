@@ -33,14 +33,16 @@
 #       It prints each file with its size and its sha256, and refuses the job naming the row
 #       when a fetch or a digest does not come out right.
 #
-#   start-fault [--hosts <list>]
-#       Starts .github/scripts/ci-fault-proxy.py --mode fail over those hosts, waits for its
-#       port, writes `proxy=http://127.0.0.1:<port>` to $GITHUB_OUTPUT, and writes the four
-#       spellings of the two proxy variables and the two emptied bypass lists to $GITHUB_ENV,
-#       printing each line as it wrote it, so a job routes its later steps through the fault by
-#       running this verb and nothing else.
-#       --hosts defaults to FAULT_HOSTS below, the release hosts both jobs fault, which is
-#       written there and in no step of either job.
+#   start-fault
+#       Starts .github/scripts/ci-fault-proxy.py --mode fail over FAULT_HOSTS below, the release
+#       hosts both jobs fault, which is written there and in no step of either job, waits for its
+#       port, and writes the four spellings of the two proxy variables and the two emptied bypass
+#       lists to $GITHUB_ENV, printing each line as it wrote it, so a job routes its later steps
+#       through the fault by running this verb and nothing else.
+#       It takes no argument, as `stop-fault` does.
+#       The proxy's own address goes to $RUNNER_TEMP/ci-tools-proof/fault.state, which is where
+#       `probe` and `installed-bun --expect-refused` read it from; neither job gives this step an
+#       id, so a step output would have no reader.
 #       Its log is $RUNNER_TEMP/ci-tools-proof/fault.log.
 #
 #   stop-fault
@@ -468,34 +470,23 @@ fault_env() {
   done
 }
 
+# start_fault: the proxy over FAULT_HOSTS, and every variable that routes this job's later steps
+# through it. The address it bound goes to the fault state file, the one thing the verbs after it
+# need of it: `probe` makes its two requests through that proxy and `installed-bun
+# --expect-refused` reads the log of the same one.
 start_fault() {
-  local hosts=$FAULT_HOSTS
-  while [ "$#" -gt 0 ]; do
-    case $1 in
-      --hosts)
-        hosts=$2
-        shift 2
-        ;;
-      *) die "start-fault: unknown argument '$1'" ;;
-    esac
-  done
-  [ -n "$hosts" ] ||
-    die "start-fault: --hosts was given no host, and an empty list would fault every host there is"
+  [ "$#" -eq 0 ] || die "start-fault takes no argument, and this call gave $#"
   mkdir -p "$work"
   local port_file="$work/fault.port"
   rm -f "$port_file" "$fault_log"
   : > "$fault_log"
-  python3 "$root/.github/scripts/ci-fault-proxy.py" --mode fail --hosts "$hosts" \
+  python3 "$root/.github/scripts/ci-fault-proxy.py" --mode fail --hosts "$FAULT_HOSTS" \
     --port 0 --port-file "$port_file" > "$fault_log" 2>&1 &
   wait_for_file "$port_file" "the fault proxy"
   local proxy
   proxy="http://127.0.0.1:$(cat "$port_file")"
-  {
-    echo "proxy=$proxy"
-    echo "hosts=$hosts"
-  } > "$fault_state"
-  [ -z "${GITHUB_OUTPUT:-}" ] || echo "proxy=$proxy" >> "$GITHUB_OUTPUT"
-  note "the fault proxy is $proxy, answering HTTP 504 for $hosts and passing every other host on"
+  echo "proxy=$proxy" > "$fault_state"
+  note "the fault proxy is $proxy, answering HTTP 504 for $FAULT_HOSTS and passing every other host on"
   note "every later step of this job goes through it:"
   fault_env "$proxy"
 }

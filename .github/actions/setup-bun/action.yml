@@ -47,12 +47,19 @@ description: >-
   runs a bun no digest answers for, under either name.
 
   A run off main passes no-cache, so only a run on main saves: an entry a pull request writes is
-  readable by no other pull request. ci.yaml runs on no push, so the entry comes from the
-  workflows that do run on main — claude-envoy-rebuild.yaml, docs-pages.yaml (through
-  docs-site.yaml), e2e.yaml (its nightly schedule, which GitHub starts from the default branch
-  alone), release.yaml and release-envoy-listener.yaml — and from a dispatch of ci.yaml on main.
+  readable by no other pull request.
+  ci.yaml runs on no push, so the entry comes from the workflows that do run on main —
+  claude-envoy-rebuild.yaml, docs-pages.yaml (through docs-site.yaml), e2e.yaml (its nightly
+  schedule, which GitHub starts from the default branch alone), release.yaml and
+  release-envoy-listener.yaml — and from a dispatch of ci.yaml on main.
   no-cache is setup-bun's only cache input and also skips the restore, so a run off main
   downloads Bun (about 34 MB) instead of restoring it.
+  ci.yaml's tool-fallback and tool-fallback-arm jobs pass it on every ref and every event as
+  well, which is the second term of that expression: both prove what an install reads when the
+  release asset serves nothing, and a Bun the Actions cache restored would be bytes no case of
+  theirs installed.
+  `github.job` is the id of the job that called this action, so those two are held out of the
+  cache by their own ids and no other job loses an entry.
 
 runs:
   using: composite
@@ -87,12 +94,17 @@ runs:
     # puts ~/.bun/bin on $GITHUB_PATH before it downloads anything, and a runner applies a step's
     # $GITHUB_PATH whether that step succeeded or failed, so every later step finds a bun there
     # either way.
+    # This step is also where a cached Bun arrives: it restores one into ~/.bun/bin/bun inside
+    # itself, from Actions cache hosts no fault proxy of this repository holds.
+    # That is why ci.yaml's two proof jobs turn the cache off here rather than by taking a bun
+    # away before this step: every case of theirs reads what an install served, and a Bun this
+    # step restored is one no case of theirs installed.
     - id: setup-bun
       uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
       continue-on-error: true
       with:
         bun-version-file: .bun-version
-        no-cache: ${{ github.ref != 'refs/heads/main' }}
+        no-cache: ${{ github.ref != 'refs/heads/main' || startsWith(github.job, 'tool-fallback') }}
 
     - id: bun-second-source
       name: Install Bun from npm when the release asset did not serve it

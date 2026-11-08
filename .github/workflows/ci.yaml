@@ -68,7 +68,9 @@ name: CI
 # shard and alone jobs restore the Playwright browsers of the version bun.lock pins, which
 # ci-caches.yaml's browsers job fills on that same push. setup-bun reads and writes its cache
 # only on main (.github/actions/setup-bun), which of this workflow's events is the dispatched
-# run alone.
+# run alone, and not in the tool-fallback and tool-fallback-arm jobs at all: that action reads
+# the id of the job that called it and passes no-cache for those two on every ref, so a
+# restored Bun cannot stand in for the install each of their cases is a reading of.
 
 # No `paths:`: every change starts this workflow, and `changes` selects what runs. No `branches:`
 # on pull_request: a pull request on any base is tested. No `edited`: a title or body edit starts
@@ -353,7 +355,7 @@ jobs:
               - 'docs/site/package.json'
               - '.bun-version'
               - '.github/actions/setup-bun/**'
-              # setup-bun's second step reads this runner's bun row through that helper and
+              # setup-bun's third step reads this runner's bun row through that helper and
               # fetches the npm copy when the release asset served no Bun of the pinned version,
               # and its last step holds the bun on PATH to that row's digest.
               - '.github/ci-tools.yaml'
@@ -2168,16 +2170,22 @@ jobs:
   # WHAT THIS JOB DRIVES, AND WHAT IT ONLY REASONS ABOUT.
   # Everything a case is read on is driven here: the fault, the origin that stands in for all
   # three sources, the corrupted payloads, and the removals each case makes before it.
-  # One thing is not. oven-sh/setup-bun, which .github/actions/setup-bun's first step pins,
-  # declares a `cache-hit` output in its own action.yml at that commit, and that wrapper passes
-  # it `no-cache: ${{ github.ref != 'refs/heads/main' }}`, so a run of this job on a pull
-  # request restores no Bun from the Actions cache while a dispatch of ci.yaml on main can,
-  # and the Actions cache is on hosts this job's fault does not hold. That second reading is
-  # taken from the action's own declaration and from the ref, not from a run of this job: a
-  # dispatch of main cannot be made from a pull request, so nothing here measures it.
-  # What this job does against it is to leave no Bun behind where a case that must read the
-  # second source would find one: every such case takes ~/.bun/bin/bun and the bunx beside it
-  # away before the install it reads.
+  # One thing is not. oven-sh/setup-bun, which .github/actions/setup-bun's second step pins,
+  # restores a cached Bun into ~/.bun/bin/bun inside a step of its own, and the Actions cache it
+  # restores from is on hosts this job's fault does not hold.
+  # .bun-version holds an exact version, so that action builds its key and its URL without
+  # asking any host which version to take, and nothing the fault refuses stands in its way.
+  # Taking a bun away before that step is therefore no answer to the cache, since the step would
+  # put a restored one back.
+  # What keeps every case here a reading of an install is the wrapper's own `no-cache`, true for
+  # every job whose id starts with `tool-fallback` — `github.job` in a composite action is the
+  # id of the job that called it — so no call of that action in this job can be served by the
+  # Actions cache, on any event and any ref.
+  # That is read from the wrapper's expression rather than from a run of this job: a run that
+  # told the action not to read the cache cannot measure what the cache would have served.
+  # The removals the cases do make are about this job's own state: a case that must read the
+  # second source takes ~/.bun/bin/bun and the bunx beside it away before its install, so what
+  # it reads is not the bun an earlier case left.
   tool-fallback:
     needs: [changes, ci-images]
     if: needs.changes.outputs.tool_fallback == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
@@ -2340,6 +2348,12 @@ jobs:
       # whose primary meets the fault and whose second source cannot be reached fails. That is
       # what makes the passes below a reading of the second source rather than of a cache, of a
       # tool the runner image already carries, or of a proxy that let the asset through.
+      # A merge base from before this change reads neither CI_TOOLS_GHCR_BASE nor
+      # CI_TOOLS_NPM_BASE, so the release asset this fault holds is its one source, and that is
+      # what fails these four on a pull request and a merge group today.
+      # A base that reads both — this tree on a workflow_dispatch, and every base once this
+      # change is on main — fails for the two dead ports instead, which leave its second source
+      # nothing to reach.
       # A control that leaned on the merge base having one source each would expire the day this
       # change lands on main: the base would then be this tree, each primary would meet the
       # fault, each second source would reach the real ghcr — whose blobs redirect to
@@ -2395,9 +2409,11 @@ jobs:
           BUN: ${{ steps.base-bun.outcome }}
         run: |
           set -euo pipefail
+          echo "a merge base from before this change reads neither CI_TOOLS_GHCR_BASE nor CI_TOOLS_NPM_BASE, so the release asset behind this fault is the one source each of its four installs has, and on a pull request and a merge group that is what fails them here"
+          echo "a base that reads both — this tree on a workflow_dispatch, and every base once this change is on main — is sent by them to a port nothing listens on, and that is what fails them instead"
           wrong=""
           for pair in "crane:$CRANE" "changie:$CHANGIE" "jj:$JJ" "bun:$BUN"; do
-            echo "the merge base's ${pair%%:*} install, its primary faulted and its second source on a dead port, ended in ${pair#*:}"
+            echo "  the merge base's ${pair%%:*} install ended in ${pair#*:}"
             [ "${pair#*:}" = failure ] || wrong="$wrong ${pair%%:*}"
           done
           if [ -n "$wrong" ]; then
@@ -2520,8 +2536,9 @@ jobs:
         run: .github/scripts/ci-tools-proof.sh report jj-second-source --outcome ${{ steps.jj-second-source.outcome }} --row jj --expect-source ghcr-mirror
 
       # Case 7 of 8: the installed Bun is one byte changed and still answers the pinned revision,
-      # so setup-bun's second step takes the primary branch — a Bun of the pinned version is
-      # already there — and its third step refuses those bytes.
+      # so setup-bun's third step takes the branch that installs nothing — a Bun of the pinned
+      # version is already at ~/.bun/bin/bun, and the first step found it there, so the word this
+      # one writes for it is `existing-install` — and the fourth step refuses those bytes.
       # Measured on 2026-11-08: the 107308936-byte binary of the bun-linux-x64 row answers
       # `--revision 1.4.4+38afee6c8` with its final byte changed, as it does whole, so the
       # branch this case needs is the branch it takes. The step below reads that answer again
@@ -2549,13 +2566,12 @@ jobs:
       - name: Read the bun-primary case
         run: .github/scripts/ci-tools-proof.sh report bun-primary --outcome ${{ steps.bun-primary.outcome }} --row bun-linux-x64 --expect-source github-release
 
-      # Case 8 of 8: with no Bun of the pinned version on this runner, setup-bun's second step
+      # Case 8 of 8: with no Bun of the pinned version on this runner, setup-bun's third step
       # must read the second source, and the npm package serves one byte changed.
       # This case takes the pair away itself rather than leaning on the case before it. That
       # case's refusal does remove the bun and the bunx it refused from ~/.bun/bin — setup-bun's
-      # third step says so — but a case that must read the second source is held to its own
-      # state and not to the one the case before it happened to leave, and a Bun the Actions
-      # cache restored on a dispatch of main would otherwise satisfy this one.
+      # fourth step says so — but a case that must read the second source is held to its own
+      # state and not to the one the case before it happened to leave.
       - name: Take any Bun away, so the second source must serve this case
         run: rm -f "$HOME/.bun/bin/bun" "$HOME/.bun/bin/bunx"
 
@@ -2626,7 +2642,7 @@ jobs:
           job-status: ${{ job.status }}
 
   # The same two halves of the Bun install, proved again on an arm64 runner.
-  # .github/actions/setup-bun's second step selects a row from `uname -m` — `bun-linux-aarch64`
+  # .github/actions/setup-bun's third step selects a row from `uname -m` — `bun-linux-aarch64`
   # here — and reads .github/ci-tools.yaml through .github/scripts/ci-tools.sh, which needs
   # python3 with PyYAML. No other step of this repository that runs on ubuntu-24.04-arm imports
   # yaml, so nothing says that runner image carries it until the arm64 leg of
@@ -2634,7 +2650,7 @@ jobs:
   # only after a merge. This job says it on the pull request instead, and a release that would
   # have failed on the first push fails here.
   # It proves both halves: the healthy path, where the release asset serves Bun and the action's
-  # third step holds it to the aarch64 row, and the npm path, under the fault the tool-fallback
+  # fourth step holds it to the aarch64 row, and the npm path, under the fault the tool-fallback
   # job uses, where the release hosts answer nothing and the second source serves the same
   # binary. Each half ends in a reading of what this runner holds, printed for a person reading
   # the run: the machine, the version, the path, the row's own pins, and what ci_tools_verify
@@ -2646,11 +2662,11 @@ jobs:
   # install to its second source. The `ci-tools:` line the install wrote would say it too, and
   # no step can read it: a composite action writes that line to the job's log, which no later
   # step reads.
-  # The tool-fallback job's comment about the Actions cache holds here too — a dispatch of
-  # ci.yaml on main can restore Bun from a store this fault does not hold, which is read from
-  # oven-sh/setup-bun's own `cache-hit` declaration and from `no-cache` being false on main
-  # rather than driven by a run of this job — and the npm half takes ~/.bun/bin away before its
-  # install, so no Bun the healthy half left behind satisfies it.
+  # The tool-fallback job's comment about the Actions cache holds here too: the wrapper passes
+  # no-cache for every job whose id starts with `tool-fallback`, so no call of it in this job
+  # can be served by the cache either, on any event and any ref.
+  # The npm half takes ~/.bun/bin away before its install all the same, so no Bun the healthy
+  # half left behind satisfies it.
   # The `tool_fallback` filter selects this job, as it selects that one: both drive the same
   # action over the same manifest through the same helper, so one filter decides both and
   # neither can drift from the other. CI_OK_SELECTED_BY maps this job to that filter, and
@@ -2685,7 +2701,7 @@ jobs:
           persist-credentials: false
 
       # The healthy path, with nothing faulted: the release asset serves Bun, and the action's
-      # third step holds what it installed to the row its second step read out of `uname -m`.
+      # fourth step holds what it installed to the row its third step read out of `uname -m`.
       - uses: ./.github/actions/setup-bun
 
       - name: Read the Bun the release asset served
@@ -2702,12 +2718,12 @@ jobs:
         run: .github/scripts/ci-tools-proof.sh probe github.com
 
       # Both names, because the action's refusal takes both: what must be read again is an
-      # install, not a bun left over from the healthy half and not one a cache restored.
+      # install, and not the bun the healthy half left behind.
       - name: Take the installed Bun away, so the second source must serve it
         run: rm -f "$HOME/.bun/bin/bun" "$HOME/.bun/bin/bunx"
 
       # The npm path on arm64: the release asset answers nothing behind the fault, so the
-      # action's second step reads the @oven/bun-linux-aarch64 package the row names.
+      # action's third step reads the @oven/bun-linux-aarch64 package the row names.
       - uses: ./.github/actions/setup-bun
 
       # --expect-refused is this half's own reading of the source: the proxy's 504 for
