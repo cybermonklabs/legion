@@ -55,9 +55,10 @@ const shellHandlers: RequestHandler[] = [
     Response.json({ code: "NO_IDENTITY", error: "no identity" }, { status: 401 })
   ),
   http.get("/api/v1/agents", () => Response.json([])),
-  // The issue header's approval steps read the project list to learn which design steps are gated,
-  // so every page that draws a header makes this read. An empty list is a project with no gate,
-  // which is what a page with no `api.listProjects` spy drew before.
+  // The sidebar reads the project list on every signed-in page (`Sidebar.tsx`, `projectsQuery`),
+  // and the issue header reads it under the same key to learn which design steps are gated. An
+  // empty list is a project with no gate, which is what a page with no `api.listProjects` spy drew
+  // before.
   http.get("/api/v1/projects", () => Response.json([])),
   http.get("/api/v1/me/replies", () => Response.json({ rows: [], total: 0, limit: 50, offset: 0 })),
   http.get("/api/v1/credential-requests", () => Response.json({ pending: [] })),

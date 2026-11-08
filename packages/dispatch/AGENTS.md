@@ -1393,9 +1393,10 @@ through — has a `Fetch` of its own rather than `globalThis.fetch`.
 A request no handler answers is errored and recorded with its method and path, and the preload's
 `afterEach` and `afterAll` fail the test with what was recorded, so a read the page swallowed in
 a `catch`, and a write still retrying after a file's last test, are reported all the same.
-The module answers the five routes the application shell reads on every page
-(`/auth/whoami` as a 401 with no identity, `/api/v1/agents`, `/api/v1/me/replies`,
-`/api/v1/credential-requests`, `/api/v1/me/agents/state`), each with the API's empty shape.
+The module answers the six routes the application shell reads on every page
+(`/auth/whoami` as a 401 with no identity, `/api/v1/agents`, `/api/v1/projects`,
+`/api/v1/me/replies`, `/api/v1/credential-requests`, `/api/v1/me/agents/state`), each with the
+API's empty shape.
 Every other route is the test's own to answer, and there are four seams for it, from the top
 down: the api-client method a test spies (`spyOn(api, "issue")`), which most of the suite uses
 and which never reaches MSW; the request identity `__tests__/send-answers.ts` (`answerRoute`)
